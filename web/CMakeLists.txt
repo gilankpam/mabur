@@ -42,6 +42,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     ${MABUR_DIR}/common/src/frame_wire.cpp ${MABUR_DIR}/common/src/rc_proto.cpp
     ${MABUR_DIR}/common/src/profile.cpp ${MABUR_DIR}/common/src/node.cpp
     ${MABUR_DIR}/common/src/hevc_params.cpp ${MABUR_DIR}/common/src/toml.cpp
+    ${MABUR_DIR}/common/src/dvr_mux.cpp ${MABUR_DIR}/common/src/raw_dvr.cpp
     ${MABUR_DIR}/common/src/probe_wire.cpp ${MABUR_DIR}/common/src/msp_dp.cpp
     ${MABUR_DIR}/gs/src/aggregator.cpp ${MABUR_DIR}/gs/src/frame_stream.cpp
     ${MABUR_DIR}/gs/src/frame_file_source.cpp ${MABUR_DIR}/gs/src/config.cpp

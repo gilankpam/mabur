@@ -11,30 +11,49 @@ cd "$W/.."
 NODE_BIN=$W/build-wasm/webgs_node.js
 [ -f "$NODE_BIN" ] || { echo "FAIL: $NODE_BIN missing -- build the WASM tree first" >&2; exit 1; }
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
-parity() {  # <dir> <drop> <seed> <label>
-  local D=$1
-  rm -f "$D"/{n,w}.{aus,trace}
+parity() {  # <dir> <drop> <seed> <label> [expect_mp4=1]
+  local D=$1 expect_mp4=${5:-1}
+  rm -f "$D"/{n,w}.{aus,trace,mp4}
   "$BUILD/web/webgs" replay "$D/frames.bin" "$D/n.aus" -c "$D/gs.toml" --mode gs \
-     --fake-ack --drop-pct "$2" --seed "$3" --control-trace "$D/n.trace" 2>/dev/null
+     --fake-ack --drop-pct "$2" --seed "$3" --control-trace "$D/n.trace" --record "$D/n.mp4" 2>/dev/null
   node "$NODE_BIN" replay "$D/frames.bin" "$D/w.aus" -c "$D/gs.toml" --mode gs \
-     --fake-ack --drop-pct "$2" --seed "$3" --control-trace "$D/w.trace" 2>/dev/null
+     --fake-ack --drop-pct "$2" --seed "$3" --control-trace "$D/w.trace" --record "$D/w.mp4" 2>/dev/null
   [ -s "$D/n.aus" ] || { echo "FAIL: native wrote no AUs ($4 drop=$2 seed=$3)"; exit 1; }
   [ -s "$D/n.trace" ] || { echo "FAIL: native wrote no control trace ($4 drop=$2 seed=$3)"; exit 1; }
   cmp "$D/n.aus" "$D/w.aus" || { echo "FAIL: AU mismatch ($4 drop=$2 seed=$3)"; exit 1; }
   diff "$D/n.trace" "$D/w.trace" > /dev/null || {
     echo "FAIL: control trace mismatch ($4 drop=$2 seed=$3)"
     diff "$D/n.trace" "$D/w.trace" | head; exit 1; }
+  # RawDvr only creates the file on the first sync point (a complete
+  # parameter-set AU); the fixture's single IDR never reaches one (see the
+  # comment at its call site), so both sides correctly write nothing at all.
+  local n_exists=0 w_exists=0
+  [ -e "$D/n.mp4" ] && n_exists=1
+  [ -e "$D/w.mp4" ] && w_exists=1
+  if [ "$expect_mp4" = 1 ]; then
+    [ -s "$D/n.mp4" ] || { echo "FAIL: native recorded no mp4 ($4 drop=$2 seed=$3)"; exit 1; }
+  fi
+  [ "$n_exists" = "$w_exists" ] || {
+    echo "FAIL: mp4 existence mismatch ($4 drop=$2 seed=$3)"; exit 1; }
+  if [ "$n_exists" = 1 ]; then
+    cmp "$D/n.mp4" "$D/w.mp4" || { echo "FAIL: recorded mp4 mismatch ($4 drop=$2 seed=$3)"; exit 1; }
+  fi
+  local mp4_bytes=0
+  [ "$n_exists" = 1 ] && mp4_bytes=$(stat -c %s "$D/n.mp4")
   echo "ok $4 drop=$2 seed=$3 ($(stat -c %s "$D/n.aus") AU bytes," \
-       "$(wc -l < "$D/n.trace") trace lines)"
+       "$(wc -l < "$D/n.trace") trace lines, $mp4_bytes mp4 bytes)"
 }
 
 # 1. The standing fixture, same generation as tests/integration/
 #    run_web_au_parity.sh. Both sides load the same derived config via -c
-#    (NODERAWFS: host paths work).
+#    (NODERAWFS: host paths work). Its one IDR (frame 0, the only carrier of
+#    VPS/SPS/PPS) lands before web_frames_gen.sh's injected RCF takes effect
+#    -- the boot MAX_RANGE op point sheds it -- so RawDvr never sees a sync
+#    point and both sides record 0 bytes; still parity, just not a recording.
 mkdir "$TMP/fix"
 bash tests/integration/web_frames_gen.sh "$TMP/fix"
-parity "$TMP/fix" 0 1 fixture
-parity "$TMP/fix" 10 7 fixture
+parity "$TMP/fix" 0 1 fixture 0
+parity "$TMP/fix" 10 7 fixture 0
 
 # 2. A long synthetic stream (10 s at 60 fps, IDR every 2 s, 2-6 kB P frames
 #    alternating base/enh -- gen_vectors.py's framing), so the lossy runs
@@ -61,5 +80,10 @@ PY
 bash tests/integration/web_frames_gen.sh "$TMP/long" "$TMP/long/fixture.bin"
 parity "$TMP/long" 0 1 long
 parity "$TMP/long" 10 7 long
-parity "$TMP/long" 25 9 long
+# 25 % drop is heavy enough that every one of this seed's 4 later
+# parameter-set opportunities (the 12 kB IDR at i=120/240/360/480; i=0 is
+# always lost the same way as the fixture above) lands truncated rather than
+# complete -- confirmed from the AU records (flags: complete bit unset), not
+# a RawDvr defect -- so this run records nothing on either side too.
+parity "$TMP/long" 25 9 long 0
 echo "== wasm_parity passed =="

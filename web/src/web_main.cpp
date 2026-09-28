@@ -27,6 +27,7 @@
 #include "au_file.h"
 #include "config.h"
 #include "frame_file_source.h"
+#include "mabur/raw_dvr.h"
 #include "web_gs.h"
 #ifdef WEBGS_LIVE
 #include <libusb.h>
@@ -192,7 +193,7 @@ bool parse_mode(const std::string& s, webgs::Mode& m) {
 // ---- replay ----------------------------------------------------------------
 
 struct ReplayOpts {
-  std::string in, out, config = WEBGS_CONFIG_PATH, trace;
+  std::string in, out, config = WEBGS_CONFIG_PATH, trace, record;
   webgs::Mode mode = webgs::Mode::Gs;
   int drop_pct = 0;
   uint32_t seed = 1;
@@ -215,8 +216,16 @@ int run_replay(const ReplayOpts& o) {
     return 2;
   }
 
+  // --record: the web page's local recorder over the replay (armed from the
+  // first AU, sealed at the end) -- the native/WASM mp4 parity input.
+  mabur::RawDvr rec;
+  if (!o.record.empty()) rec.start(o.record, 0, 0);
+
   webgs::Io io;
-  io.on_au = [&](webgs::Au&& a) { w.write(a); };
+  io.on_au = [&](webgs::Au&& a) {
+    rec.feed(a.data.data(), a.data.size(), a.pts_us, a.complete);
+    w.write(a);
+  };
   // Gs mode needs a send path; replay has no radio, so count only.
   uint64_t sends = 0;
   if (o.mode == webgs::Mode::Gs) io.send = [&](const std::vector<uint8_t>&) { ++sends; };
@@ -254,6 +263,11 @@ int run_replay(const ReplayOpts& o) {
   }
   // Match the dry-run's final poll on the ms clock: last_ms + gap + 1.
   g.tick((last_us / 1000 + static_cast<uint64_t>(cfg.video.frame_gap_timeout_ms) + 1) * 1000);
+  rec.stop();
+  if (!o.record.empty() && rec.err() != mabur::RawDvr::Err::None) {
+    std::fprintf(stderr, "error: --record %s failed\n", o.record.c_str());
+    return 2;
+  }
   if (trace) std::fclose(trace);
 
   const webgs::Stats st = g.stats();
@@ -526,7 +540,7 @@ int usage(FILE* out, int rc) {
   std::fprintf(out,
                "usage: webgs replay <frames.bin> <out-aus> [-c config.toml] [--mode gs|spotter]\n"
                "                    [--drop-pct P] [--seed S] [--fixed-gap]\n"
-               "                    [--control-trace <file>] [--fake-ack]\n"
+               "                    [--control-trace <file>] [--fake-ack] [--record <file.mp4>]\n"
 #ifdef WEBGS_LIVE
                "       webgs live [-c config.toml] [--overlay file.toml] [--ch N] [--w 20|40]\n"
                "                  [--secs 0] [--mode gs|spotter]\n"
@@ -606,6 +620,7 @@ int main(int argc, char** argv) {
         else if (k == "--drop-pct") o.drop_pct = std::atoi(v);
         else if (k == "--seed") o.seed = static_cast<uint32_t>(std::atol(v));
         else if (k == "--control-trace") o.trace = v;
+        else if (k == "--record") o.record = v;
         else return usage(stderr, 2);
         continue;
       }
