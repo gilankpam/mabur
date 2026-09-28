@@ -14,7 +14,7 @@ const mem = (init = {}) => {
 test('defaults match maburgs.default.toml', () => {
   const c = defaultConfig();
   assert.deepEqual(c, { channel: 136, width: 40, staticMcs: -1, maxMcs: 5,
-    ladder: [0, 1, 2, 3, 4].map((mcs) => ({ mcs, bw: 40, ob: 0.5, oe: 0.25 })), colortrans: true });
+    ladder: [0, 1, 2, 3, 4].map((mcs) => ({ mcs, bw: 40, ob: 0.5, oe: 0.25 })), colortrans: true, dvr: 'web' });
   c.ladder[0].mcs = 7;
   assert.equal(defaultConfig().ladder[0].mcs, 0, 'fresh copy each call');
   assert.ok(CHANNELS.includes(136) && CHANNELS.includes(165) && CHANNELS.length === 25);
@@ -121,4 +121,13 @@ test('rung add/remove limits and labels', () => {
   assert.equal(describeRungEdit(c, 7, '__add'), 'Rung 7 added');
   assert.equal(describeRungEdit(c, 2, '__remove'), 'Rung 2 removed');
   assert.equal(describeRungEdit(c, 1, 'ob', '0.6'), 'Rung 1 FEC base set to 0.6');
+});
+
+test('dvr target: default web, normalized, described', () => {
+  assert.equal(defaultConfig().dvr, 'web');
+  assert.equal(normalizeConfig({ dvr: 'both' }).dvr, 'both');
+  assert.equal(normalizeConfig({ dvr: 'vtx' }).dvr, 'vtx');
+  assert.equal(normalizeConfig({ dvr: 'sd' }).dvr, 'web');
+  assert.equal(normalizeConfig({}).dvr, 'web');
+  assert.equal(describeEdit('dvr', 'both'), 'Recording target set to Both');
 });

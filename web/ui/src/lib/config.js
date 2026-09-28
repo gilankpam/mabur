@@ -20,6 +20,8 @@ export function defaultConfig() {
     // sensor tuning on the video (lib/colortrans.js). maburplay's bundle
     // default is on too.
     colortrans: true,
+    // Page-only: which recorder(s) Record drives (lib/localrec.js).
+    dvr: 'web',
   };
 }
 
@@ -55,6 +57,7 @@ export function normalizeConfig(raw) {
     maxMcs: inRange(mm, 0, 7) ? mm : d.maxMcs,
     ladder,
     colortrans: typeof raw.colortrans === 'boolean' ? raw.colortrans : d.colortrans,
+    dvr: ['web', 'vtx', 'both'].includes(raw.dvr) ? raw.dvr : d.dvr,
   };
 }
 
@@ -149,6 +152,7 @@ export function applyRungEdit(cfg, i, key, val) {
 
 const EDIT_LABEL = { channel: 'Channel', width: 'Channel width', staticMcs: 'Fixed MCS', maxMcs: 'Max MCS' };
 export function describeEdit(key, val) {
+  if (key === 'dvr') return `Recording target set to ${{ web: 'mabur web', vtx: 'VTX', both: 'Both' }[val]}`;
   if (key === 'colortrans') return `Colour correction ${val ? 'on' : 'off'}`;
   const shown = key === 'width' ? `${val} MHz` : key === 'staticMcs' && val < 0 ? 'Adaptive' : val;
   return `${EDIT_LABEL[key]} set to ${shown}`;
