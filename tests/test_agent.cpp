@@ -1780,6 +1780,131 @@ TEST(rcf_rec_retries_until_the_actuator_takes_it) {
   CHECK(act.records.size() == 2);   // failed once, taken once, then latched
 }
 
+// GS-requested IDR (spec 2026-09-28 web-idr-request): an idr_epoch CHANGE
+// raises one pending IDR, served from tick() through the shared pacer and
+// deferred (not dropped) when the 100 ms floor refuses it.
+
+static std::vector<uint8_t> make_rcf_wire_idr(uint32_t vtx, uint16_t seq, uint8_t epoch) {
+  Rcf r; r.vtx_id = vtx; r.seq = seq; r.profile = 0x24;
+  r.fec_overhead_base = 1.0; r.fec_overhead_enh = 0.5; r.idr_epoch = epoch;
+  return pack_rcf(r);
+}
+
+TEST(gs_idr_epoch_bump_fires_exactly_one_idr) {
+  auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
+  const int base = act.idr_calls;
+  auto w1 = make_rcf_wire_idr(cfg.link.vtx_id, 1, 0);
+  agent.on_rc_frame(w1.data(), w1.size(), 200);
+  agent.tick(210, RadioHealth{});
+  CHECK(act.idr_calls == base);                 // epoch 0 == seen 0: nothing
+  auto w2 = make_rcf_wire_idr(cfg.link.vtx_id, 2, 1);
+  agent.on_rc_frame(w2.data(), w2.size(), 250);
+  CHECK(act.idr_calls == base);                 // served from tick(), not intake
+  agent.tick(260, RadioHealth{});
+  CHECK(act.idr_calls == base + 1);
+  CHECK(agent.idr_gs_total() == 1);
+  // The same epoch repeated in every later RCF is not a new request.
+  auto w3 = make_rcf_wire_idr(cfg.link.vtx_id, 3, 1);
+  agent.on_rc_frame(w3.data(), w3.size(), 300);
+  agent.tick(400, RadioHealth{});
+  CHECK(act.idr_calls == base + 1);
+  CHECK(agent.idr_gs_total() == 1);
+}
+
+TEST(gs_idr_inside_pacer_floor_is_deferred_not_dropped) {
+  auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
+  const int base = act.idr_calls;
+  agent.note_chain_break();
+  agent.tick(200, RadioHealth{});               // chain-break IDR at t=200
+  REQUIRE(act.idr_calls == base + 1);
+  auto w = make_rcf_wire_idr(cfg.link.vtx_id, 1, 1);
+  agent.on_rc_frame(w.data(), w.size(), 240);
+  agent.tick(250, RadioHealth{});               // 50 ms after the last IDR: refused
+  CHECK(act.idr_calls == base + 1);
+  agent.tick(300, RadioHealth{});               // floor passed: the SAME request fires
+  CHECK(act.idr_calls == base + 2);
+  CHECK(agent.idr_gs_total() == 1);
+  // REVERT CHECK: clearing idr_gs_pending_ before idr_due() (drop semantics)
+  // leaves idr_calls at base + 1 here.
+}
+
+TEST(gs_idr_bumps_collapse_into_one_pending_idr) {
+  auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
+  const int base = act.idr_calls;
+  auto w1 = make_rcf_wire_idr(cfg.link.vtx_id, 1, 1);
+  agent.on_rc_frame(w1.data(), w1.size(), 200);
+  auto w2 = make_rcf_wire_idr(cfg.link.vtx_id, 2, 2);
+  agent.on_rc_frame(w2.data(), w2.size(), 205);
+  agent.tick(210, RadioHealth{});
+  agent.tick(400, RadioHealth{});
+  CHECK(act.idr_calls == base + 1);
+  CHECK(agent.idr_gs_total() == 1);
+}
+
+TEST(gs_idr_epoch_wrap_is_still_a_change) {
+  auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
+  const int base = act.idr_calls;
+  auto w1 = make_rcf_wire_idr(cfg.link.vtx_id, 1, 255);
+  agent.on_rc_frame(w1.data(), w1.size(), 200);
+  agent.tick(210, RadioHealth{});
+  auto w2 = make_rcf_wire_idr(cfg.link.vtx_id, 2, 0);
+  agent.on_rc_frame(w2.data(), w2.size(), 400);
+  agent.tick(410, RadioHealth{});
+  CHECK(act.idr_calls == base + 2);
+}
+
+TEST(gs_idr_nonzero_epoch_on_first_rcf_after_disc_is_served) {
+  // A DISC link-up issues no IDR, so a page that asked before the link came
+  // up (epoch already nonzero) must get one on the first RCF.
+  auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
+  const int base = act.idr_calls;
+  auto w = make_rcf_wire_idr(cfg.link.vtx_id, 1, 7);
+  agent.on_rc_frame(w.data(), w.size(), 200);
+  agent.tick(210, RadioHealth{});
+  CHECK(act.idr_calls == base + 1);
+}
+
+TEST(gs_idr_seen_epoch_resets_across_a_failsafe_and_new_disc_session) {
+  // A restarted page reaches a LINKED drone only after FAILSAFE (its low RCF
+  // seqs read stale until then) and a DISC from the non-LINKED path. That
+  // path resets the seen epoch, so the new page's epoch 3 -- the same value
+  // the old page last sent -- is still a change.
+  // NOTE: a DISC heard while LINKED takes the keep-alive branch, which
+  // returns before any session reset; that is why the test goes through
+  // FAILSAFE first.
+  auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
+  auto w1 = make_rcf_wire_idr(cfg.link.vtx_id, 1, 3);
+  agent.on_rc_frame(w1.data(), w1.size(), 200);
+  agent.tick(210, RadioHealth{});
+  const int after_first = act.idr_calls;
+  agent.tick(200 + cfg.link.failsafe_ms + 10, RadioHealth{});
+  REQUIRE(agent.state() == RcAgent::State::FAILSAFE);
+  auto disc = make_disc_wire(cfg.link.vtx_id, 0xBEEF0001, 136, 20, 0, 2);
+  agent.on_rc_frame(disc.data(), disc.size(), 1300);   // DISC path: no IDR of its own
+  REQUIRE(agent.state() == RcAgent::State::LINKED);
+  REQUIRE(act.idr_calls == after_first);
+  auto w2 = make_rcf_wire_idr(cfg.link.vtx_id, 1, 3);
+  agent.on_rc_frame(w2.data(), w2.size(), 1400);
+  agent.tick(1410, RadioHealth{});
+  CHECK(act.idr_calls == after_first + 1);      // seen reset to 0, so 3 is a change
+  CHECK(agent.idr_gs_total() == 2);
+  // REVERT CHECK: drop `idr_epoch_seen_ = 0;` from the FAILSAFE-entry and
+  // DISC-establish resets and idr_calls stays at after_first.
+}
+
+TEST(gs_idr_served_on_the_tick_that_enters_failsafe) {
+  // Serve runs at tick ENTRY like the chain-break consumer: a request whose
+  // floor has passed still goes out on the tick that notices lost feedback.
+  auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
+  const int base = act.idr_calls;
+  auto w1 = make_rcf_wire_idr(cfg.link.vtx_id, 1, 1);
+  agent.on_rc_frame(w1.data(), w1.size(), 250);
+  agent.tick(250 + cfg.link.failsafe_ms + 10, RadioHealth{});   // first tick since the RCF
+  CHECK(agent.state() == RcAgent::State::FAILSAFE);
+  CHECK(act.idr_calls == base + 1);
+  CHECK(agent.idr_gs_total() == 1);
+}
+
 // Low-power (pre-arm) mode, spec 2026-09-20.
 
 // Helper: BOOT tick, then a LINKED mcs5 session at t=100 (ov 0.5/0.5).

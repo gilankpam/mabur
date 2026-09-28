@@ -249,4 +249,15 @@ TEST(hop_fields_pass_through) {
   CHECK(t.hop_epoch == 3);
 }
 
+TEST(idr_gs_saturates_and_round_trips) {
+  mabur::TelemInputs in;
+  in.idr_gs = 70000;
+  CHECK(mabur::make_telem(1, in).idr_gs == 65535);
+  in.idr_gs = 42;
+  auto wire = mabur::rc::pack_telem(mabur::make_telem(2, in));
+  auto back = mabur::rc::parse_telem(wire.data(), wire.size());
+  REQUIRE(back.has_value());
+  CHECK(back->idr_gs == 42);
+}
+
 MTEST_MAIN

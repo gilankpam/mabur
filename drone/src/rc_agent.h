@@ -179,6 +179,10 @@ class RcAgent {
   // 2026-09-14 §1). 0 before any hop order has ever been heard.
   uint8_t hop_epoch() const { return hop_epoch_; }
 
+  // GS-requested IDRs actually issued (spec 2026-09-28), lifetime; feeds
+  // Telem.idr_gs.
+  uint64_t idr_gs_total() const { return idr_gs_total_; }
+
   // Telemetry accessors (spec 2026-07-26 drone-telemetry): read-only
   // snapshots of RcAgent-internal state the T_TELEM collector needs but
   // that isn't otherwise exposed. All same-thread reads (the agent thread
@@ -286,10 +290,11 @@ class RcAgent {
   uint64_t rcf_accepted_ = 0;
 
   // IDR policy state (spec 2026-08-28 venc-foldin §4). Every IDR producer
-  // — the GS-driven RCF-after-failsafe path and the encoder's chain-break
-  // signal — funnels through idr_due(); nothing else may call
-  // act_.request_idr(). chain_break_pending_ is the venc thread's handoff
-  // (see note_chain_break); the two timestamps are agent-thread-only.
+  // — the GS-driven RCF-after-failsafe path, the encoder's chain-break
+  // signal, and RCF idr_epoch requests — funnels through idr_due();
+  // nothing else may call act_.request_idr(). chain_break_pending_ is the
+  // venc thread's handoff (see note_chain_break); the two timestamps are
+  // agent-thread-only.
   std::atomic<bool> chain_break_pending_{false};
   // have_* companions rather than a 0 sentinel (the file's own idiom, cf.
   // have_last_fb_/have_last_bitrate_eval_): now_ms is a caller-supplied
@@ -322,6 +327,13 @@ class RcAgent {
   // (rc::kRecKnown) is applied; link loss never touches it.
   int rec_applied_ = -1;
   void intake_arm_state_(uint64_t now_ms);
+
+  // GS-requested IDR (spec 2026-09-28 web-idr-request). The last RCF
+  // idr_epoch seen this session (0 at every session edge) and whether a
+  // request is waiting for the pacer. Agent-thread-only.
+  uint8_t idr_epoch_seen_ = 0;
+  bool idr_gs_pending_ = false;
+  uint64_t idr_gs_total_ = 0;
 
   // Bitrate policy state.
   int last_bitrate_kbps_ = 0;
