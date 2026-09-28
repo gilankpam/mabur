@@ -96,6 +96,20 @@
       {/each}
       <div class="dim5" style="font-size:11px;text-wrap:pretty">FEC overhead is extra repair data per layer (0.5 = +50%). Keep base ≥ enh on every rung.</div>
     </div>
+
+    <div class={groupClass}>
+      <span class="card-kicker">DVR</span>
+      <div class="field">
+        <span id="{uid}dvr-label" class="fieldlabel">Recording target</span>
+        <div class="seg" role="radiogroup" aria-labelledby="{uid}dvr-label">
+          <label class="seg-opt"><input type="radio" name="{uid}dvr" checked={cfg.dvr === 'web'} onchange={() => set('dvr', 'web')}>mabur web</label>
+          <label class="seg-opt"><input type="radio" name="{uid}dvr" checked={cfg.dvr === 'vtx'} disabled={spotter} onchange={() => set('dvr', 'vtx')}>VTX</label>
+          <label class="seg-opt"><input type="radio" name="{uid}dvr" checked={cfg.dvr === 'both'} disabled={spotter} onchange={() => set('dvr', 'both')}>Both</label>
+        </div>
+        <div class="hint">{{ web: 'Recorded in this browser and downloaded when you stop.', vtx: 'Recorded on the VTX storage.', both: 'Recorded in this browser and on the VTX.' }[cfg.dvr]}</div>
+        {#if spotter && cfg.dvr !== 'web'}<div class="note"><Icon name="binoculars" size="14px" /><span>Spotter records in this browser only.</span></div>{/if}
+      </div>
+    </div>
   </fieldset>
 
   <!-- Page-only, applied on the next frame: stays editable while live. -->
@@ -108,20 +122,6 @@
         <label class="seg-opt"><input type="radio" name="{uid}ct" checked={!cfg.colortrans} onchange={() => set('colortrans', false)}>Off</label>
       </div>
       <div class="hint">Undoes the drone camera's colortrans tuning. Turn off for a drone without the colortrans sensor file.</div>
-    </div>
-  </div>
-
-  <div class={groupClass}>
-    <span class="card-kicker">DVR</span>
-    <div class="field">
-      <span id="{uid}dvr-label" class="fieldlabel">Recording target</span>
-      <div class="seg" role="radiogroup" aria-labelledby="{uid}dvr-label">
-        <label class="seg-opt"><input type="radio" name="{uid}dvr" checked={cfg.dvr === 'web'} onchange={() => set('dvr', 'web')}>mabur web</label>
-        <label class="seg-opt"><input type="radio" name="{uid}dvr" checked={cfg.dvr === 'vtx'} disabled={spotter} onchange={() => set('dvr', 'vtx')}>VTX</label>
-        <label class="seg-opt"><input type="radio" name="{uid}dvr" checked={cfg.dvr === 'both'} disabled={spotter} onchange={() => set('dvr', 'both')}>Both</label>
-      </div>
-      <div class="hint">{{ web: 'Recorded in this browser and downloaded when you stop.', vtx: 'Recorded on the VTX storage.', both: 'Recorded in this browser and on the VTX.' }[cfg.dvr]}</div>
-      {#if spotter && cfg.dvr !== 'web'}<div class="note"><Icon name="binoculars" size="14px" /><span>Spotter records in this browser only.</span></div>{/if}
     </div>
   </div>
 
