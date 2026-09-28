@@ -41,18 +41,49 @@ export class Gate {
   onDecoderError() { this.armed = false; }
 }
 
-// GS-requested IDR pacing (spec 2026-09-28): ask the moment the gate is
-// unarmed, then every retryMs while it stays so (the IDR itself was lost).
-// Polled per AU and on decoder errors; no timer -- with no AUs the link is
-// down and the drone's link-up path covers it.
+// GS-requested IDR pacing (spec 2026-09-28, backoff added in the final
+// whole-branch review 2026-09-28): ask the moment the gate is unarmed, then
+// every retryMs while it stays so (the IDR itself was lost). Polled per AU
+// and on decoder errors; no timer -- with no AUs the link is down and the
+// drone's link-up path covers it.
+//
+// Backoff: a device-local decode failure (unsupported codec, reclaimed
+// hardware decoder, ...) means the drone's IDR was never the problem, so
+// hammering it at retryMs forever just costs the biggest frames on the link
+// for nothing. noteKeyFailed()/noteOutput() track consecutive key-frame
+// failures since the last decoded output; the effective retry interval
+// doubles per failure, capped at maxRetryMs, and collapses back to retryMs
+// on the next real output.
 export class IdrRequester {
-  constructor(retryMs = 300) { this.retryMs = retryMs; this.lastMs = null; }
+  constructor(retryMs = 300, maxRetryMs = 4800) {
+    this.retryMs = retryMs;
+    this.maxRetryMs = maxRetryMs;
+    this.lastMs = null;
+    this.prevMs = null;   // lastMs before the most recent fired poll(); cancel() undoes it
+    this.n = 0;            // consecutive key-frame failures since the last output
+  }
+  noteKeyFailed() { this.n++; }
+  noteOutput() { this.n = 0; }
+  interval() { return Math.min(this.retryMs * 2 ** this.n, this.maxRetryMs); }
   poll(armed, nowMs) {
-    if (armed) { this.lastMs = null; return false; }
-    if (this.lastMs !== null && nowMs - this.lastMs < this.retryMs) return false;
+    if (armed) {
+      // Only wipe the clock on a "clean" re-arm (no failures pending): once
+      // backed off (n > 0), a momentary re-arm that then fails again (the
+      // exact shape of a permanent local failure -- the gate arms on the
+      // bitstream alone, before the decoder has had a chance to reject it)
+      // must not reset the wait back to zero, or the backoff never bites.
+      if (this.n === 0) this.lastMs = null;
+      return false;
+    }
+    if (this.lastMs !== null && nowMs - this.lastMs < this.interval()) return false;
+    this.prevMs = this.lastMs;
     this.lastMs = nowMs;
     return true;
   }
+  // onWantIdr reported it didn't actually send (e.g. not live yet): undo the
+  // fire just recorded so the next poll() asks again instead of waiting out
+  // retryMs/interval for a request that never went anywhere.
+  cancel() { this.lastMs = this.prevMs; }
 }
 
 export class PtsUnwrap {

@@ -43,6 +43,10 @@ export class VideoPipeline {
     this.decoder = this.decoderSlot.replace(null);
     this.hvcc = null;
     this.configuredWith = null;
+    // Set when a 'key' chunk is submitted to the decoder, cleared by the
+    // output callback (a real decode happened) or an error path (the
+    // failure is charged to IdrRequester's backoff instead).
+    this.keyPending = false;
     this.segWindow = new SegWindow(now);
     this.metrics = new PageMetrics();
     this.hitchTimes = [];
@@ -58,12 +62,17 @@ export class VideoPipeline {
   // The next key frame builds a fresh one (onAu).
   replaceDecoder() {
     this.submitted.clear();
+    this.keyPending = false;
     this.decoder = this.decoderSlot.replace(null);
   }
 
   makeDecoder() {
     return new VideoDecoder({
       output: (frame) => {
+        // A real decode happened: the key frame that started this run (if
+        // any) succeeded, and IdrRequester's backoff resets.
+        this.keyPending = false;
+        this.idr.noteOutput();
         const t = now();
         const rec = this.submitted.get(frame.timestamp);
         if (rec) {
@@ -99,6 +108,12 @@ export class VideoPipeline {
       },
       error: (e) => {
         console.error('[webgs] decoder error', e);
+        // A key chunk was submitted and no output arrived since: this run
+        // never produced a frame (unsupported codec, reclaimed hardware
+        // decoder, ...) -- charge IdrRequester's backoff. An error after
+        // output (the ordinary missing-reference case this feature exists
+        // for) must not back off.
+        if (this.keyPending) { this.idr.noteKeyFailed(); this.keyPending = false; }
         this.gate.onDecoderError();
         this.replaceDecoder();
         this.pollIdr();
@@ -178,7 +193,16 @@ export class VideoPipeline {
       this.decoder = this.decoderSlot.replace(this.makeDecoder());
     }
     if (g.type === 'key' && (this.decoder.state !== 'configured' || this.configuredWith !== this.hvcc)) {
-      if (!this.hvcc) { this.gate.onDecoderError(); return; }
+      if (!this.hvcc) {
+        // hvcC hasn't arrived yet -- normally rides the very same AU (the
+        // core builds it from the same VPS/SPS/PPS the gate just parsed),
+        // so this is a stream-start race, not a permanent local failure:
+        // another armed AU will very likely carry it. Charge the backoff
+        // rather than either asking forever or suppressing for good.
+        this.idr.noteKeyFailed();
+        this.gate.onDecoderError();
+        return;
+      }
       this.decoder.configure({
         codec: 'hvc1.1.6.L120.B0', description: this.hvcc,
         hardwareAcceleration: 'prefer-hardware', optimizeForLatency: true,
@@ -188,10 +212,12 @@ export class VideoPipeline {
     const tSubmit = now();
     pruneSubmitted(this.submitted, tSubmit, 1000);   // dropped/never-output chunks
     this.submitted.set(pts, { tSubmit, tRecvMs, tEmitMs, capUs });
+    if (g.type === 'key') this.keyPending = true;
     try {
       this.decoder.decode(new EncodedVideoChunk({ type: g.type, timestamp: pts, data: annexbToLengthPrefixed(data) }));
     } catch (e) {
       console.error('[webgs] decode() threw', e);
+      if (this.keyPending) { this.idr.noteKeyFailed(); this.keyPending = false; }
       this.gate.onDecoderError();
       this.replaceDecoder();
     }
@@ -205,8 +231,16 @@ export class VideoPipeline {
 
   // GS-requested IDR (spec 2026-09-28): ask when the gate is unarmed, paced
   // by IdrRequester. Every early return in onAuInner still reaches this.
+  // No VideoDecoder in this browser is a permanent, local, unfixable-by-a-
+  // key-frame condition -- never ask for one (finding 1a, final review).
   pollIdr() {
-    if (this.idr.poll(this.gate.armed, performance.now())) this.onWantIdr();
+    if (typeof VideoDecoder === 'undefined') return;
+    if (this.idr.poll(this.gate.armed, performance.now())) {
+      // onWantIdr() returning exactly false means the request was swallowed
+      // (e.g. session not live yet): don't count the poll, so the next AU
+      // asks again instead of waiting out retryMs for nothing (finding 2).
+      if (this.onWantIdr() === false) this.idr.cancel();
+    }
   }
 
   // Session left live: release the hardware decoder now, not at the next Connect.

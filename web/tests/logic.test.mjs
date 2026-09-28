@@ -288,3 +288,47 @@ test('IdrRequester does not fire faster than retryMs', () => {
   for (let t = 0; t < 3000; t += 16) if (r.poll(false, t)) n++;   // 60 AU/s, unarmed 3 s
   assert.equal(n, 10);
 });
+
+test('IdrRequester backs off after consecutive key-frame failures, capped at maxRetryMs', () => {
+  const r = new IdrRequester(300, 4800);
+  assert.equal(r.poll(false, 0), true);       // unarmed edge, n=0: immediate
+  r.noteKeyFailed();                          // n=1: next interval 600
+  assert.equal(r.poll(false, 300), false);
+  assert.equal(r.poll(false, 599), false);
+  assert.equal(r.poll(false, 600), true);
+  r.noteKeyFailed();                          // n=2: next interval 1200
+  assert.equal(r.poll(false, 1200 + 600 - 1), false);
+  assert.equal(r.poll(false, 1200 + 600), true);
+  // Run n up past the cap: interval never exceeds maxRetryMs (4800).
+  for (let i = 0; i < 8; i++) r.noteKeyFailed();
+  const t0 = 100000;
+  assert.equal(r.poll(false, t0), true);
+  assert.equal(r.poll(false, t0 + 4799), false);
+  assert.equal(r.poll(false, t0 + 4800), true);
+});
+
+test('IdrRequester.noteOutput resets the backoff to the base retryMs', () => {
+  const r = new IdrRequester(300);
+  r.noteKeyFailed();
+  r.noteKeyFailed();
+  r.noteOutput();
+  assert.equal(r.poll(false, 0), true);
+  assert.equal(r.poll(false, 299), false);
+  assert.equal(r.poll(false, 300), true);     // back to the base 300 ms, not 1200
+});
+
+test('IdrRequester.cancel un-fires the last poll so the next one requests again', () => {
+  const r = new IdrRequester(300);
+  assert.equal(r.poll(false, 1000), true);    // unarmed edge: fires
+  r.cancel();                                 // onWantIdr returned false: didn't really send
+  assert.equal(r.poll(false, 1001), true);    // immediate retry, not gated by retryMs
+});
+
+test('IdrRequester.cancel after a backed-off retry restores the pre-retry timestamp', () => {
+  const r = new IdrRequester(300);
+  r.poll(false, 0);                           // edge fire, lastMs=0
+  assert.equal(r.poll(false, 300), true);     // retry fires, lastMs=300
+  r.cancel();                                 // restore lastMs to 0
+  assert.equal(r.poll(false, 299), false);    // still within retryMs of the restored 0
+  assert.equal(r.poll(false, 300), true);
+});

@@ -151,10 +151,14 @@ export class Session {
   }
 
   // GS-requested IDR (spec 2026-09-28). GS mode only: a spotter has no
-  // send path, so asking would only count.
+  // send path, so asking would only count. Returns true iff the module was
+  // actually called, so IdrRequester (video.js pollIdr) can tell a real
+  // send from one swallowed by state (e.g. still 'connecting') and not
+  // count it against its own retry pacing (final review finding 2).
   requestIdr() {
-    if (this.snapshot.state !== 'live' || this.snapshot.mode !== 'gs' || !this.mod) return;
+    if (this.snapshot.state !== 'live' || this.snapshot.mode !== 'gs' || !this.mod) return false;
     this.mod._webgs_request_idr();
+    return true;
   }
 
   // Local (OPFS) recording, both modes. null = stop. The core copies the

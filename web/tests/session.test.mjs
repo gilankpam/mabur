@@ -178,6 +178,22 @@ test('requestIdr is a no-op in spotter', async () => {
   assert.equal(f.made[0].idrCalls, 0);
 });
 
+// Final review finding 2: the caller (video.js's IdrRequester) needs to
+// tell a real send from one swallowed by state, so it doesn't count a
+// swallowed request against its own retry pacing.
+test('requestIdr returns true in live GS, false when idle or spotter', async () => {
+  const { s, f } = mk();
+  assert.equal(s.requestIdr(), false);   // idle: nothing to call
+  await s.connect({ mode: 'spotter', ch: 136, w: 40, overlayToml: '' });
+  assert.equal(s.requestIdr(), false);   // spotter: no send path
+  assert.equal(f.made[0].idrCalls, 0);
+  await s.disconnect();
+  await tick();
+  await s.connect({ mode: 'gs', ch: 136, w: 40, overlayToml: '' });
+  assert.equal(s.requestIdr(), true);
+  assert.equal(f.made[1].idrCalls, 1);
+});
+
 test('external failure (worker) -> error', async () => {
   const { s } = mk();
   await s.connect({ mode: 'gs', ch: 136, w: 40, overlayToml: '' });
