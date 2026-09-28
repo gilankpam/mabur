@@ -65,6 +65,10 @@ namespace {
 std::atomic<bool> g_stop{false};
 std::atomic<int> g_rec{-1};   // -1 never pressed, 0 off, 1 on
 
+// Page -> core IDR requests (webgs_request_idr): a monotonically increasing
+// count; the loop forwards it, and its low byte rides every RCF.
+std::atomic<uint32_t> g_idr_req{0};
+
 // Browser storage for local recordings (spec 2026-09-28-web-local-recording
 // §1.3): true once the startup OPFS probe passed. Always false natively.
 std::atomic<bool> g_opfs_ok{false};
@@ -535,11 +539,16 @@ int run_live(const LiveOpts& o) {
   std::vector<mabur::node::RxBody> batch;
   uint64_t next_stat = now_us() + 1000000;
   int applied_rec = -1;
+  uint32_t applied_idr = 0;
   for (int s = 0; o.secs == 0 || s < o.secs;) {
     if (g_stop.load(std::memory_order_acquire)) break;
     if (const int rw = g_rec.load(std::memory_order_acquire); rw != applied_rec && rw >= 0) {
       g.set_vtx_rec(rw == 1);
       applied_rec = rw;
+    }
+    if (const uint32_t ir = g_idr_req.load(std::memory_order_acquire); ir != applied_idr) {
+      g.set_idr_requests(ir);
+      applied_idr = ir;
     }
     {
       bool on = false;
@@ -698,6 +707,7 @@ int parse_live(int argc, char** argv, int first, LiveOpts& o) {
 extern "C" {
 EMSCRIPTEN_KEEPALIVE void webgs_stop() { g_stop.store(true); }
 EMSCRIPTEN_KEEPALIVE void webgs_set_rec(int on) { g_rec.store(on ? 1 : 0); }
+EMSCRIPTEN_KEEPALIVE void webgs_request_idr() { g_idr_req.fetch_add(1, std::memory_order_acq_rel); }
 EMSCRIPTEN_KEEPALIVE void webgs_set_local_rec(int on, const char* name) {
   std::lock_guard<std::mutex> lk(g_lrec.mu);
   g_lrec.on = on != 0;

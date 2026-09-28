@@ -339,6 +339,59 @@ TEST(vtx_rec_wish_is_noop_in_spotter) {
   CHECK(g.sends() == 0);
 }
 
+TEST(idr_requests_reach_rcf_epoch_byte) {
+  std::vector<uint8_t> last;
+  Io io;
+  io.on_au = [](Au&&) {};
+  io.send = [](const std::vector<uint8_t>&) {};
+  io.on_control_tick = [&](double, const maburgs::LinkHealth&, int,
+                           const std::vector<uint8_t>* sent) {
+    if (sent && mabur::rc::frame_type(sent->data(), sent->size()) == mabur::rc::T_RCF)
+      last = *sent;
+  };
+  WebGs g(cfg(), Mode::Gs, 136, 40, io);
+  const uint64_t t0 = 1'000'000;
+  g.inject_disc_ack_for_replay(t0);
+  g.tick(t0);
+  auto r0 = last_rcf_after(g, last, 30, t0);
+  REQUIRE(!r0.empty());
+  CHECK(mabur::rc::parse_rcf(r0.data(), r0.size())->idr_epoch == 0);
+
+  g.set_idr_requests(3);
+  auto r1 = last_rcf_after(g, last, 30, t0 + 1'000'000);
+  REQUIRE(!r1.empty());
+  CHECK(mabur::rc::parse_rcf(r1.data(), r1.size())->idr_epoch == 3);
+
+  g.set_idr_requests(256 + 5);                 // count wraps into the byte
+  auto r2 = last_rcf_after(g, last, 30, t0 + 2'000'000);
+  REQUIRE(!r2.empty());
+  CHECK(mabur::rc::parse_rcf(r2.data(), r2.size())->idr_epoch == 5);
+  CHECK(g.stats().idr_req == 261u);
+  CHECK(stats_json(g.stats()).find("\"idr_req\":261") != std::string::npos);
+}
+
+TEST(idr_requests_are_noop_in_spotter) {
+  Io io;
+  io.on_au = [](Au&&) {};
+  WebGs g(cfg(), Mode::Spotter, 136, 40, io);
+  g.set_idr_requests(4);   // must not crash; there is no send path
+  CHECK(g.vrx() == nullptr);
+  CHECK(g.sends() == 0);
+}
+
+TEST(drone_idr_gs_from_telem_in_stats_json) {
+  Io io;
+  io.on_au = [](Au&&) {};
+  WebGs g(cfg(), Mode::Spotter, 136, 40, io);
+  CHECK(stats_json(g.stats()).find("\"drone_idr_gs\":null") != std::string::npos);
+  mabur::rc::Telem t;
+  t.tlm_seq = 1;
+  t.idr_gs = 9;
+  g.on_rx(rc_body(mabur::rc::pack_telem(t), 1'000'000));
+  g.tick(1'000'000);
+  CHECK(stats_json(g.stats()).find("\"drone_idr_gs\":9") != std::string::npos);
+}
+
 TEST(rec_status_from_telem_in_stats_json) {
   Io io;
   io.on_au = [](Au&&) {};

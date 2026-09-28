@@ -244,6 +244,11 @@ void WebGs::set_vtx_rec(bool on) {
   vrx_->set_rec_wish(static_cast<uint8_t>(mabur::rc::kRecKnown | (on ? mabur::rc::kRecOn : 0)));
 }
 
+void WebGs::set_idr_requests(uint32_t n) {
+  idr_req_ = n;
+  if (vrx_) vrx_->set_idr_epoch(static_cast<uint8_t>(n));
+}
+
 Stats WebGs::stats() const {
   Stats s;
   s.mode = mode_;
@@ -274,10 +279,12 @@ Stats WebGs::stats() const {
   s.aus_truncated = aus_truncated_;
   s.sends = sends_;
   s.rcf_sent = rcf_sent_;
+  s.idr_req = idr_req_;
   if (telem_) {
     s.drone_rcf_rx = telem_->rcf_rx;
     s.drone_state = telem_->state;
     s.rec_status = telem_->rec_status;
+    s.drone_idr_gs = telem_->idr_gs;
   }
   s.osd_snaps = msp_ ? msp_->snapshots_out() : 0;
   s.osd_screens = osd_.screens();
@@ -306,6 +313,7 @@ std::string stats_json(const Stats& s) {
   opt("pts_off_us", s.pts_off_us);
   opt("drone_rcf_rx", s.drone_rcf_rx);
   opt("drone_state", s.drone_state);
+  opt("drone_idr_gs", s.drone_idr_gs);
   if (s.rec_status) {
     j["rec_state"] = *s.rec_status & 0x03;
     j["rec_err"] = *s.rec_status >> 2;
@@ -320,6 +328,7 @@ std::string stats_json(const Stats& s) {
   j["trunc"] = s.aus_truncated;
   j["sends"] = s.sends;
   j["rcf_sent"] = s.rcf_sent;
+  j["idr_req"] = s.idr_req;
   j["osd_snaps"] = s.osd_snaps;
   j["osd_screens"] = s.osd_screens;
   return j.dump();

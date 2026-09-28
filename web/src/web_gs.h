@@ -77,6 +77,8 @@ struct Stats {
   std::optional<uint32_t> drone_rcf_rx;   // Telem, cumulative
   std::optional<uint8_t> drone_state;
   std::optional<uint8_t> rec_status;      // Telem.rec_status raw (VTX recorder)
+  uint32_t idr_req = 0;                   // page IDR requests so far (set_idr_requests)
+  std::optional<uint16_t> drone_idr_gs;   // Telem.idr_gs: requests the drone served
   uint64_t osd_snaps = 0;     // MSP snapshots out of the FEC sink
   uint64_t osd_screens = 0;   // OSD screens published (Io::on_osd)
 };
@@ -128,6 +130,10 @@ class WebGs {
   // semantics: the RCF byte stays 0 until the first call, then
   // kRecKnown | (on ? kRecOn : 0). Spotter: no-op (no VrxController).
   void set_vtx_rec(bool on);
+  // GS-requested IDR (spec 2026-09-28): the page's cumulative request count.
+  // Its low byte is the RCF idr_epoch; the drone serves one IDR per change.
+  // Spotter: kept for stats only (no VrxController, nothing sent).
+  void set_idr_requests(uint32_t n);
   Mode mode() const { return mode_; }
   // Test seams.
   const maburgs::VrxController* vrx() const { return vrx_.get(); }  // nullptr in Spotter
@@ -166,6 +172,7 @@ class WebGs {
   Au cur_;
   uint64_t bodies_ = 0, aus_complete_ = 0, aus_truncated_ = 0, sends_ = 0, rcf_sent_ = 0;
   uint64_t resets_ = 0;
+  uint32_t idr_req_ = 0;
 };
 
 }  // namespace webgs
