@@ -20,6 +20,7 @@
 #include "colortrans.h"  // ColorTrans, build_cubic_lut, LutAxis (docs/colortrans.md)
 #include "mabur/dvr_mux.h"
 #include "mabur/dvr_name.h"
+#include "mabur/raw_dvr.h"
 #include "gs_font.h"
 #include "gs_metrics.h"
 #include "gs_layer.h"
@@ -1072,12 +1073,14 @@ int main(int argc, char** argv) {
     return 2;
   }
 
-  mabur::HevcParams params;
-  mabur::DvrMux dvr;
-  bool dvr_open = false;
-  // Latched so the GS overlay can tell "no file yet" (armed) from "the file
-  // could not be created" (fault). Nothing else needs the distinction.
-  bool dvr_open_failed = false;
+  // Raw-mode recorder (common/raw_dvr.h): sync gate + params + mux. Its
+  // Error state is what the GS overlay's REC "broken" reads.
+  mabur::RawDvr dvr;
+  // Autostart: dvr.autostart armed rec_on before this point (see rec_on's
+  // declaration above), but the actual start() call has to wait until here,
+  // where bcfg is in scope.
+  if (rec_on && rec_gs && !burned_mode)
+    dvr.start(dvr_filename(cfg.dvr.dir), bcfg.width, bcfg.height, cfg.dvr.fragment_ms);
 
   // The button's two actions. Both modes are handled here so the press
   // handler stays one line; the raw path is a flag plus a close, the
@@ -1087,7 +1090,6 @@ int main(int argc, char** argv) {
     rec_on = true;
     gs_rec.reset();  // the OSD clock counts THIS file
     vtx_trk.reset();
-    dvr_open_failed = false;
     if (!rec_gs) {
       std::fprintf(stderr, "maburplay: rec: START (vtx only)\n");
       return;
@@ -1114,6 +1116,7 @@ int main(int argc, char** argv) {
       }
     }
 #endif
+    if (!burned_mode) dvr.start(dvr_filename(cfg.dvr.dir), bcfg.width, bcfg.height, cfg.dvr.fragment_ms);
     std::fprintf(stderr, "maburplay: rec: START (%s)\n", cfg.dvr.mode.c_str());
   };
 
@@ -1125,18 +1128,11 @@ int main(int argc, char** argv) {
       return;
     }
     if (!burned_mode) {
-      // Read BEFORE the close, and gated on dvr_open. samples() survives
-      // close() and is only cleared by the next open(), so with a file in
-      // hand it reports the one just sealed -- but with NO file open it
-      // would report the PREVIOUS recording's count and claim a file
-      // /media/dvr never gained. That window is real and ~2 s wide: the
-      // raw path only opens on the next sid-0 sync point, so a quick
-      // START->STOP lands inside it.
-      const unsigned long long n = dvr_open ? dvr.samples() : 0;
-      if (dvr_open) {
-        dvr.close();
-        dvr_open = false;
-      }
+      // Read BEFORE the stop: samples() is 0 unless this recording opened a
+      // file -- the raw path only opens on the next parameter-set AU (~2 s),
+      // so a quick START->STOP lands before any file exists.
+      const unsigned long long n = dvr.samples();
+      dvr.stop();
       std::fprintf(stderr, "maburplay: rec: STOP (%llu samples)\n", n);
       return;
     }
@@ -1194,11 +1190,6 @@ int main(int argc, char** argv) {
   // happens before the backend ever sees the AU), then (b) backend submit.
   auto sink = [&](maburplay::AuEvent&& ev) {
     const bool complete = (ev.meta.flags & maburgs::kRecFlagComplete) != 0;
-    // DVR's join/cut signal: same sid0-is-the-sync-point reasoning as the
-    // backend gate below, replacing the kFlagIdr check -- this live
-    // encoder never sets it past the opening session IDR (see comment on
-    // backend_armed above).
-    const bool is_key = ev.meta.sid == 0;
 
     // GS overlay video figures, measured HERE -- at AU delivery -- and not
     // at flip: the presenter is a mailbox on the panel vsync, so flip
@@ -1213,39 +1204,11 @@ int main(int argc, char** argv) {
     if (complete) ++gs_complete_aus;
 
     // !burned_mode: in burned mode the BurnRecorder owns the recording and
-    // writes the encoder's output to its own DvrMux instead. Everything
-    // inside is the raw path, byte-for-byte unchanged.
-    if (rec_on && !burned_mode) {
-      if (!complete) {
-        // Truncated base AU: DVR records complete AUs only, so this one is
-        // skipped whole. No explicit fragment cut needed here: DvrMux
-        // already cuts unconditionally on every key AU, so the resulting
-        // decode gap is sealed off automatically the next time one arrives.
-      } else {
-        if (is_key) params.feed(ev.au.data(), ev.au.size());
-        // `&& is_key`: a file must BEGIN at a sync point. params.complete()
-        // is sticky and params is never reset, so on the SECOND and later
-        // recordings of a run it is already true when the button re-arms
-        // this path -- without this clause the file would open on whatever
-        // AU arrived next and record it with key=false, i.e. start with P
-        // slices whose references are not in the file. A no-op for the
-        // first recording: params.feed() only runs on is_key, so
-        // complete() cannot first become true anywhere but a key AU.
-        if (!dvr_open && rec_gs && params.complete() && is_key) {
-          const std::string path = dvr_filename(cfg.dvr.dir);
-          dvr_open = dvr.open(path, params.hvcc(), bcfg.width, bcfg.height, cfg.dvr.fragment_ms);
-          if (!dvr_open) {
-            std::fprintf(stderr, "maburplay: dvr: cannot open %s\n", path.c_str());
-            dvr_open_failed = true;
-          } else {
-            dvr_open_failed = false;
-          }
-        }
-        if (dvr_open) {
-          dvr.write_sample(ev.au.data(), ev.au.size(), ev.meta.pts_us, is_key);
-        }
-      }
-    }
+    // writes the encoder's output to its own DvrMux instead. RawDvr applies
+    // the raw path's rules itself (complete AUs only, file begins at a
+    // parameter-set AU) and ignores AUs while not armed.
+    if (rec_on && !burned_mode && rec_gs)
+      dvr.feed(ev.au.data(), ev.au.size(), ev.meta.pts_us, complete);
 
     if (ev.flush_before) {
       // Flush-ordering contract carried from Task 8's review:
@@ -1318,7 +1281,7 @@ int main(int argc, char** argv) {
 
   if (oneshot) {
     ring.oneshot_drain();
-    if (dvr_open) dvr.close();
+    dvr.stop();
     std::printf(
         "{\"delivered\":%llu,\"dropped_enhance_incomplete\":%llu,"
         "\"truncated_base\":%llu,\"resyncs\":%llu,\"dvr_samples\":%llu,"
@@ -1414,7 +1377,7 @@ int main(int argc, char** argv) {
     // cleanliness" rather than a false pass.
     const uint64_t errors_after_sync_3s = error_count - errors_at_3s;
 
-    if (dvr_open) dvr.close();
+    dvr.stop();
     std::printf(
         "{\"frames\":%llu,\"fps\":%.2f,\"fps_active\":%.2f,\"info_changes\":%llu,"
         "\"errors\":%llu,\"errors_after_sync_3s\":%llu,\"concealed\":%llu}\n",
@@ -1728,12 +1691,12 @@ int main(int argc, char** argv) {
         // open(), so a stopped raw recorder would keep the OSD at REC.
         rin.samples = rec_on ? dvr.samples() : 0;
         rin.feed = gs_complete_aus;
-        rin.open = dvr_open;
+        rin.open = dvr.state() == mabur::RawDvr::State::Recording;
         // rec_on, for the same reason as the burned branch below: a failed
         // open is only a FAULT while we are supposed to be recording. Once
         // the user has stopped, a stale latch would keep the OSD red until
         // the next start (rec_start is what clears it).
-        rin.broken = rec_on && dvr_open_failed;
+        rin.broken = rec_on && dvr.state() == mabur::RawDvr::State::Error;
         if (burned_mode) {
           rin.feed = frame_count;
 #ifdef MABUR_PLAYER_HW
@@ -2091,6 +2054,6 @@ int main(int argc, char** argv) {
           L.anchor_ok ? "ok" : "warm");
   }
 #endif
-  if (dvr_open) dvr.close();
+  dvr.stop();
   return 0;
 }
