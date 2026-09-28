@@ -599,6 +599,15 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
     // true rather than aspirational.
     if (entering_linked && idr_due(now_ms, /*chain=*/false)) {
       act_.request_idr();
+      // This link-up IDR already covers any GS request pending on this same
+      // RCF (spec 2026-09-28 fix round 1): FAILSAFE entry resets
+      // idr_epoch_seen_ to 0, so the first RCF back reads the page's
+      // (unchanged) epoch as a fresh change and arms idr_gs_pending_ right
+      // above -- without this, that pending request survives to the next
+      // tick and fires a redundant second IDR ~100 ms later. Leave
+      // idr_epoch_seen_ alone: the epoch itself is still correctly seen, so
+      // the same epoch in a later RCF stays "not a new request".
+      idr_gs_pending_ = false;
     }
 
     // RCFs that transition into LINKED (from RENDEZVOUS or FAILSAFE) force

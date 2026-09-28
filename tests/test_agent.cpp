@@ -1905,6 +1905,36 @@ TEST(gs_idr_served_on_the_tick_that_enters_failsafe) {
   CHECK(agent.idr_gs_total() == 1);
 }
 
+TEST(gs_idr_rcf_failsafe_recovery_sends_exactly_one_idr) {
+  // Fix round 1 (spec 2026-09-28): FAILSAFE entry resets idr_epoch_seen_ to
+  // 0, so the first RCF back reads the page's UNCHANGED epoch as a fresh
+  // change and re-arms idr_gs_pending_ on the very RCF whose entering_linked
+  // path already issues a link-up IDR. Without satisfying the pending
+  // request there, it survives to the next tick and the 100 ms floor defers
+  // it into a redundant second IDR ~100 ms after recovery.
+  auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
+  const int base = act.idr_calls;
+  auto w1 = make_rcf_wire_idr(cfg.link.vtx_id, 1, 5);
+  agent.on_rc_frame(w1.data(), w1.size(), 200);
+  agent.tick(210, RadioHealth{});                // GS request served
+  REQUIRE(act.idr_calls == base + 1);
+  agent.tick(200 + cfg.link.failsafe_ms + 10, RadioHealth{});
+  REQUIRE(agent.state() == RcAgent::State::FAILSAFE);
+  const int after_failsafe = act.idr_calls;
+  // FAILSAFE -> LINKED via RCF, same epoch as before: entering_linked's own
+  // link-up IDR must cover the request the intake just re-armed, in the
+  // same RCF -- not a second one 100 ms later.
+  auto w2 = make_rcf_wire_idr(cfg.link.vtx_id, 1, 5);
+  agent.on_rc_frame(w2.data(), w2.size(), 1400);
+  agent.tick(1450, RadioHealth{});
+  agent.tick(1600, RadioHealth{});
+  CHECK(act.idr_calls == after_failsafe + 1);    // exactly one, not two
+  CHECK(agent.idr_gs_total() == 1);              // unchanged: the link-up
+                                                  // IDR isn't GS-attributed
+  // REVERT CHECK: remove the `idr_gs_pending_ = false;` added inside the
+  // entering_linked block and act.idr_calls reads after_failsafe + 2 here.
+}
+
 // Low-power (pre-arm) mode, spec 2026-09-20.
 
 // Helper: BOOT tick, then a LINKED mcs5 session at t=100 (ov 0.5/0.5).
