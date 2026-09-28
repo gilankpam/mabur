@@ -1,5 +1,6 @@
 #include "mabur/dvr_mux.h"
 
+#include <cstdio>
 #include <cstring>
 #include <utility>
 #include <unistd.h>
@@ -51,6 +52,19 @@ struct BoxWriter {
   void fourcc(const char* tag) { bytes(reinterpret_cast<const uint8_t*>(tag), 4); }
 };
 
+// The default sink for open(path, ...): an ordinary buffered FILE*.
+class FileSink final : public DvrSink {
+ public:
+  explicit FileSink(FILE* f) : f_(f) {}
+  ~FileSink() override { std::fclose(f_); }
+  bool write(const uint8_t* p, size_t n) override { return std::fwrite(p, 1, n, f_) == n; }
+  bool flush() override { return std::fflush(f_) == 0; }
+  bool sync() override { return std::fflush(f_) == 0 && ::fsync(fileno(f_)) == 0; }
+
+ private:
+  FILE* f_;
+};
+
 void put_unity_matrix(BoxWriter& b) {
   b.u32(0x00010000);
   b.u32(0);
@@ -67,14 +81,17 @@ void put_unity_matrix(BoxWriter& b) {
 
 bool DvrMux::open(const std::string& path, const std::vector<uint8_t>& hvcc, int width,
                    int height, int fragment_ms) {
+  FILE* f = std::fopen(path.c_str(), "wb");
+  return open(f ? std::make_unique<FileSink>(f) : nullptr, hvcc, width, height, fragment_ms);
+}
+
+bool DvrMux::open(std::unique_ptr<DvrSink> sink, const std::vector<uint8_t>& hvcc, int width,
+                   int height, int fragment_ms) {
   // The handle is per-file state too. Unreachable today (every caller
   // guards on its own dvr_open flag and close() nulls f_), but this
   // function's contract is "safe on a live object", and overwriting f_
   // would leak the descriptor and leave the previous file unflushed.
-  if (f_) {
-    std::fclose(f_);
-    f_ = nullptr;
-  }
+  sink_.reset();
 
   // Per-FILE state, reset on every open() call -- success or not. The
   // record button re-opens this mux for each new recording, so without
@@ -99,11 +116,11 @@ bool DvrMux::open(const std::string& path, const std::vector<uint8_t>& hvcc, int
   bytes_written_ = 0;
   ok_ = true;
 
-  f_ = std::fopen(path.c_str(), "wb");
-  if (!f_) {
+  if (!sink) {
     ok_ = false;
     return false;
   }
+  sink_ = std::move(sink);
 
   width_ = width;
   height_ = height;
@@ -332,9 +349,9 @@ bool DvrMux::open(const std::string& path, const std::vector<uint8_t>& hvcc, int
     b.end(moov_at);
   }
 
-  const size_t n = std::fwrite(b.buf.data(), 1, b.buf.size(), f_);
-  bytes_written_ += n;
-  if (n != b.buf.size() || std::fflush(f_) != 0) ok_ = false;
+  if (sink_->write(b.buf.data(), b.buf.size())) bytes_written_ += b.buf.size();
+  else ok_ = false;
+  if (!sink_->flush()) ok_ = false;
   return ok_;
 }
 
@@ -479,32 +496,30 @@ void DvrMux::flush_fragment() {
   b.u32(static_cast<uint32_t>(mdat_size));
   b.fourcc("mdat");
 
-  size_t want = b.buf.size();
-  size_t n = std::fwrite(b.buf.data(), 1, b.buf.size(), f_);
+  if (sink_->write(b.buf.data(), b.buf.size())) bytes_written_ += b.buf.size();
+  else ok_ = false;
   for (const auto& s : pending_) {
-    want += s.data.size();
-    n += std::fwrite(s.data.data(), 1, s.data.size(), f_);
+    if (sink_->write(s.data.data(), s.data.size())) bytes_written_ += s.data.size();
+    else ok_ = false;
   }
-  bytes_written_ += n;
-  // The fflush still ends the fragment: once it returns (and the caller's
+  // The flush still ends the fragment: once it returns (and the caller's
   // sync()), the whole moof+mdat is on disk.
-  if (n != want || std::fflush(f_) != 0) ok_ = false;
+  if (!sink_->flush()) ok_ = false;
 
   pending_.clear();
 }
 
 void DvrMux::close(bool durable) {
   flush_fragment();
-  if (f_) {
+  if (sink_) {
     if (durable) (void)sync();
-    std::fclose(f_);
-    f_ = nullptr;
+    sink_.reset();
   }
 }
 
 bool DvrMux::sync() {
-  if (!f_) return false;
-  if (std::fflush(f_) != 0 || ::fsync(fileno(f_)) != 0) {
+  if (!sink_) return false;
+  if (!sink_->sync()) {
     ok_ = false;
     return false;
   }
