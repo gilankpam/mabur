@@ -267,6 +267,25 @@ over the video while frozen; the debug panel's `IDR req / served` pair
 (page count vs Telem `idr_gs`) attributes a slow recovery to lost RCFs
 (served lags req) or lost IDRs (served keeps up, gate still unarmed).
 
+`IdrRequester` never asks when `VideoDecoder` doesn't exist in this
+browser (final review, 2026-09-28) -- no request fixes a missing codec API.
+It also backs off: a key chunk that fails to decode (unsupported codec
+rejected by `configure()`, a reclaimed hardware decoder, or the hvcC racing
+its own key AU at stream start) doubles the retry interval each time,
+300 ms → 600 ms → … capped at 4.8 s, and a normal mid-stream error that
+follows an actual decoded frame (the missing-reference case this feature
+exists for) never backs off. Without this, a device that simply can't
+decode HEVC would have asked the drone for a fresh IDR -- the biggest frame
+on the link -- about 3.3 times a second for the whole flight.
+
+`IDR req` is this page's own count since the current Connect; `served` is
+the drone's Telem `idr_gs` count since the drone last booted, shared by
+every page that has ever asked it. Don't compare the two absolute numbers
+across sessions -- compare their *deltas* within one session instead:
+`served` also collapses multiple `idr_epoch` bumps that land within one RCF
+interval into a single serve, so a burst of asks can legitimately show
+`served` advancing by less than `req` even with no loss at all.
+
 **Spotter key frames.** WebCodecs will only start decoding on a real IRAP
 (IRAP NAL types 16–21: BLA/IDR/CRA), never on the drone's GDR parameter-set refresh
 (`32 33 34 1`, TRAIL_R). The drone emits a real IDR unsolicited on a rung
