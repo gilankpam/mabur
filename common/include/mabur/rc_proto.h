@@ -51,7 +51,9 @@ constexpr uint16_t RC_MAGIC = 0x5243;  // "RC"
 // Spec docs/superpowers/specs/2026-09-14-inflight-channel-hop-design.md §1.
 // Bumped 10 -> 11 on 2026-09-26: RCF gains `rec` (VTX recorder wish), Telem
 // gains `rec_status`. Spec 2026-09-26-vtx-recorder-design.md.
-constexpr uint8_t RC_VERSION = 11;
+// Bumped 11 -> 12 on 2026-09-28: RCF gains `idr_epoch` (GS-requested IDR),
+// Telem gains `idr_gs`. Spec 2026-09-28-web-idr-request-design.md.
+constexpr uint8_t RC_VERSION = 12;
 
 // RCF probe_profile sentinel: the drone runs no probe stream.
 constexpr uint8_t kNoProbeProfile = 0xFF;
@@ -110,6 +112,11 @@ struct Rcf {
   // 0 = unknown (maburgs just started, no player message yet): the drone
   // leaves the recorder alone. Level-triggered, in EVERY RCF; no decay.
   uint8_t rec = 0;
+
+  // GS-requested IDR (spec 2026-09-28): the requester bumps this on every
+  // request; the drone serves one paced IDR per CHANGE. In EVERY RCF, so a
+  // lost RCF loses nothing. 0 from a GS that never requests (maburgs).
+  uint8_t idr_epoch = 0;
 };
 
 // VRX -> VTX discovery beacon (rendezvous), addressed to a VTX_ID.
@@ -266,6 +273,11 @@ struct Telem {
   // VTX recorder (spec 2026-09-26): bits 0-1 RecState (0 off, 1 recording,
   // 2 error), bits 2-7 RecErr (drone/src/vtx_recorder.h).
   uint8_t rec_status = 0;
+
+  // GS-requested IDRs RcAgent actually issued (spec 2026-09-28), lifetime,
+  // saturating. Against the requester's own count it separates lost RCFs /
+  // pacer deferral from IDRs lost on air.
+  uint16_t idr_gs = 0;
 };
 
 // One rate's index range for a calibration phase. idx_step 4 is the coarse
