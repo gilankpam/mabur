@@ -659,3 +659,13 @@ TEST(rcf_carries_the_rec_wish) {
   REQUIRE(r.has_value());
   CHECK(r->rec == (mabur::rc::kRecKnown | mabur::rc::kRecOn));
 }
+
+TEST(rcf_carries_the_idr_epoch) {
+  // first_rcf() (file helper, ~line 495) acks the rendezvous and returns the
+  // first non-DISC frame; t carries forward between calls.
+  auto vrx = make();
+  double t = 0;
+  CHECK(first_rcf(vrx, healthy(), t).idr_epoch == 0);   // never set: 0 (maburgs)
+  vrx.set_idr_epoch(0x2B);
+  CHECK(first_rcf(vrx, healthy(), t).idr_epoch == 0x2B);
+}

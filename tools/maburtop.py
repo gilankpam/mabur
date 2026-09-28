@@ -451,7 +451,8 @@ def render_rows_compact(model, wall, width):
             f"dis {_f(enc.get('idr_disagree'), 3)}/{_f(enc.get('enhance_disagree'), 3)}   "
             f"van {_f(enc.get('vanished_base'), 3)}/{_f(enc.get('vanished_enh'), 3)}   "
             f"vring {_f(enc.get('venc_ring_fill_pct'), 3)}% "
-            f"drop {_f(enc.get('venc_full_drops'), 4)}"
+            f"drop {_f(enc.get('venc_full_drops'), 4)}   "
+            f"idr {_f(enc.get('idr_gs'), 4)}"
         )
         rows.append(
             f"TXQ     depth {_f(txq.get('depth'), 3)}/{_f(txq.get('cap'), 3)}   "
@@ -716,7 +717,8 @@ def panel_drone(model, wall):
              f"   van {_f(enc.get('vanished_base'), 3)}/{_f(enc.get('vanished_enh'), 3)}"
              f" ref {_f(enc.get('self_idr_refused'), 2)}"
              f"   vring {_f(enc.get('venc_ring_fill_pct'), 3)}%"
-             f" drop {_f(enc.get('venc_full_drops'), 4)}")
+             f" drop {_f(enc.get('venc_full_drops'), 4)}"
+             f" idr {_f(enc.get('idr_gs'), 4)}")
     ring = enc.get("ring_drops")
     spans3 = []
     dis_idx = line3.rindex("   dis ")  # anchor to cap ring span

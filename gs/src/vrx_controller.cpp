@@ -97,6 +97,7 @@ mabur::rc::Rcf VrxController::build_rcf() {
   r.hop_ch = hop_ch_;
   r.hop_epoch = hop_epoch_;
   r.rec = rec_wish_;
+  r.idr_epoch = idr_epoch_;
   // Probe stream MCS (spec 2026-09-04): the ladder names a rung to probe on
   // every RCF, or none. In static-pin mode the ladder is out of the loop, so
   // the probe follows the dedicated pin instead.

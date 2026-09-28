@@ -100,6 +100,9 @@ class VrxController {
   void set_keepalive_hold(bool hold) { keepalive_hold_ = hold; }
   // VTX recorder wish for every RCF (RecControl::wire(); spec 2026-09-26).
   void set_rec_wish(uint8_t w) { rec_wish_ = w; }
+  // GS-requested IDR epoch for every RCF (spec 2026-09-28). Only the web GS
+  // calls this; maburgs leaves it at 0.
+  void set_idr_epoch(uint8_t e) { idr_epoch_ = e; }
   uint8_t proposal() const { return rz_.proposal(); }
   // Last accepted ack's agreed_channel (0 before any accept). Set BEFORE
   // peer_caps_ so a caller reading both on one tick sees a consistent pair.
@@ -130,6 +133,7 @@ class VrxController {
   uint8_t hop_ch_ = 0;
   uint8_t hop_epoch_ = 0;
   uint8_t rec_wish_ = 0;
+  uint8_t idr_epoch_ = 0;
 };
 
 }  // namespace maburgs

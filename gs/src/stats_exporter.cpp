@@ -620,6 +620,9 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     // ring — distinct from enc.ring_drops, which is the consumer side.
     enc["venc_full_drops"] = t.venc_full_drops;
     enc["venc_ring_fill_pct"] = t.venc_ring_fill_pct;
+    // GS-requested IDRs the drone served (spec 2026-09-28; only a web GS
+    // requests, so maburgs reads 0 unless a web page flew this drone).
+    enc["idr_gs"] = t.idr_gs;
     json& txq = d["txq"];
     txq["depth"] = t.txq_depth;
     txq["cap"] = t.txq_cap;  // wire value as-is (256 saturates to 255 on the wire)

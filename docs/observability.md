@@ -918,6 +918,10 @@ climbing with `venc_full_drops` rising means the encoder is outrunning
 maburd, while `ring_drops` rising means maburd rejected slots it did read.
 A *stalled* encoder shows as neither — `drone.enc.fps`/`enc_frames` simply
 stop advancing.
+`drone.enc.idr_gs` (Telem.idr_gs, since RC_VERSION 12) counts IDRs the
+drone issued because a GS asked for one over the RCF `idr_epoch` byte. Only
+the web GS asks (spec 2026-09-28), so with maburgs flying it stays 0.
+maburtop shows it as `idr N` on the encoder row.
 `self_idr_refused` counts base vanishes suppressed by the IDR-adjacency
 guard — the self-IDR CONSUMER is deliberately not wired: on the parked
 `idr-request` branch it amplified CPU overload into an IDR storm (rolling
