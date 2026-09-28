@@ -7,12 +7,17 @@
 namespace {
 
 // Open handles live in this worker's global scope, keyed by a small int.
-EM_ASYNC_JS(int, opfs_js_open, (const char* name), {
+EM_ASYNC_JS(int, opfs_js_open, (const char* name, int overwrite), {
   const n = UTF8ToString(name);
   try {
     const root = await navigator.storage.getDirectory();
     const fh = await root.getFileHandle(n, { create: true });
     const h = await fh.createSyncAccessHandle();
+    if (!overwrite && h.getSize() > 0) {
+      h.close();
+      err('[webgs] opfs open ' + n + ': refusing to clobber a non-empty existing file');
+      return 0;
+    }
     h.truncate(0);
     const t = (globalThis.__webgsOpfs ??= { next: 1, files: new Map() });
     const id = t.next++;
@@ -71,8 +76,8 @@ EM_ASYNC_JS(int, opfs_js_remove, (const char* name), {
 
 namespace webgs {
 
-std::unique_ptr<OpfsFile> OpfsFile::open(const std::string& name) {
-  const int id = opfs_js_open(name.c_str());
+std::unique_ptr<OpfsFile> OpfsFile::open(const std::string& name, bool overwrite) {
+  const int id = opfs_js_open(name.c_str(), overwrite ? 1 : 0);
   if (id <= 0) return nullptr;
   return std::unique_ptr<OpfsFile>(new OpfsFile(id, name));
 }
@@ -101,7 +106,7 @@ void OpfsFile::close() {
 
 bool opfs_probe() {
   static const uint8_t kByte = 0x6d;  // lives in the WASM heap: tests the heap-view write
-  auto f = OpfsFile::open(".probe");
+  auto f = OpfsFile::open(".probe", /*overwrite=*/true);
   if (!f) return false;
   const bool ok = f->write(&kByte, 1) && f->flush() && opfs_js_size(f->id_) == 1.0;
   f->close();

@@ -217,10 +217,15 @@
   const vtxReady = $derived(live && sess.mode === 'gs' && !!core?.session && !!core?.peer_acked);
   const localReady = $derived(live && opfsOk && core?.lrec_avail !== 0);
   // Local needs only a live module with OPFS; VTX-only keeps today's rule.
-  const recDisabled = $derived(recCovers.web ? !localReady : !vtxReady);
+  // Both falls back to the VTX-only rule when there's no browser storage --
+  // spec §2.4 still wants Record to work, just VTX-only (spec 2026-09-28
+  // final review finding 4).
+  const bothVtxFallback = $derived(recTarget === 'both' && !localReady);
+  const recDisabled = $derived(recTarget === 'vtx' || bothVtxFallback ? !vtxReady : !localReady);
   const recLabel = $derived(recOn ? formatClock(recMs) : recWaiting ? 'waiting for sync…'
     : rec.state === 'error' ? 'REC!' : 'Record');
   const recTitle = $derived(rec.state === 'error' ? rec.err
+    : bothVtxFallback && live ? 'Browser storage unavailable — recording on the VTX only'
     : recCovers.web && live && !localReady ? 'Browser storage unavailable — local recording is off'
     : { web: 'Record in this browser (R)', vtx: 'Record on the VTX (R)', both: 'Record in this browser and on the VTX (R)' }[recTarget]);
   // Toggle from what is shown (a drone already recording after a reconnect
@@ -229,7 +234,7 @@
     if (recDisabled) return;
     const on = !(recOn || recWaiting || sess.recWish || sess.localWish);
     if (recCovers.vtx && sess.mode === 'gs') session.setRec(on);
-    if (recCovers.web) {
+    if (recCovers.web && localReady) {
       if (on) {
         if (!persistAsked) { persistAsked = true; navigator.storage?.persist?.().then((p) => console.log('[webgs] storage persist', p)).catch(() => {}); }
         session.setLocalRec(recFileName(new Date(), recItems.map((r) => r.name)));
@@ -359,7 +364,7 @@
     {/if}
   </div>
   {#if layout === 'immersive' && view}
-    <FsOverlay {live} mode={sess.mode} {chLine} {recOn} recClock={formatClock(recMs)} recErr={rec.state === 'error' ? (rec.err || 'error') : null} {recDisabled} {recTitle}
+    <FsOverlay {live} mode={sess.mode} {chLine} {recOn} {recWaiting} recClock={formatClock(recMs)} recErr={rec.state === 'error' ? (rec.err || 'error') : null} {recDisabled} {recTitle}
       onConn={toggleConn} onRec={toggleRec} onStats={() => (ui.statsVisible = !ui.statsVisible)}
       onCfg={() => (ui.cfgOpen = !ui.cfgOpen)} fsButton={isMobile(LW, LH) ? (fsSupported ? { on: realFs } : null) : { on: true }}
       onFs={isMobile(LW, LH) ? toggleRealFs : toggleFs} />
@@ -377,7 +382,7 @@
 </div>
 
 {#snippet recList()}
-  <Recordings items={recItems} active={live && (sess.localWish || rec.state === 'recording') ? (core?.lrec_name || null) : null}
+  <Recordings items={recItems} active={live && (sess.localWish || lrec?.state === 'waiting' || lrec?.state === 'recording') ? (core?.lrec_name || null) : null}
     storage={recStorage} warn={recWarn} available={opfsOk} onDownload={dlRecording} onDelete={delRecording} />
 {/snippet}
 

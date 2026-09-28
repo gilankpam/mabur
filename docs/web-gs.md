@@ -323,13 +323,18 @@ thread, fed every AU in `io.on_au` before the page hand-off. Its sync point
 is the first *complete* AU carrying VPS+SPS+PPS (`au_has_param_sets()`) —
 the live GDR encoder's parameter-set refresh, not an IRAP and not sid 0 —
 so pressing Record shows the button label `waiting for sync…` for up to
-~2 s (the drone's refresh period) until that AU arrives and the file
-actually opens; before that point nothing is armed and a press-then-release
-inside the window writes nothing. Files are named
-`mabur-YYYYMMDD-HHMMSS.mp4` (`recFileName()`, browser local clock, `-2`/`-3`
-suffix on a same-second collision) and created directly in the OPFS root via
-`OpfsFile::open()` (see Build, above), wrapped as a `DvrSink` (`OpfsSink` in
-`web_main.cpp`) that `RawDvr` writes through exactly like the FILE* sink.
+~2 s (the drone's refresh period) until that AU arrives and `RawDvr` starts
+muxing samples into the file. It IS armed before that point, though: the
+(empty) OPFS file is created and opened right at the press
+(`OpfsFile::open()`, see Build, above), wrapped as a `DvrSink` (`OpfsSink`
+in `web_main.cpp`) and held by `RawDvr` while it waits for the sync AU; a
+press-then-release inside the window leaves it empty, and the core removes
+it (rather than reporting a 0-byte download) when it seals. `open()` never
+overwrites an existing non-empty file — a same-second name collision (or a
+leftover file from an earlier session) fails the start with "cannot create
+file" instead of truncating it. Files are named `mabur-YYYYMMDD-HHMMSS.mp4`
+(`recFileName()`, browser local clock, `-2`/`-3` suffix chosen against the
+already-listed recordings) and created directly in the OPFS root.
 
 `Module.onRecClosed(name, bytes, err)` fires once per recording, on every
 way it can end: an explicit stop, a `RawDvr::Error` (sticky, surfaces once),
@@ -523,9 +528,10 @@ rule).
 - **A local recording may not play in Chrome's own `<video>` element**
   (pending the live browser bench, plan Task 9 Step 2 — this is expected,
   not yet confirmed): the file starts on the drone's GDR parameter-set
-  refresh, not a real IRAP, and browsers commonly refuse to seek to or
-  start playback on a non-IRAP first frame the way WebCodecs' `EncodedVideoChunk`
-  API does. `mpv`/`ffmpeg` decode a GDR-first stream without issue.
+  refresh, not a real IRAP. Browsers commonly refuse to start playback on a
+  file whose first frame isn't an IRAP, and Chrome's `<video>` element may
+  do the same here (unconfirmed pending the bench). `mpv`/`ffmpeg` decode a
+  GDR-first stream without issue.
 - **Capture→glass can use a stale RTT offset for up to ~30 s after a drone
   restart.** `RttEstimator`'s pts-clock offset is never explicitly reset on
   a detected drone restart, in this page or in `maburgs` itself — the

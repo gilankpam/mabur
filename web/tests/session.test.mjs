@@ -329,6 +329,17 @@ test('onRecClosed reaches the page after the module exited (disconnect seals the
   assert.deepEqual(got, [['a.mp4', 100, 0]]);
 });
 
+test('onRecClosed clears localWish while still live (a local error needs only one press to restart)', async () => {
+  const { s, f } = mk();
+  await s.connect({ mode: 'gs', ch: 136, w: 40, overlayToml: '' });
+  const m = f.made[0];
+  s.setLocalRec('a.mp4');
+  assert.equal(s.snapshot.localWish, true);
+  m.opts.onRecClosed('a.mp4', 10, 2);   // core sealed with a write error
+  assert.equal(s.snapshot.localWish, false);
+  assert.equal(s.snapshot.state, 'live');
+});
+
 test('onRecClosed from a superseded module is dropped', async () => {
   const got = [];
   const { s, f } = mk({ onRecClosed: (...a) => got.push(a) });

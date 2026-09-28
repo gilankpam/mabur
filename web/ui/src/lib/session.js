@@ -77,7 +77,14 @@ export class Session {
         onError: (text) => { if (this.token === token) this.handleError(text); },
         // Not gated on state: the core seals the file on its way out, so this
         // can land after onExit. The token still drops a superseded module's.
-        onRecClosed: (name, bytes, err) => { if (this.token === token) this.onRecClosed(name, bytes, err); },
+        // The core only ever has one armed recording, and it is sealed now
+        // -- clear localWish so a press right after an error starts a new
+        // one instead of sending a redundant stop first.
+        onRecClosed: (name, bytes, err) => {
+          if (this.token !== token) return;
+          this.set({ localWish: false });
+          this.onRecClosed(name, bytes, err);
+        },
         onExit: (code) => { token.exited = true; if (this.token === token) this.handleExit(code); },
         print: (t) => console.log('[webgs]', t),
         printErr: (t) => {

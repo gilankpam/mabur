@@ -156,9 +156,12 @@ struct MemSink : mabur::DvrSink {
   std::vector<uint8_t>* out;
   bool* destroyed;
   int writes_left;   // fail every write after this many (-1 = never)
-  MemSink(std::vector<uint8_t>* o, bool* d, int left = -1) : out(o), destroyed(d), writes_left(left) {}
+  int* calls;        // optional: bumped on every write() invocation, success or not
+  MemSink(std::vector<uint8_t>* o, bool* d, int left = -1, int* c = nullptr)
+      : out(o), destroyed(d), writes_left(left), calls(c) {}
   ~MemSink() override { if (destroyed) *destroyed = true; }
   bool write(const uint8_t* p, size_t n) override {
+    if (calls) ++*calls;
     if (writes_left == 0) return false;
     if (writes_left > 0) --writes_left;
     out->insert(out->end(), p, p + n);
@@ -214,6 +217,33 @@ TEST(write_failure_is_sticky_error) {
   CHECK(d.bytes() > 0);
   feed(d, p_au(4), 50001);               // ignored
   CHECK(d.state() == RawDvr::State::Error);
+}
+
+// Once a fragment's write starts failing, DvrMux must not keep issuing more
+// sink writes for the rest of that fragment, nor from the close() a failed
+// write triggers (2026-09-28 final review: "DvrMux keeps writing into a
+// failed sink").
+TEST(write_failure_stops_further_sink_writes) {
+  std::vector<uint8_t> mem;
+  bool destroyed = false;
+  int calls = 0;
+  RawDvr d;
+  // 2 successful writes: the init segment (moov, on open) and the cut
+  // fragment's moof/mdat header. Every write from the first pending sample
+  // onward must be refused -- and, with the fix, never even attempted.
+  d.start(std::make_unique<MemSink>(&mem, &destroyed, 2, &calls), 0, 0);
+  feed(d, param_au(1), 0);       // opens: write #1 (moov)
+  feed(d, p_au(2), 16667);       // buffered: not a cut
+  feed(d, p_au(3), 33334);       // buffered
+  feed(d, param_au(4), 50001);   // key: cuts -> header write #2 ok, then sample writes fail
+  CHECK(d.state() == RawDvr::State::Error);
+  CHECK(d.err() == RawDvr::Err::Write);
+  CHECK(calls == 3);             // moov, moof/mdat header, ONE failed sample write -- no more
+  const size_t bytes_after_failure = mem.size();
+  feed(d, p_au(5), 66668);       // ignored: state is already Error
+  d.stop();
+  CHECK(calls == 3);             // stop()'s close() must not touch the dead sink again
+  CHECK(mem.size() == bytes_after_failure);
 }
 
 TEST(unopened_sink_is_dropped_unwritten_on_stop) {

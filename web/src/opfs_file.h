@@ -16,8 +16,13 @@ namespace webgs {
 
 class OpfsFile {
  public:
-  // Creates (or truncates) `name` in the OPFS root. Null on any failure.
-  static std::unique_ptr<OpfsFile> open(const std::string& name);
+  // Creates `name` in the OPFS root. Null on any failure. A same-named file
+  // left over from an earlier recording (or a same-second name collision)
+  // is never clobbered: open() refuses and returns null unless `overwrite`
+  // is set, which truncates it -- only opfs_probe()'s ".probe" file passes
+  // that, so a leftover non-empty probe from a crash doesn't wedge the
+  // startup check forever.
+  static std::unique_ptr<OpfsFile> open(const std::string& name, bool overwrite = false);
   static bool remove(const std::string& name);
 
   ~OpfsFile() { close(); }

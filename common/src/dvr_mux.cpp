@@ -407,6 +407,10 @@ void DvrMux::write_sample_prefixed(std::vector<uint8_t> sample, uint32_t pts_us,
 
 void DvrMux::flush_fragment() {
   if (pending_.empty()) return;
+  // A previous fragment already failed: the sink is dead, so this fragment's
+  // samples (buffered by write_sample_prefixed before the caller noticed
+  // !ok()) are dropped rather than adding more moof/mdat to a broken file.
+  if (!ok_) { pending_.clear(); return; }
   ++fragments_;
 
   BoxWriter b;
@@ -499,12 +503,14 @@ void DvrMux::flush_fragment() {
   if (sink_->write(b.buf.data(), b.buf.size())) bytes_written_ += b.buf.size();
   else ok_ = false;
   for (const auto& s : pending_) {
+    if (!ok_) break;   // header (or an earlier sample) already failed: stop
     if (sink_->write(s.data.data(), s.data.size())) bytes_written_ += s.data.size();
     else ok_ = false;
   }
   // The flush still ends the fragment: once it returns (and the caller's
-  // sync()), the whole moof+mdat is on disk.
-  if (!sink_->flush()) ok_ = false;
+  // sync()), the whole moof+mdat is on disk. Skipped once a write above
+  // already failed -- flushing a sink already known bad adds nothing.
+  if (ok_ && !sink_->flush()) ok_ = false;
 
   pending_.clear();
 }
@@ -518,7 +524,9 @@ void DvrMux::close(bool durable) {
 }
 
 bool DvrMux::sync() {
-  if (!sink_) return false;
+  // Already known bad (a fragment write failed): don't ask a dead sink to
+  // fsync -- covers close(durable=true) after such a failure too.
+  if (!ok_ || !sink_) return false;
   if (!sink_->sync()) {
     ok_ = false;
     return false;
