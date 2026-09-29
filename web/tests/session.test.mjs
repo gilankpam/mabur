@@ -385,3 +385,35 @@ test('onRecClosed from a superseded module is dropped', async () => {
   f.made[1].opts.onRecClosed('new.mp4', 7, 0);
   assert.deepEqual(got, [['new.mp4', 7, 0]]);
 });
+
+test('relay connect skips WebUSB, passes --relay, starts the worker on onRelayRing', async () => {
+  let asked = 0; const started = [];
+  const t = fakeTimers(); const f = fakeModuleFactory();
+  const s = new Session({
+    createModule: f.create, requestDevice: async () => { asked++; },
+    startRelay: (o) => { started.push(o); return { terminate() { o.terminated = true; } }; },
+    onAu: () => {}, onStats: () => {}, reload: () => {}, timers: t,
+  });
+  await s.connect({ mode: 'gs', ch: 136, w: 40, relay: '192.168.1.1:8311' });
+  assert.equal(asked, 0);
+  const args = f.made[0].opts.arguments;
+  assert.deepEqual(args.slice(args.indexOf('--relay'), args.indexOf('--relay') + 2), ['--relay', '192.168.1.1:8311']);
+  const buf = new ArrayBuffer(8);
+  f.made[0].opts.onRelayRing(buf, 1024);
+  assert.equal(started.length, 1);
+  assert.equal(started[0].buffer, buf); assert.equal(started[0].ptr, 1024);
+  assert.equal(started[0].url, 'ws://192.168.1.1:8311');
+  f.made[0].opts.onExit(1);
+  assert.equal(started[0].terminated, true);
+});
+
+test('usb connect still asks for the device and never starts a relay', async () => {
+  let asked = 0, started = 0;
+  const f = fakeModuleFactory();
+  const s = new Session({ createModule: f.create, requestDevice: async () => { asked++; },
+    startRelay: () => { started++; return { terminate() {} }; },
+    onAu: () => {}, onStats: () => {}, reload: () => {}, timers: fakeTimers() });
+  await s.connect({ mode: 'gs', ch: 136, w: 40, relay: null });
+  assert.equal(asked, 1); assert.equal(started, 0);
+  assert.equal(f.made[0].opts.arguments.includes('--relay'), false);
+});

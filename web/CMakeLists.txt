@@ -51,14 +51,15 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     ${MABUR_DIR}/gs/src/rendezvous.cpp ${MABUR_DIR}/gs/src/ladder_controller.cpp
     ${MABUR_DIR}/gs/src/rung_store.cpp ${MABUR_DIR}/gs/src/rcf_slot.cpp
     ${MABUR_DIR}/gs/src/rtt_estimator.cpp ${MABUR_DIR}/gs/src/dot11.cpp
-    ${MABUR_DIR}/gs/src/msp_sink.cpp)
+    ${MABUR_DIR}/gs/src/msp_sink.cpp
+    ${MABUR_DIR}/gs/src/relay_wire.cpp ${MABUR_DIR}/gs/src/relay_client.cpp)
   target_include_directories(webgs_core PUBLIC src ${MABUR_DIR}/common/include
     ${MABUR_DIR}/gs/src ${MABUR_DIR}/third_party ${DEVOURER_DIR}/src)
   target_compile_options(webgs_core PRIVATE -O3)
   target_link_libraries(webgs_core PUBLIC devourer)
 
   # The page build: live only (WebUSB), default config embedded.
-  add_executable(webgs src/web_main.cpp src/opfs_file.cpp)
+  add_executable(webgs src/web_main.cpp src/opfs_file.cpp src/relay_link.cpp src/relay_transport.cpp)
   target_compile_definitions(webgs PRIVATE WEBGS_LIVE=1 WEBGS_CONFIG_PATH="/maburgs.toml")
   target_link_libraries(webgs PRIVATE webgs_core)
   target_link_options(webgs PRIVATE

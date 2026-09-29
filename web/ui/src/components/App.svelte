@@ -94,6 +94,12 @@
       try { granted = (await navigator.usb.getDevices()).filter((d) => d.vendorId === 0x0bda); } catch { /* requestDevice is the real gate */ }
       if (!granted.length) await navigator.usb.requestDevice({ filters: [{ vendorId: 0x0bda }] });
     },
+    checkIsolated: () => { if (!window.crossOriginIsolated) throw new Error('Page is not cross-origin isolated (COOP/COEP headers missing) — serve it as docs/web-gs.md describes.'); },
+    startRelay: ({ buffer, ptr, url }) => {
+      const w = new Worker(new URL('../lib/relay_worker.js', import.meta.url), { type: 'module' });
+      w.postMessage({ buffer, ptr, url });
+      return w;
+    },
     // Plain-JS state read (no Svelte on the per-frame path): a stopping or
     // failed module's straggler AUs must not rebuild the decoder close() freed.
     onAu: (...a) => { const st = session.snapshot.state; if (st === 'live' || st === 'connecting') video.onAu(...a); },
