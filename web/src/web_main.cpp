@@ -41,6 +41,8 @@
 #include "dot11.h"
 #include "logger.h"
 #include "mabur/ht40.h"
+#include "relay_link.h"
+#include "relay_transport.h"
 #endif
 #ifdef WEBGS_PAGE
 #include <emscripten/em_asm.h>
@@ -375,6 +377,7 @@ struct LiveOpts {
   int ch = -1, width = -1;   // -1 = the config's radio.channel / radio.width
   int secs = 0;              // 0 = until the card goes away
   std::string bad_chw;       // non-numeric --ch/--w, reported by run_live
+  std::string relay;         // --relay host:port: mabur-relay v3 over UDP instead of USB
 };
 
 // Strict decimal int: the whole string, no sign games, fits an int.
@@ -534,6 +537,49 @@ int live_loop(const LiveOpts& o, const maburgs::Config& cfg, uint8_t ch, int wid
   return rc;
 }
 
+// Live over a CPE510 mabur-relay (protocol v3) instead of the USB card:
+// RelayLink owns the transport + RX thread, feeding the same BodyQueue
+// live_loop already drains. Bounded by RelayClient's own timers -- no local
+// timeout logic here.
+int run_live_relay(const LiveOpts& o, const maburgs::Config& cfg, uint8_t ch, int width) {
+  std::unique_ptr<webgs::RelayTransport> t;
+#ifdef __EMSCRIPTEN__
+  t = webgs::open_ring_transport();
+#else
+  std::string err;
+  t = webgs::open_udp_transport(o.relay, err);
+  if (!t) { report_error("relay unreachable: %s", err.c_str()); return 1; }
+#endif
+  const uint8_t sec = width == 40 ? mabur::ht40_offset(ch) : 0;
+  maburgs::BodyQueue q;
+  webgs::RelayLink link(std::move(t), ch, sec, q, now_us);
+  link.start();
+  const bool gs = o.mode == webgs::Mode::Gs;
+  for (;;) {   // bounded by RelayClient: Unreachable after kLostMs, Refused/TuneFailed after kTuneWindowMs
+    if (g_stop.load(std::memory_order_acquire)) { link.stop(); std::printf("DONE\n"); return 0; }
+    link.tick();
+    const auto r = link.ready(gs);
+    if (r == webgs::RelayLink::Ready::Owned || r == webgs::RelayLink::Ready::Listening) break;
+    if (r == webgs::RelayLink::Ready::Unreachable) { report_error("relay unreachable"); link.stop(); return 1; }
+    if (r == webgs::RelayLink::Ready::Refused) { report_error("relay owned by another client"); link.stop(); return 1; }
+    if (r == webgs::RelayLink::Ready::TuneFailed) { report_error("relay cannot tune"); link.stop(); return 1; }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  LiveRadio r;
+  r.q = &q;
+  r.send_frame = [&](const std::vector<uint8_t>& f) { link.send_frame(f); };
+  r.ended = [&] { return link.lost(); };
+  r.lost_error = "relay lost";
+  r.on_pass = [&] { link.tick(); };
+  r.extra_stats = [&] { return link.stats_fields(); };
+  const int rc = live_loop(o, cfg, ch, width, r);
+  link.stop();
+  q.close();
+  std::printf("DONE\n");
+  std::fflush(stdout);
+  return rc;
+}
+
 int run_live(const LiveOpts& o) {
   maburgs::Config cfg;
   if (!load_cfg(o.config, o.overlay, cfg)) return 2;
@@ -554,6 +600,7 @@ int run_live(const LiveOpts& o) {
   std::printf("webgs live: mode %s ch %u width %d\n",
               o.mode == webgs::Mode::Gs ? "gs" : "spotter", ch, width);
   std::fflush(stdout);
+  if (!o.relay.empty()) return run_live_relay(o, cfg, ch, width);
 
   libusb_context* ctx = nullptr;
   if (libusb_init(&ctx) != 0) { report_error("libusb_init"); return 1; }
@@ -701,7 +748,7 @@ int usage(FILE* out, int rc) {
                "                    [--control-trace <file>] [--fake-ack] [--record <file.mp4>]\n"
 #ifdef WEBGS_LIVE
                "       webgs live [-c config.toml] [--overlay file.toml] [--ch N] [--w 20|40]\n"
-               "                  [--secs 0] [--mode gs|spotter]\n"
+               "                  [--secs 0] [--mode gs|spotter] [--relay host:port]\n"
                "                  (ch/w default to radio.channel/width)\n"
 #endif
                "default config: %s\n",
@@ -730,6 +777,7 @@ int parse_live(int argc, char** argv, int first, LiveOpts& o) {
     }
     else if (k == "--secs") o.secs = std::atoi(v);
     else if (k == "--mode") { if (!parse_mode(v, o.mode)) return usage(stderr, 2); }
+    else if (k == "--relay") o.relay = v;
     else return usage(stderr, 2);
   }
   return -1;
