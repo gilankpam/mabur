@@ -96,7 +96,7 @@ export class Session {
         print: (t) => console.log('[webgs]', t),
         printErr: (t) => {
           console.error('[webgs]', t);
-          if (this.token === token && String(t).includes('worker sent an error')) this.fail(WORKER_FAILED);
+          if (this.token === token && isWorkerFailure(String(t))) this.fail(WORKER_FAILED);
         },
       });
     } catch (e) {
@@ -221,6 +221,35 @@ export class Session {
   stopRelay() {
     if (this.relayWorker) { try { this.relayWorker.terminate(); } catch { /* gone */ } this.relayWorker = null; }
   }
+}
+
+// Emscripten's 'unwind' exit sentinel. exit() after an ASYNCIFY await (the
+// startup OPFS probe) rethrows it uncaught (Emscripten 4.0.12's asyncify
+// wakeUp), so EVERY core exit surfaces "Uncaught unwind" -- once via printErr
+// ("worker sent an error! ...webgs.js:1: Uncaught unwind") and once as a
+// window error event. It is a normal exit: the core's own onError text must
+// not be replaced by WORKER_FAILED.
+export function isExitUnwind(text) {
+  return String(text).includes('Uncaught unwind');
+}
+
+// A pthread worker that failed to load (e.g. an untrusted LAN TLS cert:
+// "worker sent an error! undefined:undefined: undefined").
+export function isWorkerFailure(line) {
+  return String(line).includes('worker sent an error') && !isExitUnwind(line);
+}
+
+// The same decision for a window 'error' event. Emscripten's worker.onerror
+// rethrows the worker's ErrorEvent on the page, so one exit fires TWO events:
+// message "Uncaught [object ErrorEvent]" with e.error = that ErrorEvent (its
+// own .message is "Uncaught unwind"), then a bare "Uncaught unwind" -- both
+// with filename .../webgs.js (bench, headless Chrome 146, 2026-09-29).
+export function isWindowWorkerFailure(e) {
+  const msg = String((e && e.message) || '');
+  const inner = e && e.error && typeof e.error === 'object' ? String(e.error.message || '') : '';
+  if (isExitUnwind(msg) || isExitUnwind(inner)) return false;
+  const fromWorker = typeof e?.filename === 'string' && /webgs\.js|worker/i.test(e.filename);
+  return msg.includes('worker sent an error') || fromWorker;
 }
 
 function stopQuietly(mod) {
