@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -387,6 +388,152 @@ bool parse_int(const char* v, int& out) {
   return true;
 }
 
+// The radio seam run_live's loop needs; filled by the USB path now and the
+// relay path in Task 9.
+struct LiveRadio {
+  maburgs::BodyQueue* q = nullptr;
+  std::function<void(const std::vector<uint8_t>& frame)> send_frame;   // build_control_frame() output
+  std::function<bool()> ended;                   // radio gone (checked once the queue is empty)
+  const char* lost_error = "card lost";          // report_error text when ended() fires
+  std::function<void()> on_pass;                 // optional, every loop pass (relay keepalive)
+  std::function<std::string()> extra_stats;      // ",\"k\":v..." appended to each STATS
+};
+
+// The body-queue-consuming half of live: local recording, page requests
+// (vtx rec / IDR / local rec), the on_rx/tick loop and its STATS cadence.
+// Radio-specific bits (RX feed, TX send, "gone" check, per-radio stats)
+// come in through r; run_live builds them for the USB path.
+int live_loop(const LiveOpts& o, const maburgs::Config& cfg, uint8_t ch, int width, LiveRadio& r) {
+  // Local recording (spec 2026-09-28-web-local-recording §1.2), fed on this
+  // thread from the AU callback, before the page hand-off.
+  mabur::RawDvr dvr;
+  std::string lrec_name;       // the armed/last recording's file name
+  bool lrec_armed = false;     // a recording is armed or open and not yet reported
+  int lrec_err = 0;            // last reported code (3 = no OPFS)
+  // lrec_err stays set after an error, so the stats show state 3 until the
+  // next start: the UI keeps REC! until the next press.
+  uint32_t lrec_seq = 0;
+  auto seal_local_rec = [&]() {
+    if (!lrec_armed) return;
+    const int err = lrec_err_code(dvr);   // read before stop(): Error is sticky
+    const uint64_t bytes = dvr.bytes();
+    dvr.stop();                           // closes the sync access handle
+#ifdef WEBGS_PAGE
+    // Stopped before the first sync point (or the open failed): no file to
+    // keep. Here, in the loop, the async remove may unwind.
+    if (bytes == 0) webgs::OpfsFile::remove(lrec_name);
+#endif
+    lrec_armed = false;
+    lrec_err = err;
+    report_rec_closed(lrec_name, bytes, err);
+  };
+
+  webgs::Io io;
+  // Can fire from inside on_rx (spotter drone-restart reset) as well as from
+  // tick(): emit_au keeps no glue state.
+  io.on_au = [&dvr](webgs::Au&& a) {
+    dvr.feed(a.data.data(), a.data.size(), a.pts_us, a.complete);
+    emit_au(std::move(a));
+  };
+  io.on_osd = emit_osd;
+  uint16_t tx_seq = 0;
+  if (o.mode == webgs::Mode::Gs)
+    io.send = [&](const std::vector<uint8_t>& body) {
+      const auto f = maburgs::build_control_frame(tx_seq, body.data(), body.size());
+      tx_seq = static_cast<uint16_t>((tx_seq + 1) & 0xFFF);
+      r.send_frame(f);
+    };
+  webgs::WebGs g(cfg, o.mode, ch, width, std::move(io));
+
+#ifndef WEBGS_PAGE
+  std::signal(SIGINT, [](int) { g_stop.store(true); });
+  std::signal(SIGTERM, [](int) { g_stop.store(true); });
+#endif
+
+  int rc = 0;
+  std::vector<mabur::node::RxBody> batch;
+  uint64_t next_stat = now_us() + 1000000;
+  int applied_rec = -1;
+  uint32_t applied_idr = 0;
+  for (int s = 0; o.secs == 0 || s < o.secs;) {
+    if (g_stop.load(std::memory_order_acquire)) break;
+    if (const int rw = g_rec.load(std::memory_order_acquire); rw != applied_rec && rw >= 0) {
+      g.set_vtx_rec(rw == 1);
+      applied_rec = rw;
+    }
+    if (const uint32_t ir = g_idr_req.load(std::memory_order_acquire); ir != applied_idr) {
+      g.set_idr_requests(ir);
+      applied_idr = ir;
+    }
+    {
+      bool on = false;
+      std::string name;
+      bool changed = false;
+      {
+        std::lock_guard<std::mutex> lk(g_lrec.mu);
+        if (g_lrec.seq != lrec_seq) {
+          lrec_seq = g_lrec.seq;
+          on = g_lrec.on;
+          name = g_lrec.name;
+          changed = true;
+        }
+      }
+      if (changed) {
+        seal_local_rec();
+        if (on && !g_opfs_ok.load()) {
+          lrec_err = 3;
+          report_rec_closed(name, 0, 3);
+        } else if (on) {
+          lrec_name = name;
+          lrec_err = 0;
+#ifdef WEBGS_PAGE
+          // Created now, from the loop (the open awaits through ASYNCIFY);
+          // a failed open arms an Error that the check below reports as 1.
+          std::unique_ptr<mabur::DvrSink> sink;
+          if (auto f = webgs::OpfsFile::open(name)) sink = std::make_unique<OpfsSink>(std::move(f));
+          dvr.start(std::move(sink), 0, 0);
+#endif
+          // The file opens on an IRAP only, and the GDR link sends one
+          // seconds apart: ask the drone for one now (applied by the IDR
+          // check at the top of the next pass; a no-op for a spotter).
+          g_idr_req.fetch_add(1, std::memory_order_acq_rel);
+          lrec_armed = true;
+        }
+      }
+    }
+    batch.clear();
+    if (r.on_pass) r.on_pass();
+    r.q->drain(batch, 5);
+    for (const auto& m : batch) g.on_rx(m);
+    g.tick(now_us());
+    if (lrec_armed && dvr.state() == mabur::RawDvr::State::Error) seal_local_rec();
+    if (r.ended() && batch.empty()) {
+      report_error("%s", r.lost_error);
+      rc = 1;
+      break;
+    }
+    if (now_us() < next_stat) continue;
+    next_stat += 1000000;
+    ++s;
+    std::string j = webgs::stats_json(g.stats());
+    j.pop_back();   // '}'
+    const int lst = lrec_armed ? (dvr.state() == mabur::RawDvr::State::Recording ? 2 : 1)
+                               : (lrec_err ? 3 : 0);
+    // lrec_name is page-built from [A-Za-z0-9.-] only (Task 7's recFileName),
+    // so it needs no JSON escaping.
+    char extra[384];
+    std::snprintf(extra, sizeof extra, ",\"qdrop\":%llu,\"lrec_avail\":%d,\"lrec_state\":%d,\"lrec_bytes\":%llu,"
+                  "\"lrec_err\":%d,\"lrec_name\":\"%s\"",
+                  static_cast<unsigned long long>(r.q->dropped()), g_opfs_ok.load() ? 1 : 0, lst,
+                  static_cast<unsigned long long>(dvr.bytes()), lrec_err, lrec_name.c_str());
+    report_stats(j + extra + (r.extra_stats ? r.extra_stats() : "") + "}");
+  }
+  // Every exit (Disconnect, card lost) seals the local recording before the
+  // module goes away, so the page can download it (spec §1.4).
+  seal_local_rec();
+  return rc;
+}
+
 int run_live(const LiveOpts& o) {
   maburgs::Config cfg;
   if (!load_cfg(o.config, o.overlay, cfg)) return 2;
@@ -488,138 +635,22 @@ int run_live(const LiveOpts& o) {
     q.close();
   });
 
-  // Local recording (spec 2026-09-28-web-local-recording §1.2), fed on this
-  // thread from the AU callback, before the page hand-off.
-  mabur::RawDvr dvr;
-  std::string lrec_name;       // the armed/last recording's file name
-  bool lrec_armed = false;     // a recording is armed or open and not yet reported
-  int lrec_err = 0;            // last reported code (3 = no OPFS)
-  // lrec_err stays set after an error, so the stats show state 3 until the
-  // next start: the UI keeps REC! until the next press.
-  uint32_t lrec_seq = 0;
-  auto seal_local_rec = [&]() {
-    if (!lrec_armed) return;
-    const int err = lrec_err_code(dvr);   // read before stop(): Error is sticky
-    const uint64_t bytes = dvr.bytes();
-    dvr.stop();                           // closes the sync access handle
-#ifdef WEBGS_PAGE
-    // Stopped before the first sync point (or the open failed): no file to
-    // keep. Here, in the loop, the async remove may unwind.
-    if (bytes == 0) webgs::OpfsFile::remove(lrec_name);
-#endif
-    lrec_armed = false;
-    lrec_err = err;
-    report_rec_closed(lrec_name, bytes, err);
-  };
-
-  webgs::Io io;
-  // Can fire from inside on_rx (spotter drone-restart reset) as well as from
-  // tick(): emit_au keeps no glue state.
-  io.on_au = [&dvr](webgs::Au&& a) {
-    dvr.feed(a.data.data(), a.data.size(), a.pts_us, a.complete);
-    emit_au(std::move(a));
-  };
-  io.on_osd = emit_osd;
-  uint16_t tx_seq = 0;
   uint64_t txfail = 0;
-  if (o.mode == webgs::Mode::Gs)
-    io.send = [&](const std::vector<uint8_t>& body) {
-      const auto f = maburgs::build_control_frame(tx_seq, body.data(), body.size());
-      tx_seq = static_cast<uint16_t>((tx_seq + 1) & 0xFFF);
-      if (!rtl->send_packet(f.data(), f.size())) ++txfail;
-    };
-  webgs::WebGs g(cfg, o.mode, ch, width, std::move(io));
-
-#ifndef WEBGS_PAGE
-  std::signal(SIGINT, [](int) { g_stop.store(true); });
-  std::signal(SIGTERM, [](int) { g_stop.store(true); });
-#endif
-
-  int rc = 0;
-  std::vector<mabur::node::RxBody> batch;
-  uint64_t next_stat = now_us() + 1000000;
-  int applied_rec = -1;
-  uint32_t applied_idr = 0;
-  for (int s = 0; o.secs == 0 || s < o.secs;) {
-    if (g_stop.load(std::memory_order_acquire)) break;
-    if (const int rw = g_rec.load(std::memory_order_acquire); rw != applied_rec && rw >= 0) {
-      g.set_vtx_rec(rw == 1);
-      applied_rec = rw;
-    }
-    if (const uint32_t ir = g_idr_req.load(std::memory_order_acquire); ir != applied_idr) {
-      g.set_idr_requests(ir);
-      applied_idr = ir;
-    }
-    {
-      bool on = false;
-      std::string name;
-      bool changed = false;
-      {
-        std::lock_guard<std::mutex> lk(g_lrec.mu);
-        if (g_lrec.seq != lrec_seq) {
-          lrec_seq = g_lrec.seq;
-          on = g_lrec.on;
-          name = g_lrec.name;
-          changed = true;
-        }
-      }
-      if (changed) {
-        seal_local_rec();
-        if (on && !g_opfs_ok.load()) {
-          lrec_err = 3;
-          report_rec_closed(name, 0, 3);
-        } else if (on) {
-          lrec_name = name;
-          lrec_err = 0;
-#ifdef WEBGS_PAGE
-          // Created now, from the loop (the open awaits through ASYNCIFY);
-          // a failed open arms an Error that the check below reports as 1.
-          std::unique_ptr<mabur::DvrSink> sink;
-          if (auto f = webgs::OpfsFile::open(name)) sink = std::make_unique<OpfsSink>(std::move(f));
-          dvr.start(std::move(sink), 0, 0);
-#endif
-          // The file opens on an IRAP only, and the GDR link sends one
-          // seconds apart: ask the drone for one now (applied by the IDR
-          // check at the top of the next pass; a no-op for a spotter).
-          g_idr_req.fetch_add(1, std::memory_order_acq_rel);
-          lrec_armed = true;
-        }
-      }
-    }
-    batch.clear();
-    q.drain(batch, 5);
-    for (const auto& m : batch) g.on_rx(m);
-    g.tick(now_us());
-    if (lrec_armed && dvr.state() == mabur::RawDvr::State::Error) seal_local_rec();
-    if (rx_ended.load(std::memory_order_acquire) && batch.empty()) {
-      report_error("card lost");
-      rc = 1;
-      break;
-    }
-    if (now_us() < next_stat) continue;
-    next_stat += 1000000;
-    ++s;
+  LiveRadio r;
+  r.q = &q;
+  r.send_frame = [&](const std::vector<uint8_t>& f) { if (!rtl->send_packet(f.data(), f.size())) ++txfail; };
+  r.ended = [&] { return rx_ended.load(std::memory_order_acquire); };
+  r.extra_stats = [&] {
     int64_t p99 = 0, mx = 0;
     late.take(p99, mx);
-    std::string j = webgs::stats_json(g.stats());
-    j.pop_back();   // '}'
-    const int lst = lrec_armed ? (dvr.state() == mabur::RawDvr::State::Recording ? 2 : 1)
-                               : (lrec_err ? 3 : 0);
-    // lrec_name is page-built from [A-Za-z0-9.-] only (Task 7's recFileName),
-    // so it needs no JSON escaping.
-    char extra[384];
-    std::snprintf(extra, sizeof extra, ",\"usb_p99_us\":%lld,\"usb_max_us\":%lld,\"txfail\":%llu,"
-                  "\"qdrop\":%llu,\"lrec_avail\":%d,\"lrec_state\":%d,\"lrec_bytes\":%llu,"
-                  "\"lrec_err\":%d,\"lrec_name\":\"%s\"}",
+    char b[160];
+    std::snprintf(b, sizeof b, ",\"radio\":\"usb\",\"usb_p99_us\":%lld,\"usb_max_us\":%lld,\"txfail\":%llu",
                   static_cast<long long>(p99), static_cast<long long>(mx),
-                  static_cast<unsigned long long>(txfail),
-                  static_cast<unsigned long long>(q.dropped()), g_opfs_ok.load() ? 1 : 0, lst,
-                  static_cast<unsigned long long>(dvr.bytes()), lrec_err, lrec_name.c_str());
-    report_stats(j + extra);
-  }
-  // Every exit (Disconnect, card lost) seals the local recording before the
-  // module goes away, so the page can download it (spec §1.4).
-  seal_local_rec();
+                  static_cast<unsigned long long>(txfail));
+    return std::string(b);
+  };
+  const int rc = live_loop(o, cfg, ch, width, r);
+
   const uint64_t t_stop0 = now_us();
   if (!rx_ended.load()) rtl->StopRxLoop();
   q.close();
