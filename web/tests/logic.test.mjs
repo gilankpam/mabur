@@ -379,8 +379,8 @@ test('relayFieldVisible: saved address or a not-found this visit', () => {
 });
 
 test('loadRelayCustom: only the new key counts; old saved defaults are ignored', () => {
-  // Review Focus 4: the previous build saved relayAddr '10.83.11.1:8311' for everyone.
-  assert.equal(loadRelayCustom({ relayAddr: '10.83.11.1:8311' }), '');
+  // Review Focus 4: the previous build saved relayAddr '192.168.1.1:8311' for everyone.
+  assert.equal(loadRelayCustom({ relayAddr: '192.168.1.1:8311' }), '');
   assert.equal(loadRelayCustom({}), '');
   assert.equal(loadRelayCustom({ relayCustom: ' 10.0.0.9 ' }), '10.0.0.9');
   assert.equal(loadRelayCustom({ relayCustom: 7 }), '');

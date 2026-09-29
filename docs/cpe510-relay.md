@@ -134,7 +134,8 @@ on ch136 HT40-. Full numbers and the per-window breakdown are in the relay
 repo's `docs/verify-mabur-relay-on-device.md` ("TX mode" section); this is
 the summary.
 
-- **TX alone** (native `webgs live --relay 192.168.1.1:8310 --mode gs --ch
+- **TX alone** (native `webgs live --relay 192.168.1.1:8310` (pre-2026-09-29
+  address) `--mode gs --ch
   136 --w 40 --secs 60`, no other GS on air, drone `low_power` on): SESSION
   + `peer_acked` within the first second, ladder climbed to rung 4 (mcs4/40)
   by ~15 s. `drone_rcf_rx / rcf_sent` = 1129 / 1151 = **98.1 %**; relay

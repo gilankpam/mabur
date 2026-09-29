@@ -127,16 +127,29 @@ headers WASM pthreads need, so
 MIT) is a service worker that adds them — the very first visit reloads the
 page once. The same worker makes the page **work offline**: on install it
 precaches every file of that build (list injected at build time by
-`web/ui/sw/plugin.mjs` from Vite's bundle + `public/` + `webgs.{js,wasm}`),
-and it serves same-origin requests network-first with a 3 s timeout, falling
-back to the cache. So: open the hosted page once with internet; afterwards
-it loads with none (e.g. a laptop whose only network is the CPE). Online
-visits always get the latest deploy; reload while online to pick one up.
-Stable and edge keep separate caches (`mabur:<scope>:<build id>`). A page
-still controlled by the old vendored coi worker registers the new one on its
-next visit (`shouldRegister()`). The WebUSB grant is per origin, so each
-device picks the card once on this site. The page is the bundle-default
-ladder build, same as a local one.
+`web/ui/sw/plugin.mjs` from Vite's bundle + `public/` + `webgs.{js,wasm}`).
+If any single file fails to precache, the whole install fails (a per-file
+warning is still logged): the previous worker and its complete cache stay in
+control, and the browser retries the install on a later navigation, rather
+than an incomplete cache going live and offline-failing on whichever file
+never made it in. Same-origin requests then get one of three fetch
+strategies (`fetchStrategy()`, `web/ui/sw/plugin.mjs`), picked per request so
+a gh-pages deploy that deletes old hashed files can never serve a stale
+`index.html` alongside a 404ing asset: hashed build assets (`assets/…`) are
+**cache-first** (cached copy if present, else network); a **navigation**
+(loading the page itself) is network-first with a 3 s timeout, falling back
+to the cache on a slow or failed network; everything else (`webgs.js`,
+`webgs.wasm`, `font_btfl.png`, …) is network-first with **no** timeout,
+falling back to the cache on a network error or a non-ok response (e.g. a
+mismatched `webgs.wasm` 404ing against a fresher `webgs.js`) when a cached
+copy exists. So: open the hosted page once with internet; afterwards it
+loads with none (e.g. a laptop whose only network is the CPE). Online visits
+always get the latest deploy; reload while online to pick one up. Stable and
+edge keep separate caches (`mabur:<scope>:<build id>`). A page still
+controlled by the old vendored coi worker registers the new one on its next
+visit (`shouldRegister()`). The WebUSB grant is per origin, so each device
+picks the card once on this site. The page is the bundle-default ladder
+build, same as a local one.
 
 `web/serve.py` is a static server for `web/dist` that sets the COOP/COEP
 headers WASM pthreads need (`Cross-Origin-Opener-Policy: same-origin`,
