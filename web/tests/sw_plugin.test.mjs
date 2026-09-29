@@ -42,3 +42,9 @@ test('sw.js carries the precache token and an identical shouldRegister', () => {
   assert.ok(src.includes('/*__MABUR_PRECACHE__*/ null'));
   assert.ok(src.includes(shouldRegister.toString()), 'sw.js inline shouldRegister drifted from plugin.mjs');
 });
+
+test('sw.js install precache bypasses the HTTP cache (fixed-name files can be stale within GH Pages max-age)', () => {
+  const src = fs.readFileSync(new URL('../ui/sw/sw.js', import.meta.url), 'utf8');
+  const install = src.slice(src.indexOf("addEventListener('install'"), src.indexOf("addEventListener('activate'"));
+  assert.ok(install.includes("cache: 'reload'"), "install handler must fetch precache entries with cache: 'reload'");
+});

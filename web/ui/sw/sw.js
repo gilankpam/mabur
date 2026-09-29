@@ -20,8 +20,14 @@ if (typeof window === 'undefined') {
   self.addEventListener('install', (event) => {
     self.skipWaiting();
     // Per-file, not addAll: one missing file must not abort the whole install.
+    // cache: 'reload' bypasses the HTTP cache -- fixed-name files (index.html,
+    // webgs.js/.wasm, font_btfl.png) are served by GitHub Pages with
+    // max-age=600, and a worker installing within that window could otherwise
+    // precache a stale index.html against this build's asset hashes, or a
+    // mismatched webgs.js/webgs.wasm pair.
     event.waitUntil(caches.open(CACHE).then((c) => Promise.allSettled(
-      MANIFEST.files.map((f) => c.add(new URL(f, SCOPE).href).catch((e) => console.warn('[sw] precache', f, e))))));
+      MANIFEST.files.map((f) => c.add(new Request(new URL(f, SCOPE).href, { cache: 'reload' }))
+        .catch((e) => console.warn('[sw] precache', f, e))))));
   });
 
   self.addEventListener('activate', (event) => event.waitUntil((async () => {
