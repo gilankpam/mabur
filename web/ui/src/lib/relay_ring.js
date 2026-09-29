@@ -39,6 +39,17 @@ export function ringWrite(r, bytes) {
   return true;
 }
 
+// The relay Worker's per-iteration decision (review round 1, defect 1): pure
+// so the "never spin without awaiting while nothing can be sent" fix is
+// unit-testable without a browser. STOP_REQ always wins; while the socket
+// isn't open yet the Worker must wait on STATE (never pump/check TX), since
+// the core can queue HELLO+TUNE into TX before the Worker's onopen fires.
+export function workerStep(state, open, txEmpty) {
+  if (state === RING.STOP_REQ) return 'stop';
+  if (!open) return 'wait-open';
+  return txEmpty ? 'pump-then-wait-tx' : 'pump';
+}
+
 export function ringRead(r) {
   let tail = Atomics.load(r.i32, r.tail) >>> 0;
   for (;;) {
