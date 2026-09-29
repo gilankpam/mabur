@@ -73,6 +73,7 @@ function lrecText(l) {
 export function debugGroups({ connected, mode, core, rcfPct, ausRate, hitches60, hitchesTotal, seg, lrec }) {
   const on = !!connected && !!core;
   const spot = mode === 'spotter';
+  const isRelay = on && core.radio === 'relay';
   const v = (x) => (on ? x : D);
   const rows = (pairs) => pairs.map(([k, val]) => ({ k, v: String(val) }));
   const groups = [
@@ -97,8 +98,12 @@ export function debugGroups({ connected, mode, core, rcfPct, ausRate, hitches60,
       ['AUs/s', v(on ? ausRate : D)], ['hitches', v(`${hitches60} last 60s (total ${hitchesTotal})`)],
       ['local rec', v(lrecText(lrec))],
     ]) },
+    // The USB latency/txfail rows are meaningless over a relay radio (no
+    // USB transfers, no local TX queue -- tx/fail/refused live in the Relay
+    // group instead), so they're left out entirely rather than shown as D.
     { title: 'Latency (ms; 1 s | 60 s windows)', rows: rows([
-      ['usb (core, 1 s)', v(has(core?.usb_p99_us) ? `p99 ${fmt(core.usb_p99_us / 1000)} max ${fmt(core.usb_max_us / 1000)}` : D)],
+      ...(isRelay ? [] : [['usb (core, 1 s)',
+        v(has(core?.usb_p99_us) ? `p99 ${fmt(core.usb_p99_us / 1000)} max ${fmt(core.usb_max_us / 1000)}` : D)]]),
       ['fec (core, first→complete)', v(segRow('fec', seg))],
       ['handoff', v(segRow('handoff', seg))], ['decode', v(segRow('decode', seg))],
       ['present', v(segRow('present', seg))],
@@ -107,14 +112,16 @@ export function debugGroups({ connected, mode, core, rcfPct, ausRate, hitches60,
     { title: 'Counters', rows: rows([
       ['bodies', v(core?.bodies ?? D)], ['aus', v(core?.aus ?? D)], ['trunc', v(core?.trunc ?? D)],
       ['sends', v(core?.sends ?? D)], ['rcf_sent', v(core?.rcf_sent ?? D)],
-      ['txfail', v(core?.txfail ?? D)], ['qdrop', v(core?.qdrop ?? D)],
+      ...(isRelay ? [] : [['txfail', v(core?.txfail ?? D)]]),
+      ['qdrop', v(core?.qdrop ?? D)],
     ]) },
   ];
-  if (on && core.radio === 'relay') {
+  if (isRelay) {
     const SEC = ['HT20', 'HT40+', 'HT40-'];
     groups.push({ title: 'Relay', rows: rows([
-      ['channel', core.relay_ch ? `${core.relay_ch} ${SEC[core.relay_sec] ?? '?'}` : 'retuning'],
-      ['owner', core.relay_owned ? 'yes' : 'no'],
+      ['channel', core.relay_state === 1 ? 'retuning' : `${core.relay_ch} ${SEC[core.relay_sec] ?? '?'}`],
+      ['owner', core.relay_you_own ? 'yes' : 'no'],
+      ['tuned', core.relay_owned ? 'yes' : 'no'],
       ['frames', core.relay_frames], ['seq gaps', core.relay_gaps],
       ['ring drops rx / tx', `${core.relay_rx_drops} / ${core.relay_tx_ring_drops}`],
       ['tx / fail / refused', `${core.relay_tx} / ${core.relay_tx_fail} / ${core.relay_tx_refused}`],

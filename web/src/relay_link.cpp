@@ -48,6 +48,7 @@ void RelayLink::send_frame(const std::vector<uint8_t>& f) {
 }
 
 RelayLink::Ready RelayLink::ready(bool gs_mode) {
+  if (closed_.load(std::memory_order_acquire)) return Ready::Unreachable;
   std::lock_guard<std::mutex> lk(mu_);
   const uint64_t now = now_us_() / 1000;
   if (c_.owned_and_tuned()) return Ready::Owned;
@@ -74,10 +75,10 @@ std::string RelayLink::stats_fields() {
   char b[512];
   std::snprintf(b, sizeof b,
                 ",\"radio\":\"relay\",\"relay_state\":%u,\"relay_ch\":%u,\"relay_sec\":%u,"
-                "\"relay_owned\":%d,\"relay_frames\":%llu,\"relay_gaps\":%llu,"
+                "\"relay_owned\":%d,\"relay_you_own\":%d,\"relay_frames\":%llu,\"relay_gaps\":%llu,"
                 "\"relay_rx_drops\":%llu,\"relay_tx_ring_drops\":%llu,\"relay_tx\":%u,\"relay_tx_fail\":%u,"
                 "\"relay_tx_refused\":%u,\"relay_your_drops\":%u",
-                s.state, s.channel, s.sec, c_.owned_and_tuned() ? 1 : 0,
+                s.state, s.channel, s.sec, c_.owned_and_tuned() ? 1 : 0, s.you_own ? 1 : 0,
                 static_cast<unsigned long long>(c_.frames()),
                 static_cast<unsigned long long>(c_.seq_gaps()),
                 static_cast<unsigned long long>(t_->rx_drops()),

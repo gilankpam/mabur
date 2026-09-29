@@ -240,21 +240,35 @@ retried every 500 ms indefinitely.
 - `relay lost` — `STATUS` stopped arriving, or the socket closed, after a
   successful connect → *"CPE relay connection lost. Press Connect to
   restart."*
+- `relay taken by another client` — GS mode, after owning the relay
+  (`owned_and_tuned()` true at least once): a `STATUS` says `you_own == 0`
+  and keeps saying so for >= 1 s straight (e.g. a UDP subscriber — native
+  `webgs --relay`, a future RemoteCard — takes ownership away; the relay
+  prefers the oldest UDP subscriber) → *"Another client took over the CPE
+  relay (maburgs or another tab). Stop it, then press Connect."* Distinct
+  from `relay owned by another client`, which fires before ownership was
+  ever won.
 
 **Spotter vs. GS mode.** A spotter never needs ownership to receive — it
-proceeds on relay video as soon as `STATUS` shows the relay tuned to the
-requested channel/width, owner or not (`RelayLink::Ready::Listening`). GS
+proceeds on relay video as soon as ANY `STATUS` arrives, tuned or not
+(`RelayLink::Ready::Listening`; `!c_.have_status()` is the only gate). GS
 mode needs ownership (`Owned`) before it can send RCFs and DISC, so
-`relay owned by another client` only fires in GS mode.
+`relay owned by another client` (and its mid-session sibling,
+`relay taken by another client`) only fire in GS mode.
 
 **Relay stats group** (Stats tab, shown only when `radio: 'relay'`):
-channel/width (or "retuning" mid-TUNE), owner (yes/no), frames, seq gaps,
-ring drops rx/tx (the `SharedArrayBuffer` ring, not the relay itself), TX /
-fail / refused (mirrors the relay's own `STATUS` counters), and your drops
-(the relay's own `your_drops` — frames it had to drop for this client
-specifically, e.g. a full send queue). The general stats line also carries
-`radio: "usb"|"relay"` so log/replay tooling can tell which path a session
-used.
+channel/width (or "retuning" when `relay_state == 1`, mid-TUNE), owner
+(`you_own`, yes/no — this client holds the relay), tuned (`relay_owned`,
+`owned_and_tuned()`, yes/no — owner AND on our channel/width; the two can
+disagree, e.g. right after another client takes ownership), frames, seq
+gaps, ring drops rx/tx (the `SharedArrayBuffer` ring, not the relay
+itself), TX / fail / refused (mirrors the relay's own `STATUS`
+counters), and your drops (the relay's own `your_drops` — frames it had
+to drop for this client specifically, e.g. a full send queue). The USB-only
+rows elsewhere on the Debug tab (usb latency, txfail) are hidden for the
+relay radio — they have no relay equivalent. The general stats line also
+carries `radio: "usb"|"relay"` so log/replay tooling can tell which path a
+session used.
 
 **Native bench equivalent:** `webgs live --relay host:port` (default UDP
 port **8310**, not the browser's WebSocket 8311) runs the same
