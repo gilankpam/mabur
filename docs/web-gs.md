@@ -881,36 +881,6 @@ while fullscreen), and follows the actual `fullscreenchange` state. It is
 hidden where the Fullscreen API isn't available (`document.fullscreenEnabled`
 false — iPhone Safari).
 
-**Android Chrome and the relay (2026-09-30).** On the https page the button
-did nothing after a CPE relay Connect, successful or not, with no refusal
-to report: Android Chrome parks an HTML fullscreen request until its own
-toolbar has hidden (`FullscreenHtmlApiHandlerBase.mPendingFullscreenOptions`)
-and never hides the toolbar on a tab whose security level is DANGEROUS
-(`TabStateBrowserControlsVisibilityDelegate`, `isContentDangerous`). The
-tab turns DANGEROUS — the red "Not secure" in the address bar — the moment
-the page constructs the plain `ws://` relay socket: Blink's mixed-content
-check lets it through under Local Network Access but reports "insecure
-content ran" before LNA even decides (Chromium TODO crbug 546013423), so a
-blocked or failed probe counts too. `requestFullscreen()` then never
-settles for the rest of the document's life (Chromium's
-`FullscreenController::EnterFullscreenCallback` notes the hanging promise).
-Handled in `lib/fullscreen.js`: a phone relay Connect goes fullscreen
-*before* the socket exists (fullscreen already held outranks the toolbar
-lock), and a request that hasn't settled in 1.5 s shows "Fullscreen
-blocked: … Clear this site's data (address-bar icon) or force-close
-Chrome, then go fullscreen before Connect" instead of hanging silently.
-Connect awaits the fullscreen request before opening the socket. A reload
-does NOT clear it: `SSLManager::DidRunMixedContent` records the host as
-having run insecure content in the profile's in-memory SSL host state, and
-`SSLManager::UpdateEntry` re-applies it to every later navigation of that
-host — only clearing the site's data or killing Chrome resets it (both
-confirmed on the user's phone, 2026-09-30). The first-ever relay Connect
-still can't be fullscreen: Chrome drops fullscreen to show the
-local-network permission prompt, and the tab is DANGEROUS by then —
-force-close Chrome once after granting. Desktop Chrome shows the
-same "Not secure" downgrade but never locks its toolbar, so it is
-unaffected. Mechanism confirmed on the user's Android phone (force-close restores fullscreen); the fullscreen-first Connect is not yet re-verified there.
-
 Not yet exercised: a real phone over LAN TLS (layouts were checked in
 Chrome's device emulation only), and the spotter mirroring a
 `maburgs`-started recording (the GS's record wish was reset to off right
