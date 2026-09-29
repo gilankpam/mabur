@@ -23,6 +23,7 @@
     formatBytes, listRecordings, downloadRecording, deleteRecording, opfsRoot } from '../lib/localrec.js';
   import { OsdLayer, OsdPainter } from '../lib/osd.js';
   import { ScreenWake } from '../lib/wakelock.js';
+  import { settle, fsBeforeConnect, FS_STUCK, FS_SETTLE_MS } from '../lib/fullscreen.js';
 
   let canvas = $state(null);
   let glCanvas = $state(null);
@@ -190,10 +191,12 @@
     // session's pipeline for a press it will ignore.
     const st = session.snapshot.state;
     if (st !== 'idle' && st !== 'error') return;
-    // Phones: Connect also goes fullscreen + landscape-locked -- but only once
-    // the card is already granted: fullscreen consumes the tap's activation,
-    // which the first-time WebUSB chooser needs.
-    if (isMobile(LW, LH) && usbGranted) goLandscape();
+    // Phones: Connect also goes fullscreen + landscape-locked -- for a relay
+    // connect always, and BEFORE the ws:// socket exists (Android Chrome
+    // refuses fullscreen to a tab that has opened one, lib/fullscreen.js);
+    // for USB only once the card is already granted: fullscreen consumes the
+    // tap's activation, which the first-time WebUSB chooser needs.
+    if (fsBeforeConnect({ mobile: isMobile(LW, LH), radio: ui.radio, usbGranted })) goLandscape();
     video.reset(); tele.reset(); osd.resetAtlasFailure(); hiddenShown = false; hiddenBanner = false;
     const p = session.connect({ mode: ui.mode, ch: ui.cfg.channel, w: ui.cfg.width, overlayToml: toOverlayToml(sessionCfg),
       relay: ui.radio === 'relay' ? relayTarget(showRelayAddr ? ui.relayAddr : '') : null });
@@ -272,26 +275,33 @@
   let realFs = $state(!!document.fullscreenElement);
   const fsSupported = !!document.fullscreenEnabled;
   // Why the last phone fullscreen tap failed, shown briefly on the overlay
-  // (Android Chrome gives no other sign; real phones were never benched).
+  // (Android Chrome gives no other sign).
   let fsMsg = $state('');
   let fsMsgTimer = null;
-  function showFsMsg(t) { fsMsg = t; clearTimeout(fsMsgTimer); fsMsgTimer = setTimeout(() => { fsMsg = ''; }, 6000); }
+  function showFsMsg(t, ms = 6000) { fsMsg = t; clearTimeout(fsMsgTimer); fsMsgTimer = setTimeout(() => { fsMsg = ''; }, ms); }
   async function toggleRealFs() {
     if (document.fullscreenElement) { try { await document.exitFullscreen(); } catch { /* stay */ } return; }
     const err = await goLandscape();
+    if (err === 'stuck') { console.warn('[webgs] fullscreen request did not settle'); showFsMsg(FS_STUCK, 12000); return; }
     if (err) { console.warn('[webgs] fullscreen refused', err); showFsMsg(`Fullscreen refused: ${err.name || 'Error'}${err.message ? ' — ' + err.message : ''}`); return; }
     setTimeout(() => { if (!document.fullscreenElement) showFsMsg('Fullscreen exited right away'); }, 1000);
   }
   // Fullscreen + lock to 'landscape' (either side: the sensor still flips it
   // 180°, never to portrait). Android Chrome allows the lock only while
   // fullscreen; must run inside the tap, before any await.
-  // Returns the refusal (an Error) or null; the orientation lock is
+  // Returns the refusal (an Error), 'stuck' when the request neither
+  // resolved nor rejected within FS_SETTLE_MS (Android Chrome after the
+  // relay socket, lib/fullscreen.js), or null; the orientation lock is
   // best-effort and never counts as a failure.
   async function goLandscape() {
     if (!fsSupported) return null;
-    try {
-      if (!document.fullscreenElement) await document.documentElement.requestFullscreen();
-    } catch (e) { return e || new Error('refused'); }
+    if (!document.fullscreenElement) {
+      let req;
+      try { req = document.documentElement.requestFullscreen(); } catch (e) { return e || new Error('refused'); }
+      const r = await settle(req, FS_SETTLE_MS);
+      if (r.timeout) return 'stuck';
+      if (r.err) return r.err;
+    }
     try {
       const lock = screen.orientation?.lock?.('landscape');
       if (lock) lock.catch(() => {});

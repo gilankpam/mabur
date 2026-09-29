@@ -881,6 +881,29 @@ while fullscreen), and follows the actual `fullscreenchange` state. It is
 hidden where the Fullscreen API isn't available (`document.fullscreenEnabled`
 false — iPhone Safari).
 
+**Android Chrome and the relay (2026-09-30).** On the https page the button
+did nothing after a CPE relay Connect, successful or not, with no refusal
+to report: Android Chrome parks an HTML fullscreen request until its own
+toolbar has hidden (`FullscreenHtmlApiHandlerBase.mPendingFullscreenOptions`)
+and never hides the toolbar on a tab whose security level is DANGEROUS
+(`TabStateBrowserControlsVisibilityDelegate`, `isContentDangerous`). The
+tab turns DANGEROUS — the red "Not secure" in the address bar — the moment
+the page constructs the plain `ws://` relay socket: Blink's mixed-content
+check lets it through under Local Network Access but reports "insecure
+content ran" before LNA even decides (Chromium TODO crbug 546013423), so a
+blocked or failed probe counts too. `requestFullscreen()` then never
+settles for the rest of the document's life (Chromium's
+`FullscreenController::EnterFullscreenCallback` notes the hanging promise).
+Handled in `lib/fullscreen.js`: a phone relay Connect goes fullscreen
+*before* the socket exists (fullscreen already held outranks the toolbar
+lock), and a request that hasn't settled in 1.5 s shows "Fullscreen
+blocked: … Reload the page, then go fullscreen before Connect" instead of
+hanging silently. The first-ever relay Connect still can't be fullscreen:
+Chrome drops fullscreen to show the local-network permission prompt, and
+the tab is DANGEROUS by then — reload afterwards. Desktop Chrome shows the
+same "Not secure" downgrade but never locks its toolbar, so it is
+unaffected. Not verified on a phone; the `edge` build carries it.
+
 Not yet exercised: a real phone over LAN TLS (layouts were checked in
 Chrome's device emulation only), and the spotter mirroring a
 `maburgs`-started recording (the GS's record wish was reset to off right
