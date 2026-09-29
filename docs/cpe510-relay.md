@@ -10,7 +10,7 @@ in `maburgs` does not exist yet**.
 
 | | |
 |---|---|
-| Firmware repo | `../poc/wfb-ng-openwrt` (OpenWrt 25.12.4 ath79, image is mabur-only — wfb-ng removed) |
+| Firmware repo | `../mabur-openwrt`, <https://github.com/gilankpam/mabur-openwrt> (OpenWrt 25.12.4 ath79, mabur-only image) |
 | Daemon source | `feed/net/mabur-relay/src` in that repo (C, libc only, single `poll()` loop) |
 | **Wire contract** | `docs/mabur-relay-protocol.md` in that repo — protocol **v3**. Code against that file, not this summary. |
 | Bench record | `docs/verify-mabur-relay-on-device.md` in that repo (flash/boot check, v1/v2 full-rate runs, TX mode) |
@@ -126,7 +126,7 @@ radio. `lost` = no `STATUS` for 2 s. `seq` gap tracking only counts forward
 jumps (a reorder or a relay-side reset resyncs quietly rather than counting
 a spurious gap).
 
-### Bench record — TX mode, 2026-09-29 (CPE v3, `wfb-ng-openwrt` master 44f0190)
+### Bench record — TX mode, 2026-09-29 (CPE v3, `mabur-openwrt` 44f0190)
 
 Setup: CPE on host USB-Ethernet (192.168.1.101 ↔ 192.168.1.1); drone `.152`
 on ch136 HT40-. Full numbers and the per-window breakdown are in the relay

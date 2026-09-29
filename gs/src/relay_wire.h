@@ -1,6 +1,6 @@
 #pragma once
 // mabur-relay protocol v3 (CPE510 remote radio): the byte contract lives in
-// ../poc/wfb-ng-openwrt docs/mabur-relay-protocol.md. Little-endian, byte by
+// ../mabur-openwrt docs/mabur-relay-protocol.md. Little-endian, byte by
 // byte. Pure: no sockets, no clock.
 #include <cstddef>
 #include <cstdint>
