@@ -30,6 +30,25 @@ export function shouldRegister({ isolated, controllerUrl, ownUrl }) {
   return !!controllerUrl && controllerUrl.split('?')[0] !== ownUrl.split('?')[0];
 }
 
+// Which fetch strategy a same-scope GET gets (docs/web-gs.md "Serve"):
+// hashed build assets are cache-first (a gh-pages deploy prunes old hashed
+// files, so racing a fast 404 against the cache must never win); navigations
+// get the 3 s network-first timeout; everything else (webgs.js/.wasm,
+// font_btfl.png, ...) is network-first with no timeout.
+export function fetchStrategy({ url, mode, scope }) {
+  if (mode === 'navigate') return 'network-timeout';
+  if (url.startsWith(scope + 'assets/')) return 'cache-first';
+  return 'network';
+}
+
+// Fallback rule shared by the no-timeout 'network' strategy: a non-ok
+// network response (e.g. a deleted asset's 404) or a network error only
+// falls back to the cache when there IS a cached copy; otherwise the network
+// result (bad response or error) stands, same as before this fell back at all.
+export function pickResponse({ netOk, hasCache }) {
+  return !netOk && hasCache;
+}
+
 export function maburSw({ srcFile, publicDir, distDir }) {
   return {
     name: 'mabur-sw',

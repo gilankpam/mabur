@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { precacheList, buildId, injectManifest, shouldRegister } from '../ui/sw/plugin.mjs';
+import { precacheList, buildId, injectManifest, shouldRegister, fetchStrategy, pickResponse } from '../ui/sw/plugin.mjs';
 
 test('precacheList: bundle + public + emscripten outputs, never stale dist files or the sw itself', () => {
   // Review Focus 5: only what THIS build emitted; web/dist also holds stale
@@ -37,10 +37,28 @@ test('shouldRegister: not isolated -> yes; isolated by the OLD coi worker -> yes
   assert.equal(shouldRegister({ isolated: true, controllerUrl: null, ownUrl: own }), false);   // serve.py headers
 });
 
-test('sw.js carries the precache token and an identical shouldRegister', () => {
+test('sw.js carries the precache token and an identical shouldRegister/fetchStrategy/pickResponse', () => {
   const src = fs.readFileSync(new URL('../ui/sw/sw.js', import.meta.url), 'utf8');
   assert.ok(src.includes('/*__MABUR_PRECACHE__*/ null'));
   assert.ok(src.includes(shouldRegister.toString()), 'sw.js inline shouldRegister drifted from plugin.mjs');
+  assert.ok(src.includes(fetchStrategy.toString()), 'sw.js inline fetchStrategy drifted from plugin.mjs');
+  assert.ok(src.includes(pickResponse.toString()), 'sw.js inline pickResponse drifted from plugin.mjs');
+});
+
+test('fetchStrategy: hashed assets cache-first, navigations network-timeout, everything else network', () => {
+  const scope = 'https://gilankpam.github.io/mabur/';
+  assert.equal(fetchStrategy({ url: scope + 'assets/index-AAA.js', mode: 'no-cors', scope }), 'cache-first');
+  assert.equal(fetchStrategy({ url: scope, mode: 'navigate', scope }), 'network-timeout');
+  assert.equal(fetchStrategy({ url: scope + 'webgs.wasm', mode: 'no-cors', scope }), 'network');
+  // A navigation request always gets the timeout, even for a URL under assets/.
+  assert.equal(fetchStrategy({ url: scope + 'assets/index-AAA.js', mode: 'navigate', scope }), 'network-timeout');
+});
+
+test('pickResponse: falls back to the cache only when the network failed AND a copy exists', () => {
+  assert.equal(pickResponse({ netOk: false, hasCache: true }), true);
+  assert.equal(pickResponse({ netOk: false, hasCache: false }), false);
+  assert.equal(pickResponse({ netOk: true, hasCache: true }), false);
+  assert.equal(pickResponse({ netOk: true, hasCache: false }), false);
 });
 
 test('sw.js install precache bypasses the HTTP cache (fixed-name files can be stale within GH Pages max-age)', () => {
