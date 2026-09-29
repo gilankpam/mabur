@@ -332,8 +332,9 @@ export function copyStatsPayload(statsRing, segSnapshot) {
   return JSON.stringify({ core, segments: segSnapshot }, null, 1);
 }
 
-// Default CPE relay address (host:port); the relay's fixed WebSocket port.
-export const RELAY_DEFAULT = '192.168.1.1:8311';
+// The CPE relay's fixed LAN address (mabur-openwrt 90-mabur-lan) + the
+// relay's WebSocket port. Connect uses it whenever no address is typed.
+export const RELAY_DEFAULT = '10.83.11.1:8311';
 
 // Parses a "host" or "host:port" relay address string into a normalized
 // "host:port" (port defaults to 8311), or null if malformed. host is an
@@ -361,23 +362,40 @@ export function isLocalRelayHost(host) {
     (a === 192 && b === 168) || (a === 169 && b === 254);
 }
 
-// Pre-connect check for the CPE relay radio: the address must parse, and an
-// https page may only open the plain ws:// relay socket when the host is
-// LNA-exempt (Chrome 142+; verified Chrome 147, docs/web-gs.md). null = OK.
-export function relayBlocker(protocol, addr) {
-  const norm = parseRelayAddr(addr);
+// Pre-connect check on the TYPED relay address (empty = the default, always
+// fine). An https page may only open the plain ws:// relay socket when the
+// host is LNA-exempt (Chrome 142+; verified Chrome 147, docs/web-gs.md).
+export function relayBlocker(protocol, typed) {
+  const t = String(typed ?? '').trim();
+  if (!t) return null;
+  const norm = parseRelayAddr(t);
   if (!norm) return 'Enter the CPE relay address as host or host:port.';
   if (protocol === 'https:' && !isLocalRelayHost(norm.slice(0, norm.lastIndexOf(':')))) {
-    return 'On the hosted page the relay address must be a private IP (e.g. 192.168.1.1) or a .local name.';
+    return 'On the hosted page the relay address must be a private IP (e.g. 10.83.11.1) or a .local name.';
   }
   return null;
 }
 
+// The one address a Connect uses: the typed one if any, else the default.
+export function relayTarget(typed) {
+  const t = String(typed ?? '').trim();
+  return t ? parseRelayAddr(t) : RELAY_DEFAULT;
+}
+
+// The address field shows when an address was saved (at page load) or when
+// a Connect this visit found no relay. Clearing it hides it from next visit.
+export function relayFieldVisible(savedAtLoad, openedThisVisit) {
+  return !!(savedAtLoad || openedThisVisit);
+}
+
+// The typed relay address from `webgs.last`. New key on purpose: builds
+// before 2026-09-29 saved relayAddr = the old default for every user.
+export function loadRelayCustom(saved) {
+  return saved && typeof saved.relayCustom === 'string' ? saved.relayCustom.trim() : '';
+}
+
 // Maps a glue `ERROR ...` line (web/src/web_gs.cpp) to user-facing text.
-export function errorText(line, protocol = globalThis.location?.protocol) {
-  if (line.includes('relay unreachable') && protocol === 'https:') {
-    return 'CPE relay not reachable — check the Ethernet cable and the relay address. If they are fine, this browser blocks ws:// from an https page: use Chrome 142+, or the local page (python3 web/serve.py 8808, open http://127.0.0.1:8808).';
-  }
+export function errorText(line) {
   if (line.includes('relay cannot tune')) {
     return 'CPE relay could not tune to this channel/width — check the channel is allowed on the CPE (regulatory domain), then press Connect.';
   }
