@@ -33,6 +33,12 @@ class RelayClient {
   bool refused(uint64_t now_ms) const;         // a STATUS said someone else owns it, past the window
   bool tune_failed(uint64_t now_ms) const;      // we own it but never reached our channel/sec, past the window
   bool lost(uint64_t now_ms) const;
+  // We were owned_and_tuned() at least once since start(), and every STATUS
+  // since has said you_own == 0 for >= 1000 ms straight (a you_own == 1
+  // STATUS at any point resets the clock). Distinct from refused(): that
+  // covers never having owned it; this covers another client taking over
+  // mid-session.
+  bool ownership_lost(uint64_t now_ms) const;
   const relay::Status& status() const { return st_; }
   uint64_t frames() const { return frames_; }
   uint64_t seq_gaps() const { return gaps_; }
@@ -48,7 +54,9 @@ class RelayClient {
   uint8_t ch_, sec_;
   SendFn send_;
   bool started_ = false, have_status_ = false, have_seq_ = false;
+  bool ever_owned_tuned_ = false, not_owner_since_set_ = false;
   uint64_t start_ms_ = 0, last_hello_ms_ = 0, last_tune_ms_ = 0, last_status_ms_ = 0;
+  uint64_t not_owner_since_ms_ = 0;
   uint16_t tune_id_ = 0;
   uint32_t last_seq_ = 0;
   relay::Status st_;

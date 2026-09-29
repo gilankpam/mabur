@@ -398,6 +398,7 @@ struct LiveRadio {
   std::function<void(const std::vector<uint8_t>& frame)> send_frame;   // build_control_frame() output
   std::function<bool()> ended;                   // radio gone (checked once the queue is empty)
   const char* lost_error = "card lost";          // report_error text when ended() fires
+  std::function<const char*()> lost_reason;      // optional, overrides lost_error when set (chosen at report time)
   std::function<void()> on_pass;                 // optional, every loop pass (relay keepalive)
   std::function<std::string()> extra_stats;      // ",\"k\":v..." appended to each STATS
 };
@@ -511,7 +512,7 @@ int live_loop(const LiveOpts& o, const maburgs::Config& cfg, uint8_t ch, int wid
     g.tick(now_us());
     if (lrec_armed && dvr.state() == mabur::RawDvr::State::Error) seal_local_rec();
     if (r.ended() && batch.empty()) {
-      report_error("%s", r.lost_error);
+      report_error("%s", r.lost_reason ? r.lost_reason() : r.lost_error);
       rc = 1;
       break;
     }
@@ -568,8 +569,13 @@ int run_live_relay(const LiveOpts& o, const maburgs::Config& cfg, uint8_t ch, in
   LiveRadio r;
   r.q = &q;
   r.send_frame = [&](const std::vector<uint8_t>& f) { link.send_frame(f); };
-  r.ended = [&] { return link.lost(); };
+  // GS mode only: a UDP subscriber (native webgs --relay, a future
+  // RemoteCard) can take ownership away from us at any time -- the relay
+  // prefers the oldest UDP subscriber. A spotter never owns, so it has
+  // nothing to lose.
+  r.ended = [&] { return link.lost() || (gs && link.ownership_lost()); };
   r.lost_error = "relay lost";
+  r.lost_reason = [&] { return (gs && link.ownership_lost()) ? "relay taken by another client" : "relay lost"; };
   r.on_pass = [&] { link.tick(); };
   r.extra_stats = [&] { return link.stats_fields(); };
   const int rc = live_loop(o, cfg, ch, width, r);

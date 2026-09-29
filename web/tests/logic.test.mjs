@@ -355,6 +355,7 @@ test('errorText relay lines', () => {
   assert.match(errorText('ERROR relay unreachable'), /CPE relay not reachable/);
   assert.match(errorText('ERROR relay unreachable: cannot resolve x:1'), /CPE relay not reachable/);
   assert.match(errorText('ERROR relay owned by another client'), /owned by another client/);
+  assert.match(errorText('ERROR relay taken by another client'), /Another client took over the CPE relay/);
   assert.match(errorText('ERROR relay lost'), /connection lost/);
   assert.match(errorText('ERROR relay cannot tune'), /could not tune/);
 });

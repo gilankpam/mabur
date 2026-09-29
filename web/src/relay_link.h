@@ -30,6 +30,7 @@ class RelayLink {
   enum class Ready { Waiting, Owned, Listening, Refused, Unreachable, TuneFailed };
   Ready ready(bool gs_mode);
   bool lost();
+  bool ownership_lost();   // taken by another client mid-session (RelayClient::ownership_lost)
   std::string stats_fields();                       // ",\"radio\":\"relay\",..."
   void stop();
 

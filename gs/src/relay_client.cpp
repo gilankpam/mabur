@@ -64,6 +64,12 @@ RelayClient::Rx RelayClient::on_message(const uint8_t* b, size_t n, uint64_t now
     st_ = s;
     have_status_ = true;
     last_status_ms_ = now_ms;
+    if (s.you_own) not_owner_since_set_ = false;
+    if (owned_and_tuned()) ever_owned_tuned_ = true;
+    if (!s.you_own && ever_owned_tuned_ && !not_owner_since_set_) {
+      not_owner_since_set_ = true;
+      not_owner_since_ms_ = now_ms;
+    }
     return Rx::Status;
   }
   if (t != relay::kFrame) { ++bad_; return Rx::None; }
@@ -128,6 +134,10 @@ bool RelayClient::lost(uint64_t now_ms) const {
   if (!started_) return false;
   const uint64_t since = have_status_ ? last_status_ms_ : start_ms_;
   return elapsed(now_ms, since) > kLostMs;
+}
+
+bool RelayClient::ownership_lost(uint64_t now_ms) const {
+  return not_owner_since_set_ && elapsed(now_ms, not_owner_since_ms_) >= 1000;
 }
 
 }  // namespace maburgs

@@ -63,6 +63,11 @@ bool RelayLink::lost() {
   return c_.lost(now_us_() / 1000);
 }
 
+bool RelayLink::ownership_lost() {
+  std::lock_guard<std::mutex> lk(mu_);
+  return c_.ownership_lost(now_us_() / 1000);
+}
+
 std::string RelayLink::stats_fields() {
   std::lock_guard<std::mutex> lk(mu_);
   const auto& s = c_.status();

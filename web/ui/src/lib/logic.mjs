@@ -365,6 +365,9 @@ export function errorText(line) {
   if (line.includes('relay owned by another client')) {
     return 'CPE relay is owned by another client (maburgs or another tab). Stop it, wait 2 s, then press Connect.';
   }
+  if (line.includes('relay taken by another client')) {
+    return 'Another client took over the CPE relay (maburgs or another tab). Stop it, then press Connect.';
+  }
   if (line.includes('relay lost')) {
     return 'CPE relay connection lost. Press Connect to restart.';
   }

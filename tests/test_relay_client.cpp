@@ -255,6 +255,54 @@ TEST(garbage_counted_not_fatal) {
   CHECK(c.bad_msgs() == 1);
 }
 
+TEST(ownership_lost_after_1s_of_not_owner_status) {
+  Sink s;
+  RelayClient c(136, 2, s.fn());
+  c.start(0);
+  mabur::node::RxBody b;
+  auto owned = status(0, 136, 2, 1);
+  c.on_message(owned.data(), owned.size(), 10, b);
+  CHECK(!c.ownership_lost(10));
+  // The first not-owner STATUS lands at 2000; two more follow at 2500 and
+  // 3000, all past having owned. ownership_lost only trips >=1000ms after
+  // the FIRST one, not each new STATUS.
+  auto stolen = status(0, 136, 2, 0);
+  c.on_message(stolen.data(), stolen.size(), 2000, b);
+  CHECK(!c.ownership_lost(2999));
+  c.on_message(stolen.data(), stolen.size(), 2500, b);
+  CHECK(!c.ownership_lost(2999));
+  c.on_message(stolen.data(), stolen.size(), 3000, b);
+  CHECK(!c.ownership_lost(2999));
+  CHECK(c.ownership_lost(3001));
+}
+
+TEST(ownership_lost_reset_by_you_own_status_in_between) {
+  Sink s;
+  RelayClient c(136, 2, s.fn());
+  c.start(0);
+  mabur::node::RxBody b;
+  auto owned = status(0, 136, 2, 1);
+  c.on_message(owned.data(), owned.size(), 10, b);
+  auto stolen = status(0, 136, 2, 0);
+  c.on_message(stolen.data(), stolen.size(), 2000, b);
+  c.on_message(stolen.data(), stolen.size(), 2500, b);
+  // A you_own==1 STATUS in between clears the not-owner clock.
+  c.on_message(owned.data(), owned.size(), 2600, b);
+  c.on_message(stolen.data(), stolen.size(), 3000, b);
+  CHECK(!c.ownership_lost(3100));   // only 100ms since the reset at 3000
+}
+
+TEST(ownership_lost_never_owned_is_always_false) {
+  Sink s;
+  RelayClient c(136, 2, s.fn());
+  c.start(0);
+  mabur::node::RxBody b;
+  auto no = status(3, 132, 0, 0);
+  for (uint64_t t = 0; t <= 5000; t += 500) c.on_message(no.data(), no.size(), t, b);
+  CHECK(!c.ownership_lost(5000));
+  CHECK(!c.ownership_lost(100000));
+}
+
 TEST(send_control_strips_radiotap) {
   Sink s;
   RelayClient c(136, 2, s.fn());

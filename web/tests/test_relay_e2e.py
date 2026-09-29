@@ -19,8 +19,14 @@ class FakeRelay:
         self.s.bind(('127.0.0.1', 0)); self.port = self.s.getsockname()[1]
         self.own, self.answer, self.stop = own, answer, False
         self.tune_fail = tune_fail
+        self.stolen = False   # another client took ownership mid-session
         self.got, self.peer, self.tuned = [], None, None
         threading.Thread(target=self.run, daemon=True).start()
+    def steal(self):
+        # Another UDP subscriber takes ownership: the relay stays tuned on
+        # our channel (state 0), but you_own flips to 0 for us.
+        self.own = False
+        self.stolen = True
     def run(self):
         self.s.settimeout(0.05); seq = 0
         while not self.stop:
@@ -34,6 +40,9 @@ class FakeRelay:
                         # than what was requested: we own the relay but it
                         # never reaches our channel/sec.
                         self.s.sendto(status(2, 100, 0, 1), a)
+                    elif self.stolen:
+                        ch, sec = self.tuned or (0, 0)
+                        self.s.sendto(status(0, ch, sec, 0), a)
                     else:
                         ch, sec = self.tuned or (0, 0)
                         self.s.sendto(status(0 if self.own else 3, ch, sec, 1 if self.own else 0), a)
@@ -99,6 +108,23 @@ class RelayE2E(unittest.TestCase):
         threading.Thread(target=mute, daemon=True).start()
         p = run_webgs(r.port, 'gs', 10); r.stop = True
         self.assertIn('ERROR relay lost', p.stdout)
+
+    def test_gs_ownership_taken_mid_session_reports_and_exits(self):
+        r = FakeRelay()
+        def steal(): time.sleep(3); r.steal()
+        threading.Thread(target=steal, daemon=True).start()
+        t0 = time.time(); p = run_webgs(r.port, 'gs', 10); r.stop = True
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn('ERROR relay taken by another client', p.stdout)
+        self.assertLess(time.time() - t0, 6)
+
+    def test_spotter_unaffected_by_ownership_theft(self):
+        r = FakeRelay()
+        def steal(): time.sleep(1); r.steal()
+        threading.Thread(target=steal, daemon=True).start()
+        p = run_webgs(r.port, 'spotter', 3); r.stop = True
+        self.assertEqual(p.returncode, 0, p.stdout)
+        self.assertNotIn('ERROR', p.stdout)
 
 if __name__ == '__main__':
     unittest.main()
