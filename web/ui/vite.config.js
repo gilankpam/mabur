@@ -6,6 +6,7 @@ import { defineConfig } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import fs from 'node:fs';
 import path from 'node:path';
+import { maburSw } from './sw/plugin.mjs';
 
 const DIST = path.resolve(import.meta.dirname, '../dist');
 const COI = {
@@ -32,7 +33,11 @@ function webgsFromDist() {
 
 export default defineConfig({
   base: './',
-  plugins: [svelte(), webgsFromDist()],
+  plugins: [svelte(), webgsFromDist(), maburSw({
+    srcFile: path.resolve(import.meta.dirname, 'sw/sw.js'),
+    publicDir: path.resolve(import.meta.dirname, 'public'),
+    distDir: DIST,
+  })],
   server: { headers: COI, host: true },
   preview: { headers: COI },
   build: { outDir: DIST, emptyOutDir: false, assetsDir: 'assets', target: 'es2022' },
