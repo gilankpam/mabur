@@ -174,7 +174,8 @@ full rate (4.5 MB/s), so wss cannot carry the top rungs. The mbedTLS test
 server also hung in the handshake against OpenSSL clients (not debugged).
 The web GS doesn't need it anyway: Chrome 142+ lets an `https://` page
 (the hosted GitHub Pages build) open plain `ws://` to a private IP literal
-or `.local` name — see `docs/web-gs.md`, "CPE relay radio".
+or `.local` name once the user allows local network access — see
+`docs/web-gs.md`, "CPE relay radio".
 
 ## Follow-ups
 

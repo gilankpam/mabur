@@ -461,3 +461,33 @@ test('isWindowWorkerFailure ignores both window events of a normal exit', () => 
   assert.equal(isWindowWorkerFailure({ message: 'worker sent an error! undefined:undefined: undefined' }), true);
   assert.equal(isWindowWorkerFailure({ message: 'Script error.', filename: 'http://x/app.js' }), false);
 });
+
+test('relay connect waits for prepareRelay; its rejection is the error, core never starts', async () => {
+  const t = fakeTimers(); const f = fakeModuleFactory();
+  let release; const gate = new Promise((r) => { release = r; });
+  const urls = [];
+  const s = new Session({
+    createModule: f.create, requestDevice: async () => { throw new Error('no usb on relay'); },
+    startRelay: () => ({ terminate() {} }),
+    prepareRelay: async (url) => { urls.push(url); await gate; },
+    onAu: () => {}, onStats: () => {}, reload: () => {}, timers: t,
+  });
+  const p = s.connect({ mode: 'spotter', ch: 136, w: 40, relay: '192.168.1.1:8311' });
+  await tick();
+  assert.deepEqual(urls, ['ws://192.168.1.1:8311']);
+  assert.equal(f.made.length, 0);          // core held until the permission answer
+  release(); await p;
+  assert.equal(f.made.length, 1);
+
+  const f2 = fakeModuleFactory();
+  const s2 = new Session({
+    createModule: f2.create, requestDevice: async () => {},
+    startRelay: () => ({ terminate() {} }),
+    prepareRelay: async () => { throw new Error('Local network access is blocked'); },
+    onAu: () => {}, onStats: () => {}, reload: () => {}, timers: fakeTimers(),
+  });
+  await s2.connect({ mode: 'gs', ch: 136, w: 40, relay: '192.168.1.1:8311' });
+  assert.equal(f2.made.length, 0);
+  assert.equal(s2.snapshot.state, 'error');
+  assert.match(s2.snapshot.error, /Local network access is blocked/);
+});

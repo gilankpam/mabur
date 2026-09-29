@@ -18,6 +18,7 @@
   import { layoutMode, keyAction, isMobile, uiFrame } from '../lib/layout.js';
   import { connectBlocker, toOverlayToml, saveConfig } from '../lib/config.js';
   import { relayBlocker, parseRelayAddr } from '../lib/logic.mjs';
+  import { ensureLocalNetwork, lnaQuery, openProbeSocket } from '../lib/relay_permission.js';
   import { effectiveTarget, targetCovers, recFileName, localView, combinedRec, headroomWarning,
     formatBytes, listRecordings, downloadRecording, deleteRecording, opfsRoot } from '../lib/localrec.js';
   import { OsdLayer, OsdPainter } from '../lib/osd.js';
@@ -96,6 +97,7 @@
       if (!granted.length) await navigator.usb.requestDevice({ filters: [{ vendorId: 0x0bda }] });
     },
     checkIsolated: () => { if (!window.crossOriginIsolated) throw new Error('Page is not cross-origin isolated (COOP/COEP headers missing) — serve it as docs/web-gs.md describes.'); },
+    prepareRelay: (url) => ensureLocalNetwork({ protocol: location.protocol, url, query: lnaQuery, openSocket: openProbeSocket }),
     startRelay: ({ buffer, ptr, url }) => {
       const w = new Worker(new URL('../lib/relay_worker.js', import.meta.url), { type: 'module' });
       w.postMessage({ buffer, ptr, url });

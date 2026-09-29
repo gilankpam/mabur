@@ -25,9 +25,9 @@ export class Session {
                 // Wrapped: a bare window.setTimeout called as timers.setTimeout(...) throws "Illegal invocation".
                 timers = { setTimeout: (f, ms) => setTimeout(f, ms), clearTimeout: (h) => clearTimeout(h) },
                 stopTimeoutMs = 3000, recOffTimeoutMs = 1000,
-                checkIsolated = () => {}, startRelay = null }) {
+                checkIsolated = () => {}, startRelay = null, prepareRelay = async () => {} }) {
     Object.assign(this, { createModule, requestDevice, onAu, onStats, onOsd, onRecClosed, reload, timers,
-      stopTimeoutMs, recOffTimeoutMs, checkIsolated, startRelay });
+      stopTimeoutMs, recOffTimeoutMs, checkIsolated, startRelay, prepareRelay });
     this.subs = new Set();
     this.mod = null;
     this.token = null;        // identifies the current connect attempt/module instance
@@ -52,7 +52,7 @@ export class Session {
     this.stopRequested = false;
     this.set({ state: 'connecting', mode, ch, w, error: null, notice: null, recWish: false, localWish: false, startedAt: null });
     try {
-      relay ? this.checkIsolated() : await this.requestDevice();
+      if (relay) { this.checkIsolated(); await this.prepareRelay('ws://' + relay); } else await this.requestDevice();
     } catch (e) {
       if (this.token !== token) return;
       // The chooser closed without a pick (WebUSB rejects with NotFoundError)
@@ -65,6 +65,8 @@ export class Session {
       }
       return;
     }
+    // A page-worker failure (fail()) landed while a chooser/prompt was up.
+    if (this.token !== token || this.snapshot.state !== 'connecting') return;
     const args = ['live', '--mode', mode, '--ch', String(ch), '--w', String(w)];
     const overlay = mode === 'gs' && overlayToml ? overlayToml : null;
     if (overlay) args.push('--overlay', '/overlay.toml');

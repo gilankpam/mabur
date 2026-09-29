@@ -206,23 +206,41 @@ address field defaulting to `192.168.1.1:8311` (`RELAY_DEFAULT`,
 `web/ui/src/lib/logic.mjs`), parsed as `host` or `host:port`
 (`parseRelayAddr()`).
 
-**Hosted page works; relay host must be a private IP.** An `https://` page
-normally cannot open a plain `ws://` socket (mixed content), and the relay
-doesn't speak `wss://` (see `docs/cpe510-relay.md`, "Why not wss"). Chrome
-142+ exempts WebSocket and fetch targets that are **private IP literals** or
-**`.local` names** from that block (Local Network Access). Verified
-2026-09-29 on Chrome 147, headless and headed: a `gilankpam.github.io` origin
-opened `ws://<LAN IP>` with no flag and no prompt, while `ws://` to a public
-DNS name resolving to the same LAN address was still blocked. So on an
-`https:` origin `relayBlocker()` accepts a private/loopback/link-local IPv4
-literal or a `.local` name and refuses anything else with *"On the hosted
-page the relay address must be a private IP (e.g. 192.168.1.1) or a .local
-name."* (`isLocalRelayHost()`). A browser without the exemption (Firefox,
-Chrome < 142) fails at Connect; on https the "relay unreachable" banner
-says so and points at the local page (`python3 web/serve.py 8808`, open
-`http://127.0.0.1:8808`), which works in any browser. Chrome logs the
-exempt connection as "Insecure access is deprecated", so a future Chrome
-may put it behind the LNA permission prompt.
+**Hosted page works; relay host must be a private IP; one-time prompt.**
+An `https://` page normally cannot open a plain `ws://` socket (mixed
+content), and the relay doesn't speak `wss://` (see `docs/cpe510-relay.md`,
+"Why not wss"). Chrome's Local Network Access (LNA) changes both halves,
+measured 2026-09-29 on Chrome 147 against the bench CPE from the real
+`gilankpam.github.io` origin:
+
+- **Mixed content:** `ws://` to a **private IP literal** or a **`.local`
+  name** is exempt (console: "Insecure access is deprecated"). A public DNS
+  name that resolves to the LAN is still blocked outright. So on an
+  `https:` origin `relayBlocker()` accepts a private/loopback/link-local
+  IPv4 literal or a `.local` name (`isLocalRelayHost()`) and refuses the
+  rest with *"On the hosted page the relay address must be a private IP
+  (e.g. 192.168.1.1) or a .local name."*
+- **Permission:** a public page reaching a private address needs the
+  `local-network` permission. Until it is granted Chrome holds the socket
+  on a one-time "local network access" prompt (headed: still pending after
+  12 s); headless, or denied, it dies with close 1006. Granting
+  `local-network` via CDP made the same socket open from both the page and
+  a Worker; the older `local-network-access` name does not unblock it.
+  Chrome's LNA blog post still says WebSockets are "not yet gated" — stale.
+- **Connect waits for the prompt.** The core gives up on an unopened relay
+  in ~2 s, which would fail the session underneath the prompt. On `https:`
+  `ensureLocalNetwork()` (`web/ui/src/lib/relay_permission.js`, via
+  Session's `prepareRelay`) queries `local-network` first: `granted` starts
+  the core, `denied` errors with a site-settings hint, `prompt` opens a
+  throwaway socket to raise the prompt and waits up to 60 s for the answer.
+  A browser with no `local-network` permission (Firefox, Chrome < 142)
+  falls straight through; its socket then fails and the https "relay
+  unreachable" banner points at the local page (`python3 web/serve.py
+  8808`, open `http://127.0.0.1:8808`), which works in any browser.
+
+A spoofed-origin test (github.io mapped to a LAN address) is **not**
+evidence here: that page is itself private, so Chrome skips the LNA check.
+Test against the real hosted origin.
 
 **What Connect does.** The page opens a dedicated Worker
 (`web/ui/src/lib/relay_worker.js`) that owns the WebSocket, bridged to the
@@ -636,10 +654,9 @@ rule).
 
 ## Known limits
 
-- **CPE relay radio from https needs Chrome 142+ and a private-IP relay
-  address.** The hosted page opens `ws://` only through Chrome's Local
-  Network Access exemption (see "CPE relay radio" above); Firefox needs the
-  local page.
+- **CPE relay radio from https needs Chrome 142+, a private-IP relay
+  address, and a one-time "local network access" Allow.** See "CPE relay
+  radio" above; Firefox needs the local page.
 - **CPE relay: one owner at a time.** The relay itself enforces this, not
   the page — a `maburgs`/native `webgs` already running against the relay
   (or another tab) holds ownership, and this page reports `relay owned by
