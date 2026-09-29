@@ -196,7 +196,9 @@
     // refuses fullscreen to a tab that has opened one, lib/fullscreen.js);
     // for USB only once the card is already granted: fullscreen consumes the
     // tap's activation, which the first-time WebUSB chooser needs.
-    if (fsBeforeConnect({ mobile: isMobile(LW, LH), radio: ui.radio, usbGranted })) goLandscape();
+    // Awaited: the relay socket must not taint the tab before Chrome has
+    // finished hiding its bars (requestFullscreen still runs inside the tap).
+    if (fsBeforeConnect({ mobile: isMobile(LW, LH), radio: ui.radio, usbGranted })) await goLandscape();
     video.reset(); tele.reset(); osd.resetAtlasFailure(); hiddenShown = false; hiddenBanner = false;
     const p = session.connect({ mode: ui.mode, ch: ui.cfg.channel, w: ui.cfg.width, overlayToml: toOverlayToml(sessionCfg),
       relay: ui.radio === 'relay' ? relayTarget(showRelayAddr ? ui.relayAddr : '') : null });

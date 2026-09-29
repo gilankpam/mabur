@@ -19,7 +19,8 @@
 export const FS_SETTLE_MS = 1500;
 
 export const FS_STUCK = 'Fullscreen blocked: Chrome keeps its bars once this page has opened the plain ws:// relay '
-  + 'socket (address bar shows "Not secure"). Reload the page, then go fullscreen before Connect.';
+  + 'socket (address bar shows "Not secure"), and a reload does not clear that. Clear this site\'s data '
+  + '(address-bar icon) or force-close Chrome, then go fullscreen before Connect.';
 
 // Resolves to { ok: true } when p fulfils, { err } when it rejects, or
 // { timeout: true } when it has done neither after ms. p's late outcome is

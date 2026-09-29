@@ -32,6 +32,7 @@ test('phone Connect goes fullscreen first for relay, or USB once granted', () =>
 test('stuck message names the cause and the way out', () => {
   assert.match(FS_STUCK, /ws:\/\//);
   assert.match(FS_STUCK, /Not secure/);
-  assert.match(FS_STUCK, /Reload/);
+  assert.match(FS_STUCK, /force-close Chrome/);
+  assert.match(FS_STUCK, /reload does not clear/);
   assert.ok(FS_SETTLE_MS >= 1000 && FS_SETTLE_MS <= 3000);
 });
