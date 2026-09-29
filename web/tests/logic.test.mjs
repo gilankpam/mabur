@@ -1,7 +1,8 @@
 // node --test web/tests/logic.test.mjs (promoted from the wasm-spike throwaway)
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { nalTypes, Gate, PtsUnwrap, PeriodEstimator, HitchMeter, pctl, IdrRequester } from '../ui/src/lib/logic.mjs';
+import { nalTypes, Gate, PtsUnwrap, PeriodEstimator, HitchMeter, pctl, IdrRequester,
+  parseRelayAddr, relayBlocker } from '../ui/src/lib/logic.mjs';
 
 const nal = (type, len = 4, four = true) =>
   [...(four ? [0, 0, 0, 1] : [0, 0, 1]), type << 1, 1, ...Array(len).fill(0x55)];
@@ -331,4 +332,29 @@ test('IdrRequester.cancel after a backed-off retry restores the pre-retry timest
   r.cancel();                                 // restore lastMs to 0
   assert.equal(r.poll(false, 299), false);    // still within retryMs of the restored 0
   assert.equal(r.poll(false, 300), true);
+});
+
+test('parseRelayAddr', () => {
+  assert.equal(parseRelayAddr('192.168.1.1'), '192.168.1.1:8311');
+  assert.equal(parseRelayAddr(' 192.168.1.1:9000 '), '192.168.1.1:9000');
+  assert.equal(parseRelayAddr('cpe.local:8311'), 'cpe.local:8311');
+  assert.equal(parseRelayAddr(''), null);
+  assert.equal(parseRelayAddr('192.168.1.1:0'), null);
+  assert.equal(parseRelayAddr('192.168.1.1:70000'), null);
+  assert.equal(parseRelayAddr('ws://192.168.1.1'), null);
+  assert.equal(parseRelayAddr('a b'), null);
+});
+
+test('relayBlocker: https cannot open ws://, bad address blocks', () => {
+  assert.match(relayBlocker('https:', '192.168.1.1:8311'), /relay needs the local page: python3 web\/serve.py 8808, open http:\/\/127.0.0.1:8808/);
+  assert.equal(relayBlocker('http:', '192.168.1.1:8311'), null);
+  assert.match(relayBlocker('http:', 'nope nope'), /address/);
+});
+
+test('errorText relay lines', () => {
+  assert.match(errorText('ERROR relay unreachable'), /CPE relay not reachable/);
+  assert.match(errorText('ERROR relay unreachable: cannot resolve x:1'), /CPE relay not reachable/);
+  assert.match(errorText('ERROR relay owned by another client'), /owned by another client/);
+  assert.match(errorText('ERROR relay lost'), /connection lost/);
+  assert.match(errorText('ERROR relay cannot tune'), /could not tune/);
 });

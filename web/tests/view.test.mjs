@@ -146,3 +146,18 @@ test('status text and link tag', () => {
   assert.deepEqual(linkTag({ state: 'live', mode: 'gs', core: { session: false } }), { label: 'Searching', on: true });
   assert.deepEqual(linkTag({ state: 'live', mode: 'spotter', core: {} }), { label: 'Spotter', on: true });
 });
+
+test('debugGroups shows a Relay group only for relay stats', () => {
+  const base = { connected: true, mode: 'gs', rcfPct: 90, ausRate: 60, hitches60: 0, hitchesTotal: 0, seg: {}, lrec: null };
+  const usb = debugGroups({ ...base, core: { radio: 'usb' } });
+  assert.equal(usb.some((g) => g.title === 'Relay'), false);
+  const rel = debugGroups({ ...base, core: { radio: 'relay', relay_state: 0, relay_ch: 136, relay_sec: 2, relay_owned: 1,
+    relay_frames: 10, relay_gaps: 1, relay_rx_drops: 0, relay_tx_ring_drops: 0, relay_tx: 5, relay_tx_fail: 0, relay_tx_refused: 0, relay_your_drops: 0 } });
+  const g = rel.find((x) => x.title === 'Relay');
+  assert.ok(g);
+  const row = (k) => g.rows.find((r) => r.k === k).v;
+  assert.equal(row('channel'), '136 HT40-');
+  assert.equal(row('owner'), 'yes');
+  assert.equal(row('seq gaps'), '1');
+  assert.equal(row('tx / fail / refused'), '5 / 0 / 0');
+});

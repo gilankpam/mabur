@@ -56,7 +56,7 @@ function segCell(e) {
   return `p99 ${fmt(e.p99)} max ${fmt(e.max)}`;
 }
 function segRow(name, seg) {
-  const a = seg.w1[name], b = seg.w60[name];
+  const a = (seg.w1 || {})[name], b = (seg.w60 || {})[name];
   if ((!a || a.n === 0) && (!b || b.n === 0)) return D;
   return `${segCell(a)} | ${segCell(b)}`;
 }
@@ -75,7 +75,7 @@ export function debugGroups({ connected, mode, core, rcfPct, ausRate, hitches60,
   const spot = mode === 'spotter';
   const v = (x) => (on ? x : D);
   const rows = (pairs) => pairs.map(([k, val]) => ({ k, v: String(val) }));
-  return [
+  const groups = [
     { title: 'Link', rows: rows([
       ['mode', v(core?.mode)], ['session', v(core?.session ? 'yes' : 'no')],
       ['peer_acked', v(spot ? 'n/a' : core?.peer_acked ? 'yes' : 'no')],
@@ -110,6 +110,18 @@ export function debugGroups({ connected, mode, core, rcfPct, ausRate, hitches60,
       ['txfail', v(core?.txfail ?? D)], ['qdrop', v(core?.qdrop ?? D)],
     ]) },
   ];
+  if (on && core.radio === 'relay') {
+    const SEC = ['HT20', 'HT40+', 'HT40-'];
+    groups.push({ title: 'Relay', rows: rows([
+      ['channel', core.relay_ch ? `${core.relay_ch} ${SEC[core.relay_sec] ?? '?'}` : 'retuning'],
+      ['owner', core.relay_owned ? 'yes' : 'no'],
+      ['frames', core.relay_frames], ['seq gaps', core.relay_gaps],
+      ['ring drops rx / tx', `${core.relay_rx_drops} / ${core.relay_tx_ring_drops}`],
+      ['tx / fail / refused', `${core.relay_tx} / ${core.relay_tx_fail} / ${core.relay_tx_refused}`],
+      ['your drops', core.relay_your_drops],
+    ]) });
+  }
+  return groups;
 }
 
 // Live-state message over the video. Before the first picture of a Connect
