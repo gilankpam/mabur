@@ -36,7 +36,7 @@ export class Session {
     this.stopTimer = null;
     this.recWaiter = null;   // resolve fn while waiting for rec_state != 1
     this.relayWorker = null;
-    this.snapshot = { state: 'idle', mode: 'spotter', ch: null, w: null, error: null, notice: null,
+    this.snapshot = { state: 'idle', mode: 'spotter', ch: null, w: null, error: null, errorCode: null, notice: null,
                       startedAt: null, recWish: false, localWish: false };
   }
 
@@ -50,9 +50,9 @@ export class Session {
     const token = {};
     this.token = token;
     this.stopRequested = false;
-    this.set({ state: 'connecting', mode, ch, w, error: null, notice: null, recWish: false, localWish: false, startedAt: null });
+    this.set({ state: 'connecting', mode, ch, w, error: null, errorCode: null, notice: null, recWish: false, localWish: false, startedAt: null });
     try {
-      if (relay) { this.checkIsolated(); await this.prepareRelay('ws://' + relay); } else await this.requestDevice();
+      if (relay) { this.checkIsolated(); await this.prepareRelay(relay); } else await this.requestDevice();
     } catch (e) {
       if (this.token !== token) return;
       // The chooser closed without a pick (WebUSB rejects with NotFoundError)
@@ -61,7 +61,7 @@ export class Session {
       if (e && e.name === 'NotFoundError') {
         this.set({ state: 'idle', notice: 'No device selected — press Connect to try again.' });
       } else {
-        this.set({ state: 'error', error: (e && e.message) || String(e) });
+        this.set({ state: 'error', error: (e && e.message) || String(e), errorCode: (e && e.code) || null });
       }
       return;
     }

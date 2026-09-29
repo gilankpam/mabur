@@ -1,6 +1,6 @@
 // App-level UI state (handoff "State"). Svelte 5 runes module.
 import { loadConfig } from './config.js';
-import { RELAY_DEFAULT } from './logic.mjs';
+import { loadRelayCustom } from './logic.mjs';
 
 function initialMode() {
   const q = new URLSearchParams(location.search).get('mode');
@@ -45,12 +45,17 @@ export const ui = $state({
   mode: initialMode(),
   cfg: initialCfg(),
   radio: saved.radio === 'relay' ? 'relay' : 'usb',
-  relayAddr: typeof saved.relayAddr === 'string' ? saved.relayAddr : RELAY_DEFAULT,
+  relayAddr: loadRelayCustom(saved),   // typed override; '' = use RELAY_DEFAULT
+  relayFieldOpen: false,               // a Connect this visit found no relay
   tick: 0,
 });
 
-export function saveMode(mode, radio = 'usb', relayAddr = RELAY_DEFAULT) {
-  try { localStorage.setItem('webgs.last', JSON.stringify({ mode, radio, relayAddr })); } catch { /* ignore */ }
+// Field visibility is decided by what was saved when the page loaded, so
+// clearing the field hides it from the next visit, not mid-edit.
+export const relaySavedAtLoad = ui.relayAddr !== '';
+
+export function saveMode(mode, radio = 'usb', relayCustom = '') {
+  try { localStorage.setItem('webgs.last', JSON.stringify({ mode, radio, relayCustom: String(relayCustom).trim() })); } catch { /* ignore */ }
 }
 
 export function reloadToConfig() {

@@ -2,7 +2,8 @@
   import Icon from './Icon.svelte';
   import bg from '../assets/fpv-feed.jpg';
   let { mode, onMode, onConnect, error = null, notice = null, blocker = null, busy = false, stopping = false,
-        padRight = false, mobile = false, radio = 'usb', onRadio = () => {}, relayAddr = '', onRelayAddr = () => {} } = $props();
+        padRight = false, mobile = false, radio = 'usb', onRadio = () => {}, relayAddr = '', onRelayAddr = () => {},
+        showAddr = false } = $props();
   const HINT = {
     gs: 'Full link control. Sends link feedback to the drone and runs the adaptive ladder.',
     spotter: 'Receive only. No uplink to the drone, so link and ladder settings are not applied.',
@@ -25,9 +26,9 @@
     <label class="seg-opt" style={mobile ? 'min-height:40px' : ''}><input type="radio" name="webgs-radio" checked={radio === 'relay'} disabled={busy}
       onchange={() => onRadio('relay')}><Icon name="broadcast" />CPE relay</label>
   </div>
-  {#if radio === 'relay'}
+  {#if radio === 'relay' && showAddr}
     <input class="addr" type="text" value={relayAddr} disabled={busy} spellcheck="false" aria-label="CPE relay address"
-      oninput={(e) => onRelayAddr(e.currentTarget.value)} />
+      placeholder="10.83.11.1" oninput={(e) => onRelayAddr(e.currentTarget.value)} />
   {/if}
   {#if blocker}<span class="msg warn">{blocker}</span>{/if}
   <button class="btn btn-primary" type="button" onclick={onConnect} disabled={busy || !!blocker}
