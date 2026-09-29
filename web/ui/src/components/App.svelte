@@ -271,20 +271,32 @@
   // (iPhone Safari).
   let realFs = $state(!!document.fullscreenElement);
   const fsSupported = !!document.fullscreenEnabled;
+  // Why the last phone fullscreen tap failed, shown briefly on the overlay
+  // (Android Chrome gives no other sign; real phones were never benched).
+  let fsMsg = $state('');
+  let fsMsgTimer = null;
+  function showFsMsg(t) { fsMsg = t; clearTimeout(fsMsgTimer); fsMsgTimer = setTimeout(() => { fsMsg = ''; }, 6000); }
   async function toggleRealFs() {
     if (document.fullscreenElement) { try { await document.exitFullscreen(); } catch { /* stay */ } return; }
-    await goLandscape();
+    const err = await goLandscape();
+    if (err) { console.warn('[webgs] fullscreen refused', err); showFsMsg(`Fullscreen refused: ${err.name || 'Error'}${err.message ? ' — ' + err.message : ''}`); return; }
+    setTimeout(() => { if (!document.fullscreenElement) showFsMsg('Fullscreen exited right away'); }, 1000);
   }
   // Fullscreen + lock to 'landscape' (either side: the sensor still flips it
   // 180°, never to portrait). Android Chrome allows the lock only while
   // fullscreen; must run inside the tap, before any await.
+  // Returns the refusal (an Error) or null; the orientation lock is
+  // best-effort and never counts as a failure.
   async function goLandscape() {
-    if (!fsSupported) return;
+    if (!fsSupported) return null;
     try {
       if (!document.fullscreenElement) await document.documentElement.requestFullscreen();
+    } catch (e) { return e || new Error('refused'); }
+    try {
       const lock = screen.orientation?.lock?.('landscape');
       if (lock) lock.catch(() => {});
-    } catch { /* refused: stay as is */ }
+    } catch { /* no lock on this device */ }
+    return null;
   }
   let usbGranted = false;
   function checkUsbGranted() {
@@ -376,7 +388,7 @@
     <FsOverlay {live} mode={sess.mode} {chLine} {recOn} {recWaiting} recClock={formatClock(recMs)} recErr={rec.state === 'error' ? (rec.err || 'error') : null} {recDisabled} {recTitle}
       onConn={toggleConn} onRec={toggleRec} onStats={() => (ui.statsVisible = !ui.statsVisible)}
       onCfg={() => (ui.cfgOpen = !ui.cfgOpen)} fsButton={isMobile(LW, LH) ? (fsSupported ? { on: realFs } : null) : { on: true }}
-      onFs={isMobile(LW, LH) ? toggleRealFs : toggleFs} />
+      onFs={isMobile(LW, LH) ? toggleRealFs : toggleFs} {fsMsg} />
     {#if ui.statsVisible && !ui.cfgOpen}
       <FloatStats v={view} mobile={isMobile(LW, LH)} open={ui.floatOpen} pos={ui.fpos}
         onOpen={(o) => (ui.floatOpen = o)} onMove={(p) => (ui.fpos = p)} cw={LW} ch={LH} toLocal={frame.toLocal} />
