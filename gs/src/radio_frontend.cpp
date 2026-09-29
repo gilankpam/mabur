@@ -7,14 +7,11 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <memory>
 
 #include "AdapterCaps.h"
-#include "RadiotapBuilder.h"
 #include "RxPacket.h"
 #include "RxSense.h"
-#include "TxMode.h"
 #include "UsbDeviceLock.h"
 #include "UsbOpen.h"
 #include "IRtlRadio.h"
@@ -25,22 +22,7 @@
 
 namespace maburgs {
 namespace {
-constexpr size_t kDot11 = 24;
-constexpr uint8_t kSa[6] = {0x57, 0x42, 0x75, 0x05, 0xd6, 0x00};
 constexpr uint16_t kScanPids[] = {0xa81a, 0x881a, 0x8812};
-
-const std::vector<uint8_t>& max_range_radiotap() {
-  static const std::vector<uint8_t> rt = [] {
-    devourer::TxMode m;
-    m.mode = devourer::TxMode::Mode::HT;
-    m.ht_mcs = 0;
-    m.bw_mhz = 20;
-    m.ldpc = true;
-    m.stbc = true;
-    return devourer::build_stream_radiotap(m);
-  }();
-  return rt;
-}
 
 uint64_t mono_us_now() {
   return static_cast<uint64_t>(
@@ -49,35 +31,6 @@ uint64_t mono_us_now() {
           .count());
 }
 }  // namespace
-
-std::vector<uint8_t> build_control_frame(uint16_t seq, const uint8_t* body,
-                                         size_t len) {
-  const auto& rt = max_range_radiotap();
-  std::vector<uint8_t> f(rt.size() + kDot11 + len);
-  std::memcpy(f.data(), rt.data(), rt.size());
-  uint8_t* d = f.data() + rt.size();
-  d[0] = 0x40;
-  d[1] = 0x00;
-  d[2] = 0x00;
-  d[3] = 0x00;
-  std::memset(d + 4, 0xff, 6);
-  std::memcpy(d + 10, kSa, 6);
-  std::memcpy(d + 16, kSa, 6);
-  const uint16_t seq_ctl = static_cast<uint16_t>(seq << 4);
-  d[22] = static_cast<uint8_t>(seq_ctl & 0xff);
-  d[23] = static_cast<uint8_t>(seq_ctl >> 8);
-  if (len) std::memcpy(d + kDot11, body, len);
-  return f;
-}
-
-bool sa_canonical(const uint8_t* dot11, size_t len) {
-  return len >= 16 && std::memcmp(dot11 + 10, kSa, 6) == 0;
-}
-
-size_t dot11_body_offset(const uint8_t* dot11, size_t len) {
-  const size_t off = (len >= 1 && dot11[0] == 0x88) ? 26 : 24;
-  return len >= off + 1 ? off : 0;
-}
 
 // --- device management (mirrors drone/src/main.cpp bring-up) ----------------
 
@@ -231,56 +184,37 @@ bool RadioFrontend::open_and_start() {
 
 void RadioFrontend::on_packet(const Packet& pkt) {
   rx_frames_.fetch_add(1, std::memory_order_relaxed);
-  const size_t body_off = dot11_body_offset(pkt.Data.data(), pkt.Data.size());
-  if (body_off == 0) return;
+  const auto& a = pkt.RxAtrib;
+  RxMeta meta;
+  meta.crc_err = a.crc_err;
+  meta.data_rate = a.data_rate;
+  meta.rssi[0] = a.rssi[0]; meta.rssi[1] = a.rssi[1];
+  meta.snr[0] = a.snr[0];   meta.snr[1] = a.snr[1];
+  meta.evm[0] = a.evm[0];   meta.evm[1] = a.evm[1];
+  meta.physt = a.physt;
+  meta.tsfl = a.tsfl;
+  mabur::node::RxBody m;
+  const RxVerdict v = fill_rx_body(pkt.Data.data(), pkt.Data.size(), meta, m);
+  if (v == RxVerdict::Short) return;
   // Foreign traffic never reaches the queue: it polluted per-card EMAs and
   // the seq-loss walk (spec revision 2). CRC-failed frames pass — a corrupt
   // SA proves nothing, and they never fed EMAs/seq anyway.
-  if (!pkt.RxAtrib.crc_err && !sa_canonical(pkt.Data.data(), pkt.Data.size())) {
+  if (v == RxVerdict::Foreign) {
     foreign_.fetch_add(1, std::memory_order_relaxed);
     return;
   }
-  if (!pkt.RxAtrib.crc_err) {
+  if (!a.crc_err) {
     own_.fetch_add(1, std::memory_order_relaxed);
     // Own airtime (spec 2026-09-25-nhm-airtime §5), CRC-good own frames only.
-    const uint16_t r = pkt.RxAtrib.data_rate;
+    const uint16_t r = a.data_rate;
     const uint8_t mcs = (r >= 0x0C && r <= 0x13) ? static_cast<uint8_t>(r - 0x0C)
                         : (r >= 0x80 && r <= 0x87) ? static_cast<uint8_t>(r - 0x80) : 255;
-    own_air_.on_frame(pkt.Data.size(), mcs, pkt.RxAtrib.physt,
-                      pkt.RxAtrib.bw == 1 ? 40 : 20, pkt.RxAtrib.stbc != 0, pkt.RxAtrib.sgi != 0);
+    own_air_.on_frame(pkt.Data.size(), mcs, a.physt,
+                      a.bw == 1 ? 40 : 20, a.stbc != 0, a.sgi != 0);
     own_air_us_.store(own_air_.total_us(), std::memory_order_relaxed);
   }
-  mabur::node::RxBody m;
   m.card_id = cfg_.card_id;
   m.mono_us = mono_us_now();
-  m.rssi[0] = pkt.RxAtrib.rssi[0];
-  m.rssi[1] = pkt.RxAtrib.rssi[1];
-  m.snr[0] = pkt.RxAtrib.snr[0];
-  m.snr[1] = pkt.RxAtrib.snr[1];
-  m.evm[0] = pkt.RxAtrib.evm[0];
-  m.evm[1] = pkt.RxAtrib.evm[1];
-  m.phy_valid = pkt.RxAtrib.physt;
-  m.crc_ok = !pkt.RxAtrib.crc_err;
-  // RX rate code -> HT MCS index. devourer's RxAtrib.data_rate carries TWO
-  // encodings depending on chip family, and both HT-1SS ranges are mapped
-  // here (they cannot collide):
-  //  - jaguar1/2/3 (8812/8822B/8822E...): the raw Realtek DESC_RATE index --
-  //    HT MCS0..7 = 0x0C..0x13 (DESC_RATEMCS0, ieee80211_radiotap.h). This
-  //    is what the GS's 8822E cards produce; verified 2026-08-14 on the
-  //    bench when the original 0x80-only mapping left every attribution
-  //    boundary unclosed (link.attrib.close_ms null through 5 promotes).
-  //  - kestrel (8852B/C): the AX 9-bit code, HT = 0x80 + mcs (the encoding
-  //    RxPacket.h's comment describes; it does NOT apply to jaguar chips).
-  // Everything else (legacy CCK/OFDM, VHT, HE, 2SS) is "unknown" for
-  // attribution purposes -- the drone injects HT-1SS only.
-  const uint16_t dr = pkt.RxAtrib.data_rate;
-  m.mcs = (dr >= 0x0C && dr <= 0x13) ? static_cast<uint8_t>(dr - 0x0C)
-          : (dr >= 0x80 && dr <= 0x87) ? static_cast<uint8_t>(dr - 0x80)
-                                       : 255;
-  m.mac_seq = static_cast<uint16_t>(
-      (static_cast<uint16_t>(pkt.Data[22] | (pkt.Data[23] << 8))) >> 4);
-  m.body.assign(pkt.Data.begin() + static_cast<long>(body_off), pkt.Data.end());
-  m.tsfl = pkt.RxAtrib.tsfl;
   // Receive-channel provenance, stamped HERE -- on the producer thread, at
   // the moment the frame is lifted off this card -- so no amount of
   // queueing between here and the core loop can change it (mabur/node.h).

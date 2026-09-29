@@ -1,6 +1,7 @@
 #pragma once
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -272,6 +273,24 @@ struct Config {
   std::array<mabur::UepLayerCfg, 2> uep_layers() const;
 };
 
+/// One radio/width validation failure: `field` and `why` exactly as
+/// load_config reports them ("config: ...: <field>: <why>").
+struct ConfigIssue {
+  std::string field, why;
+};
+
+/// radio.width's own checks: 20 or 40, and 40 only on a channel with a
+/// standard 5 GHz HT40 pair (mabur::ht40_offset). load_config runs it on the
+/// file's radio section; the web GS runs it on its page channel/width
+/// override. std::nullopt = OK.
+std::optional<ConfigIssue> radio_width_issue(uint8_t channel, int width);
+
+/// Ladder/static-pin width vs the receiver's tuned width: a 40 MHz rung or
+/// static_bw pin needs width 40 (a 20-tuned receiver cannot hear HT40).
+/// load_config runs it against radio.width; the web GS (GS mode) against
+/// its override. std::nullopt = OK.
+std::optional<ConfigIssue> link_width_issue(const LinkCfg& link, int width);
+
 /// Loads configuration from a TOML file (MABUR_GS_BUNDLE_DIR/maburgs.default.toml).
 /// Fail-fast: missing keys use struct defaults; unknown keys, out-of-range values,
 /// or missing file throw std::runtime_error("config: <file>:<line>: <field>: <why>").
@@ -279,7 +298,15 @@ struct Config {
 /// `defaulted`, when non-null, receives "dotted.key=value" for every known
 /// key the file did not set. main() prints it once at startup so a
 /// hand-transcribed config shows its gaps in the log, not in the air.
+///
+/// `overlay_path`, when non-empty, names a second TOML file deep-merged into
+/// the main document BEFORE any validation: tables merge key-by-key, every
+/// other value (arrays included -- `[[link.ladder]]` replaces the whole
+/// ladder) replaces. Strict-key and range checks then run on the merged
+/// document exactly as for a single file. The web GS writes its config form
+/// as an overlay (spec 2026-09-27-web-ui §3.2); maburgs never passes one.
 Config load_config(const std::string& path,
-                   std::vector<std::string>* defaulted = nullptr);
+                   std::vector<std::string>* defaulted = nullptr,
+                   const std::string& overlay_path = {});
 
 }  // namespace maburgs

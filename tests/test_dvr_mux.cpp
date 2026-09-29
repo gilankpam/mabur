@@ -291,13 +291,13 @@ TEST(dvr_mux_pts_wrap_tfdt_strictly_increasing) {
   CHECK(tfdt2 == expect_tfdt2);
   CHECK(tfdt2 > tfdt1);  // strictly increasing despite the raw u32 wrap
 
-  // Duration coverage: fragment 1 has 2 samples (real delta 21us, from
-  // the wrap-unwrap above), so both its trun entries — including the
-  // last — must read 21. Fragment 2 has exactly one sample (sample 2
-  // forces the cut and close() flushes immediately after), so its lone
-  // trun entry has no next-sample delta to measure and must fall back
-  // to the last real delta carried over from fragment 1: also 21, never
-  // 0.
+  // Duration coverage: fragment 1's first entry is the real delta 21us
+  // (from the wrap-unwrap above). Its LAST entry is measured to sample 2,
+  // the sample that forced the cut: 16704, so fragment 2's tfdt lands
+  // exactly where fragment 1 ends. Fragment 2 has exactly one sample
+  // (close() flushes right after), so its lone trun entry has no next
+  // sample to measure and falls back to the last real delta: 16704,
+  // never 0.
   auto read_trun_durations = [&](const Box& moof) -> std::vector<uint32_t> {
     std::vector<Box> moof_kids = parse_boxes(f, moof.payload_off(), moof.off + moof.size);
     const Box* traf = find(moof_kids, "traf");
@@ -316,11 +316,53 @@ TEST(dvr_mux_pts_wrap_tfdt_strictly_increasing) {
   std::vector<uint32_t> durs1 = read_trun_durations(moof1);
   REQUIRE(durs1.size() == 2);
   CHECK(durs1[0] == 21u);
-  CHECK(durs1[1] == 21u);  // last sample of fragment 1 reuses the real delta
+  CHECK(durs1[1] == 16704u);  // measured to the cutting sample, not guessed
 
   std::vector<uint32_t> durs2 = read_trun_durations(moof2);
   REQUIRE(durs2.size() == 1);
-  CHECK(durs2[0] == 21u);  // lone-sample fragment: carried, never 0
+  CHECK(durs2[0] == 16704u);  // lone-sample fragment: carried, never 0
+}
+
+// Each fragment's tfdt must equal the previous fragment's tfdt plus its
+// trun durations. The fragment's last duration used to be a GUESS (the
+// previous delta), so after an irregular gap the next tfdt landed before
+// or after where the previous fragment ended: a 2026-09-29 web-GS
+// recording had 465/844 such seams, some 16-133 ms BACKWARDS, and
+// Apple's player would not open it.
+TEST(dvr_mux_fragments_tile_the_timeline) {
+  std::string path = scratch_path("dvr_mux_tile.mp4");
+  std::remove(path.c_str());
+  DvrMux mux;
+  REQUIRE(mux.open(path, std::vector<uint8_t>(23, 0xAB), 1920, 1080, 1000));
+  std::vector<uint8_t> au = fake_au(0x11);
+  // Irregular spacing (dropped frames), keys cutting and a >1 s time cut.
+  const struct { uint32_t pts; bool key; } seq[] = {
+      {0, true},        {16667, false},   {100000, false}, {116667, true},
+      {133334, false},  {150000, false},  {300000, true},  {316667, false},
+      {1400000, false}, {1416667, true},  {1433334, false}};
+  for (const auto& x : seq) mux.write_sample(au.data(), au.size(), x.pts, x.key);
+  mux.close();
+
+  std::vector<uint8_t> f = read_whole_file(path);
+  std::vector<Box> top = parse_boxes(f, 0, f.size());
+  uint64_t expect = 0;
+  int frags = 0;
+  for (const Box& b : top) {
+    if (b.type != "moof") continue;
+    std::vector<Box> moof_kids = parse_boxes(f, b.payload_off(), b.off + b.size);
+    const Box* traf = find(moof_kids, "traf");
+    std::vector<Box> traf_kids = parse_boxes(f, traf->payload_off(), traf->off + traf->size);
+    const uint64_t tfdt = read_u64(f, find(traf_kids, "tfdt")->payload_off() + 4);
+    CHECK(tfdt == expect);
+    const Box* trun = find(traf_kids, "trun");
+    const uint32_t n = read_u32(f, trun->payload_off() + 4);
+    for (uint32_t i = 0; i < n; ++i) expect += read_u32(f, trun->payload_off() + 12 + 12 * i);
+    ++frags;
+  }
+  CHECK(frags == 5);
+  // Every sample but the very last keeps its real pts: the timeline ends
+  // one carried duration after the last sample's pts.
+  CHECK(expect == 1433334u + 16667u);
 }
 
 // A second recording on the SAME DvrMux must be an independent file. The

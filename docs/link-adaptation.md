@@ -843,6 +843,16 @@ What the fold-in did change:
   hardware 2026-08-29 under a deliberate ring-full storm (~24 drops/s): 0.596
   IDR/s, minimum observed spacing 919 ms — an unpaced path would have emitted
   roughly one IDR per drop.
+  The one exception is a **GS-requested** IDR (RCF `idr_epoch`, RC_VERSION
+  12, spec 2026-09-28): an epoch change raises a pending request that
+  survives a pacer refusal and goes out on the first tick past the floor.
+  The requester (the web GS page) is frozen and waiting on it, and its own
+  retry is 300 ms, so dropping would turn a ≤100 ms wait into a 300 ms one.
+  Session edges (DISC, unconfirmed move, FAILSAFE) clear it. When an RCF
+  brings the link back from FAILSAFE/RENDEZVOUS, the entering-LINKED IDR
+  also clears the pending GS request — FAILSAFE reset the seen epoch, so
+  without this a redundant second IDR would otherwise follow 100 ms later.
+  Served count: `drone.enc.idr_gs`.
 - **The ring is now visible from both ends.** `drone.enc.venc_ring_fill_pct`
   and `drone.enc.venc_full_drops` report the PRODUCER side (the encoder
   discarding AUs because maburd had not drained), against the existing

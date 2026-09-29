@@ -2,11 +2,21 @@
 #define MABUR_DVR_MUX_H_
 
 #include <cstdint>
-#include <cstdio>
+#include <memory>
 #include <string>
 #include <vector>
 
 namespace mabur {
+
+// Where DvrMux's bytes go. open(path) uses a FILE* sink; the web GS hands
+// open(sink) an OPFS file (spec 2026-09-28-web-local-recording §1.3).
+class DvrSink {
+ public:
+  virtual ~DvrSink() = default;                        // closes
+  virtual bool write(const uint8_t* p, size_t n) = 0;  // all n bytes, or false
+  virtual bool flush() = 0;                            // end of a fragment
+  virtual bool sync() { return flush(); }              // durable
+};
 
 // Fragmented MP4 (init segment + moof/mdat fragments). One video track,
 // hvc1, timescale 1'000'000 (pts_us native). No B-frames in this encoder
@@ -22,6 +32,11 @@ class DvrMux {
   // against sample pts (not wall time); a key AU always cuts too.
   bool open(const std::string& path, const std::vector<uint8_t>& hvcc,
             int width, int height, int fragment_ms = 1000);
+
+  // Same, writing through `sink` (owned from here; destroyed on close()).
+  // A null sink fails like an unopenable path.
+  bool open(std::unique_ptr<DvrSink> sink, const std::vector<uint8_t>& hvcc, int width,
+            int height, int fragment_ms = 1000);
 
   // au: Annex-B bytes (converted internally via annexb_to_length_prefixed).
   // pts_us: 32-bit capture stamp, unwrapped internally to 64-bit monotonic.
@@ -69,9 +84,13 @@ class DvrMux {
   };
 
   uint64_t unwrap_pts(uint32_t pts_us);
-  void flush_fragment();
+  // next_pts64: the sample that forced the cut, when there is one -- the
+  // fragment's last duration is measured to it so the next fragment's
+  // tfdt lands exactly where this one ends. Without one (close()), the
+  // last duration is the carried last_dur_us_.
+  void flush_fragment(const uint64_t* next_pts64 = nullptr);
 
-  FILE* f_ = nullptr;
+  std::unique_ptr<DvrSink> sink_;
   int width_ = 0;
   int height_ = 0;
   std::vector<uint8_t> hvcc_;
@@ -92,8 +111,8 @@ class DvrMux {
   // Running estimate of the inter-sample interval, in us, carried across
   // fragment boundaries. A sample's trun duration must never be 0 — some
   // players compute playback rate from it — so the last sample of any
-  // fragment (including a lone-sample fragment, e.g. back-to-back IDRs
-  // or close() right after a fragment-cutting key) falls back to this
+  // fragment that close() flushes (nothing after it to measure against)
+  // falls back to this
   // instead of 0. Seeded to the 60 fps nominal frame interval (same
   // convention as RtpPacketizerCfg::nominal_frame_us) and updated
   // whenever a real delta is computed from two consecutive samples.

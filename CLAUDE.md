@@ -22,7 +22,9 @@ no waybeam, since the 2026-08-29 venc fold-in (`drone/venc/`, ported from
 `maburgs` (ground station, aarch64) receives,
 FEC-decodes, and publishes whole access units to a shm AU ring; `maburplay`
 (gs/player/, same GS binary family) consumes the ring — MPP hardware decode
-straight to DRM/KMS, plus the fMP4 DVR on /media/dvr. `common/` holds the
+straight to DRM/KMS, plus the fMP4 DVR on /media/dvr. `web/` is the same
+receive + control core in the browser (WebUSB + WASM): a single-card GS or
+a passive spotter. `common/` holds the
 shared wire formats and FEC; `third_party/devourer` (plus the sibling
 checkout `../devourer`) is the userspace radio driver. PixelPilot and the
 RTP output were deleted in PR C.
@@ -50,6 +52,7 @@ page the task needs rather than carrying all of it.
 | carrier sense (CCA) on/off, the GS-send self-collision, the drone's RX channel view (`drone.radio.rx`), why the OSD LOSS row reads what it reads, the pending cca-on flight gate | `docs/cca-on-findings-2026-09-23.md` |
 | 40 MHz (HT40): which rungs fly 40, per-width tables, pair candidates, the boot scan's pair pick, no_agg, scanlog 3 / ctllog 12 | `docs/bw40.md` (as built: per-rung width, pairs, scan, no_agg) + `docs/bw40-sweep-findings-2026-09-23.md` ("Start here") |
 | the VTX onboard SD recorder ([record], dvr.target, the RCF rec byte, OSD REC field), VENC bind-peer order, the MI /proc/mi_modules/mi_venc per-stage delay instrument, the startup vanish-counter ratchet | docs/vtx-recorder.md (as built) + docs/sd-record-findings-2026-09-26.md (spike) |
+| the browser GS / spotter (web/), WebUSB+WASM build, LinkHealthAssembler sharing | docs/web-gs.md |
 | radio/PHY below mabur | `third_party/devourer/CLAUDE.md` |
 
 Design specs live in `docs/superpowers/specs/` — **gitignored**, so they

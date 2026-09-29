@@ -87,6 +87,8 @@ struct TelemInputs {
   uint8_t hop_epoch = 0;
   // VtxRecorder::status_byte() (spec 2026-09-26), straight pass-through.
   uint8_t rec_status = 0;
+  // RcAgent::idr_gs_total() (spec 2026-09-28), saturated to u16.
+  uint64_t idr_gs = 0;
 };
 
 rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in);

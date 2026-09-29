@@ -55,12 +55,14 @@ void check_keys(const Value& o, const std::string& where,
   }
 }
 
-long get_int(const Value& o, const char* key, long dflt, long lo, long hi,
-             const std::string& where) {
+// int64_t, not long: long is 32-bit on wasm32 (the web GS build), where
+// link.vtx_id's 0xFFFFFFFF bound wrapped to -1 and failed every config.
+int64_t get_int(const Value& o, const char* key, int64_t dflt, int64_t lo, int64_t hi,
+                const std::string& where) {
   if (!o.contains(key)) { note_default(where, key, to_text(dflt)); return dflt; }
   g_line = o[key].line();
   if (!o[key].is_number_integer()) fail(where + "." + key, "not an integer");
-  const long v = o[key].get<long>();
+  const int64_t v = o[key].get<int64_t>();
   if (v < lo || v > hi) fail(where + "." + key, "out of range");
   return v;
 }
@@ -92,6 +94,17 @@ bool get_bool(const Value& o, const char* key, bool dflt,
   if (!o[key].is_boolean()) fail(where + "." + key, "not a boolean");
   return o[key].get<bool>();
 }
+
+// Overlay merge (spec 2026-09-27-web-ui §3.2): tables recurse, anything else
+// replaces -- so an overlay [[link.ladder]] replaces the file's ladder whole.
+void merge_overlay(Value& base, const Value& ov) {
+  for (const auto& [k, v] : ov.items()) {
+    Value* b = base.find(k);
+    if (b && b->is_object() && v.is_object()) merge_overlay(*b, v);
+    else if (b) *b = v;
+    else base.set(k, v);
+  }
+}
 }  // namespace
 
 std::array<mabur::UepLayerCfg, 2> Config::uep_layers() const {
@@ -110,10 +123,32 @@ std::array<mabur::UepLayerCfg, 2> Config::uep_layers() const {
   return out;
 }
 
-Config load_config(const std::string& path, std::vector<std::string>* defaulted) {
+std::optional<ConfigIssue> radio_width_issue(uint8_t channel, int width) {
+  if (width != 20 && width != 40)
+    return ConfigIssue{"radio.width", "must be 20 or 40 (HT20 / HT40)"};
+  if (width == 40 && mabur::ht40_offset(channel) == 0)
+    return ConfigIssue{"radio.width", "40 MHz needs a standard 5 GHz pair and channel " +
+                                          std::to_string(static_cast<int>(channel)) +
+                                          " has none (common/include/mabur/ht40.h)"};
+  return std::nullopt;
+}
+
+std::optional<ConfigIssue> link_width_issue(const LinkCfg& link, int width) {
+  for (std::size_t i = 0; i < link.ladder_cfg.ladder.size(); ++i)
+    if (link.ladder_cfg.ladder[i].bw == 40 && width != 40)
+      return ConfigIssue{"link.ladder[" + std::to_string(i) + "].bw",
+                         "40 MHz rung but radio.width is 20: the GS could not receive it"};
+  if (link.static_bw == 40 && width != 40)
+    return ConfigIssue{"link.static_bw", "40 MHz pin but radio.width is 20"};
+  return std::nullopt;
+}
+
+Config load_config(const std::string& path, std::vector<std::string>* defaulted,
+                   const std::string& overlay_path) {
   Value j;
   try {
     j = toml::parse_toml_file(path);
+    if (!overlay_path.empty()) merge_overlay(j, toml::parse_toml_file(overlay_path));
   } catch (const toml::Error& e) {
     throw std::runtime_error(std::string("config: ") + e.what());
   }
@@ -141,12 +176,7 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
     check_keys(r, "radio", {"channel", "width", "cards", "tx_card", "scan"});
     c.radio.channel = static_cast<uint8_t>(get_int(r, "channel", 149, 1, 200, "radio"));
     c.radio.width = static_cast<uint8_t>(get_int(r, "width", 20, 20, 40, "radio"));
-    if (c.radio.width != 20 && c.radio.width != 40)
-      fail("radio.width", "must be 20 or 40 (HT20 / HT40)");
-    if (c.radio.width == 40 && mabur::ht40_offset(c.radio.channel) == 0)
-      fail("radio.width", "40 MHz needs a standard 5 GHz pair and channel " +
-                              std::to_string(static_cast<int>(c.radio.channel)) +
-                              " has none (common/include/mabur/ht40.h)");
+    if (auto e = radio_width_issue(c.radio.channel, c.radio.width)) fail(e->field, e->why);
     c.radio.tx_card = static_cast<int>(get_int(r, "tx_card", -1, -1, 15, "radio"));
     if (r.contains("cards")) {
       if (!r["cards"].is_array() || r["cards"].empty())
@@ -470,12 +500,7 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
   // and link sections are settled, and after the max_mcs filter above: a
   // rung filtered out by max_mcs is not checked here, which matches "what
   // will fly". Task 6 appends the scan-candidate checks to this same block.
-  for (std::size_t i = 0; i < c.link.ladder_cfg.ladder.size(); ++i)
-    if (c.link.ladder_cfg.ladder[i].bw == 40 && c.radio.width != 40)
-      fail("link.ladder[" + std::to_string(i) + "].bw",
-           "40 MHz rung but radio.width is 20: the GS could not receive it");
-  if (c.link.static_bw == 40 && c.radio.width != 40)
-    fail("link.static_bw", "40 MHz pin but radio.width is 20");
+  if (auto e = link_width_issue(c.link, c.radio.width)) fail(e->field, e->why);
   if (c.radio.width == 40) {
     const uint8_t home_off = mabur::ht40_offset(c.radio.channel);
     for (uint8_t ch : c.radio.scan.candidates) {

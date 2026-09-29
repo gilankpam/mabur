@@ -505,6 +505,8 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
     have_hop_ = false;
     hop_epoch_ = 0;
     hop_ch_ = 0;
+    idr_epoch_seen_ = 0;
+    idr_gs_pending_ = false;
 
     // Same rationale as RCF's entering_linked force: DISC always
     // (re)establishes LINKED from RENDEZVOUS/FAILSAFE, so the newly resolved
@@ -573,6 +575,16 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
       if (want != rec_applied_ && act_.set_record(want == 1)) rec_applied_ = want;
     }
 
+    // GS-requested IDR (spec 2026-09-28): a CHANGED epoch is a request.
+    // Marked seen on receipt -- pending stays set until tick() serves it, so
+    // any number of bumps collapse into one IDR. No silent adopt of the
+    // session's first epoch: a DISC link-up sends no IDR, and a page that
+    // asked before the link came up needs one.
+    if (r->idr_epoch != idr_epoch_seen_) {
+      idr_epoch_seen_ = r->idr_epoch;
+      idr_gs_pending_ = true;
+    }
+
     if (prev_state == State::BOOT || prev_state == State::RENDEZVOUS)
       link_established_ = true;
     state_ = State::LINKED;
@@ -587,6 +599,15 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
     // true rather than aspirational.
     if (entering_linked && idr_due(now_ms, /*chain=*/false)) {
       act_.request_idr();
+      // This link-up IDR already covers any GS request pending on this same
+      // RCF (spec 2026-09-28 fix round 1): FAILSAFE entry resets
+      // idr_epoch_seen_ to 0, so the first RCF back reads the page's
+      // (unchanged) epoch as a fresh change and arms idr_gs_pending_ right
+      // above -- without this, that pending request survives to the next
+      // tick and fires a redundant second IDR ~100 ms later. Leave
+      // idr_epoch_seen_ alone: the epoch itself is still correctly seen, so
+      // the same epoch in a later RCF stays "not a new request".
+      idr_gs_pending_ = false;
     }
 
     // RCFs that transition into LINKED (from RENDEZVOUS or FAILSAFE) force
@@ -625,6 +646,8 @@ void RcAgent::tick(uint64_t now_ms, const RadioHealth& health) {
     have_hop_ = false;
     hop_epoch_ = 0;
     hop_ch_ = 0;
+    idr_epoch_seen_ = 0;
+    idr_gs_pending_ = false;
     go_home_("move_unconfirmed");
   }
 
@@ -646,6 +669,17 @@ void RcAgent::tick(uint64_t now_ms, const RadioHealth& health) {
     act_.request_idr();
   }
 
+  // GS-requested IDR (spec 2026-09-28), same tick-entry state rule as the
+  // chain-break consumer above. Unlike a chain break, a refused request is
+  // DEFERRED (pending survives to the next tick): the requester is frozen
+  // and waiting, and dropping would cost it a full retry interval. Still
+  // bounded by idr_due's 100 ms floor.
+  if (idr_gs_pending_ && state_ == State::LINKED && idr_due(now_ms, /*chain=*/false)) {
+    act_.request_idr();
+    idr_gs_pending_ = false;
+    ++idr_gs_total_;
+  }
+
   if (state_ == State::LINKED) {
     if (have_last_fb_ && now_ms - last_fb_ms_ >= static_cast<uint64_t>(cfg_.link.failsafe_ms)) {
       apply_max_range(now_ms);
@@ -661,6 +695,8 @@ void RcAgent::tick(uint64_t now_ms, const RadioHealth& health) {
       have_hop_ = false;
       hop_epoch_ = 0;
       hop_ch_ = 0;
+      idr_epoch_seen_ = 0;
+      idr_gs_pending_ = false;
       // Rebase the rendezvous_ms timer from the moment failsafe was
       // entered (not the last real feedback), so a link silent since t=0
       // with failsafe_ms=1000/rendezvous_ms=30000 falls back to

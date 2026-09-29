@@ -989,6 +989,20 @@ TEST(venc_ring_stats_exported) {
   CHECK(enc["venc_ring_fill_pct"] == 62);
 }
 
+// drone.enc.idr_gs (spec 2026-09-28): GS-requested IDRs the drone served.
+// REVERT CHECK: fails if the key is dropped from the enc block.
+TEST(idr_gs_exported) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  mabur::rc::Telem t;
+  t.idr_gs = 17;
+  in.telem = t;
+  ex.poll(1000, in);
+  const json enc = cap.last()["drone"]["enc"];
+  CHECK(enc["idr_gs"] == 17);
+}
+
 TEST(exporter_attrib_block_and_stream_stale) {
   std::string sent;
   StatsExporter ex(/*session_id=*/1, /*interval_ms=*/0,

@@ -117,6 +117,7 @@ rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in) {
   t.channel = in.channel;
   t.hop_epoch = in.hop_epoch;
   t.rec_status = in.rec_status;
+  t.idr_gs = saturate<uint16_t>(in.idr_gs);
   return t;
 }
 

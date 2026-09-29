@@ -7,7 +7,7 @@ namespace {
 uint16_t rd_u16(const uint8_t* p) {
   return static_cast<uint16_t>(p[0] | (p[1] << 8));
 }
-// Mirrors gs/src/radio_frontend.cpp's dot11_body_offset(): QoS-Data (FC
+// Mirrors gs/src/dot11.cpp's dot11_body_offset(): QoS-Data (FC
 // 0x88, the post-A-MPDU drone wire) carries a 26-byte header; everything
 // else (the legacy probe-req 0x40 wire) parses at 24. Duplicated rather
 // than shared to avoid a mabur_gs_core <-> mabur_gs_radio link cycle

@@ -1,0 +1,126 @@
+name: Pages
+
+# The browser ground station (web/, docs/web-gs.md) on GitHub Pages, two
+# channels off one gh-pages branch:
+#   stable  https://gilankpam.github.io/mabur/       master pushes
+#   edge    https://gilankpam.github.io/mabur/edge/  any PR push (last one wins)
+# Pages serves the gh-pages branch (Settings → Pages → Deploy from a branch),
+# not an Actions artifact: an artifact deploy replaces the whole site, so a PR
+# build would wipe stable. Each channel rewrites only its own directory; the
+# stable deploy leaves edge/ alone. Vite's base is './', so the same dist works
+# under either path. Pages can't send COOP/COEP headers;
+# web/ui/public/coi-serviceworker.js adds them client-side (one reload on the
+# first visit).
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'web/**'
+      - 'gs/src/**'
+      - 'gs/bundle/**'
+      - 'common/**'
+      - '.github/workflows/pages.yml'
+  pull_request:
+    paths:
+      - 'web/**'
+      - 'gs/src/**'
+      - 'gs/bundle/**'
+      - 'common/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# A newer push to the same channel supersedes a queued one; stable and edge
+# never cancel each other.
+concurrency:
+  group: pages-${{ github.ref == 'refs/heads/master' && 'stable' || 'edge' }}
+  cancel-in-progress: true
+
+jobs:
+  build-deploy:
+    # A fork PR gets a read-only token and can't push gh-pages.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    env:
+      CHANNEL: ${{ github.ref == 'refs/heads/master' && 'stable' || 'edge' }}
+    defaults:
+      run:
+        working-directory: mabur
+    steps:
+      # Same two-checkout layout as ci.yml: the web build wants devourer as a
+      # sibling (web/CMakeLists.txt DEVOURER_DIR), tracking devourer master.
+      - uses: actions/checkout@v5
+        with:
+          path: mabur
+      - uses: actions/checkout@v5
+        with:
+          repository: gilankpam/devourer
+          ref: master
+          path: devourer
+
+      - uses: cachix/install-nix-action@v31.11.1
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      # Upstream libusb with the Emscripten WebUSB backend, into the
+      # repo-local EM_CACHE sysroot the page build links against.
+      - name: libusb (WASM)
+        run: |
+          nix-shell -p emscripten autoconf automake libtool pkg-config --run \
+            web/tools/build-libusb-wasm.sh
+
+      # webgs.{js,wasm} + npm ci + vite build, all into web/dist. VITE_* reach
+      # the page as import.meta.env (the header's channel label).
+      - name: Build page
+        env:
+          VITE_CHANNEL: ${{ env.CHANNEL }}
+          PR: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          export VITE_BUILD_REF="${PR:+#$PR }${SHA:0:7}"
+          nix-shell -p emscripten cmake pkg-config python3 nodejs --run \
+            "export EM_CACHE=$PWD/web/.deps/emcache; \
+             emcmake cmake -S web -B web/build-wasm -DCMAKE_BUILD_TYPE=Release \
+               -DDEVOURER_DIR=$GITHUB_WORKSPACE/devourer && \
+             cmake --build web/build-wasm -j$(nproc)"
+          ls -la web/dist
+
+      # Stable rewrites the site root except edge/; edge rewrites edge/ only.
+      # gh-pages is kept as ONE squashed commit (a 4 MB page per deploy would
+      # pile up), force-pushed with a lease on the tip we started from: if the
+      # other channel landed in between, the lease fails and we redo it on
+      # top of theirs.
+      - name: Deploy to gh-pages
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          url="https://x-access-token:$TOKEN@github.com/$GITHUB_REPOSITORY.git"
+          dist=$PWD/web/dist site=$RUNNER_TEMP/site
+          git config --global user.name github-actions
+          git config --global user.email github-actions@users.noreply.github.com
+          for attempt in 1 2 3 4 5; do
+            rm -rf "$site"
+            if git clone -q --depth 1 -b gh-pages "$url" "$site"; then
+              lease="--force-with-lease=gh-pages:$(git -C "$site" rev-parse HEAD)"
+            else
+              git init -q -b gh-pages "$site" && git -C "$site" remote add origin "$url"
+              lease=""  # first deploy: a plain push fails if someone beat us
+            fi
+            if [ "$CHANNEL" = stable ]; then
+              find "$site" -mindepth 1 -maxdepth 1 ! -name .git ! -name edge -exec rm -rf {} +
+              cp -a "$dist/." "$site/"
+            else
+              rm -rf "$site/edge" && mkdir "$site/edge"
+              cp -a "$dist/." "$site/edge/"
+            fi
+            touch "$site/.nojekyll"
+            git -C "$site" checkout -q --orphan squash
+            git -C "$site" add -A
+            git -C "$site" commit -q -m "pages: $CHANNEL $GITHUB_SHA"
+            git -C "$site" push $lease origin HEAD:gh-pages && exit 0
+            echo "push raced the other channel, retrying ($attempt)"
+            sleep $((attempt * 5))
+          done
+          exit 1

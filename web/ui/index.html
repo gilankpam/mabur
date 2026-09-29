@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>mabur web</title>
+<!-- GitHub Pages can't send the COOP/COEP headers WASM pthreads need: this
+     service worker adds them (one reload on first visit). A no-op wherever the
+     server already sends them (serve.py, vite dev). Vendored coi-serviceworker
+     v0.1.7 (MIT), web/ui/public/. -->
+<script src="coi-serviceworker.js"></script>
+</head>
+<body>
+<div id="app"></div>
+<!-- Emscripten module, a classic script (global createWebGs); not bundled. -->
+<script src="webgs.js"></script>
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>

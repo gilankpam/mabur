@@ -714,9 +714,23 @@ read the sideport. Reach for other tools only in these cases:**
   `active_low`/`bias` default to a button between the pin and GND with the
   internal pull-up). Short press, 50 ms debounce, edge-triggered: each
   press-pair produces one file, in whichever `dvr.mode` is configured — raw
-  mode waits for the next sync point (up to ~2 s) before the new file
+  mode waits for the next sync point (the next IDR — seconds on the GDR
+  link, and maburplay has no IDR-request path) before the new file
   opens, so the OSD REC indicator visibly lags the press, while burned mode
-  resumes at the next decoded frame. Files are `record-NNNN.mp4` under
+  resumes at the next decoded frame. As of the 2026-09-28 web local-recording
+  work, raw mode's sync point is decided by `common/`'s shared `RawDvr`
+  (`mabur::RawDvr`, `common/raw_dvr.h`) rather than code local to the player
+  — the same class the web GS's local recording uses — and that sync point
+  is a complete IRAP (`au_is_irap()`) once VPS+SPS+PPS are known. From
+  2026-09-28 to 2026-09-29 it was any AU carrying VPS+SPS+PPS — the GDR
+  encoder's TRAIL_R refresh start, a P slice: those files open on a P
+  slice, flag every refresh sync, and Apple's decoder refuses them (see
+  `docs/web-gs.md` for the repair recipe). **Before 2026-09-28** the
+  player's raw DVR synced on sid == 0 (BASE), which since the 2026-08-29
+  4→2 stream collapse is every other AU, not the refresh — so a raw file
+  recorded before that date marks every base frame as a sync point and its
+  fragments run ~33 ms (one base+enh pair) instead of the refresh period.
+  Files are `record-NNNN.mp4` under
   `dvr.dir`, indexed one past the highest `record-NNNN` already on the card
   — no timestamp, since the GS RTC is wrong at boot (same reasoning as the
   debug-log session directory's own `NNNN` index, above). The index
@@ -908,6 +922,10 @@ climbing with `venc_full_drops` rising means the encoder is outrunning
 maburd, while `ring_drops` rising means maburd rejected slots it did read.
 A *stalled* encoder shows as neither — `drone.enc.fps`/`enc_frames` simply
 stop advancing.
+`drone.enc.idr_gs` (Telem.idr_gs, since RC_VERSION 12) counts IDRs the
+drone issued because a GS asked for one over the RCF `idr_epoch` byte. Only
+the web GS asks (spec 2026-09-28), so with maburgs flying it stays 0.
+maburtop shows it as `idr N` on the encoder row.
 `self_idr_refused` counts base vanishes suppressed by the IDR-adjacency
 guard — the self-IDR CONSUMER is deliberately not wired: on the parked
 `idr-request` branch it amplified CPU overload into an IDR storm (rolling

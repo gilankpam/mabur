@@ -593,6 +593,24 @@ TEST(radio_width_is_20_or_40_and_40_needs_a_pair) {
   CHECK(threw);
 }
 
+TEST(width_issue_helpers_match_the_loader) {
+  // The web GS validates its page channel/width override with these same
+  // helpers; load_config's radio.width / ladder checks go through them.
+  CHECK(!maburgs::radio_width_issue(136, 40));
+  CHECK(!maburgs::radio_width_issue(165, 20));
+  auto e = maburgs::radio_width_issue(165, 40);
+  REQUIRE(e.has_value());
+  CHECK(e->field == "radio.width" && e->why.find("165") != std::string::npos);
+  CHECK(maburgs::radio_width_issue(136, 80).has_value());
+  maburgs::LinkCfg link;
+  CHECK(!maburgs::link_width_issue(link, 20));   // default ladder is all 20
+  link.ladder_cfg.ladder.back().bw = 40;
+  auto l = maburgs::link_width_issue(link, 20);
+  REQUIRE(l.has_value());
+  CHECK(l->field.rfind("link.ladder[", 0) == 0);
+  CHECK(!maburgs::link_width_issue(link, 40));
+}
+
 TEST(static_bw_defaults_20_and_40_needs_radio_width_40) {
   CHECK(maburgs::load_config(write_tmp("")).link.static_bw == 20);
   auto cfg = maburgs::load_config(write_tmp(
@@ -1281,4 +1299,63 @@ TEST(hop_confirm_extend_ms_key) {
   catch (const std::runtime_error&) { threw = true; }
   CHECK(threw);
   CHECK(maburgs::HopCfg{}.confirm_extend_ms == 3000);
+}
+
+static std::string write_tmp_at(const std::string& path, const std::string& text) {
+  std::ofstream f(path);
+  f << text;
+  return path;
+}
+static const char* kBundle = MABUR_GS_BUNDLE_DIR "/maburgs.default.toml";
+
+// Overlay: arrays replace wholesale (the page's ladder is the ladder).
+TEST(overlay_replaces_ladder_wholesale) {
+  const auto base = maburgs::load_config(kBundle);
+  const auto ov = write_tmp_at("/tmp/maburgs_test_overlay.toml",
+      "[link]\nmax_mcs = 7\n[[link.ladder]]\nmcs = 2\nbw = 20\n"
+      "overhead_base = 0.6\noverhead_enh = 0.3\n");
+  const auto c = maburgs::load_config(kBundle, nullptr, ov);
+  REQUIRE(c.link.ladder_cfg.ladder.size() == 1);
+  CHECK(c.link.ladder_cfg.ladder[0].mcs == 2);
+  CHECK(c.link.ladder_cfg.ladder[0].bw == 20);
+  CHECK(c.link.ladder_cfg.ladder[0].overhead_base > 0.599 &&
+        c.link.ladder_cfg.ladder[0].overhead_base < 0.601);
+  // A key the overlay did not name keeps the FILE's value, not the struct default.
+  CHECK(c.link.ladder_cfg.down_util == base.link.ladder_cfg.down_util);
+  CHECK(c.radio.channel == base.radio.channel);
+}
+
+// Overlay: tables merge key-by-key.
+TEST(overlay_merges_tables_keywise) {
+  const auto base = maburgs::load_config(kBundle);
+  const auto ov = write_tmp_at("/tmp/maburgs_test_overlay.toml", "[link]\nstatic_mcs = 3\n");
+  const auto c = maburgs::load_config(kBundle, nullptr, ov);
+  CHECK(c.link.static_mcs == 3);
+  CHECK(c.link.ladder_cfg.ladder.size() == base.link.ladder_cfg.ladder.size());
+}
+
+// Overlay: strict keys still apply.
+TEST(overlay_unknown_key_fails) {
+  const auto ov = write_tmp_at("/tmp/maburgs_test_overlay.toml", "[link]\nbogus = 1\n");
+  std::string msg;
+  try { maburgs::load_config(kBundle, nullptr, ov); } catch (const std::exception& e) { msg = e.what(); }
+  CHECK(msg.find("link.bogus") != std::string::npos);
+  CHECK(msg.find("unknown key") != std::string::npos);
+}
+
+// Overlay: a bad rung fails with the same field/why a file rung would.
+TEST(overlay_bad_rung_fails_like_file) {
+  const auto ov = write_tmp_at("/tmp/maburgs_test_overlay.toml",
+      "[[link.ladder]]\nmcs = 0\nbw = 40\noverhead_base = 0.2\noverhead_enh = 0.3\n");
+  std::string msg;
+  try { maburgs::load_config(kBundle, nullptr, ov); } catch (const std::exception& e) { msg = e.what(); }
+  CHECK(msg.find("link.ladder[0].overhead_base: must be >= overhead_enh") != std::string::npos);
+}
+
+// Overlay: missing file is a config error, not a crash.
+TEST(overlay_missing_file_fails) {
+  bool threw = false;
+  try { maburgs::load_config(kBundle, nullptr, "/tmp/definitely_not_here_overlay.toml"); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw);
 }

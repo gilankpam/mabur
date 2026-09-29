@@ -1,5 +1,6 @@
 #include "mabur/dvr_mux.h"
 
+#include <cstdio>
 #include <cstring>
 #include <utility>
 #include <unistd.h>
@@ -51,6 +52,19 @@ struct BoxWriter {
   void fourcc(const char* tag) { bytes(reinterpret_cast<const uint8_t*>(tag), 4); }
 };
 
+// The default sink for open(path, ...): an ordinary buffered FILE*.
+class FileSink final : public DvrSink {
+ public:
+  explicit FileSink(FILE* f) : f_(f) {}
+  ~FileSink() override { std::fclose(f_); }
+  bool write(const uint8_t* p, size_t n) override { return std::fwrite(p, 1, n, f_) == n; }
+  bool flush() override { return std::fflush(f_) == 0; }
+  bool sync() override { return std::fflush(f_) == 0 && ::fsync(fileno(f_)) == 0; }
+
+ private:
+  FILE* f_;
+};
+
 void put_unity_matrix(BoxWriter& b) {
   b.u32(0x00010000);
   b.u32(0);
@@ -67,14 +81,17 @@ void put_unity_matrix(BoxWriter& b) {
 
 bool DvrMux::open(const std::string& path, const std::vector<uint8_t>& hvcc, int width,
                    int height, int fragment_ms) {
+  FILE* f = std::fopen(path.c_str(), "wb");
+  return open(f ? std::make_unique<FileSink>(f) : nullptr, hvcc, width, height, fragment_ms);
+}
+
+bool DvrMux::open(std::unique_ptr<DvrSink> sink, const std::vector<uint8_t>& hvcc, int width,
+                   int height, int fragment_ms) {
   // The handle is per-file state too. Unreachable today (every caller
   // guards on its own dvr_open flag and close() nulls f_), but this
   // function's contract is "safe on a live object", and overwriting f_
   // would leak the descriptor and leave the previous file unflushed.
-  if (f_) {
-    std::fclose(f_);
-    f_ = nullptr;
-  }
+  sink_.reset();
 
   // Per-FILE state, reset on every open() call -- success or not. The
   // record button re-opens this mux for each new recording, so without
@@ -99,11 +116,11 @@ bool DvrMux::open(const std::string& path, const std::vector<uint8_t>& hvcc, int
   bytes_written_ = 0;
   ok_ = true;
 
-  f_ = std::fopen(path.c_str(), "wb");
-  if (!f_) {
+  if (!sink) {
     ok_ = false;
     return false;
   }
+  sink_ = std::move(sink);
 
   width_ = width;
   height_ = height;
@@ -332,9 +349,9 @@ bool DvrMux::open(const std::string& path, const std::vector<uint8_t>& hvcc, int
     b.end(moov_at);
   }
 
-  const size_t n = std::fwrite(b.buf.data(), 1, b.buf.size(), f_);
-  bytes_written_ += n;
-  if (n != b.buf.size() || std::fflush(f_) != 0) ok_ = false;
+  if (sink_->write(b.buf.data(), b.buf.size())) bytes_written_ += b.buf.size();
+  else ok_ = false;
+  if (!sink_->flush()) ok_ = false;
   return ok_;
 }
 
@@ -376,7 +393,7 @@ void DvrMux::write_sample_prefixed(std::vector<uint8_t> sample, uint32_t pts_us,
       cut = true;
     }
   }
-  if (cut) flush_fragment();
+  if (cut) flush_fragment(&pts64);
 
   if (pending_.empty()) fragment_start_pts_ = pts64;
 
@@ -388,8 +405,12 @@ void DvrMux::write_sample_prefixed(std::vector<uint8_t> sample, uint32_t pts_us,
   ++samples_;
 }
 
-void DvrMux::flush_fragment() {
+void DvrMux::flush_fragment(const uint64_t* next_pts64) {
   if (pending_.empty()) return;
+  // A previous fragment already failed: the sink is dead, so this fragment's
+  // samples (buffered by write_sample_prefixed before the caller noticed
+  // !ok()) are dropped rather than adding more moof/mdat to a broken file.
+  if (!ok_) { pending_.clear(); return; }
   ++fragments_;
 
   BoxWriter b;
@@ -429,15 +450,19 @@ void DvrMux::flush_fragment() {
 
       for (size_t i = 0; i < pending_.size(); ++i) {
         uint32_t dur;
-        if (i + 1 < pending_.size()) {
-          // Real delta to the next sample in this fragment — becomes the
-          // new running estimate for the next lone-sample fragment.
-          dur = static_cast<uint32_t>(pending_[i + 1].pts64 - pending_[i].pts64);
+        const uint64_t* next = i + 1 < pending_.size() ? &pending_[i + 1].pts64 : next_pts64;
+        if (next && *next > pending_[i].pts64) {
+          // Real delta to the next sample (in this fragment, or the one
+          // that forced the cut) — becomes the running estimate for the
+          // last sample close() flushes. Measuring across the cut keeps
+          // fragments tiling the timeline: a guessed last duration left
+          // the next tfdt up to 133 ms before this fragment's end.
+          dur = static_cast<uint32_t>(*next - pending_[i].pts64);
           last_dur_us_ = dur;
         } else {
-          // Last sample of the fragment (possibly the only one): no next
-          // sample to measure against, so reuse the running estimate.
-          // Never 0 — some players compute playback rate from duration.
+          // Last sample at close() (or a repeated pts): nothing to measure
+          // against, so reuse the running estimate. Never 0 — some
+          // players compute playback rate from duration.
           dur = last_dur_us_;
         }
         b.u32(dur);
@@ -479,32 +504,34 @@ void DvrMux::flush_fragment() {
   b.u32(static_cast<uint32_t>(mdat_size));
   b.fourcc("mdat");
 
-  size_t want = b.buf.size();
-  size_t n = std::fwrite(b.buf.data(), 1, b.buf.size(), f_);
+  if (sink_->write(b.buf.data(), b.buf.size())) bytes_written_ += b.buf.size();
+  else ok_ = false;
   for (const auto& s : pending_) {
-    want += s.data.size();
-    n += std::fwrite(s.data.data(), 1, s.data.size(), f_);
+    if (!ok_) break;   // header (or an earlier sample) already failed: stop
+    if (sink_->write(s.data.data(), s.data.size())) bytes_written_ += s.data.size();
+    else ok_ = false;
   }
-  bytes_written_ += n;
-  // The fflush still ends the fragment: once it returns (and the caller's
-  // sync()), the whole moof+mdat is on disk.
-  if (n != want || std::fflush(f_) != 0) ok_ = false;
+  // The flush still ends the fragment: once it returns (and the caller's
+  // sync()), the whole moof+mdat is on disk. Skipped once a write above
+  // already failed -- flushing a sink already known bad adds nothing.
+  if (ok_ && !sink_->flush()) ok_ = false;
 
   pending_.clear();
 }
 
 void DvrMux::close(bool durable) {
   flush_fragment();
-  if (f_) {
+  if (sink_) {
     if (durable) (void)sync();
-    std::fclose(f_);
-    f_ = nullptr;
+    sink_.reset();
   }
 }
 
 bool DvrMux::sync() {
-  if (!f_) return false;
-  if (std::fflush(f_) != 0 || ::fsync(fileno(f_)) != 0) {
+  // Already known bad (a fragment write failed): don't ask a dead sink to
+  // fsync -- covers close(durable=true) after such a failure too.
+  if (!ok_ || !sink_) return false;
+  if (!sink_->sync()) {
     ok_ = false;
     return false;
   }
