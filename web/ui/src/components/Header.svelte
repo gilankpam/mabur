@@ -1,11 +1,15 @@
 <script>
   import Icon from './Icon.svelte';
   import RecDot from './RecDot.svelte';
+  // Set by the Pages workflow: 'edge' for PR builds, with '#PR sha'.
+  const edge = import.meta.env.VITE_CHANNEL === 'edge';
+  const buildRef = import.meta.env.VITE_BUILD_REF || '';
   let { tag, chLine, live, busy, blocked = false, onConnect, onDisconnect, rec, recLabel, recDisabled, recTitle, onRec, onFs } = $props();
 </script>
 <header class="nav" style="gap:var(--space-4);padding:var(--space-3) var(--space-6);min-height:52px">
   <div style="display:flex;align-items:baseline;gap:8px;margin-right:auto">
     <span class="nav-brand" style="margin:0">mabur</span><span class="dim5" style="font-size:13px">web</span>
+    {#if edge}<span class="tag tag-accent num" title="Edge build from a pull request; stable is at ../">edge {buildRef}</span>{/if}
   </div>
   {#if tag.on}
     <span class="tag tag-accent" style="gap:6px"><span style="width:6px;height:6px;border-radius:50%;background:var(--color-accent-300)"></span>{tag.label}</span>

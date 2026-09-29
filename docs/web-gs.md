@@ -106,12 +106,19 @@ the plain `FILE*` `DvrSink` (`common/dvr_mux.h`) both raw DVR paths share.
 
 ## Serve
 
-**Hosted: <https://gilankpam.github.io/mabur/>** — the simplest way in, and
-the only one that works on a phone without extra setup. The `Pages`
+**Hosted: <https://gilankpam.github.io/mabur/>** (stable) and
+**<https://gilankpam.github.io/mabur/edge/>** (edge) — the simplest way in,
+and the only one that works on a phone without extra setup. The `Pages`
 workflow (`.github/workflows/pages.yml`) builds the WASM core and the page
-on every push to `web-gs` or `master` that touches `web/`, `gs/src/`,
-`gs/bundle/` or `common/` (or by hand: Actions → Pages → Run workflow) and
-deploys `web/dist` as-is. It is real HTTPS on a public certificate, so no
+whenever a change touches `web/`, `gs/src/`, `gs/bundle/` or `common/`, and
+pushes `web/dist` into the `gh-pages` branch (Pages source: deploy from a
+branch). A `master` push (or a manual Actions → Pages → Run workflow on master;
+any other ref goes to edge)
+rewrites the site root and leaves `edge/` alone; a push to any same-repo PR
+rewrites `edge/` only, so edge is whichever PR pushed last. The edge page
+says `edge #PR sha` next to the brand. Both channels are one origin, so
+they share the WebUSB grant, `localStorage` settings and the OPFS
+recordings. It is real HTTPS on a public certificate, so no
 local CA is needed on any device. GitHub Pages cannot send the COOP/COEP
 headers WASM pthreads need, so `web/ui/public/coi-serviceworker.js`
 (vendored coi-serviceworker v0.1.7, MIT) installs a service worker that

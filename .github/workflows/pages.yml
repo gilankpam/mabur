@@ -1,13 +1,26 @@
 name: Pages
 
-# The browser ground station (web/, docs/web-gs.md) on GitHub Pages:
-# https://gilankpam.github.io/mabur/ . Builds the WASM core (Emscripten +
-# the WebUSB libusb) and the Vite page into web/dist and deploys that as-is.
-# Pages can't send COOP/COEP headers; web/ui/public/coi-serviceworker.js adds
-# them client-side (one reload on the first visit).
+# The browser ground station (web/, docs/web-gs.md) on GitHub Pages, two
+# channels off one gh-pages branch:
+#   stable  https://gilankpam.github.io/mabur/       master pushes
+#   edge    https://gilankpam.github.io/mabur/edge/  any PR push (last one wins)
+# Pages serves the gh-pages branch (Settings → Pages → Deploy from a branch),
+# not an Actions artifact: an artifact deploy replaces the whole site, so a PR
+# build would wipe stable. Each channel rewrites only its own directory; the
+# stable deploy leaves edge/ alone. Vite's base is './', so the same dist works
+# under either path. Pages can't send COOP/COEP headers;
+# web/ui/public/coi-serviceworker.js adds them client-side (one reload on the
+# first visit).
 on:
   push:
-    branches: [master, web-gs]
+    branches: [master]
+    paths:
+      - 'web/**'
+      - 'gs/src/**'
+      - 'gs/bundle/**'
+      - 'common/**'
+      - '.github/workflows/pages.yml'
+  pull_request:
     paths:
       - 'web/**'
       - 'gs/src/**'
@@ -17,18 +30,21 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
-# One deploy at a time; a newer push supersedes a queued one.
+# A newer push to the same channel supersedes a queued one; stable and edge
+# never cancel each other.
 concurrency:
-  group: pages
+  group: pages-${{ github.ref == 'refs/heads/master' && 'stable' || 'edge' }}
   cancel-in-progress: true
 
 jobs:
-  build:
+  build-deploy:
+    # A fork PR gets a read-only token and can't push gh-pages.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    env:
+      CHANNEL: ${{ github.ref == 'refs/heads/master' && 'stable' || 'edge' }}
     defaults:
       run:
         working-directory: mabur
@@ -55,26 +71,37 @@ jobs:
           nix-shell -p emscripten autoconf automake libtool pkg-config --run \
             web/tools/build-libusb-wasm.sh
 
-      # webgs.{js,wasm} + npm ci + vite build, all into web/dist.
+      # webgs.{js,wasm} + npm ci + vite build, all into web/dist. VITE_* reach
+      # the page as import.meta.env (the header's channel label).
       - name: Build page
+        env:
+          VITE_CHANNEL: ${{ env.CHANNEL }}
+          PR: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
+          export VITE_BUILD_REF="${PR:+#$PR }${SHA:0:7}"
           nix-shell -p emscripten cmake pkg-config python3 nodejs --run \
             "export EM_CACHE=$PWD/web/.deps/emcache; \
              emcmake cmake -S web -B web/build-wasm -DCMAKE_BUILD_TYPE=Release \
                -DDEVOURER_DIR=$GITHUB_WORKSPACE/devourer && \
              cmake --build web/build-wasm -j$(nproc)"
+          touch web/dist/.nojekyll
           ls -la web/dist
 
-      - uses: actions/upload-pages-artifact@v3
+      - name: Deploy (stable → /)
+        if: env.CHANNEL == 'stable'
+        uses: JamesIves/github-pages-deploy-action@v4
         with:
-          path: mabur/web/dist
+          branch: gh-pages
+          folder: mabur/web/dist
+          clean: true
+          clean-exclude: edge
 
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Deploy (edge → /edge)
+        if: env.CHANNEL == 'edge'
+        uses: JamesIves/github-pages-deploy-action@v4
+        with:
+          branch: gh-pages
+          folder: mabur/web/dist
+          target-folder: edge
+          clean: true
