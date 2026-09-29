@@ -578,6 +578,10 @@ int run_live(const LiveOpts& o) {
           if (auto f = webgs::OpfsFile::open(name)) sink = std::make_unique<OpfsSink>(std::move(f));
           dvr.start(std::move(sink), 0, 0);
 #endif
+          // The file opens on an IRAP only, and the GDR link sends one
+          // seconds apart: ask the drone for one now (applied by the IDR
+          // check at the top of the next pass; a no-op for a spotter).
+          g_idr_req.fetch_add(1, std::memory_order_acq_rel);
           lrec_armed = true;
         }
       }

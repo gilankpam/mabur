@@ -12,9 +12,9 @@
 namespace mabur {
 
 // True when the AU carries VPS, SPS and PPS: the live GDR encoder's refresh
-// start, the only place a raw recording may begin or a fragment may be
-// marked sync. (Not sid 0 -- since the 2026-08-29 4->2 stream collapse sid 0
-// is BASE, every other frame.)
+// start AND every IDR. Feeds the hvcC; NOT a sync point on its own -- a
+// refresh start is a P slice. Recordings begin, and fragments are marked
+// sync, only at au_is_irap() AUs.
 bool au_has_param_sets(const uint8_t* au, size_t n);
 
 // The raw DVR's recording rules, shared by maburplay's raw mode and the web
@@ -26,7 +26,9 @@ class RawDvr {
   enum class Err { None, Open, Write };
 
   // Arms a recording to `path` (sealing any open one first). The file is
-  // created on the first complete parameter-set AU; nothing before that.
+  // created on the first IRAP once VPS/SPS/PPS are known; nothing before
+  // that. IDRs are rare on the GDR link (seconds apart), so a caller that
+  // can should ask the drone for one when it arms.
   // width/height <= 0: take them from the SPS (1920x1080 if it won't parse).
   void start(const std::string& path, int width, int height, int fragment_ms = 1000);
 

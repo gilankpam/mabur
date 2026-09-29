@@ -36,12 +36,17 @@ void RawDvr::start(std::unique_ptr<DvrSink> sink, int width, int height, int fra
 void RawDvr::feed(const uint8_t* au, size_t n, uint32_t pts_us, bool complete) {
   if (state_ != State::WaitSync && state_ != State::Recording) return;
   if (!complete) return;  // DVR records complete AUs only; DvrMux cuts at the next key
-  const bool key = au_has_param_sets(au, n);
-  if (key) params_.feed(au, n);  // sticky across recordings, never reset
+  if (au_has_param_sets(au, n)) params_.feed(au, n);  // sticky across recordings, never reset
+  // Sync = a real IRAP. The live encoder is GDR: VPS/SPS/PPS also ride on
+  // every TRAIL_R refresh start, which references frames before it.
+  // Treating those as sync opened files on a P slice and flagged P slices
+  // as random-access points -- Apple's decoder (QuickTime, VLC on macOS)
+  // refused the whole file (2026-09-29 web-GS recording).
+  const bool key = au_is_irap(au, n);
   if (state_ == State::WaitSync) {
     // A file must BEGIN at a sync point. params_ is sticky, so on a second
     // recording complete() is already true -- the `key` clause is what keeps
-    // the file from opening on a P AU whose references are not in it.
+    // the file from opening on an AU whose references are not in it.
     if (!key || !params_.complete()) return;
     int w = width_, h = height_;
     if ((w <= 0 || h <= 0) && !params_.sps_dimensions(&w, &h)) {

@@ -393,7 +393,7 @@ void DvrMux::write_sample_prefixed(std::vector<uint8_t> sample, uint32_t pts_us,
       cut = true;
     }
   }
-  if (cut) flush_fragment();
+  if (cut) flush_fragment(&pts64);
 
   if (pending_.empty()) fragment_start_pts_ = pts64;
 
@@ -405,7 +405,7 @@ void DvrMux::write_sample_prefixed(std::vector<uint8_t> sample, uint32_t pts_us,
   ++samples_;
 }
 
-void DvrMux::flush_fragment() {
+void DvrMux::flush_fragment(const uint64_t* next_pts64) {
   if (pending_.empty()) return;
   // A previous fragment already failed: the sink is dead, so this fragment's
   // samples (buffered by write_sample_prefixed before the caller noticed
@@ -450,15 +450,19 @@ void DvrMux::flush_fragment() {
 
       for (size_t i = 0; i < pending_.size(); ++i) {
         uint32_t dur;
-        if (i + 1 < pending_.size()) {
-          // Real delta to the next sample in this fragment — becomes the
-          // new running estimate for the next lone-sample fragment.
-          dur = static_cast<uint32_t>(pending_[i + 1].pts64 - pending_[i].pts64);
+        const uint64_t* next = i + 1 < pending_.size() ? &pending_[i + 1].pts64 : next_pts64;
+        if (next && *next > pending_[i].pts64) {
+          // Real delta to the next sample (in this fragment, or the one
+          // that forced the cut) — becomes the running estimate for the
+          // last sample close() flushes. Measuring across the cut keeps
+          // fragments tiling the timeline: a guessed last duration left
+          // the next tfdt up to 133 ms before this fragment's end.
+          dur = static_cast<uint32_t>(*next - pending_[i].pts64);
           last_dur_us_ = dur;
         } else {
-          // Last sample of the fragment (possibly the only one): no next
-          // sample to measure against, so reuse the running estimate.
-          // Never 0 — some players compute playback rate from duration.
+          // Last sample at close() (or a repeated pts): nothing to measure
+          // against, so reuse the running estimate. Never 0 — some
+          // players compute playback rate from duration.
           dur = last_dur_us_;
         }
         b.u32(dur);

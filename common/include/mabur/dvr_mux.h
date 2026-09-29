@@ -84,7 +84,11 @@ class DvrMux {
   };
 
   uint64_t unwrap_pts(uint32_t pts_us);
-  void flush_fragment();
+  // next_pts64: the sample that forced the cut, when there is one -- the
+  // fragment's last duration is measured to it so the next fragment's
+  // tfdt lands exactly where this one ends. Without one (close()), the
+  // last duration is the carried last_dur_us_.
+  void flush_fragment(const uint64_t* next_pts64 = nullptr);
 
   std::unique_ptr<DvrSink> sink_;
   int width_ = 0;
@@ -107,8 +111,8 @@ class DvrMux {
   // Running estimate of the inter-sample interval, in us, carried across
   // fragment boundaries. A sample's trun duration must never be 0 — some
   // players compute playback rate from it — so the last sample of any
-  // fragment (including a lone-sample fragment, e.g. back-to-back IDRs
-  // or close() right after a fragment-cutting key) falls back to this
+  // fragment that close() flushes (nothing after it to measure against)
+  // falls back to this
   // instead of 0. Seeded to the 60 fps nominal frame interval (same
   // convention as RtpPacketizerCfg::nominal_frame_us) and updated
   // whenever a real delta is computed from two consecutive samples.

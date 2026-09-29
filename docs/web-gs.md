@@ -367,11 +367,18 @@ left to turn it off.
 **Local (`web`) target.** `RawDvr` (`common/raw_dvr.h`, shared with
 `maburplay`'s raw DVR mode — see `docs/observability.md`) runs on the core
 thread, fed every AU in `io.on_au` before the page hand-off. Its sync point
-is the first *complete* AU carrying VPS+SPS+PPS (`au_has_param_sets()`) —
-the live GDR encoder's parameter-set refresh, not an IRAP and not sid 0 —
-so pressing Record shows the button label `waiting for sync…` for up to
-~2 s (the drone's refresh period) until that AU arrives and `RawDvr` starts
-muxing samples into the file. It IS armed before that point, though: the
+is the first *complete* IRAP (`au_is_irap()`, in practice an IDR) once
+VPS+SPS+PPS are known — and only IRAPs are marked sync inside the file.
+Arming also bumps the GS-requested IDR counter, so pressing Record shows
+the button label `waiting for sync…` for about one request round trip
+until that IDR arrives and `RawDvr` starts muxing samples into the file.
+**Before 2026-09-29** the sync point was any AU carrying VPS+SPS+PPS — the
+GDR encoder's TRAIL_R refresh start every `gop_s`, a P slice. Such files
+begin on a P slice and flag every refresh start sync; ffmpeg decodes them
+but Apple's decoder (QuickTime, VLC on macOS) refuses the file, and their
+fragment seams could step the timeline up to ~130 ms backwards. Repair
+recipe for those files: drop fragments before the first IRAP, re-flag
+sync = IRAP only, and rewrite tfdt as the running sum of trun durations. It IS armed before that point, though: the
 (empty) OPFS file is created and opened right at the press
 (`OpfsFile::open()`, see Build, above), wrapped as a `DvrSink` (`OpfsSink`
 in `web_main.cpp`) and held by `RawDvr` while it waits for the sync AU; a

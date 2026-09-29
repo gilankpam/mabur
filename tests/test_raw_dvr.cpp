@@ -40,6 +40,14 @@ std::vector<uint8_t> param_au(uint8_t tag) {
   return au;
 }
 
+// A real IDR: VPS+SPS+PPS + an IDR_W_RADL slice. The only AU a recording
+// may begin on, and the only sync sample.
+std::vector<uint8_t> idr_au(uint8_t tag) {
+  std::vector<uint8_t> au = param_au(tag);
+  au[au.size() - 4] = 0x26;                       // TRAIL_R slice -> IDR_W_RADL
+  return au;
+}
+
 std::vector<uint8_t> p_au(uint8_t tag) {
   std::vector<uint8_t> au;
   nal(au, {0x02, 0x01, tag, tag, tag});
@@ -58,7 +66,18 @@ TEST(param_set_detection) {
   CHECK(!mabur::au_has_param_sets(p.data(), p.size()));
 }
 
-TEST(nothing_written_before_first_param_set_au) {
+TEST(irap_detection) {
+  const auto i = idr_au(1), g = param_au(2), p = p_au(3);
+  CHECK(mabur::au_is_irap(i.data(), i.size()));
+  CHECK(!mabur::au_is_irap(g.data(), g.size()));   // GDR refresh start: a P slice
+  CHECK(!mabur::au_is_irap(p.data(), p.size()));
+}
+
+// The live encoder is GDR: VPS/SPS/PPS ride on a TRAIL_R refresh start
+// every gop_s, real IDRs are rare. A file that begins on the refresh start
+// has no IRAP up front, and Apple's decoder (QuickTime, VLC on macOS)
+// refuses it -- the 2026-09-29 web-GS recording. Only an IDR opens.
+TEST(nothing_written_before_first_idr) {
   const std::string path = scratch("rawdvr_wait.mp4");
   std::remove(path.c_str());
   RawDvr d;
@@ -66,60 +85,80 @@ TEST(nothing_written_before_first_param_set_au) {
   CHECK(d.state() == RawDvr::State::WaitSync);
   feed(d, p_au(1), 0);
   feed(d, p_au(2), 16667);
+  feed(d, param_au(3), 33334);                   // refresh start: not an IDR
   CHECK(d.state() == RawDvr::State::WaitSync);
   CHECK(!exists(path));
-  feed(d, param_au(3), 33334);
+  feed(d, idr_au(4), 50001);
   CHECK(d.state() == RawDvr::State::Recording);
   CHECK(exists(path));
-  feed(d, p_au(4), 50001);
+  feed(d, p_au(5), 66668);
   d.stop();
   CHECK(d.state() == RawDvr::State::Off);
   CHECK(d.samples() == 2);
   CHECK(d.err() == RawDvr::Err::None);
 }
 
-TEST(truncated_aus_are_skipped_even_param_set_ones) {
+TEST(truncated_aus_are_skipped_even_idrs) {
   const std::string path = scratch("rawdvr_trunc.mp4");
   std::remove(path.c_str());
   RawDvr d;
   d.start(path, 0, 0);
-  feed(d, param_au(1), 0, /*complete=*/false);
+  feed(d, idr_au(1), 0, /*complete=*/false);
   CHECK(d.state() == RawDvr::State::WaitSync);   // a truncated refresh never opens
-  feed(d, param_au(2), 16667);
+  feed(d, idr_au(2), 16667);
   feed(d, p_au(3), 33334, false);
   feed(d, p_au(4), 50001);
   d.stop();
   CHECK(d.samples() == 2);
 }
 
-// Only parameter-set AUs are sync samples: base P AUs (old "sid 0") must not
+// Only IDR AUs are sync samples: base P AUs (old "sid 0") must not
 // cut fragments. 5 P AUs inside one 1 s fragment window -> 1 fragment.
 TEST(plain_aus_do_not_cut_fragments) {
   const std::string path = scratch("rawdvr_frag.mp4");
   std::remove(path.c_str());
   RawDvr d;
   d.start(path, 0, 0, 1000);
-  feed(d, param_au(1), 0);
+  feed(d, idr_au(1), 0);
   for (uint32_t i = 1; i <= 5; ++i) feed(d, p_au(static_cast<uint8_t>(i)), i * 16667);
   d.stop();
   CHECK(d.samples() == 6);
   CHECK(d.fragments() == 1);
 }
 
-TEST(second_start_waits_for_next_param_set_au) {
+// A refresh start mid-recording is an ordinary sample: marking it sync
+// told players it was a random-access point it is not (702 of 844 "sync"
+// samples in the 2026-09-29 recording were P slices).
+TEST(gdr_refresh_start_is_not_a_sync_point) {
+  const std::string path = scratch("rawdvr_gdr.mp4");
+  std::remove(path.c_str());
+  RawDvr d;
+  d.start(path, 0, 0, 1000);
+  feed(d, idr_au(1), 0);
+  feed(d, p_au(2), 16667);
+  feed(d, param_au(3), 33334);                   // must not cut
+  feed(d, p_au(4), 50001);
+  feed(d, idr_au(5), 66668);                     // cuts
+  d.stop();
+  CHECK(d.samples() == 5);
+  CHECK(d.fragments() == 2);
+}
+
+TEST(second_start_waits_for_next_idr) {
   const std::string a = scratch("rawdvr_a.mp4"), b = scratch("rawdvr_b.mp4");
   std::remove(a.c_str());
   std::remove(b.c_str());
   RawDvr d;
   d.start(a, 0, 0);
-  feed(d, param_au(1), 0);
+  feed(d, idr_au(1), 0);
   feed(d, p_au(2), 16667);
   d.stop();
   d.start(b, 0, 0);                 // params are complete (sticky) already
   feed(d, p_au(3), 33334);          // must NOT open on this P AU
+  feed(d, param_au(5), 41000);      // nor on a refresh start
   CHECK(d.state() == RawDvr::State::WaitSync);
   CHECK(!exists(b));
-  feed(d, param_au(4), 50001);
+  feed(d, idr_au(4), 50001);
   CHECK(d.state() == RawDvr::State::Recording);
   d.stop();
   CHECK(d.samples() == 1);
@@ -140,11 +179,11 @@ TEST(stop_before_sync_writes_nothing) {
 TEST(open_failure_is_error_and_ignores_feed) {
   RawDvr d;
   d.start(scratch("no_such_dir/x.mp4"), 0, 0);
-  feed(d, param_au(1), 0);
+  feed(d, idr_au(1), 0);
   CHECK(d.state() == RawDvr::State::Error);
   CHECK(d.err() == RawDvr::Err::Open);
   CHECK(!d.opened());
-  feed(d, param_au(2), 16667);          // ignored, no crash
+  feed(d, idr_au(2), 16667);          // ignored, no crash
   CHECK(d.state() == RawDvr::State::Error);
   d.stop();                             // clears to Off, err kept for reporting
   CHECK(d.state() == RawDvr::State::Off);
@@ -182,7 +221,7 @@ TEST(sink_output_matches_file_output) {
   RawDvr a, b;
   a.start(path, 0, 0);
   b.start(std::make_unique<MemSink>(&mem, nullptr), 0, 0);
-  const std::vector<std::vector<uint8_t>> aus = {p_au(1), param_au(2), p_au(3), p_au(4), param_au(5), p_au(6)};
+  const std::vector<std::vector<uint8_t>> aus = {p_au(1), idr_au(2), p_au(3), p_au(4), idr_au(5), p_au(6)};
   uint32_t pts = 0;
   for (const auto& au : aus) { feed(a, au, pts); feed(b, au, pts); pts += 16667; }
   a.stop();
@@ -197,7 +236,7 @@ TEST(null_sink_is_open_error) {
   d.start(std::unique_ptr<mabur::DvrSink>{}, 0, 0);
   CHECK(d.state() == RawDvr::State::Error);
   CHECK(d.err() == RawDvr::Err::Open);
-  feed(d, param_au(1), 0);               // ignored
+  feed(d, idr_au(1), 0);               // ignored
   CHECK(d.state() == RawDvr::State::Error);
 }
 
@@ -207,10 +246,10 @@ TEST(write_failure_is_sticky_error) {
   bool destroyed = false;
   RawDvr d;
   d.start(std::make_unique<MemSink>(&mem, &destroyed, 1), 0, 0);
-  feed(d, param_au(1), 0);               // opens: init segment = write #1
+  feed(d, idr_au(1), 0);               // opens: init segment = write #1
   CHECK(d.state() == RawDvr::State::Recording);
   feed(d, p_au(2), 16667);
-  feed(d, param_au(3), 33334);           // key: cuts the first fragment -> write fails
+  feed(d, idr_au(3), 33334);           // key: cuts the first fragment -> write fails
   CHECK(d.state() == RawDvr::State::Error);
   CHECK(d.err() == RawDvr::Err::Write);
   CHECK(destroyed);                      // sink closed, what was written stays
@@ -232,10 +271,10 @@ TEST(write_failure_stops_further_sink_writes) {
   // fragment's moof/mdat header. Every write from the first pending sample
   // onward must be refused -- and, with the fix, never even attempted.
   d.start(std::make_unique<MemSink>(&mem, &destroyed, 2, &calls), 0, 0);
-  feed(d, param_au(1), 0);       // opens: write #1 (moov)
+  feed(d, idr_au(1), 0);       // opens: write #1 (moov)
   feed(d, p_au(2), 16667);       // buffered: not a cut
   feed(d, p_au(3), 33334);       // buffered
-  feed(d, param_au(4), 50001);   // key: cuts -> header write #2 ok, then sample writes fail
+  feed(d, idr_au(4), 50001);   // key: cuts -> header write #2 ok, then sample writes fail
   CHECK(d.state() == RawDvr::State::Error);
   CHECK(d.err() == RawDvr::Err::Write);
   CHECK(calls == 3);             // moov, moof/mdat header, ONE failed sample write -- no more
@@ -265,7 +304,7 @@ TEST(start_while_recording_seals_previous_file) {
   std::remove(b.c_str());
   RawDvr d;
   d.start(a, 0, 0);
-  feed(d, param_au(1), 0);
+  feed(d, idr_au(1), 0);
   d.start(b, 0, 0);
   CHECK(d.state() == RawDvr::State::WaitSync);
   CHECK(d.err() == RawDvr::Err::None);
