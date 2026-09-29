@@ -85,6 +85,36 @@ TEST(tune_retried_while_refused_then_owned) {
   CHECK(s.count(kTune) == 3);
 }
 
+TEST(retunes_owned_but_mistuned_after_window) {
+  Sink s;
+  RelayClient c(136, 2, s.fn());
+  c.start(0);
+  auto tuned = status(0, 136, 2, 1);
+  mabur::node::RxBody b;
+  c.on_message(tuned.data(), tuned.size(), 10, b);
+  for (uint64_t t = 0; t <= 3000; t += 50) c.tick(t);
+  CHECK(s.count(kTune) == 1);    // owned + tuned the whole way: no retry, no window trip
+
+  // The relay reports itself owned but on the wrong channel/sec (e.g. it
+  // rebooted onto its default) -- past kTuneWindowMs since start(), so the
+  // window-limited "not yet owned" branch would never fire again.
+  auto mistuned = status(0, 36, 0, 1);
+  c.on_message(mistuned.data(), mistuned.size(), 3000, b);
+  const int before = s.count(kTune);
+  for (uint64_t t = 3000; t <= 4000; t += 50) c.tick(t);
+  const int after = s.count(kTune);
+  REQUIRE(after - before >= 2);
+  for (auto& m : s.sent)
+    if (msg_type(m.data(), m.size()) == kTune) CHECK(m[6] == 136 && m[7] == 2);
+
+  // Once the relay reports state 1 (mid-retune), stop hammering it.
+  auto retuning = status(1, 36, 0, 1);
+  c.on_message(retuning.data(), retuning.size(), 4050, b);
+  const int before2 = s.count(kTune);
+  for (uint64_t t = 4050; t <= 4500; t += 50) c.tick(t);
+  CHECK(s.count(kTune) == before2);
+}
+
 TEST(refused_after_window) {
   Sink s;
   RelayClient c(136, 2, s.fn());
@@ -111,6 +141,22 @@ TEST(lost_without_status) {
   c.on_message(st.data(), st.size(), 2100, b);
   CHECK(!c.lost(4000));
   CHECK(c.lost(4101));
+}
+
+TEST(older_now_is_not_lost) {
+  Sink s;
+  RelayClient c(136, 2, s.fn());
+  c.start(1000);
+  auto st = status(0, 136, 2, 1);
+  mabur::node::RxBody b;
+  // A STATUS stamped ahead of the ticker's own clock (e.g. clock skew
+  // between the caller's now_ms sources) must not make now_ms - since
+  // wrap to a huge uint64 and read as instantly lost.
+  c.on_message(st.data(), st.size(), 5000, b);
+  CHECK(!c.lost(4000));
+  const int tunes_before = s.count(kTune);
+  c.tick(4000);
+  CHECK(s.count(kTune) == tunes_before);   // owned + tuned: no spurious retune
 }
 
 TEST(frame_maps_to_rxbody) {
@@ -156,6 +202,34 @@ TEST(seq_gaps_counted) {
     c.on_message(f.data(), f.size(), 1, b);
   }
   CHECK(c.frames() == 4 && c.seq_gaps() == 2);
+}
+
+TEST(seq_resync_on_reorder_or_reset) {
+  {
+    Sink s;
+    RelayClient c(136, 2, s.fn());
+    c.start(0);
+    mabur::node::RxBody b;
+    // dup (11) and a reset back to 5 (e.g. the relay rebooted and its seq
+    // counter restarted) must each resync silently; only 6->9 is a gap.
+    for (uint32_t q : {10u, 11u, 11u, 5u, 6u, 9u}) {
+      auto f = frame(q, 136, 0, 4, -40, -40, -95, -95);
+      c.on_message(f.data(), f.size(), 1, b);
+    }
+    CHECK(c.seq_gaps() == 2);
+  }
+  {
+    Sink s;
+    RelayClient c(136, 2, s.fn());
+    c.start(0);
+    mabur::node::RxBody b;
+    // Legitimate u32 seq wraparound still counts as a forward gap.
+    for (uint32_t q : {0xFFFFFFFEu, 0xFFFFFFFFu, 1u}) {
+      auto f = frame(q, 136, 0, 4, -40, -40, -95, -95);
+      c.on_message(f.data(), f.size(), 1, b);
+    }
+    CHECK(c.seq_gaps() == 1);
+  }
 }
 
 TEST(garbage_counted_not_fatal) {

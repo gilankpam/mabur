@@ -3,6 +3,10 @@
 // retry on refusal, ownership, FRAME -> RxBody, uplink TX). No sockets, no
 // clock: the caller passes now_ms and a SendFn. Not thread-safe -- a caller
 // with an RX thread wraps it in a mutex (web/src/relay_link.h).
+// TUNE retry: every kTuneRetryMs while not yet owned (only within
+// kTuneWindowMs of start), and again -- with no window limit -- whenever we
+// own the link but read back mistuned (channel/sec mismatch, not already
+// mid-retune per the relay's own state).
 #include <cstdint>
 #include <functional>
 #include <vector>
@@ -36,6 +40,10 @@ class RelayClient {
 
  private:
   void send_tune(uint64_t now_ms);
+  // Saturating "time since": now < since (an older now_ms than a stored
+  // timestamp, e.g. a message processed with a stamp ahead of the ticker)
+  // reads as 0 elapsed rather than wrapping to a huge uint64.
+  static uint64_t elapsed(uint64_t now, uint64_t since) { return now > since ? now - since : 0; }
   uint8_t ch_, sec_;
   SendFn send_;
   bool started_ = false, have_status_ = false, have_seq_ = false;

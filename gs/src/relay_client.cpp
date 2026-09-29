@@ -23,6 +23,7 @@ RelayClient::RelayClient(uint8_t channel, uint8_t sec, SendFn send)
 
 void RelayClient::start(uint64_t now_ms) {
   started_ = true;
+  have_seq_ = false;
   start_ms_ = last_hello_ms_ = now_ms;
   send_(relay::pack_hello());
   send_tune(now_ms);
@@ -35,13 +36,23 @@ void RelayClient::send_tune(uint64_t now_ms) {
 
 void RelayClient::tick(uint64_t now_ms) {
   if (!started_) return;
-  if (now_ms - last_hello_ms_ >= kHelloMs) {
+  if (elapsed(now_ms, last_hello_ms_) >= kHelloMs) {
     last_hello_ms_ = now_ms;
     send_(relay::pack_hello());
   }
-  if (!owned_and_tuned() && now_ms - start_ms_ <= kTuneWindowMs &&
-      now_ms - last_tune_ms_ >= kTuneRetryMs)
-    send_tune(now_ms);
+  const bool is_owner = have_status_ && st_.you_own;
+  if (!is_owner) {
+    // Not yet owned: retry TUNE every kTuneRetryMs, only within
+    // kTuneWindowMs of start() -- past that, refused() takes over.
+    if (elapsed(now_ms, start_ms_) <= kTuneWindowMs &&
+        elapsed(now_ms, last_tune_ms_) >= kTuneRetryMs)
+      send_tune(now_ms);
+  } else if (st_.state != 1 && (st_.channel != ch_ || st_.sec != sec_)) {
+    // Owned but mistuned (e.g. the relay rebooted onto its default
+    // channel) and not already mid-retune -- keep re-requesting the tune
+    // with no window limit: once we own the link we must never give up.
+    if (elapsed(now_ms, last_tune_ms_) >= kTuneRetryMs) send_tune(now_ms);
+  }
 }
 
 RelayClient::Rx RelayClient::on_message(const uint8_t* b, size_t n, uint64_t now_ms,
@@ -61,7 +72,15 @@ RelayClient::Rx RelayClient::on_message(const uint8_t* b, size_t n, uint64_t now
   size_t dl = 0;
   if (!relay::parse_frame(b, n, m, d, dl)) { ++bad_; return Rx::None; }
   ++frames_;
-  if (have_seq_ && m.seq != last_seq_ + 1) gaps_ += static_cast<uint32_t>(m.seq - last_seq_ - 1);
+  if (have_seq_) {
+    // Forward gap only: d in [1, 0x80000000] is a forward jump (including
+    // legitimate u32 seq wraparound). d == 0 (duplicate) or d in the upper
+    // half (a reorder, or the relay resetting seq on a reboot) is a
+    // resync -- count nothing, just adopt the new seq, so one duplicate or
+    // reset can never poison the counter with ~4.29e9.
+    const uint32_t d = m.seq - last_seq_;
+    if (d >= 1 && d - 1 < 0x80000000u) gaps_ += d - 1;
+  }
   have_seq_ = true;
   last_seq_ = m.seq;
   RxMeta meta;
@@ -93,13 +112,13 @@ bool RelayClient::owned_and_tuned() const {
 }
 
 bool RelayClient::refused(uint64_t now_ms) const {
-  return started_ && !owned_and_tuned() && now_ms - start_ms_ > kTuneWindowMs;
+  return started_ && !owned_and_tuned() && elapsed(now_ms, start_ms_) > kTuneWindowMs;
 }
 
 bool RelayClient::lost(uint64_t now_ms) const {
   if (!started_) return false;
   const uint64_t since = have_status_ ? last_status_ms_ : start_ms_;
-  return now_ms - since > kLostMs;
+  return elapsed(now_ms, since) > kLostMs;
 }
 
 }  // namespace maburgs
