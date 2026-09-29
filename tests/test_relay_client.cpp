@@ -130,6 +130,20 @@ TEST(refused_after_window) {
   CHECK(s.count(kTune) == 6);    // 0,500,...,2500: the window ends retries
 }
 
+TEST(tune_failed_when_owned_but_mistuned) {
+  Sink s;
+  RelayClient c(136, 2, s.fn());
+  c.start(0);
+  // STATUS state 2: the relay rejected our TUNE. We own it, but it never
+  // reached our channel/sec.
+  auto rejected = status(2, 132, 0, 1);
+  mabur::node::RxBody b;
+  for (uint64_t t = 0; t <= 2600; t += 100) c.on_message(rejected.data(), rejected.size(), t, b);
+  CHECK(!c.refused(2400) && !c.tune_failed(2400));
+  CHECK(c.tune_failed(2600));
+  CHECK(!c.refused(2600));   // owned, not refused -- a different failure mode
+}
+
 TEST(lost_without_status) {
   Sink s;
   RelayClient c(136, 2, s.fn());

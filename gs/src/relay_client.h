@@ -30,7 +30,8 @@ class RelayClient {
 
   bool have_status() const { return have_status_; }
   bool owned_and_tuned() const;
-  bool refused(uint64_t now_ms) const;
+  bool refused(uint64_t now_ms) const;         // a STATUS said someone else owns it, past the window
+  bool tune_failed(uint64_t now_ms) const;      // we own it but never reached our channel/sec, past the window
   bool lost(uint64_t now_ms) const;
   const relay::Status& status() const { return st_; }
   uint64_t frames() const { return frames_; }

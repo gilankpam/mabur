@@ -112,7 +112,16 @@ bool RelayClient::owned_and_tuned() const {
 }
 
 bool RelayClient::refused(uint64_t now_ms) const {
-  return started_ && !owned_and_tuned() && elapsed(now_ms, start_ms_) > kTuneWindowMs;
+  // "Not the owner" -- a STATUS said so explicitly. A relay we've never
+  // heard from is unreachable, reported by lost(), not refused().
+  return started_ && elapsed(now_ms, start_ms_) > kTuneWindowMs && have_status_ && !st_.you_own;
+}
+
+bool RelayClient::tune_failed(uint64_t now_ms) const {
+  // We own the relay, but it never reached our channel/sec -- e.g. it
+  // refused the TUNE (STATUS state 2) or is otherwise stuck mistuned.
+  return started_ && have_status_ && st_.you_own && !owned_and_tuned() &&
+         elapsed(now_ms, start_ms_) > kTuneWindowMs;
 }
 
 bool RelayClient::lost(uint64_t now_ms) const {
