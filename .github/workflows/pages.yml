@@ -85,23 +85,42 @@ jobs:
              emcmake cmake -S web -B web/build-wasm -DCMAKE_BUILD_TYPE=Release \
                -DDEVOURER_DIR=$GITHUB_WORKSPACE/devourer && \
              cmake --build web/build-wasm -j$(nproc)"
-          touch web/dist/.nojekyll
           ls -la web/dist
 
-      - name: Deploy (stable → /)
-        if: env.CHANNEL == 'stable'
-        uses: JamesIves/github-pages-deploy-action@v4
-        with:
-          branch: gh-pages
-          folder: mabur/web/dist
-          clean: true
-          clean-exclude: edge
-
-      - name: Deploy (edge → /edge)
-        if: env.CHANNEL == 'edge'
-        uses: JamesIves/github-pages-deploy-action@v4
-        with:
-          branch: gh-pages
-          folder: mabur/web/dist
-          target-folder: edge
-          clean: true
+      # Stable rewrites the site root except edge/; edge rewrites edge/ only.
+      # gh-pages is kept as ONE squashed commit (a 4 MB page per deploy would
+      # pile up), force-pushed with a lease on the tip we started from: if the
+      # other channel landed in between, the lease fails and we redo it on
+      # top of theirs.
+      - name: Deploy to gh-pages
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          url="https://x-access-token:$TOKEN@github.com/$GITHUB_REPOSITORY.git"
+          dist=$PWD/web/dist site=$RUNNER_TEMP/site
+          git config --global user.name github-actions
+          git config --global user.email github-actions@users.noreply.github.com
+          for attempt in 1 2 3 4 5; do
+            rm -rf "$site"
+            if git clone -q --depth 1 -b gh-pages "$url" "$site"; then
+              lease="--force-with-lease=gh-pages:$(git -C "$site" rev-parse HEAD)"
+            else
+              git init -q -b gh-pages "$site" && git -C "$site" remote add origin "$url"
+              lease=""  # first deploy: a plain push fails if someone beat us
+            fi
+            if [ "$CHANNEL" = stable ]; then
+              find "$site" -mindepth 1 -maxdepth 1 ! -name .git ! -name edge -exec rm -rf {} +
+              cp -a "$dist/." "$site/"
+            else
+              rm -rf "$site/edge" && mkdir "$site/edge"
+              cp -a "$dist/." "$site/edge/"
+            fi
+            touch "$site/.nojekyll"
+            git -C "$site" checkout -q --orphan squash
+            git -C "$site" add -A
+            git -C "$site" commit -q -m "pages: $CHANNEL $GITHUB_SHA"
+            git -C "$site" push $lease origin HEAD:gh-pages && exit 0
+            echo "push raced the other channel, retrying ($attempt)"
+            sleep $((attempt * 5))
+          done
+          exit 1
