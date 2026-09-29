@@ -721,7 +721,15 @@ WASM pthread can't own a browser WebSocket — the actual socket lives in the
 page's dedicated `relay_worker.js` Worker, and the ring (with its JS twin
 `web/ui/src/lib/relay_ring.js`, kept byte-identical, pinned by shared golden
 vectors in both languages' test suites) is the SharedArrayBuffer bridge
-between that Worker and the WASM core's RX thread.
+between that Worker and the WASM core's RX thread. The core queues HELLO
+and TUNE into the TX ring immediately on start, before the Worker's
+`WebSocket` has necessarily finished opening, so `relay_worker.js`
+(`workerStep()`) never spins synchronously waiting for `onopen` — it parks
+on `Atomics.waitAsync` against the ring's state word instead, and pumps the
+queued TX once the socket actually opens. The same loop honours a core
+`STOP_REQ` written into that state word even while still connecting, so a
+Disconnect during the ~500 ms-2.5 s HELLO/TUNE dance closes the socket
+right away rather than waiting for it to open first.
 
 ## Validation
 
