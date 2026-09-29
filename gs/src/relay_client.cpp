@@ -1,0 +1,143 @@
+#include "relay_client.h"
+
+#include <algorithm>
+
+#include "dot11.h"
+
+namespace maburgs {
+namespace {
+// RxBody RSSI is raw dBm + 110 (0 = absent); SNR is raw half-dB
+// (snr_units.h). The relay's noise floor is a constant -95 dBm.
+uint8_t rssi_raw(int8_t dbm) {
+  if (dbm == relay::kDbmAbsent) return 0;
+  return static_cast<uint8_t>(std::clamp(dbm + 110, 1, 255));
+}
+int8_t snr_raw(int8_t rssi, int8_t noise) {
+  if (rssi == relay::kDbmAbsent || noise == relay::kDbmAbsent) return 0;
+  return static_cast<int8_t>(std::clamp(2 * (rssi - noise), -128, 127));
+}
+}  // namespace
+
+RelayClient::RelayClient(uint8_t channel, uint8_t sec, SendFn send)
+    : ch_(channel), sec_(sec), send_(std::move(send)) {}
+
+void RelayClient::start(uint64_t now_ms) {
+  started_ = true;
+  have_seq_ = false;
+  start_ms_ = last_hello_ms_ = now_ms;
+  send_(relay::pack_hello());
+  send_tune(now_ms);
+}
+
+void RelayClient::send_tune(uint64_t now_ms) {
+  last_tune_ms_ = now_ms;
+  send_(relay::pack_tune(++tune_id_, ch_, sec_));
+}
+
+void RelayClient::tick(uint64_t now_ms) {
+  if (!started_) return;
+  if (elapsed(now_ms, last_hello_ms_) >= kHelloMs) {
+    last_hello_ms_ = now_ms;
+    send_(relay::pack_hello());
+  }
+  const bool is_owner = have_status_ && st_.you_own;
+  if (!is_owner) {
+    // Not yet owned: retry TUNE every kTuneRetryMs, only within
+    // kTuneWindowMs of start() -- past that, refused() takes over.
+    if (elapsed(now_ms, start_ms_) <= kTuneWindowMs &&
+        elapsed(now_ms, last_tune_ms_) >= kTuneRetryMs)
+      send_tune(now_ms);
+  } else if (st_.state != 1 && (st_.channel != ch_ || st_.sec != sec_)) {
+    // Owned but mistuned (e.g. the relay rebooted onto its default
+    // channel) and not already mid-retune -- keep re-requesting the tune
+    // with no window limit: once we own the link we must never give up.
+    if (elapsed(now_ms, last_tune_ms_) >= kTuneRetryMs) send_tune(now_ms);
+  }
+}
+
+RelayClient::Rx RelayClient::on_message(const uint8_t* b, size_t n, uint64_t now_ms,
+                                        mabur::node::RxBody& out) {
+  const int t = relay::msg_type(b, n);
+  if (t == relay::kStatus) {
+    relay::Status s;
+    if (!relay::parse_status(b, n, s)) { ++bad_; return Rx::None; }
+    st_ = s;
+    have_status_ = true;
+    last_status_ms_ = now_ms;
+    if (s.you_own) not_owner_since_set_ = false;
+    if (owned_and_tuned()) ever_owned_tuned_ = true;
+    if (!s.you_own && ever_owned_tuned_ && !not_owner_since_set_) {
+      not_owner_since_set_ = true;
+      not_owner_since_ms_ = now_ms;
+    }
+    return Rx::Status;
+  }
+  if (t != relay::kFrame) { ++bad_; return Rx::None; }
+  relay::FrameMeta m;
+  const uint8_t* d = nullptr;
+  size_t dl = 0;
+  if (!relay::parse_frame(b, n, m, d, dl)) { ++bad_; return Rx::None; }
+  ++frames_;
+  if (have_seq_) {
+    // Forward gap only: d in [1, 0x80000000] is a forward jump (including
+    // legitimate u32 seq wraparound). d == 0 (duplicate) or d in the upper
+    // half (a reorder, or the relay resetting seq on a reboot) is a
+    // resync -- count nothing, just adopt the new seq, so one duplicate or
+    // reset can never poison the counter with ~4.29e9.
+    const uint32_t d = m.seq - last_seq_;
+    if (d >= 1 && d - 1 < 0x80000000u) gaps_ += d - 1;
+  }
+  have_seq_ = true;
+  last_seq_ = m.seq;
+  RxMeta meta;
+  meta.crc_err = (m.flags & relay::kFlagBadFcs) != 0;
+  meta.data_rate = m.mcs <= 7 ? static_cast<uint16_t>(0x0C + m.mcs) : 0;
+  meta.physt = (m.flags & relay::kFlagPhyValid) != 0;
+  for (int i = 0; i < 2; ++i) {
+    meta.rssi[i] = rssi_raw(m.rssi[i]);
+    meta.snr[i] = snr_raw(m.rssi[i], m.noise[i]);
+  }
+  meta.tsfl = m.tsf_lo;
+  if (fill_rx_body(d, dl, meta, out) != RxVerdict::Body) return Rx::None;
+  out.rx_channel = m.rx_channel;
+  return Rx::Body;
+}
+
+bool RelayClient::send_control(const std::vector<uint8_t>& f) {
+  if (f.size() < 4) return false;
+  const size_t rt = static_cast<size_t>(f[2] | (f[3] << 8));
+  if (rt < 8 || rt >= f.size()) return false;
+  // The rate is max_range_radiotap()'s (dot11.cpp): MCS0, LDPC, STBC, 20 MHz.
+  send_(relay::pack_tx(0, relay::kTxLdpc | relay::kTxStbc, f.data() + rt, f.size() - rt));
+  ++tx_;
+  return true;
+}
+
+bool RelayClient::owned_and_tuned() const {
+  return have_status_ && st_.you_own && st_.state == 0 && st_.channel == ch_ && st_.sec == sec_;
+}
+
+bool RelayClient::refused(uint64_t now_ms) const {
+  // "Not the owner" -- a STATUS said so explicitly. A relay we've never
+  // heard from is unreachable, reported by lost(), not refused().
+  return started_ && elapsed(now_ms, start_ms_) > kTuneWindowMs && have_status_ && !st_.you_own;
+}
+
+bool RelayClient::tune_failed(uint64_t now_ms) const {
+  // We own the relay, but it never reached our channel/sec -- e.g. it
+  // refused the TUNE (STATUS state 2) or is otherwise stuck mistuned.
+  return started_ && have_status_ && st_.you_own && !owned_and_tuned() &&
+         elapsed(now_ms, start_ms_) > kTuneWindowMs;
+}
+
+bool RelayClient::lost(uint64_t now_ms) const {
+  if (!started_) return false;
+  const uint64_t since = have_status_ ? last_status_ms_ : start_ms_;
+  return elapsed(now_ms, since) > kLostMs;
+}
+
+bool RelayClient::ownership_lost(uint64_t now_ms) const {
+  return not_owner_since_set_ && elapsed(now_ms, not_owner_since_ms_) >= 1000;
+}
+
+}  // namespace maburgs

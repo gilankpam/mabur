@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Session } from '../ui/src/lib/session.js';
+import { Session, WORKER_FAILED, isExitUnwind, isWorkerFailure, isWindowWorkerFailure } from '../ui/src/lib/session.js';
 import { errorText } from '../ui/src/lib/logic.mjs';
 
 function fakeTimers() {
@@ -384,4 +384,80 @@ test('onRecClosed from a superseded module is dropped', async () => {
   assert.deepEqual(got, []);
   f.made[1].opts.onRecClosed('new.mp4', 7, 0);
   assert.deepEqual(got, [['new.mp4', 7, 0]]);
+});
+
+test('relay connect skips WebUSB, passes --relay, starts the worker on onRelayRing', async () => {
+  let asked = 0; const started = [];
+  const t = fakeTimers(); const f = fakeModuleFactory();
+  const s = new Session({
+    createModule: f.create, requestDevice: async () => { asked++; },
+    startRelay: (o) => { started.push(o); return { terminate() { o.terminated = true; } }; },
+    onAu: () => {}, onStats: () => {}, reload: () => {}, timers: t,
+  });
+  await s.connect({ mode: 'gs', ch: 136, w: 40, relay: '192.168.1.1:8311' });
+  assert.equal(asked, 0);
+  const args = f.made[0].opts.arguments;
+  assert.deepEqual(args.slice(args.indexOf('--relay'), args.indexOf('--relay') + 2), ['--relay', '192.168.1.1:8311']);
+  const buf = new ArrayBuffer(8);
+  f.made[0].opts.onRelayRing(buf, 1024);
+  assert.equal(started.length, 1);
+  assert.equal(started[0].buffer, buf); assert.equal(started[0].ptr, 1024);
+  assert.equal(started[0].url, 'ws://192.168.1.1:8311');
+  f.made[0].opts.onExit(1);
+  assert.equal(started[0].terminated, true);
+});
+
+test('usb connect still asks for the device and never starts a relay', async () => {
+  let asked = 0, started = 0;
+  const f = fakeModuleFactory();
+  const s = new Session({ createModule: f.create, requestDevice: async () => { asked++; },
+    startRelay: () => { started++; return { terminate() {} }; },
+    onAu: () => {}, onStats: () => {}, reload: () => {}, timers: fakeTimers() });
+  await s.connect({ mode: 'gs', ch: 136, w: 40, relay: null });
+  assert.equal(asked, 1); assert.equal(started, 0);
+  assert.equal(f.made[0].opts.arguments.includes('--relay'), false);
+});
+
+// Emscripten 4.0.12: exit() after an ASYNCIFY await (the startup OPFS probe)
+// rethrows its 'unwind' exit sentinel uncaught, so every core exit prints
+// "worker sent an error! ...: Uncaught unwind". That is a normal exit, not a
+// failed worker: the core's own error text must survive it.
+test('uncaught unwind on exit does not mask the core error', async () => {
+  const { s, f } = mk();
+  await s.connect({ mode: 'gs', ch: 136, w: 40, relay: '192.168.1.1:8311' });
+  const o = f.made[0].opts;
+  o.onError('ERROR relay owned by another client');
+  o.printErr('worker sent an error! http://127.0.0.1:8808/webgs.js:1: Uncaught unwind');
+  o.onExit(1);
+  assert.equal(s.snapshot.state, 'error');
+  assert.equal(s.snapshot.error, errorText('ERROR relay owned by another client'));
+});
+
+test('a real worker load failure still maps to WORKER_FAILED', async () => {
+  const { s, f } = mk();
+  await s.connect({ mode: 'gs', ch: 136, w: 40, relay: '192.168.1.1:8311' });
+  f.made[0].opts.printErr('worker sent an error! undefined:undefined: undefined');
+  assert.equal(s.snapshot.state, 'error');
+  assert.equal(s.snapshot.error, WORKER_FAILED);
+});
+
+test('isExitUnwind / isWorkerFailure classify both surfaces of the exit sentinel', () => {
+  // printErr line and the window ErrorEvent message the page sees on every exit
+  assert.equal(isExitUnwind('worker sent an error! http://127.0.0.1:8808/webgs.js:1: Uncaught unwind'), true);
+  assert.equal(isExitUnwind('Uncaught unwind'), true);
+  assert.equal(isWorkerFailure('worker sent an error! http://127.0.0.1:8808/webgs.js:1: Uncaught unwind'), false);
+  assert.equal(isWorkerFailure('worker sent an error! undefined:undefined: undefined'), true);
+  assert.equal(isExitUnwind('worker sent an error! undefined:undefined: undefined'), false);
+});
+
+test('isWindowWorkerFailure ignores both window events of a normal exit', () => {
+  const file = 'http://127.0.0.1:8808/webgs.js';
+  // shapes captured from headless Chrome on a core exit (see session.js)
+  assert.equal(isWindowWorkerFailure({ message: 'Uncaught [object ErrorEvent]', filename: file,
+    error: { message: 'Uncaught unwind' } }), false);
+  assert.equal(isWindowWorkerFailure({ message: 'Uncaught unwind', filename: file, error: null }), false);
+  // anything else from the module's worker still counts as a worker failure
+  assert.equal(isWindowWorkerFailure({ message: 'Uncaught RuntimeError: unreachable', filename: file, error: {} }), true);
+  assert.equal(isWindowWorkerFailure({ message: 'worker sent an error! undefined:undefined: undefined' }), true);
+  assert.equal(isWindowWorkerFailure({ message: 'Script error.', filename: 'http://x/app.js' }), false);
 });

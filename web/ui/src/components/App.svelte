@@ -9,7 +9,7 @@
   import FloatStats from './FloatStats.svelte';
   import ConfigSide from './ConfigSide.svelte';
   import { ui, saveMode, reloadToConfig } from '../lib/ui.svelte.js';
-  import { Session, WORKER_FAILED } from '../lib/session.js';
+  import { Session, WORKER_FAILED, isWindowWorkerFailure } from '../lib/session.js';
   import { VideoPipeline } from '../lib/video.js';
   import { Telemetry } from '../lib/telemetry.js';
   import { statsView, debugGroups, statusText, linkTag } from '../lib/view.js';
@@ -17,6 +17,7 @@
   import { sparkPoints } from '../lib/metrics.js';
   import { layoutMode, keyAction, isMobile, uiFrame } from '../lib/layout.js';
   import { connectBlocker, toOverlayToml, saveConfig } from '../lib/config.js';
+  import { relayBlocker, parseRelayAddr } from '../lib/logic.mjs';
   import { effectiveTarget, targetCovers, recFileName, localView, combinedRec, headroomWarning,
     formatBytes, listRecordings, downloadRecording, deleteRecording, opfsRoot } from '../lib/localrec.js';
   import { OsdLayer, OsdPainter } from '../lib/osd.js';
@@ -94,6 +95,12 @@
       try { granted = (await navigator.usb.getDevices()).filter((d) => d.vendorId === 0x0bda); } catch { /* requestDevice is the real gate */ }
       if (!granted.length) await navigator.usb.requestDevice({ filters: [{ vendorId: 0x0bda }] });
     },
+    checkIsolated: () => { if (!window.crossOriginIsolated) throw new Error('Page is not cross-origin isolated (COOP/COEP headers missing) — serve it as docs/web-gs.md describes.'); },
+    startRelay: ({ buffer, ptr, url }) => {
+      const w = new Worker(new URL('../lib/relay_worker.js', import.meta.url), { type: 'module' });
+      w.postMessage({ buffer, ptr, url });
+      return w;
+    },
     // Plain-JS state read (no Svelte on the per-frame path): a stopping or
     // failed module's straggler AUs must not rebuild the decoder close() freed.
     onAu: (...a) => { const st = session.snapshot.state; if (st === 'live' || st === 'connecting') video.onAu(...a); },
@@ -131,7 +138,7 @@
   const busy = $derived(sess.state === 'connecting' || sess.state === 'stopping');
   const shownMode = $derived(live || busy ? sess.mode : ui.mode);
   const chLine = $derived(live || busy ? `${sess.ch} · ${sess.w} MHz` : `${ui.cfg.channel} · ${ui.cfg.width} MHz`);
-  const blocker = $derived(connectBlocker(ui.cfg, ui.mode));
+  const blocker = $derived(connectBlocker(ui.cfg, ui.mode) ?? (ui.radio === 'relay' ? relayBlocker(location.protocol, ui.relayAddr) : null));
 
   // 200 ms view refresh (handoff "Telemetry refresh every 200 ms"). tele.* is
   // plain JS (not reactive), so everything the template reads from it is
@@ -172,7 +179,7 @@
 
   async function connect() {
     if (blocker) return;
-    saveMode(ui.mode);
+    saveMode(ui.mode, ui.radio, ui.relayAddr);
     saveConfig(localStorageSafe(), $state.snapshot(ui.cfg));
     sessionCfg = structuredClone($state.snapshot(ui.cfg));
     // Session.connect() is a no-op unless idle/error; don't wipe a running
@@ -184,7 +191,8 @@
     // which the first-time WebUSB chooser needs.
     if (isMobile(LW, LH) && usbGranted) goLandscape();
     video.reset(); tele.reset(); osd.resetAtlasFailure(); hiddenShown = false; hiddenBanner = false;
-    const p = session.connect({ mode: ui.mode, ch: ui.cfg.channel, w: ui.cfg.width, overlayToml: toOverlayToml(sessionCfg) });
+    const p = session.connect({ mode: ui.mode, ch: ui.cfg.channel, w: ui.cfg.width, overlayToml: toOverlayToml(sessionCfg),
+      relay: ui.radio === 'relay' ? parseRelayAddr(ui.relayAddr) : null });
     refresh();   // the connecting tag/overlay without waiting for the next tick
     await p;
     refresh();
@@ -315,11 +323,7 @@
       else { hiddenBanner = false; wake.onVisible(); }
     };
     document.addEventListener('visibilitychange', onVis);
-    const onWinErr = (e) => {
-      const msg = String((e && e.message) || '');
-      const fromWorker = typeof e?.filename === 'string' && /webgs\.js|worker/i.test(e.filename);
-      if (msg.includes('worker sent an error') || fromWorker) session.fail(WORKER_FAILED);
-    };
+    const onWinErr = (e) => { if (isWindowWorkerFailure(e)) session.fail(WORKER_FAILED); };
     window.addEventListener('error', onWinErr);
     return () => { clearInterval(iv); ro.disconnect(); clearTimeout(copyTimer); document.removeEventListener('fullscreenchange', onFsChange);
       document.removeEventListener('visibilitychange', onVis); window.removeEventListener('error', onWinErr); wake.set(false); };
@@ -348,7 +352,8 @@
           {#if !live}
             <DisconnectedOverlay mode={ui.mode} onMode={(m) => (ui.mode = m)} onConnect={connect}
               error={sess.state === 'error' ? sess.error : null} notice={sess.notice} {blocker} {busy} stopping={sess.state === 'stopping'}
-              padRight={layout === 'immersive' && ui.cfgOpen} mobile={layout !== 'windowed' && LW < 1000} />
+              padRight={layout === 'immersive' && ui.cfgOpen} mobile={layout !== 'windowed' && LW < 1000}
+              radio={ui.radio} onRadio={(r) => (ui.radio = r)} relayAddr={ui.relayAddr} onRelayAddr={(a) => (ui.relayAddr = a)} />
           {/if}
         </div>
       </div>

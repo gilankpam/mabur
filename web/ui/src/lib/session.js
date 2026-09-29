@@ -24,9 +24,10 @@ export class Session {
   constructor({ createModule, requestDevice, onAu, onStats, onOsd = () => {}, onRecClosed = () => {}, reload,
                 // Wrapped: a bare window.setTimeout called as timers.setTimeout(...) throws "Illegal invocation".
                 timers = { setTimeout: (f, ms) => setTimeout(f, ms), clearTimeout: (h) => clearTimeout(h) },
-                stopTimeoutMs = 3000, recOffTimeoutMs = 1000 }) {
+                stopTimeoutMs = 3000, recOffTimeoutMs = 1000,
+                checkIsolated = () => {}, startRelay = null }) {
     Object.assign(this, { createModule, requestDevice, onAu, onStats, onOsd, onRecClosed, reload, timers,
-      stopTimeoutMs, recOffTimeoutMs });
+      stopTimeoutMs, recOffTimeoutMs, checkIsolated, startRelay });
     this.subs = new Set();
     this.mod = null;
     this.token = null;        // identifies the current connect attempt/module instance
@@ -34,6 +35,7 @@ export class Session {
     this.lastCore = null;
     this.stopTimer = null;
     this.recWaiter = null;   // resolve fn while waiting for rec_state != 1
+    this.relayWorker = null;
     this.snapshot = { state: 'idle', mode: 'spotter', ch: null, w: null, error: null, notice: null,
                       startedAt: null, recWish: false, localWish: false };
   }
@@ -41,7 +43,7 @@ export class Session {
   subscribe(fn) { this.subs.add(fn); fn(this.snapshot); return () => this.subs.delete(fn); }
   set(patch) { this.snapshot = { ...this.snapshot, ...patch }; for (const f of this.subs) f(this.snapshot); }
 
-  async connect({ mode, ch, w, overlayToml }) {
+  async connect({ mode, ch, w, overlayToml, relay = null }) {
     const st = this.snapshot.state;
     if (st !== 'idle' && st !== 'error') return;
     this.lastCore = null;
@@ -50,7 +52,7 @@ export class Session {
     this.stopRequested = false;
     this.set({ state: 'connecting', mode, ch, w, error: null, notice: null, recWish: false, localWish: false, startedAt: null });
     try {
-      await this.requestDevice();
+      relay ? this.checkIsolated() : await this.requestDevice();
     } catch (e) {
       if (this.token !== token) return;
       // The chooser closed without a pick (WebUSB rejects with NotFoundError)
@@ -66,6 +68,7 @@ export class Session {
     const args = ['live', '--mode', mode, '--ch', String(ch), '--w', String(w)];
     const overlay = mode === 'gs' && overlayToml ? overlayToml : null;
     if (overlay) args.push('--overlay', '/overlay.toml');
+    if (relay) args.push('--relay', relay);
     let mod = null;
     try {
       mod = await this.createModule({
@@ -75,6 +78,10 @@ export class Session {
         onStats: (text) => { if (this.token === token) this.handleStats(text); },
         onOsd: (rows, cols, cells) => { if (this.token === token) this.onOsd(rows, cols, cells); },
         onError: (text) => { if (this.token === token) this.handleError(text); },
+        onRelayRing: (buffer, ptr) => {
+          if (this.token !== token || !this.startRelay) return;
+          this.relayWorker = this.startRelay({ buffer, ptr, url: 'ws://' + relay });
+        },
         // Not gated on state: the core seals the file on its way out, so this
         // can land after onExit. The token still drops a superseded module's.
         // The core only ever has one armed recording, and it is sealed now
@@ -89,7 +96,7 @@ export class Session {
         print: (t) => console.log('[webgs]', t),
         printErr: (t) => {
           console.error('[webgs]', t);
-          if (this.token === token && String(t).includes('worker sent an error')) this.fail(WORKER_FAILED);
+          if (this.token === token && isWorkerFailure(String(t))) this.fail(WORKER_FAILED);
         },
       });
     } catch (e) {
@@ -128,6 +135,7 @@ export class Session {
   }
 
   handleExit(code) {
+    this.stopRelay();
     if (this.stopTimer) { this.timers.clearTimeout(this.stopTimer); this.stopTimer = null; }
     this.mod = null;
     if (this.stopRequested) {
@@ -205,9 +213,43 @@ export class Session {
   fail(text) {
     const st = this.snapshot.state;
     if (st === 'idle') return;
+    this.stopRelay();
     if ((st === 'live' || st === 'connecting') && this.mod) stopQuietly(this.mod);
     this.set({ state: 'error', error: text });
   }
+
+  stopRelay() {
+    if (this.relayWorker) { try { this.relayWorker.terminate(); } catch { /* gone */ } this.relayWorker = null; }
+  }
+}
+
+// Emscripten's 'unwind' exit sentinel. exit() after an ASYNCIFY await (the
+// startup OPFS probe) rethrows it uncaught (Emscripten 4.0.12's asyncify
+// wakeUp), so EVERY core exit surfaces "Uncaught unwind" -- once via printErr
+// ("worker sent an error! ...webgs.js:1: Uncaught unwind") and once as a
+// window error event. It is a normal exit: the core's own onError text must
+// not be replaced by WORKER_FAILED.
+export function isExitUnwind(text) {
+  return String(text).includes('Uncaught unwind');
+}
+
+// A pthread worker that failed to load (e.g. an untrusted LAN TLS cert:
+// "worker sent an error! undefined:undefined: undefined").
+export function isWorkerFailure(line) {
+  return String(line).includes('worker sent an error') && !isExitUnwind(line);
+}
+
+// The same decision for a window 'error' event. Emscripten's worker.onerror
+// rethrows the worker's ErrorEvent on the page, so one exit fires TWO events:
+// message "Uncaught [object ErrorEvent]" with e.error = that ErrorEvent (its
+// own .message is "Uncaught unwind"), then a bare "Uncaught unwind" -- both
+// with filename .../webgs.js (bench, headless Chrome 146, 2026-09-29).
+export function isWindowWorkerFailure(e) {
+  const msg = String((e && e.message) || '');
+  const inner = e && e.error && typeof e.error === 'object' ? String(e.error.message || '') : '';
+  if (isExitUnwind(msg) || isExitUnwind(inner)) return false;
+  const fromWorker = typeof e?.filename === 'string' && /webgs\.js|worker/i.test(e.filename);
+  return msg.includes('worker sent an error') || fromWorker;
 }
 
 function stopQuietly(mod) {

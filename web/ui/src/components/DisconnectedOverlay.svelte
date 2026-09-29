@@ -2,7 +2,7 @@
   import Icon from './Icon.svelte';
   import bg from '../assets/fpv-feed.jpg';
   let { mode, onMode, onConnect, error = null, notice = null, blocker = null, busy = false, stopping = false,
-        padRight = false, mobile = false } = $props();
+        padRight = false, mobile = false, radio = 'usb', onRadio = () => {}, relayAddr = '', onRelayAddr = () => {} } = $props();
   const HINT = {
     gs: 'Full link control. Sends link feedback to the drone and runs the adaptive ladder.',
     spotter: 'Receive only. No uplink to the drone, so link and ladder settings are not applied.',
@@ -19,6 +19,16 @@
       onchange={() => onMode('spotter')}><Icon name="binoculars" />Spotter</label>
   </div>
   <span class="dim5" style="font-size:12px;max-width:300px;text-wrap:pretty">{HINT[mode]}</span>
+  <div class="seg" style="width:min(300px,100%)">
+    <label class="seg-opt" style={mobile ? 'min-height:40px' : ''}><input type="radio" name="webgs-radio" checked={radio === 'usb'} disabled={busy}
+      onchange={() => onRadio('usb')}><Icon name="plugs" />USB card</label>
+    <label class="seg-opt" style={mobile ? 'min-height:40px' : ''}><input type="radio" name="webgs-radio" checked={radio === 'relay'} disabled={busy}
+      onchange={() => onRadio('relay')}><Icon name="broadcast" />CPE relay</label>
+  </div>
+  {#if radio === 'relay'}
+    <input class="addr" type="text" value={relayAddr} disabled={busy} spellcheck="false" aria-label="CPE relay address"
+      oninput={(e) => onRelayAddr(e.currentTarget.value)} />
+  {/if}
   {#if blocker}<span class="msg warn">{blocker}</span>{/if}
   <button class="btn btn-primary" type="button" onclick={onConnect} disabled={busy || !!blocker}
     style="margin-top:4px;{mobile ? 'min-height:44px' : ''}">
@@ -33,4 +43,5 @@
   .msg { font-size: 12px; max-width: 360px; color: var(--color-neutral-300); white-space: pre-wrap; }
   .msg.err { color: var(--color-accent-200); background: var(--color-accent-900); padding: 6px 10px; border-radius: var(--radius-md); }
   .msg.warn { color: var(--color-accent-300); }
+  .addr { width: min(300px, 100%); font: inherit; padding: 6px 8px; border-radius: var(--radius-md); }
 </style>

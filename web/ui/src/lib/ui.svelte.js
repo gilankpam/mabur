@@ -1,5 +1,6 @@
 // App-level UI state (handoff "State"). Svelte 5 runes module.
 import { loadConfig } from './config.js';
+import { RELAY_DEFAULT } from './logic.mjs';
 
 function initialMode() {
   const q = new URLSearchParams(location.search).get('mode');
@@ -28,6 +29,11 @@ function resumeFlags() {
 
 const resume = resumeFlags();
 
+function lastSaved() {
+  try { return JSON.parse(localStorage.getItem('webgs.last') || 'null') || {}; } catch { return {}; }
+}
+const saved = lastSaved();
+
 export const ui = $state({
   tab: resume ? 'config' : 'stats',
   fs: false,
@@ -38,11 +44,13 @@ export const ui = $state({
   applied: '',
   mode: initialMode(),
   cfg: initialCfg(),
+  radio: saved.radio === 'relay' ? 'relay' : 'usb',
+  relayAddr: typeof saved.relayAddr === 'string' ? saved.relayAddr : RELAY_DEFAULT,
   tick: 0,
 });
 
-export function saveMode(mode) {
-  try { localStorage.setItem('webgs.last', JSON.stringify({ mode })); } catch { /* ignore */ }
+export function saveMode(mode, radio = 'usb', relayAddr = RELAY_DEFAULT) {
+  try { localStorage.setItem('webgs.last', JSON.stringify({ mode, radio, relayAddr })); } catch { /* ignore */ }
 }
 
 export function reloadToConfig() {

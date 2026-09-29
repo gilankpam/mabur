@@ -332,8 +332,45 @@ export function copyStatsPayload(statsRing, segSnapshot) {
   return JSON.stringify({ core, segments: segSnapshot }, null, 1);
 }
 
+// Default CPE relay address (host:port); the relay's fixed WebSocket port.
+export const RELAY_DEFAULT = '192.168.1.1:8311';
+
+// Parses a "host" or "host:port" relay address string into a normalized
+// "host:port" (port defaults to 8311), or null if malformed. host is an
+// IPv4 dotted quad or a DNS-ish name; port must be 1-65535.
+export function parseRelayAddr(s) {
+  const m = /^([A-Za-z0-9.-]+)(?::(\d{1,5}))?$/.exec(String(s ?? '').trim());
+  if (!m) return null;
+  const port = m[2] === undefined ? 8311 : Number(m[2]);
+  if (!(port >= 1 && port <= 65535)) return null;
+  return `${m[1]}:${port}`;
+}
+
+// Pre-connect check for the CPE relay radio: https can't open the ws://
+// relay socket (mixed content), and the address field must parse. null = OK.
+export function relayBlocker(protocol, addr) {
+  if (protocol === 'https:') return 'relay needs the local page: python3 web/serve.py 8808, open http://127.0.0.1:8808';
+  if (!parseRelayAddr(addr)) return 'Enter the CPE relay address as host or host:port.';
+  return null;
+}
+
 // Maps a glue `ERROR ...` line (web/src/web_gs.cpp) to user-facing text.
 export function errorText(line) {
+  if (line.includes('relay cannot tune')) {
+    return 'CPE relay could not tune to this channel/width — check the channel is allowed on the CPE (regulatory domain), then press Connect.';
+  }
+  if (line.includes('relay unreachable')) {
+    return 'CPE relay not reachable — check the Ethernet cable and the relay address, then press Connect.';
+  }
+  if (line.includes('relay owned by another client')) {
+    return 'CPE relay is owned by another client (maburgs or another tab). Stop it, wait 2 s, then press Connect.';
+  }
+  if (line.includes('relay taken by another client')) {
+    return 'Another client took over the CPE relay (maburgs or another tab). Stop it, then press Connect.';
+  }
+  if (line.includes('relay lost')) {
+    return 'CPE relay connection lost. Press Connect to restart.';
+  }
   if (line.includes('no RTL card')) {
     return 'No RTL8812EU/8812AU card found — plug it in and press Connect.';
   }

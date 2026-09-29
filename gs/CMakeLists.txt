@@ -62,6 +62,12 @@ add_library(mabur_gs_dot11 STATIC src/dot11.cpp)
 target_include_directories(mabur_gs_dot11 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(mabur_gs_dot11 PUBLIC mabur_common devourer)
 
+# mabur-relay v3 client core (CPE510 remote card): pure codec + state machine,
+# shared by the web GS and (later) maburgs' RemoteCard.
+add_library(mabur_gs_relay STATIC src/relay_wire.cpp src/relay_client.cpp)
+target_include_directories(mabur_gs_relay PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(mabur_gs_relay PUBLIC mabur_gs_dot11 mabur_common)
+
 add_library(mabur_gs_radio STATIC src/radio_frontend.cpp src/card_scan_usb.cpp)
 target_include_directories(mabur_gs_radio PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(mabur_gs_radio PUBLIC mabur_gs_core mabur_gs_dot11 mabur_common devourer)
