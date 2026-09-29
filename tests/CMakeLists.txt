@@ -306,6 +306,7 @@ add_mtest(test_au_ring test_au_ring.cpp LIBS mabur_gs_core pthread)
   # Web GS core (web/src/web_gs.h); bodies from tests/body_gen.h.
   add_mtest(test_web_gs test_web_gs.cpp LIBS mabur_web_core)
   target_compile_definitions(test_web_gs PRIVATE MABUR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+  add_mtest(test_relay_ring test_relay_ring.cpp LIBS mabur_web_core)
   add_mtest(test_stats_exporter test_stats_exporter.cpp LIBS mabur_gs_core)
   add_mtest(test_stats_sink test_stats_sink.cpp LIBS mabur_gs_core)
   add_mtest(test_cal_analysis test_cal_analysis.cpp LIBS mabur_gs_core)
