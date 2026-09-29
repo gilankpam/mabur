@@ -9,8 +9,8 @@ name: Pages
 # build would wipe stable. Each channel rewrites only its own directory; the
 # stable deploy leaves edge/ alone. Vite's base is './', so the same dist works
 # under either path. Pages can't send COOP/COEP headers;
-# web/ui/public/coi-serviceworker.js adds them client-side (one reload on the
-# first visit).
+# web/ui/sw/sw.js (built into web/dist/sw.js) adds them client-side (one
+# reload on the first visit).
 on:
   push:
     branches: [master]

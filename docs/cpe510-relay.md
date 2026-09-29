@@ -14,7 +14,7 @@ in `maburgs` does not exist yet**.
 | Daemon source | `feed/net/mabur-relay/src` in that repo (C, libc only, single `poll()` loop) |
 | **Wire contract** | `docs/mabur-relay-protocol.md` in that repo — protocol **v3**. Code against that file, not this summary. |
 | Bench record | `docs/verify-mabur-relay-on-device.md` in that repo (flash/boot check, v1/v2 full-rate runs, TX mode) |
-| Device | `root@192.168.1.1` (static, no DHCP); the bench CPE is a v3 |
+| Device | `root@10.83.11.1`; DHCP on the LAN (10.83.11.100-199, no router/DNS — mabur-openwrt `90-mabur-lan`); failsafe 192.168.1.1; the bench CPE is a v3 |
 | Ports | UDP **8310** (`maburgs`, native `webgs`), `ws://` **8311** (web GS) |
 | Config | `/etc/mabur-relay.conf` (PHY, MON, REG, TXPOWER, BOOT_CHANNEL/SEC, ports); procd service `mabur-relay`, respawns forever |
 
@@ -90,7 +90,7 @@ a `PACKET_MMAP` receive ring (RX costs ~18 pts).
 - The GS (Radxa ZERO 3) has no Ethernet — it needs a USB-Ethernet adapter to
   talk to the CPE.
 - After a `sysupgrade -n` the CPE's SSH host key changes:
-  `ssh-keygen -R 192.168.1.1`.
+  `ssh-keygen -R 10.83.11.1`.
 - For a full-rate bench run the drone's FC reports DISARMED, so set
   `[low_power] enable = false` in `/etc/mabur.toml` temporarily (restore
   after).
@@ -128,7 +128,8 @@ a spurious gap).
 
 ### Bench record — TX mode, 2026-09-29 (CPE v3, `mabur-openwrt` 44f0190)
 
-Setup: CPE on host USB-Ethernet (192.168.1.101 ↔ 192.168.1.1); drone `.152`
+Setup: CPE on host USB-Ethernet (192.168.1.101 ↔ 192.168.1.1) (pre-2026-09-29
+address); drone `.152`
 on ch136 HT40-. Full numbers and the per-window breakdown are in the relay
 repo's `docs/verify-mabur-relay-on-device.md` ("TX mode" section); this is
 the summary.
