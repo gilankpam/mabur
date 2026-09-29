@@ -13,10 +13,12 @@ its own.
 
 ## What it is
 
-A single page, one card, a fixed channel — no channel scan, no in-flight
-hop, no DVR on the VTX side beyond its SD recorder, no multi-card. Local raw
-recording into the browser's own storage exists (see Record, below). Two
-modes, picked before Connect:
+A single page, a fixed channel — no channel scan, no in-flight hop, no DVR
+on the VTX side beyond its SD recorder, no multi-card. Local raw recording
+into the browser's own storage exists (see Record, below). The page's radio
+is either one USB card (WebUSB, RTL8812EU/8812AU) or the CPE510 relay
+(`ws://`, see "CPE relay radio" under Use, below) — picked before Connect,
+alongside the mode. Two modes, picked before Connect:
 
 - **GS mode** — the *only* ground station for the drone. Runs rendezvous
   (DISC until DISC_ACK), the same measured-loss ladder as `maburgs`
@@ -193,6 +195,71 @@ via `webgs::channel_width_error`): in GS mode a 20 MHz tuning is refused
 while the ladder has any 40 MHz rung, because the GS could not receive
 it. A refusal reads `Channel/width refused: <reason>` (core line
 `ERROR bad channel/width: <reason>`).
+
+### CPE relay radio
+
+The radio picker on the Disconnected screen offers **USB card** (default) or
+**CPE relay** — a TP-Link CPE510 running `mabur-relay` protocol v3
+(`docs/cpe510-relay.md`), reached over WebSocket instead of a locally
+plugged-in card; no card chooser, no WebUSB grant. Picking it shows an
+address field defaulting to `192.168.1.1:8311` (`RELAY_DEFAULT`,
+`web/ui/src/lib/logic.mjs`), parsed as `host` or `host:port`
+(`parseRelayAddr()`).
+
+**localhost only.** An `https://` page cannot open a plain `ws://` socket
+(mixed content — see `docs/cpe510-relay.md`'s "Why not wss" for why the
+relay doesn't speak `wss://` either), so the relay option is disabled on any
+`https:` origin with the hint: *"relay needs the local page: python3
+web/serve.py 8808, open http://127.0.0.1:8808"* (`relayBlocker()`). This
+rules out the hosted GitHub Pages build and any LAN/TLS setup for relay
+mode — it only works served locally over plain HTTP.
+
+**What Connect does.** The page opens a dedicated Worker
+(`web/ui/src/lib/relay_worker.js`) that owns the WebSocket, bridged to the
+WASM core through a `SharedArrayBuffer` ring pair (`web/src/relay_ring.h` /
+`web/ui/src/lib/relay_ring.js`, byte-identical twins pinned by shared golden
+tests — see Design, below) so the socket and its GC/render-thread neighbors
+never delay an RCF. The core's `RelayClient` then does the same HELLO/TUNE
+dance the native `webgs --relay` CLI does (`docs/cpe510-relay.md`): HELLO
+every 500 ms, TUNE retried every 500 ms while not owner (only within the
+first 2.5 s), and — once owner but the relay reads back mistuned — TUNE
+retried every 500 ms indefinitely.
+
+**Errors** (core `ERROR` line → page text, `errorText()` in
+`web/ui/src/lib/logic.mjs`):
+
+- `relay unreachable` — no `STATUS` within 2 s → *"CPE relay not reachable
+  — check the Ethernet cable and the relay address, then press Connect."*
+- `relay owned by another client` — GS mode, still not owner 2.5 s after
+  connecting → *"CPE relay is owned by another client (maburgs or another
+  tab). Stop it, wait 2 s, then press Connect."*
+- `relay cannot tune` — owner, but the relay isn't on our channel/width
+  2.5 s after connecting (e.g. a regdomain that refuses the channel) →
+  *"CPE relay could not tune to this channel/width — check the channel is
+  allowed on the CPE (regulatory domain), then press Connect."*
+- `relay lost` — `STATUS` stopped arriving, or the socket closed, after a
+  successful connect → *"CPE relay connection lost. Press Connect to
+  restart."*
+
+**Spotter vs. GS mode.** A spotter never needs ownership to receive — it
+proceeds on relay video as soon as `STATUS` shows the relay tuned to the
+requested channel/width, owner or not (`RelayLink::Ready::Listening`). GS
+mode needs ownership (`Owned`) before it can send RCFs and DISC, so
+`relay owned by another client` only fires in GS mode.
+
+**Relay stats group** (Stats tab, shown only when `radio: 'relay'`):
+channel/width (or "retuning" mid-TUNE), owner (yes/no), frames, seq gaps,
+ring drops rx/tx (the `SharedArrayBuffer` ring, not the relay itself), TX /
+fail / refused (mirrors the relay's own `STATUS` counters), and your drops
+(the relay's own `your_drops` — frames it had to drop for this client
+specifically, e.g. a full send queue). The general stats line also carries
+`radio: "usb"|"relay"` so log/replay tooling can tell which path a session
+used.
+
+**Native bench equivalent:** `webgs live --relay host:port` (default UDP
+port **8310**, not the browser's WebSocket 8311) runs the same
+`RelayLink`/`RelayClient` core as a CLI, used for the A/B bench numbers in
+`docs/cpe510-relay.md`'s TX mode section.
 
 This page's ladder starts from whatever `web/CMakeLists.txt` embeds into the
 WASM module at build time — the bundle default,
@@ -545,6 +612,18 @@ rule).
 
 ## Known limits
 
+- **CPE relay radio needs `http://localhost`.** No `wss://`, so an
+  `https://` origin (including the hosted GitHub Pages build) cannot use
+  it — see "CPE relay radio" above and `docs/cpe510-relay.md`'s "Why not
+  wss".
+- **CPE relay: one owner at a time.** The relay itself enforces this, not
+  the page — a `maburgs`/native `webgs` already running against the relay
+  (or another tab) holds ownership, and this page reports `relay owned by
+  another client` rather than fighting for it. Same one-commander rule as
+  two GS-mode pages against a USB-connected drone, below.
+- **CPE relay: no scout/energy reads.** The CPE has no FA/CCA/NHM
+  instrumentation (`docs/cpe510-relay.md`), and relay mode is a fixed
+  channel anyway — there is nothing to scout for.
 - **RTL8812AU on a Linux host: unload `rtw88_8812au` first.** The kernel
   has an in-tree driver for the AU (the EU has none). devourer's
   `claim_interface_then_reset` resets the port after claiming, the kernel
@@ -630,6 +709,19 @@ into a `BodyQueue`, and the core loop driving `WebGs`; it builds as a
 native CLI (`webgs live`/`webgs replay`, used for bench A/B against the
 browser and for the parity gates) and, under `emcmake`, as the page's WASM
 module.
+
+**CPE relay radio.** `webgs::RelayLink` (`web/src/relay_link.{h,cpp}`) is
+the radio-source alternative to the WebUSB path: it wraps `RelayClient`
+(the shared, protocol-agnostic `gs/src` core, also used by the native
+`webgs --relay` CLI) with a `RelayTransport` and its own RX thread, feeding
+the same `BodyQueue` the USB path drains — `WebGs` doesn't know which radio
+fed it. Native builds get `RelayTransport` over UDP directly; under
+Emscripten it's `web/src/relay_ring.h`'s SPSC byte ring instead, because a
+WASM pthread can't own a browser WebSocket — the actual socket lives in the
+page's dedicated `relay_worker.js` Worker, and the ring (with its JS twin
+`web/ui/src/lib/relay_ring.js`, kept byte-identical, pinned by shared golden
+vectors in both languages' test suites) is the SharedArrayBuffer bridge
+between that Worker and the WASM core's RX thread.
 
 ## Validation
 
