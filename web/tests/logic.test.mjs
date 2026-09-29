@@ -345,14 +345,25 @@ test('parseRelayAddr', () => {
   assert.equal(parseRelayAddr('a b'), null);
 });
 
-test('relayBlocker: https cannot open ws://, bad address blocks', () => {
-  assert.match(relayBlocker('https:', '192.168.1.1:8311'), /relay needs the local page: python3 web\/serve.py 8808, open http:\/\/127.0.0.1:8808/);
+test('relayBlocker: https needs an LNA-exempt host, bad address blocks', () => {
+  // Revert check: the pre-2026-09-29 blocker refused every https origin.
+  assert.equal(relayBlocker('https:', '192.168.1.1:8311'), null);
+  assert.equal(relayBlocker('https:', '10.0.0.5'), null);
+  assert.equal(relayBlocker('https:', '172.20.1.1:9000'), null);
+  assert.equal(relayBlocker('https:', 'cpe.local'), null);
+  assert.match(relayBlocker('https:', 'relay.example.com'), /private IP/);
+  assert.match(relayBlocker('https:', '172.32.0.1'), /private IP/);
+  assert.match(relayBlocker('https:', '8.8.8.8'), /private IP/);
+  assert.equal(relayBlocker('http:', 'relay.example.com'), null);
   assert.equal(relayBlocker('http:', '192.168.1.1:8311'), null);
   assert.match(relayBlocker('http:', 'nope nope'), /address/);
+  assert.match(relayBlocker('https:', 'nope nope'), /address/);
 });
 
 test('errorText relay lines', () => {
-  assert.match(errorText('ERROR relay unreachable'), /CPE relay not reachable/);
+  assert.match(errorText('ERROR relay unreachable', 'http:'), /CPE relay not reachable/);
+  assert.doesNotMatch(errorText('ERROR relay unreachable', 'http:'), /Chrome 142/);
+  assert.match(errorText('ERROR relay unreachable', 'https:'), /Chrome 142\+/);
   assert.match(errorText('ERROR relay unreachable: cannot resolve x:1'), /CPE relay not reachable/);
   assert.match(errorText('ERROR relay owned by another client'), /owned by another client/);
   assert.match(errorText('ERROR relay taken by another client'), /Another client took over the CPE relay/);

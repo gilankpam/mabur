@@ -172,8 +172,9 @@ Measured on the bench CPE (AR9344, 74Kc 560 MHz), relay idle:
 TLS costs ~16 CPU points per MB/s. The relay's WS path is already 71 % at
 full rate (4.5 MB/s), so wss cannot carry the top rungs. The mbedTLS test
 server also hung in the handshake against OpenSSL clients (not debugged).
-This is why the web GS's relay radio only works from `http://localhost`
-(plain `ws://`) — see `docs/web-gs.md`.
+The web GS doesn't need it anyway: Chrome 142+ lets an `https://` page
+(the hosted GitHub Pages build) open plain `ws://` to a private IP literal
+or `.local` name — see `docs/web-gs.md`, "CPE relay radio".
 
 ## Follow-ups
 

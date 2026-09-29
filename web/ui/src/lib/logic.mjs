@@ -346,16 +346,38 @@ export function parseRelayAddr(s) {
   return `${m[1]}:${port}`;
 }
 
-// Pre-connect check for the CPE relay radio: https can't open the ws://
-// relay socket (mixed content), and the address field must parse. null = OK.
+// True when a relay host is one Chrome's Local Network Access exempts from
+// mixed-content blocking: a private/loopback/link-local IPv4 literal or a
+// `.local` name. A public DNS name that happens to resolve to the LAN is NOT
+// exempt (it would need fetch's targetAddressSpace, which WebSocket lacks).
+export function isLocalRelayHost(host) {
+  const h = String(host ?? '').toLowerCase();
+  if (h === 'localhost' || h.endsWith('.local')) return true;
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
+  if (!m) return false;
+  const [a, b] = [Number(m[1]), Number(m[2])];
+  if (m.slice(1).some((x) => Number(x) > 255)) return false;
+  return a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) || (a === 169 && b === 254);
+}
+
+// Pre-connect check for the CPE relay radio: the address must parse, and an
+// https page may only open the plain ws:// relay socket when the host is
+// LNA-exempt (Chrome 142+; verified Chrome 147, docs/web-gs.md). null = OK.
 export function relayBlocker(protocol, addr) {
-  if (protocol === 'https:') return 'relay needs the local page: python3 web/serve.py 8808, open http://127.0.0.1:8808';
-  if (!parseRelayAddr(addr)) return 'Enter the CPE relay address as host or host:port.';
+  const norm = parseRelayAddr(addr);
+  if (!norm) return 'Enter the CPE relay address as host or host:port.';
+  if (protocol === 'https:' && !isLocalRelayHost(norm.slice(0, norm.lastIndexOf(':')))) {
+    return 'On the hosted page the relay address must be a private IP (e.g. 192.168.1.1) or a .local name.';
+  }
   return null;
 }
 
 // Maps a glue `ERROR ...` line (web/src/web_gs.cpp) to user-facing text.
-export function errorText(line) {
+export function errorText(line, protocol = globalThis.location?.protocol) {
+  if (line.includes('relay unreachable') && protocol === 'https:') {
+    return 'CPE relay not reachable — check the Ethernet cable and the relay address. If they are fine, this browser blocks ws:// from an https page: use Chrome 142+, or the local page (python3 web/serve.py 8808, open http://127.0.0.1:8808).';
+  }
   if (line.includes('relay cannot tune')) {
     return 'CPE relay could not tune to this channel/width — check the channel is allowed on the CPE (regulatory domain), then press Connect.';
   }

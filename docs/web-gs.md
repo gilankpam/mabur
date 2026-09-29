@@ -206,13 +206,23 @@ address field defaulting to `192.168.1.1:8311` (`RELAY_DEFAULT`,
 `web/ui/src/lib/logic.mjs`), parsed as `host` or `host:port`
 (`parseRelayAddr()`).
 
-**localhost only.** An `https://` page cannot open a plain `ws://` socket
-(mixed content — see `docs/cpe510-relay.md`'s "Why not wss" for why the
-relay doesn't speak `wss://` either), so the relay option is disabled on any
-`https:` origin with the hint: *"relay needs the local page: python3
-web/serve.py 8808, open http://127.0.0.1:8808"* (`relayBlocker()`). This
-rules out the hosted GitHub Pages build and any LAN/TLS setup for relay
-mode — it only works served locally over plain HTTP.
+**Hosted page works; relay host must be a private IP.** An `https://` page
+normally cannot open a plain `ws://` socket (mixed content), and the relay
+doesn't speak `wss://` (see `docs/cpe510-relay.md`, "Why not wss"). Chrome
+142+ exempts WebSocket and fetch targets that are **private IP literals** or
+**`.local` names** from that block (Local Network Access). Verified
+2026-09-29 on Chrome 147, headless and headed: a `gilankpam.github.io` origin
+opened `ws://<LAN IP>` with no flag and no prompt, while `ws://` to a public
+DNS name resolving to the same LAN address was still blocked. So on an
+`https:` origin `relayBlocker()` accepts a private/loopback/link-local IPv4
+literal or a `.local` name and refuses anything else with *"On the hosted
+page the relay address must be a private IP (e.g. 192.168.1.1) or a .local
+name."* (`isLocalRelayHost()`). A browser without the exemption (Firefox,
+Chrome < 142) fails at Connect; on https the "relay unreachable" banner
+says so and points at the local page (`python3 web/serve.py 8808`, open
+`http://127.0.0.1:8808`), which works in any browser. Chrome logs the
+exempt connection as "Insecure access is deprecated", so a future Chrome
+may put it behind the LNA permission prompt.
 
 **What Connect does.** The page opens a dedicated Worker
 (`web/ui/src/lib/relay_worker.js`) that owns the WebSocket, bridged to the
@@ -626,10 +636,10 @@ rule).
 
 ## Known limits
 
-- **CPE relay radio needs `http://localhost`.** No `wss://`, so an
-  `https://` origin (including the hosted GitHub Pages build) cannot use
-  it — see "CPE relay radio" above and `docs/cpe510-relay.md`'s "Why not
-  wss".
+- **CPE relay radio from https needs Chrome 142+ and a private-IP relay
+  address.** The hosted page opens `ws://` only through Chrome's Local
+  Network Access exemption (see "CPE relay radio" above); Firefox needs the
+  local page.
 - **CPE relay: one owner at a time.** The relay itself enforces this, not
   the page — a `maburgs`/native `webgs` already running against the relay
   (or another tab) holds ownership, and this page reports `relay owned by
