@@ -856,7 +856,8 @@ What the fold-in did change:
 - **The ring is now visible from both ends.** `drone.enc.venc_ring_fill_pct`
   and `drone.enc.venc_full_drops` report the PRODUCER side (the encoder
   discarding AUs because maburd had not drained), against the existing
-  consumer-side `drone.enc.ring_drops`. See `docs/observability.md`.
+  consumer-side `drone.enc.ring_drops`. (All three left the wire in the
+  2026-09-30 telem diet.) See `docs/observability.md`.
 
 ### The bitrate policy pushes on CHANGE, plus a 5 s re-assert
 

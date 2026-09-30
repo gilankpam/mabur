@@ -956,6 +956,80 @@ def print_drone_rx_report(rows):
           f"   own: p50={_pct(own, .5):.0f} p90={_pct(own, .9):.0f} max={max(own)}")
 
 
+def drone_tx_samples(rows):
+    """One dict per distinct drone.tlm_seq (the exporter repeats a Telem
+    on every record until the next one arrives) carrying the drone-side
+    TX-path fields the 2026-09-30 telem diet kept for exactly this report:
+    txq_wait_ms (per-period max), cumulative txq.drops / radio.usb_fail,
+    sys.cpu_pct, and the congestion/failsafe shed flags. Empty when the
+    recording has no drone section."""
+    out = []
+    last_seq = None
+    for r in rows:
+        d = r.get("drone")
+        if not isinstance(d, dict):
+            continue
+        seq = d.get("tlm_seq")
+        if seq is not None and seq == last_seq:
+            continue
+        last_seq = seq
+        out.append({
+            "wait": d.get("txq_wait_ms"),
+            "drops": (d.get("txq") or {}).get("drops"),
+            "usb": (d.get("radio") or {}).get("usb_fail"),
+            "cpu": (d.get("sys") or {}).get("cpu_pct"),
+            "cong": d.get("congestion_shed"),
+            "fs": d.get("failsafe_shed"),
+        })
+    return out
+
+
+def _counter_growth(vals):
+    """Sum of per-period increases of a cumulative drone counter, and how
+    many periods it grew in. A maburd restart (value going backwards)
+    contributes its post-restart value, never a negative delta."""
+    total = periods = 0
+    prev = None
+    for v in vals:
+        if v is None:
+            continue
+        if prev is not None:
+            inc = v if v < prev else v - prev
+            if inc > 0:
+                total += inc
+                periods += 1
+        prev = v
+    return total, periods
+
+
+def print_drone_tx_report(rows):
+    """DRONE TX PATH: the drone-side reasons video can go missing that look
+    exactly like RF loss from the ground -- TxQueue wait and drop-oldest,
+    USB bulk-OUT failures, SoC CPU, and the congestion shed that silences
+    the enh layer. Kept on the wire for this section (telem diet
+    2026-09-30); the queue counters there used to be maburtop-only."""
+    s = drone_tx_samples(rows)
+    if not any(v is not None for x in s for v in x.values()):
+        return
+    waits = [x["wait"] for x in s if x["wait"] is not None]
+    cpus = [x["cpu"] for x in s if x["cpu"] is not None]
+    drops, drop_n = _counter_growth([x["drops"] for x in s])
+    usb, usb_n = _counter_growth([x["usb"] for x in s])
+    cong = sum(1 for x in s if x["cong"])
+    fs = sum(1 for x in s if x["fs"])
+    print()
+    print(f"DRONE TX PATH (per telemetry period, once per tlm_seq): n={len(s)}")
+    wait_s = (f"p50={_pct(waits, .5):.0f} p90={_pct(waits, .9):.0f} max={max(waits)}"
+              if waits else "n/a")
+    print(f"  txq wait ms: {wait_s}"
+          f"   txq drops: +{drops} in {drop_n} periods"
+          f"   usb fail: +{usb} in {usb_n} periods")
+    cpu_s = (f"p50={_pct(cpus, .5):.1f} p90={_pct(cpus, .9):.1f} max={max(cpus):.1f}"
+             if cpus else "n/a")
+    print(f"  cpu %: {cpu_s}")
+    print(f"  congestion shed: {cong} periods   failsafe shed: {fs} periods")
+
+
 def print_salvage_report(rows):
     """SALVAGE: what rx.keep_corrupted (2026-09-08) bought. The sideport's
     per-card crc_fail and per-stream corrupt/salvaged/sub_fail are
@@ -1658,6 +1732,7 @@ def main(path, aulog=None, probelog_path=None, scanlog_path=None):
 
     print_salvage_report(rows)
     print_drone_rx_report(rows)
+    print_drone_tx_report(rows)
 
     # link.attrib.suppressed was removed from the sideport 2026-09-02 with
     # the packet-level delivery window it was defined against. Old
@@ -1695,8 +1770,10 @@ if __name__ == "__main__":
         # section too -- it is a flight's post-flight command, not a ctl
         # viewer. Silent when the recording predates the counters.
         if primary != s.flight and s.flight:
-            print_salvage_report(load(s.flight))
-            print_drone_rx_report(load(s.flight))
+            flight_rows = load(s.flight)
+            print_salvage_report(flight_rows)
+            print_drone_rx_report(flight_rows)
+            print_drone_tx_report(flight_rows)
         # fec.log (2026-09-15) is a sibling too: the FEC EPISODES section
         # rides along whichever primary the session offered.
         if s.fec:

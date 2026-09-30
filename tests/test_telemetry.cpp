@@ -6,23 +6,21 @@
 
 TEST(make_telem_maps_and_saturates) {
   mabur::TelemInputs in;
-  in.state = 2; in.failsafe_shed = true; in.radio_rx_ok = true; in.probe_on = true;
+  in.state = 2; in.failsafe_shed = true;
   in.congestion_shed = true;
   in.low_power = true;
-  in.roi_qp = -24;
-  in.generation = 7; in.mode = mabur::rc::PhyMode::HT; in.mcs = 5; in.bw = 20;
+  in.mode = mabur::rc::PhyMode::HT; in.mcs = 5; in.bw = 20;
   in.applied_ov_base = 0.25;
   in.applied_ov_enh = 0.4;
   in.rcf_age_ms = 700000;            // saturates u16
-  in.enc_bytes = 5ull << 30;         // 5 GiB -> kbytes fits u32
-  in.ring_drops = 1 << 20;           // saturates u16
   in.usb_fail = 1 << 20;             // saturates u16
-  in.txq_depth = 300;                // saturates u8
+  in.txq_drops = 1ull << 33;         // saturates u32
+  in.txq_wait_max_ms = 70000;        // saturates u16
+  in.cmd_kbps = 90000;               // saturates u16
   in.uplink.has = true;
   in.uplink.rssi[0] = 51.4; in.uplink.rssi[1] = 52.0;
   in.uplink.snr[0] = 21.2; in.uplink.snr[1] = 22.0;
   in.soc_temp_c = 61; in.cpu_pct = 14.267;
-  in.idr_disagree = 3; in.enhance_disagree = 70000;
   in.rcf_seq_echo = 0x4711;
   in.rcf_seq_echo_valid = true;
   in.pts_at_build_us = 0x0011223344556677ull;
@@ -32,33 +30,29 @@ TEST(make_telem_maps_and_saturates) {
   const auto t = mabur::make_telem(9, in);
   CHECK(t.tlm_seq == 9);
   CHECK(t.state == 2);
-  // failsafe_shed | radio_rx_ok | probe_on | rcf_seq_echo_valid |
-  // congestion_shed — bit3 is the GS's only way to tell "aging against this
+  // failsafe_shed | rcf_seq_echo_valid | congestion_shed — bit3 is the GS's only way to tell "aging against this
   // seq" from "aging against a DISC/failsafe rebase where the echoed seq is
   // stale"; bit4 is the TxQueue-pressure / USB-failure shed
   // (RcAgent::run_congestion_guard), distinct from bit0's failsafe shed so
   // a bench can count congestion sheds and flightreport can attribute an
   // enh gap to congestion rather than RF.
-  CHECK(t.flags == 0x9F);  // | low_power (bit7, spec 2026-09-20)
-  // roi_qp is the ROI override RcAgent commanded (signed). It was exported
-  // as an unsigned `qp` until 2026-09-03; there is no encoder QP on the wire.
-  CHECK(t.roi_qp == -24);
+  // Bits 1/2/5 (radio_rx_ok / probe_on / air_shed) are gone since
+  // 2026-09-30 and must stay clear.
+  CHECK(t.flags == 0x99);  // | low_power (bit7, spec 2026-09-20)
   CHECK(t.applied_profile == mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 5, 20));
   // applied_ov_base/enh map straight through — the commanded per-stream
   // pair, or the debug-HTTP override when armed (main.cpp).
   CHECK(std::abs(t.applied_ov_base - 0.25) < 1e-9);
   CHECK(std::abs(t.applied_ov_enh - 0.4) < 1e-9);
   CHECK(t.rcf_age_ms == 65535);
-  CHECK(t.enc_kbytes == (5ull << 30) / 1024);
-  CHECK(t.ring_drops == 65535);
   CHECK(t.usb_fail == 65535);
-  CHECK(t.txq_depth == 255);
+  CHECK(t.txq_drops == 0xFFFFFFFFu);
+  CHECK(t.txq_wait_max_ms == 65535);
+  CHECK(t.cmd_kbps == 65535);
   CHECK(t.up_rssi[0] == 51);         // rounded raw
   CHECK(t.up_snr[1] == 22);
   CHECK(t.soc_temp_c == 61);
   CHECK(t.cpu_busy_x100 == 1427);
-  CHECK(t.idr_disagree == 3);
-  CHECK(t.enhance_disagree == 65535);  // saturates to u16
   // link-rtt: seq echo + pts pass through at full width, no saturation —
   // pts_at_build is a timestamp, not a gauge.
   CHECK(t.rcf_seq_echo == 0x4711);
@@ -162,92 +156,6 @@ TEST(soc_temp_formats) {
   }
 }
 
-
-TEST(vanish_counters_saturate_and_round_trip) {
-  // venc-ring vanish detection (docs/venc-ring-vanish-findings-2026-08-12.md):
-  // the pipeline's u64 counters ride the wire as saturating u16.
-  mabur::TelemInputs in;
-  in.vanished_base = 70000;
-  in.vanished_enh = 80000;
-  in.self_idr_refused = 90000;
-  auto t = mabur::make_telem(1, in);
-  CHECK(t.vanished_base == 65535);
-  CHECK(t.vanished_enh == 65535);
-  CHECK(t.self_idr_refused == 65535);
-
-  in.vanished_base = 3;
-  in.vanished_enh = 5;
-  in.self_idr_refused = 2;
-  auto wire = mabur::rc::pack_telem(mabur::make_telem(2, in));
-  auto back = mabur::rc::parse_telem(wire.data(), wire.size());
-  REQUIRE(back.has_value());
-  CHECK(back->vanished_base == 3);
-  CHECK(back->vanished_enh == 5);
-  CHECK(back->self_idr_refused == 2);
-}
-
-TEST(venc_ring_stats_clamp_and_round_trip) {
-  // venc_get_stats() -> wire (spec 2026-08-28 venc-foldin, Task B6):
-  // full_drops is a lifetime u64 riding as a saturating u16; fill_pct is
-  // CLAMPED to the documented 0..100, not merely saturated to u8.
-  // REVERT CHECK: drop the std::clamp in make_telem and the 100/0 cases below
-  // report 200 and 255 respectively.
-  mabur::TelemInputs in;
-  in.venc_full_drops = 70000;
-  in.venc_ring_fill_pct = 200;
-  auto t = mabur::make_telem(1, in);
-  CHECK(t.venc_full_drops == 65535);
-  CHECK(t.venc_ring_fill_pct == 100);
-
-  in.venc_ring_fill_pct = -5;
-  CHECK(mabur::make_telem(1, in).venc_ring_fill_pct == 0);
-
-  in.venc_full_drops = 12;
-  in.venc_ring_fill_pct = 73;
-  auto wire = mabur::rc::pack_telem(mabur::make_telem(2, in));
-  auto back = mabur::rc::parse_telem(wire.data(), wire.size());
-  REQUIRE(back.has_value());
-  CHECK(back->venc_full_drops == 12);
-  CHECK(back->venc_ring_fill_pct == 73);
-}
-
-// Air clock (spec 2026-09-06 §4.6): window-max backlog + drop counter ride
-// the wire as saturating u16; flags bit5 = at least one enh AU dropped by
-// the air clock in this telemetry window (distinct from bit0 failsafe and
-// bit4 congestion so the bench can tell the three sheds apart).
-TEST(air_clock_fields_saturate_and_round_trip) {
-  mabur::TelemInputs in;
-  in.air_shed = true;
-  in.air_backlog_max_ms = 70000;
-  in.air_shed_drops = 80000;
-  auto t = mabur::make_telem(1, in);
-  CHECK((t.flags & 0x20) != 0);
-  CHECK(t.air_backlog_max_ms == 65535);
-  CHECK(t.air_shed_drops == 65535);
-
-  in.air_shed = false;
-  in.air_backlog_max_ms = 37;
-  in.air_shed_drops = 12;
-  auto wire = mabur::rc::pack_telem(mabur::make_telem(2, in));
-  CHECK(wire.size() == 98 + 2);   // TELEM_LEN + crc16 (2026-09-28: +idr_gs)
-  auto back = mabur::rc::parse_telem(wire.data(), wire.size());
-  REQUIRE(back.has_value());
-  CHECK((back->flags & 0x20) == 0);
-  CHECK(back->air_backlog_max_ms == 37);
-  CHECK(back->air_shed_drops == 12);
-  CHECK(back->venc_ring_fill_pct == 0);   // the field before ours still parses
-}
-
-// In-flight channel hop readback (spec 2026-09-14 §1): channel/hop_epoch
-// are a straight pass-through, no saturation.
-TEST(hop_fields_pass_through) {
-  mabur::TelemInputs in;
-  in.channel = 149;
-  in.hop_epoch = 3;
-  auto t = mabur::make_telem(1, in);
-  CHECK(t.channel == 149);
-  CHECK(t.hop_epoch == 3);
-}
 
 TEST(idr_gs_saturates_and_round_trips) {
   mabur::TelemInputs in;

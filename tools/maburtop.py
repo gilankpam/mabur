@@ -436,27 +436,18 @@ def render_rows_compact(model, wall, width):
         state_d = drone.get("state")
         state_ds = state_d.upper() if isinstance(state_d, str) else None
         rows.append(
-            f"DRONE   {_f(state_ds, 8)}  gen {_f(drone.get('gen'), 6)}   "
+            f"DRONE   {_f(state_ds, 8)}   "
             f"applied {_applied_mcsbw_cell(applied.get('mcs'), applied.get('bw'))}"
             f" {_ov_applied_cell(applied.get('overhead_base'), applied.get('overhead_enh'))}  "
             f"rcf age {_age_cell(rcf.get('age_ms'))}  "
             f"tlm {_age_cell(drone.get('tlm_age_ms'))}"
         )
         rows.append(
-            f"ENC     {_f(enc.get('fps'), 5, 1)} fps   "
-            f"{_f(enc.get('mbps'), 5, 2)} Mbps   "
-            f"cmd {_f(enc.get('cmd_kbps'), 5)}k   "
-            f"roi {_f(enc.get('roi_qp'), 3)}   "
-            f"ring {_f(enc.get('ring_drops'), 5)}   "
-            f"dis {_f(enc.get('idr_disagree'), 3)}/{_f(enc.get('enhance_disagree'), 3)}   "
-            f"van {_f(enc.get('vanished_base'), 3)}/{_f(enc.get('vanished_enh'), 3)}   "
-            f"vring {_f(enc.get('venc_ring_fill_pct'), 3)}% "
-            f"drop {_f(enc.get('venc_full_drops'), 4)}   "
+            f"ENC     cmd {_f(enc.get('cmd_kbps'), 5)}k   "
             f"idr {_f(enc.get('idr_gs'), 4)}"
         )
         rows.append(
-            f"TXQ     depth {_f(txq.get('depth'), 3)}/{_f(txq.get('cap'), 3)}   "
-            f"sent {_f(radio.get('sent_pps'), 6, 0)} pps   "
+            f"TXQ     wait {_f(drone.get('txq_wait_ms'), 5)} ms   "
             f"drop {_f(txq.get('drops'), 5)}   "
             f"usb fail {_f(radio.get('usb_fail'), 5)}"
         )
@@ -468,11 +459,10 @@ def render_rows_compact(model, wall, width):
         soc = sys_d.get("soc_temp_c")
         if soc is not None and soc <= -128:
             soc = None
-        radio_rx_ok = drone.get("radio_rx_ok")
-        rx_s = None if radio_rx_ok is None else ("ok" if radio_rx_ok else "DEAF")
+        rx_ok = _radio_rx_ok(drone)
+        rx_s = None if rx_ok is None else ("ok" if rx_ok else "DEAF")
         rows.append(
             f"SYS     soc {_f(soc, 3)}C   "
-            f"rf delta {_f(sys_d.get('thermal_delta'), 3)}   "
             f"cpu {_f(sys_d.get('cpu_pct'), 5, 1)}%   "
             f"radio rx {_f(rx_s, 4)}   "
             f"shed {(_shed_cell(drone) or '--').ljust(4)}"
@@ -627,18 +617,30 @@ def panel_topbar(model, wall):
 def _shed_cell(drone):
     """Which shed holds the enh layer: FS (failsafe, rung 0 / lost link)
     wins over CONG (drone-local TxQueue-pressure or USB-failure shed,
-    sideport drone.congestion_shed, 2026-09-03), which wins over AIR (the
-    air-clock admission gate dropped >= 1 enh AU this window,
-    drone.air_shed, 2026-09-06), else "off". None when the recording
-    predates the congestion key, so it renders as dashes."""
+    sideport drone.congestion_shed, 2026-09-03), else "off". None when the
+    recording predates the congestion key, so it renders as dashes. The
+    air-clock tier (drone.air_shed, "AIR") left the sideport 2026-09-30:
+    per-frame air_ms in au.log carries it now."""
     if drone.get("failsafe_shed"):
         return "FS"
     cong = drone.get("congestion_shed")
     if cong is None:
         return None
-    if cong:
-        return "CONG"
-    return "AIR" if drone.get("air_shed") else "off"
+    return "CONG" if cong else "off"
+
+
+def _radio_rx_ok(drone):
+    """Did the drone's receiver hand over ANY frame last telemetry period?
+    Derived from drone.radio.rx (own + foreign + crcfail) since the
+    radio_rx_ok flag left the wire 2026-09-30. None when the recording
+    carries no rx split."""
+    rx = (drone.get("radio") or {}).get("rx")
+    if not rx:
+        return None
+    vals = [rx.get(k) for k in ("own", "foreign", "crcfail")]
+    if any(v is None for v in vals):
+        return None
+    return sum(vals) > 0
 
 
 _REC_ERR = {1: "OFF", 2: "NOSLOT", 3: "NOCARD", 4: "NOMNT", 5: "FULL", 6: "WRERR"}
@@ -672,11 +674,11 @@ def panel_drone(model, wall):
     prev_drone = model.prev_drone or {}
     body = []
 
-    # state / gen / tlm age
+    # state / tlm age
     state = drone.get("state")
     state_s = state.upper() if isinstance(state, str) else None
     tlm_age = _age_cell(drone.get("tlm_age_ms"))
-    line = (f"state     {_f(state_s, 10)}   gen {_f(drone.get('gen'), 10)}   "
+    line = (f"state     {_f(state_s, 10)}   "
             f"tlm {tlm_age}")
     spans = []
     style_map = {"LINKED": "good", "FAILSAFE": "bad", "BOOT": "warn",
@@ -708,65 +710,30 @@ def panel_drone(model, wall):
 
     # encoder
     enc = drone.get("enc") or {}
-    line3 = (f"encoder   {_f(enc.get('fps'), 5, 1)} fps    "
-             f"{_f(enc.get('mbps'), 5, 2)} Mbps    "
-             f"cmd {_f(enc.get('cmd_kbps'), 5)}k"
-             f"   roi {_f(enc.get('roi_qp'), 3)}"
-             f"   ring {_f(enc.get('ring_drops'), 5)}"
-             f"   dis {_f(enc.get('idr_disagree'), 3)}/{_f(enc.get('enhance_disagree'), 3)}"
-             f"   van {_f(enc.get('vanished_base'), 3)}/{_f(enc.get('vanished_enh'), 3)}"
-             f" ref {_f(enc.get('self_idr_refused'), 2)}"
-             f"   vring {_f(enc.get('venc_ring_fill_pct'), 3)}%"
-             f" drop {_f(enc.get('venc_full_drops'), 4)}"
-             f" idr {_f(enc.get('idr_gs'), 4)}")
-    ring = enc.get("ring_drops")
-    spans3 = []
-    dis_idx = line3.rindex("   dis ")  # anchor to cap ring span
-    if isinstance(ring, (int, float)) and ring > 0:
-        idx = line3.rindex("ring ") + 5
-        spans3.append((idx, dis_idx - idx, "bad"))
-    idr_dis = enc.get("idr_disagree")
-    enh_dis = enc.get("enhance_disagree")
-    if (isinstance(idr_dis, (int, float)) and idr_dis > 0) or (isinstance(enh_dis, (int, float)) and enh_dis > 0):
-        idx = line3.rindex("dis ") + 4
-        spans3.append((idx, len(line3) - idx, "bad"))
-    body.append((line3, spans3))
+    line3 = (f"encoder   cmd {_f(enc.get('cmd_kbps'), 5)}k"
+             f"   idr {_f(enc.get('idr_gs'), 4)}")
+    body.append((line3, []))
 
     # queue (txq)
     txq = drone.get("txq") or {}
-    depth, cap = txq.get("depth"), txq.get("cap")
-    depth_s, cap_s = _f(depth, 3), _f(cap, 3)
     drops_s = _f(txq.get("drops"), 5)
     wait_s = _f(drone.get("txq_wait_ms"), 5)
-    air_s = _f(drone.get("air_backlog_max_ms"), 4)
-    line4 = f"queue     {depth_s} / {cap_s}   txw {wait_s} ms   drops {drops_s}   air {air_s} ms"
+    line4 = f"queue     txw {wait_s} ms   drops {drops_s}"
     spans4 = []
-    if depth is not None and cap is not None and depth > cap / 2:
-        idx = line4.index(depth_s)
-        spans4.append((idx, len(depth_s), "warn"))
     if _increased(txq.get("drops"), (prev_drone.get("txq") or {}).get("drops")):
         idx = line4.rindex(drops_s)
         spans4.append((idx, len(drops_s), "bad"))
-    ab = drone.get("air_backlog_max_ms")
-    if isinstance(ab, (int, float)) and ab >= 25:
-        idx = line4.rindex(air_s)
-        spans4.append((idx, len(air_s), "warn"))
     body.append((line4, spans4))
 
     # radio (RadioTx)
     radio = drone.get("radio") or {}
     prev_radio = prev_drone.get("radio") or {}
-    sent_s = _f(radio.get("sent_pps"), 6, 0)
-    rdrops_s = _f(radio.get("drops"), 5)
     usbf_s = _f(radio.get("usb_fail"), 5)
     rx = radio.get("rx") or {}
-    line5 = (f"radio     sent {sent_s}/s   drops {rdrops_s}    usb fail {usbf_s}"
+    line5 = (f"radio     usb fail {usbf_s}"
              f"    rx own {_f(rx.get('own'), 3)} foreign {_f(rx.get('foreign'), 3)} "
              f"crc {_f(rx.get('crcfail'), 3)}")
     spans5 = []
-    if _increased(radio.get("drops"), prev_radio.get("drops")):
-        idx = line5.index(rdrops_s)
-        spans5.append((idx, len(rdrops_s), "bad"))
     if _increased(radio.get("usb_fail"), prev_radio.get("usb_fail")):
         idx = line5.rindex(usbf_s)
         spans5.append((idx, len(usbf_s), "bad"))
@@ -793,7 +760,6 @@ def panel_drone(model, wall):
         soc = None
     soc_s = _f(soc, 3)
     line8 = (f"system    soc {soc_s}°C    "
-             f"rf Δ{_f(sys_d.get('thermal_delta'), 2)}    "
              f"cpu {_f(sys_d.get('cpu_pct'), 5, 1)}%")
     spans8 = []
     if soc is not None:
@@ -801,14 +767,14 @@ def panel_drone(model, wall):
         if style:
             idx = line8.index(soc_s)
             spans8.append((idx, len(soc_s), style))
-    if drone.get("radio_rx_ok") is False:
+    if _radio_rx_ok(drone) is False:
         line8 += "    radio rx DEAF"
         idx = line8.rindex("DEAF")
         spans8.append((idx, len("DEAF"), "bad"))
     shed = _shed_cell(drone)
     shed_s = (shed if shed is not None else "--").ljust(4)
     line8 += f"    shed {shed_s}"
-    if shed in ("FS", "CONG", "AIR"):
+    if shed in ("FS", "CONG"):
         idx = line8.rindex(shed_s)
         spans8.append((idx, len(shed_s), "warn"))
     if drone.get("low_power"):
@@ -891,32 +857,6 @@ def panel_video(model, wall):
         line_lat = (f"lat ms p50/p99  enc {_lat('enc'):>7}  dq {_lat('dq'):>7}  "
                     f"air+ {_lat('air'):>7}  fec {_lat('fec'):>7}")
         body.append((line_lat, []))
-
-    drone = d.get("drone")
-    if drone is not None:
-        enc = drone.get("enc") or {}
-        enc_fps, out_fps = enc.get("fps"), video.get("fps")
-        radio = drone.get("radio") or {}
-        sent_pps = radio.get("sent_pps")
-        cards = d.get("cards") or []
-        inj_vals = [c.get("inj_pps") for c in cards if c.get("inj_pps") is not None]
-        inj_pps = max(inj_vals) if inj_vals else None
-
-        parts, cross_spans, cursor = [], [], 0
-        if enc_fps is not None and out_fps is not None:
-            seg = f"encoder {_f(enc_fps, 5, 1)} fps ──► out {_f(out_fps, 5, 1)} fps"
-            ok = enc_fps != 0 and abs(enc_fps - out_fps) <= 0.05 * abs(enc_fps)
-            cross_spans.append((cursor, len(seg), "good" if ok else "bad"))
-            parts.append(seg)
-            cursor += len(seg) + 6
-        if sent_pps is not None and inj_pps is not None:
-            seg2 = f"sent {_f(sent_pps, 5, 0)}/s ──► inj {_f(inj_pps, 5, 0)}/s"
-            ok2 = sent_pps != 0 and abs(sent_pps - inj_pps) <= 0.05 * abs(sent_pps)
-            cross_spans.append((cursor, len(seg2), "good" if ok2 else "bad"))
-            parts.append(seg2)
-        if parts:
-            body.append(("", []))
-            body.append(("      ".join(parts), cross_spans))
 
     return _panel("VIDEO OUT", body)
 

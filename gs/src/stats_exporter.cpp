@@ -509,21 +509,24 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     // window was last computed (age still advances every poll).
     const bool is_new_snapshot =
         !prev_telem_valid_ || t.tlm_seq != prev_telem_.tlm_seq;
-    // A maburd restart resets tlm_seq/generation/every cumulative counter
-    // back to ~0. Naively wrap-safe-subtracting the u16/u32 counters against
+    // A maburd restart resets tlm_seq and every cumulative counter back to
+    // ~0. Naively wrap-safe-subtracting the u16/u32 counters against
     // the pre-restart baseline then yields a ~4e9-scale (or huge tlm_seq
     // delta) garbage rate for exactly one window. Detect the restart instead
     // of computing a rate across it: an (unsigned) tlm_seq delta outside
     // [1, 32767] is either a huge forward jump (impossible at ~1 Hz) or a
-    // seq that went backwards (delta wraps to something huge); generation
-    // regressing (cur < prev) is the same signal from the op-state side.
+    // seq that went backwards (delta wraps to something huge); a cumulative
+    // u32 counter regressing (cur < prev -- they never wrap at these rates)
+    // catches the restart whose new tlm_seq lands a small step past the
+    // old one.
     // is_new_snapshot already guarantees tlm_seq changed, so the delta is
     // never 0 here.
     bool is_restart = false;
     if (is_new_snapshot && prev_telem_valid_) {
       const uint16_t seq_delta =
           static_cast<uint16_t>(t.tlm_seq - prev_telem_.tlm_seq);
-      is_restart = seq_delta > 32767 || t.generation < prev_telem_.generation;
+      is_restart = seq_delta > 32767 || t.rcf_rx < prev_telem_.rcf_rx ||
+                   t.txq_drops < prev_telem_.txq_drops;
     }
     if (is_new_snapshot && prev_telem_valid_ && !is_restart &&
         in.telem_rx_ms > prev_telem_rx_ms_) {
@@ -532,17 +535,10 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
       // Wrap-safe: subtract in the counter's own (unsigned) width before
       // widening to double, so a wrapped counter yields the correct small
       // delta instead of a huge one.
-      const uint32_t d_frames = t.enc_frames - prev_telem_.enc_frames;
-      const uint32_t d_kbytes = t.enc_kbytes - prev_telem_.enc_kbytes;
       const uint32_t d_rcf = t.rcf_rx - prev_telem_.rcf_rx;
       const uint32_t d_txq_drops = t.txq_drops - prev_telem_.txq_drops;
-      const uint32_t d_radio_sent = t.radio_sent - prev_telem_.radio_sent;
-      telem_enc_fps_ = static_cast<double>(d_frames) / dt_s;
-      telem_enc_mbps_ =
-          static_cast<double>(d_kbytes) * 1024.0 * 8.0 / 1e6 / dt_s;
       telem_rcf_rx_pps_ = static_cast<double>(d_rcf) / dt_s;
       telem_txq_drop_pps_ = static_cast<double>(d_txq_drops) / dt_s;
-      telem_radio_sent_pps_ = static_cast<double>(d_radio_sent) / dt_s;
       have_telem_rates_ = true;
     }
     if (is_restart) {
@@ -568,20 +564,11 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     d["txq_wait_ms"] = t.txq_wait_max_ms;
     d["tlm_seq"] = t.tlm_seq;
     d["state"] = t.state < 4 ? kTelemStateNames[t.state] : "unknown";
-    d["gen"] = t.generation;
     d["failsafe_shed"] = (t.flags & 0x01) != 0;
-    d["radio_rx_ok"] = (t.flags & 0x02) != 0;
-    d["probing"] = (t.flags & 0x04) != 0;
     // TxQueue-pressure / USB-failure shed (drone-local, flags bit4). A
     // shed enh layer is silence to the ladder, so this bit is the only way
     // to tell a congestion-caused enh gap from an RF one.
     d["congestion_shed"] = (t.flags & 0x10) != 0;
-    // Air clock (spec 2026-09-06): per-window max of the drone's modelled
-    // air backlog, enh AUs its admission gate dropped, and whether it
-    // dropped any this window (flags bit5). Third shed tier for maburtop.
-    d["air_shed"] = (t.flags & 0x20) != 0;
-    d["air_backlog_max_ms"] = t.air_backlog_max_ms;
-    d["air_shed_drops"] = t.air_shed_drops;
     // Low-power (pre-arm) operating point, flags bit7 (spec 2026-09-20):
     // the drone is deliberately at low_power.bitrate_kbps / fps because
     // the FC reports DISARMED. maburtop shows LP; the compact OSD tints fps.
@@ -599,37 +586,14 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     rcf["age_ms"] = t.rcf_age_ms;
     rcf["rx_pps"] = have_telem_rates_ ? json(telem_rcf_rx_pps_) : json(nullptr);
     json& enc = d["enc"];
-    enc["fps"] = have_telem_rates_ ? json(telem_enc_fps_) : json(nullptr);
-    enc["mbps"] = have_telem_rates_ ? json(telem_enc_mbps_) : json(nullptr);
     enc["cmd_kbps"] = t.cmd_kbps;
-    // roi_qp = RcAgent's ROI override (signed delta). Before 2026-09-03 the
-    // same value was exported as `enc.qp`; that key is gone — this SDK has
-    // no encoder-QP readback (docs/data-provenance.md).
-    enc["roi_qp"] = t.roi_qp;
-    enc["ring_drops"] = t.ring_drops;
-    enc["idr_disagree"] = t.idr_disagree;
-    enc["enhance_disagree"] = t.enhance_disagree;
-    // venc-ring vanish counters (docs/venc-ring-vanish-findings-2026-08-12.md):
-    // frames lost inside the drone before frame_id assignment — invisible to
-    // every FEC/wire counter by construction, so this is their ONLY export.
-    enc["vanished_base"] = t.vanished_base;
-    enc["vanished_enh"] = t.vanished_enh;
-    enc["self_idr_refused"] = t.self_idr_refused;
-    // Producer-side venc ring (spec 2026-08-28 venc-foldin): full_drops are
-    // AUs the encoder discarded because maburd fell behind draining the shm
-    // ring — distinct from enc.ring_drops, which is the consumer side.
-    enc["venc_full_drops"] = t.venc_full_drops;
-    enc["venc_ring_fill_pct"] = t.venc_ring_fill_pct;
     // GS-requested IDRs the drone served (spec 2026-09-28; only a web GS
     // requests, so maburgs reads 0 unless a web page flew this drone).
     enc["idr_gs"] = t.idr_gs;
     json& txq = d["txq"];
-    txq["depth"] = t.txq_depth;
-    txq["cap"] = t.txq_cap;  // wire value as-is (256 saturates to 255 on the wire)
     txq["drop_pps"] = have_telem_rates_ ? json(telem_txq_drop_pps_) : json(nullptr);
     txq["drops"] = t.txq_drops;
     json& radio = d["radio"];
-    radio["sent_pps"] = have_telem_rates_ ? json(telem_radio_sent_pps_) : json(nullptr);
     // The drone's own RX-side view of the channel for the last telemetry
     // period (cca-on 2026-09-23): frames that were ours (RC from this GS),
     // CRC-clean frames that were not (foreign 802.11 on our channel) and
@@ -640,7 +604,6 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     // it once per tlm_seq.
     radio["rx"] = {{"own", t.rx_own}, {"foreign", t.rx_foreign},
                    {"crcfail", t.rx_crcfail}};
-    radio["drops"] = t.radio_drops;
     radio["usb_fail"] = t.usb_fail;
     // Raw rssi 0 on both chains is never a legitimate live reading — it is
     // the wire's all-zero default for "no RC frame ever heard" (deaf radio /
@@ -663,17 +626,9 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
                      {"snr_b", t.up_snr[1] * kSnrRawToDb}};
     }
     d["sys"] = {{"soc_temp_c", t.soc_temp_c},
-                {"thermal_delta", t.thermal_delta},
                 // 65535 = unavailable (first tick after a maburd start).
                 {"cpu_pct", t.cpu_busy_x100 == 65535 ? json(nullptr)
                                                      : json(t.cpu_busy_x100 / 100.0)}};
-    // In-flight channel hop readback (spec 2026-09-14-inflight-channel-hop
-    // §1): the channel RcAgent believes it is actually on, and the epoch of
-    // the last hop order it applied -- the drone's own confirmation,
-    // independent of the GS-side hop.* block above (which is what the GS
-    // ordered; this is what the drone landed on).
-    d["channel"] = t.channel;
-    d["hop_epoch"] = t.hop_epoch;
   } else {
     j["drone"] = nullptr;
   }

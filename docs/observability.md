@@ -811,14 +811,14 @@ so the honest knob is `encoder.bitrate_max_kbps` (`waybeam.bitrate_max_kbps`
 before the fold-in renamed the section) — the bench runs 10000.
 Full findings: `docs/venc-ring-vanish-findings-2026-08-12.md` (committed
 with the detection port). The detection (pts-jump, EMA-period,
-shed-immune) ships in maburd and exports as
+shed-immune) ships in maburd and exported as
 `drone.enc.{vanished_base,vanished_enh,self_idr_refused}` on the sideport
-(Telem wire grew 61→67, then 67→70 for the venc ring stats below, 70→83
+until the 2026-09-30 telem diet removed them (Telem wire grew 61→67, then 67→70 for the venc ring stats below, 70→83
 for link-rtt, 83→84 for `roi_qp` and back to 83 the same night when the
 never-filled encoder `qp` byte was dropped — a
 version-mismatched pair just drops T_TELEM on CRC, so telemetry reads
-absent until both ends run the same build; video is unaffected) plus a 5 s
-`frame_ring:` stderr line in `/tmp/mabur.log`.
+absent until both ends run the same build; video is unaffected); the 5 s
+`frame_ring:` stderr line in `/tmp/mabur.log` still carries them.
 
 **ROI QP, no encoder QP, and the congestion-shed bit (2026-09-03).**
 `drone.enc.roi_qp` is RcAgent's ROI QP *override* as commanded (signed
@@ -828,8 +828,8 @@ analysis mistook it for "rate control never moved"
 (`docs/handover-venc-overshoot-2026-09-03.md`). For a few hours that day
 `drone.enc.qp` carried the encoder's `startQual` instead — which this
 firmware never fills — so the key was deleted rather than shipped as a
-permanent 0: **there is no encoder-QP readback on this SDK.** maburtop's
-encoder row shows `roi -NN`. Alongside,
+permanent 0: **there is no encoder-QP readback on this SDK.** (`roi_qp`
+itself left the wire in the 2026-09-30 telem diet.) Alongside,
 `drone.congestion_shed` (Telem flags bit4) is true while
 `RcAgent::run_congestion_guard` holds any shed level — the drone-local
 TxQueue-pressure / USB-failure shed (`docs/link-adaptation.md`, "Drone
@@ -837,9 +837,11 @@ congestion shed") — distinct from `failsafe_shed` (rung 0 / lost link).
 A shed enh layer is silence to the GS ladder, so this bit is the only way
 to attribute an enh gap to congestion rather than RF, and the only way a
 bench can count sheds at all. maburtop's system row renders the pair as
-`shed FS|CONG|AIR|off`. The drone `stats:` stderr line carries `enc_pk100=`,
-the peak 100 ms encoder byte rate (kbit/s, decimal) inside that stats
-second — the burst the 1 Hz `drone.enc.mbps` average hides — and, since
+`shed FS|CONG|off` (`AIR` too until 2026-09-30); `flightreport.py`'s
+DRONE TX PATH section counts the periods each held. The drone `stats:`
+stderr line carries `enc_pk100=`, the peak 100 ms encoder byte rate
+(kbit/s, decimal) inside that stats second — the burst the 1 Hz
+`drone.enc.mbps` average (removed 2026-09-30) hid — and, since
 2026-09-20, `lp=`/`armed=` (see "2026-09-20 (low-power mode)" below).
 
 **2026-09-23 (pre-FEC loss is late, not lost; and pooled).** `link.pre_fec_loss`
@@ -888,7 +890,19 @@ maburtop shows `VREC` / `VREC!<OFF|NOSLOT|NOCARD|NOMNT|FULL|WRERR>` on
 the drone line. The player turns the value into the REC field's VTX leg
 (`docs/vtx-recorder.md`). Recordings made before this date have no key.
 
-**2026-09-06 (air clock).** `drone.air_backlog_max_ms` is the per-window
+**2026-09-30 (telem diet, RC_VERSION 13).** `T_TELEM` shrank 98 → 53
+bytes: every field only maburtop read is gone (the key list is in
+`docs/data-provenance.md`). What stays under `drone.*`: `state`,
+`tlm_seq`/`tlm_age_ms`, `failsafe_shed`, `congestion_shed`, `low_power`,
+`rec`, `applied`, `rcf.{age_ms,rx_pps}`, `enc.{cmd_kbps,idr_gs}`,
+`txq_wait_ms`, `txq.{drops,drop_pps}`, `radio.{usb_fail,rx}`, `uplink`
+(per drone antenna — the dead-antenna check), `sys.{soc_temp_c,cpu_pct}`.
+maburtop's `DEAF` cell is now derived from `radio.rx` (own + foreign +
+crcfail = 0) and its encoder-fps / sent→inj cross-check row is gone.
+`flightreport.py` gained a DRONE TX PATH section (txq wait, txq drops,
+USB fails, CPU, shed periods, once per `tlm_seq`).
+
+**2026-09-06 (air clock).** `drone.air_backlog_max_ms` was the per-window
 max of the drone's modelled air backlog (`AirClock`, spec
 2026-09-06; `docs/link-adaptation.md` "Drone air clock"),
 `drone.air_shed_drops` the enh AUs its admission gate has dropped since
@@ -899,7 +913,9 @@ this window — the third shed tier, below FS and CONG in maburtop's
 backlog reported, nothing dropped. Per frame, the same backlog rides the
 SBI body header (`air_ms`, ver 2) into the AU ring (SlotHdr v3, offset
 52) and the AU log's 12th column (`# aulog 3`); `tools/bench/airdrain.py
---model` compares it against the player's measured air excess.
+--model` compares it against the player's measured air excess. The three
+sideport keys and the `AIR` shed tier left with the 2026-09-30 telem diet;
+the per-frame `air_ms` is the surviving (finer) record.
 
 **2026-09-20 (low-power mode).** `drone.low_power` (Telem flags bit7) is
 true while the low-power operating point is in force
@@ -911,17 +927,12 @@ same way a shed is; the compact bar tints its fps cell caution while set
 link-sourced while the fps number is player-measured. The drone `stats:` line carries `lp=`/`armed=` and the
 `rc: low_power ENTER/EXIT` lines mark transitions.
 
-Since the venc fold-in (spec 2026-08-28) the drone also reports the
-PRODUCER side of that ring, straight from `venc_get_stats()`:
-`drone.enc.venc_ring_fill_pct` (0–100 occupancy at the telemetry tick) and
-`drone.enc.venc_full_drops` (lifetime access units the encoder discarded
-because maburd had not drained the ring). maburtop shows them as
-`vring NN% drop N` on the encoder row. Read them against
-`drone.enc.ring_drops`, which is the CONSUMER side of the same ring: fill
-climbing with `venc_full_drops` rising means the encoder is outrunning
-maburd, while `ring_drops` rising means maburd rejected slots it did read.
-A *stalled* encoder shows as neither — `drone.enc.fps`/`enc_frames` simply
-stop advancing.
+From the venc fold-in (spec 2026-08-28) until the 2026-09-30 telem diet
+the drone also reported the PRODUCER side of that ring, straight from
+`venc_get_stats()`: `drone.enc.venc_ring_fill_pct` and
+`drone.enc.venc_full_drops`, read against the CONSUMER-side
+`drone.enc.ring_drops`; all three are gone from the wire (the consumer
+side still prints on the `frame_ring:` stderr line).
 `drone.enc.idr_gs` (Telem.idr_gs, since RC_VERSION 12) counts IDRs the
 drone issued because a GS asked for one over the RCF `idr_epoch` byte. Only
 the web GS asks (spec 2026-09-28), so with maburgs flying it stays 0.

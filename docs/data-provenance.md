@@ -179,7 +179,14 @@ SigmaStar image counts the SDK's parked D-state workers and read a flat
 ~13 whether idle or pegged — never a CPU signal in any recording;
 replaced by `drone.sys.cpu_pct`, the busy percent of the telemetry tick
 from a `/proc/stat` delta, `null` on the first tick after a maburd
-start).
+start); 2026-09-30 the telem diet (RC_VERSION 13, section below):
+`drone.gen`, `drone.radio_rx_ok`, `drone.probing`, `drone.air_shed`,
+`drone.air_backlog_max_ms`, `drone.air_shed_drops`, `drone.channel`,
+`drone.hop_epoch`, `drone.enc.fps`/`mbps`/`roi_qp`/`ring_drops`/
+`idr_disagree`/`enhance_disagree`/`vanished_base`/`vanished_enh`/
+`self_idr_refused`/`venc_full_drops`/`venc_ring_fill_pct`,
+`drone.txq.depth`/`cap`, `drone.radio.sent_pps`/`drops`,
+`drone.sys.thermal_delta`.
 Removed keys are absent, not null. Keep appending to that list — not to protect
 consumers, but because a recording made before a removal still carries the
 key and `flightreport.py` still reads old recordings. The
@@ -790,3 +797,37 @@ Full detail: `docs/inflight-channel-hop.md` §2/§3/§8,
   `tools/maburtop.py` gains a per-card `fbusy` column (renamed from `air%`
   in the final-review fix wave: it was always foreign busy, never own
   airtime) (`max(0, busy_pct − own_air_pct)`). See `docs/observability.md`.
+
+## 2026-09-30 — telem diet: RC_VERSION 13, Telem 98 → 53 bytes
+
+`T_TELEM` dropped every field no GS consumer read — link control, the
+player OSD, the web UI, `flightreport.py` / `flightjitter.py` — leaving
+the ones that were maburtop-only on the wire nowhere. A **flag day**: a
+v12 drone and a v13 GS (or the reverse) do not parse each other's RC
+frames at all (`docs/deploy.md`).
+
+- **Removed Telem fields:** `generation`, `enc_frames`, `enc_kbytes`,
+  `roi_qp`, `ring_drops`, `idr_disagree`, `enhance_disagree`,
+  `vanished_base`, `vanished_enh`, `self_idr_refused`, `venc_full_drops`,
+  `venc_ring_fill_pct`, `txq_depth`, `txq_cap`, `radio_sent`,
+  `radio_drops`, `air_backlog_max_ms`, `air_shed_drops`, `thermal_delta`,
+  `channel`, `hop_epoch`, and flag bits 1 (`radio_rx_ok`), 2 (`probe_on`),
+  5 (`air_shed`). The drone-side counters still exist; most still print
+  on maburd's own 5 s `frame_ring:` stderr line.
+- **Removed sideport keys:** the list above. A recording before this date
+  still carries them; nothing in-repo reads them any more.
+- **Where the evidence went:** per-frame air backlog was always in the SBI
+  `air_ms` → `au.log` column 12 (finer than the 1 Hz window max);
+  "drone heard nothing" is `drone.radio.rx` own + foreign + crcfail = 0
+  (maburtop derives its `DEAF` cell from it); the drone's channel is
+  whichever channel its video arrives on (`link.channel`, `scan.log` `H`
+  lines).
+- **Exporter restart detection** used `generation` regressing as its
+  second signal; it now uses `drone.rcf_rx` / `drone.txq.drops`
+  regressing. Rates (`drone.rcf.rx_pps`, `drone.txq.drop_pps`) are
+  unaffected otherwise.
+- **`flightreport.py` DRONE TX PATH** (new section): txq wait p50/p90/max,
+  txq drops and USB fails as summed per-period growth, CPU p50/p90/max,
+  congestion/failsafe shed period counts — once per `tlm_seq`. It reads
+  keys that predate the diet, so it also reports on older recordings.
+

@@ -366,8 +366,7 @@ class StatsExporter {
   mabur::rc::Telem prev_telem_{};
   uint64_t prev_telem_rx_ms_ = 0;
   bool have_telem_rates_ = false;
-  double telem_enc_fps_ = 0, telem_enc_mbps_ = 0, telem_rcf_rx_pps_ = 0,
-         telem_txq_drop_pps_ = 0, telem_radio_sent_pps_ = 0;
+  double telem_rcf_rx_pps_ = 0, telem_txq_drop_pps_ = 0;
 };
 
 }  // namespace maburgs
