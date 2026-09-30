@@ -372,13 +372,10 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     const double phy = mabur::rc::phy_rate_mbps(rung);
     json fj;
     fj["stream"] = s;
-    // The actually-applied overhead from telemetry when available (s==0 ->
-    // base, s==1 -> enh); falls back to that sid's op pair value (base for
-    // sid0, enh for sid1 -- Task 5) before the first telemetry snapshot
-    // arrives.
-    if (in.telem) fj["ov"] = s == 0 ? in.telem->applied_ov_base
-                                    : in.telem->applied_ov_enh;
-    else fj["ov"] = s == 0 ? in.op.overhead_base : in.op.overhead_enh;
+    // The commanded op pair's overhead (base for sid0, enh for sid1). The
+    // drone's applied-overhead echo left Telem 2026-09-30; the two only
+    // ever differed under the bench :8301 override.
+    fj["ov"] = s == 0 ? in.op.overhead_base : in.op.overhead_enh;
     fj["rung_mcs"] = rung.mcs;
     fj["rung_bw"] = rung.bw;
     fj["rung_ldpc"] = rung.ldpc;
@@ -553,10 +550,6 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
       prev_telem_valid_ = true;
     }
 
-    mabur::rc::PhyMode mode;
-    uint8_t mcs = 0, bw = 0;
-    mabur::rc::decode_profile(t.applied_profile, mode, mcs, bw);
-
     json& d = j["drone"];
     d["tlm_age_ms"] = now_ms > in.telem_rx_ms ? now_ms - in.telem_rx_ms : 0;
     // Task 4/5 latency accounting: per-telemetry-window max TxQueue wait,
@@ -577,19 +570,11 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     // state (0 off, 1 recording, 2 error) and error code (0..6, RecErr in
     // drone/src/vtx_recorder.h). maburtop and the player OSD read it.
     d["rec"] = {{"state", t.rec_status & 0x03}, {"err", t.rec_status >> 2}};
-    d["applied"] = {{"mcs", mcs},
-                    {"bw", bw},
-                    {"vht", mode == mabur::rc::PhyMode::VHT},
-                    {"overhead_base", t.applied_ov_base},
-                    {"overhead_enh", t.applied_ov_enh}};
     json& rcf = d["rcf"];
     rcf["age_ms"] = t.rcf_age_ms;
     rcf["rx_pps"] = have_telem_rates_ ? json(telem_rcf_rx_pps_) : json(nullptr);
     json& enc = d["enc"];
     enc["cmd_kbps"] = t.cmd_kbps;
-    // GS-requested IDRs the drone served (spec 2026-09-28; only a web GS
-    // requests, so maburgs reads 0 unless a web page flew this drone).
-    enc["idr_gs"] = t.idr_gs;
     json& txq = d["txq"];
     txq["drop_pps"] = have_telem_rates_ ? json(telem_txq_drop_pps_) : json(nullptr);
     txq["drops"] = t.txq_drops;

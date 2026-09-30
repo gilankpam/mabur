@@ -485,23 +485,24 @@ TEST(stream_rows_fall_back_to_op_overhead_without_telem) {
   CHECK(j["link"]["vtx_id"] == 1);
 }
 
-TEST(stream_rows_carry_applied_overhead_from_telem) {
-  // Telem present: base -> applied_ov_base, enh -> applied_ov_enh (the
-  // pair actually flying -- the op pair, or the debug-HTTP override when
-  // armed; Task 7 deleted the solver that used to compute this).
+TEST(stream_rows_ignore_telem_use_commanded_overhead) {
+  // The drone's applied-overhead echo left Telem 2026-09-30: with a telem
+  // snapshot present the stream rows still carry the commanded op pair.
   Capture cap;
   StatsExporter ex(1, 500, cap.fn());
   StatsInput in = base_input();
+  in.op.overhead_base = 0.25;
+  in.op.overhead_enh = 0.5;
   in.streams[1].bodies = 100;
   mabur::rc::Telem t;
-  t.applied_ov_base = 0.40;
-  t.applied_ov_enh = 0.60;
+  t.tlm_seq = 1;
   in.telem = t; in.telem_rx_ms = 900;
   ex.poll(1000, in);
   const json j = cap.last();
-  CHECK(std::abs(j["link"]["streams"][0]["ov"].get<double>() - 0.40) < 1e-9);
-  CHECK(std::abs(j["link"]["streams"][1]["ov"].get<double>() - 0.60) < 1e-9);
+  CHECK(std::abs(j["link"]["streams"][0]["ov"].get<double>() - 0.25) < 1e-9);
+  CHECK(std::abs(j["link"]["streams"][1]["ov"].get<double>() - 0.5) < 1e-9);
 }
+
 TEST(drone_section_null_then_rates) {
   Capture cap;
   StatsExporter ex(1, 500, cap.fn());
@@ -559,11 +560,12 @@ TEST(telem_diet_keys_absent) {
   ex.poll(1000, in);
   const json d = cap.last()["drone"];
   for (const char* k : {"gen", "radio_rx_ok", "probing", "air_shed", "air_backlog_max_ms",
-                        "air_shed_drops", "channel", "hop_epoch"})
+                        "air_shed_drops", "channel", "hop_epoch", "applied"})
     CHECK(!d.contains(k));
   for (const char* k : {"fps", "mbps", "roi_qp", "ring_drops", "idr_disagree",
                         "enhance_disagree", "vanished_base", "vanished_enh",
-                        "self_idr_refused", "venc_full_drops", "venc_ring_fill_pct"})
+                        "self_idr_refused", "venc_full_drops", "venc_ring_fill_pct",
+                        "idr_gs"})
     CHECK(!d["enc"].contains(k));
   CHECK(!d["txq"].contains("depth"));
   CHECK(!d["txq"].contains("cap"));
@@ -572,7 +574,6 @@ TEST(telem_diet_keys_absent) {
   CHECK(!d["sys"].contains("thermal_delta"));
   // Kept neighbours still present.
   CHECK(d["enc"].contains("cmd_kbps"));
-  CHECK(d["enc"].contains("idr_gs"));
   CHECK(d["txq"].contains("drops"));
   CHECK(d["radio"].contains("usb_fail"));
   CHECK(d["sys"].contains("cpu_pct"));
@@ -897,7 +898,7 @@ TEST(uplink_snr_is_exported_in_dB_not_half_dB) {
 // drone.applied would sail through the suite while silently un-doing a
 // documented schema removal (CLAUDE.md records it as the one exception to
 // the additive-only v:1 rule). Checked against the exporter's real output,
-// with a telem snapshot present so drone.applied/drone.sys actually exist —
+// with a telem snapshot present so the drone block actually exists —
 // against a null drone section these `contains` checks would pass vacuously.
 // (sys.thermal_delta, once asserted present here, left the wire 2026-09-30.)
 TEST(removed_power_keys_absent) {
@@ -913,9 +914,8 @@ TEST(removed_power_keys_absent) {
   CHECK(!j["link"]["op"].contains("offset_qdb"));
   CHECK(j["link"]["op"]["mcs"] == 5);          // the object is still populated
   REQUIRE(j["drone"].is_object());
-  REQUIRE(j["drone"]["applied"].is_object());
-  CHECK(!j["drone"]["applied"].contains("offset_qdb"));
-  CHECK(!j["drone"]["applied"].contains("derate_qdb"));
+  // drone.applied itself left the sideport 2026-09-30 (telem diet).
+  CHECK(!j["drone"].contains("applied"));
 }
 
 TEST(exporter_link_rungs_array) {
@@ -964,20 +964,6 @@ TEST(exporter_link_rungs_array) {
   ex.poll(1700, pin);
   auto jp = nlohmann::json::parse(sent);
   CHECK(!jp["link"].contains("rungs"));
-}
-
-// drone.enc.idr_gs (spec 2026-09-28): GS-requested IDRs the drone served.
-// REVERT CHECK: fails if the key is dropped from the enc block.
-TEST(idr_gs_exported) {
-  Capture cap;
-  StatsExporter ex(1, 500, cap.fn());
-  StatsInput in = base_input();
-  mabur::rc::Telem t;
-  t.idr_gs = 17;
-  in.telem = t;
-  ex.poll(1000, in);
-  const json enc = cap.last()["drone"]["enc"];
-  CHECK(enc["idr_gs"] == 17);
 }
 
 TEST(exporter_attrib_block_and_stream_stale) {

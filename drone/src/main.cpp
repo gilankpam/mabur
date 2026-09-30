@@ -2705,29 +2705,6 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
           ti.congestion_shed = agent.congestion_shed();
           ti.low_power = agent.low_power();
           ti.rec_status = vtx_rec.status_byte();
-          ti.idr_gs = agent.idr_gs_total();
-          // Telemetry rides the robust base rate (slot 0, mcs-1) to ensure
-          // control packets are reliably delivered even at the edge of coverage.
-          // The ladder is 2-slot: slot 0 (base, mcs-1) and slot 1 (enh, mcs).
-          ti.mode = agent.current().ladder[0].mode;
-          ti.mcs = agent.current().ladder[0].mcs;
-          ti.bw = agent.current().ladder[0].bw;
-          // applied_ov_base/enh report the commanded op PAIR (Task 6,
-          // RC_VERSION 5 — the fixed per-rung values RcAgent applies
-          // directly to the UEP layers), or the debug-HTTP per-layer
-          // override when armed (the same two atomics run_bitrate_policy's
-          // override check reads).
-          {
-            const int ob = ov_override.ovr_base_pct.load(std::memory_order_relaxed);
-            const int oe = ov_override.ovr_enh_pct.load(std::memory_order_relaxed);
-            if (ob >= 0 && oe >= 0) {
-              ti.applied_ov_base = ob / 100.0;
-              ti.applied_ov_enh = oe / 100.0;
-            } else {
-              ti.applied_ov_base = agent.current().fec_ov_base;
-              ti.applied_ov_enh = agent.current().fec_ov_enh;
-            }
-          }
           // have_feedback() false means no RCF has EVER been accepted (still
           // BOOT/RENDEZVOUS) — 0 would read as maximally fresh, the opposite of
           // the truth. Pass a value make_telem's saturate<uint16_t> clamps to

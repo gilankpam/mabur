@@ -433,9 +433,10 @@ while unarmed, `Module._webgs_request_idr()` bumps a count whose low byte
 rides every RCF as `idr_epoch`, and RcAgent serves one paced IDR per
 change. Expected freeze ≈ 150 ms (≈ 450 ms if the IDR itself is lost). A
 spotter cannot ask and waits for the next drone-side IDR. No text is drawn
-over the video while frozen; the debug panel's `IDR req / served` pair
-(page count vs Telem `idr_gs`) attributes a slow recovery to lost RCFs
-(served lags req) or lost IDRs (served keeps up, gate still unarmed).
+over the video while frozen; the debug panel's `IDR req` row is the page's
+own request count. (Until the 2026-09-30 telem diet it was an `IDR req /
+served` pair against Telem `idr_gs`; the page sees for itself whether a
+key frame arrived, so the drone's count left the wire.)
 
 `IdrRequester` never asks when `VideoDecoder` doesn't exist in this
 browser (final review, 2026-09-28) -- no request fixes a missing codec API.
@@ -448,13 +449,10 @@ exists for) never backs off. Without this, a device that simply can't
 decode HEVC would have asked the drone for a fresh IDR -- the biggest frame
 on the link -- about 3.3 times a second for the whole flight.
 
-`IDR req` is this page's own count since the current Connect; `served` is
-the drone's Telem `idr_gs` count since the drone last booted, shared by
-every page that has ever asked it. Don't compare the two absolute numbers
-across sessions -- compare their *deltas* within one session instead:
-`served` also collapses multiple `idr_epoch` bumps that land within one RCF
-interval into a single serve, so a burst of asks can legitimately show
-`served` advancing by less than `req` even with no loss at all.
+`IDR req` is this page's own count since the current Connect. The drone
+collapses multiple `idr_epoch` bumps that land within one RCF interval into
+a single IDR, so a burst of asks legitimately yields fewer key frames than
+requests.
 
 **Spotter key frames.** WebCodecs will only start decoding on a real IRAP
 (IRAP NAL types 16–21: BLA/IDR/CRA), never on the drone's GDR parameter-set refresh
@@ -624,7 +622,10 @@ offset, which only exists when this page is itself exchanging RCF/Telem
 with the drone — a spotter has no control channel to measure it over, and
 the panel says so rather than showing a stale or borrowed number.
 
-Link state shown alongside: rung/MCS/width, probe gate state, pre-FEC loss,
+Link state shown alongside: rung/MCS/width (a spotter shows only its
+configured width -- it drives no ladder, so it tracks no MCS; since
+2026-09-30 it no longer reads the drone's applied-op echo), probe gate
+state, pre-FEC loss,
 residual, SNR/RSSI, RCF heard % (Δ`Telem.rcf_rx` / Δ`rcf_sent` over a
 trailing ~10 s window of the stats ring, not the adjacent 1 s tick —
 `rcfHeardPctWindowed()` in `web/ui/src/lib/logic.mjs`; the two counters are

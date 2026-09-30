@@ -38,10 +38,8 @@ DGRAM = {
         "tlm_age_ms": 800, "tlm_seq": 4211, "state": "linked",
         "failsafe_shed": False,
         "congestion_shed": True, "txq_wait_ms": 3,
-        "applied": {"mcs": 5, "bw": 20, "vht": False,
-                    "overhead_base": 0.25, "overhead_enh": 0.25},
         "rcf": {"age_ms": 45, "rx_pps": 19.4},
-        "enc": {"cmd_kbps": 9000, "idr_gs": 2},
+        "enc": {"cmd_kbps": 9000},
         "txq": {"drop_pps": 0.0, "drops": 0},
         "radio": {"usb_fail": 0, "rx": {"own": 18, "foreign": 2, "crcfail": 1}},
         "uplink": {"rssi_a": -58.9, "rssi_b": -58.0, "snr_a": 21.0, "snr_b": 22.0},
@@ -134,14 +132,14 @@ class DronePanelTest(unittest.TestCase):
         rows = panel_drone(_fresh(), 100.2)
         self.assertTrue(rows[0][0].startswith("──"))
         joined = "\n".join(texts(rows))
-        for cell in ("LINKED", "mcs5/20", "ov b0.25/e0.25", "800ms",
-                     "9000k", "idr    2", "txw     3 ms",
+        for cell in ("LINKED", "800ms",
+                     "9000k", "txw     3 ms",
                      "shed CONG",
                      "-58.9", "-58.0", "19.4", " 61", "14.3%"):
             self.assertIn(cell, joined)
         # Keys that left the sideport 2026-09-30 must not be rendered.
         for gone in ("gen", "roi", "ring", "vring", "van ", "rf Δ", "sent",
-                     "air "):
+                     "air ", "applied", "idr"):
             self.assertNotIn(gone, joined)
 
     def test_shed_cell_states(self):
@@ -198,32 +196,6 @@ class DronePanelTest(unittest.TestCase):
         text, spans = body[0]
         self.assertIn("no telemetry", text)
         self.assertEqual(spans, [(0, len(text), "dim")])
-
-    def test_applied_mismatch_bad_span(self):
-        d = dict(DGRAM)
-        d["drone"] = dict(DGRAM["drone"],
-                           applied=dict(DGRAM["drone"]["applied"], mcs=6))
-        rows = panel_drone(_fresh(d), 100.2)
-        text, spans = next((t, s) for t, s in rows if t.startswith("applied"))
-        bad = [sp for sp in spans if sp[2] == "bad"]
-        self.assertTrue(bad)
-        st, ln, _ = bad[0]
-        self.assertIn("mcs6/20", text[st:st + ln])
-
-    def test_ov_split_renders_base_and_enh_no_mismatch_span(self):
-        # applied.overhead_{base,enh} is not diffed against op's pair the
-        # way mcs/bw are: the runtime balancer that used to explain a split
-        # is deleted (2026-08-30 same-rate-fixed-pairs), so applied ≡
-        # commanded except under an armed :8301 override — no bad span
-        # here either way, this panel just doesn't render that comparison.
-        d = dict(DGRAM)
-        d["drone"] = dict(DGRAM["drone"],
-                           applied=dict(DGRAM["drone"]["applied"],
-                                        overhead_base=0.5, overhead_enh=1.0))
-        rows = panel_drone(_fresh(d), 100.2)
-        text, spans = next((t, s) for t, s in rows if t.startswith("applied"))
-        self.assertIn("ov b0.50/e1.00", text)
-        self.assertFalse(any(style == "bad" for _, _, style in spans))
 
     def test_deaf_cell_bad_span(self):
         d = dict(DGRAM)
@@ -677,16 +649,14 @@ class FixedWidthTest(unittest.TestCase):
         extreme = dict(DGRAM)
         extreme["drone"] = dict(
             DGRAM["drone"],
-            gen=4294967295,
             tlm_age_ms=987654321,
-            applied=dict(DGRAM["drone"]["applied"], mcs=999999999, bw=888888888),
-            enc=dict(DGRAM["drone"]["enc"], fps=999999999.99, mbps=999999999.99),
-            txq=dict(DGRAM["drone"]["txq"], depth=999999999, cap=888888888,
-                     drops=999999999),
-            radio=dict(DGRAM["drone"]["radio"], sent_pps=999999999.0,
-                       drops=999999999, usb_fail=99999),
+            txq_wait_ms=999999999,
+            enc=dict(DGRAM["drone"]["enc"], cmd_kbps=999999999),
+            txq=dict(DGRAM["drone"]["txq"], drops=999999999),
+            radio=dict(DGRAM["drone"]["radio"], usb_fail=99999,
+                       rx={"own": 99999, "foreign": 99999, "crcfail": 99999}),
             rcf={"age_ms": 123456789, "rx_pps": 99999.9},
-            sys={"soc_temp_c": -128, "thermal_delta": 99, "cpu_pct": 9999.99},
+            sys={"soc_temp_c": -128, "cpu_pct": 9999.99},
         )
         extreme["cards"] = [
             dict(DGRAM["cards"][0], frames=999999999, pps=99999, rx_mbps=999.9,

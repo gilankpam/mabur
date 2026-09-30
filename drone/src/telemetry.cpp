@@ -58,12 +58,6 @@ rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in) {
                                   (in.rcf_seq_echo_valid ? 0x08 : 0) |
                                   (in.congestion_shed ? 0x10 : 0) |
                                   (in.low_power ? 0x80 : 0));
-  t.applied_profile = rc::encode_profile(in.mode, in.mcs, in.bw);
-  // Per-stream applied overhead: the commanded op pair (Task 6, RC_VERSION
-  // 5), or the debug-HTTP per-layer override when armed — see main.cpp's
-  // telemetry collector and TelemInputs.applied_ov_*.
-  t.applied_ov_base = in.applied_ov_base;
-  t.applied_ov_enh = in.applied_ov_enh;
   t.rcf_age_ms = saturate<uint16_t>(in.rcf_age_ms);
   t.rcf_seq_echo = in.rcf_seq_echo;
   t.pts_at_build = in.pts_at_build_us;
@@ -91,7 +85,6 @@ rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in) {
       in.cpu_pct ? saturate<uint16_t>(std::lround(std::clamp(*in.cpu_pct, 0.0, 100.0) * 100.0))
                  : 65535;
   t.rec_status = in.rec_status;
-  t.idr_gs = saturate<uint16_t>(in.idr_gs);
   return t;
 }
 

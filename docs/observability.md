@@ -890,11 +890,11 @@ maburtop shows `VREC` / `VREC!<OFF|NOSLOT|NOCARD|NOMNT|FULL|WRERR>` on
 the drone line. The player turns the value into the REC field's VTX leg
 (`docs/vtx-recorder.md`). Recordings made before this date have no key.
 
-**2026-09-30 (telem diet, RC_VERSION 13).** `T_TELEM` shrank 98 → 53
+**2026-09-30 (telem diet, RC_VERSION 13).** `T_TELEM` shrank 98 → 48
 bytes: every field only maburtop read is gone (the key list is in
 `docs/data-provenance.md`). What stays under `drone.*`: `state`,
 `tlm_seq`/`tlm_age_ms`, `failsafe_shed`, `congestion_shed`, `low_power`,
-`rec`, `applied`, `rcf.{age_ms,rx_pps}`, `enc.{cmd_kbps,idr_gs}`,
+`rec`, `rcf.{age_ms,rx_pps}`, `enc.cmd_kbps`,
 `txq_wait_ms`, `txq.{drops,drop_pps}`, `radio.{usb_fail,rx}`, `uplink`
 (per drone antenna — the dead-antenna check), `sys.{soc_temp_c,cpu_pct}`.
 maburtop's `DEAF` cell is now derived from `radio.rx` (own + foreign +
@@ -933,7 +933,8 @@ the drone also reported the PRODUCER side of that ring, straight from
 `drone.enc.venc_full_drops`, read against the CONSUMER-side
 `drone.enc.ring_drops`; all three are gone from the wire (the consumer
 side still prints on the `frame_ring:` stderr line).
-`drone.enc.idr_gs` (Telem.idr_gs, since RC_VERSION 12) counts IDRs the
+`drone.enc.idr_gs` (Telem.idr_gs, RC_VERSION 12 until the 2026-09-30 telem
+diet removed it) counted IDRs the
 drone issued because a GS asked for one over the RCF `idr_epoch` byte. Only
 the web GS asks (spec 2026-09-28), so with maburgs flying it stays 0.
 maburtop shows it as `idr N` on the encoder row.

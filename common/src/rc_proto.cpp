@@ -55,7 +55,7 @@ void put_crc(std::vector<uint8_t>& body) {
 constexpr size_t RCF_HEAD_LEN = 19;  // 2026-09-28: +idr_epoch (18: +rec)
 constexpr size_t DISC_LEN = 21;
 constexpr size_t DISC_ACK_LEN = 19;
-constexpr size_t TELEM_LEN = 53;  // 2026-09-30: maburtop-only fields dropped (98)
+constexpr size_t TELEM_LEN = 48;  // 2026-09-30: maburtop-only fields dropped (98)
 
 // magic(2) | ver | type | flags | vtx(4) | nonce(4) | phase | fpc(2) |
 // settle(2) | gap(2) | n_windows(1) | n * 4 bytes
@@ -291,9 +291,6 @@ std::vector<uint8_t> pack_telem(const Telem& t) {
   body.push_back(t.flags);
   put16(body, t.tlm_seq);
   body.push_back(t.state);
-  body.push_back(t.applied_profile);
-  body.push_back(saturate<uint8_t>(std::lround(t.applied_ov_base * 100.0)));
-  body.push_back(saturate<uint8_t>(std::lround(t.applied_ov_enh * 100.0)));
   put16(body, t.rcf_age_ms);
   put16(body, t.rcf_seq_echo);
   put64(body, t.pts_at_build);
@@ -312,7 +309,6 @@ std::vector<uint8_t> pack_telem(const Telem& t) {
   put16(body, t.rx_foreign);
   put16(body, t.rx_crcfail);
   body.push_back(t.rec_status);
-  put16(body, t.idr_gs);
 
   put_crc(body);
   return body;
@@ -332,28 +328,24 @@ std::optional<Telem> parse_telem(const uint8_t* buf, size_t len) {
   t.flags = buf[4];
   t.tlm_seq = get16(buf, 5);
   t.state = buf[7];
-  t.applied_profile = buf[8];
-  t.applied_ov_base = buf[9] / 100.0;
-  t.applied_ov_enh = buf[10] / 100.0;
-  t.rcf_age_ms = get16(buf, 11);
-  t.rcf_seq_echo = get16(buf, 13);
-  t.pts_at_build = get64(buf, 15);
-  t.rcf_rx = get32(buf, 23);
-  t.cmd_kbps = get16(buf, 27);
-  t.txq_drops = get32(buf, 29);
-  t.txq_wait_max_ms = get16(buf, 33);
-  t.usb_fail = get16(buf, 35);
-  t.up_rssi[0] = buf[37];
-  t.up_rssi[1] = buf[38];
-  t.up_snr[0] = static_cast<int8_t>(buf[39]);
-  t.up_snr[1] = static_cast<int8_t>(buf[40]);
-  t.soc_temp_c = static_cast<int8_t>(buf[41]);
-  t.cpu_busy_x100 = get16(buf, 42);
-  t.rx_own = get16(buf, 44);
-  t.rx_foreign = get16(buf, 46);
-  t.rx_crcfail = get16(buf, 48);
-  t.rec_status = buf[50];
-  t.idr_gs = get16(buf, 51);
+  t.rcf_age_ms = get16(buf, 8);
+  t.rcf_seq_echo = get16(buf, 10);
+  t.pts_at_build = get64(buf, 12);
+  t.rcf_rx = get32(buf, 20);
+  t.cmd_kbps = get16(buf, 24);
+  t.txq_drops = get32(buf, 26);
+  t.txq_wait_max_ms = get16(buf, 30);
+  t.usb_fail = get16(buf, 32);
+  t.up_rssi[0] = buf[34];
+  t.up_rssi[1] = buf[35];
+  t.up_snr[0] = static_cast<int8_t>(buf[36]);
+  t.up_snr[1] = static_cast<int8_t>(buf[37]);
+  t.soc_temp_c = static_cast<int8_t>(buf[38]);
+  t.cpu_busy_x100 = get16(buf, 39);
+  t.rx_own = get16(buf, 41);
+  t.rx_foreign = get16(buf, 43);
+  t.rx_crcfail = get16(buf, 45);
+  t.rec_status = buf[47];
   return t;
 }
 

@@ -9,9 +9,6 @@ TEST(make_telem_maps_and_saturates) {
   in.state = 2; in.failsafe_shed = true;
   in.congestion_shed = true;
   in.low_power = true;
-  in.mode = mabur::rc::PhyMode::HT; in.mcs = 5; in.bw = 20;
-  in.applied_ov_base = 0.25;
-  in.applied_ov_enh = 0.4;
   in.rcf_age_ms = 700000;            // saturates u16
   in.usb_fail = 1 << 20;             // saturates u16
   in.txq_drops = 1ull << 33;         // saturates u32
@@ -39,11 +36,6 @@ TEST(make_telem_maps_and_saturates) {
   // Bits 1/2/5 (radio_rx_ok / probe_on / air_shed) are gone since
   // 2026-09-30 and must stay clear.
   CHECK(t.flags == 0x99);  // | low_power (bit7, spec 2026-09-20)
-  CHECK(t.applied_profile == mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 5, 20));
-  // applied_ov_base/enh map straight through — the commanded per-stream
-  // pair, or the debug-HTTP override when armed (main.cpp).
-  CHECK(std::abs(t.applied_ov_base - 0.25) < 1e-9);
-  CHECK(std::abs(t.applied_ov_enh - 0.4) < 1e-9);
   CHECK(t.rcf_age_ms == 65535);
   CHECK(t.usb_fail == 65535);
   CHECK(t.txq_drops == 0xFFFFFFFFu);
@@ -156,16 +148,5 @@ TEST(soc_temp_formats) {
   }
 }
 
-
-TEST(idr_gs_saturates_and_round_trips) {
-  mabur::TelemInputs in;
-  in.idr_gs = 70000;
-  CHECK(mabur::make_telem(1, in).idr_gs == 65535);
-  in.idr_gs = 42;
-  auto wire = mabur::rc::pack_telem(mabur::make_telem(2, in));
-  auto back = mabur::rc::parse_telem(wire.data(), wire.size());
-  REQUIRE(back.has_value());
-  CHECK(back->idr_gs == 42);
-}
 
 MTEST_MAIN

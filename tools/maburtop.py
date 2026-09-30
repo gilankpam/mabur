@@ -50,9 +50,9 @@ RADIO_COLS = [("pps", 5), ("kbps", 6), ("rssi", 6), ("rssiA", 6), ("rssiB", 6),
 # Sticky class rows render in this fixed order regardless of dict/arrival
 # order; "ctrl" gets the short display label "ctl" (cls column is 4 wide,
 # compact renderer only).
-# 2-stream video (2026-08-29 airtime-balance-uep): s0 = BASE (mirrors the
-# ladder rung's mcs-1), s1 = ENH (canary attribution). probe is the
-# stream-5 candidate-mcs canary (spec 2026-09-04). s2/s3 are gone from
+# 2-stream video (2026-08-29 airtime-balance-uep): s0 = BASE, s1 = ENH,
+# both at the ladder rung's mcs (same-rate-fixed-pairs 2026-08-30). probe is
+# the stream-5 candidate-mcs canary (spec 2026-09-04). s2/s3 are gone from
 # the wire — class_seen_ never lights them up GS-side — but the string
 # space stays sparse-safe: an unrecognized class key from an old recording
 # would just never match here, not crash.
@@ -169,39 +169,13 @@ GRID_WIDTH = max(_grid_width(CARD_COLS), _grid_width(LNKSIG_COLS),
                  len(_dec_line("s0", {}, None)))  # widest compact grid row
 
 
-def _applied_mcsbw_cell(mcs, bw, w=7):
-    """'mcs5/20'-style composite cell, fixed-width like _rung_cell: compose
-    then truncate/pad so an untrusted/absurd mcs or bw off the wire can't
-    widen a row. w=7 fits today's real values (1-digit mcs, 2-digit bw)
-    exactly, matching the mockup with no extra padding."""
-    mcs_s = "--" if mcs is None else str(mcs)
-    bw_s = "--" if bw is None else str(bw)
-    s = f"mcs{mcs_s}/{bw_s}"
-    return s[:w].ljust(w) if len(s) > w else s.ljust(w)
-
-
-def _ov_cmd_cell(cmd_base, cmd_enh, ov_base, ov_enh):
-    """Prose-style (top bar / compact header) overhead cell: cmd_base/
-    cmd_enh are the GS-commanded pair the ladder currently sends
-    (link.op.overhead_base/overhead_enh — same-rate-fixed-pairs, Task 5);
-    ov_base/ov_enh are the drone's actual applied per-stream pair from
-    telemetry — '--' before the first T_TELEM snapshot. The runtime
-    AirBalancer solver that used to explain a commanded-vs-applied split is
-    deleted (2026-08-30 same-rate-fixed-pairs); applied now equals commanded
-    except while a bench :8301 ov_base_pct/ov_enh_pct override is armed, so
-    a divergence here means an armed override or a stale/old-daemon
-    snapshot, not a balancer doing its job."""
-    return (f"ov cmd b{_s(cmd_base, 2)}/e{_s(cmd_enh, 2)} "
-            f"(b {_s(ov_base, 2)}/e {_s(ov_enh, 2)})")
-
-
-def _ov_applied_cell(ov_base, ov_enh, w=4):
-    """Fixed-width grid cell for the drone's actual applied per-stream
-    overhead (compact DRONE row / wide 'applied' line) — no comparison
-    against the commanded op scalar; divergence means an armed :8301
-    override or staleness, not a balancer (see _ov_cmd_cell; the solver is
-    deleted as of 2026-08-30 same-rate-fixed-pairs)."""
-    return f"ov b{_f(ov_base, w, 2)}/e{_f(ov_enh, w, 2)}"
+def _ov_cmd_cell(cmd_base, cmd_enh):
+    """Prose-style (top bar / compact header) overhead cell: the
+    GS-commanded pair the ladder currently sends
+    (link.op.overhead_base/overhead_enh — same-rate-fixed-pairs, Task 5).
+    The drone's applied-overhead echo that used to sit beside it in
+    parentheses left telemetry 2026-09-30."""
+    return f"ov cmd b{_s(cmd_base, 2)}/e{_s(cmd_enh, 2)}"
 
 
 def _increased(cur, prev):
@@ -319,7 +293,6 @@ def render_rows_compact(model, wall, width):
         bw = op.get("bw")
         cmd_ov_base = op.get("overhead_base")
         cmd_ov_enh = op.get("overhead_enh")
-        drone_applied = (d.get("drone") or {}).get("applied") or {}
         state_s = state.upper() if isinstance(state, str) else "--"
         header = (
             f"maburgs   {state_s}   vtx {_s(vtx_id)}   "
@@ -327,7 +300,7 @@ def render_rows_compact(model, wall, width):
             f"hop {hop.get('state', '--')}/{hop.get('verdict', '--')}   "
             f"tx c{_s(tx_card)}   "
             f"MCS {_s(mcs)}/{_s(bw)}   "
-            f"{_ov_cmd_cell(cmd_ov_base, cmd_ov_enh, drone_applied.get('overhead_base'), drone_applied.get('overhead_enh'))}"
+            f"{_ov_cmd_cell(cmd_ov_base, cmd_ov_enh)}"
         ).ljust(width)
     rows.append(header)
 
@@ -426,7 +399,6 @@ def render_rows_compact(model, wall, width):
     if drone is None:
         rows.append("DRONE   no telemetry (old maburd / peer caps)")
     else:
-        applied = drone.get("applied") or {}
         rcf = drone.get("rcf") or {}
         enc = drone.get("enc") or {}
         txq = drone.get("txq") or {}
@@ -437,14 +409,11 @@ def render_rows_compact(model, wall, width):
         state_ds = state_d.upper() if isinstance(state_d, str) else None
         rows.append(
             f"DRONE   {_f(state_ds, 8)}   "
-            f"applied {_applied_mcsbw_cell(applied.get('mcs'), applied.get('bw'))}"
-            f" {_ov_applied_cell(applied.get('overhead_base'), applied.get('overhead_enh'))}  "
             f"rcf age {_age_cell(rcf.get('age_ms'))}  "
             f"tlm {_age_cell(drone.get('tlm_age_ms'))}"
         )
         rows.append(
-            f"ENC     cmd {_f(enc.get('cmd_kbps'), 5)}k   "
-            f"idr {_f(enc.get('idr_gs'), 4)}"
+            f"ENC     cmd {_f(enc.get('cmd_kbps'), 5)}k"
         )
         rows.append(
             f"TXQ     wait {_f(drone.get('txq_wait_ms'), 5)} ms   "
@@ -571,7 +540,6 @@ def panel_topbar(model, wall):
     mcs, bw = op.get("mcs"), op.get("bw")
     cmd_ov_base = op.get("overhead_base")
     cmd_ov_enh = op.get("overhead_enh")
-    drone_applied = (d.get("drone") or {}).get("applied") or {}
     air = link.get("air_pct")
     session = model.session
     session_s = "--" if session is None else f"0x{session:08x}"
@@ -587,7 +555,7 @@ def panel_topbar(model, wall):
     text = (
         f" maburgs  {dot} {state_s}   vtx {_s(vtx_id)}   ch {_s(chan)}   "
         f"cmd MCS {_s(mcs)}/{_s(bw)}  "
-        f"{_ov_cmd_cell(cmd_ov_base, cmd_ov_enh, drone_applied.get('overhead_base'), drone_applied.get('overhead_enh'))}   "
+        f"{_ov_cmd_cell(cmd_ov_base, cmd_ov_enh)}   "
         f"air ~{_s(air, 0)}%      session {session_s}   "
         f"restarts {model.restarts}   rx {hz:.1f} Hz"
     )
@@ -690,28 +658,9 @@ def panel_drone(model, wall):
     spans.append((tlm_idx, len(tlm_age), "dim"))
     body.append((line, spans))
 
-    # applied vs commanded op. Overhead is NOT compared against
-    # op.overhead_base/overhead_enh here: the runtime AirBalancer solver
-    # that used to explain a commanded-vs-applied split is deleted
-    # (2026-08-30 same-rate-fixed-pairs) — applied now equals commanded
-    # except while a bench :8301 override is armed, so a numeric diff here
-    # means an armed override or staleness, not the expected behavior an
-    # mcs/bw mismatch would flag.
-    applied = drone.get("applied") or {}
-    mcsbw = _applied_mcsbw_cell(applied.get("mcs"), applied.get("bw"))
-    ov_cell = _ov_applied_cell(applied.get("overhead_base"), applied.get("overhead_enh"))
-    line2 = f"applied   {mcsbw}   {ov_cell}"
-    spans2 = []
-    a_mcs, a_bw = applied.get("mcs"), applied.get("bw")
-    if a_mcs != op.get("mcs") or a_bw != op.get("bw"):
-        idx = line2.index(mcsbw)
-        spans2.append((idx, len(mcsbw), "bad"))
-    body.append((line2, spans2))
-
     # encoder
     enc = drone.get("enc") or {}
-    line3 = (f"encoder   cmd {_f(enc.get('cmd_kbps'), 5)}k"
-             f"   idr {_f(enc.get('idr_gs'), 4)}")
+    line3 = f"encoder   cmd {_f(enc.get('cmd_kbps'), 5)}k"
     body.append((line3, []))
 
     # queue (txq)
@@ -978,8 +927,8 @@ def _ctl_row(ctl):
     """Ladder-controller summary row: current rung, this window's
     loss-pressure u against budget, and the most recent transition (or
     'none@0.00' before the first one ever fires). Rung overhead is a
-    base/enh pair now (same-rate-fixed-pairs) — rendered in the
-    _ov_applied_cell house style, not the removed scalar 'ov' key."""
+    base/enh pair now (same-rate-fixed-pairs) — rendered as b/e, not the
+    removed scalar 'ov' key."""
     rung = ctl.get("rung") or {}
     util = ctl.get("util")
     budget = ctl.get("budget")

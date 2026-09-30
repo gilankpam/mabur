@@ -724,7 +724,7 @@ per device: `maburd.pre-vtxrec` + `mabur.toml.pre-vtxrec`,
 
 ## 2026-09-30 telem diet (RC_VERSION 13)
 
-`T_TELEM` shrinks 98 → 53 bytes and `RC_VERSION` goes 12 → 13 — a
+`T_TELEM` shrinks 98 → 48 bytes and `RC_VERSION` goes 12 → 13 — a
 version-mismatch flag day (no control link, no video between the two
 swaps; finish the deploy, do not restart). **No config change on either
 device**: swap `maburd` and `maburgs` only. `maburplay` is unaffected

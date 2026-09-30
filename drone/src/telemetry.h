@@ -4,7 +4,6 @@
 #include <mutex>
 #include <optional>
 
-#include "mabur/profile.h"
 #include "mabur/rc_proto.h"
 
 namespace mabur {
@@ -36,10 +35,6 @@ struct TelemInputs {
   bool failsafe_shed = false;
   bool congestion_shed = false;  // RcAgent::congestion_shed() — flags bit4
   bool low_power = false;  // RcAgent::low_power() — flags bit7, spec 2026-09-20
-  rc::PhyMode mode = rc::PhyMode::HT;
-  uint8_t mcs = 0, bw = 20;
-  double applied_ov_base = 0.0;
-  double applied_ov_enh = 0.0;
   uint64_t rcf_age_ms = 0, rcf_rx = 0;
   // link-rtt: seq of the RCF rcf_age_ms ages against + the pts-domain clock
   // (MI timebase, µs) at telem build. Straight pass-through, no saturation.
@@ -63,8 +58,6 @@ struct TelemInputs {
   std::optional<double> cpu_pct;
   // VtxRecorder::status_byte() (spec 2026-09-26), straight pass-through.
   uint8_t rec_status = 0;
-  // RcAgent::idr_gs_total() (spec 2026-09-28), saturated to u16.
-  uint64_t idr_gs = 0;
 };
 
 rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in);

@@ -141,7 +141,8 @@ namespace maburgs {
 // link collapsed from 4 UEP streams to 2 (BASE sid 0, ENH sid 1), and every
 // quantity that used to read "stream 3" (the probe/enhancement layer) now
 // reads sid 1, while the ordinary s1 quantities (u, resid) that used to read
-// "stream 1" now read sid 0 (BASE, the mirror of the drone's mcs-1 rule).
+// "stream 1" now read sid 0 (BASE; it rode mcs-1 when v7 landed, the same
+// rung mcs as ENH since 2026-08-30).
 // The pooled RF label source moved with it: base+enh (sid0+sid1), not
 // s1+s3. budget()/util3() are also now the LITERAL FEC command overhead
 // (overhead / (1 + overhead)) rather than a per-layer uep_layer_overhead

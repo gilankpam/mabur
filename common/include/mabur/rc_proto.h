@@ -53,10 +53,11 @@ constexpr uint16_t RC_MAGIC = 0x5243;  // "RC"
 // gains `rec_status`. Spec 2026-09-26-vtx-recorder-design.md.
 // Bumped 11 -> 12 on 2026-09-28: RCF gains `idr_epoch` (GS-requested IDR),
 // Telem gains `idr_gs`. Spec 2026-09-28-web-idr-request-design.md.
-// Bumped 12 -> 13 on 2026-09-30: Telem drops 21 maburtop-only fields
-// (generation, encoder/vanish/venc-ring counters, txq depth/cap, radio
-// sent/drops, air clock, thermal_delta, channel/hop_epoch) and flag bits
-// 1/2/5 -- 98 -> 53 bytes.
+// Bumped 12 -> 13 on 2026-09-30: Telem drops 25 fields no GS consumer
+// needs (generation, encoder/vanish/venc-ring counters, txq depth/cap,
+// radio sent/drops, air clock, thermal_delta, channel/hop_epoch, the
+// applied profile/overhead echo, idr_gs) and flag bits 1/2/5 -- 98 -> 48
+// bytes.
 constexpr uint8_t RC_VERSION = 13;
 
 // RCF probe_profile sentinel: the drone runs no probe stream.
@@ -150,7 +151,8 @@ struct DiscAck {
 // an old GS ignores the unknown type. Spec 2026-07-26 drone-telemetry.
 // Trimmed 2026-09-30 (RC_VERSION 13) to the fields a GS consumer reads --
 // link control, OSD, web UI, flightreport/flightjitter; the maburtop-only
-// encoder/queue/air/channel counters are gone (list in
+// encoder/queue/air/channel counters, the applied-op echo (a spotter takes
+// its width from config) and idr_gs are gone (list in
 // docs/data-provenance.md "Removed sideport keys").
 struct Telem {
   uint16_t tlm_seq = 0;
@@ -174,9 +176,6 @@ struct Telem {
                       //      drone self-initiates it after applying the result — spec 2026-09-10)
                       // bit7 low_power (RcAgent::low_power(): pre-arm 1 Mb/s / 15 fps operating point, spec 2026-09-20)
                       // bits 1, 2, 5 unused (radio_rx_ok / probe_on / air_shed until 2026-09-30).
-  uint8_t applied_profile = 0;  // encode_profile(mode, mcs, bw)
-  double applied_ov_base = 0.0;
-  double applied_ov_enh = 0.0;
   uint16_t rcf_age_ms = 0;  // saturating
   // link-rtt (2026-09-02): seq of the RCF rcf_age_ms is aging against, so
   // the GS can subtract the send time of the RIGHT frame (repeats are 10 ms
@@ -221,11 +220,6 @@ struct Telem {
   // VTX recorder (spec 2026-09-26): bits 0-1 RecState (0 off, 1 recording,
   // 2 error), bits 2-7 RecErr (drone/src/vtx_recorder.h).
   uint8_t rec_status = 0;
-
-  // GS-requested IDRs RcAgent actually issued (spec 2026-09-28), lifetime,
-  // saturating. Against the requester's own count it separates lost RCFs /
-  // pacer deferral from IDRs lost on air.
-  uint16_t idr_gs = 0;
 };
 
 // One rate's index range for a calibration phase. idx_step 4 is the coarse

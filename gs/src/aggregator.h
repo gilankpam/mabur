@@ -74,10 +74,11 @@ struct CardTrack {
   std::array<ClassTrack, kNumRfClasses> cls{};
   // base+enh pooled RF track (spec 2026-08-15, re-scoped for the airtime-
   // balance-uep split-rate ladder). The RF label source and the predictive
-  // fade trigger read THIS, not cls[S0]/cls[S1] alone. base and enh no
-  // longer share a PHY rate (base mirrors mcs-1, enh runs the profile mcs),
-  // but RSSI/SNR/EVM are channel properties, not rate-dependent ones, and TX
-  // power is constant across MCS (spec 2026-08-12-constant-txpower) — so the
+  // fade trigger read THIS, not cls[S0]/cls[S1] alone. base and enh share
+  // one PHY rate (the rung mcs, same-rate-fixed-pairs 2026-08-30; they were
+  // split mcs-1/mcs for a day before that), and RSSI/SNR/EVM are channel
+  // properties anyway, with TX power constant across MCS (spec
+  // 2026-08-12-constant-txpower) — so the
   // two streams stay statistically homogeneous and pooling both still beats
   // a single stream's sample count; msp/ctrl are excluded because their mix
   // ratio drifts with rung and shed state. Folded at frame time, NOT

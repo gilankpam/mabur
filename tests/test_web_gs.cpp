@@ -379,17 +379,25 @@ TEST(idr_requests_are_noop_in_spotter) {
   CHECK(g.sends() == 0);
 }
 
-TEST(drone_idr_gs_from_telem_in_stats_json) {
+// A spotter's link setting is just the configured width (2026-09-30: the
+// drone's applied-op echo left Telem). mcs is not tracked, and a Telem
+// arriving must not change either.
+TEST(spotter_op_is_configured_width_no_mcs) {
   Io io;
   io.on_au = [](Au&&) {};
   WebGs g(cfg(), Mode::Spotter, 136, 40, io);
-  CHECK(stats_json(g.stats()).find("\"drone_idr_gs\":null") != std::string::npos);
+  g.tick(1'000'000);
+  CHECK(g.stats().bw == 40);
+  CHECK(g.stats().mcs == -1);
   mabur::rc::Telem t;
   t.tlm_seq = 1;
-  t.idr_gs = 9;
   g.on_rx(rc_body(mabur::rc::pack_telem(t), 1'000'000));
   g.tick(1'000'000);
-  CHECK(stats_json(g.stats()).find("\"drone_idr_gs\":9") != std::string::npos);
+  CHECK(g.stats().bw == 40);
+  CHECK(g.stats().mcs == -1);
+  CHECK(stats_json(g.stats()).find("drone_idr_gs") == std::string::npos);
+  WebGs g20(cfg(), Mode::Spotter, 136, 20, io);
+  CHECK(g20.stats().bw == 20);
 }
 
 TEST(drone_temp_from_telem_in_stats_json) {

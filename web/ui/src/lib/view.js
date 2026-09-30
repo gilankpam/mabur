@@ -92,7 +92,7 @@ export function debugGroups({ connected, mode, core, rcfPct, ausRate, hitches60,
     ]) },
     { title: 'Drone', rows: rows([
       ['drone_state', v(core?.drone_state ?? D)], ['drone_rcf_rx', v(core?.drone_rcf_rx ?? D)],
-      ['IDR req / served', v(spot ? 'n/a' : `${core?.idr_req ?? D} / ${core?.drone_idr_gs ?? D}`)],
+      ['IDR req', v(spot ? 'n/a' : core?.idr_req ?? D)],
     ]) },
     { title: 'Client', rows: rows([
       ['AUs/s', v(on ? ausRate : D)], ['hitches', v(`${hitches60} last 60s (total ${hitchesTotal})`)],

@@ -182,9 +182,10 @@ from a `/proc/stat` delta, `null` on the first tick after a maburd
 start); 2026-09-30 the telem diet (RC_VERSION 13, section below):
 `drone.gen`, `drone.radio_rx_ok`, `drone.probing`, `drone.air_shed`,
 `drone.air_backlog_max_ms`, `drone.air_shed_drops`, `drone.channel`,
-`drone.hop_epoch`, `drone.enc.fps`/`mbps`/`roi_qp`/`ring_drops`/
+`drone.hop_epoch`, `drone.applied` (the whole block),
+`drone.enc.fps`/`mbps`/`roi_qp`/`ring_drops`/
 `idr_disagree`/`enhance_disagree`/`vanished_base`/`vanished_enh`/
-`self_idr_refused`/`venc_full_drops`/`venc_ring_fill_pct`,
+`self_idr_refused`/`venc_full_drops`/`venc_ring_fill_pct`/`idr_gs`,
 `drone.txq.depth`/`cap`, `drone.radio.sent_pps`/`drops`,
 `drone.sys.thermal_delta`.
 Removed keys are absent, not null. Keep appending to that list — not to protect
@@ -798,7 +799,7 @@ Full detail: `docs/inflight-channel-hop.md` §2/§3/§8,
   in the final-review fix wave: it was always foreign busy, never own
   airtime) (`max(0, busy_pct − own_air_pct)`). See `docs/observability.md`.
 
-## 2026-09-30 — telem diet: RC_VERSION 13, Telem 98 → 53 bytes
+## 2026-09-30 — telem diet: RC_VERSION 13, Telem 98 → 48 bytes
 
 `T_TELEM` dropped every field no GS consumer read — link control, the
 player OSD, the web UI, `flightreport.py` / `flightjitter.py` — leaving
@@ -811,8 +812,9 @@ frames at all (`docs/deploy.md`).
   `vanished_base`, `vanished_enh`, `self_idr_refused`, `venc_full_drops`,
   `venc_ring_fill_pct`, `txq_depth`, `txq_cap`, `radio_sent`,
   `radio_drops`, `air_backlog_max_ms`, `air_shed_drops`, `thermal_delta`,
-  `channel`, `hop_epoch`, and flag bits 1 (`radio_rx_ok`), 2 (`probe_on`),
-  5 (`air_shed`). The drone-side counters still exist; most still print
+  `channel`, `hop_epoch`, `applied_profile`, `applied_ov_base`,
+  `applied_ov_enh`, `idr_gs`, and flag bits 1 (`radio_rx_ok`), 2
+  (`probe_on`), 5 (`air_shed`). The drone-side counters still exist; most still print
   on maburd's own 5 s `frame_ring:` stderr line.
 - **Removed sideport keys:** the list above. A recording before this date
   still carries them; nothing in-repo reads them any more.
@@ -821,7 +823,11 @@ frames at all (`docs/deploy.md`).
   "drone heard nothing" is `drone.radio.rx` own + foreign + crcfail = 0
   (maburtop derives its `DEAF` cell from it); the drone's channel is
   whichever channel its video arrives on (`link.channel`, `scan.log` `H`
-  lines).
+  lines); `link.streams[].ov` is now always the commanded op pair (it only
+  ever differed from the applied echo under the bench `:8301` override); a
+  web spotter's link setting is its configured width, no MCS; a web GS sees
+  for itself whether a requested key frame arrived, so the drone's served
+  count (`drone.enc.idr_gs`) went too.
 - **Exporter restart detection** used `generation` regressing as its
   second signal; it now uses `drone.rcf_rx` / `drone.txq.drops`
   regressing. Rates (`drone.rcf.rx_pps`, `drone.txq.drop_pps`) are

@@ -13,7 +13,7 @@
 //    decoder's continuity and the FrameStream.
 //  - Spotter: passive. There is no transmit path by construction: the send
 //    callback is dropped in the constructor and no VrxController/RcfSlotter
-//    exists. The op point shown is the drone's own applied one (Telem).
+//    exists. Its op point is fixed at the configured width (no MCS).
 //    Video is always decoded; a drone restart (Telem tlm_seq stepping back,
 //    DroneRestartDetector) resets the decoder continuity + FrameStream.
 // Both modes decode the MSP OSD stream (stream_id 4) into Io::on_osd; it is
@@ -63,7 +63,7 @@ struct Stats {
   bool session = false;            // rendezvous SESSION (Gs only)
   bool peer_acked = false;
   int rung = -1;                   // commanded (Gs); -1 in Spotter
-  int mcs = -1, bw = 0;            // commanded (Gs) / drone-applied (Spotter)
+  int mcs = -1, bw = 0;            // commanded (Gs) / configured width, mcs -1 (Spotter)
   std::string probe_state;         // to_string(ProbeGateState), "" in Spotter
   std::optional<double> pre_fec_loss, residual;
   double snr_db = std::numeric_limits<double>::quiet_NaN();
@@ -78,7 +78,6 @@ struct Stats {
   std::optional<uint8_t> drone_state;
   std::optional<uint8_t> rec_status;      // Telem.rec_status raw (VTX recorder)
   uint32_t idr_req = 0;                   // page IDR requests so far (set_idr_requests)
-  std::optional<uint16_t> drone_idr_gs;   // Telem.idr_gs: requests the drone served
   std::optional<int> drone_temp_c;        // Telem.soc_temp_c; unset when -128 (unavailable)
   uint64_t osd_snaps = 0;     // MSP snapshots out of the FEC sink
   uint64_t osd_screens = 0;   // OSD screens published (Io::on_osd)
@@ -168,7 +167,7 @@ class WebGs {
   bool frame_wire_ = false;
   maburgs::DroneRestartDetector restart_;         // Spotter only
   maburgs::LinkHealth last_health_;
-  maburgs::OpPoint spotter_op_;                   // from drone Telem
+  maburgs::OpPoint spotter_op_;                   // fixed: configured width only
   std::optional<mabur::rc::Telem> telem_;
   Au cur_;
   uint64_t bodies_ = 0, aus_complete_ = 0, aus_truncated_ = 0, sends_ = 0, rcf_sent_ = 0;
