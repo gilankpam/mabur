@@ -151,6 +151,28 @@ visit (`shouldRegister()`). The WebUSB grant is per origin, so each device
 picks the card once on this site. The page is the bundle-default ladder
 build, same as a local one.
 
+**Install as an app.** The page is an installable PWA: Chrome's menu
+(Android: "Add to Home screen" / "Install app"; desktop: the install icon
+in the address bar) installs it. `web/ui/public/manifest.webmanifest`
+launches it `display: fullscreen`, `orientation: landscape`, with relative
+`start_url`/`scope`, so each channel installs as its own app (`/mabur/` and
+`/mabur/edge/`) and a local `serve.py` build is installable too. The
+manifest and icons sit in `public/`, so the offline precache above carries
+them; an installed app opens offline exactly like the tab. Launched
+installed, the phone overlay drops its Fullscreen button and Connect skips
+the `requestFullscreen` + `orientation.lock` step
+(`matchMedia('(display-mode: fullscreen)')`, `App.svelte`): the window is
+already fullscreen, while `document.fullscreenElement` stays null there.
+Icons: `web/ui/icons/icon.svg` (the design handoff's mark) and
+`icon-maskable.svg` (full-bleed background, glyph scaled 0.8 into the
+maskable safe zone) are the sources; the PNGs in `public/` are committed
+renders (`rsvg-convert` then `oxipng --strip all`, `nix-shell -p librsvg
+oxipng`), `favicon.svg` is the handoff's simplified small-size mark.
+`web/tests/pwa.test.mjs` pins the manifest fields, the icon sizes and that
+every linked file is precached. Benched headless (Chrome 147, 2026-09-30):
+no installability errors, all 7 files in the worker cache, button gate
+correct; a real phone install is untested.
+
 `web/serve.py` is a static server for `web/dist` that sets the COOP/COEP
 headers WASM pthreads need (`Cross-Origin-Opener-Policy: same-origin`,
 `Cross-Origin-Embedder-Policy: require-corp`).
@@ -915,8 +937,6 @@ Not built here, all noted in the spec as later work:
   request since spec 2026-09-28, "Key-frame recovery" above), so a spotter
   opened mid-flight does not wait indefinitely for the drone's next
   unsolicited IDR.
-- A PWA wrapper (install to home screen, offline cache) on top of the
-  GitHub Pages hosting.
 - Foreign-GS detection, so a second GS-mode page against the same drone
   gets a warning instead of silently fighting the first one's ladder.
 - Auto-reconnect after the card is unplugged and replugged, instead of
