@@ -3,301 +3,258 @@
   {
    "bw": 20,
    "byte": 0,
-   "ladder": "BASE=MCS0/20;ENH=MCS0/20",
    "mcs": 0,
    "mode": "ht"
   },
   {
    "bw": 40,
    "byte": 16,
-   "ladder": "BASE=MCS0/40;ENH=MCS0/40",
    "mcs": 0,
    "mode": "ht"
   },
   {
    "bw": 20,
    "byte": 1,
-   "ladder": "BASE=MCS0/20;ENH=MCS1/20",
    "mcs": 1,
    "mode": "ht"
   },
   {
    "bw": 40,
    "byte": 17,
-   "ladder": "BASE=MCS0/40;ENH=MCS1/40",
    "mcs": 1,
    "mode": "ht"
   },
   {
    "bw": 20,
    "byte": 2,
-   "ladder": "BASE=MCS1/20;ENH=MCS2/20",
    "mcs": 2,
    "mode": "ht"
   },
   {
    "bw": 40,
    "byte": 18,
-   "ladder": "BASE=MCS1/40;ENH=MCS2/40",
    "mcs": 2,
    "mode": "ht"
   },
   {
    "bw": 20,
    "byte": 3,
-   "ladder": "BASE=MCS2/20;ENH=MCS3/20",
    "mcs": 3,
    "mode": "ht"
   },
   {
    "bw": 40,
    "byte": 19,
-   "ladder": "BASE=MCS2/40;ENH=MCS3/40",
    "mcs": 3,
    "mode": "ht"
   },
   {
    "bw": 20,
    "byte": 4,
-   "ladder": "BASE=MCS3/20;ENH=MCS4/20",
    "mcs": 4,
    "mode": "ht"
   },
   {
    "bw": 40,
    "byte": 20,
-   "ladder": "BASE=MCS3/40;ENH=MCS4/40",
    "mcs": 4,
    "mode": "ht"
   },
   {
    "bw": 20,
    "byte": 5,
-   "ladder": "BASE=MCS4/20;ENH=MCS5/20",
    "mcs": 5,
    "mode": "ht"
   },
   {
    "bw": 40,
    "byte": 21,
-   "ladder": "BASE=MCS4/40;ENH=MCS5/40",
    "mcs": 5,
    "mode": "ht"
   },
   {
    "bw": 20,
    "byte": 6,
-   "ladder": "BASE=MCS5/20;ENH=MCS6/20",
    "mcs": 6,
    "mode": "ht"
   },
   {
    "bw": 40,
    "byte": 22,
-   "ladder": "BASE=MCS5/40;ENH=MCS6/40",
    "mcs": 6,
    "mode": "ht"
   },
   {
    "bw": 20,
    "byte": 7,
-   "ladder": "BASE=MCS6/20;ENH=MCS7/20",
    "mcs": 7,
    "mode": "ht"
   },
   {
    "bw": 40,
    "byte": 23,
-   "ladder": "BASE=MCS6/40;ENH=MCS7/40",
    "mcs": 7,
    "mode": "ht"
   },
   {
    "bw": 20,
    "byte": 64,
-   "ladder": "BASE=VHT1SS_MCS0/20;ENH=VHT1SS_MCS0/20",
    "mcs": 0,
    "mode": "vht"
   },
   {
    "bw": 40,
    "byte": 80,
-   "ladder": "BASE=VHT1SS_MCS0/40;ENH=VHT1SS_MCS0/40",
    "mcs": 0,
    "mode": "vht"
   },
   {
    "bw": 80,
    "byte": 96,
-   "ladder": "BASE=VHT1SS_MCS0/80;ENH=VHT1SS_MCS0/80",
    "mcs": 0,
    "mode": "vht"
   },
   {
    "bw": 20,
    "byte": 65,
-   "ladder": "BASE=VHT1SS_MCS0/20;ENH=VHT1SS_MCS1/20",
    "mcs": 1,
    "mode": "vht"
   },
   {
    "bw": 40,
    "byte": 81,
-   "ladder": "BASE=VHT1SS_MCS0/40;ENH=VHT1SS_MCS1/40",
    "mcs": 1,
    "mode": "vht"
   },
   {
    "bw": 80,
    "byte": 97,
-   "ladder": "BASE=VHT1SS_MCS0/80;ENH=VHT1SS_MCS1/80",
    "mcs": 1,
    "mode": "vht"
   },
   {
    "bw": 20,
    "byte": 66,
-   "ladder": "BASE=VHT1SS_MCS1/20;ENH=VHT1SS_MCS2/20",
    "mcs": 2,
    "mode": "vht"
   },
   {
    "bw": 40,
    "byte": 82,
-   "ladder": "BASE=VHT1SS_MCS1/40;ENH=VHT1SS_MCS2/40",
    "mcs": 2,
    "mode": "vht"
   },
   {
    "bw": 80,
    "byte": 98,
-   "ladder": "BASE=VHT1SS_MCS1/80;ENH=VHT1SS_MCS2/80",
    "mcs": 2,
    "mode": "vht"
   },
   {
    "bw": 20,
    "byte": 67,
-   "ladder": "BASE=VHT1SS_MCS2/20;ENH=VHT1SS_MCS3/20",
    "mcs": 3,
    "mode": "vht"
   },
   {
    "bw": 40,
    "byte": 83,
-   "ladder": "BASE=VHT1SS_MCS2/40;ENH=VHT1SS_MCS3/40",
    "mcs": 3,
    "mode": "vht"
   },
   {
    "bw": 80,
    "byte": 99,
-   "ladder": "BASE=VHT1SS_MCS2/80;ENH=VHT1SS_MCS3/80",
    "mcs": 3,
    "mode": "vht"
   },
   {
    "bw": 20,
    "byte": 68,
-   "ladder": "BASE=VHT1SS_MCS3/20;ENH=VHT1SS_MCS4/20",
    "mcs": 4,
    "mode": "vht"
   },
   {
    "bw": 40,
    "byte": 84,
-   "ladder": "BASE=VHT1SS_MCS3/40;ENH=VHT1SS_MCS4/40",
    "mcs": 4,
    "mode": "vht"
   },
   {
    "bw": 80,
    "byte": 100,
-   "ladder": "BASE=VHT1SS_MCS3/80;ENH=VHT1SS_MCS4/80",
    "mcs": 4,
    "mode": "vht"
   },
   {
    "bw": 20,
    "byte": 69,
-   "ladder": "BASE=VHT1SS_MCS4/20;ENH=VHT1SS_MCS5/20",
    "mcs": 5,
    "mode": "vht"
   },
   {
    "bw": 40,
    "byte": 85,
-   "ladder": "BASE=VHT1SS_MCS4/40;ENH=VHT1SS_MCS5/40",
    "mcs": 5,
    "mode": "vht"
   },
   {
    "bw": 80,
    "byte": 101,
-   "ladder": "BASE=VHT1SS_MCS4/80;ENH=VHT1SS_MCS5/80",
    "mcs": 5,
    "mode": "vht"
   },
   {
    "bw": 20,
    "byte": 70,
-   "ladder": "BASE=VHT1SS_MCS5/20;ENH=VHT1SS_MCS6/20",
    "mcs": 6,
    "mode": "vht"
   },
   {
    "bw": 40,
    "byte": 86,
-   "ladder": "BASE=VHT1SS_MCS5/40;ENH=VHT1SS_MCS6/40",
    "mcs": 6,
    "mode": "vht"
   },
   {
    "bw": 80,
    "byte": 102,
-   "ladder": "BASE=VHT1SS_MCS5/80;ENH=VHT1SS_MCS6/80",
    "mcs": 6,
    "mode": "vht"
   },
   {
    "bw": 20,
    "byte": 71,
-   "ladder": "BASE=VHT1SS_MCS6/20;ENH=VHT1SS_MCS7/20",
    "mcs": 7,
    "mode": "vht"
   },
   {
    "bw": 40,
    "byte": 87,
-   "ladder": "BASE=VHT1SS_MCS6/40;ENH=VHT1SS_MCS7/40",
    "mcs": 7,
    "mode": "vht"
   },
   {
    "bw": 80,
    "byte": 103,
-   "ladder": "BASE=VHT1SS_MCS6/80;ENH=VHT1SS_MCS7/80",
    "mcs": 7,
    "mode": "vht"
   },
   {
    "bw": 20,
    "byte": 72,
-   "ladder": "BASE=VHT1SS_MCS7/20;ENH=VHT1SS_MCS8/20",
    "mcs": 8,
    "mode": "vht"
   },
   {
    "bw": 40,
    "byte": 88,
-   "ladder": "BASE=VHT1SS_MCS7/40;ENH=VHT1SS_MCS8/40",
    "mcs": 8,
    "mode": "vht"
   },
   {
    "bw": 80,
    "byte": 104,
-   "ladder": "BASE=VHT1SS_MCS7/80;ENH=VHT1SS_MCS8/80",
    "mcs": 8,
    "mode": "vht"
   }

@@ -13,7 +13,7 @@ PRECODER = os.path.abspath(os.path.join(ROOT, "..", "devourer", "tools", "precod
 sys.path.insert(0, PRECODER)
 
 import fec_subblock, rc_proto, svc_uep_fec  # noqa: E402
-import adaptive_link, energy_model  # noqa: E402
+import energy_model  # noqa: E402
 
 VEC = os.path.join(ROOT, "tests", "vectors")
 FIX = os.path.join(ROOT, "tests", "fixtures")
@@ -223,8 +223,7 @@ dump("rc.json", {
 # its golden vectors are dead. devourer's own reference is untouched — this
 # just stops mirroring it into mabur's vectors.
 prof_cases = [{"mode": m, "mcs": mc, "bw": bw,
-               "byte": rc_proto.encode_profile(m, mc, bw),
-               "ladder": adaptive_link.ladder_spec(m, mc, bw)}
+               "byte": rc_proto.encode_profile(m, mc, bw)}
               for m in ("ht", "vht") for mc in range(0, 9)
               for bw in (20, 40, 80) if not (m == "ht" and (bw == 80 or mc > 7))]
 rate_cases = [{"mode": m, "mcs": mc, "bw": bw, "sgi": sgi,
@@ -232,14 +231,10 @@ rate_cases = [{"mode": m, "mcs": mc, "bw": bw, "sgi": sgi,
               for m, mc, bw, sgi in [("ht", 0, 20, False), ("ht", 4, 20, False),
                                      ("ht", 7, 40, True), ("vht", 8, 80, False),
                                      ("vht", 4, 40, True)]]
-# NOTE: committed profile.json's profiles[].ladder values are mabur's own
-# flat ladder (common/src/profile.cpp ladder_spec_str(), flat by the
-# 2026-07-26 hw ruling documented there), NOT a fresh mirror of devourer's
-# adaptive_link.ladder_spec() below, which now emits escalating T1/T2 MCS.
-# Re-running this generator therefore reproduces a profiles[].ladder diff
-# that is PRE-EXISTING drift, not a regression you introduced — devourer is
-# frozen/off-limits, so reconciling it is a separate decision, not a side
-# effect of regenerating vectors.
+# profiles[].ladder (a DEVOURER_SVC_LADDER-style string mirrored by
+# mabur's ladder_spec_str()) was dropped 2026-10-01 with that function:
+# nothing in mabur used it, and it still encoded the retired base = mcs-1
+# rule.
 dump("profile.json", {"profiles": prof_cases,
                       "rates": rate_cases,
                       "table": [{"ladder": p.svc_ladder,
