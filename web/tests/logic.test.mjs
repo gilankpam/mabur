@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { nalTypes, Gate, PtsUnwrap, PeriodEstimator, HitchMeter, pctl, IdrRequester,
-  parseRelayAddr, relayBlocker } from '../ui/src/lib/logic.mjs';
+  parseRelayAddr, relayBlocker, RELAY_DEFAULT, relayTarget, relayFieldVisible, loadRelayCustom } from '../ui/src/lib/logic.mjs';
 
 const nal = (type, len = 4, four = true) =>
   [...(four ? [0, 0, 0, 1] : [0, 0, 1]), type << 1, 1, ...Array(len).fill(0x55)];
@@ -335,20 +335,55 @@ test('IdrRequester.cancel after a backed-off retry restores the pre-retry timest
 });
 
 test('parseRelayAddr', () => {
-  assert.equal(parseRelayAddr('192.168.1.1'), '192.168.1.1:8311');
-  assert.equal(parseRelayAddr(' 192.168.1.1:9000 '), '192.168.1.1:9000');
+  assert.equal(parseRelayAddr('10.83.11.1'), '10.83.11.1:8311');
+  assert.equal(parseRelayAddr(' 10.83.11.1:9000 '), '10.83.11.1:9000');
   assert.equal(parseRelayAddr('cpe.local:8311'), 'cpe.local:8311');
   assert.equal(parseRelayAddr(''), null);
-  assert.equal(parseRelayAddr('192.168.1.1:0'), null);
-  assert.equal(parseRelayAddr('192.168.1.1:70000'), null);
-  assert.equal(parseRelayAddr('ws://192.168.1.1'), null);
+  assert.equal(parseRelayAddr('10.83.11.1:0'), null);
+  assert.equal(parseRelayAddr('10.83.11.1:70000'), null);
+  assert.equal(parseRelayAddr('ws://10.83.11.1'), null);
   assert.equal(parseRelayAddr('a b'), null);
 });
 
-test('relayBlocker: https cannot open ws://, bad address blocks', () => {
-  assert.match(relayBlocker('https:', '192.168.1.1:8311'), /relay needs the local page: python3 web\/serve.py 8808, open http:\/\/127.0.0.1:8808/);
-  assert.equal(relayBlocker('http:', '192.168.1.1:8311'), null);
+test('relayBlocker: https needs an LNA-exempt host, bad address blocks, empty = default', () => {
+  // Revert check: the pre-2026-09-29 blocker refused every https origin.
+  assert.equal(relayBlocker('https:', '10.83.11.1:8311'), null);
+  assert.equal(relayBlocker('https:', '10.0.0.5'), null);
+  assert.equal(relayBlocker('https:', '172.20.1.1:9000'), null);
+  assert.equal(relayBlocker('https:', 'cpe.local'), null);
+  assert.equal(relayBlocker('https:', 'relay.example.com'),
+    'On the hosted page the relay address must be a private IP (e.g. 10.83.11.1) or a .local name.');
+  assert.match(relayBlocker('https:', '172.32.0.1'), /private IP/);
+  assert.match(relayBlocker('https:', '1.1.1.1'), /private IP/);
+  assert.equal(relayBlocker('http:', 'relay.example.com'), null);
   assert.match(relayBlocker('http:', 'nope nope'), /address/);
+  assert.match(relayBlocker('https:', 'nope nope'), /address/);
+  assert.equal(relayBlocker('https:', ''), null);      // field hidden/empty -> default
+  assert.equal(relayBlocker('https:', '   '), null);
+});
+
+test('relayTarget: empty -> default, typed -> only the typed address', () => {
+  assert.equal(RELAY_DEFAULT, '10.83.11.1:8311');
+  assert.equal(relayTarget(''), '10.83.11.1:8311');
+  assert.equal(relayTarget('  '), '10.83.11.1:8311');
+  assert.equal(relayTarget(undefined), '10.83.11.1:8311');
+  assert.equal(relayTarget(' 10.0.0.9 '), '10.0.0.9:8311');
+  assert.equal(relayTarget('10.0.0.9:9000'), '10.0.0.9:9000');
+  assert.equal(relayTarget('nope nope'), null);       // the blocker stops Connect first
+});
+
+test('relayFieldVisible: saved address or a not-found this visit', () => {
+  assert.equal(relayFieldVisible(false, false), false);
+  assert.equal(relayFieldVisible(false, true), true);
+  assert.equal(relayFieldVisible(true, false), true);
+});
+
+test('loadRelayCustom: only the new key counts; old saved defaults are ignored', () => {
+  // Review Focus 4: the previous build saved relayAddr '192.168.1.1:8311' for everyone.
+  assert.equal(loadRelayCustom({ relayAddr: '192.168.1.1:8311' }), '');
+  assert.equal(loadRelayCustom({}), '');
+  assert.equal(loadRelayCustom({ relayCustom: ' 10.0.0.9 ' }), '10.0.0.9');
+  assert.equal(loadRelayCustom({ relayCustom: 7 }), '');
 });
 
 test('errorText relay lines', () => {

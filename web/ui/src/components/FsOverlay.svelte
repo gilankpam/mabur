@@ -1,7 +1,7 @@
 <script>
   import Icon from './Icon.svelte';
   import RecDot from './RecDot.svelte';
-  let { live, mode, chLine, recOn, recWaiting = false, recClock, recErr, recDisabled, recTitle, onConn, onRec, onStats, onCfg, onFs, fsButton = null } = $props();
+  let { live, mode, chLine, recOn, recWaiting = false, recClock, recErr, recDisabled, recTitle, onConn, onRec, onStats, onCfg, onFs, fsButton = null, fsMsg = '' } = $props();
 </script>
 <div class="tl">
   <span class="tag glass" style="gap:6px;color:var(--color-neutral-100)">
@@ -15,6 +15,7 @@
   {:else if recWaiting}
     <span class="tag glass" style="gap:6px;color:var(--color-neutral-100)">waiting for sync…</span>
   {/if}
+  {#if fsMsg}<span class="tag glass" style="color:var(--color-neutral-100)">{fsMsg}</span>{/if}
 </div>
 <div class="tr">
   <button class="btn btn-icon glass round44" type="button" title={live ? 'Disconnect' : 'Connect'} aria-label={live ? 'Disconnect' : 'Connect'} onclick={onConn}>

@@ -10,11 +10,11 @@ in `maburgs` does not exist yet**.
 
 | | |
 |---|---|
-| Firmware repo | `../poc/wfb-ng-openwrt` (OpenWrt 25.12.4 ath79, image is mabur-only — wfb-ng removed) |
+| Firmware repo | `../mabur-openwrt`, <https://github.com/gilankpam/mabur-openwrt> (OpenWrt 25.12.4 ath79, mabur-only image) |
 | Daemon source | `feed/net/mabur-relay/src` in that repo (C, libc only, single `poll()` loop) |
 | **Wire contract** | `docs/mabur-relay-protocol.md` in that repo — protocol **v3**. Code against that file, not this summary. |
 | Bench record | `docs/verify-mabur-relay-on-device.md` in that repo (flash/boot check, v1/v2 full-rate runs, TX mode) |
-| Device | `root@192.168.1.1` (static, no DHCP); the bench CPE is a v3 |
+| Device | `root@10.83.11.1`; DHCP on the LAN (10.83.11.100-199, no router/DNS — mabur-openwrt `90-mabur-lan`); failsafe 192.168.1.1; the bench CPE is a v3 |
 | Ports | UDP **8310** (`maburgs`, native `webgs`), `ws://` **8311** (web GS) |
 | Config | `/etc/mabur-relay.conf` (PHY, MON, REG, TXPOWER, BOOT_CHANNEL/SEC, ports); procd service `mabur-relay`, respawns forever |
 
@@ -90,7 +90,7 @@ a `PACKET_MMAP` receive ring (RX costs ~18 pts).
 - The GS (Radxa ZERO 3) has no Ethernet — it needs a USB-Ethernet adapter to
   talk to the CPE.
 - After a `sysupgrade -n` the CPE's SSH host key changes:
-  `ssh-keygen -R 192.168.1.1`.
+  `ssh-keygen -R 10.83.11.1`.
 - For a full-rate bench run the drone's FC reports DISARMED, so set
   `[low_power] enable = false` in `/etc/mabur.toml` temporarily (restore
   after).
@@ -126,14 +126,16 @@ radio. `lost` = no `STATUS` for 2 s. `seq` gap tracking only counts forward
 jumps (a reorder or a relay-side reset resyncs quietly rather than counting
 a spurious gap).
 
-### Bench record — TX mode, 2026-09-29 (CPE v3, `wfb-ng-openwrt` master 44f0190)
+### Bench record — TX mode, 2026-09-29 (CPE v3, `mabur-openwrt` 44f0190)
 
-Setup: CPE on host USB-Ethernet (192.168.1.101 ↔ 192.168.1.1); drone `.152`
+Setup: CPE on host USB-Ethernet (192.168.1.101 ↔ 192.168.1.1) (pre-2026-09-29
+address); drone `.152`
 on ch136 HT40-. Full numbers and the per-window breakdown are in the relay
 repo's `docs/verify-mabur-relay-on-device.md` ("TX mode" section); this is
 the summary.
 
-- **TX alone** (native `webgs live --relay 192.168.1.1:8310 --mode gs --ch
+- **TX alone** (native `webgs live --relay 192.168.1.1:8310` (pre-2026-09-29
+  address) `--mode gs --ch
   136 --w 40 --secs 60`, no other GS on air, drone `low_power` on): SESSION
   + `peer_acked` within the first second, ladder climbed to rung 4 (mcs4/40)
   by ~15 s. `drone_rcf_rx / rcf_sent` = 1129 / 1151 = **98.1 %**; relay
@@ -172,8 +174,10 @@ Measured on the bench CPE (AR9344, 74Kc 560 MHz), relay idle:
 TLS costs ~16 CPU points per MB/s. The relay's WS path is already 71 % at
 full rate (4.5 MB/s), so wss cannot carry the top rungs. The mbedTLS test
 server also hung in the handshake against OpenSSL clients (not debugged).
-This is why the web GS's relay radio only works from `http://localhost`
-(plain `ws://`) — see `docs/web-gs.md`.
+The web GS doesn't need it anyway: Chrome 142+ lets an `https://` page
+(the hosted GitHub Pages build) open plain `ws://` to a private IP literal
+or `.local` name once the user allows local network access — see
+`docs/web-gs.md`, "CPE relay radio".
 
 ## Follow-ups
 

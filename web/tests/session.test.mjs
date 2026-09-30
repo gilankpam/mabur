@@ -394,15 +394,15 @@ test('relay connect skips WebUSB, passes --relay, starts the worker on onRelayRi
     startRelay: (o) => { started.push(o); return { terminate() { o.terminated = true; } }; },
     onAu: () => {}, onStats: () => {}, reload: () => {}, timers: t,
   });
-  await s.connect({ mode: 'gs', ch: 136, w: 40, relay: '192.168.1.1:8311' });
+  await s.connect({ mode: 'gs', ch: 136, w: 40, relay: '10.83.11.1:8311' });
   assert.equal(asked, 0);
   const args = f.made[0].opts.arguments;
-  assert.deepEqual(args.slice(args.indexOf('--relay'), args.indexOf('--relay') + 2), ['--relay', '192.168.1.1:8311']);
+  assert.deepEqual(args.slice(args.indexOf('--relay'), args.indexOf('--relay') + 2), ['--relay', '10.83.11.1:8311']);
   const buf = new ArrayBuffer(8);
   f.made[0].opts.onRelayRing(buf, 1024);
   assert.equal(started.length, 1);
   assert.equal(started[0].buffer, buf); assert.equal(started[0].ptr, 1024);
-  assert.equal(started[0].url, 'ws://192.168.1.1:8311');
+  assert.equal(started[0].url, 'ws://10.83.11.1:8311');
   f.made[0].opts.onExit(1);
   assert.equal(started[0].terminated, true);
 });
@@ -424,7 +424,7 @@ test('usb connect still asks for the device and never starts a relay', async () 
 // failed worker: the core's own error text must survive it.
 test('uncaught unwind on exit does not mask the core error', async () => {
   const { s, f } = mk();
-  await s.connect({ mode: 'gs', ch: 136, w: 40, relay: '192.168.1.1:8311' });
+  await s.connect({ mode: 'gs', ch: 136, w: 40, relay: '10.83.11.1:8311' });
   const o = f.made[0].opts;
   o.onError('ERROR relay owned by another client');
   o.printErr('worker sent an error! http://127.0.0.1:8808/webgs.js:1: Uncaught unwind');
@@ -435,7 +435,7 @@ test('uncaught unwind on exit does not mask the core error', async () => {
 
 test('a real worker load failure still maps to WORKER_FAILED', async () => {
   const { s, f } = mk();
-  await s.connect({ mode: 'gs', ch: 136, w: 40, relay: '192.168.1.1:8311' });
+  await s.connect({ mode: 'gs', ch: 136, w: 40, relay: '10.83.11.1:8311' });
   f.made[0].opts.printErr('worker sent an error! undefined:undefined: undefined');
   assert.equal(s.snapshot.state, 'error');
   assert.equal(s.snapshot.error, WORKER_FAILED);
@@ -460,4 +460,36 @@ test('isWindowWorkerFailure ignores both window events of a normal exit', () => 
   assert.equal(isWindowWorkerFailure({ message: 'Uncaught RuntimeError: unreachable', filename: file, error: {} }), true);
   assert.equal(isWindowWorkerFailure({ message: 'worker sent an error! undefined:undefined: undefined' }), true);
   assert.equal(isWindowWorkerFailure({ message: 'Script error.', filename: 'http://x/app.js' }), false);
+});
+
+test('relay connect waits for prepareRelay(addr); its rejection is the error + code, core never starts', async () => {
+  const t = fakeTimers(); const f = fakeModuleFactory();
+  let release; const gate = new Promise((r) => { release = r; });
+  const addrs = [];
+  const s = new Session({
+    createModule: f.create, requestDevice: async () => { throw new Error('no usb on relay'); },
+    startRelay: () => ({ terminate() {} }),
+    prepareRelay: async (addr) => { addrs.push(addr); await gate; },
+    onAu: () => {}, onStats: () => {}, reload: () => {}, timers: t,
+  });
+  const p = s.connect({ mode: 'spotter', ch: 136, w: 40, relay: '10.83.11.1:8311' });
+  await tick();
+  assert.deepEqual(addrs, ['10.83.11.1:8311']);     // host:port, not a URL
+  assert.equal(f.made.length, 0);                   // core held until the probe answers
+  release(); await p;
+  assert.equal(f.made.length, 1);
+  assert.equal(s.snapshot.errorCode, null);
+
+  const f2 = fakeModuleFactory();
+  const s2 = new Session({
+    createModule: f2.create, requestDevice: async () => {},
+    startRelay: () => ({ terminate() {} }),
+    prepareRelay: async () => { const e = new Error('No CPE relay found at 10.83.11.1 — x'); e.code = 'relay-not-found'; throw e; },
+    onAu: () => {}, onStats: () => {}, reload: () => {}, timers: fakeTimers(),
+  });
+  await s2.connect({ mode: 'gs', ch: 136, w: 40, relay: '10.83.11.1:8311' });
+  assert.equal(f2.made.length, 0);
+  assert.equal(s2.snapshot.state, 'error');
+  assert.equal(s2.snapshot.errorCode, 'relay-not-found');   // App reveals the field on this
+  assert.match(s2.snapshot.error, /No CPE relay found/);
 });

@@ -122,12 +122,34 @@ says `edge #PR sha` next to the brand. Both channels are one origin, so
 they share the WebUSB grant, `localStorage` settings and the OPFS
 recordings. It is real HTTPS on a public certificate, so no
 local CA is needed on any device. GitHub Pages cannot send the COOP/COEP
-headers WASM pthreads need, so `web/ui/public/coi-serviceworker.js`
-(vendored coi-serviceworker v0.1.7, MIT) installs a service worker that
-adds them: the very first visit reloads the page once, after which it is
-cross-origin isolated. The WebUSB grant is per origin, so each device picks
-the card once on this site. The page is the bundle-default ladder build,
-same as a local one.
+headers WASM pthreads need, so
+`web/ui/sw/sw.js` (built into `web/dist/sw.js`; based on coi-serviceworker,
+MIT) is a service worker that adds them — the very first visit reloads the
+page once. The same worker makes the page **work offline**: on install it
+precaches every file of that build (list injected at build time by
+`web/ui/sw/plugin.mjs` from Vite's bundle + `public/` + `webgs.{js,wasm}`).
+If any single file fails to precache, the whole install fails (a per-file
+warning is still logged): the previous worker and its complete cache stay in
+control, and the browser retries the install on a later navigation, rather
+than an incomplete cache going live and offline-failing on whichever file
+never made it in. Same-origin requests then get one of three fetch
+strategies (`fetchStrategy()`, `web/ui/sw/plugin.mjs`), picked per request so
+a gh-pages deploy that deletes old hashed files can never serve a stale
+`index.html` alongside a 404ing asset: hashed build assets (`assets/…`) are
+**cache-first** (cached copy if present, else network); a **navigation**
+(loading the page itself) is network-first with a 3 s timeout, falling back
+to the cache on a slow or failed network; everything else (`webgs.js`,
+`webgs.wasm`, `font_btfl.png`, …) is network-first with **no** timeout,
+falling back to the cache on a network error or a non-ok response (e.g. a
+mismatched `webgs.wasm` 404ing against a fresher `webgs.js`) when a cached
+copy exists. So: open the hosted page once with internet; afterwards it
+loads with none (e.g. a laptop whose only network is the CPE). Online visits
+always get the latest deploy; reload while online to pick one up. Stable and
+edge keep separate caches (`mabur:<scope>:<build id>`). A page still
+controlled by the old vendored coi worker registers the new one on its next
+visit (`shouldRegister()`). The WebUSB grant is per origin, so each device
+picks the card once on this site. The page is the bundle-default ladder
+build, same as a local one.
 
 `web/serve.py` is a static server for `web/dist` that sets the COOP/COEP
 headers WASM pthreads need (`Cross-Origin-Opener-Policy: same-origin`,
@@ -201,18 +223,51 @@ it. A refusal reads `Channel/width refused: <reason>` (core line
 The radio picker on the Disconnected screen offers **USB card** (default) or
 **CPE relay** — a TP-Link CPE510 running `mabur-relay` protocol v3
 (`docs/cpe510-relay.md`), reached over WebSocket instead of a locally
-plugged-in card; no card chooser, no WebUSB grant. Picking it shows an
-address field defaulting to `192.168.1.1:8311` (`RELAY_DEFAULT`,
-`web/ui/src/lib/logic.mjs`), parsed as `host` or `host:port`
-(`parseRelayAddr()`).
+plugged-in card; no card chooser, no WebUSB grant.
 
-**localhost only.** An `https://` page cannot open a plain `ws://` socket
-(mixed content — see `docs/cpe510-relay.md`'s "Why not wss" for why the
-relay doesn't speak `wss://` either), so the relay option is disabled on any
-`https:` origin with the hint: *"relay needs the local page: python3
-web/serve.py 8808, open http://127.0.0.1:8808"* (`relayBlocker()`). This
-rules out the hosted GitHub Pages build and any LAN/TLS setup for relay
-mode — it only works served locally over plain HTTP.
+**Address.** The CPE firmware puts the relay at **`10.83.11.1`**
+(mabur-openwrt `90-mabur-lan`, DHCP for the client — `docs/cpe510-relay.md`),
+so Connect uses `10.83.11.1:8311` (`RELAY_DEFAULT`) with no address field on
+screen. Each Connect probes exactly one address (`connectRelay()`,
+`web/ui/src/lib/relay_connect.js`): open `ws://<addr>`, send HELLO, wait
+≤ 1.5 s for any mabur v3 message. No reply → *"No CPE relay found at
+10.83.11.1 — …, or enter its address."* and the address field appears. A
+typed address is saved (`webgs.last.relayCustom`), keeps the field visible
+on later visits, and is then the **only** address Connect tries; clearing it
+returns to the default and hides the field from the next visit.
+
+**Hosted page works; relay host must be a private IP; one-time prompt.**
+An `https://` page normally cannot open a plain `ws://` socket (mixed
+content), and the relay doesn't speak `wss://` (see `docs/cpe510-relay.md`,
+"Why not wss"). Chrome's Local Network Access (LNA) changes both halves,
+measured 2026-09-29 on Chrome 147 against the bench CPE from the real
+`gilankpam.github.io` origin:
+
+- **Mixed content:** `ws://` to a **private IP literal** or a **`.local`
+  name** is exempt (console: "Insecure access is deprecated"). A public DNS
+  name that resolves to the LAN is still blocked outright. So on an
+  `https:` origin `relayBlocker()` accepts a private/loopback/link-local
+  IPv4 literal or a `.local` name (`isLocalRelayHost()`) and refuses the
+  rest with *"On the hosted page the relay address must be a private IP
+  (e.g. 10.83.11.1) or a .local name."*
+- **Permission:** a public page reaching a private address needs the
+  `local-network` permission. Until it is granted Chrome holds the socket
+  on a one-time "local network access" prompt (headed: still pending after
+  12 s); headless, or denied, it dies with close 1006. Granting
+  `local-network` via CDP made the same socket open from both the page and
+  a Worker; the older `local-network-access` name does not unblock it.
+  Chrome's LNA blog post still says WebSockets are "not yet gated" — stale.
+- **Connect waits for the prompt.** The core gives up on an unopened relay
+  in ~2 s, which would fail the session underneath the prompt. On `https:`
+  `connectRelay()` queries `local-network` first: `granted` probes with the
+  1.5 s timeout, `denied` errors with a site-settings hint, `prompt` lets the
+  probe socket itself raise the prompt and waits up to 60 s. A browser with
+  no `local-network` permission (Firefox, Chrome < 142) just probes; its
+  not-found text then also names the browser block and the local page.
+
+A spoofed-origin test (github.io mapped to a LAN address) is **not**
+evidence here: that page is itself private, so Chrome skips the LNA check.
+Test against the real hosted origin.
 
 **What Connect does.** The page opens a dedicated Worker
 (`web/ui/src/lib/relay_worker.js`) that owns the WebSocket, bridged to the
@@ -626,10 +681,9 @@ rule).
 
 ## Known limits
 
-- **CPE relay radio needs `http://localhost`.** No `wss://`, so an
-  `https://` origin (including the hosted GitHub Pages build) cannot use
-  it — see "CPE relay radio" above and `docs/cpe510-relay.md`'s "Why not
-  wss".
+- **CPE relay radio from https needs Chrome 142+, a private-IP relay
+  address, and a one-time "local network access" Allow.** See "CPE relay
+  radio" above; Firefox needs the local page.
 - **CPE relay: one owner at a time.** The relay itself enforces this, not
   the page — a `maburgs`/native `webgs` already running against the relay
   (or another tab) holds ownership, and this page reports `relay owned by
@@ -638,6 +692,11 @@ rule).
 - **CPE relay: no scout/energy reads.** The CPE has no FA/CCA/NHM
   instrumentation (`docs/cpe510-relay.md`), and relay mode is a fixed
   channel anyway — there is nothing to scout for.
+- **macOS: Chrome needs the system Local Network permission** (System
+  Settings → Privacy & Security → Local Network) to reach any LAN address,
+  the CPE's 10.83.11.1 included — on top of Chrome's own prompt.
+- **Offline needs one online visit per channel** (stable and edge cache
+  separately), and a new deploy is picked up on the next online reload.
 - **RTL8812AU on a Linux host: unload `rtw88_8812au` first.** The kernel
   has an in-tree driver for the AU (the EU has none). devourer's
   `claim_interface_then_reset` resets the port after claiming, the kernel

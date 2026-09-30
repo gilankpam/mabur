@@ -104,6 +104,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     COMMAND ${NPM} run build
     WORKING_DIRECTORY ${WEB_UI}
     DEPENDS ${NPM_STAMP} ${WEB_UI_SRC} ${WEB_UI}/index.html ${WEB_UI}/vite.config.js
+            ${WEB_UI}/sw/sw.js ${WEB_UI}/sw/plugin.mjs webgs
     COMMENT "vite build -> web/dist")
   add_custom_target(webgs_ui ALL DEPENDS ${WEB_DIST}/index.html)
 else()

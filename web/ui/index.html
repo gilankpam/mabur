@@ -4,11 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>mabur web</title>
-<!-- GitHub Pages can't send the COOP/COEP headers WASM pthreads need: this
-     service worker adds them (one reload on first visit). A no-op wherever the
-     server already sends them (serve.py, vite dev). Vendored coi-serviceworker
-     v0.1.7 (MIT), web/ui/public/. -->
-<script src="coi-serviceworker.js"></script>
+<!-- GitHub Pages can't send the COOP/COEP headers WASM pthreads need, and
+     the page must load with no internet (laptop on the CPE only): sw.js adds
+     the headers and caches this build (one reload on first visit). Built from
+     web/ui/sw/ (based on coi-serviceworker, MIT). -->
+<script defer src="sw.js"></script>
 </head>
 <body>
 <div id="app"></div>

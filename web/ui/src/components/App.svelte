@@ -8,7 +8,7 @@
   import FsOverlay from './FsOverlay.svelte';
   import FloatStats from './FloatStats.svelte';
   import ConfigSide from './ConfigSide.svelte';
-  import { ui, saveMode, reloadToConfig } from '../lib/ui.svelte.js';
+  import { ui, saveMode, reloadToConfig, relaySavedAtLoad } from '../lib/ui.svelte.js';
   import { Session, WORKER_FAILED, isWindowWorkerFailure } from '../lib/session.js';
   import { VideoPipeline } from '../lib/video.js';
   import { Telemetry } from '../lib/telemetry.js';
@@ -17,7 +17,8 @@
   import { sparkPoints } from '../lib/metrics.js';
   import { layoutMode, keyAction, isMobile, uiFrame } from '../lib/layout.js';
   import { connectBlocker, toOverlayToml, saveConfig } from '../lib/config.js';
-  import { relayBlocker, parseRelayAddr } from '../lib/logic.mjs';
+  import { relayBlocker, relayTarget, relayFieldVisible } from '../lib/logic.mjs';
+  import { connectRelay, lnaQuery, probeRelay } from '../lib/relay_connect.js';
   import { effectiveTarget, targetCovers, recFileName, localView, combinedRec, headroomWarning,
     formatBytes, listRecordings, downloadRecording, deleteRecording, opfsRoot } from '../lib/localrec.js';
   import { OsdLayer, OsdPainter } from '../lib/osd.js';
@@ -96,6 +97,7 @@
       if (!granted.length) await navigator.usb.requestDevice({ filters: [{ vendorId: 0x0bda }] });
     },
     checkIsolated: () => { if (!window.crossOriginIsolated) throw new Error('Page is not cross-origin isolated (COOP/COEP headers missing) — serve it as docs/web-gs.md describes.'); },
+    prepareRelay: (addr) => connectRelay({ addr, protocol: location.protocol, query: lnaQuery, probe: probeRelay }),
     startRelay: ({ buffer, ptr, url }) => {
       const w = new Worker(new URL('../lib/relay_worker.js', import.meta.url), { type: 'module' });
       w.postMessage({ buffer, ptr, url });
@@ -126,6 +128,7 @@
     if (s.state === 'live' && prevState !== 'live') { ui.tab = 'stats'; ui.cfgOpen = false; ui.statsVisible = true; }
     if (prevState === 'stopping' && s.state === 'idle') { ui.tab = 'config'; ui.cfgOpen = true; }
     if (s.state === 'error' && prevState === 'live') { ui.tab = 'config'; }
+    if (s.state === 'error' && s.errorCode === 'relay-not-found') ui.relayFieldOpen = true;
     prevState = s.state;
   });
 
@@ -138,7 +141,8 @@
   const busy = $derived(sess.state === 'connecting' || sess.state === 'stopping');
   const shownMode = $derived(live || busy ? sess.mode : ui.mode);
   const chLine = $derived(live || busy ? `${sess.ch} · ${sess.w} MHz` : `${ui.cfg.channel} · ${ui.cfg.width} MHz`);
-  const blocker = $derived(connectBlocker(ui.cfg, ui.mode) ?? (ui.radio === 'relay' ? relayBlocker(location.protocol, ui.relayAddr) : null));
+  const showRelayAddr = $derived(relayFieldVisible(relaySavedAtLoad, ui.relayFieldOpen));
+  const blocker = $derived(connectBlocker(ui.cfg, ui.mode) ?? (ui.radio === 'relay' ? relayBlocker(location.protocol, showRelayAddr ? ui.relayAddr : '') : null));
 
   // 200 ms view refresh (handoff "Telemetry refresh every 200 ms"). tele.* is
   // plain JS (not reactive), so everything the template reads from it is
@@ -192,7 +196,7 @@
     if (isMobile(LW, LH) && usbGranted) goLandscape();
     video.reset(); tele.reset(); osd.resetAtlasFailure(); hiddenShown = false; hiddenBanner = false;
     const p = session.connect({ mode: ui.mode, ch: ui.cfg.channel, w: ui.cfg.width, overlayToml: toOverlayToml(sessionCfg),
-      relay: ui.radio === 'relay' ? parseRelayAddr(ui.relayAddr) : null });
+      relay: ui.radio === 'relay' ? relayTarget(showRelayAddr ? ui.relayAddr : '') : null });
     refresh();   // the connecting tag/overlay without waiting for the next tick
     await p;
     refresh();
@@ -267,20 +271,32 @@
   // (iPhone Safari).
   let realFs = $state(!!document.fullscreenElement);
   const fsSupported = !!document.fullscreenEnabled;
+  // Why the last phone fullscreen tap failed, shown briefly on the overlay
+  // (Android Chrome gives no other sign; real phones were never benched).
+  let fsMsg = $state('');
+  let fsMsgTimer = null;
+  function showFsMsg(t) { fsMsg = t; clearTimeout(fsMsgTimer); fsMsgTimer = setTimeout(() => { fsMsg = ''; }, 6000); }
   async function toggleRealFs() {
     if (document.fullscreenElement) { try { await document.exitFullscreen(); } catch { /* stay */ } return; }
-    await goLandscape();
+    const err = await goLandscape();
+    if (err) { console.warn('[webgs] fullscreen refused', err); showFsMsg(`Fullscreen refused: ${err.name || 'Error'}${err.message ? ' — ' + err.message : ''}`); return; }
+    setTimeout(() => { if (!document.fullscreenElement) showFsMsg('Fullscreen exited right away'); }, 1000);
   }
   // Fullscreen + lock to 'landscape' (either side: the sensor still flips it
   // 180°, never to portrait). Android Chrome allows the lock only while
   // fullscreen; must run inside the tap, before any await.
+  // Returns the refusal (an Error) or null; the orientation lock is
+  // best-effort and never counts as a failure.
   async function goLandscape() {
-    if (!fsSupported) return;
+    if (!fsSupported) return null;
     try {
       if (!document.fullscreenElement) await document.documentElement.requestFullscreen();
+    } catch (e) { return e || new Error('refused'); }
+    try {
       const lock = screen.orientation?.lock?.('landscape');
       if (lock) lock.catch(() => {});
-    } catch { /* refused: stay as is */ }
+    } catch { /* no lock on this device */ }
+    return null;
   }
   let usbGranted = false;
   function checkUsbGranted() {
@@ -353,7 +369,8 @@
             <DisconnectedOverlay mode={ui.mode} onMode={(m) => (ui.mode = m)} onConnect={connect}
               error={sess.state === 'error' ? sess.error : null} notice={sess.notice} {blocker} {busy} stopping={sess.state === 'stopping'}
               padRight={layout === 'immersive' && ui.cfgOpen} mobile={layout !== 'windowed' && LW < 1000}
-              radio={ui.radio} onRadio={(r) => (ui.radio = r)} relayAddr={ui.relayAddr} onRelayAddr={(a) => (ui.relayAddr = a)} />
+              radio={ui.radio} onRadio={(r) => (ui.radio = r)} relayAddr={ui.relayAddr} onRelayAddr={(a) => (ui.relayAddr = a)}
+              showAddr={showRelayAddr} />
           {/if}
         </div>
       </div>
@@ -371,7 +388,7 @@
     <FsOverlay {live} mode={sess.mode} {chLine} {recOn} {recWaiting} recClock={formatClock(recMs)} recErr={rec.state === 'error' ? (rec.err || 'error') : null} {recDisabled} {recTitle}
       onConn={toggleConn} onRec={toggleRec} onStats={() => (ui.statsVisible = !ui.statsVisible)}
       onCfg={() => (ui.cfgOpen = !ui.cfgOpen)} fsButton={isMobile(LW, LH) ? (fsSupported ? { on: realFs } : null) : { on: true }}
-      onFs={isMobile(LW, LH) ? toggleRealFs : toggleFs} />
+      onFs={isMobile(LW, LH) ? toggleRealFs : toggleFs} {fsMsg} />
     {#if ui.statsVisible && !ui.cfgOpen}
       <FloatStats v={view} mobile={isMobile(LW, LH)} open={ui.floatOpen} pos={ui.fpos}
         onOpen={(o) => (ui.floatOpen = o)} onMove={(p) => (ui.fpos = p)} cw={LW} ch={LH} toLocal={frame.toLocal} />
