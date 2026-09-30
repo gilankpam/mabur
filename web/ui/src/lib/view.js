@@ -32,7 +32,8 @@ export function statsView({ connected, mode, ch, w, core, page, sessionCfg, vide
     rungNum: rung >= 0 ? String(rung + 1) : D,
     rungCount: String(n),
     rungMode: spot ? 'Observed' : pinned ? 'Pinned' : 'Adaptive',
-    segs: sessionCfg.ladder.map((_, i) => rung >= 0 && i <= rung),
+    // A spotter drives no ladder: one unlit full-width line, not a rung per segment.
+    segs: spot ? [false] : sessionCfg.ladder.map((_, i) => rung >= 0 && i <= rung),
     chLine: `${ch} · ${w} MHz`,
     cards: [{ idx: 0, tx: !spot, rssi: fx(rssi, 0), snr: fx(on ? core.snr_db : null, 0), barPct }],
     bestRssi: fx(rssi, 0),
