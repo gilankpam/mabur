@@ -1,6 +1,7 @@
 // WebGs (web/src/web_gs.h): the web GS core. Pins spotter silence, the Gs
 // rendezvous/RCF cadence, and the wiring into the shared units.
 #include <algorithm>
+#include <cstdio>
 #include <stdexcept>
 
 #include "body_gen.h"
@@ -100,6 +101,39 @@ TEST(spotter_never_sends_over_lossy_replay) {
   CHECK(!called);
   CHECK(g.sends() == 0);
   CHECK(aus > 500);
+}
+
+// The spotter's LOSS row with the width-only op (2026-09-30): the op no
+// longer tracks the flying rung, so TransitionEdge fires once at start and
+// never again. Pre-FEC must still read real erasures, post-FEC must stay a
+// valid number, and a clean link must read ~0 -- bodies tagged at a real
+// rate (mcs 4) the fixed op never names.
+TEST(spotter_loss_row_reads_real_loss) {
+  auto run = [](int drop_every) {
+    Io io;
+    io.on_au = [](Au&&) {};
+    WebGs g(cfg(), Mode::Spotter, 136, 40, io);
+    uint64_t t = 0;
+    for (auto& b : gen_bodies(/*aus=*/600, /*dt_ms=*/16.0, drop_every)) {
+      b.mcs = 4;
+      t = b.mono_us;
+      g.on_rx(b);
+      g.tick(t);
+    }
+    return g.stats();
+  };
+  const auto lossy = run(7);
+  REQUIRE(lossy.pre_fec_loss.has_value());
+  REQUIRE(lossy.residual.has_value());
+  CHECK(*lossy.pre_fec_loss > 0.05);                   // ~1 in 7 bodies gone
+  const auto clean = run(0);
+  REQUIRE(clean.pre_fec_loss.has_value());
+  REQUIRE(clean.residual.has_value());
+  CHECK(*clean.pre_fec_loss < 0.001);
+  CHECK(*clean.residual < 0.001);
+  const auto heavy = run(2);                           // half gone: past what FEC repairs
+  REQUIRE(heavy.residual.has_value());
+  CHECK(*heavy.residual > 0.0);
 }
 
 TEST(gs_beacons_then_rcf_after_ack) {
