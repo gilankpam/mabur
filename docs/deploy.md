@@ -733,5 +733,6 @@ wire, so the hosted page must be rebuilt and redeployed with it.
 `tools/maburtop.py` and `tools/flightreport.py` must be the same commit
 to render the new `drone.*` block. Rollback is binary-only and paired:
 `maburd.pre-telemdiet` on the drone with `maburgs.pre-telemdiet` on the
-GS. Bench gate 2026-10-01: ausniff 30 s at mcs4/40 — 1815 AUs, 60.5 fps,
+GS. Bench gate 2026-10-01, both the 53-byte first cut and the final
+48-byte build (1d27796): ausniff 30 s at mcs4/40 — 1815 AUs, 60.5 fps,
 0 incomplete, 0 frame_id gaps, 0 resyncs.
