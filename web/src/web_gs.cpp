@@ -78,8 +78,9 @@ WebGs::WebGs(const maburgs::Config& cfg, Mode mode, uint8_t channel, int width, 
         if (io_.on_osd) io_.on_osd(rows, cols, cells);
       }) {
   // The radio is tuned by the glue. A spotter's link setting is just the
-  // configured width: it drives no ladder, so it needs no MCS, and the
-  // drone's applied-op echo left Telem 2026-09-30.
+  // configured width: it drives no ladder, so it needs no MCS (the readout
+  // comes off the air, air_mcs_), and the drone's applied-op echo left
+  // Telem 2026-09-30.
   spotter_op_.bw = width;
   if (mode_ == Mode::Gs) {
     if (!io_.send) throw std::invalid_argument("webgs: Gs mode needs Io::send");
@@ -133,9 +134,14 @@ void WebGs::on_rx(const mabur::node::RxBody& m) {
   if (m.mono_us > now_us_) now_us_ = m.mono_us;
   ++bodies_;
   agg_.on_rx_body(m);
-  if (!vrx_ || !m.crc_ok) return;
-  // Only real video refreshes the rendezvous silence timer (main.cpp).
+  if (!m.crc_ok) return;
   const int sid = mabur::sbi_peek_stream_id(m.body.data(), m.body.size());
+  // Spotter MCS readout, off the air: base-stream bodies only (enh can
+  // differ, the probe rides the next rung's candidate MCS); 255 = no rate
+  // on this body (legacy/VHT, or a relay frame without one), keep the last.
+  if (sid == 0 && m.mcs != 255) air_mcs_ = m.mcs;
+  if (!vrx_) return;
+  // Only real video refreshes the rendezvous silence timer (main.cpp).
   if (mabur::rc::frame_type(m.body.data(), m.body.size()) < 0 && sid != mabur::kMspStreamId &&
       sid != mabur::kProbeStreamId)
     vrx_->on_video(static_cast<double>(m.mono_us) / 1000.0);
@@ -256,7 +262,8 @@ Stats WebGs::stats() const {
     s.bw = vrx_->cur_op().bw;
     s.probe_state = maburgs::to_string(vrx_->ctl().probe_gate(now_ms).state);
   } else {
-    s.bw = spotter_op_.bw;   // configured width; mcs stays -1 (not tracked)
+    s.bw = spotter_op_.bw;   // configured width
+    s.mcs = air_mcs_;        // base-stream RX MCS, -1 until one is heard
   }
   const auto pre = lha_.pre_all();
   if (pre.valid) s.pre_fec_loss = pre.loss;

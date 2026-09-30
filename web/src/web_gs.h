@@ -63,7 +63,7 @@ struct Stats {
   bool session = false;            // rendezvous SESSION (Gs only)
   bool peer_acked = false;
   int rung = -1;                   // commanded (Gs); -1 in Spotter
-  int mcs = -1, bw = 0;            // commanded (Gs) / configured width, mcs -1 (Spotter)
+  int mcs = -1, bw = 0;            // commanded (Gs) / base-stream RX mcs + configured width (Spotter)
   std::string probe_state;         // to_string(ProbeGateState), "" in Spotter
   std::optional<double> pre_fec_loss, residual;
   double snr_db = std::numeric_limits<double>::quiet_NaN();
@@ -168,6 +168,7 @@ class WebGs {
   maburgs::DroneRestartDetector restart_;         // Spotter only
   maburgs::LinkHealth last_health_;
   maburgs::OpPoint spotter_op_;                   // fixed: configured width only
+  int air_mcs_ = -1;                              // last base-stream RX mcs (Spotter readout)
   std::optional<mabur::rc::Telem> telem_;
   Au cur_;
   uint64_t bodies_ = 0, aus_complete_ = 0, aus_truncated_ = 0, sends_ = 0, rcf_sent_ = 0;

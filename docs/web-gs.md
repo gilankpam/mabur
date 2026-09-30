@@ -622,10 +622,11 @@ offset, which only exists when this page is itself exchanging RCF/Telem
 with the drone — a spotter has no control channel to measure it over, and
 the panel says so rather than showing a stale or borrowed number.
 
-Link state shown alongside: rung/MCS/width (a spotter shows only its
-configured width -- it drives no ladder, so it tracks no MCS; since
-2026-09-30 it no longer reads the drone's applied-op echo), probe gate
-state, pre-FEC loss,
+Link state shown alongside: rung/MCS/width (a spotter shows its configured
+width and the MCS read off the air -- the RX-descriptor MCS of CRC-clean
+base-stream bodies, never enh or probe; since 2026-09-30 it no longer reads
+the drone's applied-op echo, and it drives no ladder), probe gate state,
+pre-FEC loss,
 residual, SNR/RSSI, RCF heard % (Δ`Telem.rcf_rx` / Δ`rcf_sent` over a
 trailing ~10 s window of the stats ring, not the adjacent 1 s tick —
 `rcfHeardPctWindowed()` in `web/ui/src/lib/logic.mjs`; the two counters are

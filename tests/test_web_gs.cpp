@@ -380,8 +380,8 @@ TEST(idr_requests_are_noop_in_spotter) {
 }
 
 // A spotter's link setting is just the configured width (2026-09-30: the
-// drone's applied-op echo left Telem). mcs is not tracked, and a Telem
-// arriving must not change either.
+// drone's applied-op echo left Telem). Its mcs readout comes off the air
+// (spotter_mcs_is_base_stream_rx_mcs), never from a Telem.
 TEST(spotter_op_is_configured_width_no_mcs) {
   Io io;
   io.on_au = [](Au&&) {};
@@ -398,6 +398,39 @@ TEST(spotter_op_is_configured_width_no_mcs) {
   CHECK(stats_json(g.stats()).find("drone_idr_gs") == std::string::npos);
   WebGs g20(cfg(), Mode::Spotter, 136, 20, io);
   CHECK(g20.stats().bw == 20);
+}
+
+// The spotter's MCS readout is read off the air: the RX-descriptor MCS of
+// CRC-clean BASE-stream (sid 0) bodies only -- enh, probe (next rung's
+// candidate MCS) and corrupt bodies never move it, and an unknown rate
+// (255: legacy/VHT, or a relay frame without one) keeps the last value.
+// Display only: the spotter's link-health op stays width-only.
+TEST(spotter_mcs_is_base_stream_rx_mcs) {
+  Io io;
+  io.on_au = [](Au&&) {};
+  WebGs g(cfg(), Mode::Spotter, 136, 40, io);
+  CHECK(g.stats().mcs == -1);                          // nothing heard yet
+  uint64_t t = 1'000'000;
+  for (auto b : gen_bodies(20, 16.0, 0)) {
+    const int sid = mabur::sbi_peek_stream_id(b.body.data(), b.body.size());
+    b.mcs = sid == 0 ? 4 : 7;                          // enh at a different rate
+    b.mono_us += t;
+    g.on_rx(b);
+  }
+  CHECK(g.stats().mcs == 4);
+  auto bodies = gen_bodies(2, 16.0, 0);
+  mabur::node::RxBody base;
+  for (auto& b : bodies)
+    if (mabur::sbi_peek_stream_id(b.body.data(), b.body.size()) == 0) base = b;
+  base.mcs = 2; base.crc_ok = false;                   // corrupt: ignored
+  g.on_rx(base);
+  CHECK(g.stats().mcs == 4);
+  base.mcs = 255; base.crc_ok = true;                  // unknown rate: ignored
+  g.on_rx(base);
+  CHECK(g.stats().mcs == 4);
+  base.mcs = 3;                                        // a real change lands
+  g.on_rx(base);
+  CHECK(g.stats().mcs == 3);
 }
 
 TEST(drone_temp_from_telem_in_stats_json) {
