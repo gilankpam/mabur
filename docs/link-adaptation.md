@@ -852,11 +852,13 @@ What the fold-in did change:
   brings the link back from FAILSAFE/RENDEZVOUS, the entering-LINKED IDR
   also clears the pending GS request — FAILSAFE reset the seen epoch, so
   without this a redundant second IDR would otherwise follow 100 ms later.
-  Served count: `drone.enc.idr_gs`.
+  Served count: `RcAgent::idr_gs_total()` (on the wire as
+  `drone.enc.idr_gs` until the 2026-09-30 telem diet).
 - **The ring is now visible from both ends.** `drone.enc.venc_ring_fill_pct`
   and `drone.enc.venc_full_drops` report the PRODUCER side (the encoder
   discarding AUs because maburd had not drained), against the existing
-  consumer-side `drone.enc.ring_drops`. See `docs/observability.md`.
+  consumer-side `drone.enc.ring_drops`. (All three left the wire in the
+  2026-09-30 telem diet.) See `docs/observability.md`.
 
 ### The bitrate policy pushes on CHANGE, plus a 5 s re-assert
 

@@ -4,7 +4,6 @@
 #include <mutex>
 #include <optional>
 
-#include "mabur/profile.h"
 #include "mabur/rc_proto.h"
 
 namespace mabur {
@@ -34,16 +33,8 @@ class UplinkTrack {
 struct TelemInputs {
   int state = 0;
   bool failsafe_shed = false;
-  bool radio_rx_ok = false;
-  bool probe_on = false;  // RcAgent::probe_on() — flags bit2, spec 2026-09-04 probe-stream
   bool congestion_shed = false;  // RcAgent::congestion_shed() — flags bit4
-  bool air_shed = false;  // flags bit5: AirClock gate dropped >= 1 enh AU this window
   bool low_power = false;  // RcAgent::low_power() — flags bit7, spec 2026-09-20
-  uint64_t generation = 0;
-  rc::PhyMode mode = rc::PhyMode::HT;
-  uint8_t mcs = 0, bw = 20;
-  double applied_ov_base = 0.0;
-  double applied_ov_enh = 0.0;
   uint64_t rcf_age_ms = 0, rcf_rx = 0;
   // link-rtt: seq of the RCF rcf_age_ms ages against + the pts-domain clock
   // (MI timebase, µs) at telem build. Straight pass-through, no saturation.
@@ -52,43 +43,21 @@ struct TelemInputs {
   uint16_t rcf_seq_echo = 0;
   bool rcf_seq_echo_valid = false;
   uint64_t pts_at_build_us = 0;
-  uint64_t enc_frames = 0, enc_bytes = 0;
   int cmd_kbps = 0;
-  int roi_qp = 0;  // RcAgent's ROI override as commanded (actuator.last_roi_qp)
-  uint64_t ring_drops = 0;
-  size_t txq_depth = 0, txq_cap = 0;
   uint64_t txq_drops = 0;
   // Per-telemetry-window max TxQueue wait (Task 4's txq_wait_max_ms atomic,
   // consumed via .exchange(0) at the 1 Hz tick) — saturating.
   uint64_t txq_wait_max_ms = 0;
-  uint64_t radio_sent = 0, radio_drops = 0, usb_fail = 0;
+  uint64_t usb_fail = 0;
   // RX-side channel view for this telemetry period (cca-on 2026-09-23):
   // the RX callback's own / foreign / CRC-failed frame split.
   uint64_t rx_own = 0, rx_foreign = 0, rx_crcfail = 0;
   UplinkTrack::Snap uplink;
   int soc_temp_c = -128;
-  int thermal_delta = 0;
   // CpuBusySampler::sample() -- empty until two ticks have been read.
   std::optional<double> cpu_pct;
-  uint64_t idr_disagree = 0, enhance_disagree = 0;
-  // FramePipeline vanish counters (venc-ring vanish detection,
-  // docs/venc-ring-vanish-findings-2026-08-12.md).
-  uint64_t vanished_base = 0, vanished_enh = 0, self_idr_refused = 0;
-  // venc_get_stats() (venc_core.h), zero on host builds where the encoder
-  // isn't compiled in. See rc::Telem for what they mean.
-  uint64_t venc_full_drops = 0;
-  int venc_ring_fill_pct = 0;
-  // Air clock (spec 2026-09-06): window max backlog (main.cpp atomic,
-  // exchange(0) per tick) and FramePipeline::air_dropped() mirror.
-  uint64_t air_backlog_max_ms = 0, air_shed_drops = 0;
-  // In-flight channel hop readback (spec 2026-09-14 §1): RcAgent::channel()
-  // and RcAgent::hop_epoch(), straight pass-through, no saturation.
-  uint8_t channel = 0;
-  uint8_t hop_epoch = 0;
   // VtxRecorder::status_byte() (spec 2026-09-26), straight pass-through.
   uint8_t rec_status = 0;
-  // RcAgent::idr_gs_total() (spec 2026-09-28), saturated to u16.
-  uint64_t idr_gs = 0;
 };
 
 rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in);

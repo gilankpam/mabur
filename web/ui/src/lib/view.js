@@ -31,8 +31,9 @@ export function statsView({ connected, mode, ch, w, core, page, sessionCfg, vide
     bw: on && core.bw ? String(core.bw) : D,
     rungNum: rung >= 0 ? String(rung + 1) : D,
     rungCount: String(n),
-    rungMode: spot ? 'Observed' : pinned ? 'Pinned' : 'Adaptive',
-    segs: sessionCfg.ladder.map((_, i) => rung >= 0 && i <= rung),
+    rungMode: spot ? '' : pinned ? 'Pinned' : 'Adaptive',   // spotter: no ladder, no label
+    // A spotter drives no ladder: one unlit full-width line, not a rung per segment.
+    segs: spot ? [false] : sessionCfg.ladder.map((_, i) => rung >= 0 && i <= rung),
     chLine: `${ch} · ${w} MHz`,
     cards: [{ idx: 0, tx: !spot, rssi: fx(rssi, 0), snr: fx(on ? core.snr_db : null, 0), barPct }],
     bestRssi: fx(rssi, 0),
@@ -92,7 +93,7 @@ export function debugGroups({ connected, mode, core, rcfPct, ausRate, hitches60,
     ]) },
     { title: 'Drone', rows: rows([
       ['drone_state', v(core?.drone_state ?? D)], ['drone_rcf_rx', v(core?.drone_rcf_rx ?? D)],
-      ['IDR req / served', v(spot ? 'n/a' : `${core?.idr_req ?? D} / ${core?.drone_idr_gs ?? D}`)],
+      ['IDR req', v(spot ? 'n/a' : core?.idr_req ?? D)],
     ]) },
     { title: 'Client', rows: rows([
       ['AUs/s', v(on ? ausRate : D)], ['hitches', v(`${hitches60} last 60s (total ${hitchesTotal})`)],

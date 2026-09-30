@@ -63,8 +63,8 @@ struct TransitionEdge {
                S1LossWindow& s1_resid_cur, S1LossWindow& s3_resid_cur,
                double now_ms) {
     bool fired = false;
-    // sid 0 (base) mirrors the drone's mcs-1 rule (rc::ladder_from(...)[0]
-    // .mcs) and always tracks the op. Overhead-only steps mark sid 0 too
+    // sid 0 (base) rides the rung mcs (rc::ladder_from(...)[0].mcs, the same
+    // mcs as enh since 2026-08-30) and always tracks the op. Overhead-only steps mark sid 0 too
     // (FEC re-key debris exists without a PHY change; the decoder then uses
     // the plain same-MCS fallback). Static-pin mode: nothing ever arms.
     if (op.mcs != last_op_mcs || op.bw != last_op_bw || op.overhead_base != last_op_ov) {

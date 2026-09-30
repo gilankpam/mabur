@@ -179,8 +179,9 @@ class RcAgent {
   // 2026-09-14 §1). 0 before any hop order has ever been heard.
   uint8_t hop_epoch() const { return hop_epoch_; }
 
-  // GS-requested IDRs actually issued (spec 2026-09-28), lifetime; feeds
-  // Telem.idr_gs.
+  // GS-requested IDRs actually issued (spec 2026-09-28), lifetime. Left the
+  // wire with Telem.idr_gs (2026-09-30); kept as the observable the
+  // request/pacer tests pin.
   uint64_t idr_gs_total() const { return idr_gs_total_; }
 
   // Telemetry accessors (spec 2026-07-26 drone-telemetry): read-only

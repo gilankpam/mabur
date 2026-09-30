@@ -721,3 +721,18 @@ drone log shows `rec: recording -> /mnt/mmcblk0p1/record-NNNN.mp4`. GS
 per device: `maburd.pre-vtxrec` + `mabur.toml.pre-vtxrec`,
 `maburgs.pre-vtxrec` + `maburplay.pre-vtxrec` +
 `maburplay.toml.pre-vtxrec`, on both ends together.
+
+## 2026-09-30 telem diet (RC_VERSION 13)
+
+`T_TELEM` shrinks 98 → 48 bytes and `RC_VERSION` goes 12 → 13 — a
+version-mismatch flag day (no control link, no video between the two
+swaps; finish the deploy, do not restart). **No config change on either
+device**: swap `maburd` and `maburgs` only. `maburplay` is unaffected
+(it reads only sideport keys that stayed). The web GS speaks the same RC
+wire, so the hosted page must be rebuilt and redeployed with it.
+`tools/maburtop.py` and `tools/flightreport.py` must be the same commit
+to render the new `drone.*` block. Rollback is binary-only and paired:
+`maburd.pre-telemdiet` on the drone with `maburgs.pre-telemdiet` on the
+GS. Bench gate 2026-10-01, both the 53-byte first cut and the final
+48-byte build (1d27796): ausniff 30 s at mcs4/40 — 1815 AUs, 60.5 fps,
+0 incomplete, 0 frame_id gaps, 0 resyncs.

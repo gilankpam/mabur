@@ -44,7 +44,8 @@ test('pinned and spotter modes', () => {
   assert.equal(p.rungMode, 'Pinned'); assert.equal(p.rungNum, '–');
   assert.ok(p.segs.every((s) => !s));
   const s = statsView({ ...base, mode: 'spotter', core: { ...core, mode: 'spotter', rung: -1 } });
-  assert.equal(s.rungMode, 'Observed'); assert.ok(s.segs.every((x) => !x));
+  // One unlit full-width line: a spotter drives no ladder, so no per-rung segments.
+  assert.equal(s.rungMode, ''); assert.deepEqual(s.segs, [false]);
   assert.equal(s.cards[0].tx, false);
   assert.equal(s.latencyCaption, 'rx→glass latency, last 12 s');
 });
@@ -99,12 +100,14 @@ test('debug Client group shows the local recorder', () => {
   assert.equal(row(debugGroups({ ...base, connected: false, lrec: null })), '–');
 });
 
-test('debug Drone group shows IDR req / served in GS, n/a in spotter', () => {
-  const args = { connected: true, mode: 'gs', core: { mode: 'gs', idr_req: 4, drone_idr_gs: 3 },
+test('debug Drone group shows IDR req in GS, n/a in spotter', () => {
+  // The drone's served count (Telem.idr_gs) left the wire 2026-09-30: the
+  // page sees for itself whether a key frame arrived.
+  const args = { connected: true, mode: 'gs', core: { mode: 'gs', idr_req: 4 },
     rcfPct: null, ausRate: 60, hitches60: 0, hitchesTotal: 0, seg: { w1: {}, w60: {} } };
-  const row = (g) => g.find((x) => x.title === 'Drone').rows.find((r) => r.k === 'IDR req / served').v;
-  assert.equal(row(debugGroups(args)), '4 / 3');
-  assert.equal(row(debugGroups({ ...args, core: { mode: 'gs', idr_req: 1, drone_idr_gs: null } })), '1 / –');
+  const row = (g) => g.find((x) => x.title === 'Drone').rows.find((r) => r.k === 'IDR req').v;
+  assert.equal(row(debugGroups(args)), '4');
+  assert.equal(row(debugGroups({ ...args, core: { mode: 'gs', idr_req: null } })), '–');
   assert.equal(row(debugGroups({ ...args, mode: 'spotter' })), 'n/a');
 });
 

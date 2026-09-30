@@ -54,34 +54,17 @@ rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in) {
   rc::Telem t;
   t.tlm_seq = tlm_seq;
   t.state = static_cast<uint8_t>(in.state);
-  t.flags = static_cast<uint8_t>((in.failsafe_shed ? 0x01 : 0) | (in.radio_rx_ok ? 0x02 : 0) |
-                                  (in.probe_on ? 0x04 : 0) |
+  t.flags = static_cast<uint8_t>((in.failsafe_shed ? 0x01 : 0) |
                                   (in.rcf_seq_echo_valid ? 0x08 : 0) |
                                   (in.congestion_shed ? 0x10 : 0) |
-                                  (in.air_shed ? 0x20 : 0) |
                                   (in.low_power ? 0x80 : 0));
-  t.generation = saturate<uint32_t>(in.generation);
-  t.applied_profile = rc::encode_profile(in.mode, in.mcs, in.bw);
-  // Per-stream applied overhead: the commanded op pair (Task 6, RC_VERSION
-  // 5), or the debug-HTTP per-layer override when armed — see main.cpp's
-  // telemetry collector and TelemInputs.applied_ov_*.
-  t.applied_ov_base = in.applied_ov_base;
-  t.applied_ov_enh = in.applied_ov_enh;
   t.rcf_age_ms = saturate<uint16_t>(in.rcf_age_ms);
   t.rcf_seq_echo = in.rcf_seq_echo;
   t.pts_at_build = in.pts_at_build_us;
   t.rcf_rx = saturate<uint32_t>(in.rcf_rx);
-  t.enc_frames = saturate<uint32_t>(in.enc_frames);
-  t.enc_kbytes = saturate<uint32_t>(in.enc_bytes / 1024);
   t.cmd_kbps = saturate<uint16_t>(in.cmd_kbps);
-  t.roi_qp = saturate<int8_t>(in.roi_qp);
-  t.ring_drops = saturate<uint16_t>(in.ring_drops);
-  t.txq_depth = saturate<uint8_t>(in.txq_depth);
-  t.txq_cap = saturate<uint8_t>(in.txq_cap);
   t.txq_drops = saturate<uint32_t>(in.txq_drops);
   t.txq_wait_max_ms = saturate<uint16_t>(in.txq_wait_max_ms);
-  t.radio_sent = saturate<uint32_t>(in.radio_sent);
-  t.radio_drops = saturate<uint32_t>(in.radio_drops);
   t.usb_fail = saturate<uint16_t>(in.usb_fail);
   t.rx_own = saturate<uint16_t>(in.rx_own);
   t.rx_foreign = saturate<uint16_t>(in.rx_foreign);
@@ -98,26 +81,10 @@ rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in) {
     t.up_snr[1] = 0;
   }
   t.soc_temp_c = saturate<int8_t>(in.soc_temp_c);
-  t.thermal_delta = saturate<int8_t>(in.thermal_delta);
   t.cpu_busy_x100 =
       in.cpu_pct ? saturate<uint16_t>(std::lround(std::clamp(*in.cpu_pct, 0.0, 100.0) * 100.0))
                  : 65535;
-  t.idr_disagree = saturate<uint16_t>(in.idr_disagree);
-  t.enhance_disagree = saturate<uint16_t>(in.enhance_disagree);
-  t.vanished_base = saturate<uint16_t>(in.vanished_base);
-  t.vanished_enh = saturate<uint16_t>(in.vanished_enh);
-  t.self_idr_refused = saturate<uint16_t>(in.self_idr_refused);
-  t.venc_full_drops = saturate<uint16_t>(in.venc_full_drops);
-  // Clamped, not just saturated: the wire field is documented 0..100 and a
-  // garbage percentage would read as a plausible occupancy.
-  t.venc_ring_fill_pct =
-      saturate<uint8_t>(std::clamp(in.venc_ring_fill_pct, 0, 100));
-  t.air_backlog_max_ms = saturate<uint16_t>(in.air_backlog_max_ms);
-  t.air_shed_drops = saturate<uint16_t>(in.air_shed_drops);
-  t.channel = in.channel;
-  t.hop_epoch = in.hop_epoch;
   t.rec_status = in.rec_status;
-  t.idr_gs = saturate<uint16_t>(in.idr_gs);
   return t;
 }
 

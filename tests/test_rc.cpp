@@ -55,11 +55,11 @@ TEST(rcf_matches_golden_wire) {
   // Reverting any pack_rcf() layout change without updating these fails
   // here, which is the point -- the format cannot drift silently.
   const std::vector<std::string> GOLDEN = {
-      "43520c0100efbeadde0700243232ff000000006650",
-      "43520c010001000000ffff006464ff000003004b2b",
+      "43520d0100efbeadde0700243232ff000000008440",
+      "43520d010001000000ffff006464ff00000300a93b",
       // Asym pair (base 1.0 / enh 0.5): ENH actually rides a different
       // literal overhead than BASE here, not a duplicated equal-pair scalar.
-      "43520c0100443322112a00086432060000025a8967",
+      "43520d0100443322112a00086432060000025a6b77",
   };
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
   REQUIRE(j["rcf"].size() == GOLDEN.size());
@@ -91,7 +91,7 @@ TEST(disc_matches_golden_wire) {
   // Reverting any pack_disc() layout change without updating this fails
   // here, which is the point -- the format cannot drift silently.
   const std::vector<std::string> GOLDEN = {
-      "43520c0204010000000100feca9514010000000200316f",
+      "43520d0204010000000100feca95140100000002002eb1",
   };
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
   REQUIRE(j["disc"].size() == GOLDEN.size());
@@ -124,7 +124,7 @@ TEST(disc_ack_matches_golden_wire) {
   // Reverting any pack_disc_ack() layout change without updating this
   // fails here, which is the point -- the format cannot drift silently.
   const std::vector<std::string> GOLDEN = {
-      "43520c0304010000000100feca0300951401001a14",
+      "43520d0304010000000100feca030095140100f804",
   };
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
   REQUIRE(j["disc_ack"].size() == GOLDEN.size());
@@ -244,97 +244,57 @@ TEST(rcf_fec_overhead_is_literal_x100) {
   CHECK(std::abs(p->fec_overhead_enh - 1.0) < 1e-9);
 }
 
-TEST(telem_applied_ov_split_round_trip) {
-  rc::Telem t;
-  t.applied_ov_base = 0.28;
-  t.applied_ov_enh = 0.80;
-  auto w = rc::pack_telem(t);
-  auto p = rc::parse_telem(w.data(), w.size());
-  CHECK(p.has_value());
-  CHECK(std::abs(p->applied_ov_base - 0.28) < 0.005);
-  CHECK(std::abs(p->applied_ov_enh - 0.80) < 0.005);
-}
-
 TEST(telem_round_trip_and_golden) {
   mabur::rc::Telem t;
-  t.tlm_seq = 0x0102; t.state = 2; t.flags = 0x03; t.generation = 0x04050607;
-  t.applied_profile = mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 5, 20);
-  t.applied_ov_base = 0.25; t.applied_ov_enh = 0.30;
+  t.tlm_seq = 0x0102; t.state = 2; t.flags = 0x09;  // failsafe_shed | echo valid
   t.rcf_age_ms = 45; t.rcf_seq_echo = 0x1234;
   t.pts_at_build = 0x0011223344556677ull;
-  t.rcf_rx = 100000; t.enc_frames = 200000;
-  t.enc_kbytes = 300000; t.cmd_kbps = 9000; t.roi_qp = -24;
-  t.ring_drops = 1;
-  t.txq_depth = 3; t.txq_cap = 64; t.txq_drops = 7; t.txq_wait_max_ms = 1234;
-  t.radio_sent = 400000;
-  t.radio_drops = 9; t.usb_fail = 2;
+  t.rcf_rx = 100000; t.cmd_kbps = 9000;
+  t.txq_drops = 7; t.txq_wait_max_ms = 1234; t.usb_fail = 2;
   t.up_rssi[0] = 51; t.up_rssi[1] = 52; t.up_snr[0] = 21; t.up_snr[1] = 22;
-  t.soc_temp_c = 61; t.thermal_delta = 3; t.cpu_busy_x100 = 72;
-  t.idr_disagree = 4; t.enhance_disagree = 5;
-  t.vanished_base = 7; t.vanished_enh = 8; t.self_idr_refused = 9;
-  t.venc_full_drops = 10; t.venc_ring_fill_pct = 62;
+  t.soc_temp_c = 61; t.cpu_busy_x100 = 72;
   // RX-side channel view per telemetry period (cca-on 2026-09-23): the
   // drone's own frame split -- ours (RC from the GS), foreign CRC-clean,
   // and CRC-failed (preamble heard, payload not decodable).
   t.rx_own = 13; t.rx_foreign = 14; t.rx_crcfail = 15;
   // VTX recorder status (spec 2026-09-26): state 2 (Error) | err 5 (LowSpace) << 2.
   t.rec_status = 0x16;
-  t.idr_gs = 0x0917;
   auto wire = mabur::rc::pack_telem(t);
+  CHECK(wire.size() == 48 + 2);
   CHECK(mabur::rc::frame_type(wire.data(), wire.size()) == mabur::rc::T_TELEM);
   auto back = mabur::rc::parse_telem(wire.data(), wire.size());
   REQUIRE(back.has_value());
   CHECK(back->tlm_seq == t.tlm_seq);
-  CHECK(back->generation == t.generation);
-  CHECK(back->applied_profile == t.applied_profile);
-  CHECK(std::abs(back->applied_ov_base - 0.25) < 0.005);
-  CHECK(std::abs(back->applied_ov_enh - 0.30) < 0.005);
+  CHECK(back->state == 2);
+  CHECK(back->flags == 0x09);
+  CHECK(back->rcf_age_ms == 45);
   CHECK(back->rcf_seq_echo == 0x1234);
   CHECK(back->pts_at_build == 0x0011223344556677ull);
   CHECK(back->rcf_rx == t.rcf_rx);
-  CHECK(back->enc_kbytes == t.enc_kbytes);
-  CHECK(back->roi_qp == -24);
+  CHECK(back->cmd_kbps == 9000);
+  CHECK(back->txq_drops == 7);
   CHECK(back->txq_wait_max_ms == 1234);
-  CHECK(back->radio_sent == t.radio_sent);
-  CHECK(back->up_snr[1] == 22);
+  CHECK(back->usb_fail == 2);
+  CHECK(back->up_rssi[0] == 51); CHECK(back->up_rssi[1] == 52);
+  CHECK(back->up_snr[0] == 21); CHECK(back->up_snr[1] == 22);
   CHECK(back->soc_temp_c == 61);
   CHECK(back->cpu_busy_x100 == 72);
-  CHECK(back->idr_disagree == 4);
-  CHECK(back->enhance_disagree == 5);
-  CHECK(back->vanished_base == 7);
-  CHECK(back->vanished_enh == 8);
-  CHECK(back->self_idr_refused == 9);
-  CHECK(back->venc_full_drops == 10);
-  CHECK(back->venc_ring_fill_pct == 62);
   CHECK(back->rx_own == 13);
   CHECK(back->rx_foreign == 14);
   CHECK(back->rx_crcfail == 15);
   CHECK(back->rec_status == 0x16);
-  CHECK(back->idr_gs == 0x0917);
   // Golden pin: byte-exact wire so the format can never drift silently.
-  // Print-once, then hardcode: std::fprintf(stderr, "%s\n", mtest::hex(wire).c_str());
-  // (fill GOLDEN with the printed hex in the same commit — the test must
-  // not pass with an empty golden)
+  // Computed independently of pack_telem (2026-09-30: python struct.pack of
+  // the documented layout + CRC16-CCITT init 0xFFFF), not printed from it.
   const std::string GOLDEN =
-      "43520c04030201020706050405191e2d0034127766554433221100a0860100400d0300"
-      "e09304002823e80100034007000000d204801a0600090000000200333415163d034800"
-      "040005000700080009000a003e0000000000000d000e000f00161709b95a";
+      "43520d04090201022d0034127766554433221100a0860100282307000000d2040200"
+      "333415163d48000d000e000f0016e574";
   CHECK(mtest::hex(wire) == GOLDEN);
   // Corrupt/truncate rejection, mirroring the disc_ack tests:
   auto trunc = wire; trunc.pop_back();
   CHECK(!mabur::rc::parse_telem(trunc.data(), trunc.size()).has_value());
   auto flip = wire; flip[wire.size() / 2] ^= 0xFF;
   CHECK(!mabur::rc::parse_telem(flip.data(), flip.size()).has_value());
-}
-
-TEST(telem_idr_gs_is_the_last_two_body_bytes) {
-  mabur::rc::Telem t; t.idr_gs = 0xBEEF;
-  auto b = mabur::rc::pack_telem(t);
-  CHECK(b.size() == 98 + 2);
-  CHECK(b[96] == 0xEF); CHECK(b[97] == 0xBE);   // little-endian, like every put16
-  auto back = mabur::rc::parse_telem(b.data(), b.size());
-  REQUIRE(back.has_value());
-  CHECK(back->idr_gs == 0xBEEF);
 }
 
 TEST(telem_rtt_sync_fields_round_trip) {
@@ -398,13 +358,13 @@ TEST(version_mismatch_rejected_both_directions) {
   CHECK(mabur::rc::parse_rcf(body.data(), body.size()).has_value());
 
   // Byte 2 is the version. Any other version must be refused outright —
-  // including 10, a previous version before bumping to 12.
+  // including 12, the version before the 2026-09-30 bump to 13.
   auto v_old = body;
-  v_old[2] = 10;
+  v_old[2] = 12;
   CHECK(!mabur::rc::parse_rcf(v_old.data(), v_old.size()).has_value());
 
   auto v_future = body;
-  v_future[2] = 13;
+  v_future[2] = 14;
   CHECK(!mabur::rc::parse_rcf(v_future.data(), v_future.size()).has_value());
 
   // The same guard must hold for telemetry, which travels the opposite
@@ -416,6 +376,9 @@ TEST(version_mismatch_rejected_both_directions) {
   auto tv1 = tb;
   tv1[2] = 1;
   CHECK(!mabur::rc::parse_telem(tv1.data(), tv1.size()).has_value());
+  auto tv12 = tb;
+  tv12[2] = 12;
+  CHECK(!mabur::rc::parse_telem(tv12.data(), tv12.size()).has_value());
 }
 
 TEST(rcf_head_is_nineteen_bytes) {
@@ -432,16 +395,6 @@ TEST(rcf_head_is_nineteen_bytes) {
   REQUIRE(back.has_value());
   CHECK(back->hop_ch == 149); CHECK(back->hop_epoch == 3); CHECK(back->rec == 5);
   CHECK(back->idr_epoch == 0xA7);
-}
-
-TEST(telem_carries_channel_and_hop_epoch) {
-  mabur::rc::Telem t; t.tlm_seq = 5; t.channel = 165; t.hop_epoch = 9;
-  auto b = mabur::rc::pack_telem(t);
-  CHECK(b.size() == 98 + 2);
-  CHECK(b[87] == 165); CHECK(b[88] == 9);
-  auto back = mabur::rc::parse_telem(b.data(), b.size());
-  REQUIRE(back.has_value());
-  CHECK(back->channel == 165); CHECK(back->hop_epoch == 9);
 }
 
 // The version check drops a foreign frame with no trace anywhere -- on a
@@ -581,19 +534,19 @@ TEST(cal_result_sentinel_is_minus_128_and_minus_1_is_a_real_wall) {
 
 TEST(telem_ack_is_the_cal_active_bit_alone) {
   // The anchor never leaves the drone (spec 2026-09-13): the calibration
-  // ack is flags bit6 and nothing else. TELEM_LEN shrank 88 -> 87 (95 since 2026-09-23, +rx_*), now 96 since 2026-09-26 (+rec_status), 98 since 2026-09-28 (+idr_gs).
+  // ack is flags bit6 and nothing else. TELEM_LEN shrank 88 -> 87 (95 since 2026-09-23, +rx_*), now 96 since 2026-09-26 (+rec_status), 98 since 2026-09-28 (+idr_gs), 48 since 2026-09-30 (fields no GS consumer needs dropped).
   mabur::rc::Telem t;
   t.flags = 0x40;
   auto b = mabur::rc::pack_telem(t);
-  CHECK(b.size() == 98 + 2);  // body + crc16
+  CHECK(b.size() == 48 + 2);  // body + crc16
   auto got = mabur::rc::parse_telem(b.data(), b.size());
   REQUIRE(got.has_value());
   CHECK((got->flags & 0x40) != 0);
 }
 
-TEST(rc_version_is_twelve) {
-  // 2026-09-28 web-idr-request: RCF +idr_epoch, Telem +idr_gs.
-  CHECK(mabur::rc::RC_VERSION == 12);
+TEST(rc_version_is_thirteen) {
+  // 2026-09-30 telem diet: Telem 98 -> 48 bytes.
+  CHECK(mabur::rc::RC_VERSION == 13);
 }
 
 MTEST_MAIN

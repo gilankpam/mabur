@@ -39,11 +39,6 @@ void decode_profile(uint8_t p, PhyMode& mode, uint8_t& mcs, uint8_t& bw);
 // and flags-off measured 2-3 dB weaker at the same MCS).
 std::array<LayerTxSpec, 2> ladder_from(PhyMode mode, uint8_t mcs, uint8_t bw);
 
-// DEVOURER_SVC_LADDER-style spec string, 2-slot since the 2026-08-29
-// mcs-1 UEP-via-rate rule: "BASE={name}{m-1}/{bw};ENH={name}{m}/{bw}" with
-// name = "VHT1SS_MCS" (VHT) or "MCS" (HT).
-std::string ladder_spec_str(PhyMode mode, uint8_t mcs, uint8_t bw);
-
 struct ProfileRow {
   uint8_t mcs;
   double ov_base;

@@ -13,7 +13,7 @@ PhyMode mode_from_json(const std::string& s) {
 }
 }  // namespace
 
-TEST(profile_byte_encode_decode_ladder_matches_vectors) {
+TEST(profile_byte_encode_decode_matches_vectors) {
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/profile.json");
   for (auto& c : j["profiles"]) {
     PhyMode mode = mode_from_json(c["mode"].get<std::string>());
@@ -30,9 +30,6 @@ TEST(profile_byte_encode_decode_ladder_matches_vectors) {
     CHECK(dmode == mode);
     CHECK(dmcs == mcs);
     CHECK(dbw == bw);
-
-    std::string ladder = ladder_spec_str(mode, mcs, bw);
-    CHECK(ladder == c["ladder"].get<std::string>());
   }
 }
 

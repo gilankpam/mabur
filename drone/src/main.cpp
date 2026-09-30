@@ -1578,40 +1578,16 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
   // apply_op, Important fix 2) -- wire it up now that cal_active exists.
   actuator.cal_active = &cal_active;
 
-  // Cumulative encoder/ring counters (spec 2026-07-26 drone-telemetry):
-  // written by the hot thread, read by the agent thread's telemetry
-  // collector. FramePipeline/FrameSource don't track these themselves (see
-  // frame_ring stats block below), so maburd tracks them here. Two
-  // different patterns live in this group: enc_frames/enc_bytes/ring_drops
-  // are computed right here (fetch_add) because nothing else tracks them,
-  // while idr_disagree_total/enhance_disagree_total are relaxed-published
-  // MIRRORS (store, not fetch_add) of counters FramePipeline already owns
-  // and updates on the hot thread — see pipe.idr_disagreements() below.
+  // Cumulative encoder output (spec 2026-07-26 drone-telemetry): written by
+  // the hot thread, read by the agent thread's peak-rate sampler for the
+  // stats line. Telemetry stopped carrying them 2026-09-30 (RC_VERSION 13).
   std::atomic<uint64_t> enc_frames_total{0};
   std::atomic<uint64_t> enc_bytes_total{0};
-  std::atomic<uint64_t> idr_disagree_total{0};
-  std::atomic<uint64_t> enhance_disagree_total{0};
-  std::atomic<uint64_t> ring_drops_total{0};
-  // venc-ring vanish detection (docs/venc-ring-vanish-findings-2026-08-12.md):
-  // relaxed-published mirrors of FramePipeline's counters (the
-  // idr_disagree_total pattern). Detection-only port of 65c94fd: the
-  // pipeline's self-IDR latch level is deliberately NOT consumed here — the
-  // self-IDR mechanism needs the redesign queued in that doc (kill switch,
-  // GOP-aware suppression, rate-based guard) before it returns.
-  std::atomic<uint64_t> vanished_base_total{0};
-  std::atomic<uint64_t> vanished_enh_total{0};
-  std::atomic<uint64_t> self_idr_refused_total{0};
   // TxQueue wait window max (spec 2026-08-30 latency-accounting, Task 4):
   // tx thread publishes the largest push→pop delay it saw since the last
   // 1 Hz telemetry read; the agent thread's collector (Task 5) exchanges it
   // back to 0 so each tick reports its own window, not a running max.
   std::atomic<uint32_t> txq_wait_max_ms{0};
-  // Air clock (spec 2026-09-06 §4.3): hot thread CAS-max'es the modelled
-  // backlog after every AU (txq_wait_max_ms pattern; the 1 Hz collector
-  // exchanges it back to 0) and mirrors FramePipeline::air_dropped() the
-  // way enhance_disagree_total mirrors its counter.
-  std::atomic<uint32_t> air_backlog_max_us{0};
-  std::atomic<uint64_t> air_shed_drops_total{0};
   // Agent thread -> hot thread: link came up from BOOT/RENDEZVOUS, so every
   // frame encoded so far died before the air — re-mark the discontinuity
   // window so the GS gets the re-base signal on frames that can actually
@@ -2004,27 +1980,8 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
           split_cpu_sum_us += cpu_us;
           if (cpu_us > split_cpu_max_us) split_cpu_max_us = cpu_us;
         }
-        {
-          // Arrival-side backlog: the same quantity the gate and the wire
-          // air_ms use (backlog_us, computed before pipe.encode), not a
-          // fresh post-booking sample -- that would always include this
-          // frame's own just-booked airtime (a rung-2 IDR alone ~23 ms).
-          const uint32_t bl = backlog_us;
-          uint32_t prev = air_backlog_max_us.load(std::memory_order_relaxed);
-          while (bl > prev &&
-                 !air_backlog_max_us.compare_exchange_weak(prev, bl)) {}
-          air_shed_drops_total.store(pipe.air_dropped(), std::memory_order_relaxed);
-        }
         enc_frames_total.fetch_add(1, std::memory_order_relaxed);
         enc_bytes_total.fetch_add(static_cast<uint64_t>(n), std::memory_order_relaxed);
-        idr_disagree_total.store(pipe.idr_disagreements(),
-                                 std::memory_order_relaxed);
-        enhance_disagree_total.store(pipe.enhance_disagreements(),
-                                     std::memory_order_relaxed);
-        vanished_base_total.store(pipe.vanished_base(), std::memory_order_relaxed);
-        vanished_enh_total.store(pipe.vanished_enhance(), std::memory_order_relaxed);
-        self_idr_refused_total.store(pipe.self_idr_refused(),
-                                     std::memory_order_relaxed);
       }
       // Ring-pressure observability (spec: the drain-feedback policy's
       // future input): one stderr line every 5 s.
@@ -2038,20 +1995,14 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
       // (write_idx - read_idx). Since the venc fold-in the producer is a
       // thread of THIS process, so its drop count is no longer unreachable:
       // it comes from venc_get_stats() (VencStats.full_drops), which reads
-      // the encoder's own handle — see the T_TELEM collector below, which
-      // publishes it as Telem.venc_full_drops. This line stays
-      // consumer-side-only on purpose, so the two provenances never blur.
+      // the encoder's own handle. This line stays consumer-side-only on
+      // purpose, so the two provenances never blur.
       // See tests/test_frame_source.cpp
       // (consumer_fill_reports_only_consumer_side_counters).
       if (now - last_ring_stats_ms >= 5000) {
         last_ring_stats_ms = now;
         venc_frame_ring_fill_t f{};
         if (fsrc.fill(&f)) {
-          // Telem.ring_drops (spec 2026-07-26 drone-telemetry): the two
-          // counters this process can actually move, per the comment above.
-          ring_drops_total.store(
-              static_cast<uint64_t>(f.oversize_drops) + static_cast<uint64_t>(f.bad_slot_drops),
-              std::memory_order_relaxed);
           std::fprintf(stderr,
               "maburd frame_ring: fill=%u%% (%u/%u) reads=%llu oversize=%llu "
               "bad_slot=%llu idr_disagree=%llu enhance_disagree=%llu "
@@ -2613,8 +2564,6 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
     // comment for why a shared counter is load-bearing there.
     uint64_t last_telem_ms = start;
     mabur::CpuBusySampler cpu_busy;  // /proc/stat delta per telemetry tick
-    uint64_t rx_beat_at_last_telem = 0;
-    uint64_t air_drops_at_last_telem = 0;
 
     mabur::TickGate tick_gate(now_steady_ms(), cfg.link.tick_ms);
     // Peak 100 ms encoder rate for the stats line (peak_rate.h): fed every
@@ -2752,43 +2701,10 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
 
           TelemInputs ti;
           ti.state = static_cast<int>(agent.state());
-          ti.channel = agent.channel();
-          ti.hop_epoch = agent.hop_epoch();
           ti.failsafe_shed = agent.failsafe_shed();
           ti.congestion_shed = agent.congestion_shed();
-          ti.probe_on = agent.probe_on();
           ti.low_power = agent.low_power();
           ti.rec_status = vtx_rec.status_byte();
-          ti.idr_gs = agent.idr_gs_total();
-          // "advanced in the last 2 s" (spec) approximated as "advanced over
-          // the last telemetry tick" (~1 s here) — the collector runs on this
-          // same 1 Hz cadence, so a stricter 2 s window would just double-count
-          // the same beat across two ticks.
-          ti.radio_rx_ok = rb > rx_beat_at_last_telem;
-          rx_beat_at_last_telem = rb;
-          ti.generation = agent.current().generation;
-          // Telemetry rides the robust base rate (slot 0, mcs-1) to ensure
-          // control packets are reliably delivered even at the edge of coverage.
-          // The ladder is 2-slot: slot 0 (base, mcs-1) and slot 1 (enh, mcs).
-          ti.mode = agent.current().ladder[0].mode;
-          ti.mcs = agent.current().ladder[0].mcs;
-          ti.bw = agent.current().ladder[0].bw;
-          // applied_ov_base/enh report the commanded op PAIR (Task 6,
-          // RC_VERSION 5 — the fixed per-rung values RcAgent applies
-          // directly to the UEP layers), or the debug-HTTP per-layer
-          // override when armed (the same two atomics run_bitrate_policy's
-          // override check reads).
-          {
-            const int ob = ov_override.ovr_base_pct.load(std::memory_order_relaxed);
-            const int oe = ov_override.ovr_enh_pct.load(std::memory_order_relaxed);
-            if (ob >= 0 && oe >= 0) {
-              ti.applied_ov_base = ob / 100.0;
-              ti.applied_ov_enh = oe / 100.0;
-            } else {
-              ti.applied_ov_base = agent.current().fec_ov_base;
-              ti.applied_ov_enh = agent.current().fec_ov_enh;
-            }
-          }
           // have_feedback() false means no RCF has EVER been accepted (still
           // BOOT/RENDEZVOUS) — 0 would read as maximally fresh, the opposite of
           // the truth. Pass a value make_telem's saturate<uint16_t> clamps to
@@ -2805,22 +2721,9 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
             ti.rcf_seq_echo_valid = true;
           }
           ti.rcf_rx = agent.rcf_accepted();
-          ti.enc_frames = enc_frames_total.load(std::memory_order_relaxed);
-          ti.enc_bytes = enc_bytes_total.load(std::memory_order_relaxed);
           ti.cmd_kbps = actuator.last_bitrate_kbps;
-          // roi_qp is what RcAgent COMMANDED (the ROI override); the
-          // encoder's own QP comes from venc_get_stats below and stays 0
-          // on host builds. They were one field until 2026-09-03, and the
-          // flight-0011 analysis read the ROI value as the rate
-          // controller's — docs/handover-venc-overshoot-2026-09-03.md.
-          ti.roi_qp = actuator.last_roi_qp;
-          ti.ring_drops = ring_drops_total.load(std::memory_order_relaxed);
-          ti.txq_depth = txq.depth();
-          ti.txq_cap = kTxQueueCap;
           ti.txq_drops = txq.dropped();
           ti.txq_wait_max_ms = txq_wait_max_ms.exchange(0, std::memory_order_relaxed);
-          ti.radio_sent = tx.sent();
-          ti.radio_drops = tx.drops();
           ti.usb_fail = txstats.failed;
           // RX-side channel view for this period (cca-on 2026-09-23): the
           // RX callback's frame split, drained per Telem. No register read
@@ -2832,29 +2735,8 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
           ti.soc_temp_c = read_soc_temp_c();
           if (ti.soc_temp_c == -128)  // SigmaStar: no thermal_zone
             ti.soc_temp_c = read_soc_temp_c_sigmastar();
-          ti.thermal_delta = health.thermal_delta;
           ti.cpu_pct = cpu_busy.sample();
-          ti.idr_disagree = idr_disagree_total.load(std::memory_order_relaxed);
-          ti.enhance_disagree = enhance_disagree_total.load(std::memory_order_relaxed);
-          ti.vanished_base = vanished_base_total.load(std::memory_order_relaxed);
-          ti.vanished_enh = vanished_enh_total.load(std::memory_order_relaxed);
-          ti.self_idr_refused = self_idr_refused_total.load(std::memory_order_relaxed);
-          ti.air_backlog_max_ms =
-              air_backlog_max_us.exchange(0, std::memory_order_relaxed) / 1000u;
-          ti.air_shed_drops = air_shed_drops_total.load(std::memory_order_relaxed);
-          ti.air_shed = ti.air_shed_drops > air_drops_at_last_telem;
-          air_drops_at_last_telem = ti.air_shed_drops;
 #ifdef MABUR_HAVE_VENC
-          // Producer side of the frame ring, straight from the encoder
-          // (venc_get_stats is thread-safe and reads the shm header, not a
-          // cached copy). ring_drops above is the CONSUMER side — the two
-          // count different losses and both are needed to tell "encoder
-          // outran maburd" from "maburd rejected a slot". A silently
-          // stalled encoder has neither: it shows as ti.enc_frames flat.
-          VencStats vs{};
-          venc_get_stats(&vs);
-          ti.venc_full_drops = vs.full_drops;
-          ti.venc_ring_fill_pct = static_cast<int>(vs.ring_fill_pct);
           // link-rtt t3: pts-domain clock at telem build. Stays 0 (the
           // wire's "unavailable" sentinel) on host builds and when
           // MI_SYS_GetCurPts is unresolved.

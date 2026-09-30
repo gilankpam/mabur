@@ -55,7 +55,7 @@ void put_crc(std::vector<uint8_t>& body) {
 constexpr size_t RCF_HEAD_LEN = 19;  // 2026-09-28: +idr_epoch (18: +rec)
 constexpr size_t DISC_LEN = 21;
 constexpr size_t DISC_ACK_LEN = 19;
-constexpr size_t TELEM_LEN = 98;  // 2026-09-28: +idr_gs (96: +rec_status)
+constexpr size_t TELEM_LEN = 48;  // 2026-09-30: maburtop-only fields dropped (98)
 
 // magic(2) | ver | type | flags | vtx(4) | nonce(4) | phase | fpc(2) |
 // settle(2) | gap(2) | n_windows(1) | n * 4 bytes
@@ -291,49 +291,24 @@ std::vector<uint8_t> pack_telem(const Telem& t) {
   body.push_back(t.flags);
   put16(body, t.tlm_seq);
   body.push_back(t.state);
-  put32(body, t.generation);
-  body.push_back(t.applied_profile);
-  body.push_back(saturate<uint8_t>(std::lround(t.applied_ov_base * 100.0)));
-  body.push_back(saturate<uint8_t>(std::lround(t.applied_ov_enh * 100.0)));
   put16(body, t.rcf_age_ms);
   put16(body, t.rcf_seq_echo);
   put64(body, t.pts_at_build);
   put32(body, t.rcf_rx);
-  put32(body, t.enc_frames);
-  put32(body, t.enc_kbytes);
   put16(body, t.cmd_kbps);
-  body.push_back(static_cast<uint8_t>(t.roi_qp));
-  put16(body, t.ring_drops);
-  body.push_back(t.txq_depth);
-  body.push_back(t.txq_cap);
   put32(body, t.txq_drops);
   put16(body, t.txq_wait_max_ms);
-  put32(body, t.radio_sent);
-  put32(body, t.radio_drops);
   put16(body, t.usb_fail);
   body.push_back(t.up_rssi[0]);
   body.push_back(t.up_rssi[1]);
   body.push_back(static_cast<uint8_t>(t.up_snr[0]));
   body.push_back(static_cast<uint8_t>(t.up_snr[1]));
   body.push_back(static_cast<uint8_t>(t.soc_temp_c));
-  body.push_back(static_cast<uint8_t>(t.thermal_delta));
   put16(body, t.cpu_busy_x100);
-  put16(body, t.idr_disagree);
-  put16(body, t.enhance_disagree);
-  put16(body, t.vanished_base);
-  put16(body, t.vanished_enh);
-  put16(body, t.self_idr_refused);
-  put16(body, t.venc_full_drops);
-  body.push_back(t.venc_ring_fill_pct);
-  put16(body, t.air_backlog_max_ms);
-  put16(body, t.air_shed_drops);
-  body.push_back(t.channel);
-  body.push_back(t.hop_epoch);
   put16(body, t.rx_own);
   put16(body, t.rx_foreign);
   put16(body, t.rx_crcfail);
   body.push_back(t.rec_status);
-  put16(body, t.idr_gs);
 
   put_crc(body);
   return body;
@@ -353,49 +328,24 @@ std::optional<Telem> parse_telem(const uint8_t* buf, size_t len) {
   t.flags = buf[4];
   t.tlm_seq = get16(buf, 5);
   t.state = buf[7];
-  t.generation = get32(buf, 8);
-  t.applied_profile = buf[12];
-  t.applied_ov_base = buf[13] / 100.0;
-  t.applied_ov_enh = buf[14] / 100.0;
-  t.rcf_age_ms = get16(buf, 15);
-  t.rcf_seq_echo = get16(buf, 17);
-  t.pts_at_build = get64(buf, 19);
-  t.rcf_rx = get32(buf, 27);
-  t.enc_frames = get32(buf, 31);
-  t.enc_kbytes = get32(buf, 35);
-  t.cmd_kbps = get16(buf, 39);
-  t.roi_qp = static_cast<int8_t>(buf[41]);
-  t.ring_drops = get16(buf, 42);
-  t.txq_depth = buf[44];
-  t.txq_cap = buf[45];
-  t.txq_drops = get32(buf, 46);
-  t.txq_wait_max_ms = get16(buf, 50);
-  t.radio_sent = get32(buf, 52);
-  t.radio_drops = get32(buf, 56);
-  t.usb_fail = get16(buf, 60);
-  t.up_rssi[0] = buf[62];
-  t.up_rssi[1] = buf[63];
-  t.up_snr[0] = static_cast<int8_t>(buf[64]);
-  t.up_snr[1] = static_cast<int8_t>(buf[65]);
-  t.soc_temp_c = static_cast<int8_t>(buf[66]);
-  t.thermal_delta = static_cast<int8_t>(buf[67]);
-  t.cpu_busy_x100 = get16(buf, 68);
-  t.idr_disagree = get16(buf, 70);
-  t.enhance_disagree = get16(buf, 72);
-  t.vanished_base = get16(buf, 74);
-  t.vanished_enh = get16(buf, 76);
-  t.self_idr_refused = get16(buf, 78);
-  t.venc_full_drops = get16(buf, 80);
-  t.venc_ring_fill_pct = buf[82];
-  t.air_backlog_max_ms = get16(buf, 83);
-  t.air_shed_drops = get16(buf, 85);
-  t.channel = buf[87];
-  t.hop_epoch = buf[88];
-  t.rx_own = get16(buf, 89);
-  t.rx_foreign = get16(buf, 91);
-  t.rx_crcfail = get16(buf, 93);
-  t.rec_status = buf[95];
-  t.idr_gs = get16(buf, 96);
+  t.rcf_age_ms = get16(buf, 8);
+  t.rcf_seq_echo = get16(buf, 10);
+  t.pts_at_build = get64(buf, 12);
+  t.rcf_rx = get32(buf, 20);
+  t.cmd_kbps = get16(buf, 24);
+  t.txq_drops = get32(buf, 26);
+  t.txq_wait_max_ms = get16(buf, 30);
+  t.usb_fail = get16(buf, 32);
+  t.up_rssi[0] = buf[34];
+  t.up_rssi[1] = buf[35];
+  t.up_snr[0] = static_cast<int8_t>(buf[36]);
+  t.up_snr[1] = static_cast<int8_t>(buf[37]);
+  t.soc_temp_c = static_cast<int8_t>(buf[38]);
+  t.cpu_busy_x100 = get16(buf, 39);
+  t.rx_own = get16(buf, 41);
+  t.rx_foreign = get16(buf, 43);
+  t.rx_crcfail = get16(buf, 45);
+  t.rec_status = buf[47];
   return t;
 }
 

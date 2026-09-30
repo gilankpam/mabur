@@ -354,6 +354,70 @@ def test_drone_rx_section_absent_on_old_recordings():
     assert "DRONE RX" not in result.stdout
 
 
+def _mk_drone_tx_row(t_ms, tlm_seq, wait, drops, usb, cpu, cong, fs=False):
+    r = _mk_stream_row(t_ms, 2)
+    r["drone"] = {"state": "linked", "tlm_seq": tlm_seq, "txq_wait_ms": wait,
+                  "failsafe_shed": fs, "congestion_shed": cong,
+                  "txq": {"drops": drops, "drop_pps": None},
+                  "radio": {"usb_fail": usb},
+                  "sys": {"soc_temp_c": 50, "cpu_pct": cpu}}
+    return r
+
+
+def test_drone_tx_path_section():
+    """DRONE TX PATH (telem diet 2026-09-30): the fields kept on the wire
+    for post-flight attribution -- txq wait, txq drops, usb fail, cpu,
+    congestion/failsafe shed -- sampled once per tlm_seq. Cumulative
+    counters are summed as per-period deltas, and a maburd restart (counter
+    going backwards) contributes its post-restart value, never a negative."""
+    rows = [
+        _mk_drone_tx_row(0,    1, wait=3,  drops=10, usb=0, cpu=20.0, cong=False),
+        _mk_drone_tx_row(200,  1, wait=3,  drops=10, usb=0, cpu=20.0, cong=False),  # repeat
+        _mk_drone_tx_row(1000, 2, wait=12, drops=10, usb=0, cpu=40.0, cong=True),
+        _mk_drone_tx_row(2000, 3, wait=40, drops=15, usb=1, cpu=71.0, cong=True),
+        _mk_drone_tx_row(3000, 1, wait=2,  drops=2,  usb=0, cpu=30.0, cong=False),  # restart
+    ]
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "flight.jsonl"
+        p.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        result = subprocess.run([sys.executable, "tools/flightreport.py", str(p)],
+                                capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    out = result.stdout
+    assert "DRONE TX PATH" in out, out
+    sec = out[out.find("DRONE TX PATH"):]
+    assert re.search(r"n=4\b", sec), sec
+    assert re.search(r"txq wait ms:\s*p50=12\b.*p90=40\b.*max=40\b", sec), sec
+    assert re.search(r"txq drops:\s*\+7 in 2 periods", sec), sec
+    assert re.search(r"usb fail:\s*\+1 in 1 periods", sec), sec
+    assert re.search(r"cpu %:\s*p50=40\.0\b.*max=71\.0\b", sec), sec
+    assert re.search(r"congestion shed:\s*2 periods", sec), sec
+    assert re.search(r"failsafe shed:\s*0 periods", sec), sec
+
+
+def test_drone_tx_path_section_absent_without_drone_telemetry():
+    rows = [_mk_stream_row(0, 2), _mk_stream_row(500, 2)]
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "flight.jsonl"
+        p.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        result = subprocess.run([sys.executable, "tools/flightreport.py", str(p)],
+                                capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert "DRONE TX PATH" not in result.stdout
+    # A drone block without any TX-path key (RX split only) stays silent too.
+    r = _mk_stream_row(0, 2)
+    r["drone"] = {"state": "linked", "tlm_seq": 1,
+                  "radio": {"rx": {"own": 1, "foreign": 0, "crcfail": 0}}}
+    rows = [r]
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "flight.jsonl"
+        p.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        result = subprocess.run([sys.executable, "tools/flightreport.py", str(p)],
+                                capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert "DRONE TX PATH" not in result.stdout
+
+
 def test_salvage_section_absent_on_old_recordings():
     """A recording that predates the counters prints no SALVAGE section
     (data-provenance: old jsonl on the DVR must still report cleanly)."""

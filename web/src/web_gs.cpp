@@ -77,7 +77,11 @@ WebGs::WebGs(const maburgs::Config& cfg, Mode mode, uint8_t channel, int width, 
       osd_([this](int rows, int cols, const uint16_t* cells) {
         if (io_.on_osd) io_.on_osd(rows, cols, cells);
       }) {
-  (void)width;  // the radio is tuned by the glue; the rung width comes from the ladder
+  // The radio is tuned by the glue. A spotter's link setting is just the
+  // configured width: it drives no ladder, so it needs no MCS (the readout
+  // comes off the air, air_mcs_), and the drone's applied-op echo left
+  // Telem 2026-09-30.
+  spotter_op_.bw = width;
   if (mode_ == Mode::Gs) {
     if (!io_.send) throw std::invalid_argument("webgs: Gs mode needs Io::send");
     vrx_ = std::make_unique<maburgs::VrxController>(maburgs::vrx_cfg_from(cfg, channel));
@@ -106,14 +110,6 @@ WebGs::WebGs(const maburgs::Config& cfg, Mode mode, uint8_t channel, int width, 
         if (vrx_)
           rtt_.on_telem(t->rcf_seq_echo, (t->flags & 0x08) != 0, t->rcf_age_ms,
                         t->pts_at_build, us);
-        mabur::rc::PhyMode pm;
-        uint8_t mcs = 0, bw = 20;
-        mabur::rc::decode_profile(t->applied_profile, pm, mcs, bw);
-        spotter_op_.vht = pm == mabur::rc::PhyMode::VHT;
-        spotter_op_.mcs = mcs;
-        spotter_op_.bw = bw;
-        spotter_op_.overhead_base = t->applied_ov_base;
-        spotter_op_.overhead_enh = t->applied_ov_enh;
       }
       return;
     }
@@ -138,9 +134,14 @@ void WebGs::on_rx(const mabur::node::RxBody& m) {
   if (m.mono_us > now_us_) now_us_ = m.mono_us;
   ++bodies_;
   agg_.on_rx_body(m);
-  if (!vrx_ || !m.crc_ok) return;
-  // Only real video refreshes the rendezvous silence timer (main.cpp).
+  if (!m.crc_ok) return;
   const int sid = mabur::sbi_peek_stream_id(m.body.data(), m.body.size());
+  // Spotter MCS readout, off the air: base-stream bodies only (enh can
+  // differ, the probe rides the next rung's candidate MCS); 255 = no rate
+  // on this body (legacy/VHT, or a relay frame without one), keep the last.
+  if (sid == 0 && m.mcs != 255) air_mcs_ = m.mcs;
+  if (!vrx_) return;
+  // Only real video refreshes the rendezvous silence timer (main.cpp).
   if (mabur::rc::frame_type(m.body.data(), m.body.size()) < 0 && sid != mabur::kMspStreamId &&
       sid != mabur::kProbeStreamId)
     vrx_->on_video(static_cast<double>(m.mono_us) / 1000.0);
@@ -260,9 +261,9 @@ Stats WebGs::stats() const {
     s.mcs = vrx_->cur_op().mcs;
     s.bw = vrx_->cur_op().bw;
     s.probe_state = maburgs::to_string(vrx_->ctl().probe_gate(now_ms).state);
-  } else if (telem_) {
-    s.mcs = spotter_op_.mcs;
-    s.bw = spotter_op_.bw;
+  } else {
+    s.bw = spotter_op_.bw;   // configured width
+    s.mcs = air_mcs_;        // base-stream RX MCS, -1 until one is heard
   }
   const auto pre = lha_.pre_all();
   if (pre.valid) s.pre_fec_loss = pre.loss;
@@ -284,7 +285,6 @@ Stats WebGs::stats() const {
     s.drone_rcf_rx = telem_->rcf_rx;
     s.drone_state = telem_->state;
     s.rec_status = telem_->rec_status;
-    s.drone_idr_gs = telem_->idr_gs;
     if (telem_->soc_temp_c != -128) s.drone_temp_c = telem_->soc_temp_c;
   }
   s.osd_snaps = msp_ ? msp_->snapshots_out() : 0;
@@ -314,7 +314,6 @@ std::string stats_json(const Stats& s) {
   opt("pts_off_us", s.pts_off_us);
   opt("drone_rcf_rx", s.drone_rcf_rx);
   opt("drone_state", s.drone_state);
-  opt("drone_idr_gs", s.drone_idr_gs);
   opt("drone_temp_c", s.drone_temp_c);
   if (s.rec_status) {
     j["rec_state"] = *s.rec_status & 0x03;

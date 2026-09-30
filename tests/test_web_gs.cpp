@@ -1,6 +1,7 @@
 // WebGs (web/src/web_gs.h): the web GS core. Pins spotter silence, the Gs
 // rendezvous/RCF cadence, and the wiring into the shared units.
 #include <algorithm>
+#include <cstdio>
 #include <stdexcept>
 
 #include "body_gen.h"
@@ -100,6 +101,39 @@ TEST(spotter_never_sends_over_lossy_replay) {
   CHECK(!called);
   CHECK(g.sends() == 0);
   CHECK(aus > 500);
+}
+
+// The spotter's LOSS row with the width-only op (2026-09-30): the op no
+// longer tracks the flying rung, so TransitionEdge fires once at start and
+// never again. Pre-FEC must still read real erasures, post-FEC must stay a
+// valid number, and a clean link must read ~0 -- bodies tagged at a real
+// rate (mcs 4) the fixed op never names.
+TEST(spotter_loss_row_reads_real_loss) {
+  auto run = [](int drop_every) {
+    Io io;
+    io.on_au = [](Au&&) {};
+    WebGs g(cfg(), Mode::Spotter, 136, 40, io);
+    uint64_t t = 0;
+    for (auto& b : gen_bodies(/*aus=*/600, /*dt_ms=*/16.0, drop_every)) {
+      b.mcs = 4;
+      t = b.mono_us;
+      g.on_rx(b);
+      g.tick(t);
+    }
+    return g.stats();
+  };
+  const auto lossy = run(7);
+  REQUIRE(lossy.pre_fec_loss.has_value());
+  REQUIRE(lossy.residual.has_value());
+  CHECK(*lossy.pre_fec_loss > 0.05);                   // ~1 in 7 bodies gone
+  const auto clean = run(0);
+  REQUIRE(clean.pre_fec_loss.has_value());
+  REQUIRE(clean.residual.has_value());
+  CHECK(*clean.pre_fec_loss < 0.001);
+  CHECK(*clean.residual < 0.001);
+  const auto heavy = run(2);                           // half gone: past what FEC repairs
+  REQUIRE(heavy.residual.has_value());
+  CHECK(*heavy.residual > 0.0);
 }
 
 TEST(gs_beacons_then_rcf_after_ack) {
@@ -379,17 +413,58 @@ TEST(idr_requests_are_noop_in_spotter) {
   CHECK(g.sends() == 0);
 }
 
-TEST(drone_idr_gs_from_telem_in_stats_json) {
+// A spotter's link setting is just the configured width (2026-09-30: the
+// drone's applied-op echo left Telem). Its mcs readout comes off the air
+// (spotter_mcs_is_base_stream_rx_mcs), never from a Telem.
+TEST(spotter_op_is_configured_width_no_mcs) {
   Io io;
   io.on_au = [](Au&&) {};
   WebGs g(cfg(), Mode::Spotter, 136, 40, io);
-  CHECK(stats_json(g.stats()).find("\"drone_idr_gs\":null") != std::string::npos);
+  g.tick(1'000'000);
+  CHECK(g.stats().bw == 40);
+  CHECK(g.stats().mcs == -1);
   mabur::rc::Telem t;
   t.tlm_seq = 1;
-  t.idr_gs = 9;
   g.on_rx(rc_body(mabur::rc::pack_telem(t), 1'000'000));
   g.tick(1'000'000);
-  CHECK(stats_json(g.stats()).find("\"drone_idr_gs\":9") != std::string::npos);
+  CHECK(g.stats().bw == 40);
+  CHECK(g.stats().mcs == -1);
+  CHECK(stats_json(g.stats()).find("drone_idr_gs") == std::string::npos);
+  WebGs g20(cfg(), Mode::Spotter, 136, 20, io);
+  CHECK(g20.stats().bw == 20);
+}
+
+// The spotter's MCS readout is read off the air: the RX-descriptor MCS of
+// CRC-clean BASE-stream (sid 0) bodies only -- enh, probe (next rung's
+// candidate MCS) and corrupt bodies never move it, and an unknown rate
+// (255: legacy/VHT, or a relay frame without one) keeps the last value.
+// Display only: the spotter's link-health op stays width-only.
+TEST(spotter_mcs_is_base_stream_rx_mcs) {
+  Io io;
+  io.on_au = [](Au&&) {};
+  WebGs g(cfg(), Mode::Spotter, 136, 40, io);
+  CHECK(g.stats().mcs == -1);                          // nothing heard yet
+  uint64_t t = 1'000'000;
+  for (auto b : gen_bodies(20, 16.0, 0)) {
+    const int sid = mabur::sbi_peek_stream_id(b.body.data(), b.body.size());
+    b.mcs = sid == 0 ? 4 : 7;                          // enh at a different rate
+    b.mono_us += t;
+    g.on_rx(b);
+  }
+  CHECK(g.stats().mcs == 4);
+  auto bodies = gen_bodies(2, 16.0, 0);
+  mabur::node::RxBody base;
+  for (auto& b : bodies)
+    if (mabur::sbi_peek_stream_id(b.body.data(), b.body.size()) == 0) base = b;
+  base.mcs = 2; base.crc_ok = false;                   // corrupt: ignored
+  g.on_rx(base);
+  CHECK(g.stats().mcs == 4);
+  base.mcs = 255; base.crc_ok = true;                  // unknown rate: ignored
+  g.on_rx(base);
+  CHECK(g.stats().mcs == 4);
+  base.mcs = 3;                                        // a real change lands
+  g.on_rx(base);
+  CHECK(g.stats().mcs == 3);
 }
 
 TEST(drone_temp_from_telem_in_stats_json) {

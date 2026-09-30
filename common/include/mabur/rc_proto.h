@@ -53,7 +53,12 @@ constexpr uint16_t RC_MAGIC = 0x5243;  // "RC"
 // gains `rec_status`. Spec 2026-09-26-vtx-recorder-design.md.
 // Bumped 11 -> 12 on 2026-09-28: RCF gains `idr_epoch` (GS-requested IDR),
 // Telem gains `idr_gs`. Spec 2026-09-28-web-idr-request-design.md.
-constexpr uint8_t RC_VERSION = 12;
+// Bumped 12 -> 13 on 2026-09-30: Telem drops 25 fields no GS consumer
+// needs (generation, encoder/vanish/venc-ring counters, txq depth/cap,
+// radio sent/drops, air clock, thermal_delta, channel/hop_epoch, the
+// applied profile/overhead echo, idr_gs) and flag bits 1/2/5 -- 98 -> 48
+// bytes.
+constexpr uint8_t RC_VERSION = 13;
 
 // RCF probe_profile sentinel: the drone runs no probe stream.
 constexpr uint8_t kNoProbeProfile = 0xFF;
@@ -141,21 +146,24 @@ struct DiscAck {
   uint16_t seq = 0;
 };
 
-// VTX -> VRX drone telemetry: RcAgent/pipeline/queue/radio state for the GS
+// VTX -> VRX drone telemetry: RcAgent/queue/radio state for the GS
 // DRONE display region. Sent unconditionally, unconditioned on peer caps;
 // an old GS ignores the unknown type. Spec 2026-07-26 drone-telemetry.
+// Trimmed 2026-09-30 (RC_VERSION 13) to the fields a GS consumer reads --
+// link control, OSD, web UI, flightreport/flightjitter; the maburtop-only
+// encoder/queue/air/channel counters, the applied-op echo (a spotter takes
+// its width from config) and idr_gs are gone (list in
+// docs/data-provenance.md "Removed sideport keys").
 struct Telem {
   uint16_t tlm_seq = 0;
   uint8_t state = 0;            // RcAgent::State numeric
-  uint8_t flags = 0;  // bit0 failsafe_shed, bit1 radio_rx_ok,
-                      // bit2 probe stream on (RcAgent::probe_on()),
+  uint8_t flags = 0;  // bit0 failsafe_shed,
                       // bit3 rcf_seq_echo valid (link-rtt),
                       // bit4 congestion_shed (RcAgent::run_congestion_guard
                       //      shed_level >= 1: TxQueue pressure / USB failure;
                       //      distinct from bit0 so a bench can count sheds
                       //      and flightreport can attribute an enh gap to
                       //      congestion rather than RF — 2026-09-03),
-                      // bit5 air_shed (AirClock enh admission dropped >= 1 enh AU this window — spec 2026-09-06),
                       // bit6 cal_active (drone accepted a calibration command; set on the
                       //      ack Telem for each accepted PHASE -- coarse, then fine -- sent
                       //      BEFORE that phase's first sweep frame, and re-sent on every exact
@@ -167,10 +175,7 @@ struct Telem {
                       //      conflict. The verify pass has no command and therefore no ack: the
                       //      drone self-initiates it after applying the result — spec 2026-09-10)
                       // bit7 low_power (RcAgent::low_power(): pre-arm 1 Mb/s / 15 fps operating point, spec 2026-09-20)
-  uint32_t generation = 0;
-  uint8_t applied_profile = 0;  // encode_profile(mode, mcs, bw)
-  double applied_ov_base = 0.0;
-  double applied_ov_enh = 0.0;
+                      // bits 1, 2, 5 unused (radio_rx_ok / probe_on / air_shed until 2026-09-30).
   uint16_t rcf_age_ms = 0;  // saturating
   // link-rtt (2026-09-02): seq of the RCF rcf_age_ms is aging against, so
   // the GS can subtract the send time of the RIGHT frame (repeats are 10 ms
@@ -183,28 +188,15 @@ struct Telem {
   // arrival stamp plus rtt/2; it never treats it as a shared clock.
   uint64_t pts_at_build = 0;
   uint32_t rcf_rx = 0;
-  uint32_t enc_frames = 0;
-  uint32_t enc_kbytes = 0;
   uint16_t cmd_kbps = 0;
-  // RcAgent's ROI QP override as last commanded (actuator.last_roi_qp;
-  // encoder.roi_qp_low/normal, e.g. -24 / 0). Signed delta QP. Until
-  // 2026-09-03 an unsigned `qp` byte carried this same value under the
-  // wrong name; for a few hours that day it carried the encoder's
-  // startQual instead, which this firmware never fills, so the byte was
-  // dropped (Telem 84 -> 83) — there is no encoder-QP readback on the
-  // wire, by design (docs/data-provenance.md).
-  int8_t roi_qp = 0;
-  uint16_t ring_drops = 0;  // saturating
-  uint8_t txq_depth = 0, txq_cap = 0;
   uint32_t txq_drops = 0;
   uint16_t txq_wait_max_ms = 0;  // per-telemetry-window max TxQueue wait (saturating)
-  uint32_t radio_sent = 0;
-  uint32_t radio_drops = 0;
   uint16_t usb_fail = 0;  // saturating
+  // Uplink (GS -> drone) signal per drone antenna -- the one view of a dead
+  // drone chain/antenna the GS's own downlink readings cannot give.
   uint8_t up_rssi[2] = {0, 0};  // raw, dBm = v - 110
   int8_t up_snr[2] = {0, 0};
   int8_t soc_temp_c = -128;  // -128 = unavailable
-  int8_t thermal_delta = 0;
   // CPU busy percent x100 over the last telemetry tick, from a /proc/stat
   // delta (user+nice+system+irq+softirq+steal over everything). 65535 =
   // unavailable (first tick, unreadable). Replaced loadavg (`load_x100`)
@@ -212,51 +204,6 @@ struct Telem {
   // SigmaStar SDK's parked D-state workers and read a flat ~13 idle or
   // pegged (docs/dq-spike-findings-2026-08-31.md).
   uint16_t cpu_busy_x100 = 65535;
-  uint16_t idr_disagree = 0;      // saturating; spec 2026-07-26 svct-enable
-  uint16_t enhance_disagree = 0;  // saturating
-  // venc-ring vanish detection (docs/venc-ring-vanish-findings-2026-08-12.md):
-  // frames that vanished between waybeam's encoder and maburd's ring read
-  // (pts-jump-detected, classified base/enhance from neighbour flags), and
-  // base vanishes suppressed by the IDR-adjacency re-seed guard (counted for
-  // loop visibility; the self-IDR consumer itself is NOT wired on this
-  // build — detection-only port of 65c94fd). All saturating. Counters are
-  // zeroed at the FIRST link-establish (encoder bring-up books ~8-9 boot
-  // counts that would otherwise need analyzer-side baselining; a mid-flight
-  // re-establish does NOT zero), so they read "vanishes since first link".
-  uint16_t vanished_base = 0;
-  uint16_t vanished_enh = 0;
-  uint16_t self_idr_refused = 0;
-  // venc encoder ring (spec 2026-08-28 venc-foldin, Task B6): the PRODUCER
-  // side of the same shm ring `ring_drops` reports the consumer side of.
-  // full_drops counts whole access units the encoder threw away because
-  // maburd had not drained the ring — the loss that breaks the decode chain
-  // and drives RcAgent's chain-break IDR — and fill_pct is the ring
-  // occupancy at the telemetry tick. Together they are the only view a
-  // ground operator has into an encoder that is running but outpacing its
-  // reader; a *stalled* encoder shows instead as enc_frames not advancing.
-  uint16_t venc_full_drops = 0;     // saturating
-  uint8_t venc_ring_fill_pct = 0;   // 0..100
-  // Drone air clock (spec 2026-09-06 §4.6): per-telemetry-window max of the
-  // modelled air backlog, and enh AUs dropped by the admission gate since
-  // link-up. Both saturating.
-  uint16_t air_backlog_max_ms = 0;
-  uint16_t air_shed_drops = 0;
-  // Calibration ack (spec 2026-09-10, indices made relative 2026-09-13): the
-  // anchor never leaves the drone, so the ack is flags bit6 (cal_active)
-  // alone. The drone emits this Telem for each ACCEPTED PHASE (coarse, then
-  // fine -- CalSession::on_ack() re-enters AwaitAck for the fine phase and
-  // needs a second ack to leave it, see
-  // tests/test_cal_session.cpp's fine_phase_sharpens_a_real_dip_and_flags_drift),
-  // before that phase starts sweeping -- and again on every exact
-  // retransmission of the phase already running, since on_ack() is a
-  // no-op once the GS has already left AwaitAck (Task 11 review: a single
-  // lost ack must not cost the whole phase). Telem is suppressed only
-  // while a phase is actively sweeping, not for the whole session, so a
-  // phase boundary's ack Telem(s) and the suppression rule never conflict.
-  // The verify pass sends no command and gets no ack -- the drone
-  // self-initiates it once it applies the result.
-  uint8_t channel = 0;    // RcAgent::channel() at build — spec 2026-09-14 §1
-  uint8_t hop_epoch = 0;  // last (epoch) applied from an RCF hop order
   // Drone RX-side channel view, per telemetry period (cca-on 2026-09-23):
   // every frame the monitor-mode receiver handed the RX callback, split
   // into RC frames from the GS (own), CRC-clean frames that were not ours
@@ -273,11 +220,6 @@ struct Telem {
   // VTX recorder (spec 2026-09-26): bits 0-1 RecState (0 off, 1 recording,
   // 2 error), bits 2-7 RecErr (drone/src/vtx_recorder.h).
   uint8_t rec_status = 0;
-
-  // GS-requested IDRs RcAgent actually issued (spec 2026-09-28), lifetime,
-  // saturating. Against the requester's own count it separates lost RCFs /
-  // pacer deferral from IDRs lost on air.
-  uint16_t idr_gs = 0;
 };
 
 // One rate's index range for a calibration phase. idx_step 4 is the coarse

@@ -28,9 +28,12 @@ has no video, since `DISC_ACK` carries `CAP_FRAME_WIRE`. See
 - `hop_epoch` (u8): bumped by the GS on every order **and** every
   withdrawal, so a repeated `(hop_ch, hop_epoch)` pair is a no-op.
 
-`Telem` gains `channel` (u8, `RcAgent::channel()` at build) and `hop_epoch`
-(u8, echo of the last pair applied) — observability only, nothing waits on
-either.
+`Telem` gained `channel` (u8, `RcAgent::channel()` at build) and `hop_epoch`
+(u8, echo of the last pair applied) — observability only, nothing waited on
+either, and nothing read them; both left the wire in the 2026-09-30 telem
+diet (RC_VERSION 13). The drone's channel is whichever channel its video
+arrives on, and maburd's own `maburd: retune A -> B (hop)` stderr line
+records what it did during a split.
 
 **Drone (`RcAgent`, `drone/src/rc_agent.cpp`).** On an accepted RCF whose
 `(hop_epoch, hop_ch)` pair differs from the last one applied — the code
@@ -1061,8 +1064,8 @@ Found on the 2026-09-15 bench (the handover page has the traces):
   TX-card freeze (`tx_selection_frozen`) removed the cause of those
   withdrawals; the strand-then-re-order pattern itself is unchanged and
   will recur on any genuine withdrawal. A guard that refuses a new order
-  until the drone has been heard again (video, or its Telem `channel`
-  echo) is the candidate fix.
+  until the drone has been heard again (video, or any Telem on the new
+  channel) is the candidate fix.
 - **The origin channel is never backed off.** Only withdrawn/failed
   targets are. With a 5 ms observe scoring a 250 frame/s jammer at ~6,
   the jammed channel stays "ranked clean" and is a legal next hop after a
