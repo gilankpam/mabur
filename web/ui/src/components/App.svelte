@@ -268,9 +268,12 @@
   // Phones: the layout is already immersive, but the browser bars stay until
   // the page asks for real fullscreen. Tracks the Fullscreen API state (not
   // ui.fs, the desktop layout flag); no button where the API is unavailable
-  // (iPhone Safari).
+  // (iPhone Safari), and none when launched as the installed app: the
+  // manifest's display fullscreen + landscape already did it, while
+  // document.fullscreenElement stays null there.
   let realFs = $state(!!document.fullscreenElement);
-  const fsSupported = !!document.fullscreenEnabled;
+  const installedFs = !!window.matchMedia?.('(display-mode: fullscreen)').matches;
+  const fsSupported = !!document.fullscreenEnabled && !installedFs;
   // Why the last phone fullscreen tap failed, shown briefly on the overlay
   // (Android Chrome gives no other sign; real phones were never benched).
   let fsMsg = $state('');
