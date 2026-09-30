@@ -31,7 +31,7 @@ export function statsView({ connected, mode, ch, w, core, page, sessionCfg, vide
     bw: on && core.bw ? String(core.bw) : D,
     rungNum: rung >= 0 ? String(rung + 1) : D,
     rungCount: String(n),
-    rungMode: spot ? 'Observed' : pinned ? 'Pinned' : 'Adaptive',
+    rungMode: spot ? '' : pinned ? 'Pinned' : 'Adaptive',   // spotter: no ladder, no label
     // A spotter drives no ladder: one unlit full-width line, not a rung per segment.
     segs: spot ? [false] : sessionCfg.ladder.map((_, i) => rung >= 0 && i <= rung),
     chLine: `${ch} · ${w} MHz`,

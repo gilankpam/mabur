@@ -45,7 +45,7 @@ test('pinned and spotter modes', () => {
   assert.ok(p.segs.every((s) => !s));
   const s = statsView({ ...base, mode: 'spotter', core: { ...core, mode: 'spotter', rung: -1 } });
   // One unlit full-width line: a spotter drives no ladder, so no per-rung segments.
-  assert.equal(s.rungMode, 'Observed'); assert.deepEqual(s.segs, [false]);
+  assert.equal(s.rungMode, ''); assert.deepEqual(s.segs, [false]);
   assert.equal(s.cards[0].tx, false);
   assert.equal(s.latencyCaption, 'rx→glass latency, last 12 s');
 });

@@ -76,7 +76,7 @@
         <div style="display:flex;align-items:baseline;gap:6px"><span style="font-size:20px;line-height:1">MCS {v.mcs}</span>
           <span class="dim4" style="font-size:12px">{v.bw} MHz{#if v.rungMode === 'Adaptive'}{' · '}rung {v.rungNum}/{v.rungCount}{/if}</span></div>
         <RungBar segs={v.segs} height={3} />
-        <div class="dim4" style="font-size:11px">CH {v.chLine.split(' · ')[0]} · {v.rungMode}</div>
+        <div class="dim4" style="font-size:11px">CH {v.chLine.split(' · ')[0]}{#if v.rungMode}{' · '}{v.rungMode}{/if}</div>
       </div>
       <div style="display:flex;flex-direction:column;gap:5px">
         {#each v.cards as c (c.idx)}
