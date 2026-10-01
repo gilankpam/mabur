@@ -49,10 +49,8 @@ bool VrxRendezvous::feed_disc_ack(const mabur::rc::DiscAck& ack, double now_ms, 
   if (ack.vrx_nonce != nonce_) return false;
   if (ack.flags & mabur::rc::kAckKeyMismatch) {
     if (!first_flagged_ms_) first_flagged_ms_ = now_ms;
-    if (now_ms - *first_flagged_ms_ >= kKeyMismatchMs) {
-      state_ = VrxState::KEY_MISMATCH;
-      vtx_nonce_.reset();
-    }
+    // vtx_nonce_ is kept (see rendezvous.h): KEY_MISMATCH sends no RCFs.
+    if (now_ms - *first_flagged_ms_ >= kKeyMismatchMs) state_ = VrxState::KEY_MISMATCH;
     return true;
   }
   first_flagged_ms_.reset();

@@ -82,6 +82,30 @@ TEST(flagged_acks_enter_key_mismatch_after_a_second_unflagged_leaves) {
   CHECK(rz.state() == VrxState::SESSION);
 }
 
+// A stranger's flagged acks plus two lost acks from our own (still LINKED)
+// drone put us in KEY_MISMATCH while we hold its vtx_nonce. When our drone's
+// next ack carries the SAME nonce it is not a new session: reporting it as
+// adopted would make the controller zero seq32, and the drone (seq32 must be
+// strictly greater) would reject every RCF until its failsafe. Revert = clear
+// vtx_nonce_ on entering KEY_MISMATCH: adopted reads true here.
+TEST(key_mismatch_keeps_the_held_vtx_nonce_and_same_nonce_is_not_new) {
+  VrxRendezvous rz(cfg());
+  bool adopted = false;
+  rz.feed_disc_ack(ack_for(rz, 0xBEEF0001), 0, &adopted);
+  CHECK(adopted);
+  rz.feed_disc_ack(ack_for(rz, 0, kAckKeyMismatch), 100, &adopted);
+  rz.feed_disc_ack(ack_for(rz, 0, kAckKeyMismatch), 1100, &adopted);
+  CHECK(rz.state() == VrxState::KEY_MISMATCH);
+  CHECK(rz.vtx_nonce() == std::optional<uint32_t>(0xBEEF0001));
+  CHECK(rz.tick(1110) != VrxAction::TxFeedback);      // held nonce sends nothing
+  rz.feed_video(1120);
+  CHECK(rz.state() == VrxState::KEY_MISMATCH);         // video does not leave it
+  CHECK(rz.feed_disc_ack(ack_for(rz, 0xBEEF0001), 1200, &adopted));
+  CHECK(!adopted);
+  CHECK(rz.state() == VrxState::SESSION);
+  CHECK(rz.vtx_nonce() == std::optional<uint32_t>(0xBEEF0001));
+}
+
 TEST(stranger_drone_flagged_acks_never_trigger_while_ours_answers) {
   VrxRendezvous rz(cfg());
   bool adopted = false;

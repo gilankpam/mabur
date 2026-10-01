@@ -445,6 +445,43 @@ TEST(move_edge_fires_on_linked_telem_or_after_five_rcfs) {
   CHECK(vrx2.take_move_edge());
 }
 
+// Controller side of the same race: KEY_MISMATCH entered while holding our
+// drone's session must not zero seq32 when that drone's next ack repeats the
+// same vtx_nonce -- the drone would reject every RCF (seq not increasing)
+// until failsafe. RCFs resume with the next seq.
+TEST(key_mismatch_then_same_vtx_nonce_keeps_seq32) {
+  auto vrx = make();
+  link(vrx, 0);
+  int t = 0;
+  int rcfs = 0;
+  for (; t < 1000 && rcfs < 3; t += 10) {
+    vrx.on_video(t);
+    if (auto out = vrx.step(t, healthy()); out && !out->is_disc) ++rcfs;
+  }
+  const uint32_t seq_before = vrx.rcf_seq32();
+  REQUIRE(seq_before > 0);
+  mabur::rc::DiscAck flagged;
+  flagged.vrx_nonce = vrx.rz_nonce();
+  flagged.flags = mabur::rc::kAckKeyMismatch;
+  auto fw = mabur::rc::pack_disc_ack(flagged);
+  vrx.on_rc_frame(fw.data(), fw.size(), t);
+  vrx.on_rc_frame(fw.data(), fw.size(), t + 1000);
+  REQUIRE(vrx.key_mismatch());
+  t += 1010;
+  link(vrx, t);                                   // our drone, same vtx_nonce
+  CHECK(!vrx.key_mismatch());
+  CHECK(vrx.rcf_seq32() == seq_before);
+  std::vector<uint8_t> next;
+  for (int end = t + 500; t < end && next.empty(); t += 10) {
+    vrx.on_video(t);
+    if (auto out = vrx.step(t, healthy()); out && !out->is_disc) next = out->frame;
+  }
+  REQUIRE(!next.empty());
+  CHECK(vrx.rcf_seq32() == seq_before + 1);
+  CHECK(mabur::rc::verify_control(next.data(), next.size(), mabur::kDefaultLinkKey,
+                                  mabur::rc::TagCtx{vrx.rz_nonce(), 0xBEEF0001, seq_before + 1}));
+}
+
 TEST(key_mismatch_sends_no_rcf_and_reports) {
   auto vrx = make();
   mabur::rc::DiscAck ack;

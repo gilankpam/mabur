@@ -43,6 +43,12 @@ class VrxRendezvous {
   uint16_t seq_ = 0;
   uint32_t nonce_;
   uint8_t proposal_;
+  // Kept across KEY_MISMATCH: tick() never returns TxFeedback outside
+  // SESSION, so a held nonce sends nothing there, and clearing it would make
+  // our own drone's next same-nonce ack read as a NEW session -- the caller
+  // would zero seq32 and the still-LINKED drone (seq32 strictly increasing)
+  // would reject every RCF until failsafe. The trigger is a stranger's
+  // flagged acks while two of our drone's acks are lost on the uplink.
   std::optional<uint32_t> vtx_nonce_;
   // Stranger rule: time of the first flagged ack in the current run of
   // flagged-only acks; reset by any unflagged ack.
