@@ -1238,17 +1238,14 @@ TEST(bundle_default_sets_every_known_key_but_radio_cards) {
                        &defaulted);
   for (const std::string& d : defaulted)
     std::fprintf(stderr, "  bundle leaves defaulted: %s\n", d.c_str());
-  // radio.cards is auto-scan by design; link.key is the optional inline
-  // overlay (Task 4), which the bundle deliberately leaves unset in favour
-  // of the key_file it does set.
-  CHECK(defaulted.size() == 2);
-  bool saw_cards = false, saw_key = false;
-  for (const std::string& d : defaulted) {
-    if (d == "radio.cards=(auto-scan)") saw_cards = true;
-    if (d == "link.key=") saw_key = true;
-  }
-  CHECK(saw_cards);
-  CHECK(saw_key);
+  // radio.cards is auto-scan by design. link.key (Task 4's optional inline
+  // overlay) is read by presence (gs/src/config.cpp), so its absence --
+  // the bundle deliberately leaves it unset in favour of key_file -- must
+  // NOT register as a defaulted key (fix round 1, Task 4 review): it would
+  // otherwise print "link.key=" under every plain boot's defaulted-key
+  // list, diluting the real DEFAULT-key warning right next to it.
+  CHECK(defaulted.size() == 1);
+  CHECK(!defaulted.empty() && defaulted[0] == "radio.cards=(auto-scan)");
 }
 
 // spec 2026-09-25-nhm-airtime §6; default blocked_pct is 50, not the spec's

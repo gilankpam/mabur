@@ -333,7 +333,13 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
                 "rcf_slot_hold_ms", "arrival_guard_syms",
                 "key_file", "key"});
     c.link.key_file = get_str(r, "key_file", "/etc/mabur.key", "link");
-    link_inline_key = get_str(r, "key", "", "link");
+    // Read by presence: link.key is an optional web-overlay key (spec §2),
+    // not a tunable with a meaningful default, so its absence (the normal
+    // case -- key_file is the real config surface) must not register as a
+    // defaulted key (fix round 1, Task 4 review) -- that would print
+    // "link.key=" under every plain boot's "config: N key(s) defaulted"
+    // list, right next to the real DEFAULT-key warning, diluting it.
+    if (r.contains("key")) link_inline_key = get_str(r, "key", "", "link");
     c.link.feedback_ms = static_cast<int>(get_int(r, "feedback_ms", 100, 20, 5000, "link"));
     c.link.rcf_slot_hold_ms = static_cast<int>(get_int(r, "rcf_slot_hold_ms", 30, 0, 1000, "link"));
     c.link.arrival_guard_syms = static_cast<int>(get_int(r, "arrival_guard_syms", 192, 16, 512, "link"));
