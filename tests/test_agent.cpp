@@ -532,6 +532,68 @@ TEST(verify_cal_frame_accepts_a_cal_cmd_with_trailing_fcs_bytes) {
   CHECK(!agent.take_auth_reject());
 }
 
+// Cal frames carry seq32 = 0, so the tag alone cannot stop a recorded
+// CAL_CMD with an OLDER cal nonce from starting a fresh TX-power sweep (and
+// its recorded CAL_RESULT from then applying walls). The drone refuses any
+// cal nonce it has already seen in the current link session; a repeat of
+// the CURRENT nonce (a retransmission, or the next phase) stays accepted.
+TEST(cal_cmd_with_an_already_seen_nonce_is_refused_until_the_session_changes) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  uint32_t vtx = link_agent(agent, act, cfg);
+  auto cmd = [&](uint32_t nonce, uint32_t v, uint8_t phase = 0) {
+    CalCmd c; c.nonce = nonce; c.phase = phase; c.windows.push_back(CalWindow{3, -4, 4, 1});
+    return pack_cal_cmd(c, mabur::kDefaultLinkKey, TagCtx{kVrx, v, 0});
+  };
+  auto n5 = cmd(5, vtx), n6 = cmd(6, vtx);
+  CHECK(agent.verify_cal_frame(n5.data(), n5.size()));       // sweep 5
+  CHECK(agent.verify_cal_frame(n5.data(), n5.size()));       // its retransmission
+  auto n5p1 = cmd(5, vtx, 1);
+  CHECK(agent.verify_cal_frame(n5p1.data(), n5p1.size()));   // its next phase
+  CHECK(!agent.take_auth_reject());
+  CHECK(agent.verify_cal_frame(n6.data(), n6.size()));       // sweep 6
+  CHECK(!agent.verify_cal_frame(n5.data(), n5.size()));      // replayed 5: refused
+  CHECK(agent.take_auth_reject());
+  CHECK(agent.verify_cal_frame(n6.data(), n6.size()));       // 6 is still current
+  // A CAL_RESULT is not a sweep start: CalSweep dedupes it against nonce_.
+  CalResult r; r.nonce = 6;
+  auto res = pack_cal_result(r, mabur::kDefaultLinkKey, TagCtx{kVrx, vtx, 0});
+  CHECK(agent.verify_cal_frame(res.data(), res.size()));
+  CHECK(!agent.take_auth_reject());
+
+  // A session change (failsafe clears it; the keep-alive DISC re-pairs)
+  // forgets the seen nonces: 5 is accepted again under the new pair.
+  agent.tick(110 + cfg.link.failsafe_ms + 1, RadioHealth{});
+  REQUIRE(agent.state() == RcAgent::State::FAILSAFE);
+  vtx = ack_agent(agent, act, 136, kVrx, 2000);
+  auto first = make_rcf_wire(1, encode_profile(PhyMode::HT, 0, 20), 8, vtx);
+  agent.on_rc_frame(first.data(), first.size(), 2010);
+  REQUIRE(agent.state() == RcAgent::State::LINKED);
+  auto again = cmd(5, vtx);
+  CHECK(agent.verify_cal_frame(again.data(), again.size()));
+  CHECK(!agent.take_auth_reject());
+}
+
+TEST(cal_nonce_ring_is_bounded_and_forgets_the_oldest) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  const uint32_t vtx = link_agent(agent, act, cfg);
+  auto cmd = [&](uint32_t nonce) {
+    CalCmd c; c.nonce = nonce; c.windows.push_back(CalWindow{3, -4, 4, 1});
+    return pack_cal_cmd(c, mabur::kDefaultLinkKey, TagCtx{kVrx, vtx, 0});
+  };
+  for (uint32_t n = 100; n < 100 + RcAgent::kCalNonceRing + 1; ++n) {
+    auto w = cmd(n);
+    CHECK(agent.verify_cal_frame(w.data(), w.size()));
+  }
+  auto oldest = cmd(100);            // pushed out of the ring
+  CHECK(agent.verify_cal_frame(oldest.data(), oldest.size()));
+  auto recent = cmd(100 + RcAgent::kCalNonceRing);   // still remembered
+  CHECK(!agent.verify_cal_frame(recent.data(), recent.size()));
+}
+
 TEST(install_session_for_replay_accepts_a_pretagged_rcf) {
   Config cfg = make_cfg();
   MockActuator act;

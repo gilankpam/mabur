@@ -84,7 +84,7 @@ field; the key is the identity now. In its place:
   plus `vrx_nonce ‖ vtx_nonce ‖ seq32` (`TagCtx`) — session-bound, not
   just key-bound.
 - **CAL_CMD / CAL_RESULT**: same tag, same `TagCtx` inputs (minus
-  `seq32`, since cal frames dedupe on their own nonce).
+  `seq32`: cal freshness is the cal nonce, see "Session and the nonces").
 - **Telem** (drone to GS): flags bit1 is `kTelemAuthReject`
   (`0x02`) — at least one control frame failed verification this
   telemetry period. (Bit1 was `radio_rx_ok` before the 2026-09-30 telem
@@ -115,6 +115,26 @@ end keeps locally (the GS beside its own counter, the drone per session,
 strictly greater than the session's last accepted — the only surviving
 replay is an RCF the GS sent moments ago that the drone missed on air and
 an attacker resends before the next one lands.
+
+**Session rules on the drone:**
+
+- **Every exit from LINKED clears both sessions** (`current_` and
+  `pending_`) — failsafe entry and the move-unconfirmed fallback alike
+  (`RcAgent::clear_sessions_()`). A kept pair would leave every RCF the
+  GS sent during an uplink fade replayable for the life of the process.
+  Recovery is the GS's next keep-alive DISC: same `vrx_nonce`, so the
+  drone issues a fresh `vtx_nonce`; the GS adopts it (newest wins) and
+  re-tags. Until then its RCFs set `auth_reject` — at most one
+  `beacon_keepalive_ms` (1 s); the loopback test measured 190 ms.
+- **Cal nonces are single-use per session.** Cal frames carry
+  `seq32 = 0`, so freshness is the cal nonce: `RcAgent::verify_cal_frame`
+  refuses a CAL_CMD whose nonce it already accepted in this session,
+  other than the running sweep's own (a retransmission or its next phase,
+  which `CalSweep` dedupes). The ring is `RcAgent::kCalNonceRing` (8)
+  deep, belongs to the published session it was filled under, and is
+  forgotten when that session is cleared or promoted. A refusal sets
+  `auth_reject`. CAL_RESULT needs no ring — `CalSweep::on_result` takes
+  only the running nonce.
 
 ## Rendezvous, as built
 

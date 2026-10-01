@@ -70,8 +70,33 @@ bool RcAgent::verify_rcf_(const uint8_t* body, size_t len, const rc::Rcf& r,
 
 bool RcAgent::verify_cal_frame(const uint8_t* body, size_t len) {
   const uint64_t p = published_session_.load(std::memory_order_acquire);
-  const bool ok = p != 0 && rc::verify_control(body, len, cfg_.link.key,
+  bool ok = p != 0 && rc::verify_control(body, len, cfg_.link.key,
       rc::TagCtx{static_cast<uint32_t>(p >> 32), static_cast<uint32_t>(p & 0xFFFFFFFFu), 0});
+  if (p != cal_ring_session_) {
+    // New (or cleared) session: the seen nonces belonged to the old pair,
+    // whose tags no longer verify anyway.
+    cal_ring_session_ = p;
+    cal_seen_n_ = cal_seen_next_ = 0;
+    have_cal_current_ = false;
+  }
+  if (ok && rc::frame_type(body, len) == rc::T_CAL_CMD) {
+    // In-session freshness (spec 2026-10-01 §5): a cal nonce already seen
+    // in this session, other than the running one, is a replay.
+    if (auto c = rc::parse_cal_cmd(body, len)) {
+      if (!have_cal_current_ || c->nonce != cal_current_) {
+        const auto seen_end = cal_seen_.begin() + static_cast<std::ptrdiff_t>(cal_seen_n_);
+        if (std::find(cal_seen_.begin(), seen_end, c->nonce) != seen_end) {
+          ok = false;
+        } else {
+          cal_seen_[cal_seen_next_] = c->nonce;
+          cal_seen_next_ = (cal_seen_next_ + 1) % kCalNonceRing;
+          if (cal_seen_n_ < kCalNonceRing) ++cal_seen_n_;
+          cal_current_ = c->nonce;
+          have_cal_current_ = true;
+        }
+      }
+    }
+  }
   if (!ok) auth_reject_.store(true, std::memory_order_relaxed);
   return ok;
 }
