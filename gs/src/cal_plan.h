@@ -32,17 +32,17 @@ constexpr uint16_t kVerifyFrames = 100;
 constexpr uint16_t kSettleMs = 100;   // MEASURE THIS ON HARDWARE -- see docs
 constexpr uint16_t kGapUs = 2000;
 
-mabur::rc::CalCmd make_coarse_plan(uint32_t vtx_id, uint32_t nonce);
+mabur::rc::CalCmd make_coarse_plan(uint32_t nonce);
 
 // Only rows whose coarse pass found a real dip get refined. A kCalNoDip row's
 // wall came from the RSSI knee on a flat ceiling, where +/-2 indices costs no
 // measurable power; a kCalUndetermined row has nothing to refine.
-mabur::rc::CalCmd make_fine_plan(uint32_t vtx_id, uint32_t nonce,
+mabur::rc::CalCmd make_fine_plan(uint32_t nonce,
                                  const std::array<RateWall, 8>& coarse);
 
 // One cell per rate at its parked index (wall - margin). kNoWall or a park
 // index out of [-64,63] means that rate was undetermined and is skipped.
-mabur::rc::CalCmd make_verify_plan(uint32_t vtx_id, uint32_t nonce,
+mabur::rc::CalCmd make_verify_plan(uint32_t nonce,
                                    const std::array<int, 8>& park_idx);
 
 // How long the drone will transmit for this plan. The GS uses it to know when

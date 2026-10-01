@@ -36,7 +36,7 @@ static mabur::node::RxBody msg(uint8_t card, uint16_t seq, bool crc_ok,
 // "wire" key out of rc.json.
 static std::vector<uint8_t> rcf_fixture_wire() {
   mabur::rc::Rcf r;
-  r.vtx_id = 0xDEADBEEF; r.seq = 7; r.profile = 0x24;
+  r.seq = 7; r.profile = 0x24;
   r.fec_overhead_base = 0.5;
   r.fec_overhead_enh = 0.5;
   return mabur::rc::pack_rcf(r);
@@ -44,7 +44,7 @@ static std::vector<uint8_t> rcf_fixture_wire() {
 
 static std::vector<uint8_t> disc_ack_fixture_wire() {
   mabur::rc::DiscAck a;
-  a.vtx_id = 1; a.vrx_nonce = 0xCAFE0001; a.chip_caps = 0x0003;
+  a.vrx_nonce = 0xCAFE0001; a.chip_caps = 0x0003;
   a.agreed_channel = 149; a.agreed_width = 20; a.seq = 1;
   return mabur::rc::pack_disc_ack(a);
 }

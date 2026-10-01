@@ -240,7 +240,6 @@ struct StatsHopIn {
 };
 
 struct StatsInput {
-  uint32_t vtx_id = 0;
   // radio.channel, straight from the GS config. Exported because the
   // player's compact OSD names the channel the rest of the line describes,
   // and reading it out of maburplay's own config instead would say what
@@ -254,6 +253,8 @@ struct StatsInput {
   std::optional<int> scan_pick;
   StatsRcfSlotIn rcf_slot;
   bool in_session = false;  // VrxState::SESSION
+  bool key_mismatch = false;   // VrxState::KEY_MISMATCH (spec 2026-10-01 §8)
+  std::string key_fp;          // mabur::key_fingerprint(cfg.link.key)
   int tx_card = 0;
   OpPoint op;
   int gap_timeout_ms[2] = {0, 0};  // FrameStream's live per-sid gap timeout

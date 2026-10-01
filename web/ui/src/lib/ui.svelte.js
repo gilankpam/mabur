@@ -1,6 +1,10 @@
 // App-level UI state (handoff "State"). Svelte 5 runes module.
-import { loadConfig } from './config.js';
+import { loadConfig, loadKey } from './config.js';
 import { loadRelayCustom } from './logic.mjs';
+
+function storageSafe() {
+  try { return localStorage; } catch { return null; }
+}
 
 function initialMode() {
   const q = new URLSearchParams(location.search).get('mode');
@@ -13,9 +17,7 @@ function initialMode() {
 }
 
 function initialCfg() {
-  let storage = null;
-  try { storage = localStorage; } catch { /* unavailable */ }
-  return loadConfig(storage, new URLSearchParams(location.search));
+  return loadConfig(storageSafe(), new URLSearchParams(location.search));
 }
 
 function resumeFlags() {
@@ -44,6 +46,7 @@ export const ui = $state({
   applied: '',
   mode: initialMode(),
   cfg: initialCfg(),
+  key: loadKey(storageSafe()),
   radio: saved.radio === 'relay' ? 'relay' : 'usb',
   relayAddr: loadRelayCustom(saved),   // typed override; '' = use RELAY_DEFAULT
   relayFieldOpen: false,               // a Connect this visit found no relay

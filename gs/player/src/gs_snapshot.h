@@ -56,6 +56,10 @@ struct GsSnapshot {
   // feature). False when the block is absent (older maburgs) or the link
   // is on home / a stale hop target.
   bool hopped = false;
+  // link.state == "key_mismatch": our key file differs from the drone's
+  // (spec 2026-10-01 link-pairing). False when the block is absent (older
+  // maburgs) or state is any other value.
+  bool key_mismatch = false;
   // drone.low_power (Telem flags bit7, spec 2026-09-20): the drone is
   // deliberately at its pre-arm low-power operating point (1 Mb/s /
   // 15 fps) because the FC reports DISARMED. False when the drone block is

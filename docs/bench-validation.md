@@ -245,7 +245,7 @@ Session evidence:
   intervention.
 - **E2 PASS.** Drone RENDEZVOUS→LINKED (state 1→2) on GS DISC/RCF across
   four separate sessions. **The FCS-tail risk did not materialize** — no
-  tail-trim needed; received RC frames pass CRC + vtx_id as-is. Applied
+  tail-trim needed; received RC frames pass CRC as-is. Applied
   on-air witness: the tee'd GS capture shows the drone's TX rate move to
   exactly the vrx-commanded rungs (318k frames MCS0 + 1,774 MCS1 + 550 MCS2
   across sessions where the controller commanded MCS1/MCS2).
@@ -668,7 +668,6 @@ Defaults that matter for bench (full defaults in `bundle/mabur.default.toml`):
 | `radio.width` | `20` | values ≠ 20 warn + fall back to 20 |
 | `radio.bw_set` | `[20]` | probe rungs; rungs > `radio.width` are dropped at load (B7, 4252b02) |
 | `radio.max_txagc` | `63` | power clamp |
-| `link.vtx_id` | `1` | must match the GS's target |
 | `link.failsafe_ms` | `1000` | silence → MAX_RANGE |
 | `frame_ring_name` | `"mabur_f"` | must equal waybeam `outgoing.server` `frame-shm://mabur_f` |
 | `waybeam.idr_path` | `/request/idr` | bench-confirmed route (B4); GET → `{"ok":true,"data":{"idr":true}}` |

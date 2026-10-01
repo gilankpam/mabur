@@ -1,7 +1,8 @@
 <script>
   import Icon from './Icon.svelte';
   import { CHANNELS, MAX_RUNGS, applyEdit, applyRungEdit, rungWarnings, channelWarning, describeEdit, describeRungEdit } from '../lib/config.js';
-  let { cfg, onChange, locked = false, spotter = false, onDisconnect = null, variant = 'rule', applied = '', recordings = null } = $props();
+  let { cfg, onChange, locked = false, spotter = false, onDisconnect = null, variant = 'rule', applied = '', recordings = null,
+    keyFp = 'default', onLoadKey = null, onClearKey = null } = $props();
   const uid = $props.id();   // unique per mounted instance -- two panels (sidebar + Task 11 side panel) never share a radio group.
 
   const groupClass = $derived(variant === 'card' ? 'card cardg' : 'group');
@@ -88,6 +89,18 @@
       </div>
       {#if pinned}
         <div class="note"><Icon name="info" size="14px" /><span>Link pinned to MCS {cfg.staticMcs}. The ladder is kept but unused until Fixed MCS is set back to Adaptive.</span></div>
+      {/if}
+      {#if !spotter}
+        <div class="field">
+          <span id="{uid}key-label" class="fieldlabel">Link key</span>
+          <div style="display:flex;gap:8px;align-items:center">
+            <span class="tag {keyFp === 'default' ? 'tag-neutral' : 'tag-accent'}">{keyFp}</span>
+            <input id="{uid}key-file" type="file" style="display:none" onchange={(e) => { const f = e.currentTarget.files?.[0]; if (f && onLoadKey) onLoadKey(f); e.currentTarget.value = ''; }}>
+            <button class="btn btn-secondary" type="button" onclick={() => document.getElementById(`${uid}key-file`).click()}>Load</button>
+            <button class="btn btn-ghost" type="button" disabled={keyFp === 'default'} onclick={() => onClearKey && onClearKey()}>Clear</button>
+          </div>
+          <div class="hint">The pairing key file (/etc/mabur.key on the drone and GS). The fingerprint must match both daemons' boot logs. Default pairs with any default install.</div>
+        </div>
       {/if}
     </div>
 

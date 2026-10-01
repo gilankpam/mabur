@@ -42,7 +42,6 @@ symbol_size = 332          # must match the drone
 seq_horizon = 512          # how far back (in symbols) a missing piece can still be repaired
 
 [link]
-vtx_id                 = 1      # must match the drone
 feedback_ms            = 50     # how often link feedback is sent to the drone
 rcf_slot_hold_ms       = 30     # time feedback so it doesn't collide with incoming video; 0 = off
 arrival_guard_syms     = 192    # how late a packet may arrive before it counts as lost
@@ -50,6 +49,7 @@ beacon_keepalive_ms    = 1000   # while linked, re-announce the ground station t
 static_mcs             = -1     # -1 = adaptive link; 0..7 pins a fixed MCS (bench testing)
 static_bw              = 20     # width used with static_mcs; 40 needs radio.width = 40
 max_mcs                = 5      # highest MCS the adaptive link may use
+key_file               = "/etc/mabur.key"   # pairing key; same file on the drone (docs/deploy.md "Pairing"). Missing = built-in default
 
 # Adaptive link: the link speed is chosen from a ladder of rungs (listed
 # below). It steps DOWN a rung when loss goes over down_util for confirm_ms,

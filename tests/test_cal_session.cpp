@@ -84,11 +84,11 @@ TEST(start_refuses_without_capability) {
   CalSession s(CalSessionCfg{});
   std::string err;
   s.set_peer(/*linked=*/false, /*cal_capable=*/true);
-  CHECK(!s.start(1, 1, 0, &err));
+  CHECK(!s.start(1, 0, &err));
   CHECK(err.find("link") != std::string::npos);
 
   s.set_peer(/*linked=*/true, /*cal_capable=*/false);
-  CHECK(!s.start(1, 1, 0, &err));
+  CHECK(!s.start(1, 0, &err));
   CHECK(err.find("CAP_CALIBRATE") != std::string::npos);
 }
 
@@ -96,8 +96,8 @@ TEST(start_refuses_while_a_session_runs) {
   CalSession s(CalSessionCfg{});
   s.set_peer(true, true);
   std::string err;
-  REQUIRE(s.start(1, 1, 0, &err));
-  CHECK(!s.start(1, 2, 10, &err));
+  REQUIRE(s.start(1, 0, &err));
+  CHECK(!s.start(2, 10, &err));
   CHECK(err.find("running") != std::string::npos);
 }
 
@@ -105,7 +105,7 @@ TEST(repeats_command_until_acknowledged) {
   CalSession s(CalSessionCfg{});
   s.set_peer(true, true);
   std::string err;
-  REQUIRE(s.start(1, 42, 0, &err));
+  REQUIRE(s.start(42, 0, &err));
   const auto a = s.due_cmd(0);
   REQUIRE(a.has_value());
   CHECK(a->phase == mabur::cal::kPhaseCoarse);
@@ -128,11 +128,11 @@ TEST(radio_is_silent_for_the_whole_phase_and_opens_after) {
   CalSession s(cfg);
   s.set_peer(true, true);
   std::string err;
-  REQUIRE(s.start(1, 7, 0, &err));
+  REQUIRE(s.start(7, 0, &err));
   REQUIRE(s.due_cmd(0).has_value());
   s.on_ack(7, 100);
 
-  const auto plan = make_coarse_plan(1, 7);
+  const auto plan = make_coarse_plan(7);
   const uint32_t dur = plan_duration_ms(plan);
   CHECK(s.radio_silent(100));
   CHECK(s.radio_silent(100 + dur / 2));
@@ -146,7 +146,7 @@ TEST(ack_timeout_fails_the_session_without_writing_anything) {
   CalSession s(cfg);
   s.set_peer(true, true);
   std::string err;
-  REQUIRE(s.start(1, 1, 0, &err));
+  REQUIRE(s.start(1, 0, &err));
   s.due_cmd(0);
   CHECK(s.state() == CalSession::State::AwaitAck);
   s.due_cmd(3500);
@@ -160,12 +160,12 @@ TEST(coarse_then_fine_then_result) {
   CalSession s(cfg);
   s.set_peer(true, true);
   std::string err;
-  REQUIRE(s.start(1, 5, 0, &err));
+  REQUIRE(s.start(5, 0, &err));
   s.due_cmd(0);
   s.on_ack(5, 1);
 
   // Coarse: every rate clean everywhere -> all no-dip, parked at the rail.
-  const auto coarse = make_coarse_plan(1, 5);
+  const auto coarse = make_coarse_plan(5);
   feed_phase(s, coarse, 100, 10);
   const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
 
@@ -191,14 +191,14 @@ TEST(fine_phase_sharpens_a_real_dip_and_flags_drift) {
   CalSession s(cfg);
   s.set_peer(true, true);
   std::string err;
-  REQUIRE(s.start(1, 11, 0, &err));
+  REQUIRE(s.start(11, 0, &err));
   s.due_cmd(0);
   s.on_ack(11, 1);
 
   // Every rate clean except rate 5, which dips above idx 55. At coarse
   // resolution (the grid is -41, -37, ..., 55, 59, 63) the last clean cell
   // is therefore 55.
-  const auto coarse = make_coarse_plan(1, 11);
+  const auto coarse = make_coarse_plan(11);
   feed_phase_fn(s, coarse,
                 [](uint8_t r, int i) { return r != 5 ? 100 : (i <= 55 ? 100 : 10); },
                 10);
@@ -232,11 +232,11 @@ TEST(undetermined_rate_reaches_the_result_as_minus_one) {
   CalSession s(cfg);
   s.set_peer(true, true);
   std::string err;
-  REQUIRE(s.start(1, 6, 0, &err));
+  REQUIRE(s.start(6, 0, &err));
   s.due_cmd(0);
   s.on_ack(6, 1);
   // Nothing heard at all: every rate is undetermined.
-  const auto coarse = make_coarse_plan(1, 6);
+  const auto coarse = make_coarse_plan(6);
   const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
   const auto res = s.due_result(t1 + 5000);
   REQUIRE(res.has_value());
@@ -259,14 +259,14 @@ TEST(verify_phase_tallies_by_rate_despite_a_margin_mismatch) {
   CalSession s(cfg);
   s.set_peer(true, true);
   std::string err;
-  REQUIRE(s.start(1, 9, 0, &err));
+  REQUIRE(s.start(9, 0, &err));
   s.due_cmd(0);
   s.on_ack(9, 1);
 
   // Every rate clean everywhere -> the constant rail wall (kRailRel), this
   // session's own park index kRailRel - 4 = 59 (1 dB margin -> 4 TXAGC
   // steps).
-  const auto coarse = make_coarse_plan(1, 9);
+  const auto coarse = make_coarse_plan(9);
   feed_phase(s, coarse, 100, 10);
   const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
   REQUIRE(s.due_result(t1 + 2000).has_value());  // arms verify (begin_verify)
@@ -287,7 +287,7 @@ TEST(corrupt_frames_count_as_loss_not_delivery) {
   CalSession s(cfg);
   s.set_peer(true, true);
   std::string err;
-  REQUIRE(s.start(1, 8, 0, &err));
+  REQUIRE(s.start(8, 0, &err));
   s.due_cmd(0);
   s.on_ack(8, 1);
   mabur::cal::CalFrameInfo f{0, 39, mabur::cal::kPhaseCoarse, 0};
@@ -302,7 +302,7 @@ TEST(frames_from_a_stale_phase_are_ignored) {
   CalSession s(cfg);
   s.set_peer(true, true);
   std::string err;
-  REQUIRE(s.start(1, 9, 0, &err));
+  REQUIRE(s.start(9, 0, &err));
   s.due_cmd(0);
   s.on_ack(9, 1);
   mabur::cal::CalFrameInfo f{0, 40, mabur::cal::kPhaseVerify, 0};  // wrong phase
@@ -314,7 +314,7 @@ TEST(abort_returns_to_idle_and_reopens_the_air) {
   CalSession s(CalSessionCfg{});
   s.set_peer(true, true);
   std::string err;
-  REQUIRE(s.start(1, 1, 0, &err));
+  REQUIRE(s.start(1, 0, &err));
   s.due_cmd(0);
   s.on_ack(1, 1);
   CHECK(s.radio_silent(100));
@@ -337,7 +337,7 @@ TEST(radio_silent_is_true_from_ack_until_abort) {
   CalSession s(cfg);
   s.set_peer(true, true);
   std::string err;
-  REQUIRE(s.start(1, 3, 0, &err));
+  REQUIRE(s.start(3, 0, &err));
   s.due_cmd(0);
   s.on_ack(3, 10);
   CHECK(s.radio_silent(11));
@@ -358,10 +358,10 @@ TEST(null_log_sink_is_inert) {
   CalSession s(cfg);  // no CalLog* -- log_ defaults to nullptr
   s.set_peer(true, true);
   std::string err;
-  REQUIRE(s.start(1, 30, 0, &err));
+  REQUIRE(s.start(30, 0, &err));
   s.due_cmd(0);
   s.on_ack(30, 1);
-  const auto coarse = make_coarse_plan(1, 30);
+  const auto coarse = make_coarse_plan(30);
   feed_phase(s, coarse, 100, 10);
   const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
   // finish_phase() and finalize_result() run their log_ calls right here;
@@ -391,14 +391,14 @@ TEST(cal_log_records_cells_and_walls_at_phase_end) {
     CalSession s(cfg, &log);
     s.set_peer(true, true);
     std::string err;
-    REQUIRE(s.start(1, 31, 0, &err));
+    REQUIRE(s.start(31, 0, &err));
     log.run(31, s.margin_db());
     s.due_cmd(0);
     s.on_ack(31, 1);
 
     // Every rate clean except rate 3, which hears nothing at all -> that
     // row never reaches deliver_pct anywhere and comes out kCalUndetermined.
-    const auto coarse = make_coarse_plan(1, 31);
+    const auto coarse = make_coarse_plan(31);
     feed_phase_fn(s, coarse, [](uint8_t r, int) { return r == 3 ? 0 : 100; }, 10);
     const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
     // Undetermined and no-dip rows both skip the fine phase (make_fine_plan),
@@ -440,14 +440,14 @@ TEST(cal_log_records_verify_results) {
     CalSession s(cfg, &log);
     s.set_peer(true, true);
     std::string err;
-    REQUIRE(s.start(1, 32, 0, &err));
+    REQUIRE(s.start(32, 0, &err));
     log.run(32, s.margin_db());
     s.due_cmd(0);
     s.on_ack(32, 1);
 
     // Every rate clean everywhere -> the constant rail wall (kRailRel), this
     // session's own park index kRailRel - 4 = 59 (1 dB margin).
-    const auto coarse = make_coarse_plan(1, 32);
+    const auto coarse = make_coarse_plan(32);
     feed_phase(s, coarse, 100, 10);
     const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
     REQUIRE(s.due_result(t1 + 2000).has_value());  // arms verify
@@ -486,10 +486,10 @@ TEST(result_is_repeated_until_a_verify_frame_acks_it) {
   CalSession s(cfg);
   s.set_peer(true, true);
   std::string err;
-  REQUIRE(s.start(1, 21, 0, &err));
+  REQUIRE(s.start(21, 0, &err));
   s.due_cmd(0);
   s.on_ack(21, 1);
-  const auto coarse = make_coarse_plan(1, 21);
+  const auto coarse = make_coarse_plan(21);
   feed_phase(s, coarse, 100, 10);
   const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
 
@@ -521,10 +521,10 @@ TEST(a_crc_bad_verify_frame_still_stops_the_repeats) {
   CalSession s(cfg);
   s.set_peer(true, true);
   std::string err;
-  REQUIRE(s.start(1, 22, 0, &err));
+  REQUIRE(s.start(22, 0, &err));
   s.due_cmd(0);
   s.on_ack(22, 1);
-  const auto coarse = make_coarse_plan(1, 22);
+  const auto coarse = make_coarse_plan(22);
   feed_phase(s, coarse, 100, 10);
   const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
   REQUIRE(s.due_result(t1 + 2000).has_value());
@@ -542,10 +542,10 @@ TEST(result_repeats_are_bounded_when_the_drone_never_applies) {
   CalSession s(cfg);
   s.set_peer(true, true);
   std::string err;
-  REQUIRE(s.start(1, 23, 0, &err));
+  REQUIRE(s.start(23, 0, &err));
   s.due_cmd(0);
   s.on_ack(23, 1);
-  const auto coarse = make_coarse_plan(1, 23);
+  const auto coarse = make_coarse_plan(23);
   feed_phase(s, coarse, 100, 10);
   const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
 
@@ -586,11 +586,11 @@ TEST(all_zero_verify_rows_are_logged_for_a_totally_silent_result) {
     CalSession s(cfg, &log);
     s.set_peer(true, true);
     std::string err;
-    REQUIRE(s.start(1, 33, 0, &err));
+    REQUIRE(s.start(33, 0, &err));
     log.run(33, s.margin_db());
     s.due_cmd(0);
     s.on_ack(33, 1);
-    const auto coarse = make_coarse_plan(1, 33);
+    const auto coarse = make_coarse_plan(33);
     feed_phase(s, coarse, 100, 10);
     const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
     REQUIRE(s.due_result(t1 + 2000).has_value());  // arms verify
@@ -630,7 +630,7 @@ TEST(silent_verify_cell_is_distinguishable_from_a_never_planned_rate) {
     CalSession s(cfg, &log);
     s.set_peer(true, true);
     std::string err;
-    REQUIRE(s.start(1, 34, 0, &err));
+    REQUIRE(s.start(34, 0, &err));
     log.run(34, s.margin_db());
     s.due_cmd(0);
     s.on_ack(34, 1);
@@ -640,7 +640,7 @@ TEST(silent_verify_cell_is_distinguishable_from_a_never_planned_rate) {
     // real wall (kRailRel, matching cal_log_records_verify_results), and
     // therefore a real park index (kRailRel - 4 = 59, margin 1.0 dB = 4 steps) seeded
     // into the verify plan.
-    const auto coarse = make_coarse_plan(1, 34);
+    const auto coarse = make_coarse_plan(34);
     feed_phase_fn(
         s, coarse, [](uint8_t r, int) { return r == 3 ? 0 : 100; }, 10);
     const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
@@ -687,11 +687,11 @@ TEST(records_are_on_disk_as_soon_as_the_run_reaches_done) {
   CalSession s(cfg, &log);
   s.set_peer(true, true);
   std::string err;
-  REQUIRE(s.start(1, 34, 0, &err));
+  REQUIRE(s.start(34, 0, &err));
   log.run(34, s.margin_db());
   s.due_cmd(0);
   s.on_ack(34, 1);
-  const auto coarse = make_coarse_plan(1, 34);
+  const auto coarse = make_coarse_plan(34);
   feed_phase(s, coarse, 100, 10);
   const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
   REQUIRE(s.due_result(t1 + 2000).has_value());
@@ -726,7 +726,7 @@ TEST(a_sweep_frame_is_an_implicit_ack_for_the_phase_it_names) {
   CalSession s(cfg);
   s.set_peer(true, true);
   std::string err;
-  REQUIRE(s.start(1, 71, 0, &err));
+  REQUIRE(s.start(71, 0, &err));
   REQUIRE(s.due_cmd(0).has_value());
   CHECK(!s.radio_silent(10));   // no ack yet: the air is still open
 
@@ -739,7 +739,7 @@ TEST(a_sweep_frame_is_an_implicit_ack_for_the_phase_it_names) {
 
   // The window is sized from the frame's arrival, so the phase still gets
   // its full planned duration of silence.
-  const uint32_t dur = plan_duration_ms(make_coarse_plan(1, 71));
+  const uint32_t dur = plan_duration_ms(make_coarse_plan(71));
   CHECK(s.radio_silent(100 + dur - 1));
   CHECK(!s.radio_silent(100 + dur + 1));
 }
@@ -752,7 +752,7 @@ TEST(a_frame_from_another_phase_is_not_an_implicit_ack) {
   CalSession s(cfg);
   s.set_peer(true, true);
   std::string err;
-  REQUIRE(s.start(1, 72, 0, &err));
+  REQUIRE(s.start(72, 0, &err));
   REQUIRE(s.due_cmd(0).has_value());
   mabur::cal::CalFrameInfo f{0, 8, mabur::cal::kPhaseVerify, 0};
   s.on_cal_frame(0, f, -70, true, 100);
@@ -769,9 +769,9 @@ TEST(no_dip_rows_park_at_the_constant_rail_without_any_ack) {
   CalSession s(cfg);
   s.set_peer(true, true);
   std::string err;
-  REQUIRE(s.start(1, 41, 0, &err));
+  REQUIRE(s.start(41, 0, &err));
   s.due_cmd(0);
-  const auto coarse = make_coarse_plan(1, 41);
+  const auto coarse = make_coarse_plan(41);
   feed_phase(s, coarse, 100, 10);
   const auto res = s.due_result(1 + plan_duration_ms(coarse) + 2001);
   REQUIRE(res.has_value());

@@ -55,8 +55,7 @@ void check_keys(const Value& o, const std::string& where,
   }
 }
 
-// int64_t, not long: long is 32-bit on wasm32 (the web GS build), where
-// link.vtx_id's 0xFFFFFFFF bound wrapped to -1 and failed every config.
+// int64_t, not long: long is 32-bit on wasm32 (the web GS build).
 int64_t get_int(const Value& o, const char* key, int64_t dflt, int64_t lo, int64_t hi,
                 const std::string& where) {
   if (!o.contains(key)) { note_default(where, key, to_text(dflt)); return dflt; }
@@ -313,10 +312,16 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
     c.fec.seq_horizon = static_cast<int>(get_int(r, "seq_horizon", 512, 16, 65536, "fec"));
   }
 
+  // Raw [link] key overlay (spec 2026-10-01 link-pairing §2); empty when
+  // absent or when only key_file was given. Resolved, with key_file, in the
+  // unconditional block below (same reasoning as the sentinel resolution
+  // further down: a config with no [link] table at all must still resolve
+  // to the compiled-in default).
+  std::string link_inline_key;
   if (j.contains("link")) {
     const Value& r = j["link"];
     check_keys(r, "link",
-               {"vtx_id", "feedback_ms", "beacon_keepalive_ms",
+               {"feedback_ms", "beacon_keepalive_ms",
                 "static_mcs", "static_overhead_base", "static_overhead_enh",
                 "static_bw",
                 "ladder", "max_mcs", "down_util", "up_util", "confirm_ms",
@@ -325,8 +330,16 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
                 "starved_confirm_ms", "s3_demote", "s3_down_util",
                 "s3_settle_ms", "s3_min_syms",
                 "rung_stats", "fade", "probe",
-                "rcf_slot_hold_ms", "arrival_guard_syms"});
-    c.link.vtx_id = static_cast<uint32_t>(get_int(r, "vtx_id", 1, 0, 0xFFFFFFFFL, "link"));
+                "rcf_slot_hold_ms", "arrival_guard_syms",
+                "key_file", "key"});
+    c.link.key_file = get_str(r, "key_file", "/etc/mabur.key", "link");
+    // Read by presence: link.key is an optional web-overlay key (spec §2),
+    // not a tunable with a meaningful default, so its absence (the normal
+    // case -- key_file is the real config surface) must not register as a
+    // defaulted key (fix round 1, Task 4 review) -- that would print
+    // "link.key=" under every plain boot's "config: N key(s) defaulted"
+    // list, right next to the real DEFAULT-key warning, diluting it.
+    if (r.contains("key")) link_inline_key = get_str(r, "key", "", "link");
     c.link.feedback_ms = static_cast<int>(get_int(r, "feedback_ms", 100, 20, 5000, "link"));
     c.link.rcf_slot_hold_ms = static_cast<int>(get_int(r, "rcf_slot_hold_ms", 30, 0, 1000, "link"));
     c.link.arrival_guard_syms = static_cast<int>(get_int(r, "arrival_guard_syms", 192, 16, 512, "link"));
@@ -493,6 +506,27 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
     c.link.ladder_cfg.probe.max_util = c.link.ladder_cfg.down_util;
   if (c.link.ladder_cfg.s3_down_util < 0)
     c.link.ladder_cfg.s3_down_util = c.link.ladder_cfg.down_util;
+
+  // Pairing key resolution (spec 2026-10-01 link-pairing §2): an inline
+  // [link] key overrides key_file; otherwise the key file is read (missing
+  // -> compiled-in default). Runs unconditionally so a config with no
+  // [link] table at all still resolves to the default.
+  if (!link_inline_key.empty()) {
+    auto k = mabur::parse_key_hex(link_inline_key);
+    if (!k) fail("link.key", "not 32 hex characters");
+    c.link.key = *k;
+    c.link.key_is_default = false;
+    c.link.key_source = "link.key";
+  } else {
+    try {
+      const auto kl = mabur::load_key_file(c.link.key_file);
+      c.link.key = kl.key;
+      c.link.key_is_default = kl.is_default;
+      c.link.key_source = kl.source;
+    } catch (const std::runtime_error& e) {
+      fail("link.key_file", e.what());
+    }
+  }
 
   // ---- Width cross-checks (2026-09-24, 40 MHz top rungs) -------------------
   // A 40 MHz rung or pin needs the GS tuned 40 -- a 20-tuned receiver cannot

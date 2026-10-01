@@ -96,7 +96,6 @@ struct TimedActuator : Actuator {
 
 Config make_cfg() {
   Config cfg;
-  cfg.link.vtx_id = 1;
   cfg.link.failsafe_ms = 1000;
   cfg.link.rendezvous_ms = 30000;
   cfg.link.tick_ms = 100;
@@ -109,9 +108,8 @@ Config make_cfg() {
   return cfg;
 }
 
-std::vector<uint8_t> rcf_wire(uint32_t vtx_id, uint16_t seq, int rung) {
+std::vector<uint8_t> rcf_wire(uint16_t seq, int rung) {
   Rcf r;
-  r.vtx_id = vtx_id;
   r.seq = seq;
   r.profile = encode_profile(PhyMode::HT, static_cast<uint8_t>(kLadder[rung].mcs), 20);
   r.fec_overhead_base = kLadder[rung].ov;
@@ -132,7 +130,6 @@ TimedActuator replay_real_agent() {
   agent.tick(t_link, RadioHealth{});  // BOOT -> RENDEZVOUS
 
   Disc d;
-  d.vtx_id = cfg.link.vtx_id;
   d.vrx_nonce = 0x1234;
   d.op_channel = 149;
   d.op_width = 20;
@@ -145,7 +142,7 @@ TimedActuator replay_real_agent() {
   for (uint64_t t = t_link + 100; t <= 605000; t += 100) {
     act.now = t;
     agent.tick(t, RadioHealth{});
-    auto wire = rcf_wire(cfg.link.vtx_id, seq++, rung_at(static_cast<double>(t)));
+    auto wire = rcf_wire(seq++, rung_at(static_cast<double>(t)));
     agent.on_rc_frame(wire.data(), wire.size(), t);
   }
   return act;

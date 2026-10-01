@@ -354,10 +354,11 @@ def test_drone_rx_section_absent_on_old_recordings():
     assert "DRONE RX" not in result.stdout
 
 
-def _mk_drone_tx_row(t_ms, tlm_seq, wait, drops, usb, cpu, cong, fs=False):
+def _mk_drone_tx_row(t_ms, tlm_seq, wait, drops, usb, cpu, cong, fs=False, auth=False):
     r = _mk_stream_row(t_ms, 2)
     r["drone"] = {"state": "linked", "tlm_seq": tlm_seq, "txq_wait_ms": wait,
                   "failsafe_shed": fs, "congestion_shed": cong,
+                  "auth_reject": auth,
                   "txq": {"drops": drops, "drop_pps": None},
                   "radio": {"usb_fail": usb},
                   "sys": {"soc_temp_c": 50, "cpu_pct": cpu}}
@@ -369,11 +370,13 @@ def test_drone_tx_path_section():
     for post-flight attribution -- txq wait, txq drops, usb fail, cpu,
     congestion/failsafe shed -- sampled once per tlm_seq. Cumulative
     counters are summed as per-period deltas, and a maburd restart (counter
-    going backwards) contributes its post-restart value, never a negative."""
+    going backwards) contributes its post-restart value, never a negative.
+    auth_reject (link pairing, 2026-10-01): a control-frame verification
+    failure, also counted per period."""
     rows = [
         _mk_drone_tx_row(0,    1, wait=3,  drops=10, usb=0, cpu=20.0, cong=False),
         _mk_drone_tx_row(200,  1, wait=3,  drops=10, usb=0, cpu=20.0, cong=False),  # repeat
-        _mk_drone_tx_row(1000, 2, wait=12, drops=10, usb=0, cpu=40.0, cong=True),
+        _mk_drone_tx_row(1000, 2, wait=12, drops=10, usb=0, cpu=40.0, cong=True, auth=True),
         _mk_drone_tx_row(2000, 3, wait=40, drops=15, usb=1, cpu=71.0, cong=True),
         _mk_drone_tx_row(3000, 1, wait=2,  drops=2,  usb=0, cpu=30.0, cong=False),  # restart
     ]
@@ -393,6 +396,7 @@ def test_drone_tx_path_section():
     assert re.search(r"cpu %:\s*p50=40\.0\b.*max=71\.0\b", sec), sec
     assert re.search(r"congestion shed:\s*2 periods", sec), sec
     assert re.search(r"failsafe shed:\s*0 periods", sec), sec
+    assert re.search(r"auth reject:\s*1 periods", sec), sec
 
 
 def test_drone_tx_path_section_absent_without_drone_telemetry():

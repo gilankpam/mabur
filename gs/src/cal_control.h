@@ -149,11 +149,7 @@ class CalControl {
       static std::random_device rd;
       const uint32_t nonce = rd();
       std::string err;
-      // vtx_id=0 is safe: CalControl has no config access to a real one,
-      // and unlike Rcf/Disc (which gate on vtx_id in their own handlers),
-      // no calibration-frame consumer validates it -- checked against
-      // every task in the plan (2026-09-11 review).
-      if (!s.start(/*vtx_id=*/0, nonce, now_ms(), &err)) {
+      if (!s.start(nonce, now_ms(), &err)) {
         *reply = "err " + err;
         return false;
       }

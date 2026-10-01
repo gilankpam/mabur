@@ -8,8 +8,7 @@
     "op_width": 20,
     "seq": 2,
     "table_ver": 1,
-    "vrx_nonce": 3405643777,
-    "vtx_id": 1
+    "vrx_nonce": 3405643777
    }
   }
  ],
@@ -19,9 +18,10 @@
     "agreed_channel": 149,
     "agreed_width": 20,
     "chip_caps": 3,
+    "flags": 0,
     "seq": 1,
     "vrx_nonce": 3405643777,
-    "vtx_id": 1
+    "vtx_nonce": 3203334146
    }
   }
  ],
@@ -35,8 +35,7 @@
     "idr_epoch": 0,
     "profile": 36,
     "rec": 0,
-    "seq": 7,
-    "vtx_id": 3735928559
+    "seq": 7
    }
   },
   {
@@ -48,8 +47,7 @@
     "idr_epoch": 0,
     "profile": 0,
     "rec": 3,
-    "seq": 65535,
-    "vtx_id": 1
+    "seq": 65535
    }
   },
   {
@@ -62,8 +60,7 @@
     "probe_profile": 6,
     "profile": 8,
     "rec": 2,
-    "seq": 42,
-    "vtx_id": 287454020
+    "seq": 42
    }
   }
  ]

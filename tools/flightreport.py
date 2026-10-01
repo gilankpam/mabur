@@ -980,6 +980,7 @@ def drone_tx_samples(rows):
             "cpu": (d.get("sys") or {}).get("cpu_pct"),
             "cong": d.get("congestion_shed"),
             "fs": d.get("failsafe_shed"),
+            "auth": d.get("auth_reject"),
         })
     return out
 
@@ -1017,6 +1018,7 @@ def print_drone_tx_report(rows):
     usb, usb_n = _counter_growth([x["usb"] for x in s])
     cong = sum(1 for x in s if x["cong"])
     fs = sum(1 for x in s if x["fs"])
+    auth = sum(1 for x in s if x["auth"])
     print()
     print(f"DRONE TX PATH (per telemetry period, once per tlm_seq): n={len(s)}")
     wait_s = (f"p50={_pct(waits, .5):.0f} p90={_pct(waits, .9):.0f} max={max(waits)}"
@@ -1027,7 +1029,8 @@ def print_drone_tx_report(rows):
     cpu_s = (f"p50={_pct(cpus, .5):.1f} p90={_pct(cpus, .9):.1f} max={max(cpus):.1f}"
              if cpus else "n/a")
     print(f"  cpu %: {cpu_s}")
-    print(f"  congestion shed: {cong} periods   failsafe shed: {fs} periods")
+    print(f"  congestion shed: {cong} periods   failsafe shed: {fs} periods"
+          f"   auth reject: {auth} periods")
 
 
 def print_salvage_report(rows):

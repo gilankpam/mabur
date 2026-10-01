@@ -3,12 +3,13 @@ import assert from 'node:assert/strict';
 import {
   CHANNELS, defaultConfig, normalizeConfig, loadConfig, saveConfig, rungWarnings, channelWarning,
   connectBlocker, toOverlayToml, applyEdit, applyRungEdit, describeEdit,
-  describeRungEdit,
+  describeRungEdit, parseKeyText, loadKey, saveKey, KEY_STORE, DEFAULT_KEY_HEX,
 } from '../ui/src/lib/config.js';
 
 const mem = (init = {}) => {
   const m = new Map(Object.entries(init));
-  return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, v), m };
+  return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, v),
+    removeItem: (k) => m.delete(k), m };
 };
 
 test('defaults match maburgs.default.toml', () => {
@@ -144,4 +145,28 @@ test('dvr target: default web, normalized, described', () => {
   assert.equal(normalizeConfig({ dvr: 'sd' }).dvr, 'web');
   assert.equal(normalizeConfig({}).dvr, 'web');
   assert.equal(describeEdit('dvr', 'both'), 'Recording target set to Both');
+});
+
+const HEX = '3f9a1c77e04b5d2290ab6ef1c8d34e5a';
+test('parseKeyText: comments, blanks, CRLF, case; rejects bad input', () => {
+  assert.equal(parseKeyText(`# key\r\n\r\n  ${HEX.toUpperCase()}  \r\n`), HEX);
+  assert.throws(() => parseKeyText(''), /no key/);
+  assert.throws(() => parseKeyText(`${HEX}\n${HEX}\n`), /more than one key/);
+  assert.throws(() => parseKeyText(HEX.slice(0, 31)), /32 hex/);
+});
+test('key store round trip; stale or broken storage falls back to null', () => {
+  const s = mem();
+  assert.equal(loadKey(s), null);
+  saveKey(s, HEX);
+  assert.equal(loadKey(s), HEX);
+  saveKey(s, null);
+  assert.equal(loadKey(s), null);
+  assert.equal(loadKey(mem({ [KEY_STORE]: 'not-a-key' })), null);
+  const bad = { getItem() { throw new Error('denied'); }, setItem() { throw new Error('denied'); }, removeItem() { throw new Error('denied'); } };
+  assert.equal(loadKey(bad), null);
+  assert.doesNotThrow(() => saveKey(bad, HEX));
+});
+test('overlay carries link.key only when a key is loaded', () => {
+  assert.ok(!/key =/.test(toOverlayToml(defaultConfig())));
+  assert.match(toOverlayToml(defaultConfig(), HEX), new RegExp(`^\\[link\\]\\nkey = "${HEX}"\\nstatic_mcs = -1\\n`));
 });

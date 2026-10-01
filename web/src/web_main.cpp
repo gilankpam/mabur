@@ -589,6 +589,8 @@ int run_live_relay(const LiveOpts& o, const maburgs::Config& cfg, uint8_t ch, in
 int run_live(const LiveOpts& o) {
   maburgs::Config cfg;
   if (!load_cfg(o.config, o.overlay, cfg)) return 2;
+  std::fprintf(stderr, "webgs: link key %s (%s)\n",
+               mabur::key_fingerprint(cfg.link.key).c_str(), cfg.link.key_source.c_str());
   if (!o.bad_chw.empty()) {
     report_error("bad channel/width: %s", o.bad_chw.c_str());
     return 2;

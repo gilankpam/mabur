@@ -477,16 +477,15 @@ void parse_venc(const Value& j, VencSectionCfg& v) {
 }
 
 void parse_link(const Value& j, LinkCfg& l) {
-  check_known_keys(j, {"vtx_id", "failsafe_ms", "rendezvous_ms", "tick_ms",
-                       "rc_drain_ms", "move_confirm_ms"}, "link");
-  assign_if_present(j, "vtx_id", l.vtx_id, "link");
+  check_known_keys(j, {"failsafe_ms", "rendezvous_ms", "tick_ms",
+                       "rc_drain_ms", "move_confirm_ms", "key_file"}, "link");
   assign_if_present(j, "failsafe_ms", l.failsafe_ms, "link");
   assign_if_present(j, "rendezvous_ms", l.rendezvous_ms, "link");
   assign_if_present(j, "move_confirm_ms", l.move_confirm_ms, "link");
   assign_if_present(j, "tick_ms", l.tick_ms, "link");
   assign_if_present(j, "rc_drain_ms", l.rc_drain_ms, "link");
+  assign_if_present(j, "key_file", l.key_file, "link");
 
-  if (l.vtx_id == 0) fail("link.vtx_id", "must be non-zero");
   if (l.move_confirm_ms < 200 || l.move_confirm_ms > 30000)
     fail("link.move_confirm_ms", "must be in [200,30000]");
   // tick_ms is the agent loop's housekeeping deadline (TickGate). Unbounded
@@ -505,6 +504,15 @@ void parse_link(const Value& j, LinkCfg& l) {
   // legacy single-cadence loop and stays legal.
   if (l.rc_drain_ms > l.tick_ms)
     fail("link.rc_drain_ms", "must be <= link.tick_ms");
+
+  try {
+    const auto kl = mabur::load_key_file(l.key_file);
+    l.key = kl.key;
+    l.key_is_default = kl.is_default;
+    l.key_source = kl.source;
+  } catch (const std::runtime_error& e) {
+    fail("link.key_file", e.what());
+  }
 }
 
 void parse_msp(const Value& j, MspCfg& m) {
@@ -645,7 +653,10 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
   if (j.contains("fec")) parse_fec(j.at("fec"), cfg.fec);
   if (j.contains("encoder")) parse_encoder(j.at("encoder"), cfg.encoder);
   if (j.contains("venc")) parse_venc(j.at("venc"), cfg.venc);
-  if (j.contains("link")) parse_link(j.at("link"), cfg.link);
+  // A config with no [link] table at all must still resolve the pairing
+  // key (to the compiled-in default), so this section is parsed
+  // unconditionally rather than gated on j.contains("link") like the rest.
+  parse_link(j.contains("link") ? j.at("link") : Value(), cfg.link);
   if (j.contains("msp")) parse_msp(j.at("msp"), cfg.msp);
   if (j.contains("ampdu")) parse_ampdu(j.at("ampdu"), cfg.ampdu);
   if (j.contains("air_clock")) parse_air_clock(j.at("air_clock"), cfg.air_clock);

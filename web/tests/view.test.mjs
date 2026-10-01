@@ -78,7 +78,8 @@ test('debug groups carry the handoff keys verbatim + counters', () => {
     hitches60: 0, hitchesTotal: 18, seg: { w1: {}, w60: {} } });
   assert.deepEqual(g.map((x) => x.title), ['Link', 'Radio', 'Drone', 'Client',
     'Latency (ms; 1 s | 60 s windows)', 'Counters']);
-  assert.deepEqual(g[0].rows.map((r) => r.k), ['mode', 'session', 'peer_acked', 'rung', 'mcs', 'width', 'probe']);
+  assert.deepEqual(g[0].rows.map((r) => r.k),
+    ['mode', 'session', 'peer_acked', 'rung', 'mcs', 'width', 'probe', 'key', 'key_mismatch']);
   assert.deepEqual(g[1].rows.map((r) => r.k), ['pre-FEC loss', 'residual', 'SNR', 'RSSI', 'RTT', 'RCF heard %']);
   assert.equal(g[3].rows[1].v, '0 last 60s (total 18)');
   const sp = debugGroups({ connected: true, mode: 'spotter', core: { ...core, mode: 'spotter' }, rcfPct: null,
@@ -208,4 +209,9 @@ test('debugGroups hides the USB-only rows (usb latency, txfail) over the relay r
   assert.ok(!relayGroups.find((g) => g.title === 'Counters').rows.some((r) => r.k === 'txfail'));
   // qdrop, a shared (non-USB) counter, still shows for relay.
   assert.ok(relayGroups.find((g) => g.title === 'Counters').rows.some((r) => r.k === 'qdrop'));
+});
+
+test('key mismatch: link tag and status text', () => {
+  assert.deepEqual(linkTag({ state: 'live', mode: 'gs', core: { session: false, key_mismatch: true } }), { label: 'Key mismatch', on: false });
+  assert.match(statusText({ state: 'live', mode: 'gs', ch: 136, w: 40, core: { peer_acked: false, key_mismatch: true, key_fp: 'a1b2' }, sinceStartMs: 0, hasPicture: false }), /Drone rejects our link key \(a1b2\)/);
 });

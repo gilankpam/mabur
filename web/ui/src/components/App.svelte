@@ -16,8 +16,8 @@
   import { recView, RecClock, formatClock } from '../lib/rec.js';
   import { sparkPoints } from '../lib/metrics.js';
   import { layoutMode, keyAction, isMobile, uiFrame } from '../lib/layout.js';
-  import { connectBlocker, toOverlayToml, saveConfig } from '../lib/config.js';
-  import { relayBlocker, relayTarget, relayFieldVisible } from '../lib/logic.mjs';
+  import { connectBlocker, toOverlayToml, saveConfig, saveKey, parseKeyText } from '../lib/config.js';
+  import { relayBlocker, relayTarget, relayFieldVisible, keyFingerprint } from '../lib/logic.mjs';
   import { connectRelay, lnaQuery, probeRelay } from '../lib/relay_connect.js';
   import { effectiveTarget, targetCovers, recFileName, localView, combinedRec, headroomWarning,
     formatBytes, listRecordings, downloadRecording, deleteRecording, opfsRoot } from '../lib/localrec.js';
@@ -195,7 +195,7 @@
     // which the first-time WebUSB chooser needs.
     if (isMobile(LW, LH) && usbGranted) goLandscape();
     video.reset(); tele.reset(); osd.resetAtlasFailure(); hiddenShown = false; hiddenBanner = false;
-    const p = session.connect({ mode: ui.mode, ch: ui.cfg.channel, w: ui.cfg.width, overlayToml: toOverlayToml(sessionCfg),
+    const p = session.connect({ mode: ui.mode, ch: ui.cfg.channel, w: ui.cfg.width, overlayToml: toOverlayToml(sessionCfg, ui.key),
       relay: ui.radio === 'relay' ? relayTarget(showRelayAddr ? ui.relayAddr : '') : null });
     refresh();   // the connecting tag/overlay without waiting for the next tick
     await p;
@@ -203,6 +203,14 @@
     checkUsbGranted();
   }
   function localStorageSafe() { try { return localStorage; } catch { return null; } }
+  async function onLoadKey(file) {
+    try {
+      const hex = parseKeyText(await file.text());
+      ui.key = hex; saveKey(localStorageSafe(), hex);
+      ui.applied = `Link key loaded (${keyFingerprint(hex)}) · ${new Date().toTimeString().slice(0, 8)}`;
+    } catch (e) { ui.applied = `Link key not loaded: ${e.message}`; }
+  }
+  function onClearKey() { ui.key = null; saveKey(localStorageSafe(), null); ui.applied = 'Link key cleared (default key)'; }
   function disconnect() {
     const p = session.disconnect();
     refresh();   // the stopping tag/overlay without waiting for the next tick
@@ -382,7 +390,8 @@
       <Sidebar tab={ui.tab} onTab={(t) => (ui.tab = t)} v={view} {spark} {groups} onCopy={copyStats} {copyMsg}>
         {#snippet config()}
           <ConfigPanel cfg={ui.cfg} onChange={onCfgChange} locked={live || busy} spotter={ui.mode === 'spotter'}
-            onDisconnect={live ? disconnect : null} variant="rule" applied={ui.applied} recordings={recList} />
+            onDisconnect={live ? disconnect : null} variant="rule" applied={ui.applied} recordings={recList}
+            keyFp={keyFingerprint(ui.key)} {onLoadKey} {onClearKey} />
         {/snippet}
       </Sidebar>
     {/if}
@@ -399,7 +408,8 @@
     {#if ui.cfgOpen}
       <ConfigSide onClose={() => (ui.cfgOpen = false)}>
         <ConfigPanel cfg={ui.cfg} onChange={onCfgChange} locked={live || busy} spotter={ui.mode === 'spotter'}
-          onDisconnect={live ? disconnect : null} variant="card" applied={ui.applied} recordings={recList} />
+          onDisconnect={live ? disconnect : null} variant="card" applied={ui.applied} recordings={recList}
+          keyFp={keyFingerprint(ui.key)} {onLoadKey} {onClearKey} />
       </ConfigSide>
     {/if}
   {/if}

@@ -12,7 +12,6 @@ using nlohmann::json;
 namespace {
 StatsInput base_input() {
   StatsInput in;
-  in.vtx_id = 1;
   in.channel = 149;
   in.in_session = true;
   in.tx_card = 0;
@@ -70,7 +69,6 @@ TEST(first_emission_immediate_with_null_rates) {
   CHECK(j["cards"][0]["foreign_pps"].is_null());
   CHECK(j["cards"][0]["self_pps"].is_null());
   // gauges are live even on the first datagram
-  CHECK(j["link"]["vtx_id"] == 1);
   // The player's compact OSD names the channel the rest of its line
   // describes, and it can only get it from here.
   CHECK(j["link"]["channel"] == 149);
@@ -93,6 +91,31 @@ TEST(op_exports_overhead_pair_not_scalar) {
   CHECK(!op.contains("overhead"));
   CHECK(op["overhead_base"].get<double>() > 0.249 && op["overhead_base"].get<double>() < 0.251);
   CHECK(op["overhead_enh"].get<double>() > 0.499 && op["overhead_enh"].get<double>() < 0.501);
+}
+
+// link pairing (2026-10-01): link.key_fp, link.state == key_mismatch, and
+// drone.auth_reject (Telem flags bit1) surface Task 5/6's session-pairs
+// state on the sideport.
+TEST(link_carries_key_fp_and_mismatch_state_and_drone_auth_reject) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  in.key_fp = "a1b2";
+  in.in_session = false;
+  in.key_mismatch = true;
+  mabur::rc::Telem t; t.flags = 0x02;
+  in.telem = t;
+  ex.poll(1000, in);
+  json j = cap.last();
+  CHECK(j["link"]["key_fp"] == "a1b2");
+  CHECK(j["link"]["state"] == "key_mismatch");
+  CHECK(j["drone"]["auth_reject"] == true);
+
+  in.key_mismatch = false; in.in_session = true; t.flags = 0; in.telem = t;
+  ex.poll(1500, in);
+  j = cap.last();
+  CHECK(j["link"]["state"] == "session");
+  CHECK(j["drone"]["auth_reject"] == false);
 }
 
 // link-rtt (2026-09-02): link.rtt is null until the estimator has a sample,
@@ -482,7 +505,6 @@ TEST(stream_rows_fall_back_to_op_overhead_without_telem) {
   const json j = cap.last();
   CHECK(std::abs(j["link"]["streams"][0]["ov"].get<double>() - 0.25) < 1e-9);
   CHECK(std::abs(j["link"]["streams"][1]["ov"].get<double>() - 0.5) < 1e-9);
-  CHECK(j["link"]["vtx_id"] == 1);
 }
 
 TEST(stream_rows_ignore_telem_use_commanded_overhead) {

@@ -55,6 +55,7 @@ rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in) {
   t.tlm_seq = tlm_seq;
   t.state = static_cast<uint8_t>(in.state);
   t.flags = static_cast<uint8_t>((in.failsafe_shed ? 0x01 : 0) |
+                                  (in.auth_reject ? rc::kTelemAuthReject : 0) |
                                   (in.rcf_seq_echo_valid ? 0x08 : 0) |
                                   (in.congestion_shed ? 0x10 : 0) |
                                   (in.low_power ? 0x80 : 0));

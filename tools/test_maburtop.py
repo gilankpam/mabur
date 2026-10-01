@@ -10,7 +10,7 @@ from maburtop import (
 DGRAM = {
     "v": 1, "session": 0xDEADBEEF, "seq": 7, "t_ms": 567890,
     "link": {
-        "vtx_id": 1, "channel": 149, "state": "session", "tx_card": 0,
+        "channel": 149, "state": "session", "tx_card": 0, "key_fp": "a1b2",
         "op": {"mcs": 5, "bw": 20, "sgi": False, "vht": False,
                "overhead_base": 0.25, "overhead_enh": 0.25, "snr_req": 18.5},
         "deadline_ms": 60, "residual_loss": 0.012,
@@ -88,13 +88,23 @@ class TopBarTest(unittest.TestCase):
     def test_content(self):
         text, spans = panel_topbar(_fresh(), 100.2)[0]
         self.assertIn("SESSION", text)
-        self.assertIn("vtx 1", text)
         # link.channel: the operating channel, also what the player's
         # compact OSD reads for its ch: field.
         self.assertIn("ch 149", text)
         self.assertIn("MCS 5/20", text)
         self.assertIn("restarts 0", text)
         self.assertTrue(any(style == "good" for _, _, style in spans))
+        # link.key_fp (link pairing, 2026-10-01): the sideport's key
+        # fingerprint, so a config mismatch shows up without reading logs.
+        self.assertIn("key a1b2", text)
+
+    def test_key_mismatch_state_bad_span(self):
+        d = dict(DGRAM, link=dict(DGRAM["link"], state="key_mismatch"))
+        text, spans = panel_topbar(_fresh(d), 100.2)[0]
+        self.assertIn("KEY MISMATCH", text)
+        self.assertTrue(any(style == "bad" for _, _, style in spans))
+        self.assertFalse(any(style == "good" for _, _, style in spans))
+        self.assertFalse(any(style == "warn" for _, _, style in spans))
 
     def test_stale_takeover(self):
         m = _fresh(wall=100.0)
@@ -154,6 +164,24 @@ class DronePanelTest(unittest.TestCase):
         d["drone"] = dict(DGRAM["drone"])
         del d["drone"]["congestion_shed"]
         self.assertIn("shed --", "\n".join(texts(panel_drone(_fresh(d), 100.2))))
+
+    def test_auth_reject_bad_span(self):
+        # drone.auth_reject (Telem flags bit1, link pairing 2026-10-01):
+        # >=1 control frame failed verification this telemetry period.
+        d = dict(DGRAM)
+        d["drone"] = dict(DGRAM["drone"], auth_reject=True)
+        rows = panel_drone(_fresh(d), 100.2)
+        joined = "\n".join(texts(rows))
+        self.assertIn("AUTH!", joined)
+        line8_text, line8_spans = rows[-1]
+        idx = line8_text.rindex("AUTH!")
+        self.assertTrue(any(s == idx and ln == len("AUTH!") and style == "bad"
+                             for s, ln, style in line8_spans))
+        d["drone"] = dict(DGRAM["drone"], auth_reject=False)
+        self.assertNotIn("AUTH!", "\n".join(texts(panel_drone(_fresh(d), 100.2))))
+        d["drone"] = dict(DGRAM["drone"])
+        d["drone"].pop("auth_reject", None)
+        self.assertNotIn("AUTH!", "\n".join(texts(panel_drone(_fresh(d), 100.2))))
 
     def test_vtx_rec_cell(self):
         # drone.rec (spec 2026-09-26): state 1 = recording, 2 = error + code;

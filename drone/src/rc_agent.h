@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "config.h"
+#include "mabur/link_key.h"
 #include "mabur/profile.h"
 #include "mabur/rc_proto.h"
 
@@ -22,7 +23,7 @@ namespace mabur {
 // enh shed, the old shed[3] — the old reserved layer and its shed[2] slot
 // are gone), and
 // a generation counter bumped only when a *new* operating point
-// (ladder/FEC) is applied (BOOT/DISC/RCF/failsafe entry) — NOT on every
+// (ladder/FEC) is applied (BOOT/RCF/failsafe entry) — NOT on every
 // publish. Congestion shed re-applies the *current* op (same ladder/FEC)
 // with updated shed flags and publishes a fresh AppliedOp WITHOUT bumping
 // generation, so consumers MUST NOT use generation to detect "did a new
@@ -142,7 +143,7 @@ class RcAgent {
   RcAgent(const Config& cfg, Actuator& act, OvOverride* ovr = nullptr);
 
   // Parses `body` as an RC frame (RCF or DISC; anything else, or a frame
-  // failing CRC/vtx_id match, is silently ignored) and applies its effect.
+  // failing CRC, is silently ignored) and applies its effect.
   void on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms);
 
   // The encoder lost a reference frame (a ring-full drop ate it), so the
@@ -198,15 +199,60 @@ class RcAgent {
   bool have_feedback() const { return have_last_fb_; }
   uint64_t last_feedback_ms() const { return last_fb_ms_; }
   uint64_t rcf_accepted() const { return rcf_accepted_; }
+  // Session bookkeeping (link pairing, spec 2026-10-01 §6/§7). All RAM,
+  // nothing persisted. A DISC from vrx_nonce gets a vtx_nonce (a PENDING
+  // pair); the first RCF that verifies under it makes it CURRENT.
+  // last_seq32 is the extended RCF seq the tag is computed over; a frame is
+  // fresh only if its seq32 is strictly greater.
+  struct Session {
+    uint32_t vrx_nonce = 0, vtx_nonce = 0;
+    bool valid = false;
+    uint32_t last_seq32 = 0;
+    bool have_seq = false;
+    uint8_t agreed_ch = 0;     // the DISC proposal this session was acked with
+  };
+  const Session& current_session() const { return current_; }
+
   // link-rtt: seq of the RCF that last_feedback_ms/rcf_age_ms age against.
-  // Empty whenever the seq window is reset (DISC re-establish, failsafe) —
-  // in that state last_fb_ms_ was refreshed by a non-RCF event and echoing
-  // a stale seq would let the GS fabricate an RTT sample from the wrong
-  // send time.
+  // Empty outside LINKED: failsafe entry rebases last_fb_ms_ to now (and an
+  // unconfirmed move drops to RENDEZVOUS), so the age is fresh but no RCF
+  // backs it -- echoing the session's (kept) seq would let the GS fabricate
+  // an RTT sample from the wrong send time. The next accepted RCF re-enters
+  // LINKED and makes it valid again.
   std::optional<uint16_t> last_feedback_seq() const {
-    if (!have_last_seq_) return std::nullopt;
-    return last_seq_;
+    if (state_ != State::LINKED || !current_.valid || !current_.have_seq) return std::nullopt;
+    return static_cast<uint16_t>(current_.last_seq32);
   }
+
+  // True once after a pending pair became current (main.cpp sends one
+  // "promote" Telem on the current channel before tick() runs any deferred
+  // channel move). Agent thread only.
+  bool take_session_promoted() {
+    const bool v = session_promoted_;
+    session_promoted_ = false;
+    return v;
+  }
+  // True once if any control frame failed verification since the last read
+  // (Telem flags bit1). Atomic: set from the agent thread (DISC/RCF) and the
+  // TX writer thread (verify_cal_frame), read once per Telem period.
+  bool take_auth_reject() { return auth_reject_.exchange(false, std::memory_order_relaxed); }
+  // Cal frames are verified on the TX writer thread against the CURRENT
+  // session, read atomically (published_session_). No pending fallback: cal
+  // needs a linked session. Sets the auth_reject flag on failure.
+  //
+  // Cal frames are tagged with seq32 = 0, so freshness is the cal nonce: a
+  // T_CAL_CMD whose nonce was already accepted in this link session -- other
+  // than the most recent one (a retransmission or the next phase of the
+  // running sweep) -- is refused like a failed tag. The seen-nonce ring
+  // (kCalNonceRing deep) belongs to the published session it was filled
+  // under and is forgotten whenever that changes (cleared or promoted).
+  // Owned by verify_cal_frame's caller thread (the TX writer); not
+  // thread-safe against concurrent verify_cal_frame calls.
+  bool verify_cal_frame(const uint8_t* body, size_t len);
+  static constexpr size_t kCalNonceRing = 8;
+  // Replay harness only (maburd --dry-run): install a known pair so a file
+  // of RCFs tagged under (vrx, vtx) verifies without a DISC exchange.
+  void install_session_for_replay(uint32_t vrx_nonce, uint32_t vtx_nonce);
 
   // True while the drone is emitting the probe stream: LINKED and the last
   // accepted RCF commanded a probe MCS. Telem flags bit2.
@@ -249,10 +295,10 @@ class RcAgent {
   // (cfg_.radio.channel) at construction and tracks the channel the agent
   // last commanded (requested, not radio-confirmed) from then on -- see
   // channel(). move_pending_/move_at_ms_ track an unconfirmed follow_gs
-  // move: set when a DISC requests a different channel and act_.retune()
-  // is called, cleared by the first subsequent accepted DISC/RCF that is
-  // not itself a new move (confirms the move) or by go_home_() (the
-  // fallback fires it home instead).
+  // move: set when tick() runs a promoted session's deferred move (or an
+  // RCF hop order) and act_.retune() is called, cleared by the first
+  // subsequent accepted RCF that is not itself a new move (confirms the
+  // move) or by go_home_() (the fallback fires it home instead).
   uint8_t channel_;
   bool move_pending_ = false;
   uint64_t move_at_ms_ = 0;
@@ -268,11 +314,10 @@ class RcAgent {
   // track the (epoch, ch) PAIR of the last applied order (spec §1: "an RCF
   // whose (hop_epoch, hop_ch) differs from the last pair applied") so a
   // repeat of the same pair is idempotent but a same-epoch new channel is
-  // still applied. Reset at every session boundary alongside have_last_seq_
-  // (new DISC, unconfirmed-move fallback, FAILSAFE entry) so a restarted
-  // GS's hop epoch numbering can't leave a stale latch here silently
-  // swallowing its first hop order -- same failure mode have_last_seq_
-  // documents at FAILSAFE entry below.
+  // still applied. Reset at every session boundary (session promotion,
+  // unconfirmed-move fallback, FAILSAFE entry) so a restarted GS's hop epoch
+  // numbering can't leave a stale latch here silently swallowing its first
+  // hop order.
   uint8_t hop_epoch_ = 0;
   uint8_t hop_ch_ = 0;
   bool have_hop_ = false;
@@ -282,10 +327,28 @@ class RcAgent {
   uint64_t last_fb_ms_ = 0;
   bool have_last_fb_ = false;
 
-  uint16_t last_seq_ = 0;
-  bool have_last_seq_ = false;
+  Session current_, pending_;
+  // (vrx << 32 | vtx) of current_, 0 = none. Written on the agent thread,
+  // read by verify_cal_frame on the TX writer thread.
+  std::atomic<uint64_t> published_session_{0};
+  // verify_cal_frame's seen-cal-nonce ring (TX writer thread only).
+  uint64_t cal_ring_session_ = 0;      // published_session_ the ring belongs to
+  std::array<uint32_t, kCalNonceRing> cal_seen_{};
+  size_t cal_seen_n_ = 0, cal_seen_next_ = 0;
+  bool have_cal_current_ = false;
+  uint32_t cal_current_ = 0;           // newest accepted cal nonce
+  std::atomic<bool> auth_reject_{false};
+  bool session_promoted_ = false;
+  uint8_t deferred_move_ch_ = 0;   // executed in tick() after main sent the promote Telem
+  uint32_t fresh_vtx_nonce_();
+  // true + fills *seq32 if the RCF bytes verify under s with a fresh seq.
+  bool verify_rcf_(const uint8_t* body, size_t len, const rc::Rcf& r, const Session& s,
+                   uint32_t* seq32) const;
+  void publish_session_();
+  // Drops current_ and pending_ and republishes: every exit from LINKED.
+  void clear_sessions_();
 
-  // Cumulative count of RCFs accepted (fresh + matching vtx_id) — feeds
+  // Cumulative count of RCFs accepted (fresh) — feeds
   // Telem.rcf_rx. Never reset (a session-boundary reset would make the GS's
   // rate computation, which is over a measured interval, ambiguous).
   uint64_t rcf_accepted_ = 0;
@@ -365,7 +428,7 @@ class RcAgent {
 
   // True for as long as MAX_RANGE is the operating point — i.e. RENDEZVOUS
   // (including BOOT's initial apply) or FAILSAFE — set in apply_max_range()
-  // and cleared the moment a resolved DISC/RCF op takes the agent back to
+  // and cleared the moment a resolved RCF op takes the agent back to
   // LINKED (apply_ladder_op()). OR'd with the congestion-level shed
   // whenever (re)building AppliedOp.shed[1] (the enh layer — the old
   // shed[2]/[3] pair collapsed to this single slot when the reserved layer
@@ -392,7 +455,8 @@ class RcAgent {
   void reapply_with_shed();
   void run_bitrate_policy(uint64_t now_ms, bool force);
   void run_congestion_guard(uint64_t now_ms, const RadioHealth& health);
-  rc::DiscAck make_disc_ack(uint32_t nonce, uint16_t seq, uint8_t agreed) const;
+  rc::DiscAck make_disc_ack(uint32_t vrx_nonce, uint32_t vtx_nonce, uint8_t flags, uint16_t seq,
+                            uint8_t agreed) const;
 
   // Retunes home if not already there and clears move_pending_ (spec §6:
   // "the drone is on the op channel only while LINKED or FAILSAFE, home

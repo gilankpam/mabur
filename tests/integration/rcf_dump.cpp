@@ -34,7 +34,6 @@ int main(int argc, char** argv) {
     return 1;
   }
   // key=value, one per line: trivial for the shell test to grep/cut.
-  std::printf("vtx_id=%u\n", r->vtx_id);
   std::printf("seq=%u\n", r->seq);
   std::printf("profile=%u\n", r->profile);
   std::printf("hop_ch=%u\n", r->hop_ch);

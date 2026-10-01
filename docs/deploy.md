@@ -267,11 +267,12 @@ The caps-reteach pair retires this dance for same-version pairs:
 - the drone acks a keep-alive DISC while already LINKED, instead of
   ignoring it, so a GS that forgot its caps gets them re-taught without
   needing to re-enter rendezvous;
-- the GS sends its keep-alive DISC on a fast cadence
-  (`unacked_keepalive_ms`, default-only, no config key) whenever its
-  peer's caps are unknown, instead of the slow steady-state
-  `beacon_keepalive_ms`, so the re-teach happens in seconds rather than
-  however long the next slow beacon would take.
+- a GS whose peer's caps are unknown holds no session either (since link
+  pairing, 2026-10-01, SESSION requires an accepted DiscAck, which
+  carries the caps), so it is still beaconing a DISC every 20 ms, not the
+  slow steady-state `beacon_keepalive_ms`, and the re-teach happens on
+  the first ack that gets through. (The 2026-08-28 build used a separate
+  fast 250 ms keep-alive for this, since deleted.)
 
 Gate-verified on hardware 2026-08-28: 5x drone `maburd` restart and 5x GS
 `maburgs` restart, each under a live peer, all 10 recovered unaided
@@ -721,6 +722,81 @@ drone log shows `rec: recording -> /mnt/mmcblk0p1/record-NNNN.mp4`. GS
 per device: `maburd.pre-vtxrec` + `mabur.toml.pre-vtxrec`,
 `maburgs.pre-vtxrec` + `maburplay.pre-vtxrec` +
 `maburplay.toml.pre-vtxrec`, on both ends together.
+
+## 2026-10-01 RC_VERSION 14 (link pairing)
+
+`RC_VERSION` goes 13 → 14: every GS→drone control frame (DISC, RCF,
+CAL_CMD, CAL_RESULT) gains an 8-byte SipHash-2-4 tag before its CRC;
+`link.vtx_id` is gone from every frame and both configs; `DISC_ACK`
+gains `vtx_nonce` + a flags byte; `Telem` flags bit1 is `auth_reject`.
+A version-mismatch flag day like every `RC_VERSION` bump above: between
+the two swaps there is no control link and no video (`DISC_ACK` carries
+`CAP_FRAME_WIRE`) — finish the deploy, do not restart either daemon
+hoping to fix it. `docs/link-pairing.md` is the as-built page.
+
+**Config moves on both ends.** `link.vtx_id` is replaced by
+`link.key_file` — an old config fails boot (strict keys), so this is
+config-before-binary on both the drone and the GS, same as every config
+move in this doc:
+
+```toml
+[link]
+key_file = "/etc/mabur.key"
+```
+
+### Pairing
+
+Generate one key and put the same file on both ends:
+
+```sh
+(echo "# mabur link key, generated $(date -I)"; openssl rand -hex 16) > mabur.key
+chmod 600 mabur.key
+scp -O mabur.key root@192.168.10.152:/etc/mabur.key   # drone
+scp    mabur.key root@10.18.0.1:/etc/mabur.key        # GS
+```
+
+(`scp -O` for the drone, same reason as everywhere else in this doc —
+the drone's `dropbear` needs the legacy SCP protocol; the GS's `openssh`
+does not.) Then **Load** the same `mabur.key` file in the web page (the
+Link key row's Load button) — the page keeps it in its own browser
+storage (`webgs.key`), separate from the rest of its config, and passes
+it to the core as a `link.key` overlay. Spotter mode has no key row and
+needs nothing here.
+
+**Verify by comparing three fingerprints**, never the key itself: the
+drone's boot log (`link: key <fp> (<source>)`), the GS's boot log (same
+line, `maburgs:` prefixed), and the page's Load/Clear row. All three
+must read the same 4 hex characters (or all three `default`, pre-key, on
+a stock install). A daemon or page showing `default` while the others
+show a real fingerprint did not get the file — re-check the `scp`/Load
+step on that one end, it is not a drone/GS mismatch.
+
+Keep `mabur.key` with the flight configs on the host; it is the backup,
+and there is no way to recover a lost key from either device (neither
+prints it, only the fingerprint).
+
+**Rollback:** restore the old config (`link.vtx_id` back,
+`link.key_file` gone) beside the old binary on each device, the usual
+paired rule. The key file itself may stay — an old (pre-pairing) binary
+never reads it and is not bothered by its presence.
+
+**The hosted web page must be redeployed** with the RC_VERSION 14 core,
+same as every RC_VERSION bump — an old page's wire frames are rejected
+by both new daemons.
+
+`ausniff` is the standing gate once both ends are up:
+`tools/bench/ausniff.py`.
+
+Bench gate 2026-10-01 (branch `link-pairing` at 08a7b60, both ends
+deployed with `key_file`, rollbacks `maburd.pre-pairing` /
+`maburgs.pre-pairing` beside `mabur.toml.pre-pairing` /
+`maburgs.toml.pre-pairing`): ausniff 30 s at mcs4/40 — 1815 AUs,
+60.5 fps, 0 incomplete, 0 gaps, 0 resyncs (identical to the telem-diet
+run); sideport `link.state = session`, `key_fp = default`,
+`drone.auth_reject = false`. Wrong key on the drone only → GS
+`KEY MISMATCH` within 1.2 s of the first rejected RCF; same key on the
+GS + `restart maburgs` → `session`, both fingerprints `2263`, drone not
+restarted. Timed recoveries in `docs/link-pairing.md` "Bench results".
 
 ## 2026-09-30 telem diet (RC_VERSION 13)
 

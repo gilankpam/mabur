@@ -263,7 +263,6 @@ struct Pair {
     ++applies_ok;
 
     mabur::rc::CalCmd verify;
-    verify.vtx_id = result.vtx_id;
     verify.nonce = result.nonce;
     verify.phase = mabur::cal::kPhaseVerify;
     verify.frames_per_cell = maburgs::kVerifyFrames;
@@ -394,7 +393,7 @@ using maburgs::CalSession;
 TEST(full_cycle_over_a_clean_channel) {
   Pair p("cal_e2e_clean");
   std::string err;
-  REQUIRE(p.gs.start(/*vtx_id=*/0, /*nonce=*/4242, p.t_ms(), &err));
+  REQUIRE(p.gs.start(/*nonce=*/4242, p.t_ms(), &err));
   p.run();
 
   CHECK(p.gs.state() == CalSession::State::Done);
@@ -455,13 +454,13 @@ TEST(realized_phase_duration_fits_the_gs_listen_window) {
   // one gap (2 ms) per 140 ms cell and nothing more.
   Pair p("cal_e2e_timing");
   std::string err;
-  REQUIRE(p.gs.start(0, 77, p.t_ms(), &err));
+  REQUIRE(p.gs.start(77, p.t_ms(), &err));
   p.run();
   REQUIRE(p.gs.state() == CalSession::State::Done);
   REQUIRE(p.phase_span_us.size() >= 2);   // coarse, fine, verify
 
   const uint32_t coarse_budget_ms =
-      maburgs::plan_duration_ms(maburgs::make_coarse_plan(0, 77));
+      maburgs::plan_duration_ms(maburgs::make_coarse_plan(77));
   const uint64_t coarse_realized_ms = p.phase_span_us[0] / 1000;
   // At the shipped 200 us sleep (plus a charged ~400 us USB round-trip per
   // frame) the phase lands ~0.5 s inside a 35.8 s window.
@@ -479,7 +478,7 @@ TEST(realized_phase_duration_fits_the_gs_listen_window) {
   // what will notice if a future change spends that millisecond.
   Pair slow("cal_e2e_timing_slow");
   slow.loop_sleep_us = 1000;
-  REQUIRE(slow.gs.start(0, 78, slow.t_ms(), &err));
+  REQUIRE(slow.gs.start(78, slow.t_ms(), &err));
   slow.run();
   REQUIRE(slow.gs.state() == CalSession::State::Done);
   REQUIRE(!slow.phase_span_us.empty());
@@ -505,7 +504,7 @@ TEST(a_lossy_control_plane_still_produces_the_right_table) {
   p.drop_uplink_pct = 40;
   p.drop_ack_pct = 40;
   std::string err;
-  REQUIRE(p.gs.start(0, 909, p.t_ms(), &err));
+  REQUIRE(p.gs.start(909, p.t_ms(), &err));
   p.run();
 
   REQUIRE(p.gs.state() == CalSession::State::Done);
@@ -541,7 +540,7 @@ TEST(a_lossy_measurement_never_reads_a_wall_HIGHER_than_the_truth) {
   Pair p("cal_e2e_lossy_meas");
   p.drop_downlink_pct = 5;
   std::string err;
-  REQUIRE(p.gs.start(0, 910, p.t_ms(), &err));
+  REQUIRE(p.gs.start(910, p.t_ms(), &err));
   p.run();
 
   REQUIRE(p.gs.state() == CalSession::State::Done);
@@ -568,7 +567,7 @@ TEST(a_result_frame_that_never_arrives_reports_no_apply) {
   // out the whole uplink instead would just fail the coarse ack and never
   // reach the state under test.)
   p.drop_result_pct = 100;
-  REQUIRE(p.gs.start(0, 5150, p.t_ms(), &err));
+  REQUIRE(p.gs.start(5150, p.t_ms(), &err));
   p.run();
 
   CHECK(p.gs.state() == CalSession::State::Done);
@@ -599,7 +598,7 @@ TEST(a_second_run_in_the_same_session_window_anchors_correctly) {
   // runs producing the identical relative walls is the whole assertion.
   Pair p("cal_e2e_second_run");
   std::string err;
-  REQUIRE(p.gs.start(0, 61, p.t_ms(), &err));
+  REQUIRE(p.gs.start(61, p.t_ms(), &err));
   p.run();
   REQUIRE(p.gs.state() == CalSession::State::Done);
   const std::string kExpectedWalls =
@@ -611,7 +610,7 @@ TEST(a_second_run_in_the_same_session_window_anchors_correctly) {
   // after seeing a flag, a GS restart, an abort).
   CHECK(p.drone.active());
   p.applies_ok = 0;
-  REQUIRE(p.gs.start(0, 62, p.t_ms(), &err));
+  REQUIRE(p.gs.start(62, p.t_ms(), &err));
   p.run();
   CHECK(p.gs.state() == CalSession::State::Done);
   CHECK(p.applies_ok == 1);

@@ -2,7 +2,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { nalTypes, Gate, PtsUnwrap, PeriodEstimator, HitchMeter, pctl, IdrRequester,
-  parseRelayAddr, relayBlocker, RELAY_DEFAULT, relayTarget, relayFieldVisible, loadRelayCustom } from '../ui/src/lib/logic.mjs';
+  parseRelayAddr, relayBlocker, RELAY_DEFAULT, relayTarget, relayFieldVisible, loadRelayCustom,
+  siphash24, keyFingerprint } from '../ui/src/lib/logic.mjs';
 
 const nal = (type, len = 4, four = true) =>
   [...(four ? [0, 0, 0, 1] : [0, 0, 1]), type << 1, 1, ...Array(len).fill(0x55)];
@@ -393,4 +394,18 @@ test('errorText relay lines', () => {
   assert.match(errorText('ERROR relay taken by another client'), /Another client took over the CPE relay/);
   assert.match(errorText('ERROR relay lost'), /connection lost/);
   assert.match(errorText('ERROR relay cannot tune'), /could not tune/);
+});
+
+test('siphash24 reference vectors', () => {
+  const k = Uint8Array.from({ length: 16 }, (_, i) => i);
+  const m = Uint8Array.from({ length: 15 }, (_, i) => i);
+  assert.equal(siphash24(k, m.subarray(0, 0)), 0x726fdb47dd0e0e31n);
+  assert.equal(siphash24(k, m.subarray(0, 1)), 0x74f839c593dc67fdn);
+  assert.equal(siphash24(k, m), 0xa129ca6149be45e5n);
+});
+test('keyFingerprint: default string, else 4 hex, pinned to the C++ golden', () => {
+  assert.equal(keyFingerprint('6d616275722d64656661756c742d3030'), 'default');
+  const fp = keyFingerprint('3f9a1c77e04b5d2290ab6ef1c8d34e5a');
+  assert.match(fp, /^[0-9a-f]{4}$/);
+  assert.equal(fp, '55db');
 });

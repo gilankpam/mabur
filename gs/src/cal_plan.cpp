@@ -4,9 +4,8 @@
 
 namespace maburgs {
 
-mabur::rc::CalCmd make_coarse_plan(uint32_t vtx_id, uint32_t nonce) {
+mabur::rc::CalCmd make_coarse_plan(uint32_t nonce) {
   mabur::rc::CalCmd c;
-  c.vtx_id = vtx_id;
   c.nonce = nonce;
   c.phase = mabur::cal::kPhaseCoarse;
   c.frames_per_cell = kCoarseFrames;
@@ -18,10 +17,9 @@ mabur::rc::CalCmd make_coarse_plan(uint32_t vtx_id, uint32_t nonce) {
   return c;
 }
 
-mabur::rc::CalCmd make_fine_plan(uint32_t vtx_id, uint32_t nonce,
+mabur::rc::CalCmd make_fine_plan(uint32_t nonce,
                                  const std::array<RateWall, 8>& coarse) {
   mabur::rc::CalCmd c;
-  c.vtx_id = vtx_id;
   c.nonce = nonce;
   c.phase = mabur::cal::kPhaseFine;
   c.frames_per_cell = kFineFrames;
@@ -39,10 +37,9 @@ mabur::rc::CalCmd make_fine_plan(uint32_t vtx_id, uint32_t nonce,
   return c;
 }
 
-mabur::rc::CalCmd make_verify_plan(uint32_t vtx_id, uint32_t nonce,
+mabur::rc::CalCmd make_verify_plan(uint32_t nonce,
                                    const std::array<int, 8>& park_idx) {
   mabur::rc::CalCmd c;
-  c.vtx_id = vtx_id;
   c.nonce = nonce;
   c.phase = mabur::cal::kPhaseVerify;
   c.frames_per_cell = kVerifyFrames;

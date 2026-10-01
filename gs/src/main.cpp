@@ -292,8 +292,8 @@ int run_hop_inject_test(const maburgs::Config& cfg, int n_cards,
   // building real RCFs -- the same wiring point a genuine drone drives.
   {
     mabur::rc::DiscAck ack;
-    ack.vtx_id = cfg.link.vtx_id;
     ack.vrx_nonce = vrx.rz_nonce();
+    ack.vtx_nonce = 1;  // no real drone: any held vtx_nonce opens SESSION
     ack.chip_caps = mabur::rc::CAP_FRAME_WIRE;
     ack.agreed_channel = cfg.radio.channel;
     ack.seq = 1;
@@ -615,6 +615,10 @@ static int run_radio(const maburgs::Config& cfg, int loss_sim_port) {
 #else
 static int run_radio(const maburgs::Config& cfg) {
 #endif
+  // Computed once: cfg.link.key never changes over the life of this
+  // process, and the sideport exports it every tick (sin.key_fp below).
+  const std::string key_fp = mabur::key_fingerprint(cfg.link.key);
+
   std::fprintf(stderr, "fec: symbol_size=[%d,%d] seq_horizon=%d\n",
                cfg.fec.symbol_size[0], cfg.fec.symbol_size[1],
                cfg.fec.seq_horizon);
@@ -1010,6 +1014,7 @@ static int run_radio(const maburgs::Config& cfg) {
   std::atomic<bool> dwell_busy{false};
   std::atomic<bool> scout_run{false};
   std::atomic<bool> in_session_atomic{false};
+  bool last_key_mismatch = false;
   std::atomic<bool> hopping_atomic{false};
   std::atomic<int> tx_card_now{tx_card_pin < 0 ? 0 : tx_card_pin};
   std::atomic<int> dwell_card{-1};
@@ -1513,6 +1518,9 @@ static int run_radio(const maburgs::Config& cfg) {
           rotate_session(prev_seq, t->tlm_seq);
         latest_telem.t = t;
         latest_telem.rx_ms = us / 1000;
+        // LINKED telem = our first RCF verified and the drone is moving:
+        // fires the controller's move edge (link-pairing spec §6 step 5).
+        vrx.note_drone_state(t->state);
         // link-rtt: every telem is a sync sample. `us` is the radio
         // frontend's steady_clock stamp — same base as the mono_us() send
         // stamps below, so the subtraction is one clock throughout.
@@ -1804,8 +1812,18 @@ static int run_radio(const maburgs::Config& cfg) {
     // cannot parse: refuse its video loudly rather than render garbage. On any
     // change, drop FRAG-seq continuity and half-assembled frames — the new
     // session's seqs and frame_ids are unrelated to the old one's.
+    // KEY_MISMATCH is not a session (no RCFs go out in it).
     const bool in_session = vrx.link_state() == maburgs::VrxState::SESSION;
     in_session_atomic.store(in_session, std::memory_order_relaxed);
+    const bool key_mismatch = vrx.key_mismatch();
+    if (key_mismatch != last_key_mismatch) {
+      std::fprintf(stderr, "maburgs: link %s (our key %s)\n",
+                   key_mismatch ? "KEY MISMATCH -- the drone rejects our tag; both ends need "
+                                  "the same /etc/mabur.key"
+                                : "key accepted",
+                   key_fp.c_str());
+      last_key_mismatch = key_mismatch;
+    }
 
     // ---- auto channel selection, per tick (spec 2026-09-13) ----
     plan.tick(now_ms, in_session);
@@ -2086,19 +2104,18 @@ static int run_radio(const maburgs::Config& cfg) {
     // plan.hopping(): a one-card GS only enters plan.hopping() at
     // OneCardRetune, but its RCFs carry the order from the Order on.
     vrx.set_keepalive_hold(hopc.state() == maburgs::HopState::Ordered);
-    // Consumed every tick regardless (an edge left unread would otherwise
-    // sit stale until the next real ack -- take_ack_edge() clears it on
-    // read), but only ACTED on outside a hop: ChannelPlan::on_ack() carries
-    // no hopping_ guard of its own (Task 6's carried invariant), resting on
-    // acks never arriving in-session mid-hop. That invariant is not
-    // airtight -- a beacon (and so a fresh DiscAck) can only fire once the
-    // rendezvous falls out of SESSION, which needs 1000 ms of video
-    // silence, but a stalled one-card hop can run that long -- so this is
-    // the enforcement rather than a bare trust in the invariant. An ack
-    // this ignores while hopping is not lost: BEACONING keeps re-offering
-    // DiscAcks every beacon_period_ms, so the next one lands the tick after
-    // hopping() clears.
-    if (vrx.take_ack_edge() && !plan.hopping()) {
+    // Move edge (link-pairing spec 2026-10-01 §6 step 5): the drone retunes
+    // only after our first RCF under a freshly adopted vtx_nonce verifies,
+    // so the controller fires this once per adoption -- on a LINKED Telem,
+    // or after VrxController::kMoveAfterRcfs RCFs if that Telem is lost.
+    // Consumed every tick regardless (take_move_edge() clears it on read),
+    // but only ACTED on outside a hop: ChannelPlan::on_ack() carries no
+    // hopping_ guard of its own (Task 6's carried invariant), so this is
+    // the enforcement. Unlike the old per-ack edge, an edge dropped here
+    // while hopping is NOT re-offered by the next ack (only a new
+    // vtx_nonce re-arms it); a session adopted mid-hop means the drone
+    // restarted, and the split/reunite fallback covers the channel.
+    if (vrx.take_move_edge() && !plan.hopping()) {
       const uint8_t proposed = vrx.proposal();
       const bool first = !plan.frozen();
       plan.on_ack(now_ms, vrx.agreed_channel(), proposed);
@@ -2288,8 +2305,9 @@ static int run_radio(const maburgs::Config& cfg) {
                    fw ? "frame wire" : "off (no session)");
     }
     // Complain only about a peer we have actually heard a DiscAck from:
-    // peer_caps() == 0 also reads as "no DiscAck yet", and the rendezvous
-    // starts in SESSION, so gating on in_session alone printed this at every
+    // peer_caps() == 0 also reads as "no DiscAck yet", and before link
+    // pairing the rendezvous started in SESSION, so gating on in_session
+    // alone printed this at every
     // startup — telling the operator to upgrade a maburd that was fine, seconds
     // before the tail came up anyway (caught on the rig 2026-07-25).
     if (vrx.peer_acked() && !fw && !refused_peer) {
@@ -2421,8 +2439,8 @@ static int run_radio(const maburgs::Config& cfg) {
     if (!cal_session.radio_silent(drained_ms)) {
       if (auto cmd = cal_session.due_cmd(drained_ms)) {
         cal_pending_nonce = cmd->nonce;
-        maburgs::SlotFrame cf{mabur::rc::pack_cal_cmd(*cmd), 0, sel.selected(),
-                              false};
+        maburgs::SlotFrame cf{mabur::rc::pack_cal_cmd(*cmd, cfg.link.key, vrx.session_ctx()),
+                              0, sel.selected(), false};
         cf.offered_ms = drained_ms;
         send_control_frame(cf);
       }
@@ -2437,8 +2455,8 @@ static int run_radio(const maburgs::Config& cfg) {
     // frame to the 30-50%-lossy uplink otherwise ends the run with the
     // config untouched and the report claiming it was written.
     if (auto res = cal_session.due_result(drained_ms)) {
-      maburgs::SlotFrame rf{mabur::rc::pack_cal_result(*res), 0,
-                            sel.selected(), false};
+      maburgs::SlotFrame rf{mabur::rc::pack_cal_result(*res, cfg.link.key, vrx.session_ctx()),
+                            0, sel.selected(), false};
       rf.offered_ms = drained_ms;
       send_control_frame(rf);
     }
@@ -2580,7 +2598,6 @@ static int run_radio(const maburgs::Config& cfg) {
 
     if (stats) {
       maburgs::StatsInput sin;
-      sin.vtx_id = cfg.link.vtx_id;
       // Live channel of the TX card, not the configured home (spec
       // section 7): with a pick committed they differ. Straight off the
       // front-end's atomic -- cur_ch is deliberately untracked for the
@@ -2613,6 +2630,8 @@ static int run_radio(const maburgs::Config& cfg) {
       sin.hop.holds = hopc.holds();
       sin.hop.last_ms = last_hop_event_ms;
       sin.in_session = in_session;
+      sin.key_mismatch = vrx.key_mismatch();
+      sin.key_fp = key_fp;
       sin.tx_card = sel.selected();
       sin.op = vrx.cur_op();
       for (int s = 0; s < 2; ++s)
@@ -2900,6 +2919,12 @@ int main(int argc, char** argv) {
       for (const std::string& d : defaulted)
         std::fprintf(stderr, "  %s\n", d.c_str());
     }
+    const std::string key_fp = mabur::key_fingerprint(cfg.link.key);
+    std::fprintf(stderr, "maburgs: link: key %s (%s)\n",
+                 key_fp.c_str(), cfg.link.key_source.c_str());
+    if (cfg.link.key_is_default)
+      std::fprintf(stderr, "maburgs: link: DEFAULT key in use -- any default-key drone will pair with "
+                           "this ground station (and vice versa); see docs/deploy.md 'Pairing'\n");
 #ifdef MABUR_LOSS_SIM
     return run_radio(cfg, loss_sim_port);
 #else

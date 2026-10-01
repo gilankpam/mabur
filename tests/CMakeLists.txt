@@ -75,6 +75,8 @@ add_gsfont(GSFONT_20 s20 "20")
 add_custom_target(gsfont_fixtures DEPENDS ${GSFONT_OUTPUTS})
 add_mtest(test_smoke test_smoke.cpp)
 add_mtest(test_crc16 test_crc16.cpp)
+add_mtest(test_siphash test_siphash.cpp)
+add_mtest(test_link_key test_link_key.cpp)
 # CRC-16 microbench (tools/bench/crc_bench.cpp): table vs bit-serial, ns/B.
 # Not a test; --target crc_bench.
 add_executable(crc_bench ${CMAKE_SOURCE_DIR}/tools/bench/crc_bench.cpp)
@@ -333,6 +335,9 @@ if(MABUR_BUILD_DRONE AND MABUR_BUILD_GS)
   # against each other -- everything else tests one side in isolation, and
   # every defect that escaped this build lived in the glue between them.
   add_mtest(test_cal_e2e test_cal_e2e.cpp LIBS mabur_gs_core mabur_drone_core)
+  # RcAgent <-> VrxController loopback: matching/mismatched keys, a same-key
+  # stranger, a restart relink (spec 2026-10-01 link-pairing §11).
+  add_mtest(test_link_auth_e2e test_link_auth_e2e.cpp LIBS mabur_gs_core mabur_drone_core)
   add_test(NAME gs_au_e2e COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/run_gs_au_e2e.sh)
   set_tests_properties(gs_au_e2e PROPERTIES
     ENVIRONMENT "BUILD=${CMAKE_BINARY_DIR}")

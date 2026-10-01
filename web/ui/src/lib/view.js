@@ -83,6 +83,7 @@ export function debugGroups({ connected, mode, core, rcfPct, ausRate, hitches60,
       ['peer_acked', v(spot ? 'n/a' : core?.peer_acked ? 'yes' : 'no')],
       ['rung', v(core?.rung >= 0 ? core.rung : D)], ['mcs', v(core?.mcs >= 0 ? core.mcs : D)],
       ['width', v(core?.bw ? core.bw + ' MHz' : D)], ['probe', v(core?.probe || 'off')],
+      ['key', v(core?.key_fp)], ['key_mismatch', v(core?.key_mismatch ? 'yes' : 'no')],
     ]) },
     { title: 'Radio', rows: rows([
       ['pre-FEC loss', v(has(core?.pre_fec_loss) ? (core.pre_fec_loss * 100).toFixed(1) + ' %' : D)],
@@ -139,11 +140,15 @@ export function debugGroups({ connected, mode, core, rcfPct, ausRate, hitches60,
 export function statusText({ state, mode, ch, core, sinceStartMs, w, hiddenBanner, hasPicture }) {
   if (state !== 'live') return '';
   let primary = '';
-  const noPeer = mode === 'gs' && core?.peer_acked !== true;
-  if (noPeer && core && core.peer_acked === false && sinceStartMs >= 10000) {
-    primary = `No drone on ch ${ch} / ${w} MHz (still trying)`;
-  } else if (!hasPicture) {
-    primary = noPeer ? `Searching for drone on ch ${ch} / ${w} MHz…` : 'Waiting for video…';
+  if (mode === 'gs' && core?.key_mismatch) {
+    primary = `Drone rejects our link key (${core.key_fp ?? '?'}) — load the same mabur.key on both ends`;
+  } else {
+    const noPeer = mode === 'gs' && core?.peer_acked !== true;
+    if (noPeer && core && core.peer_acked === false && sinceStartMs >= 10000) {
+      primary = `No drone on ch ${ch} / ${w} MHz (still trying)`;
+    } else if (!hasPicture) {
+      primary = noPeer ? `Searching for drone on ch ${ch} / ${w} MHz…` : 'Waiting for video…';
+    }
   }
   const banner = hiddenBanner ? 'GS mode keeps flying the link while this tab is hidden.' : '';
   return [primary, banner].filter(Boolean).join('\n');
@@ -154,5 +159,6 @@ export function linkTag({ state, mode, core }) {
   if (state === 'stopping') return { label: 'Disconnecting…', on: false };
   if (state !== 'live') return { label: 'Disconnected', on: false };
   if (mode === 'spotter') return { label: 'Spotter', on: true };
+  if (core?.key_mismatch) return { label: 'Key mismatch', on: false };
   return { label: core?.session && core?.peer_acked ? 'Linked' : 'Searching', on: true };
 }
