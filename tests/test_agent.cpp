@@ -689,8 +689,8 @@ TEST(keepalive_disc_while_linked_acks_without_op_change) {
 // 8450.0 -> rounds to 8500.
 // link-rtt: the telem echo must name the RCF rcf_age_ms is aging against,
 // and go INVALID whenever last_fb_ms_ was refreshed by something that is
-// not an RCF. Failsafe entry is exactly that case: it resets the seq
-// window AND rebases last_fb_ms_ to now, so a fresh-looking age paired
+// not an RCF. Failsafe entry is exactly that case: it clears the session
+// (spec 2026-10-01 §7) AND rebases last_fb_ms_ to now, so a fresh-looking age paired
 // with a stale echoed seq would let the GS fabricate an RTT sample from
 // the wrong send time. (A keepalive DISC while LINKED changes nothing —
 // feedback state included — so the echo correctly stays valid there.)
@@ -2135,9 +2135,10 @@ TEST(rcf_hop_ch_zero_is_ignored) {
 // Fix round 1, item 1 (reviewer): a restarted GS resets its hop epoch
 // numbering along with everything else, so a stale latched hop_epoch_/
 // hop_ch_ from the old session must not swallow the new session's first
-// hop order. Same failure mode have_last_seq_ documents (restarted-GS,
-// rc_agent.cpp FAILSAFE-entry comment) -- here pinned via the new-DISC
-// session boundary, which is the one a fresh GS process actually takes.
+// hop order. Every session boundary resets the hop latches (promotion, the
+// FAILSAFE entry and the move-unconfirmed fallback in rc_agent.cpp) -- here
+// pinned via the new-DISC session boundary, which is the one a fresh GS
+// process actually takes.
 TEST(new_disc_session_clears_stale_hop_state_so_the_next_hop_retunes) {
   auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); const uint32_t vtx = link_agent(agent, act, cfg);
   auto w1 = make_rcf_wire_hop(2, 0x24, 1.0, 0.5, 149, 1, vtx);
@@ -2146,10 +2147,10 @@ TEST(new_disc_session_clears_stale_hop_state_so_the_next_hop_retunes) {
   CHECK(act.retunes[0] == 149);
 
   // The GS restarts: nothing more arrives, so the unconfirmed move sends the
-  // drone home (RENDEZVOUS) once move_confirm_ms elapses -- the same bench
-  // scenario have_last_seq_'s FAILSAFE-entry comment documents (a restart
-  // long enough to lose the link, not a same-session keep-alive DISC, which
-  // takes the LINKED ack-only fast path and does not reach a reset site).
+  // drone home (RENDEZVOUS) once move_confirm_ms elapses -- a restart long
+  // enough to lose the link, which also clears the session (spec 2026-10-01
+  // §7), not a same-session keep-alive DISC, which takes the LINKED
+  // ack-only path and does not reach a reset site.
   agent.tick(200 + cfg.link.move_confirm_ms + 100, RadioHealth{});
   REQUIRE(act.retunes.size() == 2);
   CHECK(act.retunes[1] == 136);

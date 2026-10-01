@@ -41,12 +41,17 @@ on both the drone (`bundle/mabur.default.toml`) and the GS
 occupy; an old config carrying `vtx_id` fails boot (strict keys). The GS
 alone also accepts an inline `[link] key = "<32 hex>"` — the web page's
 overlay path (`web/ui/src/lib/config.js` builds it, `web/src/web_main.cpp`
-`load_cfg` merges it into `link.key`); `maburd` and `maburgs` reading a
-real TOML file accept only `key_file`, never the inline form.
+`load_cfg` merges it into `link.key`). That parser is `gs/src/config.cpp`,
+shared by the web core and `maburgs`, so `maburgs` itself also accepts
+`[link] key` in its TOML (it overrides `key_file`); the daemons are meant
+to use `key_file` and keep the key out of the config. `maburd` accepts
+only `key_file`.
 
 **Default key.** `mabur::kDefaultLinkKey` — ASCII `mabur-default-00` — is
-compiled into all three builds. A daemon whose key file is **missing**
-(not merely empty — see format above) uses it and logs one boot line; a
+compiled into all three builds. A daemon whose key file does **not
+exist** (`ENOENT` only — an empty file fails the format above, and an
+unreadable path, e.g. no permission or a directory, is a boot failure
+`<path>: <strerror>`) uses it and logs one boot line; a
 web page with no key loaded does the same. A fresh or wiped install links
 out of the box exactly as `vtx_id 1` did before this feature; pairing is
 strictly opt-in. The default offers no security: every default install
@@ -92,9 +97,16 @@ field; the key is the identity now. In its place:
   `docs/data-provenance.md`.)
 
 `rc::verify_control(buf, len, key, ctx)` is the one place a tag is
-checked, on both the drone and the GS cal path. `common/mabur/siphash.h`
-is the primitive — SipHash-2-4, 128-bit key, 64-bit output, no library,
-~60 lines, builds unchanged for armv7/aarch64/WASM.
+checked — on the drone, for DISC/RCF on the agent thread and for
+CAL_CMD/CAL_RESULT on the TX writer thread (`RcAgent::verify_cal_frame`).
+It finds the tag at the frame's **structural** offset, derived from the
+type (`DISC_LEN`, `RCF_HEAD_LEN`, `kCalResultLen`, or
+`kCalCmdFixedLen + n_windows * 4`), never at `len - 10`: on hardware the
+drone's RC body still carries devourer's trailing 4-byte 802.11 FCS
+(`Packet.Data`), and bytes past the CRC are ignored exactly as `parse_*`
+ignores them. `common/include/mabur/siphash.h` + `common/src/siphash.cpp`
+are the primitive — SipHash-2-4, 128-bit key, 64-bit output, no library,
+builds unchanged for armv7/aarch64/WASM.
 
 ## Session and the nonces
 
@@ -146,9 +158,9 @@ the drone (`RcAgent::on_rc_frame` T_RCF: verify against `current_`, then
 
 Cold start:
 
-1. GS beacons a tagged DISC at `beacon_period_ms` (fast
-   `unacked_keepalive_ms` — 250 ms — until the first accepted ack, then
-   the steady-state `beacon_keepalive_ms`, 1000 ms).
+1. GS beacons a tagged DISC every `beacon_period_ms` (20 ms) until the
+   first accepted ack; in SESSION it sends one keep-alive DISC every
+   `beacon_keepalive_ms` (1000 ms) in place of an RCF.
 2. Drone verifies the tag (`rc::verify_control(..., cfg_.link.key,
    TagCtx{})`):
    - pass: pick or reuse a `vtx_nonce` for this `vrx_nonce`, store it as
@@ -269,13 +281,18 @@ All self-healing; found during the Task 9 reviews, not hardware bugs.
 ## Observability
 
 - Sideport: `link.key_fp` (`"default"` or 4 hex), `link.state` gains
-  `key_mismatch`, `drone.auth_reject` (bool, this period).
+  `key_mismatch`, `drone.auth_reject` (bool, this period). Three causes
+  set `auth_reject`: a drone/GS restart or failsafe re-pair (one period,
+  expected); two controllers fighting over the session (sustained); and a
+  foreign-key GS in range — its DISCs fail the tag and set the bit every
+  period while it beacons on our channel, even though our own link is
+  fine.
 - `tools/maburtop.py`: `key <fp>` in the link panel; `KEY MISMATCH` in
   place of the link state when flagged; `AUTH!` beside the drone panel
   on `drone.auth_reject`.
 - `tools/flightreport.py`: `auth reject: N periods` — one period around
-  a drone/GS restart is the expected transient; sustained means a bug or
-  two controllers fighting over the session.
+  a drone/GS restart is the expected transient; sustained means a bug,
+  two controllers fighting over the session, or a foreign-key GS in range.
 - Player OSD (`gs/player/src/gs_compact.cpp`): `KEY?` in the `ch:` slot
   that otherwise shows the stale/searching channel state — the one
   failure that would otherwise look exactly like the stale-caps restart
@@ -334,3 +351,11 @@ four timed recoveries, mirroring the spec's "Restart cases" above
 | drone power cycle with GS running | <= 1.2 s |  |
 | `restart maburgs` with drone running | <= 1.2 s |  |
 | maburgs stopped, phone page connected with the key loaded | <= 1.2 s |  |
+
+Also on the hardware gate: confirm the drone's first `vtx_nonce` differs
+across cold boots (`RcAgent::fresh_vtx_nonce_` seeds from
+`std::random_device` very early in boot on the 4.9 kernel). Nothing logs
+the nonce today: capture the first DISC_ACK off the air on two
+consecutive power cycles, or add a temporary print.
+Also confirm the drone links at all — the host suite feeds exact-length
+frames, and the FCS-tail bug fixed in `verify_control` was invisible to it.

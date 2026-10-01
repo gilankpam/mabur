@@ -2305,8 +2305,9 @@ static int run_radio(const maburgs::Config& cfg) {
                    fw ? "frame wire" : "off (no session)");
     }
     // Complain only about a peer we have actually heard a DiscAck from:
-    // peer_caps() == 0 also reads as "no DiscAck yet", and the rendezvous
-    // starts in SESSION, so gating on in_session alone printed this at every
+    // peer_caps() == 0 also reads as "no DiscAck yet", and before link
+    // pairing the rendezvous started in SESSION, so gating on in_session
+    // alone printed this at every
     // startup — telling the operator to upgrade a maburd that was fine, seconds
     // before the tail came up anyway (caught on the rig 2026-07-25).
     if (vrx.peer_acked() && !fw && !refused_peer) {
@@ -2922,8 +2923,8 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "maburgs: link: key %s (%s)\n",
                  key_fp.c_str(), cfg.link.key_source.c_str());
     if (cfg.link.key_is_default)
-      std::fprintf(stderr, "maburgs: link: DEFAULT key in use -- any default install can control this "
-                           "ground station; see docs/deploy.md 'Pairing'\n");
+      std::fprintf(stderr, "maburgs: link: DEFAULT key in use -- any default-key drone will pair with "
+                           "this ground station (and vice versa); see docs/deploy.md 'Pairing'\n");
 #ifdef MABUR_LOSS_SIM
     return run_radio(cfg, loss_sim_port);
 #else

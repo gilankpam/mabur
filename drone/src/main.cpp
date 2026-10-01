@@ -588,13 +588,15 @@ struct RealActuator : mabur::Actuator {
     if (retune_waiting) retune_waiting->store(true, std::memory_order_release);
     {
       std::unique_lock<std::shared_mutex> g(*tx_gate);
-      // The DISC_ACK that precedes this retune (RcAgent sends it via
-      // send_control -> sink->send, synchronous) has RETURNED from
+      // The promote Telem that precedes a "disc" retune (main sends it on
+      // RcAgent::take_session_promoted(), before tick() executes the
+      // deferred move; sink->send, synchronous) has RETURNED from
       // send_packet but may still be sitting in the chip's TX FIFO -- the
-      // GS commits the move on hearing that ack arrive on the OLD (home)
-      // channel; if FastRetune races it out from under the ack and it
-      // actually airs on the new channel instead, the GS never hears it on
-      // home and the lost-ack/retry cycle fires on every single move.
+      // GS commits the move on hearing that LINKED Telem arrive on the OLD
+      // channel (link pairing spec 2026-10-01 §6); if FastRetune races it
+      // out from under the Telem and it actually airs on the new channel
+      // instead, the GS never hears it there and every move falls back to
+      // the slower kMoveAfterRcfs path.
       // Holding the gate exclusive already stops any NEW send from
       // starting, but does nothing about a frame the chip already
       // accepted and queued before this lock was taken; this sleep is
