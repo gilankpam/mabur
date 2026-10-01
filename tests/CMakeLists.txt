@@ -75,6 +75,8 @@ add_gsfont(GSFONT_20 s20 "20")
 add_custom_target(gsfont_fixtures DEPENDS ${GSFONT_OUTPUTS})
 add_mtest(test_smoke test_smoke.cpp)
 add_mtest(test_crc16 test_crc16.cpp)
+add_mtest(test_siphash test_siphash.cpp)
+add_mtest(test_link_key test_link_key.cpp)
 # CRC-16 microbench (tools/bench/crc_bench.cpp): table vs bit-serial, ns/B.
 # Not a test; --target crc_bench.
 add_executable(crc_bench ${CMAKE_SOURCE_DIR}/tools/bench/crc_bench.cpp)
