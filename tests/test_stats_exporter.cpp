@@ -12,7 +12,6 @@ using nlohmann::json;
 namespace {
 StatsInput base_input() {
   StatsInput in;
-  in.vtx_id = 1;
   in.channel = 149;
   in.in_session = true;
   in.tx_card = 0;
@@ -70,7 +69,6 @@ TEST(first_emission_immediate_with_null_rates) {
   CHECK(j["cards"][0]["foreign_pps"].is_null());
   CHECK(j["cards"][0]["self_pps"].is_null());
   // gauges are live even on the first datagram
-  CHECK(j["link"]["vtx_id"] == 1);
   // The player's compact OSD names the channel the rest of its line
   // describes, and it can only get it from here.
   CHECK(j["link"]["channel"] == 149);
@@ -482,7 +480,6 @@ TEST(stream_rows_fall_back_to_op_overhead_without_telem) {
   const json j = cap.last();
   CHECK(std::abs(j["link"]["streams"][0]["ov"].get<double>() - 0.25) < 1e-9);
   CHECK(std::abs(j["link"]["streams"][1]["ov"].get<double>() - 0.5) < 1e-9);
-  CHECK(j["link"]["vtx_id"] == 1);
 }
 
 TEST(stream_rows_ignore_telem_use_commanded_overhead) {

@@ -185,13 +185,13 @@ dump("uep.json", {"symbol_size": 64, "blocks_per_body": 4,
 # RC_VERSION 9: hop_ch/hop_epoch, all three cases at the 0/0 no-hop-order default.
 # RC_VERSION 11: rec byte (bit1 known, bit0 on) -- case 1 unknown, 2 known-on, 3 known-off.
 # RC_VERSION 12: idr_epoch byte -- cases 1-2 at 0, case 3 at 0x5A.
-rcfs = [{"vtx_id": 0xDEADBEEF, "seq": 7, "profile": 0x24,
+rcfs = [{"seq": 7, "profile": 0x24,
          "fec_overhead_base": 0.5, "fec_overhead_enh": 0.5,
          "hop_ch": 0, "hop_epoch": 0, "rec": 0, "idr_epoch": 0},
-        {"vtx_id": 1, "seq": 65535, "profile": 0x00,
+        {"seq": 65535, "profile": 0x00,
          "fec_overhead_base": 1.0, "fec_overhead_enh": 1.0,
          "hop_ch": 0, "hop_epoch": 0, "rec": 3, "idr_epoch": 0},
-        {"vtx_id": 0x11223344, "seq": 42, "profile": 0x08,
+        {"seq": 42, "profile": 0x08,
          "fec_overhead_base": 1.0, "fec_overhead_enh": 0.5,
          "probe_profile": 0x06, "hop_ch": 0, "hop_epoch": 0, "rec": 2,
          "idr_epoch": 0x5A}]
@@ -207,11 +207,11 @@ acks = [rc_proto.DiscAck(vtx_id=1, vrx_nonce=0xCAFE0001, chip_caps=0x0003,
 # in tests/test_rc.cpp.
 dump("rc.json", {
   "rcf": [{"fields": r} for r in rcfs],
-  "disc": [{"fields": {"vtx_id": d.vtx_id, "vrx_nonce": d.vrx_nonce,
+  "disc": [{"fields": {"vrx_nonce": d.vrx_nonce,
                        "op_channel": d.op_channel, "op_width": d.op_width,
                        "table_ver": d.table_ver, "init_profile": d.init_profile,
                        "cap_bits": d.cap_bits, "seq": d.seq}} for d in discs],
-  "disc_ack": [{"fields": {"vtx_id": a.vtx_id, "vrx_nonce": a.vrx_nonce,
+  "disc_ack": [{"fields": {"vrx_nonce": a.vrx_nonce,
                            "chip_caps": a.chip_caps,
                            "agreed_channel": a.agreed_channel,
                            "agreed_width": a.agreed_width, "seq": a.seq}} for a in acks]})

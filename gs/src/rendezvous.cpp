@@ -4,8 +4,7 @@ namespace maburgs {
 
 VrxRendezvous::VrxRendezvous(VrxRzConfig cfg)
     : cfg_(cfg),
-      nonce_(static_cast<uint32_t>(
-          (static_cast<uint64_t>(cfg.vtx_id) * 2654435761ull) & 0xFFFFFFFFull)),
+      nonce_(0x6d616275u),  // TODO(Task 5): random, not a fixed constant
       proposal_(cfg.op_channel) {}
 
 void VrxRendezvous::feed_video(double now_ms) {
@@ -30,7 +29,6 @@ VrxAction VrxRendezvous::tick(double now_ms) {
 mabur::rc::Disc VrxRendezvous::beacon() {
   seq_ = static_cast<uint16_t>(seq_ + 1);
   mabur::rc::Disc d;
-  d.vtx_id = cfg_.vtx_id;
   d.vrx_nonce = nonce_;
   d.op_channel = proposal_;
   d.op_width = 20;
@@ -39,7 +37,7 @@ mabur::rc::Disc VrxRendezvous::beacon() {
 }
 
 bool VrxRendezvous::feed_disc_ack(const mabur::rc::DiscAck& ack, double now_ms) {
-  if (ack.vtx_id != cfg_.vtx_id || ack.vrx_nonce != nonce_) return false;
+  if (ack.vrx_nonce != nonce_) return false;
   state_ = VrxState::SESSION;
   last_video_ms_ = now_ms;
   return true;

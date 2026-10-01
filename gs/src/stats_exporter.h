@@ -240,7 +240,6 @@ struct StatsHopIn {
 };
 
 struct StatsInput {
-  uint32_t vtx_id = 0;
   // radio.channel, straight from the GS config. Exported because the
   // player's compact OSD names the channel the rest of the line describes,
   // and reading it out of maburplay's own config instead would say what

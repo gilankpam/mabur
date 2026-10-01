@@ -292,7 +292,6 @@ int run_hop_inject_test(const maburgs::Config& cfg, int n_cards,
   // building real RCFs -- the same wiring point a genuine drone drives.
   {
     mabur::rc::DiscAck ack;
-    ack.vtx_id = cfg.link.vtx_id;
     ack.vrx_nonce = vrx.rz_nonce();
     ack.chip_caps = mabur::rc::CAP_FRAME_WIRE;
     ack.agreed_channel = cfg.radio.channel;
@@ -2580,7 +2579,6 @@ static int run_radio(const maburgs::Config& cfg) {
 
     if (stats) {
       maburgs::StatsInput sin;
-      sin.vtx_id = cfg.link.vtx_id;
       // Live channel of the TX card, not the configured home (spec
       // section 7): with a pick committed they differ. Straight off the
       // front-end's atomic -- cur_ch is deliberately untracked for the

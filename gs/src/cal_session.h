@@ -55,7 +55,7 @@ class CalSession {
   // Refuses (returning false and filling `*err`) unless the link is up, the
   // peer advertised CAP_CALIBRATE, and no session is already running -- the
   // three refusals both live here so `main.cpp` has one call to make.
-  bool start(uint32_t vtx_id, uint32_t nonce, uint64_t now_ms,
+  bool start(uint32_t nonce, uint64_t now_ms,
             std::string* err);
 
   // The drone accepted the outstanding T_CAL_CMD. Ignored if it names a
@@ -170,7 +170,6 @@ class CalSession {
   CalSessionCfg cfg_;
   State state_ = State::Idle;
 
-  uint32_t vtx_id_ = 0;
   uint32_t nonce_ = 0;
   bool linked_ = false;
   bool cal_capable_ = false;

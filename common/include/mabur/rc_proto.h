@@ -22,7 +22,7 @@ constexpr uint16_t RC_MAGIC = 0x5243;  // "RC"
 // control was deleted. Spec 2026-08-12-constant-txpower-design.md.
 // Bumped 2 -> 3 on 2026-08-15: RCF lost ack_seq, score and the
 // n_layers + layer_delivery tail. maburd read none of the three (rc_agent.cpp
-// uses vtx_id/seq/profile/fec_overhead/probe and nothing else), so they were
+// uses seq/profile/fec_overhead/probe and nothing else), so they were
 // write-only ballast; the RCF head is fixed-length now.
 // Bumped 3 -> 4 on 2026-08-29: fec_overhead is now the literal air overhead
 // in x100 encoding (was a x16 'cmd' scalar the drone scaled 2x); Telem
@@ -58,7 +58,11 @@ constexpr uint16_t RC_MAGIC = 0x5243;  // "RC"
 // radio sent/drops, air clock, thermal_delta, channel/hop_epoch, the
 // applied profile/overhead echo, idr_gs) and flag bits 1/2/5 -- 98 -> 48
 // bytes.
-constexpr uint8_t RC_VERSION = 13;
+// Bumped 13 -> 14 on 2026-10-01: vtx_id deleted from every frame (the link
+// key is the identity, spec 2026-10-01-link-pairing-design.md §2); the same
+// bump carries the per-frame auth tag, DISC_ACK's vtx_nonce + flags and
+// Telem flags bit1 (Task 3 of the plan). Flag day.
+constexpr uint8_t RC_VERSION = 14;
 
 // RCF probe_profile sentinel: the drone runs no probe stream.
 constexpr uint8_t kNoProbeProfile = 0xFF;
@@ -96,7 +100,6 @@ constexpr uint16_t CAP_CALIBRATE = 0x0004;
 // because no consumer ever read them off the wire (the GS reports layer
 // delivery to operators over its own stats sideport instead).
 struct Rcf {
-  uint32_t vtx_id = 0;
   uint16_t seq = 0;
   uint8_t profile = 0;
   double fec_overhead_base = 0.5;
@@ -126,7 +129,6 @@ struct Rcf {
 
 // VRX -> VTX discovery beacon (rendezvous), addressed to a VTX_ID.
 struct Disc {
-  uint32_t vtx_id = 0;
   uint32_t vrx_nonce = 0;
   uint8_t op_channel = 0;
   uint8_t op_width = 20;
@@ -138,7 +140,6 @@ struct Disc {
 
 // VTX -> VRX reply completing rendezvous + agreeing the op channel.
 struct DiscAck {
-  uint32_t vtx_id = 0;
   uint32_t vrx_nonce = 0;
   uint16_t chip_caps = 0;
   uint8_t agreed_channel = 0;
@@ -237,7 +238,6 @@ constexpr size_t kMaxCalWindows = 8;  // one per HT MCS
 // repeat it into the drone's listen window without the drone re-running a
 // phase it already started -- the uplink loses 30-50% of frames.
 struct CalCmd {
-  uint32_t vtx_id = 0;
   uint32_t nonce = 0;
   uint8_t phase = 0;              // cal::kPhaseCoarse / Fine / Verify
   uint16_t frames_per_cell = 20;
@@ -259,7 +259,6 @@ constexpr int16_t kWallUndetermined = -128;
 // must leave that config entry exactly as it found it rather than write a
 // fabricated number.
 struct CalResult {
-  uint32_t vtx_id = 0;
   uint32_t nonce = 0;
   std::array<int16_t, 8> walls{kWallUndetermined, kWallUndetermined,
                                 kWallUndetermined, kWallUndetermined,

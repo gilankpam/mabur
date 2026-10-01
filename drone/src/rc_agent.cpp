@@ -438,7 +438,7 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
   int type = rc::frame_type(body, len);
   if (type == rc::T_DISC) {
     auto d = rc::parse_disc(body, len);
-    if (!d.has_value() || d->vtx_id != cfg_.link.vtx_id) return;
+    if (!d.has_value()) return;
 
     // Auto channel select (spec 2026-09-13 auto-channel-select §6): a DISC
     // is a proposal (Disc.op_channel), not a command. follow_gs=false, or a
@@ -521,7 +521,7 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
 
   if (type == rc::T_RCF) {
     auto r = rc::parse_rcf(body, len);
-    if (!r.has_value() || r->vtx_id != cfg_.link.vtx_id) return;
+    if (!r.has_value()) return;
 
     bool fresh;
     if (!have_last_seq_) {
@@ -776,7 +776,6 @@ void RcAgent::tick(uint64_t now_ms, const RadioHealth& health) {
 
 rc::DiscAck RcAgent::make_disc_ack(uint32_t nonce, uint16_t seq, uint8_t agreed) const {
   DiscAck ack;
-  ack.vtx_id = cfg_.link.vtx_id;
   ack.vrx_nonce = nonce;
   // Frame wire is the only video format maburd speaks; the bit stays on the
   // wire (one legal value) so a GS can still refuse a peer that lacks it.

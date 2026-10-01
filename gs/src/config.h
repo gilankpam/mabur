@@ -119,9 +119,8 @@ struct FecCfg {
   int seq_horizon = 512;
 };
 
-/// Link-layer configuration: VTX ID, feedback rate, keepalive.
+/// Link-layer configuration: feedback rate, keepalive.
 struct LinkCfg {
-  uint32_t vtx_id = 1;
   int feedback_ms = 100;
   int beacon_keepalive_ms = 1000;
   // RCF slotting (gs-uplink-self-blanking findings 2026-09-02): while video

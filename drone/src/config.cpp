@@ -477,16 +477,14 @@ void parse_venc(const Value& j, VencSectionCfg& v) {
 }
 
 void parse_link(const Value& j, LinkCfg& l) {
-  check_known_keys(j, {"vtx_id", "failsafe_ms", "rendezvous_ms", "tick_ms",
+  check_known_keys(j, {"failsafe_ms", "rendezvous_ms", "tick_ms",
                        "rc_drain_ms", "move_confirm_ms"}, "link");
-  assign_if_present(j, "vtx_id", l.vtx_id, "link");
   assign_if_present(j, "failsafe_ms", l.failsafe_ms, "link");
   assign_if_present(j, "rendezvous_ms", l.rendezvous_ms, "link");
   assign_if_present(j, "move_confirm_ms", l.move_confirm_ms, "link");
   assign_if_present(j, "tick_ms", l.tick_ms, "link");
   assign_if_present(j, "rc_drain_ms", l.rc_drain_ms, "link");
 
-  if (l.vtx_id == 0) fail("link.vtx_id", "must be non-zero");
   if (l.move_confirm_ms < 200 || l.move_confirm_ms > 30000)
     fail("link.move_confirm_ms", "must be in [200,30000]");
   // tick_ms is the agent loop's housekeeping deadline (TickGate). Unbounded

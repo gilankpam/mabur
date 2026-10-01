@@ -13,7 +13,6 @@
 namespace maburgs {
 
 struct VrxCfg {
-  uint32_t vtx_id = 1;
   uint8_t op_channel = 149;
   int feedback_ms = 100;
   int beacon_keepalive_ms = 1000;

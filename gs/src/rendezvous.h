@@ -8,7 +8,6 @@ enum class VrxState { SESSION, BEACONING };
 enum class VrxAction { TxFeedback, Beacon, Idle };
 
 struct VrxRzConfig {
-  uint32_t vtx_id = 1;
   int link_lost_ms = 1000;
   int beacon_period_ms = 20;
   uint8_t op_channel = 149;

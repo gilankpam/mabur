@@ -150,7 +150,6 @@ class WebGs {
   const Mode mode_;
   Io io_;
   const Opts opts_;
-  const uint32_t vtx_id_;
   uint64_t now_us_ = 0;          // newest clock seen (on_rx stamp or tick)
   maburgs::Aggregator agg_;
   maburgs::FrameStream fs_;

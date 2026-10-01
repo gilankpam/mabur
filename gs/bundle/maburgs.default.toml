@@ -42,7 +42,6 @@ symbol_size = 332          # must match the drone
 seq_horizon = 512          # how far back (in symbols) a missing piece can still be repaired
 
 [link]
-vtx_id                 = 1      # must match the drone
 feedback_ms            = 50     # how often link feedback is sent to the drone
 rcf_slot_hold_ms       = 30     # time feedback so it doesn't collide with incoming video; 0 = off
 arrival_guard_syms     = 192    # how late a packet may arrive before it counts as lost

@@ -10,7 +10,6 @@ using namespace mabur::rc;
 
 static Rcf rcf_from_json(const nlohmann::json& f) {
   Rcf r;
-  r.vtx_id = f["vtx_id"].get<uint32_t>();
   r.seq = f["seq"].get<uint16_t>();
   r.profile = f["profile"].get<uint8_t>();
   r.fec_overhead_base = f["fec_overhead_base"].get<double>();
@@ -26,7 +25,6 @@ static Rcf rcf_from_json(const nlohmann::json& f) {
 
 static Disc disc_from_json(const nlohmann::json& f) {
   Disc d;
-  d.vtx_id = f["vtx_id"].get<uint32_t>();
   d.vrx_nonce = f["vrx_nonce"].get<uint32_t>();
   d.op_channel = f["op_channel"].get<uint8_t>();
   d.op_width = f["op_width"].get<uint8_t>();
@@ -39,7 +37,6 @@ static Disc disc_from_json(const nlohmann::json& f) {
 
 static DiscAck disc_ack_from_json(const nlohmann::json& f) {
   DiscAck a;
-  a.vtx_id = f["vtx_id"].get<uint32_t>();
   a.vrx_nonce = f["vrx_nonce"].get<uint32_t>();
   a.chip_caps = f["chip_caps"].get<uint16_t>();
   a.agreed_channel = f["agreed_channel"].get<uint8_t>();
@@ -55,11 +52,11 @@ TEST(rcf_matches_golden_wire) {
   // Reverting any pack_rcf() layout change without updating these fails
   // here, which is the point -- the format cannot drift silently.
   const std::vector<std::string> GOLDEN = {
-      "43520d0100efbeadde0700243232ff000000008440",
-      "43520d010001000000ffff006464ff00000300a93b",
+      "43520e01000700243232ff00000000d3b4",
+      "43520e0100ffff006464ff0000030081de",
       // Asym pair (base 1.0 / enh 0.5): ENH actually rides a different
       // literal overhead than BASE here, not a duplicated equal-pair scalar.
-      "43520d0100443322112a00086432060000025a6b77",
+      "43520e01002a00086432060000025a7f2e",
   };
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
   REQUIRE(j["rcf"].size() == GOLDEN.size());
@@ -72,7 +69,6 @@ TEST(rcf_matches_golden_wire) {
     auto raw = mtest::unhex(GOLDEN[i]);
     auto parsed = parse_rcf(raw.data(), raw.size());
     REQUIRE(parsed.has_value());
-    CHECK(parsed->vtx_id == r.vtx_id);
     CHECK(parsed->seq == r.seq);
     CHECK(parsed->profile == r.profile);
     CHECK(std::abs(parsed->fec_overhead_base - r.fec_overhead_base) < 1e-9);
@@ -91,7 +87,7 @@ TEST(disc_matches_golden_wire) {
   // Reverting any pack_disc() layout change without updating this fails
   // here, which is the point -- the format cannot drift silently.
   const std::vector<std::string> GOLDEN = {
-      "43520d0204010000000100feca95140100000002002eb1",
+      "43520e02040100feca9514010000000200f730",
   };
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
   REQUIRE(j["disc"].size() == GOLDEN.size());
@@ -104,7 +100,6 @@ TEST(disc_matches_golden_wire) {
     auto raw = mtest::unhex(GOLDEN[i]);
     auto parsed = parse_disc(raw.data(), raw.size());
     REQUIRE(parsed.has_value());
-    CHECK(parsed->vtx_id == d.vtx_id);
     CHECK(parsed->vrx_nonce == d.vrx_nonce);
     CHECK(parsed->op_channel == d.op_channel);
     CHECK(parsed->op_width == d.op_width);
@@ -124,7 +119,7 @@ TEST(disc_ack_matches_golden_wire) {
   // Reverting any pack_disc_ack() layout change without updating this
   // fails here, which is the point -- the format cannot drift silently.
   const std::vector<std::string> GOLDEN = {
-      "43520d0304010000000100feca030095140100f804",
+      "43520e03040100feca030095140100a66d",
   };
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
   REQUIRE(j["disc_ack"].size() == GOLDEN.size());
@@ -137,7 +132,6 @@ TEST(disc_ack_matches_golden_wire) {
     auto raw = mtest::unhex(GOLDEN[i]);
     auto parsed = parse_disc_ack(raw.data(), raw.size());
     REQUIRE(parsed.has_value());
-    CHECK(parsed->vtx_id == a.vtx_id);
     CHECK(parsed->vrx_nonce == a.vrx_nonce);
     CHECK(parsed->chip_caps == a.chip_caps);
     CHECK(parsed->agreed_channel == a.agreed_channel);
@@ -195,7 +189,6 @@ TEST(rcf_single_byte_flip_fails) {
         // original (would mean a flip landed somewhere inert, which for
         // this frame layout shouldn't happen since the CRC covers
         // everything before it).
-        CHECK(parsed->vtx_id == orig_parsed->vtx_id);
         CHECK(parsed->seq == orig_parsed->seq);
         CHECK(parsed->profile == orig_parsed->profile);
         CHECK(std::abs(parsed->fec_overhead_base - orig_parsed->fec_overhead_base) < 1e-9);
@@ -286,9 +279,12 @@ TEST(telem_round_trip_and_golden) {
   // Golden pin: byte-exact wire so the format can never drift silently.
   // Computed independently of pack_telem (2026-09-30: python struct.pack of
   // the documented layout + CRC16-CCITT init 0xFFFF), not printed from it.
+  // Re-pinned 2026-10-01 for the RC_VERSION 13 -> 14 bump (version byte 2
+  // moved, re-deriving the CRC over the changed body) -- Telem's own
+  // layout is untouched.
   const std::string GOLDEN =
-      "43520d04090201022d0034127766554433221100a0860100282307000000d2040200"
-      "333415163d48000d000e000f0016e574";
+      "43520e04090201022d0034127766554433221100a0860100282307000000d2040200"
+      "333415163d48000d000e000f0016cf9d";
   CHECK(mtest::hex(wire) == GOLDEN);
   // Corrupt/truncate rejection, mirroring the disc_ack tests:
   auto trunc = wire; trunc.pop_back();
@@ -316,17 +312,17 @@ TEST(telem_rtt_sync_fields_round_trip) {
 
 TEST(rcf_probe_profile_is_a_fixed_head_byte) {
   Rcf r;
-  r.vtx_id = 1; r.seq = 2; r.profile = 0x04;
+  r.seq = 2; r.profile = 0x04;
   r.probe_profile = mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 6, 20);
   auto wire = mabur::rc::pack_rcf(r);
   Rcf none = r;
   none.probe_profile = kNoProbeProfile;
   auto wire_none = mabur::rc::pack_rcf(none);
   CHECK(wire.size() == wire_none.size());   // fixed byte, no optional tail
-  CHECK(wire.size() == 19 + 2);              // head 19 + crc
+  CHECK(wire.size() == 15 + 2);              // head 15 + crc
   CHECK(wire[4] == 0);                       // flags byte carries nothing
-  CHECK(wire[14] == r.probe_profile);
-  CHECK(wire_none[14] == 0xFF);
+  CHECK(wire[10] == r.probe_profile);
+  CHECK(wire_none[10] == 0xFF);
   auto p = mabur::rc::parse_rcf(wire.data(), wire.size());
   REQUIRE(p.has_value());
   CHECK(p->probe_profile == r.probe_profile);
@@ -336,7 +332,7 @@ TEST(rcf_probe_profile_is_a_fixed_head_byte) {
 }
 
 TEST(rcf_v5_wire_is_rejected) {
-  Rcf r; r.vtx_id = 1; r.seq = 1; r.profile = 0;
+  Rcf r; r.seq = 1; r.profile = 0;
   auto wire = mabur::rc::pack_rcf(r);
   wire[2] = 5;  // old version byte; CRC no longer matches either, but the
                 // version check fires first and is the point of this test
@@ -347,7 +343,6 @@ TEST(version_mismatch_rejected_both_directions) {
   // Reverting the RC_VERSION bump in rc_proto.h makes the doctored frame
   // become current-version, so it parses and the first CHECK fails.
   mabur::rc::Rcf r;
-  r.vtx_id = 7;
   r.seq = 1;
   r.profile = 0;
   r.fec_overhead_base = 0.25;
@@ -358,13 +353,13 @@ TEST(version_mismatch_rejected_both_directions) {
   CHECK(mabur::rc::parse_rcf(body.data(), body.size()).has_value());
 
   // Byte 2 is the version. Any other version must be refused outright —
-  // including 12, the version before the 2026-09-30 bump to 13.
+  // including 13, the version before the 2026-10-01 bump to 14.
   auto v_old = body;
-  v_old[2] = 12;
+  v_old[2] = 13;
   CHECK(!mabur::rc::parse_rcf(v_old.data(), v_old.size()).has_value());
 
   auto v_future = body;
-  v_future[2] = 14;
+  v_future[2] = 15;
   CHECK(!mabur::rc::parse_rcf(v_future.data(), v_future.size()).has_value());
 
   // The same guard must hold for telemetry, which travels the opposite
@@ -381,16 +376,16 @@ TEST(version_mismatch_rejected_both_directions) {
   CHECK(!mabur::rc::parse_telem(tv12.data(), tv12.size()).has_value());
 }
 
-TEST(rcf_head_is_nineteen_bytes) {
-  mabur::rc::Rcf r; r.vtx_id = 0xdeadbeef; r.seq = 7; r.profile = 0x24;
+TEST(rcf_head_is_fifteen_bytes) {
+  mabur::rc::Rcf r; r.seq = 7; r.profile = 0x24;
   r.fec_overhead_base = 0.42; r.fec_overhead_enh = 0.37; r.hop_ch = 149; r.hop_epoch = 3;
   r.rec = 0x05;
   r.idr_epoch = 0xA7;
   auto body = mabur::rc::pack_rcf(r);
-  CHECK(body.size() == 19 + 2);
-  CHECK(body[12] == 42); CHECK(body[13] == 37); CHECK(body[14] == mabur::rc::kNoProbeProfile);
-  CHECK(body[15] == 149); CHECK(body[16] == 3); CHECK(body[17] == 5);
-  CHECK(body[18] == 0xA7);
+  CHECK(body.size() == 15 + 2);
+  CHECK(body[8] == 42); CHECK(body[9] == 37); CHECK(body[10] == mabur::rc::kNoProbeProfile);
+  CHECK(body[11] == 149); CHECK(body[12] == 3); CHECK(body[13] == 5);
+  CHECK(body[14] == 0xA7);
   auto back = mabur::rc::parse_rcf(body.data(), body.size());
   REQUIRE(back.has_value());
   CHECK(back->hop_ch == 149); CHECK(back->hop_epoch == 3); CHECK(back->rec == 5);
@@ -406,7 +401,6 @@ TEST(rcf_head_is_nineteen_bytes) {
 // makes the non-RC case fail.
 TEST(foreign_rc_version_predicate) {
   mabur::rc::Rcf r;
-  r.vtx_id = 7;
   r.seq = 1;
   r.fec_overhead_base = 0.25;
   r.fec_overhead_enh = 0.25;
@@ -442,7 +436,6 @@ TEST(foreign_rc_version_predicate) {
 
 TEST(cal_cmd_round_trip) {
   mabur::rc::CalCmd c;
-  c.vtx_id = 0xDEADBEEF;
   c.nonce = 0x12345678;
   c.phase = mabur::cal::kPhaseCoarse;
   c.frames_per_cell = 20;
@@ -453,7 +446,6 @@ TEST(cal_cmd_round_trip) {
   CHECK(mabur::rc::frame_type(b.data(), b.size()) == mabur::rc::T_CAL_CMD);
   auto got = mabur::rc::parse_cal_cmd(b.data(), b.size());
   REQUIRE(got.has_value());
-  CHECK(got->vtx_id == 0xDEADBEEF);
   CHECK(got->nonce == 0x12345678);
   CHECK(got->phase == mabur::cal::kPhaseCoarse);
   CHECK(got->frames_per_cell == 20);
@@ -480,9 +472,9 @@ TEST(cal_cmd_rejects_bad_window_count) {
   mabur::rc::CalCmd c;
   c.windows = {{0, 0, 124, 4}};
   auto b = mabur::rc::pack_cal_cmd(c);
-  // n_windows sits after hdr(5) + vtx(4) + nonce(4) + phase(1) + three
-  // u16s(6) = offset 20. Claim 9 windows; the max is 8.
-  const size_t n_off = 5 + 4 + 4 + 1 + 2 + 2 + 2;  // 20
+  // n_windows sits after hdr(5) + nonce(4) + phase(1) + three
+  // u16s(6) = offset 16. Claim 9 windows; the max is 8.
+  const size_t n_off = 5 + 4 + 1 + 2 + 2 + 2;  // 16
   b[n_off] = 9;
   CHECK(!mabur::rc::parse_cal_cmd(b.data(), b.size()).has_value());
 }
@@ -491,8 +483,8 @@ TEST(cal_cmd_rejects_window_outside_relative_range) {
   mabur::rc::CalCmd c;
   c.windows = {{0, -40, 60, 4}};
   auto b = mabur::rc::pack_cal_cmd(c);
-  // Window bytes start at kCalCmdFixedLen (21): rate, idx_lo, idx_hi, step.
-  b[22] = static_cast<uint8_t>(-70);  // idx_lo below -64
+  // Window bytes start at kCalCmdFixedLen (17): rate, idx_lo, idx_hi, step.
+  b[18] = static_cast<uint8_t>(-70);  // idx_lo below -64
   // A bad CRC also rejects, so re-sign the body: mabur::crc16_ccitt from
   // common/include/mabur/crc16.h, little-endian, exactly as put_crc() in
   // rc_proto.cpp writes it (check put_crc's byte order and match it).
@@ -505,7 +497,6 @@ TEST(cal_cmd_rejects_window_outside_relative_range) {
 
 TEST(cal_result_round_trip) {
   mabur::rc::CalResult r;
-  r.vtx_id = 7;
   r.nonce = 99;
   r.walls = {91, 91, 91, 95, 73, 54, 51, 49};
   r.legacy_wall = 91;
@@ -544,9 +535,6 @@ TEST(telem_ack_is_the_cal_active_bit_alone) {
   CHECK((got->flags & 0x40) != 0);
 }
 
-TEST(rc_version_is_thirteen) {
-  // 2026-09-30 telem diet: Telem 98 -> 48 bytes.
-  CHECK(mabur::rc::RC_VERSION == 13);
-}
+TEST(rc_version_is_fourteen) { CHECK(mabur::rc::RC_VERSION == 14); }
 
 MTEST_MAIN

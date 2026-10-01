@@ -320,7 +320,6 @@ TEST(gs_load_config_parses_arrays_of_tables) {
       "index = 1\n"
       "\n"
       "[link]\n"
-      "vtx_id = 1\n"
       "\n"
       "[[link.ladder]]\n"
       "mcs = 2\n"
@@ -346,7 +345,7 @@ TEST(gs_load_config_reports_defaulted_keys) {
   // The sections must be PRESENT for their keys to be visited: a whole
   // missing section is reported as the section, not key by key.
   const std::string path = write_tmp(
-      "[link]\nvtx_id = 1\n"
+      "[link]\n"
       "\n[stats]\ninterval_ms = 500\n");
   std::vector<std::string> defaulted;
   auto cfg = maburgs::load_config(path, &defaulted);
@@ -387,7 +386,7 @@ TEST(gs_load_config_reports_previously_invisible_defaults) {
   const std::string path = write_tmp(
       "[radio]\nchannel = 149\n"
       "\n[fec]\nseq_horizon = 512\n"
-      "\n[link]\nvtx_id = 1\ndown_util = 0.4\n"
+      "\n[link]\ndown_util = 0.4\n"
       "\n[link.probe]\nenable = true\n");
   std::vector<std::string> defaulted;
   auto cfg = maburgs::load_config(path, &defaulted);

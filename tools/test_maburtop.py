@@ -10,7 +10,7 @@ from maburtop import (
 DGRAM = {
     "v": 1, "session": 0xDEADBEEF, "seq": 7, "t_ms": 567890,
     "link": {
-        "vtx_id": 1, "channel": 149, "state": "session", "tx_card": 0,
+        "channel": 149, "state": "session", "tx_card": 0,
         "op": {"mcs": 5, "bw": 20, "sgi": False, "vht": False,
                "overhead_base": 0.25, "overhead_enh": 0.25, "snr_req": 18.5},
         "deadline_ms": 60, "residual_loss": 0.012,
@@ -88,7 +88,6 @@ class TopBarTest(unittest.TestCase):
     def test_content(self):
         text, spans = panel_topbar(_fresh(), 100.2)[0]
         self.assertIn("SESSION", text)
-        self.assertIn("vtx 1", text)
         # link.channel: the operating channel, also what the player's
         # compact OSD reads for its ch: field.
         self.assertIn("ch 149", text)

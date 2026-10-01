@@ -285,7 +285,6 @@ def render_rows_compact(model, wall, width):
         header = f"STALE — last seen {age:.1f} s ago".ljust(width)
     else:
         tx_card = link.get("tx_card")
-        vtx_id = link.get("vtx_id")
         chan = link.get("channel")
         home = link.get("home")
         scan = d.get("scan") or {}
@@ -295,7 +294,7 @@ def render_rows_compact(model, wall, width):
         cmd_ov_enh = op.get("overhead_enh")
         state_s = state.upper() if isinstance(state, str) else "--"
         header = (
-            f"maburgs   {state_s}   vtx {_s(vtx_id)}   "
+            f"maburgs   {state_s}   "
             f"ch {_s(chan)}/h{_s(home)} scan {scan.get('state', '--')}:{_s(scan.get('rounds'))} "
             f"hop {hop.get('state', '--')}/{hop.get('verdict', '--')}   "
             f"tx c{_s(tx_card)}   "
@@ -535,7 +534,6 @@ def panel_topbar(model, wall):
     op = link.get("op") or {}
     state = link.get("state")
     state_s = state.upper() if isinstance(state, str) else "--"
-    vtx_id = link.get("vtx_id")
     chan = link.get("channel")
     mcs, bw = op.get("mcs"), op.get("bw")
     cmd_ov_base = op.get("overhead_base")
@@ -553,7 +551,7 @@ def panel_topbar(model, wall):
 
     dot = "●"
     text = (
-        f" maburgs  {dot} {state_s}   vtx {_s(vtx_id)}   ch {_s(chan)}   "
+        f" maburgs  {dot} {state_s}   ch {_s(chan)}   "
         f"cmd MCS {_s(mcs)}/{_s(bw)}  "
         f"{_ov_cmd_cell(cmd_ov_base, cmd_ov_enh)}   "
         f"air ~{_s(air, 0)}%      session {session_s}   "

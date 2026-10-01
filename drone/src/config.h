@@ -113,7 +113,6 @@ struct VencSectionCfg {
 };
 
 struct LinkCfg {
-  uint32_t vtx_id = 1;
   int failsafe_ms = 1000;
   int rendezvous_ms = 30000;
   // After a GS-commanded retune, hear the GS within this or go home.

@@ -40,7 +40,6 @@ struct FakePowerCtl : CalSweep::PowerCtl {
 // 2 rates x 4 indices x 5 frames.
 rc::CalCmd small_cmd(uint8_t phase = cal::kPhaseCoarse, uint32_t nonce = 1) {
   rc::CalCmd c;
-  c.vtx_id = 1;
   c.nonce = nonce;
   c.phase = phase;
   c.frames_per_cell = 5;
@@ -224,7 +223,6 @@ TEST(stale_earlier_phase_duplicate_does_not_discard_an_undrained_result) {
   const size_t after_fine = sink.frames.size();
 
   rc::CalResult r;
-  r.vtx_id = 1;
   r.nonce = 7;
   r.walls = {88, 88, 88, 95, 73, 54, 51, 49};
   r.legacy_wall = 88;
@@ -288,7 +286,6 @@ TEST(result_moves_to_applying_then_verify) {
   s.on_cmd(small_cmd(), 0, pwr);
   run_to_quiescence(s, tx, pwr);
   rc::CalResult r;
-  r.vtx_id = 1;
   r.nonce = 1;
   r.walls = {88, 88, 88, 95, 73, 54, 51, 49};
   r.legacy_wall = 88;
@@ -307,7 +304,6 @@ TEST(stale_nonce_result_is_ignored) {
   s.on_cmd(small_cmd(cal::kPhaseCoarse, 7), 0, pwr);
   run_to_quiescence(s, tx, pwr);
   rc::CalResult r;
-  r.vtx_id = 1;
   r.nonce = 999;   // a different session
   s.on_result(r, 100);
   CHECK(s.state() != CalSweep::State::Applying);
@@ -348,7 +344,6 @@ TEST(duplicate_result_for_accepted_nonce_is_ignored) {
   s.on_cmd(small_cmd(), 0, pwr);
   run_to_quiescence(s, tx, pwr);
   rc::CalResult r;
-  r.vtx_id = 1;
   r.nonce = 1;
   r.walls = {88, 88, 88, 95, 73, 54, 51, 49};
   r.legacy_wall = 88;

@@ -20,7 +20,7 @@ VrxController::VrxController(VrxCfg cfg)
       // config: every hw validation ran with these, and a slower fallback to
       // BEACONING after video loss only delays re-rendezvous. The removed
       // link.video_silence_ms key claimed to tune the 1000 but never did.
-      rz_(VrxRzConfig{cfg.vtx_id, 1000, 20, cfg.op_channel}),
+      rz_(VrxRzConfig{1000, 20, cfg.op_channel}),
       cur_op_(op_from_rung(ctrl_.op())) {}
 
 void VrxController::sync_op_() { cur_op_ = op_from_rung(ctrl_.op()); }
@@ -87,7 +87,6 @@ std::optional<VrxController::Out> VrxController::step(double now_ms,
 mabur::rc::Rcf VrxController::build_rcf() {
   seq_ = static_cast<uint16_t>(seq_ + 1);
   mabur::rc::Rcf r;
-  r.vtx_id = cfg_.vtx_id;
   r.seq = seq_;
   r.profile = mabur::rc::encode_profile(
       cur_op_.vht ? mabur::rc::PhyMode::VHT : mabur::rc::PhyMode::HT,

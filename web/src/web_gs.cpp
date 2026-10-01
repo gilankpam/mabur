@@ -43,7 +43,6 @@ WebGs::WebGs(const maburgs::Config& cfg, Mode mode, uint8_t channel, int width, 
     : mode_(mode),
       io_(std::move(io)),
       opts_(opts),
-      vtx_id_(cfg.link.vtx_id),
       agg_(cfg.uep_layers(), static_cast<uint32_t>(cfg.fec.seq_horizon), 1,
            static_cast<uint32_t>(cfg.link.arrival_guard_syms)),
       fs_({static_cast<uint64_t>(cfg.video.frame_gap_timeout_ms), cfg.video.frame_lookahead},
@@ -231,7 +230,6 @@ void WebGs::tick(uint64_t now_us) {
 void WebGs::inject_disc_ack_for_replay(uint64_t now_us) {
   if (!vrx_) return;
   mabur::rc::DiscAck ack;
-  ack.vtx_id = vtx_id_;
   ack.vrx_nonce = vrx_->rz_nonce();
   ack.chip_caps = mabur::rc::CAP_FRAME_WIRE;
   ack.agreed_channel = vrx_->proposal();

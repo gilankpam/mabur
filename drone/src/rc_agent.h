@@ -142,7 +142,7 @@ class RcAgent {
   RcAgent(const Config& cfg, Actuator& act, OvOverride* ovr = nullptr);
 
   // Parses `body` as an RC frame (RCF or DISC; anything else, or a frame
-  // failing CRC/vtx_id match, is silently ignored) and applies its effect.
+  // failing CRC, is silently ignored) and applies its effect.
   void on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms);
 
   // The encoder lost a reference frame (a ring-full drop ate it), so the
@@ -285,7 +285,7 @@ class RcAgent {
   uint16_t last_seq_ = 0;
   bool have_last_seq_ = false;
 
-  // Cumulative count of RCFs accepted (fresh + matching vtx_id) — feeds
+  // Cumulative count of RCFs accepted (fresh) — feeds
   // Telem.rcf_rx. Never reset (a session-boundary reset would make the GS's
   // rate computation, which is over a measured interval, ambiguous).
   uint64_t rcf_accepted_ = 0;

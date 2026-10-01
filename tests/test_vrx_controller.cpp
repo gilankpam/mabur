@@ -18,7 +18,6 @@ static LadderCfg default_ladder() {
 
 static VrxController make(LadderCfg lcfg = default_ladder()) {
   VrxCfg cfg;
-  cfg.vtx_id = 1;
   cfg.ladder = std::move(lcfg);
   return VrxController(cfg);
 }
@@ -39,7 +38,6 @@ TEST(rcf_pacing_and_keepalive_disc) {
     // Link early via DiscAck at t=500ms to measure steady-state cadence
     if (t == 500) {
       mabur::rc::DiscAck ack;
-      ack.vtx_id = 1;
       ack.vrx_nonce = vrx.rz_nonce();
       ack.chip_caps = mabur::rc::CAP_FRAME_WIRE;
       ack.seq = 1;
@@ -69,7 +67,6 @@ TEST(keepalive_disc_held_while_a_hop_is_in_flight) {
   auto vrx = make();
   auto link = [&](double now) {
     mabur::rc::DiscAck ack;
-    ack.vtx_id = 1;
     ack.vrx_nonce = vrx.rz_nonce();
     ack.chip_caps = mabur::rc::CAP_FRAME_WIRE;
     ack.seq = 1;
@@ -127,7 +124,6 @@ TEST(rcf_fields_are_correct) {
   }
   auto r = mabur::rc::parse_rcf(out->frame.data(), out->frame.size());
   REQUIRE(r.has_value());
-  CHECK(r->vtx_id == 1);
   CHECK(r->seq > 0);
   CHECK(r->profile == mabur::rc::encode_profile(
                           mabur::rc::PhyMode::HT,
@@ -206,8 +202,7 @@ TEST(disc_ack_feeds_rendezvous) {
   vrx.step(1500, no_data());          // silence -> BEACONING
   CHECK(vrx.link_state() == VrxState::BEACONING);
   mabur::rc::DiscAck ack;
-  ack.vtx_id = 1;
-  ack.vrx_nonce = static_cast<uint32_t>((1ull * 2654435761ull) & 0xFFFFFFFFull);
+  ack.vrx_nonce = vrx.rz_nonce();
   auto wire = mabur::rc::pack_disc_ack(ack);
   vrx.on_rc_frame(wire.data(), wire.size(), 1600);
   CHECK(vrx.link_state() == VrxState::SESSION);
@@ -221,8 +216,7 @@ TEST(peer_caps_captured_from_disc_ack) {
   CHECK(vrx.peer_caps() == 0);
   vrx.step(1500, no_data());          // silence -> BEACONING
   mabur::rc::DiscAck ack;
-  ack.vtx_id = 1;
-  ack.vrx_nonce = static_cast<uint32_t>((1ull * 2654435761ull) & 0xFFFFFFFFull);
+  ack.vrx_nonce = vrx.rz_nonce();
   ack.chip_caps = mabur::rc::CAP_FRAME_WIRE;
   auto wire = mabur::rc::pack_disc_ack(ack);
   vrx.on_rc_frame(wire.data(), wire.size(), 1600);
@@ -245,8 +239,7 @@ TEST(peer_acked_false_until_a_disc_ack_is_accepted) {
   CHECK(!vrx.peer_acked());
 
   mabur::rc::DiscAck ack;
-  ack.vtx_id = 1;
-  ack.vrx_nonce = static_cast<uint32_t>((1ull * 2654435761ull) & 0xFFFFFFFFull);
+  ack.vrx_nonce = vrx.rz_nonce();
   ack.chip_caps = 0;                             // a peer that advertises none
   auto wire = mabur::rc::pack_disc_ack(ack);
   vrx.on_rc_frame(wire.data(), wire.size(), 1600);
@@ -260,7 +253,6 @@ TEST(peer_acked_false_until_a_disc_ack_is_accepted) {
 // it relaxes to beacon_keepalive_ms (1000 ms). Stale-caps fix, Part A.
 TEST(keepalive_disc_fast_until_peer_acked) {
   VrxCfg cfg;
-  cfg.vtx_id = 1;
   cfg.ladder = default_ladder();
   VrxController vrx(cfg);
 
@@ -276,7 +268,6 @@ TEST(keepalive_disc_fast_until_peer_acked) {
 
   // Accept a DiscAck -> cadence must relax to ~1 Hz.
   mabur::rc::DiscAck ack;
-  ack.vtx_id = cfg.vtx_id;
   ack.vrx_nonce = vrx.rz_nonce();
   ack.chip_caps = mabur::rc::CAP_FRAME_WIRE;
   ack.seq = 1;
@@ -382,7 +373,7 @@ TEST(controller_exposes_agreed_channel_and_ack_edge) {
   REQUIRE(d.has_value());
   CHECK(d->op_channel == 149);
   mabur::rc::DiscAck ack;
-  ack.vtx_id = 1; ack.vrx_nonce = vrx.rz_nonce(); ack.chip_caps = mabur::rc::CAP_FRAME_WIRE;
+  ack.vrx_nonce = vrx.rz_nonce(); ack.chip_caps = mabur::rc::CAP_FRAME_WIRE;
   ack.agreed_channel = 149; ack.seq = 1;
   auto wire = mabur::rc::pack_disc_ack(ack);
   vrx.on_rc_frame(wire.data(), wire.size(), now);
@@ -464,7 +455,6 @@ TEST(starved_health_forces_ladder_rung_zero_and_recovers) {
 // to its floor), and the ladder is never even ticked.
 TEST(static_pin_overrides_controller) {
   VrxCfg cfg;
-  cfg.vtx_id = 1;
   cfg.pin_mcs = 5;
   cfg.pin_overhead_base = 0.25;
   cfg.pin_overhead_enh = 0.4;  // distinct from base: proves the pin is a real pair
@@ -493,7 +483,7 @@ TEST(static_pin_overrides_controller) {
 // Drives the link into SESSION with a DiscAck, then steps until an RCF is
 // emitted; returns the parsed RCF.
 static mabur::rc::Rcf first_rcf(VrxController& vrx, const LinkHealth& h, double& t) {
-  mabur::rc::DiscAck ack; ack.vtx_id = 1; ack.vrx_nonce = vrx.rz_nonce();
+  mabur::rc::DiscAck ack; ack.vrx_nonce = vrx.rz_nonce();
   ack.chip_caps = mabur::rc::CAP_FRAME_WIRE; ack.seq = 1;
   auto wire = mabur::rc::pack_disc_ack(ack);
   vrx.on_rc_frame(wire.data(), wire.size(), t);
@@ -522,14 +512,14 @@ TEST(rcf_probe_byte_is_none_when_disabled_or_pinned_without_pin_mcs) {
   auto vrx = make(l);
   double t = 0;
   CHECK(first_rcf(vrx, healthy(), t).probe_profile == mabur::rc::kNoProbeProfile);
-  VrxCfg cfg; cfg.vtx_id = 1; cfg.ladder = default_ladder(); cfg.pin_mcs = 4;
+  VrxCfg cfg; cfg.ladder = default_ladder(); cfg.pin_mcs = 4;
   VrxController pinned(cfg);
   t = 0;
   CHECK(first_rcf(pinned, healthy(), t).probe_profile == mabur::rc::kNoProbeProfile);
 }
 
 TEST(pinned_link_can_probe_a_fixed_mcs) {
-  VrxCfg cfg; cfg.vtx_id = 1; cfg.ladder = default_ladder(); cfg.pin_mcs = 4;
+  VrxCfg cfg; cfg.ladder = default_ladder(); cfg.pin_mcs = 4;
   cfg.probe_pin_mcs = 5;
   VrxController vrx(cfg);
   double t = 0;
@@ -565,7 +555,7 @@ TEST(rcf_probe_profile_carries_the_probe_rungs_width) {
   // around it: bring the link up for real first, THEN restore.
   LadderCfg l = bw40_ladder();
   l.feedback_timeout_ms = 100000;
-  VrxCfg cfg; cfg.vtx_id = 1; cfg.ladder = l;
+  VrxCfg cfg; cfg.ladder = l;
   VrxController vrx(cfg);
   double t = 0;
   first_rcf(vrx, healthy(), t);  // stamps last_feedback_ms_ before the restore
@@ -576,7 +566,7 @@ TEST(rcf_probe_profile_carries_the_probe_rungs_width) {
 }
 
 TEST(static_pin_carries_pin_bw) {
-  VrxCfg cfg; cfg.vtx_id = 1; cfg.ladder = bw40_ladder(); cfg.pin_mcs = 3; cfg.pin_bw = 40;
+  VrxCfg cfg; cfg.ladder = bw40_ladder(); cfg.pin_mcs = 3; cfg.pin_bw = 40;
   cfg.probe_pin_mcs = 4;
   VrxController vrx(cfg);
   double t = 0;

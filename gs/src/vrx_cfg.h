@@ -11,7 +11,6 @@ namespace maburgs {
 
 inline VrxCfg vrx_cfg_from(const Config& cfg, uint8_t op_channel) {
   VrxCfg v;
-  v.vtx_id = cfg.link.vtx_id;
   v.op_channel = op_channel;
   v.feedback_ms = cfg.link.feedback_ms;
   v.beacon_keepalive_ms = cfg.link.beacon_keepalive_ms;

@@ -78,7 +78,6 @@ tx_threads = 4
 
 ```toml
 [link]
-vtx_id        = 1
 failsafe_ms   = 3000
 rc_drain_ms   = 5
 rendezvous_ms = 30000

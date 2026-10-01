@@ -5,8 +5,7 @@
 using namespace maburgs;
 
 TEST(coarse_plan_covers_all_eight_rates) {
-  const auto c = make_coarse_plan(7, 99);
-  CHECK(c.vtx_id == 7);
+  const auto c = make_coarse_plan(99);
   CHECK(c.nonce == 99);
   CHECK(c.phase == mabur::cal::kPhaseCoarse);
   CHECK(c.windows.size() == 8);
@@ -26,7 +25,7 @@ TEST(coarse_plan_is_216_cells) {
   // measured at >=90% delivery, not one index past the top of the sweep.
   // This count also drives the duration estimate the GS uses to know when
   // the drone stops transmitting.
-  const auto c = make_coarse_plan(1, 1);
+  const auto c = make_coarse_plan(1);
   int cells = 0;
   for (const auto& w : c.windows)
     for (int i = w.idx_lo; i <= w.idx_hi; i += w.idx_step) ++cells;
@@ -46,7 +45,7 @@ TEST(fine_plan_only_covers_rows_that_dipped) {
   coarse[7].wall = kNoWall;               // mcs7: undetermined
   coarse[7].flags = kCalUndetermined;
 
-  const auto f = make_fine_plan(2, 3, coarse);
+  const auto f = make_fine_plan(3, coarse);
   CHECK(f.phase == mabur::cal::kPhaseFine);
   CHECK(f.windows.size() == 4);           // only mcs3-6
   for (const auto& w : f.windows) {
@@ -60,7 +59,7 @@ TEST(fine_window_brackets_the_coarse_wall) {
   std::array<RateWall, 8> coarse{};
   coarse[5].wall = 56;
   coarse[5].flags = 0;
-  const auto f = make_fine_plan(1, 1, coarse);
+  const auto f = make_fine_plan(1, coarse);
   REQUIRE(f.windows.size() == 1);
   CHECK(f.windows[0].idx_lo == 56 - kFineHalfWidth);
   // 56 + kFineHalfWidth (64) is one past kRelMax (63): still clamps here,
@@ -72,7 +71,7 @@ TEST(fine_window_clamps_to_the_relative_range) {
   std::array<RateWall, 8> coarse{};
   coarse[0].wall = -61;   // near the bottom
   coarse[1].wall = 60;    // near the top
-  const auto f = make_fine_plan(1, 1, coarse);
+  const auto f = make_fine_plan(1, coarse);
   REQUIRE(f.windows.size() == 2);
   CHECK(f.windows[0].idx_lo == -64);
   CHECK(f.windows[1].idx_hi == 63);
@@ -81,13 +80,13 @@ TEST(fine_window_clamps_to_the_relative_range) {
 TEST(fine_plan_with_no_dips_is_empty) {
   std::array<RateWall, 8> coarse{};
   for (auto& w : coarse) w.flags = kCalNoDip;
-  const auto f = make_fine_plan(1, 1, coarse);
+  const auto f = make_fine_plan(1, coarse);
   CHECK(f.windows.empty());
 }
 
 TEST(verify_plan_is_one_cell_per_parked_rate) {
   std::array<int, 8> park = {59, 59, 59, 38, 16, -3, -6, -8};
-  const auto v = make_verify_plan(1, 1, park);
+  const auto v = make_verify_plan(1, park);
   CHECK(v.phase == mabur::cal::kPhaseVerify);
   CHECK(v.windows.size() == 8);
   CHECK(v.windows[4].idx_lo == 16);
@@ -100,7 +99,7 @@ TEST(verify_plan_skips_undetermined_and_out_of_range_parks) {
   // An undetermined rate has no parked index to verify; one past the
   // relative range is a caller bug, not a value to send to the chip.
   std::array<int, 8> park = {59, kNoWall, 59, 38, 16, -3, -6, -70};
-  const auto v = make_verify_plan(1, 1, park);
+  const auto v = make_verify_plan(1, park);
   CHECK(v.windows.size() == 6);
 }
 

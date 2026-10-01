@@ -191,7 +191,6 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
   }
 
   json& link = j["link"];
-  link["vtx_id"] = in.vtx_id;
   link["channel"] = in.channel;
   link["home"] = in.home;
   link["state"] = in.in_session ? "session" : "beaconing";

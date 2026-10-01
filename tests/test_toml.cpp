@@ -180,7 +180,7 @@ TEST(toml_multiline_array_with_trailing_comma_and_comments) {
 TEST(toml_arrays_of_tables) {
   Value v = parse_toml_string(
       "[link]\n"
-      "vtx_id = 1\n"
+      "feedback_ms = 100\n"
       "\n"
       "[[link.ladder]]\n"
       "mcs = 0\n"
@@ -193,7 +193,7 @@ TEST(toml_arrays_of_tables) {
       "[link.probe]\n"
       "enable = true\n",
       "t.toml");
-  CHECK(v.at("link").at("vtx_id").get<int>() == 1);
+  CHECK(v.at("link").at("feedback_ms").get<int>() == 100);
   const Value& lad = v.at("link").at("ladder");
   CHECK(lad.is_array());
   CHECK(lad.size() == 2);

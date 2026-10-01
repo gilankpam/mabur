@@ -70,7 +70,6 @@ struct MockActuator : Actuator {
 
 Config make_cfg() {
   Config cfg;
-  cfg.link.vtx_id = 1;
   cfg.link.failsafe_ms = 1000;
   cfg.link.rendezvous_ms = 30000;
   cfg.link.tick_ms = 100;
@@ -92,7 +91,7 @@ Config make_cfg() {
   return cfg;
 }
 
-// Builds a CRC-valid RCF wire frame for vtx_id/seq/profile/fec_overhead,
+// Builds a CRC-valid RCF wire frame for seq/profile/fec_overhead,
 // with DISTINCT base/enh overheads (ov_16ths keeps the callers' existing
 // sixteenths-based literals: 8 == 0.5, 16 == 1.0, ...). This is the widened
 // form (controller ruling, Task 6): the 4-arg overload below still packs one
@@ -102,11 +101,10 @@ Config make_cfg() {
 // form directly, or the two wire fields collapse to the same value and the
 // weighted target can't tell base from enh apart (see the weakened-test
 // comments this replaced, Task 2 finding).
-std::vector<uint8_t> make_rcf_wire(uint32_t vtx_id, uint16_t seq, uint8_t profile,
+std::vector<uint8_t> make_rcf_wire(uint16_t seq, uint8_t profile,
                                     uint8_t ov_base_16ths, uint8_t ov_enh_16ths,
                                     uint8_t probe_profile) {
   Rcf r;
-  r.vtx_id = vtx_id;
   r.seq = seq;
   r.profile = profile;
   r.fec_overhead_base = ov_base_16ths / 16.0;
@@ -116,23 +114,22 @@ std::vector<uint8_t> make_rcf_wire(uint32_t vtx_id, uint16_t seq, uint8_t profil
 }
 
 // Convenience overload: the common case with no probe stream commanded.
-std::vector<uint8_t> make_rcf_wire(uint32_t vtx_id, uint16_t seq, uint8_t profile,
+std::vector<uint8_t> make_rcf_wire(uint16_t seq, uint8_t profile,
                                     uint8_t ov_base_16ths, uint8_t ov_enh_16ths) {
-  return make_rcf_wire(vtx_id, seq, profile, ov_base_16ths, ov_enh_16ths, kNoProbeProfile);
+  return make_rcf_wire(seq, profile, ov_base_16ths, ov_enh_16ths, kNoProbeProfile);
 }
 
 // Convenience overload: the common case where a test wants the same
 // overhead commanded on both wire fields (RC_VERSION 4 behavior). Kept so
 // the ~40 existing call sites don't need touching.
-std::vector<uint8_t> make_rcf_wire(uint32_t vtx_id, uint16_t seq, uint8_t profile,
+std::vector<uint8_t> make_rcf_wire(uint16_t seq, uint8_t profile,
                                     uint8_t ov_16ths) {
-  return make_rcf_wire(vtx_id, seq, profile, ov_16ths, ov_16ths);
+  return make_rcf_wire(seq, profile, ov_16ths, ov_16ths);
 }
 
-std::vector<uint8_t> make_disc_wire(uint32_t vtx_id, uint32_t nonce, uint8_t op_channel,
+std::vector<uint8_t> make_disc_wire(uint32_t nonce, uint8_t op_channel,
                                      uint8_t op_width, uint8_t init_profile, uint16_t seq) {
   Disc d;
-  d.vtx_id = vtx_id;
   d.vrx_nonce = nonce;
   d.op_channel = op_channel;
   d.op_width = op_width;
@@ -177,7 +174,7 @@ TEST(boot_first_tick_applies_max_range_and_moves_to_rendezvous) {
   CHECK(act.bitrates.back() == 1400);
 }
 
-// 2. DISC (vtx_id matches cfg) -> send_control called once with a valid
+// 2. DISC -> send_control called once with a valid
 // DISC_ACK (nonce echo matches) and state LINKED. The GS proposes the
 // drone's OWN channel (auto channel select, spec 2026-09-13 §6: a DISC on
 // the current channel is a no-op move -- see disc_same_channel_never_retunes
@@ -192,7 +189,7 @@ TEST(disc_replies_disc_ack_and_moves_to_linked) {
   RcAgent agent(cfg, act);
   agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS
 
-  auto wire = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, cfg.radio.channel,
+  auto wire = make_disc_wire(0xCAFEF00D, cfg.radio.channel,
                               /*op_width=*/40, 0, 2);
   agent.on_rc_frame(wire.data(), wire.size(), 100);
 
@@ -200,7 +197,6 @@ TEST(disc_replies_disc_ack_and_moves_to_linked) {
   REQUIRE(act.controls.size() == 1);
   auto parsed = parse_disc_ack(act.controls[0].data(), act.controls[0].size());
   REQUIRE(parsed.has_value());
-  CHECK(parsed->vtx_id == cfg.link.vtx_id);
   CHECK(parsed->vrx_nonce == 0xCAFEF00D);
   // Same channel proposed -> no move, ack agrees on it; width is never
   // taken from the wire, so it stays the drone's own configured width (20)
@@ -226,7 +222,7 @@ TEST(disc_ack_advertises_frame_wire_cap) {
   RcAgent agent(cfg, act);
   agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS
 
-  auto wire = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, /*op_channel=*/136,
+  auto wire = make_disc_wire(0xCAFEF00D, /*op_channel=*/136,
                               /*op_width=*/40, 0, 2);
   agent.on_rc_frame(wire.data(), wire.size(), 100);
 
@@ -249,7 +245,7 @@ TEST(keepalive_disc_while_linked_acks_without_op_change) {
 
   // Link via RCF at a non-default rung (mcs2, ov 0.5).
   uint8_t profile_byte = encode_profile(PhyMode::HT, 2, 20);
-  auto rcf = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 8);
+  auto rcf = make_rcf_wire(1, profile_byte, 8);
   agent.on_rc_frame(rcf.data(), rcf.size(), 100);
   REQUIRE(agent.state() == RcAgent::State::LINKED);
   const uint64_t gen = agent.current().generation;
@@ -259,7 +255,7 @@ TEST(keepalive_disc_while_linked_acks_without_op_change) {
   // Same channel proposed as the drone's own -> no move (channel moves are
   // covered separately by disc_foreign_channel_acks_then_retunes; this test
   // stays about the keep-alive no-op).
-  auto disc = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, cfg.radio.channel, 20,
+  auto disc = make_disc_wire(0xCAFEF00D, cfg.radio.channel, 20,
                              /*init_profile=*/0, /*seq=*/7);
   agent.on_rc_frame(disc.data(), disc.size(), 600);
 
@@ -269,7 +265,6 @@ TEST(keepalive_disc_while_linked_acks_without_op_change) {
   auto parsed = parse_disc_ack(act.controls.back().data(),
                                act.controls.back().size());
   REQUIRE(parsed.has_value());
-  CHECK(parsed->vtx_id == cfg.link.vtx_id);
   CHECK(parsed->vrx_nonce == 0xCAFEF00D);
   CHECK(parsed->seq == 7);
   CHECK(parsed->chip_caps & mabur::rc::CAP_FRAME_WIRE);
@@ -310,7 +305,7 @@ TEST(last_feedback_seq_tracks_rcf_and_invalidates_on_failsafe) {
   RcAgent agent(cfg, act);
   CHECK(!agent.last_feedback_seq().has_value());  // no RCF ever
 
-  auto rcf = make_rcf_wire(1, 4711, encode_profile(PhyMode::HT, 5, 20), 4);
+  auto rcf = make_rcf_wire(4711, encode_profile(PhyMode::HT, 5, 20), 4);
   agent.on_rc_frame(rcf.data(), rcf.size(), 100);
   REQUIRE(agent.last_feedback_seq().has_value());
   CHECK(*agent.last_feedback_seq() == 4711);
@@ -328,7 +323,7 @@ TEST(rcf_apply_computes_ladder_fec_and_bitrate) {
   agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS
 
   uint8_t profile_byte = encode_profile(PhyMode::HT, 2, 20);
-  auto wire = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 8);
+  auto wire = make_rcf_wire(1, profile_byte, 8);
   agent.on_rc_frame(wire.data(), wire.size(), 100);
 
   CHECK(agent.state() == RcAgent::State::LINKED);
@@ -354,7 +349,7 @@ TEST(bitrate_policy_prices_at_delivered_rate) {
   RcAgent agent(cfg, act);
   agent.tick(0, RadioHealth{});
 
-  auto wire = make_rcf_wire(cfg.link.vtx_id, 1, encode_profile(PhyMode::HT, 2, 20), 8);
+  auto wire = make_rcf_wire(1, encode_profile(PhyMode::HT, 2, 20), 8);
   agent.on_rc_frame(wire.data(), wire.size(), 100);
   REQUIRE(!act.bitrates.empty());
   CHECK(act.bitrates.back() == 4200);
@@ -371,7 +366,7 @@ TEST(applied_op_carries_distinct_base_enh_overhead_pair) {
 
   uint8_t profile_byte = encode_profile(PhyMode::HT, 2, 20);
   // ov_base=1.0 (16/16), ov_enh=0.5 (8/16) -- distinct on the wire.
-  auto wire = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 16, 8);
+  auto wire = make_rcf_wire(1, profile_byte, 16, 8);
   agent.on_rc_frame(wire.data(), wire.size(), 100);
 
   CHECK(agent.state() == RcAgent::State::LINKED);
@@ -398,7 +393,7 @@ TEST(bitrate_policy_clamps_to_bitrate_max) {
   agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS
 
   uint8_t profile_byte = encode_profile(PhyMode::HT, 5, 20);
-  auto wire = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 8);  // ov16=8 -> 0.5
+  auto wire = make_rcf_wire(1, profile_byte, 8);  // ov16=8 -> 0.5
   agent.on_rc_frame(wire.data(), wire.size(), 100);
 
   CHECK(agent.state() == RcAgent::State::LINKED);
@@ -448,7 +443,7 @@ TEST(bitrate_policy_weights_pair_by_fixed_share) {
   uint8_t profile_byte = encode_profile(PhyMode::HT, 5, 20);
   // ov_base=0.5 (8/16), ov_enh=1.0 (16/16) -- distinct, so ovb/ove stay
   // observable in the weighted target instead of factoring out.
-  auto wire = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 8, 16);
+  auto wire = make_rcf_wire(1, profile_byte, 8, 16);
   agent.on_rc_frame(wire.data(), wire.size(), 100);
 
   CHECK(agent.state() == RcAgent::State::LINKED);
@@ -474,7 +469,7 @@ TEST(bitrate_policy_is_constant_for_a_fixed_op) {
 
   uint8_t profile_byte = encode_profile(PhyMode::HT, 3, 20);
   for (uint16_t seq = 1; seq <= 300; ++seq) {
-    auto wire = make_rcf_wire(cfg.link.vtx_id, seq, profile_byte, 16, 4);
+    auto wire = make_rcf_wire(seq, profile_byte, 16, 4);
     agent.on_rc_frame(wire.data(), wire.size(), 100 + seq * 100);
     agent.tick(100 + seq * 100, RadioHealth{});
   }
@@ -498,7 +493,7 @@ TEST(stale_seq_is_ignored) {
   agent.tick(0, RadioHealth{});
 
   uint8_t profile_byte = encode_profile(PhyMode::HT, 2, 20);
-  auto wire = make_rcf_wire(cfg.link.vtx_id, 10, profile_byte, 8);
+  auto wire = make_rcf_wire(10, profile_byte, 8);
   agent.on_rc_frame(wire.data(), wire.size(), 100);
   uint64_t gen_after_first = agent.current().generation;
 
@@ -507,7 +502,7 @@ TEST(stale_seq_is_ignored) {
   CHECK(agent.current().generation == gen_after_first);
 
   // seq - 1 (stale/old).
-  auto stale_wire = make_rcf_wire(cfg.link.vtx_id, 9, profile_byte, 8);
+  auto stale_wire = make_rcf_wire(9, profile_byte, 8);
   agent.on_rc_frame(stale_wire.data(), stale_wire.size(), 300);
   CHECK(agent.current().generation == gen_after_first);
 }
@@ -520,7 +515,7 @@ TEST(corrupt_rcf_is_ignored) {
   agent.tick(0, RadioHealth{});
 
   uint8_t profile_byte = encode_profile(PhyMode::HT, 2, 20);
-  auto wire = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 8);
+  auto wire = make_rcf_wire(1, profile_byte, 8);
   wire[5] ^= 0xFF;  // corrupt a payload byte -> CRC mismatch
 
   uint64_t gen_before = agent.current().generation;
@@ -540,7 +535,7 @@ TEST(failsafe_and_rendezvous_timers_fire_exactly) {
   agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS at t=0
 
   uint8_t profile_byte = encode_profile(PhyMode::HT, 2, 20);
-  auto wire = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 8);
+  auto wire = make_rcf_wire(1, profile_byte, 8);
   agent.on_rc_frame(wire.data(), wire.size(), 0);  // RCF at t=0 -> LINKED
   CHECK(agent.state() == RcAgent::State::LINKED);
 
@@ -576,13 +571,13 @@ TEST(rcf_after_failsafe_requests_idr) {
   agent.tick(0, RadioHealth{});
 
   uint8_t profile_byte = encode_profile(PhyMode::HT, 2, 20);
-  auto wire = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 8);
+  auto wire = make_rcf_wire(1, profile_byte, 8);
   agent.on_rc_frame(wire.data(), wire.size(), 0);
   agent.tick(1000, RadioHealth{});  // -> FAILSAFE
   CHECK(agent.state() == RcAgent::State::FAILSAFE);
   int idr_before = act.idr_calls;
 
-  auto wire2 = make_rcf_wire(cfg.link.vtx_id, 2, profile_byte, 8);
+  auto wire2 = make_rcf_wire(2, profile_byte, 8);
   agent.on_rc_frame(wire2.data(), wire2.size(), 1500);
 
   CHECK(agent.state() == RcAgent::State::LINKED);
@@ -607,7 +602,7 @@ TEST(congestion_shed_escalates_and_recovers) {
   agent.tick(0, RadioHealth{});
 
   uint8_t profile_byte = encode_profile(PhyMode::HT, 2, 20);
-  auto wire = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 8);
+  auto wire = make_rcf_wire(1, profile_byte, 8);
   agent.on_rc_frame(wire.data(), wire.size(), 0);
   CHECK(agent.current().shed[1] == false);
   CHECK(agent.congestion_shed() == false);
@@ -624,9 +619,9 @@ TEST(congestion_shed_escalates_and_recovers) {
 
   // Keep LINKED alive with fresh RCFs (seq increasing) before the failsafe
   // window (1000ms since last feedback) would otherwise elapse.
-  auto wire2 = make_rcf_wire(cfg.link.vtx_id, 2, profile_byte, 8);
+  auto wire2 = make_rcf_wire(2, profile_byte, 8);
   agent.on_rc_frame(wire2.data(), wire2.size(), 900);
-  auto wire3 = make_rcf_wire(cfg.link.vtx_id, 3, profile_byte, 8);
+  auto wire3 = make_rcf_wire(3, profile_byte, 8);
   agent.on_rc_frame(wire3.data(), wire3.size(), 1800);
 
   // 2000ms clean (no new drops) -> level decrements 2->1, still sheding enh.
@@ -634,9 +629,9 @@ TEST(congestion_shed_escalates_and_recovers) {
   CHECK(agent.state() == RcAgent::State::LINKED);
   CHECK(agent.current().shed[1] == true);
 
-  auto wire4 = make_rcf_wire(cfg.link.vtx_id, 4, profile_byte, 8);
+  auto wire4 = make_rcf_wire(4, profile_byte, 8);
   agent.on_rc_frame(wire4.data(), wire4.size(), 2700);
-  auto wire5 = make_rcf_wire(cfg.link.vtx_id, 5, profile_byte, 8);
+  auto wire5 = make_rcf_wire(5, profile_byte, 8);
   agent.on_rc_frame(wire5.data(), wire5.size(), 3600);
 
   // A second 2000ms clean window: level decrements 1->0, shed lifts.
@@ -663,7 +658,7 @@ TEST(txq_pressure_sheds_enh_before_drops) {
   agent.tick(0, RadioHealth{});
 
   uint8_t profile_byte = encode_profile(PhyMode::HT, 5, 20);
-  auto wire = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 8);
+  auto wire = make_rcf_wire(1, profile_byte, 8);
   agent.on_rc_frame(wire.data(), wire.size(), 0);
   CHECK(agent.current().shed[1] == false);
 
@@ -679,9 +674,9 @@ TEST(txq_pressure_sheds_enh_before_drops) {
   CHECK(agent.current().ladder[0].mcs == 5);  // op otherwise untouched
 
   // Keep LINKED alive (failsafe_ms = 1000) while the queue drains.
-  auto wire2 = make_rcf_wire(cfg.link.vtx_id, 2, profile_byte, 8);
+  auto wire2 = make_rcf_wire(2, profile_byte, 8);
   agent.on_rc_frame(wire2.data(), wire2.size(), 900);
-  auto wire3 = make_rcf_wire(cfg.link.vtx_id, 3, profile_byte, 8);
+  auto wire3 = make_rcf_wire(3, profile_byte, 8);
   agent.on_rc_frame(wire3.data(), wire3.size(), 1800);
 
   h.txq_depth = 0;
@@ -702,7 +697,7 @@ TEST(failsafe_shed_survives_congestion_reapply) {
   agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS, MAX_RANGE: shed[1]=true
 
   uint8_t profile_byte = encode_profile(PhyMode::HT, 2, 20);
-  auto wire = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 8);
+  auto wire = make_rcf_wire(1, profile_byte, 8);
   agent.on_rc_frame(wire.data(), wire.size(), 0);  // -> LINKED, shed[1]=false
   CHECK(agent.state() == RcAgent::State::LINKED);
   CHECK(agent.current().shed[1] == false);
@@ -737,7 +732,7 @@ TEST(identity_compare_seam_catches_shed_only_republish_generation_compare_misses
   agent.tick(0, RadioHealth{});
 
   uint8_t profile_byte = encode_profile(PhyMode::HT, 2, 20);
-  auto wire = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 8);
+  auto wire = make_rcf_wire(1, profile_byte, 8);
   agent.on_rc_frame(wire.data(), wire.size(), 0);  // -> LINKED, shed all false
   CHECK(agent.current().shed[1] == false);
 
@@ -797,12 +792,12 @@ TEST(bitrate_policy_hysteresis_within_one_second) {
   agent.tick(0, RadioHealth{});
 
   uint8_t profile_byte = encode_profile(PhyMode::HT, 2, 20);
-  auto wire1 = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 8);
+  auto wire1 = make_rcf_wire(1, profile_byte, 8);
   agent.on_rc_frame(wire1.data(), wire1.size(), 0);
   size_t count_after_first = act.bitrates.size();
   REQUIRE(count_after_first >= 1);
 
-  auto wire2 = make_rcf_wire(cfg.link.vtx_id, 2, profile_byte, 8);
+  auto wire2 = make_rcf_wire(2, profile_byte, 8);
   agent.on_rc_frame(wire2.data(), wire2.size(), 500);  // same op, within 1s
   CHECK(act.bitrates.size() == count_after_first);
 }
@@ -821,7 +816,7 @@ TEST(demote_cascade_sheds_every_decrease_immediately) {
   agent.tick(0, RadioHealth{});
 
   // Enter LINKED at the top rung: mcs7, ov 2/16 -> clamp to max = 20000.
-  auto top = make_rcf_wire(cfg.link.vtx_id, 1, encode_profile(PhyMode::HT, 7, 20), 2);
+  auto top = make_rcf_wire(1, encode_profile(PhyMode::HT, 7, 20), 2);
   agent.on_rc_frame(top.data(), top.size(), 0);
   REQUIRE(agent.state() == RcAgent::State::LINKED);
   REQUIRE(!act.bitrates.empty());
@@ -830,7 +825,7 @@ TEST(demote_cascade_sheds_every_decrease_immediately) {
   // Steady top-rung RCFs for 3s: no further calls (dedup), stamp expires.
   uint16_t seq = 2;
   for (uint64_t t = 100; t <= 3000; t += 100) {
-    auto w = make_rcf_wire(cfg.link.vtx_id, seq++,
+    auto w = make_rcf_wire(seq++,
                             encode_profile(PhyMode::HT, 7, 20), 2);
     agent.on_rc_frame(w.data(), w.size(), t);
   }
@@ -858,7 +853,7 @@ TEST(demote_cascade_sheds_every_decrease_immediately) {
   const Step down[] = {{4, 8, 16900}, {2, 8, 8500}, {0, 16, 2100}};
   uint64_t t = 3100;
   for (const Step& d : down) {
-    auto w = make_rcf_wire(cfg.link.vtx_id, seq++,
+    auto w = make_rcf_wire(seq++,
                             encode_profile(PhyMode::HT, d.mcs, 20), d.ov16);
     agent.on_rc_frame(w.data(), w.size(), t);
     REQUIRE(!act.bitrates.empty());
@@ -879,7 +874,7 @@ TEST(bitrate_increase_still_gated) {
 
   // Enter LINKED at mcs2/ov0.5 -> 8500 (forced entry call, stamp t=0; see
   // test 3/10b's blended-formula derivation for this mcs/ov combo).
-  auto w0 = make_rcf_wire(cfg.link.vtx_id, 1, encode_profile(PhyMode::HT, 2, 20), 8);
+  auto w0 = make_rcf_wire(1, encode_profile(PhyMode::HT, 2, 20), 8);
   agent.on_rc_frame(w0.data(), w0.size(), 0);
   REQUIRE(act.bitrates.back() == 8500);
 
@@ -887,19 +882,19 @@ TEST(bitrate_increase_still_gated) {
   // expired: call fires. (ov0.5, not the old ov0.25 -- that combo now
   // clamps to 20000 under same-rate, same as the mcs7 step below, and
   // couldn't show a genuine further increase.)
-  auto w1 = make_rcf_wire(cfg.link.vtx_id, 2, encode_profile(PhyMode::HT, 4, 20), 8);
+  auto w1 = make_rcf_wire(2, encode_profile(PhyMode::HT, 4, 20), 8);
   agent.on_rc_frame(w1.data(), w1.size(), 1100);
   REQUIRE(act.bitrates.back() == 16900);
   size_t n = act.bitrates.size();
 
   // Further promote to mcs7 (20000) 100ms later: inside the throttle
   // window -> deferred.
-  auto w2 = make_rcf_wire(cfg.link.vtx_id, 3, encode_profile(PhyMode::HT, 7, 20), 2);
+  auto w2 = make_rcf_wire(3, encode_profile(PhyMode::HT, 7, 20), 2);
   agent.on_rc_frame(w2.data(), w2.size(), 1200);
   CHECK(act.bitrates.size() == n);
 
   // Same op re-sent after the window: goes out.
-  auto w3 = make_rcf_wire(cfg.link.vtx_id, 4, encode_profile(PhyMode::HT, 7, 20), 2);
+  auto w3 = make_rcf_wire(4, encode_profile(PhyMode::HT, 7, 20), 2);
   agent.on_rc_frame(w3.data(), w3.size(), 2200);
   CHECK(act.bitrates.back() == 20000);
 }
@@ -935,7 +930,7 @@ TEST(promote_reaches_encoder_when_clamp_puts_target_inside_deadband) {
 
   // Enter LINKED at rung 4: mcs4/ov1.5 -> 9360.0 -> 9400 (see the
   // derivation above).
-  auto w0 = make_rcf_wire(cfg.link.vtx_id, 1, encode_profile(PhyMode::HT, 4, 20), 24);
+  auto w0 = make_rcf_wire(1, encode_profile(PhyMode::HT, 4, 20), 24);
   agent.on_rc_frame(w0.data(), w0.size(), 0);
   REQUIRE(agent.state() == RcAgent::State::LINKED);
   REQUIRE(!act.bitrates.empty());
@@ -943,7 +938,7 @@ TEST(promote_reaches_encoder_when_clamp_puts_target_inside_deadband) {
 
   // Promote to rung 5 well after the 1s throttle window: mcs5/ov1.0 ->
   // 15600.0, clamped to 10000. Only 600 above the last applied value.
-  auto w1 = make_rcf_wire(cfg.link.vtx_id, 2, encode_profile(PhyMode::HT, 5, 20), 16);
+  auto w1 = make_rcf_wire(2, encode_profile(PhyMode::HT, 5, 20), 16);
   agent.on_rc_frame(w1.data(), w1.size(), 1100);
   CHECK(act.bitrates.back() == 10000);
 }
@@ -1013,7 +1008,7 @@ TEST(link_established_latches_on_rendezvous_to_linked_rcf_not_on_failsafe_flap) 
   CHECK(!agent.take_link_established());
 
   uint8_t profile_byte = encode_profile(PhyMode::HT, 2, 20);
-  auto rcf1 = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 8);
+  auto rcf1 = make_rcf_wire(1, profile_byte, 8);
   agent.on_rc_frame(rcf1.data(), rcf1.size(), 10);  // RENDEZVOUS -> LINKED
   REQUIRE(agent.state() == RcAgent::State::LINKED);
   CHECK(agent.take_link_established());
@@ -1021,7 +1016,7 @@ TEST(link_established_latches_on_rendezvous_to_linked_rcf_not_on_failsafe_flap) 
 
   agent.tick(1010, RadioHealth{});        // feedback silence -> FAILSAFE
   REQUIRE(agent.state() == RcAgent::State::FAILSAFE);
-  auto rcf2 = make_rcf_wire(cfg.link.vtx_id, 2, profile_byte, 8);
+  auto rcf2 = make_rcf_wire(2, profile_byte, 8);
   agent.on_rc_frame(rcf2.data(), rcf2.size(), 1020);  // FAILSAFE -> LINKED
   REQUIRE(agent.state() == RcAgent::State::LINKED);
   CHECK(!agent.take_link_established());  // flap, not a (re)start
@@ -1039,7 +1034,7 @@ TEST(probe_rcf_fills_the_probe_slot_not_the_enh_layer) {
   RcAgent agent(cfg, act);
   agent.tick(0, RadioHealth{});
   const uint8_t probe_byte = encode_profile(PhyMode::HT, 6, 20);
-  auto wire = make_rcf_wire(1, 1, encode_profile(PhyMode::HT, 5, 20), 8, 8, probe_byte);
+  auto wire = make_rcf_wire(1, encode_profile(PhyMode::HT, 5, 20), 8, 8, probe_byte);
   agent.on_rc_frame(wire.data(), wire.size(), 100);
   REQUIRE(!act.applied.empty());
   const AppliedOp& op = act.applied.back();
@@ -1051,7 +1046,7 @@ TEST(probe_rcf_fills_the_probe_slot_not_the_enh_layer) {
   CHECK(op.probe.ldpc && op.probe.stbc);
   CHECK(agent.probe_on());
   // A follow-up RCF without a probe clears the slot.
-  auto wire2 = make_rcf_wire(1, 2, encode_profile(PhyMode::HT, 5, 20), 8, 8, kNoProbeProfile);
+  auto wire2 = make_rcf_wire(2, encode_profile(PhyMode::HT, 5, 20), 8, 8, kNoProbeProfile);
   agent.on_rc_frame(wire2.data(), wire2.size(), 200);
   CHECK(act.applied.back().probe_profile == kNoProbeProfile);
   CHECK(!agent.probe_on());
@@ -1065,7 +1060,7 @@ TEST(max_range_clears_the_probe_slot) {
   MockActuator act;
   RcAgent agent(cfg, act);
   agent.tick(0, RadioHealth{});
-  auto wire = make_rcf_wire(1, 1, encode_profile(PhyMode::HT, 5, 20), 8, 8,
+  auto wire = make_rcf_wire(1, encode_profile(PhyMode::HT, 5, 20), 8, 8,
                             encode_profile(PhyMode::HT, 6, 20));
   agent.on_rc_frame(wire.data(), wire.size(), 100);
   CHECK(agent.probe_on());
@@ -1084,11 +1079,11 @@ TEST(probe_rcf_does_not_change_bitrate) {
   MockActuator act;
   RcAgent agent(cfg, act);
   agent.tick(0, RadioHealth{});
-  auto plain = make_rcf_wire(1, 1, encode_profile(PhyMode::HT, 5, 20), 8, 8);
+  auto plain = make_rcf_wire(1, encode_profile(PhyMode::HT, 5, 20), 8, 8);
   agent.on_rc_frame(plain.data(), plain.size(), 100);
   REQUIRE(!act.bitrates.empty());
   const int before = act.bitrates.back();
-  auto probed = make_rcf_wire(1, 2, encode_profile(PhyMode::HT, 5, 20), 8, 8,
+  auto probed = make_rcf_wire(2, encode_profile(PhyMode::HT, 5, 20), 8, 8,
                               encode_profile(PhyMode::HT, 6, 20));
   agent.on_rc_frame(probed.data(), probed.size(), 1200);
   CHECK(act.bitrates.back() == before);
@@ -1104,7 +1099,7 @@ TEST(probe_rcf_airs_at_the_probe_profiles_own_width) {
   RcAgent agent(cfg, act);
   agent.tick(0, RadioHealth{});
   const uint8_t probe_byte = encode_profile(PhyMode::HT, 3, 40);
-  auto wire = make_rcf_wire(1, 1, encode_profile(PhyMode::HT, 4, 20), 8, 8, probe_byte);
+  auto wire = make_rcf_wire(1, encode_profile(PhyMode::HT, 4, 20), 8, 8, probe_byte);
   agent.on_rc_frame(wire.data(), wire.size(), 100);
   REQUIRE(!act.applied.empty());
   const AppliedOp& op = act.applied.back();
@@ -1114,7 +1109,7 @@ TEST(probe_rcf_airs_at_the_probe_profiles_own_width) {
 
   // Reverse: op already on 40, probe_profile also 40 (a different mcs) ->
   // probe stays 40 too, not silently coerced to the op's mode/width.
-  auto wire2 = make_rcf_wire(1, 2, encode_profile(PhyMode::HT, 3, 40), 8, 8,
+  auto wire2 = make_rcf_wire(2, encode_profile(PhyMode::HT, 3, 40), 8, 8,
                              encode_profile(PhyMode::HT, 4, 40));
   agent.on_rc_frame(wire2.data(), wire2.size(), 200);
   const AppliedOp& op2 = act.applied.back();
@@ -1128,7 +1123,7 @@ TEST(link_established_latches_on_disc_link_up) {
   MockActuator act;
   RcAgent agent(cfg, act);
   agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS
-  auto disc = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, 136, 20,
+  auto disc = make_disc_wire(0xCAFEF00D, 136, 20,
                              /*init_profile=*/0, /*seq=*/1);
   agent.on_rc_frame(disc.data(), disc.size(), 10);  // RENDEZVOUS -> LINKED
   REQUIRE(agent.state() == RcAgent::State::LINKED);
@@ -1143,7 +1138,7 @@ TEST(disc_foreign_channel_acks_then_retunes) {
   MockActuator act;
   RcAgent agent(cfg, act);
   agent.tick(0, RadioHealth{});
-  auto wire = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, /*op_channel=*/149, 20, 0, 1);
+  auto wire = make_disc_wire(0xCAFEF00D, /*op_channel=*/149, 20, 0, 1);
   agent.on_rc_frame(wire.data(), wire.size(), 100);
   REQUIRE(act.controls.size() == 1);
   auto ack = parse_disc_ack(act.controls[0].data(), act.controls[0].size());
@@ -1164,12 +1159,12 @@ TEST(linked_keepalive_disc_foreign_channel_acks_then_retunes) {
   MockActuator act;
   RcAgent agent(cfg, act);
   agent.tick(0, RadioHealth{});
-  auto home = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, 136, 20, 0, 1);
+  auto home = make_disc_wire(0xCAFEF00D, 136, 20, 0, 1);
   agent.on_rc_frame(home.data(), home.size(), 100);          // -> LINKED on home
   CHECK(agent.state() == RcAgent::State::LINKED);
   const uint64_t gen_before = agent.current().generation;
   const size_t applied_before = act.applied.size();
-  auto move = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, 149, 20, 0, 2);
+  auto move = make_disc_wire(0xCAFEF00D, 149, 20, 0, 2);
   agent.on_rc_frame(move.data(), move.size(), 200);          // LINKED keep-alive path
   REQUIRE(act.controls.size() == 2);
   auto ack = parse_disc_ack(act.controls[1].data(), act.controls[1].size());
@@ -1188,7 +1183,7 @@ TEST(disc_same_channel_never_retunes) {
   MockActuator act;
   RcAgent agent(cfg, act);
   agent.tick(0, RadioHealth{});
-  auto wire = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, 136, 20, 0, 1);
+  auto wire = make_disc_wire(0xCAFEF00D, 136, 20, 0, 1);
   agent.on_rc_frame(wire.data(), wire.size(), 100);
   agent.on_rc_frame(wire.data(), wire.size(), 200);   // LINKED keep-alive
   CHECK(act.retunes.empty());
@@ -1201,7 +1196,7 @@ TEST(unconfirmed_move_returns_home_after_move_confirm_ms) {
   MockActuator act;
   RcAgent agent(cfg, act);
   agent.tick(0, RadioHealth{});
-  auto wire = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, 149, 20, 0, 1);
+  auto wire = make_disc_wire(0xCAFEF00D, 149, 20, 0, 1);
   agent.on_rc_frame(wire.data(), wire.size(), 100);
   agent.tick(1000, RadioHealth{});
   CHECK(act.retunes.size() == 1);
@@ -1229,9 +1224,9 @@ TEST(gs_frame_confirms_move_and_rendezvous_entry_returns_home) {
   MockActuator act;
   RcAgent agent(cfg, act);
   agent.tick(0, RadioHealth{});
-  auto wire = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, 149, 20, 0, 1);
+  auto wire = make_disc_wire(0xCAFEF00D, 149, 20, 0, 1);
   agent.on_rc_frame(wire.data(), wire.size(), 100);
-  auto rcf = make_rcf_wire(cfg.link.vtx_id, 1, encode_profile(PhyMode::HT, 2, 20), 8);
+  auto rcf = make_rcf_wire(1, encode_profile(PhyMode::HT, 2, 20), 8);
   agent.on_rc_frame(rcf.data(), rcf.size(), 500);      // confirms
   agent.tick(2100, RadioHealth{});
   CHECK(act.retunes.size() == 1);                      // no fallback, no FAILSAFE-entry retune
@@ -1251,7 +1246,7 @@ TEST(follow_gs_false_acks_home_and_never_retunes) {
   MockActuator act;
   RcAgent agent(cfg, act);
   agent.tick(0, RadioHealth{});
-  auto wire = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, 149, 20, 0, 1);
+  auto wire = make_disc_wire(0xCAFEF00D, 149, 20, 0, 1);
   agent.on_rc_frame(wire.data(), wire.size(), 100);
   REQUIRE(act.controls.size() == 1);
   CHECK(parse_disc_ack(act.controls[0].data(), act.controls[0].size())->agreed_channel == 136);
@@ -1272,7 +1267,7 @@ TEST(gs_restart_low_seq_accepted_after_failsafe) {
   agent.tick(0, RadioHealth{});
 
   uint8_t profile_byte = encode_profile(PhyMode::HT, 2, 20);
-  auto old_sess = make_rcf_wire(cfg.link.vtx_id, 40000, profile_byte, 8);
+  auto old_sess = make_rcf_wire(40000, profile_byte, 8);
   agent.on_rc_frame(old_sess.data(), old_sess.size(), 100);
   REQUIRE(agent.state() == RcAgent::State::LINKED);
 
@@ -1281,7 +1276,7 @@ TEST(gs_restart_low_seq_accepted_after_failsafe) {
   REQUIRE(agent.state() == RcAgent::State::FAILSAFE);
 
   // Restarted GS: fresh seq numbering near zero must be accepted.
-  auto new_sess = make_rcf_wire(cfg.link.vtx_id, 3, profile_byte, 8);
+  auto new_sess = make_rcf_wire(3, profile_byte, 8);
   agent.on_rc_frame(new_sess.data(), new_sess.size(), 1300);
   CHECK(agent.state() == RcAgent::State::LINKED);
   uint64_t gen = agent.current().generation;
@@ -1307,7 +1302,7 @@ TEST(idr_pacer_min_spacing_and_chain_break_holdoff) {
   RcAgent agent(cfg, act);
   agent.tick(0, RadioHealth{});
   uint8_t profile_byte = encode_profile(PhyMode::HT, 2, 20);
-  auto rcf = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 8);
+  auto rcf = make_rcf_wire(1, profile_byte, 8);
   agent.on_rc_frame(rcf.data(), rcf.size(), 100);  // LINKED
   const int base = act.idr_calls;
 
@@ -1339,7 +1334,7 @@ TEST(refused_bitrate_is_retried_next_policy_tick_then_latched) {
   act.bitrate_ok = false;
   agent.tick(0, RadioHealth{});               // BOOT -> MAX_RANGE, forced apply
   uint8_t profile_byte = encode_profile(PhyMode::HT, 2, 20);
-  auto r1 = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 8);
+  auto r1 = make_rcf_wire(1, profile_byte, 8);
   agent.on_rc_frame(r1.data(), r1.size(), 100);   // -> LINKED, forced apply
   REQUIRE(act.bitrates.size() == 2);
   const int wanted = act.bitrates.back();
@@ -1348,14 +1343,14 @@ TEST(refused_bitrate_is_retried_next_policy_tick_then_latched) {
   // target still counts as changed, and the throttle window never opened
   // (its timestamp is latched on success too), so the retry goes out at once.
   act.bitrate_ok = true;
-  auto r2 = make_rcf_wire(cfg.link.vtx_id, 2, profile_byte, 8);
+  auto r2 = make_rcf_wire(2, profile_byte, 8);
   agent.on_rc_frame(r2.data(), r2.size(), 200);
   REQUIRE(act.bitrates.size() == 3);
   CHECK(act.bitrates.back() == wanted);
 
   // Now it IS latched: an unchanged target past the throttle window is not
   // re-sent, i.e. the success path still dedups exactly as before.
-  auto r3 = make_rcf_wire(cfg.link.vtx_id, 3, profile_byte, 8);
+  auto r3 = make_rcf_wire(3, profile_byte, 8);
   agent.on_rc_frame(r3.data(), r3.size(), 1400);
   CHECK(act.bitrates.size() == 3);
 }
@@ -1382,13 +1377,13 @@ TEST(refused_roi_qp_is_retried_next_policy_tick) {
   // same low bitrate re-attempts the same transition.
   act.roi_ok = true;
   uint8_t mcs0 = encode_profile(PhyMode::HT, 0, 20);
-  auto r1 = make_rcf_wire(cfg.link.vtx_id, 1, mcs0, 16);  // ov 1.00, same op
+  auto r1 = make_rcf_wire(1, mcs0, 16);  // ov 1.00, same op
   agent.on_rc_frame(r1.data(), r1.size(), 100);
   REQUIRE(act.roi_qps.size() == 2);
   CHECK(act.roi_qps.back() == cfg.encoder.roi_qp_low);
 
   // Latched now: no further transition at the same operating point.
-  auto r2 = make_rcf_wire(cfg.link.vtx_id, 2, mcs0, 16);
+  auto r2 = make_rcf_wire(2, mcs0, 16);
   agent.on_rc_frame(r2.data(), r2.size(), 1400);
   CHECK(act.roi_qps.size() == 2);
 }
@@ -1405,7 +1400,7 @@ TEST(idr_at_time_zero_arms_the_floor) {
   RcAgent agent(cfg, act);
   agent.tick(0, RadioHealth{});
   uint8_t profile_byte = encode_profile(PhyMode::HT, 2, 20);
-  auto rcf = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 8);
+  auto rcf = make_rcf_wire(1, profile_byte, 8);
   agent.on_rc_frame(rcf.data(), rcf.size(), 0);  // -> LINKED, IDR at t=0
   REQUIRE(act.idr_calls == 1);
 
@@ -1435,7 +1430,7 @@ TEST(refused_apply_on_failsafe_entry_is_retried_by_the_periodic_reassert) {
 
   agent.tick(0, RadioHealth{});                    // BOOT -> MAX_RANGE, forced
   uint8_t profile_byte = encode_profile(PhyMode::HT, 5, 20);
-  auto r1 = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 4);
+  auto r1 = make_rcf_wire(1, profile_byte, 4);
   agent.on_rc_frame(r1.data(), r1.size(), 100);    // -> LINKED, forced apply
   REQUIRE(act.bitrates.size() == 2);
 
@@ -1486,7 +1481,7 @@ TEST(reassert_is_a_five_second_cadence_not_a_per_tick_spam) {
 
   agent.tick(0, RadioHealth{});                    // BOOT apply  -> call 1
   uint8_t profile_byte = encode_profile(PhyMode::HT, 5, 20);
-  auto r1 = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 4);
+  auto r1 = make_rcf_wire(1, profile_byte, 4);
   agent.on_rc_frame(r1.data(), r1.size(), 100);    // LINKED apply -> call 2
   REQUIRE(act.bitrates.size() == 2);
   const int target = act.bitrates.back();
@@ -1518,9 +1513,9 @@ TEST(reassert_is_a_five_second_cadence_not_a_per_tick_spam) {
 // (epoch, ch) pair retunes and arms move_pending_ like a DISC move, but
 // the RCF that carries the order must not confirm its own move -- the
 // NEXT RCF heard on the new channel does that.
-static std::vector<uint8_t> make_rcf_wire_hop(uint32_t vtx, uint16_t seq, uint8_t profile,
+static std::vector<uint8_t> make_rcf_wire_hop(uint16_t seq, uint8_t profile,
                                               double ovb, double ove, uint8_t hop_ch, uint8_t epoch) {
-  Rcf r; r.vtx_id = vtx; r.seq = seq; r.profile = profile; r.fec_overhead_base = ovb;
+  Rcf r; r.seq = seq; r.profile = profile; r.fec_overhead_base = ovb;
   r.fec_overhead_enh = ove; r.hop_ch = hop_ch; r.hop_epoch = epoch;
   return pack_rcf(r);
 }
@@ -1531,13 +1526,13 @@ static std::vector<uint8_t> make_rcf_wire_hop(uint32_t vtx, uint16_t seq, uint8_
 // in-place on the caller's already-constructed agent instead.
 static void link_agent(RcAgent& agent, const Config& cfg) {
   agent.tick(0, RadioHealth{});
-  auto disc = make_disc_wire(cfg.link.vtx_id, 0xCAFEF00D, /*op_channel=*/136, 20, 0, 1);
+  auto disc = make_disc_wire(0xCAFEF00D, /*op_channel=*/136, 20, 0, 1);
   agent.on_rc_frame(disc.data(), disc.size(), 100);
 }
 
 TEST(rcf_new_hop_pair_retunes_and_arms_move_confirm) {
   auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
-  auto w = make_rcf_wire_hop(cfg.link.vtx_id, 1, 0x24, 1.0, 0.5, /*hop_ch=*/149, /*epoch=*/1);
+  auto w = make_rcf_wire_hop(1, 0x24, 1.0, 0.5, /*hop_ch=*/149, /*epoch=*/1);
   agent.on_rc_frame(w.data(), w.size(), 200);
   REQUIRE(act.retunes.size() == 1);
   CHECK(act.retunes[0] == 149);
@@ -1553,9 +1548,9 @@ TEST(rcf_new_hop_pair_retunes_and_arms_move_confirm) {
 
 TEST(rcf_same_hop_pair_is_idempotent_and_next_rcf_confirms) {
   auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
-  auto w1 = make_rcf_wire_hop(cfg.link.vtx_id, 1, 0x24, 1.0, 0.5, 149, 1);
+  auto w1 = make_rcf_wire_hop(1, 0x24, 1.0, 0.5, 149, 1);
   agent.on_rc_frame(w1.data(), w1.size(), 200);
-  auto w2 = make_rcf_wire_hop(cfg.link.vtx_id, 2, 0x24, 1.0, 0.5, 149, 1);   // repeat, heard on 149
+  auto w2 = make_rcf_wire_hop(2, 0x24, 1.0, 0.5, 149, 1);   // repeat, heard on 149
   agent.on_rc_frame(w2.data(), w2.size(), 260);
   CHECK(act.retunes.size() == 1);
   agent.tick(260 + cfg.link.move_confirm_ms + 100, RadioHealth{});
@@ -1565,9 +1560,9 @@ TEST(rcf_same_hop_pair_is_idempotent_and_next_rcf_confirms) {
 
 TEST(rcf_hop_withdrawal_returns_to_previous_channel) {
   auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
-  auto w1 = make_rcf_wire_hop(cfg.link.vtx_id, 1, 0x24, 1.0, 0.5, 149, 1);
+  auto w1 = make_rcf_wire_hop(1, 0x24, 1.0, 0.5, 149, 1);
   agent.on_rc_frame(w1.data(), w1.size(), 200);
-  auto w2 = make_rcf_wire_hop(cfg.link.vtx_id, 2, 0x24, 1.0, 0.5, 136, 2);   // withdraw: new epoch, old channel
+  auto w2 = make_rcf_wire_hop(2, 0x24, 1.0, 0.5, 136, 2);   // withdraw: new epoch, old channel
   agent.on_rc_frame(w2.data(), w2.size(), 400);
   REQUIRE(act.retunes.size() == 2);
   CHECK(act.retunes[1] == 136);
@@ -1585,16 +1580,16 @@ TEST(rcf_hop_withdrawal_returns_to_previous_channel) {
 // go to) home instead of 149.
 static void hop_and_confirm(RcAgent& agent, const Config& cfg, uint8_t ch, uint8_t epoch,
                             uint16_t seq, uint64_t t) {
-  auto order = make_rcf_wire_hop(cfg.link.vtx_id, seq, 0x24, 1.0, 0.5, ch, epoch);
+  auto order = make_rcf_wire_hop(seq, 0x24, 1.0, 0.5, ch, epoch);
   agent.on_rc_frame(order.data(), order.size(), t);
-  auto confirm = make_rcf_wire_hop(cfg.link.vtx_id, seq + 1, 0x24, 1.0, 0.5, ch, epoch);
+  auto confirm = make_rcf_wire_hop(seq + 1, 0x24, 1.0, 0.5, ch, epoch);
   agent.on_rc_frame(confirm.data(), confirm.size(), t + 60);   // heard on ch: confirmed
 }
 
 TEST(unconfirmed_hop_into_home_reverts_to_pre_hop_channel) {
   auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
   hop_and_confirm(agent, cfg, 149, 1, 1, 200);                  // op is now 149
-  auto w = make_rcf_wire_hop(cfg.link.vtx_id, 3, 0x24, 1.0, 0.5, /*hop_ch=*/136, 2);  // target == home
+  auto w = make_rcf_wire_hop(3, 0x24, 1.0, 0.5, /*hop_ch=*/136, 2);  // target == home
   agent.on_rc_frame(w.data(), w.size(), 1000);
   REQUIRE(act.retunes.size() == 2);
   CHECK(act.retunes[1] == 136);
@@ -1608,7 +1603,7 @@ TEST(unconfirmed_hop_into_home_reverts_to_pre_hop_channel) {
 TEST(unconfirmed_hop_reverts_to_pre_hop_channel_not_home) {
   auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
   hop_and_confirm(agent, cfg, 149, 1, 1, 200);
-  auto w = make_rcf_wire_hop(cfg.link.vtx_id, 3, 0x24, 1.0, 0.5, 161, 2);
+  auto w = make_rcf_wire_hop(3, 0x24, 1.0, 0.5, 161, 2);
   agent.on_rc_frame(w.data(), w.size(), 1000);
   agent.tick(1000 + cfg.link.move_confirm_ms + 100, RadioHealth{});
   REQUIRE(act.retunes.size() == 3);
@@ -1621,7 +1616,7 @@ TEST(unconfirmed_hop_reverts_to_pre_hop_channel_not_home) {
 TEST(silence_after_hop_revert_falls_back_home) {
   auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
   hop_and_confirm(agent, cfg, 149, 1, 1, 200);
-  auto w = make_rcf_wire_hop(cfg.link.vtx_id, 3, 0x24, 1.0, 0.5, 161, 2);
+  auto w = make_rcf_wire_hop(3, 0x24, 1.0, 0.5, 161, 2);
   agent.on_rc_frame(w.data(), w.size(), 1000);
   const uint64_t t_revert = 1000 + cfg.link.move_confirm_ms + 100;
   agent.tick(t_revert, RadioHealth{});
@@ -1638,12 +1633,12 @@ TEST(silence_after_hop_revert_falls_back_home) {
 TEST(withdraw_rcf_after_hop_revert_confirms_it) {
   auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
   hop_and_confirm(agent, cfg, 149, 1, 1, 200);
-  auto w = make_rcf_wire_hop(cfg.link.vtx_id, 3, 0x24, 1.0, 0.5, 161, 2);
+  auto w = make_rcf_wire_hop(3, 0x24, 1.0, 0.5, 161, 2);
   agent.on_rc_frame(w.data(), w.size(), 1000);
   const uint64_t t_revert = 1000 + cfg.link.move_confirm_ms + 100;
   agent.tick(t_revert, RadioHealth{});
   REQUIRE(act.retunes.size() == 3);
-  auto wd = make_rcf_wire_hop(cfg.link.vtx_id, 4, 0x24, 1.0, 0.5, 149, 3);
+  auto wd = make_rcf_wire_hop(4, 0x24, 1.0, 0.5, 149, 3);
   agent.on_rc_frame(wd.data(), wd.size(), t_revert + 50);
   agent.tick(t_revert + cfg.link.move_confirm_ms + 100, RadioHealth{});
   CHECK(act.retunes.size() == 3);
@@ -1652,7 +1647,7 @@ TEST(withdraw_rcf_after_hop_revert_confirms_it) {
 
 TEST(rcf_hop_ch_zero_is_ignored) {
   auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
-  auto w = make_rcf_wire_hop(cfg.link.vtx_id, 1, 0x24, 1.0, 0.5, 0, 5);
+  auto w = make_rcf_wire_hop(1, 0x24, 1.0, 0.5, 0, 5);
   agent.on_rc_frame(w.data(), w.size(), 200);
   CHECK(act.retunes.empty());
   CHECK(agent.hop_epoch() == 0);
@@ -1666,7 +1661,7 @@ TEST(rcf_hop_ch_zero_is_ignored) {
 // session boundary, which is the one a fresh GS process actually takes.
 TEST(new_disc_session_clears_stale_hop_state_so_the_next_hop_retunes) {
   auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
-  auto w1 = make_rcf_wire_hop(cfg.link.vtx_id, 1, 0x24, 1.0, 0.5, 149, 1);
+  auto w1 = make_rcf_wire_hop(1, 0x24, 1.0, 0.5, 149, 1);
   agent.on_rc_frame(w1.data(), w1.size(), 200);
   REQUIRE(act.retunes.size() == 1);
   CHECK(act.retunes[0] == 149);
@@ -1687,7 +1682,7 @@ TEST(new_disc_session_clears_stale_hop_state_so_the_next_hop_retunes) {
   // LINKED, so this is the full session-establish path, not the ack-only
   // keep-alive one) proposing the same home channel we're already on, so it
   // is not itself a move.
-  auto disc2 = make_disc_wire(cfg.link.vtx_id, 0xFEEDFACE, /*op_channel=*/136, 20, 0, 1);
+  auto disc2 = make_disc_wire(0xFEEDFACE, /*op_channel=*/136, 20, 0, 1);
   agent.on_rc_frame(disc2.data(), disc2.size(), 3000);
   CHECK(act.retunes.size() == 2);  // no move: proposed channel == current
   CHECK(agent.hop_epoch() == 0);
@@ -1697,7 +1692,7 @@ TEST(new_disc_session_clears_stale_hop_state_so_the_next_hop_retunes) {
   // as "already applied" (stale hop_epoch_==1 latched from the old
   // session) and the drone would silently stay on home while the GS
   // believes it has moved to 149.
-  auto w2 = make_rcf_wire_hop(cfg.link.vtx_id, 1, 0x24, 1.0, 0.5, 149, 1);
+  auto w2 = make_rcf_wire_hop(1, 0x24, 1.0, 0.5, 149, 1);
   agent.on_rc_frame(w2.data(), w2.size(), 3100);
   REQUIRE(act.retunes.size() == 3);
   CHECK(act.retunes[2] == 149);
@@ -1711,12 +1706,12 @@ TEST(new_disc_session_clears_stale_hop_state_so_the_next_hop_retunes) {
 // commanding a different channel must still be applied.
 TEST(rcf_same_epoch_different_channel_is_applied_not_ignored) {
   auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
-  auto w1 = make_rcf_wire_hop(cfg.link.vtx_id, 1, 0x24, 1.0, 0.5, 149, 1);
+  auto w1 = make_rcf_wire_hop(1, 0x24, 1.0, 0.5, 149, 1);
   agent.on_rc_frame(w1.data(), w1.size(), 200);
   REQUIRE(act.retunes.size() == 1);
   CHECK(act.retunes[0] == 149);
 
-  auto w2 = make_rcf_wire_hop(cfg.link.vtx_id, 2, 0x24, 1.0, 0.5, /*hop_ch=*/40, /*epoch=*/1);
+  auto w2 = make_rcf_wire_hop(2, 0x24, 1.0, 0.5, /*hop_ch=*/40, /*epoch=*/1);
   agent.on_rc_frame(w2.data(), w2.size(), 260);
   REQUIRE(act.retunes.size() == 2);
   CHECK(act.retunes[1] == 40);
@@ -1727,17 +1722,17 @@ TEST(rcf_same_epoch_different_channel_is_applied_not_ignored) {
 
 // VTX onboard recorder (spec 2026-09-26): RcAgent applies the RCF `rec` wish.
 
-static std::vector<uint8_t> make_rcf_wire_rec(uint32_t vtx, uint16_t seq, uint8_t rec) {
-  Rcf r; r.vtx_id = vtx; r.seq = seq; r.profile = 0x24;
+static std::vector<uint8_t> make_rcf_wire_rec(uint16_t seq, uint8_t rec) {
+  Rcf r; r.seq = seq; r.profile = 0x24;
   r.fec_overhead_base = 1.0; r.fec_overhead_enh = 0.5; r.rec = rec;
   return pack_rcf(r);
 }
 
 TEST(rcf_rec_known_on_calls_set_record_once) {
   auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
-  auto w1 = make_rcf_wire_rec(cfg.link.vtx_id, 1, kRecKnown | kRecOn);
+  auto w1 = make_rcf_wire_rec(1, kRecKnown | kRecOn);
   agent.on_rc_frame(w1.data(), w1.size(), 200);
-  auto w2 = make_rcf_wire_rec(cfg.link.vtx_id, 2, kRecKnown | kRecOn);
+  auto w2 = make_rcf_wire_rec(2, kRecKnown | kRecOn);
   agent.on_rc_frame(w2.data(), w2.size(), 210);
   REQUIRE(act.records.size() == 1);
   CHECK(act.records[0] == true);
@@ -1747,21 +1742,21 @@ TEST(rcf_rec_unknown_leaves_recorder) {
   // maburgs restarted: its wish is unknown until the player re-sends. The
   // onboard recording must NOT stop on that.
   auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
-  auto on = make_rcf_wire_rec(cfg.link.vtx_id, 1, kRecKnown | kRecOn);
+  auto on = make_rcf_wire_rec(1, kRecKnown | kRecOn);
   agent.on_rc_frame(on.data(), on.size(), 200);
-  auto unk = make_rcf_wire_rec(cfg.link.vtx_id, 2, 0);
+  auto unk = make_rcf_wire_rec(2, 0);
   agent.on_rc_frame(unk.data(), unk.size(), 210);
   CHECK(act.records.size() == 1);
 }
 
 TEST(rcf_rec_known_off_stops_and_link_loss_does_not) {
   auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
-  auto on = make_rcf_wire_rec(cfg.link.vtx_id, 1, kRecKnown | kRecOn);
+  auto on = make_rcf_wire_rec(1, kRecKnown | kRecOn);
   agent.on_rc_frame(on.data(), on.size(), 200);
   agent.tick(200 + cfg.link.failsafe_ms + 100, RadioHealth{});   // link lost
   CHECK(agent.state() == RcAgent::State::FAILSAFE);
   CHECK(act.records.size() == 1);                                // no timer stop
-  auto off = make_rcf_wire_rec(cfg.link.vtx_id, 2, kRecKnown);
+  auto off = make_rcf_wire_rec(2, kRecKnown);
   agent.on_rc_frame(off.data(), off.size(), 2000);
   REQUIRE(act.records.size() == 2);
   CHECK(act.records[1] == false);
@@ -1770,12 +1765,12 @@ TEST(rcf_rec_known_off_stops_and_link_loss_does_not) {
 TEST(rcf_rec_retries_until_the_actuator_takes_it) {
   auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
   act.record_ok = false;
-  auto w1 = make_rcf_wire_rec(cfg.link.vtx_id, 1, kRecKnown | kRecOn);
+  auto w1 = make_rcf_wire_rec(1, kRecKnown | kRecOn);
   agent.on_rc_frame(w1.data(), w1.size(), 200);
   act.record_ok = true;
-  auto w2 = make_rcf_wire_rec(cfg.link.vtx_id, 2, kRecKnown | kRecOn);
+  auto w2 = make_rcf_wire_rec(2, kRecKnown | kRecOn);
   agent.on_rc_frame(w2.data(), w2.size(), 210);
-  auto w3 = make_rcf_wire_rec(cfg.link.vtx_id, 3, kRecKnown | kRecOn);
+  auto w3 = make_rcf_wire_rec(3, kRecKnown | kRecOn);
   agent.on_rc_frame(w3.data(), w3.size(), 220);
   CHECK(act.records.size() == 2);   // failed once, taken once, then latched
 }
@@ -1784,8 +1779,8 @@ TEST(rcf_rec_retries_until_the_actuator_takes_it) {
 // raises one pending IDR, served from tick() through the shared pacer and
 // deferred (not dropped) when the 100 ms floor refuses it.
 
-static std::vector<uint8_t> make_rcf_wire_idr(uint32_t vtx, uint16_t seq, uint8_t epoch) {
-  Rcf r; r.vtx_id = vtx; r.seq = seq; r.profile = 0x24;
+static std::vector<uint8_t> make_rcf_wire_idr(uint16_t seq, uint8_t epoch) {
+  Rcf r; r.seq = seq; r.profile = 0x24;
   r.fec_overhead_base = 1.0; r.fec_overhead_enh = 0.5; r.idr_epoch = epoch;
   return pack_rcf(r);
 }
@@ -1793,18 +1788,18 @@ static std::vector<uint8_t> make_rcf_wire_idr(uint32_t vtx, uint16_t seq, uint8_
 TEST(gs_idr_epoch_bump_fires_exactly_one_idr) {
   auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
   const int base = act.idr_calls;
-  auto w1 = make_rcf_wire_idr(cfg.link.vtx_id, 1, 0);
+  auto w1 = make_rcf_wire_idr(1, 0);
   agent.on_rc_frame(w1.data(), w1.size(), 200);
   agent.tick(210, RadioHealth{});
   CHECK(act.idr_calls == base);                 // epoch 0 == seen 0: nothing
-  auto w2 = make_rcf_wire_idr(cfg.link.vtx_id, 2, 1);
+  auto w2 = make_rcf_wire_idr(2, 1);
   agent.on_rc_frame(w2.data(), w2.size(), 250);
   CHECK(act.idr_calls == base);                 // served from tick(), not intake
   agent.tick(260, RadioHealth{});
   CHECK(act.idr_calls == base + 1);
   CHECK(agent.idr_gs_total() == 1);
   // The same epoch repeated in every later RCF is not a new request.
-  auto w3 = make_rcf_wire_idr(cfg.link.vtx_id, 3, 1);
+  auto w3 = make_rcf_wire_idr(3, 1);
   agent.on_rc_frame(w3.data(), w3.size(), 300);
   agent.tick(400, RadioHealth{});
   CHECK(act.idr_calls == base + 1);
@@ -1817,7 +1812,7 @@ TEST(gs_idr_inside_pacer_floor_is_deferred_not_dropped) {
   agent.note_chain_break();
   agent.tick(200, RadioHealth{});               // chain-break IDR at t=200
   REQUIRE(act.idr_calls == base + 1);
-  auto w = make_rcf_wire_idr(cfg.link.vtx_id, 1, 1);
+  auto w = make_rcf_wire_idr(1, 1);
   agent.on_rc_frame(w.data(), w.size(), 240);
   agent.tick(250, RadioHealth{});               // 50 ms after the last IDR: refused
   CHECK(act.idr_calls == base + 1);
@@ -1831,9 +1826,9 @@ TEST(gs_idr_inside_pacer_floor_is_deferred_not_dropped) {
 TEST(gs_idr_bumps_collapse_into_one_pending_idr) {
   auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
   const int base = act.idr_calls;
-  auto w1 = make_rcf_wire_idr(cfg.link.vtx_id, 1, 1);
+  auto w1 = make_rcf_wire_idr(1, 1);
   agent.on_rc_frame(w1.data(), w1.size(), 200);
-  auto w2 = make_rcf_wire_idr(cfg.link.vtx_id, 2, 2);
+  auto w2 = make_rcf_wire_idr(2, 2);
   agent.on_rc_frame(w2.data(), w2.size(), 205);
   agent.tick(210, RadioHealth{});
   agent.tick(400, RadioHealth{});
@@ -1844,10 +1839,10 @@ TEST(gs_idr_bumps_collapse_into_one_pending_idr) {
 TEST(gs_idr_epoch_wrap_is_still_a_change) {
   auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
   const int base = act.idr_calls;
-  auto w1 = make_rcf_wire_idr(cfg.link.vtx_id, 1, 255);
+  auto w1 = make_rcf_wire_idr(1, 255);
   agent.on_rc_frame(w1.data(), w1.size(), 200);
   agent.tick(210, RadioHealth{});
-  auto w2 = make_rcf_wire_idr(cfg.link.vtx_id, 2, 0);
+  auto w2 = make_rcf_wire_idr(2, 0);
   agent.on_rc_frame(w2.data(), w2.size(), 400);
   agent.tick(410, RadioHealth{});
   CHECK(act.idr_calls == base + 2);
@@ -1858,7 +1853,7 @@ TEST(gs_idr_nonzero_epoch_on_first_rcf_after_disc_is_served) {
   // up (epoch already nonzero) must get one on the first RCF.
   auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
   const int base = act.idr_calls;
-  auto w = make_rcf_wire_idr(cfg.link.vtx_id, 1, 7);
+  auto w = make_rcf_wire_idr(1, 7);
   agent.on_rc_frame(w.data(), w.size(), 200);
   agent.tick(210, RadioHealth{});
   CHECK(act.idr_calls == base + 1);
@@ -1873,17 +1868,17 @@ TEST(gs_idr_seen_epoch_resets_across_a_failsafe_and_new_disc_session) {
   // returns before any session reset; that is why the test goes through
   // FAILSAFE first.
   auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
-  auto w1 = make_rcf_wire_idr(cfg.link.vtx_id, 1, 3);
+  auto w1 = make_rcf_wire_idr(1, 3);
   agent.on_rc_frame(w1.data(), w1.size(), 200);
   agent.tick(210, RadioHealth{});
   const int after_first = act.idr_calls;
   agent.tick(200 + cfg.link.failsafe_ms + 10, RadioHealth{});
   REQUIRE(agent.state() == RcAgent::State::FAILSAFE);
-  auto disc = make_disc_wire(cfg.link.vtx_id, 0xBEEF0001, 136, 20, 0, 2);
+  auto disc = make_disc_wire(0xBEEF0001, 136, 20, 0, 2);
   agent.on_rc_frame(disc.data(), disc.size(), 1300);   // DISC path: no IDR of its own
   REQUIRE(agent.state() == RcAgent::State::LINKED);
   REQUIRE(act.idr_calls == after_first);
-  auto w2 = make_rcf_wire_idr(cfg.link.vtx_id, 1, 3);
+  auto w2 = make_rcf_wire_idr(1, 3);
   agent.on_rc_frame(w2.data(), w2.size(), 1400);
   agent.tick(1410, RadioHealth{});
   CHECK(act.idr_calls == after_first + 1);      // seen reset to 0, so 3 is a change
@@ -1897,7 +1892,7 @@ TEST(gs_idr_served_on_the_tick_that_enters_failsafe) {
   // floor has passed still goes out on the tick that notices lost feedback.
   auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
   const int base = act.idr_calls;
-  auto w1 = make_rcf_wire_idr(cfg.link.vtx_id, 1, 1);
+  auto w1 = make_rcf_wire_idr(1, 1);
   agent.on_rc_frame(w1.data(), w1.size(), 250);
   agent.tick(250 + cfg.link.failsafe_ms + 10, RadioHealth{});   // first tick since the RCF
   CHECK(agent.state() == RcAgent::State::FAILSAFE);
@@ -1914,7 +1909,7 @@ TEST(gs_idr_rcf_failsafe_recovery_sends_exactly_one_idr) {
   // it into a redundant second IDR ~100 ms after recovery.
   auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); link_agent(agent, cfg);
   const int base = act.idr_calls;
-  auto w1 = make_rcf_wire_idr(cfg.link.vtx_id, 1, 5);
+  auto w1 = make_rcf_wire_idr(1, 5);
   agent.on_rc_frame(w1.data(), w1.size(), 200);
   agent.tick(210, RadioHealth{});                // GS request served
   REQUIRE(act.idr_calls == base + 1);
@@ -1924,7 +1919,7 @@ TEST(gs_idr_rcf_failsafe_recovery_sends_exactly_one_idr) {
   // FAILSAFE -> LINKED via RCF, same epoch as before: entering_linked's own
   // link-up IDR must cover the request the intake just re-armed, in the
   // same RCF -- not a second one 100 ms later.
-  auto w2 = make_rcf_wire_idr(cfg.link.vtx_id, 1, 5);
+  auto w2 = make_rcf_wire_idr(1, 5);
   agent.on_rc_frame(w2.data(), w2.size(), 1400);
   agent.tick(1450, RadioHealth{});
   agent.tick(1600, RadioHealth{});
@@ -1941,7 +1936,7 @@ TEST(gs_idr_rcf_failsafe_recovery_sends_exactly_one_idr) {
 static void link_up_mcs5(RcAgent& agent, const Config& cfg) {
   agent.tick(0, RadioHealth{});
   uint8_t profile_byte = encode_profile(PhyMode::HT, 5, 20);
-  auto r1 = make_rcf_wire(cfg.link.vtx_id, 1, profile_byte, 8);
+  auto r1 = make_rcf_wire(1, profile_byte, 8);
   agent.on_rc_frame(r1.data(), r1.size(), 100);
   REQUIRE(agent.state() == RcAgent::State::LINKED);
 }
@@ -2036,7 +2031,7 @@ TEST(low_power_silence_after_arming_never_reenters) {
   const uint8_t profile_byte = encode_profile(PhyMode::HT, 5, 20);
   uint16_t seq = 2;
   for (uint64_t t = 300; t <= 9000; t += 300) {
-    auto r = make_rcf_wire(cfg.link.vtx_id, seq++, profile_byte, 8);
+    auto r = make_rcf_wire(seq++, profile_byte, 8);
     agent.on_rc_frame(r.data(), r.size(), t);
     agent.tick(t, RadioHealth{});
     CHECK(!agent.low_power());
@@ -2058,11 +2053,11 @@ TEST(low_power_exits_when_the_disarmed_report_goes_stale) {
   CHECK(agent.low_power());
   // RCFs keep the link LINKED (failsafe_ms 1000) so the only policy runs
   // below are the ones this test is about.
-  auto r2 = make_rcf_wire(cfg.link.vtx_id, 2, profile_byte, 8);
+  auto r2 = make_rcf_wire(2, profile_byte, 8);
   agent.on_rc_frame(r2.data(), r2.size(), 900);
   agent.tick(1000, RadioHealth{});      // report 750 ms old: still fresh
   CHECK(agent.low_power());
-  auto r3 = make_rcf_wire(cfg.link.vtx_id, 3, profile_byte, 8);
+  auto r3 = make_rcf_wire(3, profile_byte, 8);
   agent.on_rc_frame(r3.data(), r3.size(), 1800);
   agent.tick(2300, RadioHealth{});      // 2050 ms old: stale
   CHECK(!agent.low_power());
@@ -2132,7 +2127,7 @@ TEST(low_power_reassert_restates_fps) {
     agent.note_arm_state(false, t);     // FC keeps answering DISARMED
     // Same-op RCFs keep the link LINKED; with force=false an unchanged
     // target sends nothing (fps or bitrate).
-    auto r = make_rcf_wire(cfg.link.vtx_id, seq++, profile_byte, 8);
+    auto r = make_rcf_wire(seq++, profile_byte, 8);
     agent.on_rc_frame(r.data(), r.size(), t);
     agent.tick(t, RadioHealth{});
   }

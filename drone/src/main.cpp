@@ -1606,9 +1606,7 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
     const int rc_type = rc::frame_type(body, body_len);
     if (rc_type >= 0) {
       // T_CAL_CMD/T_CAL_RESULT go to cal_queue instead of rc_queue: they
-      // are not vtx_id-filtered the way Rcf/Disc are inside RcAgent (the
-      // GS's CalControl has no config access and always sends vtx_id=0),
-      // and CalSweep's on_cmd/on_result must run on the TX writer thread,
+      // need CalSweep's on_cmd/on_result to run on the TX writer thread,
       // not the agent thread rc_queue feeds.
       if (rc_type == rc::T_CAL_CMD || rc_type == rc::T_CAL_RESULT) {
         cal_queue.push(body, body_len);
@@ -2257,7 +2255,6 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
       // kGapUs exactly, or the GS's listen-window deadline
       // (plan_duration_ms) desyncs from what actually airs.
       rc::CalCmd verify;
-      verify.vtx_id = result.vtx_id;
       verify.nonce = result.nonce;
       verify.phase = cal::kPhaseVerify;
       // Authority for all three: gs/src/cal_plan.h's kVerifyFrames/
