@@ -421,16 +421,34 @@ TEST(wrong_key_disc_gets_flagged_ack_and_nothing_else) {
   CHECK(agent.state() == RcAgent::State::RENDEZVOUS);
 }
 
-TEST(failsafe_keeps_the_session_so_the_first_rcf_back_relinks) {
+// Spec 2026-10-01 §7: failsafe entry clears both sessions. Otherwise every
+// RCF the GS sent during an uplink fade stays replayable (valid tag, seq32
+// still ahead of the tracker) for the life of the process. Recovery is the
+// GS's next keep-alive DISC, which gets a fresh pair.
+TEST(failsafe_clears_the_session_and_the_keepalive_disc_relinks) {
   Config cfg = make_cfg();
   MockActuator act;
   RcAgent agent(cfg, act);
   const uint32_t vtx = link_agent(agent, act, cfg);           // link RCF at t=110
   agent.tick(110 + cfg.link.failsafe_ms + 1, RadioHealth{});
   CHECK(agent.state() == RcAgent::State::FAILSAFE);
+  CHECK(!agent.current_session().valid);
+  // An RCF the GS sent during the fade (old pair, seq ahead): rejected.
   auto back = make_rcf_wire(2, encode_profile(PhyMode::HT, 3, 20), 8, vtx);
   agent.on_rc_frame(back.data(), back.size(), 2000);
+  CHECK(agent.state() == RcAgent::State::FAILSAFE);
+  CHECK(agent.take_auth_reject());
+  CHECK(agent.current().ladder[0].mcs == 0);
+  // Keep-alive DISC from the same GS (same vrx): a NEW vtx_nonce.
+  auto disc = make_disc_wire(kVrx, 136, 20, 0, 9);
+  agent.on_rc_frame(disc.data(), disc.size(), 2100);
+  const uint32_t vtx2 = last_ack_vtx(act);
+  CHECK(vtx2 != vtx);
+  CHECK(agent.state() == RcAgent::State::FAILSAFE);           // a DISC never links
+  auto first = make_rcf_wire(1, encode_profile(PhyMode::HT, 3, 20), 8, vtx2);
+  agent.on_rc_frame(first.data(), first.size(), 2110);
   CHECK(agent.state() == RcAgent::State::LINKED);
+  CHECK(agent.current_session().vtx_nonce == vtx2);
   CHECK(!agent.take_auth_reject());
 }
 
@@ -904,7 +922,10 @@ TEST(rcf_after_failsafe_requests_idr) {
   CHECK(agent.state() == RcAgent::State::FAILSAFE);
   int idr_before = act.idr_calls;
 
-  auto wire2 = make_rcf_wire(2, profile_byte, 8, vtx);
+  // Failsafe cleared the session (spec 2026-10-01 §7): the keep-alive DISC
+  // re-pairs, and the first RCF under the new pair re-links.
+  const uint32_t vtx2 = ack_agent(agent, act, 136, kVrx, 1400);
+  auto wire2 = make_rcf_wire(2, profile_byte, 8, vtx2);
   agent.on_rc_frame(wire2.data(), wire2.size(), 1500);
 
   CHECK(agent.state() == RcAgent::State::LINKED);
@@ -1353,7 +1374,9 @@ TEST(link_established_latches_on_rendezvous_to_linked_rcf_not_on_failsafe_flap) 
 
   agent.tick(1010, RadioHealth{});        // feedback silence -> FAILSAFE
   REQUIRE(agent.state() == RcAgent::State::FAILSAFE);
-  auto rcf2 = make_rcf_wire(2, profile_byte, 8, vtx);
+  const uint32_t vtx2 = ack_agent(agent, act, 136, kVrx, 1015);  // keep-alive re-pairs
+  CHECK(!agent.take_link_established());  // the DISC itself latches nothing
+  auto rcf2 = make_rcf_wire(2, profile_byte, 8, vtx2);
   agent.on_rc_frame(rcf2.data(), rcf2.size(), 1020);  // FAILSAFE -> LINKED
   REQUIRE(agent.state() == RcAgent::State::LINKED);
   CHECK(!agent.take_link_established());  // flap, not a (re)start
@@ -1568,6 +1591,22 @@ TEST(unconfirmed_move_returns_home_after_move_confirm_ms) {
   CHECK(act.retune_reasons[1] == "move_unconfirmed");  // spec §7 reason
   CHECK(agent.channel() == 136);
   CHECK(agent.state() == RcAgent::State::RENDEZVOUS);
+  // Leaving LINKED clears both sessions (spec §7), same as failsafe entry:
+  // an RCF under the old pair is rejected ...
+  CHECK(!agent.current_session().valid);
+  const uint32_t old_vtx = parse_disc_ack(act.controls[0].data(), act.controls[0].size())->vtx_nonce;
+  auto stale = make_rcf_wire(2, encode_profile(PhyMode::HT, 3, 20), 8, old_vtx);
+  agent.on_rc_frame(stale.data(), stale.size(), 2200);
+  CHECK(agent.state() == RcAgent::State::RENDEZVOUS);
+  CHECK(agent.take_auth_reject());
+  // ... and the keep-alive DISC (same vrx) gets a NEW pair that links.
+  auto disc = make_disc_wire(kVrx, 136, 20, 0, 2);
+  agent.on_rc_frame(disc.data(), disc.size(), 2300);
+  const uint32_t vtx2 = last_ack_vtx(act);
+  CHECK(vtx2 != old_vtx);
+  auto first = make_rcf_wire(1, encode_profile(PhyMode::HT, 2, 20), 8, vtx2);
+  agent.on_rc_frame(first.data(), first.size(), 2310);
+  CHECK(agent.state() == RcAgent::State::LINKED);
 }
 
 // Reordered from the brief (which ticked 3000 then 1600, non-monotonic) to a
@@ -2003,7 +2042,13 @@ TEST(silence_after_hop_revert_falls_back_home) {
 // The withdrawing GS's RCF (new epoch, old channel) heard after the revert
 // confirms it: no further retune, the drone stays on the pre-hop channel.
 TEST(withdraw_rcf_after_hop_revert_confirms_it) {
-  auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); const uint32_t vtx = link_agent(agent, act, cfg);
+  auto cfg = make_cfg();
+  // The bundle's failsafe_ms (3000): the revert lands move_confirm_ms after
+  // the hop order, inside failsafe. With make_cfg's 1000 the drone would be
+  // in FAILSAFE by then, which clears the session (spec 2026-10-01 §7) and
+  // makes the withdrawal wait for a keep-alive re-pair -- a different test.
+  cfg.link.failsafe_ms = 3000;
+  MockActuator act; RcAgent agent(cfg, act); const uint32_t vtx = link_agent(agent, act, cfg);
   hop_and_confirm(agent, cfg, 149, 1, 2, 200, vtx);
   auto w = make_rcf_wire_hop(4, 0x24, 1.0, 0.5, 161, 2, vtx);
   agent.on_rc_frame(w.data(), w.size(), 1000);
@@ -2128,7 +2173,9 @@ TEST(rcf_rec_known_off_stops_and_link_loss_does_not) {
   agent.tick(200 + cfg.link.failsafe_ms + 100, RadioHealth{});   // link lost
   CHECK(agent.state() == RcAgent::State::FAILSAFE);
   CHECK(act.records.size() == 1);                                // no timer stop
-  auto off = make_rcf_wire_rec(3, kRecKnown, vtx);
+  const uint32_t vtx2 = ack_agent(agent, act, 136, kVrx, 1900);  // keep-alive re-pairs
+  CHECK(act.records.size() == 1);                                // nor a session clear
+  auto off = make_rcf_wire_rec(3, kRecKnown, vtx2);
   agent.on_rc_frame(off.data(), off.size(), 2000);
   REQUIRE(act.records.size() == 2);
   CHECK(act.records[1] == false);
@@ -2290,9 +2337,10 @@ TEST(gs_idr_rcf_failsafe_recovery_sends_exactly_one_idr) {
   const int after_failsafe = act.idr_calls;
   // FAILSAFE -> LINKED via RCF, same epoch as before: entering_linked's own
   // link-up IDR must cover the request the intake just re-armed, in the
-  // same RCF -- not a second one 100 ms later. The session (and its seq)
-  // survives FAILSAFE, so the GS's next RCF is simply seq 3.
-  auto w2 = make_rcf_wire_idr(3, 5, vtx);
+  // same RCF -- not a second one 100 ms later. FAILSAFE cleared the
+  // session (spec 2026-10-01 §7): the keep-alive DISC re-pairs first.
+  const uint32_t vtx2 = ack_agent(agent, act, 136, kVrx, 1300);
+  auto w2 = make_rcf_wire_idr(3, 5, vtx2);
   agent.on_rc_frame(w2.data(), w2.size(), 1400);
   agent.tick(1450, RadioHealth{});
   agent.tick(1600, RadioHealth{});

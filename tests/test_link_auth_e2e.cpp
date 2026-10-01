@@ -1,5 +1,6 @@
 // RcAgent <-> VrxController loopback: the only place both ends of the
 // rendezvous run against each other on the host. Spec 2026-10-01 §11.
+#include <cstdio>
 #include <vector>
 #include "mtest.h"
 #include "mabur/link_key.h"
@@ -146,5 +147,53 @@ TEST(drone_restart_relinks_through_the_keepalive_disc) {
   }
   CHECK(relinked_at >= 0);
   CHECK(relinked_at <= 1200);   // one keep-alive interval + one RCF
+  std::fprintf(stderr, "drone restart: relinked %.0f ms after the swap\n", relinked_at);
+}
+
+// Spec 2026-10-01 §7: failsafe clears both sessions. The GS keeps getting
+// video (so it stays in SESSION and keeps sending RCFs + 1 s keep-alive
+// DISCs) while every GS->drone frame is lost for longer than failsafe_ms.
+// An RCF the GS sent during the fade, replayed after failsafe, must be
+// rejected; once the uplink returns the keep-alive DISC re-pairs and the
+// next RCF re-links.
+TEST(uplink_fade_past_failsafe_relinks_through_the_keepalive_disc) {
+  Loop l(kDefaultLinkKey, kDefaultLinkKey);
+  double t = 0;
+  for (; t < 1000 && l.agent.state() != RcAgent::State::LINKED; t += 10) l.step(t);
+  REQUIRE(l.agent.state() == RcAgent::State::LINKED);
+  for (const double end = t + 500; t < end; t += 10) l.step(t);   // settle
+  REQUIRE(l.agent.state() == RcAgent::State::LINKED);
+  const uint32_t old_vtx = l.agent.current_session().vtx_nonce;
+  (void)l.agent.take_auth_reject();
+
+  // Fade: GS->drone frames dropped, drone ticks on.
+  std::vector<uint8_t> captured;
+  const double fade_end = t + l.cfg.link.failsafe_ms + 300;
+  for (; t < fade_end; t += 10) {
+    l.vrx.on_video(t);
+    if (auto out = l.vrx.step(t, healthy()))
+      if (!out->is_disc) captured = out->frame;
+    if (static_cast<int>(t) % 100 == 0) l.agent.tick(static_cast<uint64_t>(t), RadioHealth{});
+  }
+  REQUIRE(l.agent.state() == RcAgent::State::FAILSAFE);
+  REQUIRE(l.vrx.link_state() == maburgs::VrxState::SESSION);
+  REQUIRE(!captured.empty());
+  CHECK(l.agent.take_auth_reject() == false);
+  l.agent.on_rc_frame(captured.data(), captured.size(), static_cast<uint64_t>(t));
+  CHECK(l.agent.state() == RcAgent::State::FAILSAFE);   // replay refused
+  CHECK(l.agent.take_auth_reject());
+
+  // Uplink back.
+  const double restored = t;
+  double relinked_at = -1;
+  for (; t < restored + 3000; t += 10) {
+    l.step(t);
+    if (l.agent.state() == RcAgent::State::LINKED) { relinked_at = t - restored; break; }
+  }
+  CHECK(relinked_at >= 0);
+  CHECK(relinked_at <= 1200);   // one keep-alive interval + one RCF
+  CHECK(l.agent.current_session().vtx_nonce != old_vtx);
+  CHECK(l.agent.current_session().vrx_nonce == l.vrx.rz_nonce());
+  std::fprintf(stderr, "uplink fade: relinked %.0f ms after restore\n", relinked_at);
 }
 MTEST_MAIN

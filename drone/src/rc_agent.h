@@ -329,6 +329,8 @@ class RcAgent {
   bool verify_rcf_(const uint8_t* body, size_t len, const rc::Rcf& r, const Session& s,
                    uint32_t* seq32) const;
   void publish_session_();
+  // Drops current_ and pending_ and republishes: every exit from LINKED.
+  void clear_sessions_();
 
   // Cumulative count of RCFs accepted (fresh) — feeds
   // Telem.rcf_rx. Never reset (a session-boundary reset would make the GS's

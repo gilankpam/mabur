@@ -34,6 +34,12 @@ uint32_t RcAgent::fresh_vtx_nonce_() {
   return n;
 }
 
+void RcAgent::clear_sessions_() {
+  current_ = Session{};
+  pending_ = Session{};
+  publish_session_();
+}
+
 void RcAgent::publish_session_() {
   published_session_.store(current_.valid
       ? (static_cast<uint64_t>(current_.vrx_nonce) << 32) | current_.vtx_nonce : 0,
@@ -677,6 +683,7 @@ void RcAgent::tick(uint64_t now_ms, const RadioHealth& health) {
     move_from_ch_ = 0;
     if (state_ == State::LINKED) apply_max_range(now_ms);
     state_ = State::RENDEZVOUS;
+    clear_sessions_();   // every exit from LINKED (spec 2026-10-01 §7)
     have_hop_ = false;
     hop_epoch_ = 0;
     hop_ch_ = 0;
@@ -718,8 +725,12 @@ void RcAgent::tick(uint64_t now_ms, const RadioHealth& health) {
     if (have_last_fb_ && now_ms - last_fb_ms_ >= static_cast<uint64_t>(cfg_.link.failsafe_ms)) {
       apply_max_range(now_ms);
       state_ = State::FAILSAFE;
-      // Session and seq kept: the first RCF back re-links; a restarted GS
-      // arrives as a NEW vrx_nonce (spec 2026-10-01 §6).
+      // Failsafe entry clears both sessions (spec 2026-10-01 §7): a kept
+      // pair would leave every RCF the GS sent during the fade replayable
+      // for the life of the process. Recovery: the GS's next keep-alive
+      // DISC gets a fresh pair; its RCFs set auth_reject until then
+      // (<= ~1 s, one beacon_keepalive_ms).
+      clear_sessions_();
       have_hop_ = false;
       hop_epoch_ = 0;
       hop_ch_ = 0;
