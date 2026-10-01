@@ -295,6 +295,7 @@ def render_rows_compact(model, wall, width):
         state_s = state.upper() if isinstance(state, str) else "--"
         header = (
             f"maburgs   {state_s}   "
+            f"key {_s(link.get('key_fp'))}   "
             f"ch {_s(chan)}/h{_s(home)} scan {scan.get('state', '--')}:{_s(scan.get('rounds'))} "
             f"hop {hop.get('state', '--')}/{hop.get('verdict', '--')}   "
             f"tx c{_s(tx_card)}   "
@@ -435,6 +436,7 @@ def render_rows_compact(model, wall, width):
             f"radio rx {_f(rx_s, 4)}   "
             f"shed {(_shed_cell(drone) or '--').ljust(4)}"
             f"   {'LP' if drone.get('low_power') else '  '}"
+            f"   {'AUTH!' if drone.get('auth_reject') else ''}"
             f"   {_rec_cell(drone) or ''}"
         )
 
@@ -533,7 +535,12 @@ def panel_topbar(model, wall):
     link = d.get("link") or {}
     op = link.get("op") or {}
     state = link.get("state")
-    state_s = state.upper() if isinstance(state, str) else "--"
+    if state == "key_mismatch":
+        state_s = "KEY MISMATCH"
+    elif isinstance(state, str):
+        state_s = state.upper()
+    else:
+        state_s = "--"
     chan = link.get("channel")
     mcs, bw = op.get("mcs"), op.get("bw")
     cmd_ov_base = op.get("overhead_base")
@@ -551,7 +558,7 @@ def panel_topbar(model, wall):
 
     dot = "●"
     text = (
-        f" maburgs  {dot} {state_s}   ch {_s(chan)}   "
+        f" maburgs  {dot} {state_s}   key {_s(link.get('key_fp'))}   ch {_s(chan)}   "
         f"cmd MCS {_s(mcs)}/{_s(bw)}  "
         f"{_ov_cmd_cell(cmd_ov_base, cmd_ov_enh)}   "
         f"air ~{_s(air, 0)}%      session {session_s}   "
@@ -563,6 +570,8 @@ def panel_topbar(model, wall):
         spans.append((dot_start, len(dot), "warn"))
     elif state == "session":
         spans.append((dot_start, len(dot), "good"))
+    elif state == "key_mismatch":
+        spans.append((dot_start, len(dot), "bad"))
 
     stale = model.last_rx_wall is not None and (wall - model.last_rx_wall) > STALE_S
     if stale:
@@ -728,6 +737,10 @@ def panel_drone(model, wall):
         line8 += "    LP"
         idx = line8.rindex("LP")
         spans8.append((idx, 2, "warn"))
+    if drone.get("auth_reject"):
+        line8 += "    AUTH!"
+        idx = line8.rindex("AUTH!")
+        spans8.append((idx, len("AUTH!"), "bad"))
     rec_cell = _rec_cell(drone)
     if rec_cell:
         line8 += f"    {rec_cell}"

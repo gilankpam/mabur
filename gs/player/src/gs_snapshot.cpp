@@ -95,6 +95,11 @@ bool parse_gs_snapshot(const char* data, size_t n, GsSnapshot* out) {
     // player's own config is what keeps it honest when the two configs
     // disagree.
     out->channel = integer(*link, "channel");
+    {
+      auto st = link->find("state");
+      out->key_mismatch = st != link->end() && st->is_string() &&
+                          st->get<std::string>() == "key_mismatch";
+    }
     if (hop) {
       const std::optional<int> target = integer(*hop, "target");
       const std::optional<int> home = integer(*link, "home");

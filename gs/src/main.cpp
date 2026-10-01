@@ -615,6 +615,10 @@ static int run_radio(const maburgs::Config& cfg, int loss_sim_port) {
 #else
 static int run_radio(const maburgs::Config& cfg) {
 #endif
+  // Computed once: cfg.link.key never changes over the life of this
+  // process, and the sideport exports it every tick (sin.key_fp below).
+  const std::string key_fp = mabur::key_fingerprint(cfg.link.key);
+
   std::fprintf(stderr, "fec: symbol_size=[%d,%d] seq_horizon=%d\n",
                cfg.fec.symbol_size[0], cfg.fec.symbol_size[1],
                cfg.fec.seq_horizon);
@@ -1817,7 +1821,7 @@ static int run_radio(const maburgs::Config& cfg) {
                    key_mismatch ? "KEY MISMATCH -- the drone rejects our tag; both ends need "
                                   "the same /etc/mabur.key"
                                 : "key accepted",
-                   mabur::key_fingerprint(cfg.link.key).c_str());
+                   key_fp.c_str());
       last_key_mismatch = key_mismatch;
     }
 
@@ -2625,6 +2629,8 @@ static int run_radio(const maburgs::Config& cfg) {
       sin.hop.holds = hopc.holds();
       sin.hop.last_ms = last_hop_event_ms;
       sin.in_session = in_session;
+      sin.key_mismatch = vrx.key_mismatch();
+      sin.key_fp = key_fp;
       sin.tx_card = sel.selected();
       sin.op = vrx.cur_op();
       for (int s = 0; s < 2; ++s)
@@ -2912,8 +2918,9 @@ int main(int argc, char** argv) {
       for (const std::string& d : defaulted)
         std::fprintf(stderr, "  %s\n", d.c_str());
     }
+    const std::string key_fp = mabur::key_fingerprint(cfg.link.key);
     std::fprintf(stderr, "maburgs: link: key %s (%s)\n",
-                 mabur::key_fingerprint(cfg.link.key).c_str(), cfg.link.key_source.c_str());
+                 key_fp.c_str(), cfg.link.key_source.c_str());
     if (cfg.link.key_is_default)
       std::fprintf(stderr, "maburgs: link: DEFAULT key in use -- any default install can control this "
                            "ground station; see docs/deploy.md 'Pairing'\n");

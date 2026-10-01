@@ -35,7 +35,9 @@ per-body `first_ms` arrival stamp 2026-09-05 (probe-blanking fix; a
 `probelog 1` file's `t_ms` is the finalize tick and cannot be joined to
 `au-NNNN.log` for timing) · debug logs consolidate into one per-session
 directory and `au.log`'s clock switches WALL→MONOTONIC (`# aulog 4`,
-`# latlog 2`, both drop the `# sync` bridge) 2026-09-06.
+`# latlog 2`, both drop the `# sync` bridge) 2026-09-06 ·
+link pairing: RC_VERSION 14, `vtx_id` gone, `link.key_fp` /
+`link.state = key_mismatch` / `drone.auth_reject` 2026-10-01.
 
 **`link.pre_fec_loss` scale break 2026-09-23, twice.** The ArrivalTracker
 guard behind `link.pre_fec_loss` (and the OSD LOSS row, `ctl.pre_fec_loss`,
@@ -836,4 +838,22 @@ frames at all (`docs/deploy.md`).
   txq drops and USB fails as summed per-period growth, CPU p50/p90/max,
   congestion/failsafe shed period counts — once per `tlm_seq`. It reads
   keys that predate the diet, so it also reports on older recordings.
+
+## 2026-10-01 — link pairing: RC_VERSION 14, vtx_id deleted, auth tag
+
+Every GS→drone RC frame (DISC, RCF, CAL_CMD, CAL_RESULT) carries an 8-byte
+SipHash-2-4 tag before its CRC; DISC_ACK carries `vtx_nonce` + a flags byte.
+`vtx_id` is gone from every frame and both configs. A **flag day**.
+`docs/link-pairing.md`.
+
+- **Removed sideport key:** `link.vtx_id`.
+- **New sideport keys:** `link.key_fp` (string: `default` or 4 hex),
+  `link.state` gains the value `key_mismatch`, `drone.auth_reject` (bool,
+  Telem flags bit1 — bit1 was `radio_rx_ok` until 2026-09-30, so a
+  recording between those dates reads bit1 as the old meaning).
+- **Removed config keys:** `link.vtx_id` on both ends. **New:**
+  `link.key_file` on both ends, `link.key` (inline hex, web overlay only) on
+  the GS. An old config fails boot.
+- `ctllog 12` unchanged; the KEY MISMATCH state is in `flight.jsonl` via
+  `link.state`, not in `ctl.log`.
 

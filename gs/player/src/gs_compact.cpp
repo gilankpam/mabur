@@ -319,6 +319,17 @@ GsCompactBar::FieldState GsCompactBar::state_of_(const GsSnapshot& snap,
   switch (id) {
     case GsBarField::kCh:
       st.rgb = link;
+      // Our key file differs from the drone's (spec 2026-10-01
+      // link-pairing): no RCFs go out in this state, so this takes
+      // priority over the hop/scan suffixes below -- the channel number
+      // itself is irrelevant while the link can't be controlled. Gated on
+      // !stale: a frozen last-known key_mismatch from a dead sideport
+      // would otherwise paint a status the player can no longer vouch for.
+      if (snap.key_mismatch && !stale) {
+        st.text = "KEY?";
+        st.rgb = tok::kStatusCaution;
+        break;
+      }
       st.text = snap.channel
                     ? "ch:" + ascii_int(std::clamp(*snap.channel, 0, 999))
                     : "ch:--";

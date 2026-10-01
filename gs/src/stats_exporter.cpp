@@ -193,7 +193,8 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
   json& link = j["link"];
   link["channel"] = in.channel;
   link["home"] = in.home;
-  link["state"] = in.in_session ? "session" : "beaconing";
+  link["state"] = in.key_mismatch ? "key_mismatch" : in.in_session ? "session" : "beaconing";
+  link["key_fp"] = in.key_fp;
   link["tx_card"] = in.tx_card;
   // OpPoint.overhead is a base/enh pair (Task 4, same-rate-fixed-pairs):
   // export both GS-commanded values under their own keys -- the single
@@ -565,6 +566,10 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     // the drone is deliberately at low_power.bitrate_kbps / fps because
     // the FC reports DISARMED. maburtop shows LP; the compact OSD tints fps.
     d["low_power"] = (t.flags & 0x80) != 0;
+    // Control-frame auth rejections this telemetry period, flags bit1 (spec
+    // 2026-10-01 link-pairing). One period around a drone restart is the
+    // expected transient; sustained = a bug or two controllers at once.
+    d["auth_reject"] = (t.flags & 0x02) != 0;
     // VTX onboard recorder (spec 2026-09-26): Telem::rec_status split into
     // state (0 off, 1 recording, 2 error) and error code (0..6, RecErr in
     // drone/src/vtx_recorder.h). maburtop and the player OSD read it.

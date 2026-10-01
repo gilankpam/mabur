@@ -442,6 +442,21 @@ TEST(scan_auto_is_false_when_off_or_absent) {
   CHECK(!s.scan_auto);
 }
 
+// link.state == "key_mismatch" (spec 2026-10-01 link-pairing): our key
+// file differs from the drone's. Any other state value, or an absent
+// block, reads false -- never true by default.
+TEST(key_mismatch_parses_from_link_state) {
+  GsSnapshot s;
+  REQUIRE(parse(R"({"link": {"channel": 136, "state": "key_mismatch"}})", &s));
+  CHECK(s.key_mismatch);
+  REQUIRE(parse(R"({"link": {"channel": 136, "state": "session"}})", &s));
+  CHECK(!s.key_mismatch);
+  REQUIRE(parse(R"({"link": {"channel": 136, "state": "beaconing"}})", &s));
+  CHECK(!s.key_mismatch);
+  REQUIRE(parse(R"({"link": {"channel": 136}})", &s));   // no state: older maburgs
+  CHECK(!s.key_mismatch);
+}
+
 // In-flight channel hop (spec 2026-09-14-inflight-channel-hop): `hopped`
 // means "the live channel is the hop feature's own standing target, and
 // that target isn't home" -- not "a hop has ever happened this session"

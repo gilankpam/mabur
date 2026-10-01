@@ -93,6 +93,31 @@ TEST(op_exports_overhead_pair_not_scalar) {
   CHECK(op["overhead_enh"].get<double>() > 0.499 && op["overhead_enh"].get<double>() < 0.501);
 }
 
+// link pairing (2026-10-01): link.key_fp, link.state == key_mismatch, and
+// drone.auth_reject (Telem flags bit1) surface Task 5/6's session-pairs
+// state on the sideport.
+TEST(link_carries_key_fp_and_mismatch_state_and_drone_auth_reject) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  in.key_fp = "a1b2";
+  in.in_session = false;
+  in.key_mismatch = true;
+  mabur::rc::Telem t; t.flags = 0x02;
+  in.telem = t;
+  ex.poll(1000, in);
+  json j = cap.last();
+  CHECK(j["link"]["key_fp"] == "a1b2");
+  CHECK(j["link"]["state"] == "key_mismatch");
+  CHECK(j["drone"]["auth_reject"] == true);
+
+  in.key_mismatch = false; in.in_session = true; t.flags = 0; in.telem = t;
+  ex.poll(1500, in);
+  j = cap.last();
+  CHECK(j["link"]["state"] == "session");
+  CHECK(j["drone"]["auth_reject"] == false);
+}
+
 // link-rtt (2026-09-02): link.rtt is null until the estimator has a sample,
 // then carries the control-path RTT (EWMA + session min + n), the filtered
 // pts offset, and floor_ms when the anchor was usable — all from StatsInput,
