@@ -2,7 +2,9 @@
 // channel/width (passed as --ch/--w) and, in GS mode, static_mcs / ladder
 // (written as a TOML overlay, with max_mcs = 7 so the ladder flies as listed, the core merges into its embedded
 // maburgs.default.toml, then validates with maburgs's own loader).
-import { checkChannelWidth, ht40Offset } from './logic.mjs';
+import { checkChannelWidth, ht40Offset, DEFAULT_KEY_HEX } from './logic.mjs';
+
+export { DEFAULT_KEY_HEX };
 
 export const CHANNELS = [36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124,
   128, 132, 136, 140, 144, 149, 153, 157, 161, 165];
@@ -116,11 +118,11 @@ export function connectBlocker(cfg, mode) {
 
 const num = (v) => String(Number(v));
 
-export function toOverlayToml(cfg) {
+export function toOverlayToml(cfg, keyHex = null) {
   const pinned = cfg.staticMcs >= 0;
   // max_mcs 7: the form has no Max MCS -- the ladder is the whole policy, so
   // override the bundle's max_mcs filter rather than let it drop rungs.
-  let t = `[link]\nstatic_mcs = ${cfg.staticMcs}\nstatic_bw = ${cfg.width}\nmax_mcs = 7\n`;
+  let t = `[link]\n${keyHex ? `key = "${keyHex}"\n` : ''}static_mcs = ${cfg.staticMcs}\nstatic_bw = ${cfg.width}\nmax_mcs = 7\n`;
   // Pinned, the form hides the ladder and the link never walks it, but
   // maburgs's loader still validates it (a 40 MHz rung at width
   // 20 fails boot). Send one rung that always loads instead; the saved
@@ -170,4 +172,26 @@ export function describeRungEdit(cfg, i, key, val) {
   // cfg is the post-move config: the rung now sits at val.
   if (key === '__move') return `MCS ${cfg.ladder[val].mcs} rung moved to position ${val + 1} of ${cfg.ladder.length}`;
   return `Rung ${i} ${RUNG_LABEL[key]} set to ${val}`;
+}
+
+export const KEY_STORE = 'webgs.key';
+export function parseKeyText(text) {
+  const tokens = String(text).split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
+  if (tokens.length === 0) throw new Error('no key in file');
+  if (tokens.length > 1) throw new Error('more than one key in file');
+  const t = tokens[0].toLowerCase();
+  if (!/^[0-9a-f]{32}$/.test(t)) throw new Error('key is not 32 hex characters');
+  return t;
+}
+export function loadKey(storage) {
+  try {
+    const v = storage && storage.getItem(KEY_STORE);
+    return v && /^[0-9a-f]{32}$/.test(v) ? v : null;
+  } catch { return null; }
+}
+export function saveKey(storage, hex) {
+  try {
+    if (!storage) return;
+    if (hex) storage.setItem(KEY_STORE, hex); else storage.removeItem(KEY_STORE);
+  } catch { /* page works without storage */ }
 }

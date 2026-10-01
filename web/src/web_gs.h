@@ -81,6 +81,11 @@ struct Stats {
   std::optional<int> drone_temp_c;        // Telem.soc_temp_c; unset when -128 (unavailable)
   uint64_t osd_snaps = 0;     // MSP snapshots out of the FEC sink
   uint64_t osd_screens = 0;   // OSD screens published (Io::on_osd)
+  // Pairing key (spec 2026-10-01 link-pairing §8): the drone's rendezvous
+  // answer told us our key doesn't match its, and the fingerprint of the
+  // key this core is configured with (for the page to show beside it).
+  bool key_mismatch = false;
+  std::string key_fp;
 };
 std::string stats_json(const Stats& s);   // one line, no trailing newline
 
@@ -173,6 +178,7 @@ class WebGs {
   uint64_t bodies_ = 0, aus_complete_ = 0, aus_truncated_ = 0, sends_ = 0, rcf_sent_ = 0;
   uint64_t resets_ = 0;
   uint32_t idr_req_ = 0;
+  std::string key_fp_;   // mabur::key_fingerprint(cfg.link.key), set at construction
 };
 
 }  // namespace webgs

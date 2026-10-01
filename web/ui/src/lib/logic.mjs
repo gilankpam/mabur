@@ -439,3 +439,37 @@ export function errorText(line) {
   }
   return line;
 }
+
+// SipHash-2-4 (BigInt), byte-identical to common/src/siphash.cpp. Used only
+// for the key fingerprint shown beside the Load button; the tags on the
+// wire are computed by the WASM core.
+const M64 = (1n << 64n) - 1n;
+const rotl = (x, b) => ((x << BigInt(b)) | (x >> BigInt(64 - b))) & M64;
+function u64le(a, o) { let v = 0n; for (let i = 7; i >= 0; i--) v = (v << 8n) | BigInt(a[o + i]); return v; }
+export function siphash24(key, msg) {
+  const k0 = u64le(key, 0), k1 = u64le(key, 8);
+  let v0 = 0x736f6d6570736575n ^ k0, v1 = 0x646f72616e646f6dn ^ k1;
+  let v2 = 0x6c7967656e657261n ^ k0, v3 = 0x7465646279746573n ^ k1;
+  const round = () => {
+    v0 = (v0 + v1) & M64; v1 = rotl(v1, 13); v1 ^= v0; v0 = rotl(v0, 32);
+    v2 = (v2 + v3) & M64; v3 = rotl(v3, 16); v3 ^= v2;
+    v0 = (v0 + v3) & M64; v3 = rotl(v3, 21); v3 ^= v0;
+    v2 = (v2 + v1) & M64; v1 = rotl(v1, 17); v1 ^= v2; v2 = rotl(v2, 32);
+  };
+  const n = msg.length, full = n - (n % 8);
+  let i = 0;
+  for (; i < full; i += 8) { const m = u64le(msg, i); v3 ^= m; round(); round(); v0 ^= m; }
+  let b = BigInt(n) << 56n;
+  for (let j = 0; i + j < n; j++) b |= BigInt(msg[i + j]) << BigInt(8 * j);
+  v3 ^= b; round(); round(); v0 ^= b;
+  v2 ^= 0xffn; round(); round(); round(); round();
+  return (v0 ^ v1 ^ v2 ^ v3) & M64;
+}
+export const DEFAULT_KEY_HEX = '6d616275722d64656661756c742d3030';
+export function keyFingerprint(hex) {
+  if (!hex || hex === DEFAULT_KEY_HEX) return 'default';
+  const key = Uint8Array.from(hex.match(/../g), (h) => parseInt(h, 16));
+  const h = siphash24(key, new TextEncoder().encode('mabur.key'));
+  const b0 = Number(h & 0xffn), b1 = Number((h >> 8n) & 0xffn);
+  return b0.toString(16).padStart(2, '0') + b1.toString(16).padStart(2, '0');
+}

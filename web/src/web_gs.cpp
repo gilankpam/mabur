@@ -81,6 +81,7 @@ WebGs::WebGs(const maburgs::Config& cfg, Mode mode, uint8_t channel, int width, 
   // comes off the air, air_mcs_), and the drone's applied-op echo left
   // Telem 2026-09-30.
   spotter_op_.bw = width;
+  key_fp_ = mabur::key_fingerprint(cfg.link.key);
   if (mode_ == Mode::Gs) {
     if (!io_.send) throw std::invalid_argument("webgs: Gs mode needs Io::send");
     vrx_ = std::make_unique<maburgs::VrxController>(maburgs::vrx_cfg_from(cfg, channel));
@@ -260,10 +261,12 @@ Stats WebGs::stats() const {
     s.mcs = vrx_->cur_op().mcs;
     s.bw = vrx_->cur_op().bw;
     s.probe_state = maburgs::to_string(vrx_->ctl().probe_gate(now_ms).state);
+    s.key_mismatch = vrx_->key_mismatch();
   } else {
     s.bw = spotter_op_.bw;   // configured width
     s.mcs = air_mcs_;        // base-stream RX MCS, -1 until one is heard
   }
+  s.key_fp = key_fp_;
   const auto pre = lha_.pre_all();
   if (pre.valid) s.pre_fec_loss = pre.loss;
   s.residual = lha_.residual();
@@ -300,6 +303,8 @@ std::string stats_json(const Stats& s) {
   j["mcs"] = s.mcs;
   j["bw"] = s.bw;
   j["probe"] = s.probe_state;
+  j["key_mismatch"] = s.key_mismatch;
+  j["key_fp"] = s.key_fp;
   auto opt = [&](const char* k, const auto& v) {
     if (v)
       j[k] = *v;
