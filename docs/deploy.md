@@ -722,6 +722,70 @@ per device: `maburd.pre-vtxrec` + `mabur.toml.pre-vtxrec`,
 `maburgs.pre-vtxrec` + `maburplay.pre-vtxrec` +
 `maburplay.toml.pre-vtxrec`, on both ends together.
 
+## 2026-10-01 RC_VERSION 14 (link pairing)
+
+`RC_VERSION` goes 13 → 14: every GS→drone control frame (DISC, RCF,
+CAL_CMD, CAL_RESULT) gains an 8-byte SipHash-2-4 tag before its CRC;
+`link.vtx_id` is gone from every frame and both configs; `DISC_ACK`
+gains `vtx_nonce` + a flags byte; `Telem` flags bit1 is `auth_reject`.
+A version-mismatch flag day like every `RC_VERSION` bump above: between
+the two swaps there is no control link and no video (`DISC_ACK` carries
+`CAP_FRAME_WIRE`) — finish the deploy, do not restart either daemon
+hoping to fix it. `docs/link-pairing.md` is the as-built page.
+
+**Config moves on both ends.** `link.vtx_id` is replaced by
+`link.key_file` — an old config fails boot (strict keys), so this is
+config-before-binary on both the drone and the GS, same as every config
+move in this doc:
+
+```toml
+[link]
+key_file = "/etc/mabur.key"
+```
+
+### Pairing
+
+Generate one key and put the same file on both ends:
+
+```sh
+(echo "# mabur link key, generated $(date -I)"; openssl rand -hex 16) > mabur.key
+chmod 600 mabur.key
+scp -O mabur.key root@192.168.10.152:/etc/mabur.key   # drone
+scp    mabur.key root@10.18.0.1:/etc/mabur.key        # GS
+```
+
+(`scp -O` for the drone, same reason as everywhere else in this doc —
+the drone's `dropbear` needs the legacy SCP protocol; the GS's `openssh`
+does not.) Then **Load** the same `mabur.key` file in the web page (the
+Link key row's Load button) — the page keeps it in its own browser
+storage (`webgs.key`), separate from the rest of its config, and passes
+it to the core as a `link.key` overlay. Spotter mode has no key row and
+needs nothing here.
+
+**Verify by comparing three fingerprints**, never the key itself: the
+drone's boot log (`link: key <fp> (<source>)`), the GS's boot log (same
+line, `maburgs:` prefixed), and the page's Load/Clear row. All three
+must read the same 4 hex characters (or all three `default`, pre-key, on
+a stock install). A daemon or page showing `default` while the others
+show a real fingerprint did not get the file — re-check the `scp`/Load
+step on that one end, it is not a drone/GS mismatch.
+
+Keep `mabur.key` with the flight configs on the host; it is the backup,
+and there is no way to recover a lost key from either device (neither
+prints it, only the fingerprint).
+
+**Rollback:** restore the old config (`link.vtx_id` back,
+`link.key_file` gone) beside the old binary on each device, the usual
+paired rule. The key file itself may stay — an old (pre-pairing) binary
+never reads it and is not bothered by its presence.
+
+**The hosted web page must be redeployed** with the RC_VERSION 14 core,
+same as every RC_VERSION bump — an old page's wire frames are rejected
+by both new daemons.
+
+`ausniff` is the standing gate once both ends are up:
+`tools/bench/ausniff.py`.
+
 ## 2026-09-30 telem diet (RC_VERSION 13)
 
 `T_TELEM` shrinks 98 → 48 bytes and `RC_VERSION` goes 12 → 13 — a

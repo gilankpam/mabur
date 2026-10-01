@@ -54,6 +54,7 @@ page the task needs rather than carrying all of it.
 | the VTX onboard SD recorder ([record], dvr.target, the RCF rec byte, OSD REC field), VENC bind-peer order, the MI /proc/mi_modules/mi_venc per-stage delay instrument, the startup vanish-counter ratchet | docs/vtx-recorder.md (as built) + docs/sd-record-findings-2026-09-26.md (spike) |
 | the browser GS / spotter (web/), WebUSB+WASM build, LinkHealthAssembler sharing | docs/web-gs.md |
 | the CPE510 remote RX card (mabur-relay, protocol v2, a future maburgs RemoteCard, relay TX mode) | docs/cpe510-relay.md |
+| pairing / the link key file, SipHash tag, session nonces, KEY MISMATCH, auth_reject | docs/link-pairing.md |
 | radio/PHY below mabur | `third_party/devourer/CLAUDE.md` |
 
 Design specs live in `docs/superpowers/specs/` — **gitignored**, so they
