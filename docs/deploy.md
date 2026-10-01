@@ -787,6 +787,17 @@ by both new daemons.
 `ausniff` is the standing gate once both ends are up:
 `tools/bench/ausniff.py`.
 
+Bench gate 2026-10-01 (branch `link-pairing` at 08a7b60, both ends
+deployed with `key_file`, rollbacks `maburd.pre-pairing` /
+`maburgs.pre-pairing` beside `mabur.toml.pre-pairing` /
+`maburgs.toml.pre-pairing`): ausniff 30 s at mcs4/40 — 1815 AUs,
+60.5 fps, 0 incomplete, 0 gaps, 0 resyncs (identical to the telem-diet
+run); sideport `link.state = session`, `key_fp = default`,
+`drone.auth_reject = false`. Wrong key on the drone only → GS
+`KEY MISMATCH` within 1.2 s of the first rejected RCF; same key on the
+GS + `restart maburgs` → `session`, both fingerprints `2263`, drone not
+restarted. Timed recoveries in `docs/link-pairing.md` "Bench results".
+
 ## 2026-09-30 telem diet (RC_VERSION 13)
 
 `T_TELEM` shrinks 98 → 48 bytes and `RC_VERSION` goes 12 → 13 — a
