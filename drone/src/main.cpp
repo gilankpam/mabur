@@ -883,6 +883,7 @@ int run_dry_run(const Config& cfg, const std::string& in_path, const std::string
   actuator.dry_run = true;
 
   RcAgent agent(cfg, actuator);
+  agent.install_session_for_replay(1, 1);  // --rc-in frames are tagged under (1,1) by tests/integration/mabur_rc.py
   // Debug endpoint is startable here too (no MABUR_HAVE_VENC on a host
   // build, so every route just answers "disabled") -- keeps host/dry-run
   // and real mode on one code path instead of special-casing it out.
@@ -2368,6 +2369,9 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
     // ~0.385 ms/body burst pace into USB round-trip vs airtime. A blocking
     // ~1.1 ms per 3-body batch here = the URB round-trip IS the pace.
     uint64_t sb_calls = 0, sb_bodies = 0, sb_sum_us = 0, sb_max_us = 0;
+    // Cal frames whose tag did not verify under the current session (link
+    // pairing spec 2026-10-01 §7): dropped; Telem flags bit1 carries it.
+    uint64_t cal_auth_rejects = 0;
     uint32_t last_qw_report_ms = static_cast<uint32_t>(now_steady_ms());
     while (!g_devourer_should_stop) {
       // Calibration control frames (cal_queue, fed by the RX callback):
@@ -2375,6 +2379,10 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
       // pump()'s thread (cal_sweep.h constraint 1).
       std::vector<uint8_t> cal_body;
       while (cal_queue.pop(cal_body)) {
+        if (!agent.verify_cal_frame(cal_body.data(), cal_body.size())) {
+          ++cal_auth_rejects;
+          continue;
+        }
         const int cal_type = rc::frame_type(cal_body.data(), cal_body.size());
         const uint64_t cal_now = now_steady_ms();
         if (cal_type == rc::T_CAL_CMD) {
@@ -2518,12 +2526,13 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
         if (sb_calls > 0) {
           std::fprintf(stderr,
               "maburd tx_send: calls=%llu bodies=%llu us/call mean=%llu "
-              "max=%llu us/body=%llu\n",
+              "max=%llu us/body=%llu cal_auth_rej=%llu\n",
               (unsigned long long)sb_calls,
               (unsigned long long)sb_bodies,
               (unsigned long long)(sb_sum_us / sb_calls),
               (unsigned long long)sb_max_us,
-              (unsigned long long)(sb_bodies ? sb_sum_us / sb_bodies : 0));
+              (unsigned long long)(sb_bodies ? sb_sum_us / sb_bodies : 0),
+              (unsigned long long)cal_auth_rejects);
         }
         sb_calls = sb_bodies = sb_sum_us = sb_max_us = 0;
       }
@@ -2574,6 +2583,77 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
     // the falling edge, on THIS thread (apply_op's documented contract),
     // not from the TX writer thread that noticed cal_active clear.
     bool cal_was_active_for_ladder = false;
+    // TxStats::failed as of the last housekeeping tick, for send_telem.
+    uint64_t telem_usb_fail = 0;
+    // One T_TELEM frame: the 1 Hz periodic one, and the link-pairing
+    // "promote" frame (spec 2026-10-01 §6 step 4) sent right after an RCF
+    // promoted a session, before tick() runs its deferred retune.
+    auto send_telem = [&](uint64_t now) {
+      TelemInputs ti;
+      ti.state = static_cast<int>(agent.state());
+      ti.failsafe_shed = agent.failsafe_shed();
+      ti.congestion_shed = agent.congestion_shed();
+      ti.low_power = agent.low_power();
+      ti.auth_reject = agent.take_auth_reject();
+      ti.rec_status = vtx_rec.status_byte();
+      // have_feedback() false means no RCF has EVER been accepted (still
+      // BOOT/RENDEZVOUS) — 0 would read as maximally fresh, the opposite of
+      // the truth. Pass a value make_telem's saturate<uint16_t> clamps to
+      // 65535 ("never"), matching the wire field's documented sentinel.
+      ti.rcf_age_ms = agent.have_feedback()
+                          ? (now - agent.last_feedback_ms())
+                          : static_cast<uint64_t>(UINT16_MAX) + 1;
+      // link-rtt: which RCF that age references. Invalid (flags bit3
+      // clear) outside LINKED (failsafe rebase, unconfirmed-move fallback),
+      // where the age is fresh but no RCF backs it — the GS must not match
+      // a stale seq against it.
+      if (const auto fseq = agent.last_feedback_seq()) {
+        ti.rcf_seq_echo = *fseq;
+        ti.rcf_seq_echo_valid = true;
+      }
+      ti.rcf_rx = agent.rcf_accepted();
+      ti.cmd_kbps = actuator.last_bitrate_kbps;
+      ti.txq_drops = txq.dropped();
+      ti.txq_wait_max_ms = txq_wait_max_ms.exchange(0, std::memory_order_relaxed);
+      ti.usb_fail = telem_usb_fail;
+      // RX-side channel view for this period (cca-on 2026-09-23): the
+      // RX callback's frame split, drained per Telem. No register read
+      // here -- see rx_own_frames' declaration for why.
+      ti.rx_own = rx_own_frames.exchange(0, std::memory_order_relaxed);
+      ti.rx_foreign = rx_foreign_frames.exchange(0, std::memory_order_relaxed);
+      ti.rx_crcfail = rx_crcfail_frames.exchange(0, std::memory_order_relaxed);
+      ti.uplink = uplink_track.snap();
+      ti.soc_temp_c = read_soc_temp_c();
+      if (ti.soc_temp_c == -128)  // SigmaStar: no thermal_zone
+        ti.soc_temp_c = read_soc_temp_c_sigmastar();
+      ti.cpu_pct = cpu_busy.sample();
+#ifdef MABUR_HAVE_VENC
+      // link-rtt t3: pts-domain clock at telem build. Stays 0 (the
+      // wire's "unavailable" sentinel) on host builds and when
+      // MI_SYS_GetCurPts is unresolved.
+      ti.pts_at_build_us = venc_cur_pts_us();
+#endif
+
+      const rc::Telem telem_struct = make_telem(
+          telem_wire_seq.fetch_add(1, std::memory_order_relaxed), ti);
+      // Minor fix 5: publish this real snapshot for the TX writer
+      // thread's calibration ack to start from (send_cal_ack_telem)
+      // instead of a default-constructed Telem.
+      last_telem_snapshot.store(
+          std::make_shared<const rc::Telem>(telem_struct),
+          std::memory_order_relaxed);
+      auto telem = rc::pack_telem(telem_struct);
+
+      std::vector<uint8_t> frame;
+      frame.reserve(telem_radiotap.size() + kDot11HeaderLen + telem.size());
+      frame.insert(frame.end(), telem_radiotap.begin(), telem_radiotap.end());
+      const uint16_t dot11_seq =
+          telem_dot11_seq.fetch_add(1, std::memory_order_relaxed) & 0xFFF;
+      auto hdr = build_dot11_header(dot11_seq);
+      frame.insert(frame.end(), hdr.begin(), hdr.end());
+      frame.insert(frame.end(), telem.begin(), telem.end());
+      dev_sink.send(frame.data(), frame.size());
+    };
     while (!g_devourer_should_stop) {
       uint64_t now = now_steady_ms();
       enc_peak.sample(now, enc_bytes_total.load(std::memory_order_relaxed),
@@ -2601,6 +2681,10 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
       while (rc_queue.pop(rc_body)) {
         agent.on_rc_frame(rc_body.data(), rc_body.size(), now);
       }
+      // Promote Telem (spec §6 step 4): one frame on the CURRENT channel
+      // telling the GS we hold its session, before tick() runs the
+      // deferred retune. The GS follows on a LINKED Telem.
+      if (agent.take_session_promoted()) send_telem(now);
 
       if (tick_gate.due(now)) {
         devourer::ThermalStatus thermal = rtl_device->GetThermalStatus();
@@ -2608,6 +2692,7 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
         RadioHealth health;
         health.thermal_delta = thermal.valid ? thermal.delta : 0;
         health.tx_drops = txstats.failed;
+        telem_usb_fail = txstats.failed;
         health.txq_depth = txq.depth();
         health.txq_cap = kTxQueueCap;
         agent.tick(now, health);
@@ -2695,70 +2780,7 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
         if (!cal_sweeping.load(std::memory_order_relaxed) &&
             now - last_telem_ms >= 1000) {
           last_telem_ms = now;
-
-          TelemInputs ti;
-          ti.state = static_cast<int>(agent.state());
-          ti.failsafe_shed = agent.failsafe_shed();
-          ti.congestion_shed = agent.congestion_shed();
-          ti.low_power = agent.low_power();
-          ti.rec_status = vtx_rec.status_byte();
-          // have_feedback() false means no RCF has EVER been accepted (still
-          // BOOT/RENDEZVOUS) — 0 would read as maximally fresh, the opposite of
-          // the truth. Pass a value make_telem's saturate<uint16_t> clamps to
-          // 65535 ("never"), matching the wire field's documented sentinel.
-          ti.rcf_age_ms = agent.have_feedback()
-                              ? (now - agent.last_feedback_ms())
-                              : static_cast<uint64_t>(UINT16_MAX) + 1;
-          // link-rtt: which RCF that age references. Invalid (flags bit3
-          // clear) after a DISC re-establish or failsafe rebase, where the
-          // age is fresh but no RCF backs it — the GS must not match a
-          // stale seq against it.
-          if (const auto fseq = agent.last_feedback_seq()) {
-            ti.rcf_seq_echo = *fseq;
-            ti.rcf_seq_echo_valid = true;
-          }
-          ti.rcf_rx = agent.rcf_accepted();
-          ti.cmd_kbps = actuator.last_bitrate_kbps;
-          ti.txq_drops = txq.dropped();
-          ti.txq_wait_max_ms = txq_wait_max_ms.exchange(0, std::memory_order_relaxed);
-          ti.usb_fail = txstats.failed;
-          // RX-side channel view for this period (cca-on 2026-09-23): the
-          // RX callback's frame split, drained per Telem. No register read
-          // here -- see rx_own_frames' declaration for why.
-          ti.rx_own = rx_own_frames.exchange(0, std::memory_order_relaxed);
-          ti.rx_foreign = rx_foreign_frames.exchange(0, std::memory_order_relaxed);
-          ti.rx_crcfail = rx_crcfail_frames.exchange(0, std::memory_order_relaxed);
-          ti.uplink = uplink_track.snap();
-          ti.soc_temp_c = read_soc_temp_c();
-          if (ti.soc_temp_c == -128)  // SigmaStar: no thermal_zone
-            ti.soc_temp_c = read_soc_temp_c_sigmastar();
-          ti.cpu_pct = cpu_busy.sample();
-#ifdef MABUR_HAVE_VENC
-          // link-rtt t3: pts-domain clock at telem build. Stays 0 (the
-          // wire's "unavailable" sentinel) on host builds and when
-          // MI_SYS_GetCurPts is unresolved.
-          ti.pts_at_build_us = venc_cur_pts_us();
-#endif
-
-          const rc::Telem telem_struct = make_telem(
-              telem_wire_seq.fetch_add(1, std::memory_order_relaxed), ti);
-          // Minor fix 5: publish this real snapshot for the TX writer
-          // thread's calibration ack to start from (send_cal_ack_telem)
-          // instead of a default-constructed Telem.
-          last_telem_snapshot.store(
-              std::make_shared<const rc::Telem>(telem_struct),
-              std::memory_order_relaxed);
-          auto telem = rc::pack_telem(telem_struct);
-
-          std::vector<uint8_t> frame;
-          frame.reserve(telem_radiotap.size() + kDot11HeaderLen + telem.size());
-          frame.insert(frame.end(), telem_radiotap.begin(), telem_radiotap.end());
-          const uint16_t dot11_seq =
-              telem_dot11_seq.fetch_add(1, std::memory_order_relaxed) & 0xFFF;
-          auto hdr = build_dot11_header(dot11_seq);
-          frame.insert(frame.end(), hdr.begin(), hdr.end());
-          frame.insert(frame.end(), telem.begin(), telem.end());
-          dev_sink.send(frame.data(), frame.size());
+          send_telem(now);
         }
       }
 

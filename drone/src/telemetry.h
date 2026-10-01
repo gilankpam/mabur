@@ -35,11 +35,14 @@ struct TelemInputs {
   bool failsafe_shed = false;
   bool congestion_shed = false;  // RcAgent::congestion_shed() — flags bit4
   bool low_power = false;  // RcAgent::low_power() — flags bit7, spec 2026-09-20
+  // RcAgent::take_auth_reject() — flags bit1 (rc::kTelemAuthReject): a
+  // control frame failed its tag since the last Telem (spec 2026-10-01 §8).
+  bool auth_reject = false;
   uint64_t rcf_age_ms = 0, rcf_rx = 0;
   // link-rtt: seq of the RCF rcf_age_ms ages against + the pts-domain clock
   // (MI timebase, µs) at telem build. Straight pass-through, no saturation.
-  // echo_valid maps to flags bit3; false whenever RcAgent's seq window was
-  // reset (DISC re-establish, failsafe rebase) and the echo would be stale.
+  // echo_valid maps to flags bit3; false outside LINKED (failsafe rebase),
+  // where the echo would be stale.
   uint16_t rcf_seq_echo = 0;
   bool rcf_seq_echo_valid = false;
   uint64_t pts_at_build_us = 0;

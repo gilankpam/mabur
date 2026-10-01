@@ -69,6 +69,16 @@ TEST(low_power_flag_round_trips) {
   CHECK((mabur::make_telem(2, in).flags & 0x80) == 0);
 }
 
+// Link pairing (spec 2026-10-01 §8): a control frame that failed its tag
+// since the last Telem sets flags bit1, so the GS can show it.
+TEST(auth_reject_is_flags_bit1) {
+  mabur::TelemInputs in;
+  in.auth_reject = true;
+  CHECK((mabur::make_telem(1, in).flags & 0x02) != 0);
+  in.auth_reject = false;
+  CHECK((mabur::make_telem(2, in).flags & 0x02) == 0);
+}
+
 TEST(uplink_track_ema_and_thread_snapshot) {
   mabur::UplinkTrack u;
   CHECK(!u.snap().has);
