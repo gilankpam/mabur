@@ -27,32 +27,39 @@ static LinkHealth healthy() { return LinkHealth{true, 0.0, 0.0, false}; }
 // No feedback data this window (e.g. pre-link / silence).
 static LinkHealth no_data() { return LinkHealth{false, 0.0, 0.0, false}; }
 
+// Accept an unflagged DiscAck for this controller's vrx_nonce: the only way
+// into SESSION (link-pairing spec 2026-10-01 §6) -- no RCF goes out before it.
+static void link(VrxController& vrx, double now, uint32_t vtx = 0xBEEF0001) {
+  mabur::rc::DiscAck ack;
+  ack.vrx_nonce = vrx.rz_nonce();
+  ack.vtx_nonce = vtx;
+  ack.chip_caps = mabur::rc::CAP_FRAME_WIRE;
+  ack.seq = 1;
+  auto wire = mabur::rc::pack_disc_ack(ack);
+  vrx.on_rc_frame(wire.data(), wire.size(), now);
+}
+
 // Drive video at 1 kHz and step at 10 ms; classify emissions per second.
 TEST(rcf_pacing_and_keepalive_disc) {
   auto vrx = make();
-  int rcf = 0, disc = 0;
+  int rcf_pre = 0, rcf = 0, disc = 0;
   for (int t = 0; t < 5000; t += 10) {
     const double now = t;
     vrx.on_video(now);
 
     // Link early via DiscAck at t=500ms to measure steady-state cadence
-    if (t == 500) {
-      mabur::rc::DiscAck ack;
-      ack.vrx_nonce = vrx.rz_nonce();
-      ack.chip_caps = mabur::rc::CAP_FRAME_WIRE;
-      ack.seq = 1;
-      auto wire = mabur::rc::pack_disc_ack(ack);
-      vrx.on_rc_frame(wire.data(), wire.size(), now);
-    }
+    if (t == 500) link(vrx, now);
 
     if (auto out = vrx.step(now, healthy())) {
       const int ft = mabur::rc::frame_type(out->frame.data(), out->frame.size());
+      if (t < 500) { if (ft == mabur::rc::T_RCF) ++rcf_pre; continue; }   // beaconing
       if (ft == mabur::rc::T_RCF) { CHECK(!out->is_disc); ++rcf; }
       else if (ft == mabur::rc::T_DISC) { CHECK(out->is_disc); ++disc; }
     }
   }
-  CHECK(rcf >= 40 && rcf <= 50);   // ~10 Hz for 5 s, minus keepalive slots
-  CHECK(disc >= 6 && disc <= 7);   // 2 fast DISCs at 250ms (t=0,250), ack at t~500, 4 slow at 1000ms (t=1250,2250,3250,4250) (fix a)
+  CHECK(rcf_pre == 0);             // video alone never opens a session
+  CHECK(rcf >= 40 && rcf <= 46);   // ~10 Hz for 4.5 s, minus keepalive slots
+  CHECK(disc == 5);                // keep-alive at 1000 ms: t=500,1500,2500,3500,4500 (fix a)
 }
 
 // Bench 2026-09-26 (GS session 0232, escape 144 -> 112): the drone took the
@@ -65,20 +72,12 @@ TEST(rcf_pacing_and_keepalive_disc) {
 // appears inside the held span and this fails.
 TEST(keepalive_disc_held_while_a_hop_is_in_flight) {
   auto vrx = make();
-  auto link = [&](double now) {
-    mabur::rc::DiscAck ack;
-    ack.vrx_nonce = vrx.rz_nonce();
-    ack.chip_caps = mabur::rc::CAP_FRAME_WIRE;
-    ack.seq = 1;
-    auto wire = mabur::rc::pack_disc_ack(ack);
-    vrx.on_rc_frame(wire.data(), wire.size(), now);
-  };
   int disc_held = 0, rcf_held = 0, disc_after = 0;
   double first_after = -1;
   for (int t = 0; t < 6000; t += 10) {
     const double now = t;
     vrx.on_video(now);
-    if (t == 500) link(now);
+    if (t == 500) link(vrx, now);
     vrx.set_keepalive_hold(t >= 1000 && t < 4000);
     if (auto out = vrx.step(now, healthy())) {
       const int ft = mabur::rc::frame_type(out->frame.data(), out->frame.size());
@@ -113,6 +112,7 @@ TEST(keepalive_hold_ignored_until_peer_acked) {
 
 TEST(rcf_fields_are_correct) {
   auto vrx = make();
+  link(vrx, 0.0);
   vrx.on_video(0.0);
   std::optional<VrxController::Out> out;
   double now = 0;
@@ -150,6 +150,7 @@ TEST(profile_and_overhead_track_ladder_after_forced_demote) {
   lcfg.probe.enable = false;
   lcfg.feedback_timeout_ms = 100000;  // isolate from the blind-side timeout
   auto vrx = make(lcfg);
+  link(vrx, 0.0);
 
   double now = 0;
   for (; now < 1000 && vrx.ctl().rung() == 0; now += 10) {
@@ -180,6 +181,7 @@ TEST(profile_and_overhead_track_ladder_after_forced_demote) {
 
 TEST(silence_beacons_fast_and_recovers) {
   auto vrx = make();
+  link(vrx, 0.0);
   vrx.on_video(0.0);
   // 2 s of silence: BEACONING at the 20 ms cadence.
   int discs = 0;
@@ -203,6 +205,7 @@ TEST(disc_ack_feeds_rendezvous) {
   CHECK(vrx.link_state() == VrxState::BEACONING);
   mabur::rc::DiscAck ack;
   ack.vrx_nonce = vrx.rz_nonce();
+  ack.vtx_nonce = 1;
   auto wire = mabur::rc::pack_disc_ack(ack);
   vrx.on_rc_frame(wire.data(), wire.size(), 1600);
   CHECK(vrx.link_state() == VrxState::SESSION);
@@ -217,6 +220,7 @@ TEST(peer_caps_captured_from_disc_ack) {
   vrx.step(1500, no_data());          // silence -> BEACONING
   mabur::rc::DiscAck ack;
   ack.vrx_nonce = vrx.rz_nonce();
+  ack.vtx_nonce = 1;
   ack.chip_caps = mabur::rc::CAP_FRAME_WIRE;
   auto wire = mabur::rc::pack_disc_ack(ack);
   vrx.on_rc_frame(wire.data(), wire.size(), 1600);
@@ -225,7 +229,7 @@ TEST(peer_caps_captured_from_disc_ack) {
 }
 
 // peer_acked() separates "no DiscAck yet" from "peer advertised caps == 0".
-// Both read peer_caps() == 0, and the rendezvous starts in SESSION, so without
+// Both read peer_caps() == 0, so without
 // this main.cpp cannot tell a fresh start from a pre-frame-wire drone — it
 // logged "upgrade maburd" at every maburgs startup (caught on the rig
 // 2026-07-25).
@@ -233,13 +237,14 @@ TEST(peer_acked_false_until_a_disc_ack_is_accepted) {
   auto vrx = make();
   CHECK(!vrx.peer_acked());
   CHECK(vrx.peer_caps() == 0);
-  CHECK(vrx.link_state() == VrxState::SESSION);  // initial state, no peer yet
+  CHECK(vrx.link_state() == VrxState::BEACONING);  // initial state, no peer yet
 
   vrx.step(1500, no_data());              // silence -> BEACONING
   CHECK(!vrx.peer_acked());
 
   mabur::rc::DiscAck ack;
   ack.vrx_nonce = vrx.rz_nonce();
+  ack.vtx_nonce = 1;
   ack.chip_caps = 0;                             // a peer that advertises none
   auto wire = mabur::rc::pack_disc_ack(ack);
   vrx.on_rc_frame(wire.data(), wire.size(), 1600);
@@ -269,6 +274,7 @@ TEST(keepalive_disc_fast_until_peer_acked) {
   // Accept a DiscAck -> cadence must relax to ~1 Hz.
   mabur::rc::DiscAck ack;
   ack.vrx_nonce = vrx.rz_nonce();
+  ack.vtx_nonce = 1;
   ack.chip_caps = mabur::rc::CAP_FRAME_WIRE;
   ack.seq = 1;
   auto wire = mabur::rc::pack_disc_ack(ack);
@@ -332,6 +338,7 @@ TEST(blind_side_timeout_demotes_rcf_profile) {
   // feedback_timeout_ms left at its default (1000 ms) -- exactly what this
   // test is guarding.
   auto vrx = make(lcfg);
+  link(vrx, 0.0);
 
   // Promote off rung 0 on real, healthy feedback samples.
   double now = 0;
@@ -360,10 +367,9 @@ TEST(blind_side_timeout_demotes_rcf_profile) {
   CHECK(std::abs(r->fec_overhead_base - 1.0) < 1e-9);
 }
 
-TEST(controller_exposes_agreed_channel_and_ack_edge) {
+TEST(controller_exposes_agreed_channel) {
   auto vrx = make();
   CHECK(vrx.agreed_channel() == 0);
-  CHECK(!vrx.take_ack_edge());
   vrx.set_proposal(149);
   vrx.on_video(0.0);
   double now = 0;
@@ -373,18 +379,88 @@ TEST(controller_exposes_agreed_channel_and_ack_edge) {
   REQUIRE(d.has_value());
   CHECK(d->op_channel == 149);
   mabur::rc::DiscAck ack;
-  ack.vrx_nonce = vrx.rz_nonce(); ack.chip_caps = mabur::rc::CAP_FRAME_WIRE;
+  ack.vrx_nonce = vrx.rz_nonce(); ack.vtx_nonce = 1; ack.chip_caps = mabur::rc::CAP_FRAME_WIRE;
   ack.agreed_channel = 149; ack.seq = 1;
   auto wire = mabur::rc::pack_disc_ack(ack);
   vrx.on_rc_frame(wire.data(), wire.size(), now);
   CHECK(vrx.agreed_channel() == 149);
-  CHECK(vrx.take_ack_edge());
-  CHECK(!vrx.take_ack_edge());
   ack.agreed_channel = 136; ack.seq = 2;
   wire = mabur::rc::pack_disc_ack(ack);
   vrx.on_rc_frame(wire.data(), wire.size(), now + 1);
   CHECK(vrx.agreed_channel() == 136);
-  CHECK(vrx.take_ack_edge());
+}
+
+TEST(no_rcf_before_an_ack_even_with_video) {
+  auto vrx = make();
+  int rcf = 0;
+  for (int t = 0; t < 2000; t += 10) {
+    vrx.on_video(t);
+    if (auto out = vrx.step(t, healthy()); out && !out->is_disc) ++rcf;
+  }
+  CHECK(rcf == 0);
+  CHECK(vrx.link_state() == VrxState::BEACONING);
+}
+
+TEST(rcf_is_tagged_with_the_session_and_seq32_resets_on_new_vtx_nonce) {
+  auto vrx = make();
+  link(vrx, 100);
+  std::vector<uint8_t> first;
+  for (int t = 100; t < 400 && first.empty(); t += 10) {
+    vrx.on_video(t);
+    if (auto out = vrx.step(t, healthy()); out && !out->is_disc) first = out->frame;
+  }
+  REQUIRE(!first.empty());
+  auto r = mabur::rc::parse_rcf(first.data(), first.size());
+  REQUIRE(r.has_value());
+  CHECK(r->seq == 1);
+  CHECK(mabur::rc::verify_control(first.data(), first.size(), mabur::kDefaultLinkKey,
+                                  mabur::rc::TagCtx{vrx.rz_nonce(), 0xBEEF0001, 1}));
+  CHECK(!mabur::rc::verify_control(first.data(), first.size(), mabur::kDefaultLinkKey,
+                                   mabur::rc::TagCtx{vrx.rz_nonce(), 0xBEEF0002, 1}));
+  // Same ack again (lost-ack retry): seq keeps counting.
+  link(vrx, 500);
+  CHECK(vrx.rcf_seq32() >= 1);
+  // New vtx_nonce (drone restarted): seq32 restarts so the drone's fresh
+  // tracker and our tag ctx agree from the first RCF of the new session.
+  link(vrx, 600, 0xBEEF0002);
+  CHECK(vrx.rcf_seq32() == 0);
+}
+
+TEST(move_edge_fires_on_linked_telem_or_after_five_rcfs) {
+  auto vrx = make();
+  CHECK(!vrx.take_move_edge());
+  link(vrx, 100);
+  CHECK(!vrx.take_move_edge());            // ack alone no longer moves the GS
+  vrx.note_drone_state(2);                  // RcAgent::State::LINKED
+  CHECK(vrx.take_move_edge());
+  CHECK(!vrx.take_move_edge());
+  auto vrx2 = make();
+  link(vrx2, 100);
+  int rcfs = 0;
+  for (int t = 100; t < 2000 && rcfs < 5; t += 10) {
+    vrx2.on_video(t);
+    if (auto out = vrx2.step(t, healthy()); out && !out->is_disc) ++rcfs;
+  }
+  CHECK(rcfs == 5);
+  CHECK(vrx2.take_move_edge());
+}
+
+TEST(key_mismatch_sends_no_rcf_and_reports) {
+  auto vrx = make();
+  mabur::rc::DiscAck ack;
+  ack.vrx_nonce = vrx.rz_nonce();
+  ack.flags = mabur::rc::kAckKeyMismatch;
+  auto wire = mabur::rc::pack_disc_ack(ack);
+  int rcf = 0;
+  for (int t = 0; t < 3000; t += 10) {
+    vrx.on_video(t);
+    vrx.on_rc_frame(wire.data(), wire.size(), t);
+    if (auto out = vrx.step(t, healthy()); out && !out->is_disc) ++rcf;
+  }
+  CHECK(rcf == 0);
+  CHECK(vrx.key_mismatch());
+  CHECK(vrx.link_state() == VrxState::KEY_MISMATCH);
+  CHECK(!vrx.peer_acked());
 }
 
 MTEST_MAIN
@@ -412,6 +488,7 @@ TEST(starved_health_forces_ladder_rung_zero_and_recovers) {
   lcfg.probe.enable = false;
   lcfg.feedback_timeout_ms = 100000;  // isolate from the blind-side timeout
   auto vrx = make(lcfg);
+  link(vrx, 0.0);
 
   // Healthy phase: clean margin walks the ladder off rung 0.
   double now = 0;
@@ -460,6 +537,7 @@ TEST(static_pin_overrides_controller) {
   cfg.pin_overhead_enh = 0.4;  // distinct from base: proves the pin is a real pair
   cfg.ladder.ladder = {{0, 1.0}};  // must never be consulted while pinned
   VrxController vrx(cfg);
+  link(vrx, 0.0);
   std::optional<VrxController::Out> out;
   double now = 0;
   for (int i = 0; i < 800; ++i, now += 10) {
@@ -483,10 +561,7 @@ TEST(static_pin_overrides_controller) {
 // Drives the link into SESSION with a DiscAck, then steps until an RCF is
 // emitted; returns the parsed RCF.
 static mabur::rc::Rcf first_rcf(VrxController& vrx, const LinkHealth& h, double& t) {
-  mabur::rc::DiscAck ack; ack.vrx_nonce = vrx.rz_nonce();
-  ack.chip_caps = mabur::rc::CAP_FRAME_WIRE; ack.seq = 1;
-  auto wire = mabur::rc::pack_disc_ack(ack);
-  vrx.on_rc_frame(wire.data(), wire.size(), t);
+  link(vrx, t, 1);
   for (int i = 0; i < 400; ++i, t += 10) {
     vrx.on_video(t);
     if (auto out = vrx.step(t, h); out && !out->is_disc) {
@@ -636,6 +711,7 @@ TEST(restore_rung_rcf_in_the_same_tick_carries_restored_profile) {
 TEST(rcf_carries_the_rec_wish) {
   auto vrx = make();
   vrx.set_rec_wish(mabur::rc::kRecKnown | mabur::rc::kRecOn);
+  link(vrx, 0.0);
   vrx.on_video(0.0);
   std::optional<VrxController::Out> out;
   double now = 0;

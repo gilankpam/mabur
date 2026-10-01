@@ -1,5 +1,7 @@
 #include "vrx_controller.h"
 
+#include <cassert>
+
 #include "mabur/rc_proto.h"
 #include "mabur/profile.h"
 
@@ -20,7 +22,8 @@ VrxController::VrxController(VrxCfg cfg)
       // config: every hw validation ran with these, and a slower fallback to
       // BEACONING after video loss only delays re-rendezvous. The removed
       // link.video_silence_ms key claimed to tune the 1000 but never did.
-      rz_(VrxRzConfig{1000, 20, cfg.op_channel}),
+      // nonce 0 = random per process: a restarted GS is a new session.
+      rz_(VrxRzConfig{1000, 20, cfg.op_channel, 0}),
       cur_op_(op_from_rung(ctrl_.op())) {}
 
 void VrxController::sync_op_() { cur_op_ = op_from_rung(ctrl_.op()); }
@@ -30,11 +33,25 @@ void VrxController::on_video(double now_ms) { rz_.feed_video(now_ms); }
 void VrxController::on_rc_frame(const uint8_t* buf, size_t len, double now_ms) {
   if (mabur::rc::frame_type(buf, len) != mabur::rc::T_DISC_ACK) return;
   auto ack = mabur::rc::parse_disc_ack(buf, len);
-  if (ack && rz_.feed_disc_ack(*ack, now_ms)) {
-    agreed_channel_ = ack->agreed_channel;
-    ack_edge_ = true;
-    peer_caps_ = ack->chip_caps;
-    peer_acked_ = true;
+  if (!ack) return;
+  bool adopted_new = false;
+  if (!rz_.feed_disc_ack(*ack, now_ms, &adopted_new)) return;
+  if (ack->flags & mabur::rc::kAckKeyMismatch) return;   // nothing learned about the peer
+  agreed_channel_ = ack->agreed_channel;
+  peer_caps_ = ack->chip_caps;
+  peer_acked_ = true;
+  if (adopted_new) {
+    seq32_ = 0;
+    rcfs_since_adopt_ = 0;
+    move_armed_ = true;
+    move_edge_ = false;
+  }
+}
+
+void VrxController::note_drone_state(uint8_t telem_state) {
+  if (telem_state == 2 && move_armed_) {
+    move_edge_ = true;
+    move_armed_ = false;
   }
 }
 
@@ -53,7 +70,7 @@ std::optional<VrxController::Out> VrxController::step(double now_ms,
   }
   const VrxAction act = rz_.tick(now_ms);
   if (act == VrxAction::Beacon)
-    return Out{mabur::rc::pack_disc(rz_.beacon()), true};
+    return Out{mabur::rc::pack_disc(rz_.beacon(), cfg_.key), true};
   if (act != VrxAction::TxFeedback) return std::nullopt;
 
   // Fix (a): SESSION keep-alive DISC, replacing this tick's RCF slot.
@@ -64,7 +81,7 @@ std::optional<VrxController::Out> VrxController::step(double now_ms,
   // cadence is the stale-caps re-teach and must not be delayed.
   if ((!keepalive_hold_ || !peer_acked_) && now_ms - last_keepalive_ms_ >= keepalive_ms) {
     last_keepalive_ms_ = now_ms;
-    return Out{mabur::rc::pack_disc(rz_.beacon()), true};
+    return Out{mabur::rc::pack_disc(rz_.beacon(), cfg_.key), true};
   }
   if (now_ms - last_fb_ms_ < cfg_.feedback_ms) return std::nullopt;
   last_fb_ms_ = now_ms;
@@ -81,13 +98,22 @@ std::optional<VrxController::Out> VrxController::step(double now_ms,
   // to a third of all rung changes (bench A/B, ctl-0296/0298/0300,
   // docs/switch-loss-findings-2026-09-05.md).
   note_cmd(r);
-  return Out{mabur::rc::pack_rcf(r), false};
+  if (move_armed_ && ++rcfs_since_adopt_ >= kMoveAfterRcfs) {
+    move_edge_ = true;
+    move_armed_ = false;
+  }
+  // SESSION implies a held vtx_nonce (rendezvous: only an unflagged ack
+  // adopts one, and video re-enters SESSION only when one is held).
+  assert(rz_.vtx_nonce());
+  return Out{mabur::rc::pack_rcf(r, cfg_.key,
+                                 mabur::rc::TagCtx{rz_.nonce(), *rz_.vtx_nonce(), seq32_}),
+             false};
 }
 
 mabur::rc::Rcf VrxController::build_rcf() {
-  seq_ = static_cast<uint16_t>(seq_ + 1);
+  ++seq32_;
   mabur::rc::Rcf r;
-  r.seq = seq_;
+  r.seq = static_cast<uint16_t>(seq32_);
   r.profile = mabur::rc::encode_profile(
       cur_op_.vht ? mabur::rc::PhyMode::VHT : mabur::rc::PhyMode::HT,
       static_cast<uint8_t>(cur_op_.mcs), static_cast<uint8_t>(cur_op_.bw));
@@ -127,6 +153,6 @@ void VrxController::note_cmd(const mabur::rc::Rcf& r) {
 
 const OpPoint& VrxController::cur_op() const { return cur_op_; }
 VrxState VrxController::link_state() const { return rz_.state(); }
-uint16_t VrxController::rcf_seq() const { return seq_; }
+uint16_t VrxController::rcf_seq() const { return static_cast<uint16_t>(seq32_); }
 
 }  // namespace maburgs

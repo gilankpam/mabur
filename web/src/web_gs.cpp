@@ -231,6 +231,7 @@ void WebGs::inject_disc_ack_for_replay(uint64_t now_us) {
   if (!vrx_) return;
   mabur::rc::DiscAck ack;
   ack.vrx_nonce = vrx_->rz_nonce();
+  ack.vtx_nonce = 1;  // replay has no drone: any held vtx_nonce opens SESSION
   ack.chip_caps = mabur::rc::CAP_FRAME_WIRE;
   ack.agreed_channel = vrx_->proposal();
   ack.seq = 1;

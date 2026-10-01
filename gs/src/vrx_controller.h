@@ -4,6 +4,7 @@
 #include <optional>
 #include <vector>
 
+#include "mabur/link_key.h"
 #include "mabur/rc_proto.h"
 
 #include "ladder_controller.h"
@@ -13,6 +14,9 @@
 namespace maburgs {
 
 struct VrxCfg {
+  // Link key: tags every DISC/RCF this controller builds (spec 2026-10-01
+  // link-pairing §5). config.link.key on the GS.
+  mabur::LinkKey key = mabur::kDefaultLinkKey;
   uint8_t op_channel = 149;
   int feedback_ms = 100;
   int beacon_keepalive_ms = 1000;
@@ -60,17 +64,22 @@ class VrxController {
   // mode (constructed unconditionally) but is never ticked/updated there.
   const LadderController& ctl() const { return ctrl_; }
   VrxState link_state() const;
+  // Low 16 bits of rcf_seq32(): the wire seq of the last built RCF.
   uint16_t rcf_seq() const;
+  // The RCF tag counter: tag ctx = {vrx_nonce, vtx_nonce, seq32}. Restarts at
+  // 0 on each NEW vtx_nonce adoption so the drone's fresh per-session seq
+  // tracker and our ctx agree from the first RCF (spec 2026-10-01 §5/§6).
+  uint32_t rcf_seq32() const { return seq32_; }
   // The probe byte the last built RCF carried (kNoProbeProfile when none).
   uint8_t probe_profile() const { return last_cmd_probe_profile_; }
   // chip_caps from the most recently accepted DiscAck; 0 before any accept.
   // Gates GS main's video tail on mabur::rc::CAP_FRAME_WIRE.
   uint16_t peer_caps() const { return peer_caps_; }
   // Whether any DiscAck has ever been accepted. peer_caps() == 0 is ambiguous
-  // on its own — a peer may genuinely advertise no caps — and the rendezvous
-  // starts in SESSION, so callers that want to complain about a peer's missing
-  // capability must wait for this to be true or they complain about a peer
-  // they have not heard from yet.
+  // on its own — a peer may genuinely advertise no caps — so callers that
+  // want to complain about a peer's missing capability must wait for this to
+  // be true or they complain about a peer they have not heard from yet. A
+  // key_mismatch-flagged ack does not count.
   bool peer_acked() const { return peer_acked_; }
   // In-flight channel hop (spec 2026-09-14 §4). set_hop() is carried in
   // every RCF built from now on (build_rcf() stamps r.hop_ch/r.hop_epoch);
@@ -106,8 +115,23 @@ class VrxController {
   // Last accepted ack's agreed_channel (0 before any accept). Set BEFORE
   // peer_caps_ so a caller reading both on one tick sees a consistent pair.
   uint8_t agreed_channel() const { return agreed_channel_; }
-  // Ack accept edge for this tick: true once per accepted ack, cleared by read.
-  bool take_ack_edge() { const bool e = ack_edge_; ack_edge_ = false; return e; }
+  // Channel-move edge (spec 2026-10-01 link-pairing §6 step 5): the drone
+  // retunes only after our first RCF verifies, so the GS follows it to the
+  // agreed channel when a Telem says LINKED (the drone emits one on the old
+  // channel as it promotes the session) or, if that frame is lost, after
+  // kMoveAfterRcfs RCFs sent under this session. Armed on each NEW
+  // vtx_nonce adoption; true once per arming, cleared by read.
+  static constexpr int kMoveAfterRcfs = 5;
+  bool take_move_edge() { const bool e = move_edge_; move_edge_ = false; return e; }
+  // Telem.state from the drone (2 == RcAgent::State::LINKED).
+  void note_drone_state(uint8_t telem_state);
+  // The drone answers our DISCs with key_mismatch: our key differs from its.
+  // No RCF/cal goes out; beacons continue.
+  bool key_mismatch() const { return rz_.state() == VrxState::KEY_MISMATCH; }
+  // Tag ctx for cal frames: {vrx, vtx, 0}; vtx 0 when no session is held.
+  mabur::rc::TagCtx session_ctx() const {
+    return mabur::rc::TagCtx{rz_.nonce(), rz_.vtx_nonce().value_or(0), 0};
+  }
 
  private:
   mabur::rc::Rcf build_rcf();
@@ -121,14 +145,16 @@ class VrxController {
   VrxRendezvous rz_;
   double last_fb_ms_ = -1e18;
   double last_keepalive_ms_ = -1e18;
-  uint16_t seq_ = 0;
+  uint32_t seq32_ = 0;
   OpPoint cur_op_;
   uint16_t peer_caps_ = 0;
   bool peer_acked_ = false;
   bool keepalive_hold_ = false;
   uint8_t last_cmd_probe_profile_ = mabur::rc::kNoProbeProfile;
   uint8_t agreed_channel_ = 0;
-  bool ack_edge_ = false;
+  bool move_armed_ = false;
+  bool move_edge_ = false;
+  int rcfs_since_adopt_ = 0;
   uint8_t hop_ch_ = 0;
   uint8_t hop_epoch_ = 0;
   uint8_t rec_wish_ = 0;

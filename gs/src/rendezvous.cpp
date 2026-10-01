@@ -1,15 +1,23 @@
 #include "rendezvous.h"
+#include <random>
 
 namespace maburgs {
+namespace {
+uint32_t random_nonce() {
+  std::random_device rd;
+  uint32_t n = 0;
+  do { n = rd(); } while (n == 0);
+  return n;
+}
+}  // namespace
 
 VrxRendezvous::VrxRendezvous(VrxRzConfig cfg)
-    : cfg_(cfg),
-      nonce_(0x6d616275u),  // TODO(Task 5): random, not a fixed constant
-      proposal_(cfg.op_channel) {}
+    : cfg_(cfg), nonce_(cfg.nonce ? cfg.nonce : random_nonce()), proposal_(cfg.op_channel) {}
 
 void VrxRendezvous::feed_video(double now_ms) {
   last_video_ms_ = now_ms;
-  if (state_ == VrxState::BEACONING) state_ = VrxState::SESSION;
+  // Video proves the drone is there, not that we hold its session nonce.
+  if (state_ == VrxState::BEACONING && vtx_nonce_) state_ = VrxState::SESSION;
 }
 
 VrxAction VrxRendezvous::tick(double now_ms) {
@@ -36,14 +44,24 @@ mabur::rc::Disc VrxRendezvous::beacon() {
   return d;
 }
 
-bool VrxRendezvous::feed_disc_ack(const mabur::rc::DiscAck& ack, double now_ms) {
+bool VrxRendezvous::feed_disc_ack(const mabur::rc::DiscAck& ack, double now_ms, bool* adopted_new) {
+  if (adopted_new) *adopted_new = false;
   if (ack.vrx_nonce != nonce_) return false;
+  if (ack.flags & mabur::rc::kAckKeyMismatch) {
+    if (!first_flagged_ms_) first_flagged_ms_ = now_ms;
+    if (now_ms - *first_flagged_ms_ >= kKeyMismatchMs) {
+      state_ = VrxState::KEY_MISMATCH;
+      vtx_nonce_.reset();
+    }
+    return true;
+  }
+  first_flagged_ms_.reset();
+  if (!vtx_nonce_ || *vtx_nonce_ != ack.vtx_nonce) {
+    vtx_nonce_ = ack.vtx_nonce;
+    if (adopted_new) *adopted_new = true;
+  }
   state_ = VrxState::SESSION;
   last_video_ms_ = now_ms;
   return true;
 }
-
-VrxState VrxRendezvous::state() const { return state_; }
-uint32_t VrxRendezvous::nonce() const { return nonce_; }
-
 }  // namespace maburgs
