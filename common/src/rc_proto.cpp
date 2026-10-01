@@ -377,8 +377,25 @@ bool is_foreign_rc_version(const uint8_t* buf, size_t len) {
 }
 
 bool verify_control(const uint8_t* buf, size_t len, const LinkKey& key, const TagCtx& ctx) {
-  if (len < 5 + kTagLen + 2) return false;
-  const size_t tag_at = len - 2 - kTagLen;
+  // The tag sits at the frame's STRUCTURAL end, never at len - 10: on
+  // hardware the drone's body still carries devourer's trailing 4-byte
+  // 802.11 FCS (Packet.Data, fcs_present), so anything past the CRC is
+  // ignored -- exactly as parse_* already ignore it.
+  size_t tag_at = 0;
+  switch (frame_type(buf, len)) {
+    case T_DISC: tag_at = DISC_LEN; break;
+    case T_RCF: tag_at = RCF_HEAD_LEN; break;
+    case T_CAL_RESULT: tag_at = kCalResultLen; break;
+    case T_CAL_CMD: {
+      if (len < kCalCmdFixedLen) return false;
+      const uint8_t n = buf[kCalCmdFixedLen - 1];
+      if (n == 0 || n > kMaxCalWindows) return false;   // as parse_cal_cmd
+      tag_at = kCalCmdFixedLen + static_cast<size_t>(n) * 4;
+      break;
+    }
+    default: return false;
+  }
+  if (len < tag_at + kTagLen + 2) return false;
   std::vector<uint8_t> m(buf, buf + tag_at);
   put32(m, ctx.vrx_nonce);
   put32(m, ctx.vtx_nonce);

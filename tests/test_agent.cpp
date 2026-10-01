@@ -472,6 +472,48 @@ TEST(verify_cal_frame_reads_the_current_session_from_another_thread) {
   CHECK(agent.take_auth_reject());
 }
 
+// On hardware rx_callback hands the agent Packet.Data minus the 802.11
+// header, which still carries devourer's trailing 4-byte FCS. The tag lives
+// at the frame's structural offset, so those bytes must change nothing.
+static std::vector<uint8_t> plus_fcs(std::vector<uint8_t> w) {
+  for (uint8_t b : {0x11, 0x22, 0x33, 0x44}) w.push_back(b);
+  return w;
+}
+
+TEST(disc_and_rcf_with_trailing_fcs_bytes_link_like_exact_length_frames) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});
+  auto disc = plus_fcs(make_disc_wire(kVrx, 136, 20, 0, 1));
+  agent.on_rc_frame(disc.data(), disc.size(), 100);
+  const uint32_t vtx = last_ack_vtx(act);           // unflagged: the tag verified
+  CHECK(!agent.take_auth_reject());
+  auto rcf = plus_fcs(make_rcf_wire(1, encode_profile(PhyMode::HT, 2, 20), 8, vtx));
+  agent.on_rc_frame(rcf.data(), rcf.size(), 110);
+  CHECK(agent.state() == RcAgent::State::LINKED);
+  CHECK(agent.current_session().vtx_nonce == vtx);
+  CHECK(agent.current().ladder[0].mcs == 2);
+  auto next = plus_fcs(make_rcf_wire(2, encode_profile(PhyMode::HT, 4, 20), 8, vtx));
+  agent.on_rc_frame(next.data(), next.size(), 120);
+  CHECK(agent.current().ladder[0].mcs == 4);
+  CHECK(!agent.take_auth_reject());
+}
+
+TEST(verify_cal_frame_accepts_a_cal_cmd_with_trailing_fcs_bytes) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  const uint32_t vtx = link_agent(agent, act, cfg);
+  CalCmd c; c.nonce = 5; c.windows.push_back(CalWindow{3, -4, 4, 1});
+  auto cmd = plus_fcs(pack_cal_cmd(c, mabur::kDefaultLinkKey, TagCtx{kVrx, vtx, 0}));
+  CHECK(agent.verify_cal_frame(cmd.data(), cmd.size()));
+  CalResult r; r.nonce = 5;
+  auto res = plus_fcs(pack_cal_result(r, mabur::kDefaultLinkKey, TagCtx{kVrx, vtx, 0}));
+  CHECK(agent.verify_cal_frame(res.data(), res.size()));
+  CHECK(!agent.take_auth_reject());
+}
+
 TEST(install_session_for_replay_accepts_a_pretagged_rcf) {
   Config cfg = make_cfg();
   MockActuator act;

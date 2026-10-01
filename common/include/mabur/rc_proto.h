@@ -327,8 +327,13 @@ std::vector<uint8_t> pack_cal_result(const CalResult& r, const LinkKey& key = kD
 std::optional<CalResult> parse_cal_result(const uint8_t* buf, size_t len);
 
 // Recomputes the tag of any tagged frame (DISC/RCF/CAL_CMD/CAL_RESULT): the
-// 8 bytes before the CRC must equal SipHash(key, bytes-before-tag || ctx).
-// Constant-time compare. False for a frame too short to hold a tag.
+// 8 bytes at the frame's STRUCTURAL tag offset -- derived from its type
+// (DISC_LEN, RCF_HEAD_LEN, kCalResultLen, or kCalCmdFixedLen + n_windows*4)
+// -- must equal SipHash(key, bytes-before-tag || ctx). Bytes past tag+CRC
+// are ignored: on hardware the drone's body still carries the 4-byte 802.11
+// FCS. Constant-time compare. False for any other type, a CAL_CMD whose
+// n_windows is 0 or > kMaxCalWindows, or a buffer shorter than
+// structural + tag + CRC.
 bool verify_control(const uint8_t* buf, size_t len, const LinkKey& key, const TagCtx& ctx);
 
 // Peeks the RC frame type without a full parse (no CRC check). Returns -1 if

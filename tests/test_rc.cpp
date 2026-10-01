@@ -94,6 +94,67 @@ TEST(cal_frames_are_tagged_without_seq) {
   CHECK(verify_control(rw.data(), rw.size(), test_key(), ctx));
 }
 
+// Hardware RX hands the drone the frame body WITH devourer's trailing 4-byte
+// 802.11 FCS still attached (Packet.Data, fcs_present). verify_control must
+// find the tag at the frame's structural offset, not at len - 10, and parse_*
+// must keep accepting the longer buffer too.
+static std::vector<uint8_t> with_fcs(std::vector<uint8_t> w) {
+  w.push_back(0xDE); w.push_back(0xAD); w.push_back(0xBE); w.push_back(0xEF);
+  return w;
+}
+
+TEST(verify_control_ignores_trailing_fcs_bytes_on_every_tagged_type) {
+  const TagCtx ctx{0xCAFEF00D, 0x12345678, 7};
+  Rcf r; r.seq = 7; r.profile = 0x24;
+  auto rcf = with_fcs(pack_rcf(r, test_key(), ctx));
+  CHECK(verify_control(rcf.data(), rcf.size(), test_key(), ctx));
+  CHECK(!verify_control(rcf.data(), rcf.size(), kDefaultLinkKey, ctx));
+  CHECK(parse_rcf(rcf.data(), rcf.size()).has_value());
+
+  Disc d; d.vrx_nonce = 0xCAFE0001; d.op_channel = 149; d.seq = 3;
+  auto disc = with_fcs(pack_disc(d, test_key()));
+  CHECK(verify_control(disc.data(), disc.size(), test_key(), TagCtx{}));
+  CHECK(!verify_control(disc.data(), disc.size(), kDefaultLinkKey, TagCtx{}));
+  CHECK(parse_disc(disc.data(), disc.size()).has_value());
+
+  const TagCtx cctx{1, 2, 0};
+  CalCmd c; c.nonce = 5;
+  c.windows.push_back(CalWindow{3, -4, 4, 1});
+  c.windows.push_back(CalWindow{5, -8, 8, 2});
+  auto cmd = with_fcs(pack_cal_cmd(c, test_key(), cctx));
+  CHECK(verify_control(cmd.data(), cmd.size(), test_key(), cctx));
+  CHECK(!verify_control(cmd.data(), cmd.size(), test_key(), TagCtx{1, 3, 0}));
+  CHECK(parse_cal_cmd(cmd.data(), cmd.size()).has_value());
+
+  CalResult cr; cr.nonce = 5;
+  auto res = with_fcs(pack_cal_result(cr, test_key(), cctx));
+  CHECK(verify_control(res.data(), res.size(), test_key(), cctx));
+  CHECK(!verify_control(res.data(), res.size(), test_key(), TagCtx{1, 3, 0}));
+  CHECK(parse_cal_result(res.data(), res.size()).has_value());
+}
+
+TEST(verify_control_rejects_a_frame_shorter_than_structural_plus_tag_and_crc) {
+  const TagCtx ctx{0xCAFEF00D, 0x12345678, 7};
+  Rcf r; r.seq = 7;
+  auto rcf = pack_rcf(r, test_key(), ctx);
+  CHECK(!verify_control(rcf.data(), 15 + kTagLen + 1, test_key(), ctx));
+  Disc d; d.vrx_nonce = 1;
+  auto disc = pack_disc(d, test_key());
+  CHECK(!verify_control(disc.data(), 17 + kTagLen + 1, test_key(), TagCtx{}));
+  CalCmd c; c.nonce = 5; c.windows.push_back(CalWindow{3, -4, 4, 1});
+  auto cmd = pack_cal_cmd(c, test_key(), ctx);
+  CHECK(!verify_control(cmd.data(), 17 + 4 + kTagLen + 1, test_key(), ctx));
+  // n_windows out of range (0 or > kMaxCalWindows) never verifies.
+  auto bad_n = with_fcs(cmd); bad_n[16] = 0;
+  CHECK(!verify_control(bad_n.data(), bad_n.size(), test_key(), ctx));
+  CalResult cr;
+  auto res = pack_cal_result(cr, test_key(), ctx);
+  CHECK(!verify_control(res.data(), 27 + kTagLen + 1, test_key(), ctx));
+  // An untagged type (DISC_ACK) never verifies, however long.
+  DiscAck a; auto ack = with_fcs(with_fcs(pack_disc_ack(a)));
+  CHECK(!verify_control(ack.data(), ack.size(), test_key(), TagCtx{}));
+}
+
 TEST(disc_ack_carries_vtx_nonce_and_flags) {
   DiscAck a; a.vrx_nonce = 0xCAFE0001; a.vtx_nonce = 0xBEEF0002; a.chip_caps = 3;
   a.agreed_channel = 149; a.agreed_width = 20; a.flags = kAckKeyMismatch; a.seq = 9;
