@@ -1,16 +1,28 @@
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <functional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 #include "mtest.h"
 #include "config.h"
+#include "mabur/link_key.h"
 
 static std::string write_tmp(const std::string& text) {
   std::string path = "/tmp/maburgs_test_config.toml";
   std::ofstream f(path);
   f << text;
   return path;
+}
+
+static std::string what_of(const std::function<void()>& fn) {
+  try {
+    fn();
+  } catch (const std::exception& e) {
+    return e.what();
+  }
+  return "";
 }
 
 // The shipped bundle must load through the real loader. Its values are
@@ -1226,8 +1238,17 @@ TEST(bundle_default_sets_every_known_key_but_radio_cards) {
                        &defaulted);
   for (const std::string& d : defaulted)
     std::fprintf(stderr, "  bundle leaves defaulted: %s\n", d.c_str());
-  CHECK(defaulted.size() == 1);
-  CHECK(!defaulted.empty() && defaulted[0] == "radio.cards=(auto-scan)");
+  // radio.cards is auto-scan by design; link.key is the optional inline
+  // overlay (Task 4), which the bundle deliberately leaves unset in favour
+  // of the key_file it does set.
+  CHECK(defaulted.size() == 2);
+  bool saw_cards = false, saw_key = false;
+  for (const std::string& d : defaulted) {
+    if (d == "radio.cards=(auto-scan)") saw_cards = true;
+    if (d == "link.key=") saw_key = true;
+  }
+  CHECK(saw_cards);
+  CHECK(saw_key);
 }
 
 // spec 2026-09-25-nhm-airtime §6; default blocked_pct is 50, not the spec's
@@ -1298,6 +1319,50 @@ TEST(hop_confirm_extend_ms_key) {
   catch (const std::runtime_error&) { threw = true; }
   CHECK(threw);
   CHECK(maburgs::HopCfg{}.confirm_extend_ms == 3000);
+}
+
+// ---- Task 4: link.key_file + link.key overlay (spec 2026-10-01-link-pairing §2) ----
+
+TEST(link_key_file_missing_uses_default_and_says_so) {
+  auto path = write_tmp("[link]\nkey_file = \"" + std::string(MABUR_TEST_SCRATCH_DIR) +
+                        "/gs_absent.key\"\n");
+  auto cfg = maburgs::load_config(path);
+  CHECK(cfg.link.key_is_default);
+  CHECK(cfg.link.key == mabur::kDefaultLinkKey);
+  CHECK(cfg.link.key_source == "default");
+}
+
+TEST(link_key_file_present_is_loaded_and_bad_fails_boot) {
+  const std::string kf = std::string(MABUR_TEST_SCRATCH_DIR) + "/gs_cfg.key";
+  { std::ofstream o(kf); o << "# key\n3f9a1c77e04b5d2290ab6ef1c8d34e5a\n"; }
+  auto path = write_tmp("[link]\nkey_file = \"" + kf + "\"\n");
+  auto cfg = maburgs::load_config(path);
+  CHECK(!cfg.link.key_is_default);
+  CHECK(mabur::key_to_hex(cfg.link.key) == "3f9a1c77e04b5d2290ab6ef1c8d34e5a");
+  CHECK(cfg.link.key_source == kf);
+  { std::ofstream o(kf); o << "garbage\n"; }
+  const std::string msg = what_of([&] { (void)maburgs::load_config(path); });
+  CHECK(msg.find("link.key_file") != std::string::npos);
+  CHECK(msg.find(kf) != std::string::npos);
+}
+
+TEST(link_vtx_id_is_an_unknown_key_now) {
+  auto path = write_tmp("[link]\nvtx_id = 1\n");
+  const std::string msg = what_of([&] { (void)maburgs::load_config(path); });
+  CHECK(msg.find("link.vtx_id") != std::string::npos);
+  CHECK(msg.find("unknown key") != std::string::npos);
+}
+
+TEST(link_key_inline_overrides_key_file) {
+  auto path = write_tmp("[link]\nkey_file = \"/nonexistent/x.key\"\nkey = \"3F9A1C77E04B5D2290AB6EF1C8D34E5A\"\n");
+  auto cfg = maburgs::load_config(path);
+  CHECK(!cfg.link.key_is_default);
+  CHECK(mabur::key_to_hex(cfg.link.key) == "3f9a1c77e04b5d2290ab6ef1c8d34e5a");
+  CHECK(cfg.link.key_source == "link.key");
+  auto bad = write_tmp("[link]\nkey = \"zz\"\n");
+  const std::string msg = what_of([&] { (void)maburgs::load_config(bad); });
+  CHECK(msg.find("link.key") != std::string::npos);
+  CHECK(msg.find("32 hex") != std::string::npos);
 }
 
 static std::string write_tmp_at(const std::string& path, const std::string& text) {

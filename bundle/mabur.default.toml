@@ -71,6 +71,7 @@ rc_drain_ms     = 5        # how often commands from the ground station are appl
 rendezvous_ms   = 30000    # still silent this long after failsafe = return to the home channel
 move_confirm_ms = 2000     # after a channel move, hear the ground station within this or return home
 tick_ms         = 100      # housekeeping interval (health checks, stats)
+key_file        = "/etc/mabur.key"   # pairing key; same file on the ground station (docs/deploy.md "Pairing"). Missing = built-in default
 
 [msp]
 # Flight-controller link for the OSD and arm state.

@@ -2898,6 +2898,11 @@ int main(int argc, char** argv) {
       for (const std::string& d : defaulted)
         std::fprintf(stderr, "  %s\n", d.c_str());
     }
+    std::fprintf(stderr, "maburgs: link: key %s (%s)\n",
+                 mabur::key_fingerprint(cfg.link.key).c_str(), cfg.link.key_source.c_str());
+    if (cfg.link.key_is_default)
+      std::fprintf(stderr, "maburgs: link: DEFAULT key in use -- any default install can control this "
+                           "ground station; see docs/deploy.md 'Pairing'\n");
 #ifdef MABUR_LOSS_SIM
     return run_radio(cfg, loss_sim_port);
 #else

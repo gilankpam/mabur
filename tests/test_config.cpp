@@ -9,6 +9,7 @@
 
 #include "mtest.h"
 #include "config.h"
+#include "mabur/link_key.h"
 using namespace mabur;
 
 namespace {
@@ -996,6 +997,38 @@ TEST(link_rc_drain_ms_must_not_exceed_tick_ms) {
     CHECK(msg.find("link.rc_drain_ms") != std::string::npos);
     std::filesystem::remove(path);
   }
+}
+
+// ---- Task 4: link.key_file (spec 2026-10-01-link-pairing §2) ------------
+
+TEST(link_key_file_missing_uses_default_and_says_so) {
+  auto path = write_temp_toml("[link]\nkey_file = \"" + std::string(MABUR_TEST_SCRATCH_DIR) +
+                              "/absent.key\"\n");
+  auto cfg = load_config(path.string());
+  CHECK(cfg.link.key_is_default);
+  CHECK(cfg.link.key == mabur::kDefaultLinkKey);
+  CHECK(cfg.link.key_source == "default");
+}
+
+TEST(link_key_file_present_is_loaded_and_bad_fails_boot) {
+  const std::string kf = std::string(MABUR_TEST_SCRATCH_DIR) + "/cfg.key";
+  { std::ofstream o(kf); o << "# key\n3f9a1c77e04b5d2290ab6ef1c8d34e5a\n"; }
+  auto path = write_temp_toml("[link]\nkey_file = \"" + kf + "\"\n");
+  auto cfg = load_config(path.string());
+  CHECK(!cfg.link.key_is_default);
+  CHECK(mabur::key_to_hex(cfg.link.key) == "3f9a1c77e04b5d2290ab6ef1c8d34e5a");
+  CHECK(cfg.link.key_source == kf);
+  { std::ofstream o(kf); o << "garbage\n"; }
+  const std::string msg = what_of([&] { (void)load_config(path.string()); });
+  CHECK(msg.find("link.key_file") != std::string::npos);
+  CHECK(msg.find(kf) != std::string::npos);
+}
+
+TEST(link_vtx_id_is_an_unknown_key_now) {
+  auto path = write_temp_toml("[link]\nvtx_id = 1\n");
+  const std::string msg = what_of([&] { (void)load_config(path.string()); });
+  CHECK(msg.find("link.vtx_id") != std::string::npos);
+  CHECK(msg.find("unknown key") != std::string::npos);
 }
 
 // ---- Task 3: ampdu block (spec 2026-09-01-ampdu-design.md) --------------

@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "ladder_controller.h"
+#include "mabur/link_key.h"
 #include "mabur/uep_encoder.h"
 
 namespace maburgs {
@@ -178,6 +179,14 @@ struct LinkCfg {
                         {5, 0.5, 0.5},
                         {6, 0.5, 0.5},
                         {7, 0.2, 0.2}}};
+
+  // Pairing key (spec 2026-10-01 link-pairing §2): the key FILE path. The
+  // file is read at load; a missing file means the compiled-in default (and
+  // a boot log line), a malformed one fails boot naming the file.
+  std::string key_file = "/etc/mabur.key";
+  mabur::LinkKey key = mabur::kDefaultLinkKey;   // resolved at load
+  bool key_is_default = true;
+  std::string key_source;                        // path, "default", or "link.key" (GS overlay)
 };
 
 /// Video reassembly tuning (PR C: the RTP output destination is gone --

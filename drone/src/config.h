@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "mabur/link_key.h"
 #include "mabur/profile.h"
 #include "mabur/uep_encoder.h"
 #include "venc_cfg.h"  // VencCfg, VENC_RING_NAME — plain C99, host-safe
@@ -129,6 +130,13 @@ struct LinkCfg {
   // slower than the tick would silently retime the housekeeping to the
   // drain period; == tick_ms reproduces the legacy single-cadence loop.
   int rc_drain_ms = 5;
+  // Pairing key (spec 2026-10-01 link-pairing §2): the key FILE path. The
+  // file is read at load; a missing file means the compiled-in default (and
+  // a boot log line), a malformed one fails boot naming the file.
+  std::string key_file = "/etc/mabur.key";
+  mabur::LinkKey key = mabur::kDefaultLinkKey;   // resolved at load
+  bool key_is_default = true;
+  std::string key_source;                        // path, "default", or "link.key" (GS overlay)
 };
 
 struct MspCfg {

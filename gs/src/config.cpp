@@ -312,6 +312,12 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
     c.fec.seq_horizon = static_cast<int>(get_int(r, "seq_horizon", 512, 16, 65536, "fec"));
   }
 
+  // Raw [link] key overlay (spec 2026-10-01 link-pairing §2); empty when
+  // absent or when only key_file was given. Resolved, with key_file, in the
+  // unconditional block below (same reasoning as the sentinel resolution
+  // further down: a config with no [link] table at all must still resolve
+  // to the compiled-in default).
+  std::string link_inline_key;
   if (j.contains("link")) {
     const Value& r = j["link"];
     check_keys(r, "link",
@@ -324,7 +330,10 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
                 "starved_confirm_ms", "s3_demote", "s3_down_util",
                 "s3_settle_ms", "s3_min_syms",
                 "rung_stats", "fade", "probe",
-                "rcf_slot_hold_ms", "arrival_guard_syms"});
+                "rcf_slot_hold_ms", "arrival_guard_syms",
+                "key_file", "key"});
+    c.link.key_file = get_str(r, "key_file", "/etc/mabur.key", "link");
+    link_inline_key = get_str(r, "key", "", "link");
     c.link.feedback_ms = static_cast<int>(get_int(r, "feedback_ms", 100, 20, 5000, "link"));
     c.link.rcf_slot_hold_ms = static_cast<int>(get_int(r, "rcf_slot_hold_ms", 30, 0, 1000, "link"));
     c.link.arrival_guard_syms = static_cast<int>(get_int(r, "arrival_guard_syms", 192, 16, 512, "link"));
@@ -491,6 +500,27 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
     c.link.ladder_cfg.probe.max_util = c.link.ladder_cfg.down_util;
   if (c.link.ladder_cfg.s3_down_util < 0)
     c.link.ladder_cfg.s3_down_util = c.link.ladder_cfg.down_util;
+
+  // Pairing key resolution (spec 2026-10-01 link-pairing §2): an inline
+  // [link] key overrides key_file; otherwise the key file is read (missing
+  // -> compiled-in default). Runs unconditionally so a config with no
+  // [link] table at all still resolves to the default.
+  if (!link_inline_key.empty()) {
+    auto k = mabur::parse_key_hex(link_inline_key);
+    if (!k) fail("link.key", "not 32 hex characters");
+    c.link.key = *k;
+    c.link.key_is_default = false;
+    c.link.key_source = "link.key";
+  } else {
+    try {
+      const auto kl = mabur::load_key_file(c.link.key_file);
+      c.link.key = kl.key;
+      c.link.key_is_default = kl.is_default;
+      c.link.key_source = kl.source;
+    } catch (const std::runtime_error& e) {
+      fail("link.key_file", e.what());
+    }
+  }
 
   // ---- Width cross-checks (2026-09-24, 40 MHz top rungs) -------------------
   // A 40 MHz rung or pin needs the GS tuned 40 -- a 20-tuned receiver cannot

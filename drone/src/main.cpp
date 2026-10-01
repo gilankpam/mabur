@@ -2961,6 +2961,12 @@ int main(int argc, char** argv) {
                cfg.fec.blocks_per_body[0], cfg.fec.blocks_per_body[1],
                cfg.fec.window);
 
+  std::fprintf(stderr, "link: key %s (%s)\n",
+               mabur::key_fingerprint(cfg.link.key).c_str(), cfg.link.key_source.c_str());
+  if (cfg.link.key_is_default)
+    std::fprintf(stderr, "link: DEFAULT key in use -- any default install can control this drone; "
+                         "see docs/deploy.md 'Pairing'\n");
+
   if (dry_run) {
     if (in_path.empty() || out_path.empty()) {
       std::fprintf(stderr, "error: --dry-run requires --in and --out\n");
