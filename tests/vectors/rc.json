@@ -18,8 +18,10 @@
     "agreed_channel": 149,
     "agreed_width": 20,
     "chip_caps": 3,
+    "flags": 0,
     "seq": 1,
-    "vrx_nonce": 3405643777
+    "vrx_nonce": 3405643777,
+    "vtx_nonce": 3203334146
    }
   }
  ],

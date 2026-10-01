@@ -5,8 +5,11 @@
 #include "mabur/profile.h"
 #include "mabur/cal_wire.h"
 #include "mabur/crc16.h"
+#include "mabur/link_key.h"
 using namespace mabur;
 using namespace mabur::rc;
+
+static LinkKey test_key() { return *parse_key_hex("3f9a1c77e04b5d2290ab6ef1c8d34e5a"); }
 
 static Rcf rcf_from_json(const nlohmann::json& f) {
   Rcf r;
@@ -38,11 +41,69 @@ static Disc disc_from_json(const nlohmann::json& f) {
 static DiscAck disc_ack_from_json(const nlohmann::json& f) {
   DiscAck a;
   a.vrx_nonce = f["vrx_nonce"].get<uint32_t>();
+  a.vtx_nonce = f["vtx_nonce"].get<uint32_t>();
   a.chip_caps = f["chip_caps"].get<uint16_t>();
   a.agreed_channel = f["agreed_channel"].get<uint8_t>();
   a.agreed_width = f["agreed_width"].get<uint8_t>();
+  a.flags = f["flags"].get<uint8_t>();
   a.seq = f["seq"].get<uint16_t>();
   return a;
+}
+
+TEST(rcf_tag_verifies_with_key_and_ctx_only) {
+  Rcf r; r.seq = 7; r.profile = 0x24; r.fec_overhead_base = 0.5; r.fec_overhead_enh = 0.25;
+  const TagCtx ctx{0xCAFEF00D, 0x12345678, 7};
+  auto wire = pack_rcf(r, test_key(), ctx);
+  CHECK(wire.size() == 15 + kTagLen + 2);
+  REQUIRE(parse_rcf(wire.data(), wire.size()).has_value());   // structural parse ignores the tag
+  CHECK(verify_control(wire.data(), wire.size(), test_key(), ctx));
+  CHECK(!verify_control(wire.data(), wire.size(), kDefaultLinkKey, ctx));
+  CHECK(!verify_control(wire.data(), wire.size(), test_key(), TagCtx{0xCAFEF00E, 0x12345678, 7}));
+  CHECK(!verify_control(wire.data(), wire.size(), test_key(), TagCtx{0xCAFEF00D, 0x12345679, 7}));
+  CHECK(!verify_control(wire.data(), wire.size(), test_key(), TagCtx{0xCAFEF00D, 0x12345678, 7 + 65536}));
+  // A flipped payload byte breaks the tag even if the CRC were re-signed.
+  auto bad = wire; bad[7] ^= 1;
+  const uint16_t crc = crc16_ccitt(bad.data(), bad.size() - 2);
+  bad[bad.size() - 2] = crc & 0xFF; bad[bad.size() - 1] = crc >> 8;
+  REQUIRE(parse_rcf(bad.data(), bad.size()).has_value());
+  CHECK(!verify_control(bad.data(), bad.size(), test_key(), ctx));
+  CHECK(!verify_control(wire.data(), 9, test_key(), ctx));
+}
+
+TEST(disc_tag_uses_key_alone) {
+  Disc d; d.vrx_nonce = 0xCAFE0001; d.op_channel = 149; d.seq = 3;
+  auto wire = pack_disc(d, test_key());
+  CHECK(wire.size() == 17 + kTagLen + 2);
+  CHECK(verify_control(wire.data(), wire.size(), test_key(), TagCtx{}));
+  CHECK(!verify_control(wire.data(), wire.size(), kDefaultLinkKey, TagCtx{}));
+  auto def = pack_disc(d);   // default key when none given
+  CHECK(verify_control(def.data(), def.size(), kDefaultLinkKey, TagCtx{}));
+}
+
+TEST(cal_frames_are_tagged_without_seq) {
+  CalCmd c; c.nonce = 5; c.windows.push_back(CalWindow{3, -4, 4, 1});
+  const TagCtx ctx{1, 2, 0};
+  auto w = pack_cal_cmd(c, test_key(), ctx);
+  REQUIRE(parse_cal_cmd(w.data(), w.size()).has_value());
+  CHECK(verify_control(w.data(), w.size(), test_key(), ctx));
+  CHECK(!verify_control(w.data(), w.size(), test_key(), TagCtx{1, 2, 1}));
+  CalResult r; r.nonce = 5;
+  auto rw = pack_cal_result(r, test_key(), ctx);
+  CHECK(rw.size() == 27 + kTagLen + 2);
+  REQUIRE(parse_cal_result(rw.data(), rw.size()).has_value());
+  CHECK(verify_control(rw.data(), rw.size(), test_key(), ctx));
+}
+
+TEST(disc_ack_carries_vtx_nonce_and_flags) {
+  DiscAck a; a.vrx_nonce = 0xCAFE0001; a.vtx_nonce = 0xBEEF0002; a.chip_caps = 3;
+  a.agreed_channel = 149; a.agreed_width = 20; a.flags = kAckKeyMismatch; a.seq = 9;
+  auto w = pack_disc_ack(a);
+  CHECK(w.size() == 20 + 2);
+  auto p = parse_disc_ack(w.data(), w.size());
+  REQUIRE(p.has_value());
+  CHECK(p->vtx_nonce == 0xBEEF0002);
+  CHECK(p->flags == kAckKeyMismatch);
+  CHECK(p->seq == 9);
 }
 
 TEST(rcf_matches_golden_wire) {
@@ -52,11 +113,11 @@ TEST(rcf_matches_golden_wire) {
   // Reverting any pack_rcf() layout change without updating these fails
   // here, which is the point -- the format cannot drift silently.
   const std::vector<std::string> GOLDEN = {
-      "43520e01000700243232ff00000000d3b4",
-      "43520e0100ffff006464ff0000030081de",
+      "43520e01000700243232ff000000003664ea56cbbade5c4e75",
+      "43520e0100ffff006464ff00000300738f96419a1ccbd2dea3",
       // Asym pair (base 1.0 / enh 0.5): ENH actually rides a different
       // literal overhead than BASE here, not a duplicated equal-pair scalar.
-      "43520e01002a00086432060000025a7f2e",
+      "43520e01002a00086432060000025a4caf94dbea454ba981bf",
   };
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
   REQUIRE(j["rcf"].size() == GOLDEN.size());
@@ -87,7 +148,7 @@ TEST(disc_matches_golden_wire) {
   // Reverting any pack_disc() layout change without updating this fails
   // here, which is the point -- the format cannot drift silently.
   const std::vector<std::string> GOLDEN = {
-      "43520e02040100feca9514010000000200f730",
+      "43520e02040100feca9514010000000200088800cd1879d75c788b",
   };
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
   REQUIRE(j["disc"].size() == GOLDEN.size());
@@ -119,7 +180,7 @@ TEST(disc_ack_matches_golden_wire) {
   // Reverting any pack_disc_ack() layout change without updating this
   // fails here, which is the point -- the format cannot drift silently.
   const std::vector<std::string> GOLDEN = {
-      "43520e03040100feca030095140100a66d",
+      "43520e03040100feca0200efbe030095140001008ff9",
   };
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
   REQUIRE(j["disc_ack"].size() == GOLDEN.size());
@@ -133,9 +194,11 @@ TEST(disc_ack_matches_golden_wire) {
     auto parsed = parse_disc_ack(raw.data(), raw.size());
     REQUIRE(parsed.has_value());
     CHECK(parsed->vrx_nonce == a.vrx_nonce);
+    CHECK(parsed->vtx_nonce == a.vtx_nonce);
     CHECK(parsed->chip_caps == a.chip_caps);
     CHECK(parsed->agreed_channel == a.agreed_channel);
     CHECK(parsed->agreed_width == a.agreed_width);
+    CHECK(parsed->flags == a.flags);
     CHECK(parsed->seq == a.seq);
     CHECK(frame_type(raw.data(), raw.size()) == T_DISC_ACK);
     ++i;
@@ -319,7 +382,7 @@ TEST(rcf_probe_profile_is_a_fixed_head_byte) {
   none.probe_profile = kNoProbeProfile;
   auto wire_none = mabur::rc::pack_rcf(none);
   CHECK(wire.size() == wire_none.size());   // fixed byte, no optional tail
-  CHECK(wire.size() == 15 + 2);              // head 15 + crc
+  CHECK(wire.size() == 15 + kTagLen + 2);    // head 15 + tag + crc
   CHECK(wire[4] == 0);                       // flags byte carries nothing
   CHECK(wire[10] == r.probe_profile);
   CHECK(wire_none[10] == 0xFF);
@@ -382,7 +445,7 @@ TEST(rcf_head_is_fifteen_bytes) {
   r.rec = 0x05;
   r.idr_epoch = 0xA7;
   auto body = mabur::rc::pack_rcf(r);
-  CHECK(body.size() == 15 + 2);
+  CHECK(body.size() == 15 + mabur::rc::kTagLen + 2);
   CHECK(body[8] == 42); CHECK(body[9] == 37); CHECK(body[10] == mabur::rc::kNoProbeProfile);
   CHECK(body[11] == 149); CHECK(body[12] == 3); CHECK(body[13] == 5);
   CHECK(body[14] == 0xA7);

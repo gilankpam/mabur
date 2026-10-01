@@ -39,6 +39,7 @@ RC_VERSION = int(re.search(r"RC_VERSION\s*=\s*(\d+)",
                            open("common/include/mabur/rc_proto.h").read()).group(1))
 body = struct.pack("<HBBBHBBBBBBBB", rc_proto.RC_MAGIC, RC_VERSION, rc_proto.T_RCF, 0,
                    1, rc_proto.encode_profile("ht", 4, 20), 25, 25, 0xFF, 0, 0, 0, 0)
+body += b"\x00" * 8  # 2026-10-01: 8-byte tag placeholder (Task 9 replaces with a real tag)
 w = body + struct.pack("<H", rc_proto._crc(body))
 with open(sys.argv[1], "wb") as f:
     f.write(struct.pack("<II", 1, len(w))); f.write(w)

@@ -3,6 +3,7 @@
 #include <cmath>
 #include <limits>
 #include "mabur/crc16.h"
+#include "mabur/siphash.h"
 
 namespace mabur::rc {
 namespace {
@@ -52,9 +53,21 @@ void put_crc(std::vector<uint8_t>& body) {
   put16(body, crc);
 }
 
+// Writes the 8-byte SipHash tag for a tagged frame (DISC/RCF/CAL_CMD/
+// CAL_RESULT): keyed MAC over `body` so far (the frame's bytes up to but
+// not including the tag) concatenated with ctx's three u32s, which are
+// hashed in but never sent (TagCtx doc comment).
+void put_tag(std::vector<uint8_t>& body, const LinkKey& key, const TagCtx& ctx) {
+  std::vector<uint8_t> m(body);
+  put32(m, ctx.vrx_nonce);
+  put32(m, ctx.vtx_nonce);
+  put32(m, ctx.seq32);
+  put64(body, siphash24(key, m.data(), m.size()));
+}
+
 constexpr size_t RCF_HEAD_LEN = 15;  // 2026-10-01: vtx_id deleted (19)
 constexpr size_t DISC_LEN = 17;
-constexpr size_t DISC_ACK_LEN = 15;
+constexpr size_t DISC_ACK_LEN = 20;  // 2026-10-01: vtx_nonce(4) + flags(1) added (15)
 constexpr size_t TELEM_LEN = 48;  // 2026-09-30: maburtop-only fields dropped (98)
 
 // magic(2) | ver | type | flags | nonce(4) | phase | fpc(2) |
@@ -72,9 +85,9 @@ constexpr size_t kCalResultLen = 5 + 4 + 16 + 2;
 
 }  // namespace
 
-std::vector<uint8_t> pack_rcf(const Rcf& r) {
+std::vector<uint8_t> pack_rcf(const Rcf& r, const LinkKey& key, const TagCtx& ctx) {
   std::vector<uint8_t> body;
-  body.reserve(RCF_HEAD_LEN + 2);
+  body.reserve(RCF_HEAD_LEN + kTagLen + 2);
   put16(body, RC_MAGIC);
   body.push_back(RC_VERSION);
   body.push_back(T_RCF);
@@ -88,15 +101,17 @@ std::vector<uint8_t> pack_rcf(const Rcf& r) {
   body.push_back(r.hop_epoch);
   body.push_back(r.rec);
   body.push_back(r.idr_epoch);
+  put_tag(body, key, ctx);
   put_crc(body);
   return body;
 }
 
 std::optional<Rcf> parse_rcf(const uint8_t* buf, size_t len) {
-  if (len < RCF_HEAD_LEN + 2) return std::nullopt;
+  if (len < RCF_HEAD_LEN + kTagLen + 2) return std::nullopt;
   if (get16(buf, 0) != RC_MAGIC || buf[2] != RC_VERSION || buf[3] != T_RCF)
     return std::nullopt;
-  if (get16(buf, RCF_HEAD_LEN) != crc16_ccitt(buf, RCF_HEAD_LEN)) return std::nullopt;
+  if (get16(buf, RCF_HEAD_LEN + kTagLen) != crc16_ccitt(buf, RCF_HEAD_LEN + kTagLen))
+    return std::nullopt;
   Rcf r;
   r.seq = get16(buf, 5);
   r.profile = buf[7];
@@ -110,11 +125,11 @@ std::optional<Rcf> parse_rcf(const uint8_t* buf, size_t len) {
   return r;
 }
 
-std::vector<uint8_t> pack_cal_cmd(const CalCmd& c) {
+std::vector<uint8_t> pack_cal_cmd(const CalCmd& c, const LinkKey& key, const TagCtx& ctx) {
   std::vector<uint8_t> body;
   const size_t n = c.windows.size() > kMaxCalWindows ? kMaxCalWindows
                                                      : c.windows.size();
-  body.reserve(kCalCmdFixedLen + n * 4 + 2);
+  body.reserve(kCalCmdFixedLen + n * 4 + kTagLen + 2);
   put16(body, RC_MAGIC);
   body.push_back(RC_VERSION);
   body.push_back(T_CAL_CMD);
@@ -131,6 +146,7 @@ std::vector<uint8_t> pack_cal_cmd(const CalCmd& c) {
     body.push_back(static_cast<uint8_t>(c.windows[i].idx_hi));
     body.push_back(c.windows[i].idx_step);
   }
+  put_tag(body, key, ctx);
   put_crc(body);
   return body;
 }
@@ -141,7 +157,7 @@ std::optional<CalCmd> parse_cal_cmd(const uint8_t* buf, size_t len) {
     return std::nullopt;
   const uint8_t n = buf[kCalCmdFixedLen - 1];
   if (n == 0 || n > kMaxCalWindows) return std::nullopt;
-  const size_t plen = kCalCmdFixedLen + static_cast<size_t>(n) * 4;
+  const size_t plen = kCalCmdFixedLen + static_cast<size_t>(n) * 4 + kTagLen;
   if (len < plen + 2) return std::nullopt;
   if (get16(buf, plen) != crc16_ccitt(buf, plen)) return std::nullopt;
   CalCmd c;
@@ -165,9 +181,9 @@ std::optional<CalCmd> parse_cal_cmd(const uint8_t* buf, size_t len) {
   return c;
 }
 
-std::vector<uint8_t> pack_cal_result(const CalResult& r) {
+std::vector<uint8_t> pack_cal_result(const CalResult& r, const LinkKey& key, const TagCtx& ctx) {
   std::vector<uint8_t> body;
-  body.reserve(kCalResultLen + 2);
+  body.reserve(kCalResultLen + kTagLen + 2);
   put16(body, RC_MAGIC);
   body.push_back(RC_VERSION);
   body.push_back(T_CAL_RESULT);
@@ -176,16 +192,17 @@ std::vector<uint8_t> pack_cal_result(const CalResult& r) {
   for (int i = 0; i < 8; ++i)
     put16(body, static_cast<uint16_t>(r.walls[static_cast<size_t>(i)]));
   put16(body, static_cast<uint16_t>(r.legacy_wall));
+  put_tag(body, key, ctx);
   put_crc(body);
   return body;
 }
 
 std::optional<CalResult> parse_cal_result(const uint8_t* buf, size_t len) {
-  if (len < kCalResultLen + 2) return std::nullopt;
+  if (len < kCalResultLen + kTagLen + 2) return std::nullopt;
   if (get16(buf, 0) != RC_MAGIC || buf[2] != RC_VERSION ||
       buf[3] != T_CAL_RESULT)
     return std::nullopt;
-  if (get16(buf, kCalResultLen) != crc16_ccitt(buf, kCalResultLen))
+  if (get16(buf, kCalResultLen + kTagLen) != crc16_ccitt(buf, kCalResultLen + kTagLen))
     return std::nullopt;
   CalResult r;
   r.nonce = get32(buf, 5);
@@ -196,9 +213,9 @@ std::optional<CalResult> parse_cal_result(const uint8_t* buf, size_t len) {
   return r;
 }
 
-std::vector<uint8_t> pack_disc(const Disc& d) {
+std::vector<uint8_t> pack_disc(const Disc& d, const LinkKey& key) {
   std::vector<uint8_t> body;
-  body.reserve(DISC_LEN + 2);
+  body.reserve(DISC_LEN + kTagLen + 2);
   put16(body, RC_MAGIC);
   body.push_back(RC_VERSION);
   body.push_back(T_DISC);
@@ -211,19 +228,20 @@ std::vector<uint8_t> pack_disc(const Disc& d) {
   put16(body, d.cap_bits);
   put16(body, d.seq);
 
+  put_tag(body, key, TagCtx{});  // ctx all-zero: pre-rendezvous, no nonces/seq yet
   put_crc(body);
   return body;
 }
 
 std::optional<Disc> parse_disc(const uint8_t* buf, size_t len) {
-  if (len < DISC_LEN + 2) return std::nullopt;
+  if (len < DISC_LEN + kTagLen + 2) return std::nullopt;
   uint16_t magic = get16(buf, 0);
   uint8_t ver = buf[2];
   uint8_t type = buf[3];
   if (magic != RC_MAGIC || ver != RC_VERSION || type != T_DISC) return std::nullopt;
 
-  uint16_t crc = get16(buf, DISC_LEN);
-  if (crc != crc16_ccitt(buf, DISC_LEN)) return std::nullopt;
+  uint16_t crc = get16(buf, DISC_LEN + kTagLen);
+  if (crc != crc16_ccitt(buf, DISC_LEN + kTagLen)) return std::nullopt;
 
   Disc d;
   d.vrx_nonce = get32(buf, 5);
@@ -244,9 +262,11 @@ std::vector<uint8_t> pack_disc_ack(const DiscAck& a) {
   body.push_back(T_DISC_ACK);
   body.push_back(F_DISCOVERY);
   put32(body, a.vrx_nonce);
+  put32(body, a.vtx_nonce);
   put16(body, a.chip_caps);
   body.push_back(a.agreed_channel);
   body.push_back(a.agreed_width);
+  body.push_back(a.flags);
   put16(body, a.seq);
 
   put_crc(body);
@@ -265,10 +285,12 @@ std::optional<DiscAck> parse_disc_ack(const uint8_t* buf, size_t len) {
 
   DiscAck a;
   a.vrx_nonce = get32(buf, 5);
-  a.chip_caps = get16(buf, 9);
-  a.agreed_channel = buf[11];
-  a.agreed_width = buf[12];
-  a.seq = get16(buf, 13);
+  a.vtx_nonce = get32(buf, 9);
+  a.chip_caps = get16(buf, 13);
+  a.agreed_channel = buf[15];
+  a.agreed_width = buf[16];
+  a.flags = buf[17];
+  a.seq = get16(buf, 18);
   return a;
 }
 
@@ -352,6 +374,18 @@ bool is_foreign_rc_version(const uint8_t* buf, size_t len) {
   // about, so a truncated body is never reported as a version mismatch.
   if (len < 4) return false;
   return get16(buf, 0) == RC_MAGIC && buf[2] != RC_VERSION;
+}
+
+bool verify_control(const uint8_t* buf, size_t len, const LinkKey& key, const TagCtx& ctx) {
+  if (len < 5 + kTagLen + 2) return false;
+  const size_t tag_at = len - 2 - kTagLen;
+  std::vector<uint8_t> m(buf, buf + tag_at);
+  put32(m, ctx.vrx_nonce);
+  put32(m, ctx.vtx_nonce);
+  put32(m, ctx.seq32);
+  const uint64_t want = siphash24(key, m.data(), m.size());
+  const uint64_t got = get64(buf, tag_at);
+  return ((want ^ got) == 0);   // single 64-bit compare: no early-out on partial match
 }
 
 uint8_t overhead_to_x100(double ov) {

@@ -199,6 +199,11 @@ discs = [rc_proto.Disc(vtx_id=1, vrx_nonce=0xCAFE0001, op_channel=149,
                        op_width=20, init_profile=0, seq=2)]
 acks = [rc_proto.DiscAck(vtx_id=1, vrx_nonce=0xCAFE0001, chip_caps=0x0003,
                          agreed_channel=149, agreed_width=20, seq=1)]
+# RC_VERSION 14 (2026-10-01 link-pairing): vtx_nonce + flags added to
+# DISC_ACK (Task 3). The frozen devourer DiscAck dataclass has neither, so
+# these are supplied here rather than read off the Python object.
+ACK_VTX_NONCE = 0xBEEF0002
+ACK_FLAGS = 0
 # mabur owns its RC wire bytes as of 2026-08-12. devourer's frozen
 # tools/precoder/rc_proto.py is pinned at RC_VERSION 1 and still packs a
 # pwr_idx byte, so it can no longer serve as a wire oracle across mabur's
@@ -212,9 +217,11 @@ dump("rc.json", {
                        "table_ver": d.table_ver, "init_profile": d.init_profile,
                        "cap_bits": d.cap_bits, "seq": d.seq}} for d in discs],
   "disc_ack": [{"fields": {"vrx_nonce": a.vrx_nonce,
+                           "vtx_nonce": ACK_VTX_NONCE,
                            "chip_caps": a.chip_caps,
                            "agreed_channel": a.agreed_channel,
-                           "agreed_width": a.agreed_width, "seq": a.seq}} for a in acks]})
+                           "agreed_width": a.agreed_width,
+                           "flags": ACK_FLAGS, "seq": a.seq}} for a in acks]})
 
 # --- profile / ladder / phy rate -----------------------------------------
 # The per-seq bandwidth-probe-schedule vectors were removed 2026-07-27 (SDD

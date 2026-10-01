@@ -5,6 +5,7 @@
 #include <optional>
 #include <vector>
 #include "mabur/cal_wire.h"
+#include "mabur/link_key.h"
 namespace mabur::rc {
 
 // RC control-plane framing (adaptive-link feedback + rendezvous): RCF
@@ -80,6 +81,23 @@ constexpr uint8_t T_CAL_RESULT = 6;
 
 constexpr uint8_t F_DISCOVERY = 0x04;
 
+// SipHash-24 auth tag (spec 2026-10-01 link-pairing §3): the 8 bytes
+// immediately before the CRC on every DISC/RCF/CAL_CMD/CAL_RESULT frame.
+constexpr size_t kTagLen = 8;
+
+constexpr uint8_t kAckKeyMismatch = 0x01;   // DiscAck::flags bit0
+constexpr uint8_t kTelemAuthReject = 0x02;  // Telem::flags bit1
+
+// Values hashed into a control frame's tag but never sent on the wire
+// (spec 2026-10-01 link-pairing §5): the VRX/VTX nonces from the completed
+// rendezvous plus a 32-bit sequence (RCF's seq, widened; 0 for DISC/CAL
+// frames, which carry no seq of their own).
+struct TagCtx {
+  uint32_t vrx_nonce = 0;
+  uint32_t vtx_nonce = 0;
+  uint32_t seq32 = 0;
+};
+
 // DiscAck.chip_caps bit: VTX's video bodies use the frame wire format
 // (8-byte FrameHdr units + 6-byte wide FRAG headers) instead of pre-built
 // RTP packets + 4-byte FRAG headers. Spec 2026-07-22 frame-shm ingest.
@@ -141,9 +159,15 @@ struct Disc {
 // VTX -> VRX reply completing rendezvous + agreeing the op channel.
 struct DiscAck {
   uint32_t vrx_nonce = 0;
+  uint32_t vtx_nonce = 0;
   uint16_t chip_caps = 0;
   uint8_t agreed_channel = 0;
   uint8_t agreed_width = 20;
+  uint8_t flags = 0;  // bit0 kAckKeyMismatch: VTX's DISC tag did not verify
+                      // against the VTX's own key (spec 2026-10-01 §4) --
+                      // the rendezvous still completes (no tag to check the
+                      // ack itself against yet, pre-rendezvous), but the
+                      // VRX now knows the pair is running mismatched keys.
   uint16_t seq = 0;
 };
 
@@ -176,7 +200,11 @@ struct Telem {
                       //      conflict. The verify pass has no command and therefore no ack: the
                       //      drone self-initiates it after applying the result — spec 2026-09-10)
                       // bit7 low_power (RcAgent::low_power(): pre-arm 1 Mb/s / 15 fps operating point, spec 2026-09-20)
-                      // bits 1, 2, 5 unused (radio_rx_ok / probe_on / air_shed until 2026-09-30).
+                      // bit1 auth_reject: >= 1 GS->drone control frame failed tag/seq
+                      //      verification this telemetry period (spec 2026-10-01
+                      //      link-pairing §4). One period around a drone restart is
+                      //      the expected transient; sustained = bug or two controllers.
+                      // bits 2, 5 unused (probe_on / air_shed until 2026-09-30).
   uint16_t rcf_age_ms = 0;  // saturating
   // link-rtt (2026-09-02): seq of the RCF rcf_age_ms is aging against, so
   // the GS can subtract the send time of the RIGHT frame (repeats are 10 ms
@@ -271,10 +299,17 @@ struct CalResult {
   // the wire ever read one.
 };
 
-std::vector<uint8_t> pack_rcf(const Rcf& r);
+// Tagged frames (DISC/RCF/CAL_CMD/CAL_RESULT) carry an 8-byte SipHash tag
+// (kTagLen) right before the CRC. pack_* always writes a tag -- keyed by
+// `key`, defaulting to kDefaultLinkKey, hashed over the frame's bytes plus
+// `ctx` (never sent; see TagCtx). parse_* stays structural and never checks
+// it; verify_control is the one place a tag is checked (Task 6 wires it up
+// on the drone).
+std::vector<uint8_t> pack_rcf(const Rcf& r, const LinkKey& key = kDefaultLinkKey,
+                              const TagCtx& ctx = {});
 std::optional<Rcf> parse_rcf(const uint8_t* buf, size_t len);
 
-std::vector<uint8_t> pack_disc(const Disc& d);
+std::vector<uint8_t> pack_disc(const Disc& d, const LinkKey& key = kDefaultLinkKey);  // ctx all-zero
 std::optional<Disc> parse_disc(const uint8_t* buf, size_t len);
 
 std::vector<uint8_t> pack_disc_ack(const DiscAck& a);
@@ -283,11 +318,18 @@ std::optional<DiscAck> parse_disc_ack(const uint8_t* buf, size_t len);
 std::vector<uint8_t> pack_telem(const Telem& t);
 std::optional<Telem> parse_telem(const uint8_t* buf, size_t len);
 
-std::vector<uint8_t> pack_cal_cmd(const CalCmd& c);
+std::vector<uint8_t> pack_cal_cmd(const CalCmd& c, const LinkKey& key = kDefaultLinkKey,
+                                  const TagCtx& ctx = {});
 std::optional<CalCmd> parse_cal_cmd(const uint8_t* buf, size_t len);
 
-std::vector<uint8_t> pack_cal_result(const CalResult& r);
+std::vector<uint8_t> pack_cal_result(const CalResult& r, const LinkKey& key = kDefaultLinkKey,
+                                     const TagCtx& ctx = {});
 std::optional<CalResult> parse_cal_result(const uint8_t* buf, size_t len);
+
+// Recomputes the tag of any tagged frame (DISC/RCF/CAL_CMD/CAL_RESULT): the
+// 8 bytes before the CRC must equal SipHash(key, bytes-before-tag || ctx).
+// Constant-time compare. False for a frame too short to hold a tag.
+bool verify_control(const uint8_t* buf, size_t len, const LinkKey& key, const TagCtx& ctx);
 
 // Peeks the RC frame type without a full parse (no CRC check). Returns -1 if
 // the buffer is too short or doesn't carry the RC magic/version.
