@@ -181,13 +181,22 @@ crash mid-flight must not drop the drone to the bottom rung).
 
 ### The stranger rule, as implemented
 
-The spec's draft text (`kKeyMismatchBeacons = 3` consecutive
-flagged-only beacons, ~3 s) was superseded during implementation.
-**As built:** `VrxRendezvous::kKeyMismatchMs = 1000`. The GS enters
-`VrxState::KEY_MISMATCH` when a flagged ack arrives and the first flagged
-ack of the current flagged-only run was at least `kKeyMismatchMs` ago
-with no unflagged ack since. Any unflagged ack resets the run and, if
-already in `KEY_MISMATCH`, leaves it immediately. In `KEY_MISMATCH` the
+**As built:** the GS enters `VrxState::KEY_MISMATCH` when a flagged ack
+arrives and the current flagged-only run (no unflagged ack since its first
+flagged ack) satisfies BOTH:
+
+- it is at least `VrxRendezvous::kKeyMismatchMs = 1000` old, and
+- at least `VrxRendezvous::kKeyMismatchBeacons = 3` DISCs have gone out
+  since its first flagged ack (`beacons_since_flagged_`, counted in
+  `beacon()`).
+
+In BEACONING (20 ms DISCs) the time term dominates: ~1 s. In SESSION the
+DISCs are the 1 s keep-alives, so the beacon term does: ~3 s, the ack to
+the third keep-alive after the first flagged one. That is what keeps a
+foreign-key drone in range (it answers every DISC flagged, since without
+`vtx_id` every drone answers) from tripping the state when one or two of
+our own drone's acks are lost. Any unflagged ack resets both terms and,
+if already in `KEY_MISMATCH`, leaves it immediately. In `KEY_MISMATCH` the
 GS sends no RCFs (no cal either) and keeps beaconing, so a corrected
 config on either end recovers without a restart on the other.
 
@@ -241,10 +250,12 @@ keep-alives keep landing).
 
 All self-healing; found during the Task 9 reviews, not hardware bugs.
 
-- **Stranger + two lost acks.** A stranger drone in range plus two
-  consecutive lost acks from our own drone can make the GS's
-  flagged-only run look like a real mismatch and enter `KEY_MISMATCH`
-  mid-session; it leaves on the next unflagged ack, same as any entry.
+- **Stranger + three lost acks.** A foreign-key drone in range plus
+  three consecutive lost acks from our own drone (~3 s of keep-alives in
+  SESSION) still makes the GS's flagged-only run look like a real
+  mismatch and enter `KEY_MISMATCH` mid-session; it leaves on the next
+  unflagged ack, same as any entry. One or two lost acks no longer do
+  (the time-only rule tripped on those).
 - **Failsafe recovery via an old-session RCF.** If the GS's first
   recovering RCF lands on the old (stale) session before a fresh
   keep-alive DISC does, that DISC can hand the GS the old `vtx_nonce`

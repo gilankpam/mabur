@@ -449,27 +449,47 @@ TEST(move_edge_fires_on_linked_telem_or_after_five_rcfs) {
 // drone's session must not zero seq32 when that drone's next ack repeats the
 // same vtx_nonce -- the drone would reject every RCF (seq not increasing)
 // until failsafe. RCFs resume with the next seq.
-TEST(key_mismatch_then_same_vtx_nonce_keeps_seq32) {
+// Linked, video flowing, and every SESSION keep-alive DISC (1 s) answered
+// flagged only -- as if our drone's key changed. The stranger rule needs
+// both >= kKeyMismatchMs AND >= kKeyMismatchBeacons DISCs since the first
+// flagged ack, so KEY_MISMATCH lands on the ack of the 3rd keep-alive after
+// the first flagged one (~3 s), and no RCF goes out after it. Our drone's
+// next unflagged ack (same vtx_nonce) returns to SESSION and seq32 simply
+// continues -- not a new session.
+TEST(session_keepalives_answered_flagged_only_enter_key_mismatch_seq32_continues) {
   auto vrx = make();
   link(vrx, 0);
-  int t = 0;
-  int rcfs = 0;
-  for (; t < 1000 && rcfs < 3; t += 10) {
-    vrx.on_video(t);
-    if (auto out = vrx.step(t, healthy()); out && !out->is_disc) ++rcfs;
-  }
-  const uint32_t seq_before = vrx.rcf_seq32();
-  REQUIRE(seq_before > 0);
   mabur::rc::DiscAck flagged;
   flagged.vrx_nonce = vrx.rz_nonce();
   flagged.flags = mabur::rc::kAckKeyMismatch;
   auto fw = mabur::rc::pack_disc_ack(flagged);
-  vrx.on_rc_frame(fw.data(), fw.size(), t);
-  vrx.on_rc_frame(fw.data(), fw.size(), t + 1000);
-  REQUIRE(vrx.key_mismatch());
-  t += 1010;
+  int flagged_rounds = 0, rcf_after = 0;
+  double entered = -1;
+  int t = 0;
+  for (; t < 6000 && entered < 0; t += 10) {
+    vrx.on_video(t);
+    if (auto out = vrx.step(t, healthy())) {
+      if (out->is_disc) {
+        vrx.on_rc_frame(fw.data(), fw.size(), t + 5);
+        ++flagged_rounds;
+        if (vrx.key_mismatch()) entered = t;
+      }
+    }
+  }
+  REQUIRE(entered >= 0);
+  CHECK(flagged_rounds == 4);          // first flagged ack + 3 more keep-alives
+  CHECK(entered >= 2990 && entered <= 3010);
+  const uint32_t seq_before = vrx.rcf_seq32();
+  REQUIRE(seq_before > 0);
+  for (const int end = t + 2000; t < end; t += 10) {
+    vrx.on_video(t);
+    if (auto out = vrx.step(t, healthy()); out && !out->is_disc) ++rcf_after;
+  }
+  CHECK(rcf_after == 0);
+  CHECK(vrx.key_mismatch());
   link(vrx, t);                                   // our drone, same vtx_nonce
   CHECK(!vrx.key_mismatch());
+  CHECK(vrx.link_state() == VrxState::SESSION);
   CHECK(vrx.rcf_seq32() == seq_before);
   std::vector<uint8_t> next;
   for (int end = t + 500; t < end && next.empty(); t += 10) {
@@ -480,6 +500,36 @@ TEST(key_mismatch_then_same_vtx_nonce_keeps_seq32) {
   CHECK(vrx.rcf_seq32() == seq_before + 1);
   CHECK(mabur::rc::verify_control(next.data(), next.size(), mabur::kDefaultLinkKey,
                                   mabur::rc::TagCtx{vrx.rz_nonce(), 0xBEEF0001, seq_before + 1}));
+}
+
+// A foreign-key drone answers every keep-alive flagged beside ours. Our
+// drone's ack is lost on one round, and on the next round the stranger's
+// arrives first. One missing unflagged ack is one flagged-only round, far
+// short of the rule: the GS stays in SESSION and keeps sending RCFs.
+TEST(stranger_plus_one_lost_ack_of_ours_stays_in_session) {
+  auto vrx = make();
+  link(vrx, 0);
+  mabur::rc::DiscAck flagged;
+  flagged.vrx_nonce = vrx.rz_nonce();
+  flagged.flags = mabur::rc::kAckKeyMismatch;
+  auto fw = mabur::rc::pack_disc_ack(flagged);
+  int round = 0, rcf = 0;
+  for (int t = 0; t < 8000; t += 10) {
+    vrx.on_video(t);
+    if (auto out = vrx.step(t, healthy())) {
+      if (!out->is_disc) { ++rcf; continue; }
+      ++round;
+      vrx.on_rc_frame(fw.data(), fw.size(), t + 1);          // stranger, first
+      // Even transiently: gs main acts on the edge (video tail reset,
+      // hopc.on_session_lost, cal peer unlinked).
+      CHECK(!vrx.key_mismatch());
+      if (round != 3) link(vrx, t + 2);                      // ours, lost on round 3
+    }
+    CHECK(vrx.link_state() == VrxState::SESSION);
+    CHECK(!vrx.key_mismatch());
+  }
+  CHECK(round >= 7);
+  CHECK(rcf > 50);
 }
 
 TEST(key_mismatch_sends_no_rcf_and_reports) {

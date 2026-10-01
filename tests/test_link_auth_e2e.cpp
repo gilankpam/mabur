@@ -104,27 +104,51 @@ TEST(mismatched_keys_end_in_key_mismatch_with_no_rcf_and_no_op) {
   CHECK(l.agent.take_auth_reject());
 }
 
-TEST(stranger_drone_beside_ours_never_trips_key_mismatch) {
+// A foreign-key drone beside ours answers every DISC flagged. Run both ack
+// orders, and in each a stretch where one of our drone's acks is dropped:
+// the GS must never enter KEY_MISMATCH, not even for one ack (gs main acts
+// on the edge), and our drone must stay LINKED.
+static void run_stranger_case(bool stranger_first) {
   LinkKey other = kDefaultLinkKey; other[0] ^= 1;
   Loop ours(kDefaultLinkKey, kDefaultLinkKey);
   LoopActuator sact;
   Config scfg = drone_cfg(other);
   RcAgent stranger(scfg, sact);
-  for (double t = 0; t < 3000; t += 10) {
+  int discs = 0, ever_mismatch = 0;
+  bool dropped_one = false;
+  for (double t = 0; t < 6000; t += 10) {
     ours.vrx.on_video(t);
+    bool drop_ours = false;
     if (auto out = ours.vrx.step(t, healthy())) {
       ours.agent.on_rc_frame(out->frame.data(), out->frame.size(), static_cast<uint64_t>(t));
       stranger.on_rc_frame(out->frame.data(), out->frame.size(), static_cast<uint64_t>(t));
+      if (out->is_disc && ++discs == 1 + 3 && ours.agent.state() == RcAgent::State::LINKED) {
+        drop_ours = true;    // the 3rd keep-alive's ack from our drone is lost
+        dropped_one = true;
+      }
     }
-    for (auto& c : sact.controls) ours.vrx.on_rc_frame(c.data(), c.size(), t);   // stranger answers first
-    for (auto& c : ours.act.controls) ours.vrx.on_rc_frame(c.data(), c.size(), t);
-    sact.controls.clear(); ours.act.controls.clear();
+    auto feed = [&](LoopActuator& a, bool drop) {
+      for (auto& c : a.controls) {
+        if (!drop) ours.vrx.on_rc_frame(c.data(), c.size(), t);
+        if (ours.vrx.key_mismatch()) ++ever_mismatch;
+      }
+      a.controls.clear();
+    };
+    if (stranger_first) { feed(sact, false); feed(ours.act, drop_ours); }
+    else { feed(ours.act, drop_ours); feed(sact, false); }
     if (static_cast<int>(t) % 100 == 0) { ours.agent.tick(static_cast<uint64_t>(t), RadioHealth{}); stranger.tick(static_cast<uint64_t>(t), RadioHealth{}); }
   }
+  CHECK(dropped_one);
+  CHECK(ever_mismatch == 0);
   CHECK(ours.vrx.link_state() == maburgs::VrxState::SESSION);
   CHECK(!ours.vrx.key_mismatch());
   CHECK(ours.agent.state() == RcAgent::State::LINKED);
   CHECK(stranger.state() != RcAgent::State::LINKED);
+}
+
+TEST(stranger_drone_beside_ours_never_trips_key_mismatch) {
+  run_stranger_case(/*stranger_first=*/true);
+  run_stranger_case(/*stranger_first=*/false);
 }
 
 TEST(drone_restart_relinks_through_the_keepalive_disc) {

@@ -64,16 +64,26 @@ TEST(link_loss_keeps_vtx_nonce_and_video_resumes_session) {
   CHECK(rz.state() == VrxState::SESSION);
 }
 
-TEST(flagged_acks_enter_key_mismatch_after_a_second_unflagged_leaves) {
+// Stranger rule: KEY_MISMATCH needs BOTH a flagged-only run >= kKeyMismatchMs
+// old AND >= kKeyMismatchBeacons DISCs sent since its first flagged ack. In
+// BEACONING (20 ms DISCs) the time dominates (~1 s); in SESSION (1 s
+// keep-alives) the beacon count does (~3 s), so one or two lost acks from
+// our own drone beside a stranger do not trip it.
+TEST(flagged_acks_need_a_second_and_three_beacons_unflagged_leaves) {
   VrxRendezvous rz(cfg());
   bool adopted = false;
   CHECK(rz.feed_disc_ack(ack_for(rz, 0, kAckKeyMismatch), 0, &adopted));
   CHECK(!adopted);
   CHECK(rz.state() == VrxState::BEACONING);
+  rz.beacon();
   rz.feed_disc_ack(ack_for(rz, 0, kAckKeyMismatch), 500, &adopted);
   CHECK(rz.state() == VrxState::BEACONING);
+  rz.beacon();
   rz.feed_disc_ack(ack_for(rz, 0, kAckKeyMismatch), 1001, &adopted);
-  CHECK(rz.state() == VrxState::KEY_MISMATCH);
+  CHECK(rz.state() == VrxState::BEACONING);           // >= 1 s, only 2 beacons
+  rz.beacon();
+  rz.feed_disc_ack(ack_for(rz, 0, kAckKeyMismatch), 1002, &adopted);
+  CHECK(rz.state() == VrxState::KEY_MISMATCH);        // 3 beacons and >= 1 s
   CHECK(!rz.vtx_nonce().has_value());
   CHECK(rz.tick(1021) == VrxAction::Beacon);          // keeps beaconing
   CHECK(rz.tick(1030) == VrxAction::Idle);
@@ -82,8 +92,34 @@ TEST(flagged_acks_enter_key_mismatch_after_a_second_unflagged_leaves) {
   CHECK(rz.state() == VrxState::SESSION);
 }
 
-// A stranger's flagged acks plus two lost acks from our own (still LINKED)
-// drone put us in KEY_MISMATCH while we hold its vtx_nonce. When our drone's
+TEST(flagged_run_needs_the_full_second_however_many_beacons) {
+  VrxRendezvous rz(cfg());
+  bool adopted = false;
+  rz.feed_disc_ack(ack_for(rz, 0, kAckKeyMismatch), 0, &adopted);
+  for (int i = 0; i < 49; ++i) rz.beacon();                 // 20 ms beacons
+  rz.feed_disc_ack(ack_for(rz, 0, kAckKeyMismatch), 999, &adopted);
+  CHECK(rz.state() == VrxState::BEACONING);
+  rz.feed_disc_ack(ack_for(rz, 0, kAckKeyMismatch), 1000, &adopted);
+  CHECK(rz.state() == VrxState::KEY_MISMATCH);
+}
+
+TEST(unflagged_ack_resets_both_the_time_and_the_beacon_count) {
+  VrxRendezvous rz(cfg());
+  bool adopted = false;
+  rz.feed_disc_ack(ack_for(rz, 0, kAckKeyMismatch), 0, &adopted);
+  for (int i = 0; i < 5; ++i) rz.beacon();
+  rz.feed_disc_ack(ack_for(rz, 42), 500, &adopted);          // ours: run over
+  CHECK(rz.state() == VrxState::SESSION);
+  rz.feed_disc_ack(ack_for(rz, 0, kAckKeyMismatch), 600, &adopted);   // new run
+  rz.feed_disc_ack(ack_for(rz, 0, kAckKeyMismatch), 1700, &adopted);  // 0 beacons since
+  CHECK(rz.state() == VrxState::SESSION);
+  for (int i = 0; i < 3; ++i) rz.beacon();
+  rz.feed_disc_ack(ack_for(rz, 0, kAckKeyMismatch), 1701, &adopted);
+  CHECK(rz.state() == VrxState::KEY_MISMATCH);
+}
+
+// A stranger's flagged acks plus three lost acks from our own (still
+// LINKED) drone put us in KEY_MISMATCH while we hold its vtx_nonce. When our drone's
 // next ack carries the SAME nonce it is not a new session: reporting it as
 // adopted would make the controller zero seq32, and the drone (seq32 must be
 // strictly greater) would reject every RCF until its failsafe. Revert = clear
@@ -94,6 +130,7 @@ TEST(key_mismatch_keeps_the_held_vtx_nonce_and_same_nonce_is_not_new) {
   rz.feed_disc_ack(ack_for(rz, 0xBEEF0001), 0, &adopted);
   CHECK(adopted);
   rz.feed_disc_ack(ack_for(rz, 0, kAckKeyMismatch), 100, &adopted);
+  for (int i = 0; i < 3; ++i) rz.beacon();
   rz.feed_disc_ack(ack_for(rz, 0, kAckKeyMismatch), 1100, &adopted);
   CHECK(rz.state() == VrxState::KEY_MISMATCH);
   CHECK(rz.vtx_nonce() == std::optional<uint32_t>(0xBEEF0001));

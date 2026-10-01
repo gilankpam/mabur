@@ -4,9 +4,16 @@
 namespace maburgs {
 
 // SESSION: we hold the drone's vtx_nonce and may send RCFs. BEACONING: no
-// session (never acked, or video lost > link_lost_ms). KEY_MISMATCH: the
-// drone has been answering our DISCs with key_mismatch for >= kKeyMismatchMs
-// and no unflagged ack arrived -- our key file differs from the drone's.
+// session (never acked, or video lost > link_lost_ms). KEY_MISMATCH: our
+// key file differs from the drone's -- the stranger rule: a flagged ack
+// arrives while the current flagged-only run (no unflagged ack since its
+// first flagged ack) is BOTH >= kKeyMismatchMs old AND has seen
+// >= kKeyMismatchBeacons of our DISCs go out since that first flagged ack.
+// Without vtx_id every drone on the channel answers every DISC, so a
+// foreign-key drone beside ours acks flagged; the time term alone tripped
+// in SESSION (1 s keep-alives) on one or two lost acks of our own drone.
+// BEACONING (20 ms DISCs) still trips in ~1 s; SESSION takes ~3 s. Any
+// unflagged ack resets both and leaves KEY_MISMATCH.
 // Spec 2026-10-01 link-pairing §6/§8.
 enum class VrxState { SESSION, BEACONING, KEY_MISMATCH };
 enum class VrxAction { TxFeedback, Beacon, Idle };
@@ -24,6 +31,7 @@ struct VrxRzConfig {
 class VrxRendezvous {
  public:
   static constexpr double kKeyMismatchMs = 1000;
+  static constexpr int kKeyMismatchBeacons = 3;
   explicit VrxRendezvous(VrxRzConfig cfg);
   void feed_video(double now_ms);
   VrxAction tick(double now_ms);
@@ -48,10 +56,12 @@ class VrxRendezvous {
   // our own drone's next same-nonce ack read as a NEW session -- the caller
   // would zero seq32 and the still-LINKED drone (seq32 strictly increasing)
   // would reject every RCF until failsafe. The trigger is a stranger's
-  // flagged acks while two of our drone's acks are lost on the uplink.
+  // flagged acks while three of our drone's acks are lost on the uplink.
   std::optional<uint32_t> vtx_nonce_;
   // Stranger rule: time of the first flagged ack in the current run of
-  // flagged-only acks; reset by any unflagged ack.
+  // flagged-only acks, and the DISCs beacon() built since it; both reset by
+  // any unflagged ack.
   std::optional<double> first_flagged_ms_;
+  int beacons_since_flagged_ = 0;
 };
 }  // namespace maburgs

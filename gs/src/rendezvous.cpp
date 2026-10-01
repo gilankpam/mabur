@@ -36,6 +36,7 @@ VrxAction VrxRendezvous::tick(double now_ms) {
 
 mabur::rc::Disc VrxRendezvous::beacon() {
   seq_ = static_cast<uint16_t>(seq_ + 1);
+  if (first_flagged_ms_) ++beacons_since_flagged_;
   mabur::rc::Disc d;
   d.vrx_nonce = nonce_;
   d.op_channel = proposal_;
@@ -48,12 +49,20 @@ bool VrxRendezvous::feed_disc_ack(const mabur::rc::DiscAck& ack, double now_ms, 
   if (adopted_new) *adopted_new = false;
   if (ack.vrx_nonce != nonce_) return false;
   if (ack.flags & mabur::rc::kAckKeyMismatch) {
-    if (!first_flagged_ms_) first_flagged_ms_ = now_ms;
-    // vtx_nonce_ is kept (see rendezvous.h): KEY_MISMATCH sends no RCFs.
-    if (now_ms - *first_flagged_ms_ >= kKeyMismatchMs) state_ = VrxState::KEY_MISMATCH;
+    if (!first_flagged_ms_) {
+      first_flagged_ms_ = now_ms;
+      beacons_since_flagged_ = 0;
+    }
+    // Both: the run is old enough AND enough of our DISCs went unanswered
+    // by an unflagged ack (rendezvous.h). vtx_nonce_ is kept: KEY_MISMATCH
+    // sends no RCFs.
+    if (now_ms - *first_flagged_ms_ >= kKeyMismatchMs &&
+        beacons_since_flagged_ >= kKeyMismatchBeacons)
+      state_ = VrxState::KEY_MISMATCH;
     return true;
   }
   first_flagged_ms_.reset();
+  beacons_since_flagged_ = 0;
   if (!vtx_nonce_ || *vtx_nonce_ != ack.vtx_nonce) {
     vtx_nonce_ = ack.vtx_nonce;
     if (adopted_new) *adopted_new = true;
