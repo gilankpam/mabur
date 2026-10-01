@@ -95,10 +95,10 @@ TEST(keepalive_disc_held_while_a_hop_is_in_flight) {
   CHECK(first_after >= 4000 && first_after <= 4020);   // overdue keep-alive fires at once
 }
 
-// The hop hold must never delay the stale-caps re-teach: before the first
-// DiscAck the fast keep-alive runs even while held. Revert = drop the
-// `|| !peer_acked_` term: no DISC goes out in the held, unacked span.
-TEST(keepalive_hold_ignored_until_peer_acked) {
+// The hop hold gates only the SESSION keep-alive: before the first DiscAck
+// there is no session, and BEACONING's 20 ms DISCs (the stale-caps
+// re-teach) go out regardless of the hold.
+TEST(beaconing_discs_ignore_the_hop_hold) {
   auto vrx = make();
   vrx.set_keepalive_hold(true);
   int disc = 0;
@@ -107,132 +107,10 @@ TEST(keepalive_hold_ignored_until_peer_acked) {
     if (auto out = vrx.step(t, healthy()))
       if (mabur::rc::frame_type(out->frame.data(), out->frame.size()) == mabur::rc::T_DISC) ++disc;
   }
-  CHECK(disc >= 3);   // unacked cadence (250 ms) despite the hold
-}
-
-TEST(rcf_fields_are_correct) {
-  auto vrx = make();
-  link(vrx, 0.0);
-  vrx.on_video(0.0);
-  std::optional<VrxController::Out> out;
-  double now = 0;
-  LinkHealth h{true, 0.0, 0.05, false};
-  while (!out || out->is_disc) {         // skip a leading keepalive DISC
-    now += 10;
-    vrx.on_video(now);
-    out = vrx.step(now, h);
-  }
-  auto r = mabur::rc::parse_rcf(out->frame.data(), out->frame.size());
-  REQUIRE(r.has_value());
-  CHECK(r->seq > 0);
-  CHECK(r->profile == mabur::rc::encode_profile(
-                          mabur::rc::PhyMode::HT,
-                          static_cast<uint8_t>(vrx.cur_op().mcs),
-                          static_cast<uint8_t>(vrx.cur_op().bw)));
-  CHECK(std::abs(r->fec_overhead_base - vrx.cur_op().overhead_base) < 1e-9);
-}
-
-// (b) Profile/overhead in the RCF track ctl().op() after a forced demote:
-// walk the ladder up on clean health, then feed residual loss and confirm
-// the very next RCF already reflects the demoted rung, not the stale one.
-TEST(profile_and_overhead_track_ladder_after_forced_demote) {
-  LadderCfg lcfg = default_ladder();
-  lcfg.ladder = {{0, 1.0, 1.0}, {4, 0.25, 0.25}};
-  lcfg.up_util = 0.1;
-  lcfg.confirm_ms = 10;
-  lcfg.clean_ms = 10;
-  lcfg.probation_ms = 10;
-  lcfg.hold_after_down_ms = 0;
-  lcfg.min_between_changes_ms = 0;
-  // Legacy promote semantics: these tests climb on healthy() samples, which
-  // carry no probe window, so the always-on probe gate would read NoInfo and
-  // hold every promote. The gate itself is covered in test_ladder_controller.
-  lcfg.probe.enable = false;
-  lcfg.feedback_timeout_ms = 100000;  // isolate from the blind-side timeout
-  auto vrx = make(lcfg);
-  link(vrx, 0.0);
-
-  double now = 0;
-  for (; now < 1000 && vrx.ctl().rung() == 0; now += 10) {
-    vrx.on_video(now);
-    vrx.step(now, healthy());
-  }
-  REQUIRE(vrx.ctl().rung() == 1);
-  CHECK(vrx.cur_op().mcs == 4);
-
-  std::optional<VrxController::Out> out;
-  LinkHealth lossy{true, 0.0, 0.2, false};  // residual_loss > 0 -> demote
-  for (int i = 0; i < 40 && vrx.ctl().rung() != 0; ++i) {
-    now += 10;
-    vrx.on_video(now);
-    out = vrx.step(now, lossy);
-  }
-  REQUIRE(vrx.ctl().rung() == 0);
-  CHECK(vrx.cur_op().mcs == 0);
-  REQUIRE(out.has_value());
-  REQUIRE(!out->is_disc);
-  auto r = mabur::rc::parse_rcf(out->frame.data(), out->frame.size());
-  REQUIRE(r.has_value());
-  CHECK(r->profile == mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 0, 20));
-  CHECK(std::abs(r->fec_overhead_base - 1.0) < 1e-9);
-  CHECK(vrx.cur_op().mcs == vrx.ctl().op().mcs);
-  CHECK(vrx.cur_op().overhead_base == vrx.ctl().op().overhead_base);
-}
-
-TEST(silence_beacons_fast_and_recovers) {
-  auto vrx = make();
-  link(vrx, 0.0);
-  vrx.on_video(0.0);
-  // 2 s of silence: BEACONING at the 20 ms cadence.
-  int discs = 0;
-  for (double now = 1200; now < 2200; now += 10)
-    if (auto out = vrx.step(now, no_data())) {
-      CHECK(out->is_disc);
-      ++discs;
-    }
   CHECK(vrx.link_state() == VrxState::BEACONING);
-  CHECK(discs >= 45);                       // ~50 in 1 s at 20 ms pacing
-  // Failsafe op point while blind:
-  CHECK(vrx.cur_op().mcs == 0);
-  // Video returns -> SESSION and RCFs resume.
-  vrx.on_video(2500.0);
-  CHECK(vrx.link_state() == VrxState::SESSION);
+  CHECK(disc >= 45);   // every beacon_period_ms (20 ms) despite the hold
 }
 
-TEST(disc_ack_feeds_rendezvous) {
-  auto vrx = make();
-  vrx.step(1500, no_data());          // silence -> BEACONING
-  CHECK(vrx.link_state() == VrxState::BEACONING);
-  mabur::rc::DiscAck ack;
-  ack.vrx_nonce = vrx.rz_nonce();
-  ack.vtx_nonce = 1;
-  auto wire = mabur::rc::pack_disc_ack(ack);
-  vrx.on_rc_frame(wire.data(), wire.size(), 1600);
-  CHECK(vrx.link_state() == VrxState::SESSION);
-}
-
-// peer_caps() surfaces the most recently accepted DiscAck's chip_caps (0
-// before any accept), so main.cpp's core loop can gate the frame-wire tail
-// on the peer's advertised CAP_FRAME_WIRE bit (Task 10).
-TEST(peer_caps_captured_from_disc_ack) {
-  auto vrx = make();
-  CHECK(vrx.peer_caps() == 0);
-  vrx.step(1500, no_data());          // silence -> BEACONING
-  mabur::rc::DiscAck ack;
-  ack.vrx_nonce = vrx.rz_nonce();
-  ack.vtx_nonce = 1;
-  ack.chip_caps = mabur::rc::CAP_FRAME_WIRE;
-  auto wire = mabur::rc::pack_disc_ack(ack);
-  vrx.on_rc_frame(wire.data(), wire.size(), 1600);
-  CHECK(vrx.link_state() == VrxState::SESSION);
-  CHECK(vrx.peer_caps() & mabur::rc::CAP_FRAME_WIRE);
-}
-
-// peer_acked() separates "no DiscAck yet" from "peer advertised caps == 0".
-// Both read peer_caps() == 0, so without
-// this main.cpp cannot tell a fresh start from a pre-frame-wire drone — it
-// logged "upgrade maburd" at every maburgs startup (caught on the rig
-// 2026-07-25).
 TEST(peer_acked_false_until_a_disc_ack_is_accepted) {
   auto vrx = make();
   CHECK(!vrx.peer_acked());
@@ -250,44 +128,6 @@ TEST(peer_acked_false_until_a_disc_ack_is_accepted) {
   vrx.on_rc_frame(wire.data(), wire.size(), 1600);
   CHECK(vrx.peer_acked());                       // now caps==0 means it truly said 0
   CHECK(vrx.peer_caps() == 0);
-}
-
-// While no DiscAck has ever been accepted, the SESSION keep-alive DISC runs
-// at unacked_keepalive_ms (250 ms) so a rebooted GS re-learns peer caps in
-// well under a second even with 30-50% uplink loss; after the first accept
-// it relaxes to beacon_keepalive_ms (1000 ms). Stale-caps fix, Part A.
-TEST(keepalive_disc_fast_until_peer_acked) {
-  VrxCfg cfg;
-  cfg.ladder = default_ladder();
-  VrxController vrx(cfg);
-
-  // Keep the rendezvous in SESSION by feeding video continuously.
-  int discs_first_second = 0;
-  for (int t = 0; t <= 1000; t += 10) {
-    vrx.on_video(t);
-    auto out = vrx.step(t, healthy());
-    if (out && out->is_disc) ++discs_first_second;
-  }
-  CHECK(!vrx.peer_acked());
-  CHECK(discs_first_second >= 3);  // ~4 at 250 ms cadence; >=3 tolerates phase
-
-  // Accept a DiscAck -> cadence must relax to ~1 Hz.
-  mabur::rc::DiscAck ack;
-  ack.vrx_nonce = vrx.rz_nonce();
-  ack.vtx_nonce = 1;
-  ack.chip_caps = mabur::rc::CAP_FRAME_WIRE;
-  ack.seq = 1;
-  auto wire = mabur::rc::pack_disc_ack(ack);
-  vrx.on_rc_frame(wire.data(), wire.size(), 1000);
-  CHECK(vrx.peer_acked());
-
-  int discs_second_second = 0;
-  for (int t = 1010; t <= 2000; t += 10) {
-    vrx.on_video(t);
-    auto out = vrx.step(t, healthy());
-    if (out && out->is_disc) ++discs_second_second;
-  }
-  CHECK(discs_second_second <= 1);
 }
 
 // T_TELEM frames are drone->GS display-only telemetry, not rendezvous

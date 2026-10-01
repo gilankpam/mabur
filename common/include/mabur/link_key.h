@@ -23,8 +23,10 @@ std::optional<LinkKey> parse_key_hex(const std::string& hex);
 // starting with '#' ignored; exactly one 32-hex token. Throws
 // std::runtime_error("no key" | "more than one key" | "not 32 hex characters").
 LinkKey parse_key_text(const std::string& text);
-// Missing file -> default key (is_default). Present but malformed -> throws
-// std::runtime_error("<path>: <why>"). Never a silent fallback for a bad file.
+// Missing file (ENOENT only) -> default key (is_default). Any other open or
+// read failure (EACCES, a directory, ENOTDIR) throws
+// std::runtime_error("<path>: <strerror>"); present but malformed throws
+// "<path>: <why>". Never a silent fallback for a bad or unreadable file.
 KeyLoad load_key_file(const std::string& path);
 std::string key_to_hex(const LinkKey& k);
 // 4 lowercase hex chars from SipHash-2-4(key, "mabur.key"), or "default".

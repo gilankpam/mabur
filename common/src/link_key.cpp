@@ -1,7 +1,8 @@
 #include "mabur/link_key.h"
 #include <cctype>
+#include <cerrno>
 #include <cstdio>
-#include <fstream>
+#include <cstring>
 #include <sstream>
 #include <stdexcept>
 #include "mabur/siphash.h"
@@ -51,12 +52,23 @@ LinkKey parse_key_text(const std::string& text) {
 }
 
 KeyLoad load_key_file(const std::string& path) {
-  std::ifstream f(path, std::ios::binary);
-  if (!f) return KeyLoad{kDefaultLinkKey, true, "default"};
-  std::stringstream ss;
-  ss << f.rdbuf();
+  // Only ENOENT means "no key file -> default key". Anything else (EACCES,
+  // a directory, ENOTDIR, a read error) is a boot failure naming the path.
+  std::FILE* f = std::fopen(path.c_str(), "rb");
+  if (!f) {
+    const int err = errno;
+    if (err == ENOENT) return KeyLoad{kDefaultLinkKey, true, "default"};
+    throw std::runtime_error(path + ": " + std::strerror(err));
+  }
+  std::string text;
+  char buf[256];
+  size_t n;
+  while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) text.append(buf, n);
+  const int read_err = std::ferror(f) ? errno : 0;
+  std::fclose(f);
+  if (read_err) throw std::runtime_error(path + ": " + std::strerror(read_err));
   try {
-    return KeyLoad{parse_key_text(ss.str()), false, path};
+    return KeyLoad{parse_key_text(text), false, path};
   } catch (const std::runtime_error& e) {
     throw std::runtime_error(path + ": " + e.what());
   }

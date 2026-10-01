@@ -20,11 +20,6 @@ struct VrxCfg {
   uint8_t op_channel = 149;
   int feedback_ms = 100;
   int beacon_keepalive_ms = 1000;
-  // Keep-alive DISC cadence while no DiscAck has ever been accepted
-  // (peer_acked() false): the GS is blind to peer caps and its video tail
-  // is gated off, so ask fast. Relaxes to beacon_keepalive_ms after the
-  // first accept. Stale-caps fix, 2026-08-28.
-  int unacked_keepalive_ms = 250;
   // Measured-loss ladder controller config (see LinkCfg::ladder_cfg,
   // config.h). Consulted every tick unless pinned.
   LadderCfg ladder;

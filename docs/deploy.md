@@ -267,11 +267,12 @@ The caps-reteach pair retires this dance for same-version pairs:
 - the drone acks a keep-alive DISC while already LINKED, instead of
   ignoring it, so a GS that forgot its caps gets them re-taught without
   needing to re-enter rendezvous;
-- the GS sends its keep-alive DISC on a fast cadence
-  (`unacked_keepalive_ms`, default-only, no config key) whenever its
-  peer's caps are unknown, instead of the slow steady-state
-  `beacon_keepalive_ms`, so the re-teach happens in seconds rather than
-  however long the next slow beacon would take.
+- a GS whose peer's caps are unknown holds no session either (since link
+  pairing, 2026-10-01, SESSION requires an accepted DiscAck, which
+  carries the caps), so it is still beaconing a DISC every 20 ms, not the
+  slow steady-state `beacon_keepalive_ms`, and the re-teach happens on
+  the first ack that gets through. (The 2026-08-28 build used a separate
+  fast 250 ms keep-alive for this, since deleted.)
 
 Gate-verified on hardware 2026-08-28: 5x drone `maburd` restart and 5x GS
 `maburgs` restart, each under a live peer, all 10 recovered unaided

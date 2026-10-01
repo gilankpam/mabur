@@ -1,4 +1,5 @@
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <stdexcept>
@@ -60,6 +61,23 @@ TEST(load_key_file_missing_is_default_bad_throws) {
   const std::string msg = what_of([&] { load_key_file(bad); });
   CHECK(msg.find(bad) != std::string::npos);
   CHECK(msg.find("32 hex") != std::string::npos);
+}
+
+// Only a file that does not EXIST means "use the default key". Any other
+// open/read failure -- a directory, no permission -- is a boot failure
+// naming the path, never a silent fallback to the default.
+TEST(load_key_file_unreadable_path_throws_and_names_it) {
+  const std::string dir = scratch("keydir.key");
+  std::filesystem::create_directories(dir);
+  const std::string msg = what_of([&] { load_key_file(dir); });
+  CHECK(msg.find(dir) != std::string::npos);
+  CHECK(msg.find("Is a directory") != std::string::npos);
+
+  // A path whose parent component is a regular file: ENOTDIR, not ENOENT.
+  const std::string file = scratch("plainfile");
+  write(file, kHex);
+  const std::string under = file + "/mabur.key";
+  CHECK(what_of([&] { load_key_file(under); }).find(under) != std::string::npos);
 }
 
 TEST(fingerprint_is_default_or_four_hex) {
