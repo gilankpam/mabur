@@ -244,7 +244,11 @@ same channel is answered exactly like our own GS — it only fails to win
 a session because our GS's unflagged acks keep winning "newest wins",
 not because the drone refuses it. It can thrash the drone's single
 `pending_` slot (wasted work, not a session loss as long as our own
-keep-alives keep landing).
+keep-alives keep landing). **A spoofed unflagged DISC_ACK** makes the GS
+adopt a bogus `vtx_nonce`; the drone rejects the RCFs tagged under it
+until `failsafe_ms` (the drone's `[link] failsafe_ms`, 3000 ms in
+`bundle/mabur.default.toml`) drops it out of LINKED, and the next
+keep-alive DISC re-pairs — DoS, out of scope.
 
 ## Known edges
 
@@ -256,12 +260,6 @@ All self-healing; found during the Task 9 reviews, not hardware bugs.
   mismatch and enter `KEY_MISMATCH` mid-session; it leaves on the next
   unflagged ack, same as any entry. One or two lost acks no longer do
   (the time-only rule tripped on those).
-- **Failsafe recovery via an old-session RCF.** If the GS's first
-  recovering RCF lands on the old (stale) session before a fresh
-  keep-alive DISC does, that DISC can hand the GS the old `vtx_nonce`
-  back; RCFs against the stale `current_` session are rejected until the
-  next DISC/RCF round re-pairs — about 1-2 s, bounded by the keep-alive
-  cadence.
 - **Promote Telem drains counters out of cadence.** The immediate Telem
   a session promotion sends is extra and off the regular period — it
   drains the drone's per-period counters early, shortening the next
