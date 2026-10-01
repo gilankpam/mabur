@@ -325,18 +325,27 @@ implementation pinned against the reference test vectors
 `tests/test_link_auth_e2e.cpp` is the only place both ends of the
 rendezvous — a real `RcAgent` and a real `VrxController` — run against
 each other on the host, stepped in 10 ms increments with a perfect air
-link (no loss, no reorder). Four cases:
+link (no loss, no reorder, except where a case drops frames on purpose).
+Five cases:
 
 1. **Matching keys link within a second.**
 2. **Mismatched keys** end in `KEY_MISMATCH`, zero RCFs, the drone never
    reaches `LINKED`, no operating point beyond the automatic BOOT
    default is ever applied, no retune, and `auth_reject` is set.
-3. **A same-key stranger drone beside ours** never trips `KEY_MISMATCH`
-   on our own session — our drone still links, the stranger drone (wrong
-   key relative to our GS) never does.
+3. **A foreign-key stranger drone beside ours** never trips
+   `KEY_MISMATCH`, not even for one ack — run with the stranger's ack
+   first and with ours first, each with one of our drone's keep-alive
+   acks dropped. Our drone stays linked; the stranger never links.
 4. **A drone restart relinks through the GS's keep-alive DISC** — a
    fresh `RcAgent` against the same, still-running `VrxController`
-   reaches `LINKED` within one keep-alive interval plus one RCF.
+   reaches `LINKED` within one keep-alive interval plus one RCF
+   (measured 990 ms).
+5. **An uplink fade past failsafe relinks through the keep-alive DISC**
+   — GS-to-drone frames dropped for `failsafe_ms` + 300 ms while video
+   keeps the GS in SESSION; an RCF captured during the fade and replayed
+   after failsafe is rejected (`auth_reject`, still FAILSAFE); once the
+   uplink returns the next keep-alive re-pairs under a new `vtx_nonce`
+   (measured 190 ms after restore; bound one keep-alive + one RCF).
 
 ## Bench results
 
