@@ -321,4 +321,54 @@ TEST(send_control_strips_radiotap) {
   CHECK(!c.send_control(std::vector<uint8_t>(bad, bad + 4)));
 }
 
+TEST(retune_sends_tune_and_drops_owned_until_status_confirms) {
+  Sink s;
+  RelayClient c(136, 2, s.fn());
+  c.start(0);
+  auto st = status(0, 136, 2, 1);
+  mabur::node::RxBody b;
+  c.on_message(st.data(), st.size(), 10, b);
+  REQUIRE(c.owned_and_tuned());
+  c.retune(144, 1, 20);
+  CHECK(c.channel() == 144 && c.sec() == 1);
+  CHECK(s.count(kTune) == 2);
+  CHECK(s.sent.back()[6] == 144 && s.sent.back()[7] == 1);
+  CHECK(!c.owned_and_tuned());                 // STATUS still says 136/2
+  auto mid = status(1, 0, 0, 1);               // retuning
+  c.on_message(mid.data(), mid.size(), 30, b);
+  CHECK(!c.owned_and_tuned());
+  auto ok = status(0, 144, 1, 1);
+  c.on_message(ok.data(), ok.size(), 40, b);
+  CHECK(c.owned_and_tuned());
+}
+
+TEST(start_again_forgets_the_previous_status) {
+  Sink s;
+  RelayClient c(136, 2, s.fn());
+  c.start(0);
+  auto st = status(0, 136, 2, 1);
+  mabur::node::RxBody b;
+  c.on_message(st.data(), st.size(), 10, b);
+  REQUIRE(c.owned_and_tuned());
+  c.start(5000);                               // RemoteCard reopen 5 s later
+  CHECK(!c.have_status() && !c.owned_and_tuned());
+  CHECK(!c.lost(5100));                        // counts from the new start, not the 10 ms STATUS
+  CHECK(c.lost(7100));
+  CHECK(!c.ownership_lost(6100));              // ever-owned memory cleared with the restart
+  CHECK(s.count(kHello) == 2 && s.count(kTune) == 2);
+}
+
+TEST(foreign_sa_is_reported_not_swallowed) {
+  Sink s;
+  RelayClient c(136, 2, s.fn());
+  c.start(0);
+  auto f = frame(1, 136, kFlagPhyValid, 4, -50, -52, -95, -95);
+  f[kFrameHdrLen + 10] = 0x00;                 // break the canonical SA
+  mabur::node::RxBody b;
+  CHECK(c.on_message(f.data(), f.size(), 10, b) == RelayClient::Rx::Foreign);
+  auto g = frame(2, 136, kFlagPhyValid | kFlagBadFcs, 4, -50, -52, -95, -95);
+  g[kFrameHdrLen + 10] = 0x00;                 // CRC-failed: SA proves nothing, still a body
+  CHECK(c.on_message(g.data(), g.size(), 11, b) == RelayClient::Rx::Body);
+}
+
 MTEST_MAIN
