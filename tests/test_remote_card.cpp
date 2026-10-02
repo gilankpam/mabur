@@ -100,6 +100,7 @@ TEST(static_identity) {
 TEST(open_sends_hello_and_tune_for_channel_and_width) {
   Rig r(136, 40);
   REQUIRE(r.card->open_and_start());
+  CHECK(!r.card->alive() && !r.card->ready());   // no STATUS yet: not alive
   REQUIRE(r.soon([&] { return r.t().count(kTune) >= 1; }));
   CHECK(r.t().count(kHello) >= 1);
   {   // released before stop(): the RX thread reacquires it inside recv() to exit
@@ -107,7 +108,27 @@ TEST(open_sends_hello_and_tune_for_channel_and_width) {
     auto& tune = *std::find_if(r.t().sent.begin(), r.t().sent.end(), [](auto& m) { return msg_type(m.data(), m.size()) == kTune; });
     CHECK(tune[6] == 136 && tune[7] == 2);   // 136 is HT40-: sec 2 (mabur::ht40_offset)
   }
-  CHECK(r.card->alive() && !r.card->ready());
+  r.t().push(status(0, 136, 2, 1));
+  REQUIRE(r.soon([&] { return r.card->alive(); }));
+  r.card->stop();
+}
+
+TEST(dead_relay_reads_not_alive_across_reopen) {
+  Rig r;
+  REQUIRE(r.card->open_and_start());
+  r.t().push(status(0, 136, 2, 1));
+  REQUIRE(r.soon([&] { return r.card->alive(); }));
+  r.now_ms = 1000 + 2001;                       // > kLostMs with no further STATUS
+  r.card->tick(r.now_ms);
+  CHECK(!r.card->alive());
+  r.card->stop();
+  REQUIRE(r.card->open_and_start());            // reopen: no STATUS ever arrives on the new transport
+  CHECK(!r.card->alive());                      // not alive for the usual post-open grace period
+  r.card->tick(r.now_ms);
+  CHECK(!r.card->alive());
+  r.t().push(status(0, 136, 2, 1));
+  REQUIRE(r.soon([&] { return r.card->alive(); }));
+  CHECK(r.card->relay_stats()->reconnects == 1);
   r.card->stop();
 }
 
@@ -233,6 +254,7 @@ TEST(refused_restarts_client_every_5s) {
   REQUIRE(r.card->open_and_start());
   r.t().push(status(3, 132, 0, 0));
   REQUIRE(r.soon([&] { return r.card->relay_stats()->state == 3; }));
+  CHECK(r.card->alive() && !r.card->ready());   // refused, but a STATUS flowed: alive stands
   // The real relay sends STATUS every 500 ms; one per tick keeps lost() false
   // so the card reads Refused, not Lost (Lost wins: the core loop reopens it).
   // Waiting for the inbox to drain means the RX thread has taken this STATUS,

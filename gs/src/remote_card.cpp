@@ -79,7 +79,9 @@ bool RemoteCard::ready() const {
 
 bool RemoteCard::alive() const {
   std::lock_guard<std::mutex> lk(mu_);
-  return running_.load() && !c_.lost(now_ms_());
+  // A relay we have never heard from since (re)start is not alive: a dead
+  // CPE would otherwise read UP for ~2 s after every reopen (bench 2026-10-02).
+  return running_.load() && c_.have_status() && !c_.lost(now_ms_());
 }
 
 CardCaps RemoteCard::caps() const {

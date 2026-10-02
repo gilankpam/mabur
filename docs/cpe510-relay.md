@@ -104,11 +104,12 @@ via `TUNE`); with none ready the hop runs the one-card path.
 
 **Lifecycle.** `open_and_start()` opens the UDP transport, re-asserts the
 card's current target channel/width, `RelayClient::start()`s and spawns the
-RX thread. `alive()` = RX thread running and not `lost()` (no `STATUS` for
-2 s): a silent relay is a dead card and goes through the core loop's
-existing stop/reopen path, exactly like a USB card that dropped off the
-bus. `ready()` = `owned_and_tuned() && !lost()` — owned, `STATUS state` 0,
-and the confirmed channel/`sec` equal to the target; a silent relay's last
+RX thread. `alive()` = RX thread up AND at least one `STATUS` since
+(re)start AND not lost (2 s): a silent relay is a dead card and goes
+through the core loop's existing stop/reopen path, exactly like a USB
+card that dropped off the bus. `ready()` = `owned_and_tuned() && !lost()`
+— owned, `STATUS state` 0, and the confirmed channel/`sec` equal to the
+target; a silent relay's last
 `STATUS` still reads owned-and-tuned, so lost wins. One stderr line per
 transition (`maburgs relay card N (addr): connecting` (each open) / `owned and tuned` / `refused
 (another client owns the relay)` / `lost (no STATUS for 2 s)` / `waiting
@@ -214,6 +215,8 @@ balancer, venc or UEP). One CPE, so every leg is single-relay. In order:
 6. Failures: Ethernet pulled → dead card → replug → owned again; web page in
    GS mode against the same relay → page reports taken, `maburgs`
    unaffected; CPE reboot onto its default channel → `RemoteCard` re-tunes.
+   This leg's Ethernet-pulled case found `alive()` reading UP through the
+   whole outage (fixed 2026-10-02: see the Lifecycle section above).
    Measured: not yet run (2026-10-02).
 7. Boot scan with the roster: one USB card scouts at 20 MHz in one-card
    mode (beacons in its home windows), the relay beacons DISC on home
