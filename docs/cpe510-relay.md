@@ -59,13 +59,18 @@ behind a burst of inbound video.
   second measurement at all: see "The relay has no SNR" below.
 - **No EVM** (ar9003 cannot measure long frames; not carried).
 - No FA/CCA/NHM energy reads → the CPE can never be the **scout** card.
-- The bench CPE (AR9344, `REG=US`) has **no channel 144** (5720 MHz) in its
-  phy channel list (ath9k's static channel table ends UNII-2e at 140 —
-  not a regulatory block; see Follow-ups); a TUNE there fails with `-22`
-  and the relay stays on its previous channel. Any channel in `radio.scan.candidates`, and any
-  hop target, must be one the CPE can tune, or the relay drops out for
-  the whole session (gracefully: `owned=false`, USB cards carry the
-  link). Verified 2026-10-02 after the hop test.
+- **Channel set.** Stock ath9k lists only 36–140 and 149–165: its static
+  5 GHz table (`ath9k/common-init.c`, not `init.c`) predates channel 144
+  and was never extended, so a TUNE to 144 failed with `-22` and the relay
+  stayed put (seen 2026-10-02 after the hop test). Fixed 2026-10-03 in
+  `mabur-openwrt` (kmod patch `997-ath9k-full-5ghz-chantable`, kmods
+  `-r5`): the phy now carries the whole 20 MHz grid **36–177** (adds
+  68–96, 144, 169–177), and the shipped regdb domain `REG=XM` opens all of
+  it with no DFS/NO-IR (NO-IR would make mac80211 refuse the relay's TX
+  inject; DFS alone never bothered a monitor vif). A CPE on an older image
+  still cannot tune 144; any channel in `radio.scan.candidates` or hop
+  target the CPE cannot tune drops the relay for the session (gracefully:
+  `owned=false`, USB cards carry the link).
 
 ## `maburgs` `RemoteCard` (as built, 2026-10-02)
 
@@ -305,9 +310,8 @@ Not run: 4 (attenuated-antenna auto-switch half), 6c (CPE reboot onto a
 `maburgs`/`maburplay` with
 `relays = ["10.83.11.1:8310"]`; rollback trio alongside. A later hop test
 found the boot scan committing home → 144 with the relay unable to tune
-there (see "ath9k quirks" above), and the GS's shipped candidates
-`[144, 112]` include 144, so a relay-equipped GS should drop 144 from its
-list (operator's channel plan — not changed in this PR).
+there (see "ath9k quirks" above) — resolved by the 2026-10-03 CPE image
+(full channel grid); the GS's shipped candidates `[144, 112]` stand.
 
 ## Measured limits (full rate, mcs4/40, ~3.2k frames/s, 36 Mb/s)
 
@@ -427,18 +431,27 @@ or `.local` name once the user allows local network access — see
   assembler).
 - **wss for phones at capped rungs** (the mbedTLS test server hung in the
   handshake — solve first).
-- **Channel 144 on the CPE** (bench 2026-10-02): `iw phy0 channels` on the
-  AR9344 lists 36–140 and 149–165 — 144 (5720 MHz) is not disabled or
-  radar-flagged, it is simply absent, because ath9k's static
-  `ath9k_5ghz_chantable` (drivers/net/wireless/ath/ath9k/init.c) predates
-  the channel and was never extended (ath10k/mt76/rtw88 have it). The US
-  regdb already allows 5470–5730 as one DFS block, the same block 136 lives
-  in. A one-line `CHAN5G(5720, 144)` entry in a `mabur-openwrt` ath9k patch
-  (next to the three it already carries), rebuild + flash, then a bench
-  check like the 2026-09-28 spike, would most likely enable it — the
-  synthesizer tunes 5700 and 5745 either side and the calibration piers
-  interpolate. Until then a relay-equipped GS drops 144 from
-  `radio.scan.candidates`.
+- ~~**Channel 144 on the CPE**~~ — DONE 2026-10-03: `mabur-openwrt`
+  branch `full-5ghz-chantable` (kmod patch `997-ath9k-full-5ghz-chantable`
+  + `regdb/db.txt` `XM` domain + `REG=XM` default). What the spike found:
+  the table lives in `ath9k/common-init.c`; the ar9003 synthesizer takes any
+  centre ≥ 4800 MHz and the EEPROM piers (5180…5825 on this unit) clamp
+  past the last one; our kmods are built with `ATH_USER_REGD` and the EEPROM
+  region is 0x0, so the kernel regdb (`iw reg set`) was the only limit
+  left — and US already allowed 144. Bench record below.
+- **Bench record 2026-10-03 (full grid + XM):** CPE v3 flashed from
+  `mabur-openwrt` `full-5ghz-chantable` 2c1c51f (kmods `-r5`). Phy lists
+  36–177, no Radar/No-IR/disabled flag; TUNE 144 HT40-/177/169 HT40+/68/96
+  all land; 20 injected frames on each of 177/68/144/136 give `txecho =
+  2 × tx`, `tx_fail` 0 (NO-IR would leave one echo). With drone + Radxa GS
+  on **144 HT40-** (scan off): GS ausniff 1215 AUs/20 s, 60.8 fps; relay
+  heard 49,201 good / 6 bad-FCS frames in 15 s (mcs4, RSSI −62…−38, 0 seq
+  gaps). On **177 HT20** (GS ladder trimmed to 20 MHz rungs): ausniff
+  1216 AUs, 0 gaps, 60.8 fps at mcs1; relay 12,040 good / 7 bad-FCS in
+  15 s. Not run: the relay as a `maburgs` card on those channels (the
+  Radxa had no route to the CPE this session). `iw reg get` keeps printing
+  a `phy#0 … US` block — ath9k's own boot hint copy, not what the channel
+  flags follow. Details: `mabur-openwrt` `docs/verify-mabur-relay-on-device.md`.
 - `RemoteCard::tick()` should log `tune failed` (RelayClient::tune_failed /
   STATUS state 2) instead of `waiting for STATUS` when the relay refuses
   the channel; the sideport `relay.state` already carries it.
