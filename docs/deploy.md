@@ -815,7 +815,8 @@ GS. Bench gate 2026-10-01, both the 53-byte first cut and the final
 
 ## 2026-10-02 relay cards (`radio.relays`)
 
-`maburgs` gains `[radio] relays = [...]`: each `"host:port"` entry adds a
+`maburgs` gains `[radio] relays = [...]`: each `"ipv4:port"` entry (numeric
+dotted IPv4 — a hostname fails boot; the CPE has no DNS anyway) adds a
 CPE510 `mabur-relay` unit as a card after the USB cards
 (`docs/cpe510-relay.md`, "maburgs RemoteCard"). **GS only — no drone
 change, no wire change, no flag day.** `maburplay` reads the new sideport

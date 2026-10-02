@@ -60,7 +60,9 @@ FAILSAFE entry.
    synchronously so **this same tick's** RCF already carries the new pair
    and `ref_rung`'s profile (`gs/src/main.cpp`'s `HopAction::Order` case).
 2. `ChannelPlan::hop_order(now, target, lead_card)` sends the non-TX card
-   (`lead_card`, whichever the TX selector is not currently using) to the
+   (`lead_card` = `pick_hop_lead()` in `gs/src/scout_pick.h`: the first
+   `ready()` card the TX selector is not using, any type; with none ready
+   the tick runs the one-card path, `n_cards` 1) to the
    target (a CPE510 relay card can be the lead: its retune sends `TUNE`,
    and the verdict and confirmation wait on its `ready()` and the relay's
    own `rx_channel` stamp — frames are dropped until the relay confirms;
@@ -345,7 +347,13 @@ runs once the boot scout has released every card, gated on
 collect ranking/calibration data for the first (observe-only) flights; set
 it `false` to fly with literally no dwells. Every `hop.dwell_period_ms`
 (333 ms default):
-1. Card = whichever the TX selector is not using this cycle (read once at
+1. Card = a `ready()` card the TX selector is not using this cycle, never
+   a relay. As built (`gs/src/scout_pick.h`): dwells take
+   `pick_inflight_scout()` (last scout-capable non-TX card; the loop skips
+   it when `!ready()`), the hop freshness burst takes `pick_burst_card()`
+   (scout-capable, non-TX preferred), and the hop lead is
+   `pick_hop_lead()` (first `ready()` non-TX card — the one pick a relay
+   can win, since it leads via `TUNE`). TX card read once at
    cycle start; the selector defers switching onto a card mid-dwell —
    `dwell_busy`/`dwell_card` — and, since the bench, onto a hop's lead
    card while the hop is in flight: `tx_selection_frozen()` in

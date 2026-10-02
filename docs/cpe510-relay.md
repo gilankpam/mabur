@@ -68,8 +68,10 @@ hop lead. A relay-only GS (no USB card) is not supported — the USB scan's
 "no supported radio found" exit runs before any relay is counted.
 
 **Config.** `[radio] relays = ["10.83.11.1:8310"]` in `/etc/maburgs.toml`
-(default `[]`). Each entry is `host:port`, port 1..65535, duplicates
-rejected; no baked-in default address. Strict keys: an old `maburgs` fails
+(default `[]`). Each entry is `ipv4:port` — a numeric dotted IPv4 address
+(`inet_pton`; a hostname fails boot, because the UDP transport's
+`getaddrinfo` runs on the core thread on every 2 s reopen and a dead
+resolver would stall video) — port 1..65535, duplicates rejected; no baked-in default address. Strict keys: an old `maburgs` fails
 boot on the key, so config before binary (`docs/deploy.md`).
 
 **Roster.** USB cards first (scan order, or `[[radio.cards]]` order),
@@ -91,6 +93,14 @@ false, `fa_ok`/`igi_ok`/`nhm_ok`/`floor_ok`/`snr_ok` all false; the
 (`gs/src/scout_pick.h`): the boot scout is the last scout-capable card and
 the in-flight scout the last scout-capable non-TX card, so the relay never
 scouts (`docs/channel-select.md`, `docs/inflight-channel-hop.md`).
+Scout mode keys on the USB count, not the roster: one USB card is a
+one-card scan (it interleaves home windows and beacons DISC itself), and
+every `ready()` relay beacons DISC on home *in addition*
+(`scan_disc_targets()`); a relay is never the only rendezvous path, since a
+CPE that is still booting, unplugged or owned by another client would
+otherwise mean no DISC ever leaves the GS. The in-flight hop lead is the
+first `ready()` non-TX card of any type (`pick_hop_lead()`; a relay leads
+via `TUNE`); with none ready the hop runs the one-card path.
 
 **Lifecycle.** `open_and_start()` opens the UDP transport, re-asserts the
 card's current target channel/width, `RelayClient::start()`s and spawns the
@@ -100,14 +110,14 @@ existing stop/reopen path, exactly like a USB card that dropped off the
 bus. `ready()` = `owned_and_tuned() && !lost()` — owned, `STATUS state` 0,
 and the confirmed channel/`sec` equal to the target; a silent relay's last
 `STATUS` still reads owned-and-tuned, so lost wins. One stderr line per
-transition (`maburgs relay card N (addr): owned and tuned` / `refused
+transition (`maburgs relay card N (addr): connecting` (each open) / `owned and tuned` / `refused
 (another client owns the relay)` / `lost (no STATUS for 2 s)` / `waiting
 for STATUS`).
 
 **Not ready = dead card.** Frames that arrive while `!ready()` are counted
 (`rx_frames`, `foreign`) and dropped before the `BodyQueue`: a relay tuned
 elsewhere by another owner, or still swinging to our `TUNE`, must not feed
-the aggregator. `send_control()` while not owned counts `tx_fail` and
+the aggregator. `send_control()` while not owned-and-tuned counts `tx_fail` and
 sends nothing; since its frames no longer reach the aggregator, the TX
 selector's dead-card rule (no frame for 1.5 s, or `!alive()`) moves the
 uplink off it.
@@ -205,8 +215,10 @@ balancer, venc or UEP). One CPE, so every leg is single-relay. In order:
    GS mode against the same relay → page reports taken, `maburgs`
    unaffected; CPE reboot onto its default channel → `RemoteCard` re-tunes.
    Measured: not yet run (2026-10-02).
-7. Boot scan with the roster: USB card scouts at 20 MHz, relay beacons DISC
-   on home, rendezvous time in the usual range.
+7. Boot scan with the roster: one USB card scouts at 20 MHz in one-card
+   mode (beacons in its home windows), the relay beacons DISC on home
+   whenever `ready()`; rendezvous time in the usual range, and with the
+   CPE unplugged it still rendezvouses on the USB card alone.
    Measured: not yet run (2026-10-02).
 
 ## Measured limits (full rate, mcs4/40, ~3.2k frames/s, 36 Mb/s)

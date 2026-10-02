@@ -112,10 +112,16 @@ the boot scout is the last scout-capable card — the spare USB card on a
 two-USB GS (the same pick as the old `n_cards − 1` rule), the only card on
 a one-card GS. A CPE510 relay card (`[radio] relays`, `docs/cpe510-relay.md`)
 has no FA/CCA/NHM reads and never scouts; relays sit after the USB cards
-in the roster. DISC beacons on home leave the first non-scout card
-(`boot_home_card` in `gs/src/main.cpp`; card 0 was hard-coded before), so
-with one USB card plus a relay the relay beacons DISC on home while the
-USB card scans at 20 MHz — a two-card plan, not the one-card interleave.
+in the roster. Scout mode keys on the USB card count: two USB cards scan
+two-card (the first USB card that is not the scout keeps home and beacons
+DISC always); ONE USB card scans one-card (the interleave below — it
+beacons DISC itself in its home windows), whatever relays exist. Every
+`ready()` relay beacons DISC on home in addition, but a relay is never the
+only rendezvous path: a CPE that is still booting, unplugged or owned by
+another client would otherwise mean no DISC leaves the GS
+(`scan_disc_targets()` in `gs/src/scout_pick.h`). The scout-away send gate
+drops only the scout card's frames, so a ready relay's DISC still leaves
+while the USB card is off on a candidate.
 
 No `[[radio.cards]]` block pins nothing: `maburgs` auto-probes the USB bus
 and uses every supported card it finds, which is two-card mode. Adding an
