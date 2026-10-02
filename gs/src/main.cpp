@@ -74,6 +74,7 @@
 #include "rf_labels.h"
 #include "s1_loss.h"
 #include "scan_log.h"
+#include "scout_pick.h"
 #include "snr_units.h"
 #include "stats_exporter.h"
 #include "stats_sink.h"
@@ -695,7 +696,11 @@ static int run_radio(const maburgs::Config& cfg) {
   // halves at 20 MHz tuning and joins the link at radio.width once the
   // pick freezes (ChannelScout::run -> retune_width). Every other card,
   // and every card when the scan is off, tunes radio.width from the start.
-  const int boot_scout_card = n_cards == 1 ? 0 : n_cards - 1;
+  // can_scout per roster slot: every USB card can; relays (Task 6 appends
+  // them after the USB cards) cannot. Built before the fronts because the
+  // USB loop below needs boot_scout_card for its width.
+  std::vector<bool> can_scout(static_cast<size_t>(n_cards), true);
+  const int boot_scout_card = maburgs::pick_boot_scout(can_scout);
   for (int i = 0; i < n_cards; ++i) {
     maburgs::RadioFrontend::Cfg fc;
     if (cfg.radio.auto_scan) {
@@ -1062,7 +1067,8 @@ static int run_radio(const maburgs::Config& cfg) {
     while (scout_run.load() && !g_stop.load()) {
       std::this_thread::sleep_for(std::chrono::milliseconds(hcfg.dwell_period_ms));
       if (!in_session_atomic.load() || hopping_atomic.load() || n_cards < 2) continue;
-      const int card = tx_card_now.load() == 0 ? 1 : 0;
+      const int card = maburgs::pick_inflight_scout(can_scout, tx_card_now.load());
+      if (card < 0) continue;
       auto& fe = *fronts[static_cast<size_t>(card)];
       if (!fe.ready()) continue;
       // Candidates plus home, minus the card's own channel (the op channel:
