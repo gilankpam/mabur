@@ -60,8 +60,9 @@ behind a burst of inbound video.
 - **No EVM** (ar9003 cannot measure long frames; not carried).
 - No FA/CCA/NHM energy reads → the CPE can never be the **scout** card.
 - The bench CPE (AR9344, `REG=US`) has **no channel 144** (5720 MHz) in its
-  phy channel list; a TUNE there fails with `-22` and the relay stays on
-  its previous channel. Any channel in `radio.scan.candidates`, and any
+  phy channel list (ath9k's static channel table ends UNII-2e at 140 —
+  not a regulatory block; see Follow-ups); a TUNE there fails with `-22`
+  and the relay stays on its previous channel. Any channel in `radio.scan.candidates`, and any
   hop target, must be one the CPE can tune, or the relay drops out for
   the whole session (gracefully: `owned=false`, USB cards carry the
   link). Verified 2026-10-02 after the hop test.
@@ -420,14 +421,24 @@ or `.local` name once the user allows local network access — see
 
 - **Multi-relay on hardware**: needs a second CPE and per-device addressing
   in `mabur-openwrt` (every unit ships at `10.83.11.1` with its own DHCP).
-- **Relay-aware hop confirm window**, if bench leg 5 shows TUNE→ready
-  dwarfing FastRetune.
 - **ath9k `noise` as a slow in-band energy sensor** for the relay (does NF
   calibration run in monitor mode? log `noise` next to an interferer).
 - **Web GS showing the relay's SNR as "RSSI above floor"** (its own
   assembler).
 - **wss for phones at capped rungs** (the mbedTLS test server hung in the
   handshake — solve first).
+- **Channel 144 on the CPE** (bench 2026-10-02): `iw phy0 channels` on the
+  AR9344 lists 36–140 and 149–165 — 144 (5720 MHz) is not disabled or
+  radar-flagged, it is simply absent, because ath9k's static
+  `ath9k_5ghz_chantable` (drivers/net/wireless/ath/ath9k/init.c) predates
+  the channel and was never extended (ath10k/mt76/rtw88 have it). The US
+  regdb already allows 5470–5730 as one DFS block, the same block 136 lives
+  in. A one-line `CHAN5G(5720, 144)` entry in a `mabur-openwrt` ath9k patch
+  (next to the three it already carries), rebuild + flash, then a bench
+  check like the 2026-09-28 spike, would most likely enable it — the
+  synthesizer tunes 5700 and 5745 either side and the calibration piers
+  interpolate. Until then a relay-equipped GS drops 144 from
+  `radio.scan.candidates`.
 - `RemoteCard::tick()` should log `tune failed` (RelayClient::tune_failed /
   STATUS state 2) instead of `waiting for STATUS` when the relay refuses
   the channel; the sideport `relay.state` already carries it.
