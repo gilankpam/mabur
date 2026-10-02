@@ -1211,4 +1211,45 @@ TEST(ctl_rung_ladder_and_rungs_carry_bw) {
   CHECK(j["link"]["streams"][0]["rung_bw"] == 40);
 }
 
+
+// A relay card (CPE510 RemoteCard) carries no SNR/EVM on the wire: its
+// snr*/evm* keys must read null rather than a fabricated 0 dB, its kind
+// names it, and its relay-side counters ride along under cards[i].relay.
+// USB cards stay kind "usb" with no relay key at all.
+TEST(relay_card_exports_kind_relay_block_and_null_snr) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  in.cards[0].classes[0].frames = 10;     // s0 seen on card 0 too
+  in.cards[0].classes[0].has_ema = true;
+  in.cards[0].classes[0].rssi_ema = 60;
+  in.cards[0].classes[0].snr_ema = 80;
+  StatsCardIn r;
+  r.up = true;
+  r.snr_ok = false;
+  r.kind = "relay";
+  r.relay = RelayStatsIn{0, 136, 2, true, 1000, 3, 0, 20, 0, 1, 2};
+  r.classes[0].frames = 10;
+  r.classes[0].has_ema = true;
+  r.classes[0].rssi_ema = 60;
+  r.classes[0].snr_ema = 80;
+  r.classes[0].evm_has = true;            // ignored: !snr_ok wins
+  r.classes[0].evm_ema = -40;
+  in.cards.push_back(r);
+  REQUIRE(ex.poll(1000, in));
+  json j = cap.last();
+  CHECK(j["cards"][0]["kind"] == "usb");
+  CHECK(!j["cards"][0].contains("relay"));
+  CHECK(j["cards"][1]["kind"] == "relay");
+  CHECK(j["cards"][1]["relay"]["owned"] == true);
+  CHECK(j["cards"][1]["relay"]["gaps"] == 3);
+  CHECK(j["cards"][1]["relay"]["reconnects"] == 2);
+  CHECK(j["cards"][1]["classes"]["s0"]["rssi"].get<double>() == -50.0);
+  CHECK(j["cards"][1]["classes"]["s0"]["snr"].is_null());
+  CHECK(j["cards"][1]["classes"]["s0"]["snr_a"].is_null());
+  CHECK(j["cards"][1]["classes"]["s0"]["snr_b"].is_null());
+  CHECK(j["cards"][1]["classes"]["s0"]["evm"].is_null());
+  CHECK(!j["cards"][0]["classes"]["s0"]["snr"].is_null());   // when its has_ema is true
+}
+
 MTEST_MAIN

@@ -2590,6 +2590,10 @@ static int run_radio(const maburgs::Config& cfg) {
                      static_cast<unsigned long long>(t.frames),
                      static_cast<unsigned long long>(t.crc_fail), t.snr_ema,
                      t.snr_a_ema, t.snr_b_ema);
+        if (auto rs = fronts[static_cast<size_t>(i)]->relay_stats())
+          std::fprintf(stderr, " relay[own=%d gaps=%llu drops=%u reconn=%u]",
+                       rs->owned ? 1 : 0, static_cast<unsigned long long>(rs->gaps),
+                       rs->your_drops, rs->reconnects);
       }
       for (int s = 0; s < 2; ++s) {
         const auto st = agg.decoder().stats(s);
@@ -2704,6 +2708,9 @@ static int run_radio(const maburgs::Config& cfg) {
         ci.tx_fail = fronts[static_cast<size_t>(i)]->tx_fail();
         ci.energy = energy_last[static_cast<size_t>(i)];  // last A sample
         ci.dwell = dwell_stats[static_cast<size_t>(i)];  // last in-flight scout dwell
+        ci.relay = fronts[static_cast<size_t>(i)]->relay_stats();
+        ci.kind = ci.relay ? "relay" : "usb";
+        ci.snr_ok = snr_ok[static_cast<size_t>(i)];
         static_assert(maburgs::kNumStatsClasses == maburgs::kNumRfClasses,
                       "class arrays must stay in lockstep");
         for (int k = 0; k < maburgs::kNumStatsClasses; ++k) {
