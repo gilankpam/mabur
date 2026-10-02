@@ -104,6 +104,11 @@ struct RadioCfg {
   std::vector<CardCfg> cards;
   bool auto_scan = true;
   int tx_card = -1;            // -1 = auto-select (Plan 2)
+  // CPE510 mabur-relay units (protocol v3 over UDP), "host:port" each. Every
+  // entry becomes a RemoteCard AFTER the USB cards, in this order. Empty =
+  // none. Several are supported by the code; the CPE firmware fixes every
+  // unit at 10.83.11.1, so more than one needs a firmware addressing change.
+  std::vector<std::string> relays;
   ScanCfg scan;
 };
 

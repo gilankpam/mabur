@@ -1420,3 +1420,35 @@ TEST(overlay_missing_file_fails) {
   catch (const std::exception&) { threw = true; }
   CHECK(threw);
 }
+
+// radio.relays (spec 2026-10-02-maburgs-remote-card §3): CPE510 relays are
+// RemoteCards appended after the USB cards, "host:port" each.
+TEST(radio_relays_default_empty_and_parse) {
+  auto none = maburgs::load_config(write_tmp("[radio]\nchannel = 136\n"));
+  CHECK(none.radio.relays.empty());
+  auto two = maburgs::load_config(write_tmp(
+      "[radio]\nrelays = [\"10.83.11.1:8310\", \"10.83.11.2:8310\"]\n"));
+  REQUIRE(two.radio.relays.size() == 2);
+  CHECK(two.radio.relays[0] == "10.83.11.1:8310");
+  CHECK(two.radio.relays[1] == "10.83.11.2:8310");
+}
+
+TEST(radio_relays_entries_are_validated) {
+  auto w = what_of([] { maburgs::load_config(write_tmp("[radio]\nrelays = [\"10.83.11.1\"]\n")); });
+  CHECK(w.find("radio.relays[0]") != std::string::npos && w.find("port") != std::string::npos);
+  w = what_of([] { maburgs::load_config(write_tmp("[radio]\nrelays = [\"10.83.11.1:0\"]\n")); });
+  CHECK(w.find("radio.relays[0]") != std::string::npos);
+  w = what_of([] { maburgs::load_config(write_tmp("[radio]\nrelays = [\"a:8310\", \"a:8310\"]\n")); });
+  CHECK(w.find("radio.relays[1]") != std::string::npos && w.find("duplicate") != std::string::npos);
+  w = what_of([] { maburgs::load_config(write_tmp("[radio]\nrelays = [8310]\n")); });
+  CHECK(w.find("radio.relays[0]") != std::string::npos);
+}
+
+TEST(tx_card_may_name_a_relay_after_the_explicit_cards) {
+  auto cfg = maburgs::load_config(write_tmp(
+      "[radio]\ntx_card = 1\nrelays = [\"10.83.11.1:8310\"]\n[[radio.cards]]\nusb_pid = 34842\n"));
+  CHECK(cfg.radio.tx_card == 1);   // card 0 = the USB entry, card 1 = the relay
+  auto w = what_of([] { maburgs::load_config(write_tmp(
+      "[radio]\ntx_card = 2\nrelays = [\"10.83.11.1:8310\"]\n[[radio.cards]]\nusb_pid = 34842\n")); });
+  CHECK(w.find("radio.tx_card") != std::string::npos);
+}

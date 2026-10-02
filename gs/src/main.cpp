@@ -71,6 +71,7 @@
 #include "rtt_estimator.h"
 #include "link_card.h"
 #include "radio_frontend.h"
+#include "remote_card.h"
 #include "rf_labels.h"
 #include "s1_loss.h"
 #include "scan_log.h"
@@ -687,21 +688,26 @@ static int run_radio(const maburgs::Config& cfg) {
                    maburgs::port_name(scanned[i]).c_str());
   }
 
-  const int n_cards = cfg.radio.auto_scan
-                          ? static_cast<int>(scanned.size())
-                          : static_cast<int>(cfg.radio.cards.size());
+  // Roster: USB cards first (0..n_usb-1), then radio.relays in config
+  // order. The "no supported radio" exit above runs before any relay is
+  // counted: a relay never rescues a USB-less GS.
+  const int n_usb = cfg.radio.auto_scan ? static_cast<int>(scanned.size())
+                                        : static_cast<int>(cfg.radio.cards.size());
+  const int n_relays = static_cast<int>(cfg.radio.relays.size());
+  const int n_cards = n_usb + n_relays;
   maburgs::BodyQueue queue;  // all cards share one queue; card_id tags origin
   std::vector<std::unique_ptr<maburgs::LinkCard>> fronts;
   // The boot scout card (spare card, or the only card) scans the 20 MHz
   // halves at 20 MHz tuning and joins the link at radio.width once the
   // pick freezes (ChannelScout::run -> retune_width). Every other card,
   // and every card when the scan is off, tunes radio.width from the start.
-  // can_scout per roster slot: every USB card can; relays (Task 6 appends
-  // them after the USB cards) cannot. Built before the fronts because the
-  // USB loop below needs boot_scout_card for its width.
+  // can_scout per roster slot: every USB card can; relays (after the USB
+  // cards) cannot. Built before the fronts because the USB loop below needs
+  // boot_scout_card for its width.
   std::vector<bool> can_scout(static_cast<size_t>(n_cards), true);
+  for (int i = n_usb; i < n_cards; ++i) can_scout[static_cast<size_t>(i)] = false;
   const int boot_scout_card = maburgs::pick_boot_scout(can_scout);
-  for (int i = 0; i < n_cards; ++i) {
+  for (int i = 0; i < n_usb; ++i) {
     maburgs::RadioFrontend::Cfg fc;
     if (cfg.radio.auto_scan) {
       fc.by_port = true;
@@ -717,6 +723,15 @@ static int run_radio(const maburgs::Config& cfg) {
     fc.width_mhz = (cfg.radio.scan.enable && i == boot_scout_card) ? 20 : cfg.radio.width;
     fc.card_id = static_cast<uint8_t>(i);
     fronts.push_back(std::make_unique<maburgs::RadioFrontend>(fc, queue));
+  }
+  for (int k = 0; k < n_relays; ++k) {
+    maburgs::RemoteCard::Cfg rc;
+    rc.addr = cfg.radio.relays[static_cast<size_t>(k)];
+    rc.channel = cfg.radio.channel;
+    rc.width_mhz = cfg.radio.width;  // never the boot scout: full width from the start
+    rc.card_id = static_cast<uint8_t>(n_usb + k);
+    fronts.push_back(std::make_unique<maburgs::RemoteCard>(rc, queue));
+    std::fprintf(stderr, "cards: card %d = relay %s\n", n_usb + k, rc.addr.c_str());
   }
 
   // A pin that outruns the cards actually found is a missing antenna, not a
@@ -940,7 +955,10 @@ static int run_radio(const maburgs::Config& cfg) {
   std::unique_ptr<maburgs::ChannelScout> scout;
   std::thread scout_thread;
   bool scout_joined = true;  // no thread running
-  if (scfg.enable) {
+  // boot_scout_card is >= 0 whenever a USB card exists, which the "no
+  // supported radio" exit guarantees; the guard documents that `scout`
+  // (and every scout_card use gated on it) needs a scout-capable card.
+  if (scfg.enable && boot_scout_card >= 0) {
     maburgs::ScoutCfg sc;
     sc.home = cfg.radio.channel;
     sc.candidates = scfg.candidates;
@@ -1649,10 +1667,11 @@ static int run_radio(const maburgs::Config& cfg) {
         caps_logged[static_cast<size_t>(i)] = true;
         std::fprintf(stderr,
                      "maburgs radio card %d: %s %s %dx%d fast_retune=%d "
-                     "sensors fa=%d igi=%d nhm=%d floor=%d\n",
+                     "sensors fa=%d igi=%d nhm=%d floor=%d snr=%d scout=%d\n",
                      i, c.chip.c_str(), c.gen.c_str(), c.tx_chains, c.rx_chains,
                      c.fast_retune ? 1 : 0, c.fa_ok ? 1 : 0, c.igi_ok ? 1 : 0,
-                     c.nhm_ok ? 1 : 0, c.floor_ok ? 1 : 0);
+                     c.nhm_ok ? 1 : 0, c.floor_ok ? 1 : 0, c.snr_ok ? 1 : 0,
+                     fe.can_scout() ? 1 : 0);
       }
     }
     for (int i = 0; i < n_cards; ++i) fronts[static_cast<size_t>(i)]->tick(now_ms_u);
