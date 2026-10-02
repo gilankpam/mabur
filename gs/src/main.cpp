@@ -950,12 +950,14 @@ static int run_radio(const maburgs::Config& cfg) {
   // home, retune() moves it, and the scout owns its card's entry until the
   // scout thread is joined.
   std::vector<uint8_t> cur_ch(static_cast<size_t>(n_cards), cfg.radio.channel);
-  const bool one_card = n_cards == 1;
+  // Scout mode keys on the USB card count, not the roster: with ONE USB
+  // card the scout interleaves home windows and beacons itself whatever
+  // relays exist -- a relay is never the only rendezvous path (a CPE still
+  // booting, unplugged or owned by another client would mean no DISC ever
+  // leaves the GS). ChannelPlan / HopVerdict / TxSelector / the sideport
+  // keep the total n_cards.
+  const bool one_card = n_usb == 1;
   const int scout_card = boot_scout_card;
-  // The card that keeps home while the scout is off measuring: the first
-  // non-scout card (scout_pick.h makes the scout the LAST scout-capable
-  // card, so with USB+relay that is the relay). One card: itself.
-  const int boot_home_card = n_cards >= 2 ? (scout_card == 0 ? 1 : 0) : 0;
   std::unique_ptr<maburgs::ChannelScout> scout;
   std::thread scout_thread;
   bool scout_joined = true;  // no thread running
@@ -1176,14 +1178,15 @@ static int run_radio(const maburgs::Config& cfg) {
   // send lands in the drone's inter-AU idle. See rcf_slot.h.
   maburgs::RcfSlotter rcf_slot(
       maburgs::RcfSlotCfg{cfg.link.rcf_slot_hold_ms, 100, 2, 3, 1});
-  // One card + a running scout: sends that leave while the card is off
-  // measuring a candidate would race the scout thread's FastRetune /
+  // One USB card + a running scout: sends on the SCOUT card while it is
+  // off measuring a candidate would race the scout thread's FastRetune /
   // GetRxEnergy on the same device. The DISC routing ladder checks
   // at_home() when the frame is OFFERED, but the slotter releases it
   // later with no re-check, and RCFs (which exist from the first ack
   // until the join) never consulted it at all. This is the one gate that
   // covers both, at the single site every control frame passes through.
-  // Two-card mode trips it while the scout has a silent dwell in progress
+  // Only the scout card's frames are dropped: a ready relay's DISC must
+  // still leave while the USB scout is off on a candidate. Two-card mode trips it while the scout has a silent dwell in progress
   // (quiet()): the beaconing card's TX leaks into the adjacent scout on
   // every channel and dominated the readings otherwise.
   uint64_t scout_gated_sends = 0;
@@ -1191,7 +1194,7 @@ static int run_radio(const maburgs::Config& cfg) {
   // slotter): card + RTT stamp travel with the frame (SlotFrame).
   auto send_control_frame = [&](const maburgs::SlotFrame& f) {
     if (scout && !scout_joined &&
-        ((one_card && !scout->at_home()) || scout->quiet())) {
+        ((one_card && f.card == scout_card && !scout->at_home()) || scout->quiet())) {
       ++scout_gated_sends;
       return;
     }
@@ -1667,7 +1670,8 @@ static int run_radio(const maburgs::Config& cfg) {
         if (!fe.open_and_start())
           std::fprintf(stderr, "card %d: open failed, retrying\n", i);
         else {
-          cur_ch[static_cast<size_t>(i)] = cfg.radio.channel;  // InitWrite tunes home
+          // USB: InitWrite tunes home; the relay re-asserts its last target.
+          cur_ch[static_cast<size_t>(i)] = fe.channel();
           width_tried[static_cast<size_t>(i)] = false;         // new bring-up
         }
         retry_at_ms[static_cast<size_t>(i)] = now_ms_u + 2000;
@@ -1985,7 +1989,8 @@ static int run_radio(const maburgs::Config& cfg) {
           // Raw EMAs -> the dBm/dB the [hop.verdict] thresholds are in
           // (hop_verdict.h); feeding raw here left `weak` unreachable.
           vc[si].rssi_dbm = maburgs::rssi_raw_to_dbm(t.rssi_a_ema);
-          vc[si].snr_db = maburgs::snr_raw_to_db(t.snr_ema);
+          // A relay's SNR is synthetic (snr_ok false): log nan, not a number.
+          vc[si].snr_db = snr_ok[si] ? maburgs::snr_raw_to_db(t.snr_ema) : std::nan("");
           vc[si].snr_valid = snr_ok[si];
           const double win_us = static_cast<double>(now_ms_u - window_prev_ms[si]) * 1000.0;
           const double own_pct = win_us > 0
@@ -2071,8 +2076,17 @@ static int run_radio(const maburgs::Config& cfg) {
       ht.now_ms = now_ms;
       ht.verdict = last_verdict_out;
       ht.cur_op = plan.op();
-      ht.n_cards = n_cards;
-      ht.lead_card = n_cards >= 2 ? (sel.selected() == 0 ? 1 : 0) : -1;
+      // The lead is the first ready() non-TX card (scout_pick.h); with none
+      // ready (a lost/refused relay, a dead USB card) run the one-card hop
+      // path instead of ordering a hop no card would ever retune for.
+      {
+        std::vector<bool> ready(static_cast<size_t>(n_cards));
+        for (int i = 0; i < n_cards; ++i)
+          ready[static_cast<size_t>(i)] = fronts[static_cast<size_t>(i)]->ready();
+        const int lead = maburgs::pick_hop_lead(ready, sel.selected());
+        ht.lead_card = lead;
+        ht.n_cards = lead >= 0 ? n_cards : 1;
+      }
       fill_hop_targets(ht);
       // lead_card (or the only card, one-card mode) confirms the hop by
       // landing a video body on the target channel -- last_video_ch is set
@@ -2431,8 +2445,9 @@ static int run_radio(const maburgs::Config& cfg) {
       // Which card(s) carry this frame. RCFs go to the TX selector's card,
       // as they always did. A DISC is rendezvous traffic and follows the
       // plan instead: both channels of a split, the home card while the
-      // scout has the other one, nothing at all while a single card is off
-      // measuring a candidate (spec section 6, GS side).
+      // scout has the other one, nothing from a single USB card while it is
+      // off measuring a candidate (spec section 6, GS side) -- plus any
+      // ready relay during the boot scan.
       std::vector<int> targets;
       if (!out->is_disc) {
         targets.push_back(tx);
@@ -2441,7 +2456,16 @@ static int run_radio(const maburgs::Config& cfg) {
       } else if (!scout_joined) {
         // Silent during every scout dwell (two cards: quiet(); one card:
         // outside the beacon phase).
-        if (!scout->quiet() && (!one_card || scout->at_home())) targets.push_back(boot_home_card);
+        // The home card (first USB card != scout, two USB cards) or the
+        // scout itself while home (one USB card), plus every ready relay
+        // (scout_pick.h scan_disc_targets()).
+        if (!scout->quiet()) {
+          std::vector<bool> ready(static_cast<size_t>(n_cards));
+          for (int i = 0; i < n_cards; ++i)
+            ready[static_cast<size_t>(i)] = fronts[static_cast<size_t>(i)]->ready();
+          targets = maburgs::scan_disc_targets(n_usb, n_cards, scout_card,
+                                               scout->at_home(), ready);
+        }
       } else {
         targets.push_back(tx);
       }

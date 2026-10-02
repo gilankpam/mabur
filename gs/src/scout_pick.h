@@ -34,4 +34,36 @@ inline int pick_burst_card(const std::vector<bool>& can_scout, int tx) {
   return pick_boot_scout(can_scout);   // last scout-capable card, TX or not; -1 if none
 }
 
+// DISC beacon targets during the boot scan. The scout card beacons only
+// while it is home (one-card mode: it interleaves home windows); a USB home
+// card (two-card mode: first USB card != scout) beacons always; every relay
+// that is ready() beacons as well -- but a relay is never the ONLY path to
+// rendezvous, because a CPE that is still booting, unplugged or owned by
+// another client would otherwise mean no DISC ever leaves the GS.
+// `ready` is per card; `n_usb` USB cards come first in the roster.
+inline std::vector<int> scan_disc_targets(int n_usb, int n_cards, int scout_card,
+                                          bool scout_at_home,
+                                          const std::vector<bool>& ready) {
+  std::vector<int> out;
+  if (n_cards <= 0) return out;
+  if (n_usb >= 2) {
+    out.push_back(scout_card == 0 ? 1 : 0);   // the first USB card != scout
+  } else if (n_usb == 1 && scout_at_home) {
+    out.push_back(scout_card);
+  }
+  for (int i = n_usb; i < n_cards && i < static_cast<int>(ready.size()); ++i)
+    if (ready[static_cast<size_t>(i)]) out.push_back(i);
+  return out;
+}
+
+// The in-flight hop lead: the first ready() card that is not transmitting,
+// any type (a relay leads via TUNE by design); -1 when none is ready -- the
+// caller then runs the one-card hop path (n_cards 1) instead of leading on a
+// dead card.
+inline int pick_hop_lead(const std::vector<bool>& ready, int tx) {
+  for (int i = 0; i < static_cast<int>(ready.size()); ++i)
+    if (i != tx && ready[static_cast<size_t>(i)]) return i;
+  return -1;
+}
+
 }  // namespace maburgs
