@@ -34,10 +34,11 @@ void decode_profile(uint8_t p, PhyMode& mode, uint8_t& mcs, uint8_t& bw);
 // Builds the 2-slot ladder (BASE, ENH) for a (mode, scored mcs, bw)
 // operating point. Both slots ride the scored mcs — same-rate, UEP is
 // per-layer FEC overhead only (2026-08-30 ruling, see the comment on the
-// definition). Both slots carry LDPC+STBC unconditionally on (the config
-// policy was removed 2026-07-26 — all-true was the only shape ever flown,
-// and flags-off measured 2-3 dB weaker at the same MCS).
-std::array<LayerTxSpec, 2> ladder_from(PhyMode mode, uint8_t mcs, uint8_t bw);
+// definition). Both slots carry STBC, and LDPC unless `ldpc` is false
+// (drone radio.ldpc, 2026-10-02: an RTL8821AU GS cannot decode HT-LDPC;
+// flags-off measured 2-3 dB weaker at the same MCS, so true is the default).
+std::array<LayerTxSpec, 2> ladder_from(PhyMode mode, uint8_t mcs, uint8_t bw,
+                                       bool ldpc = true);
 
 struct ProfileRow {
   uint8_t mcs;

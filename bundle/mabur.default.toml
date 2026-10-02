@@ -11,6 +11,7 @@ width      = 40          # 20 or 40 MHz. The ground station picks the width for 
 follow_gs  = true        # move to the channel the ground station asks for
 power_mode = "none"      # "none" = card's default TX power; "offset" = use the calibrated walls below
 tx_threads = 4           # parallel USB senders; 4 is needed to reach full link speed
+ldpc       = true        # LDPC coding on every frame. false only for an RTL8821AU ground card (it can't decode LDPC); costs ~2-3 dB of range
 
 # TX-power calibration ("walls"). These numbers belong to ONE card: the
 # author's 8812EU. They do nothing while power_mode = "none". To calibrate

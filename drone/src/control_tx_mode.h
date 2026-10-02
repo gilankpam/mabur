@@ -1,7 +1,8 @@
 #pragma once
 // devourer::TxMode for the MAX_RANGE control channel. DISC_ACK, telemetry
 // and every other control frame fly at the same robustness as the
-// MAX_RANGE data profile -- MCS0 / 20 MHz WITH LDPC+STBC (flying them
+// MAX_RANGE data profile -- MCS0 / 20 MHz WITH LDPC+STBC, LDPC per
+// radio.ldpc like the video slots (flying them
 // without the flags was weaker than rung 0's own data, and a DISC_ACK lost
 // at exactly the range where MAX_RANGE is needed defeats the floor).
 //
@@ -15,13 +16,13 @@
 
 namespace mabur {
 
-inline devourer::TxMode control_tx_mode() {
+inline devourer::TxMode control_tx_mode(bool ldpc = true) {
   devourer::TxMode m;
   m.mode = devourer::TxMode::Mode::HT;
   m.ht_mcs = 0;
   m.bw_mhz = 20;
   m.sgi = false;
-  m.ldpc = true;
+  m.ldpc = ldpc;
   m.stbc = true;
   m.no_agg = true;
   return m;

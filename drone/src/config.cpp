@@ -85,7 +85,7 @@ void assign_if_present(const Value& j, const char* key, T& out,
 void parse_radio(const Value& j, RadioCfg& r) {
   check_known_keys(j, {"usb_vid", "usb_pid", "channel", "width",
                         "power_mode", "tx_threads", "rate_walls_rel",
-                        "legacy_wall_rel", "wall_margin_db", "follow_gs"},
+                        "legacy_wall_rel", "wall_margin_db", "follow_gs", "ldpc"},
                    "radio");
   assign_if_present(j, "usb_vid", r.usb_vid, "radio");
   assign_if_present(j, "usb_pid", r.usb_pid, "radio");
@@ -98,6 +98,7 @@ void parse_radio(const Value& j, RadioCfg& r) {
                             std::to_string(static_cast<int>(r.channel)) +
                             " has none (common/include/mabur/ht40.h)");
   assign_if_present(j, "follow_gs", r.follow_gs, "radio");
+  assign_if_present(j, "ldpc", r.ldpc, "radio");
   assign_if_present(j, "power_mode", r.power_mode, "radio");
   assign_if_present(j, "tx_threads", r.tx_threads, "radio");
 

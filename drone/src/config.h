@@ -43,6 +43,10 @@ struct RadioCfg {
   // ≤3-frame URB batches, which the seq-addressed FEC datapath and
   // the GS max-seq delivery accounting both tolerate).
   int tx_threads = 4;
+  // LDPC on video, probe and control frames. false = BCC, for a GS card
+  // that cannot decode HT-LDPC (RTL8821AU, bench 2026-10-02: 1/1000 LDPC vs
+  // 900+/1000 BCC). Costs every GS the LDPC coding gain while off.
+  bool ldpc = true;
 };
 
 struct FecCfg {
