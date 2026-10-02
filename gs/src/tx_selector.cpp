@@ -9,6 +9,9 @@ TxSelector::TxSelector(TxSelectorCfg cfg, int n_cards)
 
 bool TxSelector::dead(const CardSnapshot& c, uint64_t now_us) const {
   if (!c.alive) return true;
+  // A body drained after the loop-top stamp carries a mono_us past the
+  // ms-floored now_us: a frame from this very tick is alive, never a wrap.
+  if (c.last_frame_us >= now_us) return false;
   return now_us - c.last_frame_us >
          static_cast<uint64_t>(cfg_.card_dead_ms) * 1000;
 }

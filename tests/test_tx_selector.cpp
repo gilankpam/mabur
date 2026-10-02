@@ -76,4 +76,19 @@ TEST(relay_with_high_synthetic_snr_but_lower_rssi_loses) {
     CHECK(sel.update(cards, t) == 0);
   }
 }
+TEST(future_frame_stamp_is_not_dead) {
+  // A body's mono_us (us, drained after the loop-top stamp) can exceed the
+  // ms-floored now_us by < 1 ms. now - last must not wrap to "dead" -- that
+  // dead-switched with no margin/hold, and the relay's ms-floored stamps are
+  // never "future", so the bias favoured the relay.
+  TxSelector sel(TxSelectorCfg{-1, 3.0, 2000, 1500}, 2);
+  std::vector<CardSnapshot> cards = {snap(50.0, 0), snap(50.0, 0)};
+  for (uint64_t now = 1'000'000; now < 3'000'000; now += 100'000) {
+    cards[0].last_frame_us = now + 500;
+    cards[1].last_frame_us = now;
+    CHECK(sel.update(cards, now) == 0);
+  }
+  CHECK(sel.switches() == 0);
+}
+
 MTEST_MAIN
