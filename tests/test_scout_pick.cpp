@@ -19,4 +19,14 @@ TEST(inflight_scout_is_last_scout_capable_non_tx_card) {
   CHECK(pick_inflight_scout({true, true, false}, 0) == 1);
   CHECK(pick_inflight_scout({true}, 0) == -1);         // one card never dwells
 }
+TEST(burst_card_prefers_non_tx_scout_capable_then_tx_scout_capable) {
+  CHECK(pick_burst_card({true, true}, 0) == 1);        // two USB: the non-TX one (unchanged)
+  CHECK(pick_burst_card({true, true}, 1) == 0);
+  CHECK(pick_burst_card({true}, 0) == 0);              // one card: itself (unchanged)
+  CHECK(pick_burst_card({true, false}, 1) == 0);       // relay transmits: USB card bursts
+  CHECK(pick_burst_card({true, false}, 0) == 0);       // USB transmits: USB card bursts anyway (never the relay)
+  CHECK(pick_burst_card({true, true, false}, 0) == 1);
+  CHECK(pick_burst_card({false}, 0) == -1);            // nothing can scout: skip
+  CHECK(pick_burst_card({false, false}, 1) == -1);
+}
 MTEST_MAIN

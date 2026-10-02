@@ -23,4 +23,15 @@ inline int pick_inflight_scout(const std::vector<bool>& can_scout, int tx) {
   return -1;
 }
 
+// scout_pick.h — the card for the hop freshness burst: a scout-capable card
+// that is not transmitting; else the last scout-capable card even if it IS
+// the TX card (the burst only runs once the verdict has fired, i.e. the link
+// is already impaired -- the same acceptance a one-card GS already has);
+// -1 when no card can scout at all (the burst is skipped).
+inline int pick_burst_card(const std::vector<bool>& can_scout, int tx) {
+  const int non_tx = pick_inflight_scout(can_scout, tx);
+  if (non_tx >= 0) return non_tx;
+  return pick_boot_scout(can_scout);   // last scout-capable card, TX or not; -1 if none
+}
+
 }  // namespace maburgs

@@ -1065,14 +1065,12 @@ observe-only flights per the spec's open items.
 
 Found on the 2026-09-15 bench (the handover page has the traces):
 
-- **The freshness burst ignores `can_scout`** (2026-10-02, code read, not
-  bench-observed). `burst_card` is the hop lead card, and the lead can be a
-  CPE510 relay; the periodic scout picks by `can_scout`, the burst does not.
-  On a relay every burst dwell reads no energy (`fa`/`cca` 0, the
-  read-failed flag on the `D` line), its retunes are `TUNE`s the relay
-  cannot complete inside a 5 ms observe, and the resulting visits score as
-  clean channels in `HopRanker`. Untested on hardware (bench leg 5 in
-  `docs/cpe510-relay.md` is the first chance to see it).
+- **Fixed 2026-10-02: the freshness burst now picks by `can_scout`.**
+  `burst_card` is `scout_pick.h`'s `pick_burst_card()` — a scout-capable
+  non-TX card, else the scout-capable TX card (the one-card GS's existing
+  acceptance, since the burst only runs once the verdict has fired), else
+  skipped (`-1`) when nothing can scout — so a CPE510 relay, which has no
+  FA/CCA/NHM reads and an async `TUNE`, never bursts.
 
 - **A withdrawn two-card order strands the drone.** The drone retunes on
   the first RCF carrying the order; if the GS withdraws (no video on the

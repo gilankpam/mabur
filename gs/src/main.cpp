@@ -2110,7 +2110,13 @@ static int run_radio(const maburgs::Config& cfg) {
         // own periodic dwell (when one is running, i.e. two-card) from
         // driving the same InflightScout/RadioFrontend at the same time.
         last_burst_ms = now_ms;
-        const int burst_card = ht.lead_card >= 0 ? ht.lead_card : 0;
+        // Never the relay: it cannot measure energy and its TUNE is async
+        // (spec 2026-10-02-maburgs-remote-card §3). Prefer a scout-capable
+        // non-TX card; with USB+relay and TX on the USB card, burst on the
+        // USB card anyway -- the one-card GS already pays this RCF gap.
+        const int burst_card = maburgs::pick_burst_card(can_scout, sel.selected());
+        if (burst_card < 0) { fill_hop_targets(ht); }
+        else {
         std::lock_guard<std::mutex> ilk(inflight_mu);
         auto& fe = *fronts[static_cast<size_t>(burst_card)];
         inflight.set_radio(fe);
@@ -2128,6 +2134,7 @@ static int run_radio(const maburgs::Config& cfg) {
         // contaminated the same way a scout dwell would contaminate it.
         nhm_win[static_cast<size_t>(burst_card)].invalidate();
         fill_hop_targets(ht);
+        }
       }
       const maburgs::HopAction act = hopc.tick(ht);
       dispatch_hop_action(act);   // the shared path, defined above the verdict window
