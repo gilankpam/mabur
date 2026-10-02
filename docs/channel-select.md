@@ -53,7 +53,9 @@ tx_card = -1               # -1 = auto-select the best-RSSI card (since 2026-10-
 # Candidates are 40 MHz pair PRIMARIES on home's side of the grid (home 136 =
 # 132+136, primary upper half), both spur-free: 144 (140+144, next door) and
 # 112 (108+112), the DFS block clear of analog/DJI/Walksnail
-# (docs/bw40.md "Channels").
+# (docs/bw40.md "Channels"). With `radio.relays` configured, every
+# candidate must also be a channel the CPE can tune (144 is not, on the
+# AR9344, docs/cpe510-relay.md); the scan has no way to ask the relay.
 [radio.scan]
 enable           = true
 candidates       = [144, 112]

@@ -59,6 +59,12 @@ behind a burst of inbound video.
   second measurement at all: see "The relay has no SNR" below.
 - **No EVM** (ar9003 cannot measure long frames; not carried).
 - No FA/CCA/NHM energy reads → the CPE can never be the **scout** card.
+- The bench CPE (AR9344, `REG=US`) has **no channel 144** (5720 MHz) in its
+  phy channel list; a TUNE there fails with `-22` and the relay stays on
+  its previous channel. Any channel in `radio.scan.candidates`, and any
+  hop target, must be one the CPE can tune, or the relay drops out for
+  the whole session (gracefully: `owned=false`, USB cards carry the
+  link). Verified 2026-10-02 after the hop test.
 
 ## `maburgs` `RemoteCard` (as built, 2026-10-02)
 
@@ -296,7 +302,11 @@ moved over (eth0 took 10.83.11.116 from the CPE's DHCP with no config).
 Not run: 4 (attenuated-antenna auto-switch half), 6c (CPE reboot onto a
 *different* default channel). Left on the GS after the bench: new
 `maburgs`/`maburplay` with
-`relays = ["10.83.11.1:8310"]`; rollback trio alongside.
+`relays = ["10.83.11.1:8310"]`; rollback trio alongside. A later hop test
+found the boot scan committing home → 144 with the relay unable to tune
+there (see "ath9k quirks" above), and the GS's shipped candidates
+`[144, 112]` include 144, so a relay-equipped GS should drop 144 from its
+list (operator's channel plan — not changed in this PR).
 
 ## Measured limits (full rate, mcs4/40, ~3.2k frames/s, 36 Mb/s)
 
@@ -418,3 +428,6 @@ or `.local` name once the user allows local network access — see
   assembler).
 - **wss for phones at capped rungs** (the mbedTLS test server hung in the
   handshake — solve first).
+- `RemoteCard::tick()` should log `tune failed` (RelayClient::tune_failed /
+  STATUS state 2) instead of `waiting for STATUS` when the relay refuses
+  the channel; the sideport `relay.state` already carries it.
