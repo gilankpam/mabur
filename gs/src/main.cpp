@@ -1986,6 +1986,7 @@ static int run_radio(const maburgs::Config& cfg) {
           // (hop_verdict.h); feeding raw here left `weak` unreachable.
           vc[si].rssi_dbm = maburgs::rssi_raw_to_dbm(t.rssi_a_ema);
           vc[si].snr_db = maburgs::snr_raw_to_db(t.snr_ema);
+          vc[si].snr_valid = snr_ok[si];
           const double win_us = static_cast<double>(now_ms_u - window_prev_ms[si]) * 1000.0;
           const double own_pct = win_us > 0
               ? std::min(100.0, 100.0 * static_cast<double>(f.own_air_us - window_prev[si].own_air_us) / win_us)

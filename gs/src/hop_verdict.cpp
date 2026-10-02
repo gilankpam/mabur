@@ -93,7 +93,8 @@ VerdictOut HopVerdict::window(double now_ms, const std::vector<VerdictCardIn>& c
                         (rec_ref > 0 && link.recovered > hv.recovered_x * rec_ref &&
                          link.recovered >= static_cast<uint32_t>(std::max(hv.recovered_min, 0))) ||
                         starved;
-  const bool weak = cards[best].rssi_dbm < hv.weak_rssi_dbm && cards[best].snr_db < hv.weak_snr_db;
+  const bool weak = cards[best].rssi_dbm < hv.weak_rssi_dbm &&
+                    (!cards[best].snr_valid || cards[best].snr_db < hv.weak_snr_db);
   // Guard: a frozen reference that was never established for this card
   // (out-of-range or invalid-with-no-history at freeze time, see below)
   // reads back as 0 -- a real RSSI is never exactly 0 dBm, so treat 0 as
