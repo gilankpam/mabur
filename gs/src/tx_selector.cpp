@@ -19,7 +19,7 @@ int TxSelector::best_alive(const std::vector<CardSnapshot>& cards,
   for (int i = 0; i < n_cards_ && i < static_cast<int>(cards.size()); ++i) {
     if (dead(cards[static_cast<size_t>(i)], now_us)) continue;
     if (best < 0 ||
-        cards[static_cast<size_t>(i)].snr_ema > cards[static_cast<size_t>(best)].snr_ema)
+        cards[static_cast<size_t>(i)].rssi_ema > cards[static_cast<size_t>(best)].rssi_ema)
       best = i;
   }
   return best < 0 ? selected_ : best;  // all dead: keep current (TX anyway)
@@ -42,8 +42,8 @@ int TxSelector::update(const std::vector<CardSnapshot>& cards, uint64_t now_us) 
   }
   const int cand = best_alive(cards, now_us);
   if (cand != selected_ &&
-      cards[static_cast<size_t>(cand)].snr_ema >=
-          cur.snr_ema + cfg_.switch_margin_db) {
+      cards[static_cast<size_t>(cand)].rssi_ema >=
+          cur.rssi_ema + cfg_.switch_margin_db) {
     if (challenger_ != cand) {
       challenger_ = cand;
       challenge_since_us_ = now_us;

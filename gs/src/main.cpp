@@ -2396,8 +2396,7 @@ static int run_radio(const maburgs::Config& cfg) {
         // transmit candidate, whatever its SNR history says.
         const bool scouting = !scout_joined && i == scout_card;
         snaps.push_back(maburgs::CardSnapshot{
-            !scouting && fronts[static_cast<size_t>(i)]->alive(), t.snr_ema,
-            t.rssi_b_ema, t.last_frame_us});
+            !scouting && fronts[static_cast<size_t>(i)]->alive(), t.rssi_ema, t.last_frame_us});
       }
       // Hold the switch decision while the in-flight scout has a card off
       // on a candidate: the dwelling card is never the TX card by

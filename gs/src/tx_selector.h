@@ -6,8 +6,7 @@ namespace maburgs {
 
 struct CardSnapshot {
   bool alive = false;
-  double snr_ema = 0.0;
-  double rssi_b_ema = 0.0;
+  double rssi_ema = 0.0;     // best-chain RSSI, raw dBm+110 (CardTrack::rssi_ema)
   uint64_t last_frame_us = 0;
 };
 
@@ -18,6 +17,10 @@ struct TxSelectorCfg {
   int card_dead_ms = 1500;
 };
 
+// Picks the uplink (RCF) TX card. Hysteresis + a dead-card override, same as
+// before; it now compares RSSI, not SNR: the CPE510 relay's SNR is not a
+// second measurement (spec 2026-10-02-maburgs-remote-card §4), and RSSI is
+// honest on every card type.
 class TxSelector {
  public:
   TxSelector(TxSelectorCfg cfg, int n_cards);
