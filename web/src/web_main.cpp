@@ -587,6 +587,16 @@ int run_live_relay(const LiveOpts& o, const maburgs::Config& cfg, uint8_t ch, in
   return rc;
 }
 
+// Cards the web core opens; devourer's chip-id read picks the driver.
+// 0bda:a81a/881a = RTL8812EU (Jaguar3), 0bda:8812 = RTL8812AU or EU,
+// 2357:011e/0120/0122 = TP-Link RTL8821AU (Jaguar1, 1T1R). The page's
+// WebUSB chooser filters by vendor only (logic.mjs USB_FILTERS).
+struct UsbId { uint16_t vid, pid; };
+constexpr UsbId kCards[] = {
+    {0x0bda, 0xa81a}, {0x0bda, 0x881a}, {0x0bda, 0x8812},
+    {0x2357, 0x011e}, {0x2357, 0x0120}, {0x2357, 0x0122},
+};
+
 int run_live(const LiveOpts& o) {
   maburgs::Config cfg;
   if (!load_cfg(o.config, o.overlay, cfg)) return 2;
@@ -618,9 +628,9 @@ int run_live(const LiveOpts& o) {
   libusb_device* dev = nullptr;
   for (ssize_t i = 0; i < n && !dev; ++i) {
     libusb_device_descriptor dd;
-    if (libusb_get_device_descriptor(list[i], &dd) != 0 || dd.idVendor != 0x0bda) continue;
-    for (uint16_t p : {0xa81a, 0x881a, 0x8812})
-      if (dd.idProduct == p) dev = list[i];
+    if (libusb_get_device_descriptor(list[i], &dd) != 0) continue;
+    for (const auto& c : kCards)
+      if (dd.idVendor == c.vid && dd.idProduct == c.pid) dev = list[i];
   }
   libusb_device_handle* h = nullptr;
   if (!dev || libusb_open(dev, &h) != 0) {

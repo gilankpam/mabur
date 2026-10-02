@@ -17,7 +17,7 @@
   import { sparkPoints } from '../lib/metrics.js';
   import { layoutMode, keyAction, isMobile, uiFrame } from '../lib/layout.js';
   import { connectBlocker, toOverlayToml, saveConfig, saveKey, parseKeyText } from '../lib/config.js';
-  import { relayBlocker, relayTarget, relayFieldVisible, keyFingerprint } from '../lib/logic.mjs';
+  import { relayBlocker, relayTarget, relayFieldVisible, keyFingerprint, USB_FILTERS, isCardVendor } from '../lib/logic.mjs';
   import { connectRelay, lnaQuery, probeRelay } from '../lib/relay_connect.js';
   import { effectiveTarget, targetCovers, recFileName, localView, combinedRec, headroomWarning,
     formatBytes, listRecordings, downloadRecording, deleteRecording, opfsRoot } from '../lib/localrec.js';
@@ -93,8 +93,8 @@
       if (!window.crossOriginIsolated) throw new Error('Page is not cross-origin isolated (COOP/COEP headers missing) — serve it as docs/web-gs.md describes.');
       if (!navigator.usb) throw new Error('WebUSB unavailable in this browser — use Chrome or Edge.');
       let granted = [];
-      try { granted = (await navigator.usb.getDevices()).filter((d) => d.vendorId === 0x0bda); } catch { /* requestDevice is the real gate */ }
-      if (!granted.length) await navigator.usb.requestDevice({ filters: [{ vendorId: 0x0bda }] });
+      try { granted = (await navigator.usb.getDevices()).filter((d) => isCardVendor(d.vendorId)); } catch { /* requestDevice is the real gate */ }
+      if (!granted.length) await navigator.usb.requestDevice({ filters: USB_FILTERS });
     },
     checkIsolated: () => { if (!window.crossOriginIsolated) throw new Error('Page is not cross-origin isolated (COOP/COEP headers missing) — serve it as docs/web-gs.md describes.'); },
     prepareRelay: (addr) => connectRelay({ addr, protocol: location.protocol, query: lnaQuery, probe: probeRelay }),
@@ -311,7 +311,7 @@
   }
   let usbGranted = false;
   function checkUsbGranted() {
-    navigator.usb?.getDevices().then((d) => { usbGranted = d.some((x) => x.vendorId === 0x0bda); }).catch(() => {});
+    navigator.usb?.getDevices().then((d) => { usbGranted = d.some((x) => isCardVendor(x.vendorId)); }).catch(() => {});
   }
 
   let copyTimer = null;

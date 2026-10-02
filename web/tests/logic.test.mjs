@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { nalTypes, Gate, PtsUnwrap, PeriodEstimator, HitchMeter, pctl, IdrRequester,
   parseRelayAddr, relayBlocker, RELAY_DEFAULT, relayTarget, relayFieldVisible, loadRelayCustom,
-  siphash24, keyFingerprint } from '../ui/src/lib/logic.mjs';
+  siphash24, keyFingerprint, USB_FILTERS, isCardVendor } from '../ui/src/lib/logic.mjs';
 
 const nal = (type, len = 4, four = true) =>
   [...(four ? [0, 0, 0, 1] : [0, 0, 1]), type << 1, 1, ...Array(len).fill(0x55)];
@@ -408,4 +408,11 @@ test('keyFingerprint: default string, else 4 hex, pinned to the C++ golden', () 
   const fp = keyFingerprint('3f9a1c77e04b5d2290ab6ef1c8d34e5a');
   assert.match(fp, /^[0-9a-f]{4}$/);
   assert.equal(fp, '55db');
+});
+
+test('WebUSB filters offer Realtek and TP-Link (RTL8821AU) cards', () => {
+  assert.deepEqual(USB_FILTERS.map((f) => f.vendorId), [0x0bda, 0x2357]);
+  assert.ok(isCardVendor(0x0bda));
+  assert.ok(isCardVendor(0x2357)); // Archer T2U Plus 2357:0120
+  assert.ok(!isCardVendor(0x0e8d));
 });
