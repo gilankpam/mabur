@@ -60,7 +60,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   target_link_libraries(webgs_core PUBLIC devourer)
 
   # The page build: live only (WebUSB), default config embedded.
-  add_executable(webgs src/web_main.cpp src/opfs_file.cpp src/relay_link.cpp src/relay_transport.cpp)
+  add_executable(webgs src/web_main.cpp src/opfs_file.cpp src/relay_link.cpp src/relay_ring_transport.cpp)
   target_compile_definitions(webgs PRIVATE WEBGS_LIVE=1 WEBGS_CONFIG_PATH="/maburgs.toml")
   target_link_libraries(webgs PRIVATE webgs_core)
   target_link_options(webgs PRIVATE
@@ -118,7 +118,7 @@ else()
   # webgs CLI: replay (the web_au_parity gate) + live (libusb + devourer,
   # the same loop the WASM build runs, or --relay over UDP to a CPE510
   # mabur-relay instead of the USB card).
-  add_executable(webgs src/web_main.cpp src/relay_link.cpp src/relay_transport.cpp)
+  add_executable(webgs src/web_main.cpp src/relay_link.cpp)
   target_link_libraries(webgs PRIVATE mabur_web_core mabur_gs_dot11 mabur_gs_relay devourer pthread)
   target_include_directories(webgs PRIVATE ${DEVOURER_DIR}/src ${CMAKE_SOURCE_DIR}/gs/src)
   target_compile_definitions(webgs PRIVATE WEBGS_LIVE=1

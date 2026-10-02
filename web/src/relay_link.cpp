@@ -4,7 +4,7 @@
 
 namespace webgs {
 
-RelayLink::RelayLink(std::unique_ptr<RelayTransport> t, uint8_t ch, uint8_t sec,
+RelayLink::RelayLink(std::unique_ptr<maburgs::RelayTransport> t, uint8_t ch, uint8_t sec,
                      maburgs::BodyQueue& q, std::function<uint64_t()> now_us)
     : t_(std::move(t)), q_(q), now_us_(std::move(now_us)),
       c_(ch, sec, [this](const std::vector<uint8_t>& m) { t_->send(m.data(), m.size()); }) {}

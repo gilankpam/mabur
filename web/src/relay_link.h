@@ -21,7 +21,7 @@ namespace webgs {
 
 class RelayLink {
  public:
-  RelayLink(std::unique_ptr<RelayTransport> t, uint8_t ch, uint8_t sec, maburgs::BodyQueue& q,
+  RelayLink(std::unique_ptr<maburgs::RelayTransport> t, uint8_t ch, uint8_t sec, maburgs::BodyQueue& q,
             std::function<uint64_t()> now_us);
   ~RelayLink();                                     // stop()
   void start();                                     // RelayClient::start + RX thread
@@ -35,7 +35,7 @@ class RelayLink {
   void stop();
 
  private:
-  std::unique_ptr<RelayTransport> t_;
+  std::unique_ptr<maburgs::RelayTransport> t_;
   maburgs::BodyQueue& q_;
   std::function<uint64_t()> now_us_;
   std::mutex mu_;
