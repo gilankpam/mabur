@@ -12,6 +12,7 @@
 #include "body_queue.h"
 #include "card_scan.h"
 #include "dot11.h"
+#include "link_card.h"
 #include "logger.h"
 #include "own_air.h"
 #include "scout_radio.h"
@@ -27,7 +28,7 @@ class UsbDeviceLock;
 
 namespace maburgs {
 
-class RadioFrontend : public ScoutRadio {
+class RadioFrontend : public LinkCard {
  public:
   struct Cfg {
     uint16_t usb_vid = 0x0bda;
@@ -48,15 +49,16 @@ class RadioFrontend : public ScoutRadio {
 
   RadioFrontend(Cfg cfg, BodyQueue& out);
   ~RadioFrontend();                               // stop() if running
-  bool open_and_start();                          // full bring-up; false on any failure
-  void stop();                                    // StopRxLoop + join + release usb
-  bool ready() const;                             // InitWrite completed
-  bool alive() const;                             // RX loop thread still running
-  uint64_t rx_frames() const;
-  uint64_t tx_frames() const;  // control frames handed to the radio OK
-  uint64_t tx_fail() const;    // send_control calls that returned false
-  uint64_t foreign() const;   // CRC-clean frames dropped by the SA filter
-  bool send_control(const std::vector<uint8_t>& body);  // false pre-ready/on error
+  bool open_and_start() override;                 // full bring-up; false on any failure
+  void stop() override;                           // StopRxLoop + join + release usb
+  bool ready() const override;                    // InitWrite completed
+  bool alive() const override;                    // RX loop thread still running
+  uint64_t rx_frames() const override;
+  uint64_t tx_frames() const override;  // control frames handed to the radio OK
+  uint64_t tx_fail() const override;    // send_control calls that returned false
+  uint64_t foreign() const override;   // CRC-clean frames dropped by the SA filter
+  bool send_control(const std::vector<uint8_t>& body) override;  // false pre-ready/on error
+  bool can_scout() const override { return true; }
 
   // ScoutRadio interface: the scout thread's control plane on this card.
   bool retune(uint8_t ch) override;                 // FastRetune; false pre-ready
@@ -65,8 +67,8 @@ class RadioFrontend : public ScoutRadio {
   // Tens of ms, once per process. False when 40 has no pair (nothing
   // recorded) or pre-ready -- the width is then still recorded as desired,
   // so the next open_and_start() comes up at it (width_resync.h).
-  bool set_width(uint8_t ch, uint8_t width_mhz);
-  uint8_t width() const { return width_.load(std::memory_order_acquire); }  // current/desired RX width
+  bool set_width(uint8_t ch, uint8_t width_mhz) override;
+  uint8_t width() const override { return width_.load(std::memory_order_acquire); }  // current/desired RX width
   bool retune_width(uint8_t ch, uint8_t width_mhz) override { return set_width(ch, width_mhz); }
   ScoutEnergy read_energy(bool with_nhm) override;  // GetRxEnergy -> ScoutEnergy
   ScoutEnergy read_energy_scout() override;         // GetRxEnergyScout -> ScoutEnergy
@@ -77,9 +79,9 @@ class RadioFrontend : public ScoutRadio {
   bool arm_nhm_busy(uint16_t period_4us) override;  // arms the card's NHM window
   NhmBusyRead read_nhm_busy() override;
   // Debug: the chip's programmed central channel (RF18 readback), -1 if unknown.
-  int tuned_central();              // reads it back
-  CardCaps caps() const { return caps_; }            // filled in open_and_start() after InitWrite
-  uint8_t channel() const { return channel_.load(std::memory_order_acquire); }  // last channel handed to InitWrite/retune
+  int tuned_central() override;              // reads it back
+  CardCaps caps() const override { return caps_; }            // filled in open_and_start() after InitWrite
+  uint8_t channel() const override { return channel_.load(std::memory_order_acquire); }  // last channel handed to InitWrite/retune
 
  private:
   void on_packet(const Packet& pkt);

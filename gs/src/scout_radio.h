@@ -42,6 +42,11 @@ struct CardCaps {
   uint16_t tune5g_lo = 0, tune5g_hi = 0;
   bool fast_retune = false;
   bool fa_ok = false, igi_ok = false, nhm_ok = false, floor_ok = false;
+  // Per-frame PHY SNR is a real measurement independent of RSSI (Realtek).
+  // False on the CPE510 relay: ath9k's "SNR" is RSSI above a calibrated
+  // noise floor -- one measurement, not two -- so no cross-card SNR
+  // comparison may include it (spec 2026-10-02-maburgs-remote-card §4).
+  bool snr_ok = true;
 };
 
 // The one card's control plane the scout drives. RadioFrontend implements

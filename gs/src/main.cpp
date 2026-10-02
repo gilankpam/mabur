@@ -69,6 +69,7 @@
 #include "probe_track.h"
 #include "rcf_slot.h"
 #include "rtt_estimator.h"
+#include "link_card.h"
 #include "radio_frontend.h"
 #include "rf_labels.h"
 #include "s1_loss.h"
@@ -689,7 +690,7 @@ static int run_radio(const maburgs::Config& cfg) {
                           ? static_cast<int>(scanned.size())
                           : static_cast<int>(cfg.radio.cards.size());
   maburgs::BodyQueue queue;  // all cards share one queue; card_id tags origin
-  std::vector<std::unique_ptr<maburgs::RadioFrontend>> fronts;
+  std::vector<std::unique_ptr<maburgs::LinkCard>> fronts;
   // The boot scout card (spare card, or the only card) scans the 20 MHz
   // halves at 20 MHz tuning and joins the link at radio.width once the
   // pick freezes (ChannelScout::run -> retune_width). Every other card,
@@ -1648,6 +1649,7 @@ static int run_radio(const maburgs::Config& cfg) {
                      c.nhm_ok ? 1 : 0, c.floor_ok ? 1 : 0);
       }
     }
+    for (int i = 0; i < n_cards; ++i) fronts[static_cast<size_t>(i)]->tick(now_ms_u);
     // The scout starts once (and only once) its card is up: from here until
     // join_scout() that card's retune/read_energy belong to the scout thread.
     if (scout && scout_joined && !scout->frozen() &&
