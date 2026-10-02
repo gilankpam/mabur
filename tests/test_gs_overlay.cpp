@@ -1196,6 +1196,15 @@ TEST(relay_row_draws_R_id_bars_from_rssi_and_status_from_rssi_alone) {
   const auto id1 = (GsFieldId)((int)GsFieldId::kCard0Id + 1 * kFieldsPerCard);
   CHECK(ov.debug_field_text(s, false, player_nominal(), id1) == "R1");
   CHECK(ov.debug_field_text(s, false, player_nominal(), GsFieldId::kCard0Id) == "C0");
+
+  // The relay row's SNR cell: heard but no SNR must draw the never-received
+  // glyph, not go blank -- a blank cell on an otherwise-live row would read
+  // as a transient drop-out. Card 0, still a normal USB card with a real
+  // SNR, renders its usual numeric string for contrast.
+  const auto snr1 = (GsFieldId)((int)GsFieldId::kCard0Snr + 1 * kFieldsPerCard);
+  CHECK(ov.debug_field_text(s, false, player_nominal(), snr1) == kEmDashPair);
+  CHECK(ov.debug_field_text(s, false, player_nominal(), GsFieldId::kCard0Snr) ==
+        "18 dB");
 }
 
 // Widening the card row is the one real risk in adding this field: the block
