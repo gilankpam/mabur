@@ -241,14 +241,20 @@ moved over (eth0 took 10.83.11.116 from the CPE's DHCP with no config).
    attenuator at hand).
 5. Hop with the relay as lead (USB card TX): hop inject test; record
    TUNE→ready time. If it dwarfs FastRetune, a relay-aware confirm
-   allowance is a follow-up. NOT run: the live hop needs the bench jammer
-   (`tools/bench/benchjam.sh`, a second spare RTL8822EU), which the host
-   did not have; `MABUR_HOP_INJECT` is a dry-run seam only. TUNE→ready: on
-   every relay (re)start the card read `owned and tuned` within ~1 s of
-   the relay daemon coming up (legs 6/7b), and the Radxa repeat of leg 7
-   measured TUNE→ready ≈ 0.2 s — far below `hop.confirm_ms`, so the
-   relay's tune is not the slow part; `hop.confirm_ms` allowance stays a
-   follow-up until the live hop runs.
+   allowance is a follow-up.
+   Measured 2026-10-02 (Radxa pinned to ONE USB card via `[[radio.cards]]` +
+   the relay, so the relay is the non-TX lead; co-channel jam on op 136
+   from a second RTL8822EU with `tools/bench/benchjam.sh` defaults, 70 s):
+   the ladder demoted 5→2 under the jam; the hop controller went hold
+   (home blocked) → `order epoch 1 target 112` with **`hop_lead card 1` =
+   the relay**; the relay's STATUS read ch 112 within the same 200 ms
+   sideport tick; **`lead_confirm +160 ms`** (video seen on 112 through the
+   relay); `hop_follow` moved the USB card; `verify_pass +1003 ms`;
+   `hop_restore` 2→3 and back to rung 5 within 7 s; the link stayed on 112.
+   ausniff over the 90 s spanning jam and hop: 5414 AUs, 7 incomplete (6
+   enh, 1 base), 0 frame_id gaps, 0 resyncs, 60.2 fps. The relay's
+   TUNE→confirm of 160 ms is far below `hop.confirm_ms` (1000), so no
+   relay-aware confirm allowance is needed.
 6. Failures: Ethernet pulled → dead card → replug → owned again; web page in
    GS mode against the same relay → page reports taken, `maburgs`
    unaffected; CPE reboot onto its default channel → `RemoteCard` re-tunes.
@@ -287,9 +293,9 @@ moved over (eth0 took 10.83.11.116 from the CPE's DHCP with no config).
    `hop.confirm_ms`); ausniff afterwards 1815 AUs, 3 incomplete enh,
    0 gaps, 0 resyncs, 60.5 fps.
 
-Not run: 4 (attenuated-antenna auto-switch half), 5 (live hop; needs a
-second 8822EU as jammer), 6c (CPE reboot onto a *different* default
-channel). Left on the GS after the bench: new `maburgs`/`maburplay` with
+Not run: 4 (attenuated-antenna auto-switch half), 6c (CPE reboot onto a
+*different* default channel). Left on the GS after the bench: new
+`maburgs`/`maburplay` with
 `relays = ["10.83.11.1:8310"]`; rollback trio alongside.
 
 ## Measured limits (full rate, mcs4/40, ~3.2k frames/s, 36 Mb/s)
