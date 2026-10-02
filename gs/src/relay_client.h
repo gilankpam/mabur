@@ -24,9 +24,15 @@ class RelayClient {
   RelayClient(uint8_t channel, uint8_t sec, SendFn send);
   void start(uint64_t now_ms);
   void tick(uint64_t now_ms);
-  enum class Rx { None, Body, Status };
+  enum class Rx { None, Body, Status, Foreign };
   Rx on_message(const uint8_t* b, size_t n, uint64_t now_ms, mabur::node::RxBody& out);
   bool send_control(const std::vector<uint8_t>& radiotap_frame);
+
+  // New target channel/sec and a TUNE right now (hop lead, width change,
+  // reconnect). owned_and_tuned() reads false until a STATUS confirms it.
+  void retune(uint8_t channel, uint8_t sec, uint64_t now_ms);
+  uint8_t channel() const { return ch_; }
+  uint8_t sec() const { return sec_; }
 
   bool have_status() const { return have_status_; }
   bool owned_and_tuned() const;

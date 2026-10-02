@@ -60,8 +60,15 @@ FAILSAFE entry.
    synchronously so **this same tick's** RCF already carries the new pair
    and `ref_rung`'s profile (`gs/src/main.cpp`'s `HopAction::Order` case).
 2. `ChannelPlan::hop_order(now, target, lead_card)` sends the non-TX card
-   (`lead_card`, whichever the TX selector is not currently using) to the
-   target; the TX card stays on the old channel (`ChannelPlan::desired()`
+   (`lead_card` = `pick_hop_lead()` in `gs/src/scout_pick.h`: the first
+   `ready()` card the TX selector is not using, any type; with none ready
+   the tick runs the one-card path, `n_cards` 1; picked on the Order tick
+   and held while `Ordered`, since a relay lead reads `!ready()` from its
+   own `TUNE` until the relay confirms the target) to the
+   target (a CPE510 relay card can be the lead: its retune sends `TUNE`,
+   and the verdict and confirmation wait on its `ready()` and the relay's
+   own `rx_channel` stamp — frames are dropped until the relay confirms;
+   `docs/cpe510-relay.md`); the TX card stays on the old channel (`ChannelPlan::desired()`
    returns `op_` for every other card while `hopping_`). Every hop, order
    or withdraw, logs an `M` line (`hop_lead`, `hop_follow`, `hop_withdraw`,
    or `hop_one_card` — new `MoveReason` values alongside `commit`/
@@ -172,7 +179,7 @@ kEvRaised/kEvBlocked/kEvStarved`):
 | bit | rule | key (default) |
 |---|---|---|
 | impaired | link pre-FEC loss % > `loss_pct` **or** (recovered count > `recovered_x` × its 5 s trailing mean **and** recovered count >= `recovered_min`) **or** `starved` | `hop.verdict.loss_pct` (3.0), `recovered_x` (3.0), `recovered_min` (8) |
-| weak | best card's RSSI < `weak_rssi_dbm` **and** SNR < `weak_snr_db` | `weak_rssi_dbm` (−78), `weak_snr_db` (12) |
+| weak | best card's RSSI < `weak_rssi_dbm` **and** SNR < `weak_snr_db` (RSSI alone when that card has no real SNR — `snr_valid` false on a CPE510 relay) | `weak_rssi_dbm` (−78), `weak_snr_db` (12) |
 | fading | best card's RSSI more than `fading_drop_db` below its frozen/trailing reference | `fading_drop_db` (6) |
 | contended | any card's foreign frames/s > `foreign_pps` | `foreign_pps` (50) |
 | raised | any card's FA/s > `fa_pps` | `fa_pps` (100) |
@@ -326,6 +333,15 @@ a periodic mid-flight dwell, and the project's new-module convention
 (pure, ctest-covered, no hardware) applies the same way it did to
 `channel_scout`/`channel_plan`.
 
+**Which card dwells** (since 2026-10-02, `gs/src/scout_pick.h`
+`pick_inflight_scout`): the last scout-capable card that is not the TX
+card, re-picked every period; none = skip the period. A CPE510 relay card
+is never scout-capable (no FA/CCA/NHM reads), so on one USB card plus a
+relay the USB card dwells only while the relay holds the uplink — while
+the USB card transmits, the periodic scout idles. On an all-USB two-card
+GS this is the same "whichever card the TX selector is not using" as
+before.
+
 Two-card GS only: a dedicated thread (`gs/src/main.cpp`'s `scout_loop`)
 runs once the boot scout has released every card, gated on
 `hop.enable || hop.scout_when_disabled` — **`scout_when_disabled` defaults
@@ -333,7 +349,13 @@ runs once the boot scout has released every card, gated on
 collect ranking/calibration data for the first (observe-only) flights; set
 it `false` to fly with literally no dwells. Every `hop.dwell_period_ms`
 (333 ms default):
-1. Card = whichever the TX selector is not using this cycle (read once at
+1. Card = a `ready()` card the TX selector is not using this cycle, never
+   a relay. As built (`gs/src/scout_pick.h`): dwells take
+   `pick_inflight_scout()` (last scout-capable non-TX card; the loop skips
+   it when `!ready()`), the hop freshness burst takes `pick_burst_card()`
+   (scout-capable, non-TX preferred), and the hop lead is
+   `pick_hop_lead()` (first `ready()` non-TX card — the one pick a relay
+   can win, since it leads via `TUNE`). TX card read once at
    cycle start; the selector defers switching onto a card mid-dwell —
    `dwell_busy`/`dwell_card` — and, since the bench, onto a hop's lead
    card while the hop is in flight: `tx_selection_frozen()` in
@@ -1052,6 +1074,13 @@ observe-only flights per the spec's open items.
 ## Known limitations
 
 Found on the 2026-09-15 bench (the handover page has the traces):
+
+- **Fixed 2026-10-02: the freshness burst now picks by `can_scout`.**
+  `burst_card` is `scout_pick.h`'s `pick_burst_card()` — a scout-capable
+  non-TX card, else the scout-capable TX card (the one-card GS's existing
+  acceptance, since the burst only runs once the verdict has fired), else
+  skipped (`-1`) when nothing can scout — so a CPE510 relay, which has no
+  FA/CCA/NHM reads and an async `TUNE`, never bursts.
 
 - **A withdrawn two-card order strands the drone.** The drone retunes on
   the first RCF carrying the order; if the GS withdraws (no video on the

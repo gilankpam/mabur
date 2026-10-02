@@ -69,10 +69,13 @@
 #include "probe_track.h"
 #include "rcf_slot.h"
 #include "rtt_estimator.h"
+#include "link_card.h"
 #include "radio_frontend.h"
+#include "remote_card.h"
 #include "rf_labels.h"
 #include "s1_loss.h"
 #include "scan_log.h"
+#include "scout_pick.h"
 #include "snr_units.h"
 #include "stats_exporter.h"
 #include "stats_sink.h"
@@ -685,17 +688,26 @@ static int run_radio(const maburgs::Config& cfg) {
                    maburgs::port_name(scanned[i]).c_str());
   }
 
-  const int n_cards = cfg.radio.auto_scan
-                          ? static_cast<int>(scanned.size())
-                          : static_cast<int>(cfg.radio.cards.size());
+  // Roster: USB cards first (0..n_usb-1), then radio.relays in config
+  // order. The "no supported radio" exit above runs before any relay is
+  // counted: a relay never rescues a USB-less GS.
+  const int n_usb = cfg.radio.auto_scan ? static_cast<int>(scanned.size())
+                                        : static_cast<int>(cfg.radio.cards.size());
+  const int n_relays = static_cast<int>(cfg.radio.relays.size());
+  const int n_cards = n_usb + n_relays;
   maburgs::BodyQueue queue;  // all cards share one queue; card_id tags origin
-  std::vector<std::unique_ptr<maburgs::RadioFrontend>> fronts;
+  std::vector<std::unique_ptr<maburgs::LinkCard>> fronts;
   // The boot scout card (spare card, or the only card) scans the 20 MHz
   // halves at 20 MHz tuning and joins the link at radio.width once the
   // pick freezes (ChannelScout::run -> retune_width). Every other card,
   // and every card when the scan is off, tunes radio.width from the start.
-  const int boot_scout_card = n_cards == 1 ? 0 : n_cards - 1;
-  for (int i = 0; i < n_cards; ++i) {
+  // can_scout per roster slot: every USB card can; relays (after the USB
+  // cards) cannot. Built before the fronts because the USB loop below needs
+  // boot_scout_card for its width.
+  std::vector<bool> can_scout(static_cast<size_t>(n_cards), true);
+  for (int i = n_usb; i < n_cards; ++i) can_scout[static_cast<size_t>(i)] = false;
+  const int boot_scout_card = maburgs::pick_boot_scout(can_scout);
+  for (int i = 0; i < n_usb; ++i) {
     maburgs::RadioFrontend::Cfg fc;
     if (cfg.radio.auto_scan) {
       fc.by_port = true;
@@ -711,6 +723,15 @@ static int run_radio(const maburgs::Config& cfg) {
     fc.width_mhz = (cfg.radio.scan.enable && i == boot_scout_card) ? 20 : cfg.radio.width;
     fc.card_id = static_cast<uint8_t>(i);
     fronts.push_back(std::make_unique<maburgs::RadioFrontend>(fc, queue));
+  }
+  for (int k = 0; k < n_relays; ++k) {
+    maburgs::RemoteCard::Cfg rc;
+    rc.addr = cfg.radio.relays[static_cast<size_t>(k)];
+    rc.channel = cfg.radio.channel;
+    rc.width_mhz = cfg.radio.width;  // never the boot scout: full width from the start
+    rc.card_id = static_cast<uint8_t>(n_usb + k);
+    fronts.push_back(std::make_unique<maburgs::RemoteCard>(rc, queue));
+    std::fprintf(stderr, "cards: card %d = relay %s\n", n_usb + k, rc.addr.c_str());
   }
 
   // A pin that outruns the cards actually found is a missing antenna, not a
@@ -929,12 +950,21 @@ static int run_radio(const maburgs::Config& cfg) {
   // home, retune() moves it, and the scout owns its card's entry until the
   // scout thread is joined.
   std::vector<uint8_t> cur_ch(static_cast<size_t>(n_cards), cfg.radio.channel);
-  const bool one_card = n_cards == 1;
+  // Scout mode keys on the USB card count, not the roster: with ONE USB
+  // card the scout interleaves home windows and beacons itself whatever
+  // relays exist -- a relay is never the only rendezvous path (a CPE still
+  // booting, unplugged or owned by another client would mean no DISC ever
+  // leaves the GS). ChannelPlan / HopVerdict / TxSelector / the sideport
+  // keep the total n_cards.
+  const bool one_card = n_usb == 1;
   const int scout_card = boot_scout_card;
   std::unique_ptr<maburgs::ChannelScout> scout;
   std::thread scout_thread;
   bool scout_joined = true;  // no thread running
-  if (scfg.enable) {
+  // boot_scout_card is >= 0 whenever a USB card exists, which the "no
+  // supported radio" exit guarantees; the guard documents that `scout`
+  // (and every scout_card use gated on it) needs a scout-capable card.
+  if (scfg.enable && boot_scout_card >= 0) {
     maburgs::ScoutCfg sc;
     sc.home = cfg.radio.channel;
     sc.candidates = scfg.candidates;
@@ -991,6 +1021,11 @@ static int run_radio(const maburgs::Config& cfg) {
   // scan_half_set() adds are the boot ChannelScout's business alone.
   maburgs::HopRanker ranker(hcfg, scfg.candidates, cfg.radio.channel, 0);
   maburgs::HopController hopc(hcfg, cfg.radio.channel);
+  // The hop lead decided on the Order tick, held while the hop is Ordered
+  // (see the HopTick block): a relay lead reads !ready() from its TUNE
+  // until the relay confirms the target, and re-picking then would flip
+  // the tick to the one-card path and move the TX card mid-hop.
+  int hop_lead_latched = -1;
   // Constructed against card 0 as a placeholder radio -- harmless, since the
   // scout thread below always repoints this via set_radio() (Task 10)
   // before every dwell/burst and never touches it beforehand.
@@ -1061,7 +1096,8 @@ static int run_radio(const maburgs::Config& cfg) {
     while (scout_run.load() && !g_stop.load()) {
       std::this_thread::sleep_for(std::chrono::milliseconds(hcfg.dwell_period_ms));
       if (!in_session_atomic.load() || hopping_atomic.load() || n_cards < 2) continue;
-      const int card = tx_card_now.load() == 0 ? 1 : 0;
+      const int card = maburgs::pick_inflight_scout(can_scout, tx_card_now.load());
+      if (card < 0) continue;
       auto& fe = *fronts[static_cast<size_t>(card)];
       if (!fe.ready()) continue;
       // Candidates plus home, minus the card's own channel (the op channel:
@@ -1147,14 +1183,15 @@ static int run_radio(const maburgs::Config& cfg) {
   // send lands in the drone's inter-AU idle. See rcf_slot.h.
   maburgs::RcfSlotter rcf_slot(
       maburgs::RcfSlotCfg{cfg.link.rcf_slot_hold_ms, 100, 2, 3, 1});
-  // One card + a running scout: sends that leave while the card is off
-  // measuring a candidate would race the scout thread's FastRetune /
+  // One USB card + a running scout: sends on the SCOUT card while it is
+  // off measuring a candidate would race the scout thread's FastRetune /
   // GetRxEnergy on the same device. The DISC routing ladder checks
   // at_home() when the frame is OFFERED, but the slotter releases it
   // later with no re-check, and RCFs (which exist from the first ack
   // until the join) never consulted it at all. This is the one gate that
   // covers both, at the single site every control frame passes through.
-  // Two-card mode trips it while the scout has a silent dwell in progress
+  // Only the scout card's frames are dropped: a ready relay's DISC must
+  // still leave while the USB scout is off on a candidate. Two-card mode trips it while the scout has a silent dwell in progress
   // (quiet()): the beaconing card's TX leaks into the adjacent scout on
   // every channel and dominated the readings otherwise.
   uint64_t scout_gated_sends = 0;
@@ -1162,7 +1199,7 @@ static int run_radio(const maburgs::Config& cfg) {
   // slotter): card + RTT stamp travel with the frame (SlotFrame).
   auto send_control_frame = [&](const maburgs::SlotFrame& f) {
     if (scout && !scout_joined &&
-        ((one_card && !scout->at_home()) || scout->quiet())) {
+        ((one_card && f.card == scout_card && !scout->at_home()) || scout->quiet())) {
       ++scout_gated_sends;
       return;
     }
@@ -1229,11 +1266,18 @@ static int run_radio(const maburgs::Config& cfg) {
   const int probe_bpb = probe_layer.blocks_per_body;
   const int probe_block_payload =
       static_cast<int>(mabur::sw::kSwHeaderLen) + probe_layer.fec.symbol_size;
+  // Per-card SNR validity (CardCaps::snr_ok): false on the CPE510 relay,
+  // whose "SNR" is RSSI above a calibrated noise floor, never a real
+  // measurement. Kept in scope past this construction -- later tasks read
+  // it too.
+  std::vector<bool> snr_ok(static_cast<size_t>(n_cards));
+  for (int i = 0; i < n_cards; ++i)
+    snr_ok[static_cast<size_t>(i)] = fronts[static_cast<size_t>(i)]->caps().snr_ok;
   // Ladder input (spec 2026-09-27-web-gs): every window/tracker feeding
   // LinkHealth lives in LinkHealthAssembler (gs/src/link_health.h), shared
   // with the web GS. s1_hop_loss (hop verdict) stays here.
   maburgs::LinkHealthAssembler lha(
-      maburgs::LinkHealthCfg{n_cards, probe_bpb, probe_block_payload});
+      maburgs::LinkHealthCfg{n_cards, probe_bpb, probe_block_payload, snr_ok});
   // Per-body probe log, alongside ctl.log and au.log in the same session
   // directory (DebugSession). Declared here, before FrameStream/au_log
   // below, and emplaced later once debug_log.enable is known.
@@ -1631,7 +1675,8 @@ static int run_radio(const maburgs::Config& cfg) {
         if (!fe.open_and_start())
           std::fprintf(stderr, "card %d: open failed, retrying\n", i);
         else {
-          cur_ch[static_cast<size_t>(i)] = cfg.radio.channel;  // InitWrite tunes home
+          // USB: InitWrite tunes home; the relay re-asserts its last target.
+          cur_ch[static_cast<size_t>(i)] = fe.channel();
           width_tried[static_cast<size_t>(i)] = false;         // new bring-up
         }
         retry_at_ms[static_cast<size_t>(i)] = now_ms_u + 2000;
@@ -1642,12 +1687,14 @@ static int run_radio(const maburgs::Config& cfg) {
         caps_logged[static_cast<size_t>(i)] = true;
         std::fprintf(stderr,
                      "maburgs radio card %d: %s %s %dx%d fast_retune=%d "
-                     "sensors fa=%d igi=%d nhm=%d floor=%d\n",
+                     "sensors fa=%d igi=%d nhm=%d floor=%d snr=%d scout=%d\n",
                      i, c.chip.c_str(), c.gen.c_str(), c.tx_chains, c.rx_chains,
                      c.fast_retune ? 1 : 0, c.fa_ok ? 1 : 0, c.igi_ok ? 1 : 0,
-                     c.nhm_ok ? 1 : 0, c.floor_ok ? 1 : 0);
+                     c.nhm_ok ? 1 : 0, c.floor_ok ? 1 : 0, c.snr_ok ? 1 : 0,
+                     fe.can_scout() ? 1 : 0);
       }
     }
+    for (int i = 0; i < n_cards; ++i) fronts[static_cast<size_t>(i)]->tick(now_ms_u);
     // The scout starts once (and only once) its card is up: from here until
     // join_scout() that card's retune/read_energy belong to the scout thread.
     if (scout && scout_joined && !scout->frozen() &&
@@ -1947,7 +1994,9 @@ static int run_radio(const maburgs::Config& cfg) {
           // Raw EMAs -> the dBm/dB the [hop.verdict] thresholds are in
           // (hop_verdict.h); feeding raw here left `weak` unreachable.
           vc[si].rssi_dbm = maburgs::rssi_raw_to_dbm(t.rssi_a_ema);
-          vc[si].snr_db = maburgs::snr_raw_to_db(t.snr_ema);
+          // A relay's SNR is synthetic (snr_ok false): log nan, not a number.
+          vc[si].snr_db = snr_ok[si] ? maburgs::snr_raw_to_db(t.snr_ema) : std::nan("");
+          vc[si].snr_valid = snr_ok[si];
           const double win_us = static_cast<double>(now_ms_u - window_prev_ms[si]) * 1000.0;
           const double own_pct = win_us > 0
               ? std::min(100.0, 100.0 * static_cast<double>(f.own_air_us - window_prev[si].own_air_us) / win_us)
@@ -2032,8 +2081,19 @@ static int run_radio(const maburgs::Config& cfg) {
       ht.now_ms = now_ms;
       ht.verdict = last_verdict_out;
       ht.cur_op = plan.op();
-      ht.n_cards = n_cards;
-      ht.lead_card = n_cards >= 2 ? (sel.selected() == 0 ? 1 : 0) : -1;
+      // The lead is the first ready() non-TX card (scout_pick.h); with none
+      // ready (a lost/refused relay, a dead USB card) run the one-card hop
+      // path instead of ordering a hop no card would ever retune for.
+      // Held (hop_lead_latched) while Ordered: the lead's own retune makes
+      // a relay lead !ready() until its TUNE is confirmed.
+      if (hopc.state() != maburgs::HopState::Ordered) {
+        std::vector<bool> ready(static_cast<size_t>(n_cards));
+        for (int i = 0; i < n_cards; ++i)
+          ready[static_cast<size_t>(i)] = fronts[static_cast<size_t>(i)]->ready();
+        hop_lead_latched = maburgs::pick_hop_lead(ready, sel.selected());
+      }
+      ht.lead_card = hop_lead_latched;
+      ht.n_cards = hop_lead_latched >= 0 ? n_cards : 1;
       fill_hop_targets(ht);
       // lead_card (or the only card, one-card mode) confirms the hop by
       // landing a video body on the target channel -- last_video_ch is set
@@ -2071,7 +2131,13 @@ static int run_radio(const maburgs::Config& cfg) {
         // own periodic dwell (when one is running, i.e. two-card) from
         // driving the same InflightScout/RadioFrontend at the same time.
         last_burst_ms = now_ms;
-        const int burst_card = ht.lead_card >= 0 ? ht.lead_card : 0;
+        // Never the relay: it cannot measure energy and its TUNE is async
+        // (spec 2026-10-02-maburgs-remote-card §3). Prefer a scout-capable
+        // non-TX card; with USB+relay and TX on the USB card, burst on the
+        // USB card anyway -- the one-card GS already pays this RCF gap.
+        const int burst_card = maburgs::pick_burst_card(can_scout, sel.selected());
+        if (burst_card < 0) { fill_hop_targets(ht); }
+        else {
         std::lock_guard<std::mutex> ilk(inflight_mu);
         auto& fe = *fronts[static_cast<size_t>(burst_card)];
         inflight.set_radio(fe);
@@ -2089,6 +2155,7 @@ static int run_radio(const maburgs::Config& cfg) {
         // contaminated the same way a scout dwell would contaminate it.
         nhm_win[static_cast<size_t>(burst_card)].invalidate();
         fill_hop_targets(ht);
+        }
       }
       const maburgs::HopAction act = hopc.tick(ht);
       dispatch_hop_action(act);   // the shared path, defined above the verdict window
@@ -2365,8 +2432,7 @@ static int run_radio(const maburgs::Config& cfg) {
         // transmit candidate, whatever its SNR history says.
         const bool scouting = !scout_joined && i == scout_card;
         snaps.push_back(maburgs::CardSnapshot{
-            !scouting && fronts[static_cast<size_t>(i)]->alive(), t.snr_ema,
-            t.rssi_b_ema, t.last_frame_us});
+            !scouting && fronts[static_cast<size_t>(i)]->alive(), t.rssi_ema, t.last_frame_us});
       }
       // Hold the switch decision while the in-flight scout has a card off
       // on a candidate: the dwelling card is never the TX card by
@@ -2386,8 +2452,9 @@ static int run_radio(const maburgs::Config& cfg) {
       // Which card(s) carry this frame. RCFs go to the TX selector's card,
       // as they always did. A DISC is rendezvous traffic and follows the
       // plan instead: both channels of a split, the home card while the
-      // scout has the other one, nothing at all while a single card is off
-      // measuring a candidate (spec section 6, GS side).
+      // scout has the other one, nothing from a single USB card while it is
+      // off measuring a candidate (spec section 6, GS side) -- plus any
+      // ready relay during the boot scan.
       std::vector<int> targets;
       if (!out->is_disc) {
         targets.push_back(tx);
@@ -2396,7 +2463,16 @@ static int run_radio(const maburgs::Config& cfg) {
       } else if (!scout_joined) {
         // Silent during every scout dwell (two cards: quiet(); one card:
         // outside the beacon phase).
-        if (!scout->quiet() && (!one_card || scout->at_home())) targets.push_back(0);
+        // The home card (first USB card != scout, two USB cards) or the
+        // scout itself while home (one USB card), plus every ready relay
+        // (scout_pick.h scan_disc_targets()).
+        if (!scout->quiet()) {
+          std::vector<bool> ready(static_cast<size_t>(n_cards));
+          for (int i = 0; i < n_cards; ++i)
+            ready[static_cast<size_t>(i)] = fronts[static_cast<size_t>(i)]->ready();
+          targets = maburgs::scan_disc_targets(n_usb, n_cards, scout_card,
+                                               scout->at_home(), ready);
+        }
       } else {
         targets.push_back(tx);
       }
@@ -2552,6 +2628,10 @@ static int run_radio(const maburgs::Config& cfg) {
                      static_cast<unsigned long long>(t.frames),
                      static_cast<unsigned long long>(t.crc_fail), t.snr_ema,
                      t.snr_a_ema, t.snr_b_ema);
+        if (auto rs = fronts[static_cast<size_t>(i)]->relay_stats())
+          std::fprintf(stderr, " relay[own=%d gaps=%llu drops=%u reconn=%u]",
+                       rs->owned ? 1 : 0, static_cast<unsigned long long>(rs->gaps),
+                       rs->your_drops, rs->reconnects);
       }
       for (int s = 0; s < 2; ++s) {
         const auto st = agg.decoder().stats(s);
@@ -2666,6 +2746,9 @@ static int run_radio(const maburgs::Config& cfg) {
         ci.tx_fail = fronts[static_cast<size_t>(i)]->tx_fail();
         ci.energy = energy_last[static_cast<size_t>(i)];  // last A sample
         ci.dwell = dwell_stats[static_cast<size_t>(i)];  // last in-flight scout dwell
+        ci.relay = fronts[static_cast<size_t>(i)]->relay_stats();
+        ci.kind = ci.relay ? "relay" : "usb";
+        ci.snr_ok = snr_ok[static_cast<size_t>(i)];
         static_assert(maburgs::kNumStatsClasses == maburgs::kNumRfClasses,
                       "class arrays must stay in lockstep");
         for (int k = 0; k < maburgs::kNumStatsClasses; ++k) {

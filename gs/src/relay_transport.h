@@ -1,13 +1,14 @@
 #pragma once
-// RelayTransport: the byte pipe RelayLink speaks over -- UDP natively
-// (open_udp_transport), the core<->worker SPSC ring in the browser
-// (open_ring_transport, Task 10). Pure interface, no protocol knowledge.
+// RelayTransport: the byte pipe RelayClient's owner speaks over -- UDP
+// natively (open_udp_transport, here), the core<->worker SPSC ring in the
+// browser (web/src/relay_ring_transport.h, open_ring_transport). Pure
+// interface, no protocol knowledge.
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
 
-namespace webgs {
+namespace maburgs {
 
 class RelayTransport {
  public:
@@ -21,10 +22,9 @@ class RelayTransport {
 };
 
 #ifndef __EMSCRIPTEN__
+// "host[:port]", port default 8310. Resolve + connect; an unreachable host
+// is NOT an error here (UDP) -- RelayClient::lost() decides.
 std::unique_ptr<RelayTransport> open_udp_transport(const std::string& host_port, std::string& err);
 #endif
-#ifdef __EMSCRIPTEN__
-std::unique_ptr<RelayTransport> open_ring_transport();
-#endif
 
-}  // namespace webgs
+}  // namespace maburgs

@@ -19,6 +19,9 @@ curve, the comb finding — is still current hardware fact and lives on in
 `docs/txagc-calibration.md`; only the tooling for producing a *new* unit's
 numbers moved.
 
+Run `maburcal` with `[radio] relays = []`: a CPE510 relay card's sweep
+frames (different antenna, ath9k RSSI) would otherwise enter the cells.
+
 ## What a run does
 
 `maburcal start` drives the whole thing from the GS: it sends one command

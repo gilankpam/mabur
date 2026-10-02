@@ -1422,8 +1422,13 @@ def evidence_card_medians(V):
             d = by_card.setdefault(c["card"], {"foreign": [], "fa": [], "rssi_dbm": [], "snr_db": []})
             d["foreign"].append(c["foreign"]); d["fa"].append(c["fa"])
             d["rssi_dbm"].append(c["rssi_dbm"]); d["snr_db"].append(c["snr_db"])
+    # snr_db is nan on a card with no SNR (the CPE510 relay, snr_ok 0):
+    # skip nan samples; a card with none left medians to nan.
+    def med(vals):
+        vals = [x for x in vals if not math.isnan(x)]
+        return statistics.median(vals) if vals else math.nan
     return {card: {"n": len(d["foreign"]),
-                   **{k: statistics.median(vals) for k, vals in d.items()}}
+                   **{k: med(vals) for k, vals in d.items()}}
             for card, d in by_card.items() if d["foreign"]}
 
 

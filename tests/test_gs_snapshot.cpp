@@ -155,6 +155,20 @@ TEST(card_with_null_s0_values_is_unheard) {
   CHECK(!s.cards[0].heard);
 }
 
+// A relay card's SNR is nulled at the source -- it is never a real
+// measurement -- but the card is still live and receiving, so RSSI alone
+// must make it heard and `kind` must flag it for the id cell.
+TEST(relay_card_is_heard_on_rssi_alone_and_flagged) {
+  GsSnapshot s;
+  REQUIRE(parse(R"({"v":1,"t_ms":1,"cards":[
+    {"id":0,"up":true,"kind":"usb","classes":{"s0":{"rssi":-58.0,"snr":18.0}}},
+    {"id":1,"up":true,"kind":"relay","classes":{"s0":{"rssi":-61.0,"snr":null}}}]})", &s));
+  REQUIRE(s.cards.size() == 2);
+  CHECK(!s.cards[0].relay && s.cards[0].heard);
+  CHECK(s.cards[1].relay && s.cards[1].heard);
+  CHECK(s.cards[1].rssi_dbm.has_value() && !s.cards[1].snr_db.has_value());
+}
+
 // EVM is the one s0 figure the chip may simply not report on an otherwise
 // perfectly healthy card: the aggregator leaves evm_has false until a frame
 // arrives with PHY status, and the exporter then writes null. That absence

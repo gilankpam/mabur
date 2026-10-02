@@ -13,6 +13,7 @@ constexpr uint8_t kVer = 3;
 enum Type : uint8_t { kFrame = 1, kHello = 2, kTune = 3, kStatus = 4, kTx = 5 };
 constexpr size_t kHdrLen = 4, kFrameHdrLen = 20, kTuneLen = 8, kStatusLen = 47, kTxHdrLen = 6;
 constexpr uint8_t kFlagBadFcs = 0x01, kFlagDropped = 0x02, kFlagPhyValid = 0x04;
+constexpr uint8_t kFlagSgi = 0x08, kFlagStbc = 0x10;
 constexpr uint8_t kTxLdpc = 0x01, kTxStbc = 0x02, kTxSgi = 0x04, kTxBw40 = 0x08;
 constexpr uint8_t kMcsNone = 0xFF;
 constexpr int8_t kDbmAbsent = -128;

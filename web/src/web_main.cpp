@@ -42,6 +42,7 @@
 #include "logger.h"
 #include "mabur/ht40.h"
 #include "relay_link.h"
+#include "relay_ring_transport.h"
 #include "relay_transport.h"
 #endif
 #ifdef WEBGS_PAGE
@@ -543,12 +544,12 @@ int live_loop(const LiveOpts& o, const maburgs::Config& cfg, uint8_t ch, int wid
 // live_loop already drains. Bounded by RelayClient's own timers -- no local
 // timeout logic here.
 int run_live_relay(const LiveOpts& o, const maburgs::Config& cfg, uint8_t ch, int width) {
-  std::unique_ptr<webgs::RelayTransport> t;
+  std::unique_ptr<maburgs::RelayTransport> t;
 #ifdef __EMSCRIPTEN__
   t = webgs::open_ring_transport();
 #else
   std::string err;
-  t = webgs::open_udp_transport(o.relay, err);
+  t = maburgs::open_udp_transport(o.relay, err);
   if (!t) { report_error("relay unreachable: %s", err.c_str()); return 1; }
 #endif
   const uint8_t sec = width == 40 ? mabur::ht40_offset(ch) : 0;

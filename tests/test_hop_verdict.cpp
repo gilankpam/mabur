@@ -474,3 +474,16 @@ TEST(new_session_clears_au_baseline) {
   auto r = v.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, 100}, 5);
   CHECK(r.evidence & kEvImpaired);
 }
+TEST(weak_without_a_real_snr_fires_on_rssi_alone) {
+  // Relay-only evidence this window: RSSI -90 dBm, "SNR" reads RSSI+95 = 5
+  // -- but even if it read 40 the card must still be weak, because its SNR
+  // is not a measurement.
+  HopVerdict v(cfg(), 2); double t = warm(v);
+  auto relay = card(-90, 40, 0, 0, 30); relay.snr_valid = false;
+  auto o = v.window(t, {relay, VerdictCardIn{}}, {0.05, 90}, 1);
+  CHECK(o.v == Verdict::Fade); CHECK(o.evidence & kEvWeak);
+  // A Realtek card with the same numbers and a real SNR of 40 is NOT weak.
+  HopVerdict u(cfg(), 2); t = warm(u);
+  auto o2 = u.window(t, {card(-90, 40, 0, 0, 30), VerdictCardIn{}}, {0.05, 90}, 1);
+  CHECK(!(o2.evidence & kEvWeak));
+}

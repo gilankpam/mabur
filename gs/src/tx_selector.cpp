@@ -9,6 +9,9 @@ TxSelector::TxSelector(TxSelectorCfg cfg, int n_cards)
 
 bool TxSelector::dead(const CardSnapshot& c, uint64_t now_us) const {
   if (!c.alive) return true;
+  // A body drained after the loop-top stamp carries a mono_us past the
+  // ms-floored now_us: a frame from this very tick is alive, never a wrap.
+  if (c.last_frame_us >= now_us) return false;
   return now_us - c.last_frame_us >
          static_cast<uint64_t>(cfg_.card_dead_ms) * 1000;
 }
@@ -19,7 +22,7 @@ int TxSelector::best_alive(const std::vector<CardSnapshot>& cards,
   for (int i = 0; i < n_cards_ && i < static_cast<int>(cards.size()); ++i) {
     if (dead(cards[static_cast<size_t>(i)], now_us)) continue;
     if (best < 0 ||
-        cards[static_cast<size_t>(i)].snr_ema > cards[static_cast<size_t>(best)].snr_ema)
+        cards[static_cast<size_t>(i)].rssi_ema > cards[static_cast<size_t>(best)].rssi_ema)
       best = i;
   }
   return best < 0 ? selected_ : best;  // all dead: keep current (TX anyway)
@@ -42,8 +45,8 @@ int TxSelector::update(const std::vector<CardSnapshot>& cards, uint64_t now_us) 
   }
   const int cand = best_alive(cards, now_us);
   if (cand != selected_ &&
-      cards[static_cast<size_t>(cand)].snr_ema >=
-          cur.snr_ema + cfg_.switch_margin_db) {
+      cards[static_cast<size_t>(cand)].rssi_ema >=
+          cur.rssi_ema + cfg_.switch_margin_db) {
     if (challenger_ != cand) {
       challenger_ = cand;
       challenge_since_us_ = now_us;

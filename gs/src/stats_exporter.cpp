@@ -96,6 +96,14 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     json cj;
     cj["id"] = i;
     cj["up"] = c.up;
+    cj["kind"] = c.kind;
+    if (c.relay) {
+      const RelayStatsIn& r = *c.relay;
+      cj["relay"] = {{"state", r.state}, {"owned", r.owned}, {"ch", r.ch}, {"sec", r.sec},
+                     {"frames", r.frames}, {"gaps", r.gaps}, {"your_drops", r.your_drops},
+                     {"tx", r.tx}, {"tx_fail", r.tx_fail}, {"tx_refused", r.tx_refused},
+                     {"reconnects", r.reconnects}};
+    }
     cj["frames"] = c.frames;
     cj["crc_fail"] = c.crc_fail;
     if (c.energy) {
@@ -173,16 +181,20 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
         kj["rssi"] = cls.rssi_ema - 110.0;
         kj["rssi_a"] = cls.rssi_a_ema - 110.0;
         kj["rssi_b"] = cls.rssi_b_ema - 110.0;
-        kj["snr"] = cls.snr_ema * kSnrRawToDb;
-        kj["snr_a"] = cls.snr_a_ema * kSnrRawToDb;
-        kj["snr_b"] = cls.snr_b_ema * kSnrRawToDb;
+        if (c.snr_ok) {
+          kj["snr"] = cls.snr_ema * kSnrRawToDb;
+          kj["snr_a"] = cls.snr_a_ema * kSnrRawToDb;
+          kj["snr_b"] = cls.snr_b_ema * kSnrRawToDb;
+        } else {  // card reports no SNR (relay): null, not a fake 0 dB
+          kj["snr"] = nullptr; kj["snr_a"] = nullptr; kj["snr_b"] = nullptr;
+        }
       } else {
         kj["rssi"] = nullptr; kj["rssi_a"] = nullptr; kj["rssi_b"] = nullptr;
         kj["snr"] = nullptr;  kj["snr_a"] = nullptr;  kj["snr_b"] = nullptr;
       }
-      kj["evm"] = cls.evm_has ? json(cls.evm_ema * kEvmRawToDb) : json(nullptr);
-      kj["evm_a"] = cls.evm_a_has ? json(cls.evm_a_ema * kEvmRawToDb) : json(nullptr);
-      kj["evm_b"] = cls.evm_b_has ? json(cls.evm_b_ema * kEvmRawToDb) : json(nullptr);
+      kj["evm"] = (c.snr_ok && cls.evm_has) ? json(cls.evm_ema * kEvmRawToDb) : json(nullptr);
+      kj["evm_a"] = (c.snr_ok && cls.evm_a_has) ? json(cls.evm_a_ema * kEvmRawToDb) : json(nullptr);
+      kj["evm_b"] = (c.snr_ok && cls.evm_b_has) ? json(cls.evm_b_ema * kEvmRawToDb) : json(nullptr);
       classes[kClassKeys[k]] = std::move(kj);
     }
     cj["classes"] = std::move(classes);

@@ -1,7 +1,8 @@
 # Auto channel selection
 
-At boot the GS measures a configured candidate list — with a spare card, or
-with its only card interleaved with beaconing — ranks channels by that
+At boot the GS measures a configured candidate list — with the last
+scout-capable card (USB; a CPE relay never scouts, `gs/src/scout_pick.h`),
+or with its only card interleaved with beaconing — ranks channels by that
 card's own busy counters, proposes the least busy one in DISC, and the
 drone follows. Both ends always fall back to a shared **home** channel
 whenever they lose each other, so a reboot or a lost pair can always find
@@ -42,16 +43,19 @@ GS, `gs/bundle/maburgs.default.toml` (relevant keys):
 [radio]
 channel = 136
 width   = 40               # HT40 on the standard pair (132+136 for home 136)
-tx_card = -1               # -1 = auto-select the best-SNR card
+tx_card = -1               # -1 = auto-select the best-RSSI card (since 2026-10-02; was SNR)
 
-# Boot-time channel scan: while waiting for the drone the spare card measures
+# Boot-time channel scan: while waiting for the drone the last scout-capable
+# card (USB; a CPE relay never scouts, gs/src/scout_pick.h) measures
 # these plus `channel` (home) and the DISC proposes the least busy one. The
 # pick freezes at the first DISC_ACK; a GS restart is the only re-scan.
 # One card: the same card alternates home windows and dwells.
 # Candidates are 40 MHz pair PRIMARIES on home's side of the grid (home 136 =
 # 132+136, primary upper half), both spur-free: 144 (140+144, next door) and
 # 112 (108+112), the DFS block clear of analog/DJI/Walksnail
-# (docs/bw40.md "Channels").
+# (docs/bw40.md "Channels"). With `radio.relays` configured, every
+# candidate must also be a channel the CPE can tune (144 is not, on the
+# AR9344, docs/cpe510-relay.md); the scan has no way to ask the relay.
 [radio.scan]
 enable           = true
 candidates       = [144, 112]
@@ -104,6 +108,22 @@ beacon period + 2·dwell_ms` (880 ms at the shipped defaults) before the drone h
 stay well under the drone's `link.move_confirm_ms` (2000 ms), or the drone
 declares the move unconfirmed and goes home while the GS is merely
 mid-hop, and the pair retries the move forever.
+
+**Who scouts, who beacons** (since 2026-10-02, `gs/src/scout_pick.h`):
+the boot scout is the last scout-capable card — the spare USB card on a
+two-USB GS (the same pick as the old `n_cards − 1` rule), the only card on
+a one-card GS. A CPE510 relay card (`[radio] relays`, `docs/cpe510-relay.md`)
+has no FA/CCA/NHM reads and never scouts; relays sit after the USB cards
+in the roster. Scout mode keys on the USB card count: two USB cards scan
+two-card (the first USB card that is not the scout keeps home and beacons
+DISC always); ONE USB card scans one-card (the interleave below — it
+beacons DISC itself in its home windows), whatever relays exist. Every
+`ready()` relay beacons DISC on home in addition, but a relay is never the
+only rendezvous path: a CPE that is still booting, unplugged or owned by
+another client would otherwise mean no DISC leaves the GS
+(`scan_disc_targets()` in `gs/src/scout_pick.h`). The scout-away send gate
+drops only the scout card's frames, so a ready relay's DISC still leaves
+while the USB card is off on a candidate.
 
 No `[[radio.cards]]` block pins nothing: `maburgs` auto-probes the USB bus
 and uses every supported card it finds, which is two-card mode. Adding an

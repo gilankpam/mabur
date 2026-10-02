@@ -1,3 +1,4 @@
+#include <cmath>
 #include "scan_log.h"
 #include "hop_controller.h"
 #include "hop_verdict.h"
@@ -53,7 +54,8 @@ TEST(scan_log_records_are_byte_exact) {
   cards[0].valid = true; cards[0].foreign = 36; cards[0].fa = 2; cards[0].cca = 0;
   cards[0].crc_fail = 5; cards[0].rssi_dbm = -55.4; cards[0].snr_db = 33.1;
   cards[1].valid = true; cards[1].foreign = 35; cards[1].fa = 1; cards[1].cca = 1;
-  cards[1].crc_fail = 6; cards[1].rssi_dbm = -56.0; cards[1].snr_db = 32.0;
+  cards[1].crc_fail = 6; cards[1].rssi_dbm = -56.0;
+  cards[1].snr_db = std::nan("");   // relay card: no SNR (snr_ok false) -> "nan"
   maburgs::VerdictLinkIn link; link.pre_fec_loss = 0.061; link.recovered = 80;
   log.verdict(1234.5, o, cards, link);
   maburgs::HopEvent h{1300.0, "order", 1, 149, 20, 0.0};
@@ -72,7 +74,7 @@ TEST(scan_log_records_are_byte_exact) {
   CHECK(text.find("\nM 9000 0 149 136 split_home\n") != std::string::npos);
   CHECK(text.find(
       "\nV 1234.5 interfered 09 5 6.1 80 0 36 2 0 5 -55.4 33.1 2.5 - 0.0 "
-      "1 35 1 1 6 -56.0 32.0 2.5 - 0.0\n") !=
+      "1 35 1 1 6 -56.0 nan 2.5 - 0.0\n") !=
       std::string::npos);
   CHECK(text.find("\nH 1300.0 order 1 149 20 0.0\n") != std::string::npos);
   CHECK(log.path() == dir + "/scan.log");

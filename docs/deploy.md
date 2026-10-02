@@ -812,3 +812,38 @@ to render the new `drone.*` block. Rollback is binary-only and paired:
 GS. Bench gate 2026-10-01, both the 53-byte first cut and the final
 48-byte build (1d27796): ausniff 30 s at mcs4/40 — 1815 AUs, 60.5 fps,
 0 incomplete, 0 frame_id gaps, 0 resyncs.
+
+## 2026-10-02 relay cards (`radio.relays`)
+
+`maburgs` gains `[radio] relays = [...]`: each `"ipv4:port"` entry (numeric
+dotted IPv4 — a hostname fails boot; the CPE has no DNS anyway) adds a
+CPE510 `mabur-relay` unit as a card after the USB cards
+(`docs/cpe510-relay.md`, "maburgs RemoteCard"). **GS only — no drone
+change, no wire change, no flag day.** `maburplay` reads the new sideport
+keys (`cards[i].kind`) and ships in the same deploy; `tools/maburtop.py`
+must be the same commit to draw the `r<id>` rows.
+
+**Config and binary move together, with the daemon stopped** (the
+config-before-binary rule): an old `maburgs` fails boot on `relays`, the new
+one boots without it (no relays). Stop `S96maburgs`, swap `maburgs` (and
+`maburplay`) keeping `maburgs.pre-relay` / `maburplay.pre-relay`, save
+`/etc/maburgs.toml.pre-relay`, add `relays = ["10.83.11.1:8310"]` under
+`[radio]`, start `S96maburgs`, restart `S97maburplay`. Never start the old
+binary against the edited config.
+
+**Network.** The Radxa ZERO 3 has no Ethernet: the CPE needs a
+USB-Ethernet adapter on the GS. The CPE serves DHCP on its LAN,
+10.83.11.100-199, with **no router and no DNS** (mabur-openwrt
+`90-mabur-lan`). After a CPE `sysupgrade -n` its SSH host key changes:
+`ssh-keygen -R 10.83.11.1`.
+
+**`tx_card` pin.** A pin may name the relay, but under auto-scan its index
+is `n_usb + k` — a second USB card appearing shifts it; pin a relay only
+with an explicit `[[radio.cards]]` list.
+
+Verify: the GS log prints `cards: card N = relay 10.83.11.1:8310` and then
+`maburgs relay card N (…): owned and tuned`; maburtop shows an `r<N>` row
+with a relay strip reading `own=1`, `gaps` flat. `ausniff` is the gate.
+Rollback: `maburgs.pre-relay` + `maburplay.pre-relay` +
+`maburgs.toml.pre-relay` together (the old binary refuses the `relays`
+key).

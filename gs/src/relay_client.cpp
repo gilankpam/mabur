@@ -25,6 +25,10 @@ void RelayClient::start(uint64_t now_ms) {
   started_ = true;
   have_seq_ = false;
   start_ms_ = last_hello_ms_ = now_ms;
+  have_status_ = false;
+  st_ = relay::Status{};
+  ever_owned_tuned_ = false;
+  not_owner_since_set_ = false;
   send_(relay::pack_hello());
   send_tune(now_ms);
 }
@@ -32,6 +36,12 @@ void RelayClient::start(uint64_t now_ms) {
 void RelayClient::send_tune(uint64_t now_ms) {
   last_tune_ms_ = now_ms;
   send_(relay::pack_tune(++tune_id_, ch_, sec_));
+}
+
+void RelayClient::retune(uint8_t channel, uint8_t sec, uint64_t now_ms) {
+  ch_ = channel;
+  sec_ = sec;
+  if (started_) send_tune(now_ms);
 }
 
 void RelayClient::tick(uint64_t now_ms) {
@@ -98,7 +108,9 @@ RelayClient::Rx RelayClient::on_message(const uint8_t* b, size_t n, uint64_t now
     meta.snr[i] = snr_raw(m.rssi[i], m.noise[i]);
   }
   meta.tsfl = m.tsf_lo;
-  if (fill_rx_body(d, dl, meta, out) != RxVerdict::Body) return Rx::None;
+  const RxVerdict v = fill_rx_body(d, dl, meta, out);
+  if (v == RxVerdict::Foreign) return Rx::Foreign;
+  if (v != RxVerdict::Body) return Rx::None;
   out.rx_channel = m.rx_channel;
   return Rx::Body;
 }

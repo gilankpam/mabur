@@ -11,6 +11,7 @@
 #include "lat_window.h"
 #include "mabur/rc_proto.h"
 #include "op_point.h"
+#include "relay_stats.h"
 
 namespace maburgs {
 
@@ -64,6 +65,9 @@ struct StatsCardIn {
   std::array<StatsClassIn, kNumStatsClasses> classes{};
   std::optional<StatsEnergyIn> energy;  // nullopt -> JSON null
   std::optional<StatsDwellIn> dwell;    // nullopt -> JSON null (never scouted)
+  bool snr_ok = true;                    // CardCaps::snr_ok; false -> snr*/evm* keys null
+  const char* kind = "usb";              // "usb" | "relay"
+  std::optional<RelayStatsIn> relay;     // relay cards only -> cards[i].relay
 };
 
 struct StatsStreamIn {  // copied from mabur::UepDecoder::LayerStats

@@ -347,7 +347,8 @@ def render_rows_compact(model, wall, width):
                    if (e := c.get("energy")) and e.get("busy_pct") is not None else None,
                    CARD_COLS[12][1], 0),
             ]
-            rows.append(_grid_row(f"  c{_s(c.get('id'))}", cells))
+            label = ("r" if c.get("kind") == "relay" else "c") + str(_s(c.get("id")))
+            rows.append(_grid_row(f"  {label}", cells))
 
     # --- LNK blocks: one per link type, decode line + per-card signal rows.
     # Signal columns are shared across every block; their titles ride the
@@ -1135,7 +1136,8 @@ def panel_gs_radios(model, wall):
                    if (e := c.get("energy")) and e.get("busy_pct") is not None else None,
                    CARD_COLS[12][1], 0),
             ]
-            text = _grid_row(f"  c{_s(c.get('id'))}", cells)
+            label = ("r" if c.get("kind") == "relay" else "c") + str(_s(c.get("id")))
+            text = _grid_row(f"  {label}", cells)
             spans = []
             if st_s == "UP":
                 spans.append((offsets[0], CARD_COLS[0][1], "good"))
@@ -1153,6 +1155,21 @@ def panel_gs_radios(model, wall):
             if txf is not None and txf > 0:
                 spans.append((offsets[10], CARD_COLS[10][1], "bad"))
             body.append((text, spans))
+        # cards[i].relay (CPE510 RemoteCard): the relay's own link state,
+        # one strip row per relay card under the grid. warn when the relay
+        # is not owned+tuned or its relay->GS seq gaps grew this datagram.
+        for c in cards:
+            r = c.get("relay")
+            if not r:
+                continue
+            text = _grid_row(f"  r{_s(c.get('id'))}", [
+                f"relay st={_s(r.get('state'))} own={int(bool(r.get('owned')))} "
+                f"gaps={_s(r.get('gaps'))} drops={_s(r.get('your_drops'))} "
+                f"txref={_s(r.get('tx_refused'))} reconn={_s(r.get('reconnects'))}"
+                .ljust(_grid_width(CARD_COLS) - LABEL_W - 1)])
+            prev_r = (model.prev_cards.get(c.get("id")) or {}).get("relay") or {}
+            warn = not r.get("owned") or _increased(r.get("gaps"), prev_r.get("gaps"))
+            body.append((text, [(0, len(text), "warn")] if warn else []))
 
     return _panel("GS RADIOS (physical)", body)
 

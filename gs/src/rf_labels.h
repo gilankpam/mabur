@@ -13,6 +13,7 @@ struct CardLabelInput {
   uint64_t frames = 0;       // cumulative s1+s3 pooled frame count
   uint64_t prev_frames = 0;  // same counter at the previous feedback window
   double snr_ema = 0.0;      // pooled s1+s3 SNR EMA, devourer raw half-dB
+  bool snr_ok = true;  // CardCaps::snr_ok: false = SNR is not a measurement, never a label source
 };
 
 // Picks the card whose RF labels (SNR/EVM/RSSI) go to the ladder
@@ -32,6 +33,7 @@ inline int select_label_card(const std::vector<CardLabelInput>& cards) {
   for (size_t i = 0; i < cards.size(); ++i) {
     const CardLabelInput& c = cards[i];
     if (!c.has_ema) continue;                 // snr_ema not meaningful yet
+    if (!c.snr_ok) continue;                  // no real SNR to offer as a label
     if (c.frames <= c.prev_frames) continue;  // frozen EMA, not a measurement
     if (best < 0 || c.snr_ema > cards[static_cast<size_t>(best)].snr_ema)
       best = static_cast<int>(i);

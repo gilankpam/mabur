@@ -1,4 +1,5 @@
 #include "config.h"
+#include <arpa/inet.h>
 
 #include <fstream>
 #include <stdexcept>
@@ -172,11 +173,42 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
   bool radio_cards_absent = false;
   if (j.contains("radio")) {
     const Value& r = j["radio"];
-    check_keys(r, "radio", {"channel", "width", "cards", "tx_card", "scan"});
+    check_keys(r, "radio", {"channel", "width", "cards", "tx_card", "scan", "relays"});
     c.radio.channel = static_cast<uint8_t>(get_int(r, "channel", 149, 1, 200, "radio"));
     c.radio.width = static_cast<uint8_t>(get_int(r, "width", 20, 20, 40, "radio"));
     if (auto e = radio_width_issue(c.radio.channel, c.radio.width)) fail(e->field, e->why);
     c.radio.tx_card = static_cast<int>(get_int(r, "tx_card", -1, -1, 15, "radio"));
+    if (r.contains("relays")) {
+      g_line = r["relays"].line();
+      if (!r["relays"].is_array()) fail("radio.relays", "not an array");
+      int i = 0;
+      for (const Value& v : r["relays"]) {
+        const std::string where = "radio.relays[" + std::to_string(i++) + "]";
+        if (v.line() > 0) g_line = v.line();
+        if (!v.is_string()) fail(where, "not a string");
+        const std::string s = v.get<std::string>();
+        const auto colon = s.rfind(':');
+        if (colon == std::string::npos || colon == 0 || colon + 1 >= s.size())
+          fail(where, "must be ipv4:port");
+        // Numeric only: open_udp_transport() runs on the core thread on
+        // every 2 s reopen, and a hostname there would block video on a
+        // dead resolver.
+        in_addr a4{};
+        if (inet_pton(AF_INET, s.substr(0, colon).c_str(), &a4) != 1)
+          fail(where, "host must be a dotted IPv4 address (the UDP transport resolves nothing)");
+        const std::string port = s.substr(colon + 1);
+        if (port.find_first_not_of("0123456789") != std::string::npos ||
+            port.size() > 5)
+          fail(where, "port is not a number");
+        const long p = std::stol(port);
+        if (p < 1 || p > 65535) fail(where, "port must be in [1,65535]");
+        for (const auto& prev : c.radio.relays)
+          if (prev == s) fail(where, "duplicate relay address");
+        c.radio.relays.push_back(s);
+      }
+    } else {
+      note_default("radio", "relays", "(none)");
+    }
     if (r.contains("cards")) {
       if (!r["cards"].is_array() || r["cards"].empty())
         fail("radio.cards", "must be a non-empty array");
@@ -234,8 +266,9 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
   // Only an explicit list is a fact at load time. Under auto-scan the count
   // is hardware, discovered after this returns; main.cpp warns and falls
   // back to auto-select when the scan finds fewer cards than the pin.
+  // Relays count: they follow the explicit cards (card k+n = relays[n]).
   if (!c.radio.auto_scan &&
-      c.radio.tx_card >= static_cast<int>(c.radio.cards.size()))
+      c.radio.tx_card >= static_cast<int>(c.radio.cards.size() + c.radio.relays.size()))
     fail("radio.tx_card", "no such card");
 
   if (j.contains("hop")) {

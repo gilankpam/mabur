@@ -8,6 +8,7 @@
 channel = 136              # home channel: must match the drone's radio.channel
 width   = 40               # 20 or 40 MHz; 40 is needed for the 40 MHz link speeds in [[link.ladder]] below
 tx_card = -1               # card that transmits to the drone; -1 = pick the one with the best signal
+relays  = []               # CPE510 mabur-relay units, "ipv4:port" each (UDP 8310, numeric -- no hostnames); each is a card after the USB cards
 
 # Boot-time channel scan. While waiting for the drone, a spare card measures
 # the candidates plus the home channel and the ground station proposes the
