@@ -16,27 +16,33 @@ class UdpTransport final : public RelayTransport {
   explicit UdpTransport(int fd) : fd_(fd) {}
   ~UdpTransport() override { close(); }
   bool send(const uint8_t* p, size_t n) override {
-    return fd_ >= 0 && ::send(fd_, p, n, MSG_DONTWAIT) == static_cast<ssize_t>(n);
+    const int fd = fd_.load();
+    return fd >= 0 && ::send(fd, p, n, MSG_DONTWAIT) == static_cast<ssize_t>(n);
   }
   int recv(uint8_t* buf, size_t cap, int timeout_ms) override {
-    if (closed_.load()) return -1;
-    pollfd pf{fd_, POLLIN, 0};
+    const int fd = fd_.load();
+    if (closed_.load() || fd < 0) return -1;
+    pollfd pf{fd, POLLIN, 0};
     const int r = ::poll(&pf, 1, timeout_ms);
     if (closed_.load()) return -1;
     if (r <= 0) return 0;
     // ECONNREFUSED (ICMP port unreachable) is not fatal: the relay may be
     // restarting. RelayClient's lost() decides.
-    const ssize_t n = ::recv(fd_, buf, cap, MSG_DONTWAIT);
+    const ssize_t n = ::recv(fd, buf, cap, MSG_DONTWAIT);
     return n > 0 ? static_cast<int>(n) : 0;
   }
   void close() override {
     if (closed_.exchange(true)) return;
-    ::shutdown(fd_, SHUT_RDWR);
-    ::close(fd_);
+    // -1 first: no send()/recv() after close() reaches a closed (or, once
+    // the number is reused, someone else's) descriptor.
+    const int fd = fd_.exchange(-1);
+    if (fd < 0) return;
+    ::shutdown(fd, SHUT_RDWR);
+    ::close(fd);
   }
 
  private:
-  int fd_;
+  std::atomic<int> fd_;
   std::atomic<bool> closed_{false};
 };
 }  // namespace

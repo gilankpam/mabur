@@ -1,7 +1,7 @@
 #pragma once
 // RelayTransport: the byte pipe RelayClient's owner speaks over -- UDP
 // natively (open_udp_transport, here), the core<->worker SPSC ring in the
-// browser (web/src/relay_transport.h, open_ring_transport). Pure
+// browser (web/src/relay_ring_transport.h, open_ring_transport). Pure
 // interface, no protocol knowledge.
 #include <cstddef>
 #include <cstdint>

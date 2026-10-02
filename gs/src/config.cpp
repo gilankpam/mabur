@@ -1,4 +1,5 @@
 #include "config.h"
+#include <arpa/inet.h>
 
 #include <fstream>
 #include <stdexcept>
@@ -188,7 +189,13 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
         const std::string s = v.get<std::string>();
         const auto colon = s.rfind(':');
         if (colon == std::string::npos || colon == 0 || colon + 1 >= s.size())
-          fail(where, "must be host:port");
+          fail(where, "must be ipv4:port");
+        // Numeric only: open_udp_transport() runs on the core thread on
+        // every 2 s reopen, and a hostname there would block video on a
+        // dead resolver.
+        in_addr a4{};
+        if (inet_pton(AF_INET, s.substr(0, colon).c_str(), &a4) != 1)
+          fail(where, "host must be a dotted IPv4 address (the UDP transport resolves nothing)");
         const std::string port = s.substr(colon + 1);
         if (port.find_first_not_of("0123456789") != std::string::npos ||
             port.size() > 5)

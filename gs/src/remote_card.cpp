@@ -134,6 +134,9 @@ bool RemoteCard::send_control(const std::vector<uint8_t>& body) {
 bool RemoteCard::retune(uint8_t ch) {
   std::lock_guard<std::mutex> lk(mu_);
   channel_.store(ch);
+  // Stopped: record the target only -- no TUNE on a closed transport;
+  // open_and_start() re-asserts channel_/width_.
+  if (!running_.load()) return true;
   c_.retune(ch, sec_for(ch, width_.load()), now_ms_());
   return true;
 }
@@ -142,6 +145,7 @@ bool RemoteCard::set_width(uint8_t ch, uint8_t width_mhz) {
   std::lock_guard<std::mutex> lk(mu_);
   width_.store(width_mhz);
   channel_.store(ch);
+  if (!running_.load()) return true;   // see retune()
   c_.retune(ch, sec_for(ch, width_mhz), now_ms_());
   return true;
 }

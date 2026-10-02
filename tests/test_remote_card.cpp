@@ -267,4 +267,23 @@ TEST(relay_stats_mirror_status_and_counters) {
   CHECK(s.frames == 2 && s.gaps == 3);
   r.card->stop();
 }
+TEST(retune_after_stop_records_target_without_sending) {
+  Rig r(136, 20);
+  REQUIRE(r.card->open_and_start());
+  REQUIRE(r.soon([&] { return r.t().count(kTune) >= 1; }));
+  r.card->stop();
+  const int tunes = r.t().count(kTune);         // the stopped card still holds its closed transport
+  CHECK(r.card->retune(149));
+  CHECK(r.card->set_width(149, 40));
+  CHECK(r.card->channel() == 149 && r.card->width() == 40);
+  CHECK(r.t().count(kTune) == tunes);           // nothing sent on the closed transport
+  REQUIRE(r.card->open_and_start());            // the reopen re-asserts the recorded target
+  REQUIRE(r.soon([&] { return r.t().count(kTune) >= 1; }));
+  {
+    std::lock_guard<std::mutex> lk(r.t().mu);
+    auto& tune = *std::find_if(r.t().sent.begin(), r.t().sent.end(), [](auto& m) { return msg_type(m.data(), m.size()) == kTune; });
+    CHECK(tune[6] == 149 && tune[7] == 1);      // 149 is HT40+: sec 1
+  }
+  r.card->stop();
+}
 MTEST_MAIN

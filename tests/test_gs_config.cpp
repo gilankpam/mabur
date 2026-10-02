@@ -1422,7 +1422,7 @@ TEST(overlay_missing_file_fails) {
 }
 
 // radio.relays (spec 2026-10-02-maburgs-remote-card §3): CPE510 relays are
-// RemoteCards appended after the USB cards, "host:port" each.
+// RemoteCards appended after the USB cards, "ipv4:port" each.
 TEST(radio_relays_default_empty_and_parse) {
   auto none = maburgs::load_config(write_tmp("[radio]\nchannel = 136\n"));
   CHECK(none.radio.relays.empty());
@@ -1438,8 +1438,15 @@ TEST(radio_relays_entries_are_validated) {
   CHECK(w.find("radio.relays[0]") != std::string::npos && w.find("port") != std::string::npos);
   w = what_of([] { maburgs::load_config(write_tmp("[radio]\nrelays = [\"10.83.11.1:0\"]\n")); });
   CHECK(w.find("radio.relays[0]") != std::string::npos);
-  w = what_of([] { maburgs::load_config(write_tmp("[radio]\nrelays = [\"a:8310\", \"a:8310\"]\n")); });
+  w = what_of([] { maburgs::load_config(write_tmp("[radio]\nrelays = [\"10.0.0.1:8310\", \"10.0.0.1:8310\"]\n")); });
   CHECK(w.find("radio.relays[1]") != std::string::npos && w.find("duplicate") != std::string::npos);
+  // A hostname is refused: the UDP transport resolves nothing (getaddrinfo
+  // on the core thread every 2 s reopen would stall video on a dead resolver).
+  w = what_of([] { maburgs::load_config(write_tmp("[radio]\nrelays = [\"cpe.local:8310\"]\n")); });
+  CHECK(w.find("radio.relays[0]") != std::string::npos &&
+        w.find("dotted IPv4") != std::string::npos);
+  w = what_of([] { maburgs::load_config(write_tmp("[radio]\nrelays = [\"10.83.11:8310\"]\n")); });
+  CHECK(w.find("dotted IPv4") != std::string::npos);
   w = what_of([] { maburgs::load_config(write_tmp("[radio]\nrelays = [8310]\n")); });
   CHECK(w.find("radio.relays[0]") != std::string::npos);
 }
