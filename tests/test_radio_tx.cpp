@@ -326,4 +326,11 @@ TEST(control_tx_mode_is_mcs0_20mhz_coded_and_no_agg) {
   CHECK(radiotap_no_agg(rt));
 }
 
+TEST(control_tx_mode_ldpc_off_keeps_the_rest) {
+  const devourer::TxMode m = control_tx_mode(/*ldpc=*/false);
+  CHECK(!m.ldpc);
+  CHECK(m.stbc && !m.sgi && m.no_agg);
+  CHECK(m.ht_mcs == 0 && m.bw_mhz == 20);
+}
+
 MTEST_MAIN

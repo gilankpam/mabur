@@ -94,8 +94,8 @@ TEST(ladder_from_applies_same_rate) {
 }
 
 TEST(ladder_from_sets_ldpc_stbc_on_all_rungs) {
-  // Config policy removed 2026-07-26: LDPC+STBC are unconditionally on for
-  // every rung (the all-true policy was the only shape ever flown).
+  // LDPC+STBC on every rung by default; LDPC can be turned off by the
+  // drone's radio.ldpc (2026-10-02, see ldpc_off below).
   auto ladder = ladder_from(PhyMode::HT, 2, 20);
   // BASE
   CHECK(ladder[0].mode == PhyMode::HT);
@@ -109,6 +109,17 @@ TEST(ladder_from_sets_ldpc_stbc_on_all_rungs) {
   CHECK(ladder[1].bw == 20);
   CHECK(ladder[1].ldpc == true);
   CHECK(ladder[1].stbc == true);
+}
+
+TEST(ladder_from_ldpc_off_clears_ldpc_keeps_stbc) {
+  // radio.ldpc = false (2026-10-02): an RTL8821AU GS cannot decode HT-LDPC
+  // (bench: 1/1000 LDPC vs 900+/1000 BCC), so the drone can fly BCC.
+  auto ladder = ladder_from(PhyMode::HT, 2, 20, /*ldpc=*/false);
+  for (const auto& l : ladder) {
+    CHECK(l.ldpc == false);
+    CHECK(l.stbc == true);
+    CHECK(l.mcs == 2);
+  }
 }
 
 TEST(ladder_from_clamps_at_top) {

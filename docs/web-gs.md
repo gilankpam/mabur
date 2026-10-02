@@ -397,7 +397,21 @@ chooser asks for the card — an RTL8812EU (Jaguar3), an RTL8812AU
 2357:0120, plus 011e/0122 — the chooser filters on vendors 0bda and 2357,
 the core on exact VID:PID in `web_main.cpp` `kCards`); the WASM core builds both devourer drivers (WebUSB's per-origin
 device grant — pick it once and later `getDevices()` calls see it without asking again on the same
-origin). What the status overlay shows after that:
+origin).
+
+**The RTL8821AU cannot decode LDPC**, and the drone codes every frame
+(video, probe, DISC_ACK, telemetry, MSP) with LDPC by default, so with this
+card the page sees only CRC-failed bodies and never links. Set
+`[radio] ldpc = false` in the drone's `/etc/mabur.toml` (config before
+binary, `docs/deploy.md`) to fly BCC instead. That costs every GS the LDPC
+coding gain (2-3 dB measured at the same MCS), so set it back to `true`
+when flying an 8812EU/AU GS. Bench 2026-10-02, ch 136 HT20, 1000 x 1400 B
+MCS0 from an 8812EU into the 8821AU: plain 900+, STBC 900+, LDPC 1,
+LDPC+STBC 0 received. The 8821AU's own uplink, LDPC included, decodes fine
+at an 8812EU (600-700+), and STBC on its RX side is fine; devourer drops
+the STBC flag on its TX (one chain) and logs a one-time warning.
+
+What the status overlay shows after that:
 
 - `Starting…` / `Requesting device…` — module bring-up, before the core
   loop is up.

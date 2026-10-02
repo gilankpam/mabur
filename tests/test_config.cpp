@@ -1322,6 +1322,17 @@ TEST(load_config_reports_real_venc_defaults_not_zero) {
   std::filesystem::remove(path);
 }
 
+TEST(radio_ldpc_defaults_on_and_parses_off) {
+  auto e = write_temp_toml("");
+  Config def = load_config(e.string());
+  std::filesystem::remove(e);
+  CHECK(def.radio.ldpc == true);
+  auto p = write_temp_toml("[radio]\nldpc = false\n");
+  Config c = load_config(p.string());
+  std::filesystem::remove(p);
+  CHECK(c.radio.ldpc == false);
+}
+
 TEST(follow_gs_and_move_confirm_parse_with_defaults) {
   auto e = write_temp_toml("");
   Config def = load_config(e.string());

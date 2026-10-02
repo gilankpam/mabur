@@ -373,6 +373,7 @@ struct RealActuator : mabur::Actuator {
   std::atomic<bool>* cal_active = nullptr;
 
   std::vector<uint8_t> control_radiotap;  // built once; control channel is fixed
+  bool ldpc = true;                       // cfg.radio.ldpc, for control_radiotap
   uint16_t control_seq = 0;
 
   // Last values commanded to the encoder — read by the telemetry collector
@@ -423,7 +424,7 @@ struct RealActuator : mabur::Actuator {
 
   void send_control(const std::vector<uint8_t>& body) override {
     if (control_radiotap.empty()) {
-      control_radiotap = devourer::build_stream_radiotap(control_tx_mode());
+      control_radiotap = devourer::build_stream_radiotap(control_tx_mode(ldpc));
     }
     std::vector<uint8_t> frame;
     frame.reserve(control_radiotap.size() + kDot11HeaderLen + body.size());
@@ -1370,6 +1371,7 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
   actuator.tx_gate = &tx_gate;
   actuator.retune_waiting = &retune_waiting;
   actuator.cur = static_cast<uint8_t>(cfg.radio.channel);
+  actuator.ldpc = cfg.radio.ldpc;
   // Encoder starts at the "normal" ROI QP (RcAgent only calls set_roi_qp on
   // a low<->normal transition — see run_bitrate_policy's roi_low_ default),
   // so the telemetry collector needs this seeded to reflect what's actually
@@ -1515,7 +1517,7 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
   // regardless of which thread sent the last frame.
   std::atomic<uint16_t> telem_wire_seq{0};
   std::atomic<uint16_t> telem_dot11_seq{0};
-  std::vector<uint8_t> telem_radiotap = devourer::build_stream_radiotap(control_tx_mode());
+  std::vector<uint8_t> telem_radiotap = devourer::build_stream_radiotap(control_tx_mode(cfg.radio.ldpc));
   // Minor 5 fix: the TX writer thread's calibration ack (below) starts from
   // the most recent REAL Telem the agent thread built, not a default-
   // constructed one -- otherwise the GS's `latest_telem` (its OSD/sideport
@@ -1641,7 +1643,7 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
       name_thread("mbr-msp");
       // Robust control modulation, same tier as DISC_ACK; MSP is a third
       // producer on the mutex-guarded dev_sink.send() path (never the pool).
-      std::vector<uint8_t> radiotap = devourer::build_stream_radiotap(control_tx_mode());
+      std::vector<uint8_t> radiotap = devourer::build_stream_radiotap(control_tx_mode(cfg.radio.ldpc));
       uint16_t seq = 0;
       std::random_device rd;
       MspSource src(to_msp_source_cfg(cfg.msp),

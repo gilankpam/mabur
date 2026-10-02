@@ -1475,6 +1475,28 @@ TEST(probe_rcf_fills_the_probe_slot_not_the_enh_layer) {
   CHECK(!agent.probe_on());
 }
 
+// 11a. radio.ldpc = false (2026-10-02, RTL8821AU GS): every slot the agent
+// applies flies BCC -- the BOOT MAX_RANGE op, the RCF-commanded rung and its
+// probe slot. STBC stays on.
+TEST(ldpc_off_config_clears_ldpc_on_every_applied_slot) {
+  Config cfg = make_cfg();
+  cfg.radio.ldpc = false;
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});
+  REQUIRE(!act.applied.empty());
+  for (const auto& l : act.applied.back().ladder) CHECK(!l.ldpc && l.stbc);
+  const uint32_t vtx = ack_agent(agent, act);
+  auto wire = make_rcf_wire(1, encode_profile(PhyMode::HT, 4, 20), 8, 8,
+                            encode_profile(PhyMode::HT, 5, 20), vtx);
+  agent.on_rc_frame(wire.data(), wire.size(), 100);
+  const AppliedOp& op = act.applied.back();
+  CHECK(op.ladder[0].mcs == 4);
+  for (const auto& l : op.ladder) CHECK(!l.ldpc && l.stbc);
+  CHECK(op.probe.mcs == 5);
+  CHECK(!op.probe.ldpc && op.probe.stbc);
+}
+
 // 11b. Failsafe entry (MAX_RANGE) clears the probe slot even if the last
 // RCF before the silence carried a probe_profile — a degraded/lost link
 // must never report itself as still probing.

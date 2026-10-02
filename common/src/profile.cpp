@@ -68,7 +68,7 @@ void decode_profile(uint8_t p, PhyMode& mode, uint8_t& mcs, uint8_t& bw) {
 // ride the scored mcs. UEP is per-rung FEC overhead pairs carried in the
 // v5 RCF — no rate split, no runtime redistribution. Measurement basis:
 // docs/same-rate-uep-findings-2026-08-30.md (static/motion/loss sweeps).
-std::array<LayerTxSpec, 2> ladder_from(PhyMode mode, uint8_t mcs, uint8_t bw) {
+std::array<LayerTxSpec, 2> ladder_from(PhyMode mode, uint8_t mcs, uint8_t bw, bool ldpc) {
   int top = (mode == PhyMode::VHT) ? 8 : 7;
   int m = std::clamp(static_cast<int>(mcs), 0, top);
 
@@ -77,13 +77,13 @@ std::array<LayerTxSpec, 2> ladder_from(PhyMode mode, uint8_t mcs, uint8_t bw) {
   ladder[0].mode = mode;
   ladder[0].mcs = static_cast<uint8_t>(m);
   ladder[0].bw = bw;
-  ladder[0].ldpc = true;
+  ladder[0].ldpc = ldpc;
   ladder[0].stbc = true;
   // ENH
   ladder[1].mode = mode;
   ladder[1].mcs = static_cast<uint8_t>(m);
   ladder[1].bw = bw;
-  ladder[1].ldpc = true;
+  ladder[1].ldpc = ldpc;
   ladder[1].stbc = true;
   return ladder;
 }

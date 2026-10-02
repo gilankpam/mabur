@@ -180,7 +180,7 @@ bool RcAgent::idr_due(uint64_t now_ms, bool chain) {
 // hysteresis — the spec mandates failsafe = robust MCS + floor bitrate, and
 // a degraded radio link must never keep flooding at the last LINKED rate.
 void RcAgent::apply_max_range(uint64_t now_ms) {
-  auto ladder = rc::ladder_from(PhyMode::HT, 0, 20);
+  auto ladder = rc::ladder_from(PhyMode::HT, 0, 20, cfg_.radio.ldpc);
 
   // Forced shed while MAX_RANGE is the operating point (BOOT/RENDEZVOUS or a
   // LINKED->FAILSAFE entry) — held sticky in failsafe_shed_ until an
@@ -237,7 +237,7 @@ void RcAgent::apply_ladder_op(const std::array<LayerTxSpec, 2>& ladder,
     // over it.
     PhyMode pm; uint8_t pmcs, pbw;
     rc::decode_profile(probe_profile, pm, pmcs, pbw);
-    applied_.probe = rc::ladder_from(ladder[1].mode, pmcs, pbw)[1];
+    applied_.probe = rc::ladder_from(ladder[1].mode, pmcs, pbw, cfg_.radio.ldpc)[1];
   }
   applied_.shed[0] = false;
   // shed_level_ still counts 0..3 (congestion semantics untouched — see
@@ -597,7 +597,7 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
     PhyMode mode;
     uint8_t mcs, bw;
     rc::decode_profile(r->profile, mode, mcs, bw);
-    auto ladder = rc::ladder_from(mode, mcs, bw);
+    auto ladder = rc::ladder_from(mode, mcs, bw, cfg_.radio.ldpc);
 
     State prev_state = state_;
     apply_ladder_op(ladder, r->fec_overhead_base, r->fec_overhead_enh, r->probe_profile);
