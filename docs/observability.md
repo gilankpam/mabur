@@ -408,6 +408,33 @@ was always foreign busy, never own airtime). Full key semantics, the OSD
 `(h)` mark, and the
 `flightreport.py` HOP section are in `docs/inflight-channel-hop.md`.
 
+**Sideport: `cards[i].kind` and `cards[i].relay`.** Since 2026-10-02
+(maburgs `RemoteCard`, `docs/cpe510-relay.md`) every card carries `kind`:
+`"usb"` or `"relay"` (a CPE510 `mabur-relay` unit from `[radio] relays`;
+relays follow the USB cards in the roster). A relay card also carries
+`relay = {state, owned, ch, sec, frames, gaps, your_drops, tx, tx_fail,
+tx_refused, reconnects}` (USB cards: key absent): `state`/`ch`/`sec` are
+the last `STATUS` (state 0 tuned, 1 retuning, 2 failed, 3 refused; `sec`
+0 HT20, 1 HT40+, 2 HT40-), `owned` is owned-and-tuned on our target,
+`frames` the `FRAME`s seen, `gaps` the relay→GS `seq` gaps — Ethernet/UDP
+loss between the CPE and the GS, **not** air loss (air loss stays in the
+per-class dot11-seq `delivery`), `your_drops` the relay's own count of
+frames it could not send us, `tx`/`tx_fail`/`tx_refused` the relay's
+injection counters (`tx_refused` = `TX` messages it would not inject: not
+from the owner, `mcs` > 7, a reserved flag bit, a bad length), and `reconnects` the client restarts —
+**both** the 5 s refused-restarts and the reopens after a lost relay. On a
+relay card the per-class `snr`, `snr_a`, `snr_b`, `evm`, `evm_a`, `evm_b`
+are always `null` (the relay's "SNR" is RSSI above a calibrated floor, not
+a measurement — `CardCaps::snr_ok = false`); RSSI is real. `energy` is
+present but its `cca`/`fa` read 0 and `busy_pct` stays `null` (no NHM);
+`own`/`foreign`/`own_air_pct` are real.
+`tools/maburtop.py` labels relay rows `r<id>` (USB `c<id>`) and adds one
+strip row per relay under the cards grid (`st own gaps drops txref
+reconn`, warn when not owned or `gaps` grew); the player OSD draws an `R`
+id and a dashed SNR cell and counts a relay card as heard on RSSI alone.
+The 5 s stderr `stats:` line appends `relay[own= gaps= drops= reconn=]`
+per relay card.
+
 **Sideport: `link.probe` and `classes.probe`.** Since 2026-09-04 the probe
 stream's live gate state is exported unconditionally (even in static-pin
 mode, where there is no controller) as `link.probe = {on, rung, mcs,

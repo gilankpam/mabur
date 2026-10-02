@@ -320,7 +320,7 @@ retried every 500 ms indefinitely.
 - `relay taken by another client` — GS mode, after owning the relay
   (`owned_and_tuned()` true at least once): a `STATUS` says `you_own == 0`
   and keeps saying so for >= 1 s straight (e.g. a UDP subscriber — native
-  `webgs --relay`, a future RemoteCard — takes ownership away; the relay
+  `webgs --relay`, a running `maburgs` with `radio.relays` — takes ownership away; the relay
   prefers the oldest UDP subscriber) → *"Another client took over the CPE
   relay (maburgs or another tab). Stop it, then press Connect."* Distinct
   from `relay owned by another client`, which fires before ownership was

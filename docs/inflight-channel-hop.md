@@ -61,7 +61,10 @@ FAILSAFE entry.
    and `ref_rung`'s profile (`gs/src/main.cpp`'s `HopAction::Order` case).
 2. `ChannelPlan::hop_order(now, target, lead_card)` sends the non-TX card
    (`lead_card`, whichever the TX selector is not currently using) to the
-   target; the TX card stays on the old channel (`ChannelPlan::desired()`
+   target (a CPE510 relay card can be the lead: its retune sends `TUNE`,
+   and the verdict and confirmation wait on its `ready()` and the relay's
+   own `rx_channel` stamp — frames are dropped until the relay confirms;
+   `docs/cpe510-relay.md`); the TX card stays on the old channel (`ChannelPlan::desired()`
    returns `op_` for every other card while `hopping_`). Every hop, order
    or withdraw, logs an `M` line (`hop_lead`, `hop_follow`, `hop_withdraw`,
    or `hop_one_card` — new `MoveReason` values alongside `commit`/
@@ -172,7 +175,7 @@ kEvRaised/kEvBlocked/kEvStarved`):
 | bit | rule | key (default) |
 |---|---|---|
 | impaired | link pre-FEC loss % > `loss_pct` **or** (recovered count > `recovered_x` × its 5 s trailing mean **and** recovered count >= `recovered_min`) **or** `starved` | `hop.verdict.loss_pct` (3.0), `recovered_x` (3.0), `recovered_min` (8) |
-| weak | best card's RSSI < `weak_rssi_dbm` **and** SNR < `weak_snr_db` | `weak_rssi_dbm` (−78), `weak_snr_db` (12) |
+| weak | best card's RSSI < `weak_rssi_dbm` **and** SNR < `weak_snr_db` (RSSI alone when that card has no real SNR — `snr_valid` false on a CPE510 relay) | `weak_rssi_dbm` (−78), `weak_snr_db` (12) |
 | fading | best card's RSSI more than `fading_drop_db` below its frozen/trailing reference | `fading_drop_db` (6) |
 | contended | any card's foreign frames/s > `foreign_pps` | `foreign_pps` (50) |
 | raised | any card's FA/s > `fa_pps` | `fa_pps` (100) |
@@ -325,6 +328,15 @@ candidates-then-home, its own quiet/beacon interleave) is not reusable for
 a periodic mid-flight dwell, and the project's new-module convention
 (pure, ctest-covered, no hardware) applies the same way it did to
 `channel_scout`/`channel_plan`.
+
+**Which card dwells** (since 2026-10-02, `gs/src/scout_pick.h`
+`pick_inflight_scout`): the last scout-capable card that is not the TX
+card, re-picked every period; none = skip the period. A CPE510 relay card
+is never scout-capable (no FA/CCA/NHM reads), so on one USB card plus a
+relay the USB card dwells only while the relay holds the uplink — while
+the USB card transmits, the periodic scout idles. On an all-USB two-card
+GS this is the same "whichever card the TX selector is not using" as
+before.
 
 Two-card GS only: a dedicated thread (`gs/src/main.cpp`'s `scout_loop`)
 runs once the boot scout has released every card, gated on
@@ -1052,6 +1064,15 @@ observe-only flights per the spec's open items.
 ## Known limitations
 
 Found on the 2026-09-15 bench (the handover page has the traces):
+
+- **The freshness burst ignores `can_scout`** (2026-10-02, code read, not
+  bench-observed). `burst_card` is the hop lead card, and the lead can be a
+  CPE510 relay; the periodic scout picks by `can_scout`, the burst does not.
+  On a relay every burst dwell reads no energy (`fa`/`cca` 0, the
+  read-failed flag on the `D` line), its retunes are `TUNE`s the relay
+  cannot complete inside a 5 ms observe, and the resulting visits score as
+  clean channels in `HopRanker`. Untested on hardware (bench leg 5 in
+  `docs/cpe510-relay.md` is the first chance to see it).
 
 - **A withdrawn two-card order strands the drone.** The drone retunes on
   the first RCF carrying the order; if the GS withdraws (no video on the

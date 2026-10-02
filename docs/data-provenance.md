@@ -857,3 +857,32 @@ SipHash-2-4 tag before its CRC; DISC_ACK carries `vtx_nonce` + a flags byte.
 - `ctllog 12` unchanged; the KEY MISMATCH state is in `flight.jsonl` via
   `link.state`, not in `ctl.log`.
 
+
+## 2026-10-02 — relay cards: `cards[i].kind`, null SNR, TX selector on RSSI
+
+`maburgs` can run a CPE510 `mabur-relay` unit as a card (`[radio] relays`,
+`docs/cpe510-relay.md`). No wire change, no flag day, no new log marker.
+
+- **New sideport keys:** `cards[i].kind` (`"usb"` | `"relay"`) on every
+  card, and `cards[i].relay` (eleven keys, `docs/observability.md`) on
+  relay cards only. A recording before this date has no `kind`: every card
+  in it is USB.
+- **Null SNR/EVM on a relay card.** From this build on a recording may
+  carry a card with `kind: "relay"` whose per-class `snr`/`snr_a`/`snr_b`/
+  `evm*` are always `null` while its `rssi*` are real — the relay's "SNR"
+  is RSSI above a calibrated floor, so it is not exported. Card ids are
+  roster order (USB first, relays after), so a relay's id is
+  `n_usb + k`. `tools/flightreport.py` already tolerates null per-card SNR
+  (its sideport SNR readers take numbers only or print nothing; a relay's
+  `probe.log` rows carry `nan` SNR, which the probe stats already exclude);
+  it ignores `relay`.
+- **TX selector compares RSSI, not SNR — on every GS, relay or not.**
+  `TxSelector` picks the uplink card on best-chain RSSI with a true 3 dB
+  margin (2 s hold and the dead-card rule unchanged). Before, it compared
+  `snr_ema` in raw half-dB units against the same `3.0`, so the effective
+  margin was **1.5 dB** of SNR. A flight's `link.tx_card` switches (and
+  which card held the uplink) are not comparable across this line.
+- **Boot-scan DISC beacons leave the first non-scout card** (`boot_home_card`
+  in `gs/src/main.cpp`), not a hard-coded card 0. On an all-USB GS that is
+  still card 0; with one USB card plus a relay the relay beacons on home
+  while the USB card scans.

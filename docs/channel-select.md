@@ -1,7 +1,8 @@
 # Auto channel selection
 
-At boot the GS measures a configured candidate list — with a spare card, or
-with its only card interleaved with beaconing — ranks channels by that
+At boot the GS measures a configured candidate list — with the last
+scout-capable card (USB; a CPE relay never scouts, `gs/src/scout_pick.h`),
+or with its only card interleaved with beaconing — ranks channels by that
 card's own busy counters, proposes the least busy one in DISC, and the
 drone follows. Both ends always fall back to a shared **home** channel
 whenever they lose each other, so a reboot or a lost pair can always find
@@ -42,9 +43,10 @@ GS, `gs/bundle/maburgs.default.toml` (relevant keys):
 [radio]
 channel = 136
 width   = 40               # HT40 on the standard pair (132+136 for home 136)
-tx_card = -1               # -1 = auto-select the best-SNR card
+tx_card = -1               # -1 = auto-select the best-RSSI card (since 2026-10-02; was SNR)
 
-# Boot-time channel scan: while waiting for the drone the spare card measures
+# Boot-time channel scan: while waiting for the drone the last scout-capable
+# card (USB; a CPE relay never scouts, gs/src/scout_pick.h) measures
 # these plus `channel` (home) and the DISC proposes the least busy one. The
 # pick freezes at the first DISC_ACK; a GS restart is the only re-scan.
 # One card: the same card alternates home windows and dwells.
@@ -104,6 +106,16 @@ beacon period + 2·dwell_ms` (880 ms at the shipped defaults) before the drone h
 stay well under the drone's `link.move_confirm_ms` (2000 ms), or the drone
 declares the move unconfirmed and goes home while the GS is merely
 mid-hop, and the pair retries the move forever.
+
+**Who scouts, who beacons** (since 2026-10-02, `gs/src/scout_pick.h`):
+the boot scout is the last scout-capable card — the spare USB card on a
+two-USB GS (the same pick as the old `n_cards − 1` rule), the only card on
+a one-card GS. A CPE510 relay card (`[radio] relays`, `docs/cpe510-relay.md`)
+has no FA/CCA/NHM reads and never scouts; relays sit after the USB cards
+in the roster. DISC beacons on home leave the first non-scout card
+(`boot_home_card` in `gs/src/main.cpp`; card 0 was hard-coded before), so
+with one USB card plus a relay the relay beacons DISC on home while the
+USB card scans at 20 MHz — a two-card plan, not the one-card interleave.
 
 No `[[radio.cards]]` block pins nothing: `maburgs` auto-probes the USB bus
 and uses every supported card it finds, which is two-card mode. Adding an
