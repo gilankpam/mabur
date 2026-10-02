@@ -952,6 +952,10 @@ static int run_radio(const maburgs::Config& cfg) {
   std::vector<uint8_t> cur_ch(static_cast<size_t>(n_cards), cfg.radio.channel);
   const bool one_card = n_cards == 1;
   const int scout_card = boot_scout_card;
+  // The card that keeps home while the scout is off measuring: the first
+  // non-scout card (scout_pick.h makes the scout the LAST scout-capable
+  // card, so with USB+relay that is the relay). One card: itself.
+  const int boot_home_card = n_cards >= 2 ? (scout_card == 0 ? 1 : 0) : 0;
   std::unique_ptr<maburgs::ChannelScout> scout;
   std::thread scout_thread;
   bool scout_joined = true;  // no thread running
@@ -2423,7 +2427,7 @@ static int run_radio(const maburgs::Config& cfg) {
       } else if (!scout_joined) {
         // Silent during every scout dwell (two cards: quiet(); one card:
         // outside the beacon phase).
-        if (!scout->quiet() && (!one_card || scout->at_home())) targets.push_back(0);
+        if (!scout->quiet() && (!one_card || scout->at_home())) targets.push_back(boot_home_card);
       } else {
         targets.push_back(tx);
       }
