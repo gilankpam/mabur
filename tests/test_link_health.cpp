@@ -175,4 +175,20 @@ TEST(residual_settle_blank_on_op_change) {
   CHECK(k.health.residual_loss == 0.0);         // blanked, not old-rung debris
 }
 
+TEST(probe_row_snr_is_nan_for_a_card_without_real_snr) {
+  Aggregator agg(layers(), 512, 2, 192);
+  LinkHealthAssembler a({2, 4, 14 + 332, {true, false}});   // card 1 = relay
+  LinkHealthInputs in;
+  in.probe_profile = mabur::rc::encode_profile(mabur::rc::PhyMode::HT, 4, 20);
+  a.tick(0.0, agg, in);
+  a.on_au_begin(1, 7, 10.0);
+  a.on_probe_body(0, make_probe_body(in.probe_profile, 7, 1, 10.0));
+  a.on_probe_body(1, make_probe_body(in.probe_profile, 7, 1, 10.0));
+  a.tick(200.0, agg, in);
+  REQUIRE(a.probe_finalized().size() == 1);
+  const auto& row = a.probe_finalized()[0];
+  CHECK(row.snr_db[0] > 19.0 && row.snr_db[0] < 21.0);   // 40 raw half-dB = 20 dB
+  CHECK(std::isnan(row.snr_db[1]));
+}
+
 MTEST_MAIN

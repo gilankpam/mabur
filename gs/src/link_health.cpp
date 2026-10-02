@@ -40,7 +40,7 @@ void LinkHealthAssembler::on_probe_body(uint8_t card,
   if (!mabur::probe::parse_probe_body(m.body.data(), m.body.size(),
                                       cfg_.probe_block_payload, &rx))
     return;
-  const double snr = m.phy_valid
+  const double snr = (m.phy_valid && snr_ok(card))
                           ? std::max(m.snr[0], m.snr[1]) * maburgs::kSnrRawToDb
                           : std::nan("");
   // EVM: raw half-dB, negative = clean, 0 = not sampled (node.h) -- pick
@@ -215,7 +215,7 @@ LinkHealthAssembler::Tick LinkHealthAssembler::tick(double now_ms,
     const auto& ct = agg.card(i).rf_pool;
     label_card_inputs_[static_cast<size_t>(i)] = maburgs::CardLabelInput{
         ct.has_ema, ct.frames, prev_pool_frames_[static_cast<size_t>(i)],
-        ct.snr_ema};
+        ct.snr_ema, snr_ok(i)};
   }
   const int best_card = maburgs::select_label_card(label_card_inputs_);
   // SNR (label + fade input) and EVM (label only) come from that ONE card,

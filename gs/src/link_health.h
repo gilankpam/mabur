@@ -38,6 +38,7 @@ struct LinkHealthCfg {
   int n_cards = 1;
   int probe_bpb = 4;             // cfg.uep_layers()[1].blocks_per_body
   int probe_block_payload = 0;   // kSwHeaderLen + uep_layers()[1].fec.symbol_size
+  std::vector<bool> snr_ok;      // per card; empty = all true
 };
 
 struct LinkHealthInputs {        // the commanded state this tick
@@ -89,6 +90,10 @@ class LinkHealthAssembler {
   const std::vector<ProbeFinalized>& probe_finalized() const { return probe_rows_; }
 
  private:
+  bool snr_ok(int card) const {
+    return cfg_.snr_ok.empty() || cfg_.snr_ok[static_cast<size_t>(card)];
+  }
+
   LinkHealthCfg cfg_;
   // Probe stream (spec 2026-09-04 section 3): scored by ProbeTrack against
   // the enh AU count; the ENH layer's geometry gives bpb/block_payload, so

@@ -104,4 +104,14 @@ TEST(selection_is_unchanged_by_the_pooled_input) {
   CHECK(select_label_card(stale) == 0);
 }
 
+TEST(card_without_real_snr_never_supplies_the_labels) {
+  // Relay card 1 reads a huge "SNR" (RSSI + 95) and is fresh; card 0 is a
+  // Realtek with a modest real SNR. Labels come from card 0.
+  const std::vector<CardLabelInput> cards{{true, 10, 5, 36.0, true}, {true, 10, 5, 90.0, false}};
+  CHECK(select_label_card(cards) == 0);
+  // Only the relay is fresh: no label card at all (NaN labels, fade inert).
+  const std::vector<CardLabelInput> only_relay{{true, 5, 5, 36.0, true}, {true, 10, 5, 90.0, false}};
+  CHECK(select_label_card(only_relay) == -1);
+}
+
 MTEST_MAIN

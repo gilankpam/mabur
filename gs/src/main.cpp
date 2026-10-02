@@ -1258,11 +1258,18 @@ static int run_radio(const maburgs::Config& cfg) {
   const int probe_bpb = probe_layer.blocks_per_body;
   const int probe_block_payload =
       static_cast<int>(mabur::sw::kSwHeaderLen) + probe_layer.fec.symbol_size;
+  // Per-card SNR validity (CardCaps::snr_ok): false on the CPE510 relay,
+  // whose "SNR" is RSSI above a calibrated noise floor, never a real
+  // measurement. Kept in scope past this construction -- later tasks read
+  // it too.
+  std::vector<bool> snr_ok(static_cast<size_t>(n_cards));
+  for (int i = 0; i < n_cards; ++i)
+    snr_ok[static_cast<size_t>(i)] = fronts[static_cast<size_t>(i)]->caps().snr_ok;
   // Ladder input (spec 2026-09-27-web-gs): every window/tracker feeding
   // LinkHealth lives in LinkHealthAssembler (gs/src/link_health.h), shared
   // with the web GS. s1_hop_loss (hop verdict) stays here.
   maburgs::LinkHealthAssembler lha(
-      maburgs::LinkHealthCfg{n_cards, probe_bpb, probe_block_payload});
+      maburgs::LinkHealthCfg{n_cards, probe_bpb, probe_block_payload, snr_ok});
   // Per-body probe log, alongside ctl.log and au.log in the same session
   // directory (DebugSession). Declared here, before FrameStream/au_log
   // below, and emplaced later once debug_log.enable is known.
