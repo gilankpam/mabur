@@ -13,9 +13,8 @@ namespace maburplay {
 // reveals a dead antenna. Never pool cards.
 struct GsCard {
   int id = 0;
-  // True only when BOTH rssi and snr arrived as numbers. A card that is
-  // present but silent renders its row with unlit bars and "never heard",
-  // which must never be confused with a weak signal.
+  // True when rssi arrived as a number. SNR is optional: a relay card never
+  // has one.
   bool heard = false;
   std::optional<double> rssi_dbm;
   std::optional<double> snr_db;
@@ -24,6 +23,7 @@ struct GsCard {
   // PHY status, so a perfectly healthy card reports null here until one
   // arrives. Gating `heard` on it would render a live antenna as dead.
   std::optional<double> evm_db;
+  bool relay = false;  // cards[i].kind == "relay": drawn with an "R" id
 };
 
 // The link half of the OSD's inputs, decoded from one sideport datagram.

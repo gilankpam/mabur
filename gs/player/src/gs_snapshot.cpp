@@ -174,6 +174,10 @@ bool parse_gs_snapshot(const char* data, size_t n, GsSnapshot* out) {
       if (!c.is_object()) continue;
       GsCard card;
       if (const std::optional<int> id = integer(c, "id")) card.id = *id;
+      {
+        auto k = c.find("kind");
+        card.relay = k != c.end() && k->is_string() && k->get<std::string>() == "relay";
+      }
       if (const json* classes = obj(c, "classes")) {
         if (const json* s0 = obj(*classes, "s0")) {
           card.rssi_dbm = num(*s0, "rssi");
@@ -181,10 +185,10 @@ bool parse_gs_snapshot(const char* data, size_t n, GsSnapshot* out) {
           card.evm_db = num(*s0, "evm");
         }
       }
-      // "Heard" needs both figures: the status colour is worst-of(rssi,snr)
-      // and a half-populated row would colour itself off one of them. EVM is
-      // NOT one of them -- see GsCard::evm_db.
-      card.heard = card.rssi_dbm.has_value() && card.snr_db.has_value();
+      // "Heard" needs only RSSI: a relay card never has a real SNR (its
+      // `snr` is nulled at the source) but is still a live, receiving card.
+      // EVM is NOT part of this either -- see GsCard::evm_db.
+      card.heard = card.rssi_dbm.has_value();
       out->cards.push_back(card);
     }
   }

@@ -1172,6 +1172,32 @@ TEST(an_unheard_card_silences_evm_too) {
   CHECK(ov.debug_field_text(s, false, player_nominal(), GsFieldId::kCard1Evm).empty());
 }
 
+// A relay card's SNR is never a real measurement (nulled at the source), so
+// it must neither drag the card to "unheard" nor colour the row off an
+// absent figure: RSSI alone drives both `heard` and `card_status`, and the
+// id cell renders "R<id>" rather than "C<id>" so the OSD names the row's
+// kind at a glance.
+TEST(relay_row_draws_R_id_bars_from_rssi_and_status_from_rssi_alone) {
+  const std::string fp = GSFONT_DESIGN;
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(fp, &err));
+  GsOverlay ov(f);
+  REQUIRE(ov.layout(1920, 1080, &err));
+  OverlayCanvas c(1920, 1080);
+  std::vector<DirtyRect> rects;
+
+  GsSnapshot s = nominal();
+  GsCard r; r.id = 1; r.heard = true; r.rssi_dbm = -60.0; r.relay = true;   // no snr
+  s.cards[1] = r;  // slot 1: nominal()'s card b, now a relay row
+  CHECK(card_status(r) == Status::kOk);          // -60 dBm is fine; absent SNR is not "critical"
+  CHECK(card_bars(r) == rssi_bars(-60.0));
+  ov.update(s, false, player_nominal(), c.s, &rects);
+  const auto id1 = (GsFieldId)((int)GsFieldId::kCard0Id + 1 * kFieldsPerCard);
+  CHECK(ov.debug_field_text(s, false, player_nominal(), id1) == "R1");
+  CHECK(ov.debug_field_text(s, false, player_nominal(), GsFieldId::kCard0Id) == "C0");
+}
+
 // Widening the card row is the one real risk in adding this field: the block
 // grows rightward from the bottom-left inset toward the bottom-CENTRE LOSS
 // block, and nothing asserted the clearance before. Boxes are worst-case

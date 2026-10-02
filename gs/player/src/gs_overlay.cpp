@@ -40,7 +40,8 @@ Status snr_status(double db) {
 Status card_status(const GsCard& c) {
   if (!c.heard) return Status::kOk;
   const Status r = rssi_status(c.rssi_dbm.value_or(0.0));
-  const Status s = snr_status(c.snr_db.value_or(0.0));
+  if (!c.snr_db) return r;  // relay: RSSI is the only measurement
+  const Status s = snr_status(*c.snr_db);
   return r > s ? r : s;  // enum order is ok < caution < critical
 }
 
@@ -670,7 +671,9 @@ GsOverlay::FieldState GsOverlay::state_of_(const GsSnapshot& snap, bool stale,
           // one) both into range would silently relabel two different
           // rows identically -- and possibly identically to a genuine C9
           // -- which is a worse failure than an honestly-wrong "C?".
-          st.text = (c.id >= 0 && c.id <= 9) ? "C" + fmt_int(c.id) : "C?";
+          st.text = (c.id >= 0 && c.id <= 9)
+                        ? std::string(c.relay ? "R" : "C") + fmt_int(c.id)
+                        : "C?";
           break;
         case 1:
           st.rgb = link_status_rgb(cs);
@@ -700,9 +703,17 @@ GsOverlay::FieldState GsOverlay::state_of_(const GsSnapshot& snap, bool stale,
           // fmt_signed_int, not fmt_int: a negative SNR on this row would
           // otherwise print an ASCII '-' while RSSI two fields over prints
           // U+2212 for the same sign, an inconsistency within one row.
-          st.text = (c.heard && c.snr_db)  // "100 dB"
-                        ? fmt_signed_int(std::clamp(*c.snr_db, -99.0, 999.0)) + " dB"
-                        : "";
+          //
+          // Blank only while unheard (the whole row goes quiet then). A
+          // HEARD card with no SNR -- a relay card, whose SNR is never a
+          // real measurement -- gets the same never-received glyph as an
+          // unheard RSSI, not silence: the row is otherwise live and a
+          // blank SNR cell there would read as a transient drop-out.
+          st.text = !c.heard
+                        ? ""
+                        : c.snr_db  // "100 dB"
+                              ? fmt_signed_int(std::clamp(*c.snr_db, -99.0, 999.0)) + " dB"
+                              : kEmDashPair;
           break;
         case 5:
           st.rgb = link_secondary;
