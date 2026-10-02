@@ -1021,6 +1021,11 @@ static int run_radio(const maburgs::Config& cfg) {
   // scan_half_set() adds are the boot ChannelScout's business alone.
   maburgs::HopRanker ranker(hcfg, scfg.candidates, cfg.radio.channel, 0);
   maburgs::HopController hopc(hcfg, cfg.radio.channel);
+  // The hop lead decided on the Order tick, held while the hop is Ordered
+  // (see the HopTick block): a relay lead reads !ready() from its TUNE
+  // until the relay confirms the target, and re-picking then would flip
+  // the tick to the one-card path and move the TX card mid-hop.
+  int hop_lead_latched = -1;
   // Constructed against card 0 as a placeholder radio -- harmless, since the
   // scout thread below always repoints this via set_radio() (Task 10)
   // before every dwell/burst and never touches it beforehand.
@@ -2079,14 +2084,16 @@ static int run_radio(const maburgs::Config& cfg) {
       // The lead is the first ready() non-TX card (scout_pick.h); with none
       // ready (a lost/refused relay, a dead USB card) run the one-card hop
       // path instead of ordering a hop no card would ever retune for.
-      {
+      // Held (hop_lead_latched) while Ordered: the lead's own retune makes
+      // a relay lead !ready() until its TUNE is confirmed.
+      if (hopc.state() != maburgs::HopState::Ordered) {
         std::vector<bool> ready(static_cast<size_t>(n_cards));
         for (int i = 0; i < n_cards; ++i)
           ready[static_cast<size_t>(i)] = fronts[static_cast<size_t>(i)]->ready();
-        const int lead = maburgs::pick_hop_lead(ready, sel.selected());
-        ht.lead_card = lead;
-        ht.n_cards = lead >= 0 ? n_cards : 1;
+        hop_lead_latched = maburgs::pick_hop_lead(ready, sel.selected());
       }
+      ht.lead_card = hop_lead_latched;
+      ht.n_cards = hop_lead_latched >= 0 ? n_cards : 1;
       fill_hop_targets(ht);
       // lead_card (or the only card, one-card mode) confirms the hop by
       // landing a video body on the target channel -- last_video_ch is set

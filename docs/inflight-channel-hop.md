@@ -62,7 +62,9 @@ FAILSAFE entry.
 2. `ChannelPlan::hop_order(now, target, lead_card)` sends the non-TX card
    (`lead_card` = `pick_hop_lead()` in `gs/src/scout_pick.h`: the first
    `ready()` card the TX selector is not using, any type; with none ready
-   the tick runs the one-card path, `n_cards` 1) to the
+   the tick runs the one-card path, `n_cards` 1; picked on the Order tick
+   and held while `Ordered`, since a relay lead reads `!ready()` from its
+   own `TUNE` until the relay confirms the target) to the
    target (a CPE510 relay card can be the lead: its retune sends `TUNE`,
    and the verdict and confirmation wait on its `ready()` and the relay's
    own `rx_channel` stamp — frames are dropped until the relay confirms;
