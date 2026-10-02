@@ -181,10 +181,15 @@ void RemoteCard::on_datagram(const uint8_t* b, size_t n) {
   mabur::node::RxBody m;
   RelayClient::Rx r;
   bool ready_now = false;
+  uint8_t air_width = 20;
   {
     std::lock_guard<std::mutex> lk(mu_);
     r = c_.on_message(b, n, now_ms, m);
     ready_now = c_.owned_and_tuned() && !c_.lost(now_ms);   // same predicate as ready()
+    // Width the relay actually tuned (confirmed sec), not the commanded
+    // width_: 40 on an unpaired channel tunes 20, and set_width may land
+    // between here and the airtime charge.
+    air_width = c_.status().sec != 0 ? 40 : 20;
   }
   if (r == RelayClient::Rx::Status || r == RelayClient::Rx::None) return;
   rx_frames_.fetch_add(1);
@@ -201,7 +206,7 @@ void RemoteCard::on_datagram(const uint8_t* b, size_t n) {
     relay::FrameMeta fm;
     const uint8_t* d; size_t dl;
     relay::parse_frame(b, n, fm, d, dl);
-    own_air_.on_frame(dl, m.mcs, m.phy_valid, width_.load(),
+    own_air_.on_frame(dl, m.mcs, m.phy_valid, air_width,
                       (fm.flags & relay::kFlagStbc) != 0, (fm.flags & relay::kFlagSgi) != 0);
     own_air_us_.store(own_air_.total_us());
   }

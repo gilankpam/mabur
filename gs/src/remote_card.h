@@ -42,7 +42,7 @@ class RemoteCard final : public LinkCard {
   // LinkCard
   bool open_and_start() override;
   void stop() override;
-  bool ready() const override;              // owned_and_tuned()
+  bool ready() const override;              // owned_and_tuned() && !lost()
   bool alive() const override;              // RX thread up and !lost()
   CardCaps caps() const override;
   void tick(uint64_t now_ms) override;

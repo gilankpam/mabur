@@ -5,9 +5,11 @@
 #include <condition_variable>
 #include <cstring>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include "mtest.h"
+#include "own_air.h"
 #include "remote_card.h"
 #include "relay_wire.h"
 using namespace maburgs;
@@ -21,6 +23,8 @@ struct FakeTransport final : public RelayTransport {
   std::deque<std::vector<uint8_t>> inbox;
   std::vector<std::vector<uint8_t>> sent;
   std::atomic<bool> closed{false};
+  // Outlives the transport (the card destroys it on reopen): the Rig keeps it.
+  std::shared_ptr<std::atomic<bool>> closed_flag = std::make_shared<std::atomic<bool>>(false);
   bool send(const uint8_t* p, size_t n) override {
     std::lock_guard<std::mutex> lk(mu); sent.emplace_back(p, p + n); return true;
   }
@@ -32,7 +36,7 @@ struct FakeTransport final : public RelayTransport {
     auto m = std::move(inbox.front()); inbox.pop_front();
     const size_t n = std::min(cap, m.size()); std::memcpy(buf, m.data(), n); return (int)n;
   }
-  void close() override { { std::lock_guard<std::mutex> lk(mu); closed = true; } cv.notify_all(); }
+  void close() override { { std::lock_guard<std::mutex> lk(mu); closed = true; } *closed_flag = true; cv.notify_all(); }
   void push(std::vector<uint8_t> m) { { std::lock_guard<std::mutex> lk(mu); inbox.push_back(std::move(m)); } cv.notify_all(); }
   int count(Type t) { std::lock_guard<std::mutex> lk(mu); int c = 0; for (auto& m : sent) c += msg_type(m.data(), m.size()) == t; return c; }
 };
@@ -40,12 +44,13 @@ struct FakeTransport final : public RelayTransport {
 struct Rig {
   BodyQueue q;
   std::atomic<uint64_t> now_ms{1000};
-  std::vector<FakeTransport*> opened;   // every transport the card opened, in order
+  std::vector<FakeTransport*> opened;   // every transport the card opened, in order (only back() is live)
+  std::vector<std::shared_ptr<std::atomic<bool>>> closed;   // each one's close() flag, safe after it is freed
   std::unique_ptr<RemoteCard> card;
   Rig(uint8_t ch = 136, uint8_t w = 40) {
     RemoteCard::Cfg c; c.addr = "10.83.11.1:8310"; c.channel = ch; c.width_mhz = w; c.card_id = 1;
     card = std::make_unique<RemoteCard>(c, q,
-        [this](const std::string&, std::string&) { auto t = std::make_unique<FakeTransport>(); opened.push_back(t.get()); return std::unique_ptr<RelayTransport>(std::move(t)); },
+        [this](const std::string&, std::string&) { auto t = std::make_unique<FakeTransport>(); opened.push_back(t.get()); closed.push_back(t->closed_flag); return std::unique_ptr<RelayTransport>(std::move(t)); },
         [this] { return now_ms.load(); });
   }
   FakeTransport& t() { return *opened.back(); }
@@ -146,6 +151,19 @@ TEST(frames_dropped_while_not_owned_and_tuned) {
   r.card->stop();
 }
 
+TEST(own_air_width_follows_tuned_sec_not_commanded_width) {
+  Rig r(165, 40);                              // 165 has no HT40 pair: sec 0, the relay tunes 20 MHz
+  REQUIRE(r.card->open_and_start());
+  r.t().push(status(0, 165, 0, 1));
+  REQUIRE(r.soon([&] { return r.card->ready(); }));
+  r.t().push(frame(1, 165, kFlagPhyValid, 4));
+  REQUIRE(r.soon([&] { return r.card->frames().own == 1; }));
+  OwnAirAcc at20;
+  at20.on_frame(29, 4, true, 20, false, false);
+  CHECK(r.card->frames().own_air_us == at20.total_us());
+  r.card->stop();
+}
+
 TEST(foreign_counted_not_queued) {
   Rig r;
   REQUIRE(r.card->open_and_start());
@@ -204,7 +222,7 @@ TEST(lost_reads_not_alive_and_reopen_restarts_cleanly) {
   r.card->stop();
   REQUIRE(r.card->open_and_start());            // what main.cpp's reopen loop does
   CHECK(r.opened.size() == 2);
-  CHECK(r.opened[0]->closed);
+  CHECK(*r.closed[0]);                         // opened[0] itself is freed by the reopen
   REQUIRE(r.soon([&] { return r.t().count(kTune) >= 1; }));
   CHECK(r.card->relay_stats()->reconnects == 1);
   r.card->stop();
