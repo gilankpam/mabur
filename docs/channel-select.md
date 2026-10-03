@@ -184,6 +184,21 @@ primaries ≈ 0.6 s. Auto, link down: burst + observe (≈ 3.2 s per round
 over eight halves at the shipped defaults). Auto, linked, pick open:
 observe only.
 
+**Op's own pair is never measured while linked** (final review I1,
+2026-10-04). With the search off (linked, or inside `search_after_ms`
+after a loss) and the pick open, the scout skips both halves of `op`'s
+pair (`op` alone at `width = 20`): no retune, no observe. They carry the
+drone's own video — at width 40 undecodable to a 20 MHz observe and so
+counted busy, and in NHM's airtime either way — and scoring them would
+make the boot hop leave a clean `op` almost every time. A skipped half is
+completed in the scheduler (stamped one dwell ahead) so the round-robin
+and `rounds()` keep moving. `op` keeps only its pre-link visits:
+`ChannelScout::mature()` waits for every member **except** `op` (and for
+`op` too while searching, when it is visited like any other), and
+`op_ranked()` says whether `op`'s pre-link visits reached the effective
+`min_rounds`. When they did not, the pick freezes in place (`"op
+unmeasured"`, below).
+
 **The leak.** Unlinked, the TX card holds its DISC during every observe
 (`quiet()`, unchanged from the 2026-09-13 fix — see History below).
 Linked, RCFs must flow, so the TX card is never held; its TX leaks into the

@@ -150,15 +150,17 @@ TEST(a_tx_counter_that_goes_back_is_no_leak) {
   CHECK(seen);
 }
 
+// Unlinked (searching): op is measured like every other channel. A linked
+// scout skips op's own halves (I1, tests below).
 TEST(two_card_proposal_matures_after_min_rounds_and_moves_only_past_the_margin) {
-  Rig g(two()); g.s.set_op(136); g.s.set_search(false);
+  Rig g(two()); g.s.set_op(136); g.s.set_search(true);
   for (int i = 0; i < 4; ++i) g.s.run_once();
   CHECK(!g.s.mature()); CHECK(g.s.proposal() == 136);
   CHECK(g.s.pick_ranking().empty());
   for (int i = 0; i < 4; ++i) g.s.run_once();
   CHECK(g.s.mature()); CHECK(g.s.rounds() == 2);
   CHECK(g.s.proposal() == 136);            // tie: stay
-  Rig h(two()); h.s.set_op(136); h.s.set_search(false);
+  Rig h(two()); h.s.set_op(136); h.s.set_search(true);
   h.r.cca_per_ms_on[132] = 1;              // 136's pair worse half = 250/visit; 144 clean
   for (int i = 0; i < 8; ++i) h.s.run_once();
   CHECK(h.s.proposal() == 144);
@@ -183,7 +185,7 @@ TEST(op_change_during_the_observe_is_what_the_dwell_publishes_against) {
     r.now += ms;
   });
   sp = &s;
-  s.set_op(144); s.set_search(false);
+  s.set_op(144); s.set_search(true);
   for (int i = 0; i < 7; ++i) s.run_once();
   s.set_op(136);
   CHECK(s.proposal() == 136);              // nothing mature: op
@@ -194,7 +196,7 @@ TEST(op_change_during_the_observe_is_what_the_dwell_publishes_against) {
 
 TEST(two_card_width_20_ranks_the_members_and_proposes_past_the_margin) {
   ScoutCfg c = two(); c.link_width_mhz = 20; Rig g(c);
-  g.s.set_op(136); g.s.set_search(false);
+  g.s.set_op(136); g.s.set_search(true);
   g.r.cca_per_ms_on[136] = 1;
   for (int i = 0; i < 4; ++i) g.s.run_once();
   CHECK(g.s.mature()); CHECK(g.s.rounds() == 2);
@@ -202,9 +204,62 @@ TEST(two_card_width_20_ranks_the_members_and_proposes_past_the_margin) {
   auto pr = g.s.pick_ranking();
   REQUIRE(pr.size() == 2);
   CHECK(pr[0] == 144 && pr[1] == 136);
-  g.s.freeze();
+  g.s.set_search(false); g.s.freeze();
   CHECK(!g.s.run_once());
   CHECK(g.r.calls.back() == "retune 136");  // park at 20 on op
+}
+
+// Final review I1: linked (search off, pick open), op's own pair carries the
+// drone's video -- undecodable to a 20 MHz observe at width 40, and in NHM's
+// airtime either way -- so the scout never tunes to op's halves and op keeps
+// only its pre-link visits. Revert (no skip in step_dwell_): 132/136 are
+// dwelt on and ranked against the link's own video.
+TEST(linked_dwells_never_tune_to_op_halves) {
+  Rig g(two()); g.s.set_op(136); g.s.set_search(false);
+  for (int i = 0; i < 8; ++i) CHECK(g.s.run_once());
+  for (auto& c : g.r.calls)
+    CHECK(c.find("132") == std::string::npos && c.find("136") == std::string::npos);
+  for (auto& e : g.s.ranking())
+    CHECK((e.ch == 132 || e.ch == 136) ? e.visits == 0 : e.visits == 4);
+  CHECK(g.s.rounds() == 4);                // skipped bins still advance the round-robin
+}
+
+TEST(linked_width_20_skips_only_op) {
+  ScoutCfg c = two(); c.link_width_mhz = 20; Rig g(c);
+  g.s.set_op(136); g.s.set_search(false);
+  for (int i = 0; i < 3; ++i) g.s.run_once();
+  for (auto& call : g.r.calls) CHECK(call.find("136") == std::string::npos);
+  for (auto& e : g.s.ranking()) CHECK(e.ch == 136 ? e.visits == 0 : e.visits == 3);
+}
+
+// mature() ignores op once linked; op_ranked() says whether op's pre-link
+// visits were enough. Revert (mature() requires op): a linked scout never
+// matures.
+TEST(linked_mature_ignores_op_and_op_ranked_reports_it) {
+  Rig g(two()); g.s.set_op(136); g.s.set_search(true);
+  g.s.run_once(); g.s.run_once();          // 132 136: one pre-link visit each
+  g.s.set_search(false);                   // linked
+  for (int i = 0; i < 4; ++i) g.s.run_once();   // 140 144 x2
+  CHECK(g.s.mature());
+  CHECK(!g.s.op_ranked());                 // 1 < min_rounds 2: op unmeasured
+  Rig h(two()); h.s.set_op(136); h.s.set_search(true);
+  for (int i = 0; i < 6; ++i) h.s.run_once();   // 132 136 140 144 132 136
+  h.s.set_search(false);
+  CHECK(!h.s.mature());                    // 140/144 have 1 visit
+  h.s.run_once(); h.s.run_once();          // 140 144
+  CHECK(h.s.mature() && h.s.op_ranked());
+}
+
+// Unlinked, op is visited like any other channel, so maturity waits for its
+// last visit too. Revert (mature() ignores op while searching): mature()
+// fires one dwell early with op's pair a visit short.
+TEST(unlinked_mature_waits_for_op) {
+  Rig g(two()); g.s.set_op(144); g.s.set_search(true);   // op's pair is visited last
+  for (int i = 0; i < 7; ++i) g.s.run_once();
+  CHECK(!g.s.op_ranked());
+  CHECK(!g.s.mature());
+  g.s.run_once();
+  CHECK(g.s.op_ranked() && g.s.mature());
 }
 
 TEST(freeze_stops_measuring_and_parks_at_link_width_on_op) {

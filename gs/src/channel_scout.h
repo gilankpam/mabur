@@ -56,6 +56,8 @@ struct ScoutDwell {
 //    Linked, the TX card carries video and is never held; its leak is
 //    subtracted instead: RankSample::leak = round(leak_per_frame x frames
 //    the TX card sent during the observe), fed in via set_tx_frames().
+//    With the search off (linked), op's own halves are skipped: they carry
+//    the drone's video (final review I1).
 //  - no work (linked and pinned, or frozen): park on op at link_width_mhz
 //    (once), working() false. freeze() closes the pick for good.
 //
@@ -96,7 +98,14 @@ class ChannelScout {
   // true -> false, proposal() -> op): the core must latch its decision.
   // After freeze() proposal() is stale: it holds its last value even if op
   // changes.
+  // mature(): every member except op ranked (op too while searching: then
+  // it is visited like any other). op_ranked(): op's pair (width 40) / op
+  // itself (width 20) has the effective min_rounds. While the search is off
+  // and the pick open, op's halves are never dwelt on (final review I1:
+  // they carry the drone's own video), so op keeps only its pre-link visits
+  // and may well be unranked at maturity -- the core freezes in place then.
   bool mature() const;
+  bool op_ranked() const;
   uint8_t proposal() const { return proposal_.load(std::memory_order_acquire); }
   std::vector<uint8_t> pick_ranking() const;
   uint64_t rounds() const { return rounds_.load(std::memory_order_acquire); }
@@ -112,6 +121,9 @@ class ChannelScout {
   void park_();
   bool tune_(uint8_t ch);
   bool step_dwell_(bool burst_ok, bool observe);
+  bool is_op_half_(uint8_t ch) const;
+  bool skip_op_half_(uint8_t ch) const;
+  bool op_ranked_locked_(int mr) const;   // mu_ held
   // Retune, settle, [burst + gap,] [discard read, observe dwell_ms, read];
   // records the dwell (+ the sample when observed).
   bool dwell(uint8_t ch, uint64_t round, bool burst, bool observe);

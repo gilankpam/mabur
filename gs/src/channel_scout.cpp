@@ -1,9 +1,11 @@
 #include "channel_scout.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 
 #include "mabur/channel_set.h"
+#include "mabur/ht40.h"
 #include "nhm_busy.h"
 #include "pair_pick.h"
 
@@ -119,16 +121,49 @@ void ChannelScout::run() {
   done_.store(true, std::memory_order_release);
 }
 
+// Final review I1: while the search is off (linked, or inside
+// search_after_ms after a loss) op's own pair carries the drone's video.
+// At width 40 a 20 MHz observe cannot decode it (counted busy), and NHM
+// counts its airtime either way, so a linked visit would score op against
+// the link itself and the boot hop would leave a clean op almost every
+// time. Those halves are skipped instead -- no retune, no observe -- and op
+// keeps only its pre-link visits (mature() then does not wait for it, and
+// the core freezes in place when op_ranked() is false).
+bool ChannelScout::is_op_half_(uint8_t ch) const {
+  const uint8_t op = op_.load(std::memory_order_acquire);
+  if (ch == op) return true;
+  return cfg_.measure && cfg_.link_width_mhz == 40 && ch == mabur::ht40_pair_other(op);
+}
+
+bool ChannelScout::skip_op_half_(uint8_t ch) const {
+  return !search_.load(std::memory_order_acquire) && measuring_() && is_op_half_(ch);
+}
+
 // One scheduler dwell. burst_ok: a DISC burst is allowed on this dwell
-// (still only when searching and on a member).
+// (still only when searching and on a member). A skipped op half is
+// completed in the scheduler without touching the card (so the round-robin
+// and rounds() advance) and the next bin is taken; false when every bin is
+// one of op's.
 bool ChannelScout::step_dwell_(bool burst_ok, bool observe) {
-  auto p = sched_.next(now_());
-  if (!p.valid) return true;
-  const bool burst = burst_ok && search_.load(std::memory_order_acquire) && member_(p.bin_ch);
-  const bool ok = dwell(p.bin_ch, p.round, burst, observe);
-  sched_.complete(p, now_(), ok);
-  rounds_.store(sched_.rounds_complete(), std::memory_order_release);
-  return true;
+  const size_t bins = dwell_channels(cfg_).size();
+  for (size_t i = 0; i <= bins; ++i) {
+    auto p = sched_.next(now_());
+    if (!p.valid) return true;
+    if (skip_op_half_(p.bin_ch)) {
+      // Stamped one dwell ahead: a skipped bin completed at `now` ties with
+      // the dwell that just finished and, by plan order, could win the tie
+      // forever (width 20, one other member).
+      sched_.complete(p, now_() + std::max(cfg_.dwell_ms, 1), true);
+      rounds_.store(sched_.rounds_complete(), std::memory_order_release);
+      continue;
+    }
+    const bool burst = burst_ok && search_.load(std::memory_order_acquire) && member_(p.bin_ch);
+    const bool ok = dwell(p.bin_ch, p.round, burst, observe);
+    sched_.complete(p, now_(), ok);
+    rounds_.store(sched_.rounds_complete(), std::memory_order_release);
+    return true;
+  }
+  return false;
 }
 
 bool ChannelScout::run_once() {
@@ -267,15 +302,41 @@ void ChannelScout::publish_() {
   proposal_.store(p, std::memory_order_release);
 }
 
+bool ChannelScout::op_ranked_locked_(int mr) const {
+  const uint8_t op = op_.load(std::memory_order_acquire);
+  const auto all = ranker_.all();
+  if (cfg_.link_width_mhz == 40) return any_pair_ranked(all, {op}, mr);
+  for (const RankEntry& e : all)
+    if (e.ch == op) return e.visits >= static_cast<uint32_t>(mr);
+  return false;
+}
+
+bool ChannelScout::op_ranked() const {
+  std::lock_guard<std::mutex> lk(mu_);
+  return op_ranked_locked_(eff_min_rounds_());
+}
+
+// Every member but op ranked (I1: a linked scout never visits op's pair, so
+// waiting for it would never end). While searching op is visited like any
+// other channel, so it is waited for too -- otherwise maturity could land a
+// dwell before op's last visit and an unlinked commit would compare against
+// an op that simply had not been reached yet.
 bool ChannelScout::mature() const {
   std::lock_guard<std::mutex> lk(mu_);
   const int mr = eff_min_rounds_();
-  if (cfg_.link_width_mhz == 40) return all_pairs_ranked(ranker_.all(), cfg_.channels, mr);
+  const uint8_t op = op_.load(std::memory_order_acquire);
   const auto all = ranker_.all();
   if (all.empty()) return false;
-  for (const RankEntry& e : all)
-    if (e.visits < static_cast<uint32_t>(mr)) return false;
-  return true;
+  if (cfg_.link_width_mhz == 40) {
+    std::vector<uint8_t> others;
+    for (uint8_t c : cfg_.channels)
+      if (c != op) others.push_back(c);
+    if (!others.empty() && !all_pairs_ranked(all, others, mr)) return false;
+  } else {
+    for (const RankEntry& e : all)
+      if (e.ch != op && e.visits < static_cast<uint32_t>(mr)) return false;
+  }
+  return !search_.load(std::memory_order_acquire) || op_ranked_locked_(mr);
 }
 
 std::vector<uint8_t> ChannelScout::pick_ranking() const {
