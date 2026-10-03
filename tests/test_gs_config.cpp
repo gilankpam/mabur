@@ -464,6 +464,19 @@ TEST(radio_channel_auto_string_or_member_pin) {
   CHECK(threw);
 }
 
+// The pin is range-checked BEFORE the uint8_t cast: 296 wraps to 40, a
+// member of the default set, and used to be accepted as a 40 pin.
+// Revert (cast first): no throw.
+TEST(radio_channel_pin_out_of_range_fails_before_the_cast) {
+  for (const char* body : {"[radio]\nchannel = 296\n", "[radio]\nchannel = 0\n",
+                           "[radio]\nchannel = -216\n"}) {
+    bool threw = false;
+    try { maburgs::load_config(write_tmp(body)); }
+    catch (const std::exception& e) { threw = std::string(e.what()).find("radio.channel") != std::string::npos; }
+    CHECK(threw);
+  }
+}
+
 TEST(radio_channels_validated_by_channel_set_rules) {
   bool threw = false;
   try { maburgs::load_config(write_tmp("[radio]\nchannels = [40, 36]\nwidth = 40\n")); }

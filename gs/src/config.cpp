@@ -199,7 +199,9 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
         if (cv.get<std::string>() != "auto") fail("radio.channel", "must be \"auto\" or a member of radio.channels");
         c.radio.pin.reset();
       } else if (cv.is_number_integer()) {
-        const long ch = cv.get<int64_t>();
+        const int64_t ch = cv.get<int64_t>();
+        // Range first: the uint8_t cast wraps (296 -> 40, a member).
+        if (ch < 1 || ch > 177) fail("radio.channel", std::to_string(ch) + " is not a channel in [1,177]");
         if (!mabur::channel_set_member(c.radio.channels, static_cast<uint8_t>(ch)))
           fail("radio.channel", std::to_string(ch) + " is not a member of radio.channels");
         c.radio.pin = static_cast<uint8_t>(ch);
@@ -586,7 +588,7 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
   // hear HT40 at all (docs/bw40.md). Runs unconditionally, after both radio
   // and link sections are settled, and after the max_mcs filter above: a
   // rung filtered out by max_mcs is not checked here, which matches "what
-  // will fly". Task 6 appends the scan-candidate checks to this same block.
+  // will fly".
   if (auto e = link_width_issue(c.link, c.radio.width)) fail(e->field, e->why);
   // ---------------------------------------------------------------------
 

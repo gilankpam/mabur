@@ -1,8 +1,8 @@
 #pragma once
 // The remembered channel (spec 2026-10-03-auto-channel-set §2 "State
 // files"): one decimal channel number and a newline. Written via a temp
-// file in the same directory + rename() so a power cut mid-write leaves
-// the old value, never a torn one. Paths are compiled-in: there is nothing
+// file in the same directory, fsync()ed, + rename() so a power cut
+// mid-write leaves the old value, never a torn or empty one. Paths are compiled-in: there is nothing
 // to configure.
 #include <cstdint>
 #include <cstdio>
@@ -10,6 +10,8 @@
 #include <fstream>
 #include <optional>
 #include <string>
+
+#include <unistd.h>
 
 namespace mabur {
 
@@ -32,7 +34,10 @@ inline bool write_channel_file(const std::string& path, uint8_t ch) {
   {
     std::FILE* f = std::fopen(tmp.c_str(), "w");
     if (!f) return false;
-    const bool ok = std::fprintf(f, "%u\n", static_cast<unsigned>(ch)) > 0 && std::fflush(f) == 0;
+    // fsync before the rename: without it a power cut can land the rename
+    // ahead of the data and leave an empty file under the real name.
+    const bool ok = std::fprintf(f, "%u\n", static_cast<unsigned>(ch)) > 0 && std::fflush(f) == 0 &&
+                    ::fsync(fileno(f)) == 0;
     std::fclose(f);
     if (!ok) { std::remove(tmp.c_str()); return false; }
   }
