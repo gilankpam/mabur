@@ -9,11 +9,20 @@ namespace maburgs {
 
 namespace {
 // Channels the scan dwells on (before the one-card home exclusion).
-std::vector<uint8_t> dwell_channels(const ScoutCfg& c) {
-  if (c.link_width_mhz == 40) return scan_half_set(c.home, c.candidates);
+// Compile-only call-site fix for Task 7 (gs/src/channel_ranker.h, pair_pick.h
+// lost the fixed `home` concept): rebuilds the {home} + candidates vector
+// these call sites used to get from the constructor/set argument itself.
+// Task 11 rewrites ChannelScout to use `current` properly; this preserves
+// today's behaviour only.
+std::vector<uint8_t> channel_set(const ScoutCfg& c) {
   std::vector<uint8_t> out{c.home};
   for (uint8_t ch : c.candidates) out.push_back(ch);
   return out;
+}
+
+std::vector<uint8_t> dwell_channels(const ScoutCfg& c) {
+  if (c.link_width_mhz == 40) return scan_half_set(channel_set(c));
+  return channel_set(c);
 }
 
 devourer::chanmig::ScanPlanConfig plan_for(const ScoutCfg& c) {
@@ -45,7 +54,7 @@ ChannelScout::ChannelScout(ScoutCfg cfg, ScoutRadio& radio, NowFn now_ms, SleepF
       now_(std::move(now_ms)),
       sleep_(std::move(sleep_ms)),
       sched_(plan_for(cfg_)),
-      ranker_(cfg_.home, dwell_channels(cfg_), cfg_.min_rounds, cfg_.home_margin, cfg_.blocked_pct),
+      ranker_(dwell_channels(cfg_), cfg_.min_rounds, cfg_.home_margin, cfg_.blocked_pct),
       proposal_(cfg_.home) {}
 
 void ChannelScout::freeze(uint8_t target) {
@@ -178,9 +187,9 @@ void ChannelScout::publish_() {
   if (frozen()) return;
   std::lock_guard<std::mutex> lk(mu_);
   const uint8_t p = cfg_.link_width_mhz == 40
-                        ? pair_proposal(ranker_.all(), cfg_.home, cfg_.candidates,
+                        ? pair_proposal(ranker_.all(), cfg_.home, channel_set(cfg_),
                                         cfg_.min_rounds, cfg_.home_margin, cfg_.blocked_pct)
-                        : ranker_.proposal();
+                        : ranker_.proposal(cfg_.home);
   proposal_.store(p, std::memory_order_release);
 }
 
