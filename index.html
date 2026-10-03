@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>mabur web</title>
+<!-- Installable (docs/web-gs.md "Install as an app"): fullscreen landscape.
+     Icon sources in web/ui/icons/; these files are precached by sw.js. -->
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#161826">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="icon-32.png">
+<link rel="apple-touch-icon" href="icon-180.png">
+<!-- GitHub Pages can't send the COOP/COEP headers WASM pthreads need, and
+     the page must load with no internet (laptop on the CPE only): sw.js adds
+     the headers and caches this build (one reload on first visit). Built from
+     web/ui/sw/ (based on coi-serviceworker, MIT). -->
+<script defer src="sw.js"></script>
+  <script type="module" crossorigin src="./assets/index-CDnAyms-.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-CjTUusQo.css">
+</head>
+<body>
+<div id="app"></div>
+<!-- Emscripten module, a classic script (global createWebGs); not bundled. -->
+<script src="webgs.js"></script>
+</body>
+</html>
