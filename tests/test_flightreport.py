@@ -1743,6 +1743,35 @@ class HopReportTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("HOP REPORT", result.stdout)
 
+    def test_scanlog5_boot_order_is_a_hop_row(self):
+        """scanlog 5 (auto-channel-set): H gains `boot_order`, the one-time
+        boot pick placed through the hop controller -- it must open a HOP
+        row like `order`/`verify_fail`/`escape`, not fall through as an
+        unrecognised kind."""
+        scanlog = flightreport.load_scanlog("tests/fixtures/scan-boot.log")
+        self.assertEqual(scanlog["version"], 5)
+        kinds = [h["kind"] for h in scanlog["H"]]
+        self.assertIn("boot_order", kinds)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            flightreport.print_hop_report(scanlog, {"E": []})
+        out = buf.getvalue()
+        self.assertIn("HOP REPORT (1 hop(s))", out)
+        self.assertIn("144", out)
+
+    def test_scanlog4_split_home_still_parses(self):
+        """CLAUDE.md: recordings outlive the code that wrote them -- an
+        older scanlog 4 file whose M lines still carry the deleted
+        split_home reason must keep parsing as-is."""
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "old.log")
+        with open(p, "w") as f:
+            f.write("scanlog 4 home=136 candidates=144,112 dwell_ms=250\n")
+            f.write("M 9000 0 144 136 split_home\n")
+        scanlog = flightreport.load_scanlog(p)
+        self.assertEqual(len(scanlog["M"]), 1)
+        self.assertEqual(scanlog["M"][0]["reason"], "split_home")
+
 
 FEC_LOG_ROWS = """feclog 1
 1000 0 5 1.00 100 12 12 12 0 0 32 32

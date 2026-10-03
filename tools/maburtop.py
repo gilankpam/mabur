@@ -286,7 +286,6 @@ def render_rows_compact(model, wall, width):
     else:
         tx_card = link.get("tx_card")
         chan = link.get("channel")
-        home = link.get("home")
         scan = d.get("scan") or {}
         hop = d.get("hop") or {}
         bw = op.get("bw")
@@ -296,7 +295,7 @@ def render_rows_compact(model, wall, width):
         header = (
             f"maburgs   {state_s}   "
             f"key {_s(link.get('key_fp'))}   "
-            f"ch {_s(chan)}/h{_s(home)} scan {scan.get('state', '--')}:{_s(scan.get('rounds'))} "
+            f"ch {_s(chan)} scan {scan.get('state', '--')}:{_s(scan.get('rounds'))} "
             f"hop {hop.get('state', '--')}/{hop.get('verdict', '--')}   "
             f"tx c{_s(tx_card)}   "
             f"MCS {_s(mcs)}/{_s(bw)}   "
