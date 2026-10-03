@@ -515,8 +515,9 @@ struct RealActuator : mabur::Actuator {
 #endif
   }
 
-  // RcAgent calls this on a Disc.op_channel move and on the move-confirm/
-  // rendezvous fallback home, from the agent thread only (same contract as
+  // RcAgent calls this on a promoted session's agreed-channel move
+  // ("disc"), an RCF hop order ("hop") and an unconfirmed move's return to
+  // where it came from ("move_unconfirmed"), from the agent thread only (same contract as
   // apply_op/send_control above). Null in dry-run (dev == nullptr): there is
   // no device and no tx_gate to take, so that path is a pure stderr echo.
   std::shared_mutex* tx_gate = nullptr;
@@ -536,10 +537,11 @@ struct RealActuator : mabur::Actuator {
   // devourer's IRtlRadio.h threading contract forbids one concurrent with
   // ANY other device call — not just a bulk-OUT. A calibration sweep runs
   // the three TX-power knobs (DevicePowerCtl, below) from the TX writer
-  // thread for up to 180 s, which is far longer than link.rendezvous_ms
-  // (30 s): the agent's own FAILSAFE->RENDEZVOUS go_home_ fires mid-sweep
-  // as a matter of course. Two rules keep that safe without ever blocking
-  // the agent thread on a sweep:
+  // thread for up to 180 s, and nothing stops a retune being requested in
+  // that time: a hop order or a promoted session's DISC move in an RCF that
+  // was already queued, or move_unconfirmed's return when the GS goes
+  // radio-silent for the sweep (move_confirm_ms is 2 s). Two rules keep
+  // that safe without ever blocking the agent thread on a sweep:
   //   * the three power calls take tx_gate SHARED (they are device calls,
   //     not senders, but the gate is what serialises them against this one);
   //   * a retune requested while cal_active simply does not happen — it is
@@ -548,9 +550,10 @@ struct RealActuator : mabur::Actuator {
   //     re-apply. `cur` deliberately stays on the radio's REAL channel
   //     while deferred, so the replayed retune still logs the true from->to
   //     and a same-channel deferral cannot be mistaken for a completed move.
-  // RcAgent's move-confirm/rendezvous machinery already handles "the retune
-  // did not take" (it hears nothing on the new channel and goes home), so a
-  // deferral degrades to that path rather than to a wedged link.
+  // RcAgent's move-confirm machinery already handles "the retune did not
+  // take" (it hears nothing on the new channel and returns to the channel it
+  // came from), so a deferral degrades to that path rather than to a wedged
+  // link.
   // Not host-testable: RealActuator lives in main.cpp and needs a real
   // IRtlRadio, so this comment is the specification.
   void retune(uint8_t ch, const char* reason) override {
@@ -2110,9 +2113,9 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
   // made from the TX writer thread, and devourer's IRtlRadio.h contract
   // forbids any of them concurrent with a channel set. RealActuator::retune
   // takes tx_gate exclusive around FastRetune, so each call here takes it
-  // SHARED -- a cal session lasts up to 180 s while link.rendezvous_ms is
-  // 30 s, so the agent's FAILSAFE->RENDEZVOUS go_home_ retune landing
-  // mid-sweep is the normal case, not a corner. retune's other half of the
+  // SHARED -- a cal session lasts up to 180 s, long enough for a hop, DISC
+  // or move_unconfirmed retune to be requested mid-sweep, so that is the
+  // normal case, not a corner. retune's other half of the
   // fix defers the move entirely while cal_active, and the deferred replay
   // fires on the agent thread's falling edge -- by which time this thread
   // may still be inside the post-session power restore. So the gate covers

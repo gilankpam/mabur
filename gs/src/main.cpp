@@ -2025,7 +2025,11 @@ static int run_radio(const maburgs::Config& cfg) {
     // scout card is dead so the scout parks and the card can be reopened.
     if (scout) {
       scout->set_op(plan.op());
-      scout_search_req = plan.release_scout() && !scout_card_down;
+      // Not while the in-flight scout thread is mid-dwell on the scout card
+      // (it checks scout_working_atomic only before starting one): the
+      // search starts the tick after that dwell returns the card.
+      scout_search_req = plan.release_scout() && !scout_card_down &&
+                         !(dwell_busy.load() && dwell_card.load() == scout_card);
       scout->set_search(scout_search_req);
       scout->set_tx_frames(ctrl_sent_total);
       const bool w = scout_owns();
