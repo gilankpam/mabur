@@ -68,6 +68,8 @@ struct MockActuator : Actuator {
     records.push_back(on);
     return record_ok;
   }
+  std::vector<uint8_t> remembered;
+  void remember_channel(uint8_t ch) override { remembered.push_back(ch); }
 };
 
 Config make_cfg() {
@@ -1774,8 +1776,9 @@ TEST(unconfirmed_move_returns_home_after_move_confirm_ms) {
 // tick(2100) call also crosses); LINKED -> FAILSAFE without a home retune
 // (channel stays on the op channel per spec §6: "on the op channel only
 // while LINKED or FAILSAFE"); FAILSAFE -> RENDEZVOUS at +rendezvous_ms from
-// the FAILSAFE-entry rebase, WITH a home retune.
-TEST(gs_frame_confirms_move_and_rendezvous_entry_returns_home) {
+// the FAILSAFE-entry rebase, WITHOUT any retune (spec 2026-10-03 §3:
+// FAILSAFE->RENDEZVOUS never retunes -- there is no home to go to).
+TEST(gs_frame_confirms_move_and_rendezvous_entry_never_retunes) {
   auto cfg = make_cfg();
   MockActuator act;
   RcAgent agent(cfg, act);
@@ -1795,27 +1798,8 @@ TEST(gs_frame_confirms_move_and_rendezvous_entry_returns_home) {
   CHECK(agent.channel() == 149);                       // FAILSAFE stays on the op channel
   agent.tick(2100 + 30000, RadioHealth{});
   CHECK(agent.state() == RcAgent::State::RENDEZVOUS);
-  REQUIRE(act.retunes.size() == 2);
-  CHECK(act.retunes[1] == 136);
-  REQUIRE(act.retune_reasons.size() == 2);
-  CHECK(act.retune_reasons[1] == "rendezvous");        // spec §7 reason
-}
-
-TEST(follow_gs_false_acks_home_and_never_retunes) {
-  auto cfg = make_cfg();
-  cfg.radio.follow_gs = false;
-  MockActuator act;
-  RcAgent agent(cfg, act);
-  agent.tick(0, RadioHealth{});
-  auto wire = make_disc_wire(kVrx, 149, 20, 0, 1);
-  agent.on_rc_frame(wire.data(), wire.size(), 100);
-  REQUIRE(act.controls.size() == 1);
-  CHECK(parse_disc_ack(act.controls[0].data(), act.controls[0].size())->agreed_channel == 136);
-  auto rcf = make_rcf_wire(1, encode_profile(PhyMode::HT, 0, 20), 8, last_ack_vtx(act));
-  agent.on_rc_frame(rcf.data(), rcf.size(), 150);
-  agent.tick(200, RadioHealth{});
-  CHECK(agent.state() == RcAgent::State::LINKED);
-  CHECK(act.retunes.empty());
+  CHECK(act.retunes.size() == 1);                      // still just the one DISC move
+  CHECK(agent.channel() == 149);                       // stays put, never "home"
 }
 
 MTEST_MAIN
@@ -2178,9 +2162,10 @@ TEST(unconfirmed_hop_reverts_to_pre_hop_channel_not_home) {
   CHECK(agent.channel() == 149);
 }
 
-// The revert is one step: silence on the pre-hop channel too means the GS is
-// gone, and the existing fallback (home, RENDEZVOUS) takes over.
-TEST(silence_after_hop_revert_falls_back_home) {
+// The revert is one step (spec 2026-10-03 §3): the drone sits in RENDEZVOUS
+// on the pre-hop channel and stays there. Further silence does not move it
+// again -- there is no home to fall through to.
+TEST(silence_after_hop_revert_stays_on_the_pre_hop_channel) {
   auto cfg = make_cfg(); MockActuator act; RcAgent agent(cfg, act); const uint32_t vtx = link_agent(agent, act, cfg);
   hop_and_confirm(agent, cfg, 149, 1, 2, 200, vtx);
   auto w = make_rcf_wire_hop(4, 0x24, 1.0, 0.5, 161, 2, vtx);
@@ -2188,22 +2173,21 @@ TEST(silence_after_hop_revert_falls_back_home) {
   const uint64_t t_revert = 1000 + cfg.link.move_confirm_ms + 100;
   agent.tick(t_revert, RadioHealth{});
   REQUIRE(act.retunes.size() == 3);
-  agent.tick(t_revert + cfg.link.move_confirm_ms + 100, RadioHealth{});
-  REQUIRE(act.retunes.size() == 4);
-  CHECK(act.retunes[3] == 136);
-  CHECK(act.retune_reasons[3] == "move_unconfirmed");
+  CHECK(act.retunes[2] == 149);
+  CHECK(act.retune_reasons[2] == "move_unconfirmed");
+  CHECK(agent.channel() == 149);
   CHECK(agent.state() == RcAgent::State::RENDEZVOUS);
+  agent.tick(t_revert + cfg.link.move_confirm_ms + 100, RadioHealth{});
+  CHECK(act.retunes.size() == 3);           // no second step -- stays put
+  CHECK(agent.channel() == 149);
 }
 
-// The withdrawing GS's RCF (new epoch, old channel) heard after the revert
-// confirms it: no further retune, the drone stays on the pre-hop channel.
-TEST(withdraw_rcf_after_hop_revert_confirms_it) {
+// Once the single revert step has dropped the session (spec 2026-10-01 §7,
+// spec 2026-10-03 §3), the withdrawing GS's own RCF under the now-stale pair
+// is rejected, not a confirmation; its next DISC re-pairs and the following
+// RCF relinks on the same pre-hop channel -- never "home".
+TEST(withdraw_after_hop_revert_rejects_stale_rcf_then_relinks) {
   auto cfg = make_cfg();
-  // The bundle's failsafe_ms (3000): the revert lands move_confirm_ms after
-  // the hop order, inside failsafe. With make_cfg's 1000 the drone would be
-  // in FAILSAFE by then, which clears the session (spec 2026-10-01 §7) and
-  // makes the withdrawal wait for a keep-alive re-pair -- a different test.
-  cfg.link.failsafe_ms = 3000;
   MockActuator act; RcAgent agent(cfg, act); const uint32_t vtx = link_agent(agent, act, cfg);
   hop_and_confirm(agent, cfg, 149, 1, 2, 200, vtx);
   auto w = make_rcf_wire_hop(4, 0x24, 1.0, 0.5, 161, 2, vtx);
@@ -2211,9 +2195,22 @@ TEST(withdraw_rcf_after_hop_revert_confirms_it) {
   const uint64_t t_revert = 1000 + cfg.link.move_confirm_ms + 100;
   agent.tick(t_revert, RadioHealth{});
   REQUIRE(act.retunes.size() == 3);
+  CHECK(agent.channel() == 149);
+  CHECK(agent.state() == RcAgent::State::RENDEZVOUS);
+
+  // Stale RCF under the now-dropped session: rejected, no retune.
   auto wd = make_rcf_wire_hop(5, 0x24, 1.0, 0.5, 149, 3, vtx);
   agent.on_rc_frame(wd.data(), wd.size(), t_revert + 50);
-  agent.tick(t_revert + cfg.link.move_confirm_ms + 100, RadioHealth{});
+  CHECK(agent.state() == RcAgent::State::RENDEZVOUS);
+  CHECK(act.retunes.size() == 3);
+  CHECK(agent.take_auth_reject());
+
+  // The withdrawing GS's keep-alive DISC on 149 re-pairs; the next RCF
+  // relinks there without any further move.
+  const uint32_t vtx2 = ack_agent(agent, act, 149, kVrx, t_revert + 100);
+  auto relink = make_rcf_wire(1, encode_profile(PhyMode::HT, 0, 20), 8, vtx2);
+  agent.on_rc_frame(relink.data(), relink.size(), t_revert + 150);
+  CHECK(agent.state() == RcAgent::State::LINKED);
   CHECK(act.retunes.size() == 3);
   CHECK(agent.channel() == 149);
 }
@@ -2285,12 +2282,15 @@ TEST(rcf_same_epoch_different_channel_is_applied_not_ignored) {
   REQUIRE(act.retunes.size() == 1);
   CHECK(act.retunes[0] == 149);
 
-  auto w2 = make_rcf_wire_hop(3, 0x24, 1.0, 0.5, /*hop_ch=*/40, /*epoch=*/1, vtx);
+  // 161 (a member, like 149) rather than the original brief's 40 (not a
+  // member of make_cfg's {136,149,161} since Task 5): the freshness check
+  // under test is the (epoch, ch) PAIR comparison, not channel membership.
+  auto w2 = make_rcf_wire_hop(3, 0x24, 1.0, 0.5, /*hop_ch=*/161, /*epoch=*/1, vtx);
   agent.on_rc_frame(w2.data(), w2.size(), 260);
   REQUIRE(act.retunes.size() == 2);
-  CHECK(act.retunes[1] == 40);
+  CHECK(act.retunes[1] == 161);
   CHECK(act.retune_reasons[1] == "hop");
-  CHECK(agent.channel() == 40);
+  CHECK(agent.channel() == 161);
   CHECK(agent.hop_epoch() == 1);
 }
 
@@ -2737,4 +2737,126 @@ TEST(low_power_cap_survives_failsafe_entry) {
   CHECK(agent.low_power());
   CHECK(act.bitrates.back() <= cfg.low_power.bitrate_kbps);
   CHECK(act.fps.back() == 15);
+}
+
+// ---- Task 5 (2026-10-03-auto-channel-set): start-channel parking, follow
+// members only, unconfirmed move back (not home), stay put, remember -----
+
+// Tags a plain, steady-state RCF under the current pair (the vtx_nonce from
+// the latest DISC_ACK) at a fresh, strictly increasing seq
+// (rcf_accepted()+1 is never replayed, since every RCF these helpers build
+// is accepted). Confirms a pending move. Returns `t` unchanged, so callers
+// can chain `t = send_rcf(agent, act, t + 20);`.
+static uint64_t send_rcf(RcAgent& agent, MockActuator& act, uint64_t t) {
+  const uint32_t vtx = last_ack_vtx(act);
+  const uint16_t seq = static_cast<uint16_t>(agent.rcf_accepted() + 1);
+  auto rcf = make_rcf_wire(seq, encode_profile(PhyMode::HT, 0, 20), 8, vtx);
+  agent.on_rc_frame(rcf.data(), rcf.size(), t);
+  return t;
+}
+
+// Same, but carries an in-flight hop order (hop_ch/epoch) instead of a bare
+// profile -- reuses make_rcf_wire_hop (defined above for the hop tests).
+static uint64_t send_rcf_with_hop(RcAgent& agent, MockActuator& act, uint64_t t,
+                                  uint8_t hop_ch, uint8_t epoch) {
+  const uint32_t vtx = last_ack_vtx(act);
+  const uint16_t seq = static_cast<uint16_t>(agent.rcf_accepted() + 1);
+  auto rcf = make_rcf_wire_hop(seq, 0x24, 1.0, 0.5, hop_ch, epoch, vtx);
+  agent.on_rc_frame(rcf.data(), rcf.size(), t);
+  return t;
+}
+
+TEST(parks_on_start_channel_else_first_member) {
+  Config cfg = make_cfg();                 // channels {136, 149, 161}
+  MockActuator a;
+  RcAgent first(cfg, a);
+  CHECK(first.channel() == 136);
+  RcAgent remembered(cfg, a, nullptr, 161);
+  CHECK(remembered.channel() == 161);
+  RcAgent bad(cfg, a, nullptr, 112);       // not a member: caller should not pass this, but never trust it
+  CHECK(bad.channel() == 136);
+}
+
+TEST(disc_proposing_a_non_member_is_acked_with_the_current_channel) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});
+  auto disc = make_disc_wire(kVrx, /*op_channel=*/112, 20, 0, 1);   // 112 is not in {136,149,161}
+  agent.on_rc_frame(disc.data(), disc.size(), 100);
+  REQUIRE(act.controls.size() == 1);
+  auto ack = parse_disc_ack(act.controls[0].data(), act.controls[0].size());
+  REQUIRE(ack.has_value());
+  CHECK(ack->agreed_channel == 136);       // override: stay where we are
+  CHECK(act.retunes.empty());
+}
+
+TEST(unconfirmed_disc_move_returns_to_the_channel_it_came_from_and_stays) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  uint64_t t = 100;
+  link_agent(agent, act, cfg, /*op_channel=*/149, t);   // acked 149 from 136, promoted
+  agent.tick(t + 10, RadioHealth{});        // deferred move runs: retune 149 (reason disc)
+  REQUIRE(act.retunes.size() == 1);
+  CHECK(act.retunes[0] == 149 && agent.channel() == 149);
+  agent.tick(t + 10 + cfg.link.move_confirm_ms, RadioHealth{});  // nothing heard on 149
+  REQUIRE(act.retunes.size() == 2);
+  CHECK(act.retunes[1] == 136);             // back where the GS found us
+  CHECK(act.retune_reasons[1] == "move_unconfirmed");
+  CHECK(agent.channel() == 136);
+  CHECK(agent.state() == RcAgent::State::RENDEZVOUS);
+  agent.tick(t + 10 + cfg.link.move_confirm_ms + 60000, RadioHealth{});  // long silence: nowhere else to go
+  CHECK(act.retunes.size() == 2);
+}
+
+TEST(failsafe_and_rendezvous_timers_never_retune) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  uint64_t t = 100;
+  link_agent(agent, act, cfg, 149, t);
+  agent.tick(t + 10, RadioHealth{});
+  const size_t n = act.retunes.size();      // the DISC move
+  // Confirm the move with an accepted RCF, then go silent.
+  t = send_rcf(agent, act, t + 20);         // must clear move_pending_
+  agent.tick(t + static_cast<uint64_t>(cfg.link.failsafe_ms) + 1, RadioHealth{});
+  CHECK(agent.state() == RcAgent::State::FAILSAFE);
+  agent.tick(t + static_cast<uint64_t>(cfg.link.failsafe_ms) +
+                 static_cast<uint64_t>(cfg.link.rendezvous_ms) + 2,
+             RadioHealth{});
+  CHECK(agent.state() == RcAgent::State::RENDEZVOUS);
+  CHECK(act.retunes.size() == n);           // still on 149
+  CHECK(agent.channel() == 149);
+}
+
+TEST(confirmed_move_is_remembered_once) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  uint64_t t = 100;
+  link_agent(agent, act, cfg, 149, t);
+  agent.tick(t + 10, RadioHealth{});
+  CHECK(act.remembered.empty());            // not before the GS is heard on 149
+  t = send_rcf(agent, act, t + 20);
+  REQUIRE(act.remembered.size() == 1);
+  CHECK(act.remembered[0] == 149);
+  send_rcf(agent, act, t + 40);
+  CHECK(act.remembered.size() == 1);        // once per move, not per RCF
+}
+
+TEST(hop_order_to_a_non_member_is_ignored_and_not_reevaluated) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  uint64_t t = 100;
+  link_agent(agent, act, cfg, 136, t);
+  const size_t n = act.retunes.size();
+  t = send_rcf_with_hop(agent, act, t + 20, /*hop_ch=*/112, /*epoch=*/1);   // non-member
+  CHECK(act.retunes.size() == n);
+  t = send_rcf_with_hop(agent, act, t + 20, 112, 1);                        // same pair again
+  CHECK(act.retunes.size() == n);
+  t = send_rcf_with_hop(agent, act, t + 20, 161, 2);                        // a member
+  REQUIRE(act.retunes.size() == n + 1);
+  CHECK(act.retunes.back() == 161 && act.retune_reasons.back() == "hop");
 }
