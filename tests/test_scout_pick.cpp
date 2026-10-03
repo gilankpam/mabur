@@ -31,17 +31,15 @@ TEST(burst_card_prefers_non_tx_scout_capable_then_tx_scout_capable) {
 }
 TEST(scan_disc_targets_never_rely_on_the_relay_alone) {
   using V = std::vector<int>;
-  // 2 USB, scout = card 1: the home card 0 beacons whatever the scout does.
-  CHECK(scan_disc_targets(2, 2, 1, true, {true, true}) == V{0});
+  // two USB: the non-scout card always; the scout card too while it bursts
   CHECK(scan_disc_targets(2, 2, 1, false, {true, true}) == V{0});
+  CHECK(scan_disc_targets(2, 2, 1, true, {true, true}) == (V{0, 1}));
   CHECK(scan_disc_targets(2, 3, 1, false, {true, true, true}) == (V{0, 2}));   // + ready relay
   CHECK(scan_disc_targets(2, 3, 1, false, {true, true, false}) == V{0});       // relay not ready
-  // 1 USB + relay: the USB scout interleaves home windows (one-card mode).
+  // one USB: the sole card only while it beacons (op window / burst)
   CHECK(scan_disc_targets(1, 2, 0, true, {true, true}) == (V{0, 1}));
   CHECK(scan_disc_targets(1, 2, 0, false, {true, true}) == V{1});
   CHECK(scan_disc_targets(1, 2, 0, false, {true, false}) == V{});
-  CHECK(scan_disc_targets(1, 2, 0, true, {true, false}) == V{0});
-  // 1 USB alone.
   CHECK(scan_disc_targets(1, 1, 0, true, {true}) == V{0});
   CHECK(scan_disc_targets(1, 1, 0, false, {true}) == V{});
   CHECK(scan_disc_targets(0, 0, -1, true, {}) == V{});
