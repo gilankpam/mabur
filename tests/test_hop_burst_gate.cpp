@@ -74,4 +74,18 @@ TEST(verdict_card_usable_only_on_the_op_channel) {
   CHECK(!verdict_card_usable(true, true, 144, 144));     // mid-dwell
   CHECK(!verdict_card_usable(false, false, 144, 144));   // not ready
 }
+// A re-pair between calibration phases arms the move edge; acting on it
+// mid-run would retune both cards off the channel being measured. Held
+// until the run ends, then delivered once -- the drone replays its own
+// deferred retune at the same point.
+// Revert (return `edge` as-is): the mid-run edge fires at once.
+TEST(cal_move_edge_hold_defers_the_edge_to_the_end_of_the_run) {
+  CalMoveEdgeHold h;
+  CHECK(h.take(true, false));          // no run: pass-through
+  CHECK(!h.take(false, false));
+  CHECK(!h.take(true, true));          // re-pair mid-run: held
+  CHECK(!h.take(false, true));
+  CHECK(h.take(false, false));         // run over: delivered once
+  CHECK(!h.take(false, false));
+}
 MTEST_MAIN

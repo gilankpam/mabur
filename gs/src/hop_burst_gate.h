@@ -78,4 +78,25 @@ inline bool hop_burst_due(HopState state, bool trigger, double now_ms,
   return hop_free && trigger && (now_ms - last_burst_ms >= dwell_period_ms);
 }
 
+// Holds the link-pairing move edge (VrxController::take_move_edge()) for
+// the length of a calibration run. The GS still beacons DISC between sweep
+// phases, so a re-pair -- and its move edge -- can land mid-run, and acting
+// on it would retune both cards off the channel being measured. The drone
+// defers its own retunes while cal_active and replays them when the run
+// ends; this replays the GS side at the same point. Outside a run it is a
+// pass-through, so the caller's own hopping guard keeps its drop semantics.
+class CalMoveEdgeHold {
+ public:
+  bool take(bool edge, bool cal_running) {
+    held_ = held_ || edge;
+    if (cal_running) return false;
+    const bool out = held_;
+    held_ = false;
+    return out;
+  }
+
+ private:
+  bool held_ = false;
+};
+
 }  // namespace maburgs

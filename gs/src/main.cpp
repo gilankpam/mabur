@@ -1152,6 +1152,7 @@ static int run_radio(const maburgs::Config& cfg) {
   // delta. Re-primed with recovered_prev_window on every hop_active edge.
   uint64_t au_seq_prev = 0;
   bool hop_was_active = false;   // hop_active() edge tracker (hop_burst_gate.h)
+  maburgs::CalMoveEdgeHold cal_move_hold;  // move edge held across a cal run
   maburgs::Verdict last_verdict = maburgs::Verdict::Healthy;
   maburgs::VerdictOut last_verdict_out;
   // hop.last_ms (Task 12): elapsed_ms of the most recent HopEvent
@@ -2194,7 +2195,11 @@ static int run_radio(const maburgs::Config& cfg) {
     // while hopping is NOT re-offered by the next ack (only a new
     // vtx_nonce re-arms it); a session adopted mid-hop means the drone
     // restarted, and the split/reunite fallback covers the channel.
-    if (vrx.take_move_edge() && !plan.hopping()) {
+    //
+    // Also held (not dropped) for a whole calibration run: a re-pair between
+    // sweep phases must not retune the cards mid-run (CalMoveEdgeHold).
+    if (cal_move_hold.take(vrx.take_move_edge(), cal_session.running()) &&
+        !plan.hopping()) {
       const uint8_t proposed = vrx.proposal();
       const bool first = !plan.frozen();
       plan.on_ack(now_ms, vrx.agreed_channel(), proposed);

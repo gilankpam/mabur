@@ -60,9 +60,14 @@ above.
 
 On the reference unit a full run is **~72 s** (three rows — MCS 0-2 — never
 dip, so they skip the fine phase). A unit whose PA walls every rate runs
-closer to 87 s. The entire run is **radio-silent from the GS**: no RCF,
-no keepalive DISC, nothing but the sweep frames themselves and the two
-`T_CAL_CMD`/`T_CAL_RESULT` control frames — video and telemetry both
+closer to 87 s. The GS is **radio-silent while each sweep phase airs**
+(`CalSession::radio_silent()`: the phase plus its `phase_slack_ms` tail):
+no RCF, no keepalive DISC, nothing but the drone's sweep frames. In the
+gaps between phases -- while a phase's `T_CAL_CMD` awaits its ack, and
+around the result -- RCF and the DISC keepalive go out as usual, which is
+harmless since the drone is not sweeping then. `T_CAL_RESULT` is the one
+send made into a silent window, on purpose (it is repeated into verify
+until the drone's first verify frame acks it). Video and telemetry both
 pause and resume with the session.
 
 `maburcal status` polls a running session; `maburcal abort` cancels one.
@@ -106,6 +111,10 @@ hop controller and periodic scout are all off -- otherwise, on any op
 channel other than home, a card leaves the channel being measured
 mid-sweep (bench 2026-10-03: `split_home` on op 144, a `hop_lead` on op
 112, both reading as `card_disagree` and garbage walls such as mcs5 −33).
+A link-pairing move edge armed by a between-phase re-pair is held, not
+acted on, until the run ends (`CalMoveEdgeHold`), mirroring the drone,
+which defers its own retunes while `cal_active` and replays them after.
+Net: no GS card changes channel from `start` to `done`.
 
 The operator's job is only to **confirm the pair re-links after each
 session**: video should resume within a couple of DISC beacons, with an
