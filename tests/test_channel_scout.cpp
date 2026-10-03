@@ -243,6 +243,7 @@ TEST(one_card_prelude_is_silent_then_op_windows_alternate_with_dwells) {
   // proposal available on the deadline ranking (1 visit per half suffices)
   CHECK(g.s.mature());
   CHECK(g.s.proposal() == 136 || g.s.proposal() == 144);
+  g.s.ack_prelude(136);                     // the core committed (here: op unchanged)
   // op window: retune to op, beacon 300, gap 20, then a dwell with a burst
   g.phases.clear();
   const size_t n_calls = g.r.calls.size();
@@ -252,12 +253,53 @@ TEST(one_card_prelude_is_silent_then_op_windows_alternate_with_dwells) {
   REQUIRE(g.phases.size() >= 2);
   CHECK(g.phases[0].first == "BW" && g.phases[0].second == 300);
   CHECK(g.phases[1].first == "W" && g.phases[1].second == 20);
+  // The dwell after the window bursts on a member; the half set alternates
+  // primary/secondary, so one of the next two steps carries it.
+  g.s.run_once();
   bool burst = false;
   for (auto& p : g.phases) burst = burst || (p.first == "BW" && p.second == 100);
   CHECK(burst);
   // the prelude never re-arms
   g.s.set_search(false); g.s.run_once(); g.s.set_search(true);
   CHECK(g.s.prelude_done());
+}
+
+TEST(one_card_no_disc_window_on_the_old_op_after_the_prelude) {
+  ScoutCfg c = two(); c.one_card = true; c.one_card_ms = 1000; Rig g(c);
+  g.s.set_op(136); g.s.set_search(true);
+  while (!g.s.prelude_done()) g.s.run_once();
+  // Until the core commits, no op window at all: no beaconing, no tune.
+  g.phases.clear();
+  const size_t n_calls = g.r.calls.size();
+  for (int i = 0; i < 5; ++i) CHECK(!g.s.run_once());
+  CHECK(g.r.calls.size() == n_calls);
+  for (auto& p : g.phases) CHECK(p.first.find('B') == std::string::npos);
+  CHECK(!g.s.beaconing());
+  CHECK(g.s.working());                     // still owns the card meanwhile
+  // A stray set_op of the old op does not release it either.
+  g.s.set_op(136);
+  CHECK(!g.s.run_once());
+  CHECK(g.r.calls.size() == n_calls);
+  // The core commits 144: the first window tunes to 144 and beacons there.
+  g.s.ack_prelude(144);
+  g.phases.clear();
+  CHECK(g.s.run_once());
+  REQUIRE(g.r.calls.size() > n_calls);
+  CHECK(g.r.calls[n_calls] == "retune 144");
+  REQUIRE(!g.phases.empty());
+  CHECK(g.phases[0].first == "BW" && g.phases[0].second == 300);
+  for (size_t i = n_calls; i < g.r.calls.size(); ++i) CHECK(g.r.calls[i] != "retune 136");
+}
+
+TEST(one_card_frozen_before_ack_does_not_wait) {
+  ScoutCfg c = two(); c.one_card = true; c.one_card_ms = 1000; Rig g(c);
+  g.s.set_op(136); g.s.set_search(true);
+  while (!g.s.prelude_done()) g.s.run_once();
+  g.s.freeze();                             // pick closed (e.g. max_ms): search only
+  g.phases.clear();
+  CHECK(g.s.run_once());
+  REQUIRE(!g.phases.empty());
+  CHECK(g.phases[0].first == "BW" && g.phases[0].second == 300);
 }
 
 TEST(one_card_pinned_has_no_prelude) {

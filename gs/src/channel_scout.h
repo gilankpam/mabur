@@ -79,6 +79,10 @@ class ChannelScout {
   void set_tx_frames(uint64_t cumulative) { tx_frames_.store(cumulative, std::memory_order_release); }
   void freeze() { frozen_.store(true, std::memory_order_release); }  // pick closed: measuring stops
   void stop() { stop_.store(true, std::memory_order_release); }
+  // One card + measure: the core has committed the prelude pick (op = the
+  // committed channel); the first op window may run. Until then, with the
+  // pick still open, the scout idles after prelude_done() (no DISC window).
+  void ack_prelude(uint8_t op);
 
   // scout -> core
   bool working() const { return working_.load(std::memory_order_acquire); }
@@ -127,7 +131,7 @@ class ChannelScout {
   std::atomic<uint64_t> tx_frames_{0};
   std::atomic<bool> search_{false}, frozen_{false}, stop_{false};
   std::atomic<bool> working_{false}, beaconing_{false}, quiet_{false}, prelude_done_{true},
-      done_{false};
+      prelude_ack_{true}, done_{false};
   std::atomic<uint64_t> rounds_{0};
   bool need_width_ = true;   // run thread only: the next tune switches the card to 20 MHz
   int64_t t0_ = -1;          // run thread only: first run_once() (one-card prelude start)

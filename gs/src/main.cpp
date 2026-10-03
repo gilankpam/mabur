@@ -1024,7 +1024,7 @@ static int run_radio(const maburgs::Config& cfg) {
   bool boot_hop_wanted = false;     // matured linked on another pair: place a boot order
   bool boot_hop = false;            // the boot order is placed (Ordered/Verifying)
   bool one_card_committed = false;  // one card: the prelude ranking went into the DISC
-  uint8_t boot_hop_from = 0;        // op when the boot order was placed
+  const char* boot_hop_result = nullptr;  // how the controller resolved the boot hop
   const uint64_t gs_start_ms = mono_ms();
   bool scout_card_down = false;     // the scout card died: no search until it reopens
   // What the scout thread was last asked to search (set_search), core
@@ -1234,7 +1234,8 @@ static int run_radio(const maburgs::Config& cfg) {
   // send lands in the drone's inter-AU idle. See rcf_slot.h.
   maburgs::RcfSlotter rcf_slot(
       maburgs::RcfSlotCfg{cfg.link.rcf_slot_hold_ms, 100, 2, 3, 1});
-  // A working scout owns its card: sends on the SCOUT card while it is off
+  // The scout owns its card (scout_owns(): working, or about to be): sends
+  // on the SCOUT card while it is off
   // on a dwell would race the scout thread's FastRetune / GetRxEnergy on
   // the same device. The DISC routing ladder checks beaconing() when the
   // frame is OFFERED, but the slotter releases it later with no re-check,
@@ -1251,7 +1252,7 @@ static int run_radio(const maburgs::Config& cfg) {
   // The one place a control frame leaves the GS (direct or via the RCF
   // slotter): card + RTT stamp travel with the frame (SlotFrame).
   auto send_control_frame = [&](const maburgs::SlotFrame& f) {
-    if (scout && scout->working() &&
+    if (scout_owns() &&
         ((f.card == scout_card && !scout->beaconing()) || scout->quiet())) {
       ++scout_gated_sends;
       return;
@@ -1266,8 +1267,7 @@ static int run_radio(const maburgs::Config& cfg) {
                    static_cast<unsigned long long>(now_ms - f.offered_ms),
                    static_cast<unsigned long long>(now_ms - rcf_slot.last_au_ms()));
     }
-    fronts[static_cast<size_t>(f.card)]->send_control(f.frame);
-    ++ctrl_sent_total;
+    if (fronts[static_cast<size_t>(f.card)]->send_control(f.frame)) ++ctrl_sent_total;
     // stamp_rtt is set only for the periodic op-point RCF (never a DISC
     // beacon or a calibration frame) -- exactly the frame that carries
     // hop_ch/hop_epoch, so this is the count HopController's one-card-
@@ -2007,14 +2007,18 @@ static int run_radio(const maburgs::Config& cfg) {
     // (commit+freeze, freeze in place, or boot_hop_wanted), never after.
     if (pick_open) {
       const uint64_t since_start = now_ms_u - gs_start_ms;
-      if (one_card && scout->prelude_done() && !linked && !one_card_committed) {
-        // One card: the prelude ranking goes into the DISC once; the pick
-        // stays open (measuring between op windows) until link-up/max_ms.
+      if (one_card && scout->prelude_done() && !one_card_committed) {
+        // One card: the prelude ranking commits BEFORE the first DISC (spec
+        // §5): the scout holds its first op window until ack_prelude(),
+        // which hands it the committed op. The pick stays open (measuring
+        // between op windows) until link-up/max_ms.
         one_card_committed = true;
         const uint8_t pick = scout->proposal();
-        std::fprintf(stderr, "maburgs channel: one-card prelude ranking picks %u (op %u)\n",
-                     static_cast<unsigned>(pick), static_cast<unsigned>(plan.op()));
-        if (pick != plan.op()) plan.commit(now_ms, pick);
+        std::fprintf(stderr, "maburgs channel: one-card prelude ranking picks %u (op %u)%s\n",
+                     static_cast<unsigned>(pick), static_cast<unsigned>(plan.op()),
+                     linked ? ", linked: not committed" : "");
+        if (!linked && pick != plan.op()) plan.commit(now_ms, pick);
+        scout->ack_prelude(plan.op());
       } else if (since_start >= static_cast<uint64_t>(scfg.max_ms)) {
         // A placed boot hop is never yanked mid-flight: it freezes on the
         // controller's return to Idle/Hold (HopTick block below).
@@ -2063,6 +2067,18 @@ static int run_radio(const maburgs::Config& cfg) {
     // both the controller's tick and the session falling edge below.
     auto dispatch_hop_action = [&](const maburgs::HopAction& act) {
       apply_hop_action(act, now_ms, hcfg.confirm_ms, vrx, plan, verdict);
+      // The boot hop's resolution, for the freeze label: keyed on what the
+      // controller did, not on where op ended up.
+      if (boot_hop) {
+        if (act.kind == maburgs::HopAction::VerifyPass) boot_hop_result = "boot hop landed";
+        else if (act.kind == maburgs::HopAction::Hold) boot_hop_result = "boot hop exhausted";
+        else if (act.kind == maburgs::HopAction::Withdraw) boot_hop_result = "boot hop withdrawn";
+        // Confirmed, then the session dropped mid-verify (on_session_lost
+        // goes Verifying -> Idle with no action): the link is on the pick.
+        else if (act.kind == maburgs::HopAction::Confirm)
+          boot_hop_result = "boot hop confirmed, verify cut short";
+        else if (act.kind == maburgs::HopAction::Order) boot_hop_result = nullptr;   // a retry
+      }
       if (auto b = maburgs::hop_verdict_loss_blank_until(act, now_ms))
         s1_hop_loss.blank_until(*b);
       switch (act.kind) {
@@ -2373,7 +2389,7 @@ static int run_radio(const maburgs::Config& cfg) {
       if (ht.boot && act.kind == maburgs::HopAction::Order) {
         boot_hop = true;
         boot_hop_wanted = false;
-        boot_hop_from = plan.op();
+        boot_hop_result = nullptr;
         std::fprintf(stderr, "maburgs channel: boot hop placed %u -> %u\n",
                      static_cast<unsigned>(plan.op()), static_cast<unsigned>(act.target));
       }
@@ -2387,10 +2403,9 @@ static int run_radio(const maburgs::Config& cfg) {
     if (boot_hop && (hopc.state() == maburgs::HopState::Idle ||
                      hopc.state() == maburgs::HopState::Hold)) {
       boot_hop = false;
-      freeze_pick(now_ms, plan.op() != boot_hop_from
-                              ? "boot hop landed"
-                              : (hopc.state() == maburgs::HopState::Idle ? "boot hop withdrawn"
-                                                                         : "boot hop exhausted"));
+      freeze_pick(now_ms, boot_hop_result ? boot_hop_result
+                          : hopc.state() == maburgs::HopState::Hold ? "boot hop exhausted"
+                                                                    : "boot hop withdrawn");
     }
 
     // Proposal for the next DISC: always op -- the boot pick reaches the
@@ -2651,7 +2666,7 @@ static int run_radio(const maburgs::Config& cfg) {
       tx_card_now.store(sel.selected(), std::memory_order_relaxed);
       // Which card(s) carry this frame. RCFs go to the TX selector's card,
       // as they always did. A DISC is rendezvous traffic and, while the
-      // scout works, follows it (scout_pick.h scan_disc_targets()): the link
+      // scout owns its card, follows it (scout_pick.h scan_disc_targets()): the link
       // card on op (two USB cards), the scout card while it beacons (its
       // search burst on a member; the one-card op window), plus every
       // ready relay. The send gate drops what must stay silent (a quiet()
@@ -2659,7 +2674,7 @@ static int run_radio(const maburgs::Config& cfg) {
       std::vector<int> targets;
       if (!out->is_disc) {
         targets.push_back(tx);
-      } else if (scout && scout->working()) {
+      } else if (scout_owns()) {
         std::vector<bool> ready(static_cast<size_t>(n_cards));
         for (int i = 0; i < n_cards; ++i)
           ready[static_cast<size_t>(i)] = fronts[static_cast<size_t>(i)]->ready();

@@ -52,6 +52,12 @@ ChannelScout::ChannelScout(ScoutCfg cfg, ScoutRadio& radio, NowFn now_ms, SleepF
       proposal_(cfg_.channels.empty() ? 0 : cfg_.channels.front()),
       op_(cfg_.channels.empty() ? 0 : cfg_.channels.front()) {
   prelude_done_.store(!(cfg_.one_card && cfg_.measure), std::memory_order_release);
+  prelude_ack_.store(!(cfg_.one_card && cfg_.measure), std::memory_order_release);
+}
+
+void ChannelScout::ack_prelude(uint8_t op) {
+  set_op(op);
+  prelude_ack_.store(true, std::memory_order_release);
 }
 
 void ChannelScout::set_op(uint8_t ch) {
@@ -138,7 +144,14 @@ bool ChannelScout::run_once() {
         return step_dwell_(/*burst_ok=*/false, /*observe=*/true);   // silent prelude
       prelude_done_.store(true, std::memory_order_release);          // never re-arms
       publish_();
+      return true;   // the core reads the ranking, commits, then ack_prelude()s
     }
+    // Spec §5: the prelude ranking commits BEFORE the first DISC. Until the
+    // core has committed the pick (ack_prelude(), which sets op), no op
+    // window runs: a window on the old op would carry DISCs the drone may
+    // ack there, and the ack_override would discard the pick. Not while
+    // frozen: then there is no pick to wait for.
+    if (measuring_() && !prelude_ack_.load(std::memory_order_acquire)) return false;
     // Op window: the core may beacon on op through this (only) card, then a
     // gap so the last DISC's ack lands before leaving.
     if (!tune_(op_.load(std::memory_order_acquire))) return true;
