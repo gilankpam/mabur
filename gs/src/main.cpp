@@ -1225,6 +1225,10 @@ static int run_radio(const maburgs::Config& cfg) {
   // A Relocate the BootPick handed out this tick: placed by the HopTick
   // block below (HopTick::relocate, best = the target).
   std::optional<uint8_t> pending_relocate;
+  // scan.pick on the sideport: latched when the pick freezes (the pin, in
+  // pinned mode, from the start) -- never the live op (final review I2).
+  std::optional<uint8_t> frozen_pick;
+  if (pinned) frozen_pick = start_ch;
   // Freshness-burst rate limiter (fix round 3): the burst's own gate
   // (Idle/Hold + trigger) has nothing else pacing it -- Hold re-enters on
   // every tick with the trigger latched true, and neither cooldown_ms
@@ -2099,6 +2103,7 @@ static int run_radio(const maburgs::Config& cfg) {
         case maburgs::BootPickOut::Freeze:
           if (bo.accept_op) plan.set_want(now_ms, plan.op());
           freeze_pick(now_ms, bo.reason);
+          frozen_pick = plan.want();
           break;
         case maburgs::BootPickOut::AcceptOp:
           std::fprintf(stderr, "maburgs channel: relocation to %u did not land; staying on %u\n",
@@ -2108,6 +2113,7 @@ static int run_radio(const maburgs::Config& cfg) {
         case maburgs::BootPickOut::None:
           break;
       }
+      if (bo.kind == maburgs::BootPickOut::Commit) frozen_pick = plan.want();
     }
     if (plan.op() != saved_op) {
       saved_op = plan.op();
@@ -2939,7 +2945,10 @@ static int run_radio(const maburgs::Config& cfg) {
                        : boot_pick.relocating() ? "moving"
                                               : "scouting";
       sin.scan_rounds = scout ? scout->rounds() : 0;
-      if (!boot_pick.open()) sin.scan_pick = plan.op();
+      // Latched (final review I2): the pick as it froze -- the pin in
+      // pinned mode -- never the live op, so the player's "(h)" marker
+      // (hop target == live channel != scan.pick) can light.
+      sin.scan_pick = frozen_pick;
       // In-flight channel hop snapshot (Task 12): straight off
       // HopController's own accessors + the latest HopVerdict output --
       // same no-controller-reference pattern as sin.ctl further down.
