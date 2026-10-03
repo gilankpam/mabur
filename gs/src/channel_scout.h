@@ -86,6 +86,12 @@ class ChannelScout {
   bool quiet() const { return quiet_.load(std::memory_order_acquire); }
   bool pick_open() const { return !frozen_.load(std::memory_order_acquire); }
   bool prelude_done() const { return prelude_done_.load(std::memory_order_acquire); }
+  // mature()/proposal()/pick_ranking() use the effective min_rounds: one
+  // card, prelude done and rounds < min_rounds -> 1, else min_rounds. When
+  // that flips from 1 back to min_rounds they can step back once (mature()
+  // true -> false, proposal() -> op): the core must latch its decision.
+  // After freeze() proposal() is stale: it holds its last value even if op
+  // changes.
   bool mature() const;
   uint8_t proposal() const { return proposal_.load(std::memory_order_acquire); }
   std::vector<uint8_t> pick_ranking() const;

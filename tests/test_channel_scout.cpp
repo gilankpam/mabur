@@ -133,6 +133,23 @@ TEST(auto_linked_dwell_has_no_burst_is_never_quiet_and_subtracts_the_tx_leak) {
   CHECK(seen);
 }
 
+TEST(a_tx_counter_that_goes_back_is_no_leak) {
+  FakeRadio r;
+  r.cca_per_ms_on[144] = 1;                // 250 cca per observe on 144
+  ChannelScout* sp = nullptr;
+  ChannelScout s(two(), r, [&] { return r.now; }, [&](int ms) {
+    if (ms == 250) sp->set_tx_frames(0);   // reset below the pre-observe 1000
+    r.now += ms;
+  });
+  sp = &s;
+  s.set_op(136); s.set_search(false);
+  for (int i = 0; i < 4; ++i) { s.set_tx_frames(1000); s.run_once(); }
+  bool seen = false;
+  for (auto& e : s.ranking())
+    if (e.ch == 144) { seen = true; CHECK(e.worst_busy == 250); }
+  CHECK(seen);
+}
+
 TEST(two_card_proposal_matures_after_min_rounds_and_moves_only_past_the_margin) {
   Rig g(two()); g.s.set_op(136); g.s.set_search(false);
   for (int i = 0; i < 4; ++i) g.s.run_once();
@@ -150,6 +167,29 @@ TEST(two_card_proposal_matures_after_min_rounds_and_moves_only_past_the_margin) 
   CHECK(pr[0] == 144 && pr[1] == 136);
   h.s.set_op(144);                         // the margin is against op: on 144, stay
   CHECK(h.s.proposal() == 144);
+}
+
+// publish_() reads op under the lock. The cross-thread interleaving itself
+// (scout loads op, core set_op()s + publishes, scout overwrites) cannot be
+// staged with the single-threaded fake; this pins the observable contract:
+// an op change that lands during the observe is what the post-dwell
+// publish proposes against.
+TEST(op_change_during_the_observe_is_what_the_dwell_publishes_against) {
+  FakeRadio r;                             // all halves clean: a tie stays on op
+  ChannelScout* sp = nullptr;
+  int observes = 0;
+  ChannelScout s(two(), r, [&] { return r.now; }, [&](int ms) {
+    if (ms == 250 && ++observes == 8) sp->set_op(144);   // the last dwell (144)
+    r.now += ms;
+  });
+  sp = &s;
+  s.set_op(144); s.set_search(false);
+  for (int i = 0; i < 7; ++i) s.run_once();
+  s.set_op(136);
+  CHECK(s.proposal() == 136);              // nothing mature: op
+  s.run_once();                            // op flips to 144 mid-observe
+  CHECK(s.mature());
+  CHECK(s.proposal() == 144);              // the tie is judged against the new op
 }
 
 TEST(two_card_width_20_ranks_the_members_and_proposes_past_the_margin) {
@@ -194,14 +234,21 @@ TEST(one_card_prelude_is_silent_then_op_windows_alternate_with_dwells) {
   while (g.r.now < 1000) g.s.run_once();   // silent dwells: never beaconing
   REQUIRE(!g.phases.empty());
   for (auto& p : g.phases) CHECK(p.first.find('B') == std::string::npos);
+  bool observed = false;                   // prelude dwells observe
+  for (auto& c : g.r.calls) observed = observed || c == "read+nhm";
+  CHECK(observed);
   CHECK(!g.s.prelude_done());
   g.s.run_once();
   CHECK(g.s.prelude_done());
   // proposal available on the deadline ranking (1 visit per half suffices)
   CHECK(g.s.mature());
   CHECK(g.s.proposal() == 136 || g.s.proposal() == 144);
-  g.phases.clear(); g.s.run_once();
   // op window: retune to op, beacon 300, gap 20, then a dwell with a burst
+  g.phases.clear();
+  const size_t n_calls = g.r.calls.size();
+  g.s.run_once();
+  REQUIRE(n_calls < g.r.calls.size());
+  CHECK(g.r.calls[n_calls] == "retune 136");   // the window tunes the card to op first
   REQUIRE(g.phases.size() >= 2);
   CHECK(g.phases[0].first == "BW" && g.phases[0].second == 300);
   CHECK(g.phases[1].first == "W" && g.phases[1].second == 20);

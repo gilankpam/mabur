@@ -229,8 +229,8 @@ bool ChannelScout::dwell(uint8_t ch, uint64_t round, bool burst, bool observe) {
   rs.floor_dbm = e.floor_dbm;
   rs.busy_valid = d.busy_valid;
   rs.busy_pct = d.busy_pct;
-  rs.leak = static_cast<uint32_t>(
-      std::lround(cfg_.leak_per_frame * static_cast<double>(tx1 - tx0)));
+  const uint64_t dtx = tx1 >= tx0 ? tx1 - tx0 : 0;   // a counter that went back is no leak
+  rs.leak = static_cast<uint32_t>(std::lround(cfg_.leak_per_frame * static_cast<double>(dtx)));
   {
     std::lock_guard<std::mutex> lk(mu_);
     if (e.fa_valid) ranker_.add(rs);
@@ -242,9 +242,11 @@ bool ChannelScout::dwell(uint8_t ch, uint64_t round, bool burst, bool observe) {
 
 void ChannelScout::publish_() {
   if (frozen_.load(std::memory_order_acquire)) return;
+  // Lock BEFORE reading op: a concurrent set_op(B) that publishes against B
+  // must not be overwritten by a proposal computed against a stale op.
+  std::lock_guard<std::mutex> lk(mu_);
   const uint8_t op = op_.load(std::memory_order_acquire);
   const int mr = eff_min_rounds_();
-  std::lock_guard<std::mutex> lk(mu_);
   const uint8_t p = cfg_.link_width_mhz == 40
                         ? pair_proposal(ranker_.all(), op, cfg_.channels, mr, cfg_.pick_margin,
                                         cfg_.blocked_pct)
@@ -253,8 +255,8 @@ void ChannelScout::publish_() {
 }
 
 bool ChannelScout::mature() const {
-  const int mr = eff_min_rounds_();
   std::lock_guard<std::mutex> lk(mu_);
+  const int mr = eff_min_rounds_();
   if (cfg_.link_width_mhz == 40) return all_pairs_ranked(ranker_.all(), cfg_.channels, mr);
   const auto all = ranker_.all();
   if (all.empty()) return false;
@@ -264,8 +266,8 @@ bool ChannelScout::mature() const {
 }
 
 std::vector<uint8_t> ChannelScout::pick_ranking() const {
-  const int mr = eff_min_rounds_();
   std::lock_guard<std::mutex> lk(mu_);
+  const int mr = eff_min_rounds_();
   if (cfg_.link_width_mhz == 40)
     return pair_ranking(ranker_.all(), cfg_.channels, mr, cfg_.blocked_pct);
   std::vector<uint8_t> out;
