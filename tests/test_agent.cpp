@@ -81,8 +81,7 @@ Config make_cfg() {
   cfg.encoder.roi_threshold_kbps = 3000;
   cfg.encoder.roi_qp_low = 8;
   cfg.encoder.roi_qp_normal = 0;
-  cfg.radio.channel = 136;
-  cfg.radio.follow_gs = true;
+  cfg.radio.channels = {136, 149, 161};
   cfg.link.move_confirm_ms = 2000;
   cfg.venc.core.fps = 60;
   cfg.msp.enable = true;
@@ -721,7 +720,7 @@ TEST(keepalive_disc_while_linked_acks_without_op_change) {
   // Same channel proposed as the drone's own -> no move (channel moves are
   // covered separately by disc_foreign_channel_acks_then_retunes; this test
   // stays about the keep-alive no-op).
-  auto disc = make_disc_wire(0xCAFEF00D, cfg.radio.channel, 20,
+  auto disc = make_disc_wire(0xCAFEF00D, cfg.radio.channels.front(), 20,
                              /*init_profile=*/0, /*seq=*/7);
   agent.on_rc_frame(disc.data(), disc.size(), 600);
 
@@ -736,7 +735,7 @@ TEST(keepalive_disc_while_linked_acks_without_op_change) {
   CHECK(parsed->flags == 0);
   CHECK(parsed->seq == 7);
   CHECK(parsed->chip_caps & mabur::rc::CAP_FRAME_WIRE);
-  CHECK(parsed->agreed_channel == cfg.radio.channel);
+  CHECK(parsed->agreed_channel == cfg.radio.channels.front());
   CHECK(parsed->agreed_width == cfg.radio.width);
   CHECK(act.retunes.empty());
 

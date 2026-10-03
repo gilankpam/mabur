@@ -37,8 +37,7 @@ static Config drone_cfg(const LinkKey& k) {
   cfg.encoder.roi_threshold_kbps = 3000;
   cfg.encoder.roi_qp_low = 8;
   cfg.encoder.roi_qp_normal = 0;
-  cfg.radio.channel = 136;
-  cfg.radio.follow_gs = true;
+  cfg.radio.channels = {136, 149, 161};
   cfg.venc.core.fps = 60;
   cfg.msp.enable = true;
   cfg.low_power.enable = true;

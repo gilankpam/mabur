@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "mabur/channel_set.h"
 #include "mabur/link_key.h"
 #include "mabur/profile.h"
 #include "mabur/uep_encoder.h"
@@ -14,11 +15,11 @@ namespace mabur {
 struct RadioCfg {
   uint16_t usb_vid = 0x0bda;
   uint16_t usb_pid = 0;  // 0 = scan
-  uint8_t channel = 149;
   uint8_t width = 20;
-  // Honour Disc.op_channel: ack from the current channel, then retune
-  // (spec 2026-09-13-auto-channel-select §6). false = ack home, never move.
-  bool follow_gs = true;
+  // The channel set (spec 2026-10-03-auto-channel-set §2): the drone parks
+  // on the remembered member (else the first) and follows the GS to any
+  // member. Must be a superset of the GS's list.
+  std::vector<uint8_t> channels{40, 64, 112, 144};
   // How bring-up programs TX power:
   //   "offset" — program the wall-equalized per-rate diff table
   //              (SetTxPowerRateDiffs) once, then zero the global offset
