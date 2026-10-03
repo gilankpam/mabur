@@ -1049,6 +1049,9 @@ static int run_radio(const maburgs::Config& cfg) {
   std::atomic<bool> dwell_busy{false};
   std::atomic<bool> scout_run{false};
   std::atomic<bool> in_session_atomic{false};
+  // CalSession::running(): the scout must not take a card off the channel
+  // a calibration sweep is being measured on.
+  std::atomic<bool> cal_running_atomic{false};
   bool last_key_mismatch = false;
   std::atomic<bool> hopping_atomic{false};
   std::atomic<int> tx_card_now{tx_card_pin < 0 ? 0 : tx_card_pin};
@@ -1095,7 +1098,9 @@ static int run_radio(const maburgs::Config& cfg) {
   auto scout_loop = [&] {
     while (scout_run.load() && !g_stop.load()) {
       std::this_thread::sleep_for(std::chrono::milliseconds(hcfg.dwell_period_ms));
-      if (!in_session_atomic.load() || hopping_atomic.load() || n_cards < 2) continue;
+      if (!in_session_atomic.load() || cal_running_atomic.load() || hopping_atomic.load() ||
+          n_cards < 2)
+        continue;
       const int card = maburgs::pick_inflight_scout(can_scout, tx_card_now.load());
       if (card < 0) continue;
       auto& fe = *fronts[static_cast<size_t>(card)];
@@ -1862,6 +1867,7 @@ static int run_radio(const maburgs::Config& cfg) {
     // KEY_MISMATCH is not a session (no RCFs go out in it).
     const bool in_session = vrx.link_state() == maburgs::VrxState::SESSION;
     in_session_atomic.store(in_session, std::memory_order_relaxed);
+    cal_running_atomic.store(cal_session.running(), std::memory_order_relaxed);
     const bool key_mismatch = vrx.key_mismatch();
     if (key_mismatch != last_key_mismatch) {
       std::fprintf(stderr, "maburgs: link %s (our key %s)\n",
@@ -1873,7 +1879,12 @@ static int run_radio(const maburgs::Config& cfg) {
     }
 
     // ---- auto channel selection, per tick (spec 2026-09-13) ----
-    plan.tick(now_ms, in_session);
+    // A calibration run counts as in session: the GS is radio-silent on
+    // purpose, so the session always lapses mid-run, and a split_home there
+    // pulls card 0 off the sweep (and maybe the T_CAL_RESULT's TX card off
+    // the drone's channel) -- bench 2026-10-03 on op 144. The drone defers
+    // its own rendezvous retune to home the same way while cal_active.
+    plan.tick(now_ms, in_session || cal_session.running());
 
     // Everything run_radio() does with a HopAction: the shared
     // apply_hop_action() (also driven by run_hop_inject_test), then this
@@ -1921,7 +1932,8 @@ static int run_radio(const maburgs::Config& cfg) {
     // was down can be acted on when it returns; on the rising edge the
     // per-card and recovered baselines are re-primed, so the first window
     // of a session measures the session, not the outage before it.
-    const bool hop_active = maburgs::hop_active(in_session, scout_joined);
+    const bool hop_active =
+        maburgs::hop_active(in_session, scout_joined, cal_session.running());
     if (hop_active != hop_was_active) {
       hop_was_active = hop_active;
       // Falling edge: the controller is about to stop being ticked, so an
@@ -2357,7 +2369,8 @@ static int run_radio(const maburgs::Config& cfg) {
     // CalControl, below the operator's `maburcal start`) is the only place
     // that reads these back.
     cal_session.set_peer(
-        in_session, in_session && (vrx.peer_caps() & mabur::rc::CAP_CALIBRATE));
+        in_session, in_session && (vrx.peer_caps() & mabur::rc::CAP_CALIBRATE),
+        vrx.session_ctx());
     if (fw != frame_wire) {
       frame_wire = fw;
       agg.decoder().reset_continuity();
@@ -2515,7 +2528,7 @@ static int run_radio(const maburgs::Config& cfg) {
     if (!cal_session.radio_silent(drained_ms)) {
       if (auto cmd = cal_session.due_cmd(drained_ms)) {
         cal_pending_nonce = cmd->nonce;
-        maburgs::SlotFrame cf{mabur::rc::pack_cal_cmd(*cmd, cfg.link.key, vrx.session_ctx()),
+        maburgs::SlotFrame cf{mabur::rc::pack_cal_cmd(*cmd, cfg.link.key, cal_session.tag_ctx()),
                               0, sel.selected(), false};
         cf.offered_ms = drained_ms;
         send_control_frame(cf);
@@ -2531,7 +2544,7 @@ static int run_radio(const maburgs::Config& cfg) {
     // frame to the 30-50%-lossy uplink otherwise ends the run with the
     // config untouched and the report claiming it was written.
     if (auto res = cal_session.due_result(drained_ms)) {
-      maburgs::SlotFrame rf{mabur::rc::pack_cal_result(*res, cfg.link.key, vrx.session_ctx()),
+      maburgs::SlotFrame rf{mabur::rc::pack_cal_result(*res, cfg.link.key, cal_session.tag_ctx()),
                             0, sel.selected(), false};
       rf.offered_ms = drained_ms;
       send_control_frame(rf);

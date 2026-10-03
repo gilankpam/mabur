@@ -34,8 +34,13 @@ namespace maburgs {
 // periodic in-flight scout thread starts on; `in_session` is
 // VrxState::SESSION. The caller resets HopVerdict on the falling edge so
 // nothing measured while inactive can latch a trigger.
-inline bool hop_active(bool in_session, bool scout_joined) {
-  return in_session && scout_joined;
+//
+// `cal_running` (CalSession::running()) also deactivates it: a calibration
+// run stops video on purpose, which the verdict engine reads as a dead
+// channel -- bench 2026-10-03 ordered a hop_lead seconds into a sweep and
+// took card 1 off the channel the walls were being measured on.
+inline bool hop_active(bool in_session, bool scout_joined, bool cal_running) {
+  return in_session && scout_joined && !cal_running;
 }
 
 // Pure: whether the core loop must keep its current TX card this tick

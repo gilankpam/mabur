@@ -95,7 +95,17 @@ window -- are still tagged under the pair the run was going under. So
 while a sweep is open the drone keeps accepting cal frames under the
 newest pair a cal frame verified under (`RcAgent::verify_cal_frame`'s
 `sweep_running` latch), and drops that latch the moment the sweep
-closes.
+closes. The GS side matches it: `CalSession` freezes the tag context at
+`start()` (`tag_ctx()`), because the GS keeps beaconing between phases and
+can adopt a fresh pair there that the drone has issued but not promoted.
+
+The lapsed session must not move the GS's radios either. While a run is
+going (`CalSession::running()`) `ChannelPlan` treats the link as in
+session (no `split_home` card 0 to home), and the in-flight hop verdict,
+hop controller and periodic scout are all off -- otherwise, on any op
+channel other than home, a card leaves the channel being measured
+mid-sweep (bench 2026-10-03: `split_home` on op 144, a `hop_lead` on op
+112, both reading as `card_disagree` and garbage walls such as mcs5 −33).
 
 The operator's job is only to **confirm the pair re-links after each
 session**: video should resume within a couple of DISC beacons, with an

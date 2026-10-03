@@ -44,8 +44,7 @@ bool CalSession::start(uint32_t nonce, uint64_t now_ms,
   // A session already running -- AwaitAck through Verify -- blocks a new
   // start(); Idle, Done and Failed do not, so a finished or failed run can
   // be retried without a separate reset call.
-  if (state_ != State::Idle && state_ != State::Done &&
-      state_ != State::Failed) {
+  if (running()) {
     if (err) *err = "a calibration session is already running";
     return false;
   }
@@ -59,6 +58,7 @@ bool CalSession::start(uint32_t nonce, uint64_t now_ms,
   }
 
   nonce_ = nonce;
+  tag_ctx_ = peer_ctx_;
   fail_reason_ = "";
   result_ready_ = false;
   result_repeats_left_ = 0;
@@ -212,9 +212,10 @@ void CalSession::abort(const char* why) {
   clear_cells();
 }
 
-void CalSession::set_peer(bool linked, bool cal_capable) {
+void CalSession::set_peer(bool linked, bool cal_capable, mabur::rc::TagCtx ctx) {
   linked_ = linked;
   cal_capable_ = cal_capable;
+  peer_ctx_ = ctx;
 }
 
 uint16_t CalSession::cell_received(uint8_t rate, int idx, int card) const {

@@ -47,10 +47,12 @@ TEST(first_burst_not_delayed_by_initial_last_burst_ms) {
 // Bench 2026-09-15: nothing in the hop block may run before the link is in
 // SESSION with the boot scout's cards released (see hop_active's comment).
 TEST(hop_block_is_inactive_outside_session_or_while_boot_scout_owns_a_card) {
-  CHECK(hop_active(/*in_session=*/true, /*scout_joined=*/true));
-  CHECK(!hop_active(false, true));
-  CHECK(!hop_active(true, false));
-  CHECK(!hop_active(false, false));
+  CHECK(hop_active(/*in_session=*/true, /*scout_joined=*/true, /*cal_running=*/false));
+  CHECK(!hop_active(false, true, false));
+  CHECK(!hop_active(true, false, false));
+  CHECK(!hop_active(false, false, false));
+  // A calibration run silences video on purpose: never a hop trigger.
+  CHECK(!hop_active(true, true, true));
 }
 // Bench 2026-09-15: the TX selector must not switch onto the lead card
 // while a hop is in flight (see tx_selection_frozen's comment).
