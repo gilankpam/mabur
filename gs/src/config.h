@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "ladder_controller.h"
+#include "mabur/channel_set.h"
 #include "mabur/link_key.h"
 #include "mabur/uep_encoder.h"
 
@@ -18,21 +19,23 @@ struct CardCfg {
   int index = 0;
 };
 
-/// Boot-time channel scan (spec 2026-09-13-auto-channel-select). The GS
-/// measures `candidates` (plus radio.channel, the home channel) with a
-/// spare card while it waits for the drone and proposes the least busy one
-/// in DISC. enable=false: every DISC proposes home and nothing retunes.
+/// Channel search + measurement over radio.channels (spec
+/// 2026-10-03-auto-channel-set §2). dwell/settle/min_rounds are the
+/// measurement; search_ms the DISC burst at the start of an unlinked dwell;
+/// op_window_ms the one-card beacon window on op; search_after_ms how long
+/// every card holds op after a loss before sweeping; pick_margin how much a
+/// candidate must beat the current channel by; one_card_ms the one-card
+/// silent measurement prelude; max_ms the ceiling on an open pick.
 struct ScanCfg {
-  bool enable = true;
-  std::vector<uint8_t> candidates;
   int dwell_ms = 250;
   int settle_ms = 30;
   int min_rounds = 3;
-  int home_window_ms = 300;
-  int split_after_ms = 5000;
-  // A candidate replaces home only if its worst visit is at least this many
-  // busy units below home's (ChannelRanker). 0 = lowest worst wins.
-  int home_margin = 20;
+  int search_ms = 100;
+  int op_window_ms = 300;
+  int search_after_ms = 5000;
+  int pick_margin = 20;
+  int one_card_ms = 5000;
+  int max_ms = 30000;
 };
 
 /// In-flight channel hop verdict thresholds (spec 2026-09-14-inflight-
@@ -92,7 +95,13 @@ struct HopCfg {
 
 /// Radio hardware: channel, bandwidth, cards, and transmit card selection.
 struct RadioCfg {
-  uint8_t channel = 149;
+  // The channel set (spec 2026-10-03 §2): the drone parks on a member, the
+  // GS picks among them. Both ends list the same set (the drone's may be a
+  // superset). Validated by mabur::channel_set_issue.
+  std::vector<uint8_t> channels{40, 64, 112, 144};
+  // `channel = "auto"` -> nullopt (measure the set, boot hop); a member ->
+  // pinned there, no measurement.
+  std::optional<uint8_t> pin;
   // HT20/HT40 (2026-09-24 HT40 top rungs): validated to 20 or 40 in
   // config.cpp, and 40 additionally requires `channel` to sit on a standard
   // 5 GHz pair (mabur::ht40_offset) -- a 20-tuned receiver cannot hear a 40

@@ -303,7 +303,7 @@ int run_replay(const ReplayOpts& o) {
 
   webgs::Opts wo;
   wo.adaptive_gap = !o.fixed_gap;
-  webgs::WebGs g(cfg, o.mode, cfg.radio.channel, cfg.radio.width, std::move(io), wo);
+  webgs::WebGs g(cfg, o.mode, cfg.radio.channels.front(), cfg.radio.width, std::move(io), wo);
 
   uint64_t last_us = 0;
   bool first = true;
@@ -606,7 +606,7 @@ int run_live(const LiveOpts& o) {
     report_error("bad channel/width: %s", o.bad_chw.c_str());
     return 2;
   }
-  const int ch_i = o.ch >= 0 ? o.ch : cfg.radio.channel;
+  const int ch_i = o.ch >= 0 ? o.ch : cfg.radio.channels.front();
   const int width = o.width >= 0 ? o.width : cfg.radio.width;
   // maburgs's own loader checks on the override (the page picks ch/w, not
   // the config): range, 20|40, HT40 pair, and in GS mode no 40 MHz rung

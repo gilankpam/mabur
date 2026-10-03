@@ -35,7 +35,7 @@ TEST(default_bundle_config_loads) {
 
 TEST(missing_keys_fall_back_to_defaults) {
   auto cfg = maburgs::load_config(write_tmp(""));
-  CHECK(cfg.radio.channel == 149);
+  CHECK(cfg.radio.channels.front() == 40);
   CHECK(cfg.video.frame_lookahead == 8);
 }
 
@@ -396,7 +396,7 @@ TEST(gs_load_config_errors_carry_file_and_line) {
 // absent value resolves to link.down_util, not to get_num's own default).
 TEST(gs_load_config_reports_previously_invisible_defaults) {
   const std::string path = write_tmp(
-      "[radio]\nchannel = 149\n"
+      "[radio]\n"
       "\n[fec]\nseq_horizon = 512\n"
       "\n[link]\ndown_util = 0.4\n"
       "\n[link.probe]\nenable = true\n");
@@ -431,85 +431,83 @@ TEST(gs_load_config_reports_previously_invisible_defaults) {
   CHECK(std::abs(cfg.link.ladder_cfg.probe.max_util - 0.4) < 1e-9);
 }
 
-TEST(radio_scan_defaults_when_absent) {
-  auto p = write_tmp("[radio]\nchannel = 136\n");
-  auto cfg = maburgs::load_config(p);
-  CHECK(cfg.radio.scan.enable == true);
-  CHECK(cfg.radio.scan.candidates.empty());
+TEST(radio_channels_default_set_and_auto) {
+  auto cfg = maburgs::load_config(write_tmp(""));
+  REQUIRE(cfg.radio.channels.size() == 4);
+  CHECK(cfg.radio.channels[0] == 40 && cfg.radio.channels[1] == 64 &&
+        cfg.radio.channels[2] == 112 && cfg.radio.channels[3] == 144);
+  CHECK(!cfg.radio.pin.has_value());                 // "auto"
   CHECK(cfg.radio.scan.dwell_ms == 250);
   CHECK(cfg.radio.scan.settle_ms == 30);
   CHECK(cfg.radio.scan.min_rounds == 3);
-  CHECK(cfg.radio.scan.home_window_ms == 300);
-  CHECK(cfg.radio.scan.split_after_ms == 5000);
-  CHECK(cfg.radio.scan.home_margin == 20);
+  CHECK(cfg.radio.scan.search_ms == 100);
+  CHECK(cfg.radio.scan.op_window_ms == 300);
+  CHECK(cfg.radio.scan.search_after_ms == 5000);
+  CHECK(cfg.radio.scan.pick_margin == 20);
+  CHECK(cfg.radio.scan.one_card_ms == 5000);
+  CHECK(cfg.radio.scan.max_ms == 30000);
+}
+
+TEST(radio_channel_auto_string_or_member_pin) {
+  auto a = maburgs::load_config(write_tmp("[radio]\nchannel = \"auto\"\nchannels = [136, 144]\nwidth = 40\n"));
+  CHECK(!a.radio.pin.has_value());
+  REQUIRE(a.radio.channels.size() == 2);
+  auto p = maburgs::load_config(write_tmp("[radio]\nchannel = 144\nchannels = [136, 144]\nwidth = 40\n"));
+  REQUIRE(p.radio.pin.has_value()); CHECK(*p.radio.pin == 144);
+  bool threw = false;
+  try { maburgs::load_config(write_tmp("[radio]\nchannel = 112\nchannels = [136, 144]\n")); }
+  catch (const std::exception& e) { threw = std::string(e.what()).find("radio.channel") != std::string::npos; }
+  CHECK(threw);                                        // pin must be a member
+  threw = false;
+  try { maburgs::load_config(write_tmp("[radio]\nchannel = \"manual\"\n")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw);
+}
+
+TEST(radio_channels_validated_by_channel_set_rules) {
+  bool threw = false;
+  try { maburgs::load_config(write_tmp("[radio]\nchannels = [40, 36]\nwidth = 40\n")); }
+  catch (const std::exception& e) { threw = std::string(e.what()).find("radio.channels") != std::string::npos; }
+  CHECK(threw);                                        // mixed offsets
+  threw = false;
+  try { maburgs::load_config(write_tmp("[radio]\nchannels = []\n")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw);
+  threw = false;
+  try { maburgs::load_config(write_tmp("[radio]\nchannels = [40, 40]\n")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw);
 }
 
 TEST(radio_scan_parses_and_validates) {
-  auto p = write_tmp(
-      "[radio]\nchannel = 136\n[radio.scan]\nenable = false\n"
-      "candidates = [149, 153, 161]\ndwell_ms = 500\nsettle_ms = 40\n"
-      "min_rounds = 2\nhome_window_ms = 400\nsplit_after_ms = 8000\n"
-      "home_margin = 5\n");
-  auto cfg = maburgs::load_config(p);
-  CHECK(cfg.radio.scan.enable == false);
-  REQUIRE(cfg.radio.scan.candidates.size() == 3);
-  CHECK(cfg.radio.scan.candidates[0] == 149);
-  CHECK(cfg.radio.scan.candidates[2] == 161);
+  auto cfg = maburgs::load_config(write_tmp(
+      "[radio.scan]\ndwell_ms = 500\nsettle_ms = 40\nmin_rounds = 2\nsearch_ms = 60\n"
+      "op_window_ms = 400\nsearch_after_ms = 8000\npick_margin = 5\none_card_ms = 0\nmax_ms = 20000\n"));
   CHECK(cfg.radio.scan.dwell_ms == 500);
-  CHECK(cfg.radio.scan.home_margin == 5);
-
+  CHECK(cfg.radio.scan.search_ms == 60);
+  CHECK(cfg.radio.scan.op_window_ms == 400);
+  CHECK(cfg.radio.scan.search_after_ms == 8000);
+  CHECK(cfg.radio.scan.pick_margin == 5);
+  CHECK(cfg.radio.scan.one_card_ms == 0);
+  CHECK(cfg.radio.scan.max_ms == 20000);
   bool threw = false;
-  try { maburgs::load_config(write_tmp("[radio.scan]\ndwell_ms = 10\n")); }
-  catch (const std::runtime_error& e) { threw = std::string(e.what()).find("radio.scan.dwell_ms") != std::string::npos; }
-  CHECK(threw);
-  threw = false;
-  try { maburgs::load_config(write_tmp("[radio.scan]\ncandidates = [0]\n")); }
-  catch (const std::runtime_error& e) { threw = std::string(e.what()).find("radio.scan.candidates") != std::string::npos; }
-  CHECK(threw);
-  threw = false;
-  try { maburgs::load_config(write_tmp("[radio.scan]\nhome_window_ms = 30\n")); }
-  catch (const std::runtime_error& e) { threw = std::string(e.what()).find("radio.scan.home_window_ms") != std::string::npos; }
-  CHECK(threw);
-  threw = false;
-  try { maburgs::load_config(write_tmp("[radio.scan]\nbogus = 1\n")); }
-  catch (const std::runtime_error& e) { threw = std::string(e.what()).find("radio.scan.bogus") != std::string::npos; }
-  CHECK(threw);
+  try { maburgs::load_config(write_tmp("[radio.scan]\nsearch_ms = 10\n")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw);                                        // [40,2000]
 }
 
-TEST(scan_candidates_must_share_home_offset_at_40) {
-  // FastRetune keeps width AND offset on both ends: with home 136
-  // (132+136, primary = upper half, offset 2) a retune to 140 would land
-  // on the off-grid 136+140, not 140+144, and the drone's ht40_offset(140)
-  // would disagree. Candidates are pair primaries on home's side.
-  auto ok = maburgs::load_config(write_tmp(
-      "[radio]\nchannel = 136\nwidth = 40\n[radio.scan]\ncandidates = [144, 40, 128]\n"));
-  CHECK(ok.radio.scan.candidates.size() == 3);
-  bool threw = false;
-  try {
-    maburgs::load_config(write_tmp(
-        "[radio]\nchannel = 136\nwidth = 40\n[radio.scan]\ncandidates = [140]\n"));
-  } catch (const std::exception& e) {
-    threw = std::string(e.what()).find("radio.scan.candidates") != std::string::npos &&
-            std::string(e.what()).find("140") != std::string::npos;
+TEST(removed_scan_and_home_keys_fail_boot) {
+  for (const char* body : {"[radio.scan]\nenable = true\n", "[radio.scan]\ncandidates = [144]\n",
+                           "[radio.scan]\nhome_window_ms = 300\n", "[radio.scan]\nsplit_after_ms = 5000\n",
+                           "[radio.scan]\nhome_margin = 20\n"}) {
+    bool threw = false;
+    try { maburgs::load_config(write_tmp(body)); } catch (const std::exception&) { threw = true; }
+    CHECK(threw);
   }
-  CHECK(threw);
-  threw = false;
-  try {
-    maburgs::load_config(write_tmp(
-        "[radio]\nchannel = 136\nwidth = 40\n[radio.scan]\ncandidates = [165]\n"));
-  } catch (const std::exception& e) {
-    threw = std::string(e.what()).find("radio.scan.candidates") != std::string::npos &&
-            std::string(e.what()).find("165") != std::string::npos;
-  }
-  CHECK(threw);
-  // At 20 MHz nothing changes: any 20 MHz channel is a candidate.
-  auto c20 = maburgs::load_config(write_tmp(
-      "[radio]\nchannel = 136\nwidth = 20\n[radio.scan]\ncandidates = [140, 165]\n"));
-  CHECK(c20.radio.scan.candidates.size() == 2);
 }
 
 TEST(hop_defaults_when_absent) {
-  auto cfg = maburgs::load_config(write_tmp("[radio]\nchannel = 136\n"));
+  auto cfg = maburgs::load_config(write_tmp(""));
   CHECK(cfg.hop.enable == false);
   CHECK(cfg.hop.scout_when_disabled == true);
   CHECK(cfg.hop.window_ms == 150 && cfg.hop.persist == 2);
@@ -548,7 +546,7 @@ TEST(radio_scan_energy_period_ms_is_gone) {
 
 TEST(ladder_rung_bw_is_required_and_20_or_40) {
   auto cfg = maburgs::load_config(write_tmp(
-      "[radio]\nchannel = 136\nwidth = 40\n"
+      "[radio]\nwidth = 40\n"
       "[[link.ladder]]\nmcs = 4\nbw = 20\noverhead_base = 0.5\noverhead_enh = 0.25\n"
       "[[link.ladder]]\nmcs = 3\nbw = 40\noverhead_base = 0.5\noverhead_enh = 0.25\n"));
   auto& L = cfg.link.ladder_cfg.ladder;
@@ -580,7 +578,7 @@ TEST(ladder_rung_bw_40_needs_radio_width_40) {
   bool threw = false;
   try {
     maburgs::load_config(write_tmp(
-        "[radio]\nchannel = 136\nwidth = 20\n"
+        "[radio]\nwidth = 20\n"
         "[[link.ladder]]\nmcs = 3\nbw = 40\noverhead_base = 0.5\noverhead_enh = 0.25\n"));
   } catch (const std::exception& e) {
     threw = std::string(e.what()).find("link.ladder[0].bw") != std::string::npos &&
@@ -590,15 +588,17 @@ TEST(ladder_rung_bw_40_needs_radio_width_40) {
 }
 
 TEST(radio_width_is_20_or_40_and_40_needs_a_pair) {
-  CHECK(maburgs::load_config(write_tmp("[radio]\nchannel = 136\nwidth = 40\n")).radio.width == 40);
+  CHECK(maburgs::load_config(write_tmp("[radio]\nwidth = 40\n")).radio.width == 40);
   bool threw = false;
-  try { maburgs::load_config(write_tmp("[radio]\nchannel = 136\nwidth = 80\n")); }
+  try { maburgs::load_config(write_tmp("[radio]\nwidth = 80\n")); }
   catch (const std::exception& e) { threw = std::string(e.what()).find("radio.width") != std::string::npos; }
   CHECK(threw);
   threw = false;
-  try { maburgs::load_config(write_tmp("[radio]\nchannel = 165\nwidth = 40\n")); }
+  // A channel-set member with no 40 MHz pair is caught by channel_set_issue
+  // on radio.channels now, not a bare radio.channel pin check.
+  try { maburgs::load_config(write_tmp("[radio]\nchannels = [165]\nwidth = 40\n")); }
   catch (const std::exception& e) {
-    threw = std::string(e.what()).find("radio.width") != std::string::npos &&
+    threw = std::string(e.what()).find("radio.channels") != std::string::npos &&
             std::string(e.what()).find("165") != std::string::npos;
   }
   CHECK(threw);
@@ -625,7 +625,7 @@ TEST(width_issue_helpers_match_the_loader) {
 TEST(static_bw_defaults_20_and_40_needs_radio_width_40) {
   CHECK(maburgs::load_config(write_tmp("")).link.static_bw == 20);
   auto cfg = maburgs::load_config(write_tmp(
-      "[radio]\nchannel = 136\nwidth = 40\n[link]\nstatic_mcs = 3\nstatic_bw = 40\n"));
+      "[radio]\nwidth = 40\n[link]\nstatic_mcs = 3\nstatic_bw = 40\n"));
   CHECK(cfg.link.static_bw == 40);
   bool threw = false;
   try { maburgs::load_config(write_tmp("[link]\nstatic_mcs = 3\nstatic_bw = 40\n")); }
@@ -1383,7 +1383,7 @@ TEST(overlay_replaces_ladder_wholesale) {
         c.link.ladder_cfg.ladder[0].overhead_base < 0.601);
   // A key the overlay did not name keeps the FILE's value, not the struct default.
   CHECK(c.link.ladder_cfg.down_util == base.link.ladder_cfg.down_util);
-  CHECK(c.radio.channel == base.radio.channel);
+  CHECK(c.radio.channels == base.radio.channels);
 }
 
 // Overlay: tables merge key-by-key.
@@ -1424,7 +1424,7 @@ TEST(overlay_missing_file_fails) {
 // radio.relays (spec 2026-10-02-maburgs-remote-card §3): CPE510 relays are
 // RemoteCards appended after the USB cards, "ipv4:port" each.
 TEST(radio_relays_default_empty_and_parse) {
-  auto none = maburgs::load_config(write_tmp("[radio]\nchannel = 136\n"));
+  auto none = maburgs::load_config(write_tmp(""));
   CHECK(none.radio.relays.empty());
   auto two = maburgs::load_config(write_tmp(
       "[radio]\nrelays = [\"10.83.11.1:8310\", \"10.83.11.2:8310\"]\n"));

@@ -5,30 +5,33 @@
 # Keys marked "must match the drone" have a twin in the drone's mabur.toml.
 
 [radio]
-channel = 136              # home channel: must match the drone's radio.channel
+channels = [40, 64, 112, 144]   # the channel set: the drone parks on a member, the GS picks among them.
+                                # Both ends must list the same set (the drone's may be a superset).
+                                # 40 MHz: pair primaries sharing one offset; spur pairs and 124+128
+                                # (weather radar) left out. A CPE510 relay cannot tune 144: drop it here.
+channel  = "auto"               # "auto" = measure the set at start and move the link to the cleanest
+                                # member once (boot hop); a member number = pin the link there.
 width   = 40               # 20 or 40 MHz; 40 is needed for the 40 MHz link speeds in [[link.ladder]] below
 tx_card = -1               # card that transmits to the drone; -1 = pick the one with the best signal
 relays  = []               # CPE510 mabur-relay units, "ipv4:port" each (UDP 8310, numeric -- no hostnames); each is a card after the USB cards
 
-# Boot-time channel scan. While waiting for the drone, a spare card measures
-# the candidates plus the home channel and the ground station proposes the
-# least busy one. The choice is fixed once the drone answers; restart maburgs
-# to scan again. With a single card, that card alternates between listening
-# on home and visiting candidates.
-#
-# The candidates are 40 MHz channel pairs picked to stay clear of other FPV
-# systems (analog, HDZero, DJI, Walksnail) and of home Wi-Fi. The scan cannot
-# detect an analog transmitter, so keep the candidate list far from any band
-# one might use.
+# Channel search + measurement (docs/channel-select.md). While the link is
+# down the spare card sweeps the set, beaconing DISC on each member for
+# search_ms to find the drone. In auto mode it also measures every 20 MHz
+# half for dwell_ms, min_rounds times, and once the ranking is mature the
+# link moves to the cleanest member if it beats the current one by
+# pick_margin busy units. One card: op_window_ms beacon windows on op between
+# dwells, and a silent one_card_ms measurement before the first DISC.
 [radio.scan]
-enable           = true
-candidates       = [144, 112]
-dwell_ms         = 250      # time spent listening on each candidate per visit
-settle_ms        = 30       # time after tuning before measuring starts
-min_rounds       = 3        # full passes over the candidates before choosing
-home_window_ms   = 300      # time back on home between visits
-split_after_ms   = 5000     # after losing the link, search the last channel this long, then also home
-home_margin      = 20       # leave home only if a candidate is at least this much quieter
+dwell_ms        = 250
+settle_ms       = 30
+min_rounds      = 3
+search_ms       = 100
+op_window_ms    = 300
+search_after_ms = 5000
+pick_margin     = 20
+one_card_ms     = 5000
+max_ms          = 30000
 
 # Radio cards: by default maburgs uses every supported card it finds on USB.
 # To use only specific cards (e.g. fly one card without unplugging the other),
