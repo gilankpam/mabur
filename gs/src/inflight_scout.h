@@ -13,9 +13,10 @@ namespace maburgs {
 struct InflightScoutCfg {
   int observe_ms = 5;
   int period_ms = 333;
+  // The dwell set is radio.channels; the card's own channel (op) is
+  // skipped per cycle.
   std::vector<uint8_t> candidates;
   uint8_t width_mhz = 20;  // radio.width: the dwell keeps the card's tuning (FastRetune), recorded here
-  uint8_t home = 0;        // radio.channel: dwelt on like a candidate whenever the link is off it
   int busy_dbm = -83;      // HopCfg::verdict.busy_dbm: NHM bucket edge for the dwell's busy-airtime read
 };
 
@@ -82,14 +83,13 @@ class InflightScout {
   // dwell_return_value_flag_and_visit_population_stay_in_lockstep group.
   bool dwell(uint8_t ch, uint8_t back, ScoutDwell& d, HopVisit& visit);
 
-  // Round-robin over the dwell set -- cfg_.candidates plus home, in
-  // HopRanker's order (config order, home appended when not listed) --
+  // Round-robin over the dwell set -- cfg_.candidates, in config order --
   // skipping `skip`, the channel the card already sits on (a dwell there is
-  // a no-op retune whose visit HopRanker::best() excludes anyway). Home is
-  // in the set because these dwells are HopRanker's only source of visits:
-  // without them home is never ranked in flight and a hop off it is one-way
-  // (reachable only as the blind "nothing ranked" fallback). nullopt when
-  // `skip` is the only channel in the set.
+  // a no-op retune whose visit HopRanker::best() excludes anyway). The
+  // dwell set is radio.channels, the card's own channel skipped per cycle:
+  // these dwells are HopRanker's only source of visits, so a member never
+  // dwelt on can never be ranked. nullopt when `skip` is the only channel
+  // in the set.
   std::optional<uint8_t> next_candidate(uint8_t skip);
 
   // Every channel of the dwell set except `back` once, back to back, each
@@ -100,7 +100,7 @@ class InflightScout {
 
  private:
   InflightScoutCfg cfg_;
-  std::vector<uint8_t> set_;   // cfg_.candidates, home appended if not listed
+  std::vector<uint8_t> set_;   // cfg_.candidates: the dwell set is radio.channels, in full
   ScoutRadio* radio_;
   NowUsFn now_us_;
   SleepFn sleep_ms_;

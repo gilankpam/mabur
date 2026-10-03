@@ -6,7 +6,7 @@
 
 namespace maburgs {
 
-HopController::HopController(HopCfg cfg, uint8_t home) : cfg_(cfg), home_(home) {}
+HopController::HopController(HopCfg cfg) : cfg_(cfg) {}
 
 HopAction HopController::tick(const HopTick& in) {
   HopAction out;
@@ -33,12 +33,12 @@ HopAction HopController::tick(const HopTick& in) {
 // the link is out of SESSION). An order still waiting for its confirm must
 // not survive that: ChannelPlan ignores link loss while a hop is in flight,
 // so an open order parked the lead card on the target and the trailing card
-// on the old op forever -- no split_home -- while the drone, which never
-// confirmed, had gone home on move_confirm_ms (bench 2026-09-24, GS session
-// 0207). Withdraw it exactly like a confirm_ms timeout (target backed off,
-// epoch bumped so the RCF stops carrying the order), which clears the plan's
-// hop and lets its ordinary link-loss path put a card on home. A confirmed
-// hop has already moved the plan's op; only the stale verify is dropped.
+// on the old op forever, while the drone, which never confirmed, had moved
+// on on move_confirm_ms (bench 2026-09-24, GS session 0207). Withdraw it
+// exactly like a confirm_ms timeout (target backed off, epoch bumped so the
+// RCF stops carrying the order), which clears the plan's hop and lets its
+// ordinary link-loss path release the scout card. A confirmed hop has
+// already moved the plan's op; only the stale verify is dropped.
 HopAction HopController::on_session_lost(double now_ms, uint8_t cur_op) {
   HopAction out;
   if (state_ == HopState::Ordered) {
@@ -78,17 +78,12 @@ void HopController::idle_tick(const HopTick& in, HopAction& out) {
   }
   if (in.best.has_value()) {
     leave_hold(in.now_ms, in.cur_op);
-    flee(in.cur_op, in.now_ms);
-    order(*in.best, in.verdict.ref_rung, in.lead_card, in.best_score, in.now_ms, "order", out);
+    if (!in.boot) flee(in.cur_op, in.now_ms);
+    order(*in.best, in.verdict.ref_rung, in.lead_card, in.best_score, in.now_ms,
+          in.boot ? "boot_order" : "order", out);
     return;
   }
-  if (home_available(in.cur_op, in.now_ms, in.home_blocked)) {
-    leave_hold(in.now_ms, in.cur_op);
-    flee(in.cur_op, in.now_ms);
-    order(home_, in.verdict.ref_rung, in.lead_card, 0, in.now_ms, "order", out);
-    return;
-  }
-  // Nothing ranked and no home, but the channel we are on is BLOCKED:
+  // Nothing ranked, but the channel we are on is BLOCKED:
   // holding here is holding on a jammed channel (bench 2026-09-26: ~33 s
   // on the 98 %-blocked 136 while 112, which had carried video, sat backed
   // off as merely fled). The escape is an unblocked channel that did not
@@ -179,8 +174,7 @@ void HopController::verifying_tick(const HopTick& in, HopAction& out) {
     back_off(failed_target, in.now_ms);
     std::optional<uint8_t> next = in.best;
     if (next.has_value() && is_backed_off(*next, in.now_ms)) next.reset();   // skip backed off
-    const bool have_candidate =
-        next.has_value() || home_available(in.cur_op, in.now_ms, in.home_blocked);
+    const bool have_candidate = next.has_value();
     if (have_candidate) {
       // Without the persist delay: act on a raw Interfered window, not a
       // fresh multi-window trigger -- this path is "still on a bad
@@ -192,11 +186,7 @@ void HopController::verifying_tick(const HopTick& in, HopAction& out) {
         enter_hold(in.now_ms, "hold_cap", failed_target, in.now_ms - verify_start_, out);
         return;
       }
-      if (next.has_value()) {
-        order(*next, in.verdict.ref_rung, in.lead_card, in.best_score, in.now_ms, "verify_fail", out);
-      } else {
-        order(home_, in.verdict.ref_rung, in.lead_card, 0, in.now_ms, "verify_fail", out);
-      }
+      order(*next, in.verdict.ref_rung, in.lead_card, in.best_score, in.now_ms, "verify_fail", out);
       return;
     }
     // No retry candidate: escape instead of holding when the channel just
@@ -294,23 +284,11 @@ void HopController::leave_hold(double now, uint8_t cur_op) {
 // ranker.
 void HopController::flee(uint8_t ch, double now) { back_off(ch, now, BackoffWhy::Fled); }
 
-// Home is the fallback when nothing is ranked -- unless the link is already
-// there, or home is backed off (it is the channel just fled, or it failed a
-// verify): then going home is going back into the problem, and holding on
-// the current channel is the better answer (bench 2026-09-24, run 1: the jam
-// was on home and the fallback ordered it straight back).
-//
-// Nor when the ranker's dwells read home as BLOCKED (NHM busy): the
-// fallback would order a channel already known to be jammed (Task 11 (a)).
-bool HopController::home_available(uint8_t cur_op, double now, bool home_blocked) const {
-  return cur_op != home_ && !is_backed_off(home_, now) && !home_blocked;
-}
-
 // The escape is used only when (the callers have already established)
-// there is no ranked target and no home: the caller supplied one, and the
-// verdict in hand says the channel we are on is blocked. A verify-failed
-// channel is excluded upstream (main.cpp skips backed_off_failed()) and
-// again here, so a stale tick can never order one.
+// there is no ranked target: the caller supplied one, and the verdict in
+// hand says the channel we are on is blocked. A verify-failed channel is
+// excluded upstream (main.cpp skips backed_off_failed()) and again here,
+// so a stale tick can never order one.
 bool HopController::escape_allowed(const HopTick& in) const {
   if (!in.escape.has_value() || !(in.verdict.evidence & kEvBlocked)) return false;
   auto it = backoff_.find(*in.escape);

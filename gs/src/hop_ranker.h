@@ -40,23 +40,25 @@ struct HopRankEntry {
 // into their own tier below every non-blocked ranked channel, tiebroken by
 // lower busy_pct (spec 2026-09-25-nhm-airtime §6).
 // Pure: no I/O, no clock of its own -- the caller passes now_ms (spec
-// 2026-09-14-inflight-channel-hop §3).
+// 2026-09-14-inflight-channel-hop §3). No home: `channels` is the full set
+// (spec 2026-10-03-auto-channel-set §5); ties go to the boot-time pick,
+// then config order.
 class HopRanker {
  public:
-  HopRanker(HopCfg cfg, std::vector<uint8_t> candidates, uint8_t home, uint8_t boot_pick);
+  HopRanker(HopCfg cfg, std::vector<uint8_t> channels, uint8_t boot_pick);
 
   void add(const HopVisit& v);
 
   // The boot scan's real pick, which is not known until the drone answers
   // the first DISC -- long after this object is constructed. Until it is
-  // set, the ranked tiebreak falls through to home, then config order.
+  // set, the ranked tiebreak falls through to config order.
   void set_boot_pick(uint8_t ch) { boot_pick_ = ch; }
 
   // fa + max(cca - own, 0) + 4*foreign
   static uint32_t score(const HopVisit& v);
 
   // Best (lowest score) first, unranked last, deterministic tiebreak:
-  // boot-time pick, then home, then config order.
+  // boot-time pick, then config order.
   std::vector<HopRankEntry> ranking(double now_ms) const;
 
   // First ranked candidate that is neither exclude nor in skip.
@@ -67,8 +69,7 @@ class HopRanker {
 
  private:
   HopCfg cfg_;
-  std::vector<uint8_t> candidates_;   // config order, home appended if not already present
-  uint8_t home_ = 0;
+  std::vector<uint8_t> candidates_;   // config order, exactly as given
   uint8_t boot_pick_ = 0;
   std::vector<std::deque<HopVisit>> visits_;   // one deque per entry in candidates_
 };

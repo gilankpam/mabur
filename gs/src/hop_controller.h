@@ -23,13 +23,14 @@ struct HopTick {
   uint8_t cur_op = 0;
   int n_cards = 2;
   int lead_card = -1;                // non-TX card index, -1 = one card
-  // The ranker marks the configured home blocked (NHM busy): then it is
-  // no fallback -- ordering it is ordering a channel already read jammed.
-  bool home_blocked = false;
+  // The boot pick (spec 2026-10-03 §5): order kind "boot_order", and the
+  // current channel is not backed off as fled -- it is merely not the
+  // best.
+  bool boot = false;
   // The escape from a blocked hold (Task 11 (d)): the best UNBLOCKED
   // candidate that is not verify-failed (fled channels allowed). Used only
-  // when there is no `best`, home is unavailable, and the current
-  // verdict's evidence carries kEvBlocked.
+  // when there is no `best` and the current verdict's evidence carries
+  // kEvBlocked.
   std::optional<uint8_t> escape;
   uint32_t escape_score = 0;
 };
@@ -64,9 +65,11 @@ struct HopEvent {
 // thing (spec 2026-09-14-inflight-channel-hop §5). Pure: no I/O, no
 // threads, no hardware, clock strictly as the caller's now_ms. Does not
 // query HopRanker -- the caller has already picked `best` for this tick.
+// No home: this feature has no fallback channel any more -- exhausted
+// (nothing ranked, no escape) holds (spec 2026-10-03-auto-channel-set §5).
 class HopController {
  public:
-  HopController(HopCfg cfg, uint8_t home);
+  explicit HopController(HopCfg cfg);
 
   HopAction tick(const HopTick& in);
   HopAction on_session_lost(double now_ms, uint8_t cur_op);
@@ -104,7 +107,6 @@ class HopController {
   // blocked -- the target is backed off as Undelivered, not Failed.
   void withdraw(uint8_t restore_to, double now, bool extended, HopAction& out);
   void flee(uint8_t ch, double now);
-  bool home_available(uint8_t cur_op, double now, bool home_blocked) const;
   // Why a channel is backed off: fled (flee() -- the trigger left it) or
   // failed (a verify fail, a withdraw, a lost session), or undelivered (a
   // withdraw after a confirm extension: the order probably never reached
@@ -121,7 +123,6 @@ class HopController {
                  double elapsed_ms);
 
   HopCfg cfg_;
-  uint8_t home_;
   HopState state_ = HopState::Idle;
   uint8_t hop_ch_ = 0;          // true internal standing target, regardless of cfg_.enable
   uint8_t epoch_ = 0;

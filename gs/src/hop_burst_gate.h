@@ -30,17 +30,22 @@ namespace maburgs {
 // every candidate in turn and exhausted before the boot pick had even
 // committed, and the freshness burst retuned the boot scout's card out
 // from under it mid-dwell (that boot scan took 17 rounds instead of 6).
-// `scout_joined` is the same "boot scout owns no card" predicate the
-// periodic in-flight scout thread starts on; `in_session` is
-// VrxState::SESSION. The caller resets HopVerdict on the falling edge so
-// nothing measured while inactive can latch a trigger.
+// `in_session` is VrxState::SESSION. The caller resets HopVerdict on the
+// falling edge so nothing measured while inactive can latch a trigger.
+// (The 2026-09-15 fix above gated this on a `scout_joined` boot-scout
+// predicate too; superseded 2026-10-03 -- see below.)
 //
 // `cal_running` (CalSession::running()) also deactivates it: a calibration
 // run stops video on purpose, which the verdict engine reads as a dead
 // channel -- bench 2026-10-03 ordered a hop_lead seconds into a sweep and
 // took card 1 off the channel the walls were being measured on.
-inline bool hop_active(bool in_session, bool scout_joined, bool cal_running) {
-  return in_session && scout_joined && !cal_running;
+//
+// The boot scout owning a card no longer deactivates it: the pick stays
+// open after link-up (spec 2026-10-03 §5) and the boot hop needs the
+// verdict engine; the scout card is excluded per-card by
+// verdict_card_usable's mid_dwell instead.
+inline bool hop_active(bool in_session, bool cal_running) {
+  return in_session && !cal_running;
 }
 
 // Pure: whether the core loop must keep its current TX card this tick
