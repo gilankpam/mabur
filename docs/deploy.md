@@ -847,3 +847,47 @@ with a relay strip reading `own=1`, `gaps` flat. `ausniff` is the gate.
 Rollback: `maburgs.pre-relay` + `maburplay.pre-relay` +
 `maburgs.toml.pre-relay` together (the old binary refuses the `relays`
 key).
+
+## 2026-10-03 channel set (no RC_VERSION bump)
+
+Home channel + candidates is replaced by one shared channel set,
+`radio.channels`, on both ends (`docs/channel-select.md`). **Binary THEN
+config, on each device** — the exception this page's intro already flags
+for exactly this shape of change: the new binary still boots on an old
+config (every new key has a default), but the new config fails the OLD
+binary at the unknown-key check (GS: `radio.channel` as a bare number,
+`radio.scan.enable`, `candidates`, `home_window_ms`, `split_after_ms`,
+`home_margin` are gone; drone: `radio.channel`, `radio.follow_gs` are
+gone). So on each device: swap the binary, confirm it is up, then push
+`gs/bundle/maburgs.default.toml` → GS `/etc/maburgs.toml` and
+`bundle/mabur.default.toml` → drone `/etc/mabur.toml`.
+
+**No `RC_VERSION` bump.** `Disc.op_channel`/`DiscAck.agreed_channel` and
+`Rcf.hop_ch`/`hop_epoch` are unchanged wire fields that both ends now mean
+literally over the whole set rather than one home channel, so a
+half-deployed pair (old binary one end, new the other, for however long
+the swap takes) just links on whichever channel both happen to be parked
+on — drone first or GS first does not matter, and there is no flag-day
+window of no video at all the way a wire bump produces.
+
+**Two new state files**, plain decimal text, written via a temp file +
+`rename()`: `/etc/mabur.channel` (drone) and `/etc/maburgs.channel` (GS).
+`rm` either one to make that end forget its remembered channel; on the
+next boot it falls back to `radio.channels[0]` (drone) or searches from
+`channels[0]`/the configured pin (GS) instead of re-finding whatever
+channel it last parked on. Deleting the GS's file is also how you force a
+fresh boot-time search after changing `radio.channels` itself, rather than
+the GS trusting a now-stale remembered member.
+
+Verify after the swap: drone stderr
+`maburd: channel set [40,64,112,144], parking on 40` (gains
+`(remembered)` after the first confirmed move); GS stderr
+`maburgs channel: set [40,64,112,144] mode auto start 40` (likewise) —
+both print once, at boot, before anything else. `ausniff` is the standing
+gate once both ends are up.
+
+Rollback is paired, as always: the old binary needs its old config
+(`radio.channel`/`follow_gs` etc.) restored alongside it on each device.
+Keep `maburd.pre-chanset` / `maburgs.pre-chanset` binary copies (with
+their old configs saved alongside) before swapping, the same convention
+as every other dated section on this page.

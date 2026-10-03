@@ -37,7 +37,10 @@ per-body `first_ms` arrival stamp 2026-09-05 (probe-blanking fix; a
 directory and `au.log`'s clock switches WALL→MONOTONIC (`# aulog 4`,
 `# latlog 2`, both drop the `# sync` bridge) 2026-09-06 ·
 link pairing: RC_VERSION 14, `vtx_id` gone, `link.key_fp` /
-`link.state = key_mismatch` / `drone.auth_reject` 2026-10-01.
+`link.state = key_mismatch` / `drone.auth_reject` 2026-10-01 ·
+channel set replaces home + candidates — `scanlog 5` (M loses
+`split_home`/`reunite`, H gains `boot_order`), sideport `link.home`
+removed — 2026-10-03 (`docs/channel-select.md`).
 
 **`link.pre_fec_loss` scale break 2026-09-23, twice.** The ArrivalTracker
 guard behind `link.pre_fec_loss` (and the OSD LOSS row, `ctl.pre_fec_loss`,
@@ -189,7 +192,8 @@ start); 2026-09-30 the telem diet (RC_VERSION 13, section below):
 `idr_disagree`/`enhance_disagree`/`vanished_base`/`vanished_enh`/
 `self_idr_refused`/`venc_full_drops`/`venc_ring_fill_pct`/`idr_gs`,
 `drone.txq.depth`/`cap`, `drone.radio.sent_pps`/`drops`,
-`drone.sys.thermal_delta`.
+`drone.sys.thermal_delta`; 2026-10-03 the channel set (section below):
+`link.home`.
 Removed keys are absent, not null. Keep appending to that list — not to protect
 consumers, but because a recording made before a removal still carries the
 key and `flightreport.py` still reads old recordings. The
@@ -883,6 +887,53 @@ SipHash-2-4 tag before its CRC; DISC_ACK carries `vtx_nonce` + a flags byte.
   margin was **1.5 dB** of SNR. A flight's `link.tx_card` switches (and
   which card held the uplink) are not comparable across this line.
 - **Boot-scan DISC beacons leave the first non-scout card** (`boot_home_card`
-  in `gs/src/main.cpp`), not a hard-coded card 0. On an all-USB GS that is
-  still card 0; with one USB card plus a relay the relay beacons on home
-  while the USB card scans.
+  in `gs/src/main.cpp` at the time; renamed `boot_scout_card` by the
+  2026-10-03 channel set below — same variable, same rule), not a
+  hard-coded card 0. On an all-USB GS that is still card 0; with one USB
+  card plus a relay the relay beacons on home while the USB card scans.
+
+## 2026-10-03 — channel set: scanlog 5, link.home removed
+
+Home channel + candidates is replaced by one shared channel set,
+`radio.channels`, on both ends. A "home" channel no longer exists as a
+concept: the drone parks on its remembered member (or the first) and only
+ever moves on a GS proposal, a GS order, or an unconfirmed move back to
+where it came from — never to a privileged fallback channel. Full detail:
+`docs/channel-select.md`.
+
+- **`scanlog 5`.** Bumped from `scanlog 4`. The header line reshapes from
+  `home=<n> candidates=<c1,c2,...> dwell_ms=<n> min_rounds=<n>
+  enable=<0|1> cards=<n>` to `channels=<c1,c2,...> mode=<auto|pinned>
+  dwell_ms=<n> min_rounds=<n> cards=<n>` — no `home=`, no `enable=`
+  (`radio.scan.enable` is gone), a `mode=` token in its place. `C`/`D`/`K`
+  record shapes are unchanged from
+  `scanlog 4`. `M`'s reason vocabulary **loses** `split_home` and
+  `reunite` — there is nothing to split from or reunite to any more — and
+  keeps `commit`/`ack_override` plus the in-flight hop's
+  `hop_lead`/`hop_follow`/`hop_withdraw`/`hop_one_card`. `H`'s kind
+  vocabulary **gains** `boot_order`: the one-time boot hop placed through
+  `HopController` while the boot pick is open, alongside the in-flight
+  hop's `order`/`verify_fail`/`escape`. A `scanlog 4` or earlier
+  recording's `M` lines may carry `split_home`/`reunite` and its `H` lines
+  never carry `boot_order` — read both as what they were.
+  `tools/flightreport.py` reads `scanlog 5` and still parses `split_home`
+  out of an older-marker file.
+- **Removed sideport key:** `link.home` (the configured home channel —
+  there is no home to report). `link.channel` is unchanged: the live
+  channel of the GS's TX card.
+- **Removed GS config keys:** `radio.channel` as a bare number (home),
+  `radio.scan.enable`, `radio.scan.candidates`, `radio.scan.home_window_ms`,
+  `radio.scan.split_after_ms`, `radio.scan.home_margin`. **Removed drone
+  config keys:** `radio.channel`, `radio.follow_gs`. **New, both ends:**
+  `radio.channels` (the set, 1-8 members); GS only: `radio.channel =
+  "auto"` (a string now, not a number) or a member to pin, plus
+  `radio.scan.search_ms`/`op_window_ms`/`pick_margin`/`one_card_ms`/
+  `max_ms`. No `RC_VERSION` bump — `Disc.op_channel`/
+  `DiscAck.agreed_channel` and `Rcf.hop_ch`/`hop_epoch` are unchanged wire
+  fields, now read over the whole set instead of a single home channel.
+- **State files, new:** `/etc/mabur.channel` (drone), `/etc/maburgs.channel`
+  (GS) — the remembered member, decimal text. Neither existed before this
+  date; their absence on an older recording's device is simply "older
+  build," not a fault.
+- **`tools/maburtop.py`:** drops the `h{home}` field; shows `scan.state`
+  (now including `moving`, a boot hop in flight) and `scan.rounds`.

@@ -40,7 +40,7 @@ page the task needs rather than carrying all of it.
 | the disarmed low-power mode, arm state over MSP, the live fps verb | `docs/link-adaptation.md` ("Low-power (disarmed) mode") |
 | the stats sideport, maburtop, the debug-log session directory (ctl/probe/au/flight/lat), ausniff, capture tools, player OSD/DVR/record button | `docs/observability.md` |
 | colortrans (CRTC 3D LUT, OSD inverse, burned-DVR GPU stage), the Buildroot glibc build of maburplay | `docs/colortrans.md` |
-| auto channel selection, the boot-time scan, scan.log, home/op channels, split/reunite | `docs/channel-select.md` |
+| auto channel selection over a shared channel set, remembered channel, boot hop, pinned mode, scan.log | `docs/channel-select.md` |
 | in-flight channel hop, verdict, dwells, hop_restore | `docs/inflight-channel-hop.md` |
 | comparing recordings, metric scales, removed sideport keys, "why do these two flights disagree" | `docs/data-provenance.md` |
 | shipping a binary or config to a device | `docs/deploy.md` |
