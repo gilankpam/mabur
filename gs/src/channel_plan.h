@@ -1,11 +1,12 @@
 #pragma once
 #include <cstdint>
-#include <optional>
 #include <vector>
+
+#include "mabur/channel_set.h"
 
 namespace maburgs {
 
-enum class MoveReason { Commit, AckOverride, SplitHome, Reunite, HopLead, HopFollow, HopWithdraw, HopOneCard };
+enum class MoveReason { Commit, AckOverride, HopLead, HopFollow, HopWithdraw, HopOneCard };
 const char* to_string(MoveReason r);
 
 struct MoveEvent {
@@ -16,28 +17,41 @@ struct MoveEvent {
 };
 
 struct ChannelPlanCfg {
-  uint8_t home = 149;
+  uint8_t start = 0;
+  std::vector<uint8_t> channels;
   int n_cards = 2;
-  int split_after_ms = 5000;
-  int home_window_ms = 300;
-  int beacon_period_ms = 20;
+  int search_after_ms = 5000;
 };
 
-// Where the link lives (spec 2026-09-13-auto-channel-select §6, GS side).
+// Where the link lives (spec 2026-10-03-auto-channel-set §4.1, GS side).
 // Pure: the caller passes the clock and the rendezvous state; the plan
-// answers "which channel should card i be on" and "which cards carry this
-// DISC", and records the moves that change where the link lives. Scout
-// dwells and one-card interleave hops are not moves.
+// answers "which channel should card i be on", and records the moves that
+// change where the link lives. There is no home channel any more -- the
+// drone picks its own channel from the set and the GS scout sweeps the set
+// looking for it; this plan only has to say when the spare card is free to
+// go scout (release_scout()) and track op_, the channel the link (and the
+// non-scouting card) sits on.
 class ChannelPlan {
  public:
   explicit ChannelPlan(ChannelPlanCfg cfg);
   void tick(double now_ms, bool in_session);
+  // agreed == op_, or agreed not a set member: no-op (nothing changed, or
+  // the drone named a channel outside the agreed set -- ignore it rather
+  // than move op_ off the set). Otherwise op_ follows agreed; Commit if the
+  // drone agreed with what the GS proposed, AckOverride if it insisted on
+  // something else.
   void on_ack(double now_ms, uint8_t agreed, uint8_t proposed);
+  // The GS's own pick, with no drone linked yet (or the boot-time prelude
+  // pick before any ack has arrived). to == op_, or not a set member: no-op.
+  void commit(double now_ms, uint8_t to);
   uint8_t op() const { return op_; }
-  bool frozen() const { return frozen_; }
-  bool split() const { return split_; }
+  bool member(uint8_t ch) const;
+  // The spare card may leave op_ and go scout the rest of the set: not in
+  // session, past search_after_ms since loss (or never linked at all, in
+  // which case there is nothing on op_ worth protecting and it may search
+  // immediately), and no hop in flight.
+  bool release_scout() const;
   uint8_t desired(int card) const;
-  std::optional<std::vector<int>> beacon_cards() const;
   std::vector<MoveEvent> take_events();
 
   // In-flight channel hop: one card leads onto target, the other keeps the
@@ -63,18 +77,12 @@ class ChannelPlan {
   int hop_lead() const { return hop_lead_; }
 
  private:
-  // One-card interleave: window index since split; even = home, odd = op.
-  int window_(double now_ms) const;
-  bool quiet_gap_(double now_ms) const;
-  void reunite_(double now_ms);
-
   ChannelPlanCfg cfg_;
   uint8_t op_;
-  bool frozen_ = false;
-  bool split_ = false;
+  bool in_session_ = false;
+  bool ever_linked_ = false;
   bool have_lost_since_ = false;
   double lost_since_ms_ = 0;
-  double split_at_ms_ = 0;
   double now_ms_ = 0;
   std::vector<MoveEvent> events_;
 
