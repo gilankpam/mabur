@@ -102,6 +102,8 @@ void parse_radio(const Value& j, RadioCfg& r) {
       if (ch < 1 || ch > 177) fail("radio.channels", "must be in [1,177]");
       r.channels.push_back(static_cast<uint8_t>(ch));
     }
+  } else {
+    note_default("radio", "channels", "[40, 64, 112, 144]");
   }
   if (auto e = mabur::channel_set_issue(r.channels, r.width, "radio.channels"))
     fail(e->field, e->why);

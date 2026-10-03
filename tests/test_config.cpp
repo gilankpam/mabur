@@ -1354,6 +1354,22 @@ TEST(radio_channels_validated_and_removed_keys_fail) {
   }
 }
 
+// Fix round 1 (reviewer): the replaced follow_gs_and_move_confirm_parse_with_
+// defaults test used to pin link.move_confirm_ms's [200,30000] bounds check
+// (parse_link, config.cpp) via a "= 10" throw case; that coverage was lost
+// when it was swapped for the two radio_channels_* tests above. Restored
+// here, plus the high end and both boundary values loading cleanly.
+TEST(move_confirm_ms_out_of_range_throws) {
+  for (const char* body : {"[link]\nmove_confirm_ms = 10\n", "[link]\nmove_confirm_ms = 40000\n"}) {
+    std::string msg = what_of([&] { (void)load_config(write_temp_toml(body).string()); });
+    CHECK(msg.find("link.move_confirm_ms") != std::string::npos);
+  }
+  CHECK(load_config(write_temp_toml("[link]\nmove_confirm_ms = 200\n").string())
+            .link.move_confirm_ms == 200);
+  CHECK(load_config(write_temp_toml("[link]\nmove_confirm_ms = 30000\n").string())
+            .link.move_confirm_ms == 30000);
+}
+
 TEST(low_power_defaults_are_disabled_and_parse) {
   {
     auto path = write_temp_toml("");
