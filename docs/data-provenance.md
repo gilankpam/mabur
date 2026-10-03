@@ -40,7 +40,9 @@ link pairing: RC_VERSION 14, `vtx_id` gone, `link.key_fp` /
 `link.state = key_mismatch` / `drone.auth_reject` 2026-10-01 ·
 channel set replaces home + candidates — `scanlog 5` (M loses
 `split_home`/`reunite`, H gains `boot_order`), sideport `link.home`
-removed — 2026-10-03 (`docs/channel-select.md`).
+removed — 2026-10-03 (`docs/channel-select.md`) · same marker: H
+`boot_order` renamed `relocate`, M gains `link_found`, `scan.pick`
+latched — 2026-10-04.
 
 **`link.pre_fec_loss` scale break 2026-09-23, twice.** The ArrivalTracker
 guard behind `link.pre_fec_loss` (and the OSD LOSS row, `ctl.pre_fec_loss`,
@@ -916,6 +918,14 @@ where it came from — never to a privileged fallback channel. Full detail:
   hop's `order`/`verify_fail`/`escape`. A `scanlog 4` or earlier
   recording's `M` lines may carry `split_home`/`reunite` and its `H` lines
   never carry `boot_order` — read both as what they were.
+  **2026-10-04, marker unchanged:** `boot_order` is renamed `relocate`
+  (any order moving the link to where it should live — the pin or the
+  boot pick — after the link formed where the drone was found; only the
+  pre-merge 2026-10-03 bench builds wrote `boot_order`, and flightreport
+  reads both), `M` gains `link_found` (the link formed on the member the
+  drone's ack was heard on), and the sideport's `scan.pick` is latched at
+  the freeze instead of following the live op (before, it moved with
+  every hop).
   `tools/flightreport.py` reads `scanlog 5` and still parses `split_home`
   out of an older-marker file.
 - **Removed sideport key:** `link.home` (the configured home channel —
@@ -936,4 +946,5 @@ where it came from — never to a privileged fallback channel. Full detail:
   date; their absence on an older recording's device is simply "older
   build," not a fault.
 - **`tools/maburtop.py`:** drops the `h{home}` field; shows `scan.state`
-  (now including `moving`, a boot hop in flight) and `scan.rounds`.
+  (now including `moving`, the boot pick's relocation in flight) and
+  `scan.rounds`.

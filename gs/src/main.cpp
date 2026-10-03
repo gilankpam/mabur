@@ -31,6 +31,7 @@
 #include "cal_log.h"
 #include "cal_session.h"
 #include "card_scan.h"
+#include "boot_pick.h"
 #include "channel_plan.h"
 #include "channel_scout.h"
 #include "config.h"
@@ -1016,15 +1017,14 @@ static int run_radio(const maburgs::Config& cfg) {
     scout->set_op(start_ch);
     scout->set_search(true);
   }
-  // The boot pick (spec §5). Open until frozen, exactly once; pinned mode
-  // is never open. The decisions below are latched: ChannelScout's
-  // mature()/proposal() can step back once in one-card mode and proposal()
-  // is stale after freeze().
-  bool pick_open = scout != nullptr && !pinned;
-  bool boot_hop_wanted = false;     // matured linked on another pair: place a boot order
-  bool boot_hop = false;            // the boot order is placed (Ordered/Verifying)
-  bool one_card_committed = false;  // one card: the prelude ranking went into the DISC
-  const char* boot_hop_result = nullptr;  // how the controller resolved the boot hop
+  // The boot pick (spec §5) and the relocation that moves the link to
+  // plan.want() (final review C1/I3): gs/src/boot_pick.h, driven once per
+  // tick below. The pick is open until frozen, exactly once; pinned mode is
+  // never open (the relocation still runs: a drone found off the pin links
+  // where it is and is moved to the pin). Its decisions are latched:
+  // ChannelScout's mature()/proposal() can step back once in one-card mode
+  // and proposal() is stale after freeze().
+  maburgs::BootPick boot_pick(scout != nullptr && !pinned);
   const uint64_t gs_start_ms = mono_ms();
   bool scout_card_down = false;     // the scout card died: no search until it reopens
   // What the scout thread was last asked to search (set_search), core
@@ -1214,6 +1214,17 @@ static int run_radio(const maburgs::Config& cfg) {
   // Channel the most recent video body arrived on (batch-drain loop,
   // below): confirms a hop landed by comparing against plan.hop_target().
   uint8_t last_video_ch = start_ch;
+  // The rx_channel of the body the aggregator is routing right now: the rc
+  // sink runs synchronously inside agg.on_rx_body(), which hands it the card
+  // but not the channel.
+  uint8_t rc_body_rx_ch = 0;
+  // BootPick edges, fed into the next tick's BootPickIn: the move edge was
+  // acted on (one card: linked); the scout card died while working.
+  bool link_edge_seen = false;
+  bool scout_card_died_seen = false;
+  // A Relocate the BootPick handed out this tick: placed by the HopTick
+  // block below (HopTick::relocate, best = the target).
+  std::optional<uint8_t> pending_relocate;
   // Freshness-burst rate limiter (fix round 3): the burst's own gate
   // (Idle/Hold + trigger) has nothing else pacing it -- Hold re-enters on
   // every tick with the trigger latched true, and neither cooldown_ms
@@ -1553,9 +1564,7 @@ static int run_radio(const maburgs::Config& cfg) {
   // link is up); the core only notices working() going false. The K line
   // records op AFTER the decision -- proposal() is stale past freeze().
   auto freeze_pick = [&](double t, const char* why) {
-    if (!pick_open) return;
-    pick_open = false;
-    boot_hop_wanted = false;
+    if (!scout) return;
     scout->freeze();
     // The scout's effective min_rounds (one card: a single visit per half
     // past the prelude deadline until min_rounds full passes exist), so a
@@ -1572,14 +1581,18 @@ static int run_radio(const maburgs::Config& cfg) {
     } else {
       for (const auto& e : all) any = any || e.visits >= static_cast<uint32_t>(mr);
     }
+    // The pick is want(), not op(): every freeze-in-place exit has already
+    // accepted op (set_want), and the others ("link lost before relocate",
+    // "one-card linked") leave the link to be relocated there.
+    const uint8_t pick = plan.want();
     // The real boot-time pick, for HopRanker's tie-break -- only when the
     // pick actually measured something.
-    if (any) ranker.set_boot_pick(plan.op());
+    if (any) ranker.set_boot_pick(pick);
     if (scan_log)
-      scan_log->pick(t, any ? std::optional<uint8_t>(plan.op()) : std::nullopt, scout->rounds(),
+      scan_log->pick(t, any ? std::optional<uint8_t>(pick) : std::nullopt, scout->rounds(),
                      all, mr);
     std::fprintf(stderr, "maburgs channel: pick frozen on %u (%s) after %llu rounds\n",
-                 static_cast<unsigned>(plan.op()), why,
+                 static_cast<unsigned>(pick), why,
                  static_cast<unsigned long long>(scout->rounds()));
   };
 
@@ -1677,7 +1690,27 @@ static int run_radio(const maburgs::Config& cfg) {
       }
       return;
     }
+    const bool was_session = vrx.link_state() == maburgs::VrxState::SESSION;
     vrx.on_rc_frame(f.data(), f.size(), static_cast<double>(us) / 1000.0);
+    // Final review C1: the link forms where the drone is found. Only the
+    // ack that OPENED the session inside this very call -- our nonce, not
+    // key-mismatch flagged, so a stranger's drone cannot drag the cards --
+    // and only on the rx_channel of this body (RxBody::rx_channel, carried
+    // in rc_body_rx_ch: the aggregator routes the card id, not the channel).
+    // plan.link_found() moves op to it for every card; the relocation to
+    // plan.want(), if any, is an ordinary hop order (BootPick).
+    if (!was_session && vrx.link_state() == maburgs::VrxState::SESSION &&
+        mabur::rc::frame_type(f.data(), f.size()) == mabur::rc::T_DISC_ACK) {
+      const auto ack = mabur::rc::parse_disc_ack(f.data(), f.size());
+      const uint8_t x = rc_body_rx_ch;
+      if (ack && ack->vrx_nonce == vrx.rz_nonce() && !(ack->flags & mabur::rc::kAckKeyMismatch) &&
+          x != 0 && x != plan.op() && plan.member(x) && !plan.hopping()) {
+        std::fprintf(stderr, "maburgs channel: drone found on %u (op %u): the link forms there\n",
+                     static_cast<unsigned>(x), static_cast<unsigned>(plan.op()));
+        plan.link_found(static_cast<double>(us) / 1000.0, x);
+        vrx.set_proposal(plan.op());   // a DISC proposes the channel it is sent on: stay
+      }
+    }
   });
 
   std::unique_ptr<maburgs::UdpSink> msp_udp;
@@ -1754,7 +1787,7 @@ static int run_radio(const maburgs::Config& cfg) {
       if (scout && i == scout_card && !fe.alive() && !scout_card_down) {
         scout_card_down = true;
         if (scout->working()) {
-          freeze_pick(now_ms, "scout card died");
+          scout_card_died_seen = true;   // BootPick freezes the pick on its next tick
           std::fprintf(stderr,
                        "maburgs channel: scout card %d died at %llu rounds; search held "
                        "until it reopens, card rejoins at %u MHz\n",
@@ -1826,6 +1859,7 @@ static int run_radio(const maburgs::Config& cfg) {
                                  m.mono_us / 1000);
         continue;
       }
+      rc_body_rx_ch = m.rx_channel;   // read by the rc sink inside on_rx_body()
       agg.on_rx_body(m);
       // A drone at a different RC_VERSION is invisible to every RC path here:
       // frame_type() returns -1 for it, which is this loop's affirmative "this
@@ -2002,55 +2036,77 @@ static int run_radio(const maburgs::Config& cfg) {
     }
     scout_working_atomic.store(scout_owns(), std::memory_order_relaxed);
 
-    // ---- the boot pick (spec 2026-10-03 §5) ----
-    // Decisions are latched: mature() is read only until one is taken
-    // (commit+freeze, freeze in place, or boot_hop_wanted), never after.
-    if (pick_open) {
-      const uint64_t since_start = now_ms_u - gs_start_ms;
-      if (one_card && scout->prelude_done() && !one_card_committed) {
-        // One card: the prelude ranking commits BEFORE the first DISC (spec
-        // §5): the scout holds its first op window until ack_prelude(),
-        // which hands it the committed op. The pick stays open (measuring
-        // between op windows) until link-up/max_ms.
-        one_card_committed = true;
-        const uint8_t pick = scout->proposal();
-        std::fprintf(stderr, "maburgs channel: one-card prelude ranking picks %u (op %u)%s\n",
-                     static_cast<unsigned>(pick), static_cast<unsigned>(plan.op()),
-                     linked ? ", linked: not committed" : "");
-        if (!linked && pick != plan.op()) plan.commit(now_ms, pick);
-        scout->ack_prelude(plan.op());
-      } else if (since_start >= static_cast<uint64_t>(scfg.max_ms)) {
-        // A placed boot hop is never yanked mid-flight: it freezes on the
-        // controller's return to Idle/Hold (HopTick block below).
-        if (!boot_hop) freeze_pick(now_ms, "max_ms");
-      } else if (boot_hop_wanted && !in_session && !boot_hop) {
-        // The link dropped before the boot order could be placed: keep op
-        // (the drone is most likely still there) and close the pick.
-        freeze_pick(now_ms, "link lost before boot hop");
-      } else if (!one_card && !boot_hop_wanted && !boot_hop && scout->mature()) {
-        const uint8_t pick = scout->proposal();
-        if (!linked) {
-          if (pick != plan.op()) {
+    // ---- the boot pick + relocation (spec 2026-10-03 §5; final review
+    // C1/I3; gs/src/boot_pick.h) ----
+    maburgs::BootPickIn bi;
+    bi.now_ms = now_ms;
+    bi.since_start_ms = now_ms_u - gs_start_ms;
+    bi.max_ms = scfg.max_ms;
+    bi.in_session = in_session;
+    bi.cal_running = cal_session.running();
+    bi.one_card = one_card;
+    if (scout) {
+      bi.scout_mature = scout->mature();
+      bi.scout_op_ranked = scout->op_ranked();
+      bi.scout_prelude_done = scout->prelude_done();
+      bi.proposal = scout->proposal();
+    }
+    bi.scout_owns = scout_owns();
+    bi.op = plan.op();
+    bi.want = plan.want();
+    bi.relocate_due = plan.relocate_due();
+    bi.plan_hopping = plan.hopping();
+    bi.hop_active = maburgs::hop_active(in_session, cal_session.running());
+    bi.hop_idle_or_hold = hopc.state() == maburgs::HopState::Idle ||
+                          hopc.state() == maburgs::HopState::Hold;
+    bi.link_edge = link_edge_seen;
+    bi.scout_card_died = scout_card_died_seen;
+    link_edge_seen = false;
+    scout_card_died_seen = false;
+    pending_relocate.reset();
+    {
+      const maburgs::BootPickOut bo = boot_pick.tick(bi);
+      switch (bo.kind) {
+        case maburgs::BootPickOut::Commit:
+          if (bo.ch != plan.op())
             std::fprintf(stderr, "maburgs channel: commit %u -> %u (no link)\n",
-                         static_cast<unsigned>(plan.op()), static_cast<unsigned>(pick));
-            plan.commit(now_ms, pick);
-          }
-          freeze_pick(now_ms, "commit");
-        } else if (pick == plan.op() || cal_session.running() || !hcfg.enable) {
-          // hop.enable false: the controller would only log would_boot_order
-          // and never move the link, so the pick stays where it is.
-          freeze_pick(now_ms, pick == plan.op()       ? "in place"
-                              : cal_session.running() ? "calibration running"
-                                                      : "hop disabled");
-        } else {
-          // Linked on another pair: one boot order through the hop
-          // controller. The scout stops measuring now (pick_ranking()
-          // stays readable) so it parks and frees the lead card.
-          boot_hop_wanted = true;
+                         static_cast<unsigned>(plan.op()), static_cast<unsigned>(bo.ch));
+          plan.commit(now_ms, bo.ch);
+          freeze_pick(now_ms, bo.reason);
+          break;
+        case maburgs::BootPickOut::AckPrelude:
+          // One card: the prelude ranking commits BEFORE the first DISC (spec
+          // §5): the scout holds its first op window until ack_prelude(),
+          // which hands it the committed op.
+          std::fprintf(stderr, "maburgs channel: one-card prelude ranking picks %u (op %u)%s\n",
+                       static_cast<unsigned>(bi.proposal), static_cast<unsigned>(plan.op()),
+                       linked ? ", linked: not committed" : "");
+          if (bo.ch != 0) plan.commit(now_ms, bo.ch);
+          scout->ack_prelude(plan.op());
+          break;
+        case maburgs::BootPickOut::WantPick:
+          // Linked on another pair: the link should live on the pick. The
+          // scout stops measuring now so it parks and frees the lead card;
+          // the relocation (one hop order) follows -- the boot hop.
+          plan.set_want(now_ms, bo.ch);
           scout->freeze();
-          std::fprintf(stderr, "maburgs channel: boot hop wanted %u -> %u\n",
-                       static_cast<unsigned>(plan.op()), static_cast<unsigned>(pick));
-        }
+          std::fprintf(stderr, "maburgs channel: boot pick wants %u, link on %u: relocating\n",
+                       static_cast<unsigned>(bo.ch), static_cast<unsigned>(plan.op()));
+          break;
+        case maburgs::BootPickOut::Relocate:
+          pending_relocate = bo.ch;
+          break;
+        case maburgs::BootPickOut::Freeze:
+          if (bo.accept_op) plan.set_want(now_ms, plan.op());
+          freeze_pick(now_ms, bo.reason);
+          break;
+        case maburgs::BootPickOut::AcceptOp:
+          std::fprintf(stderr, "maburgs channel: relocation to %u did not land; staying on %u\n",
+                       static_cast<unsigned>(plan.want()), static_cast<unsigned>(plan.op()));
+          plan.set_want(now_ms, plan.op());
+          break;
+        case maburgs::BootPickOut::None:
+          break;
       }
     }
     if (plan.op() != saved_op) {
@@ -2065,20 +2121,11 @@ static int run_radio(const maburgs::Config& cfg) {
     // loop's own cross-thread bookkeeping, the verdict loss-window blank,
     // and draining the controller's events to scan.log/stderr. One path for
     // both the controller's tick and the session falling edge below.
-    auto dispatch_hop_action = [&](const maburgs::HopAction& act) {
+    auto dispatch_hop_action = [&](const maburgs::HopAction& act, bool relocate_tick) {
       apply_hop_action(act, now_ms, hcfg.confirm_ms, vrx, plan, verdict);
-      // The boot hop's resolution, for the freeze label: keyed on what the
+      // The relocation's resolution (BootPick): keyed on what the
       // controller did, not on where op ended up.
-      if (boot_hop) {
-        if (act.kind == maburgs::HopAction::VerifyPass) boot_hop_result = "boot hop landed";
-        else if (act.kind == maburgs::HopAction::Hold) boot_hop_result = "boot hop exhausted";
-        else if (act.kind == maburgs::HopAction::Withdraw) boot_hop_result = "boot hop withdrawn";
-        // Confirmed, then the session dropped mid-verify (on_session_lost
-        // goes Verifying -> Idle with no action): the link is on the pick.
-        else if (act.kind == maburgs::HopAction::Confirm)
-          boot_hop_result = "boot hop confirmed, verify cut short";
-        else if (act.kind == maburgs::HopAction::Order) boot_hop_result = nullptr;   // a retry
-      }
+      boot_pick.note_hop_action(act.kind, relocate_tick);
       if (auto b = maburgs::hop_verdict_loss_blank_until(act, now_ms))
         s1_hop_loss.blank_until(*b);
       switch (act.kind) {
@@ -2127,7 +2174,7 @@ static int run_radio(const maburgs::Config& cfg) {
       // ignores link loss while a hop is in flight, and nothing else would
       // ever clear it (bench 2026-09-24, GS session 0207: the GS sat on the
       // target and the old op forever while the drone waited on home).
-      if (!hop_active) dispatch_hop_action(hopc.on_session_lost(now_ms, plan.op()));
+      if (!hop_active) dispatch_hop_action(hopc.on_session_lost(now_ms, plan.op()), false);
       verdict.reset();
       last_verdict = maburgs::Verdict::Healthy;
       last_verdict_out = maburgs::VerdictOut{};
@@ -2304,9 +2351,11 @@ static int run_radio(const maburgs::Config& cfg) {
       // that header for the four properties this gate has to get right,
       // now unit-tested directly instead of only inside this hardware-
       // touching body.
-      // Never while the boot scout owns a card or the boot pick drives the
-      // targets (pick_ranking() below replaces the in-flight ranker then).
-      if (!scout_owns() && !(pick_open && (boot_hop_wanted || boot_hop)) &&
+      // Never while the boot scout owns a card or a relocation owns the
+      // controller (due, being placed, or in flight).
+      const bool relocation_owns = boot_pick.relocating() || pending_relocate.has_value() ||
+                                   boot_pick.relocation_pending(bi);
+      if (!scout_owns() && !relocation_owns &&
           maburgs::hop_burst_due(hopc.state(), last_verdict_out.trigger, now_ms,
                                  last_burst_ms, hcfg.dwell_period_ms)) {
         // Freshness burst (spec section 3): sweep every candidate once,
@@ -2354,63 +2403,42 @@ static int run_radio(const maburgs::Config& cfg) {
         fill_hop_targets(ht);
         }
       }
-      // The boot pick (spec §5): one synthetic trigger places the boot
-      // order once the scout has parked (it leads on the scout card, which
-      // is the non-TX card by construction); while the boot hop runs,
-      // targets come from the boot ranking so a verify fail retries the
-      // next-best MEASURED pair.
-      bool boot_nothing = false;
-      if (pick_open && (boot_hop_wanted || boot_hop)) {
-        ht.best.reset();
-        ht.best_score = 0;
-        const auto bo = hopc.backed_off(now_ms);
-        for (uint8_t c : scout->pick_ranking())
-          if (c != plan.op() && std::find(bo.begin(), bo.end(), c) == bo.end()) {
-            ht.best = c;
-            break;
-          }
-        ht.escape.reset();   // no escape-from-blocked during the boot hop
-        ht.escape_score = 0;
-        if (boot_hop_wanted && !ht.best) boot_nothing = true;
-      }
-      if (pick_open && boot_hop_wanted && ht.best && !plan.hopping() && !scout_owns() &&
-          (hopc.state() == maburgs::HopState::Idle || hopc.state() == maburgs::HopState::Hold)) {
-        ht.verdict.trigger = true;   // synthetic: the measurement, not an impairment
-        ht.relocate = true;
-      }
       if (scout_owns()) {
         // The boot scout still owns the would-be lead card (measuring with
         // the pick open, or mid-park after a search): no order of any kind.
         ht.best.reset();
         ht.escape.reset();
+      } else if (pending_relocate) {
+        // The relocation (BootPick): one synthetic trigger -- the link is
+        // not where it should be, not impaired -- toward want(). Leads on
+        // the non-TX card (two cards) or runs the one-card path.
+        ht.verdict.trigger = true;
+        ht.relocate = true;
+        ht.best = *pending_relocate;
+        ht.best_score = 0;
+        ht.escape.reset();
+        ht.escape_score = 0;
+      } else if (relocation_owns) {
+        // A relocation is in flight (a verify fail holds instead of
+        // wandering to the in-flight ranker's best) or due and not yet
+        // placed (no reactive order may take the controller first).
+        ht.best.reset();
+        ht.escape.reset();
       }
       const maburgs::HopAction act = hopc.tick(ht);
-      dispatch_hop_action(act);   // the shared path, defined above the verdict window
-      if (ht.relocate && act.kind == maburgs::HopAction::Order) {
-        boot_hop = true;
-        boot_hop_wanted = false;
-        boot_hop_result = nullptr;
-        std::fprintf(stderr, "maburgs channel: boot hop placed %u -> %u\n",
-                     static_cast<unsigned>(plan.op()), static_cast<unsigned>(act.target));
-      }
-      // Every measured pair is backed off (or none is ranked): nothing to
-      // order, so stay on op rather than synthesize hold_exhausted.
-      if (boot_nothing && !boot_hop) freeze_pick(now_ms, "boot hop: no eligible pair");
+      dispatch_hop_action(act, ht.relocate);   // the shared path, defined above the verdict window
+      if (ht.relocate)
+        std::fprintf(stderr, "maburgs channel: relocate %u -> %u %s\n",
+                     static_cast<unsigned>(plan.op()), static_cast<unsigned>(*pending_relocate),
+                     act.kind == maburgs::HopAction::Order ? "placed" : "refused (hop cap)");
     }
-    // The boot hop resolved (verify_pass -> Idle on the pick; exhausted ->
-    // Hold on the old op; session lost -> on_session_lost withdraws to
-    // Idle): close the pick.
-    if (boot_hop && (hopc.state() == maburgs::HopState::Idle ||
-                     hopc.state() == maburgs::HopState::Hold)) {
-      boot_hop = false;
-      freeze_pick(now_ms, boot_hop_result ? boot_hop_result
-                          : hopc.state() == maburgs::HopState::Hold ? "boot hop exhausted"
-                                                                    : "boot hop withdrawn");
-    }
+    pending_relocate.reset();
 
-    // Proposal for the next DISC: always op -- the boot pick reaches the
-    // drone through plan.commit() (no link) or the boot hop (linked), never
-    // through a DISC proposing a channel the GS is not on.
+    // Proposal for the next DISC: always op -- the pick reaches the drone
+    // through plan.commit() (no link) or a relocate order (linked), never
+    // through a DISC proposing a channel the GS is not on. A copy fanned to
+    // a card on another channel is re-proposed for that channel below
+    // (disc_for_channel).
     vrx.set_proposal(plan.op());
     // No keep-alive DISC while a hop order is outstanding: it would propose
     // the old op to a drone that may already have followed the order
@@ -2444,8 +2472,9 @@ static int run_radio(const maburgs::Config& cfg) {
       // ack_override: the DISC built later in this same tick would
       // otherwise beacon the stale proposal on the NEW channel.
       vrx.set_proposal(plan.op());
-      // One card: the sole card carries the link and cannot measure.
-      if (pick_open && one_card) freeze_pick(now_ms, "one-card linked");
+      // One card: the sole card carries the link and cannot measure -- the
+      // BootPick freezes the pick on its next tick ("one-card linked").
+      link_edge_seen = true;
     }
     // Scout bookkeeping: drain the dwell records.
     if (scout) {
@@ -2461,7 +2490,7 @@ static int run_radio(const maburgs::Config& cfg) {
     // later link loss). Two-card only: the thread's own loop gates every
     // cycle on n_cards >= 2, but there is no point spinning it up on one
     // card.
-    if (!inflight_started && !scout_owns() && !pick_open && n_cards >= 2 &&
+    if (!inflight_started && !scout_owns() && !boot_pick.open() && n_cards >= 2 &&
         (hcfg.enable || hcfg.scout_when_disabled)) {
       inflight_started = true;
       scout_run.store(true);
@@ -2523,7 +2552,7 @@ static int run_radio(const maburgs::Config& cfg) {
     // on a dwell, like the mechanical retune below. A no-op for every card already at radio.width, so it
     // costs a few loads per tick.
     if (maburgs::width_resync_open(!scout_owns(), scout != nullptr,
-                                   /*scout_frozen=*/!pick_open)) {
+                                   /*scout_frozen=*/!boot_pick.open())) {
       for (int i = 0; i < n_cards; ++i) {
         auto& fe = *fronts[static_cast<size_t>(i)];
         const maburgs::WidthCard wc{fe.ready(), fe.width(), width_tried[static_cast<size_t>(i)],
@@ -2701,6 +2730,15 @@ static int run_radio(const maburgs::Config& cfg) {
         maburgs::SlotFrame sf{
             k + 1 == targets.size() ? std::move(out->frame) : out->frame,
             vrx.rcf_seq(), targets[k], !out->is_disc};
+        // A DISC proposes the channel it is sent on (final review C1
+        // addendum A): the TX card's copy proposes op, a search burst's copy
+        // on the scout card proposes the burst member -- so a drone found
+        // there agrees to stay, links there (plan.link_found) and is moved
+        // only by a relocate order, never by retuning itself on promotion.
+        if (out->is_disc) {
+          const uint8_t ch = fronts[static_cast<size_t>(targets[k])]->channel();
+          if (plan.member(ch)) sf.frame = maburgs::disc_for_channel(sf.frame, ch, cfg.link.key);
+        }
         if (!rcf_slot.offer(sf, drained_ms, false) &&
             !cal_session.radio_silent(drained_ms))
           send_control_frame(sf);
@@ -2895,13 +2933,13 @@ static int run_radio(const maburgs::Config& cfg) {
       // scout card while the scout owns it.
       sin.channel = fronts[static_cast<size_t>(sel.selected())]->channel();
       // scan.state: off (pinned, or no scout-capable card), scouting (the
-      // boot pick is open), moving (a boot hop in flight), frozen.
-      sin.scan_state = (!scout || pinned) ? "off"
-                       : !pick_open       ? "frozen"
-                       : boot_hop         ? "moving"
-                                          : "scouting";
+      // boot pick is open), moving (the pick's relocation in flight), frozen.
+      sin.scan_state = (!scout || pinned)     ? "off"
+                       : !boot_pick.open()    ? "frozen"
+                       : boot_pick.relocating() ? "moving"
+                                              : "scouting";
       sin.scan_rounds = scout ? scout->rounds() : 0;
-      if (!pick_open) sin.scan_pick = plan.op();
+      if (!boot_pick.open()) sin.scan_pick = plan.op();
       // In-flight channel hop snapshot (Task 12): straight off
       // HopController's own accessors + the latest HopVerdict output --
       // same no-controller-reference pattern as sin.ctl further down.

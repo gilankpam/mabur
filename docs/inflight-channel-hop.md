@@ -752,10 +752,14 @@ Since 2026-10-03 (`docs/channel-select.md`) `HopController` takes no home
 parameter at all — its constructor is just `HopController(HopCfg cfg)`,
 and `gs/src/hop_controller.h`'s own comment says so ("No home: this
 feature has no fallback channel any more"). The same date adds a second
-`H` (hop event) kind, `boot_order` — the one-time boot hop placed through
-this same controller while the boot pick is open
-(`docs/channel-select.md` "The pick"), logged and rate-limited exactly
-like a reactive `order`. No config key changed for either of these; `[hop]`
+`H` (hop event) kind, `relocate` (named `boot_order` until 2026-10-04) —
+the order that moves the link from where the drone was found to where it
+should live (`ChannelPlan::want()`: the pin, or the boot pick — the boot
+hop is a relocation), placed through this same controller
+(`docs/channel-select.md` "Finding the drone"). `HopTick::relocate`: no
+flee of the channel left, exempt from `cooldown_ms`, counted against
+`max_hops_per_min`, and the whole episode bypasses the `hop.enable` kill
+switch. No config key changed for either of these; `[hop]`
 and `[hop.verdict]` below are otherwise exactly as they were.
 
 `gs/bundle/maburgs.default.toml`, `[hop]`/`[hop.verdict]` (drone config
@@ -853,8 +857,8 @@ airtime work, 2026-09-25 — see `docs/data-provenance.md` for the break).
 The marker has since moved on to `scanlog 5` (2026-10-03, the channel set
 replacing home + candidates — §7 above and `docs/channel-select.md`);
 every record kind this section documents is unchanged by that bump except
-`M` (loses the `split_home`/`reunite` reasons) and `H` (gains
-`boot_order`, below).
+`M` (loses the `split_home`/`reunite` reasons; gains `link_found`
+2026-10-04) and `H` (gains `relocate`, below).
 The `A` (1 Hz in-flight energy) record and `radio.scan.energy_period_ms`
 are **gone** — the verdict engine's window reads replace them, feeding
 `cards[i].energy` on the sideport continuously in-session instead of once
@@ -884,14 +888,17 @@ H <t> <kind> <epoch> <target> <score> <elapsed_ms>            # a hop event
   `kind` is always a single snake_case token — `order`, `lead_confirm`,
   `one_card_retune`, `verify_pass`, `verify_fail`, `escape`, `withdraw`, `session_lost`, `hold_cap`,
   `hold_exhausted`, `hold_end`, `confirm_extend`, `withdraw_undelivered`,
-  `boot_order`
+  `relocate`
   (`escape`, added 2026-09-26 under the same
   `scanlog 4` marker, is an order placed to leave a blocked channel, §5;
   `confirm_extend` / `withdraw_undelivered`, added the same day, same
   marker, are the confirm extension's entry and its expiry, §5;
-  `boot_order`, added 2026-10-03 under `scanlog 5`, is the one-time boot
-  hop placed through this same controller while the boot pick is open —
-  §7 above and `docs/channel-select.md` "The pick"; the hold pair used to be the two-word C++ strings
+  `relocate`, added 2026-10-04 under `scanlog 5` (the pre-merge
+  2026-10-03 bench builds logged it as `boot_order`), is the order that
+  moves the link to `ChannelPlan::want()` — the pin, or the boot pick, the
+  boot hop being one — placed through this same controller; a relocation
+  is never `would_`-prefixed, since it bypasses `hop.enable` — §7 above and
+  `docs/channel-select.md` "Finding the drone"; the hold pair used to be the two-word C++ strings
   `"hold cap"`/`"hold exhausted"`, a space-delimited field containing the
   delimiter — fixed at the emitter rather than kept as a parser
   workaround, since scan.log is designed to outlive the code that wrote
@@ -971,7 +978,10 @@ target is the live channel and that target is not `scan.pick`
 `hop.hops > 0`, which is a monotonic counter that never resets on
 withdrawal or on hopping back to the pick and would stay lit forever after
 the first confirmed hop. `scan.pick` is the channel the GS froze its boot
-pick on (or the pin, in pinned mode) for the process lifetime; `hopped` is
+pick on (or the pin, in pinned mode) for the process lifetime — latched in
+`gs/src/main.cpp`'s `frozen_pick` at the freeze, never the live `op`
+(until 2026-10-04 it was published live as `plan.op()`, so after a hop it
+followed the target and `(h)` never lit); `hopped` is
 false while the pick is still open (`scan.pick` null, boot phase) — that
 case is the boot-scan's own `(a)`/`moving` mark, not a reactive hop. `(h)`
 and `(a)` share one suffix slot (worst_case() reserves exactly `(a)`'s

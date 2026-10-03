@@ -126,7 +126,10 @@ rather than re-finding a drone sitting on a channel the GS already
 - **Follows members only.** A DISC proposing a member the drone is not on:
   ack agreement from the current channel at DISC time; the retune itself
   happens once that agreed pair is promoted by the first verifying RCF
-  (`act_.retune(ch, "disc")`), and the move is marked unconfirmed. A DISC
+  (`act_.retune(ch, "disc")`), and the move is marked unconfirmed. (Since
+  2026-10-04 the GS never sends such a DISC: every copy proposes the
+  channel it is sent on, and the GS moves a linked drone only with hop
+  orders — "Finding the drone" below. The path stays for robustness.) A DISC
   proposing a **non-member**: the drone acks its own current channel
   instead (`maburgs` logs `ack_override` on `ChannelPlan::on_ack`). An RCF
   `hop_ch` that is not a member is ignored for the retune, but the
@@ -226,7 +229,8 @@ channel and releases the first op window — the scout holds (no tune, no
 beaconing, `working()` stays true) until that ack arrives, so no window
 ever runs against the stale pre-commit `op`. Linked, the sole card carries
 the link and cannot measure: the pick freezes at link-up (`"one-card
-linked"`).
+linked"`), and a link found off `op`/`want` is then relocated by the
+one-card hop path.
 
 **Width.** The scout card tunes 20 MHz for its dwells and rejoins the link
 at `radio.width` on `op` when it has no work (`ChannelScout::run()` parks
@@ -238,7 +242,7 @@ describes).
 (`scout_owns()`: `working() || search requested || (!pinned &&
 pick_open())`) whenever the core must not also touch it — mechanical
 retune, TX selection, verdict input, width resync, the in-flight scout and
-freshness burst, the boot-order gate all key on it. The send gate and DISC
+freshness burst, the relocation gate all key on it. The send gate and DISC
 routing use the narrower `working()`/`beaconing()`: one-card mode drops
 the sole card's non-DISC frames while it is off `op`; two-card mode holds
 the TX card's DISC while `quiet()`. The scout's own DISC bursts are sent
@@ -259,7 +263,55 @@ reads and never scouts. No `[[radio.cards]]` block pins nothing: auto-scan
 uses every supported USB card found, which is two-card mode; an explicit
 `[[radio.cards]]` list (one entry) is how you fly one card.
 
-## The pick: maturity, commit, boot hop, freeze
+## Finding the drone: link where found, then relocate
+
+**A DISC is discovery only; every move of a linked link is a hop order**
+(final review C1, 2026-10-04 — user decision). Since link pairing the drone
+retunes only after the first RCF that verifies under the pending pair
+(`docs/link-pairing.md` "Rendezvous, as built"), and before this fix a
+drone found on a member X ≠ `op` never linked: its ack opened the GS
+session, but RCFs left on the TX card on `op` and the drone on X never
+heard one. Now:
+
+- **The DISC proposes the channel it is sent on.** One DISC is built per
+  tick proposing `op`; every copy fanned to a card on another member is
+  re-proposed and re-tagged for that card's channel
+  (`disc_for_channel()`, `gs/src/vrx_controller.h`). A search burst's DISC
+  on X therefore proposes X: the drone agrees to stay, and never retunes
+  itself on promotion.
+- **The link forms where the drone is.** When the ack that **opened** the
+  session (BEACONING → SESSION inside that `on_rc_frame` call; our nonce,
+  not key-mismatch flagged — a stranger's drone cannot drag the cards) was
+  heard on a member X ≠ `op` (that body's `rx_channel`),
+  `ChannelPlan::link_found()` moves `op` to X for **every** card (the TX
+  card too, via the mechanical retune), the scout parks there, and the
+  proposal follows. `M all <op> <X> link_found`; stderr `maburgs channel:
+  drone found on X (op Y): the link forms there`.
+- **Then it is relocated.** `ChannelPlan::want()` is where the link
+  *should* live: the pin in pinned mode, else the start channel, later the
+  committed pick. While linked with `op ≠ want` (`relocate_due()`), the
+  boot-pick state machine (`gs/src/boot_pick.h`) hands out one **relocate**
+  order per link-up — once the scout owns no card, no hop is in flight and
+  the controller is `Idle`/`Hold` — through the ordinary hop machinery
+  (two cards: the non-TX card leads; one card: the one-card path).
+  `HopTick::relocate`: H kind `relocate`; the channel left is not backed
+  off as fled; exempt from `cooldown_ms`, counted against
+  `max_hops_per_min`; and the whole episode bypasses the `hop.enable`
+  kill switch (a disabled *reactive* hop must not block rendezvous).
+  `verify_pass` lands it. Anything else — withdraw, verify fail (no retry:
+  the only target offered is `want`), a session lost before or after the
+  confirm, the hop cap — accepts the channel the link is on
+  (`set_want(op)`) until the next link-up. While a relocation is due or in
+  flight no reactive order or freshness burst may take the controller.
+- **Pinned mode:** a drone found off the pin links there and is relocated
+  to the pin on that link-up; if that fails the GS stays where the link is
+  until the next loss (then beacons on that `op`) — the sideport shows
+  `link.channel ≠ scan.pick`.
+- A confirmed hop of either kind moves `want` with `op`: a reactive hop's
+  destination is where the link should live from then on, so a later
+  link-up does not relocate back onto the channel it fled.
+
+## The pick: maturity, commit, relocation, freeze
 
 **Ranking.** `pair_proposal(all, current, set, min_rounds, pick_margin,
 blocked_pct)` (`gs/src/pair_pick.h`): a pair is ranked once both halves
@@ -273,68 +325,65 @@ role home used to play: a candidate must beat it by `pick_margin`, ties
 stay on `op`. Config order breaks remaining ties. Returns `op` when
 nothing else is ranked.
 
-**At maturity** (every pair ranked, `max_ms`, or the one-card deadline —
+The whole pick is `BootPick` (`gs/src/boot_pick.{h,cpp}`, pure, every
+exit covered by `tests/test_boot_pick.cpp`); `main.cpp` only feeds it a
+`BootPickIn` per tick and applies its one `BootPickOut`.
+
+**At maturity** (every member but `op` ranked — `op` too while searching —
 `ChannelScout::mature()`):
 
-- **No link** (GS powered first): if the proposal ≠ `op`,
-  `ChannelPlan::commit()` moves `op_`, the TX card retunes, stderr
-  `maburgs channel: commit <from> -> <to> (no link)`, `M all <from> <to>
-  commit`, the state file is written. Freeze (`"commit"`). The drone, when
-  it appears on its remembered member, is found by a search burst and
-  moved by DISC.
-- **Linked, two cards**: if the proposal ≠ `op`, the scout is frozen (stops
-  measuring, parks, frees the lead card — `pick_ranking()` stays readable
-  for the hop machinery) and a **boot hop** is wanted
-  (`maburgs channel: boot hop wanted <op> -> <pick>`). Once the scout has
-  actually let go of the card, one `HopController` order is placed — event
-  kind `boot_order` (H line) — through the unchanged Order → Confirm →
-  Verify → VerifyPass / Withdraw / verify-fail machinery, lead card = the
-  scout card (the non-TX card by construction), `restore_rung` = the
-  verdict's `ref_rung` (the current rung at boot — there is no prior
-  impairment to restore from, so this is simply "keep the current rung").
-  While the pick is open, `HopTick::best` is filled from the boot
-  ranker's ordering (`pick_ranking()`, excluding backed-off pairs), not
-  the in-flight hop's own ranker, so a verify fail retries the next-best
-  **measured** pair. Logged `maburgs channel: boot hop placed <op> ->
-  <target>`. Freeze fires once the controller returns to `Idle` or `Hold`:
-  on `verify_pass` the link is on the pick (`"boot hop landed"`); on
-  exhaustion it is back on the old `op` (`"boot hop exhausted"`); on a
-  withdraw that never confirmed, `"boot hop withdrawn"`; on a confirm that
-  landed but whose verify window never finished (a session loss mid-verify),
-  `"boot hop confirmed, verify cut short"`.
-- **Linked, one card**: the pick froze at link-up — there was never a
-  second card to lead a hop with.
+- **Op unmeasured** (`!op_ranked()`, final review I1): a linked scout
+  never visits `op`'s own pair, so a drone found at once leaves `op` with
+  only its pre-link visits. A working link is not moved on a one-sided
+  comparison: freeze in place (`"op unmeasured"`); the reactive hop covers
+  a dirty `op` later.
+- **No link** (GS powered first): `ChannelPlan::commit()` moves `op` and
+  `want` (the TX card retunes; stderr `maburgs channel: commit <from> ->
+  <to> (no link)`, `M all <from> <to> commit`, the state file is written).
+  Freeze (`"commit"`). The drone, when it appears on its remembered
+  member, is found there by a search burst, the link forms there, and it
+  is relocated to the pick (above).
+- **Linked, proposal ≠ op**: `set_want(pick)` and the scout is frozen
+  (stops measuring, parks, frees the lead card); the relocation moves the
+  link — this **is** the boot hop (`maburgs channel: boot pick wants
+  <pick>, link on <op>: relocating`, `H relocate`). `restore_rung` = the
+  verdict's `ref_rung` (the current rung — "keep the current rung"). The
+  pick freezes when the controller is back in `Idle`/`Hold`: `"relocated"`
+  on `verify_pass`, else `"relocate failed, staying"` (the link stays
+  where it is, `want` follows it).
+- **Linked, one card**: the scout owns the only card while the pick is
+  open, so the pick freezes at link-up (`"one-card linked"`) and the
+  relocation, if due, follows once the scout has parked — one card now
+  relocates too, by the one-card hop path.
 - **Proposal == op**: freeze in place (`"in place"`).
 
 **Freeze** closes the pick for the GS process's lifetime: the scout stops
 measuring and rejoins the link at full width. Logged
-`maburgs channel: pick frozen on <op> (<why>) after <rounds> rounds` plus
-a `K` line (shape unchanged: `K <t> <picked|none> <rounds>
+`maburgs channel: pick frozen on <pick> (<why>) after <rounds> rounds`
+plus a `K` line (shape unchanged: `K <t> <picked|none> <rounds>
 <ch>:<worst_busy>:<floor|nan>:<busy|-> ... pair=<lo>+<hi>|-`; `picked` is
-`op` after the decision). From here only the reactive hop
-(`docs/inflight-channel-hop.md`) moves the link; later link losses
-re-propose `op`. The reasons seen in code, in no particular priority order
-(the first condition the tick loop meets wins): `"commit"`, `"in place"`,
-`"calibration running"`, `"hop disabled"` (the controller would only log
-`would_boot_order` and never move the link, so the pick stays where it
-is), `"boot hop landed"` / `"boot hop exhausted"` / `"boot hop
-withdrawn"` / `"boot hop confirmed, verify cut short"`, `"boot hop: no
-eligible pair"` (every measured pair is backed off or none is ranked —
-stay on `op` rather than synthesize an exhausted hold), `"link lost before
-boot hop"` (the link dropped between wanting the hop and placing its
-order — keep `op`, the drone is most likely still there), `"one-card
-linked"`, `"scout card died"`, and `"max_ms"` (a half that never ranks
-cannot keep the diversity card away forever).
+`want` after the decision — every freeze-in-place exit has accepted `op`
+first). From here only the reactive hop (`docs/inflight-channel-hop.md`)
+and the per-link-up relocation move the link. The reasons, first match
+wins: `"scout card died"`, `"one-card linked"`, `"relocated"` / `"relocate
+failed, staying"`, `"max_ms"` (unmeasured: stay where the link is; a
+relocation in flight is never yanked — it freezes when it resolves),
+`"link lost before relocate"` (the link dropped between wanting the pick
+and placing the order — the pick stands, the next link-up relocates
+there), `"op unmeasured"`, `"commit"`, `"in place"`, `"calibration
+running"`. Gone since 2026-10-04: `"boot hop: no eligible pair"` (the
+relocation's only target is `want`) and `"hop disabled"` (a relocation
+bypasses the kill switch).
 
-No eligibility/arm gate: the boot hop is placed armed or not. It is a
-measured, verified, withdrawn-on-failure move inside the first `max_ms` of
-a GS process; the only way it meets an armed drone is a GS restart
-mid-flight, and then it costs what a reactive hop costs.
+No eligibility/arm gate: the relocation is placed armed or not. It is a
+measured, verified, withdrawn-on-failure move; mid-flight it meets an
+armed drone only after a GS restart or a loss, and then it costs what a
+reactive hop costs.
 
 Timing at the defaults, two cards, both powered together (design figure,
 not yet bench-confirmed — see Bench validation row 1): link on the
-remembered member within ~1 s; three rounds of eight halves ≈ 10 s; boot
-hop lands ≈ 0.5 s later.
+remembered member within ~1 s; three rounds of eight halves ≈ 10 s;
+relocation lands ≈ 0.5 s later.
 
 ## In-flight hop after the freeze
 
@@ -355,24 +404,34 @@ detail, updated for this feature.
   `split_home`/`reunite` reasons — there is nothing to split from or
   reunite to any more — and keeps `commit`/`ack_override` plus the
   in-flight hop's `hop_lead`/`hop_follow`/`hop_withdraw`/`hop_one_card`.
-  `H` gains the `boot_order` kind alongside the in-flight hop's
-  `order`/`verify_fail`/`escape` (`gs/src/scan_log.h`). A `scanlog 4` or
-  earlier file never has `boot_order` and still has `split_home`/
+  `M` also gains `link_found` (2026-10-04, marker unchanged: the link
+  formed where the drone was found). `H` gains the `relocate` kind
+  alongside the in-flight hop's `order`/`verify_fail`/`escape`
+  (`gs/src/scan_log.h`) — named `boot_order` in the pre-merge 2026-10-03
+  bench builds. A `scanlog 4` or earlier file never has `relocate` and
+  still has `split_home`/
   `reunite` in its `M` lines — read it as what it was
   (`docs/data-provenance.md`).
 - **Sideport**: `scan.state` ∈ `off | scouting | moving | frozen` (`off` —
   pinned, or no scout-capable card; `scouting` — the pick is open;
-  `moving` — a boot hop is in flight; `frozen` — the pick is closed).
-  `scan.rounds` (the scout's round count). `scan.pick` (the frozen
-  channel, only once `!pick_open`). `link.home` is **deleted** — there is
+  `moving` — the pick's relocation (the boot hop) is in flight; `frozen` —
+  the pick is closed). `scan.rounds` (the scout's round count). `scan.pick`
+  is **latched** (final review I2, 2026-10-04): the channel the pick froze
+  on (`ChannelPlan::want()` at the freeze, after any accept-in-place), or
+  the pin from the start in pinned mode — never the live `op`, which a
+  reactive hop or a found-elsewhere link moves; null while the pick is
+  open. `link.home` is **deleted** — there is
   no home to report. `link.channel` is unchanged: the live channel of the
   TX card.
 - **stderr**: `maburd: channel set [<c1,c2,...>], parking on <n>[
   (remembered)]` (drone boot); `maburgs channel: set [<c1,c2,...>] mode
   <auto|pinned> start <n>[ (remembered)]` (GS boot); `maburgs channel:
-  commit <from> -> <to> (no link)`; `maburgs channel: boot hop wanted
-  <from> -> <to>`; `maburgs channel: boot hop placed <from> -> <to>`;
-  `maburgs channel: pick frozen on <op> (<why>) after <n> rounds`;
+  commit <from> -> <to> (no link)`; `maburgs channel: drone found on <x>
+  (op <n>): the link forms there`; `maburgs channel: boot pick wants <pick>,
+  link on <op>: relocating`; `maburgs channel: relocate <from> -> <to>
+  placed|refused (hop cap)`; `maburgs channel: relocation to <want> did not
+  land; staying on <op>`;
+  `maburgs channel: pick frozen on <pick> (<why>) after <n> rounds`;
   `maburgs channel: one-card prelude ranking picks <n> (op <n>)[, linked:
   not committed]`; `maburgs channel: drone acked <n>, not in our set;
   ignored`; `maburgs channel: <reason> card <n> <from> -> <to>` (every `M`
@@ -381,8 +440,9 @@ detail, updated for this feature.
 - **`tools/maburtop.py`**: drops the `h{home}` field from the compact
   channel line; shows `scan.state` (including `moving`) and `scan.rounds`
   next to the channel.
-- **`tools/flightreport.py`**: reads `scanlog 5`; treats `boot_order` as a
-  HOP-section order kind alongside `order`/`verify_fail`/`escape`; still
+- **`tools/flightreport.py`**: reads `scanlog 5`; treats `relocate` (and
+  the bench builds' `boot_order`) as a HOP-section order kind alongside
+  `order`/`verify_fail`/`escape`; still
   parses `split_home` out of an older-marker file, since a recording made
   before this date still carries it (`docs/data-provenance.md`).
 

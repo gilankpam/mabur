@@ -367,13 +367,15 @@ instead of 1 Hz:
   columns the in-flight scout added.
 - `K` — the pick at freeze, with the full ranking.
 - `M` — a GS retune that changes where the link lives (`commit`,
-  `ack_override`, `split_home`, `reunite`, plus the hop reasons
-  `hop_lead`/`hop_follow`/`hop_withdraw`/`hop_one_card`).
+  `ack_override`, `link_found`, plus the hop reasons
+  `hop_lead`/`hop_follow`/`hop_withdraw`/`hop_one_card`; `split_home`/
+  `reunite` only in `scanlog 4` and earlier files).
 - `V` — one verdict-engine window, on every verdict change and every
   non-healthy window.
 - `H` — one hop-controller event (`order`, `lead_confirm`,
   `one_card_retune`, `verify_pass`, `verify_fail`, `withdraw`, `hold_cap`,
-  `hold_exhausted`, each `would_`-prefixed while `hop.enable = false`).
+  `hold_exhausted`, `relocate`, …; each `would_`-prefixed while
+  `hop.enable = false`, except a relocation's, which bypasses the switch).
 
 Full formats, the config, the sideport keys it feeds, and the
 `cca − own` ranking assumption for the boot-time (`C`/`D`/`K`/`M`) records
