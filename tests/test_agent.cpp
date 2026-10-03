@@ -575,6 +575,71 @@ TEST(cal_cmd_with_an_already_seen_nonce_is_refused_until_the_session_changes) {
   CHECK(!agent.take_auth_reject());
 }
 
+// The GS is radio-silent for every sweep phase, so the drone always hits
+// FAILSAFE (and clears its session, spec 2026-10-01 §7) partway through a
+// calibration run. The run's later cal frames -- the next phase's CAL_CMD,
+// and above all the CAL_RESULT sent straight into the silent verify window
+// -- are still tagged under the pair the run was going under, and must
+// verify for as long as the caller says a sweep is running. Bench repro
+// 2026-10-03: every result auth-rejected, nothing ever applied.
+TEST(cal_frames_verify_under_the_running_sweeps_session_after_failsafe_clears_it) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  const uint32_t vtx = link_agent(agent, act, cfg);           // link RCF at t=110
+  CalCmd c; c.nonce = 7; c.windows.push_back(CalWindow{3, -4, 4, 1});
+  auto open = pack_cal_cmd(c, mabur::kDefaultLinkKey, TagCtx{kVrx, vtx, 0});
+  CHECK(agent.verify_cal_frame(open.data(), open.size(), false));   // opens the sweep
+  agent.tick(110 + cfg.link.failsafe_ms + 1, RadioHealth{});
+  REQUIRE(agent.state() == RcAgent::State::FAILSAFE);
+  REQUIRE(!agent.current_session().valid);
+
+  c.phase = 1;
+  auto fine = pack_cal_cmd(c, mabur::kDefaultLinkKey, TagCtx{kVrx, vtx, 0});
+  CHECK(agent.verify_cal_frame(fine.data(), fine.size(), true));
+  CalResult r; r.nonce = 7;
+  auto res = pack_cal_result(r, mabur::kDefaultLinkKey, TagCtx{kVrx, vtx, 0});
+  CHECK(agent.verify_cal_frame(res.data(), res.size(), true));
+  CHECK(!agent.take_auth_reject());
+
+  // Sweep over: the cleared pair is dead again, for results and commands.
+  CHECK(!agent.verify_cal_frame(res.data(), res.size(), false));
+  CHECK(!agent.verify_cal_frame(res.data(), res.size(), true));    // latch is gone
+  CHECK(agent.take_auth_reject());
+}
+
+// The latch follows the newest pair a cal frame verified under: the GS can
+// re-pair between phases (its DISC/RCF go out once a phase's slack ends),
+// and the run then continues under -- and must survive the next failsafe
+// with -- the new pair, not the one it opened under.
+TEST(cal_latch_follows_a_mid_run_re_pair) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  const uint32_t vtx = link_agent(agent, act, cfg);
+  CalCmd c; c.nonce = 9; c.windows.push_back(CalWindow{3, -4, 4, 1});
+  auto open = pack_cal_cmd(c, mabur::kDefaultLinkKey, TagCtx{kVrx, vtx, 0});
+  CHECK(agent.verify_cal_frame(open.data(), open.size(), false));
+  agent.tick(110 + cfg.link.failsafe_ms + 1, RadioHealth{});
+  REQUIRE(agent.state() == RcAgent::State::FAILSAFE);
+  const uint32_t vtx2 = ack_agent(agent, act, 136, kVrx, 4000);
+  auto first = make_rcf_wire(1, encode_profile(PhyMode::HT, 0, 20), 8, vtx2);
+  agent.on_rc_frame(first.data(), first.size(), 4010);
+  REQUIRE(agent.state() == RcAgent::State::LINKED);
+  c.phase = 1;
+  auto fine = pack_cal_cmd(c, mabur::kDefaultLinkKey, TagCtx{kVrx, vtx2, 0});
+  CHECK(agent.verify_cal_frame(fine.data(), fine.size(), true));
+  agent.tick(4010 + cfg.link.failsafe_ms + 1, RadioHealth{});
+  REQUIRE(!agent.current_session().valid);
+  CalResult r; r.nonce = 9;
+  auto res2 = pack_cal_result(r, mabur::kDefaultLinkKey, TagCtx{kVrx, vtx2, 0});
+  auto res1 = pack_cal_result(r, mabur::kDefaultLinkKey, TagCtx{kVrx, vtx, 0});
+  CHECK(agent.verify_cal_frame(res2.data(), res2.size(), true));
+  CHECK(!agent.take_auth_reject());
+  CHECK(!agent.verify_cal_frame(res1.data(), res1.size(), true));   // superseded pair
+  CHECK(agent.take_auth_reject());
+}
+
 TEST(cal_nonce_ring_is_bounded_and_forgets_the_oldest) {
   Config cfg = make_cfg();
   MockActuator act;

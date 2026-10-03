@@ -88,6 +88,15 @@ gated on `cal_active` while a session runs (`drone/src/main.cpp`), so the
 agent cannot fight the sweep for the radio. The falling edge of
 `cal_active` re-applies the operating ladder and TX power together.
 
+Leaving `LINKED` also clears the drone's pairing session (link pairing,
+`docs/link-pairing.md`), yet the run's later cal frames -- the next
+phase's `T_CAL_CMD` and the `T_CAL_RESULT` sent into the silent verify
+window -- are still tagged under the pair the run was going under. So
+while a sweep is open the drone keeps accepting cal frames under the
+newest pair a cal frame verified under (`RcAgent::verify_cal_frame`'s
+`sweep_running` latch), and drops that latch the moment the sweep
+closes.
+
 The operator's job is only to **confirm the pair re-links after each
 session**: video should resume within a couple of DISC beacons, with an
 IDR at the join. If it doesn't, that is the ordinary stale-caps
@@ -246,7 +255,16 @@ the drone never ran its verify sweep`. Two things produce it:
 - The drone refused the apply — an out-of-range table, a backup or write
   failure, or a candidate config that would not reload. All of these
   return before verify is armed, and all of them leave `/etc/mabur.toml`
-  exactly as it was. `/tmp/maburd.log` on the drone names which.
+  exactly as it was. `/tmp/mabur.log` on the drone names which
+  (`maburd cal: apply_calibration failed: ...`).
+
+A result frame that arrived but failed its pairing tag is counted, not
+logged: `cal_auth_rej=N` on the drone's `maburd tx_send:` stats line (it is
+cumulative, and only prints while video is flowing, so compare a line from
+before the run with one after). From the pairing merge (8f75a19,
+2026-10-01) until the session-latch fix (2026-10-03) this was every run:
+failsafe cleared the drone's session mid-sweep and the result never
+verified -- see "The drone will be in `RENDEZVOUS`" above.
 
 Either way **nothing was written**. Re-run; if it repeats, read the drone
 log before touching geometry.

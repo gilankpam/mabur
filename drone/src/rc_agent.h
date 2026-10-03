@@ -237,18 +237,27 @@ class RcAgent {
   // TX writer thread (verify_cal_frame), read once per Telem period.
   bool take_auth_reject() { return auth_reject_.exchange(false, std::memory_order_relaxed); }
   // Cal frames are verified on the TX writer thread against the CURRENT
-  // session, read atomically (published_session_). No pending fallback: cal
-  // needs a linked session. Sets the auth_reject flag on failure.
+  // session, read atomically (published_session_). No pending fallback: a
+  // sweep can only open under a linked session. Sets the auth_reject flag
+  // on failure.
+  //
+  // `sweep_running` (CalSweep::active()) extends that for the life of one
+  // run: the newest pair a cal frame verified under stays accepted until
+  // the sweep closes, even after failsafe clears current_ -- which happens
+  // in every run, because the GS is radio-silent while each phase airs.
+  // Without it the CAL_RESULT, sent into the silent verify window, never
+  // verifies and nothing is ever applied (bench repro 2026-10-03). Passing
+  // false drops the latch, so it cannot outlive the sweep.
   //
   // Cal frames are tagged with seq32 = 0, so freshness is the cal nonce: a
   // T_CAL_CMD whose nonce was already accepted in this link session -- other
   // than the most recent one (a retransmission or the next phase of the
   // running sweep) -- is refused like a failed tag. The seen-nonce ring
-  // (kCalNonceRing deep) belongs to the published session it was filled
-  // under and is forgotten whenever that changes (cleared or promoted).
+  // (kCalNonceRing deep) belongs to the pair its nonces verified under and
+  // is forgotten when a cal frame first verifies under a different one.
   // Owned by verify_cal_frame's caller thread (the TX writer); not
   // thread-safe against concurrent verify_cal_frame calls.
-  bool verify_cal_frame(const uint8_t* body, size_t len);
+  bool verify_cal_frame(const uint8_t* body, size_t len, bool sweep_running = false);
   static constexpr size_t kCalNonceRing = 8;
   // Replay harness only (maburd --dry-run): install a known pair so a file
   // of RCFs tagged under (vrx, vtx) verifies without a DISC exchange.
@@ -332,7 +341,8 @@ class RcAgent {
   // read by verify_cal_frame on the TX writer thread.
   std::atomic<uint64_t> published_session_{0};
   // verify_cal_frame's seen-cal-nonce ring (TX writer thread only).
-  uint64_t cal_ring_session_ = 0;      // published_session_ the ring belongs to
+  uint64_t cal_ring_session_ = 0;      // the pair the ring's nonces verified under
+  uint64_t cal_latch_session_ = 0;     // newest pair a cal frame verified under, 0 = none
   std::array<uint32_t, kCalNonceRing> cal_seen_{};
   size_t cal_seen_n_ = 0, cal_seen_next_ = 0;
   bool have_cal_current_ = false;

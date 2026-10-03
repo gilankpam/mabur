@@ -231,7 +231,7 @@ def _apply_status_line(run):
                 "it, or the apply itself was refused (out-of-range table, "
                 "backup/write failure, or a candidate config that would not "
                 "load). Nothing was changed on the drone; check "
-                "/tmp/maburd.log on the drone and re-run")
+                "/tmp/mabur.log on the drone and re-run")
     return "not written: this run produced no measurements"
 
 
