@@ -68,16 +68,30 @@ bool RcAgent::verify_rcf_(const uint8_t* body, size_t len, const rc::Rcf& r,
   return true;
 }
 
-bool RcAgent::verify_cal_frame(const uint8_t* body, size_t len) {
+bool RcAgent::verify_cal_frame(const uint8_t* body, size_t len, bool sweep_running) {
+  auto verifies = [&](uint64_t s) {
+    return s != 0 && rc::verify_control(body, len, cfg_.link.key,
+        rc::TagCtx{static_cast<uint32_t>(s >> 32), static_cast<uint32_t>(s & 0xFFFFFFFFu), 0});
+  };
+  // The latch only outlives the published session while a sweep runs: the
+  // GS is radio-silent for every phase, so the drone reaches FAILSAFE (and
+  // clears current_) inside every run, yet the run's later CAL_CMDs and its
+  // CAL_RESULT are still tagged under the pair it was going under.
+  if (!sweep_running) cal_latch_session_ = 0;
   const uint64_t p = published_session_.load(std::memory_order_acquire);
-  bool ok = p != 0 && rc::verify_control(body, len, cfg_.link.key,
-      rc::TagCtx{static_cast<uint32_t>(p >> 32), static_cast<uint32_t>(p & 0xFFFFFFFFu), 0});
-  if (p != cal_ring_session_) {
-    // New (or cleared) session: the seen nonces belonged to the old pair,
-    // whose tags no longer verify anyway.
-    cal_ring_session_ = p;
-    cal_seen_n_ = cal_seen_next_ = 0;
-    have_cal_current_ = false;
+  uint64_t used = 0;
+  if (verifies(p)) used = p;
+  else if (cal_latch_session_ != p && verifies(cal_latch_session_)) used = cal_latch_session_;
+  bool ok = used != 0;
+  if (ok) {
+    cal_latch_session_ = used;
+    if (used != cal_ring_session_) {
+      // New pair: the seen nonces belonged to the old one, whose tags no
+      // longer verify anyway (the latch has moved off it too).
+      cal_ring_session_ = used;
+      cal_seen_n_ = cal_seen_next_ = 0;
+      have_cal_current_ = false;
+    }
   }
   if (ok && rc::frame_type(body, len) == rc::T_CAL_CMD) {
     // In-session freshness (spec 2026-10-01 §5): a cal nonce already seen

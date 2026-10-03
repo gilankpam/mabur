@@ -2383,7 +2383,8 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
       // pump()'s thread (cal_sweep.h constraint 1).
       std::vector<uint8_t> cal_body;
       while (cal_queue.pop(cal_body)) {
-        if (!agent.verify_cal_frame(cal_body.data(), cal_body.size())) {
+        if (!agent.verify_cal_frame(cal_body.data(), cal_body.size(),
+                                     cal_sweep.active())) {
           ++cal_auth_rejects;
           continue;
         }

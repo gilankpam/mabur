@@ -100,6 +100,11 @@ class CalSession {
   bool radio_silent(uint64_t now_ms) const;
 
   State state() const { return state_; }
+  // AwaitAck through Verify: a run owns the air (the same set start()
+  // refuses to interrupt).
+  bool running() const {
+    return state_ != State::Idle && state_ != State::Done && state_ != State::Failed;
+  }
 
   // Per-rate analysis as it stands right now (coarse-only mid-run, merged
   // once a fine phase has completed) -- for the `status` command and the
@@ -112,10 +117,18 @@ class CalSession {
   // air immediately, from any state.
   void abort(const char* why);
 
-  // Told by main.cpp every tick: whether the RC link is up and whether the
-  // peer's last DiscAck carried CAP_CALIBRATE. start() is the only place
-  // that reads these.
-  void set_peer(bool linked, bool cal_capable);
+  // Told by main.cpp every tick: whether the RC link is up, whether the
+  // peer's last DiscAck carried CAP_CALIBRATE, and the pair's tag context
+  // (VrxController::session_ctx()). start() is the only place that reads
+  // these.
+  void set_peer(bool linked, bool cal_capable, mabur::rc::TagCtx ctx = {});
+
+  // The tag context every T_CAL_CMD/T_CAL_RESULT of the current run is
+  // packed under: set_peer()'s ctx as of start(), frozen for the run. The
+  // GS keeps beaconing between phases and may adopt a fresh pair there --
+  // one the drone has issued but not promoted, while it verifies the run's
+  // frames against the pair the run opened under (RcAgent's sweep latch).
+  const mabur::rc::TagCtx& tag_ctx() const { return tag_ctx_; }
 
   // The GS's own margin, for its own park bookkeeping only (the verify
   // plan's expected indices, cal.log's R line). Read-only by design: the
@@ -173,6 +186,8 @@ class CalSession {
   uint32_t nonce_ = 0;
   bool linked_ = false;
   bool cal_capable_ = false;
+  mabur::rc::TagCtx peer_ctx_{};
+  mabur::rc::TagCtx tag_ctx_{};
 
   const char* fail_reason_ = "";
 

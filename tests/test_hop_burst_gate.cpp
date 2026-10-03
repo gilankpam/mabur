@@ -47,10 +47,12 @@ TEST(first_burst_not_delayed_by_initial_last_burst_ms) {
 // Bench 2026-09-15: nothing in the hop block may run before the link is in
 // SESSION with the boot scout's cards released (see hop_active's comment).
 TEST(hop_block_is_inactive_outside_session_or_while_boot_scout_owns_a_card) {
-  CHECK(hop_active(/*in_session=*/true, /*scout_joined=*/true));
-  CHECK(!hop_active(false, true));
-  CHECK(!hop_active(true, false));
-  CHECK(!hop_active(false, false));
+  CHECK(hop_active(/*in_session=*/true, /*scout_joined=*/true, /*cal_running=*/false));
+  CHECK(!hop_active(false, true, false));
+  CHECK(!hop_active(true, false, false));
+  CHECK(!hop_active(false, false, false));
+  // A calibration run silences video on purpose: never a hop trigger.
+  CHECK(!hop_active(true, true, true));
 }
 // Bench 2026-09-15: the TX selector must not switch onto the lead card
 // while a hop is in flight (see tx_selection_frozen's comment).
@@ -71,5 +73,30 @@ TEST(verdict_card_usable_only_on_the_op_channel) {
   CHECK(!verdict_card_usable(true, false, 112, 144));    // lead card on the hop target
   CHECK(!verdict_card_usable(true, true, 144, 144));     // mid-dwell
   CHECK(!verdict_card_usable(false, false, 144, 144));   // not ready
+}
+// A re-pair between calibration phases arms the move edge; acting on it
+// mid-run would retune both cards off the channel being measured. Held
+// until the run ends, then delivered once -- the drone replays its own
+// deferred retune at the same point.
+// Revert (return `edge` as-is): the mid-run edge fires at once.
+TEST(cal_move_edge_hold_defers_the_edge_to_the_end_of_the_run) {
+  CalMoveEdgeHold h;
+  CHECK(h.take(true, false));          // no run: pass-through
+  CHECK(!h.take(false, false));
+  CHECK(!h.take(true, true));          // re-pair mid-run: held
+  CHECK(!h.take(false, true));
+  CHECK(h.take(false, false));         // run over: delivered once
+  CHECK(!h.take(false, false));
+}
+// The scout only re-reads CalSession::running() once per dwell period, so a
+// dwell begun just before `maburcal start` keeps one card off-channel for
+// up to 250 ms into the run -- against a 30 ms settle and 20-frame coarse
+// cells. The first T_CAL_CMD waits for that card to come back.
+// Revert (return !radio_silent): a due command goes out mid-dwell.
+TEST(cal_cmd_waits_for_a_scout_dwell_begun_before_start) {
+  CHECK(cal_cmd_clear(/*radio_silent=*/false, /*dwell_busy=*/false));
+  CHECK(!cal_cmd_clear(false, true));
+  CHECK(!cal_cmd_clear(true, false));
+  CHECK(!cal_cmd_clear(true, true));
 }
 MTEST_MAIN

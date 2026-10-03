@@ -778,4 +778,32 @@ TEST(no_dip_rows_park_at_the_constant_rail_without_any_ack) {
   for (int r = 0; r < 8; ++r) CHECK(res->walls[r] == kRailRel);
 }
 
+// The GS keeps beaconing between phases, and a DISC_ACK there hands it a
+// new pair the drone has only issued, not promoted -- the drone verifies the
+// run's frames against the pair the run opened under (RcAgent's sweep
+// latch). So every command and result of one run carries the tag context
+// set_peer() reported at start(), whatever set_peer() says later. Bench
+// 2026-10-03: a mid-run re-pair re-tagged the result, all 15 rejected.
+TEST(the_tag_context_is_frozen_at_start_for_the_whole_run) {
+  CalSessionCfg cfg;
+  cfg.phase_slack_ms = 0;
+  CalSession s(cfg);
+  s.set_peer(true, true, mabur::rc::TagCtx{11, 22, 0});
+  std::string err;
+  CHECK(!s.running());
+  REQUIRE(s.start(43, 0, &err));
+  CHECK(s.running());
+  s.set_peer(true, true, mabur::rc::TagCtx{11, 33, 0});   // re-paired mid-run
+  s.set_peer(false, true, mabur::rc::TagCtx{11, 33, 0});  // and lost again
+  CHECK(s.tag_ctx().vrx_nonce == 11);
+  CHECK(s.tag_ctx().vtx_nonce == 22);
+  CHECK(s.tag_ctx().seq32 == 0);
+  // The next run takes whatever the link holds when it starts.
+  s.abort("test");
+  CHECK(!s.running());
+  s.set_peer(true, true, mabur::rc::TagCtx{11, 44, 0});
+  REQUIRE(s.start(44, 10, &err));
+  CHECK(s.tag_ctx().vtx_nonce == 44);
+}
+
 MTEST_MAIN

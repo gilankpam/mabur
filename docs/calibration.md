@@ -60,9 +60,14 @@ above.
 
 On the reference unit a full run is **~72 s** (three rows — MCS 0-2 — never
 dip, so they skip the fine phase). A unit whose PA walls every rate runs
-closer to 87 s. The entire run is **radio-silent from the GS**: no RCF,
-no keepalive DISC, nothing but the sweep frames themselves and the two
-`T_CAL_CMD`/`T_CAL_RESULT` control frames — video and telemetry both
+closer to 87 s. The GS is **radio-silent while each sweep phase airs**
+(`CalSession::radio_silent()`: the phase plus its `phase_slack_ms` tail):
+no RCF, no keepalive DISC, nothing but the drone's sweep frames. In the
+gaps between phases -- while a phase's `T_CAL_CMD` awaits its ack, and
+around the result -- RCF and the DISC keepalive go out as usual, which is
+harmless since the drone is not sweeping then. `T_CAL_RESULT` is the one
+send made into a silent window, on purpose (it is repeated into verify
+until the drone's first verify frame acks it). Video and telemetry both
 pause and resume with the session.
 
 `maburcal status` polls a running session; `maburcal abort` cancels one.
@@ -87,6 +92,33 @@ symptom: `RENDEZVOUS` is a passive waiting state, and `set_ladder` is
 gated on `cal_active` while a session runs (`drone/src/main.cpp`), so the
 agent cannot fight the sweep for the radio. The falling edge of
 `cal_active` re-applies the operating ladder and TX power together.
+
+Leaving `LINKED` also clears the drone's pairing session (link pairing,
+`docs/link-pairing.md`), yet the run's later cal frames -- the next
+phase's `T_CAL_CMD` and the `T_CAL_RESULT` sent into the silent verify
+window -- are still tagged under the pair the run was going under. So
+while a sweep is open the drone keeps accepting cal frames under the
+newest pair a cal frame verified under (`RcAgent::verify_cal_frame`'s
+`sweep_running` latch), and drops that latch the moment the sweep
+closes. The GS side matches it: `CalSession` freezes the tag context at
+`start()` (`tag_ctx()`), because the GS keeps beaconing between phases and
+can adopt a fresh pair there that the drone has issued but not promoted.
+
+The lapsed session must not move the GS's radios either. While a run is
+going (`CalSession::running()`) `ChannelPlan` treats the link as in
+session (no `split_home` card 0 to home), and the in-flight hop verdict,
+hop controller and periodic scout are all off -- otherwise, on any op
+channel other than home, a card leaves the channel being measured
+mid-sweep (bench 2026-10-03: `split_home` on op 144, a `hop_lead` on op
+112, both reading as `card_disagree` and garbage walls such as mcs5 −33).
+A link-pairing move edge armed by a between-phase re-pair is held, not
+acted on, until the run ends (`CalMoveEdgeHold`), mirroring the drone,
+which defers its own retunes while `cal_active` and replays them after.
+The one dwell the scout can still have in flight at `start` (it re-reads
+`running()` only once per `dwell_period_ms`, and a dwell is 250 ms against
+a 30 ms settle) is waited out: the first `T_CAL_CMD` is not sent while
+`dwell_busy` (`cal_cmd_clear`), so no card is off-channel when the coarse
+row opens. Net: no GS card changes channel from `start` to `done`.
 
 The operator's job is only to **confirm the pair re-links after each
 session**: video should resume within a couple of DISC beacons, with an
@@ -246,7 +278,16 @@ the drone never ran its verify sweep`. Two things produce it:
 - The drone refused the apply — an out-of-range table, a backup or write
   failure, or a candidate config that would not reload. All of these
   return before verify is armed, and all of them leave `/etc/mabur.toml`
-  exactly as it was. `/tmp/maburd.log` on the drone names which.
+  exactly as it was. `/tmp/mabur.log` on the drone names which
+  (`maburd cal: apply_calibration failed: ...`).
+
+A result frame that arrived but failed its pairing tag is counted, not
+logged: `cal_auth_rej=N` on the drone's `maburd tx_send:` stats line (it is
+cumulative, and only prints while video is flowing, so compare a line from
+before the run with one after). From the pairing merge (8f75a19,
+2026-10-01) until the session-latch fix (2026-10-03) this was every run:
+failsafe cleared the drone's session mid-sweep and the result never
+verified -- see "The drone will be in `RENDEZVOUS`" above.
 
 Either way **nothing was written**. Re-run; if it repeats, read the drone
 log before touching geometry.
