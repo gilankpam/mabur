@@ -966,21 +966,18 @@ the same foreign-busy-airtime figure the `blocked` evidence bit and both
 rankers use.
 
 **Player OSD:** the compact bar's `ch:` field appends `(h)` while a hop's
-target is the live channel and that target is not home
+target is the live channel and that target is not `scan.pick`
 (`GsSnapshot::hopped`, `gs/player/src/gs_snapshot.cpp`) — **not**
 `hop.hops > 0`, which is a monotonic counter that never resets on
-withdrawal or on hopping back home and would stay lit forever after the
-first confirmed hop. `(h)` and the boot-scan's `(a)` share one suffix slot
-(worst_case() reserves exactly `(a)`'s width) with `(h)` taking priority,
-since a mid-flight hop is the more actionable of the two for the pilot.
-
-⚠ **Broken since 2026-10-03.** `GsSnapshot::hopped` still parses
-`link.home` to tell a hop target apart from the boot pick, but
-`link.home` no longer exists on the sideport (the channel set removed it,
-`docs/channel-select.md` "Observability"). `home` therefore always parses
-as absent, `out->hopped` is permanently `false`, and `(h)` never lights
-any more — hop or no hop. `gs/player` was not touched by the channel-set
-plan (Task 15 is docs-only); this needs its own follow-up fix.
+withdrawal or on hopping back to the pick and would stay lit forever after
+the first confirmed hop. `scan.pick` is the channel the GS froze its boot
+pick on (or the pin, in pinned mode) for the process lifetime; `hopped` is
+false while the pick is still open (`scan.pick` null, boot phase) — that
+case is the boot-scan's own `(a)`/`moving` mark, not a reactive hop. `(h)`
+and `(a)` share one suffix slot (worst_case() reserves exactly `(a)`'s
+width) with `(h)` taking priority, since a mid-flight hop is the more
+actionable of the two for the pilot. `(h)` reads false, not stale-true, on
+an older maburgs missing `scan` or `hop`.
 
 **`tools/flightreport.py` HOP section** (`print_hop_report`,
 `load_scanlog`). Session-mode only (`scan.log` is a sibling of `ctl.log`

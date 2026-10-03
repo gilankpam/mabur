@@ -471,34 +471,64 @@ TEST(key_mismatch_parses_from_link_state) {
   CHECK(!s.key_mismatch);
 }
 
-// In-flight channel hop (spec 2026-09-14-inflight-channel-hop): `hopped`
+// In-flight channel hop (spec 2026-09-14-inflight-channel-hop, scan.pick
+// keying since 2026-10-03 auto-channel-set deleted link.home): `hopped`
 // means "the live channel is the hop feature's own standing target, and
-// that target isn't home" -- not "a hop has ever happened this session"
-// (hop.hops is a cumulative counter that never resets) and not a plain
-// channel != home check (that also fires for an unrelated boot-scan pick).
-TEST(hopped_true_only_when_channel_matches_a_non_home_hop_target) {
+// that target isn't the GS's frozen boot pick" -- not "a hop has ever
+// happened this session" (hop.hops is a cumulative counter that never
+// resets) and not a plain channel != pick check (that also fires for the
+// boot pick itself, which has its own "(a)" mark and is unrelated to this
+// feature).
+TEST(hopped_true_only_when_channel_matches_a_non_pick_hop_target) {
   GsSnapshot s;
-  // Landed on the hop target, target != home -> true.
-  REQUIRE(parse(R"({"link": {"channel": 149, "home": 136},
+  // Landed on the hop target, target != pick -> true.
+  REQUIRE(parse(R"({"link": {"channel": 149}, "scan": {"pick": 136},
                     "hop": {"state": "idle", "target": 149}})", &s));
   CHECK(s.hopped);
-  // Withdrawn / returned home: target == home -> false, even with hops > 0
-  // from an earlier confirmed hop this session.
-  REQUIRE(parse(R"({"link": {"channel": 136, "home": 136},
+  // Withdrawn / returned to the pick: target == pick -> false, even with
+  // hops > 0 from an earlier confirmed hop this session.
+  REQUIRE(parse(R"({"link": {"channel": 136}, "scan": {"pick": 136},
                     "hop": {"state": "idle", "target": 136, "hops": 2}})", &s));
   CHECK(!s.hopped);
   // Mid-order: hop.target is set but the live channel hasn't caught up to
   // it yet -> false (not yet actually hopped-to).
-  REQUIRE(parse(R"({"link": {"channel": 136, "home": 136},
+  REQUIRE(parse(R"({"link": {"channel": 136}, "scan": {"pick": 136},
                     "hop": {"state": "ordered", "target": 149}})", &s));
   CHECK(!s.hopped);
   // hop.target null (feature never fired this session) -> false, even on a
-  // non-home channel (that's the boot-scan pick's "(a)" mark's job).
-  REQUIRE(parse(R"({"link": {"channel": 100, "home": 136},
+  // non-pick channel (that's the boot-scan pick's "(a)" mark's job).
+  REQUIRE(parse(R"({"link": {"channel": 100}, "scan": {"pick": 136},
                     "hop": {"state": "idle", "target": null}})", &s));
   CHECK(!s.hopped);
   // No "hop" block at all (older maburgs) -> false.
-  REQUIRE(parse(R"({"link": {"channel": 149, "home": 136}})", &s));
+  REQUIRE(parse(R"({"link": {"channel": 149}, "scan": {"pick": 136}})", &s));
+  CHECK(!s.hopped);
+}
+
+// scan.pick (the boot pick, or the pin in pinned mode, frozen for the
+// process lifetime) is the reference the hop marker keys on now that
+// link.home is gone -- not scan.state and not link.channel alone.
+TEST(hopped_keys_on_scan_pick_not_home) {
+  GsSnapshot s;
+  REQUIRE(parse(R"({"link": {"channel": 144}, "scan": {"pick": 40},
+                    "hop": {"target": 144}})", &s));
+  CHECK(s.hopped);
+  // Hopped right back onto the pick -> false.
+  REQUIRE(parse(R"({"link": {"channel": 144}, "scan": {"pick": 144},
+                    "hop": {"target": 144}})", &s));
+  CHECK(!s.hopped);
+  // Pick still open (boot phase) -> false, even with a live hop target --
+  // the boot hop is "(a)"/`moving`, not a reactive hop.
+  REQUIRE(parse(R"({"link": {"channel": 144}, "scan": {"pick": null},
+                    "hop": {"target": 144}})", &s));
+  CHECK(!s.hopped);
+  // No "scan" block at all (older maburgs) -> false.
+  REQUIRE(parse(R"({"link": {"channel": 144}, "hop": {"target": 144}})", &s));
+  CHECK(!s.hopped);
+  // Hop ordered but the live channel hasn't landed on the target yet ->
+  // false.
+  REQUIRE(parse(R"({"link": {"channel": 40}, "scan": {"pick": 40},
+                    "hop": {"target": 144}})", &s));
   CHECK(!s.hopped);
 }
 

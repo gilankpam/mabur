@@ -45,16 +45,20 @@ struct GsSnapshot {
   // pick rather than the configured home. False when the block is absent
   // (older maburgs) or malformed.
   bool scan_auto = false;
-  // In-flight channel hop (spec 2026-09-14-inflight-channel-hop): true
-  // only while `channel` equals hop.target and that target isn't
-  // link.home -- i.e. the live channel is one the hop feature itself put
-  // it on, right now. Deliberately NOT "a hop has ever happened this
-  // session" (hop.hops is a monotonic counter that never resets on
-  // withdraw or on hopping back to home), and NOT a plain
-  // channel != home check either (that also fires for a boot-scan pick,
-  // which already has its own "(a)" mark and is unrelated to this
-  // feature). False when the block is absent (older maburgs) or the link
-  // is on home / a stale hop target.
+  // In-flight channel hop (spec 2026-09-14-inflight-channel-hop; keyed on
+  // scan.pick since the 2026-10-03 auto-channel-set feature deleted
+  // link.home): true only while `channel` equals hop.target AND
+  // scan.pick is present (non-null -- the GS has frozen its boot pick, or
+  // pin, for the process lifetime) AND that target isn't scan.pick --
+  // i.e. the live channel is one the hop feature itself put it on, right
+  // now, after the pick was settled. Deliberately NOT "a hop has ever
+  // happened this session" (hop.hops is a monotonic counter that never
+  // resets on withdraw or on hopping back to the pick), and NOT a plain
+  // channel != pick check either (that also fires for the still-open
+  // boot pick, which already has its own "(a)"/`moving` mark and is
+  // unrelated to this feature). False when the hop or scan block is
+  // absent (older maburgs), scan.pick is still null (boot phase), or the
+  // link is on the pick / a stale hop target.
   bool hopped = false;
   // link.state == "key_mismatch": our key file differs from the drone's
   // (spec 2026-10-01 link-pairing). False when the block is absent (older
