@@ -250,8 +250,10 @@ TEST(session_loss_is_shadow_only_when_disabled) {
 }
 
 // The deadlock itself, with the real ChannelPlan: the recorded sequence
-// (op 128, order 40 on card 0, session drops before any confirm). The GS
-// must have a card on home within split_after_ms, where the drone waits.
+// (op 128, order 40 on card 0, session drops before any confirm). The
+// session loss must withdraw the in-flight order (plan no longer hopping,
+// op restored to 136) and the plan must release the spare card to search
+// once search_after_ms has elapsed -- there is no home and no split.
 #include "channel_plan.h"
 TEST(session_loss_mid_hop_withdraws_and_releases_the_plan) {
   ChannelPlan plan(ChannelPlanCfg{136, {136, 149, 161}, 2, 5000});
@@ -327,7 +329,7 @@ static bool has(const std::vector<uint8_t>& v, uint8_t ch) {
 // Revert (drop the escape branch in idle_tick): Hold, hold_exhausted.
 TEST(escape_from_blocked_op_into_fled_channel) {
   HopController h(cfg());
-  HopTick k = T(1000, blocked_here(), std::nullopt, 136);   // on home: home unavailable
+  HopTick k = T(1000, blocked_here(), std::nullopt, 136);   // on 136: nothing ranked
   k.escape = 112; k.escape_score = 7;
   auto a = h.tick(k);
   CHECK(a.kind == HopAction::Order && a.target == 112 && a.restore_rung == 5);
@@ -404,7 +406,7 @@ TEST(escape_respects_hop_cap) {
   t += 10; h.tick(T(t, interfered(), 44, 149, true));
   (void)h.take_events();
   t += kPast;
-  HopTick k = T(t, blocked_here(), std::nullopt, 44);   // home 136 fled -> unavailable
+  HopTick k = T(t, blocked_here(), std::nullopt, 44);   // 136 fled -> backed off
   k.escape = 112;
   auto a = h.tick(k);
   CHECK(a.kind == HopAction::Hold);
@@ -415,7 +417,7 @@ TEST(escape_respects_hop_cap) {
 // Revert (drop the escape branch in verifying_tick): Hold, verify_fail.
 TEST(escape_after_verify_fail) {
   HopController h(cfg());
-  h.tick(T(1000, interfered(), 149, 136));              // flee home 136
+  h.tick(T(1000, interfered(), 149, 136));              // flee 136
   h.tick(T(1080, interfered(), 149, 136, true));        // landed on 149
   (void)h.take_events();
   HopTick k = T(1400, measured(blocked_here(), 1250, 1400), std::nullopt, 149);
