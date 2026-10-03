@@ -7,7 +7,9 @@
 usb_vid    = 3034        # Realtek USB vendor ID (0x0bda) in decimal
 usb_pid    = 0           # 0 = find the card automatically (8812EU or 8812CU)
 channels   = [40, 64, 112, 144]   # the channel set, same as the ground station's (a superset is fine);
-                                  # the drone parks on the remembered member and follows the GS to any member
+                                  # the drone parks on the remembered member and follows the GS to any member.
+                                  # PROVISIONAL until bench row 8 (maburcal on 64 and 112; swap 64 for 128
+                                  # if it fails), docs/channel-select.md "Config".
 width      = 40        # HT40 on each member's standard pair; per-rung width comes from the GS ladder (docs/bw40.md)
 power_mode = "none"      # "none" = card's default TX power; "offset" = use the calibrated walls below
 tx_threads = 4           # parallel USB senders; 4 is needed to reach full link speed

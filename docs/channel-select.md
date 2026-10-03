@@ -31,7 +31,16 @@ page's §1/§3/§5/§7).
 
 Both ends carry the set. The drone's list may be a superset of the GS's,
 never a subset: the GS only ever proposes or orders members, and the drone
-parks only on members.
+parks only on members. If the drone's set does not contain the GS's, the
+link may never form (a drone parked on a channel the GS never searches is
+never found) or never reach the pick (the drone ignores a hop order to a
+channel outside its set, so every relocation fails).
+
+**The default set `[40, 64, 112, 144]` is provisional** until bench
+row 8 (`maburcal` on 64 and 112; swap 64 for 128 if it fails) — the
+spec's calibration gate for the members that have never been
+wall-calibrated. Both bundles carry the same note (final review I4,
+2026-10-04).
 
 GS, `gs/bundle/maburgs.default.toml`:
 

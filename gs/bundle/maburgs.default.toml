@@ -9,8 +9,12 @@ channels = [40, 64, 112, 144]   # the channel set: the drone parks on a member, 
                                 # Both ends must list the same set (the drone's may be a superset).
                                 # 40 MHz: pair primaries sharing one offset; spur pairs and 124+128
                                 # (weather radar) left out. A CPE510 relay cannot tune 144: drop it here.
+                                # PROVISIONAL until bench row 8 (maburcal on 64 and 112; swap 64 for 128
+                                # if it fails), docs/channel-select.md "Config".
 channel  = "auto"               # "auto" = measure the set at start and move the link to the cleanest
                                 # member once (boot hop); a member number = pin the link there.
+                                # Either way the link first forms wherever the drone is found, then
+                                # a hop order moves it to the pick or the pin.
 width   = 40               # 20 or 40 MHz; 40 is needed for the 40 MHz link speeds in [[link.ladder]] below
 tx_card = -1               # card that transmits to the drone; -1 = pick the one with the best signal
 relays  = []               # CPE510 mabur-relay units, "ipv4:port" each (UDP 8310, numeric -- no hostnames); each is a card after the USB cards
