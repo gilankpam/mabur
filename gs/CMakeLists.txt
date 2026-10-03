@@ -1,5 +1,6 @@
 add_library(mabur_gs_core STATIC
   src/channel_plan.cpp
+  src/boot_pick.cpp
   src/channel_ranker.cpp
   src/hop_verdict.cpp
   src/hop_ranker.cpp
