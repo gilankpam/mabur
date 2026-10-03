@@ -850,6 +850,11 @@ config.
 **`scan.log`, marker `scanlog 4`** (`gs/src/scan_log.h/.cpp`; formats
 locked by `tests/test_scan_log.cpp`; bumped from `scanlog 3` by the NHM
 airtime work, 2026-09-25 — see `docs/data-provenance.md` for the break).
+The marker has since moved on to `scanlog 5` (2026-10-03, the channel set
+replacing home + candidates — §7 above and `docs/channel-select.md`);
+every record kind this section documents is unchanged by that bump except
+`M` (loses the `split_home`/`reunite` reasons) and `H` (gains
+`boot_order`, below).
 The `A` (1 Hz in-flight energy) record and `radio.scan.energy_period_ms`
 are **gone** — the verdict engine's window reads replace them, feeding
 `cards[i].energy` on the sideport continuously in-session instead of once
@@ -878,12 +883,15 @@ H <t> <kind> <epoch> <target> <score> <elapsed_ms>            # a hop event
 - **H** — one per `HopController` state transition or logged decision.
   `kind` is always a single snake_case token — `order`, `lead_confirm`,
   `one_card_retune`, `verify_pass`, `verify_fail`, `escape`, `withdraw`, `session_lost`, `hold_cap`,
-  `hold_exhausted`, `hold_end`, `confirm_extend`, `withdraw_undelivered`
+  `hold_exhausted`, `hold_end`, `confirm_extend`, `withdraw_undelivered`,
+  `boot_order`
   (`escape`, added 2026-09-26 under the same
   `scanlog 4` marker, is an order placed to leave a blocked channel, §5;
   `confirm_extend` / `withdraw_undelivered`, added the same day, same
   marker, are the confirm extension's entry and its expiry, §5;
-  the hold pair used to be the two-word C++ strings
+  `boot_order`, added 2026-10-03 under `scanlog 5`, is the one-time boot
+  hop placed through this same controller while the boot pick is open —
+  §7 above and `docs/channel-select.md` "The pick"; the hold pair used to be the two-word C++ strings
   `"hold cap"`/`"hold exhausted"`, a space-delimited field containing the
   delimiter — fixed at the emitter rather than kept as a parser
   workaround, since scan.log is designed to outlive the code that wrote
@@ -965,6 +973,14 @@ withdrawal or on hopping back home and would stay lit forever after the
 first confirmed hop. `(h)` and the boot-scan's `(a)` share one suffix slot
 (worst_case() reserves exactly `(a)`'s width) with `(h)` taking priority,
 since a mid-flight hop is the more actionable of the two for the pilot.
+
+⚠ **Broken since 2026-10-03.** `GsSnapshot::hopped` still parses
+`link.home` to tell a hop target apart from the boot pick, but
+`link.home` no longer exists on the sideport (the channel set removed it,
+`docs/channel-select.md` "Observability"). `home` therefore always parses
+as absent, `out->hopped` is permanently `false`, and `(h)` never lights
+any more — hop or no hop. `gs/player` was not touched by the channel-set
+plan (Task 15 is docs-only); this needs its own follow-up fix.
 
 **`tools/flightreport.py` HOP section** (`print_hop_report`,
 `load_scanlog`). Session-mode only (`scan.log` is a sibling of `ctl.log`
