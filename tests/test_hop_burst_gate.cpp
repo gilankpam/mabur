@@ -88,4 +88,15 @@ TEST(cal_move_edge_hold_defers_the_edge_to_the_end_of_the_run) {
   CHECK(h.take(false, false));         // run over: delivered once
   CHECK(!h.take(false, false));
 }
+// The scout only re-reads CalSession::running() once per dwell period, so a
+// dwell begun just before `maburcal start` keeps one card off-channel for
+// up to 250 ms into the run -- against a 30 ms settle and 20-frame coarse
+// cells. The first T_CAL_CMD waits for that card to come back.
+// Revert (return !radio_silent): a due command goes out mid-dwell.
+TEST(cal_cmd_waits_for_a_scout_dwell_begun_before_start) {
+  CHECK(cal_cmd_clear(/*radio_silent=*/false, /*dwell_busy=*/false));
+  CHECK(!cal_cmd_clear(false, true));
+  CHECK(!cal_cmd_clear(true, false));
+  CHECK(!cal_cmd_clear(true, true));
+}
 MTEST_MAIN

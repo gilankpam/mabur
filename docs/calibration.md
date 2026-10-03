@@ -114,7 +114,11 @@ mid-sweep (bench 2026-10-03: `split_home` on op 144, a `hop_lead` on op
 A link-pairing move edge armed by a between-phase re-pair is held, not
 acted on, until the run ends (`CalMoveEdgeHold`), mirroring the drone,
 which defers its own retunes while `cal_active` and replays them after.
-Net: no GS card changes channel from `start` to `done`.
+The one dwell the scout can still have in flight at `start` (it re-reads
+`running()` only once per `dwell_period_ms`, and a dwell is 250 ms against
+a 30 ms settle) is waited out: the first `T_CAL_CMD` is not sent while
+`dwell_busy` (`cal_cmd_clear`), so no card is off-channel when the coarse
+row opens. Net: no GS card changes channel from `start` to `done`.
 
 The operator's job is only to **confirm the pair re-links after each
 session**: video should resume within a couple of DISC beacons, with an

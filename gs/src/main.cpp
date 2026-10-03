@@ -2529,8 +2529,12 @@ static int run_radio(const maburgs::Config& cfg) {
     // radio_silent() already knows the drone's listen windows precisely
     // from the plan the GS itself sent, a tighter answer than the
     // slotter's AU-cadence guess. Gated the same way as every other
-    // transmit above: nothing goes out while a sweep phase is running.
-    if (!cal_session.radio_silent(drained_ms)) {
+    // transmit above: nothing goes out while a sweep phase is running --
+    // and not while a scout dwell begun just before `start` still has a
+    // card off-channel (cal_cmd_clear's comment). due_result() below still
+    // runs step() every tick, so holding the command here stalls nothing
+    // else in the session.
+    if (maburgs::cal_cmd_clear(cal_session.radio_silent(drained_ms), dwell_busy.load())) {
       if (auto cmd = cal_session.due_cmd(drained_ms)) {
         cal_pending_nonce = cmd->nonce;
         maburgs::SlotFrame cf{mabur::rc::pack_cal_cmd(*cmd, cfg.link.key, cal_session.tag_ctx()),

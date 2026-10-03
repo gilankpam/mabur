@@ -627,6 +627,14 @@ TEST(cal_latch_follows_a_mid_run_re_pair) {
   agent.on_rc_frame(first.data(), first.size(), 4010);
   REQUIRE(agent.state() == RcAgent::State::LINKED);
   c.phase = 1;
+  // What the GS actually does now: CalSession froze its tag context at
+  // start(), so the run keeps arriving under the FIRST pair while the
+  // drone's published session is already the second. That is the latch
+  // branch with a live, different published pair -- not the cleared-pair
+  // case the previous test covers.
+  auto fine_old = pack_cal_cmd(c, mabur::kDefaultLinkKey, TagCtx{kVrx, vtx, 0});
+  CHECK(agent.verify_cal_frame(fine_old.data(), fine_old.size(), true));
+  CHECK(!agent.take_auth_reject());
   auto fine = pack_cal_cmd(c, mabur::kDefaultLinkKey, TagCtx{kVrx, vtx2, 0});
   CHECK(agent.verify_cal_frame(fine.data(), fine.size(), true));
   agent.tick(4010 + cfg.link.failsafe_ms + 1, RadioHealth{});
