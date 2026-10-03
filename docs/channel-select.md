@@ -484,14 +484,22 @@ row has not run, not an unmeasured constant masquerading as a result.
 
 | # | check | result |
 |---|---|---|
-| 1 | Cold start both, two cards, auto: link ≤ 1 s on the remembered member; `K` + boot hop within ~12 s; `verify_pass`; no gap beyond the hop's | pending |
-| 2 | GS first, drone two minutes later: `commit` at maturity; drone found by a burst; moves on ack | pending |
-| 3 | Battery swap: drone returns on `op`, re-links on the first DISC, no sweep | pending |
-| 4 | GS restart with the drone on the old `op` and the GS state file deleted: sweep finds it, proposes, moves | pending |
-| 5 | One card auto: 5 s silent then link on the pick; one card pinned: link < 1 s | pending |
-| 6 | Jam the remembered member before power-up: boot hop leaves it. Jam a candidate: never picked | pending |
-| 7 | The leak constant `k`: scout on a clean candidate while the TX card sends RCFs at the low-power and 60 fps cadences; busy per frame sent | pending |
-| 8 | `maburcal` on 64 and 112; fixed-rung linkbench 40/2 on 64 vs 136; decide 64 vs 128 for the default set | pending |
+| 1 | Cold start both, two cards, auto: link ≤ 1 s on the remembered member; `K` + boot hop within ~12 s; `verify_pass`; no gap beyond the hop's | PASS 2026-10-04 — link within seconds on 40; K after 3 rounds (60:25 64:20 108:959 112:1155 140:88 144:48, op pair 36+40 unmeasured) → freeze "op unmeasured"; the REACTIVE hop then left 40 → 64 (27/50 verdict windows interfered: the bench's home router on 36-48), lead_confirm 130 ms, verify_pass; ausniff 60 s: 1815 AUs, 0 gaps, 30.3 fps |
+| 2 | GS first, drone two minutes later: `commit` at maturity; drone found by a burst; moves on ack | PASS 2026-10-04 (run as: GS pinned 64, drone remembering 144) — "drone found on 144 (op 64)", link_found, relocate 144 → 64 placed 150 ms later, lead_confirm 91 ms, verify_pass; drone "retune 144 -> 64 (hop)"; both state files 64; ausniff 30 s: 915 AUs, 0 gaps |
+| 3 | Battery swap: drone returns on `op`, re-links on the first DISC, no sweep | PASS 2026-10-04 — drone back "parking on 64 (remembered)", linked at its first stats line; GS logged no channel/hop event |
+| 4 | GS restart with the drone on the old `op` and the GS state file deleted: sweep finds it, proposes, moves | PASS 2026-10-04 — GS started on 40 (state file deleted), "drone found on 64 (op 40)", link_found, state file 64, freeze "op unmeasured"; a later reactive hop 64 → 144 was legitimate (3 windows: ~120 foreign/s, 7-8 % pre-FEC loss); ausniff 30 s: 916 AUs, 0 gaps |
+| 5 | One card auto: 5 s silent then link on the pick; one card pinned: link < 1 s | PASS 2026-10-04 (auto only; pinned one-card not run) — one-card prelude ranked after 2 rounds, picked 144 (op 40), commit with no link; then "drone found on 64 (op 144)", link_found, freeze "one-card linked", relocate 64 → 144 via one_card_retune (+253 ms), lead_confirm +272 ms, verify_pass; ausniff 30 s: 916 AUs, 0 gaps |
+| 6 | Jam the remembered member before power-up: boot hop leaves it. Jam a candidate: never picked | FAIL 2026-10-04 (candidate jam; see findings) — 64 jammed at 250 fps / 1000 B / 6M from a card co-located with the GS: GS still committed 64. K: 60:165:32.8 % 64:130:32.8 % vs 36:444 40:629 108:607 112:1286 140:966 144:744. Retry at the lowest TX-power step: same. "Jam the remembered member before power-up" not run |
+| 7 | The leak constant `k`: scout on a clean candidate while the TX card sends RCFs at the low-power and 60 fps cadences; busy per frame sent | INCONCLUSIVE 2026-10-04 — unlinked clean halves read 4-14 events; linked (row 1) read 20-88 on the same halves, but the co-located drone's own TX cannot be separated from the GS control-frame leak on this bench; leak_per_frame = 1.0 stays provisional. Measure with the drone ≥ 20 m away or on a dummy load |
+| 8 | `maburcal` on 64 and 112; fixed-rung linkbench 40/2 on 64 vs 136; decide 64 vs 128 for the default set | NOT RUN 2026-10-04 — default set [40, 64, 112, 144] remains provisional |
+
+### Bench 2026-10-04 — findings
+
+**The event-score ranker is fooled by a strong co-located jammer (row 6).** On the jammed pair the jam's frames decode and count once each as `foreign`; centimetres away, the same frames leak into every other half as several FA/CCA events each, so every clean half read 444-1286 while the jammed pair read 130-165 and won. NHM busy was the honest signal: 32.8 % on both jammed halves (exactly the jam's computed airtime, 250 × 1.33 ms) against 0-12 % elsewhere, but below `blocked_pct = 50`. The no-jam baseline taken immediately after read 36:4 60:6 64:4 140:9 144:14. This is the ranker's scoring, not the rendezvous; candidates for a follow-up: an airtime-weighted foreign term, a lower `blocked_pct`, or NHM busy as a primary score term. A jammer at field distance leaks far less off-channel, so the bench overstates the effect.
+
+**Linked-phase measurement is inflated on the bench (row 7).** With the drone a few centimetres from the GS, its own video TX reads as energy on every half the scout dwells on, so the linked K line sits 15-80 events above the unlinked one and `leak_per_frame` cannot be fitted here. Because op's own halves are skipped while linked and the margin is applied against op, this biases the pick among candidates only where the inflation is uneven (it was: 140/144 rose more than 60/64).
+
+**Two reactive hops fired within seconds of link-up (rows 1 and 4)**, both on genuine evidence (the 36-48 router; a transient ~120 frames/s burst with 7-8 % loss on 64). They are the existing reactive layer at its shipped persistence (2 of 3 windows) and are listed here only because a pilot will see them as "the channel changed right after power-up".
 
 ## Out of scope
 
