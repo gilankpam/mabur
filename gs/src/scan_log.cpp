@@ -8,7 +8,7 @@
 namespace maburgs {
 
 ScanLog::ScanLog(LogWriter& w, const std::string& dir, const std::string& header_info)
-    : w_(w), s_(w.open(dir, "scan.log", "scanlog 4 " + header_info)) {}
+    : w_(w), s_(w.open(dir, "scan.log", "scanlog 5 " + header_info)) {}
 
 void ScanLog::put_(const char* b, int n) {
   if (s_ == LogWriter::kBadStream || n <= 0) return;

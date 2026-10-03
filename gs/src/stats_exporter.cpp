@@ -204,7 +204,6 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
 
   json& link = j["link"];
   link["channel"] = in.channel;
-  link["home"] = in.home;
   link["state"] = in.key_mismatch ? "key_mismatch" : in.in_session ? "session" : "beaconing";
   link["key_fp"] = in.key_fp;
   link["tx_card"] = in.tx_card;

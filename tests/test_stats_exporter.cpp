@@ -1089,10 +1089,9 @@ TEST(video_lat_present_when_set) {
   CHECK(lat["fec"][1] == 8000);
 }
 
-TEST(exports_home_scan_block_and_card_energy) {
+TEST(exports_scan_block_and_card_energy) {
   StatsInput in = base_input();
   in.channel = 149;
-  in.home = 136;
   in.scan_state = "frozen";
   in.scan_rounds = 7;
   in.scan_pick = 149;
@@ -1104,7 +1103,7 @@ TEST(exports_home_scan_block_and_card_energy) {
   CHECK(ex.poll(1000, in));
   json j = cap.last();
   CHECK(j["link"]["channel"] == 149);
-  CHECK(j["link"]["home"] == 136);
+  CHECK(!j["link"].contains("home"));
   CHECK(j["scan"]["state"] == "frozen");
   CHECK(j["scan"]["rounds"] == 7);
   CHECK(j["scan"]["pick"] == 149);
@@ -1112,10 +1111,12 @@ TEST(exports_home_scan_block_and_card_energy) {
   CHECK(j["cards"][0]["energy"]["igi"] == 40);
   in.scan_pick = std::nullopt;
   in.cards[0].energy = std::nullopt;
+  in.scan_state = "moving";
   CHECK(ex.poll(2000, in));
   j = cap.last();
   CHECK(j["scan"]["pick"].is_null());
   CHECK(j["cards"][0]["energy"].is_null());
+  CHECK(j["scan"]["state"] == "moving");
 }
 
 TEST(card_energy_igi_null_when_absent) {
