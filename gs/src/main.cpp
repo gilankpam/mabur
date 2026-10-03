@@ -2376,7 +2376,7 @@ static int run_radio(const maburgs::Config& cfg) {
       if (pick_open && boot_hop_wanted && ht.best && !plan.hopping() && !scout_owns() &&
           (hopc.state() == maburgs::HopState::Idle || hopc.state() == maburgs::HopState::Hold)) {
         ht.verdict.trigger = true;   // synthetic: the measurement, not an impairment
-        ht.boot = true;
+        ht.relocate = true;
       }
       if (scout_owns()) {
         // The boot scout still owns the would-be lead card (measuring with
@@ -2386,7 +2386,7 @@ static int run_radio(const maburgs::Config& cfg) {
       }
       const maburgs::HopAction act = hopc.tick(ht);
       dispatch_hop_action(act);   // the shared path, defined above the verdict window
-      if (ht.boot && act.kind == maburgs::HopAction::Order) {
+      if (ht.relocate && act.kind == maburgs::HopAction::Order) {
         boot_hop = true;
         boot_hop_wanted = false;
         boot_hop_result = nullptr;

@@ -513,6 +513,30 @@ TEST(key_mismatch_sends_no_rcf_and_reports) {
   CHECK(!vrx.peer_acked());
 }
 
+// Final review C1 addendum A: a DISC proposes the channel it is sent on.
+// The rewritten copy must still verify under the key (the drone drops an
+// untagged DISC as a wrong-key GS) and keep every other field.
+// Revert (send the op copy everywhere): the burst copy proposes 136.
+TEST(disc_for_channel_reproposes_and_retags) {
+  mabur::LinkKey key = mabur::kDefaultLinkKey;
+  key[0] ^= 0x5a;
+  mabur::rc::Disc d;
+  d.vrx_nonce = 0x1234;
+  d.op_channel = 136;
+  d.seq = 7;
+  const auto op_copy = mabur::rc::pack_disc(d, key);
+  const auto x_copy = disc_for_channel(op_copy, 149, key);
+  auto px = mabur::rc::parse_disc(x_copy.data(), x_copy.size());
+  REQUIRE(px.has_value());
+  CHECK(px->op_channel == 149 && px->vrx_nonce == 0x1234 && px->seq == 7);
+  CHECK(mabur::rc::verify_control(x_copy.data(), x_copy.size(), key, mabur::rc::TagCtx{}));
+  CHECK(disc_for_channel(op_copy, 136, key) == op_copy);   // already proposes it
+  CHECK(disc_for_channel(op_copy, 0, key) == op_copy);     // unknown channel: untouched
+  mabur::rc::Rcf r;
+  const auto rcf = mabur::rc::pack_rcf(r, key, mabur::rc::TagCtx{1, 2, 3});
+  CHECK(disc_for_channel(rcf, 149, key) == rcf);           // not a DISC
+}
+
 MTEST_MAIN
 
 // (c) Starvation guard: a decode-collapse window (zero completed base-layer

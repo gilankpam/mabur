@@ -106,6 +106,7 @@ TEST(to_string_covers_every_reason) {
   CHECK(std::string(to_string(MoveReason::HopFollow)) == "hop_follow");
   CHECK(std::string(to_string(MoveReason::HopWithdraw)) == "hop_withdraw");
   CHECK(std::string(to_string(MoveReason::HopOneCard)) == "hop_one_card");
+  CHECK(std::string(to_string(MoveReason::LinkFound)) == "link_found");
 }
 
 // Carried over from the pre-split-deletion file (hop-specific, not home-
@@ -153,6 +154,92 @@ TEST(confirm_with_no_hop_in_flight_is_a_no_op) {
   CHECK(p.take_events().empty());
   p.tick(35000, false);
   CHECK(p.release_scout());
+}
+
+// ---- final review C1 (redirected): link where the drone is found, then
+// relocate with a hop order. want = where the link SHOULD live; op = where
+// it does. Every move of a linked link is a hop order; a DISC only finds.
+
+TEST(want_starts_on_the_start_channel) {
+  ChannelPlan p(C(2, 149));
+  CHECK(p.want() == 149 && p.op() == 149);
+  p.tick(0, true);
+  CHECK(!p.relocate_due());
+}
+
+// Revert (link_found leaves op): the link card stays on the old op while
+// the drone sits on X and the session lapses (the C1 hole).
+TEST(link_found_moves_op_for_every_card_and_logs) {
+  ChannelPlan p(C(2));
+  p.tick(0, false);
+  p.link_found(10, 149);
+  CHECK(p.op() == 149 && p.desired(0) == 149 && p.desired(1) == 149);
+  CHECK(p.want() == 136);                     // where the link should be is unchanged
+  auto ev = p.take_events();
+  REQUIRE(ev.size() == 1);
+  CHECK(ev[0].reason == MoveReason::LinkFound && ev[0].card == -1 && ev[0].from == 136 &&
+        ev[0].to == 149);
+  p.link_found(20, 149);                      // already there
+  p.link_found(20, 112);                      // not a member
+  CHECK(p.op() == 149 && p.take_events().empty());
+}
+
+TEST(relocate_due_truth_table) {
+  ChannelPlan p(C(2));
+  p.tick(0, false);
+  p.link_found(10, 149);
+  CHECK(!p.relocate_due());                   // not in session
+  p.tick(20, true);
+  CHECK(p.relocate_due());                    // in session, op 149 != want 136
+  p.hop_order(30, 136, 1);
+  CHECK(!p.relocate_due());                   // the relocation is in flight
+  p.hop_confirmed(200);
+  CHECK(p.op() == 136 && !p.relocate_due());  // landed: op == want
+}
+
+TEST(commit_without_session_moves_op_and_want) {
+  ChannelPlan p(C(2));
+  p.tick(0, false);
+  p.commit(100, 149);
+  CHECK(p.op() == 149 && p.want() == 149);
+  auto ev = p.take_events();
+  REQUIRE(ev.size() == 1);
+  CHECK(ev[0].reason == MoveReason::Commit);
+}
+
+// In session the link moves only by a hop order: commit sets want and the
+// caller relocates. Revert (commit moves op in session): the cards retune
+// under a live link with no order to the drone.
+TEST(commit_in_session_only_sets_want) {
+  ChannelPlan p(C(2));
+  p.tick(0, true);
+  p.commit(100, 149);
+  CHECK(p.op() == 136 && p.want() == 149 && p.desired(0) == 136);
+  CHECK(p.take_events().empty());
+  CHECK(p.relocate_due());
+  p.commit(110, 112);                         // not a member: ignored
+  CHECK(p.want() == 149);
+}
+
+TEST(set_want_accepts_members_only) {
+  ChannelPlan p(C(2));
+  p.tick(0, true);
+  p.link_found(5, 161);
+  p.set_want(10, 161);                        // accept where the link is
+  CHECK(p.want() == 161 && !p.relocate_due());
+  p.set_want(20, 112);
+  CHECK(p.want() == 161);
+}
+
+// A reactive hop decides where the link lives: want follows the confirmed
+// target, so the next link-up does not relocate back onto the channel the
+// hop fled. Revert (want untouched): relocate_due reads true after the hop.
+TEST(hop_confirm_moves_want_with_op) {
+  ChannelPlan p(C(2));
+  p.tick(0, true);
+  p.hop_order(100, 161, 1);
+  p.hop_confirmed(300);
+  CHECK(p.op() == 161 && p.want() == 161 && !p.relocate_due());
 }
 
 MTEST_MAIN

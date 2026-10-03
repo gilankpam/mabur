@@ -1,6 +1,6 @@
 scanlog 5 channels=40,64,112,144 mode=auto dwell_ms=250 min_rounds=3 cards=2
 V 9000 healthy 00 - 0.0 0 0 0 0 0 0 -58.0 30.0 0.0 - 0.0 1 0 0 0 0 -59.0 29.0 0.0 - 0.0
-H 10000 boot_order 1 144 0 0
+H 10000 relocate 1 144 0 0
 M 10000 1 40 144 hop_lead
 H 10420 lead_confirm 1 144 0 420
 M 10420 all 40 144 hop_follow

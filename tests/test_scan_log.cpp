@@ -46,6 +46,7 @@ TEST(scan_log_records_are_byte_exact) {
   log.pick(2000, 149, 3, all, 3);
   log.pick(2001, std::nullopt, 0, all, 3);
   log.move(maburgs::MoveEvent{2100, -1, 136, 149, maburgs::MoveReason::Commit});
+  log.move(maburgs::MoveEvent{2200, -1, 149, 64, maburgs::MoveReason::LinkFound});
   maburgs::VerdictOut o; o.v = maburgs::Verdict::Interfered;
   o.evidence = maburgs::kEvImpaired | maburgs::kEvContended;
   o.ref_rung = 5; o.d_rssi_db = 2.5;
@@ -59,7 +60,7 @@ TEST(scan_log_records_are_byte_exact) {
   log.verdict(1234.5, o, cards, link);
   maburgs::HopEvent h{1300.0, "order", 1, 149, 20, 0.0};
   log.hop(h);
-  maburgs::HopEvent h2{10000.0, "boot_order", 1, 144, 0, 0.0};
+  maburgs::HopEvent h2{10000.0, "relocate", 1, 144, 0, 0.0};
   log.hop(h2);
   w.flush_now();
   std::string text = read_all(log.path());
@@ -72,12 +73,13 @@ TEST(scan_log_records_are_byte_exact) {
   CHECK(text.find("\nK 2000 149 3 136:5:-95:0.0 149:52:nan:- pair=149+153\n") != std::string::npos);
   CHECK(text.find("\nK 2001 none 0 pair=-\n") != std::string::npos);
   CHECK(text.find("\nM 2100 all 136 149 commit\n") != std::string::npos);
+  CHECK(text.find("\nM 2200 all 149 64 link_found\n") != std::string::npos);
   CHECK(text.find(
       "\nV 1234.5 interfered 09 5 6.1 80 0 36 2 0 5 -55.4 33.1 2.5 - 0.0 "
       "1 35 1 1 6 -56.0 nan 2.5 - 0.0\n") !=
       std::string::npos);
   CHECK(text.find("\nH 1300.0 order 1 149 20 0.0\n") != std::string::npos);
-  CHECK(text.find("\nH 10000.0 boot_order 1 144 0 0.0\n") != std::string::npos);
+  CHECK(text.find("\nH 10000.0 relocate 1 144 0 0.0\n") != std::string::npos);
   CHECK(log.path() == dir + "/scan.log");
 }
 

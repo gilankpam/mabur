@@ -1743,15 +1743,15 @@ class HopReportTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("HOP REPORT", result.stdout)
 
-    def test_scanlog5_boot_order_is_a_hop_row(self):
-        """scanlog 5 (auto-channel-set): H gains `boot_order`, the one-time
-        boot pick placed through the hop controller -- it must open a HOP
-        row like `order`/`verify_fail`/`escape`, not fall through as an
-        unrecognised kind."""
+    def test_scanlog5_relocate_is_a_hop_row(self):
+        """scanlog 5 (auto-channel-set): H gains `relocate`, the order that
+        moves the link to where it should live (the boot pick's move
+        included) -- it must open a HOP row like `order`/`verify_fail`/
+        `escape`, not fall through as an unrecognised kind."""
         scanlog = flightreport.load_scanlog("tests/fixtures/scan-boot.log")
         self.assertEqual(scanlog["version"], 5)
         kinds = [h["kind"] for h in scanlog["H"]]
-        self.assertIn("boot_order", kinds)
+        self.assertIn("relocate", kinds)
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             flightreport.print_hop_report(scanlog, {"E": []})

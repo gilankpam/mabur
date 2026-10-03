@@ -10,11 +10,13 @@ const char* to_string(MoveReason r) {
     case MoveReason::HopFollow: return "hop_follow";
     case MoveReason::HopWithdraw: return "hop_withdraw";
     case MoveReason::HopOneCard: return "hop_one_card";
+    case MoveReason::LinkFound: return "link_found";
   }
   return "?";
 }
 
-ChannelPlan::ChannelPlan(ChannelPlanCfg cfg) : cfg_(std::move(cfg)), op_(cfg_.start) {}
+ChannelPlan::ChannelPlan(ChannelPlanCfg cfg)
+    : cfg_(std::move(cfg)), op_(cfg_.start), want_(cfg_.start) {}
 
 bool ChannelPlan::member(uint8_t ch) const { return mabur::channel_set_member(cfg_.channels, ch); }
 
@@ -50,9 +52,23 @@ void ChannelPlan::on_ack(double now_ms, uint8_t agreed, uint8_t proposed) {
 
 void ChannelPlan::commit(double now_ms, uint8_t to) {
   now_ms_ = now_ms;
-  if (to == op_ || !member(to)) return;
+  if (!member(to)) return;
+  want_ = to;
+  if (in_session_ || to == op_) return;   // linked: the caller relocates with a hop order
   events_.push_back(MoveEvent{now_ms, -1, op_, to, MoveReason::Commit});
   op_ = to;
+}
+
+void ChannelPlan::set_want(double now_ms, uint8_t ch) {
+  now_ms_ = now_ms;
+  if (member(ch)) want_ = ch;
+}
+
+void ChannelPlan::link_found(double now_ms, uint8_t x) {
+  now_ms_ = now_ms;
+  if (hopping_ || x == op_ || !member(x)) return;
+  events_.push_back(MoveEvent{now_ms, -1, op_, x, MoveReason::LinkFound});
+  op_ = x;
 }
 
 void ChannelPlan::hop_order(double now_ms, uint8_t target, int lead_card) {
@@ -90,6 +106,7 @@ void ChannelPlan::hop_confirmed(double now_ms) {
   // a hop_target_ of 0.)
   if (!hopping_) return;
   op_ = hop_target_;
+  want_ = op_;
   hopping_ = false;
   // Exclude the hop window from the search timer: loss during a deliberate
   // hop is expected by construction, not evidence of a fade, but loss

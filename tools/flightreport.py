@@ -1124,9 +1124,11 @@ def load_scanlog(path):
 
     scanlog 5: M loses the "split_home"/"reunite" reasons (older files
     still carry them and are read as-is -- M's `reason` field is tokenised
-    generically, with no reason-specific parsing to update), and H gains
-    "boot_order" (the 2026-10-03 one-time boot pick, placed through the
-    hop controller like a live retune -- see _HOP_ORDER_KINDS).
+    generically, with no reason-specific parsing to update -- and gains
+    "link_found" (2026-10-04) the same way), and H gains "relocate" (the
+    order that moves the link from where the drone was found to where it
+    should live -- the boot pick's move included -- placed through the hop
+    controller like a live retune; see _HOP_ORDER_KINDS).
 
     H's kind field is single-token snake_case today ("hold_cap" /
     "hold_exhausted" included, fixed at the emitter -- they used to be the
@@ -1239,10 +1241,12 @@ def sniff_scanlog(path):
 # on a BLOCKED channel -- from idle (a fresh row) or in place of the
 # verify-fail hold (then, like a verify_fail retry, it also closes the
 # failed attempt).
-# "boot_order" (scanlog 5, 2026-10-03 auto-channel-set): the one-time boot
-# pick, placed through the SAME hop controller as a live retune -- a fresh
-# row, exactly like "order".
-_HOP_ORDER_KINDS = {"order", "boot_order", "verify_fail", "escape"}
+# "relocate" (scanlog 5, 2026-10-04 auto-channel-set final review): moves
+# the link from where the drone was found to where it should live (the pin
+# or the boot pick), placed through the SAME hop controller as a live
+# retune -- a fresh row, exactly like "order". "boot_order" is its name in
+# the pre-merge 2026-10-03 bench builds, read the same way.
+_HOP_ORDER_KINDS = {"order", "relocate", "boot_order", "verify_fail", "escape"}
 # A hold is a STATE, and HopController logs only its EDGES: hold_cap /
 # hold_exhausted / verify_fail on the way in, "hold_end" on the way out,
 # whose elapsed_ms is how long the episode lasted (holds used to re-log

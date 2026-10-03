@@ -42,7 +42,7 @@ namespace maburgs {
 //     is - when the card's NHM window didn't cover this verdict window on
 //     this channel, own_air is always present)
 //   H <t> <kind> <epoch> <target> <score> <elapsed_ms>            # a hop event
-//     (scanlog 5: <kind> gains "boot_order")
+//     (scanlog 5: <kind> gains "relocate"; M <reason> gains "link_found")
 class ScanLog {
  public:
   ScanLog(LogWriter& w, const std::string& dir, const std::string& header_info);

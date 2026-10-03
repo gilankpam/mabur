@@ -35,6 +35,18 @@ struct VrxCfg {
   int probe_pin_mcs = -1;
 };
 
+// A DISC proposes the channel it is sent on (final review C1 addendum A,
+// 2026-10-04): the GS builds one DISC per tick proposing op and fans it to
+// every target card, but a search-burst copy leaves on the scout card's
+// member X -- proposing op there made the drone ack "agreed op" and retune
+// itself to op on promotion while the GS linked on X. This rewrites
+// Disc.op_channel to `ch` (the sending card's channel) and re-packs/re-tags
+// the frame under `key`. Returned unchanged when it does not parse as a
+// DISC, ch is 0 (unknown) or it already proposes ch. DISC is not
+// RTT-matchable: the slotter needs nothing else.
+std::vector<uint8_t> disc_for_channel(const std::vector<uint8_t>& disc, uint8_t ch,
+                                      const mabur::LinkKey& key);
+
 class VrxController {
  public:
   explicit VrxController(VrxCfg cfg);

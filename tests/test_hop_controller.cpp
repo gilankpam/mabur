@@ -577,24 +577,25 @@ TEST(verify_pass_clears_undelivered_backoff) {
   CHECK(!has(h.backed_off(7201), 112));
 }
 
-// ---- the boot pick (a later task) places one order through this
-// controller, logged "boot_order", that must not flee the channel it
-// leaves -- that channel is merely not the best, not bad (spec
-// 2026-10-03-auto-channel-set §5).
-TEST(boot_order_does_not_flee_the_current_channel) {
+// ---- relocation (final review C1, 2026-10-04): the link formed where the
+// drone was found, or the boot pick wants another pair; the caller moves it
+// to where it should live with one order, logged "relocate", that must not
+// flee the channel it leaves -- that channel is merely not the wanted one,
+// not bad.
+TEST(relocate_does_not_flee_the_current_channel) {
   HopController h(cfg());
-  HopTick k = T(1000, interfered(), 149, 136); k.boot = true;
+  HopTick k = T(1000, interfered(), 149, 136); k.relocate = true;
   auto a = h.tick(k);
   CHECK(a.kind == HopAction::Order && a.target == 149);
-  CHECK(!backed(h, 136, 1001));              // the channel we leave is fine, just not the best
-  auto ev = h.take_events(); REQUIRE(ev.size() == 1); CHECK(ev[0].kind == "boot_order");
+  CHECK(!backed(h, 136, 1001));              // the channel we leave is fine, just not the wanted one
+  auto ev = h.take_events(); REQUIRE(ev.size() == 1); CHECK(ev[0].kind == "relocate");
   h.tick(T(1080, interfered(), 149, 136, true));
   for (double t = 1100; t < 2300; t += 150) h.tick(T(t, healthy(), 120, 149));
   CHECK(h.state() == HopState::Idle && h.hops() == 1);
 }
-TEST(boot_order_verify_fail_retries_the_callers_next_best_then_holds) {
+TEST(relocate_verify_fail_retries_the_callers_best_then_holds) {
   HopController h(cfg());
-  HopTick k = T(1000, interfered(), 149, 136); k.boot = true;
+  HopTick k = T(1000, interfered(), 149, 136); k.relocate = true;
   h.tick(k);
   h.tick(T(1080, interfered(), 149, 136, true));
   auto a = h.tick(T(1400, measured(interfered(), 1250, 1400), 165, 149));   // 149 bad; caller offers 165
@@ -603,4 +604,37 @@ TEST(boot_order_verify_fail_retries_the_callers_next_best_then_holds) {
   h.tick(T(1480, interfered(), 165, 149, true));
   a = h.tick(T(1800, measured(interfered(), 1650, 1800), std::nullopt, 165));  // nothing left
   CHECK(a.kind == HopAction::Hold);
+}
+// hop.enable = false disables the REACTIVE hop only: rendezvous relocation
+// must still move the link (else a drone found off the pin/pick could never
+// be brought back), its events are not "would_", and the whole episode --
+// order, confirm, verify, and a session-lost withdraw -- acts. cooldown_ms
+// does not delay it; max_hops_per_min still counts it.
+// Revert (kill switch applies to relocate): every action below reads None.
+TEST(relocate_ignores_the_kill_switch_and_cooldown) {
+  HopController h(cfg(/*en=*/false));
+  HopTick k = T(1000, interfered(), 149, 136); k.relocate = true;
+  auto a = h.tick(k);
+  CHECK(a.kind == HopAction::Order && a.target == 149);
+  CHECK(h.hop_ch() == 149);                  // the RCF carries it
+  CHECK(h.take_events().back().kind == "relocate");
+  CHECK(h.tick(T(1080, interfered(), std::nullopt, 136, true)).kind == HopAction::Confirm);
+  CHECK(h.tick(T(2300, healthy(), std::nullopt, 149)).kind == HopAction::VerifyPass);
+  CHECK(h.take_events().back().kind == "verify_pass");
+  // Cooldown (2000 ms) would delay a reactive order here; a relocation
+  // right after the verify_pass goes at once.
+  HopTick k2 = T(2400, interfered(), 136, 149); k2.relocate = true;
+  CHECK(h.tick(k2).kind == HopAction::Order);
+  CHECK(h.on_session_lost(2500, 149).kind == HopAction::Withdraw);   // not suppressed either
+  // A reactive trigger while disabled still orders nothing.
+  CHECK(h.tick(T(40000, interfered(), 161, 149)).kind == HopAction::None);
+}
+TEST(relocate_counts_against_the_hop_cap) {
+  HopCfg c = cfg(); c.max_hops_per_min = 1;
+  HopController h(c);
+  HopTick k = T(1000, interfered(), 149, 136); k.relocate = true;
+  REQUIRE(h.tick(k).kind == HopAction::Order);
+  CHECK(h.tick(T(1600, interfered(), std::nullopt, 136)).kind == HopAction::Withdraw);
+  HopTick k2 = T(1700, interfered(), 149, 136); k2.relocate = true;
+  CHECK(h.tick(k2).kind == HopAction::Hold);   // one order this minute already
 }

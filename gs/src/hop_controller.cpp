@@ -10,6 +10,10 @@ HopController::HopController(HopCfg cfg) : cfg_(cfg) {}
 
 HopAction HopController::tick(const HopTick& in) {
   HopAction out;
+  // Captured before the step: the relocation's last action (VerifyPass,
+  // Hold, Withdraw) still passes the kill switch on the tick that ends it.
+  const bool relocation = relocating_ || (in.relocate && (state_ == HopState::Idle ||
+                                                          state_ == HopState::Hold));
   switch (state_) {
     case HopState::Idle:
     case HopState::Hold:
@@ -24,8 +28,9 @@ HopAction HopController::tick(const HopTick& in) {
   }
   // The kill switch: the whole machine above still ran (state, epoch,
   // backoff, events -- logged with a "would_" prefix by log_event), but
-  // nothing is actually ordered while disabled.
-  if (!cfg_.enable) out = HopAction{};
+  // nothing is actually ordered while disabled. A relocation is exempt.
+  if (state_ == HopState::Idle || state_ == HopState::Hold) relocating_ = false;
+  if (!cfg_.enable && !relocation) out = HopAction{};
   return out;
 }
 
@@ -41,6 +46,7 @@ HopAction HopController::tick(const HopTick& in) {
 // already moved the plan's op; only the stale verify is dropped.
 HopAction HopController::on_session_lost(double now_ms, uint8_t cur_op) {
   HopAction out;
+  const bool relocation = relocating_;
   if (state_ == HopState::Ordered) {
     const uint8_t failed_target = hop_ch_;
     back_off(failed_target, now_ms);
@@ -55,7 +61,8 @@ HopAction HopController::on_session_lost(double now_ms, uint8_t cur_op) {
     state_ = HopState::Idle;
     log_event(now_ms, "session_lost", epoch_, hop_ch_, 0, now_ms - verify_start_);
   }
-  if (!cfg_.enable) out = HopAction{};   // same kill switch as tick()
+  relocating_ = false;
+  if (!cfg_.enable && !relocation) out = HopAction{};   // same kill switch as tick()
   return out;
 }
 
@@ -70,7 +77,8 @@ void HopController::idle_tick(const HopTick& in, HopAction& out) {
     leave_hold(in.now_ms, in.cur_op);
     return;
   }
-  if (in.now_ms - last_confirm_ms_ < cfg_.cooldown_ms) return;   // still cooling down: wait, silently
+  // still cooling down: wait, silently (a relocation is exempt)
+  if (!in.relocate && in.now_ms - last_confirm_ms_ < cfg_.cooldown_ms) return;
   prune_hop_times(in.now_ms);
   if (static_cast<int>(hop_times_.size()) >= cfg_.max_hops_per_min) {
     enter_hold(in.now_ms, "hold_cap", in.cur_op, 0, out);
@@ -78,9 +86,10 @@ void HopController::idle_tick(const HopTick& in, HopAction& out) {
   }
   if (in.best.has_value()) {
     leave_hold(in.now_ms, in.cur_op);
-    if (!in.boot) flee(in.cur_op, in.now_ms);
+    if (!in.relocate) flee(in.cur_op, in.now_ms);
+    if (in.relocate) relocating_ = true;   // before order(): its event is not "would_"
     order(*in.best, in.verdict.ref_rung, in.lead_card, in.best_score, in.now_ms,
-          in.boot ? "boot_order" : "order", out);
+          in.relocate ? "relocate" : "order", out);
     return;
   }
   // Nothing ranked, but the channel we are on is BLOCKED:
@@ -317,7 +326,7 @@ void HopController::log_event(double now, const std::string& kind, uint8_t epoch
                               uint32_t score, double elapsed_ms) {
   HopEvent e;
   e.t_ms = now;
-  e.kind = cfg_.enable ? kind : ("would_" + kind);
+  e.kind = acting() ? kind : ("would_" + kind);
   e.epoch = epoch;
   e.target = target;
   e.score = score;
@@ -325,7 +334,7 @@ void HopController::log_event(double now, const std::string& kind, uint8_t epoch
   events_.push_back(e);
 }
 
-uint8_t HopController::hop_ch() const { return cfg_.enable ? hop_ch_ : 0; }
+uint8_t HopController::hop_ch() const { return acting() ? hop_ch_ : 0; }
 uint8_t HopController::epoch() const { return epoch_; }
 HopState HopController::state() const { return state_; }
 
