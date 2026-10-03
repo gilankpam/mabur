@@ -37,10 +37,10 @@ void ChannelRanker::add(const RankSample& s) {
   }
 }
 
-std::vector<RankEntry> ChannelRanker::ranked() const {
+std::vector<RankEntry> ChannelRanker::ranked(int min_rounds) const {
   std::vector<RankEntry> out;
   for (const RankEntry& e : entries_)
-    if (e.visits >= static_cast<uint32_t>(min_rounds_)) out.push_back(e);
+    if (e.visits >= static_cast<uint32_t>(min_rounds)) out.push_back(e);
   // Stable sort keeps config order as the final tie-break.
   // Tie-break: valid floor before invalid; among valid, lower floor_dbm first.
   std::stable_sort(out.begin(), out.end(), [this](const RankEntry& a, const RankEntry& b) {
@@ -55,8 +55,8 @@ std::vector<RankEntry> ChannelRanker::ranked() const {
   return out;
 }
 
-uint8_t ChannelRanker::proposal(uint8_t current) const {
-  auto k = ranked();
+uint8_t ChannelRanker::proposal(uint8_t current, int min_rounds) const {
+  auto k = ranked(min_rounds);
   if (k.empty()) return current;
   const RankEntry& best = k.front();
   if (best.ch == current || margin_ == 0) return best.ch;

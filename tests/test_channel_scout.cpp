@@ -1,294 +1,234 @@
 #include <string>
+#include <utility>
 #include <vector>
 #include "mtest.h"
 #include "channel_scout.h"
-#include "nhm_busy.h"
 using namespace maburgs;
 
-// Fake radio + fake clock: sleep() advances time, so a dwell "takes" exactly
-// settle+dwell ms and every call is recorded in order.
+// Fake radio + fake clock: sleep() advances `now`, every call is recorded.
 struct FakeRadio : ScoutRadio {
   int64_t now = 0;
   std::vector<std::string> calls;
   uint8_t ch = 0;
+  uint8_t width = 20;
   uint32_t cca_per_ms_on[256] = {};  // busy rate per channel
   ScoutFrames fr;
   int64_t last_read = 0;
-  bool fail_width = false;   // retune_width() reports failure (dead/unready card)
   bool retune(uint8_t c) override { ch = c; calls.push_back("retune " + std::to_string(c)); return true; }
   bool retune_width(uint8_t c, uint8_t w) override {
+    ch = c; width = w;
     calls.push_back("retune_width " + std::to_string(c) + "/" + std::to_string(w));
-    if (fail_width) return false;
-    ch = c;
     return true;
   }
   ScoutEnergy read_energy(bool with_nhm) override {
-    calls.push_back(std::string(with_nhm ? "read+nhm" : "read"));
+    calls.push_back(with_nhm ? "read+nhm" : "read");
     ScoutEnergy e; e.fa_valid = true;
     e.cca_ofdm = static_cast<uint32_t>((now - last_read) * cca_per_ms_on[ch]);
     last_read = now;
     if (with_nhm) { e.floor_valid = true; e.floor_dbm = -95; }
     return e;
   }
-  // Not exercised by ChannelScout (the boot-time scout only calls
-  // read_energy); still required by the ScoutRadio interface.
-  ScoutEnergy read_energy_scout() override {
-    calls.push_back("read_scout");
-    return ScoutEnergy{};
-  }
+  ScoutEnergy read_energy_scout() override { return ScoutEnergy{}; }
   ScoutFrames frames() const override { return fr; }
 };
 
-static ScoutCfg cfg2(bool one_card = false) {
-  ScoutCfg c; c.home = 136; c.candidates = {149, 161}; c.dwell_ms = 250; c.settle_ms = 30;
-  c.min_rounds = 2; c.home_window_ms = 300; c.beacon_period_ms = 20; c.one_card = one_card;
+static ScoutCfg two(bool measure = true) {
+  ScoutCfg c; c.channels = {136, 144}; c.measure = measure; c.dwell_ms = 250; c.settle_ms = 30;
+  c.min_rounds = 2; c.search_ms = 100; c.op_window_ms = 300; c.beacon_period_ms = 20;
+  c.pick_margin = 20; c.link_width_mhz = 40;
   return c;
 }
 
-TEST(two_card_dwell_sequence_and_discard_read) {
+// (state, ms) per sleep: B = beaconing, Q = quiet, W = working.
+struct Rig {
   FakeRadio r;
-  ChannelScout s(cfg2(), r, [&] { return r.now; }, [&](int ms) { r.now += ms; });
-  CHECK(s.run_once());
-  // First dwell of a round: beacon window (quiet false) -> gap -> retune
-  // home (plan order) -> settle -> discard read -> silent observe -> read.
-  REQUIRE(r.calls.size() == 3);
-  CHECK(r.calls[0] == "retune 136");
-  CHECK(r.calls[1] == "read");
-  CHECK(r.calls[2] == "read+nhm");
-  CHECK(r.now == 300 + 20 + 30 + 250);      // window + gap + settle + dwell
-  CHECK(s.quiet());                         // dwells stay silent until the next window
-  auto d = s.take_dwells();
-  REQUIRE(d.size() == 1);
-  CHECK(d[0].survey.def.primary == 136);
-  CHECK(d[0].survey.observe_ms == 250);
-  CHECK(d[0].floor_valid && d[0].floor_dbm == -95);
-  CHECK(s.take_dwells().empty());
-  // Later dwells of the round: no window.
-  CHECK(s.run_once());
-  CHECK(r.calls[3] == "retune 149");
-  CHECK(r.now == 600 + 30 + 250);
+  ChannelScout s;
+  std::vector<std::pair<std::string, int>> phases;
+  explicit Rig(ScoutCfg c)
+      : s(c, r, [this] { return r.now; }, [this](int ms) {
+          phases.push_back({std::string(s.beaconing() ? "B" : "") + (s.quiet() ? "Q" : "") +
+                                (s.working() ? "W" : ""),
+                            ms});
+          r.now += ms;
+        }) {}
+};
+
+TEST(idle_until_search_or_measure_then_first_dwell_switches_to_20) {
+  Rig g(two(false));                       // pinned: search only
+  g.s.set_op(136); g.s.set_search(false);
+  CHECK(!g.s.run_once()); CHECK(!g.s.working());
+  CHECK(g.r.calls.empty());                // never worked: nothing to park
+  g.s.set_search(true);
+  CHECK(g.s.run_once()); CHECK(g.s.working());
+  REQUIRE(!g.r.calls.empty());
+  CHECK(g.r.calls[0] == "retune_width 136/20" && g.r.width == 20);
+  g.s.run_once();
+  CHECK(g.r.calls.back() == "retune 144");  // no second width switch
 }
 
-TEST(two_card_beacon_window_opens_once_per_round) {
-  FakeRadio r;
-  std::vector<std::pair<int, bool>> sleeps;   // (ms, quiet at that sleep)
-  ChannelScout s(cfg2(), r, [&] { return r.now; }, [&](int ms) {
-    sleeps.push_back({ms, s.quiet()});
-    r.now += ms;
-  });
-  for (int i = 0; i < 3; ++i) s.run_once();   // one full round: 136, 149, 161
-  CHECK(s.rounds() == 1);
-  // window(300, not quiet) gap(20, quiet) then 3 x [settle, observe] all quiet
-  REQUIRE(sleeps.size() == 8);
-  CHECK(sleeps[0].first == 300 && !sleeps[0].second);
-  CHECK(sleeps[1].first == 20 && sleeps[1].second);
-  for (size_t i = 2; i < 8; ++i) CHECK(sleeps[i].second);
-  sleeps.clear();
-  s.run_once();                               // next round opens a new window
-  REQUIRE(sleeps.size() == 4);
-  CHECK(sleeps[0].first == 300 && !sleeps[0].second);
-  s.freeze(149);
-  s.run();
-  CHECK(!s.quiet());                          // released for the core once done
+TEST(pinned_dwell_is_retune_settle_burst_only_on_members) {
+  Rig g(two(false)); g.s.set_op(136); g.s.set_search(true);
+  g.s.run_once();
+  // settle(30,W) burst(100,BW) gap(20,W); no read at all
+  REQUIRE(g.phases.size() == 3);
+  CHECK(g.phases[0].first == "W" && g.phases[0].second == 30);
+  CHECK(g.phases[1].first == "BW" && g.phases[1].second == 100);
+  CHECK(g.phases[2].first == "W" && g.phases[2].second == 20);
+  g.phases.clear(); g.s.run_once();
+  CHECK(g.r.ch == 144);                    // members only: 132/140 never dwelt on
+  g.s.run_once(); g.s.run_once();
+  for (auto& c : g.r.calls) {
+    CHECK(c.rfind("read", 0) != 0);        // pinned never reads energy
+    CHECK(c.find("132") == std::string::npos && c.find("140") == std::string::npos);
+  }
+  CHECK(g.s.rounds() == 2);                // a full pass = both members
 }
 
-TEST(round_covers_home_and_candidates_then_proposes_best) {
-  FakeRadio r;
-  r.cca_per_ms_on[136] = 2; r.cca_per_ms_on[149] = 0; r.cca_per_ms_on[161] = 40;
-  ChannelScout s(cfg2(), r, [&] { return r.now; }, [&](int ms) { r.now += ms; });
-  for (int i = 0; i < 3; ++i) s.run_once();
-  CHECK(s.rounds() == 1);
-  CHECK(s.proposal() == 136);               // min_rounds 2 not met -> home
-  for (int i = 0; i < 3; ++i) s.run_once();
-  CHECK(s.rounds() == 2);
-  CHECK(s.proposal() == 149);
-  auto k = s.ranking();
-  REQUIRE(k.size() == 3);
-  CHECK(k[0].ch == 136 && k[1].ch == 149 && k[2].ch == 161);
-  CHECK(k[2].worst_busy == 40u * 250u);
-}
-
-TEST(freeze_stops_run_and_retunes_to_target) {
-  FakeRadio r;
-  ChannelScout s(cfg2(), r, [&] { return r.now; }, [&](int ms) { r.now += ms; });
-  s.freeze(149);
-  CHECK(s.frozen());
-  CHECK(!s.run_once());
-  s.run();
-  CHECK(s.done());
-  CHECK(r.ch == 149);
-  CHECK(s.proposal() == 149);               // frozen proposal is the target
-}
-
-TEST(one_card_home_is_beacon_phase_then_silent_measurement) {
-  FakeRadio r;
-  std::vector<std::pair<int, bool>> sleeps;   // (ms, at_home at that sleep)
-  ChannelScout s(cfg2(true), r, [&] { return r.now; }, [&](int ms) {
-    sleeps.push_back({ms, s.at_home()});
-    r.now += ms;
-  });
-  CHECK(!s.at_home());
-  CHECK(s.run_once());
-  // home cycle: retune home, settle, BEACON phase (at_home), quiet gap,
-  // discard read, silent observe of dwell_ms, read; then one candidate.
-  REQUIRE(r.calls.size() == 6);
-  CHECK(r.calls[0] == "retune 136");
-  CHECK(r.calls[1] == "read");
-  CHECK(r.calls[2] == "read+nhm");
-  CHECK(r.calls[3] == "retune 149");
-  CHECK(r.calls[4] == "read");
-  CHECK(r.calls[5] == "read+nhm");
-  REQUIRE(sleeps.size() == 6);
-  CHECK(sleeps[0].first == 30 && !sleeps[0].second);   // settle
-  CHECK(sleeps[1].first == 300 && sleeps[1].second);   // beacon phase
-  CHECK(sleeps[2].first == 20 && !sleeps[2].second);   // quiet gap
-  CHECK(sleeps[3].first == 250 && !sleeps[3].second);  // silent observe
-  CHECK(sleeps[4].first == 30 && !sleeps[4].second);   // candidate settle
-  CHECK(sleeps[5].first == 250 && !sleeps[5].second);  // candidate observe
-  CHECK(!s.at_home());
-  CHECK(!s.quiet());                                    // one card never uses quiet()
-  CHECK(r.now == 30 + 300 + 20 + 250 + 30 + 250);
-  auto d = s.take_dwells();
+TEST(auto_unlinked_dwell_is_burst_then_quiet_observe_on_primaries_observe_only_on_secondaries) {
+  Rig g(two()); g.s.set_op(136); g.s.set_search(true);
+  g.s.run_once();                          // first half of 136's pair = 132 (not a member): no burst
+  // settle(W) observe(QW 250)
+  REQUIRE(g.phases.size() == 2);
+  CHECK(g.phases[0].first == "W" && g.phases[0].second == 30);
+  CHECK(g.phases[1].first == "QW" && g.phases[1].second == 250);
+  CHECK(g.r.ch == 132);
+  g.phases.clear(); g.s.run_once();        // 136: member -> burst, gap, observe
+  REQUIRE(g.phases.size() == 4);
+  CHECK(g.phases[1].first == "BW" && g.phases[1].second == 100);
+  CHECK(g.phases[2].first == "W" && g.phases[2].second == 20);
+  CHECK(g.phases[3].first == "QW" && g.phases[3].second == 250);
+  CHECK(!g.s.quiet() && !g.s.beaconing());  // released after the dwell
+  auto d = g.s.take_dwells();
   REQUIRE(d.size() == 2);
-  CHECK(d[0].survey.def.primary == 136);
-  CHECK(d[0].survey.observe_ms == 250);                 // same window as a candidate
-  CHECK(d[1].survey.def.primary == 149);
-  CHECK(d[1].survey.observe_ms == 250);
+  CHECK(d[1].survey.def.primary == 136 && d[1].survey.observe_ms == 250);
+  // dwell-set order is what ranking() exposes
+  auto k = g.s.ranking();
+  REQUIRE(k.size() == 4);
+  CHECK(k[0].ch == 132 && k[1].ch == 136 && k[2].ch == 140 && k[3].ch == 144);
 }
 
-TEST(one_card_home_counts_as_visits) {
+TEST(auto_linked_dwell_has_no_burst_is_never_quiet_and_subtracts_the_tx_leak) {
+  ScoutCfg c = two(); c.leak_per_frame = 2.0;
   FakeRadio r;
-  r.cca_per_ms_on[136] = 9;
-  ChannelScout s(cfg2(true), r, [&] { return r.now; }, [&](int ms) { r.now += ms; });
-  s.run_once(); s.run_once();   // 2 cycles = 2 home visits, 149 + 161 once each
-  CHECK(s.proposal() == 136);   // only home has 2 visits (busy but the only ranked one)
-  s.run_once(); s.run_once();
-  CHECK(s.proposal() == 149);
+  r.cca_per_ms_on[144] = 1;                // 250 cca per observe on 144
+  std::vector<std::string> states;         // beaconing/quiet flags at every sleep
+  uint64_t tx = 0;
+  ChannelScout* sp = nullptr;
+  // The TX card "sends" 60 frames during every observe: bump the cumulative
+  // counter the core would feed in, from inside the 250 ms sleep.
+  ChannelScout s(c, r, [&] { return r.now; }, [&](int ms) {
+    states.push_back(std::string(sp->beaconing() ? "B" : "") + (sp->quiet() ? "Q" : ""));
+    if (ms == 250) { tx += 60; sp->set_tx_frames(tx); }
+    r.now += ms;
+  });
+  sp = &s;
+  s.set_op(136); s.set_search(false);      // linked, pick open
+  s.set_tx_frames(0);
+  for (int i = 0; i < 4; ++i) s.run_once();           // 132 136 140 144
+  REQUIRE(!states.empty());
+  for (auto& st : states) CHECK(st.empty());          // never beaconing, never quiet
+  bool seen = false;
+  for (auto& e : s.ranking())
+    if (e.ch == 144) { seen = true; CHECK(e.worst_busy == 250 - 120); }  // 250 cca - 2.0*60
+  CHECK(seen);
 }
 
-// ---- 40 MHz boot scan (docs/bw40.md §3) ------------------------------------
-
-static ScoutCfg cfg40(bool one_card = false) {
-  ScoutCfg c = cfg2(one_card);
-  c.home = 136; c.candidates = {144, 40}; c.link_width_mhz = 40;
-  return c;
+TEST(two_card_proposal_matures_after_min_rounds_and_moves_only_past_the_margin) {
+  Rig g(two()); g.s.set_op(136); g.s.set_search(false);
+  for (int i = 0; i < 4; ++i) g.s.run_once();
+  CHECK(!g.s.mature()); CHECK(g.s.proposal() == 136);
+  CHECK(g.s.pick_ranking().empty());
+  for (int i = 0; i < 4; ++i) g.s.run_once();
+  CHECK(g.s.mature()); CHECK(g.s.rounds() == 2);
+  CHECK(g.s.proposal() == 136);            // tie: stay
+  Rig h(two()); h.s.set_op(136); h.s.set_search(false);
+  h.r.cca_per_ms_on[132] = 1;              // 136's pair worse half = 250/visit; 144 clean
+  for (int i = 0; i < 8; ++i) h.s.run_once();
+  CHECK(h.s.proposal() == 144);
+  auto pr = h.s.pick_ranking();
+  REQUIRE(pr.size() == 2);
+  CHECK(pr[0] == 144 && pr[1] == 136);
+  h.s.set_op(144);                         // the margin is against op: on 144, stay
+  CHECK(h.s.proposal() == 144);
 }
 
-static std::vector<std::string> retunes_of(const FakeRadio& r) {
-  std::vector<std::string> out;
-  for (const auto& c : r.calls) if (c.rfind("retune", 0) == 0) out.push_back(c);
-  return out;
+TEST(two_card_width_20_ranks_the_members_and_proposes_past_the_margin) {
+  ScoutCfg c = two(); c.link_width_mhz = 20; Rig g(c);
+  g.s.set_op(136); g.s.set_search(false);
+  g.r.cca_per_ms_on[136] = 1;
+  for (int i = 0; i < 4; ++i) g.s.run_once();
+  CHECK(g.s.mature()); CHECK(g.s.rounds() == 2);
+  CHECK(g.s.proposal() == 144);
+  auto pr = g.s.pick_ranking();
+  REQUIRE(pr.size() == 2);
+  CHECK(pr[0] == 144 && pr[1] == 136);
+  g.s.freeze();
+  CHECK(!g.s.run_once());
+  CHECK(g.r.calls.back() == "retune 136");  // park at 20 on op
 }
 
-TEST(bw40_scan_dwells_every_half_of_every_pair_in_order) {
-  FakeRadio r;
-  ChannelScout s(cfg40(), r, [&] { return r.now; }, [&](int ms) { r.now += ms; });
-  for (int i = 0; i < 6; ++i) s.run_once();   // one round: 132,136,140,144,36,40
-  CHECK(s.rounds() == 1);
-  const auto rt = retunes_of(r);
-  REQUIRE(rt.size() == 6);
-  CHECK(rt[0] == "retune 132"); CHECK(rt[1] == "retune 136");
-  CHECK(rt[2] == "retune 140"); CHECK(rt[3] == "retune 144");
-  CHECK(rt[4] == "retune 36");  CHECK(rt[5] == "retune 40");
-  auto d = s.take_dwells();
-  REQUIRE(d.size() == 6);
-  for (const auto& x : d) CHECK(x.survey.def.width == CHANNEL_WIDTH_20);   // halves are scored at 20
+TEST(freeze_stops_measuring_and_parks_at_link_width_on_op) {
+  Rig g(two()); g.s.set_op(144); g.s.set_search(false);
+  g.s.run_once();
+  CHECK(g.s.pick_open() && g.s.working());
+  g.s.freeze();
+  CHECK(!g.s.pick_open());
+  CHECK(!g.s.run_once());                  // nothing to do: parked
+  CHECK(!g.s.working() && !g.s.quiet() && !g.s.beaconing());
+  CHECK(g.r.calls.back() == "retune_width 144/40");
+  const size_t n = g.r.calls.size();
+  CHECK(!g.s.run_once());                  // parks once
+  CHECK(g.r.calls.size() == n);
+  g.s.set_search(true);                    // a later loss: search resumes, measurement does not
+  g.phases.clear(); g.s.run_once(); g.s.run_once();
+  for (auto& p : g.phases) CHECK(p.first.find('Q') == std::string::npos);
+  for (size_t i = n; i < g.r.calls.size(); ++i) CHECK(g.r.calls[i].rfind("read", 0) != 0);
+  CHECK(g.r.calls[n].rfind("retune_width ", 0) == 0 && g.r.width == 20);
+  CHECK(g.s.working());
 }
 
-TEST(bw40_proposal_is_the_primary_of_the_pair_with_the_cleanest_worse_half) {
-  FakeRadio r;
-  r.cca_per_ms_on[132] = 40;   // home's SECONDARY is dirty
-  r.cca_per_ms_on[136] = 0;
-  r.cca_per_ms_on[140] = 0; r.cca_per_ms_on[144] = 0;
-  r.cca_per_ms_on[36] = 2;  r.cca_per_ms_on[40] = 0;
-  ChannelScout s(cfg40(), r, [&] { return r.now; }, [&](int ms) { r.now += ms; });
-  for (int i = 0; i < 6; ++i) s.run_once();
-  CHECK(s.proposal() == 136);                // min_rounds 2 not met -> home
-  for (int i = 0; i < 6; ++i) s.run_once();
-  CHECK(s.rounds() == 2);
-  CHECK(s.proposal() == 144);                // 140+144 worse half 0 < home's 40*250; 36+40 worse half 500
-  auto k = s.ranking();
-  CHECK(k.size() == 6);                      // per-half entries
-  CHECK(k[0].ch == 136 && k[1].ch == 132);   // ChannelRanker keeps home at [0], then the half set in order
+TEST(one_card_prelude_is_silent_then_op_windows_alternate_with_dwells) {
+  ScoutCfg c = two(); c.one_card = true; c.one_card_ms = 1000; Rig g(c);
+  g.s.set_op(136); g.s.set_search(true);
+  CHECK(!g.s.prelude_done());
+  while (g.r.now < 1000) g.s.run_once();   // silent dwells: never beaconing
+  REQUIRE(!g.phases.empty());
+  for (auto& p : g.phases) CHECK(p.first.find('B') == std::string::npos);
+  CHECK(!g.s.prelude_done());
+  g.s.run_once();
+  CHECK(g.s.prelude_done());
+  // proposal available on the deadline ranking (1 visit per half suffices)
+  CHECK(g.s.mature());
+  CHECK(g.s.proposal() == 136 || g.s.proposal() == 144);
+  g.phases.clear(); g.s.run_once();
+  // op window: retune to op, beacon 300, gap 20, then a dwell with a burst
+  REQUIRE(g.phases.size() >= 2);
+  CHECK(g.phases[0].first == "BW" && g.phases[0].second == 300);
+  CHECK(g.phases[1].first == "W" && g.phases[1].second == 20);
+  bool burst = false;
+  for (auto& p : g.phases) burst = burst || (p.first == "BW" && p.second == 100);
+  CHECK(burst);
+  // the prelude never re-arms
+  g.s.set_search(false); g.s.run_once(); g.s.set_search(true);
+  CHECK(g.s.prelude_done());
 }
 
-TEST(bw40_run_parks_the_card_at_40_on_the_target) {
-  FakeRadio r;
-  ChannelScout s(cfg40(), r, [&] { return r.now; }, [&](int ms) { r.now += ms; });
-  s.freeze(144);
-  s.run();
-  CHECK(s.done());
-  REQUIRE(!r.calls.empty());
-  CHECK(r.calls.back() == "retune_width 144/40");
-  // 20 MHz link: plain retune, as before.
-  FakeRadio r20;
-  ChannelScout s20(cfg2(), r20, [&] { return r20.now; }, [&](int ms) { r20.now += ms; });
-  s20.freeze(149);
-  s20.run();
-  CHECK(r20.calls.back() == "retune 149");
+TEST(one_card_pinned_has_no_prelude) {
+  ScoutCfg c = two(false); c.one_card = true; Rig g(c);
+  g.s.set_op(136); g.s.set_search(true);
+  CHECK(g.s.prelude_done());
+  g.s.run_once();
+  REQUIRE(!g.phases.empty());
+  CHECK(g.phases[0].first == "BW" && g.phases[0].second == 300);
 }
 
-TEST(bw40_one_card_run_parks_the_only_card_at_40) {
-  // One card: the scout IS the link card. run() must end on retune_width
-  // at 40 on the frozen target, or the link stays capped at the 20 rungs.
-  FakeRadio r;
-  ChannelScout s(cfg40(true), r, [&] { return r.now; }, [&](int ms) { r.now += ms; });
-  for (int i = 0; i < 3; ++i) s.run_once();
-  s.freeze(136);
-  s.run();
-  CHECK(s.done());
-  REQUIRE(!r.calls.empty());
-  CHECK(r.calls.back() == "retune_width 136/40");
-  CHECK(r.ch == 136);
-}
-
-TEST(bw40_run_completes_even_when_the_width_switch_fails) {
-  // A dead/unready card: run() still ends (done) so the core can join it;
-  // the core loop's width resync (width_resync.h) fixes the card later.
-  FakeRadio r;
-  r.fail_width = true;
-  ChannelScout s(cfg40(true), r, [&] { return r.now; }, [&](int ms) { r.now += ms; });
-  s.freeze(144);
-  s.run();
-  CHECK(s.done());
-  CHECK(r.calls.back() == "retune_width 144/40");
-}
-
-TEST(bw40_one_card_dwells_the_other_half_of_home_but_not_home) {
-  FakeRadio r;
-  ChannelScout s(cfg40(true), r, [&] { return r.now; }, [&](int ms) { r.now += ms; });
-  // One-card cycle: home window dwell (136, HomeOneCard) then one scheduler
-  // dwell. Over a full round the scheduler visits 132, 140, 144, 36, 40.
-  for (int i = 0; i < 5; ++i) s.run_once();
-  const auto rt = retunes_of(r);
-  std::vector<std::string> sched;
-  for (const auto& x : rt) if (x != "retune 136") sched.push_back(x);
-  REQUIRE(sched.size() == 5);
-  CHECK(sched[0] == "retune 132"); CHECK(sched[1] == "retune 140");
-  CHECK(sched[4] == "retune 40");
-}
-
-TEST(boot_dwell_books_nhm_busy_before_the_floor_read) {
-  struct Nhm : FakeRadio {
-    uint16_t armed = 0;
-    bool arm_nhm_busy(uint16_t p) override { calls.push_back("arm " + std::to_string(p)); armed = p; return true; }
-    NhmBusyRead read_nhm_busy() override {
-      calls.push_back("nhm");
-      NhmBusyRead r; r.valid = true; r.period = armed; r.buckets[0] = 51; r.buckets[11] = 204; return r;
-    }
-  } r;
-  ScoutCfg c = cfg2(); c.blocked_pct = 30.0;
-  ChannelScout s(c, r, [&] { return r.now; }, [&](int ms) { r.now += ms; });
-  CHECK(s.run_once());
-  // retune -> discard read -> ARM (250 ms = 62500) -> observe -> NHM read -> floor read (reprograms NHM)
-  REQUIRE(r.calls.size() == 5);
-  CHECK(r.calls[2] == "arm 62500");
-  CHECK(r.calls[3] == "nhm");
-  CHECK(r.calls[4] == "read+nhm");
-  auto d = s.take_dwells();
-  REQUIRE(d.size() == 1);
-  CHECK(d[0].busy_valid && d[0].busy_pct == 80.0);
-  for (const auto& e : s.ranking())
-    if (e.ch == 136) { CHECK(e.busy_valid); CHECK(e.worst_busy_pct == 80.0); }
+TEST(run_exits_on_stop_and_parks) {
+  Rig g(two()); g.s.set_op(136); g.s.set_search(true);
+  g.s.run_once();
+  CHECK(g.s.working());
+  g.s.stop();
+  g.s.run();
+  CHECK(g.s.done() && !g.s.working());
+  CHECK(g.r.calls.back() == "retune_width 136/40");
 }
 MTEST_MAIN

@@ -130,4 +130,23 @@ TEST(margin_is_against_the_current_channel_not_a_fixed_home) {
   r.add(S(136, 60, 0, 0, 0));      // worst visit now 60
   CHECK(r.proposal(136) == 149);   // 15+20 <= 60: move
 }
+
+TEST(ranked_with_an_explicit_visit_bar_overrides_min_rounds) {
+  ChannelRanker r({136, 149}, 3);
+  r.add(S(136, 100, 0, 0, 0)); r.add(S(149, 0, 0, 0, 0));
+  CHECK(r.ranked().empty());               // 1 visit < min_rounds 3
+  auto k = r.ranked(1);
+  REQUIRE(k.size() == 2);
+  CHECK(k[0].ch == 149 && k[1].ch == 136);
+  CHECK(r.ranked(2).empty());
+}
+
+TEST(proposal_with_an_explicit_visit_bar_overrides_min_rounds) {
+  ChannelRanker r({136, 149}, 3, 20);
+  r.add(S(136, 100, 0, 0, 0)); r.add(S(149, 0, 0, 0, 0));
+  CHECK(r.proposal(136) == 136);           // nothing ranked at 3
+  CHECK(r.proposal(136, 1) == 149);        // 100 vs 0 clears the margin of 20
+  CHECK(r.proposal(136, 2) == 136);
+}
+
 MTEST_MAIN

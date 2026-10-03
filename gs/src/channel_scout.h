@@ -13,18 +13,21 @@
 namespace maburgs {
 
 struct ScoutCfg {
-  uint8_t home = 149;
-  std::vector<uint8_t> candidates;
+  std::vector<uint8_t> channels;   // the set, config order (members are primaries at width 40)
+  bool measure = true;             // auto: observe + rank; false (pinned): search only
   int dwell_ms = 250;
   int settle_ms = 30;
   int min_rounds = 3;
-  int home_window_ms = 300;
+  int search_ms = 100;             // DISC burst on a member during a search dwell
+  int op_window_ms = 300;          // one card: beacon window on op between dwells
   int beacon_period_ms = 20;
-  uint32_t home_margin = 0;
+  int one_card_ms = 5000;          // one card + measure: silent prelude before the first DISC
+  uint32_t pick_margin = 20;
   bool one_card = false;
-  uint8_t link_width_mhz = 20;  // radio.width: 40 = dwell every half at 20, pick a pair, park at 40
+  uint8_t link_width_mhz = 20;     // radio.width: 40 = dwell every half at 20, pick a pair, park at 40
   int busy_dbm = -83;
   double blocked_pct = 1e9;
+  double leak_per_frame = 1.0;     // RankSample::leak per TX-card frame sent during an observe
 };
 
 struct ScoutDwell {
@@ -40,46 +43,68 @@ struct ScoutDwell {
   double busy_pct = 0;  // NHM busy % over the observe span (scanlog 4 D)
 };
 
-// Boot-time scout (spec 2026-09-13-auto-channel-select §4). Owns one card's
-// control plane from construction until done(). Two cards: the scheduler
-// walks candidates ∪ {home}. One card: each cycle is a home window (during
-// which at_home() is true and the core may beacon) followed by one
-// scheduler dwell over the candidates.
+// The GS's long-lived search + measure scheduler. Owns the spare card
+// whenever it has work: has_work = search || (measure && !frozen).
 //
-// Every dwell is measured IN SILENCE (bench 2026-09-13: the beaconing
-// card's TX leaks into the adjacent scout on every channel -- decoded and
-// subtracted as own frames on home, counted as undecodable energy on a
-// candidate -- and a single card's TX leaks into its own receiver). Two
-// cards: quiet() is true during every dwell; once per scheduler round the
-// scout opens a beacon window of home_window_ms (quiet() false) so the
-// drone can still be discovered mid-scan. One card: each cycle is a beacon
-// phase (at_home()), a quiet gap, a silent observe of dwell_ms on home with
-// its own discard read, then one silent candidate dwell.
-// Time comes from the injected clock so tests run instantly.
+//  - search (link down): sweep the set, bursting DISC (beaconing() true for
+//    search_ms) on every member dwell so the drone can be FOUND wherever
+//    it is. Bursts happen only when search && the dwell channel is a member.
+//  - measure (auto mode, pick open): observe every dwell channel (both 20
+//    MHz halves of each member's pair at width 40) and rank it. An observe
+//    while unlinked is quiet(): the TX card holds its DISC (bench
+//    2026-09-13: a beaconing card's TX leaks into the adjacent scout).
+//    Linked, the TX card carries video and is never held; its leak is
+//    subtracted instead: RankSample::leak = round(leak_per_frame x frames
+//    the TX card sent during the observe), fed in via set_tx_frames().
+//  - no work (linked and pinned, or frozen): park on op at link_width_mhz
+//    (once), working() false. freeze() closes the pick for good.
+//
+// One card: with measure on, a silent prelude of one_card_ms (observe-only
+// dwells, no DISC anywhere) runs first and never re-arms; afterwards every
+// step is an op window (beaconing() on op for op_window_ms) then one dwell.
+// Time comes from the injected clock so tests run instantly. Every input
+// and output is an atomic; ranker_/dwells_ are under mu_.
 class ChannelScout {
  public:
   using NowFn = std::function<int64_t()>;
   using SleepFn = std::function<void(int)>;
   ChannelScout(ScoutCfg cfg, ScoutRadio& radio, NowFn now_ms, SleepFn sleep_ms);
 
-  void run();
-  bool run_once();
-  uint8_t proposal() const { return proposal_.load(std::memory_order_acquire); }
-  void freeze(uint8_t target);
-  bool frozen() const { return frozen_.load(std::memory_order_acquire); }
-  bool done() const { return done_.load(std::memory_order_acquire); }
-  bool at_home() const { return at_home_.load(std::memory_order_acquire); }
-  // Two cards: a silent dwell is in progress, the core must not beacon.
+  void run();       // thread body: loops run_once() until stop(); parks the card on exit
+  bool run_once();  // one scheduler step; false = nothing to do this step (idle, parked)
+
+  // core -> scout (any thread)
+  void set_op(uint8_t ch);
+  void set_search(bool on) { search_.store(on, std::memory_order_release); }
+  void set_tx_frames(uint64_t cumulative) { tx_frames_.store(cumulative, std::memory_order_release); }
+  void freeze() { frozen_.store(true, std::memory_order_release); }  // pick closed: measuring stops
+  void stop() { stop_.store(true, std::memory_order_release); }
+
+  // scout -> core
+  bool working() const { return working_.load(std::memory_order_acquire); }
+  bool beaconing() const { return beaconing_.load(std::memory_order_acquire); }
   bool quiet() const { return quiet_.load(std::memory_order_acquire); }
+  bool pick_open() const { return !frozen_.load(std::memory_order_acquire); }
+  bool prelude_done() const { return prelude_done_.load(std::memory_order_acquire); }
+  bool mature() const;
+  uint8_t proposal() const { return proposal_.load(std::memory_order_acquire); }
+  std::vector<uint8_t> pick_ranking() const;
   uint64_t rounds() const { return rounds_.load(std::memory_order_acquire); }
   std::vector<RankEntry> ranking() const;
   std::vector<ScoutDwell> take_dwells();
+  bool done() const { return done_.load(std::memory_order_acquire); }
 
  private:
-  enum class Kind { Silent, HomeOneCard };
-  // Retune, settle, [one-card home: beacon phase + gap,] discard read,
-  // silent observe of dwell_ms, real read; records the dwell + sample.
-  bool dwell(uint8_t ch, Kind kind, uint64_t round);
+  bool has_work_() const;
+  bool measuring_() const;
+  bool member_(uint8_t ch) const;
+  int eff_min_rounds_() const;
+  void park_();
+  bool tune_(uint8_t ch);
+  bool step_dwell_(bool burst_ok, bool observe);
+  // Retune, settle, [burst + gap,] [discard read, observe dwell_ms, read];
+  // records the dwell (+ the sample when observed).
+  bool dwell(uint8_t ch, uint64_t round, bool burst, bool observe);
   void publish_();
 
   ScoutCfg cfg_;
@@ -92,10 +117,14 @@ class ChannelScout {
   std::vector<ScoutDwell> dwells_;
   uint64_t seq_ = 0;
   std::atomic<uint8_t> proposal_;
-  std::atomic<bool> frozen_{false}, done_{false}, at_home_{false}, quiet_{false};
-  std::atomic<uint8_t> target_{0};
+  std::atomic<uint8_t> op_;
+  std::atomic<uint64_t> tx_frames_{0};
+  std::atomic<bool> search_{false}, frozen_{false}, stop_{false};
+  std::atomic<bool> working_{false}, beaconing_{false}, quiet_{false}, prelude_done_{true},
+      done_{false};
   std::atomic<uint64_t> rounds_{0};
-  bool beacon_due_ = true;   // two cards: open a beacon window before the next dwell
+  bool need_width_ = true;   // run thread only: the next tune switches the card to 20 MHz
+  int64_t t0_ = -1;          // run thread only: first run_once() (one-card prelude start)
 };
 
 }  // namespace maburgs

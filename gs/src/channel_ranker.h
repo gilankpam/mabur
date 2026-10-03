@@ -51,9 +51,13 @@ class ChannelRanker {
   ChannelRanker(std::vector<uint8_t> channels, int min_rounds, uint32_t margin = 0,
                 double blocked_pct = 1e9);
   void add(const RankSample& s);
-  std::vector<RankEntry> ranked() const;
+  std::vector<RankEntry> ranked() const { return ranked(min_rounds_); }
+  // Same, with a caller-chosen visit bar (the scout's one-card deadline
+  // ranks on 1 visit before min_rounds full passes have run).
+  std::vector<RankEntry> ranked(int min_rounds) const;
   std::vector<RankEntry> all() const { return entries_; }
-  uint8_t proposal(uint8_t current) const;
+  uint8_t proposal(uint8_t current) const { return proposal(current, min_rounds_); }
+  uint8_t proposal(uint8_t current, int min_rounds) const;
   static uint32_t busy(const RankSample& s);
   // A channel whose worst-visit NHM busy % has reached blocked_pct: ranks
   // last regardless of event score (spec 2026-09-25-nhm-airtime §7).
