@@ -28,6 +28,12 @@ class RemoteCard final : public LinkCard {
     uint8_t channel = 149;
     uint8_t width_mhz = 20;    // 20|40; sec derives from channel (mabur::ht40_offset)
     uint8_t card_id = 0;
+    // maburgs (a daemon) restarts the client every kRefusedRestartMs while
+    // another client owns the relay and never gives up. The web page is the
+    // relay's one client (spec 2026-10-04 §1): it sets this false so a
+    // refusal stays visible through health() as Refused/Taken instead of
+    // being reset.
+    bool restart_when_refused = true;
   };
   using OpenFn = std::function<std::unique_ptr<RelayTransport>(const std::string&, std::string&)>;
   using NowMsFn = std::function<uint64_t()>;

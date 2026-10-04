@@ -126,7 +126,7 @@ void RemoteCard::tick(uint64_t now_ms) {
     if (c_.lost(now_ms)) st = St::Lost;
     else if (c_.owned_and_tuned()) st = St::Owned;
     else if (c_.refused(now_ms) || c_.ownership_lost(now_ms)) st = St::Refused;
-    if (st == St::Refused && now_ms >= last_restart_ms_ && now_ms - last_restart_ms_ >= kRefusedRestartMs) {
+    if (cfg_.restart_when_refused && st == St::Refused && now_ms >= last_restart_ms_ && now_ms - last_restart_ms_ >= kRefusedRestartMs) {
       last_restart_ms_ = now_ms;
       c_.start(now_ms);          // HELLO + TUNE again, fresh retry window
       reconnects_.fetch_add(1);

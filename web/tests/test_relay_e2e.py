@@ -139,6 +139,17 @@ class RelayE2E(unittest.TestCase):
         self.assertIn('ERROR relay taken by another client', p.stdout)
         self.assertLess(time.time() - t0, 6)
 
+    def test_gs_ownership_taken_late_reports_and_exits(self):
+        # Theft past RemoteCard's 5 s refused-restart point: the page's card
+        # never restarts, so the refusal is reported, not reset away.
+        r = FakeRelay()
+        def steal(): time.sleep(7); r.steal()
+        threading.Thread(target=steal, daemon=True).start()
+        t0 = time.time(); p = run_webgs(r.port, 'gs', 15); r.stop = True
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn('ERROR relay taken by another client', p.stdout)
+        self.assertLess(time.time() - t0, 12)
+
     def test_spotter_ownership_taken_mid_session_reports_and_exits(self):
         # One relay, one client: a spotter owns the relay too, so losing it
         # mid-session is the same operator error as for a GS.

@@ -410,6 +410,7 @@ int live_loop(const LiveOpts& o, const maburgs::Config& cfg, uint8_t ch, int wid
 #endif
 
   int rc = 0;
+  bool relay_owned = false;   // Health::Owned seen (run_live waited for it; latched here anyway)
   std::vector<mabur::node::RxBody> batch;
   uint64_t next_stat = now_us() + 1000000;
   int applied_rec = -1;
@@ -467,10 +468,22 @@ int live_loop(const LiveOpts& o, const maburgs::Config& cfg, uint8_t ch, int wid
     if (lrec_armed && dvr.state() == mabur::RawDvr::State::Error) seal_local_rec();
     const char* lost = nullptr;
     if (auto* rcard = dynamic_cast<maburgs::RemoteCard*>(cards[0].get())) {
-      switch (rcard->health()) {
-        case maburgs::RemoteCard::Health::Lost:  lost = "relay lost"; break;
-        case maburgs::RemoteCard::Health::Taken: lost = "relay taken by another client"; break;
-        default: break;
+      const auto h = rcard->health();
+      if (h == maburgs::RemoteCard::Health::Owned) relay_owned = true;
+      // After ownership: Lost is fatal; Taken OR Refused means another
+      // client holds the relay (restart_when_refused is off, so a refusal
+      // is never reset back to Connecting). TuneFailed and Connecting are
+      // NOT fatal here: a core-ordered relay TUNE during a hop reads
+      // not-tuned for ~0.2 s, and RelayClient::tune_failed()'s window is
+      // measured from start(), so it reads true during any post-ownership
+      // retune.
+      if (relay_owned) {
+        switch (h) {
+          case maburgs::RemoteCard::Health::Lost:    lost = "relay lost"; break;
+          case maburgs::RemoteCard::Health::Taken:
+          case maburgs::RemoteCard::Health::Refused: lost = "relay taken by another client"; break;
+          default: break;
+        }
       }
     } else if (!cards[0]->alive()) {
       lost = "card lost";
@@ -582,6 +595,7 @@ int run_live(const LiveOpts& o) {
     rcfg.channel = ch;
     rcfg.width_mhz = static_cast<uint8_t>(width);   // never the boot scout: full width from the start
     rcfg.card_id = 0;
+    rcfg.restart_when_refused = false;   // one relay, one client: a refusal is reported, not retried
     maburgs::RemoteCard::OpenFn open =
 #ifdef __EMSCRIPTEN__
         [](const std::string&, std::string&) { return webgs::open_ring_transport(); };

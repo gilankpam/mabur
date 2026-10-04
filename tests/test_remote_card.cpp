@@ -47,8 +47,9 @@ struct Rig {
   std::vector<FakeTransport*> opened;   // every transport the card opened, in order (only back() is live)
   std::vector<std::shared_ptr<std::atomic<bool>>> closed;   // each one's close() flag, safe after it is freed
   std::unique_ptr<RemoteCard> card;
-  Rig(uint8_t ch = 136, uint8_t w = 40) {
+  Rig(uint8_t ch = 136, uint8_t w = 40, bool restart_when_refused = true) {
     RemoteCard::Cfg c; c.addr = "10.83.11.1:8310"; c.channel = ch; c.width_mhz = w; c.card_id = 1;
+    c.restart_when_refused = restart_when_refused;
     card = std::make_unique<RemoteCard>(c, q,
         [this](const std::string&, std::string&) { auto t = std::make_unique<FakeTransport>(); opened.push_back(t.get()); closed.push_back(t->closed_flag); return std::unique_ptr<RelayTransport>(std::move(t)); },
         [this] { return now_ms.load(); });
@@ -272,6 +273,43 @@ TEST(refused_restarts_client_every_5s) {
   CHECK(r.t().count(kTune) == tunes_at_window_end);     // window closed, nothing more
   tick_with_status(1000 + 5000);                        // 5 s after open (the clock seeds at open, not at refusal)
   CHECK(r.t().count(kTune) == tunes_at_window_end + 1); // restart: HELLO + TUNE again
+  CHECK(r.card->relay_stats()->reconnects == 1);
+  r.card->stop();
+}
+
+// Refused from open, ticked with a STATUS every 100 ms out to 7 s (past
+// kRefusedRestartMs): TUNE count after the 2.5 s tune window, and at 7 s.
+// TUNE, not HELLO: HELLO is RelayClient's keepalive and is sent either way;
+// a TUNE after the window closes is only ever a restart's.
+namespace {
+std::pair<int, int> refused_hello_tunes(Rig& r) {
+  REQUIRE(r.card->open_and_start());
+  auto tick_with_status = [&](uint64_t t) {
+    r.now_ms = t;
+    r.t().push(status(3, 132, 0, 0));
+    REQUIRE(r.soon([&] { std::lock_guard<std::mutex> lk(r.t().mu); return r.t().inbox.empty(); }));
+    r.card->tick(t);
+  };
+  for (uint64_t t = 1000; t <= 1000 + 2700; t += 100) tick_with_status(t);
+  const int at_window = r.t().count(kTune);
+  for (uint64_t t = 1000 + 2800; t <= 1000 + 7000; t += 100) tick_with_status(t);
+  return {at_window, r.t().count(kTune)};
+}
+}  // namespace
+
+TEST(refused_no_restart_when_restart_when_refused_false) {
+  Rig r(136, 40, false);
+  const auto [at_window, at_7s] = refused_hello_tunes(r);
+  CHECK(at_7s == at_window);                               // never restarted
+  CHECK(r.card->health() == RemoteCard::Health::Refused);  // the refusal stays visible
+  CHECK(r.card->relay_stats()->reconnects == 0);
+  r.card->stop();
+}
+
+TEST(refused_restarts_by_default) {
+  Rig r;                                                   // default: restart_when_refused = true
+  const auto [at_window, at_7s] = refused_hello_tunes(r);
+  CHECK(at_7s > at_window);                                // the 5 s restart re-sent TUNE
   CHECK(r.card->relay_stats()->reconnects == 1);
   r.card->stop();
 }
