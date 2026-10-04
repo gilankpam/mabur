@@ -208,6 +208,7 @@ window_ms            = 150    # length of one channel-health check
 persist              = 2      # bad checks in a row before hopping
 dwell_observe_ms     = 5      # scout: time listening per candidate visit...
 dwell_period_ms      = 333    # ...and time between visits
+relay_burst_period_ms = 1000  # relay sweep (~280 ms deaf): at most one per this, while hop-free
 rank_visits          = 5      # visits remembered per candidate
 rank_max_age_ms      = 10000  # visits older than this are ignored
 confirm_ms           = 1000   # drone video must appear on the new channel within this, else cancel

@@ -92,6 +92,10 @@ struct HopCfg {
   int max_hops_per_min = 4;
   int backoff_ms = 30000;
   int one_card_repeats = 5;
+  // Freshness-burst pacing when the burst card is a relay: its sweep blanks
+  // it for ~280 ms, so 333 ms (dwell_period_ms) in Hold would leave it ~85
+  // % deaf (spec 2026-10-05 §4).
+  int relay_burst_period_ms = 1000;
   HopVerdictCfg verdict;
 };
 

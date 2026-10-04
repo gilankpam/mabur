@@ -8,6 +8,10 @@
 
 namespace maburgs {
 
+// Which card gathered a visit: a USB dwell (5 ms, CCA-event counts) or a
+// relay sweep (20 ms survey, no CCA count).
+enum class VisitSrc : uint8_t { Usb, Relay };
+
 // One brief visit to a candidate channel: raw energy (fa, cca), our own
 // airtime on it (own), and the count of frames we could actually decode
 // from a foreign transmitter (foreign).
@@ -20,6 +24,11 @@ struct HopVisit {
   // visits from radios/fakes without NHM support.
   bool busy_valid = false;
   double busy_pct = 0;
+  // Which kind of card gathered the visit: USB dwells (5 ms, CCA-event
+  // counts) and relay sweeps (20 ms survey, no CCA count) are not on one
+  // scale, so ranking() uses only the newest visit's kind (spec
+  // 2026-10-05 §6).
+  VisitSrc src = VisitSrc::Usb;
 };
 
 struct HopRankEntry {

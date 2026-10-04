@@ -137,3 +137,21 @@ TEST(best_require_unblocked_skips_blocked) {
   for (const auto& e : r.ranking(10)) if (e.ch == 144) { seen = true; CHECK(e.blocked); }
   CHECK(seen);
 }
+
+// Relay sweep visits (20 ms survey, cca 0) and USB dwells (5 ms, CCA counts)
+// are different scales: a ranking uses only the newest visit's source kind
+// (spec 2026-10-05 §6).
+TEST(ranking_uses_only_the_newest_visit_source) {
+  HopCfg c; BusyCfg b;
+  HopRanker r(c, b, {40, 64, 112}, 0);
+  auto usb = [](uint8_t ch, double t, uint32_t cca) { HopVisit v; v.ch = ch; v.t_ms = t; v.cca = cca; return v; };
+  auto rel = [](uint8_t ch, double t, uint32_t fa) { HopVisit v; v.ch = ch; v.t_ms = t; v.fa = fa; v.src = VisitSrc::Relay; return v; };
+  // USB says 64 is busy, 112 clean; then a newer relay sweep says the opposite.
+  r.add(usb(64, 100, 500)); r.add(usb(64, 110, 500)); r.add(usb(112, 100, 0)); r.add(usb(112, 110, 0));
+  r.add(rel(64, 200, 0)); r.add(rel(64, 201, 0)); r.add(rel(112, 200, 90)); r.add(rel(112, 201, 90));
+  const auto best = r.best(300, 40, {});
+  REQUIRE(best.has_value());
+  CHECK(*best == 64);                 // the relay set alone ranks; the stale USB visits are ignored
+  for (const auto& e : r.ranking(300))
+    if (e.ch == 112) CHECK(e.visits == 2 && e.score == 180);
+}

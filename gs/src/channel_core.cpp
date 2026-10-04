@@ -559,7 +559,7 @@ void ChannelCore::step_controller_(const ChannelTickIn& in) {
       hop_burst_due(hopc_.state(), last_verdict_out_.trigger, now_ms, last_burst_ms_,
                     cfg_.hop.dwell_period_ms)) {
     last_burst_ms_ = now_ms;
-    const int burst_card = pick_burst_card(can_scout_, in.tx_card);
+    const int burst_card = pick_burst_card(can_scout_, std::vector<bool>(can_scout_.size(), false), in.tx_card);
     if (burst_card < 0 || !inflight_) {
       fill_hop_targets(ht);
     } else {

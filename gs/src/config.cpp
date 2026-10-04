@@ -302,7 +302,7 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
     const Value& h = j["hop"];
     check_keys(h, "hop", {"window_ms", "persist", "dwell_observe_ms",
                           "dwell_period_ms", "rank_visits", "rank_max_age_ms", "confirm_ms", "confirm_extend_ms", "verify_ms",
-                          "cooldown_ms", "max_hops_per_min", "backoff_ms", "one_card_repeats", "verdict"});
+                          "cooldown_ms", "max_hops_per_min", "backoff_ms", "one_card_repeats", "relay_burst_period_ms", "verdict"});
     HopCfg& hc = c.hop;
     hc.window_ms = (int)get_int(h, "window_ms", 150, 50, 2000, "hop");
     hc.persist = (int)get_int(h, "persist", 2, 1, 3, "hop");
@@ -317,6 +317,7 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
     hc.max_hops_per_min = (int)get_int(h, "max_hops_per_min", 4, 1, 60, "hop");
     hc.backoff_ms = (int)get_int(h, "backoff_ms", 30000, 1000, 600000, "hop");
     hc.one_card_repeats = (int)get_int(h, "one_card_repeats", 5, 1, 50, "hop");
+    hc.relay_burst_period_ms = (int)get_int(h, "relay_burst_period_ms", 1000, 100, 60000, "hop");
     if (h.contains("verdict")) {
       const Value& v = h["verdict"];
       check_keys(v, "hop.verdict", {"loss_pct", "recovered_x", "weak_rssi_dbm", "weak_snr_db",
