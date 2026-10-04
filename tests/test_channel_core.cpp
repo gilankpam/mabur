@@ -589,9 +589,12 @@ TEST(tx_frozen_while_hopping) {
 }
 
 TEST(shutdown_joins_threads_and_is_idempotent) {   // Review Focus 5
-  // threaded rig: real threads, real clock, short run
+  // Real threads, real clock. Pinned + LINKED: the boot scout has no work and
+  // parks, the pick is closed, so the in-flight thread starts and dwells on
+  // the non-TX card every dwell_period_ms; shutdown() must join it.
   Config cfg = bundle();
   cfg.radio.channels = {40, 64}; cfg.radio.width = 40; cfg.radio.pin = 40;
+  cfg.hop.enable = true;
   FakeCard a, b; a.ch = b.ch = 40; a.width_mhz = 40; b.width_mhz = 20;
   std::vector<LinkCard*> ptrs{&a, &b};
   VrxController vrx(vrx_cfg_from(cfg, 40));
@@ -602,13 +605,27 @@ TEST(shutdown_joins_threads_and_is_idempotent) {   // Review Focus 5
   auto now_us = [] { return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()); };
   ChannelCore core(cc, ptrs, vrx, sink, [](uint8_t) { return true; }, now_ms, now_us,
                    [](int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); });
-  ChannelTickIn in; in.agg = &agg;
-  for (int i = 0; i < 5; ++i) { in.now_ms = static_cast<double>(now_ms()); core.tick(in); std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
+  ChannelTickIn in; in.agg = &agg; in.in_session = true; in.tx_card = 0;
+  // Up to 3 s of linked ticks: a dwell record drained from the in-flight
+  // thread proves that thread ran (dwell_period_ms is 333 in the bundle).
+  bool dwelt = false;
+  for (int i = 0; i < 300 && !dwelt; ++i) {
+    in.now_ms = static_cast<double>(now_ms());
+    core.tick(in);
+    dwelt = core.snapshot().dwell[1].has_value();
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  REQUIRE(dwelt);
+  const uint32_t visits = core.snapshot().dwell[1]->visits;
+  const uint64_t t0 = now_ms();
   core.shutdown();
-  core.shutdown();                            // no-op, no crash
-  CHECK(std::string(core.snapshot().scan_state) == "off");
+  core.shutdown();                            // idempotent
+  CHECK(now_ms() - t0 < 2000);                // joined both threads promptly
+  in.now_ms = static_cast<double>(now_ms());
   const auto out = core.tick(in);
   CHECK(!out.dwell_busy);
+  std::this_thread::sleep_for(std::chrono::milliseconds(400));   // > dwell_period_ms
+  CHECK(core.snapshot().dwell[1]->visits == visits);             // no thread left dwelling
 }
 
 MTEST_MAIN

@@ -662,6 +662,9 @@ void ChannelCore::step_mechanical_retune_() {
 }
 
 void ChannelCore::inflight_body_() {
+  // Unlike main.cpp's always-present `inflight`, `inflight_` here is a
+  // unique_ptr built only alongside a scout-capable card (ctor, scout_card_
+  // >= 0): null on an all-relay roster, so this guard has no equivalent there.
   if (!inflight_) return;
   if (!in_session_atomic_.load() || cal_running_atomic_.load() || hopping_atomic_.load() ||
       scout_working_atomic_.load() || n_cards_ < 2)
