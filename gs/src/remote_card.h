@@ -51,6 +51,9 @@ class RemoteCard final : public LinkCard {
   // maburgs never gives up and ignores it). Read under mu_ at call time.
   enum class Health { Connecting, Owned, Refused, TuneFailed, Lost, Taken };
   Health health() const;
+  // State lines logged so far ("connecting", "owned and tuned", ...): a test
+  // seam for the transition rule in tick().
+  uint32_t transitions() const { return transitions_.load(); }
 
   // LinkCard
   bool open_and_start() override;
@@ -97,6 +100,7 @@ class RemoteCard final : public LinkCard {
   std::atomic<uint64_t> rx_frames_{0}, foreign_{0}, own_{0}, own_air_us_{0};
   std::atomic<uint64_t> tx_frames_{0}, tx_fail_{0};
   std::atomic<uint32_t> reconnects_{0};
+  std::atomic<uint32_t> transitions_{0};
   uint64_t last_restart_ms_ = 0;
   bool opened_once_ = false;
   uint16_t tx_seq_ = 0;            // under mu_

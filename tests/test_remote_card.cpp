@@ -406,4 +406,29 @@ TEST(relay_stats_carry_you_own_and_transport_drops) {
   CHECK(st->you_own);
   CHECK(st->rx_drops == 0 && st->tx_drops == 0);   // FakeTransport reports none
 }
+// Plan 2 review carry-over: a search-burst TUNE (owner, mid-retune) is not a
+// state transition; the card no longer logs waiting/owned on every burst.
+TEST(owner_mid_retune_is_not_a_logged_transition) {
+  Rig r;
+  REQUIRE(r.card->open_and_start());
+  r.t().push(status(0, 136, 2, 1));
+  REQUIRE(r.soon([&] { return r.card->ready(); }));
+  r.card->tick(r.now_ms += 10);
+  CHECK(r.card->transitions() == 2);              // "connecting", "owned and tuned"
+  REQUIRE(r.card->retune(40));                    // 40 pairs with 36 (HT40-: sec 2)
+  r.t().push(status(1, 136, 2, 1));               // STATUS: retuning, still on 136, we own it
+  REQUIRE(r.soon([&] { return !r.card->ready(); }));
+  r.card->tick(r.now_ms += 10);
+  CHECK(r.card->transitions() == 2);              // not "waiting for STATUS"
+  r.t().push(status(0, 40, 2, 1));                // tuned
+  REQUIRE(r.soon([&] { return r.card->ready(); }));
+  r.card->tick(r.now_ms += 10);
+  CHECK(r.card->transitions() == 2);              // not "owned and tuned" again
+  CHECK(r.card->health() == RemoteCard::Health::Owned);
+  // losing ownership mid-session still transitions (Refused via ownership_lost)
+  r.t().push(status(0, 40, 2, 0));
+  REQUIRE(r.soon([&] { return !r.card->ready(); }));
+  r.card->tick(r.now_ms += 1100);
+  CHECK(r.card->transitions() == 3);
+}
 MTEST_MAIN

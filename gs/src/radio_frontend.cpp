@@ -396,6 +396,7 @@ void RadioFrontend::stop() {
   // writes. Moved here from web/src/web_main.cpp run_live (2026-10-04).
   bool released_early = false;
   const uint64_t t_stop0 = mono_us_now();
+  const bool had_rx = rx_thread_.joinable();
   if (rx_thread_.joinable()) {
     for (int waited = 0; alive_.load(std::memory_order_acquire) && waited < 300; waited += 10)
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -408,9 +409,10 @@ void RadioFrontend::stop() {
   if (rx_thread_.joinable()) rx_thread_.join();
 #ifdef __EMSCRIPTEN__
   if (released_early && handle_) libusb_claim_interface(handle_, 0);
-  std::fprintf(stderr, "maburgs radio card %d: teardown rx %llu ms%s\n", static_cast<int>(cfg_.card_id),
-               static_cast<unsigned long long>((mono_us_now() - t_stop0) / 1000),
-               released_early ? " (reads aborted)" : "");
+  if (had_rx)
+    std::fprintf(stderr, "maburgs radio card %d: teardown rx %llu ms%s\n", static_cast<int>(cfg_.card_id),
+                 static_cast<unsigned long long>((mono_us_now() - t_stop0) / 1000),
+                 released_early ? " (reads aborted)" : "");
 #endif
   if (device_) device_->Stop();
   device_.reset();

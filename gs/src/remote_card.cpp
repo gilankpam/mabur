@@ -126,6 +126,10 @@ void RemoteCard::tick(uint64_t now_ms) {
     if (c_.lost(now_ms)) st = St::Lost;
     else if (c_.owned_and_tuned()) st = St::Owned;
     else if (c_.refused(now_ms) || c_.ownership_lost(now_ms)) st = St::Refused;
+    // An owner mid-retune (a search-burst or hop TUNE: STATUS state 1, or a
+    // STATUS still on the old channel) is not a transition out of Owned --
+    // the pair waiting/owned used to print on every burst (plan 2 bench).
+    else if (last_st_ == St::Owned && c_.status().you_own) st = St::Owned;
     if (cfg_.restart_when_refused && st == St::Refused && now_ms >= last_restart_ms_ && now_ms - last_restart_ms_ >= kRefusedRestartMs) {
       last_restart_ms_ = now_ms;
       c_.start(now_ms);          // HELLO + TUNE again, fresh retry window
@@ -241,6 +245,7 @@ void RemoteCard::on_datagram(const uint8_t* b, size_t n) {
 }
 
 void RemoteCard::log_transition(const char* what) {
+  transitions_.fetch_add(1);
   std::fprintf(stderr, "maburgs relay card %d (%s): %s\n", cfg_.card_id, cfg_.addr.c_str(), what);
 }
 
