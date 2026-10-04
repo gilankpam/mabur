@@ -1,7 +1,7 @@
 #include "hop_controller.h"
 #include "mtest.h"
 using namespace maburgs;
-static HopCfg cfg(bool en = true) { HopCfg c; c.enable = en; return c; }
+static HopCfg cfg() { return HopCfg{}; }
 static VerdictOut interfered(int ref = 5) { VerdictOut o; o.v = Verdict::Interfered; o.trigger = true; o.ref_rung = ref; return o; }
 static VerdictOut healthy() { return VerdictOut{}; }
 // A verdict with no span stamped on it is treated as one HopVerdict would
@@ -94,12 +94,6 @@ TEST(one_card_retunes_after_repeats) {
   auto a = h.tick(k); CHECK(a.kind == HopAction::OneCardRetune && a.target == 149);
   k.now_ms = 1300; CHECK(h.tick(k).kind == HopAction::None);       // once
   k.now_ms = 1350; k.video_on_target = true; CHECK(h.tick(k).kind == HopAction::Confirm);
-}
-TEST(disabled_logs_but_never_acts) {
-  HopController h(cfg(false));
-  CHECK(h.tick(T(1000, interfered(), 149, 136)).kind == HopAction::None);
-  CHECK(h.hop_ch() == 0);
-  auto ev = h.take_events(); REQUIRE(ev.size() == 1); CHECK(ev[0].kind == "would_order");
 }
 TEST(ordered_state_never_reorders_without_confirm_or_withdraw) {
   HopController h(cfg());
@@ -239,14 +233,6 @@ TEST(session_loss_while_verifying_ends_the_verify) {
   CHECK(h.tick(T(1080, interfered(), 149, 136, true)).kind == HopAction::Confirm);
   CHECK(h.on_session_lost(1200, 149).kind == HopAction::None);
   CHECK(h.state() == HopState::Idle);
-}
-TEST(session_loss_is_shadow_only_when_disabled) {
-  HopController h(cfg(false));
-  h.tick(T(1000, interfered(), 40, 128));
-  CHECK(h.on_session_lost(1050, 128).kind == HopAction::None);
-  auto ev = h.take_events();
-  REQUIRE(!ev.empty());
-  CHECK(ev.back().kind == "would_session_lost");
 }
 
 // The deadlock itself, with the real ChannelPlan: the recorded sequence
@@ -605,14 +591,12 @@ TEST(relocate_verify_fail_retries_the_callers_best_then_holds) {
   a = h.tick(T(1800, measured(interfered(), 1650, 1800), std::nullopt, 165));  // nothing left
   CHECK(a.kind == HopAction::Hold);
 }
-// hop.enable = false disables the REACTIVE hop only: rendezvous relocation
-// must still move the link (else a drone found off the pin/pick could never
-// be brought back), its events are not "would_", and the whole episode --
-// order, confirm, verify, and a session-lost withdraw -- acts. cooldown_ms
-// does not delay it; max_hops_per_min still counts it.
-// Revert (kill switch applies to relocate): every action below reads None.
-TEST(relocate_ignores_the_kill_switch_and_cooldown) {
-  HopController h(cfg(/*en=*/false));
+// A relocation (the link formed where the drone was found, or the boot pick
+// wants another pair) is exempt from cooldown_ms -- it is not fleeing
+// anything -- but counted against max_hops_per_min (next test). Its events
+// are "relocate", not "order".
+TEST(relocate_ignores_cooldown) {
+  HopController h(cfg());
   HopTick k = T(1000, interfered(), 149, 136); k.relocate = true;
   auto a = h.tick(k);
   CHECK(a.kind == HopAction::Order && a.target == 149);
@@ -625,9 +609,7 @@ TEST(relocate_ignores_the_kill_switch_and_cooldown) {
   // right after the verify_pass goes at once.
   HopTick k2 = T(2400, interfered(), 136, 149); k2.relocate = true;
   CHECK(h.tick(k2).kind == HopAction::Order);
-  CHECK(h.on_session_lost(2500, 149).kind == HopAction::Withdraw);   // not suppressed either
-  // A reactive trigger while disabled still orders nothing.
-  CHECK(h.tick(T(40000, interfered(), 161, 149)).kind == HopAction::None);
+  CHECK(h.on_session_lost(2500, 149).kind == HopAction::Withdraw);
 }
 TEST(relocate_counts_against_the_hop_cap) {
   HopCfg c = cfg(); c.max_hops_per_min = 1;

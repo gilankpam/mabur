@@ -5,7 +5,7 @@ using namespace maburgs;
 
 // A window straight out of HopVerdict, so these tests are pinned to what
 // the classifier can actually produce rather than to a hand-set bool.
-static HopCfg cfg() { HopCfg c; c.enable = true; return c; }
+static HopCfg cfg() { return HopCfg{}; }
 static VerdictCardIn card(double rssi, double snr, double foreign_ps, double fa_ps) {
   VerdictCardIn c; c.valid = true; c.rssi_dbm = rssi; c.snr_db = snr;
   c.foreign = (uint32_t)(foreign_ps * 0.15 + 0.5); c.fa = (uint32_t)(fa_ps * 0.15 + 0.5);
@@ -70,15 +70,14 @@ TEST(an_unknown_window_never_blanks_the_store) {
   CHECK(!hop_store_blank_until(o, true, 500).has_value());
 }
 
-// hop.enable = false is the bundle default and the first flights' config.
-// Nothing is ever ordered and the rung is never restored, so there is no
-// hop to protect the store from -- and blanking anyway would silently
-// change what those recordings contain versus every pre-branch one.
-TEST(disabled_never_blanks) {
+// Pinned mode: the reactive layer is off, nothing is ever ordered and the
+// rung is never restored, so there is no hop to protect the store from.
+// (Until 2026-10-04 this was the hop.enable = false case.)
+TEST(pinned_never_blanks) {
   HopVerdict v(cfg(), 2); double t = warm(v);
   auto o = jam(v, t);
   CHECK(o.v == Verdict::Interfered);
-  CHECK(!hop_store_blank_until(o, /*enable=*/false, 500).has_value());
+  CHECK(!hop_store_blank_until(o, /*reactive=*/false, 500).has_value());
 }
 
 // The bound: one deadline per frozen episode. A jam that runs for seconds,

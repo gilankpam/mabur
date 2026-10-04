@@ -24,15 +24,12 @@ constexpr double kHopSettleBlankMs = 150.0;
 //
 // Three gates, each load-bearing:
 //
-//  - `enable`. With hop.enable = false nothing is ever ordered and the
-//    rung is never restored, so there is no hop for the store to be
-//    protected from -- and blanking anyway would silently change what the
-//    observe-only flights record versus every recording made before this
-//    branch, with nothing in the log marking it. That is exactly the
-//    pre/post divergence docs/data-provenance.md exists to prevent, on the
-//    flights this branch exists to produce. HopAction::Order's own
-//    blank_store() call is already dead while disabled (tick() zeroes the
-//    action), so this keeps the two consistent.
+//  - `reactive`: the reactive layer is armed (auto mode; ChannelCore passes
+//    !pinned). Pinned, nothing is ever ordered and the rung is never
+//    restored, so there is no hop for the store to be protected from --
+//    blanking anyway would silently change what a pinned flight records.
+//    HopAction::Order's own blank_store() call never fires there (the
+//    controller is never fed a trigger), so this keeps the two consistent.
 //
 //  - VerdictOut::first_interfered, NOT ref_frozen. ref_frozen is keyed on
 //    `impaired`, and Fade (impaired AND weak) and Unknown (impaired
@@ -57,9 +54,9 @@ constexpr double kHopSettleBlankMs = 150.0;
 // detection window -- including the demotes section 4 explicitly expects,
 // "a demote or two, each an IDR" -- was being written into the per-rung
 // store against the interfered channel.
-inline std::optional<double> hop_store_blank_until(const VerdictOut& vo, bool enable,
+inline std::optional<double> hop_store_blank_until(const VerdictOut& vo, bool reactive,
                                                    int confirm_ms) {
-  if (!enable || !vo.first_interfered) return std::nullopt;
+  if (!reactive || !vo.first_interfered) return std::nullopt;
   return vo.t_ms + static_cast<double>(confirm_ms) + kHopSettleBlankMs;
 }
 

@@ -28,10 +28,10 @@ struct HopTick {
   // pair, and the caller moves it to ChannelPlan::want() -- set on the tick
   // that places the order. Order kind "relocate"; the channel left is not
   // backed off as fled (it is merely not the wanted one); exempt from
-  // cooldown_ms but counted against max_hops_per_min; and the whole
-  // episode, until the controller is back in Idle/Hold, bypasses the
-  // hop.enable kill switch -- a disabled REACTIVE hop must not prevent the
-  // rendezvous relocation.
+  // cooldown_ms but counted against max_hops_per_min. Pinned mode
+  // (ChannelCore) never feeds a reactive trigger or candidates, only
+  // relocations -- how the pin stays static while the drone can still be
+  // brought to it.
   bool relocate = false;
   // The escape from a blocked hold (Task 11 (d)): the best UNBLOCKED
   // candidate that is not verify-failed (fled channels allowed). Used only
@@ -45,11 +45,7 @@ struct HopAction {
   // VerifyPass: the verify window closed clean and the hop stands. The
   // only action with no radio/plan consequence -- it exists so the caller
   // can run spec section 2's second thaw rule, HopVerdict::reset(), at the
-  // one instant the spec names ("after a hop's verify window ends"). Like
-  // every other kind it is suppressed wholesale when cfg_.enable is false
-  // (a relocation's excepted, HopTick::relocate), which is what keeps an
-  // observe-only flight's references measuring the channel the link is
-  // actually still on.
+  // one instant the spec names ("after a hop's verify window ends").
   enum Kind { None, Order, OneCardRetune, Confirm, Withdraw, Hold, VerifyPass } kind = None;
   uint8_t target = 0;
   uint8_t epoch = 0;
@@ -104,7 +100,6 @@ class HopController {
   void verifying_tick(const HopTick& in, HopAction& out);
   void order(uint8_t target, int restore_rung, int lead_card, uint32_t score, double now,
              const char* event_kind, HopAction& out);
-  bool acting() const { return cfg_.enable || relocating_; }
   // A hold is a STATE: enter_hold() logs and counts only the transition
   // into it, leave_hold() logs the matching "hold_end" with how long it
   // lasted. Re-entering while already held sets the action and nothing
@@ -132,16 +127,13 @@ class HopController {
 
   HopCfg cfg_;
   HopState state_ = HopState::Idle;
-  uint8_t hop_ch_ = 0;          // true internal standing target, regardless of cfg_.enable
+  uint8_t hop_ch_ = 0;          // the standing target every RCF carries
   uint8_t epoch_ = 0;
   double order_ms_ = 0;
   double verify_start_ = 0;
   double last_confirm_ms_ = -1e18;   // -inf: the first-ever trigger always clears cooldown
   uint32_t hops_ = 0;
   uint32_t holds_ = 0;
-  // A relocation order is in flight (Order -> Ordered/Verifying -> back to
-  // Idle/Hold): its actions and events pass the kill switch.
-  bool relocating_ = false;
   bool one_card_retuned_ = false;
   bool confirm_extended_ = false;   // this order entered the confirm extension
   double hold_start_ms_ = 0;
