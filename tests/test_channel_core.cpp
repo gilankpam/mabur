@@ -1,8 +1,10 @@
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <memory>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "mtest.h"
@@ -544,6 +546,69 @@ TEST(one_card_link_edge_freezes_one_card_linked) {
   CHECK(std::string(g.core->snapshot().scan_state) == "frozen");
   REQUIRE(g.core->snapshot().scan_pick.has_value());
   CHECK(*g.core->snapshot().scan_pick == g.core->op());
+}
+
+TEST(inflight_dwell_feeds_ranker_and_dwell_stats) {
+  Rig g(2, 0, true, 40);                     // pinned: pick closed, scout idle after park
+  link_up(g);
+  for (int i = 0; i < 10; ++i) g.tick(true, false, 0);
+  // in-flight step: card 1 (non-TX, scout-capable) dwells on the next candidate
+  g.core->run_inflight_step();
+  g.tick(true, false, 0);                    // drain
+  const auto s = g.core->snapshot();
+  REQUIRE(s.dwell[1].has_value());
+  CHECK(s.dwell[1]->visits == 1);
+  REQUIRE(!g.sink.dwells.empty());
+  CHECK(g.sink.dwells.back().first == 1);
+  CHECK(g.cards[1]->ch == 40);               // back on op after the dwell
+}
+
+TEST(inflight_step_skips_when_not_in_session_or_hopping_or_one_card) {
+  Rig g(1, 0, true, 40);
+  link_up(g);
+  for (int i = 0; i < 10; ++i) g.tick(true);
+  g.core->run_inflight_step();
+  g.tick(true);
+  CHECK(!g.core->snapshot().dwell[0].has_value());   // one card: never dwells
+  Rig h(2, 0, true, 40);
+  for (int i = 0; i < 10; ++i) h.tick(false);
+  h.core->run_inflight_step();
+  h.tick(false);
+  CHECK(!h.core->snapshot().dwell[1].has_value());   // no session: never dwells
+}
+
+TEST(tx_frozen_while_hopping) {
+  Rig g(2, 0, true, 40);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
+  interfere(g, 4);
+  REQUIRE(g.sink.has_hop("order"));
+  const auto out = g.core->tick(g.in(true));
+  CHECK(out.tx_frozen);
+}
+
+TEST(shutdown_joins_threads_and_is_idempotent) {   // Review Focus 5
+  // threaded rig: real threads, real clock, short run
+  Config cfg = bundle();
+  cfg.radio.channels = {40, 64}; cfg.radio.width = 40; cfg.radio.pin = 40;
+  FakeCard a, b; a.ch = b.ch = 40; a.width_mhz = 40; b.width_mhz = 20;
+  std::vector<LinkCard*> ptrs{&a, &b};
+  VrxController vrx(vrx_cfg_from(cfg, 40));
+  RecordingSink sink;
+  Aggregator agg(cfg.uep_layers(), 32, 2, 0);
+  ChannelCoreCfg cc; cc.radio = cfg.radio; cc.hop = cfg.hop; cc.key = cfg.link.key; cc.start_ch = 40; cc.n_usb = 2;
+  auto now_ms = [] { return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()); };
+  auto now_us = [] { return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()); };
+  ChannelCore core(cc, ptrs, vrx, sink, [](uint8_t) { return true; }, now_ms, now_us,
+                   [](int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); });
+  ChannelTickIn in; in.agg = &agg;
+  for (int i = 0; i < 5; ++i) { in.now_ms = static_cast<double>(now_ms()); core.tick(in); std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
+  core.shutdown();
+  core.shutdown();                            // no-op, no crash
+  CHECK(std::string(core.snapshot().scan_state) == "off");
+  const auto out = core.tick(in);
+  CHECK(!out.dwell_busy);
 }
 
 MTEST_MAIN

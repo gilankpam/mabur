@@ -190,8 +190,14 @@ void ChannelCore::on_card_reopened(int card) {
   if (card == scout_card_) scout_card_down_ = false;
 }
 
-// stub filled by Task 5
-void ChannelCore::shutdown() {}
+void ChannelCore::shutdown() {
+  if (shut_) return;
+  shut_ = true;
+  scout_run_.store(false);
+  if (inflight_started_ && scout_thread2_.joinable()) scout_thread2_.join();
+  if (scout_) scout_->stop();
+  if (scout_started_ && scout_thread_.joinable()) scout_thread_.join();
+}
 void ChannelCore::on_rc_body(uint8_t rx_ch) { rc_body_rx_ch_ = rx_ch; }
 
 void ChannelCore::on_session_opened(const mabur::rc::DiscAck& ack, double now_ms) {
@@ -588,7 +594,37 @@ void ChannelCore::step_move_edge_(const ChannelTickIn& in) {
 void ChannelCore::step_drains_() {
   if (scout_)
     for (const auto& d : scout_->take_dwells()) sink_.dwell(now_ms_cur_, scout_card_, d);
-  // in-flight drain: Task 5
+  // In-flight scout thread: started once the boot pick is closed and the
+  // boot scout owns no card. Two-card only.
+  if (!inflight_started_ && !scout_owns_() && !boot_pick_.open() && n_cards_ >= 2 &&
+      (cfg_.hop.enable || cfg_.hop.scout_when_disabled)) {
+    inflight_started_ = true;
+    if (cfg_.threaded) {
+      scout_run_.store(true);
+      scout_thread2_ = std::thread([this] { scout_loop_(); });
+    }
+  }
+  std::vector<std::pair<int, ScoutDwell>> drained;
+  std::vector<HopVisit> visits;
+  {
+    std::lock_guard<std::mutex> lk(dwell_mu_);
+    drained.swap(dwell_recs_);
+    visits.swap(dwell_visits_);
+  }
+  size_t vi = 0;
+  for (auto& rec : drained) {
+    const int card = rec.first;
+    cur_ch_[static_cast<size_t>(card)] = cards_[static_cast<size_t>(card)]->channel();
+    sink_.dwell(now_ms_cur_, card, rec.second);
+    const bool ok = !(rec.second.survey.flags & devourer::chanmig::kFlagRetuneFailed);
+    StatsDwellIn ds = dwell_stats_[static_cast<size_t>(card)].value_or(StatsDwellIn{});
+    ++ds.visits;
+    ds.cost_us = static_cast<uint32_t>(rec.second.to_us + rec.second.read_us + rec.second.back_us);
+    if (ok && vi < visits.size()) ds.score = HopRanker::score(visits[vi]);
+    dwell_stats_[static_cast<size_t>(card)] = ds;
+    if (ok) ++vi;
+  }
+  for (const auto& v : visits) ranker_.add(v);
 }
 
 void ChannelCore::step_width_resync_() {
@@ -625,7 +661,46 @@ void ChannelCore::step_mechanical_retune_() {
   }
 }
 
-void ChannelCore::inflight_body_() {}
-void ChannelCore::scout_loop_() {}
+void ChannelCore::inflight_body_() {
+  if (!inflight_) return;
+  if (!in_session_atomic_.load() || cal_running_atomic_.load() || hopping_atomic_.load() ||
+      scout_working_atomic_.load() || n_cards_ < 2)
+    return;
+  const int card = pick_inflight_scout(can_scout_, tx_card_now_.load());
+  if (card < 0) return;
+  auto& fe = *cards_[static_cast<size_t>(card)];
+  if (!fe.ready()) return;
+  std::optional<uint8_t> dwell_ch;
+  {
+    std::lock_guard<std::mutex> ilk(inflight_mu_);
+    dwell_ch = inflight_->next_candidate(fe.channel());
+  }
+  if (!dwell_ch) return;
+  if (cfg_.threaded) {
+    const uint64_t s0 = au_seq_.load();   // align to the next AU boundary (<= 17 ms wait)
+    for (int i = 0; i < 20 && au_seq_.load() == s0; ++i) sleep_(1);
+  }
+  std::lock_guard<std::mutex> ilk(inflight_mu_);
+  inflight_->set_radio(fe);
+  dwell_card_.store(card);
+  dwell_busy_.store(true);
+  ScoutDwell d;
+  HopVisit v;
+  const bool ok = inflight_->dwell(*dwell_ch, fe.channel(), d, v);
+  dwell_gen_[static_cast<size_t>(card)].fetch_add(1, std::memory_order_release);
+  dwell_busy_.store(false);
+  dwell_card_.store(-1);
+  std::lock_guard<std::mutex> lk(dwell_mu_);
+  dwell_recs_.emplace_back(card, d);
+  if (ok) dwell_visits_.push_back(v);
+}
+
+void ChannelCore::scout_loop_() {
+  while (scout_run_.load()) {
+    sleep_(cfg_.hop.dwell_period_ms);
+    if (!scout_run_.load()) break;
+    inflight_body_();
+  }
+}
 
 }  // namespace maburgs
