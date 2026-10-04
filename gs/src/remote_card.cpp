@@ -123,13 +123,21 @@ void RemoteCard::tick(uint64_t now_ms) {
     if (!running_.load()) return;
     c_.tick(now_ms);
     St st = St::Waiting;
-    if (c_.lost(now_ms)) st = St::Lost;
-    else if (c_.owned_and_tuned()) st = St::Owned;
-    else if (c_.refused(now_ms) || c_.ownership_lost(now_ms)) st = St::Refused;
+    if (c_.lost(now_ms)) { st = St::Lost; owned_retune_since_ms_ = 0; }
+    else if (c_.owned_and_tuned()) { st = St::Owned; owned_retune_since_ms_ = 0; }
+    else if (c_.refused(now_ms) || c_.ownership_lost(now_ms)) { st = St::Refused; owned_retune_since_ms_ = 0; }
     // An owner mid-retune (a search-burst or hop TUNE: STATUS state 1, or a
     // STATUS still on the old channel) is not a transition out of Owned --
     // the pair waiting/owned used to print on every burst (plan 2 bench).
-    else if (last_st_ == St::Owned && c_.status().you_own) st = St::Owned;
+    // Bounded to 1 s (ownership_lost()'s own grace): a retune completes in
+    // ~0.2 s, but a relay stuck in a failed TUNE (owner, never reaching our
+    // channel -- tune_failed()'s case) must still surface "waiting for
+    // STATUS" once, rather than going silent forever.
+    else if (last_st_ == St::Owned && c_.status().you_own) {
+      if (owned_retune_since_ms_ == 0) owned_retune_since_ms_ = now_ms;
+      if (now_ms - owned_retune_since_ms_ < 1000) st = St::Owned;
+      else owned_retune_since_ms_ = 0;   // grace spent: fall through to Waiting, logged once
+    }
     if (cfg_.restart_when_refused && st == St::Refused && now_ms >= last_restart_ms_ && now_ms - last_restart_ms_ >= kRefusedRestartMs) {
       last_restart_ms_ = now_ms;
       c_.start(now_ms);          // HELLO + TUNE again, fresh retry window

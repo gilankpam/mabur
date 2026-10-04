@@ -107,6 +107,9 @@ class RemoteCard final : public LinkCard {
   OwnAirAcc own_air_;              // RX thread only
   // last logged state, to log transitions once
   enum class St { Down, Waiting, Owned, Refused, Lost } last_st_ = St::Down;
+  // When an owner-mid-retune first suppressed a Waiting transition (0 = not
+  // suppressing); under mu_, read/written only in tick().
+  uint64_t owned_retune_since_ms_ = 0;
 };
 
 }  // namespace maburgs

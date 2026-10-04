@@ -431,4 +431,29 @@ TEST(owner_mid_retune_is_not_a_logged_transition) {
   r.card->tick(r.now_ms += 1100);
   CHECK(r.card->transitions() == 3);
 }
+// Plan 2 review carry-over, fix round 1: the mid-retune suppression is
+// bounded to 1 s -- a relay stuck in a failed TUNE (owner, never reaching
+// our channel) still logs "waiting for STATUS" once the grace runs out,
+// instead of going silent forever.
+TEST(owner_stuck_in_a_failed_tune_logs_after_the_grace) {
+  Rig r;
+  REQUIRE(r.card->open_and_start());
+  r.t().push(status(0, 136, 2, 1));
+  REQUIRE(r.soon([&] { return r.card->ready(); }));
+  r.card->tick(r.now_ms += 10);
+  CHECK(r.card->transitions() == 2);              // "connecting", "owned and tuned"
+  REQUIRE(r.card->retune(40));
+  r.t().push(status(2, 136, 2, 1));               // STATUS: owner, refused TUNE, stuck on 136
+  REQUIRE(r.soon([&] { return !r.card->ready(); }));
+  r.card->tick(r.now_ms += 100);                  // first suppressed tick (grace clock starts)
+  CHECK(r.card->transitions() == 2);              // within the 1 s grace
+  r.card->tick(r.now_ms += 400);                  // +400 ms since the first suppressed tick
+  CHECK(r.card->transitions() == 2);
+  r.card->tick(r.now_ms += 700);                  // +1100 ms since the first suppressed tick
+  CHECK(r.card->transitions() == 3);              // grace spent: "waiting for STATUS"
+  r.t().push(status(0, 40, 2, 1));                // tuned
+  REQUIRE(r.soon([&] { return r.card->ready(); }));
+  r.card->tick(r.now_ms += 10);
+  CHECK(r.card->transitions() == 4);              // "owned and tuned" again
+}
 MTEST_MAIN
