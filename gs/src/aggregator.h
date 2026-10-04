@@ -122,6 +122,7 @@ class Aggregator {
   const CardTrack& card(int id) const { return cards_[static_cast<size_t>(id)]; }
   int n_cards() const { return static_cast<int>(cards_.size()); }
   mabur::UepDecoder& decoder() { return dec_; }
+  const mabur::UepDecoder& decoder() const { return dec_; }
   uint16_t last_video_seq() const { return last_video_seq_; }
   uint64_t last_video_us() const { return last_video_us_; }
   uint64_t bad_card_msgs() const { return bad_card_msgs_; }
