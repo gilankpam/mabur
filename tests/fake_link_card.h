@@ -19,6 +19,10 @@ struct FakeCard : maburgs::LinkCard {
   uint8_t ch = 0, width_mhz = 20;
   bool is_ready = true, is_alive = true, scout_ok = true, relay = false;
   bool retune_ok = true;
+  // Relay-style: retune() takes the target at once (channel() reads it, as
+  // RemoteCard's does) but ready() reads false until the test re-readies
+  // the card (the TUNE's ~0.2 s to STATUS).
+  bool retune_deferred = false;
   std::vector<std::string> calls;
   std::vector<std::vector<uint8_t>> sent;
   uint32_t cca_per_ms_on[256] = {};   // programmable busy rate per channel
@@ -54,7 +58,9 @@ struct FakeCard : maburgs::LinkCard {
   bool retune(uint8_t c) override {
     calls.push_back("retune " + std::to_string(c));
     if (!retune_ok) return false;
-    ch = c; return true;
+    ch = c;
+    if (retune_deferred) is_ready = false;
+    return true;
   }
   bool retune_width(uint8_t c, uint8_t w) override {
     calls.push_back("retune_width " + std::to_string(c) + "/" + std::to_string(w));

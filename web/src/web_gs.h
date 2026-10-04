@@ -13,9 +13,15 @@
 //    decoder's continuity and the FrameStream.
 //  - Spotter: passive. There is no transmit path by construction: the send
 //    callback is dropped in the constructor and no VrxController/RcfSlotter
-//    exists. Its op point is fixed at the configured width (no MCS).
-//    Video is always decoded; a drone restart (Telem tlm_seq stepping back,
-//    DroneRestartDetector) resets the decoder continuity + FrameStream.
+//    exists. Its op point is fixed at the configured width (no MCS). With a
+//    roster it runs `SpotterFollow` (spotter_follow.h): every CRC-good
+//    body's rx channel and every parsed T_RCF's (hop_ch, hop_epoch) feed
+//    it, tick() retunes card 0 toward desired() and reports
+//    on_card_channel once the card is ready() on it. No tag check (spec
+//    §6.2). Video is always decoded; a drone restart (Telem tlm_seq
+//    stepping back, DroneRestartDetector) resets the decoder continuity +
+//    FrameStream; a channel move resets nothing (the FrameStream closes the
+//    gap as truncated AUs, the decoder re-arms on the next IRAP).
 // Both modes decode the MSP OSD stream (stream_id 4) into Io::on_osd; it is
 // receive-only and independent of the video gate.
 //
@@ -54,6 +60,7 @@
 #include "rcf_slot.h"
 #include "relay_stats.h"
 #include "rtt_estimator.h"
+#include "spotter_follow.h"
 #include "stats_exporter.h"
 #include "vrx_controller.h"
 
@@ -109,11 +116,16 @@ struct Stats {
   std::string key_fp;
   int channel = 0;              // the card's live channel; start_ch with no roster (replay)
   std::optional<ChanStats> chan;   // Gs with a roster only
+  // Spotter with a roster (SpotterFollow): "locked"|"following"|"sweeping" and
+  // the number of hop orders followed. Unset in Gs mode and without a roster.
+  std::optional<std::string> follow_state;
+  std::optional<uint64_t> follows;
 };
 // One line, no trailing newline. Channel fields: "channel": int;
 // "scan_state": str|null; "scan_rounds": int|null; "scan_pick": int|null;
 // "hop": {enable, verdict, evidence, ref_rung|null, epoch, state,
-// target|null, hops, holds, last_ms|null} | null (null without a core).
+// target|null, hops, holds, last_ms|null} | null (null without a core);
+// "follow_state": str|null; "follows": int|null (spotter with a roster).
 std::string stats_json(const Stats& s);
 
 // Validates the page's channel set/start/width with the shared rules: width
@@ -209,7 +221,7 @@ class WebGs {
   void inject_disc_ack_for_replay(uint64_t now_us);
 
  private:
-  void send_(const maburgs::SlotFrame& f);
+  bool send_(const maburgs::SlotFrame& f);   // false = dropped at the scout gate (never handed to a card)
   void reset_video_();
   const Mode mode_;
   Io io_;
@@ -245,6 +257,11 @@ class WebGs {
   std::vector<maburgs::LinkCard*> cards_;
   int n_usb_ = 0;
   const uint8_t start_ch_;
+  // ---- spotter follower (Spotter with cards) ----
+  std::unique_ptr<SpotterFollow> follow_;
+  uint8_t rx_ch_cur_ = 0;                    // on_rx's body channel, read by the rc sink
+  std::optional<uint8_t> follow_reported_;   // last channel reported to the follower as ready
+  void step_follow_(double now_ms);
   struct Sink;                                      // ChannelSink -> Io::on_log; records ignored (no scan.log here)
   std::unique_ptr<Sink> sink_;
   std::unique_ptr<maburgs::ChannelCore> chan_;     // last member: destroyed (threads joined) first

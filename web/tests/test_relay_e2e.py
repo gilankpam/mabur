@@ -94,6 +94,7 @@ class RelayE2E(unittest.TestCase):
         self.assertGreater(st['bodies'], 100); self.assertEqual(st['relay_gaps'], 0)
         self.assertEqual(st['channel'], 136)
         self.assertEqual(st['scan_state'], 'off')                # auto, relay-only roster: search-only
+        self.assertIsNone(st['follow_state'])
 
     def test_gs_20mhz_set_passes_the_loader(self):
         # 165 has no 40 MHz pair: valid at 20 only. The overlay's [radio]
@@ -139,6 +140,8 @@ class RelayE2E(unittest.TestCase):
         self.assertNotIn(TX, r.types())
         st = stats(p.stdout)[-1]
         self.assertEqual(st['channel'], 136); self.assertIsNone(st['scan_state'])
+        self.assertEqual(st['follow_state'], 'locked')   # the fake relay's frames arrive on 136 (FRAME header channel)
+        self.assertEqual(st['follows'], 0)
         self.assertGreater(st['bodies'], 100)
 
     def test_silent_relay_is_unreachable(self):

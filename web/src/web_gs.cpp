@@ -162,6 +162,12 @@ WebGs::WebGs(const maburgs::Config& cfg, Mode mode, uint8_t start_ch, int width,
   } else {
     io_.send = nullptr;   // spotter: no transmit path exists
     frame_wire_ = true;   // no session to gate on: always decode
+    if (!cards_.empty()) {
+      SpotterFollowCfg fc;
+      fc.channels = cfg.radio.channels;
+      fc.start = start_ch;
+      follow_ = std::make_unique<SpotterFollow>(fc);
+    }
   }
   agg_.set_frag_sink([this](const mabur::DecodedFrag& f) {
     if (!frame_wire_) return;
@@ -184,7 +190,15 @@ WebGs::WebGs(const maburgs::Config& cfg, Mode mode, uint8_t start_ch, int width,
       }
       return;
     }
-    if (!vrx_) return;
+    if (!vrx_) {
+      // Spotter: the real GS's RCF carries the standing hop order in the
+      // clear; follow it without verifying the tag (spec §6.2). on_rx already
+      // fed this body to on_frame (every CRC-good body, DISC included).
+      if (follow_ && mabur::rc::frame_type(f.data(), f.size()) == mabur::rc::T_RCF)
+        if (const auto r = mabur::rc::parse_rcf(f.data(), f.size()))
+          follow_->on_rcf(r->hop_ch, r->hop_epoch, rx_ch_cur_, static_cast<double>(us) / 1000.0);
+      return;
+    }
     const bool was_session = vrx_->link_state() == maburgs::VrxState::SESSION;
     vrx_->on_rc_frame(f.data(), f.size(), static_cast<double>(us) / 1000.0);
     // main.cpp (final review C1): the ack that OPENED the session links
@@ -233,9 +247,31 @@ void WebGs::sleep_(int ms) {
   if (opts_.sleep_hook) opts_.sleep_hook(ms);
 }
 
+// Spotter: the follower decides, the one card follows. A RadioFrontend
+// retune is a synchronous FastRetune at the link width (members are HT40
+// primaries on one offset); a RemoteCard retune is a TUNE whose channel()
+// reads the target at once and whose ready() reads false until the relay's
+// STATUS confirms (~0.2 s) -- so the retune is re-issued while channel()
+// disagrees (a pre-ready USB card refuses it: next tick), and the follower
+// hears about the member only once the card is ready() on it.
+void WebGs::step_follow_(double now_ms) {
+  follow_->tick(now_ms);
+  auto& c = *cards_[0];
+  const uint8_t want = follow_->desired();
+  if (c.channel() != want) c.retune(want);
+  if (c.ready() && c.channel() == want && follow_reported_ != want) {
+    follow_reported_ = want;
+    follow_->on_card_channel(want, now_ms);
+  }
+}
+
 void WebGs::on_rx(const mabur::node::RxBody& m) {
   if (m.mono_us > now_us_) now_us_ = m.mono_us;
   ++bodies_;
+  rx_ch_cur_ = m.rx_channel;
+  // Before the aggregator routes it (the rc sink runs inside on_rx_body):
+  // a sweep hearing the GS on the member locks before the RCF is read.
+  if (follow_ && m.crc_ok) follow_->on_frame(m.rx_channel, static_cast<double>(now_us_) / 1000.0);
   if (chan_) chan_->on_rc_body(m.rx_channel);   // read by the rc sink inside on_rx_body()
   agg_.on_rx_body(m);
   if (!m.crc_ok) return;
@@ -262,8 +298,8 @@ void WebGs::reset_video_() {
   ++resets_;
 }
 
-void WebGs::send_(const maburgs::SlotFrame& f) {
-  if (chan_ && !chan_->may_send(f.card)) return;   // the scout gate: dropped, counted by the core
+bool WebGs::send_(const maburgs::SlotFrame& f) {
+  if (chan_ && !chan_->may_send(f.card)) return false;   // the scout gate: dropped, counted by the core
   bool ok = true;
   if (!cards_.empty())
     ok = cards_[static_cast<size_t>(f.card)]->send_control(f.frame);
@@ -276,6 +312,7 @@ void WebGs::send_(const maburgs::SlotFrame& f) {
     rtt_.on_rcf_sent(f.seq, now_us_);
   }
   if (chan_) chan_->note_sent(ok, f.stamp_rtt);
+  return true;
 }
 
 void WebGs::tick(uint64_t now_us) {
@@ -283,6 +320,7 @@ void WebGs::tick(uint64_t now_us) {
   const uint64_t now_ms_u = now_us_ / 1000;
   const double now_ms = static_cast<double>(now_ms_u);
   for (auto* c : cards_) c->tick(now_ms_u);
+  if (follow_) step_follow_(now_ms);
   if (opts_.adaptive_gap && now_ms_u >= gap_update_ms_ + 1000) {
     gap_update_ms_ = now_ms_u;
     for (int s = 0; s < 2; ++s) {
@@ -346,15 +384,14 @@ void WebGs::tick(uint64_t now_us) {
                               vrx_->rcf_seq(), targets[k], !out->is_disc};
         // A DISC proposes the channel it is sent on (main.cpp, C1 addendum A).
         if (out->is_disc && chan_) sf.frame = chan_->disc_for_card(sf.frame, targets[k]);
-        if (!slot_->offer(sf, now_ms_u, false)) {
-          send_(sf);
+        if (!slot_->offer(sf, now_ms_u, false) && send_(sf)) {
           sent_copy = sf.frame;
           sent = &sent_copy;
         }
       }
     }
     for (const auto& f : slot_->take_due(now_ms_u)) {
-      send_(f);
+      if (!send_(f)) continue;
       sent_copy = f.frame;
       sent = &sent_copy;
     }
@@ -436,6 +473,10 @@ Stats WebGs::stats() const {
     c.hop = cs.hop;
     s.chan = c;
   }
+  if (follow_) {
+    s.follow_state = to_string(follow_->state());
+    s.follows = follow_->follows();
+  }
   return s;
 }
 
@@ -481,6 +522,8 @@ std::string stats_json(const Stats& s) {
     j["scan_pick"] = nullptr;
     j["hop"] = nullptr;
   }
+  opt("follow_state", s.follow_state);
+  opt("follows", s.follows);
   opt("pre_fec_loss", s.pre_fec_loss);
   opt("residual", s.residual);
   opt("rtt_ms", s.rtt_ms);

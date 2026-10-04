@@ -31,12 +31,13 @@ uint64_t feed(WebGs& g, int n_aus, uint64_t t0_us, int drop_every = 0) {
   }
   return t;
 }
-mabur::node::RxBody rc_body(std::vector<uint8_t> wire, uint64_t mono_us) {
+mabur::node::RxBody rc_body(std::vector<uint8_t> wire, uint64_t mono_us, uint8_t rx_ch = 0) {
   mabur::node::RxBody m;
   m.card_id = 0;
   m.mono_us = mono_us;
   m.crc_ok = true;
   m.phy_valid = true;
+  m.rx_channel = rx_ch;
   m.body = std::move(wire);
   return m;
 }
@@ -734,6 +735,7 @@ struct GsRig {
   std::vector<std::vector<uint8_t>> io_sends;
   std::unique_ptr<WebGs> g;
   uint64_t t = 1'000'000;
+  uint64_t ticks_with_sent = 0;
   // Called from inside the scout's sleeps (mid-dwell / mid-beacon): where the
   // production core thread would be running the send path.
   std::function<void()> on_sleep;
@@ -751,6 +753,8 @@ struct GsRig {
     io.send = [this](const std::vector<uint8_t>& b) { io_sends.push_back(b); };
     io.on_log = [this](const std::string& l) { logs.push_back(l); };
     io.on_channel_store = [this](uint8_t ch) { stored.push_back(ch); };
+    io.on_control_tick = [this](double, const maburgs::LinkHealth&, int,
+                                const std::vector<uint8_t>* sent) { if (sent) ++ticks_with_sent; };
     Opts o; o.core_threads = false;
     o.sleep_hook = [this](int ms) {
       clk.ms += static_cast<uint64_t>(ms);
@@ -821,6 +825,7 @@ TEST(send_gate_drops_rcf_and_skips_rtt_stamp) {
   CHECK(r.g->vrx()->rcf_seq() != seq_before);  // RCFs were built...
   CHECK(r.g->channel_core()->scout_gated_sends() > gated_before);   // ...and gated
   CHECK(r.card.sent.empty());
+  CHECK(r.ticks_with_sent == 0);   // plan 2 review: a gated frame is not reported as `sent`
   CHECK(r.g->stats().rcf_sent == 0);
   CHECK(r.g->stats().sends == r.card.sent.size());   // sends counts frames handed to the card only
 }
@@ -913,4 +918,161 @@ TEST(one_card_frames_pass_to_the_card_while_the_scout_beacons) {
   CHECK(on_other);                            // a search burst on another member
   CHECK(r.io_sends.empty());
   CHECK(r.g->sends() == r.card.sent.size());
+}
+
+namespace {
+// Spotter mode on one fake card at the link width, the bundle config with
+// the channel set. The follower runs on tick(); the card is the fake, so a
+// retune is synchronous unless retune_deferred (relay-style).
+struct SpotRig {
+  maburgs::Config c = cfg();
+  FakeCard card;
+  std::unique_ptr<WebGs> g;
+  uint64_t t = 1'000'000;
+  int aus = 0;
+  explicit SpotRig(uint8_t start = 40) {
+    c.radio.channels = {40, 64, 112, 144};
+    c.radio.width = 40;
+    card.ch = start; card.width_mhz = 40;
+    Io io;
+    io.on_au = [this](Au&&) { ++aus; };
+    g = std::make_unique<WebGs>(c, Mode::Spotter, start, 40, std::vector<maburgs::LinkCard*>{&card}, 1, io);
+  }
+  SpotRig(const SpotRig&) = delete;
+  SpotRig& operator=(const SpotRig&) = delete;
+  void ticks(int n, int step_ms = 10) {
+    for (int i = 0; i < n; ++i) { t += static_cast<uint64_t>(step_ms) * 1000; g->tick(t); }
+  }
+  // One video body heard on `ch` (a CRC-good canonical body).
+  void frame_on(uint8_t ch) {
+    auto b = gen_bodies(1, 16.0, 0).front();
+    b.mono_us = t;
+    b.rx_channel = ch;
+    g->on_rx(b);
+  }
+  // The real GS's RCF heard on rx_ch, ordering hop_ch/epoch (tagged with the
+  // default key: the spotter never checks it, spec §6.2).
+  void rcf_on(uint8_t rx_ch, uint8_t hop_ch, uint8_t epoch) {
+    mabur::rc::Rcf r;
+    r.hop_ch = hop_ch;
+    r.hop_epoch = epoch;
+    g->on_rx(rc_body(mabur::rc::pack_rcf(r), t, rx_ch));
+  }
+  int retunes() const {
+    int n = 0;
+    for (auto& s : card.calls) n += s.rfind("retune ", 0) == 0;
+    return n;
+  }
+  std::string state() const { return g->stats().follow_state.value_or("none"); }
+};
+}  // namespace
+
+TEST(spotter_roster_sweeps_from_start_and_retunes_the_card) {
+  SpotRig r(40);
+  CHECK(r.g->channel_core() == nullptr);          // no core in spotter mode
+  CHECK(r.state() == "sweeping");
+  r.ticks(1);                                     // on 40 already: no retune, the dwell starts
+  CHECK(r.retunes() == 0);
+  r.ticks(15);                                    // 150 ms, nothing heard
+  CHECK(r.card.ch == 64);
+  CHECK(r.card.calls.back() == "retune 64");
+  r.ticks(15);
+  CHECK(r.card.ch == 112);
+  CHECK(r.g->stats().channel == 112);             // the card's live channel
+  CHECK(r.g->stats().follows == 0);
+  CHECK(r.g->sends() == 0);
+}
+
+TEST(spotter_locks_on_a_frame_follows_an_rcf_and_confirms) {
+  SpotRig r(40);
+  r.ticks(1);
+  r.frame_on(40);
+  CHECK(r.state() == "locked");
+  r.rcf_on(40, 64, 1);
+  CHECK(r.state() == "following");
+  CHECK(r.retunes() == 0);                        // the card moves on the next tick
+  r.ticks(1);
+  CHECK(r.card.ch == 64);
+  CHECK(r.card.calls.back() == "retune 64");
+  r.frame_on(64);
+  CHECK(r.state() == "locked");
+  CHECK(r.g->stats().channel == 64);
+  CHECK(r.g->stats().follows == 1);
+  // DISC (any GS frame) refreshes the lock, no transmit in response
+  mabur::rc::Disc d;
+  r.ticks(90);                                    // 900 ms quiet
+  r.g->on_rx(rc_body(mabur::rc::pack_disc(d), r.t, 64));
+  r.ticks(50);                                    // 500 ms more: < silence_ms since the DISC
+  CHECK(r.state() == "locked");
+  CHECK(r.g->sends() == 0);
+  // the move left the video path alone: AUs keep coming on 64
+  const int before = r.aus;
+  for (auto& b : gen_bodies(5, 16.0, 0)) { b.mono_us = (r.t += 16000); b.rx_channel = 64; r.g->on_rx(b); r.g->tick(r.t); }
+  CHECK(r.aus > before);
+}
+
+TEST(spotter_follow_timeout_returns_the_card) {
+  SpotRig r(40);
+  r.ticks(1);
+  r.frame_on(40);
+  r.rcf_on(40, 64, 1);
+  r.ticks(1);
+  REQUIRE(r.card.ch == 64);
+  r.ticks(201);                                   // > confirm_ms with nothing on 64
+  CHECK(r.state() == "locked");
+  CHECK(r.card.ch == 40);
+  CHECK(r.card.calls.back() == "retune 40");
+}
+
+// Review Focus 4 (glue half): the retune is re-issued every tick until the
+// card takes it (a RadioFrontend refuses pre-ready).
+TEST(spotter_retune_is_retried_until_the_card_takes_it) {
+  SpotRig r(40);
+  r.ticks(16);                                    // dwell over: wants 64
+  r.card.retune_ok = false;
+  r.card.ch = 40;                                 // the fake refused: still on 40
+  const int n0 = r.retunes();
+  r.ticks(3);
+  CHECK(r.retunes() == n0 + 3);
+  r.card.retune_ok = true;
+  r.ticks(1);
+  CHECK(r.card.ch == 64);
+}
+
+TEST(spotter_relay_style_card_dwell_counts_from_ready) {
+  SpotRig r(40);
+  r.card.retune_deferred = true;
+  r.ticks(16);                                    // -> retune 64, card not ready yet
+  REQUIRE(r.card.ch == 64);
+  REQUIRE(!r.card.is_ready);
+  const int n = r.retunes();
+  r.ticks(30);                                    // 300 ms: no second retune, no advance (dwell not started)
+  CHECK(r.retunes() == n);
+  CHECK(r.card.ch == 64);
+  r.card.is_ready = true;                         // STATUS: tuned
+  r.ticks(1);                                     // reported
+  r.ticks(14);
+  CHECK(r.card.ch == 64);
+  r.ticks(1);                                     // 150 ms on the member
+  CHECK(r.card.ch == 112);
+}
+
+TEST(stats_json_carries_follow_fields_for_spotter_only) {
+  SpotRig r(40);
+  std::string js = stats_json(r.g->stats());
+  CHECK(js.find("\"follow_state\":\"sweeping\"") != std::string::npos);
+  CHECK(js.find("\"follows\":0") != std::string::npos);
+  CHECK(js.find("\"scan_state\":null") != std::string::npos);
+  // GS mode: null
+  GsRig g(40, true, 2);
+  g.ticks(1);
+  js = stats_json(g.g->stats());
+  CHECK(js.find("\"follow_state\":null") != std::string::npos);
+  CHECK(js.find("\"follows\":null") != std::string::npos);
+  // spotter without a roster (replay): no follower, null
+  Io io; io.on_au = [](Au&&) {};
+  WebGs s(cfg(), Mode::Spotter, 136, 40, {}, 0, io);
+  js = stats_json(s.stats());
+  CHECK(js.find("\"follow_state\":null") != std::string::npos);
+  CHECK(!s.stats().follow_state.has_value());
 }
