@@ -734,6 +734,9 @@ struct GsRig {
   std::vector<std::vector<uint8_t>> io_sends;
   std::unique_ptr<WebGs> g;
   uint64_t t = 1'000'000;
+  // Called from inside the scout's sleeps (mid-dwell / mid-beacon): where the
+  // production core thread would be running the send path.
+  std::function<void()> on_sleep;
   explicit GsRig(uint8_t start = 40, bool pinned = false, int n_usb = 1) {
     c.radio.channels = {40, 64, 112, 144};
     c.radio.width = 40;
@@ -749,7 +752,11 @@ struct GsRig {
     io.on_log = [this](const std::string& l) { logs.push_back(l); };
     io.on_channel_store = [this](uint8_t ch) { stored.push_back(ch); };
     Opts o; o.core_threads = false;
-    o.sleep_hook = [this](int ms) { clk.ms += static_cast<uint64_t>(ms); t += static_cast<uint64_t>(ms) * 1000; };
+    o.sleep_hook = [this](int ms) {
+      clk.ms += static_cast<uint64_t>(ms);
+      t += static_cast<uint64_t>(ms) * 1000;
+      if (on_sleep && g) on_sleep();
+    };
     std::vector<maburgs::LinkCard*> roster{&card};
     if (n_usb == 2) roster.push_back(&card2);
     g = std::make_unique<WebGs>(c, Mode::Gs, start, 40, roster, n_usb, io, o);
@@ -785,7 +792,10 @@ TEST(gs_roster_builds_core_and_one_card_prelude_commits_and_stores) {
   REQUIRE(!r.stored.empty());
   CHECK(r.stored.back() != 40);
   CHECK(r.stored.back() == r.g->channel_core()->op());
-  CHECK(r.g->stats().channel == r.card.ch);   // live channel = the card's
+  // "channel" is the card's LIVE channel: with one card that can be a scout
+  // dwell channel rather than op -- spec'd, and what the page shows.
+  CHECK(r.g->stats().channel == r.card.ch);
+  CHECK(stats_json(r.g->stats()).find("\"channel\":" + std::to_string(r.card.ch)) != std::string::npos);
 }
 
 TEST(gs_roster_sends_through_the_card_not_io_send) {
@@ -816,7 +826,9 @@ TEST(send_gate_drops_rcf_and_skips_rtt_stamp) {
 }
 
 TEST(stats_json_carries_channel_fields_gs_and_spotter) {
-  GsRig r(40, true, 2);                       // card 0 (the stats card) stays on the pin
+  // Two cards so card 0 (the stats card) stays on the pin and "channel" is
+  // deterministic; the one-card live-channel case is in the prelude test.
+  GsRig r(40, true, 2);
   r.ticks(2);
   const std::string js = stats_json(r.g->stats());
   CHECK(js.find("\"channel\":40") != std::string::npos);
@@ -858,4 +870,47 @@ TEST(channel_width_error_checks_the_set_membership_and_pin) {
   REQUIRE(e.has_value());
   CHECK(e->find("radio.channels") != std::string::npos);
   CHECK(!channel_width_error(c, Mode::Spotter, 40, 20).has_value());   // fine at 20 (Spotter: the bundle ladder's 40 MHz rungs refuse a 20 MHz GS)
+}
+
+// The page's own shape: ONE card, owned by the scout. Its frames leave only
+// while the scout beacons (disc_targets(0) == {0} and may_send(0) passes);
+// without threads that window lives inside the scout step, so the gate is
+// sampled from the scout's sleeps (test_channel_core.cpp's gate_obs idiom),
+// where the production core thread would be sending. Each sample builds the
+// DISC copy the send path would hand the card and checks it proposes the
+// channel the card is on.
+TEST(one_card_frames_pass_to_the_card_while_the_scout_beacons) {
+  GsRig r;
+  r.card.cca_per_ms_on[40] = 5;
+  struct Obs { std::vector<int> targets; bool pass; uint8_t ch; bool proposes_ch; };
+  std::vector<Obs> obs;
+  r.on_sleep = [&] {
+    const auto* core = r.g->channel_core();
+    Obs o;
+    o.targets = core->disc_targets(0);
+    if (o.targets.empty()) return;            // not beaconing: the send path offers nothing
+    o.pass = core->may_send(0);
+    o.ch = r.card.ch;
+    mabur::rc::Disc d;
+    d.op_channel = 0;
+    const auto wire = core->disc_for_card(mabur::rc::pack_disc(d, r.c.link.key), 0);
+    const auto back = mabur::rc::parse_disc(wire.data(), wire.size());
+    o.proposes_ch = back && back->op_channel == o.ch;
+    obs.push_back(o);
+  };
+  for (int i = 0; i < 800 && !r.has_log("one-card prelude ranking picks"); ++i) r.ticks(1);
+  REQUIRE(r.has_log("one-card prelude ranking picks"));
+  r.ticks(20);
+  REQUIRE(!obs.empty());
+  bool on_op = false, on_other = false;
+  for (const auto& o : obs) {
+    CHECK(o.targets == std::vector<int>{0});  // the one card, never Io::send
+    CHECK(o.pass);                            // the gate lets a beaconing card send
+    CHECK(o.proposes_ch);                     // a DISC proposes the channel it is sent on
+    (o.ch == r.g->channel_core()->op() ? on_op : on_other) = true;
+  }
+  CHECK(on_op);                               // the one-card op window
+  CHECK(on_other);                            // a search burst on another member
+  CHECK(r.io_sends.empty());
+  CHECK(r.g->sends() == r.card.sent.size());
 }
