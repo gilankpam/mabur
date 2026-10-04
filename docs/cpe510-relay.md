@@ -407,12 +407,15 @@ dwells every candidate at HT20 both passes before returning. Budget
 the op channel** — link gap on a relay-only GS, since there is no spare
 card to carry video meanwhile. Two passes give two visits per candidate
 with distinct timestamps, so **one burst ranks the whole set**
-(`HopRanker` needs `fresh >= 2`). No result within **1000 ms**
-(`kSweepTimeoutMs`) → the burst is dropped, `sweep_timeout` logged, and a
-later burst may run again — this is also what covers a relay reboot or a
-lost `SCAN_RESULT` mid-sweep.
+(`HopRanker` needs `fresh >= 2`). No result within the sweep timeout —
+**`max(1000, passes·n·(observe_ms+40) + 300)` ms**, derived from the
+request when the `SCAN` leaves (`n` = channels in the `SCAN`; a 4-member
+set sits on the 1000 ms floor, an 8-member set gets 1140 ms) — → the burst
+is dropped, `sweep_timeout` logged, `hop.sweep_timeouts` bumped on the
+sideport, and a later burst may run again — this is also what covers a
+relay reboot or a lost `SCAN_RESULT` mid-sweep.
 
-**`hop.relay_burst_period_ms`** (new key, default 1000, range 100–60000,
+**`hop.relay_burst_period_ms`** (new key, default 1000, range 500–60000,
 `gs/src/config.{h,cpp}`, `gs/bundle/maburgs.default.toml`): `hop_burst_due()`
 uses this instead of `hop.dwell_period_ms` (333 ms) when the burst card is
 a relay — a 280 ms sweep every 333 ms in a sustained `Hold` would leave the
@@ -427,6 +430,16 @@ match wins:
 3. scout-capable TX (one-card USB GS's existing acceptance)
 4. sweep-capable TX (**relay-only GS**)
 5. none → skip (`-1`)
+
+"Sweep-capable" is evaluated **per tick**: a v4 relay (`can_sweep()`)
+**that is `ready()`** — owned, tuned, not lost. A relay that is down,
+booting or owned by another client therefore never takes the burst, and on
+a relay + USB GS with USB as TX the USB card bursts itself (rule 3) instead
+of the burst being spent on a dead relay. A `start_sweep()` that still
+fails (a ready → down race, or a one-member set with nothing to sweep) does
+not spend the burst (`last_burst_ms_` is restored). While a sweep is
+pending the TX selector is frozen (`tx_selection_frozen`, like an in-flight
+dwell), so TX never moves onto the sweeping relay.
 
 **Relay `HopVisit` mapping** (`gs/src/relay_sweep_map.h`'s `sweep_visit()`):
 `fa = ofdm_err`, `foreign = foreign`, `cca = own = 0` (so `fa + 4·foreign`
@@ -460,6 +473,26 @@ here as as-built facts):
 4. While a sweep is pending, `ChannelCore` feeds the hop controller
    `trigger = false` so it cannot enter `hold_exhausted` before the
    `SCAN_RESULT` (or the timeout) lands.
+5. The spec's "resync `cur_ch_` from the `SCAN_RESULT`'s `back_channel`"
+   was **not implemented**. Harmless: the core never retunes the relay as
+   part of a sweep (the relay returns itself), so `cur_ch_` is still right
+   after a normal return; a `status 3` return (radio read back elsewhere,
+   `STATUS state 2`) is recovered by `RelayClient`'s re-`TUNE`, the same
+   path as any failed retune.
+6. The sweep timeout is **derived from the request**
+   (`max(1000, passes·n·(observe_ms+40) + 300)` ms), not the spec's fixed
+   1000 ms — a larger set would otherwise time out mid-sweep (final-review
+   fix wave).
+7. `hop.relay_burst_period_ms`'s minimum is **500**, not 100: under
+   ~450 ms a burst can re-fire on the tick the trigger returns after a
+   result and starve the controller (final-review fix wave).
+8. Final-review fix wave additions: the sideport `hop.sweep_timeouts`
+   counter (`docs/observability.md`, `docs/data-provenance.md` 2026-10-05
+   entry); the per-tick ready-gated burst pick and the TX freeze above; a
+   `SURVEY` counter that goes **down within one `gen`** (a fast relay
+   restart reusing the gen) is treated by `RemoteCard` as a gen change —
+   window invalid, totals take the new sample's full count — instead of
+   wrapping u32.
 
 **Other as-built facts found during implementation** (not spec deviations,
 behaviour the spec left underspecified):
@@ -486,7 +519,7 @@ behaviour the spec left underspecified):
 - **`ChannelCore`'s op verdict skips a card only while its own sweep is
   pending** (`sweep_.on && sweep_.card == i`), deliberately **not**
   `RemoteCard::sweeping()`: a lost `SCAN_RESULT` leaves the card-level flag
-  on past `ChannelCore`'s own 1000 ms timeout, and skipping the op verdict
+  on past `ChannelCore`'s own sweep timeout, and skipping the op verdict
   on it for good would blind a one-card (relay-only) GS permanently. The
   timeout (expiry) is checked **before** the result arrival, so a result
   that lands late loses to the timeout rather than reviving a dropped
@@ -514,8 +547,11 @@ run yet.
 
 1. nl80211 retune + survey timing on the CPE (confirm ~18 ms / ~1–2 ms).
 2. `ofdm_err` moves under the WiFi jam tool.
-3. Relay-only `maburgs` (`auto_scan = false`, `cards = []`, relays set):
-   links, holds 5 min clean, **no** false hop; ausniff clean.
+3. Relay-only `maburgs` (no `[[radio.cards]]` tables, `[radio] relays`
+   set, no USB card plugged in — `auto_scan` is derived from the absent
+   card tables, not a key, and strict keys reject `auto_scan`/`cards = []`;
+   the USB settle/timeout bus scan still runs at each start and finds
+   nothing): links, holds 5 min clean, **no** false hop; ausniff clean.
 4. Relay-only, co-channel analog VTX → hop; onset → Confirm recorded.
 5. Relay-only, co-channel DJI O4 → hop.
 6. Relay-only, WiFi jam → hop; record ath9k `fa`/s (calibrate `fa_pps`?).

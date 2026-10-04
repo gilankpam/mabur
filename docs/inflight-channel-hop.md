@@ -435,7 +435,7 @@ burst runs.
 4. sweep-capable TX (**relay-only GS**: no other card exists)
 5. none → skip (`-1`)
 
-A sweep-capable pick (3/4 above) runs the relay's async `SCAN` instead of
+A sweep-capable pick (2/4 above) runs the relay's async `SCAN` instead of
 `InflightScout::burst()`: `ChannelCore` sends one `SCAN` for the dwell set
 minus the op channel, polls for the `SCAN_RESULT` on later ticks
 (`poll_sweep_()`), and only then feeds the entries into the ranker — the
@@ -444,7 +444,9 @@ the sweep's ~280 ms. Each entry becomes one `HopVisit` with `src =
 VisitSrc::Relay` (`gs/src/relay_sweep_map.h`); `HopRanker::ranking()` uses
 only the **newest visit's source kind**, so a USB dwell set (5 ms,
 CCA-event counts) and a relay sweep set (20 ms, survey counts) are never
-averaged together. No result within 1000 ms drops the burst
+averaged together. No result within the sweep timeout
+(`max(1000, passes·n·(observe_ms+40)+300)` ms, derived from the request;
+counted in sideport `hop.sweep_timeouts`) drops the burst
 (`sweep_timeout`); while a sweep is pending, `ChannelCore` holds
 `ht.verdict.trigger` false so the controller cannot enter `hold_exhausted`
 before the result (or the timeout) lands.
