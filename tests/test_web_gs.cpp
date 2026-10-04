@@ -1,7 +1,6 @@
 // WebGs (web/src/web_gs.h): the web GS core. Pins spotter silence, the Gs
 // rendezvous/RCF cadence, and the wiring into the shared units.
 #include <algorithm>
-#include <cstdio>
 #include <memory>
 #include <stdexcept>
 
@@ -801,6 +800,49 @@ TEST(gs_roster_builds_core_and_one_card_prelude_commits_and_stores) {
   CHECK(stats_json(r.g->stats()).find("\"channel\":" + std::to_string(r.card.ch)) != std::string::npos);
 }
 
+// Pin is static (2026-10-04) reaches the browser GS through the shared core:
+// the page's Link channel select becomes `channel = N` in the [radio]
+// overlay, the loader sets radio.pin, WebGs hands cfg.radio to ChannelCore.
+// Same interference on the one card, two rigs: auto (pick frozen at
+// link-up) orders a one-card reactive hop; pinned never does.
+static void interfere_one_card(GsRig& r, int windows) {
+  r.card.cca_per_ms_on[r.card.ch] = 50;
+  for (int w = 0; w < windows; ++w) {
+    r.card.fr.foreign += 40;
+    for (int i = 0; i < r.c.hop.window_ms / 10 + 1; ++i) {
+      r.g->vrx()->on_video(static_cast<double>(r.t) / 1000.0);   // keep SESSION alive (no drone here)
+      r.ticks(1);
+    }
+  }
+}
+TEST(gs_one_card_auto_hops_on_interference_but_pinned_never) {
+  GsRig a;                                    // auto, one card
+  for (int i = 0; i < 800 && !a.has_log("one-card prelude ranking picks"); ++i) a.ticks(1);
+  REQUIRE(a.has_log("one-card prelude ranking picks"));
+  a.g->inject_disc_ack_for_replay(a.t);       // SESSION on op
+  a.g->vrx()->test_set_move_edge();           // the drone linked: the link edge fires once
+  REQUIRE(a.g->stats().session);
+  for (int i = 0; i < 20 && !a.has_log("one-card linked"); ++i) { a.g->vrx()->on_video(static_cast<double>(a.t) / 1000.0); a.ticks(1); }
+  REQUIRE(a.has_log("one-card linked"));
+  a.card.ch = a.g->channel_core()->op();      // the sole card sits on op once the scout parks
+  interfere_one_card(a, 8);
+  REQUIRE(a.g->stats().session);
+  REQUIRE(a.has_log("maburgs hop: order"));   // the injection is strong enough to trigger
+
+  GsRig p(40, /*pinned=*/true, /*n_usb=*/1);
+  p.ticks(1);
+  p.g->inject_disc_ack_for_replay(p.t);
+  p.g->vrx()->test_set_move_edge();
+  REQUIRE(p.g->stats().session);
+  for (int i = 0; i < 20; ++i) { p.g->vrx()->on_video(static_cast<double>(p.t) / 1000.0); p.ticks(1); }
+  interfere_one_card(p, 8);
+  REQUIRE(p.g->stats().session);              // judged while linked, not after a drop
+  CHECK(!p.has_log("maburgs hop:"));          // no order, no hold, nothing
+  CHECK(std::string(p.g->stats().chan->hop.state) == "idle");
+  CHECK(p.g->stats().chan->hop.hops == 0 && p.g->stats().chan->hop.holds == 0);
+  CHECK(p.card.ch == 40);
+  CHECK(std::string(p.g->stats().chan->hop.verdict) == "interfered");   // still measured for the page
+}
 TEST(gs_roster_sends_through_the_card_not_io_send) {
   GsRig r(40, /*pinned=*/true, /*n_usb=*/2);   // card 0 = the link card on op
   r.ticks(60);                                // beaconing

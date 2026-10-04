@@ -212,6 +212,7 @@ class WebGs {
   Mode mode() const { return mode_; }
   // Test seams.
   const maburgs::VrxController* vrx() const { return vrx_.get(); }  // nullptr in Spotter
+  maburgs::VrxController* vrx() { return vrx_.get(); }              // tests: on_video / test_set_move_edge
   const maburgs::ChannelCore* channel_core() const { return chan_.get(); }   // nullptr without a core
   const maburgs::LinkHealthAssembler& health() const { return lha_; }
   uint64_t sends() const { return sends_; }

@@ -258,7 +258,11 @@ line`) — when it is still in the set, else the first member. In GS mode
 the link then forms where the drone is found and relocates once to the
 pick (or the pin), and — in Auto — the one-card reactive hop runs on top,
 exactly as in `maburgs`; a pinned member is static
-(`docs/channel-select.md`, `docs/inflight-channel-hop.md`).
+(`docs/channel-select.md`, `docs/inflight-channel-hop.md`). Pinned by
+`test_web_gs`'s `gs_one_card_auto_hops_on_interference_but_pinned_never`:
+the same interference that makes the Auto rig order a one-card hop leaves
+the pinned rig on its member with `hop.state` idle, `hops`/`holds` 0 and
+the verdict still reading `interfered` for the page.
 The scan/hop knobs are the bundle defaults (`gs/bundle/maburgs.default.toml`);
 the form does not expose them. A spotter starts on its start member and
 follows from there ("Spotter follower" below).
