@@ -260,3 +260,13 @@ test('describeEdit names the set and the link channel', () => {
   assert.equal(describeEdit('link', 'auto'), 'Link channel set to Auto');
   assert.equal(describeEdit('link', 64), 'Link channel set to 64');
 });
+
+test('?ch=N against a full 8-member set that lacks N is ignored (set and link unchanged)', () => {
+  const full = { ...defaultConfig(), channels: [36, 40, 44, 48, 52, 56, 60, 64], link: 'auto' };
+  const s = mem({ 'webgs.cfg': JSON.stringify(full) });
+  const c = loadConfig(s, new URLSearchParams('ch=112'));
+  assert.deepEqual(c.channels, [36, 40, 44, 48, 52, 56, 60, 64]);
+  assert.equal(c.link, 'auto');
+  // a member of the full set still pins
+  assert.equal(loadConfig(s, new URLSearchParams('ch=48')).link, 48);
+});

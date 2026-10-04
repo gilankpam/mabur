@@ -242,3 +242,32 @@ test('debugGroups has a Channel group with the core fields when present', () => 
   const sp = debugGroups({ connected: true, mode: 'spotter', core: { mode: 'spotter', channel: 64, scan_state: null, hop: null }, rcfPct: null, ausRate: 0, hitches60: 0, hitchesTotal: 0, seg: { w1: {}, w60: {} }, lrec: null });
   assert.equal(sp.find((x) => x.title === 'Channel').rows.length, 1);   // channel only
 });
+
+test('spotter channel line shows the follow state word while not locked', () => {
+  const base = { connected: true, mode: 'spotter', ch: 40, w: 40, page: null, sessionCfg: defaultConfig(), cfg: defaultConfig(), videoSize: null, colour: null };
+  const core = (x) => ({ mode: 'spotter', mcs: 4, bw: 40, rung: -1, rssi_dbm: -60, snr_db: 20, channel: 64, scan_state: null, hop: null, follow_state: 'locked', follows: 0, ...x });
+  assert.equal(statsView({ ...base, core: core({}) }).chLine, '64 · 40 MHz');
+  assert.equal(statsView({ ...base, core: core({ follow_state: 'following', channel: 112 }) }).chLine, '112 · 40 MHz · following');
+  assert.equal(statsView({ ...base, core: core({ follow_state: 'sweeping' }) }).chLine, '64 · 40 MHz · sweeping');
+  // a GS core never carries follow_state: the GS words are untouched
+  assert.equal(statsView({ ...base, mode: 'gs', core: core({ follow_state: null, scan_state: 'scouting', hop: { state: 'idle' } }) }).chLine, '64 · 40 MHz · scanning');
+});
+
+test('channel line shows the start channel while connecting, the form while disconnected', () => {
+  const base = { connected: false, mode: 'gs', ch: 64, w: 40, core: null, page: null, sessionCfg: defaultConfig(), cfg: { ...defaultConfig(), link: 'auto' }, videoSize: null, colour: null };
+  assert.equal(statsView({ ...base }).chLine, 'auto · 40 MHz');
+  assert.equal(statsView({ ...base, connecting: true }).chLine, '64 · 40 MHz');     // the member --ch starts on
+  assert.equal(statsView({ ...base, connecting: true, cfg: { ...defaultConfig(), link: 112 }, ch: 112 }).chLine, '112 · 40 MHz');
+});
+
+test('debugGroups Channel group for a spotter: channel + follow rows', () => {
+  const core = { mode: 'spotter', channel: 64, scan_state: null, hop: null, follow_state: 'following', follows: 2 };
+  const g = debugGroups({ connected: true, mode: 'spotter', core, rcfPct: null, ausRate: 0, hitches60: 0, hitchesTotal: 0, seg: { w1: {}, w60: {} }, lrec: null });
+  const ch = g.find((x) => x.title === 'Channel');
+  assert.equal(ch.rows.length, 2);
+  assert.equal(ch.rows.find((r) => r.k === 'channel').v, '64');
+  assert.equal(ch.rows.find((r) => r.k === 'follow').v, 'following · 2 follows');
+  // replay-shaped spotter stats (no follower): channel only, as before
+  const sp = debugGroups({ connected: true, mode: 'spotter', core: { mode: 'spotter', channel: 64, scan_state: null, hop: null, follow_state: null, follows: null }, rcfPct: null, ausRate: 0, hitches60: 0, hitchesTotal: 0, seg: { w1: {}, w60: {} }, lrec: null });
+  assert.equal(sp.find((x) => x.title === 'Channel').rows.length, 1);
+});

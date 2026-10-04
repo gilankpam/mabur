@@ -82,7 +82,8 @@ export function loadConfig(storage, qs) {
   } catch { raw = null; }
   const c = normalizeConfig(raw);
   // ?chs=40,64 sets the set; ?ch=N pins N (added when absent and room
-  // remains); ?ch=auto unpins.
+  // remains; against a full 8-member set that lacks N the pin is ignored --
+  // pinned by config.test.mjs); ?ch=auto unpins.
   const chs = normChannels(String(qs?.get('chs') ?? '').split(',').filter(Boolean));
   if (chs) {
     c.channels = chs;

@@ -19,8 +19,9 @@ export function latencyNow(snap, mode) {
 }
 
 // ch/w: the session's start channel and width; cfg: the form (the
-// disconnected header line shows its link channel, or "auto").
-export function statsView({ connected, mode, ch, w, core, page, sessionCfg, cfg, videoSize, colour }) {
+// disconnected header line shows its link channel, or "auto"; while
+// connecting it shows ch).
+export function statsView({ connected, connecting = false, mode, ch, w, core, page, sessionCfg, cfg, videoSize, colour }) {
   const on = !!connected && !!core;
   const spot = mode === 'spotter';
   const pinned = !spot && sessionCfg.staticMcs >= 0;
@@ -30,8 +31,11 @@ export function statsView({ connected, mode, ch, w, core, page, sessionCfg, cfg,
   const barPct = has(rssi) ? Math.max(5, Math.min(100, (rssi + 90) / 60 * 100)) : 0;
   const liveCh = on && has(core.channel) ? core.channel : ch;
   const state = !on ? '' : core.scan_state === 'scouting' ? 'scanning' : core.scan_state === 'moving' ? 'moving'
-    : core.hop && core.hop.state && core.hop.state !== 'idle' ? 'hop' : '';
-  const idle = cfg ? (cfg.link === 'auto' ? 'auto' : String(cfg.link)) : String(ch);
+    : core.hop && core.hop.state && core.hop.state !== 'idle' ? 'hop'
+    : core.follow_state && core.follow_state !== 'locked' ? core.follow_state : '';   // spotter: following | sweeping
+  // Connecting: the member --ch starts on (the pin, the remembered member or
+  // the first), not the form's "auto" -- the core has not reported yet.
+  const idle = connecting ? String(ch) : cfg ? (cfg.link === 'auto' ? 'auto' : String(cfg.link)) : String(ch);
   return {
     mcs: on && core.mcs >= 0 ? String(core.mcs) : D,
     bw: on && core.bw ? String(core.bw) : D,
@@ -91,13 +95,17 @@ export function debugGroups({ connected, mode, core, rcfPct, ausRate, hitches60,
       ['width', v(core?.bw ? core.bw + ' MHz' : D)], ['probe', v(core?.probe || 'off')],
       ['key', v(core?.key_fp)], ['key_mismatch', v(core?.key_mismatch ? 'yes' : 'no')],
     ]) },
-    // Scan/hop state is GS-only (null in spotter): there just the channel.
+    // Scan/hop state is GS-only (null in spotter); a spotter with a follower
+    // shows its follow state; replay-shaped stats show just the channel.
     { title: 'Channel', rows: rows(core?.scan_state != null ? [
       ['channel', v(core.channel ?? D)],
       ['scan', v(`${core.scan_state} · ${core.scan_rounds ?? 0} rounds · pick ${core.scan_pick ?? D}`)],
       ['hop', v(core.hop ? `${core.hop.state} · ${core.hop.verdict}` : D)],
       ['hop target', v(core.hop?.target ?? D)], ['hop epoch', v(core.hop?.epoch ?? D)],
       ['hops / holds', v(core.hop ? `${core.hop.hops} / ${core.hop.holds}` : D)],
+    ] : core?.follow_state != null ? [
+      ['channel', v(core.channel ?? D)],
+      ['follow', v(`${core.follow_state} · ${core.follows ?? 0} follows`)],
     ] : [['channel', v(core?.channel ?? D)]]) },
     { title: 'Radio', rows: rows([
       ['pre-FEC loss', v(has(core?.pre_fec_loss) ? (core.pre_fec_loss * 100).toFixed(1) + ' %' : D)],

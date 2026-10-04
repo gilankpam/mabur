@@ -159,7 +159,7 @@
     if (osdLayer.isStale(performance.now())) clearOsd();   // 5 s without MSP
     if (live) tele.sample(nowMs, sess.mode);
     core = live ? tele.core : null;
-    view = statsView({ connected: live, mode: shownMode, ch: sess.ch, w: live ? sess.w : ui.cfg.width,
+    view = statsView({ connected: live, connecting: sess.state === 'connecting', mode: shownMode, ch: sess.ch, w: live ? sess.w : ui.cfg.width,
       core, page: live ? tele.page : null, sessionCfg: live ? sessionCfg : ui.cfg, cfg: ui.cfg, videoSize: video.videoSize,
       colour: live ? video.colour : null });
     const target = effectiveTarget(sessionCfg.dvr, sess.mode);
