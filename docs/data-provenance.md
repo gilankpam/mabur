@@ -948,3 +948,20 @@ where it came from — never to a privileged fallback channel. Full detail:
 - **`tools/maburtop.py`:** drops the `h{home}` field; shows `scan.state`
   (now including `moving`, the boot pick's relocation in flight) and
   `scan.rounds`.
+
+## 2026-10-04 — pin is static: `hop.enable` deleted, no more `would_` rows, sideport `hop.enable` gone
+
+- `scan.log` `H` rows prefixed `would_` (shadow hops, `hop.enable = false`)
+  appear only in sessions recorded before this date. `flightreport.py`'s
+  SHADOW HOP REPORT path stays for them; no later build emits one.
+- **Removed sideport key:** `hop.enable`. The mode is `scan.state == "off"`
+  (pinned or relay-only) vs anything else (auto).
+- **Removed GS config keys:** `hop.enable`, `hop.scout_when_disabled`;
+  `hop.verdict.busy_dbm`/`blocked_pct` are `radio.scan.busy_dbm`/
+  `blocked_pct`. A session's `scanlog 5` header is unchanged
+  (`mode=<auto|pinned>` already names the only mode knob).
+- **Behaviour break for comparisons:** a pinned flight before this date
+  could hop (and its `scan.pick` then disagreed with `link.channel`); after
+  it a pinned flight never hops, and its `cards[i].dwell` stays `null`
+  (no in-flight dwells). `docs/channel-select.md` "Which knob drives which
+  piece".

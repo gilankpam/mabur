@@ -256,8 +256,9 @@ from the core's `CHANNEL <n>` stdout lines, which the glue prints on every
 change of the plan's op (`ChannelCore`'s store, `store_name` `CHANNEL
 line`) — when it is still in the set, else the first member. In GS mode
 the link then forms where the drone is found and relocates once to the
-pick (or the pin), and the one-card reactive hop runs on top, exactly as
-in `maburgs` (`docs/channel-select.md`, `docs/inflight-channel-hop.md`).
+pick (or the pin), and — in Auto — the one-card reactive hop runs on top,
+exactly as in `maburgs`; a pinned member is static
+(`docs/channel-select.md`, `docs/inflight-channel-hop.md`).
 The scan/hop knobs are the bundle defaults (`gs/bundle/maburgs.default.toml`);
 the form does not expose them. A spotter starts on its start member and
 follows from there ("Spotter follower" below).

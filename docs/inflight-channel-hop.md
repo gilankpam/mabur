@@ -17,7 +17,7 @@ Built without hardware, then benched on 2026-09-15: deployed both ends,
 four fixes forced by the bench (see Measurements), a co-channel hop
 confirmed in 268 ms onset-to-video on two cards and 427 ms on one, with
 `ausniff` clean through it. Not flown. `docs/handover-inflight-hop-bench-2026-09-15.md`
-covers what is still owed — read it before flying with `hop.enable = true`.
+covers what is still owed — read it before flying auto.
 
 ## 1. Wire and hop protocol
 
@@ -237,7 +237,7 @@ a long-frame 802.11 jam at low pps, or a co-channel analog VTX carrier,
 which desenses the front end and reads as a fade with SNR intact
 (`docs/analog-vtx-findings-2026-09-25.md`) — was invisible to every one of
 them. `nhm_busy_pct` comes from the chip's NHM histogram (airtime above
-`busy_dbm`, an `nf::kNhmAbsThDbm` bucket edge — config validation rejects
+`radio.scan.busy_dbm`, an `nf::kNhmAbsThDbm` bucket edge — config validation rejects
 any other value), armed and read once per verdict window per op card
 (§below); `own_air_pct` is the GS's own reconstruction of that card's
 airtime from the CRC-good frames it decoded (bytes·8 / HT rate, plus one
@@ -318,10 +318,7 @@ on those would not damage the retry's own `Order` — `order()` reads
 `reset()` after `hopc.tick()` has already built the action. The cost lands
 one window later: after a thaw, the next impaired window re-freezes
 `ref_rung` at the **mid-hop** rung (already demoted, or already restored),
-and the pre-onset value §5 wants reused is gone. Like every other
-action, `VerifyPass` is suppressed while `hop.enable = false`, which keeps
-an observe-only flight's references measuring the channel the link is
-actually still on.
+and the pre-onset value §5 wants reused is gone.
 
 Every `VerdictOut` also carries the wall-clock span its counter deltas
 were gathered over (`t_start_ms`, `t_ms` — the previous window's timestamp
@@ -349,13 +346,14 @@ the USB card transmits, the periodic scout idles. On an all-USB two-card
 GS this is the same "whichever card the TX selector is not using" as
 before.
 
-Two-card GS only: a dedicated thread (`gs/src/main.cpp`'s `scout_loop`)
-runs once the boot scout has released every card, gated on
-`hop.enable || hop.scout_when_disabled` — **`scout_when_disabled` defaults
-`true`**, so the scout dwells and logs even with `hop.enable = false`, to
-collect ranking/calibration data for the first (observe-only) flights; set
-it `false` to fly with literally no dwells. Every `hop.dwell_period_ms`
-(333 ms default):
+Two-card GS, **auto mode only**: a dedicated thread
+(`ChannelCore::scout_loop_`) runs once the boot scout has released every
+card. Pinned (`radio.channel = N`), the thread is never started — there is
+nothing to rank for — and the spare card stays on diversity.
+(`scout_when_disabled`, which kept it dwelling for the Sept observe-only
+flights, was deleted 2026-10-04 with `hop.enable`;
+`docs/channel-select.md` "Which knob drives which piece".) Every
+`hop.dwell_period_ms` (333 ms default):
 1. Card = a `ready()` card the TX selector is not using this cycle, never
    a relay. As built (`gs/src/scout_pick.h`): dwells take
    `pick_inflight_scout()` (last scout-capable non-TX card; the loop skips
@@ -465,7 +463,7 @@ read and collected before the FA/CCA pass, no own-airtime subtraction
 needed since none of our frames land on a candidate). `HopRankEntry.busy_pct`
 is the **mean** over an entry's fresh, `busy_valid` visits (a 5 ms window
 on a bursty interferer reads 0 or 100, so a single visit is not trusted);
-an entry is `blocked` when that mean is `>= hop.verdict.blocked_pct`. This
+an entry is `blocked` when that mean is `>= radio.scan.blocked_pct`. This
 is tiering, not a weight added into `score`: `ranking()`'s sort puts every
 blocked-but-ranked entry after every unblocked-but-ranked one regardless
 of event score, tiebreaking a blocked-vs-blocked pair by lower `busy_pct`
@@ -519,12 +517,12 @@ The per-half boot scan is `ChannelScout`'s alone (`pair_pick.h`,
 
   Three gates on (1), each load-bearing:
 
-  - **`hop.enable`.** Disabled, nothing is ordered and the rung is never
-    restored, so there is no hop to protect the store from — and blanking
-    anyway would silently change what the observe-only flights record
-    versus every pre-branch recording, with nothing in the log marking it
-    (`docs/data-provenance.md`). (2) is already dead while disabled, since
-    `tick()` zeroes the action; this keeps the two consistent.
+  - **Pinned.** `radio.channel = N`: the reactive layer is off, nothing is
+    ordered and the rung is never restored, so there is no hop to protect
+    the store from — and blanking anyway would silently change what a
+    pinned flight records. (2) never fires pinned either (the controller
+    is never fed a trigger); this keeps the two consistent. (Until
+    2026-10-04 this gate was `hop.enable`.)
   - **`interfered`, not `impaired`.** `VerdictOut::ref_frozen` is keyed on
     `impaired`, and `fade` (impaired ∧ weak) and `unknown` (impaired
     otherwise) are impaired too — so keying the blank on it suspended the
@@ -653,7 +651,7 @@ The per-half boot scan is `ChannelScout`'s alone (`pair_pick.h`,
   simply holds (`hold_exhausted`, below) — see the Exhaustion bullet.
 - **Never hop into a blocked channel** (2026-09-26). Every
   `ranker.best()` that feeds `HopTick::best` passes `require_unblocked`,
-  so a channel whose fresh dwells average `>= blocked_pct` busy is never
+  so a channel whose fresh dwells average `>= radio.scan.blocked_pct` busy is never
   ordered — `ranking()` keeps the blocked tier ("least busy first among
   blocked") for display and logs only. Before, "all blocked → least busy
   wins" handed back 136, which every in-flight dwell had read 99.6–100 %
@@ -705,10 +703,10 @@ The per-half boot scan is `ChannelScout`'s alone (`pair_pick.h`,
   with the trigger still latched re-enters the hold branch on every ~10 ms
   control tick. Logging per tick pushed an `H` line into `scan.log` **and**
   a line to stderr at ~100 Hz (~10 KB/s each) and turned `hop.holds` on
-  the sideport into a meaningless six-digit ramp — worst on exactly the
-  observe-only (`hop.enable = false`) flight this branch exists to produce
-  data from, where the shadow FSM runs the same loop and fills the log
-  with `would_hold_cap`. As built: entering logs one event naming the
+  the sideport into a meaningless six-digit ramp — worst on the Sept
+  observe-only flights (`hop.enable = false`, deleted 2026-10-04), where
+  the then-shadow FSM ran the same loop and filled the log with
+  `would_hold_cap`. As built: entering logs one event naming the
   reason (`hold_cap`, `hold_exhausted`, or `verify_fail`) and bumps
   `holds()` once; re-entering while already held logs nothing; leaving
   logs one `hold_end` whose `elapsed_ms` is how long the episode lasted.
@@ -729,13 +727,16 @@ The per-half boot scan is `ChannelScout`'s alone (`pair_pick.h`,
   the cap mid-verify-retry logs `hold_cap` and does not self-perpetuate —
   the 60 s trailing window (`hop_times_`) slides and the next trigger
   after it clears retries normally.
-- **Kill switch.** `hop.enable = false`: the whole state machine still
-  runs — verdict windows, the ranker, `HopController`'s ticks, scan.log —
-  but `HopController::tick()`'s last statement forces
-  `out = HopAction{}` (`None`) whenever `!cfg_.enable`, so nothing is ever
-  actually ordered; every event that would have fired logs with a
-  `would_` prefix (`would_order`, `would_withdraw`, …) instead. Bundle
-  default for the first flights.
+- **Kill switch (history).** Until 2026-10-04 `hop.enable = false` ran
+  the whole machine in shadow — verdict, ranker, controller ticks,
+  scan.log — with `tick()` zeroing the action and every event
+  `would_`-prefixed (`would_order`, `would_withdraw`, …); the Sept flights
+  flew that way. Deleted: the mode knob is `radio.channel` alone
+  (`docs/channel-select.md` "Which knob drives which piece"), and
+  `HopController` is mode-agnostic — it acts on what `ChannelCore` feeds it,
+  which pinned is relocations only. Recordings from those flights carry
+  `would_` rows and `flightreport.py` still prints them as SHADOW; no
+  later build emits one.
 - **Convergence.** The drone obeys only the newest `(hop_epoch, hop_ch)`
   pair and homes on `move_confirm_ms`; the GS waits only for video and
   withdraws on `confirm_ms`; the boot-time rendezvous machinery is
@@ -764,9 +765,15 @@ should live (`ChannelPlan::want()`: the pin, or the boot pick — the boot
 hop is a relocation), placed through this same controller
 (`docs/channel-select.md` "Finding the drone"). `HopTick::relocate`: no
 flee of the channel left, exempt from `cooldown_ms`, counted against
-`max_hops_per_min`, and the whole episode bypasses the `hop.enable` kill
-switch. No config key changed for either of these; `[hop]`
-and `[hop.verdict]` below are otherwise exactly as they were.
+`max_hops_per_min`. No config key changed for either of these.
+
+**`[hop]` has no on/off switch** (2026-10-04). The reactive hop runs in
+auto mode only; `radio.channel = N` is static. `busy_dbm`/`blocked_pct`
+are `radio.scan.busy_dbm`/`blocked_pct` since the same date: every
+measurer reads them, so they left `[hop.verdict]`
+(`docs/channel-select.md` "Which knob drives which piece"). The block
+below is the shape that shipped 2026-09-14, kept for the recordings made
+under it.
 
 `gs/bundle/maburgs.default.toml`, `[hop]`/`[hop.verdict]` (drone config
 unchanged — the drone has no hop config of its own, it just obeys
@@ -774,8 +781,8 @@ whatever `hop_ch`/`hop_epoch` arrive on the RCF):
 
 ```toml
 [hop]
-enable               = false   # first flights observe-only
-scout_when_disabled  = true
+enable               = false   # first flights observe-only -- DELETED 2026-10-04
+scout_when_disabled  = true    # DELETED 2026-10-04
 window_ms            = 150
 persist              = 2
 dwell_observe_ms     = 5
@@ -798,8 +805,8 @@ weak_snr_db          = 12
 fading_drop_db       = 6
 foreign_pps          = 50
 fa_pps               = 100
-busy_dbm             = -83
-blocked_pct          = 50
+busy_dbm             = -83     # now radio.scan.busy_dbm (2026-10-04)
+blocked_pct          = 50      # now radio.scan.blocked_pct (2026-10-04)
 recovered_min        = 8
 starved_frac         = 0.25
 ```
@@ -845,13 +852,13 @@ unknown keys fail boot:
 | `hop.verdict.fading_drop_db` | 1–40 |
 | `hop.verdict.foreign_pps` | 1–100000 |
 | `hop.verdict.fa_pps` | 1–100000 |
-| `hop.verdict.busy_dbm` | −104 – −70, must sit on an `nf::kNhmAbsThDbm` bucket edge |
-| `hop.verdict.blocked_pct` | 1.0–100.0 |
+| `radio.scan.busy_dbm` (was `hop.verdict.busy_dbm`) | −104 – −70, must sit on an `nf::kNhmAbsThDbm` bucket edge |
+| `radio.scan.blocked_pct` (was `hop.verdict.blocked_pct`) | 1.0–100.0 |
 | `hop.verdict.starved_frac` | 0.0–1.0 (0 = zero-own-frames rule only) |
 
-`[hop]`/`[hop.verdict]` are wholly new sections with defaults for every
-key, so an old config without them boots unchanged on the new binary
-(`enable` defaults `false`) — but `RC_VERSION` still forces the binary
+`[hop]`/`[hop.verdict]` were wholly new sections with defaults for every
+key, so an old config without them booted unchanged on the new binary
+(`enable` then defaulted `false`) — but `RC_VERSION` still forced the binary
 flag day described in §1, since the RCF/Telem shapes changed regardless of
 config.
 
@@ -903,13 +910,14 @@ H <t> <kind> <epoch> <target> <score> <elapsed_ms>            # a hop event
   2026-10-03 bench builds logged it as `boot_order`), is the order that
   moves the link to `ChannelPlan::want()` — the pin, or the boot pick, the
   boot hop being one — placed through this same controller; a relocation
-  is never `would_`-prefixed, since it bypasses `hop.enable` — §7 above and
+  is the one hop a pinned GS places — §7 above and
   `docs/channel-select.md` "Finding the drone"; the hold pair used to be the two-word C++ strings
   `"hold cap"`/`"hold exhausted"`, a space-delimited field containing the
   delimiter — fixed at the emitter rather than kept as a parser
   workaround, since scan.log is designed to outlive the code that wrote
-  it). `hop.enable = false` prefixes every kind with `would_` — the
-  machine still logs its decisions, it just never acts on them. Note:
+  it). Before 2026-10-04 `hop.enable = false` prefixed every kind with
+  `would_` (shadow mode, deleted); such rows exist only in older
+  recordings. Note:
   there is no `trail_follow` H-kind — the trailing card following the lead
   is an `M` line (`hop_follow`), not an `H` line; the spec's sketch listed
   it as an H event. `hold_end` closes a hold episode opened by
@@ -1012,7 +1020,8 @@ synchronous-restore finding):
 t=<order_ts> target=<ch> [SHADOW]  onset->order <ms>  order->video <ms>  video->restore <ms>  outcome <kind>
 ```
 
-With `hop.enable = false` every row is `would_`-prefixed and printed as
+In a pre-2026-10-04 recording flown with `hop.enable = false` every row is
+`would_`-prefixed and printed as
 "SHADOW hop(s)" in a separate table rather than being silently folded into
 "zero hops" — video never confirms while disabled, so a shadow row's
 outcome is structurally almost always a `would_withdraw` timeout, which is
@@ -1026,7 +1035,7 @@ shape of every observe-only flight), the report instead prints:
 - per-card medians (not means — these are counter deltas with outliers)
   of `foreign`/`fa`/`rssi_dbm`/`snr_db` over non-healthy windows —
 
-this is the whole point of the first, `hop.enable = false` flights: the
+this was the whole point of the first (Sept, `hop.enable = false`) flights: the
 spec's own Open Items call them "the calibration" for five threshold
 defaults that are spike numbers, not measurements, and a verdict name
 alone cannot say whether `foreign_pps` or `weak_rssi_dbm` was the one
@@ -1220,9 +1229,3 @@ Carried over from the implementation session:
   rather than mis-pairing with the wrong hop attempt.
 - **`V` line's `drssi` field is link-level, not per-card**, repeated
   identically across every card's chunk on that line — see §8.
-- **`scout_when_disabled` defaults `true`.** The first (`hop.enable =
-  false`) flights still pay the scout's retune cost on the spare card
-  every `dwell_period_ms`, by design (it is what makes the observe-only
-  flights a calibration instrument) — but it means the very first flight
-  after this deploy already has dwells happening on air, not a
-  fully-inert kill switch.

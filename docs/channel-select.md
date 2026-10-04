@@ -8,10 +8,12 @@ be. With `[radio] channel = "auto"` the GS measures the set once, at
 process start, and moves the link to the cleanest member (the **boot
 hop**), then freezes for good — later link losses re-propose the same
 frozen pick and the scout never runs again. A healthy link never moves on
-its own; the sub-second reactive migration layer
+its own; in auto mode the sub-second reactive layer
 (`docs/inflight-channel-hop.md`) still handles an interfered channel after
-the freeze. `channel = <member>` pins the link there instead and skips
-measurement entirely.
+the freeze. `channel = <member>` pins the link there: no measurement **and
+no reactive hop** — the pin is static (since 2026-10-04; before that a dirty
+pin hopped away on `hop.enable`, which is deleted). A drone found off the
+pin is still relocated to it.
 
 **There is no home channel.** The 2026-09-13 design (candidates plus a
 privileged home, boot-only pick frozen at first ack, split/reunite on link
@@ -62,6 +64,8 @@ search_after_ms = 5000  # on link loss, keep every card on op this long before s
 pick_margin     = 20    # auto: the pick must beat the channel the link is on by this many busy units
 one_card_ms     = 5000  # one card, auto: measure silently this long before the first DISC
 max_ms          = 30000 # auto: the pick is frozen at the latest this long after GS start
+busy_dbm        = -83   # both modes: energy level that counts the air as busy (an NHM bucket edge)
+blocked_pct     = 50    # both modes: % of busy foreign airtime that makes a half/window "blocked"
 ```
 
 Drone, `bundle/mabur.default.toml`:
@@ -72,9 +76,29 @@ channels = [40, 64, 112, 144]   # parks on the remembered member (else the first
 width    = 40
 ```
 
+### Which knob drives which piece
+
+| piece | runs when | knobs |
+|---|---|---|
+| **search** — find the drone over the set (`ChannelScout`, search job) | link down, both modes | `radio.scan.search_ms`, `op_window_ms`, `search_after_ms` |
+| **measure** — rank the set, pick, freeze (`ChannelScout` measure job, `BootPick`) | pick open, `channel = "auto"` only | `radio.scan.dwell_ms`, `settle_ms`, `min_rounds`, `pick_margin`, `one_card_ms`, `max_ms` |
+| **busy air** — what every measurer calls blocked | always | `radio.scan.busy_dbm`, `blocked_pct` (boot ranker, in-flight ranker, verdict alike) |
+| **relocate** — the link forms where the drone is, one order moves it to `want` (pin or pick) | each link-up with `op ≠ want`, both modes | `[hop] confirm_ms`, `confirm_extend_ms`, `verify_ms`, `max_hops_per_min`, `one_card_repeats` (shared with the reactive hop) |
+| **verdict** — is `op` bad right now | always (OSD / sideport `hop.verdict`) | `[hop] window_ms`, `persist`, `[hop.verdict] *` |
+| **reactive hop** — in-flight scout, freshness burst, order/verify/withdraw | `channel = "auto"` only, after the freeze | everything else in `[hop]` |
+| **one-card mode** | exactly one `[[radio.cards]]` entry | no in-flight scout; `one_card_ms`, `op_window_ms`, `one_card_repeats` apply |
+
+There is no other mode switch. `[hop] enable` and `scout_when_disabled`
+were deleted 2026-10-04: they made "pin, then roam" the default — a pinned
+40 that read dirty hopped to 64 and `want` followed, so `scan.pick` said 40
+while the link lived on 64 — and the only combination they added beyond the
+two modes above was that one.
+
 Removed, failing boot as every removed key does: GS `radio.channel` as a
 number meaning home, `radio.scan.enable`, `candidates`, `home_window_ms`,
-`split_after_ms`, `home_margin`. Drone `radio.channel`, `radio.follow_gs`.
+`split_after_ms`, `home_margin`; GS `hop.enable`, `hop.scout_when_disabled`,
+`hop.verdict.busy_dbm`, `hop.verdict.blocked_pct` (2026-10-04 — the last
+two live under `radio.scan`). Drone `radio.channel`, `radio.follow_gs`.
 Drone `link.move_confirm_ms` and `link.rendezvous_ms` stay (the latter now
 only drives the FAILSAFE → RENDEZVOUS state change, never a retune):
 
@@ -102,6 +126,8 @@ Validation (`gs/src/config.cpp`, `drone/src/config.cpp`, shared code in
 | `radio.scan.pick_margin` | 0–100000 |
 | `radio.scan.one_card_ms` | 0–60000 |
 | `radio.scan.max_ms` | 1000–600000 |
+| `radio.scan.busy_dbm` | −104 – −70, on an `nf::kNhmAbsThDbm` bucket edge (`-104 -101 -98 -95 -92 -89 -86 -83 -80 -75 -70`) |
+| `radio.scan.blocked_pct` | 1.0–100.0 |
 
 ### State files
 
@@ -315,8 +341,7 @@ heard one. Now:
   (two cards: the non-TX card leads; one card: the one-card path).
   `HopTick::relocate`: H kind `relocate`; the channel left is not backed
   off as fled; exempt from `cooldown_ms`, counted against
-  `max_hops_per_min`; and the whole episode bypasses the `hop.enable`
-  kill switch (a disabled *reactive* hop must not block rendezvous).
+  `max_hops_per_min`; and it is the one hop a pinned GS ever places.
   `verify_pass` lands it. Anything else — withdraw, verify fail (no retry:
   the only target offered is `want`), a session lost before or after the
   confirm, the hop cap — accepts the channel the link is on
@@ -325,7 +350,8 @@ heard one. Now:
 - **Pinned mode:** a drone found off the pin links there and is relocated
   to the pin on that link-up; if that fails the GS stays where the link is
   until the next loss (then beacons on that `op`) — the sideport shows
-  `link.channel ≠ scan.pick`.
+  `link.channel ≠ scan.pick`. The reactive hop never runs pinned: an
+  interfered pin is reported (`hop.verdict`, the OSD) and stays.
 - A confirmed hop of either kind moves `want` with `op`: a reactive hop's
   destination is where the link should live from then on, so a later
   link-up does not relocate back onto the channel it fled.
@@ -338,7 +364,7 @@ have `min_rounds` visits (the one-card deadline uses the *effective*
 `min_rounds` — 1, once the prelude is done and fewer than `min_rounds`
 full passes exist, else the configured value — so a one-card prelude pick
 counts as measured). Score = the worse half's worst-visit busy; the
-blocked tier (either half's NHM busy ≥ `blocked_pct`) ranks after every
+blocked tier (either half's NHM busy ≥ `radio.scan.blocked_pct`) ranks after every
 unblocked pair. The channel the link currently sits on (`op`) plays the
 role home used to play: a candidate must beat it by `pick_margin`, ties
 stay on `op`. Config order breaks remaining ties. Returns `op` when

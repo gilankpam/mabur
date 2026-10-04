@@ -374,8 +374,8 @@ instead of 1 Hz:
   non-healthy window.
 - `H` — one hop-controller event (`order`, `lead_confirm`,
   `one_card_retune`, `verify_pass`, `verify_fail`, `withdraw`, `hold_cap`,
-  `hold_exhausted`, `relocate`, …; each `would_`-prefixed while
-  `hop.enable = false`, except a relocation's, which bypasses the switch).
+  `hold_exhausted`, `relocate`, …; `would_`-prefixed rows exist only in
+  recordings made before 2026-10-04, `docs/data-provenance.md`).
 
 Full formats, the config, the sideport keys it feeds, and the
 `cca − own` ranking assumption for the boot-time (`C`/`D`/`K`/`M`) records
@@ -385,8 +385,8 @@ bits, hop sequence, and Known limitations are in
 
 **Sideport: `hop` and `cards[i].dwell`.** Since 2026-09-14
 (in-flight-channel-hop) a new top-level `hop` object is unconditional
-(idle defaults while `hop.enable = false`, matching `link.probe`'s
-pattern): `hop = {enable, verdict, evidence, ref_rung, epoch, state
+(idle defaults while pinned, matching `link.probe`'s
+pattern): `hop = {verdict, evidence, ref_rung, epoch, state
 (idle|ordered|verifying|hold), target, hops, holds, last_ms}` — `ref_rung`
 and `target` are `null` while unfrozen / before the first-ever order,
 `last_ms` is `null` until any hop event has fired this session. Per card,
