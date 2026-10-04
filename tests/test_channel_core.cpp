@@ -200,9 +200,10 @@ TEST(disc_targets_is_tx_when_scout_owns_nothing) {
 }
 
 // The one-card prelude (auto): silent one_card_ms, then AckPrelude commits
-// the prelude ranking (no link) and the first op window runs; a link edge
-// then freezes the pick "one-card linked".
-TEST(one_card_prelude_commits_then_freezes_on_link) {
+// the prelude ranking (no link) and the first op window runs. The link-edge
+// continuation ("one-card linked") is Task 4's own test once step_move_edge_
+// exists (step_move_edge_ is the only thing that can ever set link_edge_seen_).
+TEST(one_card_prelude_commits_before_first_disc) {
   Rig g(1, 0);
   g.cards[0]->cca_per_ms_on[40] = 5;   // 40 busy, the rest clean
   // run the scout + core for one_card_ms + a round
@@ -213,15 +214,6 @@ TEST(one_card_prelude_commits_then_freezes_on_link) {
   CHECK(g.vrx->proposal() == g.core->op());
   CHECK(g.sink.has_move(MoveReason::Commit));
   CHECK(std::string(g.core->snapshot().scan_state) == "scouting");   // pick still open
-  // the move edge (drone linked): BootPick freezes "one-card linked"
-  g.vrx->test_set_move_edge();   // see step 3: a test seam on VrxController
-  g.tick(true);
-  g.tick(true);
-  CHECK(g.sink.has_line("pick frozen on"));
-  CHECK(g.sink.has_line("(one-card linked)"));
-  CHECK(std::string(g.core->snapshot().scan_state) == "frozen");
-  REQUIRE(g.core->snapshot().scan_pick.has_value());
-  CHECK(*g.core->snapshot().scan_pick == g.core->op());
 }
 
 // Two cards, no link, auto: maturity commits the pick (K line) and freezes.
@@ -257,7 +249,7 @@ TEST(max_ms_freezes_unmeasured_in_place) {
   CHECK(g.core->op() == 40);
 }
 
-TEST(scout_card_death_holds_search_and_reopen_resumes) {
+TEST(scout_card_death_while_working_freezes_pick) {
   Rig g(2, 0);
   g.tick();
   g.cards[1]->is_alive = false;
@@ -265,13 +257,26 @@ TEST(scout_card_death_holds_search_and_reopen_resumes) {
   CHECK(g.sink.has_line("scout card 1 died at"));
   g.tick();
   CHECK(g.sink.has_line("(scout card died)"));   // BootPick froze the pick
+  CHECK(!g.core->pick_open());
+}
+
+// Pinned + linked: the scout has no work (search off, nothing to measure),
+// so once it parks and gives up the card, the core's own width resync is
+// the only thing left that can fix a card that reopened at 20 MHz.
+TEST(reopened_scout_card_at_20_gets_width_resync) {
+  Rig g(2, 0, /*pinned=*/true, 40);
+  for (int i = 0; i < 10; ++i) g.tick(true, false, 0);   // linked: search off, the scout parks and owns nothing
+  REQUIRE(g.cards[1]->width_mhz == 40);                   // parked at radio.width by the scout itself
+  g.cards[1]->is_alive = false;
+  g.core->on_card_died(1);
+  // reopen as RadioFrontend would: InitWrite at the card's own cfg width (20 for the scout card)
   g.cards[1]->is_alive = true; g.cards[1]->ch = 40; g.cards[1]->width_mhz = 20;
+  g.cards[1]->calls.clear();
   g.core->on_card_reopened(1);
-  // width resync: not at radio.width (40) after the reopen -> one set_width
-  for (int i = 0; i < 50; ++i) g.tick();
+  for (int i = 0; i < 50; ++i) g.tick(true, false, 0);
   bool resynced = false;
   for (auto& c : g.cards[1]->calls) if (c.rfind("set_width", 0) == 0) resynced = true;
-  CHECK(resynced);
+  CHECK(resynced);                                        // the CORE's width resync, not the scout's park
   CHECK(g.cards[1]->width_mhz == 40);
 }
 
