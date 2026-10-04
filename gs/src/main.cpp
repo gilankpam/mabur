@@ -1689,10 +1689,10 @@ static int run_radio(const maburgs::Config& cfg) {
     }
 
     // Everything run_radio() does with a HopAction: the shared
-    // apply_hop_action() (also driven by run_hop_inject_test), then this
-    // loop's own cross-thread bookkeeping, the verdict loss-window blank,
-    // and draining the controller's events to scan.log/stderr. One path for
-    // both the controller's tick and the session falling edge below.
+    // apply_hop_action(), then this loop's own cross-thread bookkeeping,
+    // the verdict loss-window blank, and draining the controller's events
+    // to scan.log/stderr. One path for both the controller's tick and the
+    // session falling edge below.
     auto dispatch_hop_action = [&](const maburgs::HopAction& act, bool relocate_tick) {
       apply_hop_action(act, now_ms, hcfg.confirm_ms, vrx, plan, verdict);
       // The relocation's resolution (BootPick): keyed on what the
