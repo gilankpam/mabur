@@ -933,6 +933,7 @@ TEST(relay_only_sweep_timeout_allows_next_burst) {   // Review Focus 3
   for (int i = 0; i < 50 && g.core->sweep_timeouts() == 0; ++i) g.tick(true);   // crosses 1000 ms
   CHECK(!g.core->sweep_pending());
   CHECK(g.core->sweep_timeouts() == 1);
+  CHECK(g.core->snapshot(0).hop.sweep_timeouts == 1);   // -> sideport hop.sweep_timeouts
   interfere(g, 3);
   CHECK(g.cards[0]->sweeps.size() == 2);           // relay_burst_period_ms (1000) has passed
 }

@@ -389,9 +389,14 @@ bits, hop sequence, and Known limitations are in
 (in-flight-channel-hop) a new top-level `hop` object is unconditional
 (idle defaults while pinned, matching `link.probe`'s
 pattern): `hop = {verdict, evidence, ref_rung, epoch, state
-(idle|ordered|verifying|hold), target, hops, holds, last_ms}` — `ref_rung`
+(idle|ordered|verifying|hold), target, hops, holds, last_ms,
+sweep_timeouts}` — `ref_rung`
 and `target` are `null` while unfrozen / before the first-ever order,
-`last_ms` is `null` until any hop event has fired this session. Per card,
+`last_ms` is `null` until any hop event has fired this session.
+`sweep_timeouts` (since 2026-10-05, CPE relay hop) counts relay `SCAN`s
+that got no `SCAN_RESULT` before their timeout
+(`max(1000, passes·n·(observe_ms+40)+300)` ms), cumulative per maburgs
+process; 0 on a GS that never sweeps a relay. Per card,
 `cards[i].dwell` (`null` until that card's first completed dwell) carries
 `{visits, score, cost_us}` — `visits` is cumulative over every dwell,
 success or failure; `score`/`cost_us` are the last **successful** dwell's,
@@ -417,7 +422,8 @@ was always foreign busy, never own airtime). Full key semantics, the OSD
 `"usb"` or `"relay"` (a CPE510 `mabur-relay` unit from `[radio] relays`;
 relays follow the USB cards in the roster). A relay card also carries
 `relay = {state, owned, ch, sec, frames, gaps, your_drops, tx, tx_fail,
-tx_refused, reconnects}` (USB cards: key absent): `state`/`ch`/`sec` are
+tx_refused, reconnects, tx_scan_drop, sweeps}` (USB cards: key absent;
+the last two since 2026-10-05, protocol v4): `state`/`ch`/`sec` are
 the last `STATUS` (state 0 tuned, 1 retuning, 2 failed, 3 refused; `sec`
 0 HT20, 1 HT40+, 2 HT40-), `owned` is owned-and-tuned on our target,
 `frames` the `FRAME`s seen, `gaps` the relay→GS `seq` gaps — Ethernet/UDP
@@ -426,7 +432,12 @@ per-class dot11-seq `delivery`), `your_drops` the relay's own count of
 frames it could not send us, `tx`/`tx_fail`/`tx_refused` the relay's
 injection counters (`tx_refused` = `TX` messages it would not inject: not
 from the owner, `mcs` > 7, a reserved flag bit, a bad length), and `reconnects` the client restarts —
-**both** the 5 s refused-restarts and the reopens after a lost relay. On a
+**both** the 5 s refused-restarts and the reopens after a lost relay;
+`tx_scan_drop` the owner `TX` frames the relay dropped while a sweep had
+it off channel, `sweeps` the `SCAN`s this card has sent. `RelayStatsIn`
+also carries `you_own` and the transport's `rx_drops`/`tx_drops` (the
+browser ring; 0 over UDP), but maburgs does **not** export them — only the
+web GS's stats JSON does (`relay_you_own`, …). On a
 relay card the per-class `snr`, `snr_a`, `snr_b`, `evm`, `evm_a`, `evm_b`
 are always `null` (the relay's "SNR" is RSSI above a calibrated floor, not
 a measurement — `CardCaps::snr_ok = false`); RSSI is real. `energy` is

@@ -44,7 +44,7 @@ removed — 2026-10-03 (`docs/channel-select.md`) · same marker: H
 `boot_order` renamed `relocate`, M gains `link_found`, `scan.pick`
 latched — 2026-10-04 · CPE relay interference sweep/hop (protocol v4) —
 `scanlog 6` (D gains trailing `rx`), sideport `cards[i].relay.tx_scan_drop`/
-`.sweeps` — 2026-10-05 (`docs/cpe510-relay.md`).
+`.sweeps`, `hop.sweep_timeouts` — 2026-10-05 (`docs/cpe510-relay.md`).
 
 **`link.pre_fec_loss` scale break 2026-09-23, twice.** The ArrivalTracker
 guard behind `link.pre_fec_loss` (and the OSD LOSS row, `ctl.pre_fec_loss`,
@@ -992,4 +992,8 @@ relay", `docs/inflight-channel-hop.md` §2/§3/§8.
   line.
 - **New sideport keys:** `cards[i].relay` gains `tx_scan_drop` (owner `TX`
   frames the relay dropped mid-sweep) and `sweeps` (`SCAN`s this card has
-  sent) — `docs/observability.md`.
+  sent); `hop` gains `sweep_timeouts` (relay `SCAN`s that got no
+  `SCAN_RESULT` before their request-derived timeout, cumulative per
+  maburgs process; added in the final-review fix wave, same date) —
+  `docs/observability.md`. A recording before 2026-10-05 has none of the
+  three; absent means "not recorded", not 0.

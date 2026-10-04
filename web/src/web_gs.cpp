@@ -515,6 +515,7 @@ std::string stats_json(const Stats& s) {
     h["hops"] = hp.hops;
     h["holds"] = hp.holds;
     h["last_ms"] = optj(hp.last_ms);
+    h["sweep_timeouts"] = hp.sweep_timeouts;
     j["hop"] = h;
   } else {
     j["scan_state"] = nullptr;
