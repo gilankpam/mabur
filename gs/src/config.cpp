@@ -317,7 +317,7 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
     hc.max_hops_per_min = (int)get_int(h, "max_hops_per_min", 4, 1, 60, "hop");
     hc.backoff_ms = (int)get_int(h, "backoff_ms", 30000, 1000, 600000, "hop");
     hc.one_card_repeats = (int)get_int(h, "one_card_repeats", 5, 1, 50, "hop");
-    hc.relay_burst_period_ms = (int)get_int(h, "relay_burst_period_ms", 1000, 100, 60000, "hop");
+    hc.relay_burst_period_ms = (int)get_int(h, "relay_burst_period_ms", 1000, 500, 60000, "hop");
     if (h.contains("verdict")) {
       const Value& v = h["verdict"];
       check_keys(v, "hop.verdict", {"loss_pct", "recovered_x", "weak_rssi_dbm", "weak_snr_db",
