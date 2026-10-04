@@ -42,7 +42,9 @@ channel set replaces home + candidates — `scanlog 5` (M loses
 `split_home`/`reunite`, H gains `boot_order`), sideport `link.home`
 removed — 2026-10-03 (`docs/channel-select.md`) · same marker: H
 `boot_order` renamed `relocate`, M gains `link_found`, `scan.pick`
-latched — 2026-10-04.
+latched — 2026-10-04 · CPE relay interference sweep/hop (protocol v4) —
+`scanlog 6` (D gains trailing `rx`), sideport `cards[i].relay.tx_scan_drop`/
+`.sweeps` — 2026-10-05 (`docs/cpe510-relay.md`).
 
 **`link.pre_fec_loss` scale break 2026-09-23, twice.** The ArrivalTracker
 guard behind `link.pre_fec_loss` (and the OSD LOSS row, `ctl.pre_fec_loss`,
@@ -967,3 +969,27 @@ where it came from — never to a privileged fallback channel. Full detail:
   it a pinned flight never hops, and its `cards[i].dwell` stays `null`
   (no in-flight dwells). `docs/channel-select.md` "Which knob drives which
   piece".
+
+## 2026-10-05 — CPE relay interference sweep/hop: scanlog 6
+
+Relay protocol v4 (`../mabur-openwrt`) adds `SURVEY`/`SCAN`/`SCAN_RESULT`,
+which lets a CPE510 relay card feed the in-flight hop verdict and the hop
+ranker; full detail: `docs/cpe510-relay.md` "Interference + hop on a
+relay", `docs/inflight-channel-hop.md` §2/§3/§8.
+
+- **`scanlog 6`.** Bumped from `scanlog 5`: `D` gains a further trailing
+  `<rx|->` (a relay sweep entry's rx % of the observe span; `-` for a USB
+  dwell, which has no rx reading, or an invalid relay reading) — on top of
+  `scanlog 4`'s `busy` column, so a `scanlog 6` `D` line has one more field
+  than a `scanlog 4`/`5` one. `C`/`K`/`M`/`V`/`H` are unchanged by this
+  bump. A relay sweep's `D` records come from the relay card (its `C`
+  record's positional `chip` field reads `ath9k`), carry `in_session=1`
+  and an `observe_ms` around 20 (the sweep's requested `observe_ms`,
+  `kSweepObserveMs`) rather than the USB dwell's 5. `tools/flightreport.py`
+  reads the new field
+  (`load_scanlog`'s `D` branch); a `scanlog 5` or earlier file has no `rx`
+  column and the parser reads it as `None` rather than misparsing the
+  line.
+- **New sideport keys:** `cards[i].relay` gains `tx_scan_drop` (owner `TX`
+  frames the relay dropped mid-sweep) and `sweeps` (`SCAN`s this card has
+  sent) — `docs/observability.md`.

@@ -450,9 +450,13 @@ here as as-built facts):
    mismatch is dropped on both sides), so there is no intermediate state
    to detect.
 3. `SURVEY` is **paused during a sweep** (the spec kept it running with
-   `gen` bumps mid-sweep); `gen` bumps once at sweep start and again on
-   return. The GS already treats a sweeping card as busy/unusable for the
-   op verdict regardless (below), so the paused stream costs nothing.
+   `gen` bumps mid-sweep); `gen` bumps **once, on return** —
+   `survey_rebase()` (`../mabur-openwrt/feed/net/mabur-relay/src/relay.c`)
+   runs at startup, in `finish_tune()` and in `finish_sweep()`, never at
+   sweep start (`handle_scan()` does not call it), and the SURVEY send
+   itself is gated off while `R.sw.active` (`relay.c`'s poll loop). The GS
+   already treats a sweeping card as busy/unusable for the op verdict
+   regardless (below), so the paused stream costs nothing.
 4. While a sweep is pending, `ChannelCore` feeds the hop controller
    `trigger = false` so it cannot enter `hold_exhausted` before the
    `SCAN_RESULT` (or the timeout) lands.
