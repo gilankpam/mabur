@@ -58,10 +58,17 @@ ChannelCore::ChannelCore(ChannelCoreCfg cfg, std::vector<LinkCard*> cards, VrxCo
   }
   one_card_ = cfg_.n_usb == 1;
   scout_card_ = pick_boot_scout(can_scout_);
+  // No card can measure (relay-only roster, spec §3.7): the last ready-able
+  // relay still searches the set (DISC bursts, no energy reads). measure =
+  // false below; the pick never opens.
+  if (scout_card_ < 0 && n_cards_ > cfg_.n_usb) {
+    scout_card_ = n_cards_ - 1;
+    relay_search_only_ = true;
+  }
   if (scout_card_ >= 0) {
     ScoutCfg sc;
     sc.channels = cfg_.radio.channels;
-    sc.measure = !pinned_;
+    sc.measure = !pinned_ && !relay_search_only_;
     sc.dwell_ms = cfg_.radio.scan.dwell_ms;
     sc.settle_ms = cfg_.radio.scan.settle_ms;
     sc.min_rounds = cfg_.radio.scan.min_rounds;
@@ -70,7 +77,7 @@ ChannelCore::ChannelCore(ChannelCoreCfg cfg, std::vector<LinkCard*> cards, VrxCo
     sc.beacon_period_ms = 20;
     sc.one_card_ms = cfg_.radio.scan.one_card_ms;
     sc.pick_margin = static_cast<uint32_t>(cfg_.radio.scan.pick_margin);
-    sc.one_card = one_card_;
+    sc.one_card = one_card_ || relay_search_only_;   // a sole relay interleaves op windows like a sole USB card
     sc.link_width_mhz = cfg_.radio.width;
     sc.busy_dbm = cfg_.hop.verdict.busy_dbm;
     sc.blocked_pct = cfg_.hop.verdict.blocked_pct;
@@ -82,6 +89,9 @@ ChannelCore::ChannelCore(ChannelCoreCfg cfg, std::vector<LinkCard*> cards, VrxCo
     scout_->set_op(cfg_.start_ch);
     scout_->set_search(true);
     scout_search_req_ = true;
+    // Built even for a relay scout: pick_burst_card/pick_inflight_scout key
+    // off can_scout_, which is all-false for a relay-only roster, so neither
+    // ever returns scout_card_ and inflight_ is never driven.
     inflight_ = std::make_unique<InflightScout>(
         InflightScoutCfg{cfg_.hop.dwell_observe_ms, cfg_.hop.dwell_period_ms,
                          cfg_.radio.channels, cfg_.radio.width, cfg_.hop.verdict.busy_dbm},
@@ -89,7 +99,7 @@ ChannelCore::ChannelCore(ChannelCoreCfg cfg, std::vector<LinkCard*> cards, VrxCo
         [this] { return static_cast<int64_t>(now_us_()); },
         [this](int ms) { sleep_(ms); });
   }
-  boot_pick_ = BootPick(scout_ != nullptr && !pinned_);
+  boot_pick_ = BootPick(scout_ != nullptr && !pinned_ && !relay_search_only_);
   if (pinned_) frozen_pick_ = cfg_.start_ch;
   tx_card_now_.store(0);
 }
@@ -104,7 +114,7 @@ ChannelSnapshot ChannelCore::snapshot() const {
   ChannelSnapshot s;
   const int tx = tx_card_now_.load();
   s.channel = cards_[static_cast<size_t>(tx)]->channel();
-  s.scan_state = (!scout_ || pinned_)        ? "off"
+  s.scan_state = (!scout_ || pinned_ || relay_search_only_) ? "off"
                  : !boot_pick_.open()        ? "frozen"
                  : boot_pick_.relocating()   ? "moving"
                                              : "scouting";

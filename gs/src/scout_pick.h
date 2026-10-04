@@ -52,8 +52,13 @@ inline std::vector<int> scan_disc_targets(int n_usb, int n_cards, int scout_card
   } else if (n_usb == 1 && scout_beaconing) {
     out.push_back(scout_card);
   }
-  for (int i = n_usb; i < n_cards && i < static_cast<int>(ready.size()); ++i)
-    if (ready[static_cast<size_t>(i)]) out.push_back(i);
+  // Every ready relay. With no USB card the scout IS a relay (search-only,
+  // spec 2026-10-04 §3.7): it joins only while beaconing, like a USB scout.
+  for (int i = n_usb; i < n_cards && i < static_cast<int>(ready.size()); ++i) {
+    if (!ready[static_cast<size_t>(i)]) continue;
+    if (n_usb == 0 && i == scout_card) { if (scout_beaconing) out.push_back(i); continue; }
+    out.push_back(i);
+  }
   return out;
 }
 

@@ -628,4 +628,26 @@ TEST(shutdown_joins_threads_and_is_idempotent) {   // Review Focus 5
   CHECK(core.snapshot().dwell[1]->visits == visits);             // no thread left dwelling
 }
 
+TEST(relay_only_roster_searches_without_measuring) {
+  Rig g(0, 1);                                // one relay, auto
+  const auto s = g.core->snapshot();
+  CHECK(std::string(s.scan_state) == "off");  // nothing can measure
+  CHECK(!g.core->pick_open());
+  // the relay scouts: search bursts retune it across the set
+  for (int i = 0; i < 40; ++i) g.tick();
+  bool retuned_off_start = false;
+  for (auto& c : g.cards[0]->calls) if (c == "retune 64" || c == "retune_width 64/20") retuned_off_start = true;
+  CHECK(retuned_off_start);
+  CHECK(g.sink.picks.empty());                // no K line ever: nothing measured
+}
+
+TEST(relay_only_roster_no_ready_relay_is_quiet) {   // Review Focus 4
+  Rig g(0, 1);
+  g.cards[0]->is_ready = false;
+  for (int i = 0; i < 20; ++i) g.tick();
+  CHECK(g.core->disc_targets(0).empty());
+  CHECK(std::string(g.core->snapshot().scan_state) == "off");
+  CHECK(g.cards[0]->calls.empty() || g.cards[0]->calls.front() != "retune 64");   // scout never started (card not ready)
+}
+
 MTEST_MAIN
