@@ -22,8 +22,6 @@
 
 namespace maburgs {
 namespace {
-constexpr uint16_t kScanPids[] = {0xa81a, 0x881a, 0x8812};
-
 uint64_t mono_us_now() {
   return static_cast<uint64_t>(
       std::chrono::duration_cast<std::chrono::microseconds>(
@@ -39,30 +37,29 @@ RadioFrontend::RadioFrontend(Cfg cfg, BodyQueue& out)
 RadioFrontend::~RadioFrontend() { stop(); }
 
 bool RadioFrontend::open_and_start() {
-  if (libusb_init(&usb_ctx_) != 0) return false;
+  open_error_.clear();
+  if (libusb_init(&usb_ctx_) != 0) { open_error_ = "libusb_init"; return false; }
   // Two ways to name the device. Auto-scan (the default) hands us a
   // physical port, which survives the card re-enumerating at a new address;
   // an explicit [[radio.cards]] entry names the index-th VID/PID match, as
-  // it always did.
+  // it always did. by_port keeps precedence only while cfg_.ids is empty --
+  // a non-empty ids list (the web page's chooser) is never a port probe.
   libusb_device** list = nullptr;
   const ssize_t n = libusb_get_device_list(usb_ctx_, &list);
   int match = 0;
   libusb_device* dev = nullptr;
   for (ssize_t i = 0; i < n; ++i) {
-    if (cfg_.by_port) {
+    if (cfg_.by_port && cfg_.ids.empty()) {
       if (device_at_port(list[i], cfg_.port)) { dev = list[i]; break; }
       continue;
     }
     libusb_device_descriptor dd;
     if (libusb_get_device_descriptor(list[i], &dd) != 0) continue;
-    if (dd.idVendor != cfg_.usb_vid) continue;
-    bool pid_ok = cfg_.usb_pid != 0 ? dd.idProduct == cfg_.usb_pid : false;
-    if (cfg_.usb_pid == 0)
-      for (uint16_t p : kScanPids) pid_ok = pid_ok || dd.idProduct == p;
-    if (!pid_ok) continue;
+    if (!usb_id_matches(cfg_, dd.idVendor, dd.idProduct)) continue;
     if (match++ == cfg_.index) { dev = list[i]; break; }
   }
   if (dev == nullptr || libusb_open(dev, &handle_) != 0) {
+    open_error_ = "no device";
     if (list) libusb_free_device_list(list, 1);
     libusb_exit(usb_ctx_);
     usb_ctx_ = nullptr;
@@ -74,6 +71,7 @@ bool RadioFrontend::open_and_start() {
   logger_ = std::make_shared<Logger>();
   int rc = devourer::claim_interface_then_reset(handle_, 0, logger_, /*do_reset=*/true, usb_lock_);
   if (rc != 0) {
+    open_error_ = "claim failed rc=" + std::to_string(rc);
     libusb_close(handle_);
     libusb_exit(usb_ctx_);
     handle_ = nullptr;
@@ -128,7 +126,7 @@ bool RadioFrontend::open_and_start() {
   if (auto radio = driver_->CreateRadio(handle_, usb_ctx_, usb_lock_, dev_cfg);
       radio && dynamic_cast<IRtlRadio*>(radio.get()))
     device_.reset(static_cast<IRtlRadio*>(radio.release()));
-  if (!device_) { stop(); return false; }
+  if (!device_) { open_error_ = "unsupported chip"; stop(); return false; }
   // width_, not the constructor's cfg_.width_mhz: a set_width() that landed
   // while the card was down (the boot scout card dying mid-scan) is the
   // width a revive must come up at.
@@ -203,6 +201,7 @@ void RadioFrontend::on_packet(const Packet& pkt) {
     foreign_.fetch_add(1, std::memory_order_relaxed);
     return;
   }
+  const uint64_t now = mono_us_now();
   if (!a.crc_err) {
     own_.fetch_add(1, std::memory_order_relaxed);
     // Own airtime (spec 2026-09-25-nhm-airtime §5), CRC-good own frames only.
@@ -212,9 +211,10 @@ void RadioFrontend::on_packet(const Packet& pkt) {
     own_air_.on_frame(pkt.Data.size(), mcs, a.physt,
                       a.bw == 1 ? 40 : 20, a.stbc != 0, a.sgi != 0);
     own_air_us_.store(own_air_.total_us(), std::memory_order_relaxed);
+    if (cfg_.usb_late_gauge) late_.add(static_cast<int64_t>(now), a.tsfl);
   }
   m.card_id = cfg_.card_id;
-  m.mono_us = mono_us_now();
+  m.mono_us = now;
   // Receive-channel provenance, stamped HERE -- on the producer thread, at
   // the moment the frame is lifted off this card -- so no amount of
   // queueing between here and the core loop can change it (mabur/node.h).
@@ -387,7 +387,31 @@ bool RadioFrontend::send_control(const std::vector<uint8_t>& body) {
 
 void RadioFrontend::stop() {
   if (device_ && alive_.load(std::memory_order_acquire)) device_->StopRxLoop();
+#ifdef __EMSCRIPTEN__
+  // WebUSB has no transfer cancel (libusb's emscripten backend cancel is a
+  // no-op): on a quiet channel the RX loop's pending transferIn calls never
+  // complete and the join below would wait for the next received frame --
+  // forever with the drone off. Releasing the interface makes Chrome abort
+  // them (AbortError), which ends the loop. Re-claimed for Stop()'s de-init
+  // writes. Moved here from web/src/web_main.cpp run_live (2026-10-04).
+  bool released_early = false;
+  const uint64_t t_stop0 = mono_us_now();
+  if (rx_thread_.joinable()) {
+    for (int waited = 0; alive_.load(std::memory_order_acquire) && waited < 300; waited += 10)
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    if (alive_.load(std::memory_order_acquire) && handle_) {
+      libusb_release_interface(handle_, 0);
+      released_early = true;
+    }
+  }
+#endif
   if (rx_thread_.joinable()) rx_thread_.join();
+#ifdef __EMSCRIPTEN__
+  if (released_early && handle_) libusb_claim_interface(handle_, 0);
+  std::fprintf(stderr, "maburgs radio card %d: teardown rx %llu ms%s\n", static_cast<int>(cfg_.card_id),
+               static_cast<unsigned long long>((mono_us_now() - t_stop0) / 1000),
+               released_early ? " (reads aborted)" : "");
+#endif
   if (device_) device_->Stop();
   device_.reset();
   driver_.reset();
@@ -408,5 +432,10 @@ uint64_t RadioFrontend::rx_frames() const { return rx_frames_.load(std::memory_o
 uint64_t RadioFrontend::foreign() const { return foreign_.load(std::memory_order_relaxed); }
 uint64_t RadioFrontend::tx_frames() const { return tx_frames_.load(std::memory_order_relaxed); }
 uint64_t RadioFrontend::tx_fail() const { return tx_fail_.load(std::memory_order_relaxed); }
+
+void RadioFrontend::take_usb_late(int64_t& p99_us, int64_t& max_us) {
+  if (!cfg_.usb_late_gauge) { p99_us = max_us = 0; return; }
+  late_.take(p99_us, max_us);
+}
 
 }  // namespace maburgs
