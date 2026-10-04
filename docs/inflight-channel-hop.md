@@ -7,6 +7,12 @@ Design spec: `docs/superpowers/specs/2026-09-14-inflight-channel-hop-design.md`
 this page describes what shipped). Reactive only: a healthy link never
 moves, and there is no proactive re-ranking while the link is clean.
 
+**Where the code lives (2026-10-04).** The GS-side hop decision and command
+flow is wired inside `gs/src/channel_core.{h,cpp}` (see `docs/channel-select.md`
+"Where the code lives" for the full integration). Test the hop inject seam
+in `tests/test_channel_core.cpp` (`two_card_order_rcf_carries_hop_and_plan_leads_then_follows`,
+`one_card_order_rides_repeats_then_retunes`).
+
 Built without hardware, then benched on 2026-09-15: deployed both ends,
 four fixes forced by the bench (see Measurements), a co-channel hop
 confirmed in 268 ms onset-to-video on two cards and 427 ms on one, with

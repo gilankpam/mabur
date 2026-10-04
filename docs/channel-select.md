@@ -170,6 +170,16 @@ from.
 
 ## GS: search and measure (`ChannelScout`, `gs/src/channel_scout.{h,cpp}`)
 
+**Where the code lives (2026-10-04).** Everything this page describes on
+the GS side is wired inside `gs/src/channel_core.{h,cpp}` (`ChannelCore`):
+`main.cpp` builds one with the card roster and calls it at six seams
+(lifecycle, the rc sink, the drain loop, `tick()`, the send path, the
+sideport). The decision units (`ChannelPlan`, `BootPick`, `ChannelScout`,
+`HopVerdict`, `HopRanker`, `HopController`, `InflightScout`) are unchanged.
+Design: `docs/superpowers/specs/2026-10-04-web-gs-channel-core-design.md`
+(gitignored; this page and `docs/inflight-channel-hop.md` are the durable
+record). The browser GS (`docs/web-gs.md`) drives the same unit.
+
 `ChannelScout` is the long-lived scheduler that owns the spare USB card
 (two-card) or the sole card between op windows (one card) whenever it has
 work. It replaces the old boot-only scan: it no longer stops at the first
@@ -503,21 +513,19 @@ row has not run, not an unmeasured constant masquerading as a result.
 
 ### Bench 2026-10-04 — channel core extraction
 
-This is a regression check that branch `channel-core` (c338e15, the channel/hop wiring moved out of `run_radio()` into `gs/src/channel_core.{h,cpp}`) changed nothing on hardware. The GS ran the new `maburgs` (rollback `maburgs.pre-chancore`) and the drone was unchanged. `debug_log.enable` was switched on temporarily to get `scan.log` (sessions `/media/dvr/log/0002`-`0003`), then switched back off. Each run was compared against the earlier 2026-10-04 sessions `0000`/`0001` on the same GS. The check covered the stderr strings, the `scanlog 5 channels=40,64,112,144 mode=auto dwell_ms=250 min_rounds=3 cards=N` header, the column counts of each record kind (C 13, D 19, H 7, M 6, V 27 two-card / 17 one-card, K 11 while linked / 13 unlinked) and the order of K/M/H events. **No difference in shape or sequence. Only timings differ.**
+This is a regression check that branch `channel-core` (c338e15, the channel/hop wiring moved out of `run_radio()` into `gs/src/channel_core.{h,cpp}`) changed nothing on hardware. The GS ran the new `maburgs` (rollback `maburgs.pre-chancore`) and the drone was unchanged. `debug_log.enable` was switched on temporarily to get `scan.log` (sessions `/media/dvr/log/0002`-`0003`), then switched back off. Each run was compared against the earlier 2026-10-04 sessions `0000`/`0001` on the same GS. The check covered the stderr strings, the `scanlog 5 channels=40,64,112,144 mode=auto dwell_ms=250 min_rounds=3 cards=N` header, the column counts of each record kind (C 13, D 19, H 7, M 6, V 27 two-card / 17 one-card, K 11 while linked / 13 unlinked) and the order of K/M/H events. **No difference in shape or sequence under matched conditions. Only timings differ.**
 
 | check | result |
 |---|---|
 | ausniff gate | PASS — 60 s linked on 64: 1816 AUs, 0 frame_id gaps, 0 incomplete, 30.3 fps |
 | Row 1 (cold start both, two cards, auto) | PASS — drone already beaconing on 64 when maburgs (re)started, as in session 0000 (the GS boots slower than the drone). `set [40,64,112,144] mode auto start 64 (remembered)`, link immediately, `K` after 3 rounds 8.6 s after the C lines (0000: 8.6 s), `pick frozen on 64 (op unmeasured) after 3 rounds`. The same shape repeated on a later restart on 144. No reactive hop fired (the 36-48 router stayed quiet). ausniff 30 s: 916 AUs, 0 gaps. The literal order (drone off → GS restart → drone on) froze before the drone booted (`pick frozen on 64 (commit) after 3 rounds`, no M line because pick == op), then linked on 64. That is the row-2 path, as expected when the drone needs 30-40 s to boot |
-| Row 3 (battery swap) | PASS — drone `parking on 64 (remembered)`, linked at its first stats line. The GS session rotated `0002 -> 0003` (tlm_seq 201 -> 0) and logged zero `maburgs channel:`/`maburgs hop:` lines. It did log one `REFUSING video: peer session did not advertise CAP_FRAME_WIRE (chip_caps=0x0007)` during the gap. That line is pre-existing and unchanged code (`peer_acked && !in_session`), and video resumed on the same second |
+| Row 3 (battery swap) | PASS — drone `parking on 64 (remembered)`, linked at its first stats line. The GS session rotated `0002 -> 0003` (tlm_seq 201 -> 0) and logged zero `maburgs channel:`/`maburgs hop:` lines. It did log one `REFUSING video: peer session did not advertise CAP_FRAME_WIRE (chip_caps=0x0007)` during the gap. That line is pre-existing and unchanged code (`peer_acked && !fw`), and video resumed on the same second |
 | Row 5 (one card auto, `[[radio.cards]]` pinned, GS state file 40, drone on 64) | PASS, same lines as the 2026-10-04 row: `one-card prelude ranking picks 144 (op 40)`, `commit card -1 40 -> 144`, `drone found on 64 (op 144): the link forms there`, `link_found`, `pick frozen on 144 (one-card linked) after 2 rounds`, `relocate 64 -> 144 placed`, `one_card_retune` +216 ms (was +253), `hop_one_card`, `lead_confirm` +235 ms (was +272), `hop_follow`, `verify_pass` +1000 ms. The scan.log order M commit, M link_found, K, H relocate, H one_card_retune, M hop_one_card, H lead_confirm, M hop_follow, H verify_pass is identical to session 0001. ausniff 30 s: 916 AUs, 0 gaps |
 | Reactive hop (benchjam 250 fps / 1000 B / 6M, co-located) | PASS — at the lowest TX-power step on op 64: `H order` → `M hop_lead 64 144` → `lead_confirm` +122 ms → `M hop_follow` → `verify_pass` +1009 ms. ausniff 60 s: 1814 AUs, 1 frame_id gap, 0 incomplete. That gap is 181 ms before the order (jam loss inside the detection window), not at the hop. The first run, at the calibrated default power on op 144, chained 144 → 64 → 40 → 112 through `verify_fail` (the jam leaks onto every channel at bench distance, see the findings above) and then held on 112 (`hold_exhausted`/`hold_end` ×5) until the jam ended. After that it went `order` → 64 → `verify_pass`. ausniff 75 s: 5 gaps, all during the verify_fail chain or the jammed hold, none at a confirmed hop |
 
 ## Out of scope
 
-The web GS (`web/`) gets **no changes** in this work; if the shared
-`maburgs::Config` change breaks its build, it stays broken until its own
-design (`docs/web-gs.md` is untouched by this page). A runtime auto/pin
+The web GS (`web/`) takes this feature through the shared `ChannelCore` — see `docs/web-gs.md`. A runtime auto/pin
 switch. Width negotiation over DISC (both ends keep `radio.width = 40`).
 Relay channel capability — the operator rule that every member must be
 CPE-tunable stays a documented rule, `docs/cpe510-relay.md` (a relay GS
