@@ -87,7 +87,7 @@ struct FakeCard : maburgs::LinkCard {
   uint32_t fa_next = 0;                             // returned (once) by read_energy_scout's fa_ofdm
   bool can_sweep() const override { return relay && sweep_ok; }
   bool start_sweep(const std::vector<uint8_t>& ch, uint8_t, uint8_t) override {
-    if (!can_sweep()) return false;
+    if (!can_sweep() || !is_ready) return false;   // RemoteCard: running + owned_and_tuned
     sweeps.push_back(ch); sweep_in_flight = true; return true;
   }
   std::optional<maburgs::SweepResult> take_sweep_result() override {

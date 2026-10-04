@@ -29,6 +29,10 @@ inline int pick_inflight_scout(const std::vector<bool>& can_scout, int tx) {
 // while the relay sweeps; the scout-capable TX card (the one-card GS's
 // acceptance: the burst only runs once the link is already impaired); the
 // sweep-capable TX card (a relay-only GS). -1 = nothing can burst.
+// can_scout and can_sweep are per card and must be the same size (the
+// roster); can_sweep is the caller's per-tick "can take a SCAN now" (v4
+// relay AND ready()), so a dead relay never takes the burst. A short
+// can_sweep reads as false past its end.
 inline int pick_burst_card(const std::vector<bool>& can_scout, const std::vector<bool>& can_sweep, int tx) {
   const int n = static_cast<int>(can_scout.size());
   auto last = [&](const std::vector<bool>& cap, bool non_tx) {

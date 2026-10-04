@@ -343,12 +343,12 @@ static std::optional<mabur::rc::Rcf> pump_rcf(Rig& g) {
 // `own` is deliberately left unbumped (own delta 0 every window) so
 // `starved` carries `impaired` instead. Runs enough windows for the
 // trigger (persist 2).
-static void interfere(Rig& g, int windows = 3) {
+static void interfere(Rig& g, int windows = 3, int tx = 0) {
   for (int w = 0; w < windows; ++w) {
     for (auto& c : g.cards) { c->fr.foreign += 40; }
     for (int i = 0; i < g.cfg.hop.window_ms / 10 + 1; ++i) {
       g.vrx->on_video(static_cast<double>(g.clk.ms));
-      g.core->tick(g.in(true));
+      g.core->tick(g.in(true, false, tx));
       g.clk.ms += 10;
     }
   }
@@ -996,10 +996,10 @@ TEST(relay_burst_waits_relay_burst_period_ms) {
   CHECK(g.cards[0]->sweeps.size() == 1);
 }
 
-TEST(relay_only_single_member_set_sends_no_scan) {   // Review Focus 4
-  Rig g(0, 1);
-  g.cfg.radio.channels = {40};
-  // rebuild the VrxController and the core with the one-member set
+// Rebuild a relay-only rig's VrxController + core around another channel
+// set (start 40, n_usb 0).
+static void rebuild_with_set(Rig& g, std::vector<uint8_t> set) {
+  g.cfg.radio.channels = std::move(set);
   g.core.reset();
   g.vrx = std::make_unique<VrxController>(vrx_cfg_from(g.cfg, 40));
   ChannelCoreCfg cc; cc.radio = g.cfg.radio; cc.hop = g.cfg.hop; cc.key = g.cfg.link.key;
@@ -1007,6 +1007,11 @@ TEST(relay_only_single_member_set_sends_no_scan) {   // Review Focus 4
   g.core = std::make_unique<ChannelCore>(cc, g.ptrs, *g.vrx, g.sink,
       [](uint8_t) { return true; }, [&g] { return g.clk.now_ms(); }, [&g] { return g.clk.now_us(); },
       [&g](int ms) { g.clk.sleep(ms); });
+}
+
+TEST(relay_only_single_member_set_sends_no_scan) {   // Review Focus 4
+  Rig g(0, 1);
+  rebuild_with_set(g, {40});
   link_up(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
   interfere(g, 4);
@@ -1045,6 +1050,100 @@ TEST(relay_plus_usb_tx_usb_lets_the_relay_sweep) {
   bool usb_retuned_off_op = false;
   for (auto& c : g.cards[0]->calls) if (c == "retune 64" || c == "retune 112" || c == "retune 144") usb_retuned_off_op = true;
   CHECK(!usb_retuned_off_op);                      // the USB TX card never left the link
+}
+
+// Final review item 4: the sweep timeout is derived from the request --
+// max(1000, passes * n * (observe_ms + 40) + 300). An 8-member set sweeps 7
+// channels x 2 passes x 60 ms + 300 = 1140 ms: a pending SCAN must NOT time
+// out at 1000 ms.
+TEST(relay_sweep_timeout_scales_with_the_request) {
+  Rig g(0, 1);
+  rebuild_with_set(g, {40, 36, 44, 48, 64, 112, 144, 149});
+  link_up(g);
+  for (int i = 0; i < 100 && g.core->pick_open(); ++i) g.tick(true);
+  REQUIRE(!g.core->pick_open());
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  uint64_t sent_ms = 0;
+  for (int w = 0; w < 4 && g.cards[0]->sweeps.empty(); ++w) {
+    for (auto& c : g.cards) c->fr.foreign += 40;
+    for (int i = 0; i < g.cfg.hop.window_ms / 10 + 1 && g.cards[0]->sweeps.empty(); ++i) {
+      g.vrx->on_video(static_cast<double>(g.clk.ms));
+      sent_ms = g.clk.ms;
+      g.core->tick(g.in(true));
+      g.clk.ms += 10;
+    }
+  }
+  REQUIRE(g.cards[0]->sweeps.size() == 1);
+  REQUIRE(g.cards[0]->sweeps[0].size() == 7);
+  g.cards[0]->sweep_in_flight = false;             // never answers
+  while (g.clk.ms < sent_ms + 1100) g.tick(true);
+  CHECK(g.core->sweep_pending());                  // the fixed 1000 ms would have expired it
+  CHECK(g.core->sweep_timeouts() == 0);
+  while (g.clk.ms < sent_ms + 1150) g.tick(true);
+  CHECK(!g.core->sweep_pending());
+  CHECK(g.core->sweep_timeouts() == 1);
+}
+
+// Final review item 1: relay + USB with the relay down (booting / not owned)
+// and the USB card transmitting. The dead relay must not take the burst:
+// the USB TX card bursts (pick rule 3), no SCAN is attempted.
+TEST(relay_plus_usb_relay_not_ready_usb_tx_bursts) {
+  Rig g(1, 1);
+  g.cards[0]->retune_ok = false;
+  freeze_auto(g);
+  g.cards[0]->retune_ok = true;
+  link_up(g);
+  g.cards[1]->is_ready = false;                    // the relay is down
+  for (int i = 0; i < 5; ++i) g.tick(true, false, /*tx=*/0);
+  const size_t d0 = g.sink.dwells.size();
+  g.cards[0]->cca_per_ms_on[40] = 50;
+  interfere(g, 3, /*tx=*/0);
+  CHECK(g.cards[1]->sweeps.empty());
+  CHECK(!g.core->sweep_pending());
+  size_t usb_dwells = 0;
+  for (size_t i = d0; i < g.sink.dwells.size(); ++i) if (g.sink.dwells[i].first == 0) ++usb_dwells;
+  CHECK(usb_dwells > 0);                           // the USB TX card burst
+}
+
+// Final review item 2: relay + USB, the relay transmits, the USB card is
+// the spare: the USB card bursts (pick rule 1), no SCAN.
+TEST(relay_plus_usb_usb_spare_bursts) {
+  Rig g(1, 1);
+  g.cards[0]->retune_ok = false;
+  freeze_auto(g);
+  g.cards[0]->retune_ok = true;
+  link_up(g);
+  for (int i = 0; i < 5; ++i) g.tick(true, false, /*tx=*/1);
+  const size_t d0 = g.sink.dwells.size();
+  g.cards[0]->cca_per_ms_on[40] = 50;
+  interfere(g, 3, /*tx=*/1);
+  CHECK(g.cards[1]->sweeps.empty());
+  size_t usb_dwells = 0;
+  for (size_t i = d0; i < g.sink.dwells.size(); ++i) if (g.sink.dwells[i].first == 0) ++usb_dwells;
+  CHECK(usb_dwells > 0);
+}
+
+// Final review item 3: while the relay sweeps, the TX selector must not
+// move TX onto it -- the sweep freezes the TX selection like a dwell.
+TEST(tx_frozen_while_relay_sweeps) {
+  Rig g(1, 1);
+  g.cards[0]->retune_ok = false;
+  freeze_auto(g);
+  g.cards[0]->retune_ok = true;
+  link_up(g);
+  for (int i = 0; i < 5; ++i) g.tick(true, false, 0);
+  g.cards[0]->cca_per_ms_on[40] = 50;
+  interfere(g, 3);
+  REQUIRE(g.core->sweep_pending());
+  REQUIRE(!g.core->hopping());
+  REQUIRE(!g.core->dwell_busy());
+  const auto out = g.core->tick(g.in(true));
+  CHECK(out.tx_frozen);
+  CHECK(g.core->tx_frozen());
+  g.cards[1]->pending_result = SweepResult{};      // the result lands: frozen no more
+  const auto out2 = g.core->tick(g.in(true));
+  CHECK(!g.core->sweep_pending());
+  CHECK(!out2.tx_frozen);
 }
 
 MTEST_MAIN

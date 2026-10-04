@@ -187,7 +187,7 @@ ChannelTickOut ChannelCore::tick(const ChannelTickIn& in) {
   }
   ChannelTickOut out;
   out.dwell_busy = dwell_busy_.load();
-  out.tx_frozen = tx_selection_frozen(out.dwell_busy, plan_.hopping());
+  out.tx_frozen = tx_selection_frozen(out.dwell_busy || sweep_.on, plan_.hopping());
   return out;
 }
 
@@ -568,20 +568,36 @@ void ChannelCore::step_controller_(const ChannelTickIn& in) {
   ht.rcf_sent_since_order = static_cast<int>(rcf_sent_total_ - rcf_sent_at_order_);
   const bool relocation_owns = boot_pick_.relocating() || pending_relocate_.has_value() ||
                                boot_pick_.relocation_pending(last_bi_);
-  const int burst_card = pick_burst_card(can_scout_, can_sweep_, in.tx_card);
+  // Sweep-capable is per tick: a relay that is down, booting or owned by
+  // another client cannot take a SCAN (RemoteCard::start_sweep refuses it),
+  // and picking it would starve the USB card of its burst (final review
+  // item 1). The static can_sweep_ only says "speaks v4".
+  std::vector<bool> sweepable(static_cast<size_t>(n_cards_));
+  for (int i = 0; i < n_cards_; ++i)
+    sweepable[static_cast<size_t>(i)] = can_sweep_[static_cast<size_t>(i)] && cards_[static_cast<size_t>(i)]->ready();
+  const int burst_card = pick_burst_card(can_scout_, sweepable, in.tx_card);
   const bool relay_burst = burst_card >= 0 && !can_scout_[static_cast<size_t>(burst_card)] &&
-                           can_sweep_[static_cast<size_t>(burst_card)];
+                           sweepable[static_cast<size_t>(burst_card)];
   const int burst_period = relay_burst ? cfg_.hop.relay_burst_period_ms : cfg_.hop.dwell_period_ms;
   if (reactive_ && !scout_owns_() && !relocation_owns && !sweep_.on &&
       hop_burst_due(hopc_.state(), last_verdict_out_.trigger, now_ms, last_burst_ms_, burst_period)) {
+    const double prev_burst_ms = last_burst_ms_;
     last_burst_ms_ = now_ms;
     if (relay_burst) {
       // Async: one SCAN for the set minus op; poll_sweep_ ranks the result.
       std::vector<uint8_t> chans;
       for (uint8_t c : cfg_.radio.channels) if (c != plan_.op()) chans.push_back(c);
       if (!chans.empty() &&
-          cards_[static_cast<size_t>(burst_card)]->start_sweep(chans, kSweepPasses, kSweepObserveMs))
-        sweep_ = PendingSweep{true, burst_card, now_ms};
+          cards_[static_cast<size_t>(burst_card)]->start_sweep(chans, kSweepPasses, kSweepObserveMs)) {
+        const double need = static_cast<double>(kSweepPasses) * static_cast<double>(chans.size()) *
+                                (kSweepObserveMs + kSweepPerChannelMs) + kSweepSlackMs;
+        sweep_ = PendingSweep{true, burst_card, now_ms, std::max(kSweepTimeoutMinMs, need)};
+      } else {
+        // Nothing ran (a ready->down race, or a one-member set): the burst
+        // is not spent. ready() gates sweepable, so this is rare; retrying
+        // next tick is cheaper than a fall-through second pick.
+        last_burst_ms_ = prev_burst_ms;
+      }
       fill_hop_targets(ht);
     } else if (burst_card < 0 || !inflight_) {
       fill_hop_targets(ht);
@@ -734,7 +750,7 @@ void ChannelCore::poll_sweep_(double now_ms) {
   // Expiry first: a sweep left pending across a session drop is a timeout,
   // and a result that sat on the card meanwhile is taken and discarded --
   // never ranked under the reconnect's timestamp (fix round 1).
-  if (now_ms - sweep_.sent_ms >= kSweepTimeoutMs) {
+  if (now_ms - sweep_.sent_ms >= sweep_.timeout_ms) {
     (void)fe.take_sweep_result();
     sweep_.on = false;
     ++sweep_timeouts_;
