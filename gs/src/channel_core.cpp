@@ -6,6 +6,8 @@
 
 #include "hop_blank.h"
 #include "hop_burst_gate.h"
+#include "mabur/channel_file.h"
+#include "pair_pick.h"
 #include "scout_pick.h"
 #include "width_resync.h"
 
@@ -166,9 +168,28 @@ ChannelTickOut ChannelCore::tick(const ChannelTickIn& in) {
 void ChannelCore::run_scout_step() { if (scout_) scout_->run_once(); }
 void ChannelCore::run_inflight_step() { inflight_body_(); }
 
-// stubs filled by Tasks 3-5
-void ChannelCore::on_card_died(int) {}
-void ChannelCore::on_card_reopened(int) {}
+void ChannelCore::on_card_died(int card) {
+  if (scout_ && card == scout_card_ && !scout_card_down_) {
+    scout_card_down_ = true;
+    if (scout_->working()) {
+      scout_card_died_seen_ = true;
+      sink_.log(logf_("maburgs channel: scout card %d died at %llu rounds; search held "
+                      "until it reopens, card rejoins at %u MHz",
+                      card, static_cast<unsigned long long>(scout_->rounds()),
+                      static_cast<unsigned>(cfg_.radio.width)));
+    }
+    scout_search_req_ = false;
+    scout_->set_search(false);
+  }
+}
+
+void ChannelCore::on_card_reopened(int card) {
+  cur_ch_[static_cast<size_t>(card)] = cards_[static_cast<size_t>(card)]->channel();
+  width_tried_[static_cast<size_t>(card)] = false;
+  if (card == scout_card_) scout_card_down_ = false;
+}
+
+// stub filled by Task 5
 void ChannelCore::shutdown() {}
 void ChannelCore::on_rc_body(uint8_t rx_ch) { rc_body_rx_ch_ = rx_ch; }
 
@@ -214,18 +235,170 @@ void ChannelCore::note_sent(bool sent_ok, bool is_rcf) {
   if (sent_ok) ++ctrl_sent_total_;
   if (is_rcf) ++rcf_sent_total_;
 }
-void ChannelCore::freeze_pick_(double, const char*) {}
+void ChannelCore::freeze_pick_(double t, const char* why) {
+  if (!scout_) return;
+  scout_->freeze();
+  const int mr = (one_card_ && scout_->prelude_done() &&
+                  scout_->rounds() < static_cast<uint64_t>(cfg_.radio.scan.min_rounds))
+                     ? 1
+                     : cfg_.radio.scan.min_rounds;
+  const auto all = scout_->ranking();
+  bool any = false;
+  if (cfg_.radio.width == 40) {
+    any = any_pair_ranked(all, cfg_.radio.channels, mr);
+  } else {
+    for (const auto& e : all) any = any || e.visits >= static_cast<uint32_t>(mr);
+  }
+  const uint8_t pick = plan_.want();
+  if (any) ranker_.set_boot_pick(pick);
+  sink_.pick(t, any ? std::optional<uint8_t>(pick) : std::nullopt, scout_->rounds(), all, mr);
+  sink_.log(logf_("maburgs channel: pick frozen on %u (%s) after %llu rounds",
+                  static_cast<unsigned>(pick), why,
+                  static_cast<unsigned long long>(scout_->rounds())));
+}
+
 void ChannelCore::dispatch_hop_action_(const HopAction&, bool, double) {}
 void ChannelCore::apply_hop_action_(const HopAction&, double) {}
-void ChannelCore::step_scout_inputs_() {}
-void ChannelCore::step_boot_pick_(const ChannelTickIn&) {}
-void ChannelCore::step_store_() {}
+
+void ChannelCore::step_scout_inputs_() {
+  if (!scout_) { scout_working_atomic_.store(false, std::memory_order_relaxed); return; }
+  scout_->set_op(plan_.op());
+  scout_search_req_ = plan_.release_scout() && !scout_card_down_ &&
+                      !(dwell_busy_.load() && dwell_card_.load() == scout_card_);
+  scout_->set_search(scout_search_req_);
+  scout_->set_tx_frames(ctrl_sent_total_);
+  const bool w = scout_owns_();
+  if (scout_was_working_ && !w) {
+    cur_ch_[static_cast<size_t>(scout_card_)] = cards_[static_cast<size_t>(scout_card_)]->channel();
+    width_tried_[static_cast<size_t>(scout_card_)] = false;
+  }
+  scout_was_working_ = w;
+  scout_working_atomic_.store(scout_owns_(), std::memory_order_relaxed);
+}
+
+void ChannelCore::step_boot_pick_(const ChannelTickIn& in) {
+  const double now_ms = in.now_ms;
+  const bool linked = in.in_session || in.cal_running;
+  BootPickIn bi;
+  bi.now_ms = now_ms;
+  bi.since_start_ms = now_ms_u_cur_ - gs_start_ms_;
+  bi.max_ms = cfg_.radio.scan.max_ms;
+  bi.in_session = in.in_session;
+  bi.cal_running = in.cal_running;
+  bi.one_card = one_card_;
+  if (scout_) {
+    bi.scout_mature = scout_->mature();
+    bi.scout_op_ranked = scout_->op_ranked();
+    bi.scout_prelude_done = scout_->prelude_done();
+    bi.proposal = scout_->proposal();
+  }
+  bi.scout_owns = scout_owns_();
+  bi.op = plan_.op();
+  bi.want = plan_.want();
+  bi.relocate_due = plan_.relocate_due();
+  bi.plan_hopping = plan_.hopping();
+  bi.hop_active = hop_active(in.in_session, in.cal_running);
+  bi.hop_idle_or_hold = hopc_.state() == HopState::Idle || hopc_.state() == HopState::Hold;
+  bi.link_edge = link_edge_seen_;
+  bi.scout_card_died = scout_card_died_seen_;
+  link_edge_seen_ = false;
+  scout_card_died_seen_ = false;
+  pending_relocate_.reset();
+  last_bi_ = bi;
+  const BootPickOut bo = boot_pick_.tick(bi);
+  switch (bo.kind) {
+    case BootPickOut::Commit:
+      if (bo.ch != plan_.op())
+        sink_.log(logf_("maburgs channel: commit %u -> %u (no link)",
+                        static_cast<unsigned>(plan_.op()), static_cast<unsigned>(bo.ch)));
+      plan_.commit(now_ms, bo.ch);
+      freeze_pick_(now_ms, bo.reason);
+      break;
+    case BootPickOut::AckPrelude:
+      sink_.log(logf_("maburgs channel: one-card prelude ranking picks %u (op %u)%s",
+                      static_cast<unsigned>(bi.proposal), static_cast<unsigned>(plan_.op()),
+                      linked ? ", linked: not committed" : ""));
+      if (bo.ch != 0) plan_.commit(now_ms, bo.ch);
+      scout_->ack_prelude(plan_.op());
+      break;
+    case BootPickOut::WantPick:
+      plan_.set_want(now_ms, bo.ch);
+      scout_->freeze();
+      sink_.log(logf_("maburgs channel: boot pick wants %u, link on %u: relocating",
+                      static_cast<unsigned>(bo.ch), static_cast<unsigned>(plan_.op())));
+      break;
+    case BootPickOut::Relocate:
+      pending_relocate_ = bo.ch;
+      break;
+    case BootPickOut::Freeze:
+      if (bo.accept_op) plan_.set_want(now_ms, plan_.op());
+      freeze_pick_(now_ms, bo.reason);
+      frozen_pick_ = plan_.want();
+      break;
+    case BootPickOut::AcceptOp:
+      sink_.log(logf_("maburgs channel: relocation to %u did not land; staying on %u",
+                      static_cast<unsigned>(plan_.want()), static_cast<unsigned>(plan_.op())));
+      plan_.set_want(now_ms, plan_.op());
+      break;
+    case BootPickOut::None:
+      break;
+  }
+  if (bo.kind == BootPickOut::Commit) frozen_pick_ = plan_.want();
+}
+
+void ChannelCore::step_store_() {
+  if (plan_.op() != saved_op_) {
+    saved_op_ = plan_.op();
+    vrx_.set_proposal(plan_.op());
+    if (!store_(saved_op_))
+      sink_.log(logf_("maburgs channel: could not write %s", mabur::kGsChannelFile));
+  }
+}
+
 void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn&) {}
 void ChannelCore::step_controller_(const ChannelTickIn&) {}
 void ChannelCore::step_move_edge_(const ChannelTickIn&) {}
-void ChannelCore::step_drains_() {}
-void ChannelCore::step_width_resync_() {}
-void ChannelCore::step_mechanical_retune_() {}
+
+void ChannelCore::step_drains_() {
+  if (scout_)
+    for (const auto& d : scout_->take_dwells()) sink_.dwell(now_ms_cur_, scout_card_, d);
+  // in-flight drain: Task 5
+}
+
+void ChannelCore::step_width_resync_() {
+  if (!width_resync_open(!scout_owns_(), scout_ != nullptr, /*scout_frozen=*/!boot_pick_.open())) return;
+  for (int i = 0; i < n_cards_; ++i) {
+    auto& fe = *cards_[static_cast<size_t>(i)];
+    const WidthCard wc{fe.ready(), fe.width(), width_tried_[static_cast<size_t>(i)],
+                       dwell_busy_.load() && dwell_card_.load() == i};
+    if (!needs_width_fix(wc, cfg_.radio.width)) continue;
+    width_tried_[static_cast<size_t>(i)] = true;
+    std::lock_guard<std::mutex> ilk(inflight_mu_);
+    const uint8_t ch = fe.channel();
+    if (fe.set_width(ch, cfg_.radio.width)) {
+      cur_ch_[static_cast<size_t>(i)] = fe.channel();
+      nhm_win_[static_cast<size_t>(i)].invalidate();
+    } else {
+      sink_.log(logf_("maburgs radio: card %d width resync to %u MHz on ch %u failed", i,
+                      static_cast<unsigned>(cfg_.radio.width), static_cast<unsigned>(ch)));
+    }
+  }
+}
+
+void ChannelCore::step_mechanical_retune_() {
+  for (int i = 0; i < n_cards_; ++i) {
+    const bool scouting = scout_owns_() && i == scout_card_;
+    const bool inflight_dwelling = dwell_busy_.load() && dwell_card_.load() == i;
+    auto& fe = *cards_[static_cast<size_t>(i)];
+    if (scouting || inflight_dwelling || !fe.ready()) continue;
+    const uint8_t want = plan_.desired(i);
+    if (cur_ch_[static_cast<size_t>(i)] != want && fe.retune(want)) {
+      cur_ch_[static_cast<size_t>(i)] = want;
+      nhm_win_[static_cast<size_t>(i)].invalidate();
+    }
+  }
+}
+
 void ChannelCore::inflight_body_() {}
 void ChannelCore::scout_loop_() {}
 

@@ -130,6 +130,8 @@ class VrxController {
   // vtx_nonce adoption; true once per arming, cleared by read.
   static constexpr int kMoveAfterRcfs = 5;
   bool take_move_edge() { const bool e = move_edge_; move_edge_ = false; return e; }
+  // Test seam: arm the move edge as a LINKED Telem under a fresh vtx_nonce would.
+  void test_set_move_edge() { move_edge_ = true; }
   // Telem.state from the drone (2 == RcAgent::State::LINKED).
   void note_drone_state(uint8_t telem_state);
   // The drone answers our DISCs with key_mismatch: our key differs from its.

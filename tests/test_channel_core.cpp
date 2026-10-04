@@ -188,4 +188,108 @@ TEST(session_opened_with_key_mismatch_or_foreign_nonce_is_ignored) {
   CHECK(g.core->op() == 40);
 }
 
+// Carried from Task 2 (task-2-brief.md Step 1): needed step_scout_inputs_ --
+// the search request goes false once the plan is in session.
+TEST(disc_targets_is_tx_when_scout_owns_nothing) {
+  Rig g(2, 0, /*pinned=*/true, 40);
+  g.tick(true, false, /*tx=*/1);  // linked: release_scout() false, search off
+  g.tick(true, false, 1);
+  const auto t = g.core->disc_targets(1);
+  REQUIRE(t.size() == 1);
+  CHECK(t[0] == 1);
+}
+
+// The one-card prelude (auto): silent one_card_ms, then AckPrelude commits
+// the prelude ranking (no link) and the first op window runs; a link edge
+// then freezes the pick "one-card linked".
+TEST(one_card_prelude_commits_then_freezes_on_link) {
+  Rig g(1, 0);
+  g.cards[0]->cca_per_ms_on[40] = 5;   // 40 busy, the rest clean
+  // run the scout + core for one_card_ms + a round
+  for (int i = 0; i < 800 && !g.sink.has_line("one-card prelude ranking picks"); ++i) g.tick();
+  REQUIRE(g.sink.has_line("one-card prelude ranking picks"));
+  CHECK(g.core->op() != 40);                       // committed off the busy channel
+  CHECK(!g.stored.empty() && g.stored.back() == g.core->op());
+  CHECK(g.vrx->proposal() == g.core->op());
+  CHECK(g.sink.has_move(MoveReason::Commit));
+  CHECK(std::string(g.core->snapshot().scan_state) == "scouting");   // pick still open
+  // the move edge (drone linked): BootPick freezes "one-card linked"
+  g.vrx->test_set_move_edge();   // see step 3: a test seam on VrxController
+  g.tick(true);
+  g.tick(true);
+  CHECK(g.sink.has_line("pick frozen on"));
+  CHECK(g.sink.has_line("(one-card linked)"));
+  CHECK(std::string(g.core->snapshot().scan_state) == "frozen");
+  REQUIRE(g.core->snapshot().scan_pick.has_value());
+  CHECK(*g.core->snapshot().scan_pick == g.core->op());
+}
+
+// Two cards, no link, auto: maturity commits the pick (K line) and freezes.
+TEST(two_card_no_link_commits_at_maturity) {
+  Rig g(2, 0);
+  g.cards[1]->cca_per_ms_on[40] = 5; g.cards[1]->cca_per_ms_on[36] = 5;   // op pair busy
+  for (int i = 0; i < 3000 && !g.sink.has_line("pick frozen on"); ++i) g.tick();
+  REQUIRE(g.sink.has_line("pick frozen on"));
+  CHECK(g.sink.has_line("(commit)"));
+  CHECK(g.sink.has_line("maburgs channel: commit 40 -> "));
+  CHECK(g.core->op() != 40);
+  REQUIRE(!g.sink.picks.empty());
+  CHECK(g.sink.picks.back().has_value());
+  // every card retuned to op by the mechanical retune
+  CHECK(g.cards[0]->ch == g.core->op());
+}
+
+TEST(store_failure_is_logged_not_fatal) {   // Review Focus 2
+  Rig g(2, 0);
+  g.store_ok = false;
+  g.cards[1]->cca_per_ms_on[40] = 5; g.cards[1]->cca_per_ms_on[36] = 5;
+  for (int i = 0; i < 3000 && !g.sink.has_line("pick frozen on"); ++i) g.tick();
+  REQUIRE(g.sink.has_line("pick frozen on"));
+  CHECK(g.sink.has_line("maburgs channel: could not write"));
+  CHECK(g.core->op() != 40);
+}
+
+TEST(max_ms_freezes_unmeasured_in_place) {
+  Rig g(2, 0);
+  g.cards[1]->retune_ok = false;          // the scout never completes a dwell
+  for (int i = 0; i < 4000 && !g.sink.has_line("pick frozen on"); ++i) g.tick();
+  REQUIRE(g.sink.has_line("(max_ms)"));
+  CHECK(g.core->op() == 40);
+}
+
+TEST(scout_card_death_holds_search_and_reopen_resumes) {
+  Rig g(2, 0);
+  g.tick();
+  g.cards[1]->is_alive = false;
+  g.core->on_card_died(1);
+  CHECK(g.sink.has_line("scout card 1 died at"));
+  g.tick();
+  CHECK(g.sink.has_line("(scout card died)"));   // BootPick froze the pick
+  g.cards[1]->is_alive = true; g.cards[1]->ch = 40; g.cards[1]->width_mhz = 20;
+  g.core->on_card_reopened(1);
+  // width resync: not at radio.width (40) after the reopen -> one set_width
+  for (int i = 0; i < 50; ++i) g.tick();
+  bool resynced = false;
+  for (auto& c : g.cards[1]->calls) if (c.rfind("set_width", 0) == 0) resynced = true;
+  CHECK(resynced);
+  CHECK(g.cards[1]->width_mhz == 40);
+}
+
+TEST(mechanical_retune_skips_scout_card_and_follows_desired) {
+  Rig g(2, 0, /*pinned=*/true, 40);
+  g.tick(true, false, 0); g.tick(true, false, 0);   // linked, scout idle
+  // a relocation target would be set by the plan; emulate a commit with no link
+  g.tick(false); g.tick(false);
+  // force a desired change: commit() with no session moves op
+  g.core->on_rc_body(64);
+  mabur::rc::DiscAck ack; ack.vrx_nonce = g.vrx->rz_nonce(); ack.vtx_nonce = 1; ack.agreed_channel = 64; ack.seq = 1;
+  g.core->on_session_opened(ack, static_cast<double>(g.clk.ms));
+  g.tick(true);
+  CHECK(g.cards[0]->ch == 64);                        // TX card followed op
+  bool scout_retuned_by_core = false;
+  for (auto& c : g.cards[1]->calls) if (c == "retune 64") scout_retuned_by_core = true;
+  // the scout card is parked by the scout itself (retune_width), not by the core while it owns it
+  CHECK(!scout_retuned_by_core || !g.core->pick_open());
+}
+
 MTEST_MAIN
