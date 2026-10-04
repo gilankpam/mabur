@@ -475,7 +475,7 @@ int live_loop(const LiveOpts& o, const maburgs::Config& cfg, uint8_t ch, int wid
       // client holds the relay (restart_when_refused is off, so a refusal
       // is never reset back to Connecting). TuneFailed and Connecting are
       // NOT fatal here: a core-ordered relay TUNE during a hop reads
-      // not-tuned for ~0.2 s, and RelayClient::tune_failed()'s window is
+      // not-tuned for ~50 ms, and RelayClient::tune_failed()'s window is
       // measured from start(), so it reads true during any post-ownership
       // retune.
       if (relay_owned) {

@@ -130,7 +130,7 @@ void RemoteCard::tick(uint64_t now_ms) {
     // STATUS still on the old channel) is not a transition out of Owned --
     // the pair waiting/owned used to print on every burst (plan 2 bench).
     // Bounded to 1 s (ownership_lost()'s own grace): a retune completes in
-    // ~0.2 s, but a relay stuck in a failed TUNE (owner, never reaching our
+    // ~50 ms, but a relay stuck in a failed TUNE (owner, never reaching our
     // channel -- tune_failed()'s case) must still surface "waiting for
     // STATUS" once, rather than going silent forever.
     else if (last_st_ == St::Owned && c_.status().you_own) {

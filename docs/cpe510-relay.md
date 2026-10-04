@@ -300,8 +300,11 @@ moved over (eth0 took 10.83.11.116 from the CPE's DHCP with no config).
    (2 USB + relay, fixed binary c41f942): relay stopped before an
    `S96maburgs` restart — SESSION 0.2 s after the first datagram on the
    two USB cards, relay `up` false throughout, and when the daemon came
-   back the relay went STATUS `retuning` → `owned and tuned` in ~200 ms
-   (**TUNE→ready ≈ 0.2 s**, so the relay's tune is far below
+   back the relay went STATUS `retuning` → `owned and tuned` within the
+   daemon's next stats line (**TUNE→ready ≈ 50 ms** when timed directly
+   on the wire, 2026-10-04: `retuning` STATUS after ~7 ms, `tuned` after
+   50 ms, 30/30 retunes; the "~0.2 s" first written here was the log's
+   resolution, not the relay's), so the relay's tune is far below
    `hop.confirm_ms`); ausniff afterwards 1815 AUs, 3 incomplete enh,
    0 gaps, 0 resyncs, 60.5 fps.
 

@@ -251,7 +251,7 @@ void WebGs::sleep_(int ms) {
 // retune is a synchronous FastRetune at the link width (members are HT40
 // primaries on one offset); a RemoteCard retune is a TUNE whose channel()
 // reads the target at once and whose ready() reads false until the relay's
-// STATUS confirms (~0.2 s) -- so the retune is re-issued while channel()
+// STATUS confirms (~50 ms) -- so the retune is re-issued while channel()
 // disagrees (a pre-ready USB card refuses it: next tick), and the follower
 // hears about the member only once the card is ready() on it.
 void WebGs::step_follow_(double now_ms) {
