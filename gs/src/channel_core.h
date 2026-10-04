@@ -1,4 +1,15 @@
 #pragma once
+// ChannelCore: maburgs's channel/hop wiring as one unit -- the channel plan,
+// the boot scout + BootPick, the hop verdict/ranker/controller and the
+// in-flight scout, plus the per-card retune/width bookkeeping they share.
+// Six seams: lifecycle (on_card_died/on_card_reopened/shutdown), the rc sink
+// (on_rc_body/on_session_opened), the drain hooks (note_video/note_au_end),
+// tick(), the send path (disc_targets/may_send/disc_for_card/note_tx_card/
+// note_sent) and snapshot(). Per tick: drain -> tick() -> send path.
+// Threading: the core thread calls everything public; the scout thread and
+// the in-flight thread are owned (started, joined) here; threaded = false
+// runs without threads for tests. tx_frozen()/dwell_busy() are live reads
+// because the send path runs after tick() and a dwell may start in between.
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -47,8 +58,9 @@ struct ChannelCoreCfg {
   uint8_t start_ch = 0;        // the pin, else the remembered member, else channels[0]
   int n_usb = 0;               // USB cards come first in the roster
   double leak_per_frame = 1.0; // bench row 7 pins this (docs/channel-select.md)
-  // false = no threads: tick() runs one scout step and one in-flight step
-  // itself (tests; deterministic with an injected clock).
+  // false = no threads: tick() runs one scout step itself; the in-flight
+  // body runs only through run_inflight_step() (tests; deterministic with
+  // an injected clock).
   bool threaded = true;
 };
 
@@ -125,10 +137,15 @@ class ChannelCore {
   bool may_send(int card) const;                 // the scout gate; false = drop (counted)
   std::vector<uint8_t> disc_for_card(const std::vector<uint8_t>& frame, int card) const;
   void note_sent(bool sent_ok, bool is_rcf);
+  // The send path's TX choice, stored the instant it is made (old main.cpp
+  // stored tx_card_now right after sel.update()): the in-flight thread
+  // picks its dwell card against the LIVE TX card, not last tick's.
+  void note_tx_card(int tx) { tx_card_now_.store(tx, std::memory_order_relaxed); }
 
   // ---- state ----
   ChannelSnapshot snapshot() const;
   uint8_t op() const { return plan_.op(); }
+  int scout_card() const { return scout_card_; }   // the boot scout card (-1 = none); opens at 20 MHz
   bool hopping() const { return plan_.hopping(); }
   uint8_t hop_target() const { return plan_.hop_target(); }
   // Live reads of the cross-thread state at call time (not the end-of-tick

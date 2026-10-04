@@ -285,20 +285,23 @@ TEST(reopened_scout_card_at_20_gets_width_resync) {
 }
 
 TEST(mechanical_retune_skips_scout_card_and_follows_desired) {
-  Rig g(2, 0, /*pinned=*/true, 40);
-  g.tick(true, false, 0); g.tick(true, false, 0);   // linked, scout idle
-  // a relocation target would be set by the plan; emulate a commit with no link
-  g.tick(false); g.tick(false);
-  // force a desired change: commit() with no session moves op
+  Rig g(2, 0);                                   // auto: the scout owns card 1 from the start
+  g.tick(); g.tick();
+  REQUIRE(g.core->scout_owns_card(1));
+  // a found-elsewhere session moves op for every card: desired(0) and desired(1) become 64
   g.core->on_rc_body(64);
   mabur::rc::DiscAck ack; ack.vrx_nonce = g.vrx->rz_nonce(); ack.vtx_nonce = 1; ack.agreed_channel = 64; ack.seq = 1;
   g.core->on_session_opened(ack, static_cast<double>(g.clk.ms));
-  g.tick(true);
-  CHECK(g.cards[0]->ch == 64);                        // TX card followed op
-  bool scout_retuned_by_core = false;
-  for (auto& c : g.cards[1]->calls) if (c == "retune 64") scout_retuned_by_core = true;
-  // the scout card is parked by the scout itself (retune_width), not by the core while it owns it
-  CHECK(!scout_retuned_by_core || !g.core->pick_open());
+  g.cards[1]->calls.clear();
+  // core->tick() directly (the brief's form); the check is specifically
+  // for the CORE's mechanical "retune 64" on card 1 -- the scout's own
+  // dwells retune through its own calls, which this tick does not count.
+  g.core->tick(g.in(true));
+  CHECK(g.cards[0]->ch == 64);                   // the TX card followed op via the core's mechanical retune
+  bool core_retuned_scout = false;
+  for (auto& c : g.cards[1]->calls) if (c == "retune 64") core_retuned_scout = true;
+  CHECK(!core_retuned_scout);                    // the scout card is untouchable while the scout owns it
+  CHECK(g.core->scout_owns_card(1));
 }
 
 // Helpers: bring the rig to SESSION on the start channel (synthetic ack, as
@@ -432,6 +435,8 @@ TEST(one_card_order_rides_repeats_then_retunes) {
   g.tick(true);
   CHECK(g.sink.has_hop("lead_confirm"));
   CHECK(g.sink.has_move(MoveReason::HopFollow));
+  for (int i = 0; i < (g.cfg.hop.verify_ms / 10) + 30; ++i) { g.vrx->on_video(static_cast<double>(g.clk.ms)); g.tick(true); }
+  CHECK(g.sink.has_hop("verify_pass"));
 }
 
 TEST(withdraw_on_no_video_restores_cards) {
@@ -494,9 +499,46 @@ TEST(cal_running_holds_relocation_and_move_edge) {   // Review Focus 3
   for (int i = 0; i < 20; ++i) g.tick(true, /*cal=*/true);
   CHECK(!g.sink.has_hop("order"));            // no relocate while calibrating
   CHECK(!g.sink.has_line("relocate 64 -> 40"));
+  // The move edge during cal: a repeat DISC_ACK (same nonces) refreshes
+  // agreed_channel() to a NON-member 60 without opening a new session, then
+  // the edge fires. Held during cal => the step never reads agreed, so no
+  // "not in our set" line and no plan move.
+  const auto ack60 = [](Rig& r, const mabur::rc::DiscAck& base) {
+    mabur::rc::DiscAck rep = base; rep.chip_caps = mabur::rc::CAP_FRAME_WIRE; rep.agreed_channel = 60; rep.seq = 2;
+    const auto wire = mabur::rc::pack_disc_ack(rep);
+    r.vrx->on_rc_frame(wire.data(), wire.size(), static_cast<double>(r.clk.ms));
+    REQUIRE(r.vrx->agreed_channel() == 60);
+    REQUIRE(r.vrx->link_state() == VrxState::SESSION);
+  };
+  ack60(g, ack);
+  g.vrx->test_set_move_edge();
+  for (int i = 0; i < 5; ++i) g.tick(true, /*cal=*/true);
+  CHECK(!g.sink.has_line("drone acked 60, not in our set; ignored"));   // held, not acted on
+  CHECK(!g.sink.has_move(MoveReason::AckOverride));
+  CHECK(!g.sink.has_move(MoveReason::Commit));
+  CHECK(!g.sink.has_line("relocate 64 -> 40"));
+  // (Here the first post-cal tick also places the relocate, and
+  // step_move_edge_ runs after step_controller_ with a `!plan_.hopping()`
+  // guard, so this rig's released edge lands on a hopping tick and is
+  // consumed without acting -- the old main.cpp order. The release itself
+  // is pinned on rig h below, where no relocation is pending.)
   for (int i = 0; i < 20; ++i) g.tick(true, false);
   CHECK(g.sink.has_line("maburgs channel: relocate 64 -> 40 placed"));
   CHECK(g.sink.has_hop("relocate"));
+  // Rig h: linked on op 40 = want, nothing to relocate. The edge armed
+  // during cal is held (no line), then released after cal: the line once.
+  Rig h(2, 0, true, 40);
+  link_up(h);
+  mabur::rc::DiscAck hack; hack.vrx_nonce = h.vrx->rz_nonce(); hack.vtx_nonce = 1; hack.seq = 1;
+  ack60(h, hack);
+  h.vrx->test_set_move_edge();
+  for (int i = 0; i < 20; ++i) h.tick(true, /*cal=*/true);
+  CHECK(!h.sink.has_line("drone acked 60, not in our set; ignored"));
+  for (int i = 0; i < 20; ++i) h.tick(true, false);
+  int acked60 = 0;
+  for (const auto& l : h.sink.lines) if (l.find("drone acked 60, not in our set; ignored") != std::string::npos) ++acked60;
+  CHECK(acked60 == 1);                         // the held edge released and acted on, exactly once
+  CHECK(h.core->op() == 40);                   // a non-member ack moves nothing
 }
 
 TEST(relocate_lands_on_verify_pass_and_freezes_relocated) {
@@ -623,10 +665,10 @@ TEST(shutdown_joins_threads_and_is_idempotent) {   // Review Focus 5
   core.shutdown();
   core.shutdown();                            // idempotent
   CHECK(now_ms() - t0 < 2000);                // joined both threads promptly
-  in.now_ms = static_cast<double>(now_ms());
-  const auto out = core.tick(in);
-  CHECK(!out.dwell_busy);
   std::this_thread::sleep_for(std::chrono::milliseconds(400));   // > dwell_period_ms
+  in.now_ms = static_cast<double>(now_ms());
+  const auto out = core.tick(in);                                // drains anything a live thread left
+  CHECK(!out.dwell_busy);
   CHECK(core.snapshot().dwell[1]->visits == visits);             // no thread left dwelling
 }
 

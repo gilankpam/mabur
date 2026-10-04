@@ -178,7 +178,7 @@ sideport). The decision units (`ChannelPlan`, `BootPick`, `ChannelScout`,
 `HopVerdict`, `HopRanker`, `HopController`, `InflightScout`) are unchanged.
 Design: `docs/superpowers/specs/2026-10-04-web-gs-channel-core-design.md`
 (gitignored; this page and `docs/inflight-channel-hop.md` are the durable
-record). The browser GS (`docs/web-gs.md`) drives the same unit.
+record). The browser GS (`docs/web-gs.md`) will drive the same unit (plan 2, not yet built).
 
 `ChannelScout` is the long-lived scheduler that owns the spare USB card
 (two-card) or the sole card between op windows (one card) whenever it has
@@ -525,7 +525,7 @@ This is a regression check that branch `channel-core` (c338e15, the channel/hop 
 
 ## Out of scope
 
-The web GS (`web/`) takes this feature through the shared `ChannelCore` — see `docs/web-gs.md`. A runtime auto/pin
+The web GS (`web/`) will take this feature through the shared `ChannelCore` (its own plan; `docs/web-gs.md` is unchanged until then). A runtime auto/pin
 switch. Width negotiation over DISC (both ends keep `radio.width = 40`).
 Relay channel capability — the operator rule that every member must be
 CPE-tunable stays a documented rule, `docs/cpe510-relay.md` (a relay GS

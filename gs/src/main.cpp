@@ -1311,6 +1311,7 @@ static int run_radio(const maburgs::Config& cfg) {
       // target and the RCF that carries the order must keep leaving on
       // the old channel until the drone has been seen there.
       const int tx = chan.tx_frozen() ? sel.selected() : sel.update(snaps, now_ms_u * 1000);
+      chan.note_tx_card(sel.selected());
       // Which card(s) carry this frame. RCFs go to the TX selector's card,
       // as they always did. A DISC is rendezvous traffic and, while the
       // scout owns its card, follows it (scout_pick.h scan_disc_targets()): the link

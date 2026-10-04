@@ -105,6 +105,7 @@ ChannelCore::ChannelCore(ChannelCoreCfg cfg, std::vector<LinkCard*> cards, VrxCo
   boot_pick_ = BootPick(scout_ != nullptr && !pinned_ && !relay_search_only_);
   if (pinned_) frozen_pick_ = cfg_.start_ch;
   tx_card_now_.store(0);
+  last_video_ch_ = cfg_.start_ch;   // old main.cpp: uint8_t last_video_ch = start_ch;
 }
 
 ChannelCore::~ChannelCore() { shutdown(); }
@@ -169,6 +170,9 @@ ChannelTickOut ChannelCore::tick(const ChannelTickIn& in) {
   step_mechanical_retune_();
   // s1_hop_loss is fed from the same base-sid arrival counters as the
   // assembler's s1_loss, on the same now_ms.
+  // Fed at the end of tick() (old main.cpp: right after fstream.poll);
+  // nothing in between touches decoder().stats(0), and the window samples
+  // before this tick's add either way.
   if (in.agg) {
     const auto s1 = in.agg->decoder().stats(0);
     s1_hop_loss_.add(s1.arr_expected, s1.arr_arrived, in.now_ms);

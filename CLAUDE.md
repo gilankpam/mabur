@@ -42,7 +42,7 @@ page the task needs rather than carrying all of it.
 | colortrans (CRTC 3D LUT, OSD inverse, burned-DVR GPU stage), the Buildroot glibc build of maburplay | `docs/colortrans.md` |
 | auto channel selection over a shared channel set, remembered channel, boot hop, pinned mode, scan.log | `docs/channel-select.md` |
 | in-flight channel hop, verdict, dwells, hop_restore | `docs/inflight-channel-hop.md` |
-| the shared channel/hop wiring (`ChannelCore`), its seams into maburgs and the web GS, the test fakes | `gs/src/channel_core.h` (header comment) + `docs/channel-select.md` "Where the code lives" |
+| the shared channel/hop wiring (`ChannelCore`), its seams into maburgs (the web GS follows), the test fakes | `gs/src/channel_core.h` (header comment) + `docs/channel-select.md` "Where the code lives" |
 | comparing recordings, metric scales, removed sideport keys, "why do these two flights disagree" | `docs/data-provenance.md` |
 | shipping a binary or config to a device | `docs/deploy.md` |
 | calibrating a VTX's TX-power walls, maburcal, cal.log | `docs/calibration.md` |
