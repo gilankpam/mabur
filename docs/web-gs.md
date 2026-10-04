@@ -1024,6 +1024,32 @@ the human runs it on the bench card and drone.
   clean and 10 %-drop long runs each recorded a matching ~1.4–2.0 MB mp4
   on both sides.
 
+### Channel set, relocation, one-card hop — bench 2026-10-04 (plan 2)
+
+Branch `web-gs-core` (the card stack + `ChannelCore` in GS mode). Bench
+drone on the desk, host RTL8812EU (0bda:a81a) as the page's card, headless
+Chrome 147 driven over CDP against `python3 web/serve.py 8808`, the real
+link key loaded into the page (`webgs.key`). `maburgs` on the GS was
+stopped for the page runs (one commander). The GS itself first ran the
+branch's `maburgs` (the `ChannelCore` papercuts of this plan) as the
+standing regression gate.
+
+| row | result |
+|---|---|
+| maburgs regression (branch `maburgs` on the GS, drone remembering 144) | PASS — `set [40,64,112,144] mode auto start 144 (remembered)`, `pick frozen on 144 (commit) after 3 rounds`; ausniff 60 s: 1815 AUs, 0 frame_id gaps, 0 incomplete, 30.3 fps |
+| web GS, USB, auto, start 40, drone parked on 112 (A: page still on the default key) | drone found on 112 but **Key mismatch** (the drone rejects the default key, as designed); the pick froze on 40 at `max_ms` after 6 rounds; the header walked the scout dwells (`CH 112 · 40 MHz · scanning`, …); Disconnect: `teardown rx 304 ms (reads aborted)`, `DONE` |
+| same, B: real key loaded | **PASS** — card up 6.8 s after Connect; `one-card prelude ranking picks 64 (op 40)` +10.2 s, `CHANNEL 64`, `commit card -1 40 -> 64`; `drone found on 112 (op 64): the link forms there` +14.2 s, `CHANNEL 112`, `link_found`, `pick frozen on 64 (one-card linked) after 2 rounds`, `relocate 112 -> 64 placed`, `one_card_retune` +238 ms, `lead_confirm` +253 ms, `hop_follow`, `CHANNEL 64`, `verify_pass` +1002 ms; header `Linked · CH 64 · 40 MHz · hop` then `CH 64 · 40 MHz`; drone log `retune 112 -> 64 (hop)`, drone `/etc/mabur.channel` 64; `localStorage.webgs.channel` 64 at the end. The same K/M/H order as `maburgs` row 5 (`docs/channel-select.md`) |
+| Disconnect while scouting, Connect again in the same tab | **PASS** — Disconnect 8 s into the scan: `teardown rx 20 ms`, `DONE`, header `Disconnected` within 2 s, no reload fallback; Connect again: `webgs live: mode gs ch 64` (the remembered member), prelude picked 112 this time (`commit 64 -> 112`), `drone found on 64 (op 112)`, relocate 64 → 112, `one_card_retune` +211 ms, `lead_confirm` +238 ms, `verify_pass` +1002 ms, `CHANNEL 112`; the drone followed. Note: two consecutive auto sessions picked 64 then 112 and moved the drone each time — the co-located bench's ranker noise (`docs/channel-select.md` rows 6/7), not a page defect |
+| reactive hop against the bench jammer | NOT RUN — the host's only Realtek card is the page's radio, so `benchjam` cannot run on the host, and a GS-side `txdemo` could not be cross-built in the session. The one-card hop controller path (order → `one_card_retune` → `lead_confirm` → `verify_pass`) is the one the relocate rows above exercise; what stays unmeasured on the page is RX resuming after a jam-driven hop |
+| relay GS (search-only scout), relay spotter | NOT RUN — the CPE's host USB NIC (`enp14s0u2`) was not present (10.83.11.1 unreachable). Host-side coverage: `web_relay_e2e` (10 cases: owned/refused/tune-failed/lost/taken early and late, spotter refused when not owner, `scan_state` `off`, `channel` 136) |
+
+Seen but not fixed: `RadioFrontend::stop()` prints a second
+`teardown rx 0 ms` line when the destructor runs after an explicit `stop()`
+(cosmetic). The page's AU/gap counters were not captured by the driver in
+these runs (the Debug tab was read before it re-rendered); the `Linked`
+tag, the drone's `retune` line and the `verify_pass` (which needs video on
+the target) stand in for them.
+
 ## Follow-ups
 
 Not built here, all noted in the spec as later work:
