@@ -595,9 +595,12 @@ void ChannelCore::step_move_edge_(const ChannelTickIn& in) {
   vrx_.set_proposal(plan_.op());
   vrx_.set_keepalive_hold(hopc_.state() == HopState::Ordered);
   // The edge is held through a calibration run AND through a hop in flight
-  // (relocate or reactive) and replayed when both are over. Before 2026-10-04
-  // an edge landing on a hopping tick was consumed and dropped. Acting after
-  // the hop is safe: on_ack() with agreed == op is a no-op (channel_plan.cpp).
+  // (relocate or reactive) and replayed when both are over; agreed is read at
+  // replay time (the drone's latest accepted ack). on_ack() with agreed == op
+  // is a no-op (channel_plan.cpp); a member agreed != op (e.g. after a
+  // withdrawn hop) moves op as a normal ack move (Commit / AckOverride).
+  // Deliberate 2026-10-04 change: before it, an edge landing on a hopping tick
+  // was consumed and dropped.
   if (cal_move_hold_.take(vrx_.take_move_edge(), in.cal_running || plan_.hopping())) {
     const uint8_t proposed = vrx_.proposal();
     const uint8_t agreed = vrx_.agreed_channel();
