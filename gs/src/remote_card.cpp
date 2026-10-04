@@ -192,14 +192,23 @@ void RemoteCard::on_survey_(const relay::Survey& s) {
   // gen the relay's counters only grow; a new gen restarts them from 0.
   // The first SURVEY of a session (open/reopen) is a baseline only: its
   // counters are the relay's backlog for that gen, not this verdict window's.
+  // A counter that went DOWN within one gen (a fast relay restart that
+  // reused the gen) is a gen change too: the restarted counters began at 0,
+  // so the new-gen rule applies -- never a u32 wrap (final review item 6).
+  const bool regressed = have_sv_ && s.gen == sv_last_.gen &&
+                         (s.active_ms < sv_last_.active_ms || s.busy_ms < sv_last_.busy_ms ||
+                          s.rx_ms < sv_last_.rx_ms || s.ofdm_err < sv_last_.ofdm_err ||
+                          s.foreign < sv_last_.foreign);
   if (!have_sv_) {
     // baseline: add nothing
-  } else if (s.gen == sv_last_.gen) {
+    ++sv_era_;
+  } else if (s.gen == sv_last_.gen && !regressed) {
     ofdm_total_ += s.ofdm_err - sv_last_.ofdm_err;
     sv_foreign_total_ += s.foreign - sv_last_.foreign;
   } else {
     ofdm_total_ += s.ofdm_err;
     sv_foreign_total_ += s.foreign;
+    ++sv_era_;   // the window across it is invalid (read_survey_window)
   }
   sv_last_ = s;
   have_sv_ = true;
@@ -208,7 +217,7 @@ void RemoteCard::on_survey_(const relay::Survey& s) {
 SurveyWindow RemoteCard::read_survey_window() {
   std::lock_guard<std::mutex> lk(mu_);
   SurveyWindow w;
-  if (have_sv_ && have_win_ && sv_last_.gen == win_base_.gen) {
+  if (have_sv_ && have_win_ && sv_era_ == win_era_) {
     const uint32_t act = sv_last_.active_ms - win_base_.active_ms;
     if (act >= kMinSurveyWindowMs) {
       w.valid = true;
@@ -217,6 +226,7 @@ SurveyWindow RemoteCard::read_survey_window() {
     }
   }
   win_base_ = sv_last_;
+  win_era_ = sv_era_;
   have_win_ = have_sv_;
   return w;
 }

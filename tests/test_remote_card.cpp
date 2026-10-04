@@ -520,6 +520,36 @@ TEST(survey_reopen_does_not_re_add_the_relay_backlog) {
   CHECK(g.card->read_energy_scout().fa_ofdm == 1);
 }
 
+// Final review item 6: a counter that goes DOWN within one gen (a fast relay
+// restart that reused the gen) is a gen change, not a u32 wrap: the window
+// across it is invalid, and the totals add the new sample's full count (the
+// restarted counters began at 0), never ~4e9.
+TEST(survey_counter_decrease_within_a_gen_is_a_gen_change) {
+  Rig g; REQUIRE(g.card->open_and_start());
+  g.t().push(status(0, 136, 2, 1));
+  g.t().push(survey(1, 1000, 100, 50, 30, 10));     // session baseline
+  g.t().push(survey(1, 1000, 100, 50, 30, 11));     // sync: foreign +1
+  REQUIRE(g.soon([&] { return g.card->frames().foreign == 1; }));
+  g.card->read_survey_window();                     // window baseline
+  CHECK(g.card->read_energy_scout().fa_ofdm == 0);
+  g.t().push(survey(1, 20, 5, 1, 2, 1));            // restarted relay, same gen: everything dropped
+  REQUIRE(g.soon([&] { return g.card->frames().foreign == 2; }));   // +1 (full), not a wrap
+  CHECK(!g.card->read_survey_window().valid);       // across the restart: invalid
+  CHECK(g.card->read_energy_scout().fa_ofdm == 2);  // the new sample's full count
+  g.t().push(survey(1, 170, 20, 1, 4, 2));          // +150 ms on the restarted counters
+  REQUIRE(g.soon([&] { return g.card->frames().foreign == 3; }));
+  const auto w = g.card->read_survey_window();
+  CHECK(w.valid);
+  CHECK(std::abs(w.busy_pct - 10.0) < 0.01);        // 15 / 150
+  CHECK(g.card->read_energy_scout().fa_ofdm == 2);
+  // only ONE counter regressing still counts (a restart that already
+  // accumulated more active time than the old sample)
+  g.t().push(survey(1, 400, 25, 2, 1, 3));          // ofdm 4 -> 1
+  REQUIRE(g.soon([&] { return g.card->frames().foreign == 6; }));   // full 3 added
+  CHECK(!g.card->read_survey_window().valid);
+  CHECK(g.card->read_energy_scout().fa_ofdm == 1);
+}
+
 TEST(start_sweep_sends_scan_and_result_comes_back_once) {
   Rig g; REQUIRE(g.card->open_and_start());
   g.t().push(status(0, 136, 2, 1));

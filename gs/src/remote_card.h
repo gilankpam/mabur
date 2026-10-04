@@ -114,6 +114,9 @@ class RemoteCard final : public LinkCard {
   OwnAirAcc own_air_;              // RX thread only
   relay::Survey sv_last_, win_base_;           // under mu_
   bool have_sv_ = false, have_win_ = false;    // under mu_
+  // Bumped on every SURVEY baseline, gen change or within-gen counter
+  // regression; a window is valid only inside one era (under mu_).
+  uint64_t sv_era_ = 0, win_era_ = 0;
   uint64_t ofdm_total_ = 0, ofdm_read_ = 0, sv_foreign_total_ = 0;   // under mu_
   std::atomic<uint64_t> sweeps_{0};
   // last logged state, to log transitions once
