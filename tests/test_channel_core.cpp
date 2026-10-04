@@ -755,6 +755,19 @@ TEST(relay_only_roster_searches_without_measuring) {
   CHECK(g.sink.picks.empty());                // no K line ever: nothing measured
 }
 
+// Bench 2026-10-04: web GS on a CPE relay, auto channel set -- the drone
+// linked, then sat in FAILSAFE. BootPick(false) never froze the scout, so
+// pick_open() stayed true, scout_owns_() stayed true for life, and the gate
+// dropped every RCF on the relay (the scout card) once search stopped
+// beaconing. Pinned mode skips that clause, which is why it climbed.
+TEST(relay_only_roster_in_session_lets_rcfs_through) {
+  Rig g(0, 1);                                // one relay, auto
+  for (int i = 0; i < 40; ++i) g.tick();      // searching
+  for (int i = 0; i < 200; ++i) g.tick(/*session=*/true);
+  CHECK(!g.core->scout_owns_card(0));
+  CHECK(g.core->may_send(0));
+}
+
 TEST(relay_only_roster_no_ready_relay_is_quiet) {   // Review Focus 4
   Rig g(0, 1);
   g.cards[0]->is_ready = false;

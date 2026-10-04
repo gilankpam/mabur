@@ -89,6 +89,13 @@ ChannelCore::ChannelCore(ChannelCoreCfg cfg, std::vector<LinkCard*> cards, VrxCo
         [this] { return static_cast<int64_t>(now_ms_()); },
         [this](int ms) { sleep_(ms); });
     scout_->set_op(cfg_.start_ch);
+    // A search-only relay has no pick: boot_pick_ is born closed below and
+    // never freezes the scout, so close the scout's pick here too. Left
+    // open, pick_open() kept scout_owns_() true for life and may_send()
+    // dropped every RCF on the relay -- the drone linked, then sat in
+    // FAILSAFE (web GS on a CPE, auto, 2026-10-04). Search is unaffected:
+    // freeze() only stops measuring, which measure=false already does.
+    if (relay_search_only_) scout_->freeze();
     scout_->set_search(true);
     scout_search_req_ = true;
     // Built even for a relay scout: pick_burst_card/pick_inflight_scout key
