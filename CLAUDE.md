@@ -53,7 +53,7 @@ page the task needs rather than carrying all of it.
 | carrier sense (CCA) on/off, the GS-send self-collision, the drone's RX channel view (`drone.radio.rx`), why the OSD LOSS row reads what it reads, the pending cca-on flight gate | `docs/cca-on-findings-2026-09-23.md` |
 | 40 MHz (HT40): which rungs fly 40, per-width tables, pair candidates, the boot scan's pair pick, no_agg, scanlog 3 / ctllog 12 | `docs/bw40.md` (as built: per-rung width, pairs, scan, no_agg) + `docs/bw40-sweep-findings-2026-09-23.md` ("Start here") |
 | the VTX onboard SD recorder ([record], dvr.target, the RCF rec byte, OSD REC field), VENC bind-peer order, the MI /proc/mi_modules/mi_venc per-stage delay instrument, the startup vanish-counter ratchet | docs/vtx-recorder.md (as built) + docs/sd-record-findings-2026-09-26.md (spike) |
-| the browser GS / spotter (web/), WebUSB+WASM build, LinkHealthAssembler sharing, channel set form, CHANNEL line | docs/web-gs.md |
+| the browser GS / spotter (web/), WebUSB+WASM build, LinkHealthAssembler sharing, channel set form, CHANNEL line, spotter follower | docs/web-gs.md |
 | the CPE510 relay card (mabur-relay protocol v3, maburgs RemoteCard + radio.relays, web GS relay mode, relay TX) | docs/cpe510-relay.md |
 | pairing / the link key file, SipHash tag, session nonces, KEY MISMATCH, auth_reject | docs/link-pairing.md |
 | radio/PHY below mabur | `third_party/devourer/CLAUDE.md` |

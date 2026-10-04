@@ -34,8 +34,8 @@ alongside the mode. Two modes, picked before Connect:
   no send path in this mode by construction (`web/src/web_gs.h`): the
   constructor drops the `Io::send` callback and neither `VrxController`
   nor `RcfSlotter` exists, so there is no code path that can build a
-  control frame. A spotter is tuned to its start member and stays there in
-  this build (the follower is plan 3).
+  control frame. A spotter starts on its start member and then follows the
+  link on its own (see "Spotter follower" under Channel set).
 
 Only one GS may command a given drone. The mode picker's own text says so
 ("GS mode commands the drone — only one GS per drone. Use Spotter next to a
@@ -259,8 +259,8 @@ the link then forms where the drone is found and relocates once to the
 pick (or the pin), and the one-card reactive hop runs on top, exactly as
 in `maburgs` (`docs/channel-select.md`, `docs/inflight-channel-hop.md`).
 The scan/hop knobs are the bundle defaults (`gs/bundle/maburgs.default.toml`);
-the form does not expose them. A spotter is tuned to its start member and
-stays there in this build (the follower is plan 3).
+the form does not expose them. A spotter starts on its start member and
+follows from there ("Spotter follower" below).
 
 The set is validated twice. Page-side, `checkChannelSet()` (a mirror of
 `common/include/mabur/channel_set.h`'s rules plus the pin rule: 1–8
@@ -282,6 +282,41 @@ the channel, scan state/rounds/pick, hop state/verdict, hop target/epoch
 and hops/holds (a spotter shows only the channel). The core's
 `maburgs channel: …` / `maburgs hop: …` stderr lines appear verbatim in the
 browser console log.
+
+### Spotter follower
+
+A spotter has no control link, so it cannot be told where the link is;
+it listens for it. `webgs::SpotterFollow` (`web/src/spotter_follow.{h,cpp}`,
+spec 2026-10-04 §6) runs in the core on the spotter's one card:
+
+- **Sweeping** — round-robin over the channel set, 150 ms per member
+  counted from when the card reports it is on the member (a USB
+  FastRetune is immediate; a CPE relay TUNE takes ~0.2 s to `ready()`);
+  the first CRC-good mabur frame on a member locks. A member the card
+  never reports (a relay that cannot tune it) is skipped after 1 s. The
+  spotter starts here, on its start member.
+- **Locked** — every frame on the channel refreshes a 1 s silence timer;
+  silence sweeps again from the next member. The real GS's RCFs carry
+  its standing hop order (`hop_ch`/`hop_epoch`) in the clear; a new pair
+  naming another member → **Following**.
+- **Following** — the card retunes to the target; a frame there locks
+  (`follows` counts it). Nothing on the target within 2 s (the drone's
+  own `move_confirm_ms`) → back to the previous channel, with a fresh
+  silence window. A withdrawal heard before the card moved returns at
+  once; the same pair repeated is ignored (so a standing order after a
+  timeout cannot ping-pong).
+
+The RCF tag is **not verified** on a spotter (user decision 2026-10-04):
+it cannot be in general (the tag's `seq32` wrap count is private to the
+two link ends), and the pairing design defends the aircraft, not a
+display — a forged order drags a spotter off-channel for at most 2 s.
+No key is read in spotter mode. A move resets nothing in the video path:
+the FrameStream closes the gap as truncated AUs and the decoder re-arms
+on the next IRAP (see "Spotter key frames"). STATS carries
+`follow_state` (`locked` | `following` | `sweeping`) and `follows`; the
+header shows the state word after the width while not locked, and the
+Debug tab's Channel group shows `channel` and `follow`. Spotter mode
+still never transmits.
 
 ### CPE relay radio
 
@@ -542,7 +577,11 @@ first link a self-linking GS's own link-up already produces a key frame
 roughly a second after DISC_ACK (linking a previously-unlinked drone
 changes its bitrate, max-range floor → rung, and that `SetChnAttr` costs
 an IDR on its own), and any later drop is covered by the request path
-above.
+above. The same applies after a follower move (a sweep find or a followed
+hop): the spotter waits for the drone's next unsolicited IDR on the new
+channel — a followed hop usually gets one soon, since the drone's retune
+and the GS's post-hop rung change both cost an IDR, but nothing on the
+spotter can ask for it.
 
 ## Config form
 
@@ -798,7 +837,11 @@ rule).
   relay the core searches the set for the drone but never ranks members
   (`scan_state` reads `off`); auto on a relay means 'start member plus
   search'.
-- **Spotter does not follow a hop yet** (plan 3).
+- **Spotter follows the link only by listening.** It needs ~0.15 s per
+  member to find the link at start (worst case the whole set) and up to
+  2 s to give up on a followed order that never showed; it cannot ask the
+  GS where the link is, and it does not verify the hop order it follows
+  ("Spotter follower").
 - **macOS: Chrome needs the system Local Network permission** (System
   Settings → Privacy & Security → Local Network) to reach any LAN address,
   the CPE's 10.83.11.1 included — on top of Chrome's own prompt.
@@ -1068,5 +1111,4 @@ Not built here, all noted in the spec as later work:
   gets a warning instead of silently fighting the first one's ladder.
 - Auto-reconnect after the card is unplugged and replugged, instead of
   requiring a manual Connect.
-- Spotter follows the link's channel (plan 3); relay search-only scout in
-  the page benched (plan 4).
+- Relay search-only scout in the page benched (plan 4).
