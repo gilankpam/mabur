@@ -10,8 +10,7 @@ struct RecordingSink : maburgs::ChannelSink {
   std::vector<maburgs::HopEvent> hops;            // hop()
   std::vector<std::pair<int, maburgs::ScoutDwell>> dwells;
   std::vector<std::optional<uint8_t>> picks;
-  int verdicts = 0, caps_n = 0;
-  void caps(double, int, const maburgs::CardCaps&) override { ++caps_n; }
+  int verdicts = 0;
   void dwell(double, int card, const maburgs::ScoutDwell& d) override { dwells.emplace_back(card, d); }
   void pick(double, std::optional<uint8_t> p, uint64_t, const std::vector<maburgs::RankEntry>&, int) override { picks.push_back(p); }
   void move(const maburgs::MoveEvent& e) override { moves.push_back(e); }

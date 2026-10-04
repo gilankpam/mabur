@@ -62,14 +62,18 @@ struct ChannelCoreCfg {
   // body runs only through run_inflight_step() (tests; deterministic with
   // an injected clock).
   bool threaded = true;
+  // Name of the remembered-channel store for the "could not write" line:
+  // maburgs passes mabur::kGsChannelFile, the web GS "CHANNEL line".
+  std::string store_name;
 };
 
 // Where the records and the stderr-style lines go. maburgs: ScanLog +
-// stderr. Web: the page log. Record shapes are the scan.log ones.
+// stderr. Web: the page log. Record shapes are the scan.log ones. Six
+// records: dwell, pick, move, verdict, hop, log. Card caps are not one:
+// the core never emits them (maburgs logs caps to scan.log itself).
 class ChannelSink {
  public:
   virtual ~ChannelSink() = default;
-  virtual void caps(double t_ms, int card, const CardCaps& c) = 0;
   virtual void dwell(double t_ms, int card, const ScoutDwell& d) = 0;
   virtual void pick(double t_ms, std::optional<uint8_t> picked, uint64_t rounds,
                     const std::vector<RankEntry>& all, int min_rounds) = 0;
@@ -143,7 +147,7 @@ class ChannelCore {
   void note_tx_card(int tx) { tx_card_now_.store(tx, std::memory_order_relaxed); }
 
   // ---- state ----
-  ChannelSnapshot snapshot() const;
+  ChannelSnapshot snapshot(int tx_card) const;   // channel = cards[tx_card]->channel()
   uint8_t op() const { return plan_.op(); }
   int scout_card() const { return scout_card_; }   // the boot scout card (-1 = none); opens at 20 MHz
   bool hopping() const { return plan_.hopping(); }

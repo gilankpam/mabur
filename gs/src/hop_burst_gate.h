@@ -88,8 +88,9 @@ inline bool hop_burst_due(HopState state, bool trigger, double now_ms,
 // phases, so a re-pair -- and its move edge -- can land mid-run, and acting
 // on it would retune both cards off the channel being measured. The drone
 // defers its own retunes while cal_active and replays them when the run
-// ends; this replays the GS side at the same point. Outside a run it is a
-// pass-through, so the caller's own hopping guard keeps its drop semantics.
+// ends; this replays the GS side at the same point. The caller also passes
+// `plan.hopping()` as the hold condition, so an edge landing mid-hop replays
+// after the hop resolves instead of being dropped (2026-10-04).
 class CalMoveEdgeHold {
  public:
   bool take(bool edge, bool cal_running) {

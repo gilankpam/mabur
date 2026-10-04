@@ -56,6 +56,7 @@ struct Rig {
     ChannelCoreCfg cc;
     cc.radio = cfg.radio; cc.hop = cfg.hop; cc.key = cfg.link.key;
     cc.start_ch = start_ch; cc.n_usb = n_usb; cc.threaded = false;
+    cc.store_name = "the-store";
     core = std::make_unique<ChannelCore>(
         cc, ptrs, *vrx, sink,
         [this](uint8_t ch) { stored.push_back(ch); return store_ok; },
@@ -78,7 +79,7 @@ struct Rig {
 
 TEST(constructs_two_cards_auto_scouting) {
   Rig g(2, 0);
-  const auto s = g.core->snapshot();
+  const auto s = g.core->snapshot(0);
   CHECK(std::string(s.scan_state) == "scouting");
   CHECK(s.scan_rounds == 0);
   CHECK(!s.scan_pick.has_value());
@@ -90,7 +91,7 @@ TEST(constructs_two_cards_auto_scouting) {
 
 TEST(constructs_pinned_is_off_with_pick_latched) {
   Rig g(2, 0, /*pinned=*/true, 64);
-  const auto s = g.core->snapshot();
+  const auto s = g.core->snapshot(0);
   CHECK(std::string(s.scan_state) == "off");
   REQUIRE(s.scan_pick.has_value());
   CHECK(*s.scan_pick == 64);
@@ -112,7 +113,7 @@ TEST(may_send_two_usb_drops_scout_card_unless_beaconing) {
   // scout card is card 1 (last scout-capable); search requested at start
   CHECK(g.core->may_send(0));          // link card always passes (not quiet yet)
   CHECK(!g.core->may_send(1));         // scout card, not beaconing
-  CHECK(g.core->snapshot().scout_gated_sends == 1);   // the gate counts
+  CHECK(g.core->snapshot(0).scout_gated_sends == 1);   // the gate counts
   // beaconing_/quiet_ are set and cleared again within one synchronous
   // run_once() call, so polling may_send() from the test body after the call
   // returns can never observe either branch (see task-2-report.md). The
@@ -133,9 +134,9 @@ TEST(may_send_two_usb_drops_scout_card_unless_beaconing) {
 TEST(may_send_counts_gated_sends_only_through_note) {
   Rig g(1, 0);                          // one card: the sole card is the scout card
   CHECK(!g.core->may_send(0));          // prelude: silent
-  CHECK(g.core->snapshot().scout_gated_sends == 1);
+  CHECK(g.core->snapshot(0).scout_gated_sends == 1);
   CHECK(!g.core->may_send(0));
-  CHECK(g.core->snapshot().scout_gated_sends == 2);
+  CHECK(g.core->snapshot(0).scout_gated_sends == 2);
 }
 
 TEST(disc_targets_follow_scan_disc_targets_while_scout_owns) {
@@ -217,7 +218,7 @@ TEST(one_card_prelude_commits_before_first_disc) {
   CHECK(!g.stored.empty() && g.stored.back() == g.core->op());
   CHECK(g.vrx->proposal() == g.core->op());
   CHECK(g.sink.has_move(MoveReason::Commit));
-  CHECK(std::string(g.core->snapshot().scan_state) == "scouting");   // pick still open
+  CHECK(std::string(g.core->snapshot(0).scan_state) == "scouting");   // pick still open
 }
 
 // Two cards, no link, auto: maturity commits the pick (K line) and freezes.
@@ -241,7 +242,7 @@ TEST(store_failure_is_logged_not_fatal) {   // Review Focus 2
   g.cards[1]->cca_per_ms_on[40] = 5; g.cards[1]->cca_per_ms_on[36] = 5;
   for (int i = 0; i < 3000 && !g.sink.has_line("pick frozen on"); ++i) g.tick();
   REQUIRE(g.sink.has_line("pick frozen on"));
-  CHECK(g.sink.has_line("maburgs channel: could not write"));
+  CHECK(g.sink.has_line("maburgs channel: could not write the-store"));
   CHECK(g.core->op() != 40);
 }
 
@@ -380,7 +381,7 @@ TEST(two_card_order_rcf_carries_hop_and_plan_leads_then_follows) {
   // verify: healthy windows past verify_ms
   for (int i = 0; i < (g.cfg.hop.verify_ms / 10) + 30; ++i) { g.vrx->on_video(static_cast<double>(g.clk.ms)); g.tick(true); }
   CHECK(g.sink.has_hop("verify_pass"));
-  CHECK(g.core->snapshot().hop.hops == 1);
+  CHECK(g.core->snapshot(0).hop.hops == 1);
 }
 
 TEST(stale_pre_hop_verdict_does_not_break_verify) {
@@ -399,7 +400,7 @@ TEST(stale_pre_hop_verdict_does_not_break_verify) {
   g.tick(true);
   REQUIRE(g.sink.has_hop("lead_confirm"));
   g.tick(true);                              // same cached interfered verdict
-  CHECK(std::string(g.core->snapshot().hop.state) == "verifying");
+  CHECK(std::string(g.core->snapshot(0).hop.state) == "verifying");
   CHECK(!g.sink.has_hop("withdraw"));
 }
 
@@ -464,7 +465,7 @@ TEST(lead_card_dies_mid_order_withdraws_to_op) {   // Review Focus 1
   REQUIRE(g.sink.has_hop("order"));
   g.cards[1]->is_ready = false;               // the lead vanishes
   g.tick(true);
-  CHECK(std::string(g.core->snapshot().hop.state) == "ordered");   // latched lead, no re-pick
+  CHECK(std::string(g.core->snapshot(0).hop.state) == "ordered");   // latched lead, no re-pick
   for (int i = 0; i < (g.cfg.hop.confirm_extend_ms / 10) + 20; ++i) { g.vrx->on_video(static_cast<double>(g.clk.ms)); g.tick(true); }
   CHECK(g.sink.has_hop("withdraw"));
   CHECK(g.core->op() == 40);
@@ -517,14 +518,25 @@ TEST(cal_running_holds_relocation_and_move_edge) {   // Review Focus 3
   CHECK(!g.sink.has_move(MoveReason::AckOverride));
   CHECK(!g.sink.has_move(MoveReason::Commit));
   CHECK(!g.sink.has_line("relocate 64 -> 40"));
-  // (Here the first post-cal tick also places the relocate, and
-  // step_move_edge_ runs after step_controller_ with a `!plan_.hopping()`
-  // guard, so this rig's released edge lands on a hopping tick and is
-  // consumed without acting -- the old main.cpp order. The release itself
-  // is pinned on rig h below, where no relocation is pending.)
   for (int i = 0; i < 20; ++i) g.tick(true, false);
   CHECK(g.sink.has_line("maburgs channel: relocate 64 -> 40 placed"));
   CHECK(g.sink.has_hop("relocate"));
+  // Carried from plan 1: the edge released on the same tick as the relocate
+  // was DROPPED by the `!plan_.hopping()` guard. Now it is held through the
+  // hop and acted on once the hop resolves (here: confirm + verify_pass).
+  {
+    const auto r = pump_rcf(g);
+    REQUIRE(r.has_value() && r->hop_ch == 40);
+    g.core->note_video(40);
+    g.tick(true);
+    REQUIRE(g.sink.has_hop("lead_confirm"));
+    for (int i = 0; i < (g.cfg.hop.verify_ms / 10) + 30; ++i) { g.vrx->on_video(static_cast<double>(g.clk.ms)); g.tick(true); }
+    REQUIRE(g.sink.has_hop("verify_pass"));
+    int acked60 = 0;
+    for (const auto& l : g.sink.lines) if (l.find("drone acked 60, not in our set; ignored") != std::string::npos) ++acked60;
+    CHECK(acked60 == 1);          // released once the hop resolved, acted on exactly once
+    CHECK(g.core->op() == 40);    // a non-member ack still moves nothing
+  }
   // Rig h: linked on op 40 = want, nothing to relocate. The edge armed
   // during cal is held (no line), then released after cal: the line once.
   Rig h(2, 0, true, 40);
@@ -569,7 +581,58 @@ TEST(relocate_lands_on_verify_pass_and_freezes_relocated) {
   for (int i = 0; i < (g.cfg.hop.verify_ms / 10) + 30; ++i) { g.vrx->on_video(static_cast<double>(g.clk.ms)); g.tick(true); }
   CHECK(g.sink.has_hop("verify_pass"));
   CHECK(g.core->op() == 40);
-  CHECK(std::string(g.core->snapshot().scan_state) != "moving");
+  CHECK(std::string(g.core->snapshot(0).scan_state) != "moving");
+}
+
+// Carried from plan 1: the AUTO boot hop. The scout measures op's pair to
+// min_rounds BEFORE the drone appears on 64 (a linked scout never visits
+// op's own halves, so without that BootPick freezes "op unmeasured"), and
+// the link forms while the later pairs are still short of min_rounds (else
+// the unlinked pick would already have committed). At maturity the pick
+// wants another pair -> WantPick -> relocate -> confirm -> verify_pass ->
+// "pick frozen on <pick> (relocated)".
+TEST(auto_want_pick_relocates_linked_drone_to_the_pick) {
+  Rig g(2, 0);
+  g.cards[1]->cca_per_ms_on[60] = 5;   // 64's pair is the busy one
+  g.cards[1]->cca_per_ms_on[64] = 5;
+  // The scout sweeps 36,40,60,64,108,112,140,144 each round: stop right
+  // after 64's min_rounds-th visit, i.e. inside the last round.
+  const auto visits = [&g](uint8_t ch) {
+    int n = 0;
+    for (const auto& d : g.sink.dwells) if (d.second.survey.def.primary == ch) ++n;
+    return n;
+  };
+  const int mr = g.cfg.radio.scan.min_rounds;
+  for (int i = 0; i < 3000 && visits(64) < mr; ++i) g.tick();
+  REQUIRE(visits(60) >= mr && visits(64) >= mr);
+  REQUIRE(visits(144) < mr);                // not mature yet
+  REQUIRE(g.core->pick_open());             // ... so nothing committed unlinked
+  g.core->on_rc_body(64);
+  mabur::rc::DiscAck ack; ack.vrx_nonce = g.vrx->rz_nonce(); ack.vtx_nonce = 1; ack.agreed_channel = 64; ack.seq = 1;
+  g.core->on_session_opened(ack, static_cast<double>(g.clk.ms));
+  link_up(g);
+  REQUIRE(g.core->op() == 64);
+  for (int i = 0; i < 6000 && !g.sink.has_line("boot pick wants"); ++i) g.tick(true);
+  REQUIRE(g.sink.has_line("boot pick wants"));
+  REQUIRE(g.sink.has_line(", link on 64: relocating"));
+  for (int i = 0; i < 200 && !g.sink.has_line("relocate 64 -> "); ++i) g.tick(true);
+  REQUIRE(g.sink.has_line(" placed"));
+  CHECK(std::string(g.core->snapshot(0).scan_state) == "moving");   // pick open, relocation placed
+  const uint8_t target = g.core->hop_target();
+  REQUIRE(target != 0 && target != 64);
+  const auto r = pump_rcf(g);
+  REQUIRE(r.has_value() && r->hop_ch == target);
+  g.core->note_video(target);
+  g.tick(true);
+  REQUIRE(g.sink.has_hop("lead_confirm"));
+  for (int i = 0; i < (g.cfg.hop.verify_ms / 10) + 30; ++i) { g.vrx->on_video(static_cast<double>(g.clk.ms)); g.tick(true); }
+  REQUIRE(g.sink.has_hop("verify_pass"));
+  CHECK(g.core->op() == target);
+  CHECK(g.sink.has_line("(relocated)"));
+  CHECK(std::string(g.core->snapshot(0).scan_state) == "frozen");
+  REQUIRE(g.core->snapshot(0).scan_pick.has_value());
+  CHECK(*g.core->snapshot(0).scan_pick == target);
+  CHECK(!g.stored.empty() && g.stored.back() == target);   // the store follows op
 }
 
 // Carried from Task 3 (continuation deferred to Task 4): the move edge
@@ -585,9 +648,9 @@ TEST(one_card_link_edge_freezes_one_card_linked) {
   g.tick(true);
   CHECK(g.sink.has_line("pick frozen on"));
   CHECK(g.sink.has_line("(one-card linked)"));
-  CHECK(std::string(g.core->snapshot().scan_state) == "frozen");
-  REQUIRE(g.core->snapshot().scan_pick.has_value());
-  CHECK(*g.core->snapshot().scan_pick == g.core->op());
+  CHECK(std::string(g.core->snapshot(0).scan_state) == "frozen");
+  REQUIRE(g.core->snapshot(0).scan_pick.has_value());
+  CHECK(*g.core->snapshot(0).scan_pick == g.core->op());
 }
 
 TEST(inflight_dwell_feeds_ranker_and_dwell_stats) {
@@ -598,7 +661,7 @@ TEST(inflight_dwell_feeds_ranker_and_dwell_stats) {
   g.core->run_inflight_step();
   g.tick(true, false, 0);                    // drain
   CHECK(!g.core->dwell_busy());
-  const auto s = g.core->snapshot();
+  const auto s = g.core->snapshot(0);
   REQUIRE(s.dwell[1].has_value());
   CHECK(s.dwell[1]->visits == 1);
   REQUIRE(!g.sink.dwells.empty());
@@ -612,12 +675,12 @@ TEST(inflight_step_skips_when_not_in_session_or_hopping_or_one_card) {
   for (int i = 0; i < 10; ++i) g.tick(true);
   g.core->run_inflight_step();
   g.tick(true);
-  CHECK(!g.core->snapshot().dwell[0].has_value());   // one card: never dwells
+  CHECK(!g.core->snapshot(0).dwell[0].has_value());   // one card: never dwells
   Rig h(2, 0, true, 40);
   for (int i = 0; i < 10; ++i) h.tick(false);
   h.core->run_inflight_step();
   h.tick(false);
-  CHECK(!h.core->snapshot().dwell[1].has_value());   // no session: never dwells
+  CHECK(!h.core->snapshot(0).dwell[1].has_value());   // no session: never dwells
 }
 
 TEST(tx_frozen_while_hopping) {
@@ -630,6 +693,13 @@ TEST(tx_frozen_while_hopping) {
   const auto out = g.core->tick(g.in(true));
   CHECK(out.tx_frozen);
   CHECK(g.core->tx_frozen());
+}
+
+TEST(snapshot_channel_is_the_given_tx_card) {
+  Rig g(2, 0, true, 40);
+  g.cards[1]->ch = 112;
+  CHECK(g.core->snapshot(0).channel == 40);
+  CHECK(g.core->snapshot(1).channel == 112);
 }
 
 TEST(shutdown_joins_threads_and_is_idempotent) {   // Review Focus 5
@@ -656,11 +726,11 @@ TEST(shutdown_joins_threads_and_is_idempotent) {   // Review Focus 5
   for (int i = 0; i < 300 && !dwelt; ++i) {
     in.now_ms = static_cast<double>(now_ms());
     core.tick(in);
-    dwelt = core.snapshot().dwell[1].has_value();
+    dwelt = core.snapshot(0).dwell[1].has_value();
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
   REQUIRE(dwelt);
-  const uint32_t visits = core.snapshot().dwell[1]->visits;
+  const uint32_t visits = core.snapshot(0).dwell[1]->visits;
   const uint64_t t0 = now_ms();
   core.shutdown();
   core.shutdown();                            // idempotent
@@ -669,12 +739,12 @@ TEST(shutdown_joins_threads_and_is_idempotent) {   // Review Focus 5
   in.now_ms = static_cast<double>(now_ms());
   const auto out = core.tick(in);                                // drains anything a live thread left
   CHECK(!out.dwell_busy);
-  CHECK(core.snapshot().dwell[1]->visits == visits);             // no thread left dwelling
+  CHECK(core.snapshot(0).dwell[1]->visits == visits);             // no thread left dwelling
 }
 
 TEST(relay_only_roster_searches_without_measuring) {
   Rig g(0, 1);                                // one relay, auto
-  const auto s = g.core->snapshot();
+  const auto s = g.core->snapshot(0);
   CHECK(std::string(s.scan_state) == "off");  // nothing can measure
   CHECK(!g.core->pick_open());
   // the relay scouts: search bursts retune it across the set
@@ -690,7 +760,7 @@ TEST(relay_only_roster_no_ready_relay_is_quiet) {   // Review Focus 4
   g.cards[0]->is_ready = false;
   for (int i = 0; i < 20; ++i) g.tick();
   CHECK(g.core->disc_targets(0).empty());
-  CHECK(std::string(g.core->snapshot().scan_state) == "off");
+  CHECK(std::string(g.core->snapshot(0).scan_state) == "off");
   CHECK(g.cards[0]->calls.empty());           // scout never started (card not ready): nothing touched it
 }
 

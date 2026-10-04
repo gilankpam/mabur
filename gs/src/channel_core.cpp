@@ -7,7 +7,6 @@
 
 #include "hop_blank.h"
 #include "hop_burst_gate.h"
-#include "mabur/channel_file.h"
 #include "pair_pick.h"
 #include "scout_pick.h"
 #include "width_resync.h"
@@ -114,10 +113,9 @@ bool ChannelCore::scout_owns_() const {
   return scout_ && (scout_->working() || scout_search_req_ || (!pinned_ && scout_->pick_open()));
 }
 
-ChannelSnapshot ChannelCore::snapshot() const {
+ChannelSnapshot ChannelCore::snapshot(int tx_card) const {
   ChannelSnapshot s;
-  const int tx = tx_card_now_.load();
-  s.channel = cards_[static_cast<size_t>(tx)]->channel();
+  s.channel = cards_[static_cast<size_t>(tx_card)]->channel();
   s.scan_state = (!scout_ || pinned_ || relay_search_only_) ? "off"
                  : !boot_pick_.open()        ? "frozen"
                  : boot_pick_.relocating()   ? "moving"
@@ -426,7 +424,7 @@ void ChannelCore::step_store_() {
     saved_op_ = plan_.op();
     vrx_.set_proposal(plan_.op());
     if (!store_(saved_op_))
-      sink_.log(logf_("maburgs channel: could not write %s", mabur::kGsChannelFile));
+      sink_.log(logf_("maburgs channel: could not write %s", cfg_.store_name.c_str()));
   }
 }
 
@@ -596,7 +594,11 @@ void ChannelCore::step_move_edge_(const ChannelTickIn& in) {
   const double now_ms = in.now_ms;
   vrx_.set_proposal(plan_.op());
   vrx_.set_keepalive_hold(hopc_.state() == HopState::Ordered);
-  if (cal_move_hold_.take(vrx_.take_move_edge(), in.cal_running) && !plan_.hopping()) {
+  // The edge is held through a calibration run AND through a hop in flight
+  // (relocate or reactive) and replayed when both are over. Before 2026-10-04
+  // an edge landing on a hopping tick was consumed and dropped. Acting after
+  // the hop is safe: on_ack() with agreed == op is a no-op (channel_plan.cpp).
+  if (cal_move_hold_.take(vrx_.take_move_edge(), in.cal_running || plan_.hopping())) {
     const uint8_t proposed = vrx_.proposal();
     const uint8_t agreed = vrx_.agreed_channel();
     if (!plan_.member(agreed))

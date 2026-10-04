@@ -548,7 +548,6 @@ static int run_radio(const maburgs::Config& cfg) {
   struct ScanLogSink final : maburgs::ChannelSink {
     std::optional<maburgs::ScanLog>* sl;
     explicit ScanLogSink(std::optional<maburgs::ScanLog>* l) : sl(l) {}
-    void caps(double t, int card, const maburgs::CardCaps& c) override { if (*sl) (*sl)->caps(t, card, c); }
     void dwell(double t, int card, const maburgs::ScoutDwell& d) override { if (*sl) (*sl)->dwell(t, card, d); }
     void pick(double t, std::optional<uint8_t> p, uint64_t rounds, const std::vector<maburgs::RankEntry>& all, int mr) override {
       if (*sl) (*sl)->pick(t, p, rounds, all, mr);
@@ -570,6 +569,7 @@ static int run_radio(const maburgs::Config& cfg) {
   ccfg.start_ch = start_ch;
   ccfg.n_usb = n_usb;
   ccfg.leak_per_frame = 1.0;   // bench row 7 pins this (docs/channel-select.md)
+  ccfg.store_name = mabur::kGsChannelFile;
   maburgs::ChannelCore chan(
       ccfg, card_ptrs, vrx, chan_sink,
       [](uint8_t ch) { return mabur::write_channel_file(mabur::kGsChannelFile, ch); },
@@ -1535,10 +1535,10 @@ static int run_radio(const maburgs::Config& cfg) {
       // section 7): with a pick committed they differ. Straight off the
       // front-end's atomic -- the core's per-card channel is untracked for the
       // scout card while the scout owns it.
-      const maburgs::ChannelSnapshot chs = chan.snapshot();
-      sin.channel = fronts[static_cast<size_t>(sel.selected())]->channel();
+      const maburgs::ChannelSnapshot chs = chan.snapshot(sel.selected());
+      sin.channel = chs.channel;
       // scan.state / rounds / the latched pick and the in-flight hop
-      // snapshot: ChannelCore::snapshot() (gs/src/channel_core.cpp).
+      // snapshot: ChannelCore::snapshot(tx) (gs/src/channel_core.cpp).
       sin.scan_state = chs.scan_state;
       sin.scan_rounds = chs.scan_rounds;
       sin.scan_pick = chs.scan_pick;
