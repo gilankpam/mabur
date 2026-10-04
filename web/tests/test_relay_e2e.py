@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""webgs live --relay against a fake mabur-relay v3 (UDP). argv[1] = webgs binary."""
+"""webgs live --relay against a fake mabur-relay v4 (UDP). argv[1] = webgs binary."""
 import socket, struct, subprocess, sys, threading, time, unittest, json
 import tempfile, os, atexit
 
@@ -23,9 +23,12 @@ LINK20 = ('\n[link]\nstatic_mcs = -1\nstatic_bw = 20\nmax_mcs = 7\n'
 OVERLAY_GS20 = overlay('[radio]\nchannels = [165]\nchannel = 165\nwidth = 20\n' + LINK20)
 OVERLAY_SP20 = overlay('[radio]\nchannels = [165]\nchannel = "auto"\nwidth = 20\n' + LINK20)
 
-def hdr(t): return struct.pack('<HBB', 0x524D, 3, t)
+def hdr(t): return struct.pack('<HBB', 0x524D, 4, t)
 def status(state, ch, sec, you_own, tune_id=0):
-    return hdr(STATUS) + struct.pack('<HBBBBB', tune_id, state, ch, sec, 1, you_own) + b'\0' * 36
+    # v4 STATUS is 51 bytes: the v3 47-byte layout (header + tune_id/state/
+    # channel/sec/owner/you_own + 9 zeroed u32 counters) plus tx_scan_drop
+    # (u32) appended at offset 47. No SURVEY feed needed for this test.
+    return hdr(STATUS) + struct.pack('<HBBBBB', tune_id, state, ch, sec, 1, you_own) + b'\0' * 40
 def qos_frame(seq, dot_seq):
     d = bytes([0x88, 0, 0, 0]) + b'\xff' * 6 + bytes([0x57, 0x42, 0x75, 0x05, 0xd6, 0x00]) * 2
     d += struct.pack('<H', dot_seq << 4) + b'\0\0' + bytes(range(40))

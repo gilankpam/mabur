@@ -342,7 +342,7 @@ struct LiveOpts {
   int ch = -1, width = -1;   // -1 = the pin or first member / radio.width
   int secs = 0;              // 0 = until the card goes away
   std::string bad_chw;       // non-numeric --ch/--w, reported by run_live
-  std::string relay;         // --relay host:port: mabur-relay v3 over UDP instead of USB
+  std::string relay;         // --relay host:port: mabur-relay v4 over UDP instead of USB
 };
 
 // Strict decimal int: the whole string, no sign games, fits an int.
