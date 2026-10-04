@@ -78,6 +78,19 @@ TEST(blocked_channel_loses_to_a_busier_by_events_unblocked_one) {
   REQUIRE(b.has_value());
   CHECK(*b == 64);   // today's score alone would pick 144 (0 events)
 }
+// radio.scan.blocked_pct is the ranker's own input (BusyCfg), not a
+// constant: at 30 a 40 %-busy channel is blocked and loses to a busier-by-
+// events clean one; at the default 50 it is not. Pins the 2026-10-04 move.
+TEST(blocked_threshold_comes_from_busy_cfg) {
+  maburgs::HopCfg c;
+  BusyCfg b; b.blocked_pct = 30;
+  maburgs::HopRanker r(c, b, {144, 64}, 0);
+  for (int i = 0; i < 3; ++i) { r.add(bv(144, i, 0, 40)); r.add(bv(64, i, 40, 0)); }
+  CHECK(*r.best(10, 136, {}) == 64);
+  maburgs::HopRanker d(c, BusyCfg{}, {144, 64}, 0);
+  for (int i = 0; i < 3; ++i) { d.add(bv(144, i, 0, 40)); d.add(bv(64, i, 40, 0)); }
+  CHECK(*d.best(10, 136, {}) == 144);
+}
 TEST(busy_is_the_mean_over_fresh_visits) {
   maburgs::HopCfg c;
   maburgs::HopRanker r(c, BusyCfg{}, {144}, 0);

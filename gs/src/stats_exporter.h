@@ -216,8 +216,8 @@ struct StatsProbeIn {
 // straight from HopController's own accessors (state()/epoch()/hop_ch()/
 // hops()/holds()) plus the latest HopVerdict::window() output -- plain
 // values only, no controller reference, matching StatsCtlIn's pattern.
-// Unconditional (like StatsProbeIn): a disabled feature still exports
-// enable=false and the verdict/counters at their idle defaults, so a
+// Unconditional (like StatsProbeIn): a pinned GS, whose reactive hop never
+// runs, still exports the verdict/counters at their idle defaults, so a
 // consumer never has to special-case a missing block.
 struct StatsHopIn {
   const char* verdict = "unknown";  // to_string(Verdict)

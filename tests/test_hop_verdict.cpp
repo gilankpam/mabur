@@ -229,6 +229,19 @@ TEST(long_frame_jam_is_interfered_via_blocked) {
   CHECK(o.evidence & maburgs::kEvBlocked);
   CHECK(o.trigger);
 }
+// Same jam at 40 % busy: blocked only when radio.scan.blocked_pct (BusyCfg)
+// is lowered to 30 -- the threshold is the engine's input, not a constant.
+TEST(blocked_threshold_comes_from_busy_cfg) {
+  maburgs::HopCfg cfg;
+  BusyCfg b; b.blocked_pct = 30;
+  maburgs::HopVerdict low(cfg, b, 1), def(cfg, BusyCfg{}, 1);
+  maburgs::VerdictLinkIn bad; bad.pre_fec_loss = 0.80;
+  maburgs::VerdictOut ol, od;
+  double t = 0;
+  for (int i = 0; i < 3; ++i) { ol = low.window(t += 150, {busy_card(40, 2)}, bad, 0); od = def.window(t, {busy_card(40, 2)}, bad, 0); }
+  CHECK(ol.evidence & maburgs::kEvBlocked);
+  CHECK(!(od.evidence & maburgs::kEvBlocked));
+}
 TEST(busy_but_healthy_link_stays_healthy) {
   maburgs::HopCfg cfg;
   maburgs::HopVerdict v(cfg, BusyCfg{}, 1);

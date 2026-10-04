@@ -417,8 +417,8 @@ relocation in flight is never yanked — it freezes when it resolves),
 and placing the order — the pick stands, the next link-up relocates
 there), `"op unmeasured"`, `"commit"`, `"in place"`, `"calibration
 running"`. Gone since 2026-10-04: `"boot hop: no eligible pair"` (the
-relocation's only target is `want`) and `"hop disabled"` (a relocation
-bypasses the kill switch).
+relocation's only target is `want`) and `"hop disabled"` (the kill switch
+it bypassed, `hop.enable`, was deleted the same day).
 
 No eligibility/arm gate: the relocation is placed armed or not. It is a
 measured, verified, withdrawn-on-failure move; mid-flight it meets an

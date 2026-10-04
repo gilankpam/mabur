@@ -954,8 +954,10 @@ where it came from — never to a privileged fallback channel. Full detail:
 - `scan.log` `H` rows prefixed `would_` (shadow hops, `hop.enable = false`)
   appear only in sessions recorded before this date. `flightreport.py`'s
   SHADOW HOP REPORT path stays for them; no later build emits one.
-- **Removed sideport key:** `hop.enable`. The mode is `scan.state == "off"`
-  (pinned or relay-only) vs anything else (auto).
+- **Removed sideport key:** `hop.enable`. Pinned reads `scan.state == "off"`
+  (so does a relay-only roster, which in auto is still reactive on its
+  one-card path); the authoritative mode is the `scanlog 5` header's
+  `mode=<auto|pinned>`.
 - **Removed GS config keys:** `hop.enable`, `hop.scout_when_disabled`;
   `hop.verdict.busy_dbm`/`blocked_pct` are `radio.scan.busy_dbm`/
   `blocked_pct`. A session's `scanlog 5` header is unchanged
