@@ -277,9 +277,11 @@ line `ERROR bad channel/width: <reason>`).
 While live, the header shows the live channel (the core's `channel`) with
 `scanning` (scout running, `scan_state` `scouting`), `moving` (the
 relocation) or `hop` (a hop in flight) after it; disconnected it shows the
-form's link channel or `auto`. The Debug tab's **Channel** group carries
+form's link channel or `auto`; a spotter shows `following` or `sweeping`
+while it is not locked. The Debug tab's **Channel** group carries
 the channel, scan state/rounds/pick, hop state/verdict, hop target/epoch
-and hops/holds (a spotter shows only the channel). The core's
+and hops/holds (a spotter shows the channel and its follow state, see
+"Spotter follower"). The core's
 `maburgs channel: …` / `maburgs hop: …` stderr lines appear verbatim in the
 browser console log.
 
