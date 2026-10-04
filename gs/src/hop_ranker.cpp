@@ -4,8 +4,8 @@
 
 namespace maburgs {
 
-HopRanker::HopRanker(HopCfg cfg, std::vector<uint8_t> channels, uint8_t boot_pick)
-    : cfg_(cfg), candidates_(std::move(channels)), boot_pick_(boot_pick) {
+HopRanker::HopRanker(HopCfg cfg, BusyCfg busy, std::vector<uint8_t> channels, uint8_t boot_pick)
+    : cfg_(cfg), busy_(busy), candidates_(std::move(channels)), boot_pick_(boot_pick) {
   visits_.resize(candidates_.size());
 }
 
@@ -42,7 +42,7 @@ std::vector<HopRankEntry> HopRanker::ranking(double now_ms) const {
     e.score = sum;
     e.ranked = fresh >= 2;
     e.busy_pct = busy_n ? busy_sum / busy_n : 0.0;
-    e.blocked = busy_n > 0 && e.busy_pct >= cfg_.verdict.blocked_pct;
+    e.blocked = busy_n > 0 && e.busy_pct >= busy_.blocked_pct;
     entries.push_back(e);
   }
   // Ranked first, then by score; ties among RANKED entries -> boot-time

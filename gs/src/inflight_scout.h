@@ -17,7 +17,7 @@ struct InflightScoutCfg {
   // skipped per cycle.
   std::vector<uint8_t> candidates;
   uint8_t width_mhz = 20;  // radio.width: the dwell keeps the card's tuning (FastRetune), recorded here
-  int busy_dbm = -83;      // HopCfg::verdict.busy_dbm: NHM bucket edge for the dwell's busy-airtime read
+  int busy_dbm = -83;      // radio.scan.busy_dbm: NHM bucket edge for the dwell's busy-airtime read
 };
 
 // The ~10 ms mid-flight dwell (spec 2026-09-14-inflight-channel-hop §3): a

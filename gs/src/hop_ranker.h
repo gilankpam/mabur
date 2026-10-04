@@ -28,7 +28,7 @@ struct HopRankEntry {
   int visits = 0;
   bool ranked = false;
   // Mean busy_pct over this entry's fresh, busy_valid visits (0 when none
-  // had a reading), and whether that mean clears HopCfg::verdict.blocked_pct
+  // had a reading), and whether that mean clears radio.scan.blocked_pct
   // -- a channel with any busy evidence at or above the threshold ranks
   // behind every non-blocked ranked channel, tiebroken by lower busy_pct.
   bool blocked = false;
@@ -36,7 +36,7 @@ struct HopRankEntry {
 };
 
 // Ranks candidate channels by how busy recent brief visits found them, with
-// NHM-blocked channels (mean busy_pct >= HopCfg::verdict.blocked_pct) pushed
+// NHM-blocked channels (mean busy_pct >= radio.scan.blocked_pct) pushed
 // into their own tier below every non-blocked ranked channel, tiebroken by
 // lower busy_pct (spec 2026-09-25-nhm-airtime §6).
 // Pure: no I/O, no clock of its own -- the caller passes now_ms (spec
@@ -45,7 +45,7 @@ struct HopRankEntry {
 // then config order.
 class HopRanker {
  public:
-  HopRanker(HopCfg cfg, std::vector<uint8_t> channels, uint8_t boot_pick);
+  HopRanker(HopCfg cfg, BusyCfg busy, std::vector<uint8_t> channels, uint8_t boot_pick);
 
   void add(const HopVisit& v);
 
@@ -69,6 +69,7 @@ class HopRanker {
 
  private:
   HopCfg cfg_;
+  BusyCfg busy_;
   std::vector<uint8_t> candidates_;   // config order, exactly as given
   uint8_t boot_pick_ = 0;
   std::vector<std::deque<HopVisit>> visits_;   // one deque per entry in candidates_

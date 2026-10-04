@@ -35,8 +35,8 @@ ChannelCore::ChannelCore(ChannelCoreCfg cfg, std::vector<LinkCard*> cards, VrxCo
       plan_(ChannelPlanCfg{cfg_.start_ch, cfg_.radio.channels, n_cards_,
                            cfg_.radio.scan.search_after_ms}),
       boot_pick_(false),
-      verdict_(cfg_.hop, n_cards_),
-      ranker_(cfg_.hop, cfg_.radio.channels, 0),
+      verdict_(cfg_.hop, cfg_.radio.scan.busy, n_cards_),
+      ranker_(cfg_.hop, cfg_.radio.scan.busy, cfg_.radio.channels, 0),
       hopc_(cfg_.hop),
       cur_ch_(static_cast<size_t>(n_cards_), cfg_.start_ch),
       width_tried_(static_cast<size_t>(n_cards_), false),
@@ -82,8 +82,8 @@ ChannelCore::ChannelCore(ChannelCoreCfg cfg, std::vector<LinkCard*> cards, VrxCo
     sc.pick_margin = static_cast<uint32_t>(cfg_.radio.scan.pick_margin);
     sc.one_card = one_card_ || relay_search_only_;   // a sole relay interleaves op windows like a sole USB card
     sc.link_width_mhz = cfg_.radio.width;
-    sc.busy_dbm = cfg_.hop.verdict.busy_dbm;
-    sc.blocked_pct = cfg_.hop.verdict.blocked_pct;
+    sc.busy_dbm = cfg_.radio.scan.busy.busy_dbm;
+    sc.blocked_pct = cfg_.radio.scan.busy.blocked_pct;
     sc.leak_per_frame = cfg_.leak_per_frame;
     scout_ = std::make_unique<ChannelScout>(
         sc, *cards_[static_cast<size_t>(scout_card_)],
@@ -104,7 +104,7 @@ ChannelCore::ChannelCore(ChannelCoreCfg cfg, std::vector<LinkCard*> cards, VrxCo
     // ever returns scout_card_ and inflight_ is never driven.
     inflight_ = std::make_unique<InflightScout>(
         InflightScoutCfg{cfg_.hop.dwell_observe_ms, cfg_.hop.dwell_period_ms,
-                         cfg_.radio.channels, cfg_.radio.width, cfg_.hop.verdict.busy_dbm},
+                         cfg_.radio.channels, cfg_.radio.width, cfg_.radio.scan.busy.busy_dbm},
         *cards_[static_cast<size_t>(scout_card_)],
         [this] { return static_cast<int64_t>(now_us_()); },
         [this](int ms) { sleep_(ms); });
@@ -494,7 +494,7 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
       const double own_pct = win_us > 0
           ? std::min(100.0, 100.0 * static_cast<double>(f.own_air_us - window_prev_[si].own_air_us) / win_us)
           : 0.0;
-      const auto busy_pct = nhm_ok ? nhm_busy_pct(nb, cfg_.hop.verdict.busy_dbm) : std::nullopt;
+      const auto busy_pct = nhm_ok ? nhm_busy_pct(nb, cfg_.radio.scan.busy.busy_dbm) : std::nullopt;
       vc[si].busy_valid = busy_pct.has_value();
       vc[si].nhm_busy_pct = busy_pct.value_or(0.0);
       vc[si].own_air_pct = own_pct;

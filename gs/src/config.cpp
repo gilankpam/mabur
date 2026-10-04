@@ -264,7 +264,7 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
       const Value& s = r["scan"];
       check_keys(s, "radio.scan",
                  {"dwell_ms", "settle_ms", "min_rounds", "search_ms", "op_window_ms",
-                  "search_after_ms", "pick_margin", "one_card_ms", "max_ms"});
+                  "search_after_ms", "pick_margin", "one_card_ms", "max_ms", "busy_dbm", "blocked_pct"});
       ScanCfg& sc = c.radio.scan;
       sc.dwell_ms = static_cast<int>(get_int(s, "dwell_ms", 250, 50, 10000, "radio.scan"));
       sc.settle_ms = static_cast<int>(get_int(s, "settle_ms", 30, 0, 1000, "radio.scan"));
@@ -275,6 +275,11 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
       sc.pick_margin = static_cast<int>(get_int(s, "pick_margin", 20, 0, 100000, "radio.scan"));
       sc.one_card_ms = static_cast<int>(get_int(s, "one_card_ms", 5000, 0, 60000, "radio.scan"));
       sc.max_ms = static_cast<int>(get_int(s, "max_ms", 30000, 1000, 600000, "radio.scan"));
+      sc.busy.busy_dbm = static_cast<int>(get_int(s, "busy_dbm", -83, -104, -70, "radio.scan"));
+      if (!maburgs::busy_dbm_is_edge(sc.busy.busy_dbm))
+        fail("radio.scan.busy_dbm",
+             "must be an NHM bucket edge: -104 -101 -98 -95 -92 -89 -86 -83 -80 -75 -70");
+      sc.busy.blocked_pct = get_num(s, "blocked_pct", 50.0, 1.0, 100.0, "radio.scan");
     } else {
       note_default("radio", "scan", "(section absent)");
     }
@@ -295,12 +300,10 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
 
   if (j.contains("hop")) {
     const Value& h = j["hop"];
-    check_keys(h, "hop", {"enable", "scout_when_disabled", "window_ms", "persist", "dwell_observe_ms",
+    check_keys(h, "hop", {"window_ms", "persist", "dwell_observe_ms",
                           "dwell_period_ms", "rank_visits", "rank_max_age_ms", "confirm_ms", "confirm_extend_ms", "verify_ms",
                           "cooldown_ms", "max_hops_per_min", "backoff_ms", "one_card_repeats", "verdict"});
     HopCfg& hc = c.hop;
-    hc.enable = get_bool(h, "enable", hc.enable, "hop");
-    hc.scout_when_disabled = get_bool(h, "scout_when_disabled", hc.scout_when_disabled, "hop");
     hc.window_ms = (int)get_int(h, "window_ms", 150, 50, 2000, "hop");
     hc.persist = (int)get_int(h, "persist", 2, 1, 3, "hop");
     hc.dwell_observe_ms = (int)get_int(h, "dwell_observe_ms", 5, 1, 250, "hop");
@@ -317,8 +320,8 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
     if (h.contains("verdict")) {
       const Value& v = h["verdict"];
       check_keys(v, "hop.verdict", {"loss_pct", "recovered_x", "weak_rssi_dbm", "weak_snr_db",
-                                    "fading_drop_db", "foreign_pps", "fa_pps", "busy_dbm",
-                                    "blocked_pct", "recovered_min", "starved_frac"});
+                                    "fading_drop_db", "foreign_pps", "fa_pps",
+                                    "recovered_min", "starved_frac"});
       HopVerdictCfg& vc = hc.verdict;
       vc.loss_pct = get_num(v, "loss_pct", 3.0, 0.1, 100.0, "hop.verdict");
       vc.recovered_x = get_num(v, "recovered_x", 3.0, 1.0, 100.0, "hop.verdict");
@@ -328,11 +331,6 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
       vc.fading_drop_db = (int)get_int(v, "fading_drop_db", 6, 1, 40, "hop.verdict");
       vc.foreign_pps = (int)get_int(v, "foreign_pps", 50, 1, 100000, "hop.verdict");
       vc.fa_pps = (int)get_int(v, "fa_pps", 100, 1, 100000, "hop.verdict");
-      vc.busy_dbm = (int)get_int(v, "busy_dbm", -83, -104, -70, "hop.verdict");
-      if (!maburgs::busy_dbm_is_edge(vc.busy_dbm))
-        fail("hop.verdict.busy_dbm",
-             "must be an NHM bucket edge: -104 -101 -98 -95 -92 -89 -86 -83 -80 -75 -70");
-      vc.blocked_pct = get_num(v, "blocked_pct", 50.0, 1.0, 100.0, "hop.verdict");
       vc.starved_frac = get_num(v, "starved_frac", 0.25, 0.0, 1.0, "hop.verdict");
     } else {
       note_default("hop", "verdict", "(section absent)");

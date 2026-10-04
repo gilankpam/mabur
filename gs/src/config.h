@@ -26,6 +26,15 @@ struct CardCfg {
 /// every card holds op after a loss before sweeping; pick_margin how much a
 /// candidate must beat the current channel by; one_card_ms the one-card
 /// silent measurement prelude; max_ms the ceiling on an open pick.
+/// What counts as busy air. Shared by every measurer -- the boot scout
+/// and its pair ranker, the in-flight scout and its ranker, the verdict
+/// engine -- so it lives under [radio.scan], not [hop]: a pinned GS with
+/// no reactive hop still measures.
+struct BusyCfg {
+  int busy_dbm = -83;         // nf::kNhmAbsThDbm bucket edge (nhm_busy.h::busy_dbm_is_edge)
+  double blocked_pct = 50.0;  // foreign busy airtime that makes a window/channel "blocked"
+};
+
 struct ScanCfg {
   int dwell_ms = 250;
   int settle_ms = 30;
@@ -36,6 +45,7 @@ struct ScanCfg {
   int pick_margin = 20;
   int one_card_ms = 5000;
   int max_ms = 30000;
+  BusyCfg busy;
 };
 
 /// In-flight channel hop verdict thresholds (spec 2026-09-14-inflight-
@@ -53,13 +63,6 @@ struct HopVerdictCfg {
   int fading_drop_db = 6;
   int foreign_pps = 50;
   int fa_pps = 100;
-  // NHM busy-airtime evidence (spec 2026-09-25-nhm-airtime §6). busy_dbm
-  // must be an nf::kNhmAbsThDbm bucket edge (nhm_busy.h::busy_dbm_is_edge).
-  // blocked_pct default is 50, not the spec's 30 -- the hw spike found
-  // busy_dbm -83 / blocked_pct 50 the working pair (docs/nhm-airtime-
-  // spike-findings-2026-09-25.md).
-  int busy_dbm = -83;
-  double blocked_pct = 50.0;  // foreign busy airtime that makes a window/channel "blocked"
   // AU rate below this fraction of the trailing per-window AU mean reads
   // `starved` even when a trickle of own frames still arrives (bench
   // session 0232, 2026-09-26: 5-30 own frames/s under a long-frame jam).
@@ -67,12 +70,11 @@ struct HopVerdictCfg {
   double starved_frac = 0.25;
 };
 
-/// In-flight channel hop (spec 2026-09-14-inflight-channel-hop). enable
-/// governs whether a bad verdict actually retunes; scout_when_disabled lets
-/// the scout keep ranking candidates for observability even while disabled.
+/// In-flight channel hop (spec 2026-09-14-inflight-channel-hop). Runs in
+/// auto mode only: radio.channel = N pins the link and the reactive layer
+/// is off (ChannelCore::reactive_). What counts as busy air is
+/// radio.scan.busy, shared with the boot scout.
 struct HopCfg {
-  bool enable = false;
-  bool scout_when_disabled = true;
   int window_ms = 150;
   int persist = 2;
   int dwell_observe_ms = 5;

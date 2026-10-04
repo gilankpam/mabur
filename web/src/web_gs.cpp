@@ -505,7 +505,6 @@ std::string stats_json(const Stats& s) {
     const auto& hp = s.chan->hop;
     auto optj = [](const auto& v) { return v ? nlohmann::json(*v) : nlohmann::json(nullptr); };
     nlohmann::json h;
-    h["enable"] = hp.enable;
     h["verdict"] = hp.verdict;
     h["evidence"] = hp.evidence;
     h["ref_rung"] = optj(hp.ref_rung);

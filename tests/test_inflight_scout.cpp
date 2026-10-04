@@ -130,7 +130,7 @@ TEST(a_clean_member_becomes_a_ranked_hop_target_after_a_hop) {
   int64_t t = 0;
   InflightScout s(cfg(), r, [&] { return t; }, [&](int ms) { t += ms * 1000; });
   HopCfg hc;
-  HopRanker ranker(hc, {120, 149, 165, 136}, 0);
+  HopRanker ranker(hc, BusyCfg{}, {120, 149, 165, 136}, 0);
   for (int i = 0; i < 6; ++i) {
     ScoutDwell d; HopVisit v;
     if (s.dwell(*s.next_candidate(149), 149, d, v)) ranker.add(v);

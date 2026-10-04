@@ -521,19 +521,29 @@ TEST(removed_scan_and_home_keys_fail_boot) {
 
 TEST(hop_defaults_when_absent) {
   auto cfg = maburgs::load_config(write_tmp(""));
-  CHECK(cfg.hop.enable == false);
-  CHECK(cfg.hop.scout_when_disabled == true);
   CHECK(cfg.hop.window_ms == 150 && cfg.hop.persist == 2);
   CHECK(cfg.hop.dwell_observe_ms == 5 && cfg.hop.dwell_period_ms == 333);
   CHECK(cfg.hop.confirm_ms == 500 && cfg.hop.verify_ms == 1000 && cfg.hop.cooldown_ms == 2000);
   CHECK(cfg.hop.max_hops_per_min == 4 && cfg.hop.backoff_ms == 30000 && cfg.hop.one_card_repeats == 5);
   CHECK(cfg.hop.verdict.loss_pct == 3.0 && cfg.hop.verdict.fa_pps == 100 && cfg.hop.verdict.weak_rssi_dbm == -78);
+  CHECK(cfg.radio.scan.busy.busy_dbm == -83 && cfg.radio.scan.busy.blocked_pct == 50.0);
+}
+// 2026-10-04: pin is static. The mode knob is radio.channel alone; the
+// busy-air thresholds belong to every measurer, so they live under
+// radio.scan. Removed keys fail boot, as every removed key does.
+TEST(removed_hop_keys_fail_boot) {
+  for (const char* body : {"[hop]\nenable = true\n", "[hop]\nscout_when_disabled = false\n",
+                           "[hop.verdict]\nbusy_dbm = -83\n", "[hop.verdict]\nblocked_pct = 50\n"}) {
+    bool threw = false;
+    try { maburgs::load_config(write_tmp(body)); } catch (const std::exception&) { threw = true; }
+    CHECK(threw);
+  }
 }
 TEST(hop_parses_and_validates) {
   auto cfg = maburgs::load_config(write_tmp(
-      "[hop]\nenable = true\nwindow_ms = 200\npersist = 3\ndwell_observe_ms = 8\n"
+      "[hop]\nwindow_ms = 200\npersist = 3\ndwell_observe_ms = 8\n"
       "[hop.verdict]\nfa_pps = 250\nweak_rssi_dbm = -80\n"));
-  CHECK(cfg.hop.enable && cfg.hop.window_ms == 200 && cfg.hop.persist == 3 && cfg.hop.dwell_observe_ms == 8);
+  CHECK(cfg.hop.window_ms == 200 && cfg.hop.persist == 3 && cfg.hop.dwell_observe_ms == 8);
   CHECK(cfg.hop.verdict.fa_pps == 250 && cfg.hop.verdict.weak_rssi_dbm == -80);
   bool threw = false;
   try { maburgs::load_config(write_tmp("[hop]\nwindow_ms = 10\n")); }
@@ -1263,14 +1273,13 @@ TEST(bundle_default_sets_every_known_key_but_radio_cards) {
 
 // spec 2026-09-25-nhm-airtime §6; default blocked_pct is 50, not the spec's
 // 30 -- hw spike findings (docs/nhm-airtime-spike-findings-2026-09-25.md).
-TEST(hop_verdict_busy_keys) {
-  auto c = maburgs::load_config(write_tmp(
-      "[hop]\nenable = true\n[hop.verdict]\nbusy_dbm = -80\nblocked_pct = 25\n"));
-  CHECK(c.hop.verdict.busy_dbm == -80);
-  CHECK(c.hop.verdict.blocked_pct == 25.0);
+// Under radio.scan since 2026-10-04: every measurer reads them.
+TEST(scan_busy_keys_parse_and_validate) {
+  auto c = maburgs::load_config(write_tmp("[radio.scan]\nbusy_dbm = -86\nblocked_pct = 40\n"));
+  CHECK(c.radio.scan.busy.busy_dbm == -86 && c.radio.scan.busy.blocked_pct == 40.0);
   bool threw = false;
-  try { maburgs::load_config(write_tmp("[hop.verdict]\nbusy_dbm = -82\n")); }
-  catch (const std::runtime_error& e) { threw = std::string(e.what()).find("hop.verdict") != std::string::npos; }
+  try { maburgs::load_config(write_tmp("[radio.scan]\nbusy_dbm = -82\n")); }
+  catch (const std::runtime_error& e) { threw = std::string(e.what()).find("radio.scan.busy_dbm") != std::string::npos; }
   CHECK(threw);   // -82 is not an NHM bucket edge
 }
 
