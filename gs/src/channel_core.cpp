@@ -468,7 +468,9 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
     const SurveyWindow sw = fe.read_survey_window();   // always: rebases the card's window
     const bool busy = (dwell_busy_.load() && dwell_card_.load() == i) ||
                       (scout_owns_() && i == scout_card_) ||
-                      (sweep_.on && sweep_.card == i) || fe.sweeping();
+                      (sweep_.on && sweep_.card == i);   // NOT fe.sweeping(): a relay's
+    // scan_pending_ outlives a lost SCAN_RESULT, and skipping the card on it
+    // past our own timeout blinds a one-card verdict for good (fix round 1).
     if (!verdict_card_usable(fe.ready(), busy, fe.channel(), plan_.op())) {
       window_prev_ok_[si] = false;
       nhm_win_[si].invalidate();
@@ -729,6 +731,16 @@ void ChannelCore::step_mechanical_retune_() {
 void ChannelCore::poll_sweep_(double now_ms) {
   if (!sweep_.on) return;
   auto& fe = *cards_[static_cast<size_t>(sweep_.card)];
+  // Expiry first: a sweep left pending across a session drop is a timeout,
+  // and a result that sat on the card meanwhile is taken and discarded --
+  // never ranked under the reconnect's timestamp (fix round 1).
+  if (now_ms - sweep_.sent_ms >= kSweepTimeoutMs) {
+    (void)fe.take_sweep_result();
+    sweep_.on = false;
+    ++sweep_timeouts_;
+    sink_.log(logf_("maburgs hop: relay sweep_timeout on card %d", sweep_.card));
+    return;
+  }
   if (auto r = fe.take_sweep_result()) {
     sweep_.on = false;
     ++sweep_round_;
@@ -740,12 +752,6 @@ void ChannelCore::poll_sweep_(double now_ms) {
     if (r->status != 0)
       sink_.log(logf_("maburgs hop: relay sweep status %u, radio back on %u",
                       static_cast<unsigned>(r->status), static_cast<unsigned>(r->back_channel)));
-    return;
-  }
-  if (now_ms - sweep_.sent_ms >= kSweepTimeoutMs) {
-    sweep_.on = false;
-    ++sweep_timeouts_;
-    sink_.log(logf_("maburgs hop: relay sweep_timeout on card %d", sweep_.card));
   }
 }
 

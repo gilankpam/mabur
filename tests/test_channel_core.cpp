@@ -937,6 +937,46 @@ TEST(relay_only_sweep_timeout_allows_next_burst) {   // Review Focus 3
   CHECK(g.cards[0]->sweeps.size() == 2);           // relay_burst_period_ms (1000) has passed
 }
 
+// Fix round 1: a lost SCAN / SCAN_RESULT. RemoteCard::sweeping() stays true
+// until a matching result, the next start_scan or a reopen -- so the fake
+// keeps sweep_in_flight set throughout. The verdict must not skip the relay
+// on the card's own flag past the core's timeout, or a one-card roster
+// reads Unknown forever, never triggers, never re-scans: detection dead.
+TEST(relay_lost_scan_result_does_not_blind_the_verdict) {
+  Rig g(0, 1);
+  freeze_auto(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  interfere(g, 3);
+  REQUIRE(g.cards[0]->sweeps.size() == 1);
+  for (int i = 0; i < 150 && g.core->sweep_timeouts() == 0; ++i) g.tick(true);
+  REQUIRE(g.core->sweep_timeouts() == 1);
+  CHECK(g.cards[0]->sweeping());                   // the relay still thinks a scan is pending
+  interfere(g, 3);
+  CHECK(g.cards[0]->sweeps.size() == 2);           // interfered verdicts again -> the next SCAN
+}
+
+// Fix round 1: a sweep pending across a session drop. On reconnect an
+// expired sweep is a timeout; a result that sat on the card meanwhile is
+// taken and discarded, never ranked with the reconnect's timestamp.
+TEST(relay_sweep_expired_across_session_drop_discards_late_result) {
+  Rig g(0, 1);
+  freeze_auto(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  interfere(g, 3);
+  REQUIRE(g.cards[0]->sweeps.size() == 1);
+  REQUIRE(g.core->sweep_pending());
+  const size_t dwells0 = g.sink.dwells.size();
+  for (int i = 0; i < 120; ++i) g.tick(false);     // session down > 1 s
+  CHECK(g.core->sweep_timeouts() == 0);            // nothing polled while hop-inactive
+  g.cards[0]->pending_result = sweep_of({{64, 20}, {112, 1}, {144, 4}});
+  g.tick(true);                                    // session back
+  CHECK(!g.core->sweep_pending());
+  CHECK(g.core->sweep_timeouts() == 1);
+  CHECK(!g.cards[0]->pending_result.has_value());  // taken from the card...
+  CHECK(!g.cards[0]->sweeping());
+  CHECK(g.sink.dwells.size() == dwells0);          // ...and discarded: no D records, no visits
+}
+
 // The relay burst paces on hop.relay_burst_period_ms (1000), not the USB
 // burst's dwell_period_ms: an empty result lands at once, and a burst 400 ms
 // after the first SCAN must not happen.
