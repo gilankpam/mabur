@@ -51,6 +51,9 @@ ChannelCore::ChannelCore(ChannelCoreCfg cfg, std::vector<LinkCard*> cards, VrxCo
   gs_start_ms_ = now_ms_();
   nhm_op_period_ = nhm_period_4us(std::max(cfg_.hop.window_ms - 10, 1));
   can_scout_.assign(static_cast<size_t>(n_cards_), false);
+  can_sweep_.assign(static_cast<size_t>(n_cards_), false);
+  for (int i = 0; i < n_cards_; ++i)
+    can_sweep_[static_cast<size_t>(i)] = cards_[static_cast<size_t>(i)]->can_sweep();
   snr_ok_.assign(static_cast<size_t>(n_cards_), true);
   for (int i = 0; i < n_cards_; ++i) {
     can_scout_[static_cast<size_t>(i)] = cards_[static_cast<size_t>(i)]->can_scout();
@@ -192,6 +195,7 @@ void ChannelCore::run_scout_step() { if (scout_) scout_->run_once(); }
 void ChannelCore::run_inflight_step() { inflight_body_(); }
 
 void ChannelCore::on_card_died(int card) {
+  if (sweep_.on && sweep_.card == card) sweep_ = PendingSweep{};   // no result coming; not a timeout
   if (scout_ && card == scout_card_ && !scout_card_down_) {
     scout_card_down_ = true;
     if (scout_->working()) {
@@ -461,8 +465,10 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
   for (int i = 0; i < n_cards_; ++i) {
     auto& fe = *cards_[static_cast<size_t>(i)];
     const size_t si = static_cast<size_t>(i);
+    const SurveyWindow sw = fe.read_survey_window();   // always: rebases the card's window
     const bool busy = (dwell_busy_.load() && dwell_card_.load() == i) ||
-                      (scout_owns_() && i == scout_card_);
+                      (scout_owns_() && i == scout_card_) ||
+                      (sweep_.on && sweep_.card == i) || fe.sweeping();
     if (!verdict_card_usable(fe.ready(), busy, fe.channel(), plan_.op())) {
       window_prev_ok_[si] = false;
       nhm_win_[si].invalidate();
@@ -494,12 +500,16 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
       const double own_pct = win_us > 0
           ? std::min(100.0, 100.0 * static_cast<double>(f.own_air_us - window_prev_[si].own_air_us) / win_us)
           : 0.0;
-      const auto busy_pct = nhm_ok ? nhm_busy_pct(nb, cfg_.radio.scan.busy.busy_dbm) : std::nullopt;
+      const auto nhm_pct = nhm_ok ? nhm_busy_pct(nb, cfg_.radio.scan.busy.busy_dbm) : std::nullopt;
+      // A relay reports op-channel airtime through SURVEY (busy %, rx %);
+      // rx ~ our own video on the op, so it plays own_air (spec §4).
+      const auto busy_pct = sw.valid ? std::optional<double>(sw.busy_pct) : nhm_pct;
+      const double own_used = sw.valid ? sw.rx_pct : own_pct;
       vc[si].busy_valid = busy_pct.has_value();
       vc[si].nhm_busy_pct = busy_pct.value_or(0.0);
-      vc[si].own_air_pct = own_pct;
+      vc[si].own_air_pct = own_used;
       energy_last_[si] = StatsEnergyIn{e.cca_ofdm, e.fa_ofdm, f.own - window_prev_[si].own,
-                                       f.foreign - window_prev_[si].foreign, std::nullopt, busy_pct, own_pct};
+                                       f.foreign - window_prev_[si].foreign, std::nullopt, busy_pct, own_used};
     }
     window_prev_[si] = f;
     window_prev_crc_[si] = crc_fail;
@@ -529,6 +539,7 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
 void ChannelCore::step_controller_(const ChannelTickIn& in) {
   const double now_ms = in.now_ms;
   if (!hop_active(in.in_session, in.cal_running)) { pending_relocate_.reset(); return; }
+  poll_sweep_(now_ms);
   auto fill_hop_targets = [&](HopTick& k) {
     k.best = ranker_.best(now_ms, plan_.op(), hopc_.backed_off(now_ms), /*require_unblocked=*/true);
     k.escape = ranker_.best(now_ms, plan_.op(), hopc_.backed_off_failed(now_ms), /*require_unblocked=*/true);
@@ -555,12 +566,22 @@ void ChannelCore::step_controller_(const ChannelTickIn& in) {
   ht.rcf_sent_since_order = static_cast<int>(rcf_sent_total_ - rcf_sent_at_order_);
   const bool relocation_owns = boot_pick_.relocating() || pending_relocate_.has_value() ||
                                boot_pick_.relocation_pending(last_bi_);
-  if (reactive_ && !scout_owns_() && !relocation_owns &&
-      hop_burst_due(hopc_.state(), last_verdict_out_.trigger, now_ms, last_burst_ms_,
-                    cfg_.hop.dwell_period_ms)) {
+  const int burst_card = pick_burst_card(can_scout_, can_sweep_, in.tx_card);
+  const bool relay_burst = burst_card >= 0 && !can_scout_[static_cast<size_t>(burst_card)] &&
+                           can_sweep_[static_cast<size_t>(burst_card)];
+  const int burst_period = relay_burst ? cfg_.hop.relay_burst_period_ms : cfg_.hop.dwell_period_ms;
+  if (reactive_ && !scout_owns_() && !relocation_owns && !sweep_.on &&
+      hop_burst_due(hopc_.state(), last_verdict_out_.trigger, now_ms, last_burst_ms_, burst_period)) {
     last_burst_ms_ = now_ms;
-    const int burst_card = pick_burst_card(can_scout_, std::vector<bool>(can_scout_.size(), false), in.tx_card);
-    if (burst_card < 0 || !inflight_) {
+    if (relay_burst) {
+      // Async: one SCAN for the set minus op; poll_sweep_ ranks the result.
+      std::vector<uint8_t> chans;
+      for (uint8_t c : cfg_.radio.channels) if (c != plan_.op()) chans.push_back(c);
+      if (!chans.empty() &&
+          cards_[static_cast<size_t>(burst_card)]->start_sweep(chans, kSweepPasses, kSweepObserveMs))
+        sweep_ = PendingSweep{true, burst_card, now_ms};
+      fill_hop_targets(ht);
+    } else if (burst_card < 0 || !inflight_) {
       fill_hop_targets(ht);
     } else {
       std::lock_guard<std::mutex> ilk(inflight_mu_);
@@ -573,6 +594,13 @@ void ChannelCore::step_controller_(const ChannelTickIn& in) {
       nhm_win_[static_cast<size_t>(burst_card)].invalidate();
       fill_hop_targets(ht);
     }
+  }
+  // A relay sweep in flight: the ranking is about to change; holding the
+  // trigger back keeps the controller out of hold_exhausted until it lands.
+  if (sweep_.on) {
+    ht.verdict.trigger = false;
+    ht.best.reset();
+    ht.escape.reset();
   }
   // Pinned: the verdict is still measured (OSD/sideport read it) but the
   // controller never sees a reactive trigger, in any arm below -- no order,
@@ -695,6 +723,29 @@ void ChannelCore::step_mechanical_retune_() {
       cur_ch_[static_cast<size_t>(i)] = want;
       nhm_win_[static_cast<size_t>(i)].invalidate();
     }
+  }
+}
+
+void ChannelCore::poll_sweep_(double now_ms) {
+  if (!sweep_.on) return;
+  auto& fe = *cards_[static_cast<size_t>(sweep_.card)];
+  if (auto r = fe.take_sweep_result()) {
+    sweep_.on = false;
+    ++sweep_round_;
+    for (const auto& e : r->entries) {
+      if (!e.valid) continue;
+      ranker_.add(sweep_visit(e, now_ms));
+      sink_.dwell(now_ms, sweep_.card, sweep_dwell(e, sweep_round_));
+    }
+    if (r->status != 0)
+      sink_.log(logf_("maburgs hop: relay sweep status %u, radio back on %u",
+                      static_cast<unsigned>(r->status), static_cast<unsigned>(r->back_channel)));
+    return;
+  }
+  if (now_ms - sweep_.sent_ms >= kSweepTimeoutMs) {
+    sweep_.on = false;
+    ++sweep_timeouts_;
+    sink_.log(logf_("maburgs hop: relay sweep_timeout on card %d", sweep_.card));
   }
 }
 

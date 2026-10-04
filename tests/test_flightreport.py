@@ -1374,6 +1374,22 @@ class HopReportTest(unittest.TestCase):
         self.assertEqual(len(scanlog["H"]), len(ref["H"]))
         self.assertEqual(len(scanlog["V"]), len(ref["V"]))
 
+    def test_v6_scanlog_d_carries_rx(self):
+        """scanlog 6 (spec 2026-10-05-cpe-relay-hop): D gains a trailing rx %
+        (relay sweeps; '-' for USB dwells). Older D lines have no rx field."""
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "scan.log")
+        with open(p, "w") as f:
+            f.write("scanlog 5 channels=40,64 mode=auto dwell_ms=250\n")
+            f.write("D 100 0 64 1 5 3 0 0 0 - nan 0 1 0 0 0 20 12.0\n")
+            f.write("scanlog 6 channels=40,64 mode=auto dwell_ms=250\n")
+            f.write("D 200 1 165 0 20 0 9 0 3 - nan 0 1 0 0 0 20 70.0 10.0\n")
+            f.write("D 300 0 64 1 5 3 0 0 0 - nan 0 1 0 0 0 20 12.0 -\n")
+        s = flightreport.load_scanlog(p)
+        self.assertEqual(s["version"], 6)
+        self.assertEqual([x["rx"] for x in s["D"]], [None, 10.0, None])
+        self.assertEqual(s["D"][1]["busy"], 70.0)
+
     def test_v4_scanlog_carries_busy_and_own_air(self):
         """scanlog 4 (spec 2026-09-25-nhm-airtime §6): the V card block
         grows two fields, nhm_busy (%, '-' when the window wasn't ours) and

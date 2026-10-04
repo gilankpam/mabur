@@ -875,4 +875,136 @@ TEST(relay_only_roster_no_ready_relay_is_quiet) {   // Review Focus 4
   CHECK(g.cards[0]->calls.empty());           // scout never started (card not ready): nothing touched it
 }
 
+// ---- relay sweep (spec 2026-10-05-cpe-relay-hop) ----
+static SweepResult sweep_of(std::initializer_list<std::pair<uint8_t, uint16_t>> ch_busy) {
+  SweepResult r;
+  for (int pass = 0; pass < 2; ++pass)
+    for (auto [ch, busy] : ch_busy) {
+      SweepEntry e; e.ch = ch; e.pass = (uint8_t)pass; e.valid = true;
+      e.active_ms = 20; e.busy_ms = busy; e.rx_ms = 0;
+      r.entries.push_back(e);
+    }
+  return r;
+}
+
+// The whole relay-only path: interference -> one SCAN for set-minus-op ->
+// the result ranks every candidate in ONE burst -> order on N RCFs -> the
+// sole relay retunes (its TUNE). Blocked 64 (raw busy 100 %) is skipped.
+TEST(relay_only_sweep_ranks_in_one_burst_then_hops) {
+  Rig g(0, 1);
+  freeze_auto(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  interfere(g, 3);
+  REQUIRE(g.cards[0]->sweeps.size() == 1);
+  CHECK((g.cards[0]->sweeps[0] == std::vector<uint8_t>{64, 112, 144}));   // set minus op 40
+  CHECK(g.core->sweep_pending());
+  CHECK(!g.sink.has_hop("order"));                 // waits for the result, no hold_exhausted either
+  CHECK(!g.sink.has_hop("hold_exhausted"));
+  g.cards[0]->pending_result = sweep_of({{64, 20}, {112, 1}, {144, 4}});
+  interfere(g, 3);                                 // persist 2-of-3 again once the card is usable
+  CHECK(!g.core->sweep_pending());
+  REQUIRE(g.sink.has_hop("order"));
+  pump_rcf(g);
+  std::optional<mabur::rc::Rcf> r;
+  for (int i = 0; i < 10 && !g.sink.has_hop("one_card_retune"); ++i) r = pump_rcf(g);
+  REQUIRE(g.sink.has_hop("one_card_retune"));
+  REQUIRE(r.has_value());
+  CHECK(r->hop_ch == 112);                         // least busy unblocked; 64 is blocked (100 %)
+  CHECK(g.cards[0]->ch == 112);
+  size_t relay_dwells = 0;
+  for (auto& [card, d] : g.sink.dwells) if (d.rx_valid && card == 0) ++relay_dwells;
+  CHECK(relay_dwells == 6);                        // 3 channels x 2 passes logged as D records
+}
+
+TEST(relay_only_sweep_timeout_allows_next_burst) {   // Review Focus 3
+  Rig g(0, 1);
+  freeze_auto(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  interfere(g, 3);
+  REQUIRE(g.cards[0]->sweeps.size() == 1);
+  g.cards[0]->sweep_in_flight = false;             // the relay never answers
+  // Checked AT the timeout, not 1100 ms on: the verdict's 2-of-3 window
+  // still holds the pre-sweep interfered windows (a no-valid-card window
+  // never pushes), so the first usable window after the timeout re-triggers
+  // and -- relay_burst_period_ms having passed -- sends the next SCAN at once.
+  for (int i = 0; i < 60; ++i) g.tick(true);       // 600 ms on (the SCAN left ~220 ms earlier): still waiting
+  CHECK(g.core->sweep_pending());
+  CHECK(g.core->sweep_timeouts() == 0);
+  for (int i = 0; i < 50 && g.core->sweep_timeouts() == 0; ++i) g.tick(true);   // crosses 1000 ms
+  CHECK(!g.core->sweep_pending());
+  CHECK(g.core->sweep_timeouts() == 1);
+  interfere(g, 3);
+  CHECK(g.cards[0]->sweeps.size() == 2);           // relay_burst_period_ms (1000) has passed
+}
+
+// The relay burst paces on hop.relay_burst_period_ms (1000), not the USB
+// burst's dwell_period_ms: an empty result lands at once, and a burst 400 ms
+// after the first SCAN must not happen.
+TEST(relay_burst_waits_relay_burst_period_ms) {
+  Rig g(0, 1);
+  freeze_auto(g);
+  REQUIRE(g.cfg.hop.dwell_period_ms < 400);
+  REQUIRE(g.cfg.hop.relay_burst_period_ms > 600);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  interfere(g, 3);
+  REQUIRE(g.cards[0]->sweeps.size() == 1);
+  g.cards[0]->sweep_in_flight = false;
+  g.cards[0]->pending_result = SweepResult{};      // an empty answer: nothing ranked
+  for (int i = 0; i < 40; ++i) g.tick(true);
+  CHECK(!g.core->sweep_pending());
+  interfere(g, 1);                                 // the trigger is still high
+  CHECK(g.cards[0]->sweeps.size() == 1);
+}
+
+TEST(relay_only_single_member_set_sends_no_scan) {   // Review Focus 4
+  Rig g(0, 1);
+  g.cfg.radio.channels = {40};
+  // rebuild the VrxController and the core with the one-member set
+  g.core.reset();
+  g.vrx = std::make_unique<VrxController>(vrx_cfg_from(g.cfg, 40));
+  ChannelCoreCfg cc; cc.radio = g.cfg.radio; cc.hop = g.cfg.hop; cc.key = g.cfg.link.key;
+  cc.start_ch = 40; cc.n_usb = 0; cc.threaded = false; cc.store_name = "s";
+  g.core = std::make_unique<ChannelCore>(cc, g.ptrs, *g.vrx, g.sink,
+      [](uint8_t) { return true; }, [&g] { return g.clk.now_ms(); }, [&g] { return g.clk.now_us(); },
+      [&g](int ms) { g.clk.sleep(ms); });
+  link_up(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  interfere(g, 4);
+  CHECK(g.cards[0]->sweeps.empty());
+  CHECK(!g.core->sweep_pending());
+}
+
+TEST(relay_survey_window_feeds_blocked) {
+  Rig g(0, 1);
+  freeze_auto(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  g.cards[0]->survey_win = SurveyWindow{true, 97.0, 2.0};   // analog-VTX shape: busy, not decodable
+  interfere(g, 2);
+  REQUIRE(g.sink.last_cards.size() == 1);
+  CHECK(g.sink.last_cards[0].busy_valid);
+  CHECK(std::abs(g.sink.last_cards[0].nhm_busy_pct - 97.0) < 1e-9);
+  CHECK(std::abs(g.sink.last_cards[0].own_air_pct - 2.0) < 1e-9);
+  CHECK(g.core->snapshot(0).hop.evidence & kEvBlocked);
+}
+
+TEST(relay_plus_usb_tx_usb_lets_the_relay_sweep) {
+  Rig g(1, 1);
+  // freeze_auto's >=2-card branch blocks the LAST card (the relay), but here
+  // the boot scout is card 0 (the one USB card): block it too, so no dwell
+  // ever completes and max_ms freezes op in place on 40.
+  g.cards[0]->retune_ok = false;
+  freeze_auto(g);
+  g.cards[0]->retune_ok = true;
+  link_up(g);
+  for (int i = 0; i < 5; ++i) g.tick(true, false, /*tx=*/0);
+  REQUIRE(g.cards[0]->ch == 40);
+  g.cards[0]->calls.clear();                       // the refused boot-scan retunes above are not the hop's
+  g.cards[0]->cca_per_ms_on[40] = 50;
+  interfere(g, 3);                                 // tx_card 0 (USB) by default in g.in()
+  CHECK(g.cards[1]->sweeps.size() == 1);           // the relay spare swept
+  bool usb_retuned_off_op = false;
+  for (auto& c : g.cards[0]->calls) if (c == "retune 64" || c == "retune 112" || c == "retune 144") usb_retuned_off_op = true;
+  CHECK(!usb_retuned_off_op);                      // the USB TX card never left the link
+}
+
 MTEST_MAIN
