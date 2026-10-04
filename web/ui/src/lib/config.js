@@ -158,12 +158,11 @@ export function channelWarning(cfg) {
 
 // Page-side mirror of what the core's loader would refuse (so Connect never
 // ends in `ERROR bad config`). null = OK, else a user-facing sentence.
-export function connectBlocker(cfg, mode, radio = 'usb') {
+export function connectBlocker(cfg, mode, _radio = 'usb') {
   const cs = checkChannelSet(cfg.channels, cfg.link, cfg.width);
   if (cs) return cs;
-  if (radio === 'relay' && cfg.channels.includes(144)) {
-    return 'The CPE relay cannot tune channel 144 — drop it from the set.';
-  }
+  // No per-radio channel rule: the CPE relay tunes the whole 20 MHz grid
+  // 36-177 since mabur-openwrt 2c1c51f (2026-10-03), 144 included.
   if (mode !== 'gs') return null;   // spotter's [link] is fixed (one rung at the page width)
   if (cfg.staticMcs >= 0) return null;   // pinned: the ladder is hidden and not sent (toOverlayToml)
   for (let i = 0; i < cfg.ladder.length; i++) {

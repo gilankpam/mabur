@@ -266,8 +266,10 @@ The set is validated twice. Page-side, `checkChannelSet()` (a mirror of
 `common/include/mabur/channel_set.h`'s rules plus the pin rule: 1–8
 members, each 1–177, no duplicates, at 40 MHz every member on an HT40 pair
 and all on one side of the pair grid, the pin a member) runs in
-`connectBlocker()` before the device is requested; with the CPE relay radio
-it also refuses channel 144, which the CPE cannot tune, before Connect.
+`connectBlocker()` before the device is requested. There is no per-radio
+channel rule: the CPE relay tunes the whole 20 MHz grid 36–177, channel 144
+included, since `mabur-openwrt` 2c1c51f (2026-10-03, `docs/cpe510-relay.md`);
+the page's earlier "cannot tune 144" refusal was stale and was removed.
 Core-side, `webgs::channel_width_error` re-checks with `maburgs`'s own
 loader checks: the set rules, the start channel a member, pinned ⇒ start ==
 the pin, and in GS mode no 40 MHz rung at width 20 (the GS could not
@@ -1129,8 +1131,9 @@ Channel row every second). The GS ran plan 2's `maburgs` a155bf32 — **not
 redeployed by this plan** (its only GS-side changes are a log-transition
 rule and an Emscripten-only guard) — under a temporary bench config: one
 card (`[[radio.cards]] index = 0`, which came up on usb 2-1.4, leaving
-2-1.1 for the jammer) and `channels = [40, 64, 112]` (no 144: the CPE
-relay cannot tune it), remembered 64; the drone's `/etc/mabur.channel`
+2-1.1 for the jammer) and `channels = [40, 64, 112]` (no 144: the page
+still carried its stale "CPE cannot tune 144" refusal, removed the same
+night), remembered 64; the drone's `/etc/mabur.channel`
 was set to 64 for the bench. Both configs were restored afterwards (GS
 `[40,64,112,144]` two-card auto, drone 144). Jam = plan 2's recipe
 (`txdemo` on the GS's free card: QoS-Data 1000 B at 6M, 4 ms interval,

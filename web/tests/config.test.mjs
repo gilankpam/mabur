@@ -205,10 +205,11 @@ test('checkChannelSet: count, range, duplicates, 40 MHz pairs on one offset, lin
   assert.match(checkChannelSet([40, 64], 112, 40), /not in the set/);
 });
 
-test('connectBlocker refuses 144 on the relay radio only (Review Focus 5)', () => {
+test('connectBlocker accepts 144 on the relay radio (CPE full 5 GHz grid since mabur-openwrt 2c1c51f)', () => {
   const c = defaultConfig();                       // contains 144
   assert.equal(connectBlocker(c, 'gs', 'usb'), null);
-  assert.match(connectBlocker(c, 'spotter', 'relay'), /144/);
+  assert.equal(connectBlocker(c, 'spotter', 'relay'), null);
+  assert.equal(connectBlocker(c, 'gs', 'relay'), null);
   assert.equal(connectBlocker(toggleChannel(c, 144), 'spotter', 'relay'), null);
 });
 
