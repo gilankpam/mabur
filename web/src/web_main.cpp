@@ -303,7 +303,7 @@ int run_replay(const ReplayOpts& o) {
 
   webgs::Opts wo;
   wo.adaptive_gap = !o.fixed_gap;
-  webgs::WebGs g(cfg, o.mode, cfg.radio.channels.front(), cfg.radio.width, std::move(io), wo);
+  webgs::WebGs g(cfg, o.mode, cfg.radio.channels.front(), cfg.radio.width, {}, 0, std::move(io), wo);
 
   uint64_t last_us = 0;
   bool first = true;
@@ -448,7 +448,7 @@ int live_loop(const LiveOpts& o, const maburgs::Config& cfg, uint8_t ch, int wid
       tx_seq = static_cast<uint16_t>((tx_seq + 1) & 0xFFF);
       r.send_frame(f);
     };
-  webgs::WebGs g(cfg, o.mode, ch, width, std::move(io));
+  webgs::WebGs g(cfg, o.mode, ch, width, {}, 0, std::move(io));
 
 #ifndef WEBGS_PAGE
   std::signal(SIGINT, [](int) { g_stop.store(true); });

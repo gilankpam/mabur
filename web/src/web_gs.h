@@ -19,8 +19,18 @@
 // Both modes decode the MSP OSD stream (stream_id 4) into Io::on_osd; it is
 // receive-only and independent of the video gate.
 //
-// Single-threaded: on_rx/tick/stats from one thread, one clock (core mono
-// us) for both the RX stamps and tick().
+// Gs with a roster also runs maburgs's `ChannelCore` (gs/src/channel_core.h)
+// at the same six seams run_radio() does: card tick + core tick per tick(),
+// on_rc_body/on_session_opened in the rc sink, is_link_video/note_video in
+// on_rx, note_au_end at every AU end, disc_targets/may_send/disc_for_card/
+// note_sent around every send, snapshot() for stats. The scout thread is the
+// core's own (a pthread in the browser, spec §5.5/§8). Without a roster
+// (replay/tests) Gs sends through Io::send and runs no core.
+//
+// Single-threaded API: on_rx/tick/stats from one thread, one clock (core
+// mono us) for both the RX stamps and tick(). The core's scout thread is the
+// only other thread; it reads the clock through the core's clock fns.
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <limits>
@@ -30,10 +40,12 @@
 #include <vector>
 
 #include "aggregator.h"
+#include "channel_core.h"
 #include "config.h"
 #include "drone_restart.h"
 #include "frame_stream.h"
 #include "gap_timeout_policy.h"
+#include "link_card.h"
 #include "link_health.h"
 #include "mabur/node.h"
 #include "mabur/rc_proto.h"
@@ -42,6 +54,7 @@
 #include "rcf_slot.h"
 #include "relay_stats.h"
 #include "rtt_estimator.h"
+#include "stats_exporter.h"
 #include "vrx_controller.h"
 
 namespace webgs {
@@ -57,6 +70,13 @@ struct Au {
   uint64_t t_first_us = 0;         // core clock
   uint64_t t_complete_us = 0;      // core clock
   std::optional<int64_t> cap_to_complete_us;  // GS mode once RTT has an offset
+};
+
+struct ChanStats {              // GS mode with a roster; mirrors ChannelSnapshot / the sideport
+  std::string scan_state;       // off | scouting | moving | frozen
+  uint64_t scan_rounds = 0;
+  std::optional<int> scan_pick;
+  maburgs::StatsHopIn hop;
 };
 
 struct Stats {
@@ -87,18 +107,24 @@ struct Stats {
   // key this core is configured with (for the page to show beside it).
   bool key_mismatch = false;
   std::string key_fp;
+  int channel = 0;              // the card's live channel; start_ch with no roster (replay)
+  std::optional<ChanStats> chan;   // Gs with a roster only
 };
-std::string stats_json(const Stats& s);   // one line, no trailing newline
+// One line, no trailing newline. Channel fields: "channel": int;
+// "scan_state": str|null; "scan_rounds": int|null; "scan_pick": int|null;
+// "hop": {enable, verdict, evidence, ref_rung|null, epoch, state,
+// target|null, hops, holds, last_ms|null} | null (null without a core).
+std::string stats_json(const Stats& s);
 
-// Validates the page's channel/width override (spec: ch/w come from the
-// page, not the config) with maburgs's own loader checks
-// (maburgs::radio_width_issue / link_width_issue): channel in the loader's
-// [1,200], width 20|40, 40 only on an HT40 pair, and -- GS mode, which
-// commands the ladder -- no 40 MHz rung / static pin while tuned 20.
-// Spotter only listens, so a 20 MHz spotter under a 40-capable ladder is
-// fine (it sees the 20 MHz rungs). std::nullopt = OK, else the reason.
+// Validates the page's channel set/start/width with the shared rules: width
+// 20|40; the set 1-8 unique members in [1,177], at width 40 every member an
+// HT40 pair primary on one offset (mabur::channel_set_issue); start_ch a
+// member; in pinned mode start_ch == the pin; GS mode additionally no 40 MHz
+// rung while tuned 20 (maburgs::link_width_issue). Spotter only listens, so
+// a 20 MHz spotter under a 40-capable ladder is fine (it sees the 20 MHz
+// rungs). std::nullopt = OK, else the reason.
 std::optional<std::string> channel_width_error(const maburgs::Config& cfg, Mode mode,
-                                               int channel, int width);
+                                               int start_ch, int width);
 
 // The page's relay stats fields, appended to each STATS line (keys as the
 // 2026-09-29 RelayLink::stats_fields emitted them; web/ui/src/lib/view.js
@@ -123,17 +149,40 @@ struct Io {
   // Optional, both modes: one MSP OSD screen (spec 2026-09-27-web-msp-osd),
   // at most every 30 ms. rows x cols cells, row-major, char | page << 8.
   std::function<void(int rows, int cols, const uint16_t* cells)> on_osd;
+  // Gs with a roster: the core's stderr-style lines ("maburgs channel: ...",
+  // "maburgs hop: ..."), exact text as maburgs prints them. The glue prints them.
+  // Called from the core thread or the scout thread.
+  std::function<void(const std::string& line)> on_log;
+  // Gs with a roster: the remembered channel changed (ChannelCore's store);
+  // the glue prints `CHANNEL <n>`, the page stores it and passes it back as --ch.
+  std::function<void(uint8_t ch)> on_channel_store;
 };
 
 struct Opts {
   bool adaptive_gap = true;  // false = fixed cfg.video.frame_gap_timeout_ms
                              // (AU parity with maburgs --dry-run, which has no policy)
+  // false = the ChannelCore runs without threads (tests): tick() runs one scout
+  // step itself, the core's clock is WebGs's tick clock, and a scout sleep
+  // ADVANCES that clock. true (default) = the scout thread, real clock, real sleeps.
+  bool core_threads = true;
+  // Tests: called from the core's SleepFn after the clock advance (or the
+  // real sleep), with the slept ms -- keeps a test's own clock (a fake
+  // card's energy clock) in step with the core's.
+  std::function<void(int ms)> sleep_hook;
 };
 
 class WebGs {
  public:
-  WebGs(const maburgs::Config& cfg, Mode mode, uint8_t channel, int width, Io io,
-        Opts opts = {});
+  // cards: the roster (USB first, then relays), n_usb of them USB. They
+  // outlive this object: the core's threads are joined in the destructor,
+  // before the caller stops the cards. Empty = no radio (replay/tests) -> Gs
+  // mode sends through Io::send and runs no core. Spotter never sends; its
+  // cards only report the live channel.
+  WebGs(const maburgs::Config& cfg, Mode mode, uint8_t start_ch, int width,
+        std::vector<maburgs::LinkCard*> cards, int n_usb, Io io, Opts opts = {});
+  ~WebGs();
+  WebGs(const WebGs&) = delete;
+  WebGs& operator=(const WebGs&) = delete;
   void on_rx(const mabur::node::RxBody& m);   // m.mono_us = core clock
   void tick(uint64_t now_us);                 // same clock as on_rx stamps
   Stats stats() const;
@@ -148,6 +197,7 @@ class WebGs {
   Mode mode() const { return mode_; }
   // Test seams.
   const maburgs::VrxController* vrx() const { return vrx_.get(); }  // nullptr in Spotter
+  const maburgs::ChannelCore* channel_core() const { return chan_.get(); }   // nullptr without a core
   const maburgs::LinkHealthAssembler& health() const { return lha_; }
   uint64_t sends() const { return sends_; }
   // Video-tail resets so far (session edges in Gs, drone restarts in Spotter).
@@ -161,7 +211,9 @@ class WebGs {
   const Mode mode_;
   Io io_;
   const Opts opts_;
-  uint64_t now_us_ = 0;          // newest clock seen (on_rx stamp or tick)
+  // Newest clock seen (on_rx stamp or tick). Atomic: the core's clock fns
+  // read it (core_threads = false) and may be called off the API thread.
+  std::atomic<uint64_t> now_us_{0};
   maburgs::Aggregator agg_;
   maburgs::FrameStream fs_;
   maburgs::GapTimeoutPolicy gap_;
@@ -185,6 +237,17 @@ class WebGs {
   uint64_t resets_ = 0;
   uint32_t idr_req_ = 0;
   std::string key_fp_;   // mabur::key_fingerprint(cfg.link.key), set at construction
+
+  // ---- roster + channel core (Gs with cards) ----
+  std::vector<maburgs::LinkCard*> cards_;
+  int n_usb_ = 0;
+  const uint8_t start_ch_;
+  struct Sink;                                      // ChannelSink -> Io::on_log; records ignored (no scan.log here)
+  std::unique_ptr<Sink> sink_;
+  std::unique_ptr<maburgs::ChannelCore> chan_;     // last member: destroyed (threads joined) first
+  void sleep_(int ms);                              // the core's SleepFn (see Opts::core_threads)
+  uint64_t now_us_for_core_() const;               // the core's clock (see Opts::core_threads)
+  uint64_t now_ms_for_core_() const;
 };
 
 }  // namespace webgs

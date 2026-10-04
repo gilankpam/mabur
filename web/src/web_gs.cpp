@@ -1,11 +1,14 @@
 #include "web_gs.h"
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <stdexcept>
+#include <thread>
 #include <utility>
 
 #include "json.hpp"
+#include "mabur/channel_set.h"
 #include "mabur/profile.h"
 #include "mabur/sbi.h"
 #include "mabur/sw_wire.h"
@@ -20,11 +23,18 @@ int64_t cap_to_complete_us(uint32_t pts32, uint64_t t_complete_us, int64_t pts_o
 }
 
 std::optional<std::string> channel_width_error(const maburgs::Config& cfg, Mode mode,
-                                               int channel, int width) {
-  // Same range as load_config's radio.channel.
-  if (channel < 1 || channel > 200)
-    return "channel " + std::to_string(channel) + " out of range [1,200]";
-  if (auto e = maburgs::radio_width_issue(static_cast<uint8_t>(channel), width))
+                                               int start_ch, int width) {
+  if (width != 20 && width != 40) return "radio.width: must be 20 or 40";
+  if (auto e = mabur::channel_set_issue(cfg.radio.channels, static_cast<uint8_t>(width),
+                                        "radio.channels"))
+    return e->field + ": " + e->why;
+  if (start_ch < 1 || start_ch > 177 ||
+      !mabur::channel_set_member(cfg.radio.channels, static_cast<uint8_t>(start_ch)))
+    return "channel " + std::to_string(start_ch) + " is not a member of radio.channels";
+  if (cfg.radio.pin && *cfg.radio.pin != start_ch)
+    return "radio.channel: pinned to " + std::to_string(*cfg.radio.pin) +
+           " but the start channel is " + std::to_string(start_ch);
+  if (auto e = maburgs::radio_width_issue(static_cast<uint8_t>(start_ch), width))
     return e->field + ": " + e->why;
   if (mode == Mode::Gs)
     if (auto e = maburgs::link_width_issue(cfg.link, width)) return e->field + ": " + e->why;
@@ -53,8 +63,25 @@ maburgs::LinkHealthCfg lh_cfg(const maburgs::Config& cfg) {
 }
 }  // namespace
 
-WebGs::WebGs(const maburgs::Config& cfg, Mode mode, uint8_t channel, int width, Io io,
-             Opts opts)
+// ChannelSink for the page: the stderr-style lines go to Io::on_log; the
+// scan.log records have no home here and are dropped.
+struct WebGs::Sink final : maburgs::ChannelSink {
+  WebGs* w;
+  explicit Sink(WebGs* o) : w(o) {}
+  void dwell(double, int, const maburgs::ScoutDwell&) override {}
+  void pick(double, std::optional<uint8_t>, uint64_t, const std::vector<maburgs::RankEntry>&,
+            int) override {}
+  void move(const maburgs::MoveEvent&) override {}
+  void verdict(double, const maburgs::VerdictOut&, const std::vector<maburgs::VerdictCardIn>&,
+               const maburgs::VerdictLinkIn&) override {}
+  void hop(const maburgs::HopEvent&) override {}
+  void log(const std::string& line) override {
+    if (w->io_.on_log) w->io_.on_log(line);
+  }
+};
+
+WebGs::WebGs(const maburgs::Config& cfg, Mode mode, uint8_t start_ch, int width,
+             std::vector<maburgs::LinkCard*> cards, int n_usb, Io io, Opts opts)
     : mode_(mode),
       io_(std::move(io)),
       opts_(opts),
@@ -72,6 +99,8 @@ WebGs::WebGs(const maburgs::Config& cfg, Mode mode, uint8_t channel, int width, 
            },
            [this](const uint8_t* p, size_t n) { cur_.data.insert(cur_.data.end(), p, p + n); },
            [this](bool complete, const maburgs::AuLatMeta& lat) {
+             // main.cpp: every AU end, clean or truncated (in-flight scout alignment).
+             if (chan_) chan_->note_au_end();
              cur_.complete = complete;
              cur_.t_first_us = lat.t_first_us;
              cur_.t_complete_us = now_us_;
@@ -90,7 +119,10 @@ WebGs::WebGs(const maburgs::Config& cfg, Mode mode, uint8_t channel, int width, 
       lha_(lh_cfg(cfg)),
       osd_([this](int rows, int cols, const uint16_t* cells) {
         if (io_.on_osd) io_.on_osd(rows, cols, cells);
-      }) {
+      }),
+      cards_(std::move(cards)),
+      n_usb_(n_usb),
+      start_ch_(start_ch) {
   // The radio is tuned by the glue. A spotter's link setting is just the
   // configured width: it drives no ladder, so it needs no MCS (the readout
   // comes off the air, air_mcs_), and the drone's applied-op echo left
@@ -98,11 +130,33 @@ WebGs::WebGs(const maburgs::Config& cfg, Mode mode, uint8_t channel, int width, 
   spotter_op_.bw = width;
   key_fp_ = mabur::key_fingerprint(cfg.link.key);
   if (mode_ == Mode::Gs) {
-    if (!io_.send) throw std::invalid_argument("webgs: Gs mode needs Io::send");
-    vrx_ = std::make_unique<maburgs::VrxController>(maburgs::vrx_cfg_from(cfg, channel));
-    vrx_->set_proposal(channel);   // never move the drone: we cannot follow
+    if (!io_.send && cards_.empty())
+      throw std::invalid_argument("webgs: Gs mode needs Io::send or a card");
+    // VrxCfg::op_channel seeds the proposal; with a roster the core owns it
+    // from here on.
+    vrx_ = std::make_unique<maburgs::VrxController>(maburgs::vrx_cfg_from(cfg, start_ch));
     slot_ = std::make_unique<maburgs::RcfSlotter>(
         maburgs::RcfSlotCfg{cfg.link.rcf_slot_hold_ms, 100, 2, 3, 1});
+    if (!cards_.empty()) {
+      sink_ = std::make_unique<Sink>(this);
+      maburgs::ChannelCoreCfg cc;
+      cc.radio = cfg.radio;
+      cc.hop = cfg.hop;
+      cc.key = cfg.link.key;
+      cc.start_ch = start_ch;
+      cc.n_usb = n_usb_;
+      cc.leak_per_frame = 1.0;   // as maburgs (bench row 7, docs/channel-select.md)
+      cc.threaded = opts_.core_threads;
+      cc.store_name = "CHANNEL line";
+      chan_ = std::make_unique<maburgs::ChannelCore>(
+          cc, cards_, *vrx_, *sink_,
+          [this](uint8_t ch) {
+            if (io_.on_channel_store) io_.on_channel_store(ch);
+            return true;
+          },
+          [this] { return now_ms_for_core_(); }, [this] { return now_us_for_core_(); },
+          [this](int ms) { sleep_(ms); });
+    }
   } else {
     io_.send = nullptr;   // spotter: no transmit path exists
     frame_wire_ = true;   // no session to gate on: always decode
@@ -128,7 +182,15 @@ WebGs::WebGs(const maburgs::Config& cfg, Mode mode, uint8_t channel, int width, 
       }
       return;
     }
-    if (vrx_) vrx_->on_rc_frame(f.data(), f.size(), static_cast<double>(us) / 1000.0);
+    if (!vrx_) return;
+    const bool was_session = vrx_->link_state() == maburgs::VrxState::SESSION;
+    vrx_->on_rc_frame(f.data(), f.size(), static_cast<double>(us) / 1000.0);
+    // main.cpp (final review C1): the ack that OPENED the session links
+    // where it was heard (on_rc_body() handed the core its rx channel).
+    if (chan_ && !was_session && vrx_->link_state() == maburgs::VrxState::SESSION &&
+        mabur::rc::frame_type(f.data(), f.size()) == mabur::rc::T_DISC_ACK)
+      if (const auto ack = mabur::rc::parse_disc_ack(f.data(), f.size()))
+        chan_->on_session_opened(*ack, static_cast<double>(us) / 1000.0);
   });
   agg_.set_probe_sink([this](uint8_t card, const mabur::node::RxBody& m) {
     if (slot_) slot_->on_probe_tail(now_us_ / 1000);
@@ -145,9 +207,34 @@ WebGs::WebGs(const maburgs::Config& cfg, Mode mode, uint8_t channel, int width, 
   }
 }
 
+WebGs::~WebGs() {
+  // Join the core's threads while every member they touch is still alive
+  // (the cards outlive this object).
+  if (chan_) chan_->shutdown();
+}
+
+uint64_t WebGs::now_us_for_core_() const {
+  if (!opts_.core_threads) return now_us_.load(std::memory_order_relaxed);
+  return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                   std::chrono::steady_clock::now().time_since_epoch())
+                                   .count());
+}
+
+uint64_t WebGs::now_ms_for_core_() const { return now_us_for_core_() / 1000; }
+
+void WebGs::sleep_(int ms) {
+  if (ms <= 0) return;
+  if (!opts_.core_threads)
+    now_us_.fetch_add(static_cast<uint64_t>(ms) * 1000, std::memory_order_relaxed);
+  else
+    std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+  if (opts_.sleep_hook) opts_.sleep_hook(ms);
+}
+
 void WebGs::on_rx(const mabur::node::RxBody& m) {
   if (m.mono_us > now_us_) now_us_ = m.mono_us;
   ++bodies_;
+  if (chan_) chan_->on_rc_body(m.rx_channel);   // read by the rc sink inside on_rx_body()
   agg_.on_rx_body(m);
   if (!m.crc_ok) return;
   const int sid = mabur::sbi_peek_stream_id(m.body.data(), m.body.size());
@@ -156,10 +243,14 @@ void WebGs::on_rx(const mabur::node::RxBody& m) {
   // on this body (legacy/VHT, or a relay frame without one), keep the last.
   if (sid == 0 && m.mcs != 255) air_mcs_ = m.mcs;
   if (!vrx_) return;
-  // Only real video refreshes the rendezvous silence timer (main.cpp).
   if (mabur::rc::frame_type(m.body.data(), m.body.size()) < 0 && sid != mabur::kMspStreamId &&
-      sid != mabur::kProbeStreamId)
-    vrx_->on_video(static_cast<double>(m.mono_us) / 1000.0);
+      sid != mabur::kProbeStreamId) {
+    // Only real video heard where the link lives refreshes the rendezvous
+    // silence timer (main.cpp, ChannelPlan::is_link_video).
+    if (!chan_ || chan_->is_link_video(m.rx_channel))
+      vrx_->on_video(static_cast<double>(m.mono_us) / 1000.0);
+    if (chan_) chan_->note_video(m.rx_channel);   // hop confirmation reads the stamp
+  }
 }
 
 void WebGs::reset_video_() {
@@ -170,19 +261,26 @@ void WebGs::reset_video_() {
 }
 
 void WebGs::send_(const maburgs::SlotFrame& f) {
-  io_.send(f.frame);
+  if (chan_ && !chan_->may_send(f.card)) return;   // the scout gate: dropped, counted by the core
+  bool ok = true;
+  if (!cards_.empty())
+    ok = cards_[static_cast<size_t>(f.card)]->send_control(f.frame);
+  else
+    io_.send(f.frame);
   ++sends_;
   // stamp_rtt is set exactly for RCFs (tick(): `!out->is_disc`).
   if (f.stamp_rtt) {
     ++rcf_sent_;
     rtt_.on_rcf_sent(f.seq, now_us_);
   }
+  if (chan_) chan_->note_sent(ok, f.stamp_rtt);
 }
 
 void WebGs::tick(uint64_t now_us) {
   if (now_us > now_us_) now_us_ = now_us;
   const uint64_t now_ms_u = now_us_ / 1000;
   const double now_ms = static_cast<double>(now_ms_u);
+  for (auto* c : cards_) c->tick(now_ms_u);
   if (opts_.adaptive_gap && now_ms_u >= gap_update_ms_ + 1000) {
     gap_update_ms_ = now_ms_u;
     for (int s = 0; s < 2; ++s) {
@@ -195,6 +293,18 @@ void WebGs::tick(uint64_t now_us) {
     msp_->tick(now_ms_u);   // expire stale repair rows (~1 Hz, as maburgs)
   }
   osd_.tick(now_ms_u);      // publishes a held screen once its 30 ms is up
+  if (chan_) {
+    // maburgs main.cpp's per-tick block (gs/src/channel_core.h). One TX
+    // card: card 0 (the page has no TxSelector and no calibration).
+    maburgs::ChannelTickIn cin;
+    cin.now_ms = now_ms;
+    cin.in_session = vrx_->link_state() == maburgs::VrxState::SESSION;
+    cin.cal_running = false;
+    cin.tx_card = 0;
+    cin.agg = &agg_;
+    chan_->tick(cin);
+    chan_->note_tx_card(0);
+  }
   if (vrx_) {
     // maburgs main.cpp: video tail only while in SESSION with a
     // CAP_FRAME_WIRE peer; any change drops FRAG-seq continuity and
@@ -224,13 +334,21 @@ void WebGs::tick(uint64_t now_us) {
     if (lh.probe_tail_ms) slot_->set_probe_tail_ms(*lh.probe_tail_ms);
     if (auto out = vrx_->step(now_ms, lh.health)) {
       if (!out->is_disc) lha_.on_step_sent(agg_);
-      // rcf_seq() IS this frame's seq (build_rcf bumped it); DISCs are not
-      // matchable RTT sends.
-      maburgs::SlotFrame sf{std::move(out->frame), vrx_->rcf_seq(), 0, !out->is_disc};
-      if (!slot_->offer(sf, now_ms_u, false)) {
-        send_(sf);
-        sent_copy = sf.frame;
-        sent = &sent_copy;
+      // A DISC follows the scout (scan_disc_targets via the core); an RCF
+      // goes to card 0. rcf_seq() IS this frame's seq (build_rcf bumped
+      // it); DISCs are not matchable RTT sends.
+      const std::vector<int> targets =
+          (out->is_disc && chan_) ? chan_->disc_targets(0) : std::vector<int>{0};
+      for (size_t k = 0; k < targets.size(); ++k) {
+        maburgs::SlotFrame sf{k + 1 == targets.size() ? std::move(out->frame) : out->frame,
+                              vrx_->rcf_seq(), targets[k], !out->is_disc};
+        // A DISC proposes the channel it is sent on (main.cpp, C1 addendum A).
+        if (out->is_disc && chan_) sf.frame = chan_->disc_for_card(sf.frame, targets[k]);
+        if (!slot_->offer(sf, now_ms_u, false)) {
+          send_(sf);
+          sent_copy = sf.frame;
+          sent = &sent_copy;
+        }
       }
     }
     for (const auto& f : slot_->take_due(now_ms_u)) {
@@ -306,6 +424,16 @@ Stats WebGs::stats() const {
   }
   s.osd_snaps = msp_ ? msp_->snapshots_out() : 0;
   s.osd_screens = osd_.screens();
+  s.channel = cards_.empty() ? start_ch_ : cards_[0]->channel();
+  if (chan_) {
+    const auto cs = chan_->snapshot(0);
+    ChanStats c;
+    c.scan_state = cs.scan_state;
+    c.scan_rounds = cs.scan_rounds;
+    c.scan_pick = cs.scan_pick;
+    c.hop = cs.hop;
+    s.chan = c;
+  }
   return s;
 }
 
@@ -326,6 +454,31 @@ std::string stats_json(const Stats& s) {
     else
       j[k] = nullptr;
   };
+  j["channel"] = s.channel;
+  if (s.chan) {
+    j["scan_state"] = s.chan->scan_state;
+    j["scan_rounds"] = s.chan->scan_rounds;
+    opt("scan_pick", s.chan->scan_pick);
+    const auto& hp = s.chan->hop;
+    auto optj = [](const auto& v) { return v ? nlohmann::json(*v) : nlohmann::json(nullptr); };
+    nlohmann::json h;
+    h["enable"] = hp.enable;
+    h["verdict"] = hp.verdict;
+    h["evidence"] = hp.evidence;
+    h["ref_rung"] = optj(hp.ref_rung);
+    h["epoch"] = hp.epoch;
+    h["state"] = hp.state;
+    h["target"] = optj(hp.target);
+    h["hops"] = hp.hops;
+    h["holds"] = hp.holds;
+    h["last_ms"] = optj(hp.last_ms);
+    j["hop"] = h;
+  } else {
+    j["scan_state"] = nullptr;
+    j["scan_rounds"] = nullptr;
+    j["scan_pick"] = nullptr;
+    j["hop"] = nullptr;
+  }
   opt("pre_fec_loss", s.pre_fec_loss);
   opt("residual", s.residual);
   opt("rtt_ms", s.rtt_ms);
