@@ -1,7 +1,7 @@
 #include "hop_controller.h"
 #include "mtest.h"
 using namespace maburgs;
-static HopCfg cfg(bool en = true) { HopCfg c; c.enable = en; return c; }
+static HopCfg cfg() { return HopCfg{}; }
 static VerdictOut interfered(int ref = 5) { VerdictOut o; o.v = Verdict::Interfered; o.trigger = true; o.ref_rung = ref; return o; }
 static VerdictOut healthy() { return VerdictOut{}; }
 // A verdict with no span stamped on it is treated as one HopVerdict would
@@ -28,7 +28,7 @@ static bool backed(const HopController& h, uint8_t ch, double now) {
   return false;
 }
 TEST(trigger_orders_best_and_video_confirms_then_verify_passes) {
-  HopController h(cfg(), 136);
+  HopController h(cfg());
   auto a = h.tick(T(1000, interfered(5), 149, 136));
   CHECK(a.kind == HopAction::Order && a.target == 149 && a.epoch == 1 && a.restore_rung == 5 && a.lead_card == 1);
   CHECK(h.hop_ch() == 149 && h.state() == HopState::Ordered);
@@ -47,7 +47,7 @@ TEST(trigger_orders_best_and_video_confirms_then_verify_passes) {
   CHECK(ev[0].kind == "order" && ev[1].kind == "lead_confirm" && ev.back().kind == "verify_pass");
 }
 TEST(no_video_withdraws_and_backs_off_target) {
-  HopController h(cfg(), 136);
+  HopController h(cfg());
   h.tick(T(1000, interfered(), 149, 136));
   auto a = h.tick(T(1600, interfered(), 149, 136));
   CHECK(a.kind == HopAction::Withdraw && a.target == 136 && a.epoch == 2);
@@ -59,7 +59,7 @@ TEST(no_video_withdraws_and_backs_off_target) {
   CHECK(h.backed_off(1600 + 30000 + 1).empty());
 }
 TEST(verify_fail_hops_again_immediately_to_next_best) {
-  HopController h(cfg(), 136);
+  HopController h(cfg());
   h.tick(T(1000, interfered(), 149, 136));
   h.tick(T(1080, interfered(), 149, 136, true));
   auto a = h.tick(T(1300, interfered(), 165, 149));     // still interfered on 149; ranker now says 165
@@ -67,16 +67,14 @@ TEST(verify_fail_hops_again_immediately_to_next_best) {
   auto bo = h.backed_off(1301);   // the fled 136 and the failed 149
   CHECK(bo.size() == 2 && bo[0] == 136 && bo[1] == 149);
 }
-TEST(exhausted_goes_home_then_holds) {
-  HopController h(cfg(), 136);
+TEST(exhausted_holds_without_a_home_fallback) {
+  HopController h(cfg());
   auto a = h.tick(T(1000, interfered(), std::nullopt, 149));
-  CHECK(a.kind == HopAction::Order && a.target == 136);
-  h.tick(T(1080, interfered(), std::nullopt, 149, true));
-  a = h.tick(T(1300, interfered(), std::nullopt, 136));
   CHECK(a.kind == HopAction::Hold && h.state() == HopState::Hold && h.holds() == 1);
+  CHECK(h.hop_ch() == 0);                    // nothing ordered
 }
 TEST(cooldown_and_per_minute_cap) {
-  HopController h(cfg(), 136);
+  HopController h(cfg());
   double t = 0;
   for (int n = 0; n < 4; ++n) {                       // 4 confirmed hops
     CHECK(h.tick(T(t += 3000, interfered(), 149, 136)).kind == HopAction::Order);
@@ -88,7 +86,7 @@ TEST(cooldown_and_per_minute_cap) {
   CHECK(h.tick(T(t += 2500, interfered(), 149, 136)).kind == HopAction::Hold);   // 4/min cap
 }
 TEST(one_card_retunes_after_repeats) {
-  HopController h(cfg(), 136);
+  HopController h(cfg());
   HopTick k = T(1000, interfered(), 149, 136, false, /*lead=*/-1); k.n_cards = 1;
   CHECK(h.tick(k).kind == HopAction::Order);
   k.now_ms = 1200; k.rcf_sent_since_order = 4; CHECK(h.tick(k).kind == HopAction::None);
@@ -97,20 +95,14 @@ TEST(one_card_retunes_after_repeats) {
   k.now_ms = 1300; CHECK(h.tick(k).kind == HopAction::None);       // once
   k.now_ms = 1350; k.video_on_target = true; CHECK(h.tick(k).kind == HopAction::Confirm);
 }
-TEST(disabled_logs_but_never_acts) {
-  HopController h(cfg(false), 136);
-  CHECK(h.tick(T(1000, interfered(), 149, 136)).kind == HopAction::None);
-  CHECK(h.hop_ch() == 0);
-  auto ev = h.take_events(); REQUIRE(ev.size() == 1); CHECK(ev[0].kind == "would_order");
-}
 TEST(ordered_state_never_reorders_without_confirm_or_withdraw) {
-  HopController h(cfg(), 136);
+  HopController h(cfg());
   CHECK(h.tick(T(1000, interfered(), 149, 136)).kind == HopAction::Order);
   CHECK(h.tick(T(1100, interfered(), 149, 136)).kind == HopAction::None);   // still Ordered, before confirm_ms, no video
   CHECK(h.state() == HopState::Ordered);
 }
 TEST(verify_fail_retries_count_against_rate_cap) {
-  HopController h(cfg(), 136);
+  HopController h(cfg());
   double t = 1000;
   CHECK(h.tick(T(t, interfered(), 149, 136)).kind == HopAction::Order);              // order #1
   t += 50; CHECK(h.tick(T(t, interfered(), 149, 136, true)).kind == HopAction::Confirm);
@@ -138,7 +130,7 @@ TEST(verify_fail_retries_count_against_rate_cap) {
 // verify of a perfectly good channel ~10 ms after landing, backed it off
 // for 30 s and marched on to the next candidate.
 TEST(stale_pre_hop_interfered_does_not_break_the_verify_window) {
-  HopController h(cfg(), 136);
+  HopController h(cfg());
   VerdictOut pre_hop = measured(interfered(5), 850, 1000);   // the window the order was placed on
   CHECK(h.tick(T(1000, pre_hop, 149, 136)).kind == HopAction::Order);
   CHECK(h.tick(T(1080, pre_hop, 149, 136, /*video=*/true)).kind == HopAction::Confirm);
@@ -157,7 +149,7 @@ TEST(stale_pre_hop_interfered_does_not_break_the_verify_window) {
 // The boundary: a window that merely ENDS after the confirm gathered most
 // of its deltas on the old channel, so it is still stale.
 TEST(verify_window_rejects_a_window_that_straddles_the_confirm) {
-  HopController h(cfg(), 136);
+  HopController h(cfg());
   h.tick(T(1000, measured(interfered(5), 850, 1000), 149, 136));
   h.tick(T(1080, measured(interfered(5), 850, 1000), 149, 136, true));   // confirm at 1080
   CHECK(h.tick(T(1160, measured(interfered(5), 1000, 1150), 165, 149)).kind == HopAction::None);
@@ -170,7 +162,7 @@ TEST(verify_window_rejects_a_window_that_straddles_the_confirm) {
 // (~10 KB/s each), and hop.holds on the sideport becoming a six-digit ramp.
 // A hold is a state: log its edges.
 TEST(hold_is_one_episode_not_one_event_per_tick) {
-  HopController h(cfg(), 136);
+  HopController h(cfg());
   for (double t = 1000; t < 2000; t += 10) {
     auto a = h.tick(T(t, interfered(), std::nullopt, 136));   // at home, nothing ranked
     CHECK(a.kind == HopAction::Hold);
@@ -185,7 +177,7 @@ TEST(hold_is_one_episode_not_one_event_per_tick) {
 // the rest of the flight: every other way out of Hold runs through order(),
 // which needs a live trigger.
 TEST(hold_ends_when_the_trigger_clears_and_says_how_long) {
-  HopController h(cfg(), 136);
+  HopController h(cfg());
   h.tick(T(1000, interfered(), std::nullopt, 136));
   (void)h.take_events();
   CHECK(h.tick(T(1500, healthy(), std::nullopt, 136)).kind == HopAction::None);
@@ -199,7 +191,7 @@ TEST(hold_ends_when_the_trigger_clears_and_says_how_long) {
   CHECK(h.take_events().empty());
 }
 TEST(re_entering_a_hold_after_it_ended_counts_a_second_episode) {
-  HopController h(cfg(), 136);
+  HopController h(cfg());
   h.tick(T(1000, interfered(), std::nullopt, 136));
   h.tick(T(1500, healthy(), std::nullopt, 136));
   h.tick(T(2000, interfered(), std::nullopt, 136));
@@ -216,7 +208,7 @@ MTEST_MAIN
 // on the old op, no split_home, while the drone had long since gone home
 // on move_confirm_ms. on_session_lost() is the falling-edge exit.
 TEST(session_loss_while_ordered_withdraws_the_hop) {
-  HopController h(cfg(), 136);
+  HopController h(cfg());
   CHECK(h.tick(T(1000, interfered(), 40, 128)).kind == HopAction::Order);
   auto a = h.on_session_lost(1050, 128);
   CHECK(a.kind == HopAction::Withdraw && a.target == 128 && a.epoch == 2);
@@ -229,37 +221,31 @@ TEST(session_loss_while_ordered_withdraws_the_hop) {
   CHECK(ev.back().kind == "session_lost" && ev.back().target == 40);
 }
 TEST(session_loss_when_idle_does_nothing) {
-  HopController h(cfg(), 136);
+  HopController h(cfg());
   CHECK(h.on_session_lost(1000, 136).kind == HopAction::None);
   CHECK(h.state() == HopState::Idle && h.take_events().empty());
 }
 TEST(session_loss_while_verifying_ends_the_verify) {
   // Confirmed already, so ChannelPlan has moved op_ and its own link-loss
   // path works; the controller must just not resume a stale verify.
-  HopController h(cfg(), 136);
+  HopController h(cfg());
   h.tick(T(1000, interfered(), 149, 136));
   CHECK(h.tick(T(1080, interfered(), 149, 136, true)).kind == HopAction::Confirm);
   CHECK(h.on_session_lost(1200, 149).kind == HopAction::None);
   CHECK(h.state() == HopState::Idle);
 }
-TEST(session_loss_is_shadow_only_when_disabled) {
-  HopController h(cfg(false), 136);
-  h.tick(T(1000, interfered(), 40, 128));
-  CHECK(h.on_session_lost(1050, 128).kind == HopAction::None);
-  auto ev = h.take_events();
-  REQUIRE(!ev.empty());
-  CHECK(ev.back().kind == "would_session_lost");
-}
 
 // The deadlock itself, with the real ChannelPlan: the recorded sequence
-// (op 128, order 40 on card 0, session drops before any confirm). The GS
-// must have a card on home within split_after_ms, where the drone waits.
+// (op 128, order 40 on card 0, session drops before any confirm). The
+// session loss must withdraw the in-flight order (plan no longer hopping,
+// op restored to 136) and the plan must release the spare card to search
+// once search_after_ms has elapsed -- there is no home and no split.
 #include "channel_plan.h"
-TEST(session_loss_mid_hop_lets_the_plan_split_home) {
-  ChannelPlan plan(ChannelPlanCfg{136, 2, 5000, 300, 20});
-  plan.on_ack(0, 128, 128);                  // link lives on 128
+TEST(session_loss_mid_hop_withdraws_and_releases_the_plan) {
+  ChannelPlan plan(ChannelPlanCfg{136, {136, 149, 161}, 2, 5000});
+  plan.on_ack(0, 128, 128);                  // not a set member: no-op, op stays 136
   plan.tick(100, true);
-  HopController h(cfg(), 136);
+  HopController h(cfg());
   auto a = h.tick(T(1000, interfered(), 40, 128, false, /*lead=*/0));
   REQUIRE(a.kind == HopAction::Order);
   plan.hop_order(1000, a.target, a.lead_card);
@@ -267,12 +253,11 @@ TEST(session_loss_mid_hop_lets_the_plan_split_home) {
   a = h.on_session_lost(1100, plan.op());
   REQUIRE(a.kind == HopAction::Withdraw);
   plan.hop_withdraw(1100);
-  bool home = false;
-  for (double t = 1100; t <= 1100 + 5000 + 100; t += 10) {
-    plan.tick(t, false);
-    home = home || plan.desired(0) == 136 || plan.desired(1) == 136;
-  }
-  CHECK(home);
+  CHECK(!plan.hopping() && plan.op() == 136);
+  double t = 1100;
+  plan.tick(t, false);           // falling edge: starts the search timer
+  plan.tick(t + 5000, false);    // search_after_ms later
+  CHECK(plan.release_scout());
 }
 
 // ---- never retry the channel being fled (same session) -----------------
@@ -281,19 +266,18 @@ TEST(session_loss_mid_hop_lets_the_plan_split_home) {
 // the jammed 144 a clean 25, so when 128's verify failed the retry went
 // straight back into the jam.
 TEST(trigger_backs_off_the_channel_it_flees) {
-  HopController h(cfg(), 136);
+  HopController h(cfg());
   CHECK(h.tick(T(1000, interfered(), 128, 144)).kind == HopAction::Order);
   bool fled = false;
   for (auto c : h.backed_off(1001)) fled = fled || c == 144;
   CHECK(fled);
 }
 TEST(verify_fail_never_retries_the_channel_it_fled) {
-  HopController h(cfg(), 136);
+  HopController h(cfg());
   h.tick(T(1000, interfered(), 128, 144));           // flee the jam on 144
   h.tick(T(1062, interfered(), 128, 144, true));     // landed on 128
   auto a = h.tick(T(1300, interfered(), 144, 128));  // 128 "fails"; ranker offers 144
-  CHECK(a.kind == HopAction::Order && a.target != 144);
-  CHECK(a.target == 136);                            // nothing else ranked: home
+  CHECK(a.kind == HopAction::Hold);
 }
 
 // ---- the verify ignores the landing's own debris (bench 2026-09-24) ----
@@ -304,7 +288,7 @@ TEST(verify_fail_never_retries_the_channel_it_fled) {
 // settle (kHopSettleBlankMs, the same one the loss window is blanked for)
 // after the confirm to count.
 TEST(verify_ignores_a_window_that_starts_inside_the_landing_settle) {
-  HopController h(cfg(), 136);
+  HopController h(cfg());
   h.tick(T(1000, measured(interfered(5), 850, 1000), 149, 136));
   h.tick(T(1080, measured(interfered(5), 850, 1000), 149, 136, true));   // confirm at 1080
   // starts 27 ms after landing: repairs of the transition, not the channel
@@ -313,29 +297,6 @@ TEST(verify_ignores_a_window_that_starts_inside_the_landing_settle) {
   // starts after confirm + settle: genuine, fails the verify
   auto a = h.tick(T(1410, measured(interfered(5), 1257, 1407), 165, 149));
   CHECK(a.kind == HopAction::Order && a.target == 165);
-}
-
-// ---- nor go home when home is the channel being fled -------------------
-// Run 1 of the fix bench: the jam was on home (136). 136 was correctly
-// backed off as the fled channel, but when 144, 128 and 40 each failed
-// their verify, the "nothing ranked: go home" fallback ordered 136 anyway
-// -- straight back into the jam. A backed-off home is not a candidate.
-TEST(verify_fail_does_not_fall_back_to_a_backed_off_home) {
-  HopController h(cfg(), 136);
-  h.tick(T(1000, interfered(), 149, 136));             // flee the jam on home
-  h.tick(T(1080, interfered(), 149, 136, true));       // landed on 149
-  auto a = h.tick(T(1400, measured(interfered(), 1250, 1400), std::nullopt, 149));
-  CHECK(a.kind != HopAction::Order || a.target != 136);
-  CHECK(a.kind == HopAction::Hold);
-}
-TEST(fresh_trigger_does_not_fall_back_to_a_backed_off_home) {
-  HopController h(cfg(), 136);
-  h.tick(T(1000, interfered(), 149, 136));             // flee 136 (backs it off)
-  h.tick(T(1080, interfered(), 149, 136, true));
-  h.tick(T(2200, healthy(), std::nullopt, 149));       // verify passes on 149
-  // cooldown over, 149 now jammed, nothing ranked, home still backed off
-  auto a = h.tick(T(5000, interfered(), std::nullopt, 149));
-  CHECK(a.kind != HopAction::Order || a.target != 136);
 }
 
 // ---- Task 11: hop-logic fixes after the 2026-09-26 long-frame jam run ----
@@ -349,31 +310,12 @@ static bool has(const std::vector<uint8_t>& v, uint8_t ch) {
   for (auto c : v) if (c == ch) return true;
   return false;
 }
-// (a) A blocked home is not the "nothing ranked" fallback: ordering it is
-// ordering a channel the dwells already read as jammed.
-// Revert (drop `!home_blocked` from home_available()): both ticks Order 136.
-TEST(blocked_home_is_not_a_fallback) {
-  HopController h(cfg(), 136);
-  HopTick k = T(1000, interfered(), std::nullopt, 149); k.home_blocked = true;
-  auto a = h.tick(k);
-  CHECK(a.kind == HopAction::Hold);
-  auto ev = h.take_events();
-  REQUIRE(ev.size() == 1);
-  CHECK(ev[0].kind == "hold_exhausted");
-  // ...and not the verify-fail retry's fallback either.
-  HopController g(cfg(), 136);
-  g.tick(T(1000, interfered(), 149, 120));
-  g.tick(T(1080, interfered(), 149, 120, true));
-  HopTick f = T(1400, measured(interfered(), 1250, 1400), std::nullopt, 149); f.home_blocked = true;
-  auto b = g.tick(f);
-  CHECK(b.kind == HopAction::Hold);
-}
 // (d) Stuck on a blocked op with nothing ranked and home unavailable: the
 // escape (a fled, unblocked channel) is ordered instead of a hold.
 // Revert (drop the escape branch in idle_tick): Hold, hold_exhausted.
 TEST(escape_from_blocked_op_into_fled_channel) {
-  HopController h(cfg(), 136);
-  HopTick k = T(1000, blocked_here(), std::nullopt, 136);   // on home: home unavailable
+  HopController h(cfg());
+  HopTick k = T(1000, blocked_here(), std::nullopt, 136);   // on 136: nothing ranked
   k.escape = 112; k.escape_score = 7;
   auto a = h.tick(k);
   CHECK(a.kind == HopAction::Order && a.target == 112 && a.restore_rung == 5);
@@ -389,7 +331,7 @@ TEST(escape_from_blocked_op_into_fled_channel) {
 }
 // Revert (escape without the kEvBlocked gate): Order 112.
 TEST(no_escape_when_op_not_blocked) {
-  HopController h(cfg(), 136);
+  HopController h(cfg());
   HopTick k = T(1000, raised_here(), std::nullopt, 136);
   k.escape = 112;
   auto a = h.tick(k);
@@ -403,7 +345,7 @@ TEST(no_escape_when_op_not_blocked) {
 // Revert (backed_off_failed returns every entry, or flee() records
 // verify_failed): 144 appears in the failed list.
 TEST(backed_off_failed_lists_only_verify_failed_channels) {
-  HopController h(cfg(), 136);
+  HopController h(cfg());
   h.tick(T(1000, interfered(), 128, 144));             // flee 144
   h.tick(T(1062, interfered(), 128, 144, true));       // landed on 128
   auto a = h.tick(T(1300, interfered(), 40, 128));     // 128 fails its verify -> 40
@@ -423,7 +365,7 @@ TEST(backed_off_failed_lists_only_verify_failed_channels) {
 // reason (and keeps doubling).
 // Revert (back_off() keeps the first reason): 144 stays "fled".
 TEST(back_off_reason_is_overwritten_by_a_later_failure) {
-  HopController g(cfg(), 136);
+  HopController g(cfg());
   g.tick(T(1000, interfered(), 128, 144));             // flee 144 (k=1, fled)
   g.tick(T(1062, interfered(), 128, 144, true));
   g.tick(T(2200, healthy(), std::nullopt, 128));       // verify passes on 128
@@ -437,7 +379,7 @@ TEST(back_off_reason_is_overwritten_by_a_later_failure) {
 }
 // Revert (no hop-cap check before the verify-fail escape): Order 112.
 TEST(escape_respects_hop_cap) {
-  HopController h(cfg(), 136);
+  HopController h(cfg());
   double t = 1000;
   const double kPast = 160;
   CHECK(h.tick(T(t, interfered(), 149, 136)).kind == HopAction::Order);               // #1
@@ -450,7 +392,7 @@ TEST(escape_respects_hop_cap) {
   t += 10; h.tick(T(t, interfered(), 44, 149, true));
   (void)h.take_events();
   t += kPast;
-  HopTick k = T(t, blocked_here(), std::nullopt, 44);   // home 136 fled -> unavailable
+  HopTick k = T(t, blocked_here(), std::nullopt, 44);   // 136 fled -> backed off
   k.escape = 112;
   auto a = h.tick(k);
   CHECK(a.kind == HopAction::Hold);
@@ -460,8 +402,8 @@ TEST(escape_respects_hop_cap) {
 }
 // Revert (drop the escape branch in verifying_tick): Hold, verify_fail.
 TEST(escape_after_verify_fail) {
-  HopController h(cfg(), 136);
-  h.tick(T(1000, interfered(), 149, 136));              // flee home 136
+  HopController h(cfg());
+  h.tick(T(1000, interfered(), 149, 136));              // flee 136
   h.tick(T(1080, interfered(), 149, 136, true));        // landed on 149
   (void)h.take_events();
   HopTick k = T(1400, measured(blocked_here(), 1250, 1400), std::nullopt, 149);
@@ -473,7 +415,7 @@ TEST(escape_after_verify_fail) {
   CHECK(ev[0].kind == "escape" && ev[0].target == 112);
   CHECK(has(h.backed_off_failed(1401), 149));           // the failed target is still penalised
   // not blocked here: the old verify_fail hold stands
-  HopController g(cfg(), 136);
+  HopController g(cfg());
   g.tick(T(1000, interfered(), 149, 136));
   g.tick(T(1080, interfered(), 149, 136, true));
   HopTick m = T(1400, measured(raised_here(), 1250, 1400), std::nullopt, 149);
@@ -495,7 +437,7 @@ static uint8_t evcount(const std::vector<HopEvent>& ev, const char* k) {
 }
 // Revert (drop the extension branch in ordered_tick): Withdraw at 1500.
 TEST(confirm_extends_while_op_blocked) {
-  HopController h(cfg(), 136);
+  HopController h(cfg());
   REQUIRE(h.tick(T(1000, blocked_here(), 112, 144)).kind == HopAction::Order);
   (void)h.take_events();
   CHECK(h.tick(T(1500, blocked_here(), 112, 144)).kind == HopAction::None);
@@ -509,7 +451,7 @@ TEST(confirm_extends_while_op_blocked) {
 // Revert (record Failed on an extended withdraw): 112 is in
 // backed_off_failed(); or keep "withdraw" as the event kind.
 TEST(extension_expires_as_undelivered) {
-  HopController h(cfg(), 136);
+  HopController h(cfg());
   h.tick(T(1000, blocked_here(), 112, 144));
   h.tick(T(1500, blocked_here(), 112, 144));
   (void)h.take_events();
@@ -525,7 +467,7 @@ TEST(extension_expires_as_undelivered) {
 // Today's behaviour when the op is not blocked, and with the key at 0.
 // Revert (extend regardless of kEvBlocked): None at 1500.
 TEST(unblocked_op_withdraws_at_confirm_ms) {
-  HopController h(cfg(), 136);
+  HopController h(cfg());
   h.tick(T(1000, raised_here(), 112, 144));
   (void)h.take_events();
   CHECK(h.tick(T(1500, raised_here(), 112, 144)).kind == HopAction::Withdraw);
@@ -535,7 +477,7 @@ TEST(unblocked_op_withdraws_at_confirm_ms) {
   CHECK(has(h.backed_off_failed(1501), 112));
   // confirm_extend_ms 0 (<= confirm_ms): no extension even when blocked
   HopCfg c = cfg(); c.confirm_extend_ms = 0;
-  HopController g(c, 136);
+  HopController g(c);
   g.tick(T(1000, blocked_here(), 112, 144));
   CHECK(g.tick(T(1500, blocked_here(), 112, 144)).kind == HopAction::Withdraw);
   CHECK(has(g.backed_off_failed(1501), 112));
@@ -546,7 +488,7 @@ TEST(unblocked_op_withdraws_at_confirm_ms) {
 // withdraw then races the drone's retune into a move_unconfirmed split.
 // Revert (re-check kEvBlocked on every tick of the extension): Withdraw at 1800.
 TEST(extension_holds_after_op_unblocks) {
-  HopController h(cfg(), 136);
+  HopController h(cfg());
   h.tick(T(1000, blocked_here(), 112, 144));
   h.tick(T(1500, blocked_here(), 112, 144));   // blocked at confirm_ms: extended
   (void)h.take_events();
@@ -557,7 +499,7 @@ TEST(extension_holds_after_op_unblocks) {
   auto a = h.tick(T(2600, healthy(), 112, 144, /*video=*/true));
   CHECK(a.kind == HopAction::Confirm && h.state() == HopState::Verifying);
   // ...and an unblocked extension that never confirms still expires as undelivered
-  HopController g(cfg(), 136);
+  HopController g(cfg());
   g.tick(T(1000, blocked_here(), 112, 144));
   g.tick(T(1500, blocked_here(), 112, 144));
   CHECK(g.tick(T(3900, healthy(), 112, 144)).kind == HopAction::None);
@@ -571,7 +513,7 @@ TEST(extension_holds_after_op_unblocks) {
 // Revert (gate on confirm_extend_ms > 0): None at 500.
 TEST(confirm_extend_not_above_confirm_ms_never_extends) {
   HopCfg c = cfg(); c.confirm_extend_ms = 400;
-  HopController h(c, 136);
+  HopController h(c);
   h.tick(T(1000, blocked_here(), 112, 144));
   CHECK(h.tick(T(1500, blocked_here(), 112, 144)).kind == HopAction::Withdraw);
   auto ev = h.take_events();
@@ -582,13 +524,13 @@ TEST(confirm_extend_not_above_confirm_ms_never_extends) {
 // still an escape once the op reads blocked again.
 // Revert (Undelivered counted in backed_off_failed): Hold, hold_exhausted.
 TEST(escape_may_target_undelivered_channel) {
-  HopController h(cfg(), 136);
+  HopController h(cfg());
   h.tick(T(1000, blocked_here(), 112, 144));   // flee 144, order 112
   h.tick(T(1500, blocked_here(), 112, 144));
   REQUIRE(h.tick(T(4000, blocked_here(), 112, 144)).kind == HopAction::Withdraw);
   (void)h.take_events();
-  // after cooldown: nothing ranked (112 backed off), home 136 blocked
-  HopTick k = T(6100, blocked_here(), std::nullopt, 144); k.home_blocked = true;
+  // after cooldown: nothing ranked (112 backed off); escape is all there is
+  HopTick k = T(6100, blocked_here(), std::nullopt, 144);
   k.escape = 112; k.escape_score = 4;
   auto a = h.tick(k);
   CHECK(a.kind == HopAction::Order && a.target == 112);
@@ -598,7 +540,7 @@ TEST(escape_may_target_undelivered_channel) {
 }
 // Revert (check the timeout before video_on_target): no Confirm.
 TEST(confirm_during_extension_proceeds_to_verifying) {
-  HopController h(cfg(), 136);
+  HopController h(cfg());
   h.tick(T(1000, blocked_here(), 112, 144));
   h.tick(T(1500, blocked_here(), 112, 144));
   auto a = h.tick(T(2700, blocked_here(), 112, 144, /*video=*/true));
@@ -610,13 +552,96 @@ TEST(confirm_during_extension_proceeds_to_verifying) {
 // A later verify_pass on the undelivered channel erases its back-off.
 // Revert (drop backoff_.erase(landed) in verifying_tick): 112 stays backed off.
 TEST(verify_pass_clears_undelivered_backoff) {
-  HopController h(cfg(), 136);
+  HopController h(cfg());
   h.tick(T(1000, blocked_here(), 112, 144));
   h.tick(T(1500, blocked_here(), 112, 144));
   h.tick(T(4000, blocked_here(), 112, 144));   // withdraw_undelivered
-  HopTick k = T(6100, blocked_here(), std::nullopt, 144); k.home_blocked = true; k.escape = 112;
+  HopTick k = T(6100, blocked_here(), std::nullopt, 144); k.escape = 112;
   REQUIRE(h.tick(k).kind == HopAction::Order);
   REQUIRE(h.tick(T(6150, blocked_here(), std::nullopt, 144, true)).kind == HopAction::Confirm);
   CHECK(h.tick(T(7200, healthy(), std::nullopt, 112)).kind == HopAction::VerifyPass);
   CHECK(!has(h.backed_off(7201), 112));
+}
+
+// ---- relocation (final review C1, 2026-10-04): the link formed where the
+// drone was found, or the boot pick wants another pair; the caller moves it
+// to where it should live with one order, logged "relocate", that must not
+// flee the channel it leaves -- that channel is merely not the wanted one,
+// not bad.
+TEST(relocate_does_not_flee_the_current_channel) {
+  HopController h(cfg());
+  HopTick k = T(1000, interfered(), 149, 136); k.relocate = true;
+  auto a = h.tick(k);
+  CHECK(a.kind == HopAction::Order && a.target == 149);
+  CHECK(!backed(h, 136, 1001));              // the channel we leave is fine, just not the wanted one
+  auto ev = h.take_events(); REQUIRE(ev.size() == 1); CHECK(ev[0].kind == "relocate");
+  h.tick(T(1080, interfered(), 149, 136, true));
+  for (double t = 1100; t < 2300; t += 150) h.tick(T(t, healthy(), 120, 149));
+  CHECK(h.state() == HopState::Idle && h.hops() == 1);
+}
+TEST(relocate_verify_fail_retries_the_callers_best_then_holds) {
+  HopController h(cfg());
+  HopTick k = T(1000, interfered(), 149, 136); k.relocate = true;
+  h.tick(k);
+  h.tick(T(1080, interfered(), 149, 136, true));
+  auto a = h.tick(T(1400, measured(interfered(), 1250, 1400), 165, 149));   // 149 bad; caller offers 165
+  CHECK(a.kind == HopAction::Order && a.target == 165);
+  auto ev = h.take_events(); CHECK(ev.back().kind == "verify_fail");
+  h.tick(T(1480, interfered(), 165, 149, true));
+  a = h.tick(T(1800, measured(interfered(), 1650, 1800), std::nullopt, 165));  // nothing left
+  CHECK(a.kind == HopAction::Hold);
+}
+// A relocation (the link formed where the drone was found, or the boot pick
+// wants another pair) is exempt from cooldown_ms -- it is not fleeing
+// anything -- but counted against max_hops_per_min (next test). Its events
+// are "relocate", not "order".
+TEST(relocate_ignores_cooldown) {
+  HopController h(cfg());
+  HopTick k = T(1000, interfered(), 149, 136); k.relocate = true;
+  auto a = h.tick(k);
+  CHECK(a.kind == HopAction::Order && a.target == 149);
+  CHECK(h.hop_ch() == 149);                  // the RCF carries it
+  CHECK(h.take_events().back().kind == "relocate");
+  CHECK(h.tick(T(1080, interfered(), std::nullopt, 136, true)).kind == HopAction::Confirm);
+  CHECK(h.tick(T(2300, healthy(), std::nullopt, 149)).kind == HopAction::VerifyPass);
+  CHECK(h.take_events().back().kind == "verify_pass");
+  // Cooldown (2000 ms) would delay a reactive order here; a relocation
+  // right after the verify_pass goes at once.
+  HopTick k2 = T(2400, interfered(), 136, 149); k2.relocate = true;
+  CHECK(h.tick(k2).kind == HopAction::Order);
+  CHECK(h.on_session_lost(2500, 149).kind == HopAction::Withdraw);
+}
+// A pinned relocation has exactly one legal destination, so "is the new
+// channel better than the one we left" -- the verify window's question --
+// has no meaning: the confirm lands it. A dirty pin must not read as a
+// failed hop (bench 2026-10-04: relocate 64 -> 40 under the 36-48 router
+// logged verify_fail +332 ms, backed the pin off and held). Revert (drop
+// no_verify): the third tick reads Hold/verify_fail and the pin is backed off.
+TEST(pinned_relocation_lands_on_confirm_without_a_verify_window) {
+  HopController h(cfg());
+  HopTick k = T(1000, interfered(), 40, 64); k.relocate = true; k.no_verify = true;
+  REQUIRE(h.tick(k).kind == HopAction::Order);
+  REQUIRE(h.tick(T(1170, interfered(), std::nullopt, 64, true)).kind == HopAction::Confirm);
+  // a window measured entirely on the pin, after the settle, reads interfered
+  auto a = h.tick(T(1400, measured(interfered(), 1330, 1400), std::nullopt, 40));
+  CHECK(a.kind == HopAction::VerifyPass && a.target == 40);
+  CHECK(h.state() == HopState::Idle);
+  CHECK(h.backed_off(1401).empty());          // the pin is not backed off
+  CHECK(h.holds() == 0 && h.hops() == 1);
+  auto ev = h.take_events();
+  REQUIRE(ev.size() == 3);
+  CHECK(ev[0].kind == "relocate" && ev[1].kind == "lead_confirm" && ev[2].kind == "verify_pass");
+  // a reactive order after it still verifies as before
+  h.tick(T(5000, interfered(), 149, 40));
+  h.tick(T(5080, interfered(), std::nullopt, 40, true));
+  CHECK(h.tick(T(5400, measured(interfered(), 5330, 5400), std::nullopt, 149)).kind == HopAction::Hold);
+}
+TEST(relocate_counts_against_the_hop_cap) {
+  HopCfg c = cfg(); c.max_hops_per_min = 1;
+  HopController h(c);
+  HopTick k = T(1000, interfered(), 149, 136); k.relocate = true;
+  REQUIRE(h.tick(k).kind == HopAction::Order);
+  CHECK(h.tick(T(1600, interfered(), std::nullopt, 136)).kind == HopAction::Withdraw);
+  HopTick k2 = T(1700, interfered(), 149, 136); k2.relocate = true;
+  CHECK(h.tick(k2).kind == HopAction::Hold);   // one order this minute already
 }

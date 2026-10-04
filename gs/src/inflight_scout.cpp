@@ -1,7 +1,5 @@
 #include "inflight_scout.h"
 
-#include <algorithm>
-
 #include "mabur/ht40.h"
 #include "nhm_busy.h"
 
@@ -10,7 +8,6 @@ namespace maburgs {
 InflightScout::InflightScout(InflightScoutCfg cfg, ScoutRadio& radio, NowUsFn now_us, SleepFn sleep_ms)
     : cfg_(std::move(cfg)), radio_(&radio), now_us_(std::move(now_us)), sleep_ms_(std::move(sleep_ms)) {
   set_ = cfg_.candidates;
-  if (cfg_.home != 0 && std::find(set_.begin(), set_.end(), cfg_.home) == set_.end()) set_.push_back(cfg_.home);
 }
 
 void InflightScout::set_radio(ScoutRadio& radio) { radio_ = &radio; }

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "config.h"
+#include "mabur/channel_set.h"
 #include "mabur/link_key.h"
 #include "mabur/profile.h"
 #include "mabur/rc_proto.h"
@@ -102,17 +103,20 @@ class Actuator {
   // `reason` is a stable, short literal naming WHY the move is happening --
   // "disc" (a DISC proposed a channel we agreed to), "hop" (an RCF carried
   // a new hop order), "move_unconfirmed" (the post-move confirm window
-  // expired), "rendezvous" (the rendezvous timer sent us home). It is
+  // expired, so the drone returned to the channel it came from). It is
   // spec §7 observability only: the real
   // actuator prints it on the retune line so a stderr/serial capture says
-  // which of the four fired, which is otherwise indistinguishable from
-  // the channel numbers alone (all four can move us to home). Never null,
-  // never freed -- always a string literal.
+  // which of the three fired. Never null, never freed -- always a string
+  // literal.
   virtual void retune(uint8_t ch, const char* reason) = 0;
   // VTX onboard recorder (spec 2026-09-26): hand the operator's wish to the
   // recorder. true = handed over (the recorder reports its own outcome in
   // Telem::rec_status); RcAgent latches the wish only on true.
   virtual bool set_record(bool on) = 0;
+  // A move the GS has confirmed (the first accepted RCF on the new channel):
+  // persist it so the next boot parks there (spec 2026-10-03 §2 state
+  // files). Default no-op: tests and dry-run have nowhere to write.
+  virtual void remember_channel(uint8_t ch) { (void)ch; }
 };
 
 // Radio-side health signals sampled once per tick. thermal_delta is
@@ -140,7 +144,10 @@ class RcAgent {
   // ovr is the debug-HTTP per-layer overhead override (bench sweeps); may
   // be null (tests), in which case no override is ever armed and the
   // bitrate policy always builds its target from the commanded pair.
-  RcAgent(const Config& cfg, Actuator& act, OvOverride* ovr = nullptr);
+  // start_ch is the channel to park on (spec 2026-10-03-auto-channel-set
+  // §2: the remembered member from the state file, read by main.cpp); 0 (or
+  // a non-member) means cfg.radio.channels.front().
+  RcAgent(const Config& cfg, Actuator& act, OvOverride* ovr = nullptr, uint8_t start_ch = 0);
 
   // Parses `body` as an RC frame (RCF or DISC; anything else, or a frame
   // failing CRC, is silently ignored) and applies its effect.
@@ -170,10 +177,7 @@ class RcAgent {
   const AppliedOp& current() const { return applied_; }
 
   // The channel the agent last commanded (requested, not radio-confirmed)
-  // (spec 2026-09-13 auto-channel-select §6): cfg_.radio.channel (home) at
-  // boot, the DISC's op_channel while a follow_gs move is in effect, home
-  // again once the move falls back unconfirmed or the drone re-enters
-  // RENDEZVOUS by any path.
+  // (spec 2026-10-03-auto-channel-set §2/§3).
   uint8_t channel() const { return channel_; }
 
   // The epoch of the last in-flight hop order applied from an RCF (spec
@@ -300,22 +304,24 @@ class RcAgent {
   State state_ = State::BOOT;
   bool link_established_ = false;  // see take_link_established()
 
-  // Auto channel select (spec 2026-09-13 §6). channel_ is home
-  // (cfg_.radio.channel) at construction and tracks the channel the agent
-  // last commanded (requested, not radio-confirmed) from then on -- see
-  // channel(). move_pending_/move_at_ms_ track an unconfirmed follow_gs
-  // move: set when tick() runs a promoted session's deferred move (or an
-  // RCF hop order) and act_.retune() is called, cleared by the first
-  // subsequent accepted RCF that is not itself a new move (confirms the
-  // move) or by go_home_() (the fallback fires it home instead).
+  // channel_ is the start channel (the remembered member, else
+  // channels.front()) at construction and tracks the channel the agent
+  // last commanded. The drone is always on a member and moves only on a GS
+  // proposal, a GS order, or an unconfirmed move back to move_from_ch_.
+  // move_pending_/move_at_ms_ track an unconfirmed move: set when tick()
+  // runs a promoted session's deferred move (or an RCF hop order) and
+  // act_.retune() is called, cleared by the first subsequent accepted RCF
+  // that is not itself a new move (confirms the move) or by the
+  // move-confirm fallback in tick() (which returns to move_from_ch_).
   uint8_t channel_;
   bool move_pending_ = false;
   uint64_t move_at_ms_ = 0;
-  // The channel a hop order moved us FROM, while that move is unconfirmed
-  // (0 = none: a DISC move, or the revert already spent). The move-confirm
-  // fallback returns here first -- where a withdrawing GS goes (spec
-  // 2026-09-14 §1 step 4) -- and only then home. Bench 2026-09-26: with the
-  // hop target == home, going "home" was a no-op and the pair split 60 s.
+  // The channel a move (a DISC move OR a hop order) moved us FROM, while
+  // that move is unconfirmed (0 = none: the revert already spent). The
+  // move-confirm fallback returns here and stays -- there is no home to
+  // fall through to. This is also where a withdrawing GS goes (spec
+  // 2026-09-14 §1 step 4). Bench 2026-09-26: with the hop target == home,
+  // going "home" was a no-op and the pair split 60 s.
   uint8_t move_from_ch_ = 0;
 
   // In-flight hop order (spec 2026-09-14 §1). have_hop_ is false until the
@@ -468,11 +474,7 @@ class RcAgent {
   rc::DiscAck make_disc_ack(uint32_t vrx_nonce, uint32_t vtx_nonce, uint8_t flags, uint16_t seq,
                             uint8_t agreed) const;
 
-  // Retunes home if not already there and clears move_pending_ (spec §6:
-  // "the drone is on the op channel only while LINKED or FAILSAFE, home
-  // otherwise"). Called on the move-confirm fallback and on every path that
-  // enters RENDEZVOUS.
-  void go_home_(const char* why);
+  bool member_(uint8_t ch) const { return mabur::channel_set_member(cfg_.radio.channels, ch); }
 };
 
 }  // namespace mabur

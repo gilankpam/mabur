@@ -1,5 +1,6 @@
 add_library(mabur_gs_core STATIC
   src/channel_plan.cpp
+  src/boot_pick.cpp
   src/channel_ranker.cpp
   src/hop_verdict.cpp
   src/hop_ranker.cpp
@@ -7,6 +8,7 @@ add_library(mabur_gs_core STATIC
   src/channel_scout.cpp
   src/pair_pick.cpp
   src/inflight_scout.cpp
+  src/channel_core.cpp
   src/config.cpp
   src/card_scan.cpp
   src/aggregator.cpp
@@ -88,22 +90,4 @@ target_link_libraries(maburgs PRIVATE mabur_gs_core mabur_gs_radio mabur_common 
 option(MABUR_LOSS_SIM "Compile the bench per-stream loss injector into maburgs (never for prod)" OFF)
 if(MABUR_LOSS_SIM)
   target_compile_definitions(mabur_gs_core PUBLIC MABUR_LOSS_SIM)
-endif()
-
-# In-flight hop e2e injection seam (Task 15, 2026-09-14-inflight-channel-hop):
-# MABUR_HOP_INJECT, read only under this macro, drives gs_e2e's hop scenario
-# (tests/integration/run_gs_e2e.sh) through the real dry-run binary. Follows
-# the MABUR_LOSS_SIM precedent above -- PUBLIC on mabur_gs_core so main.cpp
-# (compiled directly into the maburgs target, not the library) sees it too.
-# Auto-ON whenever tests are being built (MABUR_BUILD_TESTS, default ON) so
-# `ctest -R gs_e2e` works out of the box; every device/cross build passes
-# -DMABUR_BUILD_TESTS=OFF explicitly (tools/build-arm.sh, build-arm64.sh),
-# so this is never compiled into a shipped binary. The explicit option
-# still exists so it can be forced independently of MABUR_BUILD_TESTS.
-option(MABUR_TEST "Compile the in-flight hop e2e injection seam into maburgs (never for prod)" OFF)
-if(MABUR_BUILD_TESTS)
-  set(MABUR_TEST ON)
-endif()
-if(MABUR_TEST)
-  target_compile_definitions(mabur_gs_core PUBLIC MABUR_TEST)
 endif()

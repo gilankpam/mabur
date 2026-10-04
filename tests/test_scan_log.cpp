@@ -21,7 +21,7 @@ TEST(scan_log_records_are_byte_exact) {
   std::string dir = "build_scan_log_test";
   reset_dir(dir);
   maburgs::LogWriter w;
-  maburgs::ScanLog log(w, dir, "home=136 candidates=149,161 dwell_ms=250");
+  maburgs::ScanLog log(w, dir, "channels=40,64,112,144 mode=auto dwell_ms=250");
   REQUIRE(log.ok());
   maburgs::CardCaps c; c.valid = true; c.chip = "RTL8822E"; c.gen = "jaguar3"; c.tx_chains = 2; c.rx_chains = 2;
   c.bw_mask = 0x1f; c.tune5g_lo = 5080; c.tune5g_hi = 6165; c.fast_retune = true;
@@ -46,7 +46,7 @@ TEST(scan_log_records_are_byte_exact) {
   log.pick(2000, 149, 3, all, 3);
   log.pick(2001, std::nullopt, 0, all, 3);
   log.move(maburgs::MoveEvent{2100, -1, 136, 149, maburgs::MoveReason::Commit});
-  log.move(maburgs::MoveEvent{9000, 0, 149, 136, maburgs::MoveReason::SplitHome});
+  log.move(maburgs::MoveEvent{2200, -1, 149, 64, maburgs::MoveReason::LinkFound});
   maburgs::VerdictOut o; o.v = maburgs::Verdict::Interfered;
   o.evidence = maburgs::kEvImpaired | maburgs::kEvContended;
   o.ref_rung = 5; o.d_rssi_db = 2.5;
@@ -60,9 +60,11 @@ TEST(scan_log_records_are_byte_exact) {
   log.verdict(1234.5, o, cards, link);
   maburgs::HopEvent h{1300.0, "order", 1, 149, 20, 0.0};
   log.hop(h);
+  maburgs::HopEvent h2{10000.0, "relocate", 1, 144, 0, 0.0};
+  log.hop(h2);
   w.flush_now();
   std::string text = read_all(log.path());
-  CHECK(text.rfind("scanlog 4 home=136 candidates=149,161 dwell_ms=250\n", 0) == 0);
+  CHECK(text.rfind("scanlog 5 channels=40,64,112,144 mode=auto dwell_ms=250\n", 0) == 0);
   CHECK(text.find("\nC 1000 1 RTL8822E jaguar3 2x2 1f 5080-6165 1 1 1 1 0\n") != std::string::npos);
   CHECK(text.find("\nC 1001 0 ? ? 0x0 0 0-0 0 0 0 0 0\n") != std::string::npos);
   CHECK(text.find("\nD 1300 1 161 2 250 812 790 3 2 42 -93 10 0 0 0 0 20 -\n") != std::string::npos);
@@ -71,12 +73,13 @@ TEST(scan_log_records_are_byte_exact) {
   CHECK(text.find("\nK 2000 149 3 136:5:-95:0.0 149:52:nan:- pair=149+153\n") != std::string::npos);
   CHECK(text.find("\nK 2001 none 0 pair=-\n") != std::string::npos);
   CHECK(text.find("\nM 2100 all 136 149 commit\n") != std::string::npos);
-  CHECK(text.find("\nM 9000 0 149 136 split_home\n") != std::string::npos);
+  CHECK(text.find("\nM 2200 all 149 64 link_found\n") != std::string::npos);
   CHECK(text.find(
       "\nV 1234.5 interfered 09 5 6.1 80 0 36 2 0 5 -55.4 33.1 2.5 - 0.0 "
       "1 35 1 1 6 -56.0 nan 2.5 - 0.0\n") !=
       std::string::npos);
   CHECK(text.find("\nH 1300.0 order 1 149 20 0.0\n") != std::string::npos);
+  CHECK(text.find("\nH 10000.0 relocate 1 144 0 0.0\n") != std::string::npos);
   CHECK(log.path() == dir + "/scan.log");
 }
 
@@ -106,6 +109,6 @@ TEST(scan_log_bad_dir_is_nonfatal) {
   maburgs::LogWriter w;
   maburgs::ScanLog log(w, "/nonexistent/dir/for/scan", "x");
   CHECK(!log.ok());
-  log.move(maburgs::MoveEvent{1, -1, 1, 2, maburgs::MoveReason::Reunite});  // must not crash
+  log.move(maburgs::MoveEvent{1, -1, 1, 2, maburgs::MoveReason::Commit});  // must not crash
 }
 MTEST_MAIN

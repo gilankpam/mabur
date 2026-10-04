@@ -1,6 +1,6 @@
 <script>
   import Icon from './Icon.svelte';
-  import { CHANNELS, MAX_RUNGS, applyEdit, applyRungEdit, rungWarnings, channelWarning, describeEdit, describeRungEdit } from '../lib/config.js';
+  import { chipChannels, MAX_RUNGS, applyEdit, applyRungEdit, rungWarnings, checkChannelSet, toggleChannel, describeEdit, describeRungEdit } from '../lib/config.js';
   let { cfg, onChange, locked = false, spotter = false, onDisconnect = null, variant = 'rule', applied = '', recordings = null,
     keyFp = 'default', onLoadKey = null, onClearKey = null } = $props();
   const uid = $props.id();   // unique per mounted instance -- two panels (sidebar + Task 11 side panel) never share a radio group.
@@ -12,7 +12,7 @@
     onChange(next, describeRungEdit(next, i, key, val));
   };
   const MCS = [0, 1, 2, 3, 4, 5, 6, 7];
-  const chWarn = $derived(channelWarning(cfg));
+  const chWarn = $derived(checkChannelSet(cfg.channels, cfg.link, cfg.width));
   const pinned = $derived(cfg.staticMcs >= 0);
 
   // Rung drag-to-reorder. Pointer events, not HTML5 DnD (no touch support);
@@ -61,12 +61,26 @@
     <div class={groupClass}>
       <span class="card-kicker">Radio</span>
       <div class="field">
-        <label for="cfg-ch">Channel</label>
-        <select id="cfg-ch" class="input" style="min-height:34px;padding:5px 8px" onchange={(e) => set('channel', +e.currentTarget.value)}>
-          {#each CHANNELS as c}<option value={c} selected={c === cfg.channel}>{c}</option>{/each}
-        </select>
-        <div class="hint">Must match the drone.</div>
+        <span id="{uid}chs-label" class="fieldlabel">Channels</span>
+        <div class="chips" role="group" aria-labelledby="{uid}chs-label">
+          {#each chipChannels(cfg) as c}
+            {@const on = cfg.channels.includes(c)}
+            <button type="button" class="chip" class:on aria-pressed={on}
+              disabled={locked || (!on && cfg.channels.length >= 8) || (on && cfg.channels.length === 1)}
+              onclick={() => { const next = toggleChannel(cfg, c); onChange(next, describeEdit('channels', next.channels)); }}>{c}</button>
+          {/each}
+        </div>
+        <div class="hint">The channel set, 1–8 members. The drone must list every member (its own set may be larger).</div>
         {#if chWarn}<div class="warn"><Icon name="warning" />{chWarn}</div>{/if}
+      </div>
+      <div class="field">
+        <label for="{uid}link">Link channel</label>
+        <select id="{uid}link" class="input" style="min-height:34px;padding:5px 8px"
+          onchange={(e) => set('link', e.currentTarget.value === 'auto' ? 'auto' : +e.currentTarget.value)}>
+          <option value="auto" selected={cfg.link === 'auto'}>Auto (measure the set, hop to the cleanest)</option>
+          {#each cfg.channels as c}<option value={c} selected={c === cfg.link}>{c} (pinned)</option>{/each}
+        </select>
+        <div class="hint">{cfg.link === 'auto' ? 'The link forms where the drone is found, then moves to the pick once.' : `The link forms where the drone is found, then moves to ${cfg.link}.`}</div>
       </div>
       <div class="field">
         <span id="cfg-width-label" class="fieldlabel">Channel width</span>
@@ -191,6 +205,11 @@
 </div>
 
 <style>
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { font: inherit; font-size: 12px; padding: 4px 9px; border-radius: 999px; border: 1px solid var(--color-neutral-600);
+          background: transparent; color: var(--color-text); cursor: pointer; }
+  .chip.on { background: var(--color-accent-900); border-color: var(--color-accent); color: var(--color-accent-200); }
+  .chip:disabled { opacity: .45; cursor: default; }
   .fieldlabel { display: block; font-size: 12px; margin-bottom: 5px; color: color-mix(in srgb, var(--color-text) 70%, transparent); }
   .lock { display: flex; gap: 8px; align-items: center; padding: var(--space-3) var(--space-4); border-radius: var(--radius-md);
           background: var(--color-accent-900); color: var(--color-accent-200); font-size: 12px; }

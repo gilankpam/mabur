@@ -22,8 +22,8 @@ double HopVerdict::median(std::deque<double> v) {
   return (n % 2) ? v[n / 2] : (v[n / 2 - 1] + v[n / 2]) / 2.0;
 }
 
-HopVerdict::HopVerdict(HopCfg cfg, int n_cards)
-    : cfg_(cfg), n_cards_(n_cards), rssi_hist_(n_cards) {}
+HopVerdict::HopVerdict(HopCfg cfg, BusyCfg busy, int n_cards)
+    : cfg_(cfg), busy_(busy), n_cards_(n_cards), rssi_hist_(n_cards) {}
 
 void HopVerdict::reset() {
   frozen_ = false;
@@ -128,7 +128,7 @@ VerdictOut HopVerdict::window(double now_ms, const std::vector<VerdictCardIn>& c
       have_busy_reading = true;
     }
   }
-  blocked = have_busy_reading && min_foreign_busy_pct >= hv.blocked_pct;
+  blocked = have_busy_reading && min_foreign_busy_pct >= busy_.blocked_pct;
   o.evidence = (impaired ? kEvImpaired : 0) | (weak ? kEvWeak : 0) | (fading ? kEvFading : 0) |
                (contended ? kEvContended : 0) | (raised ? kEvRaised : 0) | (blocked ? kEvBlocked : 0) |
                (starved ? kEvStarved : 0);

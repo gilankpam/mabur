@@ -24,8 +24,10 @@ int round_to_100(double v) { return static_cast<int>(std::lround(v / 100.0) * 10
 
 }  // namespace
 
-RcAgent::RcAgent(const Config& cfg, Actuator& act, OvOverride* ovr)
-    : cfg_(cfg), act_(act), ovr_(ovr), channel_(cfg.radio.channel) {}
+RcAgent::RcAgent(const Config& cfg, Actuator& act, OvOverride* ovr, uint8_t start_ch)
+    : cfg_(cfg), act_(act), ovr_(ovr),
+      channel_(mabur::channel_set_member(cfg.radio.channels, start_ch) ? start_ch
+                                                                        : cfg.radio.channels.front()) {}
 
 uint32_t RcAgent::fresh_vtx_nonce_() {
   static thread_local std::mt19937 rng{std::random_device{}()};
@@ -533,11 +535,13 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
   if (type == rc::T_DISC) {
     auto d = rc::parse_disc(body, len);
     if (!d.has_value()) return;
-    // Auto channel select (spec 2026-09-13 §6): a DISC is a proposal
-    // (Disc.op_channel), not a command -- we agree to it with follow_gs, else
-    // we answer home. The agreement rides the ack and the pending pair; the
-    // move itself happens only once that pair is promoted (see T_RCF).
-    const uint8_t agreed = cfg_.radio.follow_gs ? d->op_channel : cfg_.radio.channel;
+    // Auto channel select (spec 2026-10-03-auto-channel-set §2/§6): a DISC
+    // is a proposal (Disc.op_channel), not a command -- we agree to it when
+    // it's a member of our channel set; a non-member is answered with the
+    // current channel instead (the GS logs ack_override). The agreement
+    // rides the ack and the pending pair; the move itself happens only once
+    // that pair is promoted (see T_RCF).
+    const uint8_t agreed = member_(d->op_channel) ? d->op_channel : channel_;
     if (!rc::verify_control(body, len, cfg_.link.key, rc::TagCtx{})) {
       // Wrong key on the GS. Answer so the GS can SHOW it (spec §8) instead
       // of looking like the stale-caps deadlock; change nothing else.
@@ -591,7 +595,7 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
       hop_ch_ = 0;
       idr_epoch_seen_ = 0;
       idr_gs_pending_ = false;
-      if (cfg_.radio.follow_gs && current_.agreed_ch != 0 && current_.agreed_ch != channel_)
+      if (current_.agreed_ch != 0 && current_.agreed_ch != channel_)
         deferred_move_ch_ = current_.agreed_ch;          // after main's promote Telem
     } else {
       // Wrong key, wrong pair, stale or replayed seq: drop, flag for the
@@ -606,6 +610,7 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
     // frame received after the move confirms it") -- it arrived on the
     // channel we retuned to, so there's nothing left for tick()'s fallback
     // to guard against.
+    if (move_pending_) act_.remember_channel(channel_);   // the GS heard us here: persist
     move_pending_ = false;
 
     PhyMode mode;
@@ -626,7 +631,9 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
       have_hop_ = true;
       hop_epoch_ = r->hop_epoch;
       hop_ch_ = r->hop_ch;
-      if (r->hop_ch != channel_) {
+      // The pair is still recorded above regardless, so a non-member order
+      // is not re-evaluated on every repeat of the same (epoch, ch).
+      if (member_(r->hop_ch) && r->hop_ch != channel_) {
         act_.retune(r->hop_ch, "hop");
         move_from_ch_ = channel_;
         channel_ = r->hop_ch;
@@ -696,8 +703,8 @@ void RcAgent::tick(uint64_t now_ms, const RadioHealth& health) {
     const uint8_t ch = deferred_move_ch_;
     deferred_move_ch_ = 0;
     act_.retune(ch, "disc");
+    move_from_ch_ = channel_;
     channel_ = ch;
-    move_from_ch_ = 0;
     move_pending_ = true;
     move_at_ms_ = now_ms;
   }
@@ -707,28 +714,25 @@ void RcAgent::tick(uint64_t now_ms, const RadioHealth& health) {
     return;
   }
 
-  if (move_pending_ && now_ms - move_at_ms_ >= static_cast<uint64_t>(cfg_.link.move_confirm_ms) &&
-      move_from_ch_ != 0 && move_from_ch_ != cfg_.radio.channel && move_from_ch_ != channel_) {
-    // Unconfirmed HOP: first back to the channel we hopped from, where a GS
-    // that withdrew the order is (spec 2026-09-14 §1 step 4). One step only:
-    // the move stays pending, so silence there falls through to home below.
-    act_.retune(move_from_ch_, "move_unconfirmed");
-    channel_ = move_from_ch_;
-    move_from_ch_ = 0;
-    move_at_ms_ = now_ms;
-  }
   if (move_pending_ && now_ms - move_at_ms_ >= static_cast<uint64_t>(cfg_.link.move_confirm_ms)) {
-    // Unconfirmed move (spec §6): nothing from the GS on the new channel.
+    // Unconfirmed move (spec 2026-10-03 §3): nothing from the GS on the new
+    // channel. Back to the channel we came from -- where the GS found us,
+    // or where a withdrawing GS still is -- and stay there. There is no
+    // home to fall through to.
+    if (move_from_ch_ != 0 && move_from_ch_ != channel_) {
+      act_.retune(move_from_ch_, "move_unconfirmed");
+      channel_ = move_from_ch_;
+    }
     move_from_ch_ = 0;
+    move_pending_ = false;
     if (state_ == State::LINKED) apply_max_range(now_ms);
     state_ = State::RENDEZVOUS;
-    clear_sessions_();   // every exit from LINKED (spec 2026-10-01 §7)
+    clear_sessions_();
     have_hop_ = false;
     hop_epoch_ = 0;
     hop_ch_ = 0;
     idr_epoch_seen_ = 0;
     idr_gs_pending_ = false;
-    go_home_("move_unconfirmed");
   }
 
   // Chain-break intake, evaluated against the state as of this tick's ENTRY
@@ -785,7 +789,6 @@ void RcAgent::tick(uint64_t now_ms, const RadioHealth& health) {
     if (have_last_fb_ &&
         now_ms - last_fb_ms_ >= static_cast<uint64_t>(cfg_.link.rendezvous_ms)) {
       state_ = State::RENDEZVOUS;
-      go_home_("rendezvous");
     }
   }
 
@@ -866,26 +869,15 @@ rc::DiscAck RcAgent::make_disc_ack(uint32_t vrx_nonce, uint32_t vtx_nonce, uint8
   // wires them up in main.cpp) -- a real gate, unlike CAP_TELEMETRY:
   // gs/src/cal_session.cpp's start() refuses a session outright without it.
   ack.chip_caps = rc::CAP_FRAME_WIRE | rc::CAP_TELEMETRY | rc::CAP_CALIBRATE;
-  // agreed is follow_gs ? the DISC's proposed op_channel : home (spec
-  // 2026-09-13 auto-channel-select §6) -- computed by the caller, which
-  // also stores it in the pending pair whose promotion drives the actual
-  // retune, so the ack and the move can never disagree about what was
-  // agreed to.
+  // agreed is member_(op_channel) ? the DISC's proposed op_channel : the
+  // current channel (spec 2026-10-03-auto-channel-set §2/§6) -- computed by
+  // the caller, which also stores it in the pending pair whose promotion
+  // drives the actual retune, so the ack and the move can never disagree
+  // about what was agreed to.
   ack.agreed_channel = agreed;
   ack.agreed_width = cfg_.radio.width;
   ack.seq = seq;
   return ack;
-}
-
-void RcAgent::go_home_(const char* why) {
-  // `why` is spec §7's retune reason: it rides through to the Actuator,
-  // which is where the stderr line is printed (see RealActuator in
-  // main.cpp) -- RcAgent itself logs nothing.
-  if (channel_ != cfg_.radio.channel) {
-    act_.retune(cfg_.radio.channel, why);
-    channel_ = cfg_.radio.channel;
-  }
-  move_pending_ = false;
 }
 
 }  // namespace mabur

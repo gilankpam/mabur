@@ -4,11 +4,10 @@
 
 namespace maburgs {
 
-ChannelRanker::ChannelRanker(uint8_t home, const std::vector<uint8_t>& candidates,
-                             int min_rounds, uint32_t home_margin, double blocked_pct)
-    : home_(home), min_rounds_(min_rounds), home_margin_(home_margin), blocked_pct_(blocked_pct) {
-  entries_.push_back(RankEntry{home, 0, 0, false, 0});
-  for (uint8_t c : candidates) {
+ChannelRanker::ChannelRanker(std::vector<uint8_t> channels, int min_rounds, uint32_t margin,
+                             double blocked_pct)
+    : min_rounds_(min_rounds), margin_(margin), blocked_pct_(blocked_pct) {
+  for (uint8_t c : channels) {
     bool dup = false;
     for (const RankEntry& e : entries_) dup = dup || e.ch == c;
     if (!dup) entries_.push_back(RankEntry{c, 0, 0, false, 0});
@@ -16,8 +15,8 @@ ChannelRanker::ChannelRanker(uint8_t home, const std::vector<uint8_t>& candidate
 }
 
 uint32_t ChannelRanker::busy(const RankSample& s) {
-  const uint32_t cca_foreign = s.cca > s.own ? s.cca - s.own : 0;
-  return cca_foreign + s.fa + s.foreign;
+  const int64_t foreign_cca = static_cast<int64_t>(s.cca) - s.own - s.leak;
+  return static_cast<uint32_t>(std::max<int64_t>(foreign_cca, 0)) + s.fa + s.foreign;
 }
 
 void ChannelRanker::add(const RankSample& s) {
@@ -38,11 +37,11 @@ void ChannelRanker::add(const RankSample& s) {
   }
 }
 
-std::vector<RankEntry> ChannelRanker::ranked() const {
+std::vector<RankEntry> ChannelRanker::ranked(int min_rounds) const {
   std::vector<RankEntry> out;
   for (const RankEntry& e : entries_)
-    if (e.visits >= static_cast<uint32_t>(min_rounds_)) out.push_back(e);
-  // Stable sort keeps config order (home first) as the final tie-break.
+    if (e.visits >= static_cast<uint32_t>(min_rounds)) out.push_back(e);
+  // Stable sort keeps config order as the final tie-break.
   // Tie-break: valid floor before invalid; among valid, lower floor_dbm first.
   std::stable_sort(out.begin(), out.end(), [this](const RankEntry& a, const RankEntry& b) {
     const bool ab = is_blocked(a), bb = is_blocked(b);
@@ -56,17 +55,17 @@ std::vector<RankEntry> ChannelRanker::ranked() const {
   return out;
 }
 
-uint8_t ChannelRanker::proposal() const {
-  auto k = ranked();
-  if (k.empty()) return home_;
+uint8_t ChannelRanker::proposal(uint8_t current, int min_rounds) const {
+  auto k = ranked(min_rounds);
+  if (k.empty()) return current;
   const RankEntry& best = k.front();
-  if (best.ch == home_ || home_margin_ == 0) return best.ch;
+  if (best.ch == current || margin_ == 0) return best.ch;
   for (const RankEntry& e : k)
-    if (e.ch == home_) {
+    if (e.ch == current) {
       if (is_blocked(e) && !is_blocked(best)) return best.ch;   // margin applies within a tier
-      return best.worst_busy + home_margin_ <= e.worst_busy ? best.ch : home_;
+      return best.worst_busy + margin_ <= e.worst_busy ? best.ch : current;
     }
-  return best.ch;  // home not ranked yet: the best ranked candidate
+  return best.ch;  // current not ranked yet: the best ranked one
 }
 
 }  // namespace maburgs

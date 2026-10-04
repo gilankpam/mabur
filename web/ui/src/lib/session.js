@@ -21,12 +21,13 @@ export const WORKER_FAILED = 'Page worker failed — if served over LAN, the TLS
   + 'this device (see docs/web-gs.md).';
 
 export class Session {
-  constructor({ createModule, requestDevice, onAu, onStats, onOsd = () => {}, onRecClosed = () => {}, reload,
+  constructor({ createModule, requestDevice, onAu, onStats, onOsd = () => {}, onRecClosed = () => {},
+                onChannel = () => {}, reload,
                 // Wrapped: a bare window.setTimeout called as timers.setTimeout(...) throws "Illegal invocation".
                 timers = { setTimeout: (f, ms) => setTimeout(f, ms), clearTimeout: (h) => clearTimeout(h) },
                 stopTimeoutMs = 3000, recOffTimeoutMs = 1000,
                 checkIsolated = () => {}, startRelay = null, prepareRelay = async () => {} }) {
-    Object.assign(this, { createModule, requestDevice, onAu, onStats, onOsd, onRecClosed, reload, timers,
+    Object.assign(this, { createModule, requestDevice, onAu, onStats, onOsd, onRecClosed, onChannel, reload, timers,
       stopTimeoutMs, recOffTimeoutMs, checkIsolated, startRelay, prepareRelay });
     this.subs = new Set();
     this.mod = null;
@@ -68,7 +69,8 @@ export class Session {
     // A page-worker failure (fail()) landed while a chooser/prompt was up.
     if (this.token !== token || this.snapshot.state !== 'connecting') return;
     const args = ['live', '--mode', mode, '--ch', String(ch), '--w', String(w)];
-    const overlay = mode === 'gs' && overlayToml ? overlayToml : null;
+    // Both modes: the overlay's [radio] carries the channel set --ch is checked against.
+    const overlay = overlayToml || null;
     if (overlay) args.push('--overlay', '/overlay.toml');
     if (relay) args.push('--relay', relay);
     let mod = null;
@@ -95,7 +97,14 @@ export class Session {
           this.onRecClosed(name, bytes, err);
         },
         onExit: (code) => { token.exited = true; if (this.token === token) this.handleExit(code); },
-        print: (t) => console.log('[webgs]', t),
+        // `CHANNEL <n>`: the core's remembered channel changed (App stores
+        // it). A clean stop keeps this.token, so an exited module's late
+        // line is dropped on token.exited.
+        print: (t) => {
+          console.log('[webgs]', t);
+          const m = /^CHANNEL (\d+)$/.exec(String(t));
+          if (m && this.token === token && !token.exited) this.onChannel(Number(m[1]));
+        },
         printErr: (t) => {
           console.error('[webgs]', t);
           if (this.token === token && isWorkerFailure(String(t))) this.fail(WORKER_FAILED);

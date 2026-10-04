@@ -66,9 +66,15 @@ bool parse_gs_snapshot(const char* data, size_t n, GsSnapshot* out) {
   }
   if (!j.is_object()) return false;
 
+  // scan.pick (the boot pick, or the pin in pinned mode) is captured here,
+  // top-level like `hop`, and consumed once the `link` block below has
+  // parsed out->channel -- it is the reference the hop marker keys on
+  // instead of the deleted link.home.
+  std::optional<int> scan_pick;
   if (const json* scan = obj(j, "scan")) {
     auto it = scan->find("state");
     out->scan_auto = it != scan->end() && it->is_string() && it->get<std::string>() != "off";
+    scan_pick = integer(*scan, "pick");
   }
   if (const json* drone = obj(j, "drone")) {
     auto it = drone->find("low_power");
@@ -84,8 +90,8 @@ bool parse_gs_snapshot(const char* data, size_t n, GsSnapshot* out) {
     }
   }
   // Captured here (top-level, like `scan`) and consumed once the `link`
-  // block below has parsed out->channel and link.home -- hop.target alone
-  // says nothing about whether the LIVE channel is that target right now.
+  // block below has parsed out->channel -- hop.target alone says nothing
+  // about whether the LIVE channel is that target right now.
   const json* hop = obj(j, "hop");
   if (const json* link = obj(j, "link")) {
     // The GS's operating wifi channel (radio.channel). Exported from the GS
@@ -102,9 +108,8 @@ bool parse_gs_snapshot(const char* data, size_t n, GsSnapshot* out) {
     }
     if (hop) {
       const std::optional<int> target = integer(*hop, "target");
-      const std::optional<int> home = integer(*link, "home");
-      out->hopped = target && home && out->channel &&
-                    *target == *out->channel && *target != *home;
+      out->hopped = target && scan_pick && out->channel &&
+                    *target == *out->channel && *target != *scan_pick;
     }
     out->air_pct = num(*link, "air_pct");
     if (const std::optional<double> r = num(*link, "residual_loss"))

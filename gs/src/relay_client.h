@@ -2,7 +2,7 @@
 // RelayClient: the pure mabur-relay v3 client (HELLO keepalive, TUNE +
 // retry on refusal, ownership, FRAME -> RxBody, uplink TX). No sockets, no
 // clock: the caller passes now_ms and a SendFn. Not thread-safe -- a caller
-// with an RX thread wraps it in a mutex (web/src/relay_link.h).
+// with an RX thread wraps it in a mutex (gs/src/remote_card.h).
 // TUNE retry: every kTuneRetryMs while not yet owned (only within
 // kTuneWindowMs of start), and again -- with no window limit -- whenever we
 // own the link but read back mistuned (channel/sec mismatch, not already

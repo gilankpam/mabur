@@ -1,6 +1,6 @@
 #pragma once
 // Config -> VrxCfg: the one field mapping every VrxController owner uses
-// (maburgs run_radio, run_hop_inject_test, the web GS core). Kept out of
+// (maburgs run_radio, the web GS core). Kept out of
 // vrx_controller.h so that header stays independent of the TOML config.
 #include <cstdint>
 

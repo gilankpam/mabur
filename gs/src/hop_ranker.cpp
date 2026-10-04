@@ -4,10 +4,8 @@
 
 namespace maburgs {
 
-HopRanker::HopRanker(HopCfg cfg, std::vector<uint8_t> candidates, uint8_t home, uint8_t boot_pick)
-    : cfg_(cfg), candidates_(std::move(candidates)), home_(home), boot_pick_(boot_pick) {
-  if (std::find(candidates_.begin(), candidates_.end(), home_) == candidates_.end())
-    candidates_.push_back(home_);
+HopRanker::HopRanker(HopCfg cfg, BusyCfg busy, std::vector<uint8_t> channels, uint8_t boot_pick)
+    : cfg_(cfg), busy_(busy), candidates_(std::move(channels)), boot_pick_(boot_pick) {
   visits_.resize(candidates_.size());
 }
 
@@ -44,15 +42,15 @@ std::vector<HopRankEntry> HopRanker::ranking(double now_ms) const {
     e.score = sum;
     e.ranked = fresh >= 2;
     e.busy_pct = busy_n ? busy_sum / busy_n : 0.0;
-    e.blocked = busy_n > 0 && e.busy_pct >= cfg_.verdict.blocked_pct;
+    e.blocked = busy_n > 0 && e.busy_pct >= busy_.blocked_pct;
     entries.push_back(e);
   }
   // Ranked first, then by score; ties among RANKED entries -> boot-time
-  // pick, then home, then config order (spec §3: "ties -> boot-time pick,
-  // then home"). Unranked entries skip both tiebreaks and fall straight
-  // to config order, so their relative order stays pure config order
-  // (stable_sort preserving entries' original, candidates_-derived
-  // order).
+  // pick, then config order (spec 2026-10-03-auto-channel-set §5: "ties ->
+  // boot-time pick, then config order" -- no home). Unranked entries skip
+  // the tiebreak and fall straight to config order, so their relative
+  // order stays pure config order (stable_sort preserving entries'
+  // original, candidates_-derived order).
   std::stable_sort(entries.begin(), entries.end(), [&](const HopRankEntry& a, const HopRankEntry& b) {
     if (a.ranked != b.ranked) return a.ranked;
     if (a.ranked) {
@@ -61,8 +59,6 @@ std::vector<HopRankEntry> HopRanker::ranking(double now_ms) const {
       if (a.score != b.score) return a.score < b.score;
       const bool a_boot = a.ch == boot_pick_, b_boot = b.ch == boot_pick_;
       if (a_boot != b_boot) return a_boot;
-      const bool a_home = a.ch == home_, b_home = b.ch == home_;
-      if (a_home != b_home) return a_home;
     }
     return false;
   });

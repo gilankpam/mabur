@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -16,6 +17,7 @@
 #include "logger.h"
 #include "own_air.h"
 #include "scout_radio.h"
+#include "usb_late.h"
 
 // Forward declarations for devourer types
 class WiFiDriver;
@@ -28,8 +30,15 @@ class UsbDeviceLock;
 
 namespace maburgs {
 
+// Default VID:PID scan list for an unqualified Cfg (usb_pid == 0): the
+// Realtek chips this project has ever shipped with. Lives here, not in the
+// .cpp, so usb_id_matches() below (and the web page's device chooser) can
+// see it.
+inline constexpr uint16_t kScanPids[] = {0xa81a, 0x881a, 0x8812};
+
 class RadioFrontend : public LinkCard {
  public:
+  struct UsbId { uint16_t vid, pid; };
   struct Cfg {
     uint16_t usb_vid = 0x0bda;
     uint16_t usb_pid = 0;      // 0 = scan {0xa81a,0x881a,0x8812}
@@ -45,12 +54,25 @@ class RadioFrontend : public LinkCard {
     // card re-enumerating at a new bus address, which the ordinal does not.
     bool by_port = false;
     ScannedCard port;
+    // Non-empty: the device is the index-th whose VID:PID is in this list
+    // (the web page's chooser list). usb_vid/usb_pid/by_port are then
+    // ignored.
+    std::vector<UsbId> ids;
+    // Collect the USB lateness gauge (take_usb_late). Off on maburgs: a
+    // mutexed push per CRC-good frame on the RX thread the GS has no
+    // consumer for.
+    bool usb_late_gauge = false;
   };
 
   RadioFrontend(Cfg cfg, BodyQueue& out);
   ~RadioFrontend();                               // stop() if running
   bool open_and_start() override;                 // full bring-up; false on any failure
   void stop() override;                           // StopRxLoop + join + release usb
+  // Why the last open_and_start() returned false: "libusb_init", "no
+  // device", "claim failed rc=<n>", "unsupported chip". Empty after a
+  // success.
+  const std::string& open_error() const { return open_error_; }
+  void take_usb_late(int64_t& p99_us, int64_t& max_us);   // zeros unless usb_late_gauge
   bool ready() const override;                    // InitWrite completed
   bool alive() const override;                    // RX loop thread still running
   uint64_t rx_frames() const override;
@@ -136,6 +158,20 @@ class RadioFrontend : public LinkCard {
   // channel()'s existing readers are unaffected.
   std::atomic<uint8_t> rx_channel_{0};
   CardCaps caps_;
+  std::string open_error_;
+  UsbLate late_;
 };
+
+// pure, testable without libusb
+inline bool usb_id_matches(const RadioFrontend::Cfg& c, uint16_t vid, uint16_t pid) {
+  if (!c.ids.empty()) {
+    for (const auto& id : c.ids) if (id.vid == vid && id.pid == pid) return true;
+    return false;
+  }
+  if (vid != c.usb_vid) return false;
+  if (c.usb_pid != 0) return pid == c.usb_pid;
+  for (uint16_t p : kScanPids) if (pid == p) return true;
+  return false;
+}
 
 }  // namespace maburgs

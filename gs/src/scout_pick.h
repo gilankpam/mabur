@@ -34,25 +34,31 @@ inline int pick_burst_card(const std::vector<bool>& can_scout, int tx) {
   return pick_boot_scout(can_scout);   // last scout-capable card, TX or not; -1 if none
 }
 
-// DISC beacon targets during the boot scan. The scout card beacons only
-// while it is home (one-card mode: it interleaves home windows); a USB home
-// card (two-card mode: first USB card != scout) beacons always; every relay
-// that is ready() beacons as well -- but a relay is never the ONLY path to
-// rendezvous, because a CPE that is still booting, unplugged or owned by
-// another client would otherwise mean no DISC ever leaves the GS.
+// DISC targets while the scout owns a card (spec 2026-10-03 §4.2).
+// Two USB: the link card (always) + the scout card while it bursts DISC on a member.
+// One USB: the scout card while beaconing (op window or search burst).
+// Plus every relay that is ready() — but a relay is never the ONLY path to rendezvous,
+// because a CPE that is still booting, unplugged or owned by another client would
+// otherwise mean no DISC ever leaves the GS.
 // `ready` is per card; `n_usb` USB cards come first in the roster.
 inline std::vector<int> scan_disc_targets(int n_usb, int n_cards, int scout_card,
-                                          bool scout_at_home,
+                                          bool scout_beaconing,
                                           const std::vector<bool>& ready) {
   std::vector<int> out;
   if (n_cards <= 0) return out;
   if (n_usb >= 2) {
-    out.push_back(scout_card == 0 ? 1 : 0);   // the first USB card != scout
-  } else if (n_usb == 1 && scout_at_home) {
+    out.push_back(scout_card == 0 ? 1 : 0);          // the link card, on op, always
+    if (scout_beaconing) out.push_back(scout_card);  // the search burst on a member
+  } else if (n_usb == 1 && scout_beaconing) {
     out.push_back(scout_card);
   }
-  for (int i = n_usb; i < n_cards && i < static_cast<int>(ready.size()); ++i)
-    if (ready[static_cast<size_t>(i)]) out.push_back(i);
+  // Every ready relay. With no USB card the scout IS a relay (search-only,
+  // spec 2026-10-04 §3.7): it joins only while beaconing, like a USB scout.
+  for (int i = n_usb; i < n_cards && i < static_cast<int>(ready.size()); ++i) {
+    if (!ready[static_cast<size_t>(i)]) continue;
+    if (n_usb == 0 && i == scout_card) { if (scout_beaconing) out.push_back(i); continue; }
+    out.push_back(i);
+  }
   return out;
 }
 

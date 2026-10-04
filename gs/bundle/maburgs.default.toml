@@ -5,34 +5,48 @@
 # Keys marked "must match the drone" have a twin in the drone's mabur.toml.
 
 [radio]
-channel = 136              # home channel: must match the drone's radio.channel
+channels = [40, 64, 112, 144]   # the channel set: the drone parks on a member, the GS picks among them.
+                                # Both ends must list the same set (the drone's may be a superset).
+                                # 40 MHz: pair primaries sharing one offset; spur pairs and 124+128
+                                # (weather radar) left out. A CPE510 relay cannot tune 144: drop it here.
+                                # PROVISIONAL until bench row 8 (maburcal on 64 and 112; swap 64 for 128
+                                # if it fails), docs/channel-select.md "Config".
+channel  = "auto"               # "auto" = measure the set at start and move the link to the cleanest
+                                # member once (boot hop); a member number = pin the link there.
+                                # Either way the link first forms wherever the drone is found, then
+                                # a hop order moves it to the pick or the pin. A pinned member is static:
+                                # the in-flight hop below runs only in auto mode.
 width   = 40               # 20 or 40 MHz; 40 is needed for the 40 MHz link speeds in [[link.ladder]] below
 tx_card = -1               # card that transmits to the drone; -1 = pick the one with the best signal
 relays  = []               # CPE510 mabur-relay units, "ipv4:port" each (UDP 8310, numeric -- no hostnames); each is a card after the USB cards
 
-# Boot-time channel scan. While waiting for the drone, a spare card measures
-# the candidates plus the home channel and the ground station proposes the
-# least busy one. The choice is fixed once the drone answers; restart maburgs
-# to scan again. With a single card, that card alternates between listening
-# on home and visiting candidates.
-#
-# The candidates are 40 MHz channel pairs picked to stay clear of other FPV
-# systems (analog, HDZero, DJI, Walksnail) and of home Wi-Fi. The scan cannot
-# detect an analog transmitter, so keep the candidate list far from any band
-# one might use.
+# Channel search + measurement (docs/channel-select.md). While the link is
+# down the spare card sweeps the set, beaconing DISC on each member for
+# search_ms to find the drone. In auto mode it also measures every 20 MHz
+# half for dwell_ms, min_rounds times, and once the ranking is mature the
+# link moves to the cleanest member if it beats the current one by
+# pick_margin busy units. One card: op_window_ms beacon windows on op between
+# dwells, and a silent one_card_ms measurement before the first DISC.
+# Auto only: dwell_ms, settle_ms, min_rounds, pick_margin, one_card_ms, max_ms.
+# Both modes: search_ms, op_window_ms, search_after_ms, busy_dbm, blocked_pct.
 [radio.scan]
-enable           = true
-candidates       = [144, 112]
-dwell_ms         = 250      # time spent listening on each candidate per visit
-settle_ms        = 30       # time after tuning before measuring starts
-min_rounds       = 3        # full passes over the candidates before choosing
-home_window_ms   = 300      # time back on home between visits
-split_after_ms   = 5000     # after losing the link, search the last channel this long, then also home
-home_margin      = 20       # leave home only if a candidate is at least this much quieter
+dwell_ms        = 250
+settle_ms       = 30
+min_rounds      = 3
+search_ms       = 100
+op_window_ms    = 300
+search_after_ms = 5000
+pick_margin     = 20
+one_card_ms     = 5000
+max_ms          = 30000
+busy_dbm        = -83   # energy level that counts the air as busy: an NHM bucket edge, -104 -101 -98 -95 -92 -89 -86 -83 -80 -75 -70
+blocked_pct     = 50    # % of time the air is busy with others = channel blocked; every measurer uses it (boot scout, in-flight scout, verdict)
 
 # Radio cards: by default maburgs uses every supported card it finds on USB.
 # To use only specific cards (e.g. fly one card without unplugging the other),
 # uncomment and repeat this block per card; the list then replaces the scan.
+# One entry is also the one-card mode switch: no in-flight scout;
+# one_card_ms, op_window_ms and one_card_repeats apply.
 #[[radio.cards]]
 #usb_vid = 3034   # Realtek (0x0bda), in decimal
 #usb_pid = 0
@@ -183,12 +197,13 @@ dir           = "/media/dvr/log"
 ctl_period_ms = 50            # link-state log interval
 rung_period_s = 10            # per-rung summary log interval
 
-# In-flight channel hop: when the current channel goes bad, move the link to
-# a cleaner candidate from [radio.scan]. A spare card keeps "scouting" the
-# candidates in the background to rank them.
+# In-flight channel hop (docs/inflight-channel-hop.md): when the current
+# channel goes bad, move the link to a cleaner member of the set; the spare
+# card keeps "scouting" the other members in the background to rank them.
+# Runs only with [radio] channel = "auto": a pinned member is static -- the
+# channel is still measured (the OSD shows a dirty pin) but the link never
+# leaves it.
 [hop]
-enable               = true
-scout_when_disabled  = true   # keep ranking candidates even with enable = false
 window_ms            = 150    # length of one channel-health check
 persist              = 2      # bad checks in a row before hopping
 dwell_observe_ms     = 5      # scout: time listening per candidate visit...
@@ -213,6 +228,4 @@ weak_snr_db          = 12
 fading_drop_db       = 6      # signal this much below its recent level = fading, not interference
 foreign_pps          = 50     # other transmitters' packets per second
 fa_pps               = 100    # false detections per second (non-Wi-Fi noise)
-busy_dbm             = -83    # energy level that counts the air as busy: -104 to -74 in steps of 3
-blocked_pct          = 50     # % of time the air is busy with others = channel blocked
 starved_frac         = 0.25   # video rate below this fraction of normal = starved (keep below 0.5)

@@ -1,7 +1,6 @@
 // webgs: the web GS entry point. Native: CLI (replay for parity gates, live
 // for bench A/B vs the browser). Emscripten: the same live loop, with AUs
 // and 1 Hz stats posted to the page (spec 2026-09-27-web-gs §2.3).
-#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <climits>
@@ -11,7 +10,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -31,19 +29,12 @@
 #include "mabur/raw_dvr.h"
 #include "web_gs.h"
 #ifdef WEBGS_LIVE
-#include <libusb.h>
-#include "IRtlRadio.h"
-#include "RxPacket.h"
-#include "UsbDeviceLock.h"
-#include "UsbOpen.h"
-#include "WiFiDriver.h"
 #include "body_queue.h"
-#include "dot11.h"
-#include "logger.h"
-#include "mabur/ht40.h"
-#include "relay_link.h"
+#include "link_card.h"
+#include "radio_frontend.h"
 #include "relay_ring_transport.h"
 #include "relay_transport.h"
+#include "remote_card.h"
 #endif
 #ifdef WEBGS_PAGE
 #include <emscripten/em_asm.h>
@@ -303,7 +294,8 @@ int run_replay(const ReplayOpts& o) {
 
   webgs::Opts wo;
   wo.adaptive_gap = !o.fixed_gap;
-  webgs::WebGs g(cfg, o.mode, cfg.radio.channel, cfg.radio.width, std::move(io), wo);
+  wo.rz_nonce = 1;   // reproducible DISC nonce + RCF tags (native/WASM parity)
+  webgs::WebGs g(cfg, o.mode, cfg.radio.channels.front(), cfg.radio.width, {}, 0, std::move(io), wo);
 
   uint64_t last_us = 0;
   bool first = true;
@@ -335,47 +327,19 @@ int run_replay(const ReplayOpts& o) {
 // ---- live ------------------------------------------------------------------
 
 #ifdef WEBGS_LIVE
+// steady_clock since epoch: the same clock RadioFrontend stamps bodies with
+// (mono_us_now) and RemoteCard's now_ms, so WebGs sees one clock.
 uint64_t now_us() {
-  static const auto t0 = std::chrono::steady_clock::now();
   return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
-                                   std::chrono::steady_clock::now() - t0)
+                                   std::chrono::steady_clock::now().time_since_epoch())
                                    .count());
 }
-
-// USB delivery lateness (host arrival - chip RX TSF, above the per-second
-// minimum), rxprobe's measure, on CRC-good frames.
-struct UsbLate {
-  std::mutex mu;
-  std::vector<int64_t> offs;
-  uint32_t last_tsf = 0;
-  int64_t tsf_hi = 0;
-  void add(int64_t host, uint32_t tsf) {
-    std::lock_guard<std::mutex> lk(mu);
-    if (tsf < last_tsf) tsf_hi += int64_t{1} << 32;
-    last_tsf = tsf;
-    offs.push_back(host - (tsf_hi + tsf));
-  }
-  // p99/max of this second's lateness above its minimum; resets the window.
-  void take(int64_t& p99, int64_t& mx) {
-    std::vector<int64_t> v;
-    {
-      std::lock_guard<std::mutex> lk(mu);
-      v.swap(offs);
-    }
-    p99 = mx = 0;
-    if (v.empty()) return;
-    std::sort(v.begin(), v.end());
-    const int64_t mn = v.front();
-    p99 = v[v.size() * 99 / 100] - mn;
-    mx = v.back() - mn;
-  }
-};
 
 struct LiveOpts {
   std::string config = WEBGS_CONFIG_PATH;
   std::string overlay;       // optional TOML merged over config (the page's /overlay.toml)
   webgs::Mode mode = webgs::Mode::Gs;
-  int ch = -1, width = -1;   // -1 = the config's radio.channel / radio.width
+  int ch = -1, width = -1;   // -1 = the pin or first member / radio.width
   int secs = 0;              // 0 = until the card goes away
   std::string bad_chw;       // non-numeric --ch/--w, reported by run_live
   std::string relay;         // --relay host:port: mabur-relay v3 over UDP instead of USB
@@ -392,23 +356,14 @@ bool parse_int(const char* v, int& out) {
   return true;
 }
 
-// The radio seam run_live's loop needs; filled by the USB path now and the
-// relay path in Task 9.
-struct LiveRadio {
-  maburgs::BodyQueue* q = nullptr;
-  std::function<void(const std::vector<uint8_t>& frame)> send_frame;   // build_control_frame() output
-  std::function<bool()> ended;                   // radio gone (checked once the queue is empty)
-  const char* lost_error = "card lost";          // report_error text when ended() fires
-  std::function<const char*()> lost_reason;      // optional, overrides lost_error when set (chosen at report time)
-  std::function<void()> on_pass;                 // optional, every loop pass (relay keepalive)
-  std::function<std::string()> extra_stats;      // ",\"k\":v..." appended to each STATS
-};
-
 // The body-queue-consuming half of live: local recording, page requests
 // (vtx rec / IDR / local rec), the on_rx/tick loop and its STATS cadence.
-// Radio-specific bits (RX feed, TX send, "gone" check, per-radio stats)
-// come in through r; run_live builds them for the USB path.
-int live_loop(const LiveOpts& o, const maburgs::Config& cfg, uint8_t ch, int width, LiveRadio& r) {
+// The roster (one card: USB or relay) is run_live's; WebGs here ticks the
+// cards, transmits through them (GS mode) and runs the channel core. g is
+// local, so its core threads are joined before run_live stops the cards.
+int live_loop(const LiveOpts& o, const maburgs::Config& cfg, uint8_t ch, int width,
+              std::vector<std::unique_ptr<maburgs::LinkCard>>& cards, int n_usb,
+              maburgs::BodyQueue& q) {
   // Local recording (spec 2026-09-28-web-local-recording §1.2), fed on this
   // thread from the AU callback, before the page hand-off.
   mabur::RawDvr dvr;
@@ -441,14 +396,14 @@ int live_loop(const LiveOpts& o, const maburgs::Config& cfg, uint8_t ch, int wid
     emit_au(std::move(a));
   };
   io.on_osd = emit_osd;
-  uint16_t tx_seq = 0;
-  if (o.mode == webgs::Mode::Gs)
-    io.send = [&](const std::vector<uint8_t>& body) {
-      const auto f = maburgs::build_control_frame(tx_seq, body.data(), body.size());
-      tx_seq = static_cast<uint16_t>((tx_seq + 1) & 0xFFF);
-      r.send_frame(f);
-    };
-  webgs::WebGs g(cfg, o.mode, ch, width, std::move(io));
+  io.on_log = [](const std::string& l) { std::fprintf(stderr, "%s\n", l.c_str()); };
+  io.on_channel_store = [](uint8_t c) {
+    std::printf("CHANNEL %u\n", static_cast<unsigned>(c));
+    std::fflush(stdout);
+  };
+  std::vector<maburgs::LinkCard*> ptrs;
+  for (auto& c : cards) ptrs.push_back(c.get());
+  webgs::WebGs g(cfg, o.mode, ch, width, ptrs, n_usb, std::move(io));
 
 #ifndef WEBGS_PAGE
   std::signal(SIGINT, [](int) { g_stop.store(true); });
@@ -456,6 +411,7 @@ int live_loop(const LiveOpts& o, const maburgs::Config& cfg, uint8_t ch, int wid
 #endif
 
   int rc = 0;
+  bool relay_owned = false;   // Health::Owned seen (run_live waited for it; latched here anyway)
   std::vector<mabur::node::RxBody> batch;
   uint64_t next_stat = now_us() + 1000000;
   int applied_rec = -1;
@@ -507,13 +463,34 @@ int live_loop(const LiveOpts& o, const maburgs::Config& cfg, uint8_t ch, int wid
       }
     }
     batch.clear();
-    if (r.on_pass) r.on_pass();
-    r.q->drain(batch, 5);
+    q.drain(batch, 5);
     for (const auto& m : batch) g.on_rx(m);
     g.tick(now_us());
     if (lrec_armed && dvr.state() == mabur::RawDvr::State::Error) seal_local_rec();
-    if (r.ended() && batch.empty()) {
-      report_error("%s", r.lost_reason ? r.lost_reason() : r.lost_error);
+    const char* lost = nullptr;
+    if (auto* rcard = dynamic_cast<maburgs::RemoteCard*>(cards[0].get())) {
+      const auto h = rcard->health();
+      if (h == maburgs::RemoteCard::Health::Owned) relay_owned = true;
+      // After ownership: Lost is fatal; Taken OR Refused means another
+      // client holds the relay (restart_when_refused is off, so a refusal
+      // is never reset back to Connecting). TuneFailed and Connecting are
+      // NOT fatal here: a core-ordered relay TUNE during a hop reads
+      // not-tuned for ~50 ms, and RelayClient::tune_failed()'s window is
+      // measured from start(), so it reads true during any post-ownership
+      // retune.
+      if (relay_owned) {
+        switch (h) {
+          case maburgs::RemoteCard::Health::Lost:    lost = "relay lost"; break;
+          case maburgs::RemoteCard::Health::Taken:
+          case maburgs::RemoteCard::Health::Refused: lost = "relay taken by another client"; break;
+          default: break;
+        }
+      }
+    } else if (!cards[0]->alive()) {
+      lost = "card lost";
+    }
+    if (lost && batch.empty()) {
+      report_error("%s", lost);
       rc = 1;
       break;
     }
@@ -529,9 +506,21 @@ int live_loop(const LiveOpts& o, const maburgs::Config& cfg, uint8_t ch, int wid
     char extra[384];
     std::snprintf(extra, sizeof extra, ",\"qdrop\":%llu,\"lrec_avail\":%d,\"lrec_state\":%d,\"lrec_bytes\":%llu,"
                   "\"lrec_err\":%d,\"lrec_name\":\"%s\"",
-                  static_cast<unsigned long long>(r.q->dropped()), g_opfs_ok.load() ? 1 : 0, lst,
+                  static_cast<unsigned long long>(q.dropped()), g_opfs_ok.load() ? 1 : 0, lst,
                   static_cast<unsigned long long>(dvr.bytes()), lrec_err, lrec_name.c_str());
-    report_stats(j + extra + (r.extra_stats ? r.extra_stats() : "") + "}");
+    std::string extra2;
+    if (auto* rcard = dynamic_cast<maburgs::RemoteCard*>(cards[0].get())) {
+      if (const auto st = rcard->relay_stats()) extra2 = webgs::relay_stats_fields(*st);
+    } else if (auto* fe = dynamic_cast<maburgs::RadioFrontend*>(cards[0].get())) {
+      int64_t p99 = 0, mx = 0;
+      fe->take_usb_late(p99, mx);
+      char b[160];
+      std::snprintf(b, sizeof b, ",\"radio\":\"usb\",\"usb_p99_us\":%lld,\"usb_max_us\":%lld,\"txfail\":%llu",
+                    static_cast<long long>(p99), static_cast<long long>(mx),
+                    static_cast<unsigned long long>(fe->tx_fail()));
+      extra2 = b;
+    }
+    report_stats(j + extra + extra2 + "}");
   }
   // Every exit (Disconnect, card lost) seals the local recording before the
   // module goes away, so the page can download it (spec §1.4).
@@ -539,60 +528,11 @@ int live_loop(const LiveOpts& o, const maburgs::Config& cfg, uint8_t ch, int wid
   return rc;
 }
 
-// Live over a CPE510 mabur-relay (protocol v3) instead of the USB card:
-// RelayLink owns the transport + RX thread, feeding the same BodyQueue
-// live_loop already drains. Bounded by RelayClient's own timers -- no local
-// timeout logic here.
-int run_live_relay(const LiveOpts& o, const maburgs::Config& cfg, uint8_t ch, int width) {
-  std::unique_ptr<maburgs::RelayTransport> t;
-#ifdef __EMSCRIPTEN__
-  t = webgs::open_ring_transport();
-#else
-  std::string err;
-  t = maburgs::open_udp_transport(o.relay, err);
-  if (!t) { report_error("relay unreachable: %s", err.c_str()); return 1; }
-#endif
-  const uint8_t sec = width == 40 ? mabur::ht40_offset(ch) : 0;
-  maburgs::BodyQueue q;
-  webgs::RelayLink link(std::move(t), ch, sec, q, now_us);
-  link.start();
-  const bool gs = o.mode == webgs::Mode::Gs;
-  for (;;) {   // bounded by RelayClient: Unreachable after kLostMs, Refused/TuneFailed after kTuneWindowMs
-    if (g_stop.load(std::memory_order_acquire)) { link.stop(); std::printf("DONE\n"); return 0; }
-    link.tick();
-    const auto r = link.ready(gs);
-    if (r == webgs::RelayLink::Ready::Owned || r == webgs::RelayLink::Ready::Listening) break;
-    if (r == webgs::RelayLink::Ready::Unreachable) { report_error("relay unreachable"); link.stop(); return 1; }
-    if (r == webgs::RelayLink::Ready::Refused) { report_error("relay owned by another client"); link.stop(); return 1; }
-    if (r == webgs::RelayLink::Ready::TuneFailed) { report_error("relay cannot tune"); link.stop(); return 1; }
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  }
-  LiveRadio r;
-  r.q = &q;
-  r.send_frame = [&](const std::vector<uint8_t>& f) { link.send_frame(f); };
-  // GS mode only: a UDP subscriber (native webgs --relay, a future
-  // RemoteCard) can take ownership away from us at any time -- the relay
-  // prefers the oldest UDP subscriber. A spotter never owns, so it has
-  // nothing to lose.
-  r.ended = [&] { return link.lost() || (gs && link.ownership_lost()); };
-  r.lost_error = "relay lost";
-  r.lost_reason = [&] { return (gs && link.ownership_lost()) ? "relay taken by another client" : "relay lost"; };
-  r.on_pass = [&] { link.tick(); };
-  r.extra_stats = [&] { return link.stats_fields(); };
-  const int rc = live_loop(o, cfg, ch, width, r);
-  link.stop();
-  q.close();
-  std::printf("DONE\n");
-  std::fflush(stdout);
-  return rc;
-}
-
 // Cards the web core opens; devourer's chip-id read picks the driver.
 // 0bda:a81a/881a = RTL8812EU (Jaguar3), 0bda:8812 = RTL8812AU or EU,
 // 2357:011e/0120/0122 = TP-Link RTL8821AU (Jaguar1, 1T1R). The page's
 // WebUSB chooser filters by vendor only (logic.mjs USB_FILTERS).
-struct UsbId { uint16_t vid, pid; };
-constexpr UsbId kCards[] = {
+const std::vector<maburgs::RadioFrontend::UsbId> kCards = {
     {0x0bda, 0xa81a}, {0x0bda, 0x881a}, {0x0bda, 0x8812},
     {0x2357, 0x011e}, {0x2357, 0x0120}, {0x2357, 0x0122},
 };
@@ -606,154 +546,107 @@ int run_live(const LiveOpts& o) {
     report_error("bad channel/width: %s", o.bad_chw.c_str());
     return 2;
   }
-  const int ch_i = o.ch >= 0 ? o.ch : cfg.radio.channel;
+  const int ch_i = o.ch >= 0 ? o.ch : (cfg.radio.pin ? *cfg.radio.pin : cfg.radio.channels.front());
   const int width = o.width >= 0 ? o.width : cfg.radio.width;
   // maburgs's own loader checks on the override (the page picks ch/w, not
-  // the config): range, 20|40, HT40 pair, and in GS mode no 40 MHz rung
-  // while tuned 20.
+  // the config): set membership, range, 20|40, HT40 pair, and in GS mode no
+  // 40 MHz rung while tuned 20.
   if (auto e = webgs::channel_width_error(cfg, o.mode, ch_i, width)) {
     report_error("bad channel/width: %s", e->c_str());
     return 2;
   }
   const uint8_t ch = static_cast<uint8_t>(ch_i);
-  std::printf("webgs live: mode %s ch %u width %d\n",
-              o.mode == webgs::Mode::Gs ? "gs" : "spotter", ch, width);
+  // The page's width is the link width: ChannelCore's ScoutCfg::link_width_mhz
+  // and the pair rules read cfg.radio.width. The page's overlay carries
+  // [radio] width too (so the loader validated the set at the page's width),
+  // making this a no-op there; it still matters for the native CLI run without
+  // an overlay, where the loader saw the bundle's width and
+  // channel_width_error just checked the set against --w.
+  cfg.radio.width = static_cast<uint8_t>(width);
+  std::string set;
+  for (size_t i = 0; i < cfg.radio.channels.size(); ++i)
+    set += (i ? "," : "") + std::to_string(cfg.radio.channels[i]);
+  std::printf("webgs live: mode %s ch %u width %d set [%s] %s\n",
+              o.mode == webgs::Mode::Gs ? "gs" : "spotter", ch, width, set.c_str(),
+              cfg.radio.pin ? "pinned" : "auto");
   std::fflush(stdout);
-  if (!o.relay.empty()) return run_live_relay(o, cfg, ch, width);
-
-  libusb_context* ctx = nullptr;
-  if (libusb_init(&ctx) != 0) { report_error("libusb_init"); return 1; }
-  libusb_device** list = nullptr;
-  const ssize_t n = libusb_get_device_list(ctx, &list);
-  libusb_device* dev = nullptr;
-  for (ssize_t i = 0; i < n && !dev; ++i) {
-    libusb_device_descriptor dd;
-    if (libusb_get_device_descriptor(list[i], &dd) != 0) continue;
-    for (const auto& c : kCards)
-      if (dd.idVendor == c.vid && dd.idProduct == c.pid) dev = list[i];
-  }
-  libusb_device_handle* h = nullptr;
-  if (!dev || libusb_open(dev, &h) != 0) {
-    if (list) libusb_free_device_list(list, 1);
-    report_error("no RTL card");
-    libusb_exit(ctx);
-    return 1;
-  }
-  libusb_free_device_list(list, 1);
-  // Early-error unwind once the handle is open (the page reconnects in the
-  // same tab, so nothing may leak).
-  auto bail = [&](int code) {
-    if (h) libusb_close(h);
-    libusb_exit(ctx);
-    return code;
-  };
-  auto logger = std::make_shared<Logger>();
-  std::shared_ptr<devourer::UsbDeviceLock> lock;
-  if (int rc = devourer::claim_interface_then_reset(h, 0, logger, true, lock); rc != 0) {
-    report_error("claim failed rc=%d", rc);
-    return bail(1);
-  }
-  devourer::DeviceConfig dcfg;
-  dcfg.rx.enable_with_tx = true;
-  dcfg.rx.keep_corrupted = true;
-  dcfg.tuning.disable_cca = false;
-  dcfg.tx.no_cancel_multipkt = true;
-  dcfg.usb.rx_zerocopy = false;
-  WiFiDriver driver(logger);
-  auto radio = driver.CreateRadio(h, ctx, lock, dcfg);
-  auto* rtl = dynamic_cast<IRtlRadio*>(radio.get());
-  if (!rtl) {
-    report_error("unsupported chip");
-    radio.reset();
-    lock.reset();
-    return bail(1);
-  }
-  rtl->InitWrite(width == 40 ? SelectedChannel{ch, mabur::ht40_offset(ch), CHANNEL_WIDTH_40}
-                             : SelectedChannel{ch, 0, CHANNEL_WIDTH_20});
 
   maburgs::BodyQueue q;
-  UsbLate late;
-  std::atomic<bool> rx_ended{false};
-  std::thread rx([&] {
-    rtl->StartRxLoop([&](const Packet& pkt) {
-      const uint64_t host = now_us();
-      const auto& a = pkt.RxAtrib;
-      maburgs::RxMeta meta;
-      meta.crc_err = a.crc_err;
-      meta.data_rate = a.data_rate;
-      meta.rssi[0] = a.rssi[0]; meta.rssi[1] = a.rssi[1];
-      meta.snr[0] = a.snr[0];   meta.snr[1] = a.snr[1];
-      meta.evm[0] = a.evm[0];   meta.evm[1] = a.evm[1];
-      meta.physt = a.physt;
-      meta.tsfl = a.tsfl;
-      mabur::node::RxBody m;
-      if (maburgs::fill_rx_body(pkt.Data.data(), pkt.Data.size(), meta, m) !=
-          maburgs::RxVerdict::Body)
-        return;
-      m.card_id = 0;
-      m.rx_channel = ch;
-      m.mono_us = host;
-      if (m.crc_ok) late.add(static_cast<int64_t>(host), a.tsfl);
-      q.push(std::move(m));
-    });
-    // StartRxLoop returns on StopRxLoop or when the device goes away.
-    rx_ended.store(true, std::memory_order_release);
-    q.close();
-  });
-
-  uint64_t txfail = 0;
-  LiveRadio r;
-  r.q = &q;
-  r.send_frame = [&](const std::vector<uint8_t>& f) { if (!rtl->send_packet(f.data(), f.size())) ++txfail; };
-  r.ended = [&] { return rx_ended.load(std::memory_order_acquire); };
-  r.extra_stats = [&] {
-    int64_t p99 = 0, mx = 0;
-    late.take(p99, mx);
-    char b[160];
-    std::snprintf(b, sizeof b, ",\"radio\":\"usb\",\"usb_p99_us\":%lld,\"usb_max_us\":%lld,\"txfail\":%llu",
-                  static_cast<long long>(p99), static_cast<long long>(mx),
-                  static_cast<unsigned long long>(txfail));
-    return std::string(b);
-  };
-  const int rc = live_loop(o, cfg, ch, width, r);
-
-  const uint64_t t_stop0 = now_us();
-  if (!rx_ended.load()) rtl->StopRxLoop();
-  q.close();
-  // WebUSB has no transfer cancel (libusb's emscripten backend cancel is a
-  // no-op): on a quiet channel the RX loop's pending transferIn calls never
-  // complete and rx.join() would wait for the next received frame -- forever
-  // with the drone off. Releasing the interface makes Chrome abort them
-  // (AbortError), which ends the loop. Re-claimed below for Stop()'s de-init.
-  bool released_early = false;
-  for (int waited = 0; !rx_ended.load(std::memory_order_acquire) && waited < 300; waited += 10)
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  if (!rx_ended.load(std::memory_order_acquire)) {
-    libusb_release_interface(h, 0);
-    released_early = true;
+  std::vector<std::unique_ptr<maburgs::LinkCard>> cards;
+  int n_usb = 0;
+  if (o.relay.empty()) {
+    maburgs::RadioFrontend::Cfg fc;
+    fc.ids = kCards;
+    fc.channel = ch;
+    // GS mode: the one card is the boot scout card and opens at 20 MHz like
+    // maburgs's (main.cpp: "the scout card always starts at 20"); the core's
+    // width resync brings it to the link width when the pick freezes.
+    // A spotter opens at the link width.
+    fc.width_mhz = o.mode == webgs::Mode::Gs ? 20 : static_cast<uint8_t>(width);
+    fc.card_id = 0;
+    fc.usb_late_gauge = true;
+    auto fe = std::make_unique<maburgs::RadioFrontend>(fc, q);
+    if (!fe->open_and_start()) {
+      const std::string& e = fe->open_error();
+      report_error("%s", e == "no device" ? "no RTL card" : e.c_str());
+      return 1;
+    }
+    cards.push_back(std::move(fe));
+    n_usb = 1;
+  } else {
+    maburgs::RemoteCard::Cfg rcfg;
+    rcfg.addr = o.relay;
+    rcfg.channel = ch;
+    rcfg.width_mhz = static_cast<uint8_t>(width);   // never the boot scout: full width from the start
+    rcfg.card_id = 0;
+    rcfg.restart_when_refused = false;   // one relay, one client: a refusal is reported, not retried
+    maburgs::RemoteCard::OpenFn open =
+#ifdef __EMSCRIPTEN__
+        [](const std::string&, std::string&) { return webgs::open_ring_transport(); };
+#else
+        [](const std::string& a, std::string& err) { return maburgs::open_udp_transport(a, err); };
+#endif
+    auto card = std::make_unique<maburgs::RemoteCard>(rcfg, q, open, [] { return now_us() / 1000; });
+    if (!card->open_and_start()) {
+      report_error("relay unreachable");
+      return 1;
+    }
+    // Wait for ownership (both modes: one relay, one client). Bounded by
+    // RelayClient's own windows: Lost after kLostMs, Refused/TuneFailed after
+    // kTuneWindowMs. No WebGs yet, so the card is ticked here.
+    for (;;) {
+      if (g_stop.load(std::memory_order_acquire)) {
+        card->stop();
+        std::printf("DONE\n");
+        std::fflush(stdout);
+        return 0;
+      }
+      card->tick(now_us() / 1000);
+      const auto h = card->health();
+      if (h == maburgs::RemoteCard::Health::Owned) break;
+      const char* err = nullptr;
+      switch (h) {
+        case maburgs::RemoteCard::Health::Lost:       err = "relay unreachable"; break;
+        case maburgs::RemoteCard::Health::Refused:    err = "relay owned by another client"; break;
+        case maburgs::RemoteCard::Health::TuneFailed: err = "relay cannot tune"; break;
+        case maburgs::RemoteCard::Health::Taken:      err = "relay taken by another client"; break;
+        default: break;
+      }
+      if (err) {
+        report_error("%s", err);
+        card->stop();
+        return 1;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    cards.push_back(std::move(card));
   }
-  rx.join();
-  if (released_early) libusb_claim_interface(h, 0);
-  const uint64_t t_rx = now_us();
-  // In-page Disconnect needs a real teardown (the page builds a fresh module
-  // on the next Connect): radio before the handle it drives, interface
-  // released before close, context last (devourer's DeviceSession order).
-  // Stop() powers the chip down to a re-enumerable state first, as maburgs'
-  // RadioFrontend::stop does; on a lost card its de-init writes fail and it
-  // swallows that. The lock is not a claim: it releases no interface.
-  // Returning from main lets -sEXIT_RUNTIME fire Module.onExit(rc).
-  rtl->Stop();
-  const uint64_t t_chip = now_us();
-  radio.reset();
-  libusb_release_interface(h, 0);
-  libusb_close(h);
-  lock.reset();
-  libusb_exit(ctx);
-  std::printf("teardown: rx %llu ms%s, chip stop %llu ms, close %llu ms\n",
-              static_cast<unsigned long long>((t_rx - t_stop0) / 1000),
-              released_early ? " (reads aborted)" : "",
-              static_cast<unsigned long long>((t_chip - t_rx) / 1000),
-              static_cast<unsigned long long>((now_us() - t_chip) / 1000));
+  // WebGs (and its core threads) are gone when live_loop returns.
+  const int rc = live_loop(o, cfg, ch, width, cards, n_usb, q);
+  // RadioFrontend::stop holds the WebUSB early-release teardown. Returning
+  // from main lets -sEXIT_RUNTIME fire Module.onExit(rc).
+  for (auto& c : cards) c->stop();
+  q.close();
   std::printf("DONE\n");
   std::fflush(stdout);
   return rc;
@@ -768,7 +661,7 @@ int usage(FILE* out, int rc) {
 #ifdef WEBGS_LIVE
                "       webgs live [-c config.toml] [--overlay file.toml] [--ch N] [--w 20|40]\n"
                "                  [--secs 0] [--mode gs|spotter] [--relay host:port]\n"
-               "                  (ch/w default to radio.channel/width)\n"
+               "                  (ch/w default to the pin or the first member / radio.width)\n"
 #endif
                "default config: %s\n",
                WEBGS_CONFIG_PATH);

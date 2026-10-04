@@ -5,7 +5,7 @@ using namespace maburgs;
 
 // A window straight out of HopVerdict, so these tests are pinned to what
 // the classifier can actually produce rather than to a hand-set bool.
-static HopCfg cfg() { HopCfg c; c.enable = true; return c; }
+static HopCfg cfg() { return HopCfg{}; }
 static VerdictCardIn card(double rssi, double snr, double foreign_ps, double fa_ps) {
   VerdictCardIn c; c.valid = true; c.rssi_dbm = rssi; c.snr_db = snr;
   c.foreign = (uint32_t)(foreign_ps * 0.15 + 0.5); c.fa = (uint32_t)(fa_ps * 0.15 + 0.5);
@@ -28,14 +28,14 @@ static VerdictOut unknown(HopVerdict& v, double t) {      // impaired, no domain
 }
 
 TEST(no_blank_while_the_link_is_clean) {
-  HopVerdict v(cfg(), 2); double t = warm(v);
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   auto o = v.window(t, {clean(), clean()}, {0.0, 20}, 5);
   CHECK(o.v == Verdict::Healthy);
   CHECK(!hop_store_blank_until(o, true, 500).has_value());
 }
 
 TEST(blank_opens_at_the_first_interfered_window) {
-  HopVerdict v(cfg(), 2); double t = warm(v);
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   auto o = jam(v, t);
   CHECK(o.v == Verdict::Interfered);
   const auto until = hop_store_blank_until(o, true, 500);
@@ -50,7 +50,7 @@ TEST(blank_opens_at_the_first_interfered_window) {
 // seconds at a time, on flights whose whole purpose is recording what the
 // ladder does.
 TEST(a_fade_never_blanks_the_store_even_though_it_freezes_the_references) {
-  HopVerdict v(cfg(), 2); double t = warm(v);
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   auto o = fade(v, t);
   CHECK(o.v == Verdict::Fade);
   CHECK(o.evidence & kEvImpaired);
@@ -62,7 +62,7 @@ TEST(a_fade_never_blanks_the_store_even_though_it_freezes_the_references) {
 }
 
 TEST(an_unknown_window_never_blanks_the_store) {
-  HopVerdict v(cfg(), 2); double t = warm(v);
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   auto o = unknown(v, t);
   CHECK(o.v == Verdict::Unknown);
   CHECK(o.evidence & kEvImpaired);
@@ -70,15 +70,14 @@ TEST(an_unknown_window_never_blanks_the_store) {
   CHECK(!hop_store_blank_until(o, true, 500).has_value());
 }
 
-// hop.enable = false is the bundle default and the first flights' config.
-// Nothing is ever ordered and the rung is never restored, so there is no
-// hop to protect the store from -- and blanking anyway would silently
-// change what those recordings contain versus every pre-branch one.
-TEST(disabled_never_blanks) {
-  HopVerdict v(cfg(), 2); double t = warm(v);
+// Pinned mode: the reactive layer is off, nothing is ever ordered and the
+// rung is never restored, so there is no hop to protect the store from.
+// (Until 2026-10-04 this was the hop.enable = false case.)
+TEST(pinned_never_blanks) {
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   auto o = jam(v, t);
   CHECK(o.v == Verdict::Interfered);
-  CHECK(!hop_store_blank_until(o, /*enable=*/false, 500).has_value());
+  CHECK(!hop_store_blank_until(o, /*reactive=*/false, 500).has_value());
 }
 
 // The bound: one deadline per frozen episode. A jam that runs for seconds,
@@ -86,14 +85,14 @@ TEST(disabled_never_blanks) {
 // reaching the 3 consecutive healthy windows a thaw needs, stays inside
 // ONE episode and cannot roll the deadline forward.
 TEST(a_sustained_jam_arms_the_blank_exactly_once) {
-  HopVerdict v(cfg(), 2); double t = warm(v);
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   int armed = 0;
   for (int i = 0; i < 40; ++i)
     if (hop_store_blank_until(jam(v, t + 150 * i), true, 500)) ++armed;
   CHECK(armed == 1);
 }
 TEST(interfered_healthy_alternation_inside_one_episode_does_not_rearm) {
-  HopVerdict v(cfg(), 2); double t = warm(v);
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   int armed = 0;
   for (int i = 0; i < 20; ++i) {
     if (hop_store_blank_until(jam(v, t), true, 500)) ++armed;
@@ -106,13 +105,13 @@ TEST(interfered_healthy_alternation_inside_one_episode_does_not_rearm) {
 
 // ...and it re-arms after a genuine thaw, by either rule.
 TEST(rearms_after_three_healthy_windows) {
-  HopVerdict v(cfg(), 2); double t = warm(v);
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   CHECK(hop_store_blank_until(jam(v, t), true, 500).has_value());
   for (int i = 1; i <= 3; ++i) v.window(t + 150 * i, {clean(), clean()}, {0.0, 20}, 5);
   CHECK(hop_store_blank_until(jam(v, t + 600), true, 500).has_value());
 }
 TEST(rearms_after_reset_ends_a_verify_window) {
-  HopVerdict v(cfg(), 2); double t = warm(v);
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   CHECK(hop_store_blank_until(jam(v, t), true, 500).has_value());
   CHECK(!hop_store_blank_until(jam(v, t + 150), true, 500).has_value());
   v.reset();
@@ -120,7 +119,7 @@ TEST(rearms_after_reset_ends_a_verify_window) {
 }
 
 TEST(span_follows_the_configured_confirm_ms) {
-  HopVerdict v(cfg(), 2); double t = warm(v);
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   CHECK(*hop_store_blank_until(jam(v, t), true, 2000) == t + 2000 + kHopSettleBlankMs);
 }
 MTEST_MAIN

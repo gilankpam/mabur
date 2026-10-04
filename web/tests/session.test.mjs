@@ -41,7 +41,8 @@ const mk = (over = {}) => {
   let reloads = 0;
   const s = new Session({
     createModule: f.create, requestDevice: over.requestDevice || (async () => {}),
-    onAu: () => {}, onStats: () => {}, onRecClosed: over.onRecClosed || (() => {}), reload: () => { reloads++; }, timers: t,
+    onAu: () => {}, onStats: () => {}, onRecClosed: over.onRecClosed || (() => {}),
+    onChannel: over.onChannel || (() => {}), reload: () => { reloads++; }, timers: t,
   });
   const states = [];
   s.subscribe((v) => states.push(v.state));
@@ -63,11 +64,27 @@ test('gs connect passes args + overlay, disconnect tears down to idle', async ()
   assert.deepEqual(states.slice(-2), ['stopping', 'idle']);
 });
 
-test('spotter sends no overlay', async () => {
+test('spotter passes the overlay too (the channel set rides it)', async () => {
   const { s, f } = mk();
-  await s.connect({ mode: 'spotter', ch: 136, w: 40, overlayToml: 'x' });
-  assert.deepEqual(f.made[0].opts.arguments, ['live', '--mode', 'spotter', '--ch', '136', '--w', '40']);
-  assert.deepEqual(f.made[0].files, {});
+  const toml = '[radio]\nchannels = [40, 64]\nchannel = "auto"\n';
+  await s.connect({ mode: 'spotter', ch: 40, w: 40, overlayToml: toml });
+  assert.deepEqual(f.made[0].opts.arguments,
+    ['live', '--mode', 'spotter', '--ch', '40', '--w', '40', '--overlay', '/overlay.toml']);
+  assert.deepEqual(f.made[0].files, { '/overlay.toml': toml });
+});
+
+test('CHANNEL stdout lines reach onChannel for the current module only', async () => {
+  const seen = [];
+  const { s, f } = mk({ onChannel: (n) => seen.push(n) });
+  await s.connect({ mode: 'gs', ch: 40, w: 40, overlayToml: '[radio]\nchannels = [40, 64]\nchannel = "auto"\n' });
+  const m = f.made[0];
+  m.opts.print('webgs live: mode gs ch 40 width 40 set [40,64] auto');
+  m.opts.print('CHANNEL 64');
+  assert.deepEqual(seen, [64]);
+  await s.disconnect();
+  await tick();
+  m.opts.print('CHANNEL 112');          // a stale module's line is dropped
+  assert.deepEqual(seen, [64]);
 });
 
 test('device chooser cancelled -> idle with a notice, no module', async () => {

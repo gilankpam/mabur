@@ -50,6 +50,8 @@
 #include "debug_http.h"
 #include "frame_pipeline.h"
 #include "frame_source.h"
+#include "mabur/channel_file.h"
+#include "mabur/channel_set.h"
 #include "mabur/frame_wire.h"
 #include "mabur/ht40.h"
 #include "mabur/msp_source.h"
@@ -513,8 +515,9 @@ struct RealActuator : mabur::Actuator {
 #endif
   }
 
-  // RcAgent calls this on a Disc.op_channel move and on the move-confirm/
-  // rendezvous fallback home, from the agent thread only (same contract as
+  // RcAgent calls this on a promoted session's agreed-channel move
+  // ("disc"), an RCF hop order ("hop") and an unconfirmed move's return to
+  // where it came from ("move_unconfirmed"), from the agent thread only (same contract as
   // apply_op/send_control above). Null in dry-run (dev == nullptr): there is
   // no device and no tx_gate to take, so that path is a pure stderr echo.
   std::shared_mutex* tx_gate = nullptr;
@@ -523,7 +526,7 @@ struct RealActuator : mabur::Actuator {
   // See await_retune_gate's comment for why a reader-preferring rwlock
   // cannot be left to starve this writer: it runs on the agent thread.
   std::atomic<bool>* retune_waiting = nullptr;
-  uint8_t cur = 0;  // set to cfg.radio.channel where the actuator is configured
+  uint8_t cur = 0;  // set to start_ch where the actuator is configured
   // A retune that arrived during a calibration sweep and has not been
   // performed yet (see retune() below). Agent-thread-only, like every other
   // member here.
@@ -534,10 +537,11 @@ struct RealActuator : mabur::Actuator {
   // devourer's IRtlRadio.h threading contract forbids one concurrent with
   // ANY other device call — not just a bulk-OUT. A calibration sweep runs
   // the three TX-power knobs (DevicePowerCtl, below) from the TX writer
-  // thread for up to 180 s, which is far longer than link.rendezvous_ms
-  // (30 s): the agent's own FAILSAFE->RENDEZVOUS go_home_ fires mid-sweep
-  // as a matter of course. Two rules keep that safe without ever blocking
-  // the agent thread on a sweep:
+  // thread for up to 180 s, and nothing stops a retune being requested in
+  // that time: a hop order or a promoted session's DISC move in an RCF that
+  // was already queued, or move_unconfirmed's return when the GS goes
+  // radio-silent for the sweep (move_confirm_ms is 2 s). Two rules keep
+  // that safe without ever blocking the agent thread on a sweep:
   //   * the three power calls take tx_gate SHARED (they are device calls,
   //     not senders, but the gate is what serialises them against this one);
   //   * a retune requested while cal_active simply does not happen — it is
@@ -546,9 +550,10 @@ struct RealActuator : mabur::Actuator {
   //     re-apply. `cur` deliberately stays on the radio's REAL channel
   //     while deferred, so the replayed retune still logs the true from->to
   //     and a same-channel deferral cannot be mistaken for a completed move.
-  // RcAgent's move-confirm/rendezvous machinery already handles "the retune
-  // did not take" (it hears nothing on the new channel and goes home), so a
-  // deferral degrades to that path rather than to a wedged link.
+  // RcAgent's move-confirm machinery already handles "the retune did not
+  // take" (it hears nothing on the new channel and returns to the channel it
+  // came from), so a deferral degrades to that path rather than to a wedged
+  // link.
   // Not host-testable: RealActuator lives in main.cpp and needs a real
   // IRtlRadio, so this comment is the specification.
   void retune(uint8_t ch, const char* reason) override {
@@ -652,6 +657,17 @@ struct RealActuator : mabur::Actuator {
     }
     if (recorder) recorder->request(on);   // non-blocking; outcome in rec_status
     return true;
+  }
+
+  // Spec 2026-10-03-auto-channel-set §3: RcAgent calls this once per
+  // confirmed move, from the agent thread. A failed write is one stderr
+  // line, never fatal -- the drone still parks on the right channel this
+  // session, it just won't remember it across a restart.
+  void remember_channel(uint8_t ch) override {
+    if (dry_run) { std::fprintf(stderr, "[dry-run] remember_channel(%u)\n", ch); return; }
+    if (!mabur::write_channel_file(mabur::kDroneChannelFile, ch))
+      std::fprintf(stderr, "maburd: could not write %s (channel %u not remembered)\n",
+                   mabur::kDroneChannelFile, static_cast<unsigned>(ch));
   }
 };
 
@@ -864,9 +880,9 @@ std::vector<RcInRecord> read_rc_in(const std::string& path) {
   return recs;
 }
 
-int run_dry_run(const Config& cfg, const std::string& in_path, const std::string& out_path,
-                const std::string& rc_in_path, const std::string& msp_in_path,
-                const std::string& msp_out_path) {
+int run_dry_run(const Config& cfg, uint8_t start_ch, const std::string& in_path,
+                const std::string& out_path, const std::string& rc_in_path,
+                const std::string& msp_in_path, const std::string& msp_out_path) {
   FileSink file_sink;
   file_sink.f = std::fopen(out_path.c_str(), "wb");
   if (!file_sink.f) {
@@ -885,7 +901,7 @@ int run_dry_run(const Config& cfg, const std::string& in_path, const std::string
   actuator.dev = nullptr;
   actuator.dry_run = true;
 
-  RcAgent agent(cfg, actuator);
+  RcAgent agent(cfg, actuator, nullptr, start_ch);
   agent.install_session_for_replay(1, 1);  // --rc-in frames are tagged under (1,1) by tests/integration/mabur_rc.py
   // Debug endpoint is startable here too (no MABUR_HAVE_VENC on a host
   // build, so every route just answers "disabled") -- keeps host/dry-run
@@ -1108,7 +1124,7 @@ uint16_t open_usb_and_get_pid(uint16_t vid, uint16_t configured_pid,
   return 0;
 }
 
-int run_real_mode(const Config& cfg, const std::string& cfg_path) {
+int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_path) {
   // Before libusb_init and the venc bring-up, so every thread either
   // library spawns inherits core 0; the hot thread claims core 1 itself.
   if (two_core_target()) {
@@ -1284,7 +1300,7 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
     // exits before there is anything to contend with.
     if (two_core_target()) pin_self_to(kHotCore);
     try {
-      const uint8_t ch = static_cast<uint8_t>(cfg.radio.channel);
+      const uint8_t ch = start_ch;
       rtl_device->InitWrite(cfg.radio.width == 40
                                 ? SelectedChannel{ch, mabur::ht40_offset(ch), CHANNEL_WIDTH_40}
                                 : SelectedChannel{ch, 0, CHANNEL_WIDTH_20});
@@ -1370,7 +1386,7 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
   actuator.ampdu = cfg.ampdu;
   actuator.tx_gate = &tx_gate;
   actuator.retune_waiting = &retune_waiting;
-  actuator.cur = static_cast<uint8_t>(cfg.radio.channel);
+  actuator.cur = start_ch;
   actuator.ldpc = cfg.radio.ldpc;
   // Encoder starts at the "normal" ROI QP (RcAgent only calls set_roi_qp on
   // a low<->normal transition — see run_bitrate_policy's roi_low_ default),
@@ -1386,7 +1402,7 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
                              cfg.venc.core.height);
   actuator.recorder = &vtx_rec;
 
-  RcAgent agent(cfg, actuator, &ov_override);
+  RcAgent agent(cfg, actuator, &ov_override, start_ch);
 
 #ifdef MABUR_HAVE_VENC
   // Boot the encoder BEFORE the radio and before any thread starts: it
@@ -2097,9 +2113,9 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
   // made from the TX writer thread, and devourer's IRtlRadio.h contract
   // forbids any of them concurrent with a channel set. RealActuator::retune
   // takes tx_gate exclusive around FastRetune, so each call here takes it
-  // SHARED -- a cal session lasts up to 180 s while link.rendezvous_ms is
-  // 30 s, so the agent's FAILSAFE->RENDEZVOUS go_home_ retune landing
-  // mid-sweep is the normal case, not a corner. retune's other half of the
+  // SHARED -- a cal session lasts up to 180 s, long enough for a hop, DISC
+  // or move_unconfirmed retune to be requested mid-sweep, so that is the
+  // normal case, not a corner. retune's other half of the
   // fix defers the move entirely while cal_active, and the deferred replay
   // fires on the agent thread's falling edge -- by which time this thread
   // may still be inside the post-session power restore. So the gate covers
@@ -2891,7 +2907,7 @@ int run_real_mode(const Config& cfg, const std::string& cfg_path) {
   // (radio_tx.cpp), so the wire never depends on this.
 
   device_ready.store(true, std::memory_order_release);
-  std::fprintf(stderr, "maburd entering RX loop on channel %d\n", cfg.radio.channel);
+  std::fprintf(stderr, "maburd entering RX loop on channel %d\n", start_ch);
   rtl_device->StartRxLoop(rx_callback);
 
   // Init() returns once g_devourer_should_stop is set (SIGINT/SIGTERM) or the
@@ -2982,6 +2998,23 @@ int main(int argc, char** argv) {
       std::fprintf(stderr, "  %s\n", d.c_str());
   }
 
+  // Spec 2026-10-03-auto-channel-set §3: park on the remembered member,
+  // else the first. A missing/garbage/non-member file is silently the
+  // first member -- nothing to configure, nothing to repair.
+  const auto remembered_ch = mabur::read_channel_file(mabur::kDroneChannelFile);
+  const bool use_remembered =
+      remembered_ch && mabur::channel_set_member(cfg.radio.channels, *remembered_ch);
+  const uint8_t start_ch = use_remembered ? *remembered_ch : cfg.radio.channels.front();
+  {
+    std::string set_str;
+    for (size_t i = 0; i < cfg.radio.channels.size(); ++i) {
+      if (i) set_str += ",";
+      set_str += std::to_string(cfg.radio.channels[i]);
+    }
+    std::fprintf(stderr, "maburd: channel set [%s], parking on %u%s\n", set_str.c_str(),
+                 static_cast<unsigned>(start_ch), use_remembered ? " (remembered)" : "");
+  }
+
   std::fprintf(stderr,
                "fec: symbol_size=[%d,%d] bpb=[%d,%d] window=%d\n",
                cfg.fec.symbol_size[0], cfg.fec.symbol_size[1],
@@ -3000,8 +3033,8 @@ int main(int argc, char** argv) {
       print_usage(argv[0]);
       return 1;
     }
-    return run_dry_run(cfg, in_path, out_path, rc_in_path, msp_in_path, msp_out_path);
+    return run_dry_run(cfg, start_ch, in_path, out_path, rc_in_path, msp_in_path, msp_out_path);
   }
 
-  return run_real_mode(cfg, cfg_path);
+  return run_real_mode(cfg, start_ch, cfg_path);
 }

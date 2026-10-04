@@ -6,9 +6,11 @@
 [radio]
 usb_vid    = 3034        # Realtek USB vendor ID (0x0bda) in decimal
 usb_pid    = 0           # 0 = find the card automatically (8812EU or 8812CU)
-channel    = 136         # home channel: where the drone waits for the ground station
-width      = 40          # 20 or 40 MHz. The ground station picks the width for each link speed
-follow_gs  = true        # move to the channel the ground station asks for
+channels   = [40, 64, 112, 144]   # the channel set, same as the ground station's (a superset is fine);
+                                  # the drone parks on the remembered member and follows the GS to any member.
+                                  # PROVISIONAL until bench row 8 (maburcal on 64 and 112; swap 64 for 128
+                                  # if it fails), docs/channel-select.md "Config".
+width      = 40        # HT40 on each member's standard pair; per-rung width comes from the GS ladder (docs/bw40.md)
 power_mode = "none"      # "none" = card's default TX power; "offset" = use the calibrated walls below
 tx_threads = 4           # parallel USB senders; 4 is needed to reach full link speed
 ldpc       = true        # LDPC coding on every frame. false only for an RTL8821AU ground card (it can't decode LDPC); costs ~2-3 dB of range
@@ -69,8 +71,8 @@ center  = 0.4
 [link]
 failsafe_ms     = 3000     # no word from the ground station this long = drop to the most robust link setting
 rc_drain_ms     = 5        # how often commands from the ground station are applied
-rendezvous_ms   = 30000    # still silent this long after failsafe = return to the home channel
-move_confirm_ms = 2000     # after a channel move, hear the ground station within this or return home
+rendezvous_ms   = 30000    # still silent this long after failsafe = back to RENDEZVOUS (the drone stays on its channel)
+move_confirm_ms = 2000     # after a channel move, hear the ground station within this or return to the channel we came from
 tick_ms         = 100      # housekeeping interval (health checks, stats)
 key_file        = "/etc/mabur.key"   # pairing key; same file on the ground station (docs/deploy.md "Pairing"). Missing = built-in default
 

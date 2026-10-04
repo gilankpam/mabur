@@ -15,6 +15,15 @@ OpPoint op_from_rung(const Rung& r) {
 }
 }  // namespace
 
+std::vector<uint8_t> disc_for_channel(const std::vector<uint8_t>& disc, uint8_t ch,
+                                      const mabur::LinkKey& key) {
+  if (ch == 0 || mabur::rc::frame_type(disc.data(), disc.size()) != mabur::rc::T_DISC) return disc;
+  auto d = mabur::rc::parse_disc(disc.data(), disc.size());
+  if (!d || d->op_channel == ch) return disc;
+  d->op_channel = ch;
+  return mabur::rc::pack_disc(*d, key);
+}
+
 VrxController::VrxController(VrxCfg cfg)
     : cfg_(cfg),
       ctrl_(cfg.ladder),
@@ -23,7 +32,7 @@ VrxController::VrxController(VrxCfg cfg)
       // BEACONING after video loss only delays re-rendezvous. The removed
       // link.video_silence_ms key claimed to tune the 1000 but never did.
       // nonce 0 = random per process: a restarted GS is a new session.
-      rz_(VrxRzConfig{1000, 20, cfg.op_channel, 0}),
+      rz_(VrxRzConfig{1000, 20, cfg.op_channel, cfg.rz_nonce}),
       cur_op_(op_from_rung(ctrl_.op())) {}
 
 void VrxController::sync_op_() { cur_op_ = op_from_rung(ctrl_.op()); }

@@ -31,8 +31,7 @@
 #include "cal_log.h"
 #include "cal_session.h"
 #include "card_scan.h"
-#include "channel_plan.h"
-#include "channel_scout.h"
+#include "channel_core.h"
 #include "config.h"
 #include "ctl_log.h"
 #include "drone_restart.h"
@@ -40,12 +39,7 @@
 #include "frame_file_source.h"
 #include "frame_stream.h"
 #include "gap_timeout_policy.h"
-#include "hop_controller.h"
-#include "hop_blank.h"
-#include "hop_burst_gate.h"
-#include "hop_ranker.h"
-#include "hop_verdict.h"
-#include "inflight_scout.h"
+#include "hop_burst_gate.h"   // cal_cmd_clear
 #include "ladder_residual.h"
 #include "link_health.h"
 #include "lat_window.h"
@@ -54,6 +48,8 @@
 #include "loss_control.h"
 #endif
 #include "mabur/cal_wire.h"
+#include "mabur/channel_file.h"
+#include "mabur/channel_set.h"
 #include "mabur/probe_wire.h"
 #include "mabur/profile.h"
 #include "mabur/rc_proto.h"
@@ -61,8 +57,6 @@
 #include "mabur/sw_wire.h"
 #include "mabur/uep_encoder.h"
 #include "msp_sink.h"
-#include "nhm_window.h"
-#include "pair_pick.h"
 #include "pts_anchor.h"
 #include "probe_log.h"
 #include "fec_log.h"
@@ -73,7 +67,6 @@
 #include "radio_frontend.h"
 #include "remote_card.h"
 #include "rf_labels.h"
-#include "s1_loss.h"
 #include "scan_log.h"
 #include "scout_pick.h"
 #include "snr_units.h"
@@ -84,7 +77,6 @@
 #include "udp_sink.h"
 #include "vrx_cfg.h"
 #include "vrx_controller.h"
-#include "width_resync.h"
 
 namespace {
 
@@ -109,444 +101,6 @@ uint64_t mono_us() {
       std::chrono::duration_cast<std::chrono::microseconds>(
           std::chrono::steady_clock::now().time_since_epoch()).count());
 }
-
-// hop.state on the sideport (Task 12): HopState has no to_string() of its
-// own (hop_controller.h/.cpp aren't in this task's file list), so map it
-// here, next to the exporter feed's other ad hoc conversions.
-const char* hop_state_name(maburgs::HopState s) {
-  switch (s) {
-    case maburgs::HopState::Idle:      return "idle";
-    case maburgs::HopState::Ordered:   return "ordered";
-    case maburgs::HopState::Verifying: return "verifying";
-    case maburgs::HopState::Hold:      return "hold";
-  }
-  return "idle";
-}
-
-// Shared by run_radio()'s live loop and (under MABUR_TEST)
-// run_hop_inject_test(): the 4-case HopAction handler, extracted so gs_e2e's
-// hop scenario exercises the SAME code run_radio() runs instead of a
-// hand-copied duplicate (Task 15 fix round 1 -- the duplicate's deliberate-
-// break check was found to validate only itself, since --dry-run returns
-// before run_radio() is ever reached). Deliberately excludes run_radio()'s
-// three cross-thread bookkeeping lines (hopping_atomic x2,
-// rcf_sent_at_order) -- those have no meaning outside run_radio()'s own
-// atomics/counters, so the caller still runs them immediately after this
-// call, in the same relative order as before the extraction.
-void apply_hop_action(const maburgs::HopAction& act, double now_ms, int confirm_ms,
-                      maburgs::VrxController& vrx, maburgs::ChannelPlan& plan,
-                      maburgs::HopVerdict& verdict) {
-  switch (act.kind) {
-    case maburgs::HopAction::Order:
-      vrx.set_hop(act.target, act.epoch);
-      vrx.restore_rung(act.restore_rung, now_ms);
-      vrx.blank_store(now_ms + confirm_ms + 150.0);
-      // Two-card (act.lead_card >= 0): retune the lead card right now --
-      // the trailing card keeps video alive on op_ throughout, so there is
-      // nothing to wait for. One-card (act.lead_card < 0): do NOT retune
-      // yet. The sole radio must stay on the OLD channel while the order
-      // rides hop.one_card_repeats RCFs (spec section 1 step 1) --
-      // HopController already counts those repeats and only emits
-      // OneCardRetune once enough have gone out; calling plan.hop_order()
-      // here too would move plan.desired() (and so this radio) before the
-      // drone could possibly have heard the order, abandoning the only
-      // channel it can still be reached on. vrx.set_hop/restore_rung/
-      // blank_store above still run unconditionally: the RCF has to start
-      // carrying the order immediately, which is the whole point of the
-      // repeats.
-      if (act.lead_card >= 0) plan.hop_order(now_ms, act.target, act.lead_card);
-      break;
-    case maburgs::HopAction::OneCardRetune:
-      plan.hop_order(now_ms, act.target, -1);
-      break;
-    case maburgs::HopAction::Confirm:
-      plan.hop_confirmed(now_ms);
-      break;
-    case maburgs::HopAction::Withdraw:
-      vrx.set_hop(act.target, act.epoch);
-      plan.hop_withdraw(now_ms);
-      break;
-    case maburgs::HopAction::VerifyPass:
-      // The hop stands: thaw the verdict engine's frozen references (spec
-      // section 2, "or after a hop's verify window ends"). Before this
-      // HopVerdict::reset() had ZERO callers anywhere in the tree, so the
-      // per-card RSSI median and the recovered-rate mean stayed frozen at
-      // the OLD channel's values for the rest of the flight -- `fading` on
-      // the channel we had just moved to was being measured against the
-      // one we left. Only verify_pass thaws: a verify_fail or a withdraw
-      // RE-ORDERS, and spec section 5 has the retry REUSE the pre-onset
-      // ref_rung rather than re-snapshot it. (The retry's own Order is
-      // unaffected either way -- order() reads restore_rung off the cached
-      // VerdictOut and hopc.tick() has already returned by the time this
-      // runs. The cost lands one window later: after a thaw the next
-      // impaired window re-freezes ref_rung at the MID-HOP rung, already
-      // demoted or already restored, and the pre-onset value section 5
-      // wants reused is gone.)
-      verdict.reset();
-      break;
-    case maburgs::HopAction::Hold:
-    case maburgs::HopAction::None:
-      break;
-  }
-}
-
-#ifdef MABUR_TEST
-// In-flight hop injection seam (Task 15, 2026-09-14-inflight-channel-hop).
-// Exists ONLY when MABUR_BUILD_TESTS compiled MABUR_TEST into this binary
-// (gs/CMakeLists.txt option; never a production/device build, which passes
-// -DMABUR_BUILD_TESTS=OFF -- tools/build-arm.sh, tools/build-arm64.sh) and
-// only runs when MABUR_HOP_INJECT is actually set, so a bare `--dry-run`
-// invocation (every other gs_e2e scenario) is byte-for-byte unaffected.
-//
-// Drives the SAME classes run_radio()'s live loop wires together
-// (ChannelPlan, HopController, VrxController/LadderController, ScanLog,
-// CtlLog) through the real action-handling/RCF-building/log-writing code,
-// proving the WIRING between them -- every module underneath already has
-// its own unit tests. There is no real radio and no wall clock here: the
-// scenario runs on a private double `t` instead, advanced explicitly by
-// this function, which is what lets a 1 s verify window finish instantly
-// instead of sleeping. `agg` is the SAME Aggregator the fixture bodies were
-// fed into by the caller, so the confirming AU goes through the real
-// decode path (Aggregator::on_rx_body), not a bypass; `confirm_template` is
-// a genuine video body captured from that same fixture stream, replayed
-// with its card_id overwritten to the card under test.
-//
-// MABUR_HOP_INJECT=<target_ch>:<score> is the whole seam: everything else
-// (candidate ranking, RF windows, dwells) is exactly what test_hop_ranker.cpp
-// and test_hop_verdict.cpp already cover in isolation, so this test skips
-// straight to the one decision -- "hop to <target_ch>" -- HopController
-// would otherwise reach only after a real ranker sweep.
-int run_hop_inject_test(const maburgs::Config& cfg, int n_cards,
-                        maburgs::Aggregator& agg,
-                        const mabur::node::RxBody& confirm_template) {
-  const char* inject = std::getenv("MABUR_HOP_INJECT");
-  unsigned target_u = 0, score_u = 0;
-  if (std::sscanf(inject, "%u:%u", &target_u, &score_u) != 2) {
-    std::fprintf(stderr, "hop-test: MABUR_HOP_INJECT must be '<ch>:<score>', got '%s'\n", inject);
-    return 2;
-  }
-  const uint8_t target = static_cast<uint8_t>(target_u);
-  const uint32_t score = score_u;
-  const int lead_card = n_cards >= 2 ? n_cards - 1 : -1;
-  const int confirm_card = lead_card >= 0 ? lead_card : 0;
-
-  maburgs::DebugSession debug(cfg.debug_log.dir, cfg.debug_log.enable);
-  if (!debug.ok()) {
-    std::fprintf(stderr,
-                 "hop-test: MABUR_HOP_INJECT needs debug_log.enable=true and a "
-                 "writable debug_log.dir\n");
-    return 2;
-  }
-  maburgs::LogWriter writer;
-  maburgs::CtlLog ctl_log(writer, debug.dir(), "hop-e2e");
-  maburgs::ScanLog scan_log(writer, debug.dir(), "hop-e2e");
-
-  maburgs::VrxController vrx(maburgs::vrx_cfg_from(cfg, cfg.radio.channel));
-
-  maburgs::ChannelPlan plan(maburgs::ChannelPlanCfg{
-      cfg.radio.channel, n_cards, cfg.radio.scan.split_after_ms,
-      cfg.radio.scan.home_window_ms, 20});
-  maburgs::HopController hopc(cfg.hop, cfg.radio.channel);
-  // The real verdict engine, so the VerifyPass -> HopVerdict::reset()
-  // wiring is exercised end to end rather than asserted by reading the
-  // code. It is driven straight below to the state a real interference
-  // episode leaves it in: references frozen at the OLD channel.
-  maburgs::HopVerdict hop_verdict(cfg.hop, n_cards);
-  std::vector<uint8_t> cur_ch(static_cast<size_t>(n_cards), cfg.radio.channel);
-  double t = 0.0;
-  double last_ctl_t = vrx.ctl().last_event().t_ms;
-  const maburgs::LinkHealth healthy{true, 0.0, 0.0, false};
-
-  // Log the ladder's ctl.log transition line whenever LadderController's
-  // own last_event() changes -- same t_ms-change-detect pattern main.cpp's
-  // live loop uses (ctl_log->event(...) site above run_radio's `E` line).
-  auto drain_ctl_event = [&] {
-    if (const auto& e = vrx.ctl().last_event(); e.t_ms != last_ctl_t) {
-      last_ctl_t = e.t_ms;
-      ctl_log.event(e.t_ms, e.from, e.to, maburgs::to_string(e.reason), e.u,
-                   e.snr_db, e.evm_db);
-    }
-  };
-  // Apply a HopAction through the SAME apply_hop_action() run_radio() calls
-  // (Task 15 fix round 1 -- this used to be a hand-copied duplicate switch,
-  // which meant the deliberate-break check below only ever validated the
-  // duplicate, not the shipped code path), then drain both controllers'
-  // event queues into scan.log/ctl.log. Returns the taken HopEvents so the
-  // caller can check for a specific kind (e.g. "order" or "verify_pass")
-  // without re-deriving controller state.
-  auto apply_action = [&](const maburgs::HopAction& act) {
-    apply_hop_action(act, t, cfg.hop.confirm_ms, vrx, plan, hop_verdict);
-    for (int i = 0; i < n_cards; ++i)
-      cur_ch[static_cast<size_t>(i)] = plan.desired(i);
-    drain_ctl_event();
-    std::vector<maburgs::HopEvent> events = hopc.take_events();
-    for (const auto& e : events) scan_log.hop(e);
-    for (const auto& ev : plan.take_events()) scan_log.move(ev);
-    return events;
-  };
-  auto has_kind = [](const std::vector<maburgs::HopEvent>& evs, const char* kind) {
-    for (const auto& e : evs)
-      if (e.kind == kind) return true;
-    return false;
-  };
-
-  // 1) Settle: a synthetic DiscAck (mirroring vrx.on_rc_frame() off a real
-  // drone reply) so the rendezvous reaches SESSION and step() starts
-  // building real RCFs -- the same wiring point a genuine drone drives.
-  {
-    mabur::rc::DiscAck ack;
-    ack.vrx_nonce = vrx.rz_nonce();
-    ack.vtx_nonce = 1;  // no real drone: any held vtx_nonce opens SESSION
-    ack.chip_caps = mabur::rc::CAP_FRAME_WIRE;
-    ack.agreed_channel = cfg.radio.channel;
-    ack.seq = 1;
-    const auto wire = mabur::rc::pack_disc_ack(ack);
-    vrx.on_rc_frame(wire.data(), wire.size(), t);
-  }
-  bool session_up = false;
-  for (int i = 0; i < 200 && !session_up; ++i) {
-    t += 10.0;
-    vrx.on_video(t);
-    vrx.step(t, healthy);
-    session_up = vrx.link_state() == maburgs::VrxState::SESSION;
-  }
-  if (!session_up) {
-    std::fprintf(stderr, "hop-test: synthetic link never reached SESSION\n");
-    return 2;
-  }
-  plan.tick(t, true);
-  for (int i = 0; i < n_cards; ++i) cur_ch[static_cast<size_t>(i)] = plan.desired(i);
-
-  // 2) Inject the verdict: `interfered`, best candidate = target/score,
-  // bypassing HopVerdict/HopRanker -- this IS the injection seam.
-  maburgs::VerdictOut vo;
-  vo.v = maburgs::Verdict::Interfered;
-  vo.trigger = true;
-  vo.ref_rung = vrx.ctl().rung();
-  // The measurement span a real HopVerdict::window() would have stamped:
-  // this verdict was computed BEFORE the hop, on the old channel. main.cpp
-  // caches exactly this object and re-feeds it to HopController on every
-  // ~10 ms control tick until the next 150 ms window replaces it, so the
-  // first thing verifying_tick() ever sees after a Confirm is this -- step
-  // 5 below replays it deliberately.
-  vo.t_start_ms = t - cfg.hop.window_ms;
-  vo.t_ms = t;
-  const std::vector<maburgs::VerdictCardIn> vc(static_cast<size_t>(n_cards));
-  const maburgs::VerdictLinkIn vl;
-  scan_log.verdict(t, vo, vc, vl);
-
-  // Freeze the verdict engine's references the way a real impaired window
-  // does (spec section 2), so there is something for verify_pass to thaw.
-  {
-    std::vector<maburgs::VerdictCardIn> impaired(static_cast<size_t>(n_cards));
-    for (auto& c : impaired) {
-      c.valid = true;
-      c.rssi_dbm = -55; c.snr_db = 30;
-      c.foreign = 40;                       // > foreign_pps * window_ms/1000
-    }
-    maburgs::VerdictLinkIn il;
-    il.pre_fec_loss = 0.10;                 // > loss_pct 3 %
-    hop_verdict.window(t, impaired, il, vrx.ctl().rung());
-  }
-  if (hop_verdict.ref_rung() < 0) {
-    std::fprintf(stderr, "hop-test: verdict references never froze\n");
-    return 2;
-  }
-
-  maburgs::HopTick ht;
-  ht.now_ms = t;
-  ht.verdict = vo;
-  ht.cur_op = plan.op();
-  ht.n_cards = n_cards;
-  ht.lead_card = lead_card;
-  ht.best = target;
-  ht.best_score = score;
-  plan.tick(t, true);
-  maburgs::HopAction act = hopc.tick(ht);
-  if (act.kind != maburgs::HopAction::Order) {
-    std::fprintf(stderr, "hop-test: expected Order, got kind=%d\n",
-                 static_cast<int>(act.kind));
-    return 2;
-  }
-  apply_action(act);
-
-  // 3) Dump the first RCF built after the order -- it must already carry
-  // hop_ch/hop_epoch (VrxController::build_rcf() stamps them from
-  // set_hop() above). One-card (lead_card < 0): keep sending on the OLD
-  // channel and re-ticking the controller after every send, exactly the
-  // `rcf_sent_since_order` count ordered_tick() escalates on, until it
-  // fires OneCardRetune -- the spec's "one_card_repeats RCFs on the old
-  // channel before the radio moves".
-  int rcf_sent = 0;
-  bool dumped = false;
-  for (int i = 0; i < 40 && (n_cards >= 2 ? !dumped
-                                          : hopc.state() == maburgs::HopState::Ordered);
-       ++i) {
-    t += cfg.link.feedback_ms;
-    vrx.on_video(t);
-    auto out = vrx.step(t, healthy);
-    if (!out || out->is_disc) continue;
-    ++rcf_sent;
-    if (const char* path = std::getenv("MABUR_HOP_RCF_OUT"); path && !dumped) {
-      if (FILE* f = std::fopen(path, "wb")) {
-        std::fwrite(out->frame.data(), 1, out->frame.size(), f);
-        std::fclose(f);
-      }
-    }
-    dumped = true;
-    if (n_cards == 1) {
-      ht.now_ms = t;
-      ht.rcf_sent_since_order = rcf_sent;
-      ht.video_on_target = false;
-      act = hopc.tick(ht);
-      apply_action(act);
-      // Stop as soon as the radio actually moves: ordered_tick() stays in
-      // HopState::Ordered after OneCardRetune (only a Confirm/Withdraw
-      // leaves it), so without this the loop would keep re-ticking with
-      // video_on_target still false all the way to the confirm_ms
-      // timeout and withdraw before step 4 below ever gets to inject the
-      // confirming AU.
-      if (act.kind == maburgs::HopAction::OneCardRetune) break;
-    }
-  }
-  if (!dumped) {
-    std::fprintf(stderr, "hop-test: no RCF built after the order\n");
-    return 2;
-  }
-  if (n_cards == 1 && cur_ch[static_cast<size_t>(confirm_card)] != target) {
-    std::fprintf(stderr,
-                 "hop-test: one-card radio never reached the target (OneCardRetune "
-                 "did not fire within %d RCF sends)\n",
-                 rcf_sent);
-    return 2;
-  }
-
-  // 4) Confirm: replay a genuine video body (captured from the fixture
-  // stream the caller already fed through this same Aggregator) on the
-  // lead/only card, and check the SAME condition run_radio's batch-drain
-  // loop uses to decide "this is video, not RC/MSP/probe traffic" before
-  // it updates last_video_ch.
-  mabur::node::RxBody cb = confirm_template;
-  cb.card_id = static_cast<uint8_t>(confirm_card);
-  cb.mono_us = static_cast<uint64_t>(t) * 1000;
-  const int sid_peek = mabur::sbi_peek_stream_id(cb.body.data(), cb.body.size());
-  const bool is_video = cb.crc_ok &&
-                        mabur::rc::frame_type(cb.body.data(), cb.body.size()) < 0 &&
-                        sid_peek != mabur::kMspStreamId &&
-                        sid_peek != mabur::kProbeStreamId;
-  if (!is_video) {
-    std::fprintf(stderr, "hop-test: confirm_template is not a video body\n");
-    return 2;
-  }
-  // 4a) The body a real card actually produces first: one received on the
-  // OLD channel before the retune landed, drained a tick later. The card
-  // is ALREADY tuned to the target by now (cur_ch[confirm_card] == target,
-  // the plan moved it), so the pre-fix "where is this card tuned now" read
-  // confirmed the hop off it -- before the order's RCF had left the
-  // slotter, and on a link that documents 30-50 % RCF uplink loss. Only
-  // RxBody::rx_channel, stamped when the frame was lifted off the card,
-  // can tell the two apart.
-  // Not fed to `agg`: this is a second copy of the SAME body (there is one
-  // template), which the decoder would rightly dedupe, and the decode path
-  // is not what 4a exercises -- the confirm gate is.
-  mabur::node::RxBody stale = cb;
-  stale.rx_channel = cfg.radio.channel;   // received before the lead card moved
-  vrx.on_video(t);
-  ht.now_ms = t;
-  ht.video_on_target = plan.hopping() && stale.rx_channel == plan.hop_target();
-  if (ht.video_on_target) {
-    std::fprintf(stderr,
-                 "hop-test: a body received on the OLD channel (%u) confirmed the "
-                 "hop to %u\n",
-                 static_cast<unsigned>(stale.rx_channel), target);
-    return 2;
-  }
-  act = hopc.tick(ht);
-  if (act.kind != maburgs::HopAction::None ||
-      hopc.state() != maburgs::HopState::Ordered) {
-    std::fprintf(stderr,
-                 "hop-test: stale-channel body moved the controller (kind=%d state=%s)\n",
-                 static_cast<int>(act.kind), hop_state_name(hopc.state()));
-    return 2;
-  }
-  apply_action(act);
-
-  // 4b) The genuine confirmation: a body stamped with the target, i.e. one
-  // the card really did receive after its retune.
-  cb.rx_channel = target;
-  agg.on_rx_body(cb);
-  const uint8_t last_video_ch = cb.rx_channel;
-  vrx.on_video(t);
-  ht.now_ms = t;
-  ht.video_on_target = plan.hopping() && last_video_ch == plan.hop_target();
-  if (!ht.video_on_target) {
-    std::fprintf(stderr, "hop-test: confirm body did not land on the hop target\n");
-    return 2;
-  }
-  act = hopc.tick(ht);
-  if (act.kind != maburgs::HopAction::Confirm) {
-    std::fprintf(stderr, "hop-test: expected Confirm, got kind=%d\n",
-                 static_cast<int>(act.kind));
-    return 2;
-  }
-  apply_action(act);
-
-  // 5a) The tick right after the Confirm, which in run_radio() is ~10 ms
-  // later and carries the SAME cached VerdictOut the order was placed on:
-  // Interfered, measured on the old channel. It must not break the verify
-  // window (C1 -- unguarded this backed the just-landed clean channel off
-  // for 30 s and ordered the next candidate ~10 ms after arriving).
-  ht.now_ms = t + 10.0;
-  ht.verdict = vo;
-  ht.video_on_target = false;
-  act = hopc.tick(ht);
-  if (act.kind != maburgs::HopAction::None ||
-      hopc.state() != maburgs::HopState::Verifying) {
-    std::fprintf(stderr,
-                 "hop-test: stale pre-hop verdict broke the verify window "
-                 "(kind=%d state=%s)\n",
-                 static_cast<int>(act.kind), hop_state_name(hopc.state()));
-    return 2;
-  }
-  apply_action(act);
-
-  // 5b) Verify: healthy windows until verify_ms has elapsed since confirm.
-  bool verify_pass = false;
-  maburgs::VerdictOut healthy_vo;  // default Healthy, trigger=false
-  for (int i = 0; i < 200 && !verify_pass; ++i) {
-    healthy_vo.t_start_ms = t;
-    t += cfg.hop.window_ms;
-    healthy_vo.t_ms = t;
-    vrx.on_video(t);
-    vrx.step(t, healthy);
-    scan_log.verdict(t, healthy_vo, vc, vl);
-    ht.now_ms = t;
-    ht.verdict = healthy_vo;
-    ht.video_on_target = false;
-    act = hopc.tick(ht);
-    verify_pass = has_kind(apply_action(act), "verify_pass");
-  }
-  if (!verify_pass) {
-    std::fprintf(stderr, "hop-test: verify_pass never landed in scan.log\n");
-    return 2;
-  }
-  // Spec section 2's second thaw rule, driven through the SAME
-  // apply_hop_action() run_radio() uses: the references frozen on the old
-  // channel above must be gone now the hop has stood. Without the
-  // HopAction::VerifyPass wiring, HopVerdict::reset() has no caller at all
-  // and this still reads the old channel's snapshot.
-  if (hop_verdict.ref_rung() >= 0) {
-    std::fprintf(stderr,
-                 "hop-test: verify_pass did not thaw the verdict references "
-                 "(ref_rung still %d)\n",
-                 hop_verdict.ref_rung());
-    return 2;
-  }
-  writer.flush_now();
-  std::fprintf(stderr, "hop-test: OK (n_cards=%d target=%u)\n", n_cards, target);
-  return 0;
-}
-#endif  // MABUR_TEST
 
 void usage() {
   std::fprintf(stderr,
@@ -688,6 +242,27 @@ static int run_radio(const maburgs::Config& cfg) {
                    maburgs::port_name(scanned[i]).c_str());
   }
 
+  // Spec 2026-10-03-auto-channel-set §4.1: pinned -> the pin; auto -> the
+  // remembered member, else the first.
+  const bool pinned = cfg.radio.pin.has_value();
+  uint8_t start_ch = cfg.radio.channels.front();
+  bool start_remembered = false;
+  if (pinned) {
+    start_ch = *cfg.radio.pin;
+  } else if (auto r = mabur::read_channel_file(mabur::kGsChannelFile);
+             r && mabur::channel_set_member(cfg.radio.channels, *r)) {
+    start_ch = *r;
+    start_remembered = true;
+  }
+  {
+    std::string set;
+    for (size_t i = 0; i < cfg.radio.channels.size(); ++i)
+      set += (i ? "," : "") + std::to_string(cfg.radio.channels[i]);
+    std::fprintf(stderr, "maburgs channel: set [%s] mode %s start %u%s\n", set.c_str(),
+                 pinned ? "pinned" : "auto", static_cast<unsigned>(start_ch),
+                 start_remembered ? " (remembered)" : "");
+  }
+
   // Roster: USB cards first (0..n_usb-1), then radio.relays in config
   // order. The "no supported radio" exit above runs before any relay is
   // counted: a relay never rescues a USB-less GS.
@@ -699,7 +274,7 @@ static int run_radio(const maburgs::Config& cfg) {
   std::vector<std::unique_ptr<maburgs::LinkCard>> fronts;
   // The boot scout card (spare card, or the only card) scans the 20 MHz
   // halves at 20 MHz tuning and joins the link at radio.width once the
-  // pick freezes (ChannelScout::run -> retune_width). Every other card,
+  // pick freezes (the core's boot scout retunes its width). Every other card,
   // and every card when the scan is off, tunes radio.width from the start.
   // can_scout per roster slot: every USB card can; relays (after the USB
   // cards) cannot. Built before the fronts because the USB loop below needs
@@ -719,15 +294,16 @@ static int run_radio(const maburgs::Config& cfg) {
       fc.usb_pid = cfg.radio.cards[static_cast<size_t>(i)].usb_pid;
       fc.index = cfg.radio.cards[static_cast<size_t>(i)].index;
     }
-    fc.channel = cfg.radio.channel;
-    fc.width_mhz = (cfg.radio.scan.enable && i == boot_scout_card) ? 20 : cfg.radio.width;
+    fc.channel = start_ch;
+    // The scout card always starts at 20: it searches at 20 even when pinned.
+    fc.width_mhz = (boot_scout_card >= 0 && i == boot_scout_card) ? 20 : cfg.radio.width;
     fc.card_id = static_cast<uint8_t>(i);
     fronts.push_back(std::make_unique<maburgs::RadioFrontend>(fc, queue));
   }
   for (int k = 0; k < n_relays; ++k) {
     maburgs::RemoteCard::Cfg rc;
     rc.addr = cfg.radio.relays[static_cast<size_t>(k)];
-    rc.channel = cfg.radio.channel;
+    rc.channel = start_ch;
     rc.width_mhz = cfg.radio.width;  // never the boot scout: full width from the start
     rc.card_id = static_cast<uint8_t>(n_usb + k);
     fronts.push_back(std::make_unique<maburgs::RemoteCard>(rc, queue));
@@ -935,250 +511,7 @@ static int run_radio(const maburgs::Config& cfg) {
   // Spec 2026-07-26 drone-telemetry.
   struct { std::optional<mabur::rc::Telem> t; uint64_t rx_ms = 0; } latest_telem;
 
-  // Hoisted above the boot scout's ScoutCfg fill (moved up from its
-  // original spot just below the InflightScout comment) so the boot scan
-  // can read hcfg.verdict.busy_dbm / .blocked_pct.
-  const maburgs::HopCfg& hcfg = cfg.hop;
-  // Auto channel selection (spec 2026-09-13-auto-channel-select). The plan
-  // owns where the link lives; the scout (only while radio.scan.enable and
-  // until the first ack) measures candidates on the spare card, or on the
-  // only card between home windows.
-  const maburgs::ScanCfg& scfg = cfg.radio.scan;
-  maburgs::ChannelPlan plan(maburgs::ChannelPlanCfg{
-      cfg.radio.channel, n_cards, scfg.split_after_ms, scfg.home_window_ms, 20});
-  // Live channel per card, as far as this thread knows: InitWrite tunes to
-  // home, retune() moves it, and the scout owns its card's entry until the
-  // scout thread is joined.
-  std::vector<uint8_t> cur_ch(static_cast<size_t>(n_cards), cfg.radio.channel);
-  // Scout mode keys on the USB card count, not the roster: with ONE USB
-  // card the scout interleaves home windows and beacons itself whatever
-  // relays exist -- a relay is never the only rendezvous path (a CPE still
-  // booting, unplugged or owned by another client would mean no DISC ever
-  // leaves the GS). ChannelPlan / HopVerdict / TxSelector / the sideport
-  // keep the total n_cards.
-  const bool one_card = n_usb == 1;
-  const int scout_card = boot_scout_card;
-  std::unique_ptr<maburgs::ChannelScout> scout;
-  std::thread scout_thread;
-  bool scout_joined = true;  // no thread running
-  // boot_scout_card is >= 0 whenever a USB card exists, which the "no
-  // supported radio" exit guarantees; the guard documents that `scout`
-  // (and every scout_card use gated on it) needs a scout-capable card.
-  if (scfg.enable && boot_scout_card >= 0) {
-    maburgs::ScoutCfg sc;
-    sc.home = cfg.radio.channel;
-    sc.candidates = scfg.candidates;
-    sc.dwell_ms = scfg.dwell_ms;
-    sc.settle_ms = scfg.settle_ms;
-    sc.min_rounds = scfg.min_rounds;
-    sc.home_window_ms = scfg.home_window_ms;
-    sc.beacon_period_ms = 20;
-    sc.home_margin = static_cast<uint32_t>(scfg.home_margin);
-    sc.one_card = one_card;
-    sc.link_width_mhz = cfg.radio.width;
-    sc.busy_dbm = hcfg.verdict.busy_dbm;
-    sc.blocked_pct = hcfg.verdict.blocked_pct;
-    scout = std::make_unique<maburgs::ChannelScout>(
-        sc, *fronts[static_cast<size_t>(scout_card)],
-        [] { return static_cast<int64_t>(mono_ms()); },
-        [](int ms) {
-          if (ms > 0) std::this_thread::sleep_for(std::chrono::milliseconds(ms));
-        });
-  }
-  // Freeze + join the scout thread (it exits at the end of the current
-  // dwell, after parking its card on `target`). Idempotent.
-  auto join_scout = [&](uint8_t target) {
-    if (scout_joined) return;
-    scout->freeze(target);
-    scout_thread.join();
-    scout_joined = true;
-  };
-
-  // In-flight channel hop (spec 2026-09-14-inflight-channel-hop): verdict
-  // engine, candidate ranker, hop state machine, and the spare-card scout
-  // that runs for the rest of the flight (unlike `scout` above, which is
-  // boot-only). HopRanker is built over scfg.candidates PLUS home (its own
-  // constructor appends home when it is not already a candidate, hop_ranker.cpp)
-  // -- a strict superset of the in-flight scout's own candidate list just
-  // below, so HopRanker::add() (which silently drops a visit for any
-  // channel outside its own list, Task 5's carried finding) can never
-  // discard a scout visit: every channel the scout can ever dwell on is
-  // already ranked. (hcfg itself is declared above, before the boot
-  // scout's ScoutCfg fill, which also reads it.)
-  maburgs::HopVerdict verdict(hcfg, n_cards);
-  // boot_pick 0 = "no boot-time pick yet" (no channel is ever 0), so the
-  // ranked tiebreak falls through to home until the boot scan actually
-  // resolves; ranker.set_boot_pick() below publishes the real one at the
-  // first DiscAck. Passing home as BOTH arguments (as this did) collapsed
-  // spec section 3's "ties -> boot-time pick, then home" into "ties ->
-  // home" and made the tiebreak's first term dead code.
-  //
-  // Primaries only, at both widths. Nothing from the boot scan reaches
-  // HopRanker::add() -- only inflight.burst() and the in-flight dwells do,
-  // and both visit primaries -- and at radio.width 40 every candidate is a
-  // pair primary sharing home's ht40_offset (config rule), which FastRetune
-  // keeps, so every candidate is also a valid hop target. The 20 MHz halves
-  // scan_half_set() adds are the boot ChannelScout's business alone.
-  maburgs::HopRanker ranker(hcfg, scfg.candidates, cfg.radio.channel, 0);
-  maburgs::HopController hopc(hcfg, cfg.radio.channel);
-  // The hop lead decided on the Order tick, held while the hop is Ordered
-  // (see the HopTick block): a relay lead reads !ready() from its TUNE
-  // until the relay confirms the target, and re-picking then would flip
-  // the tick to the one-card path and move the TX card mid-hop.
-  int hop_lead_latched = -1;
-  // Constructed against card 0 as a placeholder radio -- harmless, since the
-  // scout thread below always repoints this via set_radio() (Task 10)
-  // before every dwell/burst and never touches it beforehand.
-  maburgs::InflightScout inflight(
-      maburgs::InflightScoutCfg{hcfg.dwell_observe_ms, hcfg.dwell_period_ms, scfg.candidates,
-                                cfg.radio.width, cfg.radio.channel, hcfg.verdict.busy_dbm},
-      *fronts[static_cast<size_t>(scout_card)],
-      [] { return static_cast<int64_t>(mono_us()); },
-      [](int ms) {
-        if (ms > 0) std::this_thread::sleep_for(std::chrono::milliseconds(ms));
-      });
-
-  // Cross-thread state for the in-flight scout thread (spec section 3/6).
-  // Everything the scout thread and the core loop both touch is either an
-  // atomic here or guarded by dwell_mu (the two drained vectors) /
-  // inflight_mu (every call into `inflight`, which drives a RadioFrontend
-  // the core loop's own mechanical retune loop and TX selector must not
-  // race). dwell_busy/dwell_card name the card (if any) the scout thread
-  // currently has off on a candidate; every core-loop site that can call
-  // fe.retune()/sel.update() on that card must hold off until it clears.
-  std::atomic<bool> dwell_busy{false};
-  std::atomic<bool> scout_run{false};
-  std::atomic<bool> in_session_atomic{false};
-  // CalSession::running(): the scout must not take a card off the channel
-  // a calibration sweep is being measured on.
-  std::atomic<bool> cal_running_atomic{false};
   bool last_key_mismatch = false;
-  std::atomic<bool> hopping_atomic{false};
-  std::atomic<int> tx_card_now{tx_card_pin < 0 ? 0 : tx_card_pin};
-  std::atomic<int> dwell_card{-1};
-  // Bumped by scout_loop right after every completed in-flight dwell
-  // (success or fail) on that card (fix round 1, task-6 review): the NHM
-  // verdict-window tracker's period/channel checks alone miss a dwell
-  // that lands mid-window, since InflightScout::dwell()'s FastRetune
-  // neither clears devourer's NHM-ready state nor leaves the card off its
-  // own channel by the next tick. The core loop pins arm/read to the
-  // generation it armed under -- see gs/src/nhm_window.h.
-  std::vector<std::atomic<uint32_t>> dwell_gen(static_cast<size_t>(n_cards));
-  // Bumped once per completed AU (end-of-AU FrameStream callback, below):
-  // the scout thread's alignment wait, so a dwell starts on an AU boundary
-  // rather than mid-burst.
-  std::atomic<uint64_t> au_seq{0};
-  std::mutex dwell_mu;
-  std::vector<std::pair<int, maburgs::ScoutDwell>> dwell_recs;  // {card, record}
-  std::vector<maburgs::HopVisit> dwell_visits;
-  // Sideport dwell snapshot per card (Task 12). NOT guarded by dwell_mu --
-  // safe anyway because both the write (at the dwell_recs/dwell_visits
-  // drain below, AFTER that drain's lock_guard scope has already closed
-  // and swapped the shared vectors into purely local ones) and the read
-  // (at the sideport feed) run on the core thread only, same as the
-  // pre-existing cur_ch update in that same drain loop -- there is no
-  // second thread that ever touches dwell_stats for a lock to arbitrate.
-  // nullopt = this card has never completed a dwell. visits is cumulative
-  // over every drained dwell (success or not); score is the last
-  // SUCCESSFUL dwell's HopRanker::score() (a failed retune produces no
-  // HopVisit, so a stale score is kept rather than zeroed); cost_us is
-  // always the last dwell's to_us+read_us+back_us, success or not.
-  std::vector<std::optional<maburgs::StatsDwellIn>> dwell_stats(
-      static_cast<size_t>(n_cards));
-  // Serializes every call into `inflight` (and, transitively, whichever
-  // RadioFrontend it currently points at) across the scout thread's
-  // periodic dwell and the core thread's own synchronous freshness burst
-  // (Step 4, just before a hop order) -- the brief's sketch has the core
-  // thread call inflight.burst() directly with no such guard, which would
-  // let the two threads drive the same InflightScout/RadioFrontend at
-  // once; this mutex is the fix.
-  std::mutex inflight_mu;
-  bool inflight_started = false;
-  std::thread scout_thread2;
-  auto scout_loop = [&] {
-    while (scout_run.load() && !g_stop.load()) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(hcfg.dwell_period_ms));
-      if (!in_session_atomic.load() || cal_running_atomic.load() || hopping_atomic.load() ||
-          n_cards < 2)
-        continue;
-      const int card = maburgs::pick_inflight_scout(can_scout, tx_card_now.load());
-      if (card < 0) continue;
-      auto& fe = *fronts[static_cast<size_t>(card)];
-      if (!fe.ready()) continue;
-      // Candidates plus home, minus the card's own channel (the op channel:
-      // this loop never runs mid-hop). Pick before the AU wait so a GS with
-      // nothing else to dwell on idles without touching the card.
-      std::optional<uint8_t> dwell_ch;
-      {
-        std::lock_guard<std::mutex> ilk(inflight_mu);
-        dwell_ch = inflight.next_candidate(fe.channel());
-      }
-      if (!dwell_ch) continue;
-      const uint64_t s0 = au_seq.load();  // align to the next AU boundary (<= 17 ms wait)
-      for (int i = 0; i < 20 && au_seq.load() == s0; ++i)
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-      std::lock_guard<std::mutex> ilk(inflight_mu);
-      inflight.set_radio(fe);
-      dwell_card.store(card);
-      dwell_busy.store(true);
-      maburgs::ScoutDwell d;
-      maburgs::HopVisit v;
-      const bool ok = inflight.dwell(*dwell_ch, fe.channel(), d, v);
-      dwell_gen[static_cast<size_t>(card)].fetch_add(1, std::memory_order_release);
-      dwell_busy.store(false);
-      dwell_card.store(-1);
-      std::lock_guard<std::mutex> lk(dwell_mu);
-      dwell_recs.emplace_back(card, d);
-      if (ok) dwell_visits.push_back(v);
-    }
-  };
-
-  // Verdict-window bookkeeping (spec section 2): trailing per-card frame
-  // snapshots so every window reads a DELTA, not a cumulative count -- the
-  // same pattern crc_fail/foreign deltas use elsewhere in this loop.
-  std::vector<maburgs::ScoutFrames> window_prev(static_cast<size_t>(n_cards));
-  std::vector<uint64_t> window_prev_crc(static_cast<size_t>(n_cards), 0);
-  std::vector<bool> window_prev_ok(static_cast<size_t>(n_cards), false);
-  std::vector<uint64_t> window_prev_ms(static_cast<size_t>(n_cards), 0);
-  // NHM busy-airtime bookkeeping (spec 2026-09-25-nhm-airtime §6): one
-  // arm/read tracker per card, and the period we (not a scout dwell) arm
-  // with -- clamped to the window itself, less a 10 ms margin so the read
-  // lands before the next window's arm.
-  std::vector<maburgs::NhmWindowTracker> nhm_win(static_cast<size_t>(n_cards));
-  const uint16_t nhm_op_period = maburgs::nhm_period_4us(std::max(hcfg.window_ms - 10, 1));
-  uint64_t last_window_ms = 0;
-  uint64_t recovered_prev_window = 0;
-  // au_seq at the previous verdict window: VerdictLinkIn::au_count is the
-  // delta. Re-primed with recovered_prev_window on every hop_active edge.
-  uint64_t au_seq_prev = 0;
-  bool hop_was_active = false;   // hop_active() edge tracker (hop_burst_gate.h)
-  maburgs::CalMoveEdgeHold cal_move_hold;  // move edge held across a cal run
-  maburgs::Verdict last_verdict = maburgs::Verdict::Healthy;
-  maburgs::VerdictOut last_verdict_out;
-  // hop.last_ms (Task 12): elapsed_ms of the most recent HopEvent
-  // (HopController::take_events(), drained below) -- nullopt until any
-  // hop event (order/confirm/withdraw/hold) has fired this session.
-  std::optional<uint64_t> last_hop_event_ms;
-
-  // RCF send counter: the hop controller's one-card-retune escalation
-  // reads the delta since the order. Bumped in send_control_frame below
-  // wherever stamp_rtt is set, i.e. exactly the periodic op-point RCF --
-  // never a DISC beacon or a calibration frame, neither of which carries
-  // hop_ch/hop_epoch.
-  uint64_t rcf_sent_total = 0, rcf_sent_at_order = 0;
-  // Channel the most recent video body arrived on (batch-drain loop,
-  // below): confirms a hop landed by comparing against plan.hop_target().
-  uint8_t last_video_ch = cfg.radio.channel;
-  // Freshness-burst rate limiter (fix round 3): the burst's own gate
-  // (Idle/Hold + trigger) has nothing else pacing it -- Hold re-enters on
-  // every tick with the trigger latched true, and neither cooldown_ms
-  // (guards only a POST-hop re-trigger, stamped at verify_pass) nor
-  // max_hops_per_min (counted only inside order()) apply to a burst that
-  // never results in an order. Reusing dwell_period_ms caps a sustained
-  // Hold to the same off-air duty cycle the periodic scout thread already
-  // runs at (one ~30 ms burst per ~333 ms, ~9%), rather than back-to-back
-  // (~100%, and the process's own core-thread RX drain along with it).
-  double last_burst_ms = -1e18;
 
   // Control-path RTT + pts-offset estimator (link-rtt, 2026-09-02). Fed
   // from the same core thread as latest_telem: RCF send stamps below,
@@ -1189,26 +522,66 @@ static int run_radio(const maburgs::Config& cfg) {
   // send lands in the drone's inter-AU idle. See rcf_slot.h.
   maburgs::RcfSlotter rcf_slot(
       maburgs::RcfSlotCfg{cfg.link.rcf_slot_hold_ms, 100, 2, 3, 1});
-  // One USB card + a running scout: sends on the SCOUT card while it is
-  // off measuring a candidate would race the scout thread's FastRetune /
-  // GetRxEnergy on the same device. The DISC routing ladder checks
-  // at_home() when the frame is OFFERED, but the slotter releases it
-  // later with no re-check, and RCFs (which exist from the first ack
-  // until the join) never consulted it at all. This is the one gate that
-  // covers both, at the single site every control frame passes through.
-  // Only the scout card's frames are dropped: a ready relay's DISC must
-  // still leave while the USB scout is off on a candidate. Two-card mode trips it while the scout has a silent dwell in progress
-  // (quiet()): the beaconing card's TX leaks into the adjacent scout on
-  // every channel and dominated the readings otherwise.
-  uint64_t scout_gated_sends = 0;
-  // The one place a control frame leaves the GS (direct or via the RCF
-  // slotter): card + RTT stamp travel with the frame (SlotFrame).
-  auto send_control_frame = [&](const maburgs::SlotFrame& f) {
-    if (scout && !scout_joined &&
-        ((one_card && f.card == scout_card && !scout->at_home()) || scout->quiet())) {
-      ++scout_gated_sends;
-      return;
+  // Declared ahead of the FrameStream below: ChannelCore needs it, and
+  // the end-of-AU callback calls chan.note_au_end().
+  maburgs::VrxController vrx(maburgs::vrx_cfg_from(cfg, start_ch));
+
+  // scan.log (scanlog 5): the channel-selection record -- card caps, scout
+  // dwells (boot-time AND in-flight), the pick, every link move, and the
+  // in-flight hop verdict/hop-event lines (spec 2026-10-03-auto-channel-set
+  // section 7). Same session directory and writer as ctl.log, same
+  // debug_log.enable gate.
+  std::optional<maburgs::ScanLog> scan_log;
+  if (debug.ok()) {
+    const maburgs::ScanCfg& scfg = cfg.radio.scan;
+    std::string h;
+    for (size_t i = 0; i < cfg.radio.channels.size(); ++i)
+      h += (i ? "," : "") + std::to_string(cfg.radio.channels[i]);
+    h = "channels=" + h + " mode=" + (pinned ? "pinned" : "auto") +
+        " dwell_ms=" + std::to_string(scfg.dwell_ms) +
+        " min_rounds=" + std::to_string(scfg.min_rounds) + " cards=" + std::to_string(n_cards);
+    scan_log.emplace(*log_writer, debug.dir(), h);
+  }
+
+  // The channel/hop unit (gs/src/channel_core.h): everything that used to
+  // be the "auto channel set, per tick" + in-flight hop blocks here.
+  struct ScanLogSink final : maburgs::ChannelSink {
+    std::optional<maburgs::ScanLog>* sl;
+    explicit ScanLogSink(std::optional<maburgs::ScanLog>* l) : sl(l) {}
+    void dwell(double t, int card, const maburgs::ScoutDwell& d) override { if (*sl) (*sl)->dwell(t, card, d); }
+    void pick(double t, std::optional<uint8_t> p, uint64_t rounds, const std::vector<maburgs::RankEntry>& all, int mr) override {
+      if (*sl) (*sl)->pick(t, p, rounds, all, mr);
     }
+    void move(const maburgs::MoveEvent& e) override { if (*sl) (*sl)->move(e); }
+    void verdict(double t, const maburgs::VerdictOut& o, const std::vector<maburgs::VerdictCardIn>& c, const maburgs::VerdictLinkIn& l) override {
+      if (*sl) (*sl)->verdict(t, o, c, l);
+    }
+    void hop(const maburgs::HopEvent& e) override { if (*sl) (*sl)->hop(e); }
+    void log(const std::string& line) override { std::fprintf(stderr, "%s\n", line.c_str()); }
+  };
+  ScanLogSink chan_sink(&scan_log);
+  std::vector<maburgs::LinkCard*> card_ptrs;
+  for (auto& fe : fronts) card_ptrs.push_back(fe.get());
+  maburgs::ChannelCoreCfg ccfg;
+  ccfg.radio = cfg.radio;
+  ccfg.hop = cfg.hop;
+  ccfg.key = cfg.link.key;
+  ccfg.start_ch = start_ch;
+  ccfg.n_usb = n_usb;
+  ccfg.leak_per_frame = 1.0;   // bench row 7 pins this (docs/channel-select.md)
+  ccfg.store_name = mabur::kGsChannelFile;
+  maburgs::ChannelCore chan(
+      ccfg, card_ptrs, vrx, chan_sink,
+      [](uint8_t ch) { return mabur::write_channel_file(mabur::kGsChannelFile, ch); },
+      [] { return mono_ms(); }, [] { return mono_us(); },
+      [](int ms) { if (ms > 0) std::this_thread::sleep_for(std::chrono::milliseconds(ms)); });
+
+  // The one place a control frame leaves the GS (direct or via the RCF
+  // slotter): card + RTT stamp travel with the frame (SlotFrame). The
+  // scout gate (ChannelCore::may_send) drops what must stay silent while
+  // the scout owns its card.
+  auto send_control_frame = [&](const maburgs::SlotFrame& f) {
+    if (!chan.may_send(f.card)) return;
     static const bool gaplog = std::getenv("MABUR_GAPLOG") != nullptr;
     if (gaplog) {
       const uint64_t now_ms = mono_ms();
@@ -1219,15 +592,9 @@ static int run_radio(const maburgs::Config& cfg) {
                    static_cast<unsigned long long>(now_ms - f.offered_ms),
                    static_cast<unsigned long long>(now_ms - rcf_slot.last_au_ms()));
     }
-    fronts[static_cast<size_t>(f.card)]->send_control(f.frame);
-    // stamp_rtt is set only for the periodic op-point RCF (never a DISC
-    // beacon or a calibration frame) -- exactly the frame that carries
-    // hop_ch/hop_epoch, so this is the count HopController's one-card-
-    // retune escalation reads the delta of.
-    if (f.stamp_rtt) {
-      rtt_est.on_rcf_sent(f.seq, mono_us());
-      ++rcf_sent_total;
-    }
+    const bool ok = fronts[static_cast<size_t>(f.card)]->send_control(f.frame);
+    if (f.stamp_rtt) rtt_est.on_rcf_sent(f.seq, mono_us());
+    chan.note_sent(ok, f.stamp_rtt);
   };
 
   maburgs::AuRingWriter au_ring;
@@ -1281,7 +648,7 @@ static int run_radio(const maburgs::Config& cfg) {
     snr_ok[static_cast<size_t>(i)] = fronts[static_cast<size_t>(i)]->caps().snr_ok;
   // Ladder input (spec 2026-09-27-web-gs): every window/tracker feeding
   // LinkHealth lives in LinkHealthAssembler (gs/src/link_health.h), shared
-  // with the web GS. s1_hop_loss (hop verdict) stays here.
+  // with the web GS. The hop verdict's own s1 loss window is ChannelCore's.
   maburgs::LinkHealthAssembler lha(
       maburgs::LinkHealthCfg{n_cards, probe_bpb, probe_block_payload, snr_ok});
   // Per-body probe log, alongside ctl.log and au.log in the same session
@@ -1324,7 +691,7 @@ static int run_radio(const maburgs::Config& cfg) {
          // 2026-09-14-inflight-channel-hop section 3): every AU end, clean
          // or truncated, counts -- the scout only needs a boundary to start
          // its dwell on, not a specific outcome.
-         au_seq.fetch_add(1, std::memory_order_relaxed);
+         chan.note_au_end();
          if (au_on) {
            const uint64_t rec = au_ring.finish(c, lat);
            if (rec != UINT64_MAX) au_bell.notify(rec);
@@ -1427,8 +794,6 @@ static int run_radio(const maburgs::Config& cfg) {
                             {f.body_mono_us, f.q_ms, f.enc_us, f.air_ms});
   });
 
-  maburgs::VrxController vrx(maburgs::vrx_cfg_from(cfg, cfg.radio.channel));
-
   // Dedicated adaptive-link log (spec 2026-08-05-s3-probe-promote-design.md
   // section 5): maburgs' own compact S/E/P/N record of every rung decision,
   // independent of the stats sideport so the learning dataset survives a
@@ -1483,29 +848,6 @@ static int run_radio(const maburgs::Config& cfg) {
     if (au_on) au_log.emplace(*log_writer, debug.dir());
   }
 
-  // scan.log (scanlog 2): the channel-selection record -- card caps, scout
-  // dwells (boot-time AND in-flight), the pick, every link move, and the
-  // in-flight hop verdict/hop-event lines (spec 2026-09-13-auto-channel-
-  // select section 7; V/H lines added by 2026-09-14-inflight-channel-hop).
-  // Same session directory and writer as ctl.log, same debug_log.enable gate.
-  std::optional<maburgs::ScanLog> scan_log;
-  if (debug.ok()) {
-    std::string h = "home=" + std::to_string(cfg.radio.channel) + " candidates=";
-    for (size_t i = 0; i < scfg.candidates.size(); ++i)
-      h += (i ? "," : "") + std::to_string(scfg.candidates[i]);
-    h += " dwell_ms=" + std::to_string(scfg.dwell_ms) +
-         " min_rounds=" + std::to_string(scfg.min_rounds) +
-         " enable=" + std::string(scfg.enable ? "1" : "0") +
-         " cards=" + std::to_string(n_cards);
-    scan_log.emplace(*log_writer, debug.dir(), h);
-  }
-
-  // The hop verdict's own copy of the ladder's s1_loss (now inside
-  // LinkHealthAssembler), fed identically but blanked when a
-  // hop lands (hop_verdict_loss_blank_until, gs/src/hop_blank.h) so a verify
-  // is judged on the channel it verifies. Separate so the blank never touches
-  // the sideport/ctl-log/OSD loss gauge s1_loss also feeds.
-  maburgs::S1LossWindow s1_hop_loss;
   // Change-detect on ctl().last_event(): initialize to the pre-any-event
   // default (t_ms 0) so boot doesn't print a phantom transition line.
   double last_ctl_event_ms = vrx.ctl().last_event().t_ms;
@@ -1594,7 +936,19 @@ static int run_radio(const maburgs::Config& cfg) {
       }
       return;
     }
+    const bool was_session = vrx.link_state() == maburgs::VrxState::SESSION;
     vrx.on_rc_frame(f.data(), f.size(), static_cast<double>(us) / 1000.0);
+    // Final review C1: the link forms where the drone is found. Only the
+    // ack that OPENED the session inside this very call -- our nonce, not
+    // key-mismatch flagged, so a stranger's drone cannot drag the cards --
+    // and only on the rx_channel of this body (RxBody::rx_channel, handed
+    // to the core via on_rc_body(): the aggregator routes the card id, not
+    // the channel). ChannelCore::on_session_opened() does the rest.
+    if (!was_session && vrx.link_state() == maburgs::VrxState::SESSION &&
+        mabur::rc::frame_type(f.data(), f.size()) == mabur::rc::T_DISC_ACK) {
+      if (const auto ack = mabur::rc::parse_disc_ack(f.data(), f.size()))
+        chan.on_session_opened(*ack, static_cast<double>(us) / 1000.0);
+    }
   });
 
   std::unique_ptr<maburgs::UdpSink> msp_udp;
@@ -1632,14 +986,6 @@ static int run_radio(const maburgs::Config& cfg) {
   std::vector<uint64_t> retry_at_ms(static_cast<size_t>(n_cards), 0);
   // scan.log C record: once per card, the first time it reports ready.
   std::vector<bool> caps_logged(static_cast<size_t>(n_cards), false);
-  // Width resync (width_resync.h): one set_width per card bring-up at most.
-  std::vector<bool> width_tried(static_cast<size_t>(n_cards), false);
-  // Last sample mirrored into the sideport. Nothing writes this since the
-  // A-record block (1 Hz in-flight energy poll, spec section 7) was removed
-  // with radio.scan.energy_period_ms -- cards[i].energy reads null on the
-  // sideport until Task 11's verdict windows refill it.
-  std::vector<std::optional<maburgs::StatsEnergyIn>> energy_last(
-      static_cast<size_t>(n_cards));
   uint64_t last_stats_ms = 0;
   // Separate from last_stats_ms since 2026-08-15: the ctl log runs on
   // debug_log.ctl_period_ms, the stderr line stays at 1 Hz.
@@ -1663,27 +1009,23 @@ static int run_radio(const maburgs::Config& cfg) {
     // Card lifecycle: (re)open dead front-ends with 2 s backoff.
     for (int i = 0; i < n_cards; ++i) {
       auto& fe = *fronts[static_cast<size_t>(i)];
-      // The scout thread owns this card's control plane, so it must be gone
-      // before the card is stopped and reopened underneath it. A dead card
-      // also fails every retune, which costs the scout its dwell sleeps and
-      // spins it; freezing on what it has measured so far ends that.
-      if (i == scout_card && !scout_joined && !fe.alive()) {
-        const uint64_t rounds = scout->rounds();
-        join_scout(scout->proposal());
-        std::fprintf(stderr,
-                     "maburgs channel: scout card %d died, scan abandoned at "
-                     "%llu rounds, card rejoins at %u MHz once reopened\n",
-                     i, static_cast<unsigned long long>(rounds),
-                     static_cast<unsigned>(cfg.radio.width));
-      }
-      if (!fe.alive() && now_ms_u >= retry_at_ms[static_cast<size_t>(i)]) {
+      // A working scout owns this card's control plane, so it must be off
+      // the card before the card is stopped and reopened underneath it. A
+      // dead card also fails every retune, which costs the scout its dwell
+      // sleeps and spins it; freezing the pick on what it has measured so
+      // far and holding the search until the reopen lets it park.
+      if (!fe.alive()) chan.on_card_died(i);
+      // Not while the scout thread is still on the card (it parks first);
+      // working(), not ownership: the very first open happens here too,
+      // before the scout thread exists.
+      if (!fe.alive() && !(chan.scout_working() && chan.scout_owns_card(i)) &&
+          now_ms_u >= retry_at_ms[static_cast<size_t>(i)]) {
         fe.stop();
         if (!fe.open_and_start())
           std::fprintf(stderr, "card %d: open failed, retrying\n", i);
         else {
-          // USB: InitWrite tunes home; the relay re-asserts its last target.
-          cur_ch[static_cast<size_t>(i)] = fe.channel();
-          width_tried[static_cast<size_t>(i)] = false;         // new bring-up
+          // USB: InitWrite tunes start_ch; the relay re-asserts its last target.
+          chan.on_card_reopened(i);
         }
         retry_at_ms[static_cast<size_t>(i)] = now_ms_u + 2000;
       }
@@ -1701,13 +1043,6 @@ static int run_radio(const maburgs::Config& cfg) {
       }
     }
     for (int i = 0; i < n_cards; ++i) fronts[static_cast<size_t>(i)]->tick(now_ms_u);
-    // The scout starts once (and only once) its card is up: from here until
-    // join_scout() that card's retune/read_energy belong to the scout thread.
-    if (scout && scout_joined && !scout->frozen() &&
-        fronts[static_cast<size_t>(scout_card)]->ready()) {
-      scout_thread = std::thread([&] { scout->run(); });
-      scout_joined = false;
-    }
 
     // Drain (blocks <=10 ms: this IS the control tick cadence).
     batch.clear();
@@ -1733,6 +1068,7 @@ static int run_radio(const maburgs::Config& cfg) {
                                  m.mono_us / 1000);
         continue;
       }
+      chan.on_rc_body(m.rx_channel);   // read by the rc sink inside on_rx_body()
       agg.on_rx_body(m);
       // A drone at a different RC_VERSION is invisible to every RC path here:
       // frame_type() returns -1 for it, which is this loop's affirmative "this
@@ -1777,15 +1113,15 @@ static int run_radio(const maburgs::Config& cfg) {
           sid_peek != mabur::kMspStreamId && sid_peek != mabur::kProbeStreamId) {
         // Only video heard where the link lives refreshes the silence timer
         // (ChannelPlan::is_link_video): a scout dwell catching the drone on
-        // home must not hold a split GS in SESSION (bench 2026-09-26: 60 s).
-        if (plan.is_link_video(m.rx_channel))
+        // another member must not hold the GS in SESSION (bench 2026-09-26: 60 s).
+        if (chan.is_link_video(m.rx_channel))
           vrx.on_video(static_cast<double>(m.mono_us) / 1000.0);
         // In-flight hop confirmation (spec section 4): the channel THIS
         // video body was actually received on, stamped by the producing
         // RadioFrontend at the instant it lifted the frame off the card
         // (mabur/node.h's RxBody::rx_channel).
         //
-        // NOT cur_ch[m.card_id], which is where that card is tuned NOW:
+        // NOT the card's tuned channel, which is where that card is tuned NOW:
         // this drain runs up to a full control tick behind the RX threads
         // and RadioFrontend::retune() does not flush BodyQueue, so bodies
         // received on the OLD channel and still queued when the lead
@@ -1794,7 +1130,7 @@ static int run_radio(const maburgs::Config& cfg) {
         // RCF had even left the slotter. 0 = received mid-retune (or a
         // replay source): never equal to a real hop target, so it simply
         // fails to confirm, which is the safe direction.
-        last_video_ch = m.rx_channel;
+        chan.note_video(m.rx_channel);
         // MABUR_HOP_DEBUG: every CRC-good video body stamped with the hop
         // target while a hop is in flight, next to the latest seq seen on a
         // card NOT stamped with the target -- tells adjacent-channel leakage
@@ -1805,13 +1141,13 @@ static int run_radio(const maburgs::Config& cfg) {
         static uint16_t other_seq = 0;
         static uint64_t other_mono = 0;
         if (hopdbg) {
-          if (plan.hopping() && m.rx_channel == plan.hop_target()) {
+          if (chan.hopping() && m.rx_channel == chan.hop_target()) {
             std::fprintf(stderr,
                          "hopdbg t=%llu card=%u rx_ch=%u target=%u op=%u seq=%u other_seq=%u "
                          "other_age_ms=%lld mcs=%u rssi=%d/%d snr=%d/%d len=%zu chip_central=%d\n",
                          static_cast<unsigned long long>(m.mono_us / 1000),
                          static_cast<unsigned>(m.card_id), static_cast<unsigned>(m.rx_channel),
-                         static_cast<unsigned>(plan.hop_target()), static_cast<unsigned>(plan.op()),
+                         static_cast<unsigned>(chan.hop_target()), static_cast<unsigned>(chan.op()),
                          static_cast<unsigned>(m.mac_seq), static_cast<unsigned>(other_seq),
                          static_cast<long long>((m.mono_us - other_mono) / 1000),
                          static_cast<unsigned>(m.mcs), static_cast<int>(m.rssi[0]) - 110,
@@ -1867,8 +1203,6 @@ static int run_radio(const maburgs::Config& cfg) {
     // session's seqs and frame_ids are unrelated to the old one's.
     // KEY_MISMATCH is not a session (no RCFs go out in it).
     const bool in_session = vrx.link_state() == maburgs::VrxState::SESSION;
-    in_session_atomic.store(in_session, std::memory_order_relaxed);
-    cal_running_atomic.store(cal_session.running(), std::memory_order_relaxed);
     const bool key_mismatch = vrx.key_mismatch();
     if (key_mismatch != last_key_mismatch) {
       std::fprintf(stderr, "maburgs: link %s (our key %s)\n",
@@ -1879,495 +1213,14 @@ static int run_radio(const maburgs::Config& cfg) {
       last_key_mismatch = key_mismatch;
     }
 
-    // ---- auto channel selection, per tick (spec 2026-09-13) ----
-    // A calibration run counts as in session: the GS is radio-silent on
-    // purpose, so the session always lapses mid-run, and a split_home there
-    // pulls card 0 off the sweep (and maybe the T_CAL_RESULT's TX card off
-    // the drone's channel) -- bench 2026-10-03 on op 144. The drone defers
-    // its own rendezvous retune to home the same way while cal_active.
-    plan.tick(now_ms, in_session || cal_session.running());
-
-    // Everything run_radio() does with a HopAction: the shared
-    // apply_hop_action() (also driven by run_hop_inject_test), then this
-    // loop's own cross-thread bookkeeping, the verdict loss-window blank,
-    // and draining the controller's events to scan.log/stderr. One path for
-    // both the controller's tick and the session falling edge below.
-    auto dispatch_hop_action = [&](const maburgs::HopAction& act) {
-      apply_hop_action(act, now_ms, hcfg.confirm_ms, vrx, plan, verdict);
-      if (auto b = maburgs::hop_verdict_loss_blank_until(act, now_ms))
-        s1_hop_loss.blank_until(*b);
-      switch (act.kind) {
-        case maburgs::HopAction::Order:
-          hopping_atomic.store(true);
-          rcf_sent_at_order = rcf_sent_total;
-          break;
-        case maburgs::HopAction::Confirm:
-        case maburgs::HopAction::Withdraw:
-          hopping_atomic.store(false);
-          break;
-        case maburgs::HopAction::VerifyPass:
-          // Handled in apply_hop_action() above (HopVerdict::reset()) --
-          // nothing run_radio-specific to do.
-        case maburgs::HopAction::OneCardRetune:
-        case maburgs::HopAction::Hold:
-        case maburgs::HopAction::None:
-          break;
-      }
-      for (const auto& e : hopc.take_events()) {
-        if (scan_log) scan_log->hop(e);
-        std::fprintf(stderr, "maburgs hop: %s epoch %u target %u score %u +%.0f ms\n",
-                     e.kind.c_str(), e.epoch, e.target, e.score, e.elapsed_ms);
-        last_hop_event_ms = static_cast<uint64_t>(e.elapsed_ms >= 0 ? e.elapsed_ms : 0.0);
-      }
-    };
-
-    // ---- in-flight channel hop: verdict window (spec section 2) ----
-    // Placed right after plan.tick() so a hop ordered below lands on
-    // plan.op()/plan.hopping() this SAME tick -- the mechanical retune loop
-    // and the RCF this tick's vrx.step() builds both read plan/vrx state
-    // that follows, not precedes, this block.
-    //
-    // Gated on hop_active() (hop_burst_gate.h): SESSION and the boot scout
-    // owning no card. On the falling edge the verdict engine is reset and
-    // the cached VerdictOut cleared, so no trigger measured on a link that
-    // was down can be acted on when it returns; on the rising edge the
-    // per-card and recovered baselines are re-primed, so the first window
-    // of a session measures the session, not the outage before it.
-    const bool hop_active =
-        maburgs::hop_active(in_session, scout_joined, cal_session.running());
-    if (hop_active != hop_was_active) {
-      hop_was_active = hop_active;
-      // Falling edge: the controller is about to stop being ticked, so an
-      // order still awaiting its confirm must be withdrawn NOW -- ChannelPlan
-      // ignores link loss while a hop is in flight, and nothing else would
-      // ever clear it (bench 2026-09-24, GS session 0207: the GS sat on the
-      // target and the old op forever while the drone waited on home).
-      if (!hop_active) dispatch_hop_action(hopc.on_session_lost(now_ms, plan.op()));
-      verdict.reset();
-      last_verdict = maburgs::Verdict::Healthy;
-      last_verdict_out = maburgs::VerdictOut{};
-      std::fill(window_prev_ok.begin(), window_prev_ok.end(), false);
-      recovered_prev_window = agg.decoder().stats(0).syms_recovered +
-                              agg.decoder().stats(1).syms_recovered;
-      au_seq_prev = au_seq.load(std::memory_order_relaxed);
-      // The AU baseline restarts with the session (both edges run this
-      // block; the rising one is what matters -- the falling one only
-      // clears state nothing reads until then).
-      verdict.new_session();
-      last_window_ms = now_ms_u;
-    }
-    if (hop_active && now_ms_u - last_window_ms >= static_cast<uint64_t>(hcfg.window_ms)) {
-      last_window_ms = now_ms_u;
-      std::vector<maburgs::VerdictCardIn> vc(static_cast<size_t>(n_cards));
-      // Starved (Task 11 (c)): at least one valid card, and not one own
-      // frame on ANY valid card this window. No frames means no loss, so a
-      // drone starved by a jam otherwise reads `healthy`.
-      int starved_valid = 0;
-      bool starved_all_zero = true;
-      for (int i = 0; i < n_cards; ++i) {
-        auto& fe = *fronts[static_cast<size_t>(i)];
-        const size_t si = static_cast<size_t>(i);
-        const bool busy = dwell_busy.load() && dwell_card.load() == i;
-        // The verdict describes the OP channel: a card tuned elsewhere (a
-        // hop's lead card parked on the target until Confirm) contributes
-        // nothing, exactly like one mid-dwell. Mixing its clean-target
-        // readings in was a latent bug that cleared kEvBlocked during every
-        // Ordered (hop_burst_gate.h::verdict_card_usable).
-        if (!maburgs::verdict_card_usable(fe.ready(), busy, fe.channel(), plan.op())) {
-          window_prev_ok[si] = false;
-          nhm_win[si].invalidate();
-          continue;
-        }
-        // Order matters (spec §6): the NHM window that just ended is read
-        // BEFORE the FA/CCA counter reset, then re-armed for the next one.
-        const maburgs::NhmBusyRead nb = fe.read_nhm_busy();
-        const bool nhm_ok = nhm_win[si].usable(nb, fe.channel(),
-                                               dwell_gen[si].load(std::memory_order_acquire));
-        const maburgs::ScoutEnergy e = fe.read_energy_scout();
-        const maburgs::ScoutFrames f = fe.frames();
-        const auto& t = agg.card(i);
-        // Capture the channel and dwell generation BEFORE arming -- read
-        // from fe.channel()/dwell_gen[si] only after arm_nhm_busy() returns
-        // would let a scout dwell complete between the arm call and these
-        // reads, attributing that dwell's window to the arm we are about
-        // to make (fix round 2, final review).
-        const uint8_t arm_ch = fe.channel();
-        const uint32_t arm_gen = dwell_gen[si].load(std::memory_order_acquire);
-        if (fe.arm_nhm_busy(nhm_op_period))
-          nhm_win[si].armed(arm_ch, nhm_op_period, arm_gen);
-        else nhm_win[si].invalidate();
-        if (window_prev_ok[si]) {
-          vc[si].valid = true;
-          ++starved_valid;
-          if (f.own - window_prev[si].own != 0) starved_all_zero = false;
-          vc[si].fa = e.fa_ofdm;
-          vc[si].cca = e.cca_ofdm;
-          vc[si].foreign = static_cast<uint32_t>(f.foreign - window_prev[si].foreign);
-          vc[si].crc_fail = static_cast<uint32_t>(t.crc_fail - window_prev_crc[si]);
-          // Raw EMAs -> the dBm/dB the [hop.verdict] thresholds are in
-          // (hop_verdict.h); feeding raw here left `weak` unreachable.
-          vc[si].rssi_dbm = maburgs::rssi_raw_to_dbm(t.rssi_a_ema);
-          // A relay's SNR is synthetic (snr_ok false): log nan, not a number.
-          vc[si].snr_db = snr_ok[si] ? maburgs::snr_raw_to_db(t.snr_ema) : std::nan("");
-          vc[si].snr_valid = snr_ok[si];
-          const double win_us = static_cast<double>(now_ms_u - window_prev_ms[si]) * 1000.0;
-          const double own_pct = win_us > 0
-              ? std::min(100.0, 100.0 * static_cast<double>(f.own_air_us - window_prev[si].own_air_us) / win_us)
-              : 0.0;
-          const auto busy_pct = nhm_ok ? maburgs::nhm_busy_pct(nb, hcfg.verdict.busy_dbm) : std::nullopt;
-          vc[si].busy_valid = busy_pct.has_value();
-          vc[si].nhm_busy_pct = busy_pct.value_or(0.0);
-          vc[si].own_air_pct = own_pct;
-          // Keep cards[i].energy on the sideport alive from this window --
-          // Task 3 removed the 1 Hz A-record poll that used to feed it.
-          energy_last[si] = maburgs::StatsEnergyIn{
-              e.cca_ofdm, e.fa_ofdm, f.own - window_prev[si].own,
-              f.foreign - window_prev[si].foreign, std::nullopt, busy_pct, own_pct};
-        }
-        window_prev[si] = f;
-        window_prev_crc[si] = t.crc_fail;
-        window_prev_ms[si] = now_ms_u;
-        window_prev_ok[si] = true;
-      }
-      maburgs::VerdictLinkIn vl;
-      // The s1 (BASE) loss window, same family the ladder's own
-      // pre_fec_loss reads (s1_loss_cur is the current-rung-scoped
-      // sibling) -- sampled independently here since this block runs
-      // before that window's .add() for THIS tick, so it reflects state as
-      // of the end of the previous tick: one control-loop tick (~10-20 ms)
-      // stale against a 150 ms-default verdict window, immaterial.
-      const auto s1_hop_sample = s1_hop_loss.sample(now_ms);
-      vl.pre_fec_loss = s1_hop_sample.valid ? s1_hop_sample.loss : 0.0;
-      const uint64_t recovered_now = agg.decoder().stats(0).syms_recovered +
-                                     agg.decoder().stats(1).syms_recovered;
-      vl.recovered = static_cast<uint32_t>(recovered_now - recovered_prev_window);
-      recovered_prev_window = recovered_now;
-      vl.starved = starved_valid > 0 && starved_all_zero;
-      // AUs published this window (Task 12 (e)): HopVerdict reads a
-      // collapse against the trailing mean as starved.
-      const uint64_t au_seq_now = au_seq.load(std::memory_order_relaxed);
-      vl.au_count = static_cast<uint32_t>(au_seq_now - au_seq_prev);
-      au_seq_prev = au_seq_now;
-      const auto vo = verdict.window(now_ms, vc, vl, vrx.ctl().rung());
-      if (scan_log && (vo.v != maburgs::Verdict::Healthy || vo.v != last_verdict))
-        scan_log->verdict(now_ms, vo, vc, vl);
-      last_verdict = vo.v;
-      last_verdict_out = vo;
-      // Spec section 4: the rung store's EWMAs stop taking writes at the
-      // first INTERFERED window of an episode, not at the order 300-450 ms
-      // later. One deadline per episode, confirm_ms + the settle wide, and
-      // only when the feature is enabled -- see hop_blank.h for why each
-      // of those three gates is load-bearing. blank_store() keeps the
-      // later of the deadlines it is given, so this never shortens
-      // HopAction::Order's own window.
-      if (const auto blank =
-              maburgs::hop_store_blank_until(vo, hcfg.enable, hcfg.confirm_ms))
-        vrx.blank_store(*blank);
-    }
-
-    // ---- in-flight channel hop: controller tick + actions (spec
-    // section 4/5) ---- same hop_active gate as the window above: an
-    // in-flight hop's own timers simply resume on the next active tick
-    // (confirm_ms elapsed -> withdraw, the fail-safe outcome).
-    if (hop_active) {
-      // Every target the controller may order, from the ranker (Task 11):
-      //   best   -- never blocked, never backed off (fled or failed);
-      //   escape -- never blocked, never verify-failed, fled allowed: the
-      //             way out of a hold on a blocked channel (the controller
-      //             only uses it when the current verdict is blocked);
-      //   home_blocked -- the dwells read the configured home as blocked,
-      //             so it is no fallback either.
-      auto fill_hop_targets = [&](maburgs::HopTick& k) {
-        k.best = ranker.best(now_ms, plan.op(), hopc.backed_off(now_ms), /*require_unblocked=*/true);
-        k.escape = ranker.best(now_ms, plan.op(), hopc.backed_off_failed(now_ms),
-                               /*require_unblocked=*/true);
-        k.best_score = 0;
-        k.escape_score = 0;
-        k.home_blocked = false;
-        for (const auto& e : ranker.ranking(now_ms)) {
-          if (k.best && e.ch == *k.best) k.best_score = e.score;
-          if (k.escape && e.ch == *k.escape) k.escape_score = e.score;
-          if (e.ch == cfg.radio.channel) k.home_blocked = e.blocked;
-        }
-      };
-      maburgs::HopTick ht;
-      ht.now_ms = now_ms;
-      ht.verdict = last_verdict_out;
-      ht.cur_op = plan.op();
-      // The lead is the first ready() non-TX card (scout_pick.h); with none
-      // ready (a lost/refused relay, a dead USB card) run the one-card hop
-      // path instead of ordering a hop no card would ever retune for.
-      // Held (hop_lead_latched) while Ordered: the lead's own retune makes
-      // a relay lead !ready() until its TUNE is confirmed.
-      if (hopc.state() != maburgs::HopState::Ordered) {
-        std::vector<bool> ready(static_cast<size_t>(n_cards));
-        for (int i = 0; i < n_cards; ++i)
-          ready[static_cast<size_t>(i)] = fronts[static_cast<size_t>(i)]->ready();
-        hop_lead_latched = maburgs::pick_hop_lead(ready, sel.selected());
-      }
-      ht.lead_card = hop_lead_latched;
-      ht.n_cards = hop_lead_latched >= 0 ? n_cards : 1;
-      fill_hop_targets(ht);
-      // lead_card (or the only card, one-card mode) confirms the hop by
-      // landing a video body on the target channel -- last_video_ch is set
-      // in the batch-drain loop above from RxBody::rx_channel, the channel
-      // the producing card was actually tuned to when it lifted that frame
-      // off the air (NOT cur_ch[m.card_id], where the card is tuned now),
-      // matching the brief's "lead card received a video AU on hop_ch".
-      ht.video_on_target = plan.hopping() && last_video_ch == plan.hop_target();
-      ht.rcf_sent_since_order = static_cast<int>(rcf_sent_total - rcf_sent_at_order);
-      // hop_burst_gate.h's hop_burst_due() (Task 15 fix round 1): "no hop
-      // in flight" (Idle/Hold, not Ordered/Verifying) AND the trigger AND
-      // the dwell_period_ms rate limit against last_burst_ms below -- see
-      // that header for the four properties this gate has to get right,
-      // now unit-tested directly instead of only inside this hardware-
-      // touching body.
-      if (maburgs::hop_burst_due(hopc.state(), last_verdict_out.trigger, now_ms,
-                                 last_burst_ms, hcfg.dwell_period_ms)) {
-        // Freshness burst (spec section 3): sweep every candidate once,
-        // back to back, BEFORE a target is chosen -- so it must not
-        // require ht.best to already hold one (dropped from this gate in
-        // fix round 2; the plan's own snippet had it, the spec overrules).
-        // BOTH card counts (spec: "the only card on a one-card GS since
-        // the link is already impaired") -- a one-card GS never runs the
-        // periodic scout thread (that stays two-card-only, see scout_loop
-        // above), so this burst is the ONLY source of ranking data it will
-        // ever have; without it (and without also accepting Hold above)
-        // ht.best is permanently nullopt, the state machine can only ever
-        // order home once and then hold forever, and it can never leave
-        // Hold since leaving requires order(), which itself requires
-        // best. Runs synchronously on the core thread (blocking it for
-        // the whole sweep, a handful of candidates at a few ms each on
-        // two cards -- see the report's threading notes and, for the
-        // one-card case, the burst-duration note in fix round 2), so
-        // inflight_mu is held for the duration to keep the scout thread's
-        // own periodic dwell (when one is running, i.e. two-card) from
-        // driving the same InflightScout/RadioFrontend at the same time.
-        last_burst_ms = now_ms;
-        // Never the relay: it cannot measure energy and its TUNE is async
-        // (spec 2026-10-02-maburgs-remote-card §3). Prefer a scout-capable
-        // non-TX card; with USB+relay and TX on the USB card, burst on the
-        // USB card anyway -- the one-card GS already pays this RCF gap.
-        const int burst_card = maburgs::pick_burst_card(can_scout, sel.selected());
-        if (burst_card < 0) { fill_hop_targets(ht); }
-        else {
-        std::lock_guard<std::mutex> ilk(inflight_mu);
-        auto& fe = *fronts[static_cast<size_t>(burst_card)];
-        inflight.set_radio(fe);
-        std::vector<maburgs::ScoutDwell> recs;
-        for (const auto& v : inflight.burst(plan.op(), recs)) ranker.add(v);
-        for (const auto& d : recs)
-          if (scan_log) scan_log->dwell(now_ms, burst_card, d);
-        // Re-sync from live hardware, mirroring the periodic-dwell drain
-        // below: a candidate dwell inside the burst may have failed its
-        // return retune (kFlagRetuneFailed) and left the card off `op_`.
-        cur_ch[static_cast<size_t>(burst_card)] = fe.channel();
-        // The burst swept this card off-channel through one or more
-        // candidates on the core thread itself (fix round 1, task-6
-        // review) -- any NHM window we'd armed on it before the burst is
-        // contaminated the same way a scout dwell would contaminate it.
-        nhm_win[static_cast<size_t>(burst_card)].invalidate();
-        fill_hop_targets(ht);
-        }
-      }
-      const maburgs::HopAction act = hopc.tick(ht);
-      dispatch_hop_action(act);   // the shared path, defined above the verdict window
-    }
-
-    // Proposal for the next DISC: the frozen op once the drone has answered,
-    // the scout's current best before that, home with scanning off.
-    vrx.set_proposal(plan.frozen() ? plan.op()
-                                   : (scout ? scout->proposal() : cfg.radio.channel));
-    // No keep-alive DISC while a hop order is outstanding: it would propose
-    // the old op to a drone that may already have followed the order
-    // (vrx_controller.h). Keyed on the controller's Ordered state, not
-    // plan.hopping(): a one-card GS only enters plan.hopping() at
-    // OneCardRetune, but its RCFs carry the order from the Order on.
-    vrx.set_keepalive_hold(hopc.state() == maburgs::HopState::Ordered);
-    // Move edge (link-pairing spec 2026-10-01 §6 step 5): the drone retunes
-    // only after our first RCF under a freshly adopted vtx_nonce verifies,
-    // so the controller fires this once per adoption -- on a LINKED Telem,
-    // or after VrxController::kMoveAfterRcfs RCFs if that Telem is lost.
-    // Consumed every tick regardless (take_move_edge() clears it on read),
-    // but only ACTED on outside a hop: ChannelPlan::on_ack() carries no
-    // hopping_ guard of its own (Task 6's carried invariant), so this is
-    // the enforcement. Unlike the old per-ack edge, an edge dropped here
-    // while hopping is NOT re-offered by the next ack (only a new
-    // vtx_nonce re-arms it); a session adopted mid-hop means the drone
-    // restarted, and the split/reunite fallback covers the channel.
-    //
-    // Also held (not dropped) for a whole calibration run: a re-pair between
-    // sweep phases must not retune the cards mid-run (CalMoveEdgeHold).
-    if (cal_move_hold.take(vrx.take_move_edge(), cal_session.running()) &&
-        !plan.hopping()) {
-      const uint8_t proposed = vrx.proposal();
-      const bool first = !plan.frozen();
-      plan.on_ack(now_ms, vrx.agreed_channel(), proposed);
-      if (first && scout) {
-        scout->freeze(plan.op());  // stops the scan for the process lifetime
-        // "none" = the drone appeared before any channel reached
-        // min_rounds (the DISC proposed home by default, not by
-        // measurement). Computed outside the scan_log guard because the
-        // hop ranker needs the same answer whether or not logging is on.
-        const auto all = scout->ranking();
-        bool any_ranked = false;
-        if (cfg.radio.width == 40) {
-          // At 40 MHz the entries are per HALF and pair_proposal only ranks
-          // a pair once BOTH halves reach min_rounds; one half there (e.g.
-          // the one-card home half, which also books home-window visits)
-          // would call home-by-default a measured pick.
-          any_ranked = maburgs::any_pair_ranked(all, cfg.radio.channel, scfg.candidates,
-                                                scfg.min_rounds);
-        } else {
-          for (const auto& e : all)
-            any_ranked = any_ranked || e.visits >= static_cast<uint32_t>(scfg.min_rounds);
-        }
-        // The real boot-time pick, for HopRanker's tie-break (spec
-        // section 3). Only when the scan actually measured something: an
-        // unranked "pick" is just home proposed by default, and feeding
-        // that in would re-collapse the tiebreak.
-        if (any_ranked) ranker.set_boot_pick(proposed);
-        if (scan_log)
-          scan_log->pick(now_ms,
-                         any_ranked ? std::optional<uint8_t>(proposed) : std::nullopt,
-                         scout->rounds(), all, scfg.min_rounds);
-      }
-      // Re-publish the proposal the instant the plan commits (Important
-      // fix 3): set_proposal above ran BEFORE on_ack, so on the commit tick
-      // it still holds the pre-ack proposal. On an ack_override -- the
-      // drone agreeing to a channel that is not the one we proposed -- the
-      // DISC built later in this same tick would otherwise beacon the STALE
-      // proposal on the NEW channel, i.e. command the drone to move a
-      // second time, to the channel it just declined.
-      if (plan.frozen()) vrx.set_proposal(plan.op());
-    }
-    // Scout bookkeeping: drain the dwell records, then join the thread once
-    // it has parked its card on the op channel (run() retunes before done()).
-    if (scout) {
-      if (scan_log)
-        for (const auto& d : scout->take_dwells()) scan_log->dwell(now_ms, scout_card, d);
-      else
-        (void)scout->take_dwells();
-      if (!scout_joined && scout->done()) {
-        scout_thread.join();
-        scout_joined = true;
-        // The live atomic, not plan.op(): a second ack with a different
-        // agreed channel between freeze and join would otherwise record a
-        // channel the card is not on, and the loop below would never
-        // correct it (it only retunes on a mismatch).
-        cur_ch[static_cast<size_t>(scout_card)] =
-            fronts[static_cast<size_t>(scout_card)]->channel();
-      }
-    }
-    // In-flight scout thread: started once (idempotent, guarded by
-    // inflight_started) as soon as the boot scout no longer owns any card
-    // -- immediately, when radio.scan.enable is off and there was no boot
-    // scout at all (scout_joined starts true). Two-card only: the thread's
-    // own loop gates every cycle on n_cards >= 2, but there is no point
-    // spinning it up on one card.
-    if (!inflight_started && scout_joined && n_cards >= 2 &&
-        (hcfg.enable || hcfg.scout_when_disabled)) {
-      inflight_started = true;
-      scout_run.store(true);
-      scout_thread2 = std::thread(scout_loop);
-    }
-    // In-flight scout bookkeeping: drain completed dwells/visits. Re-sync
-    // cur_ch[card] from the LIVE hardware channel() rather than trusting
-    // the cache -- the scout thread retunes this card directly, bypassing
-    // the mechanical retune loop below, and on a stranded return retune
-    // (ScoutDwell::survey.flags & kFlagRetuneFailed, Task 10) the card can
-    // be left parked on the candidate. Refreshing here is what lets the
-    // mechanical loop (which only acts on a cur_ch/desired mismatch)
-    // notice and pull it back next tick -- mirroring the boot scout's own
-    // join-time resync just above. This is also why cur_ch must NOT be
-    // written from the scout thread itself: it is single-writer (this
-    // core loop) by construction, so no lock is needed around it.
-    {
-      std::vector<std::pair<int, maburgs::ScoutDwell>> drained;
-      std::vector<maburgs::HopVisit> visits;
-      {
-        std::lock_guard<std::mutex> lk(dwell_mu);
-        drained.swap(dwell_recs);
-        visits.swap(dwell_visits);
-      }
-      size_t vi = 0;
-      for (auto& rec : drained) {
-        const int card = rec.first;
-        cur_ch[static_cast<size_t>(card)] = fronts[static_cast<size_t>(card)]->channel();
-        if (scan_log) scan_log->dwell(now_ms, card, rec.second);
-        // Sideport dwell snapshot (Task 12, StatsCardIn::dwell). dwell_recs
-        // and dwell_visits are pushed in lockstep by scout_loop -- one
-        // ScoutDwell per completed dwell, one HopVisit iff that SAME
-        // dwell's retune didn't fail (InflightScout::dwell() sets
-        // kFlagRetuneFailed on exactly the two paths that produce no
-        // visit, never otherwise). So `visits` is a strict, order-
-        // preserving subsequence of `drained`'s successes: walking both in
-        // lockstep and consuming one visit per non-failed record
-        // attributes each score to the right card despite HopVisit itself
-        // carrying no card field.
-        const bool ok =
-            !(rec.second.survey.flags & devourer::chanmig::kFlagRetuneFailed);
-        maburgs::StatsDwellIn ds =
-            dwell_stats[static_cast<size_t>(card)].value_or(maburgs::StatsDwellIn{});
-        ++ds.visits;
-        ds.cost_us = static_cast<uint32_t>(rec.second.to_us + rec.second.read_us +
-                                           rec.second.back_us);
-        if (ok && vi < visits.size()) ds.score = maburgs::HopRanker::score(visits[vi]);
-        dwell_stats[static_cast<size_t>(card)] = ds;
-        if (ok) ++vi;
-      }
-      for (const auto& v : visits) ranker.add(v);
-    }
-    // Width resync (width_resync.h): width is desired per-card state, like
-    // cur_ch. Once no boot scout owns a card and the scan is over, any ready
-    // card not at radio.width gets ONE set_width on its live channel -- the
-    // scout card that died mid-scan (revived at 20) or whose scan never ran
-    // (first DISC_ACK before it was ready). Under inflight_mu, and skipping a
-    // card the in-flight scout has off on a dwell, like the mechanical
-    // retune below. A no-op for every card already at radio.width, so it
-    // costs a few loads per tick.
-    if (maburgs::width_resync_open(scout_joined, scout != nullptr,
-                                   scout && scout->frozen())) {
-      for (int i = 0; i < n_cards; ++i) {
-        auto& fe = *fronts[static_cast<size_t>(i)];
-        const maburgs::WidthCard wc{fe.ready(), fe.width(), width_tried[static_cast<size_t>(i)],
-                                    dwell_busy.load() && dwell_card.load() == i};
-        if (!maburgs::needs_width_fix(wc, cfg.radio.width)) continue;
-        width_tried[static_cast<size_t>(i)] = true;
-        std::lock_guard<std::mutex> ilk(inflight_mu);
-        const uint8_t ch = fe.channel();
-        if (fe.set_width(ch, cfg.radio.width)) {
-          cur_ch[static_cast<size_t>(i)] = fe.channel();
-          nhm_win[static_cast<size_t>(i)].invalidate();
-        } else
-          std::fprintf(stderr, "maburgs radio: card %d width resync to %u MHz on ch %u failed\n",
-                       i, static_cast<unsigned>(cfg.radio.width), static_cast<unsigned>(ch));
-      }
-    }
-    // Every move that changes where the link lives -> M line + stderr.
-    for (const auto& ev : plan.take_events()) {
-      if (scan_log) scan_log->move(ev);
-      std::fprintf(stderr, "maburgs channel: %s card %d %u -> %u\n",
-                   maburgs::to_string(ev.reason), ev.card,
-                   static_cast<unsigned>(ev.from), static_cast<unsigned>(ev.to));
-    }
-    // The mechanical per-card retune toward plan.desired(). The scout card is
-    // untouchable until joined; a card the in-flight scout thread currently
-    // has off on a candidate (dwell_busy) is untouchable too -- the scout
-    // thread is mid-retune-sequence on it, and fe.retune() from both
-    // threads at once on the same RadioFrontend is the one race this
-    // feature must never allow (see the report's threading notes).
-    for (int i = 0; i < n_cards; ++i) {
-      const bool scouting = !scout_joined && i == scout_card;
-      const bool inflight_dwelling = dwell_busy.load() && dwell_card.load() == i;
-      auto& fe = *fronts[static_cast<size_t>(i)];
-      if (scouting || inflight_dwelling || !fe.ready()) continue;
-      const uint8_t want = plan.desired(i);
-      if (cur_ch[static_cast<size_t>(i)] != want && fe.retune(want)) {
-        cur_ch[static_cast<size_t>(i)] = want;
-        nhm_win[static_cast<size_t>(i)].invalidate();
-      }
-    }
+    // ---- auto channel set + in-flight hop, per tick (gs/src/channel_core.h) ----
+    maburgs::ChannelTickIn cin;
+    cin.now_ms = now_ms;
+    cin.in_session = in_session;
+    cin.cal_running = cal_session.running();
+    cin.tx_card = sel.selected();
+    cin.agg = &agg;
+    chan.tick(cin);
     const bool fw = in_session && (vrx.peer_caps() & mabur::rc::CAP_FRAME_WIRE);
     // Told every tick (CalSession::set_peer): whether the link is up and
     // whether the peer's last DiscAck carried CAP_CALIBRATE. start() (via
@@ -2406,12 +1259,6 @@ static int run_radio(const maburgs::Config& cfg) {
     if (frame_wire) fstream.poll(drained_ms);
     if (au_on) au_bell.poll();
 
-    // s1_hop_loss is fed from the same base-sid arrival counters as the
-    // assembler's s1_loss, on the same now_ms (it was fed right beside it).
-    {
-      const auto s1 = agg.decoder().stats(0);
-      s1_hop_loss.add(s1.arr_expected, s1.arr_arrived, now_ms);
-    }
     // Ladder input: every window + the LinkHealth build, gs/src/link_health.cpp.
     const auto lh = lha.tick(now_ms, agg,
                              maburgs::LinkHealthInputs{vrx.cur_op(), vrx.probe_profile(),
@@ -2446,15 +1293,15 @@ static int run_radio(const maburgs::Config& cfg) {
       std::vector<maburgs::CardSnapshot> snaps;
       for (int i = 0; i < n_cards; ++i) {
         const auto& t = agg.card(i);
-        // A scouting card is off somewhere measuring a candidate: never a
-        // transmit candidate, whatever its SNR history says.
-        const bool scouting = !scout_joined && i == scout_card;
+        // A card the scout owns is off (or about to go) searching or
+        // measuring: never a transmit candidate, whatever its SNR history says.
+        const bool scouting = chan.scout_owns_card(i);
         snaps.push_back(maburgs::CardSnapshot{
             !scouting && fronts[static_cast<size_t>(i)]->alive(), t.rssi_ema, t.last_frame_us});
       }
       // Hold the switch decision while the in-flight scout has a card off
       // on a candidate: the dwelling card is never the TX card by
-      // construction (the scout thread always picks the NON-tx_card_now
+      // construction (the scout thread always picks the NON-TX
       // card), so it could only ever become a challenger here -- and
       // sel.update() is what would act on a challenger and switch onto it
       // mid-dwell, which is exactly what must not happen (spec section 6).
@@ -2463,37 +1310,16 @@ static int run_radio(const maburgs::Config& cfg) {
       // (tx_selection_frozen, hop_burst_gate.h): the lead card is on the
       // target and the RCF that carries the order must keep leaving on
       // the old channel until the drone has been seen there.
-      const int tx = maburgs::tx_selection_frozen(dwell_busy.load(), plan.hopping())
-                         ? sel.selected()
-                         : sel.update(snaps, now_ms_u * 1000);
-      tx_card_now.store(sel.selected(), std::memory_order_relaxed);
+      const int tx = chan.tx_frozen() ? sel.selected() : sel.update(snaps, now_ms_u * 1000);
+      chan.note_tx_card(sel.selected());
       // Which card(s) carry this frame. RCFs go to the TX selector's card,
-      // as they always did. A DISC is rendezvous traffic and follows the
-      // plan instead: both channels of a split, the home card while the
-      // scout has the other one, nothing from a single USB card while it is
-      // off measuring a candidate (spec section 6, GS side) -- plus any
-      // ready relay during the boot scan.
-      std::vector<int> targets;
-      if (!out->is_disc) {
-        targets.push_back(tx);
-      } else if (auto bc = plan.beacon_cards()) {
-        targets = *bc;
-      } else if (!scout_joined) {
-        // Silent during every scout dwell (two cards: quiet(); one card:
-        // outside the beacon phase).
-        // The home card (first USB card != scout, two USB cards) or the
-        // scout itself while home (one USB card), plus every ready relay
-        // (scout_pick.h scan_disc_targets()).
-        if (!scout->quiet()) {
-          std::vector<bool> ready(static_cast<size_t>(n_cards));
-          for (int i = 0; i < n_cards; ++i)
-            ready[static_cast<size_t>(i)] = fronts[static_cast<size_t>(i)]->ready();
-          targets = maburgs::scan_disc_targets(n_usb, n_cards, scout_card,
-                                               scout->at_home(), ready);
-        }
-      } else {
-        targets.push_back(tx);
-      }
+      // as they always did. A DISC is rendezvous traffic and, while the
+      // scout owns its card, follows it (scout_pick.h scan_disc_targets()): the link
+      // card on op (two USB cards), the scout card while it beacons (its
+      // search burst on a member; the one-card op window), plus every
+      // ready relay. The send gate drops what must stay silent (a quiet()
+      // observe, the scout card off a beacon).
+      const std::vector<int> targets = out->is_disc ? chan.disc_targets(tx) : std::vector<int>{tx};
       // link-rtt: build_rcf bumped seq_, so rcf_seq() IS this frame's seq;
       // captured now because the slotter may send it later. DISCs are
       // rendezvous traffic, not RCFs — the drone never ages against them,
@@ -2512,6 +1338,12 @@ static int run_radio(const maburgs::Config& cfg) {
         maburgs::SlotFrame sf{
             k + 1 == targets.size() ? std::move(out->frame) : out->frame,
             vrx.rcf_seq(), targets[k], !out->is_disc};
+        // A DISC proposes the channel it is sent on (final review C1
+        // addendum A): the TX card's copy proposes op, a search burst's copy
+        // on the scout card proposes the burst member -- so a drone found
+        // there agrees to stay, links there (on_session_opened) and is moved
+        // only by a relocate order, never by retuning itself on promotion.
+        if (out->is_disc) sf.frame = chan.disc_for_card(sf.frame, targets[k]);
         if (!rcf_slot.offer(sf, drained_ms, false) &&
             !cal_session.radio_silent(drained_ms))
           send_control_frame(sf);
@@ -2534,7 +1366,7 @@ static int run_radio(const maburgs::Config& cfg) {
     // card off-channel (cal_cmd_clear's comment). due_result() below still
     // runs step() every tick, so holding the command here stalls nothing
     // else in the session.
-    if (maburgs::cal_cmd_clear(cal_session.radio_silent(drained_ms), dwell_busy.load())) {
+    if (maburgs::cal_cmd_clear(cal_session.radio_silent(drained_ms), chan.dwell_busy())) {
       if (auto cmd = cal_session.due_cmd(drained_ms)) {
         cal_pending_nonce = cmd->nonce;
         maburgs::SlotFrame cf{mabur::rc::pack_cal_cmd(*cmd, cfg.link.key, cal_session.tag_ctx()),
@@ -2682,9 +1514,8 @@ static int run_radio(const maburgs::Config& cfg) {
                    static_cast<unsigned long long>(fstream.bad_fragments()),
                    static_cast<unsigned long long>(fstream.stall_resets()));
       // Only while a one-card scout is actually costing us sends.
-      if (scout_gated_sends)
-        std::fprintf(stderr, " scoutgate=%llu",
-                     static_cast<unsigned long long>(scout_gated_sends));
+      if (const uint64_t gated = chan.scout_gated_sends())
+        std::fprintf(stderr, " scoutgate=%llu", static_cast<unsigned long long>(gated));
 #ifdef MABUR_LOSS_SIM
       if (agg.loss_sim().enabled())
         std::fprintf(stderr, " LOSS-SIM[s0/s1/s2/s3/s4/s5]=%llu/%llu/%llu/%llu/%llu/%llu",
@@ -2702,35 +1533,16 @@ static int run_radio(const maburgs::Config& cfg) {
       maburgs::StatsInput sin;
       // Live channel of the TX card, not the configured home (spec
       // section 7): with a pick committed they differ. Straight off the
-      // front-end's atomic -- cur_ch is deliberately untracked for the
+      // front-end's atomic -- the core's per-card channel is untracked for the
       // scout card while the scout owns it.
-      sin.channel = fronts[static_cast<size_t>(sel.selected())]->channel();
-      sin.home = cfg.radio.channel;
-      // The scout, not the plan: the plan is still unfrozen after the
-      // scout-card-death path abandons the scan, and with scan.enable
-      // false there is no scout at all.
-      sin.scan_state = (!scfg.enable || !scout)
-                           ? "off"
-                           : (scout->frozen() ? "frozen" : "scouting");
-      sin.scan_rounds = scout ? scout->rounds() : 0;
-      if (plan.frozen()) sin.scan_pick = plan.op();
-      // In-flight channel hop snapshot (Task 12): straight off
-      // HopController's own accessors + the latest HopVerdict output --
-      // same no-controller-reference pattern as sin.ctl further down.
-      sin.hop.enable = hcfg.enable;
-      sin.hop.verdict = maburgs::to_string(last_verdict_out.v);
-      sin.hop.evidence = last_verdict_out.evidence;
-      if (last_verdict_out.ref_rung >= 0) sin.hop.ref_rung = last_verdict_out.ref_rung;
-      sin.hop.epoch = hopc.epoch();
-      sin.hop.state = hop_state_name(hopc.state());
-      // hop_ch() is 0 sentinel ("never ordered a hop yet") until the first
-      // order; once set it never reverts to 0 again (withdraw sets it to
-      // the pre-attempt point, not to the sentinel), so this is null only
-      // for a session where the hop feature has never fired.
-      if (const uint8_t hc = hopc.hop_ch(); hc != 0) sin.hop.target = hc;
-      sin.hop.hops = hopc.hops();
-      sin.hop.holds = hopc.holds();
-      sin.hop.last_ms = last_hop_event_ms;
+      const maburgs::ChannelSnapshot chs = chan.snapshot(sel.selected());
+      sin.channel = chs.channel;
+      // scan.state / rounds / the latched pick and the in-flight hop
+      // snapshot: ChannelCore::snapshot(tx) (gs/src/channel_core.cpp).
+      sin.scan_state = chs.scan_state;
+      sin.scan_rounds = chs.scan_rounds;
+      sin.scan_pick = chs.scan_pick;
+      sin.hop = chs.hop;
       sin.in_session = in_session;
       sin.key_mismatch = vrx.key_mismatch();
       sin.key_fp = key_fp;
@@ -2766,8 +1578,8 @@ static int run_radio(const maburgs::Config& cfg) {
         ci.foreign = fronts[static_cast<size_t>(i)]->foreign();
         ci.tx_frames = fronts[static_cast<size_t>(i)]->tx_frames();
         ci.tx_fail = fronts[static_cast<size_t>(i)]->tx_fail();
-        ci.energy = energy_last[static_cast<size_t>(i)];  // last A sample
-        ci.dwell = dwell_stats[static_cast<size_t>(i)];  // last in-flight scout dwell
+        ci.energy = chs.energy[static_cast<size_t>(i)];  // last A sample
+        ci.dwell = chs.dwell[static_cast<size_t>(i)];  // last in-flight scout dwell
         ci.relay = fronts[static_cast<size_t>(i)]->relay_stats();
         ci.kind = ci.relay ? "relay" : "usb";
         ci.snr_ok = snr_ok[static_cast<size_t>(i)];
@@ -2967,14 +1779,9 @@ static int run_radio(const maburgs::Config& cfg) {
       stats->poll(drained_ms, sin);
     }
   }
-  // Shutdown: both scout threads must be gone before the cards they drive
-  // are stopped and destroyed. The in-flight scout's loop wakes at most
-  // dwell_period_ms after scout_run clears; join it first since it can
-  // touch either card, then the boot scout (freeze() ends its loop at the
-  // end of the current dwell).
-  scout_run.store(false);
-  if (inflight_started && scout_thread2.joinable()) scout_thread2.join();
-  join_scout(plan.op());
+  // Shutdown: both scout threads (ChannelCore) must be gone before the
+  // cards they drive are stopped and destroyed.
+  chan.shutdown();
   queue.close();
   for (auto& fe : fronts) fe->stop();
   return 0;
@@ -3115,19 +1922,9 @@ int main(int argc, char** argv) {
   agg.set_rc_sink([&](uint8_t, const std::vector<uint8_t>&, uint64_t) { ++rc_frames; });
 
   uint64_t last_ms = 0;
-#ifdef MABUR_TEST
-  // Captured for run_hop_inject_test()'s confirm step: any body out of this
-  // fixture is genuine video (this IS the frame stream, not an RC frame),
-  // so the first one seen is a fine template to replay on a different card.
-  mabur::node::RxBody hop_confirm_template;
-  bool hop_confirm_captured = false;
-#endif
   while (auto m = src.next()) {
     replay_ms = m->mono_us / 1000;
     agg.on_rx_body(*m);
-#ifdef MABUR_TEST
-    if (!hop_confirm_captured) { hop_confirm_template = *m; hop_confirm_captured = true; }
-#endif
     const uint64_t now_ms = m->mono_us / 1000;
     fstream.poll(now_ms);
     if (au_on) au_bell.poll();
@@ -3187,15 +1984,5 @@ int main(int argc, char** argv) {
   if (!out_aus_path.empty())
     std::fprintf(stderr, "aus_out=%llu (file)\n",
                  static_cast<unsigned long long>(file_out.written));
-#ifdef MABUR_TEST
-  if (std::getenv("MABUR_HOP_INJECT")) {
-    if (!hop_confirm_captured) {
-      std::fprintf(stderr, "hop-test: no bodies read from --in; nothing to confirm with\n");
-      return 2;
-    }
-    const int rc = run_hop_inject_test(cfg, n_cards, agg, hop_confirm_template);
-    if (rc != 0) return rc;
-  }
-#endif
   return 0;
 }

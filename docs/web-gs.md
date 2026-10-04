@@ -13,8 +13,11 @@ its own.
 
 ## What it is
 
-A single page, a fixed channel — no channel scan, no in-flight hop, no DVR
-on the VTX side beyond its SD recorder, no multi-card. Local raw recording
+A single page. GS mode runs the same channel set, boot pick/relocation and
+one-card reactive hop as `maburgs`, through the shared `ChannelCore`
+(`gs/src/channel_core.h`, `docs/channel-select.md`,
+`docs/inflight-channel-hop.md`); no DVR on the VTX side beyond its SD
+recorder, no multi-card. Local raw recording
 into the browser's own storage exists (see Record, below). The page's radio
 is either one USB card (WebUSB, RTL8812EU/8812AU) or the CPE510 relay
 (`ws://`, see "CPE relay radio" under Use, below) — picked before Connect,
@@ -23,14 +26,16 @@ alongside the mode. Two modes, picked before Connect:
 - **GS mode** — the *only* ground station for the drone. Runs rendezvous
   (DISC until DISC_ACK), the same measured-loss ladder as `maburgs`
   (probe-before-promote, fade, failsafe), and slots its RCFs into the
-  drone's inter-AU idle exactly like `RcfSlotter`. It proposes its own
-  channel on DISC, so the drone never moves to chase it.
+  drone's inter-AU idle exactly like `RcfSlotter`. Its DISC proposes the
+  channel it is sent on; the link forms where the drone is found and then
+  relocates once to the pick (or the pin), exactly as `maburgs` does.
 - **Spotter mode** — receive, decode, display; **never transmits**. Built
   to sit next to a real `maburgs` that is already flying the link. There is
   no send path in this mode by construction (`web/src/web_gs.h`): the
   constructor drops the `Io::send` callback and neither `VrxController`
   nor `RcfSlotter` exists, so there is no code path that can build a
-  control frame.
+  control frame. A spotter starts on its start member and then follows the
+  link on its own (see "Spotter follower" under Channel set).
 
 Only one GS may command a given drone. The mode picker's own text says so
 ("GS mode commands the drone — only one GS per drone. Use Spotter next to a
@@ -225,20 +230,109 @@ firewall reload — not persistent).
 
 ## Use
 
-Pick a mode, channel and width, press Connect. The page defaults to
+Pick a mode, a channel set and width, press Connect. The page defaults to
 **Spotter** mode (URL `?mode=` or the last-used choice override it) — a
 deliberate safety default, although the design spec named `gs`: opening
 the page must never start commanding a drone that a `maburgs` or another
 tab may already be flying; GS mode is an explicit opt-in.
 
-Channel/width are checked before the device is requested (an integer in
-1–200, width 20 or 40, 40 only on a standard HT40 pair), and the core
-re-checks them with `maburgs`'s own config-loader checks
-(`maburgs::radio_width_issue` / `link_width_issue`, `gs/src/config.cpp`,
-via `webgs::channel_width_error`): in GS mode a 20 MHz tuning is refused
-while the ladder has any 40 MHz rung, because the GS could not receive
-it. A refusal reads `Channel/width refused: <reason>` (core line
-`ERROR bad channel/width: <reason>`).
+### Channel set
+
+The Config form's radio group is a **Channels** chip row (1–8 members of
+the 5 GHz list, `CHANNELS` in `web/ui/src/lib/config.js`, plus any member
+outside it — `chipChannels()` — so every member can be removed) and a **Link
+channel** select: **Auto** (measure the set, hop to the cleanest) or one
+member, which pins the link to it. URL params override the saved form on
+load: `?chs=40,64` sets the set, `?ch=N` pins N (added to the set, kept
+sorted, when absent and there is room), `?ch=auto` unpins. On Connect the form goes to
+the core as the overlay's `[radio]` table — `channels = [...]`,
+`channel = "auto"|N` and `width` — in **both** modes (`toOverlayToml()`), so
+the core's loader checks the set at the page's width (not the bundle's 40:
+a 20 MHz set like `[165]` would otherwise fail `ERROR bad config`).
+
+`--ch` is "start on this member" (`startChannel()`): the pin when there is
+one, else the remembered member — `localStorage` `webgs.channel`, written
+from the core's `CHANNEL <n>` stdout lines, which the glue prints on every
+change of the plan's op (`ChannelCore`'s store, `store_name` `CHANNEL
+line`) — when it is still in the set, else the first member. In GS mode
+the link then forms where the drone is found and relocates once to the
+pick (or the pin), and — in Auto — the one-card reactive hop runs on top,
+exactly as in `maburgs`; a pinned member is static
+(`docs/channel-select.md`, `docs/inflight-channel-hop.md`). Pinned by
+`test_web_gs`'s `gs_one_card_auto_hops_on_interference_but_pinned_never`:
+the same interference that makes the Auto rig order a one-card hop leaves
+the pinned rig on its member with `hop.state` idle, `hops`/`holds` 0 and
+the verdict still reading `interfered` for the page.
+The scan/hop knobs are the bundle defaults (`gs/bundle/maburgs.default.toml`);
+the form does not expose them. A spotter starts on its start member and
+follows from there ("Spotter follower" below).
+
+The set is validated twice. Page-side, `checkChannelSet()` (a mirror of
+`common/include/mabur/channel_set.h`'s rules plus the pin rule: 1–8
+members, each 1–177, no duplicates, at 40 MHz every member on an HT40 pair
+and all on one side of the pair grid, the pin a member) runs in
+`connectBlocker()` before the device is requested. There is no per-radio
+channel rule: the CPE relay tunes the whole 20 MHz grid 36–177, channel 144
+included, since `mabur-openwrt` 2c1c51f (2026-10-03, `docs/cpe510-relay.md`);
+the page's earlier "cannot tune 144" refusal was stale and was removed.
+Core-side, `webgs::channel_width_error` re-checks with `maburgs`'s own
+loader checks: the set rules, the start channel a member, pinned ⇒ start ==
+the pin, and in GS mode no 40 MHz rung at width 20 (the GS could not
+receive it). A core refusal reads `Channel/width refused: <reason>` (core
+line `ERROR bad channel/width: <reason>`).
+
+While live, the header shows the live channel (the core's `channel`) with
+`scanning` (scout running, `scan_state` `scouting`), `moving` (the
+relocation) or `hop` (a hop in flight) after it; disconnected it shows the
+form's link channel or `auto`; a spotter shows `following` or `sweeping`
+while it is not locked. The Debug tab's **Channel** group carries
+the channel, scan state/rounds/pick, hop state/verdict, hop target/epoch
+and hops/holds (a spotter shows the channel and its follow state, see
+"Spotter follower"). The core's
+`maburgs channel: …` / `maburgs hop: …` stderr lines appear verbatim in the
+browser console log.
+
+### Spotter follower
+
+A spotter has no control link, so it cannot be told where the link is;
+it listens for it. `webgs::SpotterFollow` (`web/src/spotter_follow.{h,cpp}`,
+spec 2026-10-04 §6) runs in the core on the spotter's one card:
+
+- **Sweeping** — round-robin over the channel set, 150 ms per member
+  counted from when the card reports it is on the member (a USB
+  FastRetune is immediate; a CPE relay TUNE reports tuned after 50 ms,
+  measured 2026-10-04);
+  the first CRC-good mabur frame on a member locks. A member the card
+  never reports (a relay that cannot tune it) is skipped after 1 s. The
+  spotter starts here, on its start member.
+- **Locked** — every frame on the channel refreshes a 1 s silence timer;
+  silence sweeps again from the next member. The real GS's RCFs carry
+  its standing hop order (`hop_ch`/`hop_epoch`) in the clear; a new pair
+  naming another member → **Following**. Locked means hearing any mabur
+  traffic on the channel — the GS's own DISC search bursts included —
+  not video: with the drone off, a spotter sits locked wherever the GS
+  is beaconing, and sweeps again within ~1 s once the GS links elsewhere
+  and stops beaconing.
+- **Following** — the card retunes to the target; a frame there locks
+  (`follows` counts every order acted on — confirmed, retargeted,
+  withdrawn or timed out — so one hop that was retargeted once reads
+  `follows 2`). Nothing on the target within 2 s (the drone's
+  own `move_confirm_ms`) → back to the previous channel, with a fresh
+  silence window. A withdrawal heard before the card moved returns at
+  once; the same pair repeated is ignored (so a standing order after a
+  timeout cannot ping-pong).
+
+The RCF tag is **not verified** on a spotter (user decision 2026-10-04):
+it cannot be in general (the tag's `seq32` wrap count is private to the
+two link ends), and the pairing design defends the aircraft, not a
+display — a forged order drags a spotter off-channel for at most 2 s.
+No key is read in spotter mode. A move resets nothing in the video path:
+the FrameStream closes the gap as truncated AUs and the decoder re-arms
+on the next IRAP (see "Spotter key frames"). STATS carries
+`follow_state` (`locked` | `following` | `sweeping`) and `follows`; the
+header shows the state word after the width while not locked, and the
+Debug tab's Channel group shows `channel` and `follow`. Spotter mode
+still never transmits.
 
 ### CPE relay radio
 
@@ -296,19 +390,31 @@ Test against the real hosted origin.
 WASM core through a `SharedArrayBuffer` ring pair (`web/src/relay_ring.h` /
 `web/ui/src/lib/relay_ring.js`, byte-identical twins pinned by shared golden
 tests — see Design, below) so the socket and its GC/render-thread neighbors
-never delay an RCF. The core's `RelayClient` then does the same HELLO/TUNE
-dance the native `webgs --relay` CLI does (`docs/cpe510-relay.md`): HELLO
-every 500 ms, TUNE retried every 500 ms while not owner (only within the
-first 2.5 s), and — once owner but the relay reads back mistuned — TUNE
-retried every 500 ms indefinitely.
+never delay an RCF. The core builds a `maburgs::RemoteCard`
+(`gs/src/remote_card.{h,cpp}`, the same card class `maburgs` runs for
+`radio.relays`) over that ring (`web/src/relay_ring_transport.h`), with
+`Cfg::restart_when_refused` off. Its `RelayClient` does the same HELLO/TUNE
+dance as natively (`docs/cpe510-relay.md`): HELLO every 500 ms, TUNE
+retried every 500 ms while not owner (only within the first 2.5 s), and —
+once owner but the relay reads back mistuned — TUNE retried every 500 ms
+indefinitely. **Both modes own the relay** (one relay, one client — spec
+2026-10-04 §1): Connect waits for `RemoteCard::health()` to read `Owned`
+before the session starts, in GS mode and in Spotter mode alike.
+
+**Search-only scout on the relay.** With no USB card, the core's boot
+scout runs on the relay with search bursts only (spec §3.7): DISC goes out
+on each member in turn, but the CPE has no energy reads, so no member is
+ever ranked and the stats' `scan_state` reads `off`. Auto on a relay means
+"start member plus search".
 
 **Errors** (core `ERROR` line → page text, `errorText()` in
-`web/ui/src/lib/logic.mjs`):
+`web/ui/src/lib/logic.mjs`), driven by `RemoteCard::health()` — the same
+five texts as before, in both modes:
 
 - `relay unreachable` — no `STATUS` within 2 s → *"CPE relay not reachable
   — check the Ethernet cable and the relay address, then press Connect."*
-- `relay owned by another client` — GS mode, still not owner 2.5 s after
-  connecting → *"CPE relay is owned by another client (maburgs or another
+- `relay owned by another client` — still not owner 2.5 s after
+  connecting (a spotter too, since both modes own the relay) → *"CPE relay is owned by another client (maburgs or another
   tab). Stop it, wait 2 s, then press Connect."*
 - `relay cannot tune` — owner, but the relay isn't on our channel/width
   2.5 s after connecting (e.g. a regdomain that refuses the channel) →
@@ -317,7 +423,7 @@ retried every 500 ms indefinitely.
 - `relay lost` — `STATUS` stopped arriving, or the socket closed, after a
   successful connect → *"CPE relay connection lost. Press Connect to
   restart."*
-- `relay taken by another client` — GS mode, after owning the relay
+- `relay taken by another client` — after owning the relay
   (`owned_and_tuned()` true at least once): a `STATUS` says `you_own == 0`
   and keeps saying so for >= 1 s straight (e.g. a UDP subscriber — native
   `webgs --relay`, a running `maburgs` with `radio.relays` — takes ownership away; the relay
@@ -326,12 +432,12 @@ retried every 500 ms indefinitely.
   from `relay owned by another client`, which fires before ownership was
   ever won.
 
-**Spotter vs. GS mode.** A spotter never needs ownership to receive — it
-proceeds on relay video as soon as ANY `STATUS` arrives, tuned or not
-(`RelayLink::Ready::Listening`; `!c_.have_status()` is the only gate). GS
-mode needs ownership (`Owned`) before it can send RCFs and DISC, so
-`relay owned by another client` (and its mid-session sibling,
-`relay taken by another client`) only fire in GS mode.
+**One owner, both modes.** A spotter no longer listens on a relay it does
+not own: the page is one client of the relay whichever mode it runs, so a
+spotter needs ownership exactly as GS mode does, and `relay owned by
+another client` / `relay taken by another client` fire for it too. A
+spotter next to a `maburgs` that already holds the relay cannot share it —
+give the spotter a USB card instead.
 
 **Relay stats group** (Stats tab, shown only when `radio: 'relay'`):
 channel/width (or "retuning" when `relay_state == 1`, mid-TUNE), owner
@@ -341,7 +447,9 @@ disagree, e.g. right after another client takes ownership), frames, seq
 gaps, ring drops rx/tx (the `SharedArrayBuffer` ring, not the relay
 itself), TX / fail / refused (mirrors the relay's own `STATUS`
 counters), and your drops (the relay's own `your_drops` — frames it had
-to drop for this client specifically, e.g. a full send queue). The USB-only
+to drop for this client specifically, e.g. a full send queue). The keys
+are unchanged (`relay_you_own`, …); the ring drops now come from
+`RemoteCard::relay_stats()`. The USB-only
 rows elsewhere on the Debug tab (usb latency, txfail) are hidden for the
 relay radio — they have no relay equivalent. The general stats line also
 carries `radio: "usb"|"relay"` so log/replay tooling can tell which path a
@@ -349,7 +457,7 @@ session used.
 
 **Native bench equivalent:** `webgs live --relay host:port` (default UDP
 port **8310**, not the browser's WebSocket 8311) runs the same
-`RelayLink`/`RelayClient` core as a CLI, used for the A/B bench numbers in
+`RemoteCard` over UDP as a CLI, used for the A/B bench numbers in
 `docs/cpe510-relay.md`'s TX mode section.
 
 This page's ladder starts from whatever `web/CMakeLists.txt` embeds into the
@@ -360,15 +468,16 @@ overrides it per session. A GS box on the same drone may run a different
 (e.g. mcs-wider or narrower) ladder; don't read this page's rung numbers as
 if they were that GS's unless the form was left at its defaults.
 
-**Connect/Disconnect are in-page** — no reload to change mode, channel,
+**Connect/Disconnect are in-page** — no reload to change mode, channel set,
 width or (GS mode) the ladder, and no reload between flights.
 `Session` (`web/ui/src/lib/session.js`) drives a small state machine
 (`idle → connecting → live → stopping → idle`, plus `error`): Connect
 requests the device, builds a **fresh** WASM module every time (never
-reused across connects) with `--mode`/`--ch`/`--w` and, in GS mode always
-(even when the form matches the embedded default), `--overlay
+reused across connects) with `--mode`/`--ch`/`--w` and, in both modes
+always (even when the form matches the embedded default), `--overlay
 /overlay.toml` (the form's overlay TOML written into the module's virtual
-FS before `main()` runs).
+FS before `main()` runs; a spotter's carries `[radio]` plus a minimal
+one-rung `[link]` at the page width).
 Disconnect calls the exported `webgs_stop()`, which sets an atomic the core
 loop polls; the core tears down cleanly and returns from `main()`, and
 `-sEXIT_RUNTIME` fires `Module.onExit()`, which the page treats as the
@@ -382,12 +491,13 @@ below) before the stop request goes out.
 WebUSB has no transfer cancel (libusb's emscripten backend `cancel` is a
 no-op), so on a quiet channel — drone off, nothing on air — the RX loop's
 pending `transferIn` calls would never complete and the core could not
-exit. The teardown waits 300 ms for the RX loop to end on its own; if it
-hasn't, it releases interface 0, which makes Chrome abort those reads
-(they surface in the console as `NetworkError: ... A transfer error has
-occurred`), joins the RX thread, re-claims the interface for the chip's
-power-down writes, and continues. The core prints one line per stop:
-`teardown: rx <ms> [(reads aborted)], chip stop <ms>, close <ms>`. A stop
+exit. The dance lives in `RadioFrontend::stop()` under `__EMSCRIPTEN__`
+(`gs/src/radio_frontend.cpp`): it waits 300 ms for the RX loop to end on
+its own; if it hasn't, it releases interface 0, which makes Chrome abort
+those reads (they surface in the console as `NetworkError: ... A transfer
+error has occurred`), joins the RX thread, re-claims the interface for the
+chip's power-down writes, and continues. It prints one line per stop, on
+stderr: `maburgs radio card 0: teardown rx <ms> [(reads aborted)]`. A stop
 requested while the card is still initialising (~5 s after Connect) takes
 effect only once init finishes.
 
@@ -395,7 +505,8 @@ The browser's own device
 chooser asks for the card — an RTL8812EU (Jaguar3), an RTL8812AU
 (Jaguar1), or a TP-Link RTL8821AU (Jaguar1 1T1R: Archer T2U Plus
 2357:0120, plus 011e/0122 — the chooser filters on vendors 0bda and 2357,
-the core on exact VID:PID in `web_main.cpp` `kCards`); the WASM core builds both devourer drivers (WebUSB's per-origin
+the core on exact VID:PID — `web_main.cpp`'s `kCards`, handed to
+`RadioFrontend::Cfg::ids`); the WASM core builds both devourer drivers (WebUSB's per-origin
 device grant — pick it once and later `getDevices()` calls see it without asking again on the same
 origin).
 
@@ -482,22 +593,28 @@ first link a self-linking GS's own link-up already produces a key frame
 roughly a second after DISC_ACK (linking a previously-unlinked drone
 changes its bitrate, max-range floor → rung, and that `SetChnAttr` costs
 an IDR on its own), and any later drop is covered by the request path
-above.
+above. The same applies after a follower move (a sweep find or a followed
+hop): the spotter waits for the drone's next unsolicited IDR on the new
+channel — a followed hop usually gets one soon, since the drone's retune
+and the GS's post-hop rung change both cost an IDR, but nothing on the
+spotter can ask for it.
 
 ## Config form
 
 The Config tab (`web/ui/src/components/ConfigPanel.svelte`, and
-`ConfigSide.svelte` for the immersive/mobile layout) edits channel and width
-in both modes, plus — GS mode only — Fixed MCS (`static_mcs`, −1 =
-adaptive) and the ladder rungs (mcs/bw/FEC overhead per rung, add/
+`ConfigSide.svelte` for the immersive/mobile layout) edits the channel set,
+the link channel and width in both modes (see "Channel set" under Use),
+plus — GS mode only — Fixed MCS (`static_mcs`, −1 = adaptive) and the
+ladder rungs (mcs/bw/FEC overhead per rung, add/
 remove up to 8, drag the ⋮⋮ handle — or focus it and use ↑/↓ — to reorder;
 `applyRungEdit(cfg, from, '__move', to)`). `web/ui/src/lib/config.js` normalizes and persists the
 form to `localStorage` under `webgs.cfg` (per-field fallback to the bundle
 default, so a stale or hand-edited entry can never break the page), and
-`?ch=`/`?w=` query params override the saved channel/width on load the same
-way `?mode=` overrides the saved mode. On Connect, the GS-mode form (always, even
-when it matches the embedded default) is serialized to TOML
-(`toOverlayToml()`: `[link] static_mcs/static_bw/max_mcs` plus one
+`?chs=`/`?ch=`/`?w=` query params override the saved set, link channel and
+width on load the same way `?mode=` overrides the saved mode. On Connect,
+the form (always, even when it matches the embedded default) is serialized
+to TOML (`toOverlayToml()`: `[radio] channels/channel/width` in both modes, and
+in GS mode `[link] static_mcs/static_bw/max_mcs` plus one
 `[[link.ladder]]` block per rung, `static_bw` carrying the form's width,
 `max_mcs` always 7 — the form has no Max MCS since 2026-09-29, the ladder
 as listed is the whole policy) and
@@ -516,8 +633,10 @@ page-side (channel/width, FEC overhead range 0.1–2.0, enh ≤ base, no 40 MHz 
 form is refused before Connect ever starts the device request, and a
 per-field warning (`rungWarnings()`/`channelWarning()`) flags a 40 MHz rung
 under a 20 MHz width, enh above base, or a channel with no HT40 pair without blocking the rest of
-the form. Spotter mode sends no overlay — it only listens, so only channel/
-width apply.
+the form. Spotter mode's overlay carries `[radio]` plus a fixed minimal
+`[link]` (`static_bw` and one MCS 0 rung at the page width, so the loader's
+ladder-vs-width check passes at 20 MHz) — it only listens, so only the
+channel set, link channel and width apply.
 
 ## Record
 
@@ -626,7 +745,7 @@ as JSON. Segments (spec §4):
 | Segment | What it measures | Mode |
 |---|---|---|
 | Control RTT (EWMA / min) | `RttEstimator`: RCF seq echoed back in `Telem`, clock-sync-free | GS |
-| USB lateness p99/max | host arrival time − chip TSF, above the window's own minimum (`UsbLate` in `web_main.cpp`) | both |
+| USB lateness p99/max | host arrival time − chip TSF, above the window's own minimum (`UsbLate`, `gs/src/usb_late.h`, read by `web_main.cpp`) | both |
 | FEC/assembly | first body seen for the AU → AU complete, both timestamps on the core clock (`AuLatMeta`, `gs/src/frame_stream.cpp`) | both |
 | Hand-off | AU complete (core/worker thread) → page receives it, both sides aligned to `performance.timeOrigin` | both |
 | Decode | `VideoDecoder` chunk submit → decoded output callback | both |
@@ -727,11 +846,29 @@ rule).
 - **CPE relay: one owner at a time.** The relay itself enforces this, not
   the page — a `maburgs`/native `webgs` already running against the relay
   (or another tab) holds ownership, and this page reports `relay owned by
-  another client` rather than fighting for it. Same one-commander rule as
+  another client` rather than fighting for it, in Spotter mode as well as
+  GS mode. Same one-commander rule as
   two GS-mode pages against a USB-connected drone, below.
-- **CPE relay: no scout/energy reads.** The CPE has no FA/CCA/NHM
-  instrumentation (`docs/cpe510-relay.md`), and relay mode is a fixed
-  channel anyway — there is nothing to scout for.
+- **CPE relay: search only.** The CPE has no FA/CCA/NHM reads, so on the
+  relay the core searches the set for the drone but never ranks members
+  (`scan_state` reads `off`); auto on a relay means 'start member plus
+  search'. Each TUNE silently costs 50 ms of beaconing: the scout offers
+  no DISC until the relay reports tuned (a CPE TUNE answers `retuning`
+  after ~7 ms and `tuned` after 50 ms, flat over 30 retunes, measured
+  2026-10-04), so a 100 ms search burst on a non-op member sends 2–3
+  DISCs instead of 5. Measured against a USB card on the same search-only
+  schedule (pinned, 4 ms FastRetune): 48.8 vs 56.0 DISCs per round at the
+  same 0.7 rounds/s, 13 % fewer; nothing is dropped (`relay_tx_fail` and
+  `relay_tx_refused` stay 0). Kept as built (spec §3.7's "wait for
+  `ready()`" was not implemented): finding still works, and the wait
+  would cost ~100 ms per round.
+- **Spotter follows the link only by listening.** It needs ~0.15 s per
+  member on a USB card (about 0.2 s per member on the CPE relay: a
+  50 ms TUNE plus the dwell, so up to ~1.6 s for 8 members) to find the
+  link at start (worst case the whole set) and up to
+  2 s to give up on a followed order that never showed; it cannot ask the
+  GS where the link is, and it does not verify the hop order it follows
+  ("Spotter follower").
 - **macOS: Chrome needs the system Local Network permission** (System
   Settings → Privacy & Security → Local Network) to reach any LAN address,
   the CPE's 10.83.11.1 included — on top of Chrome's own prompt.
@@ -807,8 +944,8 @@ The ladder's per-tick input is `LinkHealthAssembler`
 same way — the point being that the web GS's ladder behaves exactly like
 `maburgs`'s, not merely similarly. `maburgs` still owns log writing (ctl/
 fec/probe logs, the sideport) and everything the assembler does not need to
-decide the ladder itself: hop verdict, scan/hop/scout, TX selector, cal
-radio silence. `web/src/web_gs.h`'s `WebGs` composes the assembler with the
+decide the ladder itself: TX selector, cal radio silence (scan/hop/scout
+and the hop verdict are the shared `ChannelCore`, below). `web/src/web_gs.h`'s `WebGs` composes the assembler with the
 same `Aggregator`, `FrameStream`, `VrxController`, `RcfSlotter` and
 `RttEstimator` maburgs uses, just with one card and no devourer types
 reaching the core (`web/CMakeLists.txt`'s `webgs_core` links only the
@@ -816,20 +953,32 @@ receive + control subset of `mabur_common` — never `fec_worker` /
 `sw_encoder` / `uep_encoder`, which call `pthread_setaffinity_np` and do not
 build under Emscripten). The dot11 frame-building/parsing pure functions
 (`build_control_frame`, foreign-SA drop, CRC-fail pass-through) live in
-`gs/src/dot11.{h,cpp}`, shared with `RadioFrontend` the same way.
-`web/src/web_main.cpp` is the glue: libusb (WebUSB backend under
-Emscripten, native libusb1 on the host) for the card, a devourer RX loop
-into a `BodyQueue`, and the core loop driving `WebGs`; it builds as a
+`gs/src/dot11.{h,cpp}`, shared with `RadioFrontend` the same way. In GS mode
+`WebGs` also runs `maburgs::ChannelCore` (`gs/src/channel_core.h`) over the
+card roster: the send gate, link-where-found, the boot scout, the
+relocation and the one-card hop, the same object `maburgs` drives.
+`web/src/web_main.cpp` is the glue: it builds a card roster of `maburgs`'s
+own card classes — a `maburgs::RadioFrontend` (`gs/src/radio_frontend.{h,cpp}`;
+libusb with the WebUSB backend under Emscripten, native libusb1 on the
+host; its RX thread feeds a `BodyQueue`) or a `maburgs::RemoteCard` for the
+CPE relay — and the core loop driving `WebGs` over it; it builds as a
 native CLI (`webgs live`/`webgs replay`, used for bench A/B against the
 browser and for the parity gates) and, under `emcmake`, as the page's WASM
 module.
 
-**CPE relay radio.** `webgs::RelayLink` (`web/src/relay_link.{h,cpp}`) is
-the radio-source alternative to the WebUSB path: it wraps `RelayClient`
-(the shared, protocol-agnostic `gs/src` core, also used by the native
-`webgs --relay` CLI) with a `RelayTransport` and its own RX thread, feeding
-the same `BodyQueue` the USB path drains — `WebGs` doesn't know which radio
-fed it. Native builds get `RelayTransport` over UDP directly; under
+FastRetune between HT40 members over WebUSB: median 3.75 ms, p95 ≈ 4.1 ms,
+worst seen ≈ 12.6 ms (native 3.75 / 3.76 / 11.5); width change 40→20 ≈
+55 ms, 20→40 ≈ 71 ms; a full scout dwell ≈ 300 ms (spike 2026-10-04,
+`docs/superpowers/specs/2026-10-04-web-gs-channel-core-design.md` §8).
+
+**CPE relay radio.** `maburgs::RemoteCard` (`gs/src/remote_card.{h,cpp}`) is
+the radio-source alternative to the WebUSB path — the same card class
+`maburgs` runs for `radio.relays`: it wraps `RelayClient` (the shared,
+protocol-agnostic `gs/src` core) with a `RelayTransport` and its own RX
+thread, feeding the same `BodyQueue` the USB path drains — `WebGs` doesn't
+know which radio fed it. The page sets `Cfg::restart_when_refused` false
+(one relay, one client: a refusal is reported, not retried) and both modes
+wait for ownership. Native builds get `RelayTransport` over UDP directly; under
 Emscripten it's `web/src/relay_ring.h`'s SPSC byte ring instead, because a
 WASM pthread can't own a browser WebSocket — the actual socket lives in the
 page's dedicated `relay_worker.js` Worker, and the ring (with its JS twin
@@ -882,7 +1031,9 @@ bench drone on ch136 HT40, GS box off for GS mode):
 
 - **Connect → Disconnect → Connect ×10** (GS mode, drone on): 10/10, no
   reload fallback; Disconnect ~200 ms (`teardown: rx 10–20 ms, chip stop
-  45–100 ms`), relink ~6.2 s (dominated by the card's ~5 s init), video
+  45–100 ms` — the stdout teardown line of that build; it is now stderr
+  `maburgs radio card 0: teardown rx <ms> [(reads aborted)]`, see
+  Connect/Disconnect under Use), relink ~6.2 s (dominated by the card's ~5 s init), video
   back at once (link-up IDR).
 - **Disconnect with the drone powered off**: before the interface-release
   abort (above) the core never exited and the 3 s reload fallback fired
@@ -947,6 +1098,70 @@ the human runs it on the bench card and drone.
   construction of those fixtures — see the script's own comments); the
   clean and 10 %-drop long runs each recorded a matching ~1.4–2.0 MB mp4
   on both sides.
+
+### Channel set, relocation, one-card hop — bench 2026-10-04 (plan 2)
+
+Branch `web-gs-core` (the card stack + `ChannelCore` in GS mode). Bench
+drone on the desk, host RTL8812EU (0bda:a81a) as the page's card, headless
+Chrome 147 driven over CDP against `python3 web/serve.py 8808`, the real
+link key loaded into the page (`webgs.key`). `maburgs` on the GS was
+stopped for the page runs (one commander). The GS itself first ran the
+branch's `maburgs` (the `ChannelCore` papercuts of this plan) as the
+standing regression gate.
+
+| row | result |
+|---|---|
+| maburgs regression (branch `maburgs` on the GS, drone remembering 144) | PASS — `set [40,64,112,144] mode auto start 144 (remembered)`, `pick frozen on 144 (commit) after 3 rounds`; ausniff 60 s: 1815 AUs, 0 frame_id gaps, 0 incomplete, 30.3 fps |
+| web GS, USB, auto, start 40, drone parked on 112 (A: page still on the default key) | drone found on 112 but **Key mismatch** (the drone rejects the default key, as designed); the pick froze on 40 at `max_ms` after 6 rounds; the header walked the scout dwells (`CH 112 · 40 MHz · scanning`, …); Disconnect: `teardown rx 304 ms (reads aborted)`, `DONE` |
+| same, B: real key loaded | **PASS** — card up 6.8 s after Connect; `one-card prelude ranking picks 64 (op 40)` +10.2 s, `CHANNEL 64`, `commit card -1 40 -> 64`; `drone found on 112 (op 64): the link forms there` +14.2 s, `CHANNEL 112`, `link_found`, `pick frozen on 64 (one-card linked) after 2 rounds`, `relocate 112 -> 64 placed`, `one_card_retune` +238 ms, `lead_confirm` +253 ms, `hop_follow`, `CHANNEL 64`, `verify_pass` +1002 ms; header `Linked · CH 64 · 40 MHz · hop` then `CH 64 · 40 MHz`; drone log `retune 112 -> 64 (hop)`, drone `/etc/mabur.channel` 64; `localStorage.webgs.channel` 64 at the end. The same K/M/H order as `maburgs` row 5 (`docs/channel-select.md`) |
+| Disconnect while scouting, Connect again in the same tab | **PASS** — Disconnect 8 s into the scan: `teardown rx 20 ms`, `DONE`, header `Disconnected` within 2 s, no reload fallback; Connect again: `webgs live: mode gs ch 64` (the remembered member), prelude picked 112 this time (`commit 64 -> 112`), `drone found on 64 (op 112)`, relocate 64 → 112, `one_card_retune` +211 ms, `lead_confirm` +238 ms, `verify_pass` +1002 ms, `CHANNEL 112`; the drone followed. Note: two consecutive auto sessions picked 64 then 112 and moved the drone each time — the co-located bench's ranker noise (`docs/channel-select.md` rows 6/7), not a page defect |
+| reactive hop against the bench jammer (page pinned on 144, drone on 144; jam = devourer `txdemo` cross-built for arm64 and run on the GS box's spare card 2-1.4 because the host's only Realtek card is the page's radio: QoS-Data 1000 B at 6M, 4 ms interval, SA `02:4a:41:4d:00:01`, `DEVOURER_TX_PKT_OFSET=0`, 40 s) | **PASS** — link at +6.7 s after Connect; jam from +60 s; at +68.5 s `hold_exhausted`/`hold_end` (epoch 0) then `order epoch 1 target 64`, `one_card_retune` +243 ms, `hop_one_card 144 -> 64`, `lead_confirm` +262 ms, `hop_follow`, `CHANNEL 64`, `verify_pass` +1003 ms; header `Linked · CH 64 · 40 MHz`; the Radio group's residual read 11.7 % at the order and 0.00 % again within ~5 s, and stayed 0.00 % for the remaining 80 s with the jam still running on 144; drone log `retune 144 -> 64 (hop)`, drone `/etc/mabur.channel` 64. One-card hop timings match `maburgs`'s 2026-10-04 one-card row (+216/+235 ms). The `txdemo` arm64 build only resolves its include dirs when the cross `g++` wrapper runs inside a `nix-shell`; bare it silently fails to find `libusb.h` (environmental, not reproduced to a cause) |
+| relay GS, search-only scout (CPE at 10.83.11.1 over the host USB NIC, set `{40, 64, 112}` — no 144 — auto, start 40; drone moved onto 112 ~40 s after Connect) | **PASS** — `maburgs relay card 0 (10.83.11.1:8311): owned and tuned` at once; `scan off` throughout (the relay search-only path, spec §3.7) with the header walking the search bursts (`CH 40`/`CH 64`/…) and `scan_rounds` climbing ~0.7/s; `drone found on 112 (op 40): the link forms there` +59 s, `CHANNEL 112`, `link_found card -1 40 -> 112`; `Linked · CH 112 · 40 MHz`, pre-FEC 0.0 %, residual 0.00 %, linked for the remaining 120 s. Seen: the relay card's state line flaps `waiting for STATUS` ↔ `owned and tuned` on every search-burst TUNE (`RemoteCard::log_transition` logs each flip; noise, not a fault) |
+| relay spotter | NOT RUN — the spotter follower is plan 3; a relay spotter in this build only sits on its start member. Host-side coverage of the relay path: `web_relay_e2e` (12 cases: owned/refused/tune-failed/lost/taken early and late, spotter refused when not owner, `scan_state` `off`, 20 MHz sets) |
+
+Seen but not fixed: `RadioFrontend::stop()` prints a second
+`teardown rx 0 ms` line when the destructor runs after an explicit `stop()`
+(cosmetic). The page's AU/gap counters were not captured by the driver in
+these runs (the Debug tab was read before it re-rendered); the `Linked`
+tag, the drone's `retune` line and the `verify_pass` (which needs video on
+the target) stand in for them.
+
+### Spotter follower — bench 2026-10-04 (plan 3)
+
+Branch `spotter-follow` (fffd1db) page, served from `web/dist` and driven
+headless (Chrome 147 over CDP, the WebUSB-granted profile; the driver
+clicks Spotter + the radio, writes the channel set into `webgs.cfg`, and
+reads the 1 Hz STATS through a `JSON.parse` hook plus the Debug tab's
+Channel row every second). The GS ran plan 2's `maburgs` a155bf32 — **not
+redeployed by this plan** (its only GS-side changes are a log-transition
+rule and an Emscripten-only guard) — under a temporary bench config: one
+card (`[[radio.cards]] index = 0`, which came up on usb 2-1.4, leaving
+2-1.1 for the jammer) and `channels = [40, 64, 112]` (no 144: the page
+still carried its stale "CPE cannot tune 144" refusal, removed the same
+night), remembered 64; the drone's `/etc/mabur.channel`
+was set to 64 for the bench. Both configs were restored afterwards (GS
+`[40,64,112,144]` two-card auto, drone 144). Jam = plan 2's recipe
+(`txdemo` on the GS's free card: QoS-Data 1000 B at 6M, 4 ms interval,
+non-canonical SA, `DEVOURER_TX_PKT_OFSET=0`, 40 s). STATS are 1 Hz, so
+every "within a second" below is that resolution.
+
+| row | result |
+|---|---|
+| A — USB spotter opened mid-flight (link on 64, spotter set `[40,64,112]`, remembered channel cleared, so it starts on 40) | **PASS** — `webgs live: mode spotter ch 40` at +1.0 s after Connect; card up +5.3 s later (the usual ~5 s init); the first STATS, one second after that, already read `locked` on 64 (`follows 0`): the 150 ms dwell on 40, one FastRetune and the lock on the first frame all fit inside the first STATS interval. Header `CH 40 · 40 MHz` from module start (the start member, not the form's `auto`), then `CH 64 · 40 MHz`; 30 AUs/s, 0 truncated, `sends 0`, one `teardown rx 50 ms` line at Disconnect |
+| B — USB spotter follows `maburgs` hops (jam on 64 from +55 s for 40 s) | **PASS** — `maburgs`: `hold_exhausted` → `order epoch 1 target 112` → `one_card_retune` +253 ms → `lead_confirm` +294 ms, then the jam leaking onto every member at bench distance (as in plan 2 and `docs/channel-select.md` row 6) chained `verify_fail epoch 2 → 40` and `escape epoch 3 → 64` within ~3 s, a 27 s hold, `order epoch 4 → 112`, a `hold_cap` run, and `order epoch 5 → 40`. Spotter STATS: `locked 64 follows 0` → `locked 112 follows 1` → `locked 40 follows 2` → `locked 64 follows 3` in three consecutive seconds (+55.8/+57.1/+58.4 s), `locked 112 follows 4` at +86.5 s, `locked 40 follows 5` at +118.5 s — six orders, six follows, every one re-locked on the target inside the next STATS; no STATS sample ever read `following` or `sweeping`. AU rate 26–31/s throughout; truncated AUs 0 → 49 during the jam window (jam loss and the hops), flat at 49 afterwards; `sends 0`. Drone `/etc/mabur.channel` followed (40 at the end) |
+| C — CPE relay spotter follows via TUNE (CPE 10.83.11.1, link on 40, jam on 40 from +55 s) | **PASS** — `maburgs relay card 0 (10.83.11.1:8311): connecting` / `waiting for STATUS` / `owned and tuned` once at start and **never again** (the plan-2 flap on every TUNE is gone; `relay_state` read 0 in all 149 STATS samples); `locked 40` on the first STATS; `maburgs` ordered `epoch 6 → 64` (`verify_pass`) 3 s into the run on its own, then under the jam `epoch 7 → 40`, `verify_fail epoch 8 → 112`, `epoch 9 → 64`, `escape epoch 10 → 112`, `epoch 11 → 40`; the spotter's `follows` went 1…6 in step (+4 s, +55 s, +56 s, +86 s, +87 s, +117 s), each sample `locked` on the new member (the TUNE's 50 ms plus the lock fit inside one STATS interval). 30 AUs/s, 5 truncated in total, `sends 0`, relay TX 0 |
+| D — withdrawn hop / timeout return | **not provoked** — no `withdraw` line appeared in `maburgs`'s log across rows B–E (18 orders/escapes/verify_fails, every one confirmed); the bench has no fault injector for a drone that fails to follow. Covered host-side by `tests/test_spotter_follow.cpp` (`timeout_and_return`, `withdrawal_heard_on_back_returns_at_once`, `standing_order_after_timeout_return_is_ignored`) and `tests/test_web_gs.cpp` `spotter_follow_timeout_returns_the_card` |
+| E — Disconnect / Connect in spotter mode (USB) | **PASS** — Disconnect at +30 s: exactly one `teardown rx 60 ms` line (the plan-2 double line is gone), `DONE` 1.0 s after the click, header `Disconnected · CH auto`; Connect again 5 s later: `webgs live` +1.0 s, card up +4.3 s, `locked 64` on the first STATS; second Disconnect: one `teardown rx 80 ms`, `DONE`. In the first session the spotter also followed an unprovoked `maburgs` hop 40 → 64 at +25 s (`follows 1`) |
+
+Seen, not a page defect: `maburgs` hopped twice without a jammer (row C
++3 s, row E +25 s) and chained `verify_fail` hops under the jam — the
+one-card verdict on the co-located bench, `docs/inflight-channel-hop.md`,
+not the spotter. With the drone off, a spotter reads `locked` on
+whichever member the GS is beaconing on (the DISC search bursts are mabur
+traffic; see "Spotter follower"). The `localStorage` `webgs.channel` is
+never written in spotter mode (no `CHANNEL` line without a `ChannelCore`),
+so a spotter always starts on the pin or the first member and sweeps —
+one dwell per member, which row A shows costs well under a second.
 
 ## Follow-ups
 

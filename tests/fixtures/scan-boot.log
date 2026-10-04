@@ -1,0 +1,9 @@
+scanlog 5 channels=40,64,112,144 mode=auto dwell_ms=250 min_rounds=3 cards=2
+V 9000 healthy 00 - 0.0 0 0 0 0 0 0 -58.0 30.0 0.0 - 0.0 1 0 0 0 0 -59.0 29.0 0.0 - 0.0
+H 10000 relocate 1 144 0 0
+M 10000 1 40 144 hop_lead
+H 10420 lead_confirm 1 144 0 420
+M 10420 all 40 144 hop_follow
+V 10600 healthy 00 - 0.0 0 0 0 0 0 0 -58.0 30.0 0.0 - 0.0 1 0 0 0 0 -59.0 29.0 0.0 - 0.0
+H 11420 verify_pass 1 144 0 1000
+K 11420 144 3 36:2:nan:- 40:3:nan:- 60:1:nan:- 64:1:nan:- 108:0:nan:- 112:0:nan:- 140:0:nan:- 144:0:nan:- pair=140+144

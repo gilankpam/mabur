@@ -1,10 +1,12 @@
 // WebGs (web/src/web_gs.h): the web GS core. Pins spotter silence, the Gs
 // rendezvous/RCF cadence, and the wiring into the shared units.
 #include <algorithm>
-#include <cstdio>
+#include <memory>
 #include <stdexcept>
 
 #include "body_gen.h"
+#include "channel_core.h"
+#include "fake_link_card.h"
 #include "mtest.h"
 #include "web_gs.h"
 #include "mabur/msp_dp.h"
@@ -28,12 +30,13 @@ uint64_t feed(WebGs& g, int n_aus, uint64_t t0_us, int drop_every = 0) {
   }
   return t;
 }
-mabur::node::RxBody rc_body(std::vector<uint8_t> wire, uint64_t mono_us) {
+mabur::node::RxBody rc_body(std::vector<uint8_t> wire, uint64_t mono_us, uint8_t rx_ch = 0) {
   mabur::node::RxBody m;
   m.card_id = 0;
   m.mono_us = mono_us;
   m.crc_ok = true;
   m.phy_valid = true;
+  m.rx_channel = rx_ch;
   m.body = std::move(wire);
   return m;
 }
@@ -89,7 +92,7 @@ TEST(spotter_never_sends_over_lossy_replay) {
   io.on_au = [&](Au&&) { ++aus; };
   bool called = false;
   io.send = [&](const std::vector<uint8_t>&) { called = true; };
-  WebGs g(cfg(), Mode::Spotter, 136, 40, io);
+  WebGs g(cfg(), Mode::Spotter, 136, 40, {}, 0, io);
   CHECK(g.vrx() == nullptr);
   uint64_t t = 0;
   for (auto& b : gen_bodies(/*aus=*/600, /*dt_ms=*/16.0, /*drop_every=*/7)) {
@@ -112,7 +115,7 @@ TEST(spotter_loss_row_reads_real_loss) {
   auto run = [](int drop_every) {
     Io io;
     io.on_au = [](Au&&) {};
-    WebGs g(cfg(), Mode::Spotter, 136, 40, io);
+    WebGs g(cfg(), Mode::Spotter, 136, 40, {}, 0, io);
     uint64_t t = 0;
     for (auto& b : gen_bodies(/*aus=*/600, /*dt_ms=*/16.0, drop_every)) {
       b.mcs = 4;
@@ -142,7 +145,7 @@ TEST(gs_beacons_then_rcf_after_ack) {
   io.on_au = [](Au&&) {};
   io.send = [&](const std::vector<uint8_t>& b) { sent.push_back(b); };
   auto c = cfg();
-  WebGs g(c, Mode::Gs, 136, 40, io);
+  WebGs g(c, Mode::Gs, 136, 40, {}, 0, io);
   uint64_t t = 1'000'000;
   for (int i = 0; i < 50; ++i) g.tick(t += 10000);    // 500 ms, no drone
   REQUIRE(!sent.empty());
@@ -175,7 +178,7 @@ TEST(probe_expectation_wired_from_frame_stream) {
   Io io;
   io.on_au = [](Au&&) {};
   io.send = [](const std::vector<uint8_t>&) {};
-  WebGs g(cfg(), Mode::Gs, 136, 40, io);
+  WebGs g(cfg(), Mode::Gs, 136, 40, {}, 0, io);
   uint64_t t = 1'000'000;
   g.inject_disc_ack_for_replay(t);
   for (auto& b : gen_bodies(300, 16.0, 0)) { b.mono_us += t; g.on_rx(b); g.tick(b.mono_us); }
@@ -201,7 +204,7 @@ TEST(no_cap_without_offset) {
   io.send = [](const std::vector<uint8_t>&) {};
   int n = 0;
   io.on_au = [&](Au&& a) { ++n; last = std::move(a); };
-  WebGs g(cfg(), Mode::Gs, 136, 40, io);
+  WebGs g(cfg(), Mode::Gs, 136, 40, {}, 0, io);
   uint64_t t = 1'000'000;
   g.inject_disc_ack_for_replay(t);
   g.tick(t);
@@ -236,7 +239,7 @@ TEST(cap_to_complete_from_telem_offset) {
       last_sent_us = static_cast<uint64_t>(now_ms) * 1000;
     }
   };
-  WebGs g(cfg(), Mode::Gs, 136, 40, io);
+  WebGs g(cfg(), Mode::Gs, 136, 40, {}, 0, io);
   // One drone run: 90 AUs, the Telem lands after AU 59. The drone's pts is
   // gen's 0-based t_ms, so pts = mono - t0: offset = -t0 (mod 2^32).
   const uint64_t t0 = 1'000'000;
@@ -292,7 +295,7 @@ TEST(gs_no_video_before_ack) {
   Io io;
   io.on_au = [&](Au&&) { ++n; };
   io.send = [](const std::vector<uint8_t>&) {};
-  WebGs g(cfg(), Mode::Gs, 136, 40, io);
+  WebGs g(cfg(), Mode::Gs, 136, 40, {}, 0, io);
   uint64_t t = feed(g, 60, 1'000'000);
   CHECK(n == 0);
   g.inject_disc_ack_for_replay(t);
@@ -306,7 +309,7 @@ TEST(gs_session_loss_then_reack_resets_and_flows) {
   Io io;
   io.on_au = [&](Au&&) { ++n; };
   io.send = [](const std::vector<uint8_t>&) {};
-  WebGs g(cfg(), Mode::Gs, 136, 40, io);
+  WebGs g(cfg(), Mode::Gs, 136, 40, {}, 0, io);
   uint64_t t = 1'000'000;
   g.inject_disc_ack_for_replay(t);
   g.tick(t);
@@ -343,7 +346,7 @@ TEST(vtx_rec_wish_reaches_rcf_byte) {
     if (sent && mabur::rc::frame_type(sent->data(), sent->size()) == mabur::rc::T_RCF)
       last = *sent;
   };
-  WebGs g(cfg(), Mode::Gs, 136, 40, io);
+  WebGs g(cfg(), Mode::Gs, 136, 40, {}, 0, io);
   const uint64_t t0 = 1'000'000;
   g.inject_disc_ack_for_replay(t0);
   g.tick(t0);
@@ -367,7 +370,7 @@ TEST(vtx_rec_wish_reaches_rcf_byte) {
 TEST(vtx_rec_wish_is_noop_in_spotter) {
   Io io;
   io.on_au = [](Au&&) {};
-  WebGs g(cfg(), Mode::Spotter, 136, 40, io);
+  WebGs g(cfg(), Mode::Spotter, 136, 40, {}, 0, io);
   g.set_vtx_rec(true);   // must not crash; there is no send path
   CHECK(g.vrx() == nullptr);
   CHECK(g.sends() == 0);
@@ -383,7 +386,7 @@ TEST(idr_requests_reach_rcf_epoch_byte) {
     if (sent && mabur::rc::frame_type(sent->data(), sent->size()) == mabur::rc::T_RCF)
       last = *sent;
   };
-  WebGs g(cfg(), Mode::Gs, 136, 40, io);
+  WebGs g(cfg(), Mode::Gs, 136, 40, {}, 0, io);
   const uint64_t t0 = 1'000'000;
   g.inject_disc_ack_for_replay(t0);
   g.tick(t0);
@@ -407,7 +410,7 @@ TEST(idr_requests_reach_rcf_epoch_byte) {
 TEST(idr_requests_are_noop_in_spotter) {
   Io io;
   io.on_au = [](Au&&) {};
-  WebGs g(cfg(), Mode::Spotter, 136, 40, io);
+  WebGs g(cfg(), Mode::Spotter, 136, 40, {}, 0, io);
   g.set_idr_requests(4);   // must not crash; there is no send path
   CHECK(g.vrx() == nullptr);
   CHECK(g.sends() == 0);
@@ -419,7 +422,7 @@ TEST(idr_requests_are_noop_in_spotter) {
 TEST(spotter_op_is_configured_width_no_mcs) {
   Io io;
   io.on_au = [](Au&&) {};
-  WebGs g(cfg(), Mode::Spotter, 136, 40, io);
+  WebGs g(cfg(), Mode::Spotter, 136, 40, {}, 0, io);
   g.tick(1'000'000);
   CHECK(g.stats().bw == 40);
   CHECK(g.stats().mcs == -1);
@@ -430,7 +433,7 @@ TEST(spotter_op_is_configured_width_no_mcs) {
   CHECK(g.stats().bw == 40);
   CHECK(g.stats().mcs == -1);
   CHECK(stats_json(g.stats()).find("drone_idr_gs") == std::string::npos);
-  WebGs g20(cfg(), Mode::Spotter, 136, 20, io);
+  WebGs g20(cfg(), Mode::Spotter, 136, 20, {}, 0, io);
   CHECK(g20.stats().bw == 20);
 }
 
@@ -442,7 +445,7 @@ TEST(spotter_op_is_configured_width_no_mcs) {
 TEST(spotter_mcs_is_base_stream_rx_mcs) {
   Io io;
   io.on_au = [](Au&&) {};
-  WebGs g(cfg(), Mode::Spotter, 136, 40, io);
+  WebGs g(cfg(), Mode::Spotter, 136, 40, {}, 0, io);
   CHECK(g.stats().mcs == -1);                          // nothing heard yet
   uint64_t t = 1'000'000;
   for (auto b : gen_bodies(20, 16.0, 0)) {
@@ -470,7 +473,7 @@ TEST(spotter_mcs_is_base_stream_rx_mcs) {
 TEST(drone_temp_from_telem_in_stats_json) {
   Io io;
   io.on_au = [](Au&&) {};
-  WebGs g(cfg(), Mode::Spotter, 136, 40, io);
+  WebGs g(cfg(), Mode::Spotter, 136, 40, {}, 0, io);
   CHECK(stats_json(g.stats()).find("\"drone_temp_c\":null") != std::string::npos);
   mabur::rc::Telem t;
   t.tlm_seq = 1;   // soc_temp_c defaults to -128 = unavailable
@@ -487,7 +490,7 @@ TEST(drone_temp_from_telem_in_stats_json) {
 TEST(rec_status_from_telem_in_stats_json) {
   Io io;
   io.on_au = [](Au&&) {};
-  WebGs g(cfg(), Mode::Spotter, 136, 40, io);
+  WebGs g(cfg(), Mode::Spotter, 136, 40, {}, 0, io);
   CHECK(!g.stats().rec_status.has_value());
   CHECK(stats_json(g.stats()).find("\"rec_state\":null") != std::string::npos);
   mabur::rc::Telem t;
@@ -505,7 +508,7 @@ TEST(spotter_drone_restart_resets_and_flows) {
   int n = 0;
   Io io;
   io.on_au = [&](Au&&) { ++n; };
-  WebGs g(cfg(), Mode::Spotter, 136, 40, io);
+  WebGs g(cfg(), Mode::Spotter, 136, 40, {}, 0, io);
   uint64_t t = 1'000'000;
   g.on_rx(telem_body(5000, t));
   t = feed(g, 60, t);
@@ -526,25 +529,27 @@ TEST(gs_without_send_throws) {
   Io io;
   bool threw = false;
   try {
-    WebGs g(cfg(), Mode::Gs, 136, 40, io);
+    WebGs g(cfg(), Mode::Gs, 136, 40, {}, 0, io);
   } catch (const std::invalid_argument&) {
     threw = true;
   }
   CHECK(threw);
-  WebGs s(cfg(), Mode::Spotter, 136, 40, io);   // spotter needs no send
+  WebGs s(cfg(), Mode::Spotter, 136, 40, {}, 0, io);   // spotter needs no send
   CHECK(s.vrx() == nullptr);
 }
 
 TEST(channel_width_override_validation) {
-  const auto c = cfg();   // bundle: ch 136 / 40, ladder has 40 MHz rungs
+  auto c = cfg();   // bundle ladder has 40 MHz rungs
+  c.radio.channels = {136};   // the start channel must be a member (set checks: the test below)
   CHECK(!channel_width_error(c, Mode::Gs, 136, 40));
   CHECK(!channel_width_error(c, Mode::Spotter, 136, 40));
   CHECK(channel_width_error(c, Mode::Gs, 0, 20).has_value());
   CHECK(channel_width_error(c, Mode::Gs, 201, 20).has_value());
   CHECK(channel_width_error(c, Mode::Spotter, 136, 80).has_value());
-  auto e = channel_width_error(c, Mode::Spotter, 165, 40);   // no HT40 pair
+  c.radio.channels = {165};
+  auto e = channel_width_error(c, Mode::Spotter, 165, 40);   // no HT40 pair: the set check says so
   REQUIRE(e.has_value());
-  CHECK(e->find("radio.width") != std::string::npos && e->find("165") != std::string::npos);
+  CHECK(e->find("radio.channels") != std::string::npos && e->find("165") != std::string::npos);
   // GS commands the ladder: a 40 MHz rung while tuned 20 is refused...
   bool has40 = false;
   for (const auto& r : c.link.ladder_cfg.ladder) has40 |= r.bw == 40;
@@ -554,6 +559,18 @@ TEST(channel_width_override_validation) {
   CHECK(g->find("link.ladder[") != std::string::npos);
   // ...a spotter only listens, so 20 is fine.
   CHECK(!channel_width_error(c, Mode::Spotter, 165, 20));
+}
+
+TEST(relay_stats_fields_keeps_the_page_keys) {
+  maburgs::RelayStatsIn r;
+  r.state = 0; r.ch = 136; r.sec = 2; r.owned = true; r.frames = 1000; r.gaps = 3;
+  r.your_drops = 4; r.tx = 20; r.tx_fail = 1; r.tx_refused = 2; r.reconnects = 0;
+  r.you_own = true; r.rx_drops = 5; r.tx_drops = 6;
+  const std::string s = relay_stats_fields(r);
+  CHECK(s == ",\"radio\":\"relay\",\"relay_state\":0,\"relay_ch\":136,\"relay_sec\":2,"
+             "\"relay_owned\":1,\"relay_you_own\":1,\"relay_frames\":1000,\"relay_gaps\":3,"
+             "\"relay_rx_drops\":5,\"relay_tx_ring_drops\":6,\"relay_tx\":20,\"relay_tx_fail\":1,"
+             "\"relay_tx_refused\":2,\"relay_your_drops\":4");
 }
 
 MTEST_MAIN
@@ -638,7 +655,7 @@ TEST(spotter_msp_bodies_reach_on_osd) {
   Io io;
   io.on_au = [](Au&&) {};
   io.on_osd = collect(pubs);
-  WebGs g(cfg(), Mode::Spotter, 136, 40, io);
+  WebGs g(cfg(), Mode::Spotter, 136, 40, {}, 0, io);
   const uint64_t t = 1'000'000;
   const auto bodies = msp_bodies("HELLO", t);
   REQUIRE(!bodies.empty());
@@ -662,7 +679,7 @@ TEST(gs_mode_shows_osd_before_session) {
   io.on_au = [](Au&&) {};
   io.send = [](const std::vector<uint8_t>&) {};
   io.on_osd = collect(pubs);
-  WebGs g(cfg(), Mode::Gs, 136, 40, io);
+  WebGs g(cfg(), Mode::Gs, 136, 40, {}, 0, io);
   const uint64_t t = 1'000'000;
   for (const auto& b : msp_bodies("GS", t)) { g.on_rx(b); g.tick(t); }
   CHECK(!g.stats().peer_acked);   // no DISC_ACK yet: rendezvous starts in SESSION, so peer_acked is the gate
@@ -677,7 +694,7 @@ TEST(msp_disabled_publishes_nothing) {
   io.on_osd = collect(pubs);
   auto c = cfg();
   c.msp.enable = false;
-  WebGs g(c, Mode::Spotter, 136, 40, io);
+  WebGs g(c, Mode::Spotter, 136, 40, {}, 0, io);
   const uint64_t t = 1'000'000;
   for (const auto& b : msp_bodies("OFF", t)) { g.on_rx(b); g.tick(t); }
   CHECK(pubs.empty());
@@ -689,8 +706,414 @@ TEST(osd_without_on_osd_is_counted_not_crashing) {
   // Replay/Node builds leave Io::on_osd unset.
   Io io;
   io.on_au = [](Au&&) {};
-  WebGs g(cfg(), Mode::Spotter, 136, 40, io);
+  WebGs g(cfg(), Mode::Spotter, 136, 40, {}, 0, io);
   const uint64_t t = 1'000'000;
   for (const auto& b : msp_bodies("X", t)) { g.on_rx(b); g.tick(t); }
   CHECK(g.stats().osd_screens == 1);
+}
+
+namespace {
+// GS mode on fake USB cards, bundle config with the channel set, no core
+// threads: each tick() runs one scout step; the scout's sleeps advance the
+// WebGs clock (and, through Opts::sleep_hook, the rig's clock and the fake
+// cards' energy clock with it). One card: `card` is the scout and opens at
+// 20 MHz like maburgs's boot scout card. Two cards: `card` is the link card
+// at radio.width, `card2` the scout at 20.
+//
+// No threads means the scout's beacon windows open and close inside one
+// tick()'s scout step, so the send path (after the core tick) never sees
+// the scout beaconing: a one-card rig never offers a DISC, and the scout
+// card's own sends are always gated. Tests that need frames on the air use
+// two cards (the link card's DISCs pass) or a session (RCFs to card 0).
+struct GsRig {
+  maburgs::Config c = cfg();
+  FakeClock clk;
+  FakeCard card, card2;
+  std::vector<std::string> logs;
+  std::vector<uint8_t> stored;
+  std::vector<std::vector<uint8_t>> io_sends;
+  std::unique_ptr<WebGs> g;
+  uint64_t t = 1'000'000;
+  uint64_t ticks_with_sent = 0;
+  // Called from inside the scout's sleeps (mid-dwell / mid-beacon): where the
+  // production core thread would be running the send path.
+  std::function<void()> on_sleep;
+  explicit GsRig(uint8_t start = 40, bool pinned = false, int n_usb = 1) {
+    c.radio.channels = {40, 64, 112, 144};
+    c.radio.width = 40;
+    if (pinned) c.radio.pin = start;
+    card.ch = start; card.width_mhz = n_usb == 1 ? 20 : 40;
+    card2.ch = start; card2.width_mhz = 20;
+    card.clk = card2.clk = &clk;
+    clk.ms = t / 1000;
+    Io io;
+    io.on_au = [](Au&&) {};
+    io.send = [this](const std::vector<uint8_t>& b) { io_sends.push_back(b); };
+    io.on_log = [this](const std::string& l) { logs.push_back(l); };
+    io.on_channel_store = [this](uint8_t ch) { stored.push_back(ch); };
+    io.on_control_tick = [this](double, const maburgs::LinkHealth&, int,
+                                const std::vector<uint8_t>* sent) { if (sent) ++ticks_with_sent; };
+    Opts o; o.core_threads = false;
+    o.sleep_hook = [this](int ms) {
+      clk.ms += static_cast<uint64_t>(ms);
+      t += static_cast<uint64_t>(ms) * 1000;
+      if (on_sleep && g) on_sleep();
+    };
+    std::vector<maburgs::LinkCard*> roster{&card};
+    if (n_usb == 2) roster.push_back(&card2);
+    g = std::make_unique<WebGs>(c, Mode::Gs, start, 40, roster, n_usb, io, o);
+  }
+  GsRig(const GsRig&) = delete;
+  GsRig& operator=(const GsRig&) = delete;
+  bool has_log(const std::string& needle) const {
+    for (auto& l : logs) if (l.find(needle) != std::string::npos) return true;
+    return false;
+  }
+  void ticks(int n, int step_ms = 10) {
+    for (int i = 0; i < n; ++i) {
+      t += static_cast<uint64_t>(step_ms) * 1000;
+      clk.ms = t / 1000;
+      g->tick(t);
+    }
+  }
+};
+}  // namespace
+
+TEST(gs_roster_builds_core_and_one_card_prelude_commits_and_stores) {
+  GsRig r;
+  r.card.cca_per_ms_on[40] = 5;              // the start pair is the busy one
+  REQUIRE(r.g->channel_core() != nullptr);
+  CHECK(r.g->stats().chan.has_value());
+  CHECK(r.g->stats().chan->scan_state == "scouting");
+  for (int i = 0; i < 800 && !r.has_log("one-card prelude ranking picks"); ++i) r.ticks(1);
+  REQUIRE(r.has_log("one-card prelude ranking picks"));
+  // the prelude committed away from 40: the card was retuned and CHANNEL fired
+  bool retuned = false;
+  for (auto& call : r.card.calls) retuned = retuned || call.rfind("retune", 0) == 0;
+  CHECK(retuned);
+  REQUIRE(!r.stored.empty());
+  CHECK(r.stored.back() != 40);
+  CHECK(r.stored.back() == r.g->channel_core()->op());
+  // "channel" is the card's LIVE channel: with one card that can be a scout
+  // dwell channel rather than op -- spec'd, and what the page shows.
+  CHECK(r.g->stats().channel == r.card.ch);
+  CHECK(stats_json(r.g->stats()).find("\"channel\":" + std::to_string(r.card.ch)) != std::string::npos);
+}
+
+// Pin is static (2026-10-04) reaches the browser GS through the shared core:
+// the page's Link channel select becomes `channel = N` in the [radio]
+// overlay, the loader sets radio.pin, WebGs hands cfg.radio to ChannelCore.
+// Same interference on the one card, two rigs: auto (pick frozen at
+// link-up) orders a one-card reactive hop; pinned never does.
+static void interfere_one_card(GsRig& r, int windows) {
+  r.card.cca_per_ms_on[r.card.ch] = 50;
+  for (int w = 0; w < windows; ++w) {
+    r.card.fr.foreign += 40;
+    for (int i = 0; i < r.c.hop.window_ms / 10 + 1; ++i) {
+      r.g->vrx()->on_video(static_cast<double>(r.t) / 1000.0);   // keep SESSION alive (no drone here)
+      r.ticks(1);
+    }
+  }
+}
+TEST(gs_one_card_auto_hops_on_interference_but_pinned_never) {
+  GsRig a;                                    // auto, one card
+  for (int i = 0; i < 800 && !a.has_log("one-card prelude ranking picks"); ++i) a.ticks(1);
+  REQUIRE(a.has_log("one-card prelude ranking picks"));
+  a.g->inject_disc_ack_for_replay(a.t);       // SESSION on op
+  a.g->vrx()->test_set_move_edge();           // the drone linked: the link edge fires once
+  REQUIRE(a.g->stats().session);
+  for (int i = 0; i < 20 && !a.has_log("one-card linked"); ++i) { a.g->vrx()->on_video(static_cast<double>(a.t) / 1000.0); a.ticks(1); }
+  REQUIRE(a.has_log("one-card linked"));
+  a.card.ch = a.g->channel_core()->op();      // the sole card sits on op once the scout parks
+  interfere_one_card(a, 8);
+  REQUIRE(a.g->stats().session);
+  REQUIRE(a.has_log("maburgs hop: order"));   // the injection is strong enough to trigger
+
+  GsRig p(40, /*pinned=*/true, /*n_usb=*/1);
+  p.ticks(1);
+  p.g->inject_disc_ack_for_replay(p.t);
+  p.g->vrx()->test_set_move_edge();
+  REQUIRE(p.g->stats().session);
+  for (int i = 0; i < 20; ++i) { p.g->vrx()->on_video(static_cast<double>(p.t) / 1000.0); p.ticks(1); }
+  interfere_one_card(p, 8);
+  REQUIRE(p.g->stats().session);              // judged while linked, not after a drop
+  CHECK(!p.has_log("maburgs hop:"));          // no order, no hold, nothing
+  CHECK(std::string(p.g->stats().chan->hop.state) == "idle");
+  CHECK(p.g->stats().chan->hop.hops == 0 && p.g->stats().chan->hop.holds == 0);
+  CHECK(p.card.ch == 40);
+  CHECK(std::string(p.g->stats().chan->hop.verdict) == "interfered");   // still measured for the page
+}
+TEST(gs_roster_sends_through_the_card_not_io_send) {
+  GsRig r(40, /*pinned=*/true, /*n_usb=*/2);   // card 0 = the link card on op
+  r.ticks(60);                                // beaconing
+  CHECK(r.io_sends.empty());
+  CHECK(!r.card.sent.empty());                // DISCs went to the card
+  CHECK(r.g->sends() == r.card.sent.size() + r.card2.sent.size());
+  for (auto& s : r.card.sent) CHECK(mabur::rc::frame_type(s.data(), s.size()) == mabur::rc::T_DISC);
+}
+
+// Review Focus 3: an RCF due while the scout owns the card off a beacon is
+// dropped by may_send(); rcf_sent and the RTT estimator never see it.
+TEST(send_gate_drops_rcf_and_skips_rtt_stamp) {
+  GsRig r;                                    // auto, one card: the scout owns it (pick open)
+  r.ticks(1);
+  r.g->inject_disc_ack_for_replay(r.t);       // SESSION: RCFs are due, all to card 0
+  REQUIRE(r.g->stats().session);
+  const uint64_t gated_before = r.g->channel_core()->scout_gated_sends();
+  const auto seq_before = r.g->vrx()->rcf_seq();
+  r.ticks(3);                                 // RCFs offered while the scout is not beaconing
+  REQUIRE(r.g->stats().session);
+  CHECK(r.g->vrx()->rcf_seq() != seq_before);  // RCFs were built...
+  CHECK(r.g->channel_core()->scout_gated_sends() > gated_before);   // ...and gated
+  CHECK(r.card.sent.empty());
+  CHECK(r.ticks_with_sent == 0);   // plan 2 review: a gated frame is not reported as `sent`
+  CHECK(r.g->stats().rcf_sent == 0);
+  CHECK(r.g->stats().sends == r.card.sent.size());   // sends counts frames handed to the card only
+}
+
+TEST(stats_json_carries_channel_fields_gs_and_spotter) {
+  // Two cards so card 0 (the stats card) stays on the pin and "channel" is
+  // deterministic; the one-card live-channel case is in the prelude test.
+  GsRig r(40, true, 2);
+  r.ticks(2);
+  const std::string js = stats_json(r.g->stats());
+  CHECK(js.find("\"channel\":40") != std::string::npos);
+  CHECK(js.find("\"scan_state\":\"off\"") != std::string::npos);     // pinned
+  CHECK(js.find("\"scan_pick\":40") != std::string::npos);
+  CHECK(js.find("\"hop\":{") != std::string::npos);
+  CHECK(js.find("\"state\":\"idle\"") != std::string::npos);
+  CHECK(js.find("\"target\":null") != std::string::npos);
+  // spotter with a card: channel from the card, no core fields
+  FakeCard sc; sc.ch = 64; sc.width_mhz = 40;
+  Io io; io.on_au = [](Au&&) {};
+  WebGs s(cfg(), Mode::Spotter, 64, 40, {&sc}, 1, io);
+  const std::string sj = stats_json(s.stats());
+  CHECK(s.channel_core() == nullptr);
+  CHECK(sj.find("\"channel\":64") != std::string::npos);
+  CHECK(sj.find("\"scan_state\":null") != std::string::npos);
+  CHECK(sj.find("\"hop\":null") != std::string::npos);
+}
+
+TEST(channel_width_error_checks_the_set_membership_and_pin) {
+  auto c = cfg();
+  c.radio.channels = {40, 64, 112, 144};
+  CHECK(!channel_width_error(c, Mode::Gs, 40, 40).has_value());
+  CHECK(!channel_width_error(c, Mode::Spotter, 144, 20).has_value());
+  // Review Focus 2: a non-member start
+  auto e = channel_width_error(c, Mode::Gs, 136, 40);
+  REQUIRE(e.has_value());
+  CHECK(e->find("136") != std::string::npos && e->find("member") != std::string::npos);
+  // Review Focus 1: pinned, --ch is a stale remembered member
+  c.radio.pin = 40;
+  e = channel_width_error(c, Mode::Gs, 64, 40);
+  REQUIRE(e.has_value());
+  CHECK(e->find("pinned to 40") != std::string::npos);
+  CHECK(!channel_width_error(c, Mode::Gs, 40, 40).has_value());
+  // the set itself vs the PAGE width: 40 needs pairs on one offset
+  c.radio.pin.reset();
+  c.radio.channels = {40, 44};                // 44 is HT40-, 40 is HT40+
+  e = channel_width_error(c, Mode::Gs, 40, 40);
+  REQUIRE(e.has_value());
+  CHECK(e->find("radio.channels") != std::string::npos);
+  CHECK(!channel_width_error(c, Mode::Spotter, 40, 20).has_value());   // fine at 20 (Spotter: the bundle ladder's 40 MHz rungs refuse a 20 MHz GS)
+}
+
+// The page's own shape: ONE card, owned by the scout. Its frames leave only
+// while the scout beacons (disc_targets(0) == {0} and may_send(0) passes);
+// without threads that window lives inside the scout step, so the gate is
+// sampled from the scout's sleeps (test_channel_core.cpp's gate_obs idiom),
+// where the production core thread would be sending. Each sample builds the
+// DISC copy the send path would hand the card and checks it proposes the
+// channel the card is on.
+TEST(one_card_frames_pass_to_the_card_while_the_scout_beacons) {
+  GsRig r;
+  r.card.cca_per_ms_on[40] = 5;
+  struct Obs { std::vector<int> targets; bool pass; uint8_t ch; bool proposes_ch; };
+  std::vector<Obs> obs;
+  r.on_sleep = [&] {
+    const auto* core = r.g->channel_core();
+    Obs o;
+    o.targets = core->disc_targets(0);
+    if (o.targets.empty()) return;            // not beaconing: the send path offers nothing
+    o.pass = core->may_send(0);
+    o.ch = r.card.ch;
+    mabur::rc::Disc d;
+    d.op_channel = 0;
+    const auto wire = core->disc_for_card(mabur::rc::pack_disc(d, r.c.link.key), 0);
+    const auto back = mabur::rc::parse_disc(wire.data(), wire.size());
+    o.proposes_ch = back && back->op_channel == o.ch;
+    obs.push_back(o);
+  };
+  for (int i = 0; i < 800 && !r.has_log("one-card prelude ranking picks"); ++i) r.ticks(1);
+  REQUIRE(r.has_log("one-card prelude ranking picks"));
+  r.ticks(20);
+  REQUIRE(!obs.empty());
+  bool on_op = false, on_other = false;
+  for (const auto& o : obs) {
+    CHECK(o.targets == std::vector<int>{0});  // the one card, never Io::send
+    CHECK(o.pass);                            // the gate lets a beaconing card send
+    CHECK(o.proposes_ch);                     // a DISC proposes the channel it is sent on
+    (o.ch == r.g->channel_core()->op() ? on_op : on_other) = true;
+  }
+  CHECK(on_op);                               // the one-card op window
+  CHECK(on_other);                            // a search burst on another member
+  CHECK(r.io_sends.empty());
+  CHECK(r.g->sends() == r.card.sent.size());
+}
+
+namespace {
+// Spotter mode on one fake card at the link width, the bundle config with
+// the channel set. The follower runs on tick(); the card is the fake, so a
+// retune is synchronous unless retune_deferred (relay-style).
+struct SpotRig {
+  maburgs::Config c = cfg();
+  FakeCard card;
+  std::unique_ptr<WebGs> g;
+  uint64_t t = 1'000'000;
+  int aus = 0;
+  explicit SpotRig(uint8_t start = 40) {
+    c.radio.channels = {40, 64, 112, 144};
+    c.radio.width = 40;
+    card.ch = start; card.width_mhz = 40;
+    Io io;
+    io.on_au = [this](Au&&) { ++aus; };
+    g = std::make_unique<WebGs>(c, Mode::Spotter, start, 40, std::vector<maburgs::LinkCard*>{&card}, 1, io);
+  }
+  SpotRig(const SpotRig&) = delete;
+  SpotRig& operator=(const SpotRig&) = delete;
+  void ticks(int n, int step_ms = 10) {
+    for (int i = 0; i < n; ++i) { t += static_cast<uint64_t>(step_ms) * 1000; g->tick(t); }
+  }
+  // One video body heard on `ch` (a CRC-good canonical body).
+  void frame_on(uint8_t ch) {
+    auto b = gen_bodies(1, 16.0, 0).front();
+    b.mono_us = t;
+    b.rx_channel = ch;
+    g->on_rx(b);
+  }
+  // The real GS's RCF heard on rx_ch, ordering hop_ch/epoch (tagged with the
+  // default key: the spotter never checks it, spec §6.2).
+  void rcf_on(uint8_t rx_ch, uint8_t hop_ch, uint8_t epoch) {
+    mabur::rc::Rcf r;
+    r.hop_ch = hop_ch;
+    r.hop_epoch = epoch;
+    g->on_rx(rc_body(mabur::rc::pack_rcf(r), t, rx_ch));
+  }
+  int retunes() const {
+    int n = 0;
+    for (auto& s : card.calls) n += s.rfind("retune ", 0) == 0;
+    return n;
+  }
+  std::string state() const { return g->stats().follow_state.value_or("none"); }
+};
+}  // namespace
+
+TEST(spotter_roster_sweeps_from_start_and_retunes_the_card) {
+  SpotRig r(40);
+  CHECK(r.g->channel_core() == nullptr);          // no core in spotter mode
+  CHECK(r.state() == "sweeping");
+  r.ticks(1);                                     // on 40 already: no retune, the dwell starts
+  CHECK(r.retunes() == 0);
+  r.ticks(15);                                    // 150 ms, nothing heard
+  CHECK(r.card.ch == 64);
+  CHECK(r.card.calls.back() == "retune 64");
+  r.ticks(15);
+  CHECK(r.card.ch == 112);
+  CHECK(r.g->stats().channel == 112);             // the card's live channel
+  CHECK(r.g->stats().follows == 0);
+  CHECK(r.g->sends() == 0);
+}
+
+TEST(spotter_locks_on_a_frame_follows_an_rcf_and_confirms) {
+  SpotRig r(40);
+  r.ticks(1);
+  r.frame_on(40);
+  CHECK(r.state() == "locked");
+  r.rcf_on(40, 64, 1);
+  CHECK(r.state() == "following");
+  CHECK(r.retunes() == 0);                        // the card moves on the next tick
+  r.ticks(1);
+  CHECK(r.card.ch == 64);
+  CHECK(r.card.calls.back() == "retune 64");
+  r.frame_on(64);
+  CHECK(r.state() == "locked");
+  CHECK(r.g->stats().channel == 64);
+  CHECK(r.g->stats().follows == 1);
+  // DISC (any GS frame) refreshes the lock, no transmit in response
+  mabur::rc::Disc d;
+  r.ticks(90);                                    // 900 ms quiet
+  r.g->on_rx(rc_body(mabur::rc::pack_disc(d), r.t, 64));
+  r.ticks(50);                                    // 500 ms more: < silence_ms since the DISC
+  CHECK(r.state() == "locked");
+  CHECK(r.g->sends() == 0);
+  // the move left the video path alone: AUs keep coming on 64
+  const int before = r.aus;
+  for (auto& b : gen_bodies(5, 16.0, 0)) { b.mono_us = (r.t += 16000); b.rx_channel = 64; r.g->on_rx(b); r.g->tick(r.t); }
+  CHECK(r.aus > before);
+}
+
+TEST(spotter_follow_timeout_returns_the_card) {
+  SpotRig r(40);
+  r.ticks(1);
+  r.frame_on(40);
+  r.rcf_on(40, 64, 1);
+  r.ticks(1);
+  REQUIRE(r.card.ch == 64);
+  r.ticks(201);                                   // > confirm_ms with nothing on 64
+  CHECK(r.state() == "locked");
+  CHECK(r.card.ch == 40);
+  CHECK(r.card.calls.back() == "retune 40");
+}
+
+// Review Focus 4 (glue half): the retune is re-issued every tick until the
+// card takes it (a RadioFrontend refuses pre-ready).
+TEST(spotter_retune_is_retried_until_the_card_takes_it) {
+  SpotRig r(40);
+  r.ticks(16);                                    // dwell over: wants 64
+  r.card.retune_ok = false;
+  r.card.ch = 40;                                 // the fake refused: still on 40
+  const int n0 = r.retunes();
+  r.ticks(3);
+  CHECK(r.retunes() == n0 + 3);
+  r.card.retune_ok = true;
+  r.ticks(1);
+  CHECK(r.card.ch == 64);
+}
+
+TEST(spotter_relay_style_card_dwell_counts_from_ready) {
+  SpotRig r(40);
+  r.card.retune_deferred = true;
+  r.ticks(16);                                    // -> retune 64, card not ready yet
+  REQUIRE(r.card.ch == 64);
+  REQUIRE(!r.card.is_ready);
+  const int n = r.retunes();
+  r.ticks(30);                                    // 300 ms: no second retune, no advance (dwell not started)
+  CHECK(r.retunes() == n);
+  CHECK(r.card.ch == 64);
+  r.card.is_ready = true;                         // STATUS: tuned
+  r.ticks(1);                                     // reported
+  r.ticks(14);
+  CHECK(r.card.ch == 64);
+  r.ticks(1);                                     // 150 ms on the member
+  CHECK(r.card.ch == 112);
+}
+
+TEST(stats_json_carries_follow_fields_for_spotter_only) {
+  SpotRig r(40);
+  std::string js = stats_json(r.g->stats());
+  CHECK(js.find("\"follow_state\":\"sweeping\"") != std::string::npos);
+  CHECK(js.find("\"follows\":0") != std::string::npos);
+  CHECK(js.find("\"scan_state\":null") != std::string::npos);
+  // GS mode: null
+  GsRig g(40, true, 2);
+  g.ticks(1);
+  js = stats_json(g.g->stats());
+  CHECK(js.find("\"follow_state\":null") != std::string::npos);
+  CHECK(js.find("\"follows\":null") != std::string::npos);
+  // spotter without a roster (replay): no follower, null
+  Io io; io.on_au = [](Au&&) {};
+  WebGs s(cfg(), Mode::Spotter, 136, 40, {}, 0, io);
+  js = stats_json(s.stats());
+  CHECK(js.find("\"follow_state\":null") != std::string::npos);
+  CHECK(!s.stats().follow_state.has_value());
 }

@@ -13,12 +13,12 @@ static double warm(HopVerdict& v, double t = 0) {
   return t;
 }
 TEST(baseline_is_healthy) {
-  HopVerdict v(cfg(), 2); double t = warm(v);
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   auto o = v.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.005, 20}, 5);
   CHECK(o.v == Verdict::Healthy); CHECK(!o.trigger); CHECK(o.ref_rung == -1);
 }
 TEST(co_channel_802_11_neighbour_is_interfered_after_two_windows) {
-  HopVerdict v(cfg(), 2); double t = warm(v);
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   // spike jam250c120: loss 4-8 %, foreign 237/s, FA 2/s, RSSI rose to -55, SNR 33
   auto o1 = v.window(t, {card(-55, 33, 237, 2), card(-55, 33, 237, 2)}, {0.06, 80}, 5);
   CHECK(o1.v == Verdict::Interfered); CHECK(!o1.trigger); CHECK(o1.ref_rung == 5);
@@ -27,27 +27,27 @@ TEST(co_channel_802_11_neighbour_is_interfered_after_two_windows) {
   CHECK(o2.trigger); CHECK(o2.ref_rung == 5);   // snapshot taken at the FIRST impaired window
 }
 TEST(o4_raised_floor_is_interfered_even_with_rssi_up) {
-  HopVerdict v(cfg(), 2); double t = warm(v);
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   auto o = v.window(t, {card(-48, 30, 0, 744, 130), card(-50, 27, 0, 388, 130)}, {0.85, 5}, 0);
   CHECK(o.v == Verdict::Interfered); CHECK(o.evidence & kEvRaised); CHECK(!(o.evidence & kEvFading));
 }
 TEST(fade_is_fade_not_interfered) {
-  HopVerdict v(cfg(), 2); double t = warm(v);
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   auto o = v.window(t, {card(-90, 8, 0, 0, 30), card(-86, 10, 0, 10, 5)}, {0.05, 90}, 1);
   CHECK(o.v == Verdict::Fade); CHECK(o.evidence & kEvWeak); CHECK(!o.trigger);
 }
 TEST(loss_with_no_domain_evidence_is_unknown) {
-  HopVerdict v(cfg(), 2); double t = warm(v);
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   auto o = v.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.08, 100}, 5);
   CHECK(o.v == Verdict::Unknown); CHECK(!o.trigger);
 }
 TEST(off_channel_blocking_reads_as_raised) {
-  HopVerdict v(cfg(), 2); double t = warm(v);
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   auto o = v.window(t, {card(-59, 28, 0, 209, 94), card(-59, 28, 0, 299, 130)}, {0.04, 70}, 4);
   CHECK(o.v == Verdict::Interfered); CHECK(o.evidence & kEvRaised);
 }
 TEST(recovered_rate_alone_marks_impaired_and_its_reference_freezes) {
-  HopVerdict v(cfg(), 2); double t = warm(v);          // recovered mean 20/window
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);          // recovered mean 20/window
   auto o1 = v.window(t, {card(-55, 33, 237, 2), card(-55, 33, 237, 2)}, {0.0, 100}, 5);   // 5x
   CHECK(o1.evidence & kEvImpaired);
   for (int i = 1; i < 30; ++i) v.window(t + 150 * i, {card(-55, 33, 237, 2), card(-55, 33, 237, 2)}, {0.0, 100}, 0);
@@ -55,7 +55,7 @@ TEST(recovered_rate_alone_marks_impaired_and_its_reference_freezes) {
   CHECK(o2.evidence & kEvImpaired);   // frozen mean: 100 is still 5x the pre-onset 20
 }
 TEST(skipped_card_does_not_contribute_and_one_card_fade_covered_is_healthy) {
-  HopVerdict v(cfg(), 2); double t = warm(v);
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   VerdictCardIn dead; dead.valid = false;
   auto o = v.window(t, {card(-61, 30, 0, 4), dead}, {0.004, 20}, 5);
   CHECK(o.v == Verdict::Healthy);
@@ -63,7 +63,7 @@ TEST(skipped_card_does_not_contribute_and_one_card_fade_covered_is_healthy) {
   CHECK(o2.v == Verdict::Healthy);   // best card is fine and the link is not impaired
 }
 TEST(references_thaw_after_three_healthy_windows) {
-  HopVerdict v(cfg(), 2); double t = warm(v);
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   v.window(t, {card(-55, 33, 237, 2), card(-55, 33, 237, 2)}, {0.06, 80}, 5);
   CHECK(v.ref_rung() == 5);
   for (int i = 1; i <= 3; ++i) v.window(t + 150 * i, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, 20}, 3);
@@ -75,7 +75,7 @@ TEST(references_thaw_after_three_healthy_windows) {
 // empty), then let card 1 come back as the best card and check its fading
 // evidence is not fabricated from a bogus 0 dBm reference.
 TEST(frozen_reference_for_a_mid_dwell_card_is_not_fabricated_from_zero) {
-  HopVerdict v(cfg(), 2);
+  HopVerdict v(cfg(), BusyCfg{}, 2);
   VerdictCardIn dead; dead.valid = false;
   double t = 0;
   // 5 s of clean windows -- card 1 hasn't dwelt on home once yet, so its
@@ -98,7 +98,7 @@ TEST(frozen_reference_for_a_mid_dwell_card_is_not_fabricated_from_zero) {
 // jammer symptoms (contended) must still classify as Fade and must never
 // trigger a hop -- the ladder owns weak links, not the hop.
 TEST(weak_takes_priority_over_contended_when_not_fading) {
-  HopVerdict v(cfg(), 2);
+  HopVerdict v(cfg(), BusyCfg{}, 2);
   double t = 0;
   // Warm at RSSI -80 / SNR 10, no loss: not impaired, so these windows are
   // Healthy and the per-card RSSI references build at -80 (not frozen).
@@ -119,7 +119,7 @@ TEST(weak_takes_priority_over_contended_when_not_fading) {
 // a cached one on every ~10 ms control tick between 150 ms windows and has
 // to be able to tell a fresh verdict from a pre-hop one.
 TEST(every_window_carries_the_span_it_was_measured_over) {
-  HopVerdict v(cfg(), 2);
+  HopVerdict v(cfg(), BusyCfg{}, 2);
   auto o1 = v.window(1000, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, 20}, 5);
   CHECK(o1.t_start_ms == 1000 && o1.t_ms == 1000);   // first window: no previous one
   auto o2 = v.window(1150, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, 20}, 5);
@@ -137,7 +137,7 @@ TEST(every_window_carries_the_span_it_was_measured_over) {
 // thaw. Deliberately not ref_frozen, which is keyed on `impaired` and so
 // is set through fades and unknown windows too.
 TEST(first_interfered_fires_once_per_frozen_episode) {
-  HopVerdict v(cfg(), 2); double t = warm(v);
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   // A fade freezes the references but is not interference: no edge.
   auto f = v.window(t, {card(-90, 8, 0, 0, 30), card(-86, 10, 0, 10, 5)}, {0.05, 90}, 1);
   CHECK(f.v == Verdict::Fade && f.ref_frozen && !f.first_interfered);
@@ -157,7 +157,7 @@ TEST(first_interfered_fires_once_per_frozen_episode) {
   CHECK(o4.first_interfered);
 }
 TEST(ref_frozen_marks_the_impaired_episode) {
-  HopVerdict v(cfg(), 2); double t = warm(v);
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   CHECK(!v.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, 20}, 5).ref_frozen);
   t += 150;
   auto o = v.window(t, {card(-55, 33, 237, 2), card(-55, 33, 237, 2)}, {0.06, 80}, 5);
@@ -176,7 +176,7 @@ TEST(ref_frozen_marks_the_impaired_episode) {
 // latched persistence window -- a trigger built from windows measured on
 // the channel we have just left must not survive the hop.
 TEST(reset_thaws_the_snapshot_and_clears_the_latched_trigger) {
-  HopVerdict v(cfg(), 2); double t = warm(v);
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   auto o1 = v.window(t, {card(-55, 33, 237, 2), card(-55, 33, 237, 2)}, {0.06, 80}, 5);
   auto o2 = v.window(t + 150, {card(-55, 33, 237, 2), card(-55, 33, 237, 2)}, {0.06, 80}, 5);
   CHECK(o1.ref_frozen && o2.trigger && v.ref_rung() == 5);
@@ -199,7 +199,7 @@ TEST(raw_units_convert_to_dbm_and_db) {
   CHECK(rssi_raw_to_dbm(0.0) == 0.0);   // "no frame heard yet" keeps the no-reference sentinel
 }
 TEST(converted_edge_of_range_reading_is_fade) {
-  HopVerdict v(cfg(), 2); double t = warm(v);
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   const double r = rssi_raw_to_dbm(28), s = snr_raw_to_db(20);   // -82 dBm, 10 dB
   auto o = v.window(t, {card(r, s, 0, 4), card(r, s, 0, 4)}, {0.06, 80}, 5);
   CHECK(o.v == Verdict::Fade); CHECK(o.evidence & kEvWeak);
@@ -220,7 +220,7 @@ static maburgs::VerdictCardIn busy_card(double busy, double own, bool valid = tr
 // findings-2026-09-25.md), not the spec's 30 -- 95-2=93 still clears it.
 TEST(long_frame_jam_is_interfered_via_blocked) {
   maburgs::HopCfg cfg;
-  maburgs::HopVerdict v(cfg, 1);
+  maburgs::HopVerdict v(cfg, BusyCfg{}, 1);
   maburgs::VerdictLinkIn bad; bad.pre_fec_loss = 0.80;
   maburgs::VerdictOut o;
   double t = 0;
@@ -229,16 +229,29 @@ TEST(long_frame_jam_is_interfered_via_blocked) {
   CHECK(o.evidence & maburgs::kEvBlocked);
   CHECK(o.trigger);
 }
+// Same jam at 40 % busy: blocked only when radio.scan.blocked_pct (BusyCfg)
+// is lowered to 30 -- the threshold is the engine's input, not a constant.
+TEST(blocked_threshold_comes_from_busy_cfg) {
+  maburgs::HopCfg cfg;
+  BusyCfg b; b.blocked_pct = 30;
+  maburgs::HopVerdict low(cfg, b, 1), def(cfg, BusyCfg{}, 1);
+  maburgs::VerdictLinkIn bad; bad.pre_fec_loss = 0.80;
+  maburgs::VerdictOut ol, od;
+  double t = 0;
+  for (int i = 0; i < 3; ++i) { ol = low.window(t += 150, {busy_card(40, 2)}, bad, 0); od = def.window(t, {busy_card(40, 2)}, bad, 0); }
+  CHECK(ol.evidence & maburgs::kEvBlocked);
+  CHECK(!(od.evidence & maburgs::kEvBlocked));
+}
 TEST(busy_but_healthy_link_stays_healthy) {
   maburgs::HopCfg cfg;
-  maburgs::HopVerdict v(cfg, 1);
+  maburgs::HopVerdict v(cfg, BusyCfg{}, 1);
   maburgs::VerdictLinkIn ok; ok.pre_fec_loss = 0.0;
   auto o = v.window(150, {busy_card(95, 2)}, ok, 0);
   CHECK(o.v == maburgs::Verdict::Healthy);
 }
 TEST(own_airtime_is_subtracted) {
   maburgs::HopCfg cfg;
-  maburgs::HopVerdict v(cfg, 1);
+  maburgs::HopVerdict v(cfg, BusyCfg{}, 1);
   maburgs::VerdictLinkIn bad; bad.pre_fec_loss = 0.20;
   auto o = v.window(150, {busy_card(60, 45)}, bad, 0);   // 15 % foreign < 50
   CHECK(!(o.evidence & maburgs::kEvBlocked));
@@ -248,7 +261,7 @@ TEST(blocked_beats_fading_but_not_weak) {
   maburgs::HopCfg cfg;
   maburgs::VerdictLinkIn bad; bad.pre_fec_loss = 0.5;
   {  // fading: RSSI 15 dB under its trailing reference (analog desense)
-    maburgs::HopVerdict v(cfg, 1);
+    maburgs::HopVerdict v(cfg, BusyCfg{}, 1);
     maburgs::VerdictLinkIn ok;
     double t = 0;
     for (int i = 0; i < 10; ++i) v.window(t += 150, {busy_card(0, 2)}, ok, 0);
@@ -258,7 +271,7 @@ TEST(blocked_beats_fading_but_not_weak) {
     CHECK(o.v == maburgs::Verdict::Interfered);
   }
   {  // weak: range edge
-    maburgs::HopVerdict v(cfg, 1);
+    maburgs::HopVerdict v(cfg, BusyCfg{}, 1);
     auto c = busy_card(100, 2); c.rssi_dbm = -85; c.snr_db = 5;
     auto o = v.window(150, {c}, bad, 0);
     CHECK(o.v == maburgs::Verdict::Fade);
@@ -266,7 +279,7 @@ TEST(blocked_beats_fading_but_not_weak) {
 }
 TEST(no_busy_reading_is_todays_verdict) {
   maburgs::HopCfg cfg;
-  maburgs::HopVerdict v(cfg, 1);
+  maburgs::HopVerdict v(cfg, BusyCfg{}, 1);
   maburgs::VerdictLinkIn bad; bad.pre_fec_loss = 0.8;
   auto o = v.window(150, {busy_card(100, 0, /*valid=*/false)}, bad, 0);
   CHECK(o.v == maburgs::Verdict::Unknown);
@@ -278,7 +291,7 @@ TEST(no_busy_reading_is_todays_verdict) {
 // see card A's foreign 65 alone and call Interfered).
 TEST(weak_diversity_card_alone_is_not_blocked) {
   maburgs::HopCfg cfg;
-  maburgs::HopVerdict v(cfg, 2);
+  maburgs::HopVerdict v(cfg, BusyCfg{}, 2);
   maburgs::VerdictLinkIn bad; bad.pre_fec_loss = 0.2;
   auto a = busy_card(70, 5);    // foreign 65 -- would clear blocked_pct(50) alone
   auto b = busy_card(70, 68);   // foreign 2 -- the same interferer, seen weakly
@@ -288,7 +301,7 @@ TEST(weak_diversity_card_alone_is_not_blocked) {
 }
 TEST(interferer_seen_by_both_cards_is_blocked) {
   maburgs::HopCfg cfg;
-  maburgs::HopVerdict v(cfg, 2);
+  maburgs::HopVerdict v(cfg, BusyCfg{}, 2);
   maburgs::VerdictLinkIn bad; bad.pre_fec_loss = 0.2;
   auto a = busy_card(95, 2);   // foreign 93
   auto b = busy_card(95, 2);   // foreign 93
@@ -298,7 +311,7 @@ TEST(interferer_seen_by_both_cards_is_blocked) {
 }
 TEST(card_without_reading_does_not_veto) {
   maburgs::HopCfg cfg;
-  maburgs::HopVerdict v(cfg, 2);
+  maburgs::HopVerdict v(cfg, BusyCfg{}, 2);
   maburgs::VerdictLinkIn bad; bad.pre_fec_loss = 0.2;
   auto a = busy_card(95, 2);                     // foreign 93, only reading card
   auto b = busy_card(100, 0, /*valid=*/false);   // no busy reading this window
@@ -322,7 +335,7 @@ static double warm_quiet(HopVerdict& v, double t = 0) {
   return t;
 }
 TEST(recovered_below_floor_is_not_impaired) {
-  HopVerdict v(cfg(), 2); double t = warm_quiet(v);
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm_quiet(v);
   auto o = v.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, 2}, 5);
   CHECK(!(o.evidence & kEvImpaired));
   CHECK(o.v == Verdict::Healthy);
@@ -330,17 +343,17 @@ TEST(recovered_below_floor_is_not_impaired) {
 // Revert (floor compared with > 12 instead of >=, or floor applied to the
 // loss term too): the at/above-floor case must still be impaired.
 TEST(recovered_at_floor_is_impaired) {
-  HopVerdict v(cfg(), 2); double t = warm_quiet(v);
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm_quiet(v);
   auto o = v.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, 12}, 5);
   CHECK(o.evidence & kEvImpaired);
-  HopVerdict v8(cfg(), 2); t = warm_quiet(v8);
+  HopVerdict v8(cfg(), BusyCfg{}, 2); t = warm_quiet(v8);
   auto o8 = v8.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, 8}, 5);
   CHECK(o8.evidence & kEvImpaired);   // exactly the floor counts
 }
 // Revert (treat 0 as "use the default"): the zero-floor window stays healthy.
 TEST(recovered_min_zero_disables_floor) {
   HopCfg c = cfg(); c.verdict.recovered_min = 0;
-  HopVerdict v(c, 2); double t = warm_quiet(v);
+  HopVerdict v(c, BusyCfg{}, 2); double t = warm_quiet(v);
   auto o = v.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, 2}, 5);
   CHECK(o.evidence & kEvImpaired);
 }
@@ -352,7 +365,7 @@ TEST(recovered_min_zero_disables_floor) {
 // Revert (drop `|| link.starved`): starved_and_blocked_is_interfered reads
 // Healthy with no kEvStarved.
 TEST(starved_and_blocked_is_interfered) {
-  HopVerdict v(cfg(), 2); double t = warm(v);
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   VerdictLinkIn s; s.pre_fec_loss = 0.0; s.recovered = 0; s.starved = true;
   auto o = v.window(t, {busy_card(98, 0), busy_card(98, 0)}, s, 5);
   CHECK(o.v == Verdict::Interfered);
@@ -364,7 +377,7 @@ TEST(starved_and_blocked_is_interfered) {
 // any other unexplained impairment -- never a trigger on its own.
 // Revert (classify starved as Interfered directly): this reads Interfered.
 TEST(starved_alone_is_unknown) {
-  HopVerdict v(cfg(), 2); double t = warm(v);
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   VerdictLinkIn s; s.starved = true;
   VerdictOut o;
   for (int i = 0; i < 3; ++i) o = v.window(t + 150 * i, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, s, 5);
@@ -377,7 +390,7 @@ TEST(starved_alone_is_unknown) {
 // trailing histories; after the starve ends, the recovered reference is
 // still the pre-starve one.
 TEST(starved_windows_do_not_feed_the_trailing_references) {
-  HopVerdict v(cfg(), 2); double t = warm(v);   // recovered mean 20
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);   // recovered mean 20
   VerdictLinkIn s; s.starved = true;             // recovered 0 while starved
   for (int i = 0; i < 30; ++i, t += 150) {
     auto o = v.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, s, 5);
@@ -405,7 +418,7 @@ static double warm_au(HopVerdict& v, uint32_t au, double t = 0, int n = 10) {
 }
 // Revert (drop the au_count term from `starved`): Healthy, no kEvStarved.
 TEST(au_collapse_is_starved) {
-  HopVerdict v(cfg(), 2); double t = warm_au(v, 9);
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm_au(v, 9);
   auto o = v.window(t, {busy_card(98, 0), busy_card(98, 0)}, au_link(1), 5);
   CHECK(o.evidence & kEvStarved);
   CHECK(o.evidence & kEvImpaired);
@@ -413,7 +426,7 @@ TEST(au_collapse_is_starved) {
 }
 // Revert (threshold 0.5 instead of starved_frac): 4 < 4.5 reads starved.
 TEST(half_rate_is_not_starved) {
-  HopVerdict v(cfg(), 2); double t = warm_au(v, 9);
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm_au(v, 9);
   auto o = v.window(t, {busy_card(98, 0), busy_card(98, 0)}, au_link(4), 5);
   CHECK(!(o.evidence & kEvStarved));
   CHECK(o.v == Verdict::Healthy);
@@ -424,18 +437,18 @@ TEST(half_rate_is_not_starved) {
 // Revert (drop `au_ref >= 2.0`): 0 < 0.25 * 0 is false anyway, so the
 // second half pins it -- a mean of 1 with au_count 0 would read starved.
 TEST(no_au_baseline_is_not_starved) {
-  HopVerdict v(cfg(), 2);
+  HopVerdict v(cfg(), BusyCfg{}, 2);
   auto o = v.window(0, {busy_card(98, 0), busy_card(98, 0)}, au_link(0), 5);
   CHECK(!(o.evidence & kEvStarved));
   CHECK(o.v == Verdict::Healthy);
-  HopVerdict w(cfg(), 2); double t = warm_au(w, 1);
+  HopVerdict w(cfg(), BusyCfg{}, 2); double t = warm_au(w, 1);
   auto p = w.window(t, {busy_card(98, 0), busy_card(98, 0)}, au_link(0), 5);
   CHECK(!(p.evidence & kEvStarved));
 }
 // Revert (ignore starved_frac == 0): au 1 against 9 reads starved.
 TEST(starved_frac_zero_disables_au_rule) {
   HopCfg c = cfg(); c.verdict.starved_frac = 0.0;
-  HopVerdict v(c, 2); double t = warm_au(v, 9);
+  HopVerdict v(c, BusyCfg{}, 2); double t = warm_au(v, 9);
   auto o = v.window(t, {busy_card(98, 0), busy_card(98, 0)}, au_link(1), 5);
   CHECK(!(o.evidence & kEvStarved));
   CHECK(o.v == Verdict::Healthy);
@@ -447,7 +460,7 @@ TEST(starved_frac_zero_disables_au_rule) {
 // Revert (push au_hist_ regardless of frozen_ and read the live mean):
 // the later windows lose kEvStarved.
 TEST(frozen_au_reference_is_used_while_frozen) {
-  HopVerdict v(cfg(), 2); double t = warm_au(v, 9, 0, 33);
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm_au(v, 9, 0, 33);
   for (int i = 0; i < 30; ++i, t += 150) {
     auto o = v.window(t, {busy_card(98, 0), busy_card(98, 0)}, au_link(1), 5);
     CHECK(o.evidence & kEvStarved);
@@ -464,7 +477,7 @@ TEST(frozen_au_reference_is_used_while_frozen) {
 // after it. rssi/recovered histories are left alone.
 // Revert (new_session() a no-op): the first window at 0 AUs reads starved.
 TEST(new_session_clears_au_baseline) {
-  HopVerdict v(cfg(), 2); double t = warm_au(v, 9);
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm_au(v, 9);
   v.new_session();
   for (int i = 0; i < 3; ++i, t += 150) {
     auto o = v.window(t, {busy_card(98, 0), busy_card(98, 0)}, au_link(0), 5);
@@ -478,12 +491,12 @@ TEST(weak_without_a_real_snr_fires_on_rssi_alone) {
   // Relay-only evidence this window: RSSI -90 dBm, "SNR" reads RSSI+95 = 5
   // -- but even if it read 40 the card must still be weak, because its SNR
   // is not a measurement.
-  HopVerdict v(cfg(), 2); double t = warm(v);
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   auto relay = card(-90, 40, 0, 0, 30); relay.snr_valid = false;
   auto o = v.window(t, {relay, VerdictCardIn{}}, {0.05, 90}, 1);
   CHECK(o.v == Verdict::Fade); CHECK(o.evidence & kEvWeak);
   // A Realtek card with the same numbers and a real SNR of 40 is NOT weak.
-  HopVerdict u(cfg(), 2); t = warm(u);
+  HopVerdict u(cfg(), BusyCfg{}, 2); t = warm(u);
   auto o2 = u.window(t, {card(-90, 40, 0, 0, 30), VerdictCardIn{}}, {0.05, 90}, 1);
   CHECK(!(o2.evidence & kEvWeak));
 }

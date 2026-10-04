@@ -216,11 +216,10 @@ struct StatsProbeIn {
 // straight from HopController's own accessors (state()/epoch()/hop_ch()/
 // hops()/holds()) plus the latest HopVerdict::window() output -- plain
 // values only, no controller reference, matching StatsCtlIn's pattern.
-// Unconditional (like StatsProbeIn): a disabled feature still exports
-// enable=false and the verdict/counters at their idle defaults, so a
+// Unconditional (like StatsProbeIn): a pinned GS, whose reactive hop never
+// runs, still exports the verdict/counters at their idle defaults, so a
 // consumer never has to special-case a missing block.
 struct StatsHopIn {
-  bool enable = false;
   const char* verdict = "unknown";  // to_string(Verdict)
   int evidence = 0;
   std::optional<int> ref_rung;      // HopVerdict::ref_rung(), -1 -> null
@@ -249,9 +248,8 @@ struct StatsInput {
   // and reading it out of maburplay's own config instead would say what
   // the PLAYER believes rather than what the receiver is tuned to.
   int channel = 0;
-  // Home (rendezvous) channel and the boot-time scan's state
-  // (spec 2026-09-13-auto-channel-select): "scouting" | "frozen" | "off".
-  int home = 0;
+  // Boot-time scan's state (spec 2026-09-13-auto-channel-select):
+  // "off" | "scouting" | "moving" | "frozen".
   std::string scan_state = "off";
   uint64_t scan_rounds = 0;
   std::optional<int> scan_pick;

@@ -23,13 +23,26 @@ struct HopTick {
   uint8_t cur_op = 0;
   int n_cards = 2;
   int lead_card = -1;                // non-TX card index, -1 = one card
-  // The ranker marks the configured home blocked (NHM busy): then it is
-  // no fallback -- ordering it is ordering a channel already read jammed.
-  bool home_blocked = false;
+  // Relocation (final review C1, 2026-10-04): the link formed where the
+  // drone was found (ChannelPlan::link_found) or the boot pick wants another
+  // pair, and the caller moves it to ChannelPlan::want() -- set on the tick
+  // that places the order. Order kind "relocate"; the channel left is not
+  // backed off as fled (it is merely not the wanted one); exempt from
+  // cooldown_ms but counted against max_hops_per_min. Pinned mode
+  // (ChannelCore) never feeds a reactive trigger or candidates, only
+  // relocations -- how the pin stays static while the drone can still be
+  // brought to it.
+  bool relocate = false;
+  // With relocate: the target is the only place the link may live (a pinned
+  // GS relocating onto its pin), so the verify window's question -- is the
+  // channel we landed on better than the one we left -- has no answer. The
+  // confirm lands it: VerifyPass on the next tick, no verify_fail, no
+  // backoff of the pin (bench 2026-10-04: a dirty pin read as a failed hop).
+  bool no_verify = false;
   // The escape from a blocked hold (Task 11 (d)): the best UNBLOCKED
   // candidate that is not verify-failed (fled channels allowed). Used only
-  // when there is no `best`, home is unavailable, and the current
-  // verdict's evidence carries kEvBlocked.
+  // when there is no `best` and the current verdict's evidence carries
+  // kEvBlocked.
   std::optional<uint8_t> escape;
   uint32_t escape_score = 0;
 };
@@ -38,10 +51,7 @@ struct HopAction {
   // VerifyPass: the verify window closed clean and the hop stands. The
   // only action with no radio/plan consequence -- it exists so the caller
   // can run spec section 2's second thaw rule, HopVerdict::reset(), at the
-  // one instant the spec names ("after a hop's verify window ends"). Like
-  // every other kind it is suppressed wholesale when cfg_.enable is false,
-  // which is what keeps an observe-only flight's references measuring the
-  // channel the link is actually still on.
+  // one instant the spec names ("after a hop's verify window ends").
   enum Kind { None, Order, OneCardRetune, Confirm, Withdraw, Hold, VerifyPass } kind = None;
   uint8_t target = 0;
   uint8_t epoch = 0;
@@ -64,9 +74,11 @@ struct HopEvent {
 // thing (spec 2026-09-14-inflight-channel-hop §5). Pure: no I/O, no
 // threads, no hardware, clock strictly as the caller's now_ms. Does not
 // query HopRanker -- the caller has already picked `best` for this tick.
+// No home: this feature has no fallback channel any more -- exhausted
+// (nothing ranked, no escape) holds (spec 2026-10-03-auto-channel-set §5).
 class HopController {
  public:
-  HopController(HopCfg cfg, uint8_t home);
+  explicit HopController(HopCfg cfg);
 
   HopAction tick(const HopTick& in);
   HopAction on_session_lost(double now_ms, uint8_t cur_op);
@@ -104,7 +116,6 @@ class HopController {
   // blocked -- the target is backed off as Undelivered, not Failed.
   void withdraw(uint8_t restore_to, double now, bool extended, HopAction& out);
   void flee(uint8_t ch, double now);
-  bool home_available(uint8_t cur_op, double now, bool home_blocked) const;
   // Why a channel is backed off: fled (flee() -- the trigger left it) or
   // failed (a verify fail, a withdraw, a lost session), or undelivered (a
   // withdraw after a confirm extension: the order probably never reached
@@ -121,9 +132,8 @@ class HopController {
                  double elapsed_ms);
 
   HopCfg cfg_;
-  uint8_t home_;
   HopState state_ = HopState::Idle;
-  uint8_t hop_ch_ = 0;          // true internal standing target, regardless of cfg_.enable
+  uint8_t hop_ch_ = 0;          // the standing target every RCF carries
   uint8_t epoch_ = 0;
   double order_ms_ = 0;
   double verify_start_ = 0;
@@ -132,6 +142,7 @@ class HopController {
   uint32_t holds_ = 0;
   bool one_card_retuned_ = false;
   bool confirm_extended_ = false;   // this order entered the confirm extension
+  bool no_verify_ = false;          // this order lands on confirm (HopTick::no_verify)
   double hold_start_ms_ = 0;
   struct Backoff { double until_ms; int k; BackoffWhy why; };
   std::map<uint8_t, Backoff> backoff_;                  // ch -> {until_ms, repeat count k, reason}

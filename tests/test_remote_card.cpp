@@ -47,8 +47,9 @@ struct Rig {
   std::vector<FakeTransport*> opened;   // every transport the card opened, in order (only back() is live)
   std::vector<std::shared_ptr<std::atomic<bool>>> closed;   // each one's close() flag, safe after it is freed
   std::unique_ptr<RemoteCard> card;
-  Rig(uint8_t ch = 136, uint8_t w = 40) {
+  Rig(uint8_t ch = 136, uint8_t w = 40, bool restart_when_refused = true) {
     RemoteCard::Cfg c; c.addr = "10.83.11.1:8310"; c.channel = ch; c.width_mhz = w; c.card_id = 1;
+    c.restart_when_refused = restart_when_refused;
     card = std::make_unique<RemoteCard>(c, q,
         [this](const std::string&, std::string&) { auto t = std::make_unique<FakeTransport>(); opened.push_back(t.get()); closed.push_back(t->closed_flag); return std::unique_ptr<RelayTransport>(std::move(t)); },
         [this] { return now_ms.load(); });
@@ -276,6 +277,43 @@ TEST(refused_restarts_client_every_5s) {
   r.card->stop();
 }
 
+// Refused from open, ticked with a STATUS every 100 ms out to 7 s (past
+// kRefusedRestartMs): TUNE count after the 2.5 s tune window, and at 7 s.
+// TUNE, not HELLO: HELLO is RelayClient's keepalive and is sent either way;
+// a TUNE after the window closes is only ever a restart's.
+namespace {
+std::pair<int, int> refused_hello_tunes(Rig& r) {
+  REQUIRE(r.card->open_and_start());
+  auto tick_with_status = [&](uint64_t t) {
+    r.now_ms = t;
+    r.t().push(status(3, 132, 0, 0));
+    REQUIRE(r.soon([&] { std::lock_guard<std::mutex> lk(r.t().mu); return r.t().inbox.empty(); }));
+    r.card->tick(t);
+  };
+  for (uint64_t t = 1000; t <= 1000 + 2700; t += 100) tick_with_status(t);
+  const int at_window = r.t().count(kTune);
+  for (uint64_t t = 1000 + 2800; t <= 1000 + 7000; t += 100) tick_with_status(t);
+  return {at_window, r.t().count(kTune)};
+}
+}  // namespace
+
+TEST(refused_no_restart_when_restart_when_refused_false) {
+  Rig r(136, 40, false);
+  const auto [at_window, at_7s] = refused_hello_tunes(r);
+  CHECK(at_7s == at_window);                               // never restarted
+  CHECK(r.card->health() == RemoteCard::Health::Refused);  // the refusal stays visible
+  CHECK(r.card->relay_stats()->reconnects == 0);
+  r.card->stop();
+}
+
+TEST(refused_restarts_by_default) {
+  Rig r;                                                   // default: restart_when_refused = true
+  const auto [at_window, at_7s] = refused_hello_tunes(r);
+  CHECK(at_7s > at_window);                                // the 5 s restart re-sent TUNE
+  CHECK(r.card->relay_stats()->reconnects == 1);
+  r.card->stop();
+}
+
 TEST(relay_stats_mirror_status_and_counters) {
   Rig r;
   REQUIRE(r.card->open_and_start());
@@ -307,5 +345,115 @@ TEST(retune_after_stop_records_target_without_sending) {
     CHECK(tune[6] == 149 && tune[7] == 1);      // 149 is HT40+: sec 1
   }
   r.card->stop();
+}
+TEST(health_connecting_then_owned) {
+  Rig r;
+  CHECK(r.card->health() == RemoteCard::Health::Connecting);   // not opened
+  REQUIRE(r.card->open_and_start());
+  CHECK(r.card->health() == RemoteCard::Health::Connecting);   // no STATUS yet
+  r.t().push(status(0, 136, 2, 1));
+  REQUIRE(r.soon([&] { return r.card->ready(); }));
+  CHECK(r.card->health() == RemoteCard::Health::Owned);
+}
+TEST(health_refused_past_the_tune_window) {
+  Rig r;
+  REQUIRE(r.card->open_and_start());
+  r.t().push(status(3, 136, 2, 0));
+  REQUIRE(r.soon([&] { return r.card->alive(); }));
+  CHECK(r.card->health() == RemoteCard::Health::Connecting);   // inside the window
+  r.now_ms += 2600;
+  r.t().push(status(3, 136, 2, 0));
+  REQUIRE(r.soon([&] { return r.card->health() == RemoteCard::Health::Refused; }));
+}
+TEST(health_tune_failed) {
+  Rig r;
+  REQUIRE(r.card->open_and_start());
+  r.t().push(status(2, 100, 0, 1));            // owner, never on our channel
+  REQUIRE(r.soon([&] { return r.card->alive(); }));
+  r.now_ms += 2600;
+  r.t().push(status(2, 100, 0, 1));
+  REQUIRE(r.soon([&] { return r.card->health() == RemoteCard::Health::TuneFailed; }));
+}
+TEST(health_lost_and_taken) {
+  Rig r;
+  REQUIRE(r.card->open_and_start());
+  r.t().push(status(0, 136, 2, 1));
+  REQUIRE(r.soon([&] { return r.card->ready(); }));
+  r.now_ms += 2100;                            // no STATUS for > kLostMs
+  CHECK(r.card->health() == RemoteCard::Health::Lost);
+  Rig s;
+  REQUIRE(s.card->open_and_start());
+  s.t().push(status(0, 136, 2, 1));
+  REQUIRE(s.soon([&] { return s.card->ready(); }));
+  s.t().push(status(0, 136, 2, 0));            // another client took it
+  // Wait for the RX thread to consume this STATUS (and thus set
+  // not_owner_since_ms_ at the pre-increment clock) before moving the
+  // clock, same idiom as tick_with_status above -- otherwise the RX
+  // thread can read the already-advanced clock and ownership_lost()
+  // never crosses its 1000 ms window.
+  REQUIRE(s.soon([&] { std::lock_guard<std::mutex> lk(s.t().mu); return s.t().inbox.empty(); }));
+  s.now_ms += 1100;
+  s.t().push(status(0, 136, 2, 0));
+  REQUIRE(s.soon([&] { return s.card->health() == RemoteCard::Health::Taken; }));
+}
+TEST(relay_stats_carry_you_own_and_transport_drops) {
+  Rig r;
+  REQUIRE(r.card->open_and_start());
+  r.t().push(status(0, 136, 2, 1));
+  REQUIRE(r.soon([&] { return r.card->ready(); }));
+  const auto st = r.card->relay_stats();
+  REQUIRE(st.has_value());
+  CHECK(st->you_own);
+  CHECK(st->rx_drops == 0 && st->tx_drops == 0);   // FakeTransport reports none
+}
+// Plan 2 review carry-over: a search-burst TUNE (owner, mid-retune) is not a
+// state transition; the card no longer logs waiting/owned on every burst.
+TEST(owner_mid_retune_is_not_a_logged_transition) {
+  Rig r;
+  REQUIRE(r.card->open_and_start());
+  r.t().push(status(0, 136, 2, 1));
+  REQUIRE(r.soon([&] { return r.card->ready(); }));
+  r.card->tick(r.now_ms += 10);
+  CHECK(r.card->transitions() == 2);              // "connecting", "owned and tuned"
+  REQUIRE(r.card->retune(40));                    // 40 pairs with 36 (HT40-: sec 2)
+  r.t().push(status(1, 136, 2, 1));               // STATUS: retuning, still on 136, we own it
+  REQUIRE(r.soon([&] { return !r.card->ready(); }));
+  r.card->tick(r.now_ms += 10);
+  CHECK(r.card->transitions() == 2);              // not "waiting for STATUS"
+  r.t().push(status(0, 40, 2, 1));                // tuned
+  REQUIRE(r.soon([&] { return r.card->ready(); }));
+  r.card->tick(r.now_ms += 10);
+  CHECK(r.card->transitions() == 2);              // not "owned and tuned" again
+  CHECK(r.card->health() == RemoteCard::Health::Owned);
+  // losing ownership mid-session still transitions (Refused via ownership_lost)
+  r.t().push(status(0, 40, 2, 0));
+  REQUIRE(r.soon([&] { return !r.card->ready(); }));
+  r.card->tick(r.now_ms += 1100);
+  CHECK(r.card->transitions() == 3);
+}
+// Plan 2 review carry-over, fix round 1: the mid-retune suppression is
+// bounded to 1 s -- a relay stuck in a failed TUNE (owner, never reaching
+// our channel) still logs "waiting for STATUS" once the grace runs out,
+// instead of going silent forever.
+TEST(owner_stuck_in_a_failed_tune_logs_after_the_grace) {
+  Rig r;
+  REQUIRE(r.card->open_and_start());
+  r.t().push(status(0, 136, 2, 1));
+  REQUIRE(r.soon([&] { return r.card->ready(); }));
+  r.card->tick(r.now_ms += 10);
+  CHECK(r.card->transitions() == 2);              // "connecting", "owned and tuned"
+  REQUIRE(r.card->retune(40));
+  r.t().push(status(2, 136, 2, 1));               // STATUS: owner, refused TUNE, stuck on 136
+  REQUIRE(r.soon([&] { return !r.card->ready(); }));
+  r.card->tick(r.now_ms += 100);                  // first suppressed tick (grace clock starts)
+  CHECK(r.card->transitions() == 2);              // within the 1 s grace
+  r.card->tick(r.now_ms += 400);                  // +400 ms since the first suppressed tick
+  CHECK(r.card->transitions() == 2);
+  r.card->tick(r.now_ms += 700);                  // +1100 ms since the first suppressed tick
+  CHECK(r.card->transitions() == 3);              // grace spent: "waiting for STATUS"
+  r.t().push(status(0, 40, 2, 1));                // tuned
+  REQUIRE(r.soon([&] { return r.card->ready(); }));
+  r.card->tick(r.now_ms += 10);
+  CHECK(r.card->transitions() == 4);              // "owned and tuned" again
 }
 MTEST_MAIN

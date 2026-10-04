@@ -83,21 +83,30 @@ void assign_if_present(const Value& j, const char* key, T& out,
 }
 
 void parse_radio(const Value& j, RadioCfg& r) {
-  check_known_keys(j, {"usb_vid", "usb_pid", "channel", "width",
+  check_known_keys(j, {"usb_vid", "usb_pid", "channels", "width",
                         "power_mode", "tx_threads", "rate_walls_rel",
-                        "legacy_wall_rel", "wall_margin_db", "follow_gs", "ldpc"},
+                        "legacy_wall_rel", "wall_margin_db", "ldpc"},
                    "radio");
   assign_if_present(j, "usb_vid", r.usb_vid, "radio");
   assign_if_present(j, "usb_pid", r.usb_pid, "radio");
-  assign_if_present(j, "channel", r.channel, "radio");
   assign_if_present(j, "width", r.width, "radio");
   if (r.width != 20 && r.width != 40)
     fail("radio.width", "must be 20 or 40 (HT20 / HT40; nothing else is measured)");
-  if (r.width == 40 && mabur::ht40_offset(r.channel) == 0)
-    fail("radio.width", "40 MHz needs a standard 5 GHz pair and channel " +
-                            std::to_string(static_cast<int>(r.channel)) +
-                            " has none (common/include/mabur/ht40.h)");
-  assign_if_present(j, "follow_gs", r.follow_gs, "radio");
+  if (j.contains("channels")) {
+    const Value& a = j["channels"];
+    if (!a.is_array()) fail("radio.channels", "not an array");
+    r.channels.clear();
+    for (const Value& v : a) {
+      if (!v.is_number_integer()) fail("radio.channels", "not an integer");
+      const long ch = v.get<int64_t>();
+      if (ch < 1 || ch > 177) fail("radio.channels", "must be in [1,177]");
+      r.channels.push_back(static_cast<uint8_t>(ch));
+    }
+  } else {
+    note_default("radio", "channels", "[40, 64, 112, 144]");
+  }
+  if (auto e = mabur::channel_set_issue(r.channels, r.width, "radio.channels"))
+    fail(e->field, e->why);
   assign_if_present(j, "ldpc", r.ldpc, "radio");
   assign_if_present(j, "power_mode", r.power_mode, "radio");
   assign_if_present(j, "tx_threads", r.tx_threads, "radio");
@@ -119,7 +128,6 @@ void parse_radio(const Value& j, RadioCfg& r) {
   assign_if_present(j, "legacy_wall_rel", r.legacy_wall_rel, "radio");
   assign_if_present(j, "wall_margin_db", r.wall_margin_db, "radio");
 
-  if (r.channel < 1 || r.channel > 177) fail("radio.channel", "must be in [1,177]");
   if (r.tx_threads < 1 || r.tx_threads > 8)
     fail("radio.tx_threads", "must be in [1,8]");
   if (r.power_mode != "offset" && r.power_mode != "none")

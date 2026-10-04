@@ -1,8 +1,11 @@
 // The page's config form model (spec 2026-09-27-web-ui §4.4). The form edits
-// channel/width (passed as --ch/--w) and, in GS mode, static_mcs / ladder
-// (written as a TOML overlay, with max_mcs = 7 so the ladder flies as listed, the core merges into its embedded
-// maburgs.default.toml, then validates with maburgs's own loader).
-import { checkChannelWidth, ht40Offset, DEFAULT_KEY_HEX } from './logic.mjs';
+// the channel set + link channel (the overlay's [radio] channels/channel, in
+// both modes; --ch carries the start member, startChannel), width (--w and
+// [radio] width) and,
+// in GS mode, static_mcs / ladder (the overlay's [link], with max_mcs = 7 so
+// the ladder flies as listed). The core merges the overlay into its embedded
+// maburgs.default.toml, then validates with maburgs's own loader.
+import { ht40Offset, DEFAULT_KEY_HEX } from './logic.mjs';
 
 export { DEFAULT_KEY_HEX };
 
@@ -16,7 +19,7 @@ const OV_MIN = 0.1, OV_MAX = 2.0;
 // gs/bundle/maburgs.default.toml
 export function defaultConfig() {
   return {
-    channel: 136, width: 40, staticMcs: -1,
+    channels: [40, 64, 112, 144], link: 'auto', width: 40, staticMcs: -1,
     ladder: [0, 1, 2, 3, 4].map((mcs) => ({ mcs, bw: 40, ob: 0.5, oe: 0.25 })),
     // Page-only (never sent to the core): reverse the drone's colortrans
     // sensor tuning on the video (lib/colortrans.js). maburplay's bundle
@@ -38,12 +41,21 @@ function normRung(r) {
   return { mcs, bw, ob, oe };
 }
 
+function normChannels(raw) {
+  if (!Array.isArray(raw) || raw.length < 1 || raw.length > 8) return null;
+  const out = raw.map(int);
+  if (!out.every((c) => inRange(c, 1, 177))) return null;
+  if (new Set(out).size !== out.length) return null;
+  return out;
+}
+
 // Per-field fallback: anything missing or malformed takes the default, so a
 // stale or hand-edited localStorage entry can never break the page.
 export function normalizeConfig(raw) {
   const d = defaultConfig();
   if (!raw || typeof raw !== 'object') return d;
-  const ch = int(raw.channel);
+  const channels = normChannels(raw.channels) ?? d.channels;
+  const lk = raw.link === 'auto' ? 'auto' : int(raw.link);
   const w = int(raw.width);
   const sm = int(raw.staticMcs);
   let ladder = d.ladder;
@@ -52,7 +64,8 @@ export function normalizeConfig(raw) {
     if (rungs.every(Boolean)) ladder = rungs;
   }
   return {
-    channel: inRange(ch, 1, 200) ? ch : d.channel,
+    channels,
+    link: lk === 'auto' || channels.includes(lk) ? lk : 'auto',
     width: w === 20 || w === 40 ? w : d.width,
     staticMcs: inRange(sm, -1, 7) ? sm : d.staticMcs,
     ladder,
@@ -68,9 +81,24 @@ export function loadConfig(storage, qs) {
     raw = t ? JSON.parse(t) : null;
   } catch { raw = null; }
   const c = normalizeConfig(raw);
-  const qch = int(qs?.get('ch') ?? '');
+  // ?chs=40,64 sets the set; ?ch=N pins N (added when absent and room
+  // remains; against a full 8-member set that lacks N the pin is ignored --
+  // pinned by config.test.mjs); ?ch=auto unpins.
+  const chs = normChannels(String(qs?.get('chs') ?? '').split(',').filter(Boolean));
+  if (chs) {
+    c.channels = chs;
+    if (c.link !== 'auto' && !chs.includes(c.link)) c.link = 'auto';
+  }
+  const qch = qs?.get('ch');
+  if (qch === 'auto') c.link = 'auto';
+  else {
+    const n = int(qch ?? '');
+    if (inRange(n, 1, 177)) {
+      if (!c.channels.includes(n) && c.channels.length < 8) c.channels = [...c.channels, n].sort((a, b) => a - b);
+      if (c.channels.includes(n)) c.link = n;
+    }
+  }
   const qw = int(qs?.get('w') ?? '');
-  if (inRange(qch, 1, 200)) c.channel = qch;
   if (qw === 20 || qw === 40) c.width = qw;
   return c;
 }
@@ -87,19 +115,55 @@ export function rungWarnings(cfg, i) {
   return out;
 }
 
-export function channelWarning(cfg) {
-  if (cfg.width === 40 && ht40Offset(cfg.channel) === 0) {
-    return `Channel ${cfg.channel} has no 40 MHz pair — pick 20 MHz or another channel.`;
+// Add or remove a set member. The set stays 1..8 (removing the last member or
+// adding a ninth is a no-op); a removed pinned link channel falls back to auto.
+export function toggleChannel(cfg, ch) {
+  const has = cfg.channels.includes(ch);
+  if (has && cfg.channels.length === 1) return cfg;
+  if (!has && cfg.channels.length >= 8) return cfg;
+  const channels = has ? cfg.channels.filter((c) => c !== ch) : [...cfg.channels, ch].sort((a, b) => a - b);
+  const link = cfg.link !== 'auto' && !channels.includes(cfg.link) ? 'auto' : cfg.link;
+  return { ...cfg, ladder: cfg.ladder.map((r) => ({ ...r })), channels, link };
+}
+
+// The chips the form shows: the chip list plus any member outside it (a
+// ?ch= / ?chs= / stored member), so every member can be removed.
+export function chipChannels(cfg) {
+  return [...new Set([...CHANNELS, ...cfg.channels])].sort((a, b) => a - b);
+}
+
+// Mirror of common/include/mabur/channel_set.h channel_set_issue + the pin
+// rule. null = OK, else a user-facing sentence.
+export function checkChannelSet(channels, link, width) {
+  if (!Array.isArray(channels) || channels.length < 1 || channels.length > 8) return 'Pick 1 to 8 channels.';
+  for (const ch of channels) if (!inRange(ch, 1, 177)) return `Channel ${ch} is out of range (1–177).`;
+  if (new Set(channels).size !== channels.length) return 'A channel is listed twice.';
+  if (Number(width) === 40) {
+    const off0 = ht40Offset(channels[0]);
+    for (const ch of channels) {
+      const off = ht40Offset(ch);
+      if (off === 0) return `Channel ${ch} has no 40 MHz pair — pick 20 MHz or drop it.`;
+      if (off !== off0) {
+        return `Channel ${ch} is on the other side of the pair grid from channel ${channels[0]} — every member must share one offset at 40 MHz.`;
+      }
+    }
   }
+  if (link !== 'auto' && !channels.includes(link)) return `Link channel ${link} is not in the set.`;
   return null;
+}
+
+export function channelWarning(cfg) {
+  return cfg.width === 40 ? checkChannelSet(cfg.channels, cfg.link, 40) : null;
 }
 
 // Page-side mirror of what the core's loader would refuse (so Connect never
 // ends in `ERROR bad config`). null = OK, else a user-facing sentence.
-export function connectBlocker(cfg, mode) {
-  const cw = checkChannelWidth(String(cfg.channel), String(cfg.width));
-  if (cw) return cw;
-  if (mode !== 'gs') return null;   // spotter sends no overlay
+export function connectBlocker(cfg, mode, _radio = 'usb') {
+  const cs = checkChannelSet(cfg.channels, cfg.link, cfg.width);
+  if (cs) return cs;
+  // No per-radio channel rule: the CPE relay tunes the whole 20 MHz grid
+  // 36-177 since mabur-openwrt 2c1c51f (2026-10-03), 144 included.
+  if (mode !== 'gs') return null;   // spotter's [link] is fixed (one rung at the page width)
   if (cfg.staticMcs >= 0) return null;   // pinned: the ladder is hidden and not sent (toOverlayToml)
   for (let i = 0; i < cfg.ladder.length; i++) {
     const { ob, oe } = cfg.ladder[i];
@@ -118,11 +182,20 @@ export function connectBlocker(cfg, mode) {
 
 const num = (v) => String(Number(v));
 
-export function toOverlayToml(cfg, keyHex = null) {
+// [radio] in both modes (the core validates --ch against this set, and the
+// set against this width -- not the bundle's); [link] + the ladder in GS
+// mode. The spotter never walks a ladder, but the loader validates the
+// bundle's against radio.width, so it gets one rung at the page width.
+export function toOverlayToml(cfg, keyHex = null, mode = 'gs') {
+  let t = `[radio]\nchannels = [${cfg.channels.join(', ')}]\nchannel = ${cfg.link === 'auto' ? '"auto"' : cfg.link}\nwidth = ${cfg.width}\n`;
+  if (mode !== 'gs') {
+    return t + `\n[link]\nstatic_mcs = -1\nstatic_bw = ${cfg.width}\nmax_mcs = 7\n`
+      + `\n[[link.ladder]]\nmcs = 0\nbw = ${cfg.width}\noverhead_base = 0.5\noverhead_enh = 0.25\n`;
+  }
   const pinned = cfg.staticMcs >= 0;
   // max_mcs 7: the form has no Max MCS -- the ladder is the whole policy, so
   // override the bundle's max_mcs filter rather than let it drop rungs.
-  let t = `[link]\n${keyHex ? `key = "${keyHex}"\n` : ''}static_mcs = ${cfg.staticMcs}\nstatic_bw = ${cfg.width}\nmax_mcs = 7\n`;
+  t += `\n[link]\n${keyHex ? `key = "${keyHex}"\n` : ''}static_mcs = ${cfg.staticMcs}\nstatic_bw = ${cfg.width}\nmax_mcs = 7\n`;
   // Pinned, the form hides the ladder and the link never walks it, but
   // maburgs's loader still validates it (a 40 MHz rung at width
   // 20 fails boot). Send one rung that always loads instead; the saved
@@ -158,11 +231,30 @@ export function applyRungEdit(cfg, i, key, val) {
   return { ...cfg, ladder: L };
 }
 
-const EDIT_LABEL = { channel: 'Channel', width: 'Channel width', staticMcs: 'Fixed MCS' };
+export const CHANNEL_STORE = 'webgs.channel';
+export function loadRememberedChannel(storage) {
+  try {
+    const v = int(storage && storage.getItem(CHANNEL_STORE));
+    return inRange(v, 1, 177) ? v : null;
+  } catch { return null; }
+}
+export function saveRememberedChannel(storage, ch) {
+  try { storage && storage.setItem(CHANNEL_STORE, String(ch)); } catch { /* page works without storage */ }
+}
+// What --ch carries: "start on this member" (spec 2026-10-04 §5.2). The pin
+// wins; else the remembered channel if it is still a member; else the first.
+export function startChannel(cfg, remembered) {
+  if (cfg.link !== 'auto') return cfg.link;
+  if (remembered !== null && remembered !== undefined && cfg.channels.includes(remembered)) return remembered;
+  return cfg.channels[0];
+}
+
+const EDIT_LABEL = { channels: 'Channels', link: 'Link channel', width: 'Channel width', staticMcs: 'Fixed MCS' };
 export function describeEdit(key, val) {
   if (key === 'dvr') return `Recording target set to ${{ web: 'mabur web', vtx: 'VTX', both: 'Both' }[val]}`;
   if (key === 'colortrans') return `Colour correction ${val ? 'on' : 'off'}`;
-  const shown = key === 'width' ? `${val} MHz` : key === 'staticMcs' && val < 0 ? 'Adaptive' : val;
+  const shown = key === 'channels' ? val.join(', ') : key === 'link' ? (val === 'auto' ? 'Auto' : val)
+    : key === 'width' ? `${val} MHz` : key === 'staticMcs' && val < 0 ? 'Adaptive' : val;
   return `${EDIT_LABEL[key]} set to ${shown}`;
 }
 const RUNG_LABEL = { mcs: 'MCS', bw: 'BW', ob: 'FEC base', oe: 'FEC enh' };

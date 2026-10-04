@@ -28,6 +28,12 @@ class RemoteCard final : public LinkCard {
     uint8_t channel = 149;
     uint8_t width_mhz = 20;    // 20|40; sec derives from channel (mabur::ht40_offset)
     uint8_t card_id = 0;
+    // maburgs (a daemon) restarts the client every kRefusedRestartMs while
+    // another client owns the relay and never gives up. The web page is the
+    // relay's one client (spec 2026-10-04 §1): it sets this false so a
+    // refusal stays visible through health() as Refused/Taken instead of
+    // being reset.
+    bool restart_when_refused = true;
   };
   using OpenFn = std::function<std::unique_ptr<RelayTransport>(const std::string&, std::string&)>;
   using NowMsFn = std::function<uint64_t()>;
@@ -35,9 +41,19 @@ class RemoteCard final : public LinkCard {
   // daemon must not, so the client is restarted this often while refused.
   static constexpr uint64_t kRefusedRestartMs = 5000;
 
+#ifndef __EMSCRIPTEN__
   RemoteCard(Cfg cfg, BodyQueue& out);                                // UDP + monotonic clock
+#endif
   RemoteCard(Cfg cfg, BodyQueue& out, OpenFn open, NowMsFn now_ms);   // injectable (tests)
   ~RemoteCard() override;
+
+  // The page's view of the relay (web_main.cpp maps these to its ERROR lines;
+  // maburgs never gives up and ignores it). Read under mu_ at call time.
+  enum class Health { Connecting, Owned, Refused, TuneFailed, Lost, Taken };
+  Health health() const;
+  // State lines logged so far ("connecting", "owned and tuned", ...): a test
+  // seam for the transition rule in tick().
+  uint32_t transitions() const { return transitions_.load(); }
 
   // LinkCard
   bool open_and_start() override;
@@ -84,12 +100,16 @@ class RemoteCard final : public LinkCard {
   std::atomic<uint64_t> rx_frames_{0}, foreign_{0}, own_{0}, own_air_us_{0};
   std::atomic<uint64_t> tx_frames_{0}, tx_fail_{0};
   std::atomic<uint32_t> reconnects_{0};
+  std::atomic<uint32_t> transitions_{0};
   uint64_t last_restart_ms_ = 0;
   bool opened_once_ = false;
   uint16_t tx_seq_ = 0;            // under mu_
   OwnAirAcc own_air_;              // RX thread only
   // last logged state, to log transitions once
   enum class St { Down, Waiting, Owned, Refused, Lost } last_st_ = St::Down;
+  // When an owner-mid-retune first suppressed a Waiting transition (0 = not
+  // suppressing); under mu_, read/written only in tick().
+  uint64_t owned_retune_since_ms_ = 0;
 };
 
 }  // namespace maburgs

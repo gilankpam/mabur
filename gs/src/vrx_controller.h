@@ -33,7 +33,23 @@ struct VrxCfg {
   // link.probe.pin_mcs: static-pin mode only -- probe a fixed MCS while
   // pinned (bench validation).
   int probe_pin_mcs = -1;
+  // Rendezvous vrx_nonce: 0 = random per process (a restarted GS is a new
+  // session, rendezvous.h). Only a replay pins one, so its sent frames (DISC
+  // nonce, RCF tags) are reproducible -- the native/WASM parity trace.
+  uint32_t rz_nonce = 0;
 };
+
+// A DISC proposes the channel it is sent on (final review C1 addendum A,
+// 2026-10-04): the GS builds one DISC per tick proposing op and fans it to
+// every target card, but a search-burst copy leaves on the scout card's
+// member X -- proposing op there made the drone ack "agreed op" and retune
+// itself to op on promotion while the GS linked on X. This rewrites
+// Disc.op_channel to `ch` (the sending card's channel) and re-packs/re-tags
+// the frame under `key`. Returned unchanged when it does not parse as a
+// DISC, ch is 0 (unknown) or it already proposes ch. DISC is not
+// RTT-matchable: the slotter needs nothing else.
+std::vector<uint8_t> disc_for_channel(const std::vector<uint8_t>& disc, uint8_t ch,
+                                      const mabur::LinkKey& key);
 
 class VrxController {
  public:
@@ -118,6 +134,8 @@ class VrxController {
   // vtx_nonce adoption; true once per arming, cleared by read.
   static constexpr int kMoveAfterRcfs = 5;
   bool take_move_edge() { const bool e = move_edge_; move_edge_ = false; return e; }
+  // Test seam: arm the move edge as a LINKED Telem under a fresh vtx_nonce would.
+  void test_set_move_edge() { move_edge_ = true; }
   // Telem.state from the drone (2 == RcAgent::State::LINKED).
   void note_drone_state(uint8_t telem_state);
   // The drone answers our DISCs with key_mismatch: our key differs from its.
