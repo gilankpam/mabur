@@ -308,4 +308,64 @@ TEST(retune_after_stop_records_target_without_sending) {
   }
   r.card->stop();
 }
+TEST(health_connecting_then_owned) {
+  Rig r;
+  CHECK(r.card->health() == RemoteCard::Health::Connecting);   // not opened
+  REQUIRE(r.card->open_and_start());
+  CHECK(r.card->health() == RemoteCard::Health::Connecting);   // no STATUS yet
+  r.t().push(status(0, 136, 2, 1));
+  REQUIRE(r.soon([&] { return r.card->ready(); }));
+  CHECK(r.card->health() == RemoteCard::Health::Owned);
+}
+TEST(health_refused_past_the_tune_window) {
+  Rig r;
+  REQUIRE(r.card->open_and_start());
+  r.t().push(status(3, 136, 2, 0));
+  REQUIRE(r.soon([&] { return r.card->alive(); }));
+  CHECK(r.card->health() == RemoteCard::Health::Connecting);   // inside the window
+  r.now_ms += 2600;
+  r.t().push(status(3, 136, 2, 0));
+  REQUIRE(r.soon([&] { return r.card->health() == RemoteCard::Health::Refused; }));
+}
+TEST(health_tune_failed) {
+  Rig r;
+  REQUIRE(r.card->open_and_start());
+  r.t().push(status(2, 100, 0, 1));            // owner, never on our channel
+  REQUIRE(r.soon([&] { return r.card->alive(); }));
+  r.now_ms += 2600;
+  r.t().push(status(2, 100, 0, 1));
+  REQUIRE(r.soon([&] { return r.card->health() == RemoteCard::Health::TuneFailed; }));
+}
+TEST(health_lost_and_taken) {
+  Rig r;
+  REQUIRE(r.card->open_and_start());
+  r.t().push(status(0, 136, 2, 1));
+  REQUIRE(r.soon([&] { return r.card->ready(); }));
+  r.now_ms += 2100;                            // no STATUS for > kLostMs
+  CHECK(r.card->health() == RemoteCard::Health::Lost);
+  Rig s;
+  REQUIRE(s.card->open_and_start());
+  s.t().push(status(0, 136, 2, 1));
+  REQUIRE(s.soon([&] { return s.card->ready(); }));
+  s.t().push(status(0, 136, 2, 0));            // another client took it
+  // Wait for the RX thread to consume this STATUS (and thus set
+  // not_owner_since_ms_ at the pre-increment clock) before moving the
+  // clock, same idiom as tick_with_status above -- otherwise the RX
+  // thread can read the already-advanced clock and ownership_lost()
+  // never crosses its 1000 ms window.
+  REQUIRE(s.soon([&] { std::lock_guard<std::mutex> lk(s.t().mu); return s.t().inbox.empty(); }));
+  s.now_ms += 1100;
+  s.t().push(status(0, 136, 2, 0));
+  REQUIRE(s.soon([&] { return s.card->health() == RemoteCard::Health::Taken; }));
+}
+TEST(relay_stats_carry_you_own_and_transport_drops) {
+  Rig r;
+  REQUIRE(r.card->open_and_start());
+  r.t().push(status(0, 136, 2, 1));
+  REQUIRE(r.soon([&] { return r.card->ready(); }));
+  const auto st = r.card->relay_stats();
+  REQUIRE(st.has_value());
+  CHECK(st->you_own);
+  CHECK(st->rx_drops == 0 && st->tx_drops == 0);   // FakeTransport reports none
+}
 MTEST_MAIN

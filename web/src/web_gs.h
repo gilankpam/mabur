@@ -40,6 +40,7 @@
 #include "msp_sink.h"
 #include "osd_screen.h"
 #include "rcf_slot.h"
+#include "relay_stats.h"
 #include "rtt_estimator.h"
 #include "vrx_controller.h"
 
@@ -98,6 +99,11 @@ std::string stats_json(const Stats& s);   // one line, no trailing newline
 // fine (it sees the 20 MHz rungs). std::nullopt = OK, else the reason.
 std::optional<std::string> channel_width_error(const maburgs::Config& cfg, Mode mode,
                                                int channel, int width);
+
+// The page's relay stats fields, appended to each STATS line (keys as the
+// 2026-09-29 RelayLink::stats_fields emitted them; web/ui/src/lib/view.js
+// reads them).
+std::string relay_stats_fields(const maburgs::RelayStatsIn& r);
 
 // Capture -> AU complete, core clock, from the drone's u32 pts and the
 // RTT estimator's pts offset (pts - GS-mono). Modular in 32 bits: valid

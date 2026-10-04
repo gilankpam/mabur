@@ -35,9 +35,16 @@ class RemoteCard final : public LinkCard {
   // daemon must not, so the client is restarted this often while refused.
   static constexpr uint64_t kRefusedRestartMs = 5000;
 
+#ifndef __EMSCRIPTEN__
   RemoteCard(Cfg cfg, BodyQueue& out);                                // UDP + monotonic clock
+#endif
   RemoteCard(Cfg cfg, BodyQueue& out, OpenFn open, NowMsFn now_ms);   // injectable (tests)
   ~RemoteCard() override;
+
+  // The page's view of the relay (web_main.cpp maps these to its ERROR lines;
+  // maburgs never gives up and ignores it). Read under mu_ at call time.
+  enum class Health { Connecting, Owned, Refused, TuneFailed, Lost, Taken };
+  Health health() const;
 
   // LinkCard
   bool open_and_start() override;

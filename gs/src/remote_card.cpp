@@ -7,21 +7,25 @@
 #include "mabur/ht40.h"
 
 namespace maburgs {
+#ifndef __EMSCRIPTEN__
 namespace {
 uint64_t mono_ms_now() {
   return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 }  // namespace
+#endif
 
 uint8_t RemoteCard::sec_for(uint8_t ch, uint8_t width_mhz) {
   return width_mhz == 40 ? mabur::ht40_offset(ch) : 0;
 }
 
+#ifndef __EMSCRIPTEN__
 RemoteCard::RemoteCard(Cfg cfg, BodyQueue& out)
     : RemoteCard(std::move(cfg), out,
                  [](const std::string& a, std::string& e) { return open_udp_transport(a, e); },
                  mono_ms_now) {}
+#endif
 
 RemoteCard::RemoteCard(Cfg cfg, BodyQueue& out, OpenFn open, NowMsFn now_ms)
     : cfg_(std::move(cfg)), out_(out), open_(std::move(open)), now_ms_(std::move(now_ms)),
@@ -82,6 +86,18 @@ bool RemoteCard::alive() const {
   // A relay we have never heard from since (re)start is not alive: a dead
   // CPE would otherwise read UP for ~2 s after every reopen (bench 2026-10-02).
   return running_.load() && c_.have_status() && !c_.lost(now_ms_());
+}
+
+RemoteCard::Health RemoteCard::health() const {
+  std::lock_guard<std::mutex> lk(mu_);
+  if (!running_.load()) return opened_once_ ? Health::Lost : Health::Connecting;
+  const uint64_t now = now_ms_();
+  if (c_.lost(now)) return Health::Lost;
+  if (c_.owned_and_tuned()) return Health::Owned;
+  if (c_.ownership_lost(now)) return Health::Taken;
+  if (c_.refused(now)) return Health::Refused;
+  if (c_.tune_failed(now)) return Health::TuneFailed;
+  return Health::Connecting;
 }
 
 CardCaps RemoteCard::caps() const {
@@ -165,6 +181,9 @@ std::optional<RelayStatsIn> RemoteCard::relay_stats() const {
   r.frames = c_.frames(); r.gaps = c_.seq_gaps();
   r.your_drops = s.your_drops; r.tx = s.tx; r.tx_fail = s.tx_fail; r.tx_refused = s.tx_refused;
   r.reconnects = reconnects_.load();
+  r.you_own = s.you_own;
+  r.rx_drops = t_ ? t_->rx_drops() : 0;
+  r.tx_drops = t_ ? t_->tx_drops() : 0;
   return r;
 }
 

@@ -1,6 +1,7 @@
 #include "web_gs.h"
 
 #include <cmath>
+#include <cstdio>
 #include <stdexcept>
 #include <utility>
 
@@ -28,6 +29,20 @@ std::optional<std::string> channel_width_error(const maburgs::Config& cfg, Mode 
   if (mode == Mode::Gs)
     if (auto e = maburgs::link_width_issue(cfg.link, width)) return e->field + ": " + e->why;
   return std::nullopt;
+}
+
+std::string relay_stats_fields(const maburgs::RelayStatsIn& r) {
+  char b[512];
+  std::snprintf(b, sizeof b,
+                ",\"radio\":\"relay\",\"relay_state\":%u,\"relay_ch\":%u,\"relay_sec\":%u,"
+                "\"relay_owned\":%d,\"relay_you_own\":%d,\"relay_frames\":%llu,\"relay_gaps\":%llu,"
+                "\"relay_rx_drops\":%llu,\"relay_tx_ring_drops\":%llu,\"relay_tx\":%u,\"relay_tx_fail\":%u,"
+                "\"relay_tx_refused\":%u,\"relay_your_drops\":%u",
+                r.state, r.ch, r.sec, r.owned ? 1 : 0, r.you_own ? 1 : 0,
+                static_cast<unsigned long long>(r.frames), static_cast<unsigned long long>(r.gaps),
+                static_cast<unsigned long long>(r.rx_drops), static_cast<unsigned long long>(r.tx_drops),
+                r.tx, r.tx_fail, r.tx_refused, r.your_drops);
+  return b;
 }
 
 namespace {
