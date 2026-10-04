@@ -364,7 +364,9 @@ instead of 1 Hz:
   bring-up.
 - `D` — one scout dwell (the channel-ranker's raw input) — boot-time or
   in-session, distinguished by a trailing `sess` flag and three step-timing
-  columns the in-flight scout added.
+  columns the in-flight scout added; since `scanlog 6` (2026-10-05, CPE510
+  relay interference sweep/hop) a further trailing rx % field for a relay
+  sweep entry (`-` for a USB dwell), `docs/cpe510-relay.md`.
 - `K` — the pick at freeze, with the full ranking.
 - `M` — a GS retune that changes where the link lives (`commit`,
   `ack_override`, `link_found`, plus the hop reasons

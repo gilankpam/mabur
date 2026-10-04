@@ -337,7 +337,7 @@ still never transmits.
 ### CPE relay radio
 
 The radio picker on the Disconnected screen offers **USB card** (default) or
-**CPE relay** — a TP-Link CPE510 running `mabur-relay` protocol v3
+**CPE relay** — a TP-Link CPE510 running `mabur-relay` protocol v4
 (`docs/cpe510-relay.md`), reached over WebSocket instead of a locally
 plugged-in card; no card chooser, no WebUSB grant.
 
@@ -346,7 +346,7 @@ plugged-in card; no card chooser, no WebUSB grant.
 so Connect uses `10.83.11.1:8311` (`RELAY_DEFAULT`) with no address field on
 screen. Each Connect probes exactly one address (`connectRelay()`,
 `web/ui/src/lib/relay_connect.js`): open `ws://<addr>`, send HELLO, wait
-≤ 1.5 s for any mabur v3 message. No reply → *"No CPE relay found at
+≤ 1.5 s for any mabur v4 message. No reply → *"No CPE relay found at
 10.83.11.1 — …, or enter its address."* and the address field appears. A
 typed address is saved (`webgs.last.relayCustom`), keeps the field visible
 on later visits, and is then the **only** address Connect tries; clearing it
@@ -405,7 +405,16 @@ before the session starts, in GS mode and in Spotter mode alike.
 scout runs on the relay with search bursts only (spec §3.7): DISC goes out
 on each member in turn, but the CPE has no energy reads, so no member is
 ever ranked and the stats' `scan_state` reads `off`. Auto on a relay means
-"start member plus search".
+"start member plus search". This is **boot only**: once linked, the page
+drives the same `ChannelCore` `maburgs` does (`docs/channel-select.md`
+"Where the code lives"; bench §"Channel set, relocation, one-card hop —
+bench 2026-10-04 (plan 2)" below), and since protocol v4 (2026-10-05,
+`docs/cpe510-relay.md` "Interference + hop on a relay") a relay-only page
+gets the full in-flight verdict → sweep → ranker → hop flow too — it sends
+a `SCAN` for the channel set, ranks the `SCAN_RESULT`, and hops exactly as
+`maburgs` does. The boot scout's own search-only limit (no member ever
+ranked at boot) is unchanged; only the in-flight path gained a ranking
+source for the relay.
 
 **Errors** (core `ERROR` line → page text, `errorText()` in
 `web/ui/src/lib/logic.mjs`), driven by `RemoteCard::health()` — the same
@@ -849,10 +858,13 @@ rule).
   another client` rather than fighting for it, in Spotter mode as well as
   GS mode. Same one-commander rule as
   two GS-mode pages against a USB-connected drone, below.
-- **CPE relay: search only.** The CPE has no FA/CCA/NHM reads, so on the
-  relay the core searches the set for the drone but never ranks members
-  (`scan_state` reads `off`); auto on a relay means 'start member plus
-  search'. Each TUNE silently costs 50 ms of beaconing: the scout offers
+- **CPE relay: search only at boot.** The CPE has no FA/CCA/NHM reads, so
+  on the relay the **boot** scout searches the set for the drone but never
+  ranks members (`scan_state` reads `off`); auto on a relay means 'start
+  member plus search'. This limit is boot-only: once linked, in-flight
+  interference detection and hop run on a relay too, via `SCAN`/survey
+  instead of energy reads (protocol v4, "Search-only scout on the relay"
+  above). Each TUNE silently costs 50 ms of beaconing: the scout offers
   no DISC until the relay reports tuned (a CPE TUNE answers `retuning`
   after ~7 ms and `tuned` after 50 ms, flat over 30 retunes, measured
   2026-10-04), so a 100 ms search burst on a non-op member sends 2–3
