@@ -16,7 +16,8 @@
   import { recView, RecClock, formatClock } from '../lib/rec.js';
   import { sparkPoints } from '../lib/metrics.js';
   import { layoutMode, keyAction, isMobile, uiFrame } from '../lib/layout.js';
-  import { connectBlocker, toOverlayToml, saveConfig, saveKey, parseKeyText } from '../lib/config.js';
+  import { connectBlocker, toOverlayToml, saveConfig, saveKey, parseKeyText,
+    startChannel, loadRememberedChannel, saveRememberedChannel } from '../lib/config.js';
   import { relayBlocker, relayTarget, relayFieldVisible, keyFingerprint, USB_FILTERS, isCardVendor } from '../lib/logic.mjs';
   import { connectRelay, lnaQuery, probeRelay } from '../lib/relay_connect.js';
   import { effectiveTarget, targetCovers, recFileName, localView, combinedRec, headroomWarning,
@@ -107,6 +108,8 @@
     // failed module's straggler AUs must not rebuild the decoder close() freed.
     onAu: (...a) => { const st = session.snapshot.state; if (st === 'live' || st === 'connecting') video.onAu(...a); },
     onStats: (text, s) => { tele.onCoreStats(text, s); ui.tick++; },
+    // The core's remembered channel: the next Connect starts there (startChannel).
+    onChannel: (n) => saveRememberedChannel(localStorageSafe(), n),
     // Same live/connecting gate as onAu: a stopping module's straggler
     // screens must not repaint after Disconnect cleared the layer.
     onOsd: (rows, cols, cells) => {
@@ -140,9 +143,8 @@
   const live = $derived(sess.state === 'live');
   const busy = $derived(sess.state === 'connecting' || sess.state === 'stopping');
   const shownMode = $derived(live || busy ? sess.mode : ui.mode);
-  const chLine = $derived(live || busy ? `${sess.ch} · ${sess.w} MHz` : `${ui.cfg.channel} · ${ui.cfg.width} MHz`);
   const showRelayAddr = $derived(relayFieldVisible(relaySavedAtLoad, ui.relayFieldOpen));
-  const blocker = $derived(connectBlocker(ui.cfg, ui.mode) ?? (ui.radio === 'relay' ? relayBlocker(location.protocol, showRelayAddr ? ui.relayAddr : '') : null));
+  const blocker = $derived(connectBlocker(ui.cfg, ui.mode, ui.radio) ?? (ui.radio === 'relay' ? relayBlocker(location.protocol, showRelayAddr ? ui.relayAddr : '') : null));
 
   // 200 ms view refresh (handoff "Telemetry refresh every 200 ms"). tele.* is
   // plain JS (not reactive), so everything the template reads from it is
@@ -157,8 +159,8 @@
     if (osdLayer.isStale(performance.now())) clearOsd();   // 5 s without MSP
     if (live) tele.sample(nowMs, sess.mode);
     core = live ? tele.core : null;
-    view = statsView({ connected: live, mode: shownMode, ch: live ? sess.ch : ui.cfg.channel, w: live ? sess.w : ui.cfg.width,
-      core, page: live ? tele.page : null, sessionCfg: live ? sessionCfg : ui.cfg, videoSize: video.videoSize,
+    view = statsView({ connected: live, mode: shownMode, ch: sess.ch, w: live ? sess.w : ui.cfg.width,
+      core, page: live ? tele.page : null, sessionCfg: live ? sessionCfg : ui.cfg, cfg: ui.cfg, videoSize: video.videoSize,
       colour: live ? video.colour : null });
     const target = effectiveTarget(sessionCfg.dvr, sess.mode);
     const lv = live ? localView(core) : { state: 'unknown', err: null, bytes: 0 };
@@ -195,7 +197,8 @@
     // which the first-time WebUSB chooser needs.
     if (isMobile(LW, LH) && usbGranted) goLandscape();
     video.reset(); tele.reset(); osd.resetAtlasFailure(); hiddenShown = false; hiddenBanner = false;
-    const p = session.connect({ mode: ui.mode, ch: ui.cfg.channel, w: ui.cfg.width, overlayToml: toOverlayToml(sessionCfg, ui.key),
+    const ch = startChannel(sessionCfg, loadRememberedChannel(localStorageSafe()));
+    const p = session.connect({ mode: ui.mode, ch, w: sessionCfg.width, overlayToml: toOverlayToml(sessionCfg, ui.key, ui.mode),
       relay: ui.radio === 'relay' ? relayTarget(showRelayAddr ? ui.relayAddr : '') : null });
     refresh();   // the connecting tag/overlay without waiting for the next tick
     await p;
@@ -361,7 +364,7 @@
 
 <div class="root" class:immersive={layout !== 'windowed'} style={frame.style}>
   {#if layout === 'windowed'}
-    <Header {tag} {chLine} {live} {busy} blocked={!!blocker}
+    <Header {tag} chLine={view?.chLine ?? ''} {live} {busy} blocked={!!blocker}
       onConnect={connect} onDisconnect={disconnect} rec={recOn} {recLabel} {recDisabled} {recTitle}
       onRec={toggleRec} onFs={toggleFs} />
   {/if}
@@ -397,7 +400,7 @@
     {/if}
   </div>
   {#if layout === 'immersive' && view}
-    <FsOverlay {live} mode={sess.mode} {chLine} {recOn} {recWaiting} recClock={formatClock(recMs)} recErr={rec.state === 'error' ? (rec.err || 'error') : null} {recDisabled} {recTitle}
+    <FsOverlay {live} mode={sess.mode} chLine={view?.chLine ?? ''} {recOn} {recWaiting} recClock={formatClock(recMs)} recErr={rec.state === 'error' ? (rec.err || 'error') : null} {recDisabled} {recTitle}
       onConn={toggleConn} onRec={toggleRec} onStats={() => (ui.statsVisible = !ui.statsVisible)}
       onCfg={() => (ui.cfgOpen = !ui.cfgOpen)} fsButton={isMobile(LW, LH) ? (fsSupported ? { on: realFs } : null) : { on: true }}
       onFs={isMobile(LW, LH) ? toggleRealFs : toggleFs} {fsMsg} />

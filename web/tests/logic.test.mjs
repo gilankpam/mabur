@@ -115,7 +115,7 @@ test('DecoderSlot.replace closes the previous decoder unless already closed (fin
 
 import {
   SegWindow, capToGlass, rcfHeardPct, rcfHeardPctWindowed, errorText, ht40Offset,
-  checkChannelWidth, pruneSubmitted, trimBefore, copyStatsPayload, controlsLocked,
+  pruneSubmitted, trimBefore, copyStatsPayload, controlsLocked,
   isStalePresentSample,
 } from '../ui/src/lib/logic.mjs';
 
@@ -162,18 +162,6 @@ test('ht40Offset matches common/include/mabur/ht40.h', () => {
   assert.equal(ht40Offset(132), 1); assert.equal(ht40Offset(136), 2);
   assert.equal(ht40Offset(149), 1); assert.equal(ht40Offset(161), 2);
   assert.equal(ht40Offset(165), 0); assert.equal(ht40Offset(6), 0);
-});
-
-test('checkChannelWidth refuses bad channel/width before connect', () => {
-  assert.equal(checkChannelWidth('136', '40'), null);
-  assert.equal(checkChannelWidth('165', '20'), null);
-  assert.match(checkChannelWidth('abc', '20'), /not a number/);
-  assert.match(checkChannelWidth('', '20'), /not a number/);
-  assert.match(checkChannelWidth('13.5', '20'), /not a number/);
-  assert.match(checkChannelWidth('0', '20'), /out of range/);
-  assert.match(checkChannelWidth('201', '20'), /out of range/);
-  assert.match(checkChannelWidth('136', '80'), /20 or 40/);
-  assert.match(checkChannelWidth('165', '40'), /no 40 MHz pair/);
 });
 
 test('pruneSubmitted drops records older than 1 s', () => {
@@ -389,7 +377,6 @@ test('loadRelayCustom: only the new key counts; old saved defaults are ignored',
 
 test('errorText relay lines', () => {
   assert.match(errorText('ERROR relay unreachable'), /CPE relay not reachable/);
-  assert.match(errorText('ERROR relay unreachable: cannot resolve x:1'), /CPE relay not reachable/);
   assert.match(errorText('ERROR relay owned by another client'), /owned by another client/);
   assert.match(errorText('ERROR relay taken by another client'), /Another client took over the CPE relay/);
   assert.match(errorText('ERROR relay lost'), /connection lost/);

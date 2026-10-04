@@ -4,6 +4,8 @@ import {
   CHANNELS, defaultConfig, normalizeConfig, loadConfig, saveConfig, rungWarnings, channelWarning,
   connectBlocker, toOverlayToml, applyEdit, applyRungEdit, describeEdit,
   describeRungEdit, parseKeyText, loadKey, saveKey, KEY_STORE, DEFAULT_KEY_HEX,
+  toggleChannel, checkChannelSet, CHANNEL_STORE, loadRememberedChannel, saveRememberedChannel,
+  startChannel,
 } from '../ui/src/lib/config.js';
 
 const mem = (init = {}) => {
@@ -14,7 +16,7 @@ const mem = (init = {}) => {
 
 test('defaults match maburgs.default.toml', () => {
   const c = defaultConfig();
-  assert.deepEqual(c, { channel: 136, width: 40, staticMcs: -1,
+  assert.deepEqual(c, { channels: [40, 64, 112, 144], link: 'auto', width: 40, staticMcs: -1,
     ladder: [0, 1, 2, 3, 4].map((mcs) => ({ mcs, bw: 40, ob: 0.5, oe: 0.25 })), colortrans: true, dvr: 'web' });
   c.ladder[0].mcs = 7;
   assert.equal(defaultConfig().ladder[0].mcs, 0, 'fresh copy each call');
@@ -25,9 +27,14 @@ test('normalize_config_falls_back_per_field', () => {
   const d = defaultConfig();
   assert.deepEqual(normalizeConfig(null), d);
   assert.deepEqual(normalizeConfig('junk'), d);
-  const c = normalizeConfig({ channel: '149', width: 33, staticMcs: 9, maxMcs: 3,   // stale maxMcs key: dropped
+  const c = normalizeConfig({ channels: ['40', 64, 64, 112], link: 64, width: 33, staticMcs: 9, maxMcs: 3,   // stale maxMcs key: dropped
     ladder: [{ mcs: 1, bw: 20, ob: 0.5, oe: 0.25 }, { mcs: 'x' }] });
-  assert.equal(c.channel, 149);          // numeric string accepted
+  assert.deepEqual(c.channels, d.channels);   // a duplicate -> whole default set
+  assert.equal(c.link, 64);                   // a member of the (default) set
+  assert.deepEqual(normalizeConfig({ channels: ['40', 64] }).channels, [40, 64]);   // numeric strings accepted
+  assert.equal(normalizeConfig({ channels: [40, 64], link: 112 }).link, 'auto');    // non-member pin -> auto
+  assert.deepEqual(normalizeConfig({ channels: [40, 300] }).channels, d.channels);  // out of range
+  assert.deepEqual(normalizeConfig({ channels: Array.from({ length: 9 }, (_, i) => 36 + 4 * i) }).channels, d.channels);
   assert.equal(c.width, 40);             // bad -> default
   assert.equal(c.staticMcs, -1);         // out of range -> default
   assert.ok(!('maxMcs' in c));
@@ -45,8 +52,15 @@ test('load/save round trip, storage failures tolerated, URL ch/w override', () =
   const c = applyEdit(defaultConfig(), 'staticMcs', 3);
   saveConfig(s, c);
   assert.deepEqual(loadConfig(s, new URLSearchParams()), c);
-  assert.equal(loadConfig(s, new URLSearchParams('ch=149&w=20')).channel, 149);
-  assert.equal(loadConfig(s, new URLSearchParams('ch=149&w=20')).width, 20);
+  const q = loadConfig(s, new URLSearchParams('chs=40,64&ch=64&w=20'));
+  assert.deepEqual(q.channels, [40, 64]);
+  assert.equal(q.link, 64);
+  assert.equal(q.width, 20);
+  assert.equal(loadConfig(mem({ 'webgs.cfg': JSON.stringify({ ...c, link: 64 }) }), new URLSearchParams('ch=auto')).link, 'auto');
+  const s2 = mem({ 'webgs.cfg': JSON.stringify({ ...c, channels: [40, 64] }) });
+  const q2 = loadConfig(s2, new URLSearchParams('ch=112'));
+  assert.deepEqual(q2.channels, [40, 64, 112]);
+  assert.equal(q2.link, 112);
   const bad = { getItem() { throw new Error('denied'); }, setItem() { throw new Error('denied'); } };
   assert.deepEqual(loadConfig(bad, new URLSearchParams()), defaultConfig());
   assert.doesNotThrow(() => saveConfig(bad, c));
@@ -64,8 +78,9 @@ test('rung warnings use the handoff strings, in order', () => {
 
 test('channel warning for an unpaired channel at 40', () => {
   assert.equal(channelWarning(defaultConfig()), null);
-  assert.match(channelWarning(applyEdit(defaultConfig(), 'channel', 165)), /no 40 MHz pair/);
-  assert.equal(channelWarning(applyEdit(applyEdit(defaultConfig(), 'channel', 165), 'width', 20)), null);
+  assert.match(channelWarning(applyEdit(defaultConfig(), 'channels', [40, 165])), /165/);
+  assert.match(channelWarning(applyEdit(defaultConfig(), 'channels', [40, 165])), /no 40 MHz pair/);
+  assert.equal(channelWarning(applyEdit(applyEdit(defaultConfig(), 'channels', [40, 165]), 'width', 20)), null);
 });
 
 test('connect_blockers_gs_refuses_what_the_core_refuses', () => {
@@ -79,30 +94,31 @@ test('connect_blockers_gs_refuses_what_the_core_refuses', () => {
   const w = { ...applyEdit(d, 'width', 20),
     ladder: [{ mcs: 0, bw: 20, ob: 0.5, oe: 0.25 }, { mcs: 7, bw: 40, ob: 0.5, oe: 0.25 }] };
   assert.match(connectBlocker(w, 'gs'), /Rung 1/);
-  assert.match(connectBlocker(applyEdit(d, 'channel', 165), 'gs'), /no 40 MHz pair/);
+  assert.match(connectBlocker(applyEdit(d, 'channels', [165]), 'gs'), /no 40 MHz pair/);
 });
 
 test('connect_blockers_spotter_only_checks_channel_width', () => {
   const d = defaultConfig();
   assert.equal(connectBlocker(applyRungEdit(d, 1, 'oe', '0.9'), 'spotter'), null);
   assert.equal(connectBlocker(applyEdit(d, 'width', 20), 'spotter'), null);
-  assert.match(connectBlocker(applyEdit(d, 'channel', 165), 'spotter'), /no 40 MHz pair/);
+  assert.match(connectBlocker(applyEdit(d, 'channels', [165]), 'spotter'), /no 40 MHz pair/);
 });
 
 test('overlay TOML, pinned: one always-loadable rung, max_mcs 7, saved ladder untouched', () => {
   const c = applyEdit(applyEdit(defaultConfig(), 'staticMcs', 3), 'width', 20);
   const t = toOverlayToml(c);
-  assert.equal(t, '[link]\nstatic_mcs = 3\nstatic_bw = 20\nmax_mcs = 7\n'
+  assert.equal(t, '[radio]\nchannels = [40, 64, 112, 144]\nchannel = "auto"\n'
+    + '\n[link]\nstatic_mcs = 3\nstatic_bw = 20\nmax_mcs = 7\n'
     + '\n[[link.ladder]]\nmcs = 3\nbw = 20\noverhead_base = 0.5\noverhead_enh = 0.25\n');
   assert.equal(c.ladder.length, 5);
   // hidden fields never block a pinned connect
   assert.equal(connectBlocker(applyRungEdit(c, 1, 'oe', '0.9'), 'gs'), null);
-  assert.match(connectBlocker(applyEdit(applyEdit(c, 'width', 40), 'channel', 165), 'gs'), /no 40 MHz pair/);
+  assert.match(connectBlocker(applyEdit(applyEdit(c, 'width', 40), 'channels', [165]), 'gs'), /no 40 MHz pair/);
 });
 
 test('overlay TOML carries static_mcs, static_bw=width, max_mcs 7 and the ladder', () => {
   const t = toOverlayToml(defaultConfig());
-  assert.match(t, /^\[link\]\nstatic_mcs = -1\nstatic_bw = 40\nmax_mcs = 7\n/);
+  assert.match(t, /\n\[link\]\nstatic_mcs = -1\nstatic_bw = 40\nmax_mcs = 7\n/);
   assert.equal((t.match(/\[\[link\.ladder\]\]/g) || []).length, 5);
   assert.match(t, /\[\[link\.ladder\]\]\nmcs = 0\nbw = 40\noverhead_base = 0\.5\noverhead_enh = 0\.25\n/);
   assert.ok(!/NaN|undefined/.test(t));
@@ -120,7 +136,6 @@ test('rung add/remove limits and labels', () => {
   assert.equal(describeEdit('width', 40), 'Channel width set to 40 MHz');
   assert.equal(describeEdit('staticMcs', -1), 'Fixed MCS set to Adaptive');
   assert.equal(describeEdit('colortrans', false), 'Colour correction off');
-  assert.equal(describeEdit('channel', 149), 'Channel set to 149');
   assert.equal(describeRungEdit(c, 7, '__add'), 'Rung 7 added');
   assert.equal(describeRungEdit(c, 2, '__remove'), 'Rung 2 removed');
   assert.equal(describeRungEdit(c, 1, 'ob', '0.6'), 'Rung 1 FEC base set to 0.6');
@@ -168,5 +183,63 @@ test('key store round trip; stale or broken storage falls back to null', () => {
 });
 test('overlay carries link.key only when a key is loaded', () => {
   assert.ok(!/key =/.test(toOverlayToml(defaultConfig())));
-  assert.match(toOverlayToml(defaultConfig(), HEX), new RegExp(`^\\[link\\]\\nkey = "${HEX}"\\nstatic_mcs = -1\\n`));
+  assert.match(toOverlayToml(defaultConfig(), HEX), new RegExp(`\\n\\[link\\]\\nkey = "${HEX}"\\nstatic_mcs = -1\\n`));
+});
+
+test('toggleChannel adds/removes, keeps 1..8, never drops the last, clears a removed pin', () => {
+  let c = { ...defaultConfig(), channels: [40], link: 40 };
+  c = toggleChannel(c, 64); assert.deepEqual(c.channels, [40, 64]);
+  c = toggleChannel(c, 40); assert.deepEqual(c.channels, [64]); assert.equal(c.link, 'auto');   // the pin went
+  c = toggleChannel(c, 64); assert.deepEqual(c.channels, [64]);                                 // last member stays
+  for (const ch of [36, 40, 44, 48, 52, 56, 60]) c = toggleChannel(c, ch);
+  assert.equal(c.channels.length, 8);
+  assert.equal(toggleChannel(c, 100).channels.length, 8);                                        // 9th refused
+});
+
+test('checkChannelSet: count, range, duplicates, 40 MHz pairs on one offset, link a member', () => {
+  assert.equal(checkChannelSet([40, 64, 112, 144], 'auto', 40), null);
+  assert.match(checkChannelSet([], 'auto', 40), /1 to 8/);
+  assert.match(checkChannelSet([40, 44], 'auto', 40), /other side|offset/);     // 40 HT40-, 44 HT40+
+  assert.equal(checkChannelSet([40, 44], 'auto', 20), null);
+  assert.match(checkChannelSet([40, 165], 'auto', 40), /no 40 MHz pair/);
+  assert.match(checkChannelSet([40, 64], 112, 40), /not in the set/);
+});
+
+test('connectBlocker refuses 144 on the relay radio only (Review Focus 5)', () => {
+  const c = defaultConfig();                       // contains 144
+  assert.equal(connectBlocker(c, 'gs', 'usb'), null);
+  assert.match(connectBlocker(c, 'spotter', 'relay'), /144/);
+  assert.equal(connectBlocker(toggleChannel(c, 144), 'spotter', 'relay'), null);
+});
+
+test('toOverlayToml carries the set in both modes and the link section in gs only', () => {
+  const c = defaultConfig();
+  const gs = toOverlayToml(c, null, 'gs');
+  assert.match(gs, /^\[radio\]\nchannels = \[40, 64, 112, 144\]\nchannel = "auto"\n/);
+  assert.match(gs, /\[link\]/);
+  const sp = toOverlayToml({ ...c, link: 64 }, null, 'spotter');
+  assert.match(sp, /channel = 64\n/);
+  assert.doesNotMatch(sp, /\[link\]/);
+});
+
+test('startChannel: the pin wins, a non-member remembered is ignored (Review Focus 1, 2)', () => {
+  const c = defaultConfig();
+  assert.equal(startChannel({ ...c, link: 40 }, 64), 40);     // pinned: never the remembered one
+  assert.equal(startChannel(c, 64), 64);                      // auto: remembered member
+  assert.equal(startChannel(c, 136), 40);                     // auto: stale non-member -> first member
+  assert.equal(startChannel(c, null), 40);
+});
+
+test('remembered channel round trip', () => {
+  const s = mem();
+  saveRememberedChannel(s, 112);
+  assert.equal(loadRememberedChannel(s), 112);
+  assert.equal(loadRememberedChannel(mem({ [CHANNEL_STORE]: 'junk' })), null);
+  assert.equal(loadRememberedChannel(mem({ [CHANNEL_STORE]: '300' })), null);
+});
+
+test('describeEdit names the set and the link channel', () => {
+  assert.equal(describeEdit('channels', [40, 64]), 'Channels set to 40, 64');
+  assert.equal(describeEdit('link', 'auto'), 'Link channel set to Auto');
+  assert.equal(describeEdit('link', 64), 'Link channel set to 64');
 });

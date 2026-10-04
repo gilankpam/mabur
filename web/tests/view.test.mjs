@@ -76,15 +76,15 @@ test('latency pick: GS capture->glass, spotter rx->glass sum', () => {
 test('debug groups carry the handoff keys verbatim + counters', () => {
   const g = debugGroups({ connected: true, mode: 'gs', core, rcfPct: 97.2, ausRate: 60,
     hitches60: 0, hitchesTotal: 18, seg: { w1: {}, w60: {} } });
-  assert.deepEqual(g.map((x) => x.title), ['Link', 'Radio', 'Drone', 'Client',
+  assert.deepEqual(g.map((x) => x.title), ['Link', 'Channel', 'Radio', 'Drone', 'Client',
     'Latency (ms; 1 s | 60 s windows)', 'Counters']);
   assert.deepEqual(g[0].rows.map((r) => r.k),
     ['mode', 'session', 'peer_acked', 'rung', 'mcs', 'width', 'probe', 'key', 'key_mismatch']);
-  assert.deepEqual(g[1].rows.map((r) => r.k), ['pre-FEC loss', 'residual', 'SNR', 'RSSI', 'RTT', 'RCF heard %']);
-  assert.equal(g[3].rows[1].v, '0 last 60s (total 18)');
+  assert.deepEqual(g[2].rows.map((r) => r.k), ['pre-FEC loss', 'residual', 'SNR', 'RSSI', 'RTT', 'RCF heard %']);
+  assert.equal(g[4].rows[1].v, '0 last 60s (total 18)');
   const sp = debugGroups({ connected: true, mode: 'spotter', core: { ...core, mode: 'spotter' }, rcfPct: null,
     ausRate: 60, hitches60: 0, hitchesTotal: 0, seg: { w1: {}, w60: {} } });
-  assert.equal(sp[0].rows[2].v, 'n/a'); assert.equal(sp[1].rows[4].v, '–');
+  assert.equal(sp[0].rows[2].v, 'n/a'); assert.equal(sp[2].rows[4].v, '–');
   const off = debugGroups({ connected: false, mode: 'gs', core: null, rcfPct: null, ausRate: 0,
     hitches60: 0, hitchesTotal: 0, seg: { w1: {}, w60: {} } });
   assert.ok(off.every((grp) => grp.rows.every((r) => r.v === '–')));
@@ -118,6 +118,8 @@ test('status text before the first picture says what the page is waiting for', (
   // GS, drone not answered yet (and not yet the 10 s "No drone" verdict).
   assert.equal(at({ core: { peer_acked: false } }), 'Searching for drone on ch 136 / 40 MHz…');
   assert.equal(at({ core: null }), 'Searching for drone on ch 136 / 40 MHz…');
+  // The core's live channel wins over the start channel once it reports one.
+  assert.equal(at({ core: { peer_acked: false, channel: 64 } }), 'Searching for drone on ch 64 / 40 MHz…');
   // GS, drone answered, no frame drawn yet.
   assert.equal(at({ core: { peer_acked: true } }), 'Waiting for video…');
   // Spotter never has peer_acked: it only waits for video.
@@ -214,4 +216,29 @@ test('debugGroups hides the USB-only rows (usb latency, txfail) over the relay r
 test('key mismatch: link tag and status text', () => {
   assert.deepEqual(linkTag({ state: 'live', mode: 'gs', core: { session: false, key_mismatch: true } }), { label: 'Key mismatch', on: false });
   assert.match(statusText({ state: 'live', mode: 'gs', ch: 136, w: 40, core: { peer_acked: false, key_mismatch: true, key_fp: 'a1b2' }, sinceStartMs: 0, hasPicture: false }), /Drone rejects our link key \(a1b2\)/);
+});
+
+test('channel line shows the live channel and a state word while scanning/moving/hopping', () => {
+  const base = { connected: true, mode: 'gs', ch: 40, w: 40, page: null, sessionCfg: defaultConfig(), cfg: defaultConfig(), videoSize: null, colour: null };
+  const core = (x) => ({ mcs: 4, bw: 40, rung: 2, rssi_dbm: -60, snr_db: 20, channel: 64, scan_state: 'frozen', hop: { state: 'idle' }, ...x });
+  assert.equal(statsView({ ...base, core: core({}) }).chLine, '64 · 40 MHz');
+  assert.equal(statsView({ ...base, core: core({ scan_state: 'scouting' }) }).chLine, '64 · 40 MHz · scanning');
+  assert.equal(statsView({ ...base, core: core({ scan_state: 'moving' }) }).chLine, '64 · 40 MHz · moving');
+  assert.equal(statsView({ ...base, core: core({ hop: { state: 'ordered' } }) }).chLine, '64 · 40 MHz · hop');
+  // disconnected: the form's link channel or "auto"
+  assert.equal(statsView({ ...base, connected: false, core: null }).chLine, 'auto · 40 MHz');
+  assert.equal(statsView({ ...base, connected: false, core: null, cfg: { ...defaultConfig(), link: 112 } }).chLine, '112 · 40 MHz');
+});
+
+test('debugGroups has a Channel group with the core fields when present', () => {
+  const core = { mode: 'gs', channel: 64, scan_state: 'frozen', scan_rounds: 3, scan_pick: 64,
+    hop: { state: 'idle', verdict: 'healthy', evidence: 0, target: null, epoch: 2, hops: 1, holds: 0 } };
+  const g = debugGroups({ connected: true, mode: 'gs', core, rcfPct: null, ausRate: 0, hitches60: 0, hitchesTotal: 0, seg: { w1: {}, w60: {} }, lrec: null });
+  const ch = g.find((x) => x.title === 'Channel');
+  assert.ok(ch);
+  const row = (k) => ch.rows.find((r) => r.k === k)?.v;
+  assert.equal(row('channel'), '64'); assert.equal(row('scan'), 'frozen · 3 rounds · pick 64');
+  assert.equal(row('hop'), 'idle · healthy'); assert.equal(row('hop target'), '–'); assert.equal(row('hops / holds'), '1 / 0');
+  const sp = debugGroups({ connected: true, mode: 'spotter', core: { mode: 'spotter', channel: 64, scan_state: null, hop: null }, rcfPct: null, ausRate: 0, hitches60: 0, hitchesTotal: 0, seg: { w1: {}, w60: {} }, lrec: null });
+  assert.equal(sp.find((x) => x.title === 'Channel').rows.length, 1);   // channel only
 });

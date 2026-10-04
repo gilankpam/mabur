@@ -18,7 +18,9 @@ export function latencyNow(snap, mode) {
   return parts.reduce((n, e) => n + e.p50, 0);
 }
 
-export function statsView({ connected, mode, ch, w, core, page, sessionCfg, videoSize, colour }) {
+// ch/w: the session's start channel and width; cfg: the form (the
+// disconnected header line shows its link channel, or "auto").
+export function statsView({ connected, mode, ch, w, core, page, sessionCfg, cfg, videoSize, colour }) {
   const on = !!connected && !!core;
   const spot = mode === 'spotter';
   const pinned = !spot && sessionCfg.staticMcs >= 0;
@@ -26,6 +28,10 @@ export function statsView({ connected, mode, ch, w, core, page, sessionCfg, vide
   const rung = on && !spot && !pinned && core.rung >= 0 ? core.rung : -1;
   const rssi = on ? core.rssi_dbm : null;
   const barPct = has(rssi) ? Math.max(5, Math.min(100, (rssi + 90) / 60 * 100)) : 0;
+  const liveCh = on && has(core.channel) ? core.channel : ch;
+  const state = !on ? '' : core.scan_state === 'scouting' ? 'scanning' : core.scan_state === 'moving' ? 'moving'
+    : core.hop && core.hop.state && core.hop.state !== 'idle' ? 'hop' : '';
+  const idle = cfg ? (cfg.link === 'auto' ? 'auto' : String(cfg.link)) : String(ch);
   return {
     mcs: on && core.mcs >= 0 ? String(core.mcs) : D,
     bw: on && core.bw ? String(core.bw) : D,
@@ -34,7 +40,7 @@ export function statsView({ connected, mode, ch, w, core, page, sessionCfg, vide
     rungMode: spot ? '' : pinned ? 'Pinned' : 'Adaptive',   // spotter: no ladder, no label
     // A spotter drives no ladder: one unlit full-width line, not a rung per segment.
     segs: spot ? [false] : sessionCfg.ladder.map((_, i) => rung >= 0 && i <= rung),
-    chLine: `${ch} · ${w} MHz`,
+    chLine: `${on ? liveCh : idle} · ${w} MHz${state ? ' · ' + state : ''}`,
     cards: [{ idx: 0, tx: !spot, rssi: fx(rssi, 0), snr: fx(on ? core.snr_db : null, 0), barPct }],
     bestRssi: fx(rssi, 0),
     // Telem.soc_temp_c, 1 Hz; the core sends null until a Telem with a
@@ -85,6 +91,14 @@ export function debugGroups({ connected, mode, core, rcfPct, ausRate, hitches60,
       ['width', v(core?.bw ? core.bw + ' MHz' : D)], ['probe', v(core?.probe || 'off')],
       ['key', v(core?.key_fp)], ['key_mismatch', v(core?.key_mismatch ? 'yes' : 'no')],
     ]) },
+    // Scan/hop state is GS-only (null in spotter): there just the channel.
+    { title: 'Channel', rows: rows(core?.scan_state != null ? [
+      ['channel', v(core.channel ?? D)],
+      ['scan', v(`${core.scan_state} · ${core.scan_rounds ?? 0} rounds · pick ${core.scan_pick ?? D}`)],
+      ['hop', v(core.hop ? `${core.hop.state} · ${core.hop.verdict}` : D)],
+      ['hop target', v(core.hop?.target ?? D)], ['hop epoch', v(core.hop?.epoch ?? D)],
+      ['hops / holds', v(core.hop ? `${core.hop.hops} / ${core.hop.holds}` : D)],
+    ] : [['channel', v(core?.channel ?? D)]]) },
     { title: 'Radio', rows: rows([
       ['pre-FEC loss', v(has(core?.pre_fec_loss) ? (core.pre_fec_loss * 100).toFixed(1) + ' %' : D)],
       ['residual', v(has(core?.residual) ? (core.residual * 100).toFixed(2) + ' %' : D)],
@@ -140,14 +154,15 @@ export function debugGroups({ connected, mode, core, rcfPct, ausRate, hitches60,
 export function statusText({ state, mode, ch, core, sinceStartMs, w, hiddenBanner, hasPicture }) {
   if (state !== 'live') return '';
   let primary = '';
+  const shownCh = has(core?.channel) ? core.channel : ch;
   if (mode === 'gs' && core?.key_mismatch) {
     primary = `Drone rejects our link key (${core.key_fp ?? '?'}) — load the same mabur.key on both ends`;
   } else {
     const noPeer = mode === 'gs' && core?.peer_acked !== true;
     if (noPeer && core && core.peer_acked === false && sinceStartMs >= 10000) {
-      primary = `No drone on ch ${ch} / ${w} MHz (still trying)`;
+      primary = `No drone on ch ${shownCh} / ${w} MHz (still trying)`;
     } else if (!hasPicture) {
-      primary = noPeer ? `Searching for drone on ch ${ch} / ${w} MHz…` : 'Waiting for video…';
+      primary = noPeer ? `Searching for drone on ch ${shownCh} / ${w} MHz…` : 'Waiting for video…';
     }
   }
   const banner = hiddenBanner ? 'GS mode keeps flying the link while this tab is hidden.' : '';

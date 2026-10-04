@@ -289,25 +289,6 @@ export function ht40Offset(ch) {
   return 0;
 }
 
-// Pre-connect check of the page's channel/width (strings from the inputs).
-// Mirrors the glue's checks that need no config (web_gs.cpp
-// channel_width_error): channel an integer in [1,200], width 20|40, 40 only
-// on an HT40 pair. The GS-mode "40 MHz rung while tuned 20" check needs the
-// ladder and stays in the glue (ERROR bad channel/width: ...). Returns null
-// when OK, else a user-facing message.
-export function checkChannelWidth(chStr, wStr) {
-  const chS = String(chStr ?? '').trim();
-  if (!/^\d+$/.test(chS)) return `Channel "${chS}" is not a number.`;
-  const ch = Number(chS);
-  if (ch < 1 || ch > 200) return `Channel ${ch} is out of range (1–200).`;
-  const w = String(wStr ?? '').trim();
-  if (w !== '20' && w !== '40') return `Width "${w}" must be 20 or 40 MHz.`;
-  if (w === '40' && ht40Offset(ch) === 0) {
-    return `Channel ${ch} has no 40 MHz pair — pick 20 MHz or a paired channel (e.g. 136).`;
-  }
-  return null;
-}
-
 // Drops decode-submit records older than maxAgeMs (their frame will never
 // be output: decoder replaced/reset, or the chunk was dropped). Mutates and
 // returns the map.
