@@ -64,13 +64,13 @@ struct Rig {
 
 std::vector<uint8_t> status(uint8_t state, uint8_t ch, uint8_t sec, uint8_t you_own) {
   std::vector<uint8_t> b(kStatusLen, 0);
-  b[0] = 0x4D; b[1] = 0x52; b[2] = 3; b[3] = kStatus;
+  b[0] = 0x4D; b[1] = 0x52; b[2] = 4; b[3] = kStatus;
   b[6] = state; b[7] = ch; b[8] = sec; b[9] = 1; b[10] = you_own;
   return b;
 }
 std::vector<uint8_t> frame(uint32_t seq, uint8_t rx_ch, uint8_t flags, uint8_t mcs, bool canonical = true) {
   std::vector<uint8_t> b(kFrameHdrLen, 0);
-  b[0] = 0x4D; b[1] = 0x52; b[2] = 3; b[3] = kFrame;
+  b[0] = 0x4D; b[1] = 0x52; b[2] = 4; b[3] = kFrame;
   for (int i = 0; i < 4; ++i) b[4 + i] = (uint8_t)(seq >> (8 * i));
   b[8] = rx_ch; b[9] = 2; b[10] = flags; b[11] = mcs;
   b[12] = (uint8_t)-50; b[13] = (uint8_t)-52; b[14] = (uint8_t)-95; b[15] = (uint8_t)-95;

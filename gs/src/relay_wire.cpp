@@ -37,8 +37,20 @@ std::vector<uint8_t> pack_tx(uint8_t mcs, uint8_t flags, const uint8_t* dot11, s
   return v;
 }
 
+std::vector<uint8_t> pack_scan(uint16_t scan_id, uint8_t passes, uint8_t observe_ms,
+                               const std::vector<uint8_t>& ch) {
+  auto v = hdr(kScan, 5 + ch.size());
+  v.push_back(scan_id & 0xFF);
+  v.push_back(scan_id >> 8);
+  v.push_back(passes);
+  v.push_back(observe_ms);
+  v.push_back(static_cast<uint8_t>(ch.size()));
+  v.insert(v.end(), ch.begin(), ch.end());
+  return v;
+}
+
 int msg_type(const uint8_t* b, size_t n) {
-  if (n < kHdrLen || get16(b) != kMagic || b[2] != kVer || b[3] < kFrame || b[3] > kTx) return -1;
+  if (n < kHdrLen || get16(b) != kMagic || b[2] != kVer || b[3] < kFrame || b[3] > kScanResult) return -1;
   return b[3];
 }
 
@@ -77,6 +89,33 @@ bool parse_status(const uint8_t* b, size_t n, Status& s) {
   s.tx = get32(b + 35);
   s.tx_fail = get32(b + 39);
   s.tx_refused = get32(b + 43);
+  s.tx_scan_drop = get32(b + 47);
+  return true;
+}
+
+bool parse_survey(const uint8_t* b, size_t n, Survey& s) {
+  if (msg_type(b, n) != kSurvey || n < kSurveyLen) return false;
+  s.channel = b[4]; s.sec = b[5]; s.gen = get16(b + 6);
+  s.active_ms = get32(b + 8); s.busy_ms = get32(b + 12); s.rx_ms = get32(b + 16);
+  s.tx_ms = get32(b + 20); s.ofdm_err = get32(b + 24); s.foreign = get32(b + 28);
+  return true;
+}
+
+bool parse_scan_result(const uint8_t* b, size_t n, SweepResult& r) {
+  if (msg_type(b, n) != kScanResult || n < kScanResultHdrLen) return false;
+  const size_t cnt = b[9];
+  if (n < kScanResultHdrLen + cnt * kScanEntryLen) return false;
+  r.scan_id = get16(b + 4); r.status = b[6]; r.back_channel = b[7]; r.back_sec = b[8];
+  r.entries.clear();
+  r.entries.reserve(cnt);
+  for (size_t i = 0; i < cnt; ++i) {
+    const uint8_t* p = b + kScanResultHdrLen + i * kScanEntryLen;
+    SweepEntry e;
+    e.ch = p[0]; e.pass = p[1]; e.valid = p[2] != 0;
+    e.active_ms = get16(p + 3); e.busy_ms = get16(p + 5); e.rx_ms = get16(p + 7);
+    e.foreign = get16(p + 9); e.ofdm_err = get16(p + 11);
+    r.entries.push_back(e);
+  }
   return true;
 }
 }  // namespace maburgs::relay

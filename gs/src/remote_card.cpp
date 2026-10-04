@@ -228,7 +228,7 @@ void RemoteCard::on_datagram(const uint8_t* b, size_t n) {
     // between here and the airtime charge.
     air_width = c_.status().sec != 0 ? 40 : 20;
   }
-  if (r == RelayClient::Rx::Status || r == RelayClient::Rx::None) return;
+  if (r != RelayClient::Rx::Body && r != RelayClient::Rx::Foreign) return;
   rx_frames_.fetch_add(1);
   if (r == RelayClient::Rx::Foreign) { foreign_.fetch_add(1); return; }
   // A relay another client has tuned elsewhere, or one still swinging to

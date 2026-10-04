@@ -29,6 +29,9 @@ void RelayClient::start(uint64_t now_ms) {
   st_ = relay::Status{};
   ever_owned_tuned_ = false;
   not_owner_since_set_ = false;
+  have_survey_ = false;
+  scan_pending_ = false;
+  result_.reset();
   send_(relay::pack_hello());
   send_tune(now_ms);
 }
@@ -82,6 +85,21 @@ RelayClient::Rx RelayClient::on_message(const uint8_t* b, size_t n, uint64_t now
     }
     return Rx::Status;
   }
+  if (t == relay::kSurvey) {
+    relay::Survey s;
+    if (!relay::parse_survey(b, n, s)) { ++bad_; return Rx::None; }
+    survey_ = s;
+    have_survey_ = true;
+    return Rx::Survey;
+  }
+  if (t == relay::kScanResult) {
+    SweepResult r;
+    if (!relay::parse_scan_result(b, n, r)) { ++bad_; return Rx::None; }
+    if (!scan_pending_ || r.scan_id != scan_id_) return Rx::None;   // stale or not ours
+    scan_pending_ = false;
+    result_ = std::move(r);
+    return Rx::ScanResult;
+  }
   if (t != relay::kFrame) { ++bad_; return Rx::None; }
   relay::FrameMeta m;
   const uint8_t* d = nullptr;
@@ -123,6 +141,20 @@ bool RelayClient::send_control(const std::vector<uint8_t>& f) {
   send_(relay::pack_tx(0, relay::kTxLdpc | relay::kTxStbc, f.data() + rt, f.size() - rt));
   ++tx_;
   return true;
+}
+
+uint16_t RelayClient::start_scan(const std::vector<uint8_t>& ch, uint8_t passes, uint8_t observe_ms) {
+  ++scan_id_;
+  scan_pending_ = true;
+  result_.reset();
+  send_(relay::pack_scan(scan_id_, passes, observe_ms, ch));
+  return scan_id_;
+}
+
+std::optional<SweepResult> RelayClient::take_scan_result() {
+  auto r = std::move(result_);
+  result_.reset();
+  return r;
 }
 
 bool RelayClient::owned_and_tuned() const {
