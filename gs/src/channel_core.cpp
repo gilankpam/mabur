@@ -171,11 +171,49 @@ void ChannelCore::on_card_died(int) {}
 void ChannelCore::on_card_reopened(int) {}
 void ChannelCore::shutdown() {}
 void ChannelCore::on_rc_body(uint8_t rx_ch) { rc_body_rx_ch_ = rx_ch; }
-void ChannelCore::on_session_opened(const mabur::rc::DiscAck&, double) {}
-std::vector<int> ChannelCore::disc_targets(int tx) const { return {tx}; }
-bool ChannelCore::may_send(int) const { return true; }
-std::vector<uint8_t> ChannelCore::disc_for_card(const std::vector<uint8_t>& f, int) const { return f; }
-void ChannelCore::note_sent(bool, bool) {}
+
+void ChannelCore::on_session_opened(const mabur::rc::DiscAck& ack, double now_ms) {
+  // Final review C1: the link forms where the drone is found. Only the ack
+  // that OPENED the session -- our nonce, not key-mismatch flagged, so a
+  // stranger's drone cannot drag the cards -- and only on the rx_channel of
+  // this body. plan.link_found() moves op to it for every card; the
+  // relocation to plan.want(), if any, is an ordinary hop order (BootPick).
+  const uint8_t x = rc_body_rx_ch_;
+  if (ack.vrx_nonce == vrx_.rz_nonce() && !(ack.flags & mabur::rc::kAckKeyMismatch) &&
+      x != 0 && x != plan_.op() && plan_.member(x) && !plan_.hopping()) {
+    sink_.log(logf_("maburgs channel: drone found on %u (op %u): the link forms there",
+                    static_cast<unsigned>(x), static_cast<unsigned>(plan_.op())));
+    plan_.link_found(now_ms, x);
+    vrx_.set_proposal(plan_.op());   // a DISC proposes the channel it is sent on: stay
+  }
+}
+
+std::vector<int> ChannelCore::disc_targets(int tx) const {
+  if (!scout_owns_()) return {tx};
+  std::vector<bool> ready(static_cast<size_t>(n_cards_));
+  for (int i = 0; i < n_cards_; ++i) ready[static_cast<size_t>(i)] = cards_[static_cast<size_t>(i)]->ready();
+  return scan_disc_targets(cfg_.n_usb, n_cards_, scout_card_, scout_->beaconing(), ready);
+}
+
+bool ChannelCore::may_send(int card) const {
+  if (scout_owns_() && ((card == scout_card_ && !scout_->beaconing()) || scout_->quiet())) {
+    ++scout_gated_sends_;   // mutable: the gate is a query the caller makes before sending
+    return false;
+  }
+  return true;
+}
+
+std::vector<uint8_t> ChannelCore::disc_for_card(const std::vector<uint8_t>& frame, int card) const {
+  // A DISC proposes the channel it is sent on (final review C1 addendum A).
+  const uint8_t ch = cards_[static_cast<size_t>(card)]->channel();
+  if (plan_.member(ch)) return disc_for_channel(frame, ch, cfg_.key);
+  return frame;
+}
+
+void ChannelCore::note_sent(bool sent_ok, bool is_rcf) {
+  if (sent_ok) ++ctrl_sent_total_;
+  if (is_rcf) ++rcf_sent_total_;
+}
 void ChannelCore::freeze_pick_(double, const char*) {}
 void ChannelCore::dispatch_hop_action_(const HopAction&, bool, double) {}
 void ChannelCore::apply_hop_action_(const HopAction&, double) {}
