@@ -33,9 +33,10 @@ export function statsView({ connected, connecting = false, mode, ch, w, core, pa
   const state = !on ? '' : core.scan_state === 'scouting' ? 'scanning' : core.scan_state === 'moving' ? 'moving'
     : core.hop && core.hop.state && core.hop.state !== 'idle' ? 'hop'
     : core.follow_state && core.follow_state !== 'locked' ? core.follow_state : '';   // spotter: following | sweeping
-  // Connecting: the member --ch starts on (the pin, the remembered member or
-  // the first), not the form's "auto" -- the core has not reported yet.
-  const idle = connecting ? String(ch) : cfg ? (cfg.link === 'auto' ? 'auto' : String(cfg.link)) : String(ch);
+  // Connecting, or live before the first STATS: the member --ch starts on
+  // (the pin, the remembered member or the first), not the form's "auto" --
+  // the core has not reported yet.
+  const idle = (connecting || (connected && !core)) ? String(ch) : cfg ? (cfg.link === 'auto' ? 'auto' : String(cfg.link)) : String(ch);
   return {
     mcs: on && core.mcs >= 0 ? String(core.mcs) : D,
     bw: on && core.bw ? String(core.bw) : D,

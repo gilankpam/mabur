@@ -260,6 +260,12 @@ test('channel line shows the start channel while connecting, the form while disc
   assert.equal(statsView({ ...base, connecting: true, cfg: { ...defaultConfig(), link: 112 }, ch: 112 }).chLine, '112 · 40 MHz');
 });
 
+test('channel line shows the start channel while live before the first STATS', () => {
+  const base = { connected: true, mode: 'spotter', ch: 64, w: 40, core: null, page: null, sessionCfg: defaultConfig(), cfg: { ...defaultConfig(), link: 'auto' }, videoSize: null, colour: null };
+  assert.equal(statsView({ ...base }).chLine, '64 · 40 MHz');          // live, core still null
+  assert.equal(statsView({ ...base, connected: false }).chLine, 'auto · 40 MHz');   // disconnected: the form
+});
+
 test('debugGroups Channel group for a spotter: channel + follow rows', () => {
   const core = { mode: 'spotter', channel: 64, scan_state: null, hop: null, follow_state: 'following', follows: 2 };
   const g = debugGroups({ connected: true, mode: 'spotter', core, rcfPct: null, ausRate: 0, hitches60: 0, hitchesTotal: 0, seg: { w1: {}, w60: {} }, lrec: null });

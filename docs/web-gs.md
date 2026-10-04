@@ -300,9 +300,15 @@ spec 2026-10-04 §6) runs in the core on the spotter's one card:
 - **Locked** — every frame on the channel refreshes a 1 s silence timer;
   silence sweeps again from the next member. The real GS's RCFs carry
   its standing hop order (`hop_ch`/`hop_epoch`) in the clear; a new pair
-  naming another member → **Following**.
+  naming another member → **Following**. Locked means hearing any mabur
+  traffic on the channel — the GS's own DISC search bursts included —
+  not video: with the drone off, a spotter sits locked wherever the GS
+  is beaconing, and sweeps again within ~1 s once the GS links elsewhere
+  and stops beaconing.
 - **Following** — the card retunes to the target; a frame there locks
-  (`follows` counts it). Nothing on the target within 2 s (the drone's
+  (`follows` counts every order acted on — confirmed, retargeted,
+  withdrawn or timed out — so one hop that was retargeted once reads
+  `follows 2`). Nothing on the target within 2 s (the drone's
   own `move_confirm_ms`) → back to the previous channel, with a fresh
   silence window. A withdrawal heard before the card moved returns at
   once; the same pair repeated is ignored (so a standing order after a
@@ -840,7 +846,9 @@ rule).
   (`scan_state` reads `off`); auto on a relay means 'start member plus
   search'.
 - **Spotter follows the link only by listening.** It needs ~0.15 s per
-  member to find the link at start (worst case the whole set) and up to
+  member on a USB card (about 0.35 s per member on the CPE relay: a
+  ~0.2 s TUNE plus the dwell, so up to ~2.8 s for 8 members) to find the
+  link at start (worst case the whole set) and up to
   2 s to give up on a followed order that never showed; it cannot ask the
   GS where the link is, and it does not verify the hop order it follows
   ("Spotter follower").
