@@ -555,6 +555,7 @@ TEST(inflight_dwell_feeds_ranker_and_dwell_stats) {
   // in-flight step: card 1 (non-TX, scout-capable) dwells on the next candidate
   g.core->run_inflight_step();
   g.tick(true, false, 0);                    // drain
+  CHECK(!g.core->dwell_busy());
   const auto s = g.core->snapshot();
   REQUIRE(s.dwell[1].has_value());
   CHECK(s.dwell[1]->visits == 1);
@@ -586,6 +587,7 @@ TEST(tx_frozen_while_hopping) {
   REQUIRE(g.sink.has_hop("order"));
   const auto out = g.core->tick(g.in(true));
   CHECK(out.tx_frozen);
+  CHECK(g.core->tx_frozen());
 }
 
 TEST(shutdown_joins_threads_and_is_idempotent) {   // Review Focus 5

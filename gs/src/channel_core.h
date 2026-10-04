@@ -131,6 +131,12 @@ class ChannelCore {
   uint8_t op() const { return plan_.op(); }
   bool hopping() const { return plan_.hopping(); }
   uint8_t hop_target() const { return plan_.hop_target(); }
+  // Live reads of the cross-thread state at call time (not the end-of-tick
+  // ChannelTickOut copy): the send path runs after tick(), and a dwell the
+  // scout thread starts in between must still freeze TX / hold the cal cmd.
+  bool tx_frozen() const { return tx_selection_frozen(dwell_busy_.load(), plan_.hopping()); }
+  bool dwell_busy() const { return dwell_busy_.load(); }
+  uint64_t scout_gated_sends() const { return scout_gated_sends_; }
   bool pick_open() const { return boot_pick_.open(); }
   bool scout_working() const { return scout_ && scout_->working(); }       // card reopen gate
   bool scout_owns_card(int card) const { return scout_owns_() && card == scout_card_; }  // TX snapshots

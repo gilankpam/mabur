@@ -39,6 +39,7 @@
 #include "frame_file_source.h"
 #include "frame_stream.h"
 #include "gap_timeout_policy.h"
+#include "hop_burst_gate.h"   // cal_cmd_clear
 #include "ladder_residual.h"
 #include "link_health.h"
 #include "lat_window.h"
@@ -1219,7 +1220,7 @@ static int run_radio(const maburgs::Config& cfg) {
     cin.cal_running = cal_session.running();
     cin.tx_card = sel.selected();
     cin.agg = &agg;
-    const maburgs::ChannelTickOut cout_ = chan.tick(cin);
+    chan.tick(cin);
     const bool fw = in_session && (vrx.peer_caps() & mabur::rc::CAP_FRAME_WIRE);
     // Told every tick (CalSession::set_peer): whether the link is up and
     // whether the peer's last DiscAck carried CAP_CALIBRATE. start() (via
@@ -1309,7 +1310,7 @@ static int run_radio(const maburgs::Config& cfg) {
       // (tx_selection_frozen, hop_burst_gate.h): the lead card is on the
       // target and the RCF that carries the order must keep leaving on
       // the old channel until the drone has been seen there.
-      const int tx = cout_.tx_frozen ? sel.selected() : sel.update(snaps, now_ms_u * 1000);
+      const int tx = chan.tx_frozen() ? sel.selected() : sel.update(snaps, now_ms_u * 1000);
       // Which card(s) carry this frame. RCFs go to the TX selector's card,
       // as they always did. A DISC is rendezvous traffic and, while the
       // scout owns its card, follows it (scout_pick.h scan_disc_targets()): the link
@@ -1364,7 +1365,7 @@ static int run_radio(const maburgs::Config& cfg) {
     // card off-channel (cal_cmd_clear's comment). due_result() below still
     // runs step() every tick, so holding the command here stalls nothing
     // else in the session.
-    if (maburgs::cal_cmd_clear(cal_session.radio_silent(drained_ms), cout_.dwell_busy)) {
+    if (maburgs::cal_cmd_clear(cal_session.radio_silent(drained_ms), chan.dwell_busy())) {
       if (auto cmd = cal_session.due_cmd(drained_ms)) {
         cal_pending_nonce = cmd->nonce;
         maburgs::SlotFrame cf{mabur::rc::pack_cal_cmd(*cmd, cfg.link.key, cal_session.tag_ctx()),
@@ -1512,7 +1513,7 @@ static int run_radio(const maburgs::Config& cfg) {
                    static_cast<unsigned long long>(fstream.bad_fragments()),
                    static_cast<unsigned long long>(fstream.stall_resets()));
       // Only while a one-card scout is actually costing us sends.
-      if (const uint64_t gated = chan.snapshot().scout_gated_sends)
+      if (const uint64_t gated = chan.scout_gated_sends())
         std::fprintf(stderr, " scoutgate=%llu", static_cast<unsigned long long>(gated));
 #ifdef MABUR_LOSS_SIM
       if (agg.loss_sim().enabled())
@@ -1533,14 +1534,14 @@ static int run_radio(const maburgs::Config& cfg) {
       // section 7): with a pick committed they differ. Straight off the
       // front-end's atomic -- the core's per-card channel is untracked for the
       // scout card while the scout owns it.
-      const maburgs::ChannelSnapshot cs = chan.snapshot();
+      const maburgs::ChannelSnapshot chs = chan.snapshot();
       sin.channel = fronts[static_cast<size_t>(sel.selected())]->channel();
       // scan.state / rounds / the latched pick and the in-flight hop
       // snapshot: ChannelCore::snapshot() (gs/src/channel_core.cpp).
-      sin.scan_state = cs.scan_state;
-      sin.scan_rounds = cs.scan_rounds;
-      sin.scan_pick = cs.scan_pick;
-      sin.hop = cs.hop;
+      sin.scan_state = chs.scan_state;
+      sin.scan_rounds = chs.scan_rounds;
+      sin.scan_pick = chs.scan_pick;
+      sin.hop = chs.hop;
       sin.in_session = in_session;
       sin.key_mismatch = vrx.key_mismatch();
       sin.key_fp = key_fp;
@@ -1576,8 +1577,8 @@ static int run_radio(const maburgs::Config& cfg) {
         ci.foreign = fronts[static_cast<size_t>(i)]->foreign();
         ci.tx_frames = fronts[static_cast<size_t>(i)]->tx_frames();
         ci.tx_fail = fronts[static_cast<size_t>(i)]->tx_fail();
-        ci.energy = cs.energy[static_cast<size_t>(i)];  // last A sample
-        ci.dwell = cs.dwell[static_cast<size_t>(i)];  // last in-flight scout dwell
+        ci.energy = chs.energy[static_cast<size_t>(i)];  // last A sample
+        ci.dwell = chs.dwell[static_cast<size_t>(i)];  // last in-flight scout dwell
         ci.relay = fronts[static_cast<size_t>(i)]->relay_stats();
         ci.kind = ci.relay ? "relay" : "usb";
         ci.snr_ok = snr_ok[static_cast<size_t>(i)];
