@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstring>
 #include <deque>
@@ -81,6 +82,14 @@ std::vector<uint8_t> frame(uint32_t seq, uint8_t rx_ch, uint8_t flags, uint8_t m
   if (!canonical) d[10] = 0x00;
   d[22] = 0x30; d[23] = 0x12; d[26] = 0xAA; d[27] = 0xBB; d[28] = 0xCC;
   b.insert(b.end(), d.begin(), d.end());
+  return b;
+}
+std::vector<uint8_t> survey(uint16_t gen, uint32_t act, uint32_t busy, uint32_t rx, uint32_t err, uint32_t foreign) {
+  std::vector<uint8_t> b(kSurveyLen, 0);
+  b[0] = 0x4D; b[1] = 0x52; b[2] = 4; b[3] = kSurvey; b[4] = 136; b[5] = 2;
+  b[6] = (uint8_t)gen; b[7] = (uint8_t)(gen >> 8);
+  auto put = [&](size_t o, uint32_t v) { for (int i = 0; i < 4; ++i) b[o + i] = (uint8_t)(v >> (8 * i)); };
+  put(8, act); put(12, busy); put(16, rx); put(24, err); put(28, foreign);
   return b;
 }
 size_t drained(BodyQueue& q, std::vector<mabur::node::RxBody>& out) { out.clear(); return q.drain(out, 0); }
@@ -456,4 +465,69 @@ TEST(owner_stuck_in_a_failed_tune_logs_after_the_grace) {
   r.card->tick(r.now_ms += 10);
   CHECK(r.card->transitions() == 4);              // "owned and tuned" again
 }
+TEST(survey_window_is_the_delta_between_calls_on_one_gen) {
+  Rig g; REQUIRE(g.card->open_and_start());
+  g.t().push(status(0, 136, 2, 1));
+  g.t().push(survey(1, 100, 10, 5, 3, 1));
+  // The first SURVEY must be processed before the baseline read, or the
+  // baseline lands on nothing (its foreign count proves it arrived).
+  REQUIRE(g.soon([&] { return g.card->frames().foreign == 1; }));
+  REQUIRE(g.soon([&] { return g.card->read_survey_window().valid == false; }));   // first call: baseline only
+  g.t().push(survey(1, 250, 160, 10, 13, 4));      // +150 ms: busy +150 (100 %), rx +5
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  const auto w = g.card->read_survey_window();
+  CHECK(w.valid);
+  CHECK(std::abs(w.busy_pct - 100.0) < 0.01);
+  CHECK(std::abs(w.rx_pct - 100.0 * 5 / 150) < 0.01);
+  const auto e = g.card->read_energy_scout();
+  CHECK(e.fa_valid);
+  CHECK(e.fa_ofdm == 13);                          // cumulative since open: 3 + (13 - 3)
+  CHECK(g.card->read_energy_scout().fa_ofdm == 0); // a delta: consumed
+  CHECK(g.card->frames().foreign == 4);
+}
+
+TEST(survey_window_invalid_across_a_gen_change_or_short_span) {
+  Rig g; REQUIRE(g.card->open_and_start());
+  g.t().push(status(0, 136, 2, 1));
+  g.t().push(survey(1, 100, 10, 5, 0, 0));
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));   // first SURVEY processed before the baseline
+  REQUIRE(g.soon([&] { g.card->read_survey_window(); return true; }));
+  g.t().push(survey(2, 150, 10, 5, 0, 0));          // new gen (a retune or sweep)
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  CHECK(!g.card->read_survey_window().valid);
+  g.t().push(survey(2, 200, 20, 5, 0, 0));          // only 50 ms on gen 2
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  CHECK(!g.card->read_survey_window().valid);
+}
+
+TEST(start_sweep_sends_scan_and_result_comes_back_once) {
+  Rig g; REQUIRE(g.card->open_and_start());
+  g.t().push(status(0, 136, 2, 1));
+  REQUIRE(g.soon([&] { return g.card->ready(); }));
+  CHECK(g.card->can_sweep());
+  CHECK(g.card->start_sweep({40, 64}, 2, 20));
+  CHECK(g.card->sweeping());
+  CHECK(g.t().count(kScan) == 1);
+  std::vector<uint8_t> scan_msg;
+  { std::lock_guard<std::mutex> lk(g.t().mu); for (auto& m : g.t().sent) if (msg_type(m.data(), m.size()) == kScan) scan_msg = m; }
+  const uint16_t id = (uint16_t)(scan_msg[4] | (scan_msg[5] << 8));
+  std::vector<uint8_t> res = {0x4D, 0x52, 0x04, 0x08, (uint8_t)id, (uint8_t)(id >> 8), 0, 136, 2, 1,
+                              64, 0, 1, 20, 0, 14, 0, 1, 0, 3, 0, 9, 0};
+  g.t().push(res);
+  REQUIRE(g.soon([&] { return !g.card->sweeping(); }));
+  auto r = g.card->take_sweep_result();
+  REQUIRE(r.has_value());
+  CHECK(r->entries.size() == 1 && r->entries[0].ch == 64 && r->entries[0].ofdm_err == 9);
+  CHECK(!g.card->take_sweep_result().has_value());
+  CHECK(g.card->relay_stats()->sweeps == 1);
+}
+
+TEST(start_sweep_refused_when_not_owned) {
+  Rig g; REQUIRE(g.card->open_and_start());
+  g.t().push(status(0, 136, 2, 0));                 // someone else owns it
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  CHECK(!g.card->start_sweep({40}, 2, 20));
+  CHECK(g.t().count(kScan) == 0);
+}
+
 MTEST_MAIN

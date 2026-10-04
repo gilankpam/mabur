@@ -102,7 +102,8 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
       cj["relay"] = {{"state", r.state}, {"owned", r.owned}, {"ch", r.ch}, {"sec", r.sec},
                      {"frames", r.frames}, {"gaps", r.gaps}, {"your_drops", r.your_drops},
                      {"tx", r.tx}, {"tx_fail", r.tx_fail}, {"tx_refused", r.tx_refused},
-                     {"reconnects", r.reconnects}};
+                     {"reconnects", r.reconnects}, {"tx_scan_drop", r.tx_scan_drop},
+                     {"sweeps", r.sweeps}};
     }
     cj["frames"] = c.frames;
     cj["crc_fail"] = c.crc_fail;

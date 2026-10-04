@@ -566,11 +566,12 @@ TEST(relay_stats_fields_keeps_the_page_keys) {
   r.state = 0; r.ch = 136; r.sec = 2; r.owned = true; r.frames = 1000; r.gaps = 3;
   r.your_drops = 4; r.tx = 20; r.tx_fail = 1; r.tx_refused = 2; r.reconnects = 0;
   r.you_own = true; r.rx_drops = 5; r.tx_drops = 6;
+  r.tx_scan_drop = 7; r.sweeps = 8;
   const std::string s = relay_stats_fields(r);
   CHECK(s == ",\"radio\":\"relay\",\"relay_state\":0,\"relay_ch\":136,\"relay_sec\":2,"
              "\"relay_owned\":1,\"relay_you_own\":1,\"relay_frames\":1000,\"relay_gaps\":3,"
              "\"relay_rx_drops\":5,\"relay_tx_ring_drops\":6,\"relay_tx\":20,\"relay_tx_fail\":1,"
-             "\"relay_tx_refused\":2,\"relay_your_drops\":4");
+             "\"relay_tx_refused\":2,\"relay_your_drops\":4,\"relay_tx_scan_drop\":7,\"relay_sweeps\":8");
 }
 
 MTEST_MAIN

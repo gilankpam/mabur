@@ -1,5 +1,6 @@
 #include "remote_card.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 
@@ -54,6 +55,7 @@ bool RemoteCard::open_and_start() {
     // mechanical retune loop corrects any mismatch next tick anyway.
     c_.retune(channel_.load(), sec_for(channel_.load(), width_.load()), now_ms_());
     c_.start(now_ms_());         // forgets the old STATUS: lost()/refused() count from here
+    have_sv_ = have_win_ = false; // SURVEY deltas restart; ofdm/foreign totals stay monotonic
     last_restart_ms_ = now_ms_(); // first refused-restart no sooner than kRefusedRestartMs after open
     if (opened_once_) reconnects_.fetch_add(1);
     last_st_ = St::Down;          // a reopened card logs its transitions afresh
@@ -181,7 +183,65 @@ bool RemoteCard::set_width(uint8_t ch, uint8_t width_mhz) {
 }
 
 ScoutFrames RemoteCard::frames() const {
-  return ScoutFrames{own_.load(), foreign_.load(), own_air_us_.load()};
+  std::lock_guard<std::mutex> lk(mu_);
+  return ScoutFrames{own_.load(), foreign_.load() + sv_foreign_total_, own_air_us_.load()};
+}
+
+void RemoteCard::on_survey_(const relay::Survey& s) {
+  // Cumulative OFDM errors / foreign frames across generations: within a
+  // gen the relay's counters only grow; a new gen restarts them from 0.
+  if (have_sv_ && s.gen == sv_last_.gen) {
+    ofdm_total_ += s.ofdm_err - sv_last_.ofdm_err;
+    sv_foreign_total_ += s.foreign - sv_last_.foreign;
+  } else {
+    ofdm_total_ += s.ofdm_err;
+    sv_foreign_total_ += s.foreign;
+  }
+  sv_last_ = s;
+  have_sv_ = true;
+}
+
+SurveyWindow RemoteCard::read_survey_window() {
+  std::lock_guard<std::mutex> lk(mu_);
+  SurveyWindow w;
+  if (have_sv_ && have_win_ && sv_last_.gen == win_base_.gen) {
+    const uint32_t act = sv_last_.active_ms - win_base_.active_ms;
+    if (act >= kMinSurveyWindowMs) {
+      w.valid = true;
+      w.busy_pct = std::min(100.0, 100.0 * (sv_last_.busy_ms - win_base_.busy_ms) / act);
+      w.rx_pct = std::min(100.0, 100.0 * (sv_last_.rx_ms - win_base_.rx_ms) / act);
+    }
+  }
+  win_base_ = sv_last_;
+  have_win_ = have_sv_;
+  return w;
+}
+
+ScoutEnergy RemoteCard::read_energy_scout() {
+  std::lock_guard<std::mutex> lk(mu_);
+  ScoutEnergy e;
+  e.fa_valid = true;
+  e.fa_ofdm = static_cast<uint32_t>(ofdm_total_ - ofdm_read_);
+  ofdm_read_ = ofdm_total_;
+  return e;
+}
+
+bool RemoteCard::start_sweep(const std::vector<uint8_t>& ch, uint8_t passes, uint8_t observe_ms) {
+  std::lock_guard<std::mutex> lk(mu_);
+  if (!running_.load() || !c_.owned_and_tuned() || ch.empty()) return false;
+  c_.start_scan(ch, passes, observe_ms);
+  sweeps_.fetch_add(1);
+  return true;
+}
+
+std::optional<SweepResult> RemoteCard::take_sweep_result() {
+  std::lock_guard<std::mutex> lk(mu_);
+  return c_.take_scan_result();
+}
+
+bool RemoteCard::sweeping() const {
+  std::lock_guard<std::mutex> lk(mu_);
+  return c_.scan_pending();
 }
 
 std::optional<RelayStatsIn> RemoteCard::relay_stats() const {
@@ -196,6 +256,8 @@ std::optional<RelayStatsIn> RemoteCard::relay_stats() const {
   r.you_own = s.you_own;
   r.rx_drops = t_ ? t_->rx_drops() : 0;
   r.tx_drops = t_ ? t_->tx_drops() : 0;
+  r.tx_scan_drop = s.tx_scan_drop;
+  r.sweeps = sweeps_.load();
   return r;
 }
 
@@ -222,6 +284,7 @@ void RemoteCard::on_datagram(const uint8_t* b, size_t n) {
   {
     std::lock_guard<std::mutex> lk(mu_);
     r = c_.on_message(b, n, now_ms, m);
+    if (r == RelayClient::Rx::Survey) on_survey_(c_.survey());
     ready_now = c_.owned_and_tuned() && !c_.lost(now_ms);   // same predicate as ready()
     // Width the relay actually tuned (confirmed sec), not the commanded
     // width_: 40 on an unpaired channel tunes 20, and set_width may land
