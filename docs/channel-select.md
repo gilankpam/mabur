@@ -525,7 +525,7 @@ This is a regression check that branch `channel-core` (c338e15, the channel/hop 
 
 ## Out of scope
 
-The web GS (`web/`) will take this feature through the shared `ChannelCore` (its own plan; `docs/web-gs.md` is unchanged until then). A runtime auto/pin
+The web GS (`web/`) runs this feature through the same `ChannelCore` in GS mode on its one card (`docs/web-gs.md` "Channel set"); the relay-only page searches without measuring (§3.7 of the 2026-10-04 spec). A runtime auto/pin
 switch. Width negotiation over DISC (both ends keep `radio.width = 40`).
 Relay channel capability — the operator rule that every member must be
 CPE-tunable stays a documented rule, `docs/cpe510-relay.md` (a relay GS
