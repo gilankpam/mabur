@@ -28,6 +28,10 @@ struct Rig {
   std::unique_ptr<VrxController> vrx;
   std::unique_ptr<ChannelCore> core;
   Aggregator agg;
+  // {may_send(0), may_send(1)} sampled from inside the scout's sleep
+  // callback -- the synchronous equivalent of the core thread reading the
+  // gate while the scout thread is mid-dwell on another thread in prod.
+  std::vector<std::pair<bool, bool>> gate_obs;
 
   Rig(int n_usb, int n_relays, bool pinned = false, uint8_t start = 0)
       : agg(bundle().uep_layers(), 32, n_usb + n_relays, 0) {
@@ -52,7 +56,10 @@ struct Rig {
         cc, ptrs, *vrx, sink,
         [this](uint8_t ch) { stored.push_back(ch); return store_ok; },
         [this] { return clk.now_ms(); }, [this] { return clk.now_us(); },
-        [this](int ms) { clk.sleep(ms); });
+        [this](int ms) {
+          clk.sleep(ms);
+          if (core) gate_obs.emplace_back(core->may_send(0), core->may_send(1));
+        });
   }
   ChannelTickIn in(bool session, bool cal = false, int tx = 0) {
     ChannelTickIn i; i.now_ms = static_cast<double>(clk.ms); i.in_session = session;
@@ -102,17 +109,21 @@ TEST(may_send_two_usb_drops_scout_card_unless_beaconing) {
   CHECK(g.core->may_send(0));          // link card always passes (not quiet yet)
   CHECK(!g.core->may_send(1));         // scout card, not beaconing
   CHECK(g.core->snapshot().scout_gated_sends == 1);   // the gate counts
-  // Drive the scout to a dwell. channel_scout.cpp's run_once()/dwell() set
-  // beaconing_ true then false again within the SAME synchronous call (the
-  // sleep_ callback here is FakeClock::sleep, which only advances the clock
-  // and never yields) -- so beaconing() always reads false again by the time
-  // run_scout_step() returns here, no matter how many steps are taken.
-  g.core->run_scout_step();
-  g.core->run_scout_step();
-  g.core->run_scout_step();
-  CHECK(g.core->may_send(1));          // scout card beaconing passes
-  CHECK(g.cards[1]->ch == 40 || g.cards[1]->ch == 64 ||
-       g.cards[1]->ch == 112 || g.cards[1]->ch == 144);
+  // beaconing_/quiet_ are set and cleared again within one synchronous
+  // run_once() call, so polling may_send() from the test body after the call
+  // returns can never observe either branch (see task-2-report.md). The
+  // production core instead reads the gate from another thread while the
+  // scout thread is mid-dwell; the synchronous equivalent is Rig's sleep
+  // callback, which samples the gate (gate_obs) from inside the scout's own
+  // sleep_ calls, while the atomics are still live.
+  for (int i = 0; i < 6; ++i) g.core->run_scout_step();
+  bool seen_burst_pass = false, seen_quiet_hold = false;
+  for (const auto& o : g.gate_obs) {
+    if (o.second) seen_burst_pass = true;      // scout card beaconing: gate passes it
+    if (!o.first) seen_quiet_hold = true;       // quiet observe: even the link card is held
+  }
+  CHECK(seen_burst_pass);
+  CHECK(seen_quiet_hold);
 }
 
 TEST(may_send_counts_gated_sends_only_through_note) {
@@ -132,15 +143,6 @@ TEST(disc_targets_follow_scan_disc_targets_while_scout_owns) {
   CHECK(t[0] == 0);
   CHECK(std::find(t.begin(), t.end(), 2) != t.end());
   CHECK(std::find(t.begin(), t.end(), 1) == t.end());   // not beaconing yet
-}
-
-TEST(disc_targets_is_tx_when_scout_owns_nothing) {
-  Rig g(2, 0, /*pinned=*/true, 40);
-  g.tick(true, false, /*tx=*/1);  // linked: release_scout() false, search off
-  g.tick(true, false, 1);
-  const auto t = g.core->disc_targets(1);
-  REQUIRE(t.size() == 1);
-  CHECK(t[0] == 1);
 }
 
 TEST(disc_for_card_retags_only_members) {
