@@ -1,6 +1,7 @@
 #include "channel_core.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 
@@ -257,8 +258,59 @@ void ChannelCore::freeze_pick_(double t, const char* why) {
                   static_cast<unsigned long long>(scout_->rounds())));
 }
 
-void ChannelCore::dispatch_hop_action_(const HopAction&, bool, double) {}
-void ChannelCore::apply_hop_action_(const HopAction&, double) {}
+void ChannelCore::apply_hop_action_(const HopAction& act, double now_ms) {
+  switch (act.kind) {
+    case HopAction::Order:
+      vrx_.set_hop(act.target, act.epoch);
+      vrx_.restore_rung(act.restore_rung, now_ms);
+      vrx_.blank_store(now_ms + cfg_.hop.confirm_ms + 150.0);
+      // Two-card: retune the lead now. One-card (lead < 0): the sole radio
+      // stays on the OLD channel while the order rides one_card_repeats
+      // RCFs; OneCardRetune below moves it.
+      if (act.lead_card >= 0) plan_.hop_order(now_ms, act.target, act.lead_card);
+      break;
+    case HopAction::OneCardRetune:
+      plan_.hop_order(now_ms, act.target, -1);
+      break;
+    case HopAction::Confirm:
+      plan_.hop_confirmed(now_ms);
+      break;
+    case HopAction::Withdraw:
+      vrx_.set_hop(act.target, act.epoch);
+      plan_.hop_withdraw(now_ms);
+      break;
+    case HopAction::VerifyPass:
+      verdict_.reset();   // thaw the frozen references (spec section 2)
+      break;
+    case HopAction::Hold:
+    case HopAction::None:
+      break;
+  }
+}
+
+void ChannelCore::dispatch_hop_action_(const HopAction& act, bool relocate_tick, double now_ms) {
+  apply_hop_action_(act, now_ms);
+  boot_pick_.note_hop_action(act.kind, relocate_tick);
+  if (auto b = hop_verdict_loss_blank_until(act, now_ms)) s1_hop_loss_.blank_until(*b);
+  switch (act.kind) {
+    case HopAction::Order:
+      hopping_atomic_.store(true);
+      rcf_sent_at_order_ = rcf_sent_total_;
+      break;
+    case HopAction::Confirm:
+    case HopAction::Withdraw:
+      hopping_atomic_.store(false);
+      break;
+    default:
+      break;
+  }
+  for (const auto& e : hopc_.take_events()) {
+    sink_.hop(e);
+    sink_.log(logf_("maburgs hop: %s epoch %u target %u score %u +%.0f ms", e.kind.c_str(),
+                    e.epoch, e.target, e.score, e.elapsed_ms));
+    last_hop_event_ms_ = static_cast<uint64_t>(e.elapsed_ms >= 0 ? e.elapsed_ms : 0.0);
+  }
+}
 
 void ChannelCore::step_scout_inputs_() {
   if (!scout_) { scout_working_atomic_.store(false, std::memory_order_relaxed); return; }
@@ -355,9 +407,183 @@ void ChannelCore::step_store_() {
   }
 }
 
-void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn&) {}
-void ChannelCore::step_controller_(const ChannelTickIn&) {}
-void ChannelCore::step_move_edge_(const ChannelTickIn&) {}
+void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
+  const double now_ms = in.now_ms;
+  const uint64_t now_ms_u = now_ms_u_cur_;
+  const bool active = hop_active(in.in_session, in.cal_running);
+  if (active != hop_was_active_) {
+    hop_was_active_ = active;
+    if (!active) dispatch_hop_action_(hopc_.on_session_lost(now_ms, plan_.op()), false, now_ms);
+    verdict_.reset();
+    last_verdict_ = Verdict::Healthy;
+    last_verdict_out_ = VerdictOut{};
+    std::fill(window_prev_ok_.begin(), window_prev_ok_.end(), false);
+    recovered_prev_window_ = in.agg ? in.agg->decoder().stats(0).syms_recovered +
+                                          in.agg->decoder().stats(1).syms_recovered
+                                    : 0;
+    au_seq_prev_ = au_seq_.load(std::memory_order_relaxed);
+    verdict_.new_session();
+    last_window_ms_ = now_ms_u;
+  }
+  if (!(active && now_ms_u - last_window_ms_ >= static_cast<uint64_t>(cfg_.hop.window_ms))) return;
+  last_window_ms_ = now_ms_u;
+  std::vector<VerdictCardIn> vc(static_cast<size_t>(n_cards_));
+  int starved_valid = 0;
+  bool starved_all_zero = true;
+  for (int i = 0; i < n_cards_; ++i) {
+    auto& fe = *cards_[static_cast<size_t>(i)];
+    const size_t si = static_cast<size_t>(i);
+    const bool busy = (dwell_busy_.load() && dwell_card_.load() == i) ||
+                      (scout_owns_() && i == scout_card_);
+    if (!verdict_card_usable(fe.ready(), busy, fe.channel(), plan_.op())) {
+      window_prev_ok_[si] = false;
+      nhm_win_[si].invalidate();
+      continue;
+    }
+    const NhmBusyRead nb = fe.read_nhm_busy();
+    const bool nhm_ok = nhm_win_[si].usable(nb, fe.channel(), dwell_gen_[si].load(std::memory_order_acquire));
+    const ScoutEnergy e = fe.read_energy_scout();
+    const ScoutFrames f = fe.frames();
+    const uint64_t crc_fail = in.agg ? in.agg->card(i).crc_fail : 0;
+    const double rssi_raw = in.agg ? in.agg->card(i).rssi_a_ema : 0.0;
+    const double snr_raw = in.agg ? in.agg->card(i).snr_ema : 0.0;
+    const uint8_t arm_ch = fe.channel();
+    const uint32_t arm_gen = dwell_gen_[si].load(std::memory_order_acquire);
+    if (fe.arm_nhm_busy(nhm_op_period_)) nhm_win_[si].armed(arm_ch, nhm_op_period_, arm_gen);
+    else nhm_win_[si].invalidate();
+    if (window_prev_ok_[si]) {
+      vc[si].valid = true;
+      ++starved_valid;
+      if (f.own - window_prev_[si].own != 0) starved_all_zero = false;
+      vc[si].fa = e.fa_ofdm;
+      vc[si].cca = e.cca_ofdm;
+      vc[si].foreign = static_cast<uint32_t>(f.foreign - window_prev_[si].foreign);
+      vc[si].crc_fail = static_cast<uint32_t>(crc_fail - window_prev_crc_[si]);
+      vc[si].rssi_dbm = rssi_raw_to_dbm(rssi_raw);
+      vc[si].snr_db = snr_ok_[si] ? snr_raw_to_db(snr_raw) : std::nan("");
+      vc[si].snr_valid = snr_ok_[si];
+      const double win_us = static_cast<double>(now_ms_u - window_prev_ms_[si]) * 1000.0;
+      const double own_pct = win_us > 0
+          ? std::min(100.0, 100.0 * static_cast<double>(f.own_air_us - window_prev_[si].own_air_us) / win_us)
+          : 0.0;
+      const auto busy_pct = nhm_ok ? nhm_busy_pct(nb, cfg_.hop.verdict.busy_dbm) : std::nullopt;
+      vc[si].busy_valid = busy_pct.has_value();
+      vc[si].nhm_busy_pct = busy_pct.value_or(0.0);
+      vc[si].own_air_pct = own_pct;
+      energy_last_[si] = StatsEnergyIn{e.cca_ofdm, e.fa_ofdm, f.own - window_prev_[si].own,
+                                       f.foreign - window_prev_[si].foreign, std::nullopt, busy_pct, own_pct};
+    }
+    window_prev_[si] = f;
+    window_prev_crc_[si] = crc_fail;
+    window_prev_ms_[si] = now_ms_u;
+    window_prev_ok_[si] = true;
+  }
+  VerdictLinkIn vl;
+  const auto s1 = s1_hop_loss_.sample(now_ms);
+  vl.pre_fec_loss = s1.valid ? s1.loss : 0.0;
+  const uint64_t recovered_now = in.agg ? in.agg->decoder().stats(0).syms_recovered +
+                                              in.agg->decoder().stats(1).syms_recovered
+                                        : 0;
+  vl.recovered = static_cast<uint32_t>(recovered_now - recovered_prev_window_);
+  recovered_prev_window_ = recovered_now;
+  vl.starved = starved_valid > 0 && starved_all_zero;
+  const uint64_t au_now = au_seq_.load(std::memory_order_relaxed);
+  vl.au_count = static_cast<uint32_t>(au_now - au_seq_prev_);
+  au_seq_prev_ = au_now;
+  const auto vo = verdict_.window(now_ms, vc, vl, vrx_.ctl().rung());
+  if (vo.v != Verdict::Healthy || vo.v != last_verdict_) sink_.verdict(now_ms, vo, vc, vl);
+  last_verdict_ = vo.v;
+  last_verdict_out_ = vo;
+  if (const auto blank = hop_store_blank_until(vo, cfg_.hop.enable, cfg_.hop.confirm_ms))
+    vrx_.blank_store(*blank);
+}
+
+void ChannelCore::step_controller_(const ChannelTickIn& in) {
+  const double now_ms = in.now_ms;
+  if (!hop_active(in.in_session, in.cal_running)) { pending_relocate_.reset(); return; }
+  auto fill_hop_targets = [&](HopTick& k) {
+    k.best = ranker_.best(now_ms, plan_.op(), hopc_.backed_off(now_ms), /*require_unblocked=*/true);
+    k.escape = ranker_.best(now_ms, plan_.op(), hopc_.backed_off_failed(now_ms), /*require_unblocked=*/true);
+    k.best_score = 0;
+    k.escape_score = 0;
+    for (const auto& e : ranker_.ranking(now_ms)) {
+      if (k.best && e.ch == *k.best) k.best_score = e.score;
+      if (k.escape && e.ch == *k.escape) k.escape_score = e.score;
+    }
+  };
+  HopTick ht;
+  ht.now_ms = now_ms;
+  ht.verdict = last_verdict_out_;
+  ht.cur_op = plan_.op();
+  if (hopc_.state() != HopState::Ordered) {
+    std::vector<bool> ready(static_cast<size_t>(n_cards_));
+    for (int i = 0; i < n_cards_; ++i) ready[static_cast<size_t>(i)] = cards_[static_cast<size_t>(i)]->ready();
+    hop_lead_latched_ = pick_hop_lead(ready, in.tx_card);
+  }
+  ht.lead_card = hop_lead_latched_;
+  ht.n_cards = hop_lead_latched_ >= 0 ? n_cards_ : 1;
+  fill_hop_targets(ht);
+  ht.video_on_target = plan_.hopping() && last_video_ch_ == plan_.hop_target();
+  ht.rcf_sent_since_order = static_cast<int>(rcf_sent_total_ - rcf_sent_at_order_);
+  const bool relocation_owns = boot_pick_.relocating() || pending_relocate_.has_value() ||
+                               boot_pick_.relocation_pending(last_bi_);
+  if (!scout_owns_() && !relocation_owns &&
+      hop_burst_due(hopc_.state(), last_verdict_out_.trigger, now_ms, last_burst_ms_,
+                    cfg_.hop.dwell_period_ms)) {
+    last_burst_ms_ = now_ms;
+    const int burst_card = pick_burst_card(can_scout_, in.tx_card);
+    if (burst_card < 0 || !inflight_) {
+      fill_hop_targets(ht);
+    } else {
+      std::lock_guard<std::mutex> ilk(inflight_mu_);
+      auto& fe = *cards_[static_cast<size_t>(burst_card)];
+      inflight_->set_radio(fe);
+      std::vector<ScoutDwell> recs;
+      for (const auto& v : inflight_->burst(plan_.op(), recs)) ranker_.add(v);
+      for (const auto& d : recs) sink_.dwell(now_ms, burst_card, d);
+      cur_ch_[static_cast<size_t>(burst_card)] = fe.channel();
+      nhm_win_[static_cast<size_t>(burst_card)].invalidate();
+      fill_hop_targets(ht);
+    }
+  }
+  if (scout_owns_()) {
+    ht.best.reset();
+    ht.escape.reset();
+  } else if (pending_relocate_) {
+    ht.verdict.trigger = true;
+    ht.relocate = true;
+    ht.best = *pending_relocate_;
+    ht.best_score = 0;
+    ht.escape.reset();
+    ht.escape_score = 0;
+  } else if (relocation_owns) {
+    ht.best.reset();
+    ht.escape.reset();
+  }
+  const HopAction act = hopc_.tick(ht);
+  dispatch_hop_action_(act, ht.relocate, now_ms);
+  if (ht.relocate)
+    sink_.log(logf_("maburgs channel: relocate %u -> %u %s", static_cast<unsigned>(plan_.op()),
+                    static_cast<unsigned>(*pending_relocate_),
+                    act.kind == HopAction::Order ? "placed" : "refused (hop cap)"));
+  pending_relocate_.reset();
+}
+
+void ChannelCore::step_move_edge_(const ChannelTickIn& in) {
+  const double now_ms = in.now_ms;
+  vrx_.set_proposal(plan_.op());
+  vrx_.set_keepalive_hold(hopc_.state() == HopState::Ordered);
+  if (cal_move_hold_.take(vrx_.take_move_edge(), in.cal_running) && !plan_.hopping()) {
+    const uint8_t proposed = vrx_.proposal();
+    const uint8_t agreed = vrx_.agreed_channel();
+    if (!plan_.member(agreed))
+      sink_.log(logf_("maburgs channel: drone acked %u, not in our set; ignored",
+                      static_cast<unsigned>(agreed)));
+    plan_.on_ack(now_ms, agreed, proposed);
+    vrx_.set_proposal(plan_.op());
+    link_edge_seen_ = true;
+  }
+}
 
 void ChannelCore::step_drains_() {
   if (scout_)

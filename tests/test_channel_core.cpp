@@ -1,5 +1,7 @@
 #include <algorithm>
+#include <cmath>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -295,6 +297,253 @@ TEST(mechanical_retune_skips_scout_card_and_follows_desired) {
   for (auto& c : g.cards[1]->calls) if (c == "retune 64") scout_retuned_by_core = true;
   // the scout card is parked by the scout itself (retune_width), not by the core while it owns it
   CHECK(!scout_retuned_by_core || !g.core->pick_open());
+}
+
+// Helpers: bring the rig to SESSION on the start channel (synthetic ack, as
+// run_hop_inject_test did), freeze the pick (pinned rigs are frozen from
+// the start), and pump RCFs through vrx.step() so the core's note_sent
+// sees them.
+static void link_up(Rig& g) {
+  mabur::rc::DiscAck ack; ack.vrx_nonce = g.vrx->rz_nonce(); ack.vtx_nonce = 1;
+  ack.chip_caps = mabur::rc::CAP_FRAME_WIRE; ack.agreed_channel = g.core->op(); ack.seq = 1;
+  const auto wire = mabur::rc::pack_disc_ack(ack);
+  g.vrx->on_rc_frame(wire.data(), wire.size(), static_cast<double>(g.clk.ms));
+  const LinkHealth healthy{true, 0.0, 0.0, false};
+  for (int i = 0; i < 200 && g.vrx->link_state() != VrxState::SESSION; ++i) {
+    g.clk.ms += 10;
+    g.vrx->on_video(static_cast<double>(g.clk.ms));
+    g.vrx->step(static_cast<double>(g.clk.ms), healthy);
+  }
+  REQUIRE(g.vrx->link_state() == VrxState::SESSION);
+}
+// One RCF built and "sent": returns the parsed Rcf.
+static std::optional<mabur::rc::Rcf> pump_rcf(Rig& g) {
+  const LinkHealth healthy{true, 0.0, 0.0, false};
+  for (int i = 0; i < 20; ++i) {
+    g.clk.ms += static_cast<uint64_t>(g.cfg.link.feedback_ms);
+    g.vrx->on_video(static_cast<double>(g.clk.ms));
+    auto out = g.vrx->step(static_cast<double>(g.clk.ms), healthy);
+    g.core->tick(g.in(true));
+    if (!out || out->is_disc) continue;
+    g.core->note_sent(true, true);
+    return mabur::rc::parse_rcf(out->frame.data(), out->frame.size());
+  }
+  return std::nullopt;
+}
+// An interfered verdict window: foreign >> foreign_pps on every usable
+// card, AND impaired (HopVerdict::window() -- hop_verdict.cpp -- gates
+// Interfered on `impaired`, which `contended`/`raised` alone never set;
+// only pre_fec_loss/recovered/starved do). This rig's Aggregator never
+// decodes a real body, so pre_fec_loss/recovered are permanently 0 --
+// `own` is deliberately left unbumped (own delta 0 every window) so
+// `starved` carries `impaired` instead. Runs enough windows for the
+// trigger (persist 2).
+static void interfere(Rig& g, int windows = 3) {
+  for (int w = 0; w < windows; ++w) {
+    for (auto& c : g.cards) { c->fr.foreign += 40; }
+    for (int i = 0; i < g.cfg.hop.window_ms / 10 + 1; ++i) {
+      g.vrx->on_video(static_cast<double>(g.clk.ms));
+      g.core->tick(g.in(true));
+      g.clk.ms += 10;
+    }
+  }
+}
+
+TEST(two_card_order_rcf_carries_hop_and_plan_leads_then_follows) {
+  Rig g(2, 0, /*pinned=*/true, 40);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  // rank 64 as the best candidate: feed the ranker through the burst path
+  // (the fake's energy is clean on 64, busy on 40) -- the burst runs when
+  // the trigger fires; so first interfere, then the burst ranks, then order.
+  g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
+  g.cards[0]->fr.foreign = 0; g.cards[1]->fr.foreign = 0;
+  interfere(g, 4);
+  REQUIRE(g.sink.has_hop("order"));
+  const auto r = pump_rcf(g);
+  REQUIRE(r.has_value());
+  CHECK(r->hop_ch != 0 && r->hop_ch != 40);
+  CHECK(r->hop_epoch == 1);
+  CHECK(g.sink.has_move(MoveReason::HopLead));
+  CHECK(std::string(to_string(g.vrx->ctl().last_event().reason)) == "hop_restore");   // ctl hop_restore at the order
+  // confirm: video on the target, received by the lead card
+  g.core->note_video(r->hop_ch);
+  g.tick(true);
+  CHECK(g.sink.has_hop("lead_confirm"));
+  CHECK(g.sink.has_move(MoveReason::HopFollow));
+  CHECK(g.core->op() == r->hop_ch);
+  // verify: healthy windows past verify_ms
+  for (int i = 0; i < (g.cfg.hop.verify_ms / 10) + 30; ++i) { g.vrx->on_video(static_cast<double>(g.clk.ms)); g.tick(true); }
+  CHECK(g.sink.has_hop("verify_pass"));
+  CHECK(g.core->snapshot().hop.hops == 1);
+}
+
+TEST(stale_pre_hop_verdict_does_not_break_verify) {
+  // After Confirm the cached VerdictOut (measured on the old channel) is
+  // re-fed every tick until the next window: the controller must stay in
+  // Verifying (C1).
+  Rig g(2, 0, true, 40);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
+  interfere(g, 4);
+  REQUIRE(g.sink.has_hop("order"));
+  const auto r = pump_rcf(g);
+  REQUIRE(r.has_value());
+  g.core->note_video(r->hop_ch);
+  g.tick(true);
+  REQUIRE(g.sink.has_hop("lead_confirm"));
+  g.tick(true);                              // same cached interfered verdict
+  CHECK(std::string(g.core->snapshot().hop.state) == "verifying");
+  CHECK(!g.sink.has_hop("withdraw"));
+}
+
+TEST(one_card_order_rides_repeats_then_retunes) {
+  Rig g(1, 0, true, 40);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  g.cards[0]->cca_per_ms_on[40] = 50;
+  interfere(g, 4);
+  REQUIRE(g.sink.has_hop("order"));
+  CHECK(g.cards[0]->ch == 40);              // radio stays until one_card_repeats RCFs
+  // interfere() only drives core->tick() (closing verdict windows), never
+  // vrx.step() -- unlike run_radio(), where the SAME control-loop pass that
+  // dispatches the Order also runs vrx.step() afterward and sends that
+  // pass's RCF. Without this one send, the order's own control-tick
+  // contributes nothing to rcf_sent_total_, and ordered_tick's
+  // rcf_sent_since_order count (read before THIS call's own note_sent, like
+  // every call below) would need one extra pump_rcf() call to reach
+  // one_card_repeats -- pins note_sent()'s count to the Order's own pass,
+  // not an extra one.
+  pump_rcf(g);
+  int sent = 0;
+  std::optional<mabur::rc::Rcf> r;
+  for (int i = 0; i < 10 && !g.sink.has_hop("one_card_retune"); ++i) { r = pump_rcf(g); ++sent; }
+  REQUIRE(g.sink.has_hop("one_card_retune"));
+  CHECK(sent == g.cfg.hop.one_card_repeats);
+  REQUIRE(r.has_value());
+  CHECK(g.cards[0]->ch == r->hop_ch);        // the sole radio moved (mechanical retune)
+  CHECK(g.sink.has_move(MoveReason::HopOneCard));
+  for (auto& e : g.sink.hops)
+    if (e.kind == "one_card_retune") CHECK(e.elapsed_ms >= 200 && e.elapsed_ms <= 400);
+  g.core->note_video(r->hop_ch);
+  g.tick(true);
+  CHECK(g.sink.has_hop("lead_confirm"));
+  CHECK(g.sink.has_move(MoveReason::HopFollow));
+}
+
+TEST(withdraw_on_no_video_restores_cards) {
+  Rig g(2, 0, true, 40);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
+  interfere(g, 4);
+  REQUIRE(g.sink.has_hop("order"));
+  const auto r = pump_rcf(g);
+  REQUIRE(r.has_value());
+  for (int i = 0; i < (g.cfg.hop.confirm_extend_ms / 10) + 20; ++i) { g.vrx->on_video(static_cast<double>(g.clk.ms)); g.tick(true); }
+  CHECK(g.sink.has_hop("withdraw"));
+  CHECK(g.sink.has_move(MoveReason::HopWithdraw));
+  CHECK(g.cards[1]->ch == 40);               // lead card back on op
+  CHECK(g.core->op() == 40);
+}
+
+TEST(lead_card_dies_mid_order_withdraws_to_op) {   // Review Focus 1
+  Rig g(2, 0, true, 40);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
+  interfere(g, 4);
+  REQUIRE(g.sink.has_hop("order"));
+  g.cards[1]->is_ready = false;               // the lead vanishes
+  g.tick(true);
+  CHECK(std::string(g.core->snapshot().hop.state) == "ordered");   // latched lead, no re-pick
+  for (int i = 0; i < (g.cfg.hop.confirm_extend_ms / 10) + 20; ++i) { g.vrx->on_video(static_cast<double>(g.clk.ms)); g.tick(true); }
+  CHECK(g.sink.has_hop("withdraw"));
+  CHECK(g.core->op() == 40);
+  g.cards[1]->is_ready = true;
+  g.tick(true);
+  CHECK(g.cards[1]->ch == 40);                // retuned back once ready
+}
+
+TEST(session_loss_mid_order_withdraws) {
+  Rig g(2, 0, true, 40);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
+  interfere(g, 4);
+  REQUIRE(g.sink.has_hop("order"));
+  g.tick(false);                              // hop_active falling edge
+  // on_session_lost() returns HopAction::Withdraw, but the EVENT it logs
+  // (hop_controller.cpp) is kind "session_lost", not "withdraw" -- that
+  // literal kind is only ever logged by withdraw() (the confirm_ms/
+  // confirm_extend_ms timeout path), a different caller.
+  CHECK(g.sink.has_hop("session_lost"));
+  CHECK(!g.core->hopping());
+}
+
+TEST(cal_running_holds_relocation_and_move_edge) {   // Review Focus 3
+  Rig g(2, 0, true, 40);
+  g.core->on_rc_body(64);
+  mabur::rc::DiscAck ack; ack.vrx_nonce = g.vrx->rz_nonce(); ack.vtx_nonce = 1; ack.agreed_channel = 64; ack.seq = 1;
+  g.core->on_session_opened(ack, static_cast<double>(g.clk.ms));   // link formed on 64, want = 40
+  link_up(g);
+  CHECK(g.core->op() == 64);
+  for (int i = 0; i < 20; ++i) g.tick(true, /*cal=*/true);
+  CHECK(!g.sink.has_hop("order"));            // no relocate while calibrating
+  CHECK(!g.sink.has_line("relocate 64 -> 40"));
+  for (int i = 0; i < 20; ++i) g.tick(true, false);
+  CHECK(g.sink.has_line("maburgs channel: relocate 64 -> 40 placed"));
+  CHECK(g.sink.has_hop("relocate"));
+}
+
+TEST(relocate_lands_on_verify_pass_and_freezes_relocated) {
+  // Pinned, not auto: BootPick's own "op unmeasured" guard (final review
+  // I1, boot_pick.cpp) means an AUTO pick never relocates off a link found
+  // before any scouting -- "a linked scout never measures op's own pair,
+  // so a drone found at once leaves op with only its pre-link visits. A
+  // working link is not moved on a one-sided comparison." That freezes
+  // auto mode's pick in place on 64 forever (confirmed: 200+ ticks never
+  // produce the relocate), which is BootPick's deliberate design, not a
+  // gap this task's dispatch/controller code can or should route around.
+  // Pinned mode skips the pick entirely (open_ false from construction)
+  // and goes straight to the relocation gate this test actually exercises
+  // -- same as cal_running_holds_relocation_and_move_edge, carried through
+  // Confirm/Verify/VerifyPass.
+  Rig g(2, 0, /*pinned=*/true, 40);
+  g.core->on_rc_body(64);
+  mabur::rc::DiscAck ack; ack.vrx_nonce = g.vrx->rz_nonce(); ack.vtx_nonce = 1; ack.agreed_channel = 64; ack.seq = 1;
+  g.core->on_session_opened(ack, static_cast<double>(g.clk.ms));
+  link_up(g);
+  for (int i = 0; i < 200 && !g.sink.has_line("relocate 64 -> 40 placed"); ++i) g.tick(true);
+  REQUIRE(g.sink.has_line("relocate 64 -> 40 placed"));
+  const auto r = pump_rcf(g);
+  REQUIRE(r.has_value() && r->hop_ch == 40);
+  g.core->note_video(40);
+  g.tick(true);
+  REQUIRE(g.sink.has_hop("lead_confirm"));
+  for (int i = 0; i < (g.cfg.hop.verify_ms / 10) + 30; ++i) { g.vrx->on_video(static_cast<double>(g.clk.ms)); g.tick(true); }
+  CHECK(g.sink.has_hop("verify_pass"));
+  CHECK(g.core->op() == 40);
+  CHECK(std::string(g.core->snapshot().scan_state) != "moving");
+}
+
+// Carried from Task 3 (continuation deferred to Task 4): the move edge
+// (step_move_edge_) is what sets link_edge_seen_, which BootPick reads next
+// tick as "one-card linked".
+TEST(one_card_link_edge_freezes_one_card_linked) {
+  Rig g(1, 0);
+  g.cards[0]->cca_per_ms_on[40] = 5;
+  for (int i = 0; i < 800 && !g.sink.has_line("one-card prelude ranking picks"); ++i) g.tick();
+  REQUIRE(g.sink.has_line("one-card prelude ranking picks"));
+  g.vrx->test_set_move_edge();   // the drone linked: the move edge fires once
+  g.tick(true);
+  g.tick(true);
+  CHECK(g.sink.has_line("pick frozen on"));
+  CHECK(g.sink.has_line("(one-card linked)"));
+  CHECK(std::string(g.core->snapshot().scan_state) == "frozen");
+  REQUIRE(g.core->snapshot().scan_pick.has_value());
+  CHECK(*g.core->snapshot().scan_pick == g.core->op());
 }
 
 MTEST_MAIN
