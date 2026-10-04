@@ -414,6 +414,35 @@ TEST(pinned_one_card_never_hops_on_interference) {
   CHECK(r->hop_ch == 0);
 }
 
+// Bench 2026-10-04 (row 9): the relocation onto pinned 40 landed, then one
+// verify window read the pin interfered (the 36-48 router) -> verify_fail,
+// "relocation to 40 did not land; staying on 40", holds 1. Pinned, the
+// relocation has nowhere else to go: the confirm lands it, no verify.
+TEST(pinned_relocation_is_not_failed_by_a_dirty_pin) {
+  Rig g(2, 0, /*pinned=*/true, 40);
+  g.core->on_rc_body(64);
+  mabur::rc::DiscAck ack; ack.vrx_nonce = g.vrx->rz_nonce(); ack.vtx_nonce = 1; ack.agreed_channel = 64; ack.seq = 1;
+  g.core->on_session_opened(ack, static_cast<double>(g.clk.ms));
+  link_up(g);
+  for (int i = 0; i < 200 && !g.sink.has_line("relocate 64 -> 40 placed"); ++i) g.tick(true);
+  REQUIRE(g.sink.has_line("relocate 64 -> 40 placed"));
+  const auto r = pump_rcf(g);
+  REQUIRE(r.has_value() && r->hop_ch == 40);
+  g.core->note_video(40);
+  g.tick(true);
+  REQUIRE(g.sink.has_hop("lead_confirm"));
+  // the pin reads interfered through what would have been the verify window
+  g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
+  interfere(g, 8);
+  CHECK(g.sink.has_hop("verify_pass"));
+  CHECK(!g.sink.has_hop("verify_fail"));
+  CHECK(!g.sink.has_line("did not land"));
+  CHECK(g.core->snapshot(0).hop.holds == 0);
+  CHECK(std::string(g.core->snapshot(0).hop.state) == "idle");
+  CHECK(g.core->op() == 40 && g.cards[0]->ch == 40 && g.cards[1]->ch == 40);
+  CHECK(std::string(g.core->snapshot(0).hop.verdict) == "interfered");   // still measured, still reported
+}
+
 TEST(two_card_order_rcf_carries_hop_and_plan_leads_then_follows) {
   Rig g(2, 0); freeze_auto(g);
   link_up(g);

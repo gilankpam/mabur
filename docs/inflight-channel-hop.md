@@ -559,6 +559,14 @@ The per-half boot scan is `ChannelScout`'s alone (`pair_pick.h`,
 `gs/src/main.cpp` only translates its `HopAction`s into `ChannelPlan`/
 `VrxController`/scan.log calls.
 
+- **No verify for a pinned relocation** (`HopTick::no_verify`, 2026-10-04).
+  A relocation onto the pin has nowhere else to go, so the verify's
+  question is empty: the Confirm lands it and `VerifyPass` follows on the
+  next tick (one action per tick), the pin is never backed off, `holds`
+  stays 0. Without it a dirty pin read as a failed hop — bench 2026-10-04,
+  `verify_fail` +332 ms on relocate 64 → 40 under the 36-48 router, then
+  "relocation to 40 did not land; staying on 40". Set by `ChannelCore` only
+  when `!reactive_`; a relocation onto an auto pick keeps the verify below.
 - **Verify window** `hop.verify_ms` (1000 ms) after confirmation:
   - `healthy`/`fade`/`unknown` throughout → stands (only a raw
     `Verdict::Interfered` window inside `verifying_tick` breaks it early);

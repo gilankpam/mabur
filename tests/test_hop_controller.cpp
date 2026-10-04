@@ -611,6 +611,31 @@ TEST(relocate_ignores_cooldown) {
   CHECK(h.tick(k2).kind == HopAction::Order);
   CHECK(h.on_session_lost(2500, 149).kind == HopAction::Withdraw);
 }
+// A pinned relocation has exactly one legal destination, so "is the new
+// channel better than the one we left" -- the verify window's question --
+// has no meaning: the confirm lands it. A dirty pin must not read as a
+// failed hop (bench 2026-10-04: relocate 64 -> 40 under the 36-48 router
+// logged verify_fail +332 ms, backed the pin off and held). Revert (drop
+// no_verify): the third tick reads Hold/verify_fail and the pin is backed off.
+TEST(pinned_relocation_lands_on_confirm_without_a_verify_window) {
+  HopController h(cfg());
+  HopTick k = T(1000, interfered(), 40, 64); k.relocate = true; k.no_verify = true;
+  REQUIRE(h.tick(k).kind == HopAction::Order);
+  REQUIRE(h.tick(T(1170, interfered(), std::nullopt, 64, true)).kind == HopAction::Confirm);
+  // a window measured entirely on the pin, after the settle, reads interfered
+  auto a = h.tick(T(1400, measured(interfered(), 1330, 1400), std::nullopt, 40));
+  CHECK(a.kind == HopAction::VerifyPass && a.target == 40);
+  CHECK(h.state() == HopState::Idle);
+  CHECK(h.backed_off(1401).empty());          // the pin is not backed off
+  CHECK(h.holds() == 0 && h.hops() == 1);
+  auto ev = h.take_events();
+  REQUIRE(ev.size() == 3);
+  CHECK(ev[0].kind == "relocate" && ev[1].kind == "lead_confirm" && ev[2].kind == "verify_pass");
+  // a reactive order after it still verifies as before
+  h.tick(T(5000, interfered(), 149, 40));
+  h.tick(T(5080, interfered(), std::nullopt, 40, true));
+  CHECK(h.tick(T(5400, measured(interfered(), 5330, 5400), std::nullopt, 149)).kind == HopAction::Hold);
+}
 TEST(relocate_counts_against_the_hop_cap) {
   HopCfg c = cfg(); c.max_hops_per_min = 1;
   HopController h(c);

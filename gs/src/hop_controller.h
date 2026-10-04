@@ -33,6 +33,12 @@ struct HopTick {
   // relocations -- how the pin stays static while the drone can still be
   // brought to it.
   bool relocate = false;
+  // With relocate: the target is the only place the link may live (a pinned
+  // GS relocating onto its pin), so the verify window's question -- is the
+  // channel we landed on better than the one we left -- has no answer. The
+  // confirm lands it: VerifyPass on the next tick, no verify_fail, no
+  // backoff of the pin (bench 2026-10-04: a dirty pin read as a failed hop).
+  bool no_verify = false;
   // The escape from a blocked hold (Task 11 (d)): the best UNBLOCKED
   // candidate that is not verify-failed (fled channels allowed). Used only
   // when there is no `best` and the current verdict's evidence carries
@@ -136,6 +142,7 @@ class HopController {
   uint32_t holds_ = 0;
   bool one_card_retuned_ = false;
   bool confirm_extended_ = false;   // this order entered the confirm extension
+  bool no_verify_ = false;          // this order lands on confirm (HopTick::no_verify)
   double hold_start_ms_ = 0;
   struct Backoff { double until_ms; int k; BackoffWhy why; };
   std::map<uint8_t, Backoff> backoff_;                  // ch -> {until_ms, repeat count k, reason}

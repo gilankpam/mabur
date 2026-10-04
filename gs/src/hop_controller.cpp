@@ -77,6 +77,7 @@ void HopController::idle_tick(const HopTick& in, HopAction& out) {
     if (!in.relocate) flee(in.cur_op, in.now_ms);
     order(*in.best, in.verdict.ref_rung, in.lead_card, in.best_score, in.now_ms,
           in.relocate ? "relocate" : "order", out);
+    no_verify_ = in.relocate && in.no_verify;
     return;
   }
   // Nothing ranked, but the channel we are on is BLOCKED:
@@ -141,6 +142,23 @@ void HopController::ordered_tick(const HopTick& in, HopAction& out) {
 }
 
 void HopController::verifying_tick(const HopTick& in, HopAction& out) {
+  // A pinned relocation (HopTick::no_verify): the confirm already landed
+  // it, there is nothing to verify against and nowhere else to go. Pass
+  // now -- the pin is never backed off, a dirty pin never reads as a
+  // failed hop -- on the tick after the Confirm, since one tick carries one
+  // action.
+  if (no_verify_) {
+    const uint8_t landed = hop_ch_;
+    backoff_.erase(landed);
+    state_ = HopState::Idle;
+    last_confirm_ms_ = in.now_ms;
+    ++hops_;
+    out.kind = HopAction::VerifyPass;
+    out.target = landed;
+    out.epoch = epoch_;
+    log_event(in.now_ms, "verify_pass", epoch_, landed, 0, in.now_ms - verify_start_);
+    return;
+  }
   // A verdict window whose measurement span STARTED before the hop landed
   // describes the channel we just left, and on that channel the verdict is
   // Interfered by construction -- it is why we hopped. The caller ticks
@@ -229,6 +247,7 @@ void HopController::order(uint8_t target, int restore_rung, int lead_card, uint3
   order_ms_ = now;
   one_card_retuned_ = false;
   confirm_extended_ = false;
+  no_verify_ = false;
   hop_times_.push_back(now);
   out.kind = HopAction::Order;
   out.target = target;

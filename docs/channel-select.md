@@ -342,6 +342,13 @@ heard one. Now:
   `HopTick::relocate`: H kind `relocate`; the channel left is not backed
   off as fled; exempt from `cooldown_ms`, counted against
   `max_hops_per_min`; and it is the one hop a pinned GS ever places.
+  **Onto the pin the confirm lands it** (`HopTick::no_verify`, 2026-10-04):
+  there is no verify window, because its question — is the channel we
+  landed on better than the one we left — has no answer when the target is
+  the only place the link may live. `verify_pass` follows `lead_confirm` on
+  the next tick; the pin is never backed off and a dirty pin never reads as
+  a failed hop (bench row 9 saw `verify_fail` +332 ms under the 36-48
+  router before this). Relocations onto an auto pick keep their verify.
   `verify_pass` lands it. Anything else — withdraw, verify fail (no retry:
   the only target offered is `want`), a session lost before or after the
   confirm, the hop cap — accepts the channel the link is on
@@ -351,7 +358,9 @@ heard one. Now:
   to the pin on that link-up; if that fails the GS stays where the link is
   until the next loss (then beacons on that `op`) — the sideport shows
   `link.channel ≠ scan.pick`. The reactive hop never runs pinned: an
-  interfered pin is reported (`hop.verdict`, the OSD) and stays.
+  interfered pin is reported (`hop.verdict`, the OSD) and stays. The
+  controller is never handed a reactive trigger in any arm of the core's
+  dispatch (cleared once, before the arms; the relocation arm re-arms it).
 - A confirmed hop of either kind moves `want` with `op`: a reactive hop's
   destination is where the link should live from then on, so a later
   link-up does not relocate back onto the channel it fled.
@@ -528,7 +537,8 @@ row has not run, not an unmeasured constant masquerading as a result.
 | 6 | Jam the remembered member before power-up: boot hop leaves it. Jam a candidate: never picked | FAIL 2026-10-04 (candidate jam; see findings) — 64 jammed at 250 fps / 1000 B / 6M from a card co-located with the GS: GS still committed 64. K: 60:165:32.8 % 64:130:32.8 % vs 36:444 40:629 108:607 112:1286 140:966 144:744. Retry at the lowest TX-power step: same. "Jam the remembered member before power-up" not run |
 | 7 | The leak constant `k`: scout on a clean candidate while the TX card sends RCFs at the low-power and 60 fps cadences; busy per frame sent | INCONCLUSIVE 2026-10-04 — unlinked clean halves read 4-14 events; linked (row 1) read 20-88 on the same halves, but the co-located drone's own TX cannot be separated from the GS control-frame leak on this bench; leak_per_frame = 1.0 stays provisional. Measure with the drone ≥ 20 m away or on a dummy load |
 | 8 | `maburcal` on 64 and 112; fixed-rung linkbench 40/2 on 64 vs 136; decide 64 vs 128 for the default set | NOT RUN 2026-10-04 — default set [40, 64, 112, 144] remains provisional |
-| 9 | Pinned member under interference: the link never leaves it (2026-10-04 "pin is static") | PASS 2026-10-04 — GS `channel = 40`, drone remembered 64, bench router on 36-48: `set [40,64,112,144] mode pinned start 40`, "drone found on 64 (op 40)", `relocate 64 -> 40` placed, `lead_confirm` +170 ms, drone followed (its state file reads 40), then `verify_fail` +332 ms (40 read interfered inside the verify) → "relocation to 40 did not land; staying on 40", hold closed in 5 ms. 60 s soak at 5 Hz: 13/300 verdicts `interfered`, `link.channel` 40 throughout, `hop.state` idle, `hops` 0, `holds` 1, `cards[*].dwell` null (no in-flight scout), no further `H` events; sideport `hop` carries no `enable`. ausniff 30 s: 1815 AUs, 60.5 fps, 0 gaps. Before this change the same reading hopped 40 → 64 (row 1's reactive hop) |
+| 9 | Pinned member under interference: the link never leaves it (2026-10-04 "pin is static") | PASS 2026-10-04 — GS `channel = 40`, drone remembered 64, bench router on 36-48: `set [40,64,112,144] mode pinned start 40`, "drone found on 64 (op 40)", `relocate 64 -> 40` placed, `lead_confirm` +170 ms, drone followed (its state file reads 40), then `verify_fail` +332 ms (40 read interfered inside the verify) → "relocation to 40 did not land; staying on 40", hold closed in 5 ms. 60 s soak at 5 Hz: 13/300 verdicts `interfered`, `link.channel` 40 throughout, `hop.state` idle, `hops` 0, `holds` 1, `cards[*].dwell` null (no in-flight scout), no further `H` events; sideport `hop` carries no `enable`. ausniff 30 s: 1815 AUs, 60.5 fps, 0 gaps. Before this change the same reading hopped 40 → 64 (row 1's reactive hop). The `verify_fail`/`holds 1` was fixed the same day (`no_verify`: a pinned relocation lands on confirm) — host-tested `pinned_relocation_is_not_failed_by_a_dirty_pin`, bench re-run below |
+| 10 | Pinned relocation onto a dirty pin: `lead_confirm` → `verify_pass`, no `verify_fail`, `holds` 0 | PENDING bench (host: `pinned_relocation_is_not_failed_by_a_dirty_pin`, `pinned_relocation_lands_on_confirm_without_a_verify_window`) |
 
 ### Bench 2026-10-04 — findings
 

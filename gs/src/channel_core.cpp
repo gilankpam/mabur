@@ -574,12 +574,17 @@ void ChannelCore::step_controller_(const ChannelTickIn& in) {
       fill_hop_targets(ht);
     }
   }
+  // Pinned: the verdict is still measured (OSD/sideport read it) but the
+  // controller never sees a reactive trigger, in any arm below -- no order,
+  // no escape, no exhausted hold. Relocation re-arms it on its own tick.
+  if (!reactive_) ht.verdict.trigger = false;
   if (scout_owns_()) {
     ht.best.reset();
     ht.escape.reset();
   } else if (pending_relocate_) {
     ht.verdict.trigger = true;
     ht.relocate = true;
+    ht.no_verify = !reactive_;   // onto the pin: the confirm lands it, no verify
     ht.best = *pending_relocate_;
     ht.best_score = 0;
     ht.escape.reset();
@@ -588,10 +593,6 @@ void ChannelCore::step_controller_(const ChannelTickIn& in) {
     ht.best.reset();
     ht.escape.reset();
   } else if (!reactive_) {
-    // Pinned: the verdict is still measured (OSD/sideport read it) but the
-    // controller never sees a reactive trigger or a candidate -- no order,
-    // no escape, no exhausted hold. Relocation, above, is the only mover.
-    ht.verdict.trigger = false;
     ht.best.reset();
     ht.escape.reset();
   }
