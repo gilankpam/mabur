@@ -647,7 +647,7 @@ TEST(relay_only_roster_no_ready_relay_is_quiet) {   // Review Focus 4
   for (int i = 0; i < 20; ++i) g.tick();
   CHECK(g.core->disc_targets(0).empty());
   CHECK(std::string(g.core->snapshot().scan_state) == "off");
-  CHECK(g.cards[0]->calls.empty() || g.cards[0]->calls.front() != "retune 64");   // scout never started (card not ready)
+  CHECK(g.cards[0]->calls.empty());           // scout never started (card not ready): nothing touched it
 }
 
 MTEST_MAIN

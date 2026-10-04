@@ -58,10 +58,13 @@ ChannelCore::ChannelCore(ChannelCoreCfg cfg, std::vector<LinkCard*> cards, VrxCo
   }
   one_card_ = cfg_.n_usb == 1;
   scout_card_ = pick_boot_scout(can_scout_);
-  // No card can measure (relay-only roster, spec §3.7): the last ready-able
-  // relay still searches the set (DISC bursts, no energy reads). measure =
-  // false below; the pick never opens.
-  if (scout_card_ < 0 && n_cards_ > cfg_.n_usb) {
+  // Relay-only roster (no USB card), spec §3.7: the last ready-able relay
+  // still searches the set (DISC bursts, no energy reads). measure = false
+  // below; the pick never opens. Scoped to cfg_.n_usb == 0 to agree with
+  // scan_disc_targets's own n_usb == 0 special case -- with any USB card
+  // present, RadioFrontend::can_scout() is statically true and
+  // pick_boot_scout never returns -1, so this never fires there anyway.
+  if (scout_card_ < 0 && cfg_.n_usb == 0 && n_cards_ > 0) {
     scout_card_ = n_cards_ - 1;
     relay_search_only_ = true;
   }
