@@ -1109,6 +1109,42 @@ these runs (the Debug tab was read before it re-rendered); the `Linked`
 tag, the drone's `retune` line and the `verify_pass` (which needs video on
 the target) stand in for them.
 
+### Spotter follower — bench 2026-10-04 (plan 3)
+
+Branch `spotter-follow` (fffd1db) page, served from `web/dist` and driven
+headless (Chrome 147 over CDP, the WebUSB-granted profile; the driver
+clicks Spotter + the radio, writes the channel set into `webgs.cfg`, and
+reads the 1 Hz STATS through a `JSON.parse` hook plus the Debug tab's
+Channel row every second). The GS ran plan 2's `maburgs` a155bf32 — **not
+redeployed by this plan** (its only GS-side changes are a log-transition
+rule and an Emscripten-only guard) — under a temporary bench config: one
+card (`[[radio.cards]] index = 0`, which came up on usb 2-1.4, leaving
+2-1.1 for the jammer) and `channels = [40, 64, 112]` (no 144: the CPE
+relay cannot tune it), remembered 64; the drone's `/etc/mabur.channel`
+was set to 64 for the bench. Both configs were restored afterwards (GS
+`[40,64,112,144]` two-card auto, drone 144). Jam = plan 2's recipe
+(`txdemo` on the GS's free card: QoS-Data 1000 B at 6M, 4 ms interval,
+non-canonical SA, `DEVOURER_TX_PKT_OFSET=0`, 40 s). STATS are 1 Hz, so
+every "within a second" below is that resolution.
+
+| row | result |
+|---|---|
+| A — USB spotter opened mid-flight (link on 64, spotter set `[40,64,112]`, remembered channel cleared, so it starts on 40) | **PASS** — `webgs live: mode spotter ch 40` at +1.0 s after Connect; card up +5.3 s later (the usual ~5 s init); the first STATS, one second after that, already read `locked` on 64 (`follows 0`): the 150 ms dwell on 40, one FastRetune and the lock on the first frame all fit inside the first STATS interval. Header `CH 40 · 40 MHz` from module start (the start member, not the form's `auto`), then `CH 64 · 40 MHz`; 30 AUs/s, 0 truncated, `sends 0`, one `teardown rx 50 ms` line at Disconnect |
+| B — USB spotter follows `maburgs` hops (jam on 64 from +55 s for 40 s) | **PASS** — `maburgs`: `hold_exhausted` → `order epoch 1 target 112` → `one_card_retune` +253 ms → `lead_confirm` +294 ms, then the jam leaking onto every member at bench distance (as in plan 2 and `docs/channel-select.md` row 6) chained `verify_fail epoch 2 → 40` and `escape epoch 3 → 64` within ~3 s, a 27 s hold, `order epoch 4 → 112`, a `hold_cap` run, and `order epoch 5 → 40`. Spotter STATS: `locked 64 follows 0` → `locked 112 follows 1` → `locked 40 follows 2` → `locked 64 follows 3` in three consecutive seconds (+55.8/+57.1/+58.4 s), `locked 112 follows 4` at +86.5 s, `locked 40 follows 5` at +118.5 s — six orders, six follows, every one re-locked on the target inside the next STATS; no STATS sample ever read `following` or `sweeping`. AU rate 26–31/s throughout; truncated AUs 0 → 49 during the jam window (jam loss and the hops), flat at 49 afterwards; `sends 0`. Drone `/etc/mabur.channel` followed (40 at the end) |
+| C — CPE relay spotter follows via TUNE (CPE 10.83.11.1, link on 40, jam on 40 from +55 s) | **PASS** — `maburgs relay card 0 (10.83.11.1:8311): connecting` / `waiting for STATUS` / `owned and tuned` once at start and **never again** (the plan-2 flap on every TUNE is gone; `relay_state` read 0 in all 149 STATS samples); `locked 40` on the first STATS; `maburgs` ordered `epoch 6 → 64` (`verify_pass`) 3 s into the run on its own, then under the jam `epoch 7 → 40`, `verify_fail epoch 8 → 112`, `epoch 9 → 64`, `escape epoch 10 → 112`, `epoch 11 → 40`; the spotter's `follows` went 1…6 in step (+4 s, +55 s, +56 s, +86 s, +87 s, +117 s), each sample `locked` on the new member (the TUNE's ~0.2 s plus the lock fit inside one STATS interval). 30 AUs/s, 5 truncated in total, `sends 0`, relay TX 0 |
+| D — withdrawn hop / timeout return | **not provoked** — no `withdraw` line appeared in `maburgs`'s log across rows B–E (18 orders/escapes/verify_fails, every one confirmed); the bench has no fault injector for a drone that fails to follow. Covered host-side by `tests/test_spotter_follow.cpp` (`timeout_and_return`, `withdrawal_heard_on_back_returns_at_once`, `standing_order_after_timeout_return_is_ignored`) and `tests/test_web_gs.cpp` `spotter_follow_timeout_returns_the_card` |
+| E — Disconnect / Connect in spotter mode (USB) | **PASS** — Disconnect at +30 s: exactly one `teardown rx 60 ms` line (the plan-2 double line is gone), `DONE` 1.0 s after the click, header `Disconnected · CH auto`; Connect again 5 s later: `webgs live` +1.0 s, card up +4.3 s, `locked 64` on the first STATS; second Disconnect: one `teardown rx 80 ms`, `DONE`. In the first session the spotter also followed an unprovoked `maburgs` hop 40 → 64 at +25 s (`follows 1`) |
+
+Seen, not a page defect: `maburgs` hopped twice without a jammer (row C
++3 s, row E +25 s) and chained `verify_fail` hops under the jam — the
+one-card verdict on the co-located bench, `docs/inflight-channel-hop.md`,
+not the spotter. With the drone off, a spotter reads `locked` on
+whichever member the GS is beaconing on (the DISC search bursts are mabur
+traffic; see "Spotter follower"). The `localStorage` `webgs.channel` is
+never written in spotter mode (no `CHANNEL` line without a `ChannelCore`),
+so a spotter always starts on the pin or the first member and sweeps —
+one dwell per member, which row A shows costs well under a second.
+
 ## Follow-ups
 
 Not built here, all noted in the spec as later work:
