@@ -32,7 +32,7 @@ VrxController::VrxController(VrxCfg cfg)
       // BEACONING after video loss only delays re-rendezvous. The removed
       // link.video_silence_ms key claimed to tune the 1000 but never did.
       // nonce 0 = random per process: a restarted GS is a new session.
-      rz_(VrxRzConfig{1000, 20, cfg.op_channel, 0}),
+      rz_(VrxRzConfig{1000, 20, cfg.op_channel, cfg.rz_nonce}),
       cur_op_(op_from_rung(ctrl_.op())) {}
 
 void VrxController::sync_op_() { cur_op_ = op_from_rung(ctrl_.op()); }

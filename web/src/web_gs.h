@@ -165,6 +165,9 @@ struct Opts {
   // step itself, the core's clock is WebGs's tick clock, and a scout sleep
   // ADVANCES that clock. true (default) = the scout thread, real clock, real sleeps.
   bool core_threads = true;
+  // Replay: pin the rendezvous vrx_nonce (VrxCfg::rz_nonce) so the control
+  // trace's sent bytes are reproducible native vs WASM. 0 = random (live).
+  uint32_t rz_nonce = 0;
   // Tests: called from the core's SleepFn after the clock advance (or the
   // real sleep), with the slept ms -- keeps a test's own clock (a fake
   // card's energy clock) in step with the core's.

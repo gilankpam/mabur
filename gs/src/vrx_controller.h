@@ -33,6 +33,10 @@ struct VrxCfg {
   // link.probe.pin_mcs: static-pin mode only -- probe a fixed MCS while
   // pinned (bench validation).
   int probe_pin_mcs = -1;
+  // Rendezvous vrx_nonce: 0 = random per process (a restarted GS is a new
+  // session, rendezvous.h). Only a replay pins one, so its sent frames (DISC
+  // nonce, RCF tags) are reproducible -- the native/WASM parity trace.
+  uint32_t rz_nonce = 0;
 };
 
 // A DISC proposes the channel it is sent on (final review C1 addendum A,

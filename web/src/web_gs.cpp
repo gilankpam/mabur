@@ -134,7 +134,9 @@ WebGs::WebGs(const maburgs::Config& cfg, Mode mode, uint8_t start_ch, int width,
       throw std::invalid_argument("webgs: Gs mode needs Io::send or a card");
     // VrxCfg::op_channel seeds the proposal; with a roster the core owns it
     // from here on.
-    vrx_ = std::make_unique<maburgs::VrxController>(maburgs::vrx_cfg_from(cfg, start_ch));
+    maburgs::VrxCfg vc = maburgs::vrx_cfg_from(cfg, start_ch);
+    vc.rz_nonce = opts_.rz_nonce;
+    vrx_ = std::make_unique<maburgs::VrxController>(vc);
     slot_ = std::make_unique<maburgs::RcfSlotter>(
         maburgs::RcfSlotCfg{cfg.link.rcf_slot_hold_ms, 100, 2, 3, 1});
     if (!cards_.empty()) {

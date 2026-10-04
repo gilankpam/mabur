@@ -294,6 +294,7 @@ int run_replay(const ReplayOpts& o) {
 
   webgs::Opts wo;
   wo.adaptive_gap = !o.fixed_gap;
+  wo.rz_nonce = 1;   // reproducible DISC nonce + RCF tags (native/WASM parity)
   webgs::WebGs g(cfg, o.mode, cfg.radio.channels.front(), cfg.radio.width, {}, 0, std::move(io), wo);
 
   uint64_t last_us = 0;
