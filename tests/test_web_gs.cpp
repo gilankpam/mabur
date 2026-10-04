@@ -743,7 +743,6 @@ struct GsRig {
     c.radio.channels = {40, 64, 112, 144};
     c.radio.width = 40;
     if (pinned) c.radio.pin = start;
-    c.hop.enable = true;
     card.ch = start; card.width_mhz = n_usb == 1 ? 20 : 40;
     card2.ch = start; card2.width_mhz = 20;
     card.clk = card2.clk = &clk;

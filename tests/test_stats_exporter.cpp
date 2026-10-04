@@ -1136,7 +1136,6 @@ TEST(card_energy_igi_null_when_absent) {
 TEST(exports_hop_block_and_card_dwell) {
   StatsInput in = base_input();
   REQUIRE(in.cards.size() == 1);
-  in.hop.enable = true;
   in.hop.verdict = "interfered";
   in.hop.evidence = 6;
   in.hop.ref_rung = 3;
@@ -1152,7 +1151,7 @@ TEST(exports_hop_block_and_card_dwell) {
   StatsExporter ex(1, 500, cap.fn());
   CHECK(ex.poll(1000, in));
   json j = cap.last();
-  CHECK(j["hop"]["enable"] == true);
+  CHECK(!j["hop"].contains("enable"));   // deleted 2026-10-04 with hop.enable
   CHECK(j["hop"]["verdict"] == "interfered");
   CHECK(j["hop"]["evidence"] == 6);
   CHECK(j["hop"]["ref_rung"] == 3);
@@ -1170,12 +1169,11 @@ TEST(exports_hop_block_and_card_dwell) {
 
 TEST(hop_ref_rung_and_target_null_when_absent) {
   StatsInput in = base_input();
-  // in.hop stays default: enable=false, ref_rung/target unset.
+  // in.hop stays default: ref_rung/target unset.
   Capture cap;
   StatsExporter ex(1, 500, cap.fn());
   CHECK(ex.poll(1000, in));
   json j = cap.last();
-  CHECK(j["hop"]["enable"] == false);
   CHECK(j["hop"]["ref_rung"].is_null());
   CHECK(j["hop"]["target"].is_null());
   CHECK(j["hop"]["last_ms"].is_null());

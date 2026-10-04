@@ -178,6 +178,7 @@ class ChannelCore {
   SleepFn sleep_;
   int n_cards_ = 0;
   bool pinned_ = false;
+  bool reactive_ = true;       // !pinned_: the in-flight hop + its scout and burst run only in auto mode
   std::vector<bool> can_scout_;
   std::vector<bool> snr_ok_;
   int scout_card_ = -1;        // pick_boot_scout(can_scout_)

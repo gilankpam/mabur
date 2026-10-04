@@ -498,7 +498,6 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
   // top-level like `scan`: it describes the hop feature's own state
   // machine, not a per-window link measurement.
   json& hop = j["hop"];
-  hop["enable"] = in.hop.enable;
   hop["verdict"] = in.hop.verdict;
   hop["evidence"] = in.hop.evidence;
   if (in.hop.ref_rung) hop["ref_rung"] = *in.hop.ref_rung; else hop["ref_rung"] = nullptr;

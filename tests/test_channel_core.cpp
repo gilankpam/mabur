@@ -41,7 +41,6 @@ struct Rig {
       : agg(bundle().uep_layers(), 32, n_usb + n_relays, 0) {
     cfg.radio.channels = {40, 64, 112, 144};
     cfg.radio.width = 40;
-    cfg.hop.enable = true;
     if (pinned) cfg.radio.pin = start ? start : 40;
     const uint8_t start_ch = start ? start : (pinned ? *cfg.radio.pin : 40);
     for (int i = 0; i < n_usb + n_relays; ++i) {
@@ -355,8 +354,68 @@ static void interfere(Rig& g, int windows = 3) {
   }
 }
 
-TEST(two_card_order_rcf_carries_hop_and_plan_leads_then_follows) {
+// Bring an AUTO rig to a frozen pick on 40 without a hop, so the reactive
+// layer is live exactly as in flight. Two cards: no dwell ever completes
+// (the scout card refuses to retune), so max_ms freezes op in place. One
+// card: link-up freezes it ("one-card linked"). The hop tests used pinned
+// rigs for this until 2026-10-04 (frozen from construction); pinned now
+// means NO reactive hop.
+static void freeze_auto(Rig& g) {
+  if (g.cards.size() >= 2) {
+    g.cards.back()->retune_ok = false;
+    for (int i = 0; i < 4000 && g.core->pick_open(); ++i) g.tick();
+    g.cards.back()->retune_ok = true;
+  } else {
+    link_up(g);
+    for (int i = 0; i < 100 && g.core->pick_open(); ++i) g.tick(true);
+  }
+  REQUIRE(!g.core->pick_open());
+  REQUIRE(g.core->op() == 40);
+}
+
+// Pinned = static. An interfered op produces a verdict (the OSD/sideport
+// still say the pin is dirty) but no order, no escape, no exhausted hold:
+// the controller is never fed a reactive trigger. Review Focus 1.
+TEST(pinned_two_card_never_hops_on_interference) {
   Rig g(2, 0, /*pinned=*/true, 40);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
+  g.cards[0]->fr.foreign = 0; g.cards[1]->fr.foreign = 0;
+  interfere(g, 6);
+  CHECK(std::string(g.core->snapshot(0).hop.verdict) == "interfered");
+  CHECK(g.sink.hops.empty());                 // no order/escape/hold of any kind
+  CHECK(std::string(g.core->snapshot(0).hop.state) == "idle");
+  CHECK(g.cards[0]->ch == 40 && g.cards[1]->ch == 40);
+  const auto r = pump_rcf(g);
+  REQUIRE(r.has_value());
+  CHECK(r->hop_ch == 0);                      // no order ever issued
+  // and the in-flight scout never dwells, driven directly or not
+  const size_t dwells = g.sink.dwells.size();
+  g.core->run_inflight_step();
+  g.tick(true);
+  CHECK(g.sink.dwells.size() == dwells);
+  CHECK(g.cards[1]->ch == 40);
+}
+
+// Same on one card (the web GS shape): the one-card path has no scout, so
+// the only reactive source is the freshness burst + order. Review Focus 2.
+TEST(pinned_one_card_never_hops_on_interference) {
+  Rig g(1, 0, /*pinned=*/true, 40);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  g.cards[0]->cca_per_ms_on[40] = 50;
+  interfere(g, 6);
+  CHECK(std::string(g.core->snapshot(0).hop.verdict) == "interfered");
+  CHECK(g.sink.hops.empty());
+  CHECK(g.cards[0]->ch == 40);
+  const auto r = pump_rcf(g);
+  REQUIRE(r.has_value());
+  CHECK(r->hop_ch == 0);
+}
+
+TEST(two_card_order_rcf_carries_hop_and_plan_leads_then_follows) {
+  Rig g(2, 0); freeze_auto(g);
   link_up(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
   // rank 64 as the best candidate: feed the ranker through the burst path
@@ -388,7 +447,7 @@ TEST(stale_pre_hop_verdict_does_not_break_verify) {
   // After Confirm the cached VerdictOut (measured on the old channel) is
   // re-fed every tick until the next window: the controller must stay in
   // Verifying (C1).
-  Rig g(2, 0, true, 40);
+  Rig g(2, 0); freeze_auto(g);
   link_up(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
   g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
@@ -405,8 +464,7 @@ TEST(stale_pre_hop_verdict_does_not_break_verify) {
 }
 
 TEST(one_card_order_rides_repeats_then_retunes) {
-  Rig g(1, 0, true, 40);
-  link_up(g);
+  Rig g(1, 0); freeze_auto(g);               // links too
   for (int i = 0; i < 5; ++i) g.tick(true);
   g.cards[0]->cca_per_ms_on[40] = 50;
   interfere(g, 4);
@@ -441,7 +499,7 @@ TEST(one_card_order_rides_repeats_then_retunes) {
 }
 
 TEST(withdraw_on_no_video_restores_cards) {
-  Rig g(2, 0, true, 40);
+  Rig g(2, 0); freeze_auto(g);
   link_up(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
   g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
@@ -457,7 +515,7 @@ TEST(withdraw_on_no_video_restores_cards) {
 }
 
 TEST(lead_card_dies_mid_order_withdraws_to_op) {   // Review Focus 1
-  Rig g(2, 0, true, 40);
+  Rig g(2, 0); freeze_auto(g);
   link_up(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
   g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
@@ -475,7 +533,7 @@ TEST(lead_card_dies_mid_order_withdraws_to_op) {   // Review Focus 1
 }
 
 TEST(session_loss_mid_order_withdraws) {
-  Rig g(2, 0, true, 40);
+  Rig g(2, 0); freeze_auto(g);
   link_up(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
   g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
@@ -654,7 +712,7 @@ TEST(one_card_link_edge_freezes_one_card_linked) {
 }
 
 TEST(inflight_dwell_feeds_ranker_and_dwell_stats) {
-  Rig g(2, 0, true, 40);                     // pinned: pick closed, scout idle after park
+  Rig g(2, 0); freeze_auto(g);               // auto, frozen: scout idle after park, reactive layer live
   link_up(g);
   for (int i = 0; i < 10; ++i) g.tick(true, false, 0);
   // in-flight step: card 1 (non-TX, scout-capable) dwells on the next candidate
@@ -681,10 +739,19 @@ TEST(inflight_step_skips_when_not_in_session_or_hopping_or_one_card) {
   h.core->run_inflight_step();
   h.tick(false);
   CHECK(!h.core->snapshot(0).dwell[1].has_value());   // no session: never dwells
+  // pinned two-card, linked: never dwells either (Review Focus 4)
+  Rig p(2, 0, /*pinned=*/true, 40);
+  link_up(p);
+  for (int i = 0; i < 10; ++i) p.tick(true);
+  const size_t sweep = p.sink.dwells.size();   // the boot search sweep's own records
+  p.core->run_inflight_step();
+  p.tick(true);
+  CHECK(p.sink.dwells.size() == sweep);
+  CHECK(!p.core->snapshot(0).dwell[1].has_value());
 }
 
 TEST(tx_frozen_while_hopping) {
-  Rig g(2, 0, true, 40);
+  Rig g(2, 0); freeze_auto(g);
   link_up(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
   g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
@@ -703,12 +770,14 @@ TEST(snapshot_channel_is_the_given_tx_card) {
 }
 
 TEST(shutdown_joins_threads_and_is_idempotent) {   // Review Focus 5
-  // Real threads, real clock. Pinned + LINKED: the boot scout has no work and
-  // parks, the pick is closed, so the in-flight thread starts and dwells on
-  // the non-TX card every dwell_period_ms; shutdown() must join it.
+  // Real threads, real clock. Auto + LINKED, max_ms at its floor: the boot
+  // scout thread measures for ~1 s, the pick freezes in place, the scout
+  // parks, and the in-flight thread starts and dwells on the non-TX card
+  // every dwell_period_ms; shutdown() must join both. (Pinned would start
+  // no in-flight thread at all since 2026-10-04.)
   Config cfg = bundle();
-  cfg.radio.channels = {40, 64}; cfg.radio.width = 40; cfg.radio.pin = 40;
-  cfg.hop.enable = true;
+  cfg.radio.channels = {40, 64}; cfg.radio.width = 40;
+  cfg.radio.scan.max_ms = 1000;
   FakeCard a, b; a.ch = b.ch = 40; a.width_mhz = 40; b.width_mhz = 20;
   std::vector<LinkCard*> ptrs{&a, &b};
   VrxController vrx(vrx_cfg_from(cfg, 40));
@@ -720,10 +789,10 @@ TEST(shutdown_joins_threads_and_is_idempotent) {   // Review Focus 5
   ChannelCore core(cc, ptrs, vrx, sink, [](uint8_t) { return true; }, now_ms, now_us,
                    [](int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); });
   ChannelTickIn in; in.agg = &agg; in.in_session = true; in.tx_card = 0;
-  // Up to 3 s of linked ticks: a dwell record drained from the in-flight
+  // Up to 5 s of linked ticks: a dwell record drained from the in-flight
   // thread proves that thread ran (dwell_period_ms is 333 in the bundle).
   bool dwelt = false;
-  for (int i = 0; i < 300 && !dwelt; ++i) {
+  for (int i = 0; i < 500 && !dwelt; ++i) {
     in.now_ms = static_cast<double>(now_ms());
     core.tick(in);
     dwelt = core.snapshot(0).dwell[1].has_value();

@@ -30,6 +30,7 @@ ChannelCore::ChannelCore(ChannelCoreCfg cfg, std::vector<LinkCard*> cards, VrxCo
       sleep_(std::move(sleep_ms)),
       n_cards_(static_cast<int>(cards_.size())),
       pinned_(cfg_.radio.pin.has_value()),
+      reactive_(!cfg_.radio.pin.has_value()),
       saved_op_(cfg_.start_ch),
       plan_(ChannelPlanCfg{cfg_.start_ch, cfg_.radio.channels, n_cards_,
                            cfg_.radio.scan.search_after_ms}),
@@ -129,7 +130,6 @@ ChannelSnapshot ChannelCore::snapshot(int tx_card) const {
                                              : "scouting";
   s.scan_rounds = scout_ ? scout_->rounds() : 0;
   s.scan_pick = frozen_pick_;
-  s.hop.enable = cfg_.hop.enable;
   s.hop.verdict = to_string(last_verdict_out_.v);
   s.hop.evidence = last_verdict_out_.evidence;
   if (last_verdict_out_.ref_rung >= 0) s.hop.ref_rung = last_verdict_out_.ref_rung;
@@ -522,7 +522,7 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
   if (vo.v != Verdict::Healthy || vo.v != last_verdict_) sink_.verdict(now_ms, vo, vc, vl);
   last_verdict_ = vo.v;
   last_verdict_out_ = vo;
-  if (const auto blank = hop_store_blank_until(vo, cfg_.hop.enable, cfg_.hop.confirm_ms))
+  if (const auto blank = hop_store_blank_until(vo, reactive_, cfg_.hop.confirm_ms))
     vrx_.blank_store(*blank);
 }
 
@@ -555,7 +555,7 @@ void ChannelCore::step_controller_(const ChannelTickIn& in) {
   ht.rcf_sent_since_order = static_cast<int>(rcf_sent_total_ - rcf_sent_at_order_);
   const bool relocation_owns = boot_pick_.relocating() || pending_relocate_.has_value() ||
                                boot_pick_.relocation_pending(last_bi_);
-  if (!scout_owns_() && !relocation_owns &&
+  if (reactive_ && !scout_owns_() && !relocation_owns &&
       hop_burst_due(hopc_.state(), last_verdict_out_.trigger, now_ms, last_burst_ms_,
                     cfg_.hop.dwell_period_ms)) {
     last_burst_ms_ = now_ms;
@@ -585,6 +585,13 @@ void ChannelCore::step_controller_(const ChannelTickIn& in) {
     ht.escape.reset();
     ht.escape_score = 0;
   } else if (relocation_owns) {
+    ht.best.reset();
+    ht.escape.reset();
+  } else if (!reactive_) {
+    // Pinned: the verdict is still measured (OSD/sideport read it) but the
+    // controller never sees a reactive trigger or a candidate -- no order,
+    // no escape, no exhausted hold. Relocation, above, is the only mover.
+    ht.verdict.trigger = false;
     ht.best.reset();
     ht.escape.reset();
   }
@@ -624,9 +631,9 @@ void ChannelCore::step_drains_() {
   if (scout_)
     for (const auto& d : scout_->take_dwells()) sink_.dwell(now_ms_cur_, scout_card_, d);
   // In-flight scout thread: started once the boot pick is closed and the
-  // boot scout owns no card. Two-card only.
-  if (!inflight_started_ && !scout_owns_() && !boot_pick_.open() && n_cards_ >= 2 &&
-      (cfg_.hop.enable || cfg_.hop.scout_when_disabled)) {
+  // boot scout owns no card. Two-card, auto mode only -- pinned never ranks
+  // (nothing to move to), and the spare card stays on diversity.
+  if (!inflight_started_ && reactive_ && !scout_owns_() && !boot_pick_.open() && n_cards_ >= 2) {
     inflight_started_ = true;
     if (cfg_.threaded) {
       scout_run_.store(true);
@@ -694,7 +701,7 @@ void ChannelCore::inflight_body_() {
   // Unlike main.cpp's always-present `inflight`, `inflight_` here is a
   // unique_ptr built only alongside a scout-capable card (ctor, scout_card_
   // >= 0): null on an all-relay roster, so this guard has no equivalent there.
-  if (!inflight_) return;
+  if (!inflight_ || !reactive_) return;
   if (!in_session_atomic_.load() || cal_running_atomic_.load() || hopping_atomic_.load() ||
       scout_working_atomic_.load() || n_cards_ < 2)
     return;

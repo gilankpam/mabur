@@ -220,7 +220,6 @@ struct StatsProbeIn {
 // enable=false and the verdict/counters at their idle defaults, so a
 // consumer never has to special-case a missing block.
 struct StatsHopIn {
-  bool enable = false;
   const char* verdict = "unknown";  // to_string(Verdict)
   int evidence = 0;
   std::optional<int> ref_rung;      // HopVerdict::ref_rung(), -1 -> null
