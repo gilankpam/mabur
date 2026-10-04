@@ -465,39 +465,59 @@ TEST(owner_stuck_in_a_failed_tune_logs_after_the_grace) {
   r.card->tick(r.now_ms += 10);
   CHECK(r.card->transitions() == 4);              // "owned and tuned" again
 }
+// The survey tests poll frames().foreign to know the RX thread has processed
+// a pushed SURVEY (messages are handled in order): each sync sample carries a
+// foreign increment. The first SURVEY of a session is a baseline and adds
+// nothing, so it is always followed by such a sync sample.
 TEST(survey_window_is_the_delta_between_calls_on_one_gen) {
   Rig g; REQUIRE(g.card->open_and_start());
   g.t().push(status(0, 136, 2, 1));
-  g.t().push(survey(1, 100, 10, 5, 3, 1));
-  // The first SURVEY must be processed before the baseline read, or the
-  // baseline lands on nothing (its foreign count proves it arrived).
+  g.t().push(survey(1, 100, 10, 5, 3, 1));          // session baseline: the relay's backlog is not counted
+  g.t().push(survey(1, 100, 10, 5, 3, 2));          // sync: foreign +1, no airtime
   REQUIRE(g.soon([&] { return g.card->frames().foreign == 1; }));
-  REQUIRE(g.soon([&] { return g.card->read_survey_window().valid == false; }));   // first call: baseline only
-  g.t().push(survey(1, 250, 160, 10, 13, 4));      // +150 ms: busy +150 (100 %), rx +5
-  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  CHECK(!g.card->read_survey_window().valid);       // first call: baseline only
+  g.t().push(survey(1, 250, 160, 10, 13, 4));       // +150 ms: busy +150 (100 %), rx +5, foreign +2
+  REQUIRE(g.soon([&] { return g.card->frames().foreign == 3; }));
   const auto w = g.card->read_survey_window();
   CHECK(w.valid);
   CHECK(std::abs(w.busy_pct - 100.0) < 0.01);
   CHECK(std::abs(w.rx_pct - 100.0 * 5 / 150) < 0.01);
   const auto e = g.card->read_energy_scout();
   CHECK(e.fa_valid);
-  CHECK(e.fa_ofdm == 13);                          // cumulative since open: 3 + (13 - 3)
-  CHECK(g.card->read_energy_scout().fa_ofdm == 0); // a delta: consumed
-  CHECK(g.card->frames().foreign == 4);
+  CHECK(e.fa_ofdm == 10);                           // since the session baseline: 13 - 3
+  CHECK(g.card->read_energy_scout().fa_ofdm == 0);  // a delta: consumed
+  CHECK(g.card->frames().foreign == 3);             // 4 - 1
 }
 
 TEST(survey_window_invalid_across_a_gen_change_or_short_span) {
   Rig g; REQUIRE(g.card->open_and_start());
   g.t().push(status(0, 136, 2, 1));
-  g.t().push(survey(1, 100, 10, 5, 0, 0));
-  std::this_thread::sleep_for(std::chrono::milliseconds(30));   // first SURVEY processed before the baseline
-  REQUIRE(g.soon([&] { g.card->read_survey_window(); return true; }));
-  g.t().push(survey(2, 150, 10, 5, 0, 0));          // new gen (a retune or sweep)
-  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  g.t().push(survey(1, 100, 10, 5, 0, 0));          // session baseline
+  g.t().push(survey(1, 100, 10, 5, 0, 1));          // sync: foreign +1
+  REQUIRE(g.soon([&] { return g.card->frames().foreign == 1; }));
+  g.card->read_survey_window();                     // window baseline
+  g.t().push(survey(2, 250, 10, 5, 0, 1));          // new gen (a retune or sweep): raw span 150 ms, still invalid
+  REQUIRE(g.soon([&] { return g.card->frames().foreign == 2; }));   // a new gen adds its full count
   CHECK(!g.card->read_survey_window().valid);
-  g.t().push(survey(2, 200, 20, 5, 0, 0));          // only 50 ms on gen 2
-  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  g.t().push(survey(2, 300, 20, 5, 0, 2));          // only 50 ms on gen 2
+  REQUIRE(g.soon([&] { return g.card->frames().foreign == 3; }));
   CHECK(!g.card->read_survey_window().valid);
+}
+
+TEST(survey_reopen_does_not_re_add_the_relay_backlog) {
+  Rig g; REQUIRE(g.card->open_and_start());
+  g.t().push(status(0, 136, 2, 1));
+  g.t().push(survey(1, 100, 10, 5, 3, 1));          // baseline
+  g.t().push(survey(1, 100, 10, 5, 5, 2));          // +2 ofdm, +1 foreign
+  REQUIRE(g.soon([&] { return g.card->frames().foreign == 1; }));
+  CHECK(g.card->read_energy_scout().fa_ofdm == 2);
+  g.card->stop();
+  REQUIRE(g.card->open_and_start());                // reopen after a lost relay: same gen, counters kept
+  g.t().push(status(0, 136, 2, 1));
+  g.t().push(survey(1, 200, 20, 5, 5, 2));          // new session's baseline: cumulative 5 / 2 not re-added
+  g.t().push(survey(1, 200, 20, 5, 6, 3));          // +1 ofdm, +1 foreign
+  REQUIRE(g.soon([&] { return g.card->frames().foreign == 2; }));
+  CHECK(g.card->read_energy_scout().fa_ofdm == 1);
 }
 
 TEST(start_sweep_sends_scan_and_result_comes_back_once) {

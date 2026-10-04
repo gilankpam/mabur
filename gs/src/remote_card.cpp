@@ -190,7 +190,11 @@ ScoutFrames RemoteCard::frames() const {
 void RemoteCard::on_survey_(const relay::Survey& s) {
   // Cumulative OFDM errors / foreign frames across generations: within a
   // gen the relay's counters only grow; a new gen restarts them from 0.
-  if (have_sv_ && s.gen == sv_last_.gen) {
+  // The first SURVEY of a session (open/reopen) is a baseline only: its
+  // counters are the relay's backlog for that gen, not this verdict window's.
+  if (!have_sv_) {
+    // baseline: add nothing
+  } else if (s.gen == sv_last_.gen) {
     ofdm_total_ += s.ofdm_err - sv_last_.ofdm_err;
     sv_foreign_total_ += s.foreign - sv_last_.foreign;
   } else {
