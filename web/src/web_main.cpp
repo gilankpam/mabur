@@ -557,8 +557,11 @@ int run_live(const LiveOpts& o) {
   }
   const uint8_t ch = static_cast<uint8_t>(ch_i);
   // The page's width is the link width: ChannelCore's ScoutCfg::link_width_mhz
-  // and the pair rules read cfg.radio.width (the loader validated the set against
-  // the bundle's width; channel_width_error just did against the page's).
+  // and the pair rules read cfg.radio.width. The page's overlay carries
+  // [radio] width too (so the loader validated the set at the page's width),
+  // making this a no-op there; it still matters for the native CLI run without
+  // an overlay, where the loader saw the bundle's width and
+  // channel_width_error just checked the set against --w.
   cfg.radio.width = static_cast<uint8_t>(width);
   std::string set;
   for (size_t i = 0; i < cfg.radio.channels.size(); ++i)

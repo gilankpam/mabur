@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   CHANNELS, defaultConfig, normalizeConfig, loadConfig, saveConfig, rungWarnings, channelWarning,
-  connectBlocker, toOverlayToml, applyEdit, applyRungEdit, describeEdit,
+  connectBlocker, toOverlayToml, chipChannels, applyEdit, applyRungEdit, describeEdit,
   describeRungEdit, parseKeyText, loadKey, saveKey, KEY_STORE, DEFAULT_KEY_HEX,
   toggleChannel, checkChannelSet, CHANNEL_STORE, loadRememberedChannel, saveRememberedChannel,
   startChannel,
@@ -107,7 +107,7 @@ test('connect_blockers_spotter_only_checks_channel_width', () => {
 test('overlay TOML, pinned: one always-loadable rung, max_mcs 7, saved ladder untouched', () => {
   const c = applyEdit(applyEdit(defaultConfig(), 'staticMcs', 3), 'width', 20);
   const t = toOverlayToml(c);
-  assert.equal(t, '[radio]\nchannels = [40, 64, 112, 144]\nchannel = "auto"\n'
+  assert.equal(t, '[radio]\nchannels = [40, 64, 112, 144]\nchannel = "auto"\nwidth = 20\n'
     + '\n[link]\nstatic_mcs = 3\nstatic_bw = 20\nmax_mcs = 7\n'
     + '\n[[link.ladder]]\nmcs = 3\nbw = 20\noverhead_base = 0.5\noverhead_enh = 0.25\n');
   assert.equal(c.ladder.length, 5);
@@ -212,14 +212,31 @@ test('connectBlocker refuses 144 on the relay radio only (Review Focus 5)', () =
   assert.equal(connectBlocker(toggleChannel(c, 144), 'spotter', 'relay'), null);
 });
 
-test('toOverlayToml carries the set in both modes and the link section in gs only', () => {
+test('toOverlayToml carries the set + width in both modes; the spotter gets a minimal [link]', () => {
   const c = defaultConfig();
   const gs = toOverlayToml(c, null, 'gs');
-  assert.match(gs, /^\[radio\]\nchannels = \[40, 64, 112, 144\]\nchannel = "auto"\n/);
+  assert.match(gs, /^\[radio\]\nchannels = \[40, 64, 112, 144\]\nchannel = "auto"\nwidth = 40\n/);
   assert.match(gs, /\[link\]/);
-  const sp = toOverlayToml({ ...c, link: 64 }, null, 'spotter');
-  assert.match(sp, /channel = 64\n/);
-  assert.doesNotMatch(sp, /\[link\]/);
+  const sp = toOverlayToml({ ...c, link: 64 }, 'ab'.repeat(16), 'spotter');
+  assert.equal(sp, '[radio]\nchannels = [40, 64, 112, 144]\nchannel = 64\nwidth = 40\n'
+    + '\n[link]\nstatic_mcs = -1\nstatic_bw = 40\nmax_mcs = 7\n'
+    + '\n[[link.ladder]]\nmcs = 0\nbw = 40\noverhead_base = 0.5\noverhead_enh = 0.25\n');
+  // A 20 MHz-only set (no 40 MHz pair) carries width 20, so the loader checks it at 20.
+  const w20 = { ...c, channels: [165], link: 'auto', width: 20 };
+  assert.match(toOverlayToml(w20, null, 'gs'), /^\[radio\]\nchannels = \[165\]\nchannel = "auto"\nwidth = 20\n/);
+  assert.match(toOverlayToml(w20, null, 'spotter'), /\nwidth = 20\n[\s\S]*static_bw = 20\n[\s\S]*bw = 20\n/);
+});
+
+test('chipChannels shows an off-list member; ?ch= keeps the set sorted', () => {
+  assert.deepEqual(chipChannels(defaultConfig()), CHANNELS);
+  const chips = chipChannels({ ...defaultConfig(), channels: [40, 169] });
+  assert.ok(chips.includes(169));
+  assert.deepEqual(chips, [...chips].sort((a, b) => a - b));
+  const q = loadConfig(mem(), new URLSearchParams('ch=169'));
+  assert.deepEqual(q.channels, [40, 64, 112, 144, 169]);
+  assert.equal(q.link, 169);
+  const s = mem({ 'webgs.cfg': JSON.stringify({ ...defaultConfig(), channels: [64, 112] }) });
+  assert.deepEqual(loadConfig(s, new URLSearchParams('ch=40')).channels, [40, 64, 112]);
 });
 
 test('startChannel: the pin wins, a non-member remembered is ignored (Review Focus 1, 2)', () => {

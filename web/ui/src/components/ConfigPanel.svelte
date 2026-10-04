@@ -1,6 +1,6 @@
 <script>
   import Icon from './Icon.svelte';
-  import { CHANNELS, MAX_RUNGS, applyEdit, applyRungEdit, rungWarnings, checkChannelSet, toggleChannel, describeEdit, describeRungEdit } from '../lib/config.js';
+  import { chipChannels, MAX_RUNGS, applyEdit, applyRungEdit, rungWarnings, checkChannelSet, toggleChannel, describeEdit, describeRungEdit } from '../lib/config.js';
   let { cfg, onChange, locked = false, spotter = false, onDisconnect = null, variant = 'rule', applied = '', recordings = null,
     keyFp = 'default', onLoadKey = null, onClearKey = null } = $props();
   const uid = $props.id();   // unique per mounted instance -- two panels (sidebar + Task 11 side panel) never share a radio group.
@@ -63,14 +63,14 @@
       <div class="field">
         <span id="{uid}chs-label" class="fieldlabel">Channels</span>
         <div class="chips" role="group" aria-labelledby="{uid}chs-label">
-          {#each CHANNELS as c}
+          {#each chipChannels(cfg) as c}
             {@const on = cfg.channels.includes(c)}
             <button type="button" class="chip" class:on aria-pressed={on}
               disabled={locked || (!on && cfg.channels.length >= 8) || (on && cfg.channels.length === 1)}
-              onclick={() => onChange(toggleChannel(cfg, c), describeEdit('channels', toggleChannel(cfg, c).channels))}>{c}</button>
+              onclick={() => { const next = toggleChannel(cfg, c); onChange(next, describeEdit('channels', next.channels)); }}>{c}</button>
           {/each}
         </div>
-        <div class="hint">The channel set, 1–8 members. Both ends must list the same set; the drone's may be larger.</div>
+        <div class="hint">The channel set, 1–8 members. The drone must list every member (its own set may be larger).</div>
         {#if chWarn}<div class="warn"><Icon name="warning" />{chWarn}</div>{/if}
       </div>
       <div class="field">

@@ -1,13 +1,27 @@
 #!/usr/bin/env python3
 """webgs live --relay against a fake mabur-relay v3 (UDP). argv[1] = webgs binary."""
 import socket, struct, subprocess, sys, threading, time, unittest, json
-import tempfile, os
+import tempfile, os, atexit
 
 WEBGS = sys.argv.pop(1) if len(sys.argv) > 1 else 'build/web/webgs'
 FRAME, HELLO, TUNE, STATUS, TX = 1, 2, 3, 4, 5
-# The bundle's set does not hold 136: pin it so --ch 136 is a member.
-OVERLAY = tempfile.NamedTemporaryFile('w', suffix='.toml', delete=False)
-OVERLAY.write('[radio]\nchannels = [136]\nchannel = 136\n'); OVERLAY.close()
+
+def overlay(text):
+    f = tempfile.NamedTemporaryFile('w', suffix='.toml', delete=False)
+    f.write(text); f.close()
+    atexit.register(os.unlink, f.name)
+    return f.name
+
+# The bundle's set does not hold 136: a one-member set so --ch 136 is a
+# member. channel = "auto" (not a pin), so a relay-only GS roster takes the
+# core's relay search-only path (no boot scan) rather than the pin's.
+OVERLAY = overlay('[radio]\nchannels = [136]\nchannel = "auto"\n')
+# What the page sends at 20 MHz for a set with no 40 MHz pair: [radio] width
+# 20 (the loader checks the set at 20, not the bundle's 40) and a ladder at 20.
+LINK20 = ('\n[link]\nstatic_mcs = -1\nstatic_bw = 20\nmax_mcs = 7\n'
+          '\n[[link.ladder]]\nmcs = 0\nbw = 20\noverhead_base = 0.5\noverhead_enh = 0.25\n')
+OVERLAY_GS20 = overlay('[radio]\nchannels = [165]\nchannel = 165\nwidth = 20\n' + LINK20)
+OVERLAY_SP20 = overlay('[radio]\nchannels = [165]\nchannel = "auto"\nwidth = 20\n' + LINK20)
 
 def hdr(t): return struct.pack('<HBB', 0x524D, 3, t)
 def status(state, ch, sec, you_own, tune_id=0):
@@ -56,9 +70,9 @@ class FakeRelay:
                     self.s.sendto(qos_frame(seq, seq & 0xFFF), self.peer); seq += 1
     def types(self): return [b[3] for b in self.got]
 
-def run_webgs(port, mode, secs):
+def run_webgs(port, mode, secs, ch=136, w=40, ov=OVERLAY):
     return subprocess.run([WEBGS, 'live', '--relay', f'127.0.0.1:{port}', '--mode', mode,
-                           '--ch', '136', '--w', '40', '--secs', str(secs), '--overlay', OVERLAY.name],
+                           '--ch', str(ch), '--w', str(w), '--secs', str(secs), '--overlay', ov],
                           capture_output=True, text=True, timeout=30)
 
 def stats(out):
@@ -79,7 +93,24 @@ class RelayE2E(unittest.TestCase):
         self.assertEqual(st['radio'], 'relay'); self.assertEqual(st['relay_owned'], 1)
         self.assertGreater(st['bodies'], 100); self.assertEqual(st['relay_gaps'], 0)
         self.assertEqual(st['channel'], 136)
-        self.assertEqual(st['scan_state'], 'off')                # pinned; relay search-only
+        self.assertEqual(st['scan_state'], 'off')                # auto, relay-only roster: search-only
+
+    def test_gs_20mhz_set_passes_the_loader(self):
+        # 165 has no 40 MHz pair: valid at 20 only. The overlay's [radio]
+        # width = 20 is what lets the loader accept it (Important 1).
+        r = FakeRelay()
+        p = run_webgs(r.port, 'gs', 3, ch=165, w=20, ov=OVERLAY_GS20); r.stop = True
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertNotIn('ERROR', p.stdout)
+        self.assertEqual(r.tuned, (165, 0))
+        st = stats(p.stdout)[-1]
+        self.assertEqual(st['channel'], 165); self.assertEqual(st['bw'], 20)
+
+    def test_spotter_20mhz_set_passes_the_loader(self):
+        r = FakeRelay()
+        p = run_webgs(r.port, 'spotter', 3, ch=165, w=20, ov=OVERLAY_SP20); r.stop = True
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertNotIn('ERROR', p.stdout)
 
     def test_gs_refused_when_not_owner(self):
         r = FakeRelay(own=False)

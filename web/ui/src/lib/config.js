@@ -1,6 +1,7 @@
 // The page's config form model (spec 2026-09-27-web-ui §4.4). The form edits
 // the channel set + link channel (the overlay's [radio] channels/channel, in
-// both modes; --ch carries the start member, startChannel), width (--w) and,
+// both modes; --ch carries the start member, startChannel), width (--w and
+// [radio] width) and,
 // in GS mode, static_mcs / ladder (the overlay's [link], with max_mcs = 7 so
 // the ladder flies as listed). The core merges the overlay into its embedded
 // maburgs.default.toml, then validates with maburgs's own loader.
@@ -92,7 +93,7 @@ export function loadConfig(storage, qs) {
   else {
     const n = int(qch ?? '');
     if (inRange(n, 1, 177)) {
-      if (!c.channels.includes(n) && c.channels.length < 8) c.channels = [...c.channels, n];
+      if (!c.channels.includes(n) && c.channels.length < 8) c.channels = [...c.channels, n].sort((a, b) => a - b);
       if (c.channels.includes(n)) c.link = n;
     }
   }
@@ -122,6 +123,12 @@ export function toggleChannel(cfg, ch) {
   const channels = has ? cfg.channels.filter((c) => c !== ch) : [...cfg.channels, ch].sort((a, b) => a - b);
   const link = cfg.link !== 'auto' && !channels.includes(cfg.link) ? 'auto' : cfg.link;
   return { ...cfg, ladder: cfg.ladder.map((r) => ({ ...r })), channels, link };
+}
+
+// The chips the form shows: the chip list plus any member outside it (a
+// ?ch= / ?chs= / stored member), so every member can be removed.
+export function chipChannels(cfg) {
+  return [...new Set([...CHANNELS, ...cfg.channels])].sort((a, b) => a - b);
 }
 
 // Mirror of common/include/mabur/channel_set.h channel_set_issue + the pin
@@ -156,7 +163,7 @@ export function connectBlocker(cfg, mode, radio = 'usb') {
   if (radio === 'relay' && cfg.channels.includes(144)) {
     return 'The CPE relay cannot tune channel 144 — drop it from the set.';
   }
-  if (mode !== 'gs') return null;   // spotter's overlay carries [radio] only
+  if (mode !== 'gs') return null;   // spotter's [link] is fixed (one rung at the page width)
   if (cfg.staticMcs >= 0) return null;   // pinned: the ladder is hidden and not sent (toOverlayToml)
   for (let i = 0; i < cfg.ladder.length; i++) {
     const { ob, oe } = cfg.ladder[i];
@@ -175,11 +182,16 @@ export function connectBlocker(cfg, mode, radio = 'usb') {
 
 const num = (v) => String(Number(v));
 
-// [radio] in both modes (the core validates --ch against this set); [link] +
-// the ladder in GS mode only.
+// [radio] in both modes (the core validates --ch against this set, and the
+// set against this width -- not the bundle's); [link] + the ladder in GS
+// mode. The spotter never walks a ladder, but the loader validates the
+// bundle's against radio.width, so it gets one rung at the page width.
 export function toOverlayToml(cfg, keyHex = null, mode = 'gs') {
-  let t = `[radio]\nchannels = [${cfg.channels.join(', ')}]\nchannel = ${cfg.link === 'auto' ? '"auto"' : cfg.link}\n`;
-  if (mode !== 'gs') return t;
+  let t = `[radio]\nchannels = [${cfg.channels.join(', ')}]\nchannel = ${cfg.link === 'auto' ? '"auto"' : cfg.link}\nwidth = ${cfg.width}\n`;
+  if (mode !== 'gs') {
+    return t + `\n[link]\nstatic_mcs = -1\nstatic_bw = ${cfg.width}\nmax_mcs = 7\n`
+      + `\n[[link.ladder]]\nmcs = 0\nbw = ${cfg.width}\noverhead_base = 0.5\noverhead_enh = 0.25\n`;
+  }
   const pinned = cfg.staticMcs >= 0;
   // max_mcs 7: the form has no Max MCS -- the ladder is the whole policy, so
   // override the bundle's max_mcs filter rather than let it drop rungs.

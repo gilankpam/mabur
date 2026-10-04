@@ -239,14 +239,16 @@ tab may already be flying; GS mode is an explicit opt-in.
 ### Channel set
 
 The Config form's radio group is a **Channels** chip row (1–8 members of
-the 5 GHz list, `CHANNELS` in `web/ui/src/lib/config.js`) and a **Link
+the 5 GHz list, `CHANNELS` in `web/ui/src/lib/config.js`, plus any member
+outside it — `chipChannels()` — so every member can be removed) and a **Link
 channel** select: **Auto** (measure the set, hop to the cleanest) or one
 member, which pins the link to it. URL params override the saved form on
-load: `?chs=40,64` sets the set, `?ch=N` pins N (added to the set when
-absent and there is room), `?ch=auto` unpins. On Connect the form goes to
-the core as the overlay's `[radio]` table — `channels = [...]` and
-`channel = "auto"|N` — in **both** modes (`toOverlayToml()`), so the core
-loads the same set rules `maburgs`'s loader applies.
+load: `?chs=40,64` sets the set, `?ch=N` pins N (added to the set, kept
+sorted, when absent and there is room), `?ch=auto` unpins. On Connect the form goes to
+the core as the overlay's `[radio]` table — `channels = [...]`,
+`channel = "auto"|N` and `width` — in **both** modes (`toOverlayToml()`), so
+the core's loader checks the set at the page's width (not the bundle's 40:
+a 20 MHz set like `[165]` would otherwise fail `ERROR bad config`).
 
 `--ch` is "start on this member" (`startChannel()`): the pin when there is
 one, else the remembered member — `localStorage` `webgs.channel`, written
@@ -423,7 +425,8 @@ requests the device, builds a **fresh** WASM module every time (never
 reused across connects) with `--mode`/`--ch`/`--w` and, in both modes
 always (even when the form matches the embedded default), `--overlay
 /overlay.toml` (the form's overlay TOML written into the module's virtual
-FS before `main()` runs; a spotter's carries only `[radio]`).
+FS before `main()` runs; a spotter's carries `[radio]` plus a minimal
+one-rung `[link]` at the page width).
 Disconnect calls the exported `webgs_stop()`, which sets an atomic the core
 loop polls; the core tears down cleanly and returns from `main()`, and
 `-sEXIT_RUNTIME` fires `Module.onExit()`, which the page treats as the
@@ -555,7 +558,7 @@ default, so a stale or hand-edited entry can never break the page), and
 `?chs=`/`?ch=`/`?w=` query params override the saved set, link channel and
 width on load the same way `?mode=` overrides the saved mode. On Connect,
 the form (always, even when it matches the embedded default) is serialized
-to TOML (`toOverlayToml()`: `[radio] channels/channel` in both modes, and
+to TOML (`toOverlayToml()`: `[radio] channels/channel/width` in both modes, and
 in GS mode `[link] static_mcs/static_bw/max_mcs` plus one
 `[[link.ladder]]` block per rung, `static_bw` carrying the form's width,
 `max_mcs` always 7 — the form has no Max MCS since 2026-09-29, the ladder
@@ -575,8 +578,10 @@ page-side (channel/width, FEC overhead range 0.1–2.0, enh ≤ base, no 40 MHz 
 form is refused before Connect ever starts the device request, and a
 per-field warning (`rungWarnings()`/`channelWarning()`) flags a 40 MHz rung
 under a 20 MHz width, enh above base, or a channel with no HT40 pair without blocking the rest of
-the form. Spotter mode's overlay carries only `[radio]` — it only listens,
-so only the channel set, link channel and width apply.
+the form. Spotter mode's overlay carries `[radio]` plus a fixed minimal
+`[link]` (`static_bw` and one MCS 0 rung at the page width, so the loader's
+ladder-vs-width check passes at 20 MHz) — it only listens, so only the
+channel set, link channel and width apply.
 
 ## Record
 
