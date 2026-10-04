@@ -1,5 +1,5 @@
 #pragma once
-// Browser transport for RelayLink: the core<->worker SPSC ring. The
+// Browser transport for RemoteCard: the core<->worker SPSC ring. The
 // interface and the native UDP transport live in gs/src/relay_transport.h.
 #include <memory>
 #include "relay_transport.h"   // gs/src/relay_transport.h (include path: MABUR_DIR/gs/src)

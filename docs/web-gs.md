@@ -626,7 +626,7 @@ as JSON. Segments (spec §4):
 | Segment | What it measures | Mode |
 |---|---|---|
 | Control RTT (EWMA / min) | `RttEstimator`: RCF seq echoed back in `Telem`, clock-sync-free | GS |
-| USB lateness p99/max | host arrival time − chip TSF, above the window's own minimum (`UsbLate` in `web_main.cpp`) | both |
+| USB lateness p99/max | host arrival time − chip TSF, above the window's own minimum (`UsbLate`, `gs/src/usb_late.h`, read by `web_main.cpp`) | both |
 | FEC/assembly | first body seen for the AU → AU complete, both timestamps on the core clock (`AuLatMeta`, `gs/src/frame_stream.cpp`) | both |
 | Hand-off | AU complete (core/worker thread) → page receives it, both sides aligned to `performance.timeOrigin` | both |
 | Decode | `VideoDecoder` chunk submit → decoded output callback | both |
@@ -824,7 +824,7 @@ native CLI (`webgs live`/`webgs replay`, used for bench A/B against the
 browser and for the parity gates) and, under `emcmake`, as the page's WASM
 module.
 
-**CPE relay radio.** `webgs::RelayLink` (`web/src/relay_link.{h,cpp}`) is
+**CPE relay radio.** `maburgs::RemoteCard` (`gs/src/remote_card.{h,cpp}`) is
 the radio-source alternative to the WebUSB path: it wraps `RelayClient`
 (the shared, protocol-agnostic `gs/src` core, also used by the native
 `webgs --relay` CLI) with a `RelayTransport` and its own RX thread, feeding

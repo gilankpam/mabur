@@ -53,14 +53,21 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     ${MABUR_DIR}/gs/src/rung_store.cpp ${MABUR_DIR}/gs/src/rcf_slot.cpp
     ${MABUR_DIR}/gs/src/rtt_estimator.cpp ${MABUR_DIR}/gs/src/dot11.cpp
     ${MABUR_DIR}/gs/src/msp_sink.cpp
-    ${MABUR_DIR}/gs/src/relay_wire.cpp ${MABUR_DIR}/gs/src/relay_client.cpp)
+    ${MABUR_DIR}/gs/src/relay_wire.cpp ${MABUR_DIR}/gs/src/relay_client.cpp
+    ${MABUR_DIR}/gs/src/channel_core.cpp ${MABUR_DIR}/gs/src/channel_plan.cpp
+    ${MABUR_DIR}/gs/src/channel_scout.cpp ${MABUR_DIR}/gs/src/channel_ranker.cpp
+    ${MABUR_DIR}/gs/src/boot_pick.cpp ${MABUR_DIR}/gs/src/hop_controller.cpp
+    ${MABUR_DIR}/gs/src/hop_ranker.cpp ${MABUR_DIR}/gs/src/hop_verdict.cpp
+    ${MABUR_DIR}/gs/src/inflight_scout.cpp ${MABUR_DIR}/gs/src/pair_pick.cpp
+    ${MABUR_DIR}/gs/src/radio_frontend.cpp ${MABUR_DIR}/gs/src/card_scan_usb.cpp
+    ${MABUR_DIR}/gs/src/remote_card.cpp)
   target_include_directories(webgs_core PUBLIC src ${MABUR_DIR}/common/include
     ${MABUR_DIR}/gs/src ${MABUR_DIR}/third_party ${DEVOURER_DIR}/src)
   target_compile_options(webgs_core PRIVATE -O3)
   target_link_libraries(webgs_core PUBLIC devourer)
 
   # The page build: live only (WebUSB), default config embedded.
-  add_executable(webgs src/web_main.cpp src/opfs_file.cpp src/relay_link.cpp src/relay_ring_transport.cpp)
+  add_executable(webgs src/web_main.cpp src/opfs_file.cpp src/relay_ring_transport.cpp)
   target_compile_definitions(webgs PRIVATE WEBGS_LIVE=1 WEBGS_CONFIG_PATH="/maburgs.toml")
   target_link_libraries(webgs PRIVATE webgs_core)
   target_link_options(webgs PRIVATE
@@ -115,11 +122,11 @@ else()
     PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
   target_link_libraries(mabur_web_core PUBLIC mabur_gs_core mabur_common)
 
-  # webgs CLI: replay (the web_au_parity gate) + live (libusb + devourer,
-  # the same loop the WASM build runs, or --relay over UDP to a CPE510
-  # mabur-relay instead of the USB card).
-  add_executable(webgs src/web_main.cpp src/relay_link.cpp)
-  target_link_libraries(webgs PRIVATE mabur_web_core mabur_gs_dot11 mabur_gs_relay devourer pthread)
+  # webgs CLI: replay (the web_au_parity gate) + live (maburgs's
+  # RadioFrontend over libusb + devourer, the same loop the WASM build runs,
+  # or --relay: RemoteCard over UDP to a CPE510 mabur-relay).
+  add_executable(webgs src/web_main.cpp)
+  target_link_libraries(webgs PRIVATE mabur_web_core mabur_gs_radio mabur_gs_dot11 mabur_gs_relay devourer pthread)
   target_include_directories(webgs PRIVATE ${DEVOURER_DIR}/src ${CMAKE_SOURCE_DIR}/gs/src)
   target_compile_definitions(webgs PRIVATE WEBGS_LIVE=1
     MABUR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")

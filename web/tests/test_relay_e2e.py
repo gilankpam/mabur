@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """webgs live --relay against a fake mabur-relay v3 (UDP). argv[1] = webgs binary."""
 import socket, struct, subprocess, sys, threading, time, unittest, json
+import tempfile, os
 
 WEBGS = sys.argv.pop(1) if len(sys.argv) > 1 else 'build/web/webgs'
 FRAME, HELLO, TUNE, STATUS, TX = 1, 2, 3, 4, 5
+# The bundle's set does not hold 136: pin it so --ch 136 is a member.
+OVERLAY = tempfile.NamedTemporaryFile('w', suffix='.toml', delete=False)
+OVERLAY.write('[radio]\nchannels = [136]\nchannel = 136\n'); OVERLAY.close()
 
 def hdr(t): return struct.pack('<HBB', 0x524D, 3, t)
 def status(state, ch, sec, you_own, tune_id=0):
@@ -54,7 +58,7 @@ class FakeRelay:
 
 def run_webgs(port, mode, secs):
     return subprocess.run([WEBGS, 'live', '--relay', f'127.0.0.1:{port}', '--mode', mode,
-                           '--ch', '136', '--w', '40', '--secs', str(secs)],
+                           '--ch', '136', '--w', '40', '--secs', str(secs), '--overlay', OVERLAY.name],
                           capture_output=True, text=True, timeout=30)
 
 def stats(out):
@@ -74,6 +78,8 @@ class RelayE2E(unittest.TestCase):
         st = stats(p.stdout)[-1]
         self.assertEqual(st['radio'], 'relay'); self.assertEqual(st['relay_owned'], 1)
         self.assertGreater(st['bodies'], 100); self.assertEqual(st['relay_gaps'], 0)
+        self.assertEqual(st['channel'], 136)
+        self.assertEqual(st['scan_state'], 'off')                # pinned; relay search-only
 
     def test_gs_refused_when_not_owner(self):
         r = FakeRelay(own=False)
@@ -83,11 +89,26 @@ class RelayE2E(unittest.TestCase):
         self.assertLess(time.time() - t0, 6)
         self.assertNotIn(TX, r.types())
 
-    def test_spotter_proceeds_when_not_owner(self):
+    def test_spotter_is_refused_when_not_owner(self):
+        # One relay, one client (spec 2026-10-04 §1): the page is the relay's
+        # tune owner in BOTH modes; a refusal is an operator error, not a listen-only path.
         r = FakeRelay(own=False)
-        p = run_webgs(r.port, 'spotter', 2); r.stop = True
-        self.assertEqual(p.returncode, 0, p.stdout)
+        t0 = time.time(); p = run_webgs(r.port, 'spotter', 10); r.stop = True
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn('ERROR relay owned by another client', p.stdout)
+        self.assertLess(time.time() - t0, 6)
+        self.assertIn(TUNE, r.types())           # it did ask
         self.assertNotIn(TX, r.types())
+
+    def test_spotter_owned_receives_without_tx(self):
+        r = FakeRelay()
+        p = run_webgs(r.port, 'spotter', 3); r.stop = True
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual(r.tuned, (136, 2))
+        self.assertNotIn(TX, r.types())
+        st = stats(p.stdout)[-1]
+        self.assertEqual(st['channel'], 136); self.assertIsNone(st['scan_state'])
+        self.assertGreater(st['bodies'], 100)
 
     def test_silent_relay_is_unreachable(self):
         r = FakeRelay(answer=False)
@@ -118,13 +139,16 @@ class RelayE2E(unittest.TestCase):
         self.assertIn('ERROR relay taken by another client', p.stdout)
         self.assertLess(time.time() - t0, 6)
 
-    def test_spotter_unaffected_by_ownership_theft(self):
+    def test_spotter_ownership_taken_mid_session_reports_and_exits(self):
+        # One relay, one client: a spotter owns the relay too, so losing it
+        # mid-session is the same operator error as for a GS.
         r = FakeRelay()
         def steal(): time.sleep(1); r.steal()
         threading.Thread(target=steal, daemon=True).start()
-        p = run_webgs(r.port, 'spotter', 3); r.stop = True
-        self.assertEqual(p.returncode, 0, p.stdout)
-        self.assertNotIn('ERROR', p.stdout)
+        t0 = time.time(); p = run_webgs(r.port, 'spotter', 10); r.stop = True
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn('ERROR relay taken by another client', p.stdout)
+        self.assertLess(time.time() - t0, 6)
 
 if __name__ == '__main__':
     unittest.main()

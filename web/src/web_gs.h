@@ -127,7 +127,7 @@ std::optional<std::string> channel_width_error(const maburgs::Config& cfg, Mode 
                                                int start_ch, int width);
 
 // The page's relay stats fields, appended to each STATS line (keys as the
-// 2026-09-29 RelayLink::stats_fields emitted them; web/ui/src/lib/view.js
+// 2026-09-29 web relay client emitted them; web/ui/src/lib/view.js
 // reads them).
 std::string relay_stats_fields(const maburgs::RelayStatsIn& r);
 
