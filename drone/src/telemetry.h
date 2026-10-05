@@ -52,6 +52,9 @@ struct TelemInputs {
   // consumed via .exchange(0) at the 1 Hz tick) — saturating.
   uint64_t txq_wait_max_ms = 0;
   uint64_t usb_fail = 0;
+  // fec-nack, per period (spec 2026-10-05 §5): verified T_NACKs answered,
+  // symbols re-sent, symbols the token bucket refused.
+  uint64_t nack_rx = 0, retx_syms = 0, retx_refused = 0;
   // RX-side channel view for this telemetry period (cca-on 2026-09-23):
   // the RX callback's own / foreign / CRC-failed frame split.
   uint64_t rx_own = 0, rx_foreign = 0, rx_crcfail = 0;

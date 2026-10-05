@@ -41,6 +41,7 @@
 #endif
 
 #include "air_clock.h"
+#include "nack_bucket.h"
 #include "air_rate.h"
 #include "ampdu_policy.h"
 #include "cal_apply.h"
@@ -1624,12 +1625,12 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
   // reads) and the T_NACK handler, bound once txq exists (it is declared
   // after this callback). Sized by [nack].ring_ms of base-layer history at
   // encoder.bitrate_max_kbps; env_len is the sealed base envelope (sw
-  // header + base symbol_size). Task 11 rewrites the handler to use it
-  // properly -- the spike's per-entry sid plumbing below is a holdover.
+  // header + base symbol_size). Counters are per Telem period (exchanged
+  // at the 1 Hz build); nack_bad / retx_miss are drone-local only.
   const size_t retx_env_len = static_cast<size_t>(mabur::sw::kSwHeaderLen) + static_cast<size_t>(cfg.fec.symbol_size[0]);
   mabur::RetxRing retx(mabur::RetxRing::slots_for(cfg.encoder.bitrate_max_kbps, cfg.nack.ring_ms, cfg.fec.symbol_size[0]), retx_env_len);
   std::function<void(const uint8_t*, size_t)> nack_hook;
-  std::atomic<uint64_t> nack_rx{0}, nack_bad{0}, retx_syms{0}, retx_miss{0}, retx_bodies{0};
+  std::atomic<uint64_t> nack_rx{0}, nack_bad{0}, retx_syms{0}, retx_refused{0}, retx_miss{0};
   auto rx_callback = [&](const Packet& pkt) {
     rx_beat.fetch_add(1, std::memory_order_relaxed);
     if (pkt.RxAtrib.crc_err) rx_crcfail_frames.fetch_add(1, std::memory_order_relaxed);
@@ -1644,7 +1645,7 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
       if (rc_type == rc::T_CAL_CMD || rc_type == rc::T_CAL_RESULT) {
         cal_queue.push(body, body_len);
       } else if (rc_type == rc::T_NACK) {
-        if (nack_hook) nack_hook(body, body_len);  // SPIKE (fec-nack)
+        if (nack_hook) nack_hook(body, body_len);  // RX thread (fec-nack)
       } else {
         rc_queue.push(body, body_len);
       }
@@ -1759,63 +1760,67 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
   // glitch root cause). ~256 bodies ≈ 150 ms at 1700 bodies/s.
   constexpr size_t kTxQueueCap = 256;  // also feeds Telem.txq_cap
   TxQueue txq(kTxQueueCap);
-  // SPIKE (fec-nack): answer a verified T_NACK from the RX thread -- pack
-  // the ring's copies of the requested source envelopes into fresh SBI
-  // bodies (same geometry as the layer) and jump the TxQueue line.
+  // spec 2026-09-06 air clock. Lives out here, not in the hot thread, since
+  // fec-nack: the hot thread prices it (set_rates via apply_op_to_clock),
+  // books every video/probe body and reads the backlog; the RX thread's
+  // T_NACK handler below books every retransmit body. AirClock's own mutex
+  // guards it; both sides lock per BODY, never per symbol.
+  AirClock air_clock;
+  // Software NACK answer (spec 2026-10-05 fec-nack §4.2-4.3), RX thread.
+  // Verified request -> ring lookups -> fresh SBI bodies marked retx ->
+  // TxQueue head, under a token bucket of nack.air_pct of the base layer's
+  // delivered capacity. A repeat-flagged request is answered twice (and
+  // draws two tokens per symbol). The bucket, packer and scratch envelope
+  // are RX-thread-only; ring, txq, air_clock and agent are thread-safe.
+  // The UepBody carries stream_id 0, so RadioTx::build_frame and the air
+  // clock see plain base-layer bodies; the retx mark lives only in the SBI
+  // stream byte, which the GS routes as base and decodes as a retransmit.
+  TokenBucket retx_bucket(64.0);
+  mabur::SbiPacker retx_packer(static_cast<int>(retx_env_len), cfg.fec.blocks_per_body[0],
+                               static_cast<uint8_t>(0 | mabur::kSbiRetxMark));
+  std::vector<uint8_t> retx_env(retx_env_len);
+  std::vector<std::vector<uint8_t>> retx_out;
   nack_hook = [&](const uint8_t* body, size_t len) {
     auto n = rc::parse_nack(body, len);
-    if (!n || !agent.verify_session_tagged(body, len, n->counter)) {
+    uint64_t session = 0;
+    if (!n || n->sid != 0 || !agent.verify_session_tagged(body, len, n->counter, &session) ||
+        !agent.accept_nack_counter(n->counter, session)) {
       nack_bad.fetch_add(1, std::memory_order_relaxed);
+      agent.note_auth_reject();
       return;
     }
     nack_rx.fetch_add(1, std::memory_order_relaxed);
-    static mabur::SbiPacker packers[2] = {
-        mabur::SbiPacker(static_cast<int>(mabur::sw::kSwHeaderLen) + cfg.fec.symbol_size[0],
-                         cfg.fec.blocks_per_body[0], 0),
-        mabur::SbiPacker(static_cast<int>(mabur::sw::kSwHeaderLen) + cfg.fec.symbol_size[1],
-                         cfg.fec.blocks_per_body[1], 1)};
+    const auto op = shared_op.load();
+    const double sym_per_s =
+        op ? delivered_mbps(op->ladder[0], cfg.air_clock) * 1e6 / 8.0 / static_cast<double>(retx_env_len)
+           : 0.0;
+    retx_bucket.refill(now_steady_us(), sym_per_s * cfg.nack.air_pct / 100.0);
+    const bool twice = (n->flags & rc::kNackFlagRepeat) != 0;
+    const double cost = twice ? 2.0 : 1.0;
+    retx_out.clear();
+    for (uint8_t i = 0; i < n->n; ++i) {
+      for (int b = 0; b < 32; ++b) {
+        if (!(n->e[i].bitmap & (1u << b))) continue;
+        const uint32_t seq = n->e[i].first_seq + static_cast<uint32_t>(b);
+        if (!retx.get(seq, retx_env.data())) { retx_miss.fetch_add(1, std::memory_order_relaxed); continue; }
+        if (!retx_bucket.take(cost)) { retx_refused.fetch_add(1, std::memory_order_relaxed); continue; }
+        retx_syms.fetch_add(1, std::memory_order_relaxed);
+        auto out = retx_packer.add_one(retx_env.data(), retx_env.size());
+        if (!out.empty()) retx_out.push_back(std::move(out));
+      }
+    }
+    auto tail = retx_packer.flush_one();
+    if (!tail.empty()) retx_out.push_back(std::move(tail));
+    // push_front stacks, so push each pass back-to-front: the bodies then
+    // leave in request order (pass 1 then pass 2) ahead of queued video.
     const uint32_t now_ms = static_cast<uint32_t>(now_steady_ms());
-    // Task 1 (fec-nack): sid moved from NackEntry to the Nack frame as a
-    // whole (final wire layout, rc_proto.h); the spike's per-entry sid is
-    // gone. Task 11 rewrites this handler properly -- this keeps it
-    // compiling against the new layout in the meantime.
-    if (n->sid < 2) {
-      for (uint8_t i = 0; i < n->n; ++i) {
-        const auto& e = n->e[i];
-        for (int b = 0; b < 32; ++b) {
-          if (!(e.bitmap & (1u << b))) continue;
-          std::vector<uint8_t> env(retx_env_len);
-          if (n->sid != 0 || !retx.get(e.first_seq + static_cast<uint32_t>(b), env.data())) {
-            retx_miss.fetch_add(1, std::memory_order_relaxed);
-            continue;
-          }
-          retx_syms.fetch_add(1, std::memory_order_relaxed);
-          auto out = packers[n->sid].add_one(env.data(), env.size());
-          if (!out.empty()) {
-            UepBody ub{n->sid, std::move(out), now_ms, now_steady_us(), false};
-            txq.push_front(std::move(ub));
-            retx_bodies.fetch_add(1, std::memory_order_relaxed);
-          }
-        }
+    for (int rep = 0; rep < (twice ? 2 : 1); ++rep)
+      for (auto it = retx_out.rbegin(); it != retx_out.rend(); ++it) {
+        const uint64_t p_us = now_steady_us();
+        const size_t bytes = it->size();
+        txq.push_front(UepBody{0, *it, now_ms, p_us, false});
+        air_clock.book(p_us, bytes, 0);
       }
-    }
-    for (uint8_t s = 0; s < 2; ++s) {
-      auto out = packers[s].flush_one();
-      if (!out.empty()) {
-        UepBody ub{s, std::move(out), now_ms, now_steady_us(), false};
-        txq.push_front(std::move(ub));
-        retx_bodies.fetch_add(1, std::memory_order_relaxed);
-      }
-    }
-    static uint64_t last_rep = 0;
-    const uint64_t t = now_steady_ms();
-    if (t - last_rep >= 5000) {
-      last_rep = t;
-      std::fprintf(stderr, "maburd nack: rx=%llu bad=%llu syms=%llu miss=%llu bodies=%llu\n",
-                   (unsigned long long)nack_rx.load(), (unsigned long long)nack_bad.load(),
-                   (unsigned long long)retx_syms.load(), (unsigned long long)retx_miss.load(),
-                   (unsigned long long)retx_bodies.load());
-    }
   };
   // fec.feed_batch: group the TX writer's wakeups so bodies leave in
   // URB-filling batches (see TxQueue::set_batch); the hot thread flushes at
@@ -1836,7 +1841,6 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
     // is behaviourally identical to the old default "mabur_f".
     FrameSource fsrc(VENC_RING_NAME);
     FramePipeline pipe;
-    AirClock air_clock;   // spec 2026-09-06; priced by apply_op_to_clock
     std::vector<uint8_t> fbuf(VENC_FRAME_META_SIZE + 512 * 1024);
     uint64_t last_reattach = 0;
     uint64_t last_ring_stats_ms = 0;
@@ -2712,6 +2716,11 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
       ti.txq_drops = txq.dropped();
       ti.txq_wait_max_ms = txq_wait_max_ms.exchange(0, std::memory_order_relaxed);
       ti.usb_fail = telem_usb_fail;
+      // fec-nack, per period (spec 2026-10-05 §5): bumped by the RX
+      // thread's T_NACK handler, drained here.
+      ti.nack_rx = nack_rx.exchange(0, std::memory_order_relaxed);
+      ti.retx_syms = retx_syms.exchange(0, std::memory_order_relaxed);
+      ti.retx_refused = retx_refused.exchange(0, std::memory_order_relaxed);
       // RX-side channel view for this period (cca-on 2026-09-23): the
       // RX callback's frame split, drained per Telem. No register read
       // here -- see rx_own_frames' declaration for why.

@@ -11,6 +11,7 @@ TEST(make_telem_maps_and_saturates) {
   in.low_power = true;
   in.rcf_age_ms = 700000;            // saturates u16
   in.usb_fail = 1 << 20;             // saturates u16
+  in.nack_rx = 70000; in.retx_syms = 5; in.retx_refused = 6;   // fec-nack, per period
   in.txq_drops = 1ull << 33;         // saturates u32
   in.txq_wait_max_ms = 70000;        // saturates u16
   in.cmd_kbps = 90000;               // saturates u16
@@ -38,6 +39,7 @@ TEST(make_telem_maps_and_saturates) {
   CHECK(t.flags == 0x99);  // | low_power (bit7, spec 2026-09-20)
   CHECK(t.rcf_age_ms == 65535);
   CHECK(t.usb_fail == 65535);
+  CHECK(t.nack_rx == 65535 && t.retx_syms == 5 && t.retx_refused == 6);
   CHECK(t.txq_drops == 0xFFFFFFFFu);
   CHECK(t.txq_wait_max_ms == 65535);
   CHECK(t.cmd_kbps == 65535);

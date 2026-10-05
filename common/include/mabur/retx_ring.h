@@ -37,12 +37,23 @@ class RetxRing {
     state_[i].store(1, std::memory_order_relaxed);          // writing
     std::atomic_thread_fence(std::memory_order_release);
     std::memcpy(&data_[i * env_len_], env, env_len_);
-    seq_[i].store(seq, std::memory_order_relaxed);
+    // Release, not relaxed (controller ruling R16): pairs with the acquire
+    // seq_ load in get()'s first gate -- see the comment there.
+    seq_[i].store(seq, std::memory_order_release);
     state_[i].store(2, std::memory_order_release);          // valid
   }
   bool get(uint32_t seq, uint8_t* out) const {
     const size_t i = seq & (slots_ - 1);
-    if (state_[i].load(std::memory_order_acquire) != 2 || seq_[i].load(std::memory_order_relaxed) != seq) return false;
+    // The gate's seq_ load is acquire, pairing with put()'s release store
+    // of seq_ (ruling R16): state_ is a two-value flag, so a gate that sees
+    // the PREVIOUS occupant's state==2 and then the NEW put's seq would,
+    // with a relaxed seq load, not synchronize with that put at all -- the
+    // memcpy below could copy a mix of old and new bytes and still pass the
+    // recheck (state==2, seq matches). It is not hypothetical: the GS's tail
+    // trigger requests seqs the hot thread may be writing at that moment.
+    // Acquiring seq_ makes a matching seq imply the new put's memcpy (and
+    // its state=1 store) is visible, so a concurrent overwrite is caught.
+    if (state_[i].load(std::memory_order_acquire) != 2 || seq_[i].load(std::memory_order_acquire) != seq) return false;
     std::memcpy(out, &data_[i * env_len_], env_len_);
     // Two separate ordering jobs, both required (Boehm's seqlock
     // requirement): this fence orders the memcpy's plain loads BEFORE the

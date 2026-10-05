@@ -67,6 +67,9 @@ rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in) {
   t.txq_drops = saturate<uint32_t>(in.txq_drops);
   t.txq_wait_max_ms = saturate<uint16_t>(in.txq_wait_max_ms);
   t.usb_fail = saturate<uint16_t>(in.usb_fail);
+  t.nack_rx = saturate<uint16_t>(in.nack_rx);
+  t.retx_syms = saturate<uint16_t>(in.retx_syms);
+  t.retx_refused = saturate<uint16_t>(in.retx_refused);
   t.rx_own = saturate<uint16_t>(in.rx_own);
   t.rx_foreign = saturate<uint16_t>(in.rx_foreign);
   t.rx_crcfail = saturate<uint16_t>(in.rx_crcfail);

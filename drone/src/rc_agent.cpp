@@ -70,11 +70,37 @@ bool RcAgent::verify_rcf_(const uint8_t* body, size_t len, const rc::Rcf& r,
   return true;
 }
 
-bool RcAgent::verify_session_tagged(const uint8_t* body, size_t len, uint32_t seq32) const {
+bool RcAgent::verify_session_tagged(const uint8_t* body, size_t len, uint32_t seq32,
+                                    uint64_t* session) const {
   const uint64_t p = published_session_.load(std::memory_order_acquire);
   if (p == 0) return false;
-  return rc::verify_control(body, len, cfg_.link.key,
-      rc::TagCtx{static_cast<uint32_t>(p >> 32), static_cast<uint32_t>(p & 0xFFFFFFFFu), seq32});
+  if (!rc::verify_control(body, len, cfg_.link.key,
+          rc::TagCtx{static_cast<uint32_t>(p >> 32), static_cast<uint32_t>(p & 0xFFFFFFFFu), seq32}))
+    return false;
+  if (session) *session = p;
+  return true;
+}
+
+bool RcAgent::accept_nack_counter(uint32_t counter) {
+  return accept_nack_counter(counter, published_session_.load(std::memory_order_acquire));
+}
+
+// Keyed by the pair's vtx nonce rather than reset from publish_session_():
+// a reset store can never be ordered against an RX-thread CAS that verified
+// under the OLD pair and lands after it -- that would plant the old pair's
+// (possibly large) counter in the new pair's space and refuse the GS's
+// restarted counters until they overtake it. With the key in the same word,
+// a stale-keyed state just reads as "nothing accepted yet".
+bool RcAgent::accept_nack_counter(uint32_t counter, uint64_t session) {
+  if (session == 0 || session != published_session_.load(std::memory_order_acquire)) return false;
+  const uint64_t key = session & 0xFFFFFFFFu;   // vtx_nonce
+  uint64_t cur = nack_last_.load(std::memory_order_relaxed);
+  for (;;) {
+    const uint32_t last = (cur >> 32) == key ? static_cast<uint32_t>(cur) : 0;
+    if (counter <= last) return false;
+    if (nack_last_.compare_exchange_weak(cur, (key << 32) | counter, std::memory_order_relaxed))
+      return true;
+  }
 }
 
 bool RcAgent::verify_cal_frame(const uint8_t* body, size_t len, bool sweep_running) {

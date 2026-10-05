@@ -50,7 +50,7 @@ class TxQueue {
     if (signal) cv_.notify_one();
   }
 
-  // SPIKE 2026-10-05 (fec-nack): a retransmit body jumps the line -- it is
+  // fec-nack (spec 2026-10-05 §4.2): a retransmit body jumps the line -- it is
   // the one the GS is waiting on -- and wakes the consumer at once. May
   // exceed cap_ by the retransmit count (never drops video for it).
   void push_front(UepBody&& b) {
