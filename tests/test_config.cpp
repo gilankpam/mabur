@@ -1448,6 +1448,28 @@ TEST(low_power_disabled_skips_cross_section_checks) {
   std::filesystem::remove(path);
 }
 
+TEST(nack_section_defaults_and_bounds) {
+  {
+    auto path = write_temp_toml("");
+    auto cfg = load_config(path.string());
+    CHECK(cfg.nack.ring_ms == 150 && cfg.nack.air_pct == 5);
+    std::filesystem::remove(path);
+  }
+  {
+    auto path = write_temp_toml("[nack]\nring_ms = 300\nair_pct = 10\n");
+    auto cfg = load_config(path.string());
+    CHECK(cfg.nack.ring_ms == 300 && cfg.nack.air_pct == 10);
+    std::filesystem::remove(path);
+  }
+  {
+    auto path = write_temp_toml("[nack]\nair_pct = 80\n");
+    bool threw = false;
+    try { load_config(path.string()); } catch (const std::exception&) { threw = true; }
+    CHECK(threw);
+    std::filesystem::remove(path);
+  }
+}
+
 // ---- radio.width is real (2026-09-24, 40 MHz rungs) ----------------------
 
 TEST(radio_width_accepts_20_and_40_only) {

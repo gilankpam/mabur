@@ -232,6 +232,14 @@ struct RecordCfg {
   int width = 0, height = 0;
 };
 
+// Software NACK (spec 2026-10-05 fec-nack): how long the drone keeps
+// recently sent base-layer source envelopes for re-sending, and the air
+// budget a GS's T_NACK requests may spend.
+struct NackDroneCfg {
+  int ring_ms = 150;
+  int air_pct = 5;
+};
+
 struct Config {
   RadioCfg radio;
   FecCfg fec;
@@ -243,6 +251,7 @@ struct Config {
   AirClockCfg air_clock;
   LowPowerCfg low_power;
   RecordCfg record;
+  NackDroneCfg nack;
   std::array<UepLayerCfg, 2> uep_layers() const;
 };
 

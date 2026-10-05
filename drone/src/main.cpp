@@ -73,7 +73,7 @@
 #include "vtx_recorder.h"
 #include "tick_gate.h"
 #include "tx_queue.h"
-#include "retx_ring.h"  // SPIKE (fec-nack)
+#include "mabur/retx_ring.h"
 #include "usb_tx_pool.h"
 #ifdef MABUR_HAVE_VENC
 #include "venc_core.h"  // ARM only: drone/venc is not compiled on host builds
@@ -1619,10 +1619,15 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
   // RX callback: pulls RC frames (rc::frame_type >= 0) off the air and
   // queues them for the agent thread. Runs on the main thread (inside
   // rtl_device->Init's blocking RX loop).
-  // SPIKE 2026-10-05 (fec-nack): retransmit ring (hot thread writes via the
-  // UepEncoder source tap, RX thread reads) and the T_NACK handler, bound
-  // once txq exists (it is declared after this callback).
-  mabur::RetxRing retx(512);
+  // 2026-10-05 (fec-nack, Task 10): retransmit ring of base-layer source
+  // envelopes (hot thread writes via the UepEncoder source tap, RX thread
+  // reads) and the T_NACK handler, bound once txq exists (it is declared
+  // after this callback). Sized by [nack].ring_ms of base-layer history at
+  // encoder.bitrate_max_kbps; env_len is the sealed base envelope (sw
+  // header + base symbol_size). Task 11 rewrites the handler to use it
+  // properly -- the spike's per-entry sid plumbing below is a holdover.
+  const size_t retx_env_len = static_cast<size_t>(mabur::sw::kSwHeaderLen) + static_cast<size_t>(cfg.fec.symbol_size[0]);
+  mabur::RetxRing retx(mabur::RetxRing::slots_for(cfg.encoder.bitrate_max_kbps, cfg.nack.ring_ms, cfg.fec.symbol_size[0]), retx_env_len);
   std::function<void(const uint8_t*, size_t)> nack_hook;
   std::atomic<uint64_t> nack_rx{0}, nack_bad{0}, retx_syms{0}, retx_miss{0}, retx_bodies{0};
   auto rx_callback = [&](const Packet& pkt) {
@@ -1779,10 +1784,13 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
         const auto& e = n->e[i];
         for (int b = 0; b < 32; ++b) {
           if (!(e.bitmap & (1u << b))) continue;
-          auto env = retx.get(n->sid, e.first_seq + static_cast<uint32_t>(b));
-          if (!env) { retx_miss.fetch_add(1, std::memory_order_relaxed); continue; }
+          std::vector<uint8_t> env(retx_env_len);
+          if (n->sid != 0 || !retx.get(e.first_seq + static_cast<uint32_t>(b), env.data())) {
+            retx_miss.fetch_add(1, std::memory_order_relaxed);
+            continue;
+          }
           retx_syms.fetch_add(1, std::memory_order_relaxed);
-          auto out = packers[n->sid].add_one(env->data(), env->size());
+          auto out = packers[n->sid].add_one(env.data(), env.size());
           if (!out.empty()) {
             UepBody ub{n->sid, std::move(out), now_ms, now_steady_us(), false};
             txq.push_front(std::move(ub));
@@ -1847,7 +1855,7 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
     FecWorker fec_worker(two_core_target() ? kRestCore : -1);
     UepEncoder uep(cfg.uep_layers(), cfg.fec.flush_ms, &fec_worker);
     uep.set_source_tap([&retx](uint8_t sid, uint32_t seq, const uint8_t* env, size_t n) {
-      retx.put(sid, seq, env, n);  // SPIKE (fec-nack)
+      if (sid == 0) retx.put(seq, env, n);  // base layer only (fec-nack)
     });
 
     // Probe stream (spec 2026-09-04 §2): same FEC geometry as the enh layer

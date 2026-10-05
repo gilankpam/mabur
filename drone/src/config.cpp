@@ -574,6 +574,14 @@ void parse_record(const Value& j, RecordCfg& r) {
     fail("record.min_free_mb", "must be in [0,1000000]");
 }
 
+void parse_nack(const Value& j, NackDroneCfg& n) {
+  check_known_keys(j, {"ring_ms", "air_pct"}, "nack");
+  assign_if_present(j, "ring_ms", n.ring_ms, "nack");
+  assign_if_present(j, "air_pct", n.air_pct, "nack");
+  if (n.ring_ms < 50 || n.ring_ms > 1000) fail("nack.ring_ms", "must be in [50,1000]");
+  if (n.air_pct < 0 || n.air_pct > 50) fail("nack.air_pct", "must be in [0,50]");
+}
+
 void parse_ampdu(const Value& j, AmpduCfg& a) {
   check_known_keys(j, {"max_num", "max_time", "min_mcs_20", "min_mcs_40"}, "ampdu");
   assign_if_present(j, "max_num", a.max_num, "ampdu");
@@ -648,8 +656,8 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
   } clear_on_exit;
 
   static const char* kSections[] = {"radio", "fec", "encoder", "venc",
-                                    "link", "msp", "ampdu", "air_clock", "low_power", "record"};
-  check_known_keys(j, {"radio", "fec", "encoder", "venc", "link", "msp", "ampdu", "air_clock", "low_power", "record"}, "");
+                                    "link", "msp", "ampdu", "air_clock", "low_power", "record", "nack"};
+  check_known_keys(j, {"radio", "fec", "encoder", "venc", "link", "msp", "ampdu", "air_clock", "low_power", "record", "nack"}, "");
 
   // A whole missing section means none of its keys are visited below, so
   // report the section itself. Dropping a [table] while hand-transcribing is
@@ -671,6 +679,7 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
   if (j.contains("air_clock")) parse_air_clock(j.at("air_clock"), cfg.air_clock);
   if (j.contains("low_power")) parse_low_power(j.at("low_power"), cfg.low_power);
   if (j.contains("record")) parse_record(j.at("record"), cfg.record);
+  if (j.contains("nack")) parse_nack(j.at("nack"), cfg.nack);
 
   // Cross-section checks, only when the mode is on: a disabled mode's
   // values are irrelevant and the minimal configs the tests load (msp off,
