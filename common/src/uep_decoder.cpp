@@ -55,6 +55,10 @@ std::vector<DecodedFrag> UepDecoder::add_body(const uint8_t* body, size_t len,
       hint = rx_mcs == L.cur_mcs ? SwBoundary::kPost : SwBoundary::kPre;
     }
   }
+  // Retransmit bodies are boundary-neutral (SwDecoder::add_symbol): one
+  // re-sent at the new rate must not close the boundary nor set close_ms.
+  // sbi_peek_stream_id validated the header, so body[3] is in range.
+  if (body[3] & kSbiRetxMark) hint = SwBoundary::kNone;
   if (hint == SwBoundary::kPost && L.bnd_open) {
     L.bnd_open = false;
     if (L.bnd_arm_ms <= now_ms)

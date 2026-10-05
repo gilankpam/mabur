@@ -856,3 +856,25 @@ TEST(retx_copy_of_recovered_symbol_counts_nothing) {
   d.add_symbol(envs[hole].data(), envs[hole].size(), 1002);
   CHECK(d.syms_recovered_arrived() == 1);
 }
+
+TEST(retx_is_boundary_neutral) {
+  // A retx of a pre-transition seq heard at the NEW rate (kPost) must not
+  // close the boundary: else wm_ stays at the snapshot and the transition
+  // gap (lost 906, 907) books as current, not stale, abandonment.
+  SwConfig cfg{64, 8, 0.0};
+  auto envs = sources_only(cfg, 40, 900);
+  SwDecoder d(cfg, 16);
+  for (size_t i = 0; i < 6; ++i)
+    if (i != 3) d.add_symbol(envs[i].data(), envs[i].size(), 1000);
+  d.mark_transition();  // wm = 905
+  REQUIRE(d.boundary_open());
+  d.add_symbol(envs[3].data(), envs[3].size(), 1005, SwBoundary::kPost, true, /*retx=*/true);
+  CHECK(d.boundary_open());
+  CHECK(d.syms_retx() == 1);
+  // 906, 907 lost in the transition; 908 is the first post-transition source.
+  d.add_symbol(envs[8].data(), envs[8].size(), 1010, SwBoundary::kPost);
+  CHECK(!d.boundary_open());
+  for (size_t i = 9; i < envs.size(); ++i) d.add_symbol(envs[i].data(), envs[i].size(), 1020);
+  CHECK(d.syms_abandoned() == 2);
+  CHECK(d.syms_abandoned_stale() == 2);
+}

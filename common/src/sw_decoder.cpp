@@ -261,6 +261,11 @@ std::vector<std::vector<uint8_t>> SwDecoder::add_symbol(const uint8_t* env, size
       reset_state(kAnchor + h.seq);
       v = newest_v_;
     }
+    // A retransmit is boundary-neutral: the drone re-sends old seqs at the
+    // CURRENT rate, so its PHY rate says nothing about which op the seq
+    // belongs to -- letting it close the boundary would leave the transition
+    // gap booked as current loss (option A: retx never moves a ladder input).
+    if (retx) b = SwBoundary::kNone;
     if (b == SwBoundary::kPre && wm_valid_ && v > wm_) wm_ = v;
     if (b == SwBoundary::kPost && wm_open_) {
       wm_open_ = false;
