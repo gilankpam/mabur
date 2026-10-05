@@ -522,7 +522,6 @@ static int run_radio(const maburgs::Config& cfg) {
   // RCF slotting (gs-uplink-self-blanking findings 2026-09-02): control
   // frames wait for the end-of-AU callback (FrameStream sink below) so the
   // send lands in the drone's inter-AU idle. See rcf_slot.h.
-  maburgs::NackTracker nack_trk(cfg.link.nack);  // SPIKE (fec-nack)
   maburgs::RcfSlotter rcf_slot(
       maburgs::RcfSlotCfg{cfg.link.rcf_slot_hold_ms, 100, 2, 3, 1});
   // Declared ahead of the FrameStream below: ChannelCore needs it, and
@@ -1181,32 +1180,6 @@ static int run_radio(const maburgs::Config& cfg) {
 #ifdef MABUR_LOSS_SIM
     if (loss_ctl.ok()) loss_ctl.poll(agg.loss_sim());
 #endif
-    // SPIKE 2026-10-05 (fec-nack): ask the drone for what FEC could not
-    // recover. Direct send (mid-burst, carrier sense arbitrates) unless
-    // link.nack.slotted, in which case it rides the RcfSlotter like an RCF.
-    if (cfg.link.nack.enable) {
-      const auto sctx = vrx.session_ctx();
-      if (sctx.vtx_nonce != 0 && frame_wire) {
-        auto n = nack_trk.poll(
-            drained_ms,
-            [&](int sid) { return agg.decoder().missing_sources(sid, static_cast<uint32_t>(cfg.link.nack.lookback)); },
-            [&](int sid, uint32_t seq) { return agg.decoder().source_state(sid, seq); });
-        if (n) {
-          mabur::rc::TagCtx ctx = sctx;
-          ctx.seq32 = n->counter;  // Task 1 (fec-nack): Nack::seq32 renamed counter
-          maburgs::SlotFrame sf{mabur::rc::pack_nack(*n, cfg.link.key, ctx), 0, sel.selected(), false};
-          sf.offered_ms = drained_ms;
-          if (cal_session.radio_silent(drained_ms)) {
-            // nothing
-          } else if (cfg.link.nack.slotted) {
-            if (!rcf_slot.offer(sf, drained_ms, false)) send_control_frame(sf);
-          } else {
-            send_control_frame(sf);
-          }
-        }
-      }
-      nack_trk.report(drained_ms, stderr);
-    }
     // Compiled into every prod build, unlike loss_ctl above (cal_control.h).
     const auto cal_state_before_poll = cal_session.state();
     cal_ctl.poll(cal_session);

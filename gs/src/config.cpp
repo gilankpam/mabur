@@ -546,15 +546,12 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
     // SPIKE 2026-10-05 (fec-nack): optional [link.nack] block.
     if (r.contains("nack")) {
       const Value& nj = r["nack"];
-      check_keys(nj, "link.nack", {"enable", "settle_ms", "repeat_ms", "max_tries",
-                                   "lookback", "slotted"});
+      check_keys(nj, "link.nack", {"enable", "repeat_ms", "max_tries", "lookback"});
       auto& nc = c.link.nack;
       nc.enable = get_bool(nj, "enable", nc.enable, "link.nack");
-      nc.settle_ms = static_cast<int>(get_int(nj, "settle_ms", 0, 0, 1000, "link.nack"));
       nc.repeat_ms = static_cast<int>(get_int(nj, "repeat_ms", 16, 1, 1000, "link.nack"));
       nc.max_tries = static_cast<int>(get_int(nj, "max_tries", 2, 0, 16, "link.nack"));  // 0 = observe only
       nc.lookback = static_cast<int>(get_int(nj, "lookback", 256, 8, 500, "link.nack"));
-      nc.slotted = get_bool(nj, "slotted", nc.slotted, "link.nack");
     }  // absent = rig off; not reported as a defaulted key (bench knob)
 
     if (r.contains("rung_stats")) {
