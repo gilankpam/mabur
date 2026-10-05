@@ -100,7 +100,9 @@ constexpr Reso kFourResolutions[] = {
 // The format the operator asked for, field by field. Pinned per row because
 // the ORDER and the SPLIT are as much a part of the layout as the labels --
 // and because which row an item sits on decides the type size (row 1 is the
-// wider one, see kRow in gs_compact.cpp).
+// wider one -- 76 worst-case characters across seven items/6 gaps vs row
+// 0's 76 across six items/5 gaps, see the kOrder/kRow comment in
+// gs_compact.cpp).
 TEST(the_rows_read_exactly_as_specified) {
   GsFont f;
   std::string err;

@@ -16,17 +16,19 @@ namespace {
 // size. 32/24 still clears the panel bezel on the GS's own display.
 constexpr int kInsetX = 32, kInsetY = 24;
 
-// The eleven items, in draw order, and the row each one lands on. This IS
+// The fourteen items, in draw order, and the row each one lands on. This IS
 // the reading order on the glass: row 0 is the radio (what the link is
 // doing), row 1 the picture (what came out of it). Split by source rather
 // than by width -- an even split would put `snr` next to `bitrate`, which
 // reads as one continuous line of unrelated figures.
 //
-// Row 0 is the WIDER of the two since the temp cell joined it (71
-// worst-case characters plus 5 gaps, against row 1's 69 plus 5), so it is
-// what decides the type size. Moving an item between rows changes the size
-// the whole bar renders at -- which is one of the reasons REC is in the
-// corner instead (see gs_compact.h).
+// Row 1 is the WIDER of the two since the rtx cell (Task 9) joined it:
+// summing worst_case() over each row's own items, row 0's six items are 76
+// worst-case characters plus 5 gaps, row 1's seven are also 76 characters
+// but plus 6 gaps -- the extra gap (one more item, same total text) is what
+// tips it, and row 1 is therefore what decides the type size now. Moving an
+// item between rows changes the size the whole bar renders at -- which is
+// one of the reasons REC is in the corner instead (see gs_compact.h).
 constexpr GsBarField kOrder[] = {
     GsBarField::kCh,   GsBarField::kMcs, GsBarField::kAir,     GsBarField::kRssi,
     GsBarField::kSnr,  GsBarField::kTemp, GsBarField::kRec,    GsBarField::kBitrate,
