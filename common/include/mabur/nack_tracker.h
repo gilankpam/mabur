@@ -16,8 +16,12 @@
 // Deadline: an entry still unknown gap_timeout_ms after t0 is dead (never
 // requested again) but stays tracked until the decoder's state is
 // terminal, so the erasure set cannot re-admit it. A requested entry books
-// exactly one outcome (filled / late_fill / wasted / dropped_deadline), even
-// when the stop rule killed its repeat.
+// one resolution (filled / late_fill / wasted) when its state turns
+// terminal, and dropped_deadline once if it is still unknown at the
+// deadline or falls below the floor -- the buckets are NOT disjoint: an
+// entry that booked dropped_deadline and resolves later books both, so the
+// outcomes can sum above syms_requested. A requested entry the stop rule
+// killed still books dropped_deadline at the deadline/floor.
 // Stop rule: while util >= down_util, a poll with due entries counts one
 // `suppressed` and marks those entries dead -- no catch-up burst later.
 //

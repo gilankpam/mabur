@@ -10,7 +10,10 @@
 #
 # Before a run: stop the production daemon in its own ssh
 # (`/etc/init.d/S96maburgs stop`, verify with ps; its wrapper respawns
-# anything else it owns) and stage the arm binary as GSBIN.
+# anything else it owns) and stage the as-built out/arm64/maburgs as GSBIN
+# (default /usr/local/bin/maburgs.fecnack -- deliberately not the spike's
+# maburgs.nack, which speaks the RC 14 spike wire and cannot link an RC 15
+# drone).
 #
 # Env: DUR (s, 300), PPS (jammer frames/s, 180 = the 2026-10-05 calibration;
 # recalibrate per docs/fec-nack.md), CH (op channel, 144), ARMS, GSBIN (the
@@ -19,7 +22,7 @@
 cd /home/gilankpam/Projects/drone/mabur
 G=root@10.18.0.1
 DUR=${DUR:-300}; PPS=${PPS:-180}; CH=${CH:-144}
-GSBIN=${GSBIN:-/usr/local/bin/maburgs.nack}; GSARGS=${GSARGS:-}
+GSBIN=${GSBIN:-/usr/local/bin/maburgs.fecnack}; GSARGS=${GSARGS:-}
 S=$(dirname "$0")
 
 # ssh with retry: 18 tries, 5 s apart. Returns the last ssh's status.
@@ -39,7 +42,10 @@ run_arm() {
   local name=$1 session
   echo "=== $name start $(date +%T) pps=$PPS ch=$CH"
   rssh $G "killall $(basename "$GSBIN") 2>/dev/null; sleep 1; rm -f /tmp/mabur-session; true" || exit 1
-  rssh $G "setsid $GSBIN -c /tmp/cfg/$name.toml $GSARGS </dev/null >/tmp/maburgs.log 2>&1 & sleep 20; true" || exit 1
+  # Idempotent launch: a retry after a dropped ssh kills the instance the
+  # failed try may have started instead of running a second one beside it.
+  rssh $G "killall $(basename "$GSBIN") 2>/dev/null; sleep 1; rm -f /tmp/mabur-session; setsid $GSBIN -c /tmp/cfg/$name.toml $GSARGS </dev/null >/tmp/maburgs.log 2>&1 & true" || exit 1
+  sleep 20
   session=$(rssh $G 'cat /tmp/mabur-session 2>/dev/null; true')
   if [ -z "$session" ] || [ "$session" = "$prev_session" ]; then
     echo "!!! $name: maburgs restart produced no new /tmp/mabur-session (got '${session}', previous '${prev_session}'); aborting" >&2

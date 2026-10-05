@@ -93,7 +93,8 @@ against `link.down_util`; and the per-symbol deadline
 `settle` = the maximum natural lateness (how long a never-requested seq
 stayed missing before its own copy arrived) over a sliding 10 s window,
 + 2 ms, clamped to **[4, 24] ms**; seeded at 12 ms until the window holds
-50 samples. There is no config key. The clamp exists because the spike's
+50 samples. When the window later drops below 50 samples, settle keeps its
+last value (no reseed). There is no config key. The clamp exists because the spike's
 natural-lateness max read 12 ms under loss-sim but 30–37 ms under the
 jammer (carrier-sense deferral reorders more); unclamped it would spend most
 of the gap window waiting. A seq that arrives by itself after it was
@@ -107,8 +108,9 @@ repeat flag. `max_tries = 0` is observe-only: lateness stats, no sends.
 **Deadline.** An entry still Unknown `gap_ms(0)` after `t0` is **dead**:
 never requested again. `gap_ms(0)` is the rate-aware sid-0 frame gap
 timeout (`GapTimeoutPolicy`: `clamp(w / seq_rate + 15 ms,
-video.frame_gap_timeout_ms, video.frame_gap_timeout_max_ms)`, 50..150 ms
-by default). A dead entry stays tracked until the decoder's state for it is
+video.frame_gap_timeout_ms, video.frame_gap_timeout_max_ms)`, 50..100 ms
+as shipped in `gs/bundle/maburgs.default.toml`; the code default for the
+max is 150). A dead entry stays tracked until the decoder's state for it is
 terminal, so the erasure set cannot re-admit it.
 
 **Stop rule.** While util ≥ `down_util`, a poll that has due entries
@@ -267,7 +269,10 @@ per step, until the control shows ~30 base abandoned symbols/min (spec §8).
 enable = false`) and `cfg/A1_nack.toml` (`enable = true`, lookback 256,
 repeat_ms 16, max_tries 2), both the GS's live config pinned at
 `static_mcs 2` / `static_bw 40` / `static_overhead_base 0.5` /
-`static_overhead_enh 0.25` with `debug_log.enable`. Stop `S96maburgs`,
+`static_overhead_enh 0.25` with `debug_log.enable`. Stage the as-built
+`out/arm64/maburgs` as `GSBIN` (default `/usr/local/bin/maburgs.fecnack`)
+before the arms; the spike's `maburgs.nack` speaks the RC 14 spike wire
+and gets no link to an RC 15 drone, yet still writes a session. Stop `S96maburgs`,
 stage the configs in `/tmp/cfg/` on the GS, run `runjam.sh` (each ssh
 retries 18 × 5 s because the jammer disturbs the GS's management Wi-Fi;
 an arm whose restart did not write a new `/tmp/mabur-session` aborts the
