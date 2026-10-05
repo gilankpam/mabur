@@ -103,16 +103,28 @@ class NackTracker {
     if (due.empty()) return std::nullopt;
     std::sort(due.begin(), due.end());
     // 4. pack runs of 32 into entries (max kMaxNackEntries per frame)
+    //
+    // Task 1 (fec-nack): the final wire moved `sid` from NackEntry to the
+    // Nack frame as a whole (one sid per T_NACK, base layer only --
+    // global-constraints.md), so this spike tracker -- which still admits
+    // both sids and used to tag each entry -- now groups by sid locally
+    // and stamps the FIRST group's sid onto the frame; a mixed-sid `due`
+    // set loses the second sid's entries from this frame (they stay
+    // outstanding and go out next poll). Deleted + replaced by
+    // common/include/mabur/nack_tracker.h in Task 6.
     mabur::rc::Nack n;
-    n.seq32 = ++seq32_;
+    n.counter = ++seq32_;
     size_t i = 0;
     bool any_repeat = false;
+    bool sid_set = false;
     while (i < due.size() && n.n < mabur::rc::kMaxNackEntries) {
+      const int cur_sid = due[i].first;
+      if (!sid_set) { n.sid = static_cast<uint8_t>(cur_sid); sid_set = true; }
+      if (cur_sid != n.sid) { ++i; continue; }  // defer to a later frame
       mabur::rc::NackEntry en;
-      en.sid = static_cast<uint8_t>(due[i].first);
       en.first_seq = due[i].second;
       en.bitmap = 0;
-      while (i < due.size() && due[i].first == en.sid &&
+      while (i < due.size() && due[i].first == cur_sid &&
              due[i].second - en.first_seq < 32) {
         en.bitmap |= 1u << (due[i].second - en.first_seq);
         Entry& e = entries_[due[i]];
@@ -124,6 +136,7 @@ class NackTracker {
       }
       n.e[n.n++] = en;
     }
+    if (any_repeat) n.flags |= mabur::rc::kNackFlagRepeat;
     ++stats_.sent;
     if (any_repeat) ++stats_.repeats;
     return n;

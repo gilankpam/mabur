@@ -68,7 +68,7 @@ void put_tag(std::vector<uint8_t>& body, const LinkKey& key, const TagCtx& ctx) 
 constexpr size_t RCF_HEAD_LEN = 15;  // 2026-10-01: vtx_id deleted (19)
 constexpr size_t DISC_LEN = 17;
 constexpr size_t DISC_ACK_LEN = 20;  // 2026-10-01: vtx_nonce(4) + flags(1) added (15)
-constexpr size_t TELEM_LEN = 48;  // 2026-09-30: maburtop-only fields dropped (98)
+constexpr size_t TELEM_LEN = 54;  // 2026-10-06: +nack_rx/retx_syms/retx_refused (48)
 
 // magic(2) | ver | type | flags | nonce(4) | phase | fpc(2) |
 // settle(2) | gap(2) | n_windows(1) | n * 4 bytes
@@ -82,9 +82,9 @@ constexpr size_t kCalCmdFixedLen = 5 + 4 + 1 + 2 + 2 + 2 + 1;  // 17
 // magic(2) | ver | type | flags | nonce(4) | walls(8*2) |
 // legacy(2)
 constexpr size_t kCalResultLen = 5 + 4 + 16 + 2;
-// magic(2) | ver | type | flags | seq32(4) | n(1) | n * (sid(1) first(4) bitmap(4))
-constexpr size_t kNackFixedLen = 5 + 4 + 1;  // 10, INCLUDES the n byte
-constexpr size_t kNackEntryLen = 9;
+// magic(2) | ver | type | flags | counter(4) | sid | n | n * (first_seq(4) bitmap(4))
+constexpr size_t kNackFixedLen = 5 + 4 + 1 + 1;  // 11, INCLUDES the n byte at [10]
+constexpr size_t kNackEntryLen = 8;
 
 }  // namespace
 
@@ -324,6 +324,9 @@ std::vector<uint8_t> pack_telem(const Telem& t) {
   put16(body, t.rx_foreign);
   put16(body, t.rx_crcfail);
   body.push_back(t.rec_status);
+  put16(body, t.nack_rx);
+  put16(body, t.retx_syms);
+  put16(body, t.retx_refused);
 
   put_crc(body);
   return body;
@@ -361,6 +364,10 @@ std::optional<Telem> parse_telem(const uint8_t* buf, size_t len) {
   t.rx_foreign = get16(buf, 43);
   t.rx_crcfail = get16(buf, 45);
   t.rec_status = buf[47];
+  const size_t o = TELEM_LEN - 6;
+  t.nack_rx = get16(buf, o);
+  t.retx_syms = get16(buf, o + 2);
+  t.retx_refused = get16(buf, o + 4);
   return t;
 }
 
@@ -386,11 +393,11 @@ std::vector<uint8_t> pack_nack(const Nack& n, const LinkKey& key, const TagCtx& 
   put16(body, RC_MAGIC);
   body.push_back(RC_VERSION);
   body.push_back(T_NACK);
-  body.push_back(0);
-  put32(body, n.seq32);
+  body.push_back(n.flags);
+  put32(body, n.counter);
+  body.push_back(n.sid);
   body.push_back(cnt);
   for (uint8_t i = 0; i < cnt; ++i) {
-    body.push_back(n.e[i].sid);
     put32(body, n.e[i].first_seq);
     put32(body, n.e[i].bitmap | 1u);
   }
@@ -401,21 +408,21 @@ std::vector<uint8_t> pack_nack(const Nack& n, const LinkKey& key, const TagCtx& 
 
 std::optional<Nack> parse_nack(const uint8_t* buf, size_t len) {
   if (len < kNackFixedLen) return std::nullopt;
-  if (get16(buf, 0) != RC_MAGIC || buf[2] != RC_VERSION || buf[3] != T_NACK)
-    return std::nullopt;
+  if (get16(buf, 0) != RC_MAGIC || buf[2] != RC_VERSION || buf[3] != T_NACK) return std::nullopt;
   const uint8_t cnt = buf[kNackFixedLen - 1];
   if (cnt == 0 || cnt > kMaxNackEntries) return std::nullopt;
   const size_t plen = kNackFixedLen + cnt * kNackEntryLen + kTagLen;
   if (len < plen + 2) return std::nullopt;
   if (get16(buf, plen) != crc16_ccitt(buf, plen)) return std::nullopt;
   Nack n;
-  n.seq32 = get32(buf, 5);
+  n.flags = buf[4];
+  n.counter = get32(buf, 5);
+  n.sid = buf[9];
   n.n = cnt;
   for (uint8_t i = 0; i < cnt; ++i) {
     const size_t o = kNackFixedLen + i * kNackEntryLen;
-    n.e[i].sid = buf[o];
-    n.e[i].first_seq = get32(buf, o + 1);
-    n.e[i].bitmap = get32(buf, o + 5);
+    n.e[i].first_seq = get32(buf, o);
+    n.e[i].bitmap = get32(buf, o + 4);
   }
   return n;
 }

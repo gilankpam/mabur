@@ -1759,7 +1759,7 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
   // bodies (same geometry as the layer) and jump the TxQueue line.
   nack_hook = [&](const uint8_t* body, size_t len) {
     auto n = rc::parse_nack(body, len);
-    if (!n || !agent.verify_session_tagged(body, len, n->seq32)) {
+    if (!n || !agent.verify_session_tagged(body, len, n->counter)) {
       nack_bad.fetch_add(1, std::memory_order_relaxed);
       return;
     }
@@ -1770,19 +1770,24 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
         mabur::SbiPacker(static_cast<int>(mabur::sw::kSwHeaderLen) + cfg.fec.symbol_size[1],
                          cfg.fec.blocks_per_body[1], 1)};
     const uint32_t now_ms = static_cast<uint32_t>(now_steady_ms());
-    for (uint8_t i = 0; i < n->n; ++i) {
-      const auto& e = n->e[i];
-      if (e.sid >= 2) continue;
-      for (int b = 0; b < 32; ++b) {
-        if (!(e.bitmap & (1u << b))) continue;
-        auto env = retx.get(e.sid, e.first_seq + static_cast<uint32_t>(b));
-        if (!env) { retx_miss.fetch_add(1, std::memory_order_relaxed); continue; }
-        retx_syms.fetch_add(1, std::memory_order_relaxed);
-        auto out = packers[e.sid].add_one(env->data(), env->size());
-        if (!out.empty()) {
-          UepBody ub{e.sid, std::move(out), now_ms, now_steady_us(), false};
-          txq.push_front(std::move(ub));
-          retx_bodies.fetch_add(1, std::memory_order_relaxed);
+    // Task 1 (fec-nack): sid moved from NackEntry to the Nack frame as a
+    // whole (final wire layout, rc_proto.h); the spike's per-entry sid is
+    // gone. Task 11 rewrites this handler properly -- this keeps it
+    // compiling against the new layout in the meantime.
+    if (n->sid < 2) {
+      for (uint8_t i = 0; i < n->n; ++i) {
+        const auto& e = n->e[i];
+        for (int b = 0; b < 32; ++b) {
+          if (!(e.bitmap & (1u << b))) continue;
+          auto env = retx.get(n->sid, e.first_seq + static_cast<uint32_t>(b));
+          if (!env) { retx_miss.fetch_add(1, std::memory_order_relaxed); continue; }
+          retx_syms.fetch_add(1, std::memory_order_relaxed);
+          auto out = packers[n->sid].add_one(env->data(), env->size());
+          if (!out.empty()) {
+            UepBody ub{n->sid, std::move(out), now_ms, now_steady_us(), false};
+            txq.push_front(std::move(ub));
+            retx_bodies.fetch_add(1, std::memory_order_relaxed);
+          }
         }
       }
     }

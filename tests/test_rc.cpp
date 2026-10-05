@@ -173,12 +173,15 @@ TEST(rcf_matches_golden_wire) {
   //   std::fprintf(stderr, "%s\n", mtest::hex(wire).c_str());
   // Reverting any pack_rcf() layout change without updating these fails
   // here, which is the point -- the format cannot drift silently.
+  // Re-pinned 2026-10-06 for the RC_VERSION 14 -> 15 bump (version byte 2
+  // moved, re-deriving the tag + CRC over the changed body) -- pack_rcf's
+  // own layout is untouched.
   const std::vector<std::string> GOLDEN = {
-      "43520e01000700243232ff000000003664ea56cbbade5c4e75",
-      "43520e0100ffff006464ff00000300738f96419a1ccbd2dea3",
+      "43520f01000700243232ff000000003081cd06e6f96e92f6c5",
+      "43520f0100ffff006464ff00000300a9ecb70f6005b64e6502",
       // Asym pair (base 1.0 / enh 0.5): ENH actually rides a different
       // literal overhead than BASE here, not a duplicated equal-pair scalar.
-      "43520e01002a00086432060000025a4caf94dbea454ba981bf",
+      "43520f01002a00086432060000025a0ac563781e2aef723988",
   };
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
   REQUIRE(j["rcf"].size() == GOLDEN.size());
@@ -208,8 +211,9 @@ TEST(disc_matches_golden_wire) {
   //   std::fprintf(stderr, "%s\n", mtest::hex(wire).c_str());
   // Reverting any pack_disc() layout change without updating this fails
   // here, which is the point -- the format cannot drift silently.
+  // Re-pinned 2026-10-06 for the RC_VERSION 14 -> 15 bump.
   const std::vector<std::string> GOLDEN = {
-      "43520e02040100feca9514010000000200088800cd1879d75c788b",
+      "43520f02040100feca9514010000000200ad461c95fb3f72f6d124",
   };
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
   REQUIRE(j["disc"].size() == GOLDEN.size());
@@ -240,8 +244,9 @@ TEST(disc_ack_matches_golden_wire) {
   //   std::fprintf(stderr, "%s\n", mtest::hex(wire).c_str());
   // Reverting any pack_disc_ack() layout change without updating this
   // fails here, which is the point -- the format cannot drift silently.
+  // Re-pinned 2026-10-06 for the RC_VERSION 14 -> 15 bump.
   const std::vector<std::string> GOLDEN = {
-      "43520e03040100feca0200efbe030095140001008ff9",
+      "43520f03040100feca0200efbe03009514000100be09",
   };
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
   REQUIRE(j["disc_ack"].size() == GOLDEN.size());
@@ -377,7 +382,7 @@ TEST(telem_round_trip_and_golden) {
   // VTX recorder status (spec 2026-09-26): state 2 (Error) | err 5 (LowSpace) << 2.
   t.rec_status = 0x16;
   auto wire = mabur::rc::pack_telem(t);
-  CHECK(wire.size() == 48 + 2);
+  CHECK(wire.size() == 54 + 2);
   CHECK(mabur::rc::frame_type(wire.data(), wire.size()) == mabur::rc::T_TELEM);
   auto back = mabur::rc::parse_telem(wire.data(), wire.size());
   REQUIRE(back.has_value());
@@ -400,15 +405,15 @@ TEST(telem_round_trip_and_golden) {
   CHECK(back->rx_foreign == 14);
   CHECK(back->rx_crcfail == 15);
   CHECK(back->rec_status == 0x16);
+  CHECK(back->nack_rx == 0 && back->retx_syms == 0 && back->retx_refused == 0);
   // Golden pin: byte-exact wire so the format can never drift silently.
   // Computed independently of pack_telem (2026-09-30: python struct.pack of
   // the documented layout + CRC16-CCITT init 0xFFFF), not printed from it.
-  // Re-pinned 2026-10-01 for the RC_VERSION 13 -> 14 bump (version byte 2
-  // moved, re-deriving the CRC over the changed body) -- Telem's own
-  // layout is untouched.
+  // Re-pinned 2026-10-06 for RC_VERSION 14 -> 15 (Telem +6 bytes: nack_rx,
+  // retx_syms, retx_refused).
   const std::string GOLDEN =
-      "43520e04090201022d0034127766554433221100a0860100282307000000d2040200"
-      "333415163d48000d000e000f0016cf9d";
+      "43520f04090201022d0034127766554433221100a0860100282307000000d2040200"
+      "333415163d48000d000e000f0016000000000000e6ad";
   CHECK(mtest::hex(wire) == GOLDEN);
   // Corrupt/truncate rejection, mirroring the disc_ack tests:
   auto trunc = wire; trunc.pop_back();
@@ -477,13 +482,13 @@ TEST(version_mismatch_rejected_both_directions) {
   CHECK(mabur::rc::parse_rcf(body.data(), body.size()).has_value());
 
   // Byte 2 is the version. Any other version must be refused outright —
-  // including 13, the version before the 2026-10-01 bump to 14.
+  // including 14, the version before the 2026-10-06 bump to 15.
   auto v_old = body;
-  v_old[2] = 13;
+  v_old[2] = 14;
   CHECK(!mabur::rc::parse_rcf(v_old.data(), v_old.size()).has_value());
 
   auto v_future = body;
-  v_future[2] = 15;
+  v_future[2] = 16;
   CHECK(!mabur::rc::parse_rcf(v_future.data(), v_future.size()).has_value());
 
   // The same guard must hold for telemetry, which travels the opposite
@@ -649,16 +654,55 @@ TEST(cal_result_sentinel_is_minus_128_and_minus_1_is_a_real_wall) {
 
 TEST(telem_ack_is_the_cal_active_bit_alone) {
   // The anchor never leaves the drone (spec 2026-09-13): the calibration
-  // ack is flags bit6 and nothing else. TELEM_LEN shrank 88 -> 87 (95 since 2026-09-23, +rx_*), now 96 since 2026-09-26 (+rec_status), 98 since 2026-09-28 (+idr_gs), 48 since 2026-09-30 (fields no GS consumer needs dropped).
+  // ack is flags bit6 and nothing else. TELEM_LEN shrank 88 -> 87 (95 since 2026-09-23, +rx_*), now 96 since 2026-09-26 (+rec_status), 98 since 2026-09-28 (+idr_gs), 48 since 2026-09-30 (fields no GS consumer needs dropped), 54 since 2026-10-06 (+nack_rx/retx_syms/retx_refused).
   mabur::rc::Telem t;
   t.flags = 0x40;
   auto b = mabur::rc::pack_telem(t);
-  CHECK(b.size() == 48 + 2);  // body + crc16
+  CHECK(b.size() == 54 + 2);  // body + crc16
   auto got = mabur::rc::parse_telem(b.data(), b.size());
   REQUIRE(got.has_value());
   CHECK((got->flags & 0x40) != 0);
 }
 
-TEST(rc_version_is_fourteen) { CHECK(mabur::rc::RC_VERSION == 14); }
+TEST(rc_version_is_fifteen) { CHECK(mabur::rc::RC_VERSION == 15); }
+
+TEST(nack_final_layout_round_trip_and_tag) {
+  using namespace mabur::rc;
+  Nack n;
+  n.counter = 0x01020304u;
+  n.sid = 0;
+  n.flags = kNackFlagRepeat;
+  n.n = 2;
+  n.e[0] = NackEntry{1000, 0x5u};
+  n.e[1] = NackEntry{4000000000u, 0x80000000u};  // bit 0 forced on the wire
+  TagCtx ctx{11, 22, 0x01020304u};
+  auto f = pack_nack(n, test_key(), ctx);
+  // magic(2) ver type flags counter(4) sid n = 11 bytes, 2 entries x 8, tag 8, crc 2
+  CHECK(f.size() == 11 + 16 + 8 + 2);
+  CHECK(f[2] == RC_VERSION && f[3] == T_NACK && f[4] == kNackFlagRepeat);
+  CHECK(frame_type(f.data(), f.size()) == T_NACK);
+  auto p = parse_nack(f.data(), f.size());
+  REQUIRE(p.has_value());
+  CHECK(p->counter == 0x01020304u && p->sid == 0 && p->flags == kNackFlagRepeat && p->n == 2);
+  CHECK(p->e[0].first_seq == 1000 && p->e[0].bitmap == 0x5u);
+  CHECK(p->e[1].first_seq == 4000000000u && p->e[1].bitmap == 0x80000001u);
+  CHECK(verify_control(f.data(), f.size(), test_key(), ctx));
+  CHECK(!verify_control(f.data(), f.size(), test_key(), TagCtx{11, 22, 0x01020305u}));
+  CHECK(!verify_control(f.data(), f.size(), kDefaultLinkKey, ctx));
+  auto g = f; g[12] ^= 0xFF;                       // inside entry 0
+  CHECK(!parse_nack(g.data(), g.size()).has_value());
+  Nack zero; zero.n = 0;
+  auto z = pack_nack(zero, test_key(), ctx);
+  CHECK(!parse_nack(z.data(), z.size()).has_value()); // n == 0 is malformed
+}
+
+TEST(telem_nack_counters_round_trip) {
+  mabur::rc::Telem t;
+  t.nack_rx = 7; t.retx_syms = 65535; t.retx_refused = 9;
+  auto wire = mabur::rc::pack_telem(t);
+  auto back = mabur::rc::parse_telem(wire.data(), wire.size());
+  REQUIRE(back.has_value());
+  CHECK(back->nack_rx == 7 && back->retx_syms == 65535 && back->retx_refused == 9);
+}
 
 MTEST_MAIN

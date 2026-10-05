@@ -1193,7 +1193,7 @@ static int run_radio(const maburgs::Config& cfg) {
             [&](int sid, uint32_t seq) { return agg.decoder().source_state(sid, seq); });
         if (n) {
           mabur::rc::TagCtx ctx = sctx;
-          ctx.seq32 = n->seq32;
+          ctx.seq32 = n->counter;  // Task 1 (fec-nack): Nack::seq32 renamed counter
           maburgs::SlotFrame sf{mabur::rc::pack_nack(*n, cfg.link.key, ctx), 0, sel.selected(), false};
           sf.offered_ms = drained_ms;
           if (cal_session.radio_silent(drained_ms)) {
