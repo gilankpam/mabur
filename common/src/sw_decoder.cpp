@@ -64,6 +64,26 @@ void SwDecoder::mark_transition() {
 // during the join window and is identical to base_ in steady state.
 uint64_t SwDecoder::live_floor() const { return newest_v_ - horizon_; }
 
+std::vector<uint32_t> SwDecoder::missing_sources(uint32_t lookback) const {
+  std::vector<uint32_t> out;
+  if (!have_seq_) return out;
+  const uint64_t floor = live_floor();
+  uint64_t from = newest_v_ > lookback ? newest_v_ - lookback : 0;
+  if (from < floor) from = floor;
+  if (from < base_) from = base_;
+  for (uint64_t v = from; v < newest_v_; ++v)
+    if (!known_.count(v)) out.push_back(static_cast<uint32_t>(v));
+  return out;
+}
+
+SwDecoder::SourceState SwDecoder::source_state(uint32_t wire_seq) const {
+  if (!have_seq_) return SourceState::kUnknown;
+  const uint64_t v = unwrap(wire_seq);
+  if (v < live_floor() || v < base_) return SourceState::kBelowFloor;
+  if (!known_.count(v)) return SourceState::kUnknown;
+  return recovered_await_src_.count(v) ? SourceState::kRecovered : SourceState::kDirect;
+}
+
 void SwDecoder::advance(uint64_t newest_candidate) {
   if (newest_candidate <= newest_v_) return;
   newest_v_ = newest_candidate;

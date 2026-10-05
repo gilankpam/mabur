@@ -132,6 +132,14 @@ class SwDecoder {
   uint64_t resets() const { return resets_; }
   size_t rows_in_flight() const { return rows_.size(); }
 
+  // SPIKE 2026-10-05 (fec-nack): wire seqs in (newest - lookback, newest)
+  // that are above the live floor and not known (neither delivered nor
+  // repair-recovered) -- the decoder's current erasure set, ascending.
+  std::vector<uint32_t> missing_sources(uint32_t lookback) const;
+  enum class SourceState : uint8_t { kUnknown, kDirect, kRecovered, kBelowFloor };
+  // kDirect = a source copy was heard; kRecovered = known via repair only.
+  SourceState source_state(uint32_t wire_seq) const;
+
  private:
   struct Row {
     std::map<uint64_t, uint8_t> coeffs;  // virtual seq -> coefficient

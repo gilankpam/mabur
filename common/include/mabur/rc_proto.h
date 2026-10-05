@@ -78,6 +78,10 @@ constexpr uint8_t T_DISC_ACK = 3;
 constexpr uint8_t T_TELEM = 4;
 constexpr uint8_t T_CAL_CMD = 5;
 constexpr uint8_t T_CAL_RESULT = 6;
+// SPIKE 2026-10-05 (fec-nack): GS -> drone selective-repeat request. Lists
+// source symbols the sliding-window decoder could not recover; the drone
+// re-sends them from its retransmit ring at the head of the TxQueue.
+constexpr uint8_t T_NACK = 7;
 
 constexpr uint8_t F_DISCOVERY = 0x04;
 
@@ -321,6 +325,26 @@ std::optional<Telem> parse_telem(const uint8_t* buf, size_t len);
 std::vector<uint8_t> pack_cal_cmd(const CalCmd& c, const LinkKey& key = kDefaultLinkKey,
                                   const TagCtx& ctx = {});
 std::optional<CalCmd> parse_cal_cmd(const uint8_t* buf, size_t len);
+
+// T_NACK (spike): up to kMaxNackEntries runs, each (sid, first_seq, bitmap)
+// -- bit i set = wire seq first_seq + i is requested (bit 0 always set).
+// seq32 is the GS's own NACK counter and is the tag ctx seq32 (replay
+// protection is deliberately weak: a replayed NACK only re-airs symbols
+// the ring still holds).
+constexpr int kMaxNackEntries = 4;
+struct NackEntry {
+  uint8_t sid = 0;
+  uint32_t first_seq = 0;
+  uint32_t bitmap = 1;
+};
+struct Nack {
+  uint32_t seq32 = 0;
+  uint8_t n = 0;
+  NackEntry e[kMaxNackEntries];
+};
+std::vector<uint8_t> pack_nack(const Nack& n, const LinkKey& key = kDefaultLinkKey,
+                               const TagCtx& ctx = TagCtx{});
+std::optional<Nack> parse_nack(const uint8_t* buf, size_t len);
 
 std::vector<uint8_t> pack_cal_result(const CalResult& r, const LinkKey& key = kDefaultLinkKey,
                                      const TagCtx& ctx = {});

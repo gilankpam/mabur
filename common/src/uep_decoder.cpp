@@ -131,4 +131,14 @@ double UepDecoder::last_boundary_close_ms(int sid) const {
   return layers_[static_cast<size_t>(sid)].bnd_close_ms;
 }
 
+std::vector<uint32_t> UepDecoder::missing_sources(int sid, uint32_t lookback) const {
+  if (sid < 0 || sid >= 2) return {};
+  return layers_[static_cast<size_t>(sid)].sw.missing_sources(lookback);
+}
+
+SwDecoder::SourceState UepDecoder::source_state(int sid, uint32_t wire_seq) const {
+  if (sid < 0 || sid >= 2) return SwDecoder::SourceState::kUnknown;
+  return layers_[static_cast<size_t>(sid)].sw.source_state(wire_seq);
+}
+
 }  // namespace mabur

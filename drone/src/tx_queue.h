@@ -50,6 +50,19 @@ class TxQueue {
     if (signal) cv_.notify_one();
   }
 
+  // SPIKE 2026-10-05 (fec-nack): a retransmit body jumps the line -- it is
+  // the one the GS is waiting on -- and wakes the consumer at once. May
+  // exceed cap_ by the retransmit count (never drops video for it).
+  void push_front(UepBody&& b) {
+    {
+      std::lock_guard<std::mutex> l(m_);
+      if (closed_) return;
+      q_.push_front(std::move(b));
+      pending_ = 0;
+    }
+    cv_.notify_one();
+  }
+
   // Release a partial group now — called at AU end so a frame's tail bodies
   // never wait on the next frame's production. No-op when nothing pends.
   void flush() {

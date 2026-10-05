@@ -385,6 +385,7 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
                 "s3_settle_ms", "s3_min_syms",
                 "rung_stats", "fade", "probe",
                 "rcf_slot_hold_ms", "arrival_guard_syms",
+                "nack",
                 "key_file", "key"});
     c.link.key_file = get_str(r, "key_file", "/etc/mabur.key", "link");
     // Read by presence: link.key is an optional web-overlay key (spec §2),
@@ -541,6 +542,21 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
       fc.min_rung = static_cast<int>(get_int(fj, "min_rung", 2, 0, 15, "link.fade"));
     } else {
       note_default("link", "fade", "(section absent)");
+    }
+    // SPIKE 2026-10-05 (fec-nack): optional [link.nack] block.
+    if (r.contains("nack")) {
+      const Value& nj = r["nack"];
+      check_keys(nj, "link.nack", {"enable", "settle_ms", "repeat_ms", "max_tries",
+                                   "lookback", "slotted"});
+      auto& nc = c.link.nack;
+      nc.enable = get_bool(nj, "enable", nc.enable, "link.nack");
+      nc.settle_ms = static_cast<int>(get_int(nj, "settle_ms", 0, 0, 1000, "link.nack"));
+      nc.repeat_ms = static_cast<int>(get_int(nj, "repeat_ms", 16, 1, 1000, "link.nack"));
+      nc.max_tries = static_cast<int>(get_int(nj, "max_tries", 2, 0, 16, "link.nack"));  // 0 = observe only
+      nc.lookback = static_cast<int>(get_int(nj, "lookback", 256, 8, 500, "link.nack"));
+      nc.slotted = get_bool(nj, "slotted", nc.slotted, "link.nack");
+    } else {
+      note_default("link", "nack", "(section absent)");
     }
 
     if (r.contains("rung_stats")) {

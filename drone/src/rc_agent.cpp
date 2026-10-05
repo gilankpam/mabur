@@ -70,6 +70,13 @@ bool RcAgent::verify_rcf_(const uint8_t* body, size_t len, const rc::Rcf& r,
   return true;
 }
 
+bool RcAgent::verify_session_tagged(const uint8_t* body, size_t len, uint32_t seq32) const {
+  const uint64_t p = published_session_.load(std::memory_order_acquire);
+  if (p == 0) return false;
+  return rc::verify_control(body, len, cfg_.link.key,
+      rc::TagCtx{static_cast<uint32_t>(p >> 32), static_cast<uint32_t>(p & 0xFFFFFFFFu), seq32});
+}
+
 bool RcAgent::verify_cal_frame(const uint8_t* body, size_t len, bool sweep_running) {
   auto verifies = [&](uint64_t s) {
     return s != 0 && rc::verify_control(body, len, cfg_.link.key,

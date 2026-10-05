@@ -262,6 +262,9 @@ class RcAgent {
   // Owned by verify_cal_frame's caller thread (the TX writer); not
   // thread-safe against concurrent verify_cal_frame calls.
   bool verify_cal_frame(const uint8_t* body, size_t len, bool sweep_running = false);
+  // SPIKE 2026-10-05 (fec-nack): verify a T_NACK's tag against the
+  // published session with the frame's own seq32 as ctx. Any thread.
+  bool verify_session_tagged(const uint8_t* body, size_t len, uint32_t seq32) const;
   static constexpr size_t kCalNonceRing = 8;
   // Replay harness only (maburd --dry-run): install a known pair so a file
   // of RCFs tagged under (vrx, vtx) verifies without a DISC exchange.

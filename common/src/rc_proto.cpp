@@ -82,6 +82,9 @@ constexpr size_t kCalCmdFixedLen = 5 + 4 + 1 + 2 + 2 + 2 + 1;  // 17
 // magic(2) | ver | type | flags | nonce(4) | walls(8*2) |
 // legacy(2)
 constexpr size_t kCalResultLen = 5 + 4 + 16 + 2;
+// magic(2) | ver | type | flags | seq32(4) | n(1) | n * (sid(1) first(4) bitmap(4))
+constexpr size_t kNackFixedLen = 5 + 4 + 1;  // 10, INCLUDES the n byte
+constexpr size_t kNackEntryLen = 9;
 
 }  // namespace
 
@@ -376,6 +379,47 @@ bool is_foreign_rc_version(const uint8_t* buf, size_t len) {
   return get16(buf, 0) == RC_MAGIC && buf[2] != RC_VERSION;
 }
 
+std::vector<uint8_t> pack_nack(const Nack& n, const LinkKey& key, const TagCtx& ctx) {
+  std::vector<uint8_t> body;
+  const uint8_t cnt = static_cast<uint8_t>(std::min<int>(n.n, kMaxNackEntries));
+  body.reserve(kNackFixedLen + cnt * kNackEntryLen + kTagLen + 2);
+  put16(body, RC_MAGIC);
+  body.push_back(RC_VERSION);
+  body.push_back(T_NACK);
+  body.push_back(0);
+  put32(body, n.seq32);
+  body.push_back(cnt);
+  for (uint8_t i = 0; i < cnt; ++i) {
+    body.push_back(n.e[i].sid);
+    put32(body, n.e[i].first_seq);
+    put32(body, n.e[i].bitmap | 1u);
+  }
+  put_tag(body, key, ctx);
+  put_crc(body);
+  return body;
+}
+
+std::optional<Nack> parse_nack(const uint8_t* buf, size_t len) {
+  if (len < kNackFixedLen) return std::nullopt;
+  if (get16(buf, 0) != RC_MAGIC || buf[2] != RC_VERSION || buf[3] != T_NACK)
+    return std::nullopt;
+  const uint8_t cnt = buf[kNackFixedLen - 1];
+  if (cnt == 0 || cnt > kMaxNackEntries) return std::nullopt;
+  const size_t plen = kNackFixedLen + cnt * kNackEntryLen + kTagLen;
+  if (len < plen + 2) return std::nullopt;
+  if (get16(buf, plen) != crc16_ccitt(buf, plen)) return std::nullopt;
+  Nack n;
+  n.seq32 = get32(buf, 5);
+  n.n = cnt;
+  for (uint8_t i = 0; i < cnt; ++i) {
+    const size_t o = kNackFixedLen + i * kNackEntryLen;
+    n.e[i].sid = buf[o];
+    n.e[i].first_seq = get32(buf, o + 1);
+    n.e[i].bitmap = get32(buf, o + 5);
+  }
+  return n;
+}
+
 bool verify_control(const uint8_t* buf, size_t len, const LinkKey& key, const TagCtx& ctx) {
   // The tag sits at the frame's STRUCTURAL end, never at len - 10: on
   // hardware the drone's body still carries devourer's trailing 4-byte
@@ -386,6 +430,13 @@ bool verify_control(const uint8_t* buf, size_t len, const LinkKey& key, const Ta
     case T_DISC: tag_at = DISC_LEN; break;
     case T_RCF: tag_at = RCF_HEAD_LEN; break;
     case T_CAL_RESULT: tag_at = kCalResultLen; break;
+    case T_NACK: {
+      if (len < kNackFixedLen) return false;
+      const uint8_t n = buf[kNackFixedLen - 1];
+      if (n == 0 || n > kMaxNackEntries) return false;
+      tag_at = kNackFixedLen + static_cast<size_t>(n) * kNackEntryLen;
+      break;
+    }
     case T_CAL_CMD: {
       if (len < kCalCmdFixedLen) return false;
       const uint8_t n = buf[kCalCmdFixedLen - 1];
