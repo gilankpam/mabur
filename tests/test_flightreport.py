@@ -1859,6 +1859,60 @@ def test_fec_section_feclog1_rows_default_bw_20():
     assert rows[0]["first_seq"] == 100 and rows[0]["m"] == 12, rows[0]
 
 
+FEC_LOG3_ROWS = """feclog 3
+1000 0 3 40 0.50 100 12 12 8 4 0 0 32 32
+1100 0 3 40 0.50 300 4 4 4 0 0 0 32 32
+1200 1 3 40 0.25 500 6 6 2 0 4 0 16 32
+"""
+
+
+def test_fec_section_feclog3_reads_rtx_and_keeps_old_versions():
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "fec.log"
+        p.write_text(FEC_LOG3_ROWS)
+        rows = flightreport.load_feclog(str(p))
+        assert [r["rtx"] for r in rows] == [4, 0, 0], rows
+        assert rows[0]["rec"] == 8 and rows[0]["aband"] == 0, rows[0]
+        result = subprocess.run([sys.executable, "tools/flightreport.py", str(p)],
+                                capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert re.search(r"sid 0 mcs 3/40 ov 0\.50: n=2 stale=0 failed=0 retx=1", result.stdout), result.stdout
+    # feclog 2 and 1 still parse with rtx == 0
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "fec.log"
+        p.write_text(FEC_LOG2_ROWS)
+        rows2 = flightreport.load_feclog(str(p))
+        p.write_text(FEC_LOG_ROWS)
+        rows1 = flightreport.load_feclog(str(p))
+    assert all(r["rtx"] == 0 for r in rows2 + rows1)
+
+
+def test_nack_section_from_sideport_rows():
+    rows = []
+    for i, (req, filled, refused) in enumerate([(0, 0, 0), (10, 8, 0), (25, 20, 3)]):
+        rows.append({"t_ms": 1000 + 200 * i, "seq": i, "v": 1,
+                     "link": {"nack": {"requests": req, "repeats": 1, "syms_requested": req * 10,
+                                       "tail_requests": 2, "filled": filled, "late_fill": 1,
+                                       "wasted": 2, "dropped_deadline": 0, "suppressed": 0,
+                                       "fill_pps": 4.0, "fill_ms": {"p50": 12, "p90": 20, "max": 30},
+                                       "settle_ms": 12, "late_ms_max": 9}},
+                     "drone": {"nack": {"rx": req, "retx_syms": req * 10, "retx_refused": refused}}})
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        flightreport.print_nack_report(rows)
+    text = out.getvalue()
+    assert "NACK" in text
+    assert re.search(r"requests=25", text), text
+    assert re.search(r"filled=20", text), text
+    assert re.search(r"refused=3", text), text
+    assert re.search(r"fill_ms p50/p90/max=12/20/30", text), text
+    # rows without the block (old recordings) print nothing
+    out2 = io.StringIO()
+    with contextlib.redirect_stdout(out2):
+        flightreport.print_nack_report([{"t_ms": 1, "link": {}}])
+    assert out2.getvalue() == ""
+
+
 def test_session_dir_mode_prints_fec_section():
     """A session directory carrying fec.log gets the FEC section after the
     ctl report, from the sibling file (session.resolve pairing)."""
@@ -1876,6 +1930,8 @@ if __name__ == "__main__":
     test_session_dir_mode_prints_fec_section()
     test_fec_section_feclog2_groups_by_mcs_and_bw()
     test_fec_section_feclog1_rows_default_bw_20()
+    test_fec_section_feclog3_reads_rtx_and_keeps_old_versions()
+    test_nack_section_from_sideport_rows()
     test_flightreport_structure()
     test_old_scale_snr_warns_on_stderr()
     test_overhead_scale_break_warns_on_stderr()

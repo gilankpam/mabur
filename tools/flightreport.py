@@ -824,7 +824,7 @@ def sniff_feclog(path):
 
 
 FEC_COLS = ("t_ms", "sid", "mcs", "bw", "ov", "first_seq", "span", "m", "rec",
-            "aband", "stale", "r", "w")
+            "rtx", "aband", "stale", "r", "w")
 FEC_CANDIDATE_OV = (0.25, 0.35, 0.50, 0.75, 1.00)
 
 
@@ -833,7 +833,9 @@ def load_feclog(path):
     decoder closed. A rejoined session re-states the marker partway
     through; `# dropped N` is the LogWriter's gap marker. Both skipped,
     everything else is a row. feclog 2 (2026-09-24, 40 MHz rungs) inserts
-    `bw` after mcs; feclog 1 rows carry no bw and are 20 MHz."""
+    `bw` after mcs; feclog 1 rows carry no bw and are 20 MHz. feclog 3
+    (2026-10-05, software NACK) inserts `rtx` (symbols the episode
+    received via retransmit) after `rec`; feclog 1/2 rows read rtx=0."""
     rows = []
     version = 1
     with open(path) as f:
@@ -848,6 +850,8 @@ def load_feclog(path):
             tok = line.split()
             if version < 2:
                 tok = tok[:3] + ["20"] + tok[3:]
+            if version < 3:
+                tok = tok[:9] + ["0"] + tok[9:]
             if len(tok) != len(FEC_COLS):
                 continue
             r = {}
@@ -891,10 +895,11 @@ def print_fec_report(rows):
         live = [r for r in g if r["stale"] == 0]
         stale = len(g) - len(live)
         failed = sum(1 for r in g if r["aband"] > 0)
+        retx = sum(1 for r in g if r["rtx"] > 0)
         ms = [r["m"] for r in live]
         reqs = [fec_ov_req(r["m"], r["r"], ov) for r in live]
         print(f"  sid {sid} mcs {mcs}/{bw} ov {ov:.2f}: n={len(g)} stale={stale} "
-              f"failed={failed}")
+              f"failed={failed} retx={retx}")
         if not live:
             continue
         print(f"    m p50/p90/max={_pct(ms, 0.5)}/{_pct(ms, 0.9)}/{max(ms)}  "
@@ -1031,6 +1036,33 @@ def print_drone_tx_report(rows):
     print(f"  cpu %: {cpu_s}")
     print(f"  congestion shed: {cong} periods   failsafe shed: {fs} periods"
           f"   auth reject: {auth} periods")
+
+
+def print_nack_report(rows):
+    """NACK (spec 2026-10-05 fec-nack): the software selective-repeat on the
+    base layer. link.nack counters are cumulative; drone.nack are per Telem
+    period from the drone. Silent on recordings without the block."""
+    nrows = [r for r in rows if (r.get("link") or {}).get("nack")]
+    if not nrows:
+        return
+    last = nrows[-1]["link"]["nack"]
+    first = nrows[0]["link"]["nack"]
+    span_s = max(1e-9, (nrows[-1]["t_ms"] - nrows[0]["t_ms"]) / 1000.0)
+    def d(k):
+        return (last.get(k) or 0) - (first.get(k) or 0)
+    refused = sum((r.get("drone") or {}).get("nack", {}).get("retx_refused") or 0 for r in nrows)
+    p50 = [r["link"]["nack"].get("fill_ms", {}).get("p50") for r in nrows]
+    p90 = [r["link"]["nack"].get("fill_ms", {}).get("p90") for r in nrows]
+    mx = [r["link"]["nack"].get("fill_ms", {}).get("max") for r in nrows]
+    p50 = [x for x in p50 if x is not None]; p90 = [x for x in p90 if x is not None]; mx = [x for x in mx if x is not None]
+    print("NACK (base-layer selective repeat, link.nack / drone.nack)")
+    print(f"  requests={last.get('requests', 0)} ({d('requests') / span_s * 60:.1f}/min) repeats={last.get('repeats', 0)}"
+          f" syms={last.get('syms_requested', 0)} tail={last.get('tail_requests', 0)}")
+    print(f"  filled={last.get('filled', 0)} late_fill={last.get('late_fill', 0)} wasted={last.get('wasted', 0)}"
+          f" dropped_deadline={last.get('dropped_deadline', 0)} suppressed={last.get('suppressed', 0)} refused={refused}")
+    if p50:
+        print(f"  fill_ms p50/p90/max={_pct(p50, 0.5)}/{_pct(p90, 0.5)}/{max(mx) if mx else 0}"
+              f"  settle_ms last={last.get('settle_ms')} late_ms_max={max(r['link']['nack'].get('late_ms_max') or 0 for r in nrows)}")
 
 
 def print_salvage_report(rows):
@@ -1757,6 +1789,7 @@ def main(path, aulog=None, probelog_path=None, scanlog_path=None):
         print(f"  t={t} residual={rl:.4f} u[-5s..]={flat_traj} drone_state={drone_state}{rssi_str}{snr_str}")
 
     print_salvage_report(rows)
+    print_nack_report(rows)
     print_drone_rx_report(rows)
     print_drone_tx_report(rows)
 
@@ -1798,6 +1831,7 @@ if __name__ == "__main__":
         if primary != s.flight and s.flight:
             flight_rows = load(s.flight)
             print_salvage_report(flight_rows)
+            print_nack_report(flight_rows)
             print_drone_rx_report(flight_rows)
             print_drone_tx_report(flight_rows)
         # fec.log (2026-09-15) is a sibling too: the FEC EPISODES section
