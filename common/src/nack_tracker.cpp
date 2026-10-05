@@ -47,9 +47,12 @@ void NackTracker::resolve(uint64_t now_ms, const NackInputs& in) {
         done = false;
         // Deadline: dead but kept until terminal, so missing() cannot
         // re-admit it.
-        if (!e.dead && now_ms - e.first_missing_ms > in.gap_timeout_ms) {
+        if (now_ms - e.first_missing_ms > in.gap_timeout_ms) {
           e.dead = true;
-          if (e.tries > 0) ++stats_.dropped_deadline;
+          if (e.tries > 0 && !e.deadline_counted) {
+            ++stats_.dropped_deadline;
+            e.deadline_counted = true;
+          }
         }
         break;
       case S::kRetx:
@@ -69,7 +72,7 @@ void NackTracker::resolve(uint64_t now_ms, const NackInputs& in) {
         if (e.tries > 0) ++stats_.wasted;
         break;
       case S::kBelowFloor:
-        if (e.tries > 0 && !e.dead) ++stats_.dropped_deadline;
+        if (e.tries > 0 && !e.deadline_counted) ++stats_.dropped_deadline;
         break;
     }
     if (done)
@@ -81,14 +84,17 @@ void NackTracker::resolve(uint64_t now_ms, const NackInputs& in) {
 
 void NackTracker::admit(uint64_t now_ms, const NackInputs& in) {
   for (uint32_t s : in.missing())
-    if (!entries_.count(s)) entries_[s] = Entry{now_ms, 0, 0, 0, false, false};
+    if (!entries_.count(s)) entries_[s] = Entry{now_ms, 0, 0, 0, false, false, false};
   if (auto tv = in.tail()) {
     if (now_ms >= tv->last_progress_ms + static_cast<uint64_t>(settle_ms_) &&
         tv->max_idx + 1 < tv->count) {
       const uint32_t n_tail = static_cast<uint32_t>(tv->count - tv->max_idx - 1);
       for (uint32_t k = 1; k <= n_tail; ++k) {
         const uint32_t s = tv->seq_at_max + k;
-        if (!entries_.count(s)) entries_[s] = Entry{tv->last_progress_ms, 0, 0, 0, true, false};
+        // Only still-unknown seqs: a stale tail view (slot not advanced past
+        // a seq that already resolved) must not re-admit it every poll.
+        if (!entries_.count(s) && in.state(s) == S::kUnknown)
+          entries_[s] = Entry{tv->last_progress_ms, 0, 0, 0, true, false, false};
       }
     }
   }

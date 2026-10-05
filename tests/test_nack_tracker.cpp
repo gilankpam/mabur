@@ -106,6 +106,21 @@ TEST(stop_rule_suppresses_while_util_high) {
   CHECK(n->e[0].first_seq == 200);
 }
 
+TEST(stop_killed_repeat_still_books_deadline) {
+  World w; w.lose({100});
+  NackTracker t(cfg_on());
+  CHECK(!t.poll(1000, w.in()).has_value());
+  REQUIRE(t.poll(1012, w.in()).has_value());           // tries 1
+  w.util = 0.5;
+  CHECK(!t.poll(1028, w.in()).has_value());            // repeat due, suppressed -> dead
+  CHECK(t.stats().suppressed == 1 && t.stats().requests == 1);
+  CHECK(!t.poll(1100, w.in()).has_value());            // past the deadline
+  CHECK(t.stats().dropped_deadline == 1);
+  w.st[100] = S::kBelowFloor; w.missing.clear();
+  t.poll(1200, w.in());                                // terminal: not booked twice
+  CHECK(t.stats().dropped_deadline == 1 && t.outstanding() == 0);
+}
+
 TEST(adaptive_settle_tracks_natural_lateness) {
   World w;
   NackCfg c = cfg_on(); c.settle_min_samples = 3;
@@ -123,12 +138,19 @@ TEST(adaptive_settle_tracks_natural_lateness) {
 TEST(tail_trigger_requests_only_inside_count) {
   World w;
   w.tail = NackTailView{6, 2, 902, 1000};     // 6 fragments, highest heard idx 2 at seq 902
+  for (uint32_t s = 903; s <= 906; ++s) w.st[s] = S::kUnknown;   // unheard past newest
   NackTracker t(cfg_on());
   CHECK(!t.poll(1005, w.in()).has_value());
   auto n = t.poll(1012, w.in());
   REQUIRE(n.has_value());
   CHECK(n->n == 1 && n->e[0].first_seq == 903 && n->e[0].bitmap == 0x7u);   // 903,904,905 only
   CHECK(t.stats().tail_requests == 3);
+  // The retx fills them while the tail view is stale (same slot, max_idx
+  // not advanced): no re-admission, no re-request.
+  for (uint32_t s = 903; s <= 905; ++s) w.st[s] = S::kRetx;
+  CHECK(!t.poll(1013, w.in()).has_value());
+  CHECK(!t.poll(1030, w.in()).has_value());
+  CHECK(t.stats().filled == 3 && t.stats().tail_requests == 3 && t.stats().requests == 1);
 }
 
 TEST(tail_trigger_needs_header) {

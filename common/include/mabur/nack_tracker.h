@@ -6,15 +6,18 @@
 //   gap  -- the decoder's erasure set reports it missing; t0 = first poll
 //           that saw it.
 //   tail -- the newest frame's header says it has `count` fragments but
-//           only up to `max_idx` arrived; the seqs after seq_at_max are
-//           admitted with t0 = last_progress_ms.
+//           only up to `max_idx` arrived; the seqs after seq_at_max that
+//           the decoder still reports unknown are admitted with
+//           t0 = last_progress_ms.
 // A seq is first requested once now >= t0 + settle (adaptive: max natural
 // lateness over settle_window_ms + 2, clamped), then repeated every
 // repeat_ms up to max_tries (0 = observe only: lateness stats, no sends).
 //
 // Deadline: an entry still unknown gap_timeout_ms after t0 is dead (never
 // requested again) but stays tracked until the decoder's state is
-// terminal, so the erasure set cannot re-admit it.
+// terminal, so the erasure set cannot re-admit it. A requested entry books
+// exactly one outcome (filled / late_fill / wasted / dropped_deadline), even
+// when the stop rule killed its repeat.
 // Stop rule: while util >= down_util, a poll with due entries counts one
 // `suppressed` and marks those entries dead -- no catch-up burst later.
 //
@@ -78,6 +81,7 @@ class NackTracker {
     int tries = 0;
     bool from_tail = false;
     bool dead = false;               // deadline or stop rule: never requested again
+    bool deadline_counted = false;   // dropped_deadline already booked for this entry
   };
   void resolve(uint64_t now_ms, const NackInputs& in);
   void admit(uint64_t now_ms, const NackInputs& in);
