@@ -747,6 +747,10 @@ errs toward an earlier demote. The bench does not reproduce the probation
 bounce this change targets (the control is `probation=0` on 10/10 too), so
 the flight remains the real test.
 
+Since 2026-10 (fec-nack) a symbol filled by a NACK retransmit counts as
+abandoned for both residual paths and never reaches the arrival tracker:
+the ladder sees the loss, only the video does not (`docs/fec-nack.md`).
+
 The open-boundary path is itself an adaptive blank, not an absence of
 one. While `SwDecoder`'s `wm_open_` is true, `arr_stale_end()` returns
 `~0ull`, so every seq the tracker books during that time is stale and

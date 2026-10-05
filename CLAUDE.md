@@ -56,6 +56,7 @@ page the task needs rather than carrying all of it.
 | the browser GS / spotter (web/), WebUSB+WASM build, LinkHealthAssembler sharing, channel set form, CHANNEL line, spotter follower | docs/web-gs.md |
 | the CPE510 relay card (mabur-relay protocol v4, maburgs RemoteCard + radio.relays, web GS relay mode, relay TX, interference sweep/hop on a relay) | docs/cpe510-relay.md |
 | pairing / the link key file, SipHash tag, session nonces, KEY MISMATCH, auth_reject | docs/link-pairing.md |
+| the software NACK (base-layer selective repeat): T_NACK, the retx ring, the air bucket, the retx accounting class, feclog 3 | docs/fec-nack.md (as built) + docs/fec-nack-spike-findings-2026-10-05.md (spike) |
 | radio/PHY below mabur | `third_party/devourer/CLAUDE.md` |
 
 Design specs live in `docs/superpowers/specs/` — **gitignored**, so they

@@ -1,5 +1,10 @@
-import json,sys,statistics as st
+#!/usr/bin/env python3
+"""The FEC "prize" in a DVR session dir: sideport span/RSSI/rungs, au.log
+truncations and fid gaps, fec.log abandoned episodes (feclog 1/2/3)."""
+import json,os,sys,statistics as st
 from collections import Counter,defaultdict
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+from flightreport import load_feclog  # noqa: E402  (tools/flightreport.py)
 def pct(v,p):
     v=sorted(v); return v[min(len(v)-1,int(p*len(v)))] if v else None
 for d in sys.argv[1:]:
@@ -48,12 +53,9 @@ for d in sys.argv[1:]:
     bins=Counter(int((a["t"]-t0)/1e6) for a in trunc)
     print(f"  truncation seconds: {len(bins)} distinct seconds; busiest {bins.most_common(5)}")
     # --- fec.log
-    ep=[]
-    for l in open(f"{d}/fec.log"):
-        if l.startswith("feclog") or l.startswith("#"): continue
-        f=l.split()
-        if len(f)<13: continue
-        ep.append(dict(t=int(f[0]),sid=int(f[1]),mcs=int(f[2]),bw=int(f[3]),ov=float(f[4]),first=int(f[5]),span=int(f[6]),m=int(f[7]),rec=int(f[8]),ab=int(f[9]),stale=int(f[10]),r=int(f[11]),w=int(f[12])))
+    # By version marker (feclog 1/2/3, tools/flightreport.py load_feclog):
+    # feclog 3 inserts rtx after rec, so positional columns would misread it.
+    ep=[dict(t=e["t_ms"],sid=e["sid"],mcs=e["mcs"],bw=e["bw"],ov=e["ov"],first=e["first_seq"],span=e["span"],m=e["m"],rec=e["rec"],rtx=e["rtx"],ab=e["aband"],stale=e["stale"],r=e["r"],w=e["w"]) for e in load_feclog(f"{d}/fec.log")]
     tot=len(ep); ab=[e for e in ep if e["ab"]>0 and e["stale"]==0]; abst=[e for e in ep if e["ab"]>0 and e["stale"]>0]
     print(f"fec episodes {tot}; recovered-only {tot-len(ab)-len(abst)}; abandoned (non-stale) {len(ab)}; abandoned-stale {len(abst)}")
     if ab:

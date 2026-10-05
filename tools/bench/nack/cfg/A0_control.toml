@@ -127,11 +127,12 @@ bw  = 40
 overhead_base = 0.5
 overhead_enh  = 0.25
 
-# Before stepping up, the drone sends test packets at the next rung; the
-# step happens only if they arrive clean.
+# Software NACK (base layer), docs/fec-nack.md. Bench arm knob.
 [link.nack]
 enable = false
 
+# Before stepping up, the drone sends test packets at the next rung; the
+# step happens only if they arrive clean.
 [link.probe]
 enable       = true
 rung_offset  = 1           # probe this many rungs above the current one
