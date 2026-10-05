@@ -364,4 +364,58 @@ TEST(lat_headerless_slot_drop_never_reaches_end_frame) {
   CHECK(fs.frames_dropped() >= 1);
 }
 
+TEST(tail_view_reports_count_and_seq_of_highest_fragment) {
+  Capture cap;
+  FrameStream fs({50, 8}, cap.cbs());
+  CHECK(!fs.tail_view(0).has_value());
+  mabur::Fragmenter frag;
+  std::vector<uint8_t> pay(6 * 300, 0x11);
+  auto frags = frag_frame(frag, /*frame_id=*/5, pay);
+  REQUIRE(frags.size() >= 6);
+  for (uint16_t idx = 0; idx < 3; ++idx) {
+    FragArrival a;
+    a.body_mono_us = 1000;
+    a.sw_seq = 900 + idx;
+    a.have_sw_seq = true;
+    fs.push_fragment(0, frags[idx].data(), frags[idx].size(), 10 + idx, a);
+  }
+  auto tv = fs.tail_view(0);
+  REQUIRE(tv.has_value());
+  CHECK(tv->count == frags.size());
+  CHECK(tv->max_idx == 2 && tv->seq_at_max == 902);
+  CHECK(tv->last_progress_ms == 12);
+  CHECK(!fs.tail_view(1).has_value());  // different sid -> nullopt
+
+  // header-less slot (fragment 0 missing) exposes nothing, even with a
+  // known sw_seq on the fragment that did arrive.
+  Capture cap2;
+  FrameStream fs2({50, 8}, cap2.cbs());
+  FragArrival a2;
+  a2.sw_seq = 950;
+  a2.have_sw_seq = true;
+  fs2.push_fragment(0, frags[1].data(), frags[1].size(), 10, a2);
+  CHECK(!fs2.tail_view(0).has_value());
+}
+
+TEST(tail_view_hdr_retx_latches_through_end_frame) {
+  // Fragment 0 arriving retx-marked latches AuLatMeta::hdr_retx, surfaced to
+  // the ring writer via end_frame -- Task 7's latency-anchor guard consumes
+  // this to refuse an anchor sample built from a NACK-filled header.
+  Capture cap;
+  FrameStream fs({50, 8}, cap.cbs());
+  mabur::Fragmenter frag;
+  std::vector<uint8_t> pay(2000, 0x22);
+  auto frags = frag_frame(frag, /*frame_id=*/7, pay);
+  REQUIRE(!frags.empty());
+  for (size_t i = 0; i < frags.size(); ++i) {
+    FragArrival a;
+    if (i == 0) a.retx = true;
+    fs.push_fragment(0, frags[i].data(), frags[i].size(), 10, a);
+  }
+  REQUIRE(!cap.evs.empty());
+  CHECK(cap.evs.back().kind == 'E');
+  CHECK(cap.evs.back().complete);
+  CHECK(cap.evs.back().lat.hdr_retx == true);
+}
+
 MTEST_MAIN

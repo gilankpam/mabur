@@ -794,7 +794,7 @@ static int run_radio(const maburgs::Config& cfg) {
   agg.set_frag_sink([&](const mabur::DecodedFrag& f) {
     if (frame_wire)
       fstream.push_fragment(f.stream_id, f.frag.data(), f.frag.size(), mono_ms(),
-                            {f.body_mono_us, f.q_ms, f.enc_us, f.air_ms});
+                            {f.body_mono_us, f.q_ms, f.enc_us, f.air_ms, f.sw_seq, true, f.retx});
   });
 
   // Dedicated adaptive-link log (spec 2026-08-05-s3-probe-promote-design.md

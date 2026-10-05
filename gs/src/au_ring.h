@@ -99,6 +99,10 @@ struct AuLatMeta {
   uint16_t drone_q_ms = 0;    // from SBI q_ms via the AU's first fragment
   uint16_t enc_us = 0;        // from SBI enc_us, same latch
   uint16_t drone_air_ms = 0;  // from SBI air_ms, same latch as drone_q_ms
+  // fragment 0 of this AU arrived retx-marked (fec-nack, Task 5/7): a NACK
+  // retransmit filled the AU's header fragment, so the latency-anchor guard
+  // (Task 7) must not trust this AU's arrival time as a clean anchor sample.
+  bool hdr_retx = false;
 };
 
 // Creates/truncates the ring file and publishes AUs accumulated between

@@ -24,6 +24,8 @@ struct DecodedFrag {
   uint16_t enc_us = 0;        // SBI enc_us of that body (0 = unknown)
   uint16_t air_ms = 0;        // SBI air_ms of that body (0 = unknown)
   uint32_t sw_seq = 0;        // wire seq of the symbol this fragment came from
+  bool retx = false;          // set from SbiUnpackResult::retx: the carrying
+                              // body was a NACK retransmit (kSbiRetxMark)
 };
 
 // Receiver mirror of UepEncoder: route a body by its SBI stream_id to that

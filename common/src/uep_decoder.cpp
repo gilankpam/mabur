@@ -85,7 +85,7 @@ std::vector<DecodedFrag> UepDecoder::add_body(const uint8_t* body, size_t len,
                                 body_crc_ok ? r.q_ms : static_cast<uint16_t>(0),
                                 body_crc_ok ? r.enc_us : static_cast<uint16_t>(0),
                                 body_crc_ok ? r.air_ms : static_cast<uint16_t>(0),
-                                k < seqs.size() ? seqs[k] : 0u});
+                                k < seqs.size() ? seqs[k] : 0u, retx});
     }
   }
   return out;
