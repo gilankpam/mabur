@@ -155,7 +155,10 @@ LinkHealthAssembler::Tick LinkHealthAssembler::tick(double now_ms,
   s3_loss_.add(s3.arr_expected, s3.arr_arrived, now_ms);
   const auto s3_sample = s3_loss_.sample(now_ms);
 
-  const uint64_t s3_ab_cur = s3.syms_abandoned - s3.syms_abandoned_stale;
+  // + syms_retx mirrors ladder_residual.cpp's abandoned term (enh never has
+  // retx today; keeps the two paths symmetric).
+  const uint64_t s3_ab_cur =
+      s3.syms_abandoned - s3.syms_abandoned_stale + s3.syms_retx;
   const uint64_t s3_exp_cur = s3.syms_delivered + s3.syms_recovered + s3_ab_cur;
   s3_loss_cur_.add(s3.arr_expected - s3.arr_expected_stale,
                   s3.arr_arrived - s3.arr_arrived_stale, now_ms);

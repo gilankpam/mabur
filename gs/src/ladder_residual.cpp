@@ -27,11 +27,17 @@ namespace maburgs {
 // the "never-shed base layers" note on window_counts). Since the 2-stream
 // flatten sid 1 is the SHED-ABLE enh layer, which has its own demote path
 // in block 5a; pooling it here let enh loss demote through both.
+//
+// abandoned also folds in syms_retx: a symbol a NACK retransmit filled is
+// video-whole but the direct copy never arrived -- plus symbols a NACK
+// retransmit filled -- option A, spec 2026-10-05: the ladder sees the
+// loss, only the video does not.
 ResidualCounts residual_counts(const mabur::UepDecoder& dec, int sid,
                                bool cur) {
   const auto s = dec.stats(sid);
   const uint64_t abandoned =
-      cur ? s.syms_abandoned - s.syms_abandoned_stale : s.syms_abandoned;
+      (cur ? s.syms_abandoned - s.syms_abandoned_stale : s.syms_abandoned) +
+      s.syms_retx;
   const uint64_t expected = s.syms_delivered + s.syms_recovered + abandoned;
   return ResidualCounts{expected - abandoned, expected};
 }
