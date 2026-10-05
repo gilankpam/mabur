@@ -110,6 +110,55 @@ Readings:
 - `filled` includes late originals that arrived after a request; with
   settle 12 that share is small (late_ms max 12–38).
 
+## Re-run with real interference (host 8822EU jammer, same evening)
+
+Same binaries and configs, loss from `tools/bench/benchjam.sh` instead of
+the loss-sim: a spare 8822EU on the host flooding 1000 B QoS-Data at
+6 Mbit/s on the op channel (144, the 140+144 pair's primary), so losses are
+whole PPDUs on both GS cards, the drone's carrier sense defers to the
+interferer, and the uplink NACK is exposed to the same air. Calibration at
+pinned mcs2/40, 60 s each: 60 fps -> base abandoned 0/min, 120 fps -> 0,
+180 fps -> 86 base + 1 434 enh abandoned symbols/min, 250 fps -> 979 base.
+Arms ran at **180 frames/s**. Sessions 0014 (control), 0015 (settle 12;
+13.6 min because the GS management Wi-Fi dropped when the next arm was due
+and the runner never restarted it -- the first 300 s window is the
+comparable one), 0016 (settle 6, re-run cleanly).
+
+| arm | session | window | truncated AUs | dropped AUs | base abandoned syms | enh abandoned syms | NACKs | repeats | syms requested | wasted | fill ms p50 / p90 / max |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| control | 0014 | 300 s | 256 | 124 | 569 | 6 815 | – | – | – | – | – |
+| NACK direct, settle 12 | 0015 | first 300 s | **14** | **7** | **0** | 190 | | | | | |
+| NACK direct, settle 12 | 0015 | whole 819 s | 25 | 2 | (2 episodes) | (16 episodes) | 1 596 | 301 (19 %) | 29 334 | 5 588 (19 %) | 15 / 24 / 46 |
+| NACK direct, settle 6 | 0016 | 300 s | **12** | **3** | **0** | 251 | 1 105 | 170 (15 %) | 19 839 | 6 832 (34 %) | 14 / 25 / 46 |
+
+`air_pct` 52.6–53.0 in every arm; drone cpu 35.8–36.0; uplink delivery
+(drone `nack rx` / GS `sent`) 88 % and 89 %.
+
+Readings, on top of the loss-sim ones:
+
+- **The result holds under real per-PPDU loss**: truncations −95 %,
+  drops −94 to −98 %, and the base layer went from 569 abandoned symbols
+  in 5 min to zero in both NACK arms. First-to-finish p99 fell 44.8 -> 34
+  ms.
+- **The uplink pays for the interference too.** Repeats rose from 4 % of
+  requests (loss-sim) to 15–19 %: the NACK frame itself is now lost or
+  deferred by the jammer, so the second try carries real weight. This is
+  the case for doubling the second send (design option 3) and for keeping
+  `max_tries` 2 rather than 1.
+- **Fill latency is ~4 ms slower than under loss-sim** (p50 15 vs 11,
+  p90 24 vs 17): carrier-sense deferral on both the request and the
+  retransmit. Still well inside the 50 ms gap window; max 46.
+- **Settle 6 vs 12 under the jammer**: the same outcome (12 vs 14
+  truncated) for 34 % vs 19 % wasted requests. 12 ms remains the better
+  operating point; the natural-lateness max read 30–37 ms in these runs
+  (vs 12 under loss-sim) because reordering grows under deferral, which is
+  why the design makes settle adaptive and clamps it at 24.
+- **Caveat**: the jammer is an on/off contention source at 35 % duty,
+  not fading; a 180 fps setting is specific to this bench geometry. The GS
+  management Wi-Fi (5 GHz, `aicwf_sdio`) is disturbed by the jammer -- a
+  runner that restarts maburgs between arms must tolerate ssh dropping for
+  a minute, or pre-stage the restarts on the GS.
+
 ## Recommendation
 
 Build it for real, direct-send only, `settle_ms` ≈ observed late_ms max
