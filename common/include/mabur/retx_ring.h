@@ -44,14 +44,22 @@ class RetxRing {
     const size_t i = seq & (slots_ - 1);
     if (state_[i].load(std::memory_order_acquire) != 2 || seq_[i].load(std::memory_order_relaxed) != seq) return false;
     std::memcpy(out, &data_[i * env_len_], env_len_);
-    // Recheck must itself be an acquire load, not a fence-guarded relaxed
-    // one: if the writer overwrote this slot (and even finished, leaving
-    // state back at 2) during the memcpy above, only an acquire load here
-    // that actually observes that store synchronizes-with it and forces
-    // the following seq_ read to see the NEW seq -- a relaxed load could
-    // be reordered ahead of the writer's release and still read the OLD
-    // (matching) seq after the writer's new state is already visible,
-    // which is exactly the torn-read-passes-as-a-hit bug this guards.
+    // Two separate ordering jobs, both required (Boehm's seqlock
+    // requirement): this fence orders the memcpy's plain loads BEFORE the
+    // recheck below -- an acquire load only stops LATER operations moving
+    // above it, it does nothing to stop this EARLIER plain memcpy sinking
+    // below it, and a sunk memcpy could read a mix of this put and the
+    // next one even though the recheck below still sees the first put's
+    // state/seq. The fence closes that.
+    std::atomic_thread_fence(std::memory_order_acquire);
+    // The recheck's state_ load must itself be acquire, not relaxed: if
+    // the writer overwrote this slot (and even finished, leaving state
+    // back at 2) during the memcpy above, only an acquire load here that
+    // actually observes that store synchronizes-with it and forces the
+    // following seq_ read to see the NEW seq -- a relaxed load could
+    // observe the writer's new state==2 while still reading the OLD
+    // (matching) seq, which is the torn-read-passes-as-a-hit bug this
+    // half guards against.
     return state_[i].load(std::memory_order_acquire) == 2 && seq_[i].load(std::memory_order_relaxed) == seq;
   }
   size_t slots() const { return slots_; }
