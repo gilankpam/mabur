@@ -524,6 +524,32 @@ static int run_radio(const maburgs::Config& cfg) {
   // send lands in the drone's inter-AU idle. See rcf_slot.h.
   maburgs::RcfSlotter rcf_slot(
       maburgs::RcfSlotCfg{cfg.link.rcf_slot_hold_ms, 100, 2, 3, 1});
+  // Software NACK (spec 2026-10-05 fec-nack), base layer only. Core-thread
+  // owned, like the decoder it reads. nack_interval_t0 = previous sideport
+  // export, for link.nack.fill_pps.
+  mabur::NackTracker nack(cfg.link.nack);
+  uint64_t nack_interval_t0 = 0;
+  // Tail-trigger geometry (spec §3.1): the tail trigger maps fragment k of
+  // the newest frame to wire seq seq_at_max + (k - max_idx), which holds
+  // only while one sid-0 fragment == one FEC source symbol. Mirror the
+  // drone's UepEncoder layer: fragments are cut to usable = max_packet_size
+  // - Fragmenter::kHdrLen, so a full fragment (usable + kHdrLen bytes)
+  // fills the symbol's packet space exactly and no second packet can join
+  // it; a frame's short last fragment is sealed alone by the frame-end
+  // flush. If that ever stops holding, keep the gap trigger only.
+  const mabur::SwConfig nack_sw0{cfg.fec.symbol_size[0]};
+  const int nack_usable0 =
+      nack_sw0.max_packet_size() - static_cast<int>(mabur::Fragmenter::kHdrLen);
+  const bool nack_tail_ok =
+      nack_usable0 > 0 &&
+      nack_usable0 + static_cast<int>(mabur::Fragmenter::kHdrLen) ==
+          nack_sw0.max_packet_size();
+  if (cfg.link.nack.enable && !nack_tail_ok)
+    std::fprintf(stderr,
+                 "warning: link.nack tail trigger disabled: fec.symbol_size[0]=%d "
+                 "does not carry exactly one fragment per source symbol "
+                 "(gap trigger only)\n",
+                 cfg.fec.symbol_size[0]);
   // Declared ahead of the FrameStream below: ChannelCore needs it, and
   // the end-of-AU callback calls chan.note_au_end().
   maburgs::VrxController vrx(maburgs::vrx_cfg_from(cfg, start_ch));
@@ -764,7 +790,9 @@ static int run_radio(const maburgs::Config& cfg) {
            // snap-down floor.
            const int64_t adjust = static_cast<int64_t>(lat.enc_us) +
                                   static_cast<int64_t>(lat.drone_q_ms) * 1000;
-           if (adjust <= maburgs::PtsAnchor::kMaxAnchorAdjustUs &&
+           // A retransmitted fragment 0 (hdr_retx, fec-nack spec §6) arrived
+           // a NACK round trip late: never let it feed the snap-down floor.
+           if (!lat.hdr_retx && adjust <= maburgs::PtsAnchor::kMaxAnchorAdjustUs &&
                static_cast<int64_t>(lat.t_first_us) > adjust) {
              const uint64_t adj_arrival =
                  lat.t_first_us - static_cast<uint64_t>(adjust);
@@ -1180,6 +1208,44 @@ static int run_radio(const maburgs::Config& cfg) {
 #ifdef MABUR_LOSS_SIM
     if (loss_ctl.ok()) loss_ctl.poll(agg.loss_sim());
 #endif
+    // Software NACK (spec 2026-10-05 fec-nack §3): base-layer selective
+    // repeat. Direct send, mid-burst -- never the RcfSlotter (bench: slotted
+    // fill p50 44 ms, past the gap timeout). Option A: the retransmit fixes
+    // the video only; every ladder input still books the loss.
+    if (cfg.link.nack.enable) {
+      const auto sctx = vrx.session_ctx();
+      if (sctx.vtx_nonce == 0 || !frame_wire) {
+        nack.clear();
+      } else {
+        mabur::NackInputs ni;
+        ni.missing = [&] {
+          return agg.decoder().missing_sources(
+              0, static_cast<uint32_t>(cfg.link.nack.lookback));
+        };
+        ni.state = [&](uint32_t s) { return agg.decoder().source_state(0, s); };
+        ni.tail = [&]() -> std::optional<mabur::NackTailView> {
+          if (!nack_tail_ok) return std::nullopt;
+          auto tv = fstream.tail_view(0);
+          if (!tv) return std::nullopt;
+          return mabur::NackTailView{tv->count, tv->max_idx, tv->seq_at_max,
+                                     tv->last_progress_ms};
+        };
+        // The stop rule's util is the ladder's own demote input:
+        // LadderController::u_ = base pre-FEC loss / budget_base(), compared
+        // against cfg.down_util in its util-pressure block.
+        ni.util = [&] { return vrx.ctl().util(); };
+        ni.down_util = cfg.link.ladder_cfg.down_util;
+        ni.gap_timeout_ms = fstream.gap_ms(0);
+        if (auto n = nack.poll(drained_ms, ni)) {
+          mabur::rc::TagCtx ctx = sctx;
+          ctx.seq32 = n->counter;
+          maburgs::SlotFrame sf{mabur::rc::pack_nack(*n, cfg.link.key, ctx), 0,
+                                sel.selected(), false};
+          sf.offered_ms = drained_ms;
+          if (!cal_session.radio_silent(drained_ms)) send_control_frame(sf);
+        }
+      }
+    }
     // Compiled into every prod build, unlike loss_ctl above (cal_control.h).
     const auto cal_state_before_poll = cal_session.state();
     cal_ctl.poll(cal_session);
@@ -1235,6 +1301,7 @@ static int run_radio(const maburgs::Config& cfg) {
       frame_wire = fw;
       agg.decoder().reset_continuity();
       fstream.reset();
+      nack.clear();  // the new session's seqs are unrelated to the old one's
       lat_anchor.reset();  // new session's pts space is unrelated to the old one's
       // Drop any pre-reset samples too: without this, the anchor re-warms
       // (kWarmFrames) before the next flush, but the window itself still
@@ -1643,6 +1710,17 @@ static int run_radio(const maburgs::Config& cfg) {
       sin.rcf_slot = {rcf_slot.released_au(), rcf_slot.released_timeout(),
                       rcf_slot.passthru(), rcf_slot.released_probe(),
                       rcf_slot.tail_ub_ms()};
+      // link.nack: take_window() is destructive, so only on a poll that
+      // will emit (same reasoning as lat_win.flush() below).
+      if (cfg.link.nack.enable && stats->due(drained_ms)) {
+        sin.nack.enabled = true;
+        sin.nack.cum = nack.stats();
+        sin.nack.win = nack.take_window();
+        sin.nack.settle_ms = nack.settle_ms();
+        sin.nack.interval_s =
+            nack_interval_t0 ? (drained_ms - nack_interval_t0) / 1000.0 : 0.0;
+        nack_interval_t0 = drained_ms;
+      }
       // link-rtt block. floor via floor_us_from (pts_anchor.h), which owns
       // the 32-bit-seed vs 64-bit-MI-domain wrap rule.
       if (rtt_est.has_rtt()) {

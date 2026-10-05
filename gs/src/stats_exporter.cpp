@@ -254,6 +254,37 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     rs["probe"] = in.rcf_slot.probe;
     rs["tail_ub_ms"] = in.rcf_slot.tail_ub_ms;
   }
+  // Software NACK (spec 2026-10-05 fec-nack §8). Counters are cumulative;
+  // fill_pps / fill_ms / late_ms_max cover the window since the last export.
+  // fill_ms percentiles are nearest-rank (index ceil(p*n)-1).
+  if (in.nack.enabled) {
+    json& nk = link["nack"];
+    const auto& c = in.nack.cum;
+    nk["requests"] = c.requests;
+    nk["repeats"] = c.repeats;
+    nk["syms_requested"] = c.syms_requested;
+    nk["tail_requests"] = c.tail_requests;
+    nk["filled"] = c.filled;
+    nk["late_fill"] = c.late_fill;
+    nk["wasted"] = c.wasted;
+    nk["dropped_deadline"] = c.dropped_deadline;
+    nk["suppressed"] = c.suppressed;
+    nk["fill_pps"] = in.nack.interval_s > 0
+                         ? json(static_cast<double>(in.nack.win.filled) / in.nack.interval_s)
+                         : json(nullptr);
+    std::vector<uint32_t> f = in.nack.win.fill_ms;
+    std::sort(f.begin(), f.end());
+    auto pct = [&f](double p) -> json {
+      if (f.empty()) return nullptr;
+      const double rank = std::ceil(p * static_cast<double>(f.size()));
+      const size_t i = rank < 1.0 ? 0 : static_cast<size_t>(rank) - 1;
+      return f[std::min(f.size() - 1, i)];
+    };
+    nk["fill_ms"] = {{"p50", pct(0.5)}, {"p90", pct(0.9)},
+                     {"max", f.empty() ? json(nullptr) : json(f.back())}};
+    nk["settle_ms"] = in.nack.settle_ms;
+    nk["late_ms_max"] = in.nack.win.late_ms_max;
+  }
 
   // Measured-loss ladder controller snapshot; static-pin mode never ticks
   // the controller, so it emits null rather than a frozen/meaningless state.
@@ -586,6 +617,10 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     // state (0 off, 1 recording, 2 error) and error code (0..6, RecErr in
     // drone/src/vtx_recorder.h). maburtop and the player OSD read it.
     d["rec"] = {{"state", t.rec_status & 0x03}, {"err", t.rec_status >> 2}};
+    // Software NACK, drone side (spec 2026-10-05 fec-nack §8): NACKs
+    // verified, source symbols re-sent and symbols refused by the air
+    // bucket -- per Telem period (not cumulative), straight from Telem.
+    d["nack"] = {{"rx", t.nack_rx}, {"retx_syms", t.retx_syms}, {"retx_refused", t.retx_refused}};
     json& rcf = d["rcf"];
     rcf["age_ms"] = t.rcf_age_ms;
     rcf["rx_pps"] = have_telem_rates_ ? json(telem_rcf_rx_pps_) : json(nullptr);

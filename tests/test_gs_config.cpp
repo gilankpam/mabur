@@ -312,6 +312,39 @@ TEST(out_entry_missing_a_port_is_rejected) {
   std::remove(p.c_str());
 }
 
+// Software NACK (spec 2026-10-05 fec-nack section 7): [link.nack] is
+// optional and absent = off; the spike's settle_ms knob is gone (settle is
+// adaptive), and lookback must stay inside the decoder's seq horizon.
+TEST(link_nack_section_parses_and_defaults_off) {
+  auto off = maburgs::load_config(write_tmp(""));
+  CHECK(!off.link.nack.enable && off.link.nack.lookback == 256 &&
+        off.link.nack.repeat_ms == 16 && off.link.nack.max_tries == 2);
+  auto on = maburgs::load_config(write_tmp(
+      "[link.nack]\nenable = true\nlookback = 128\nrepeat_ms = 20\nmax_tries = 1\n"));
+  CHECK(on.link.nack.enable && on.link.nack.lookback == 128 &&
+        on.link.nack.repeat_ms == 20 && on.link.nack.max_tries == 1);
+  bool threw = false;
+  try { maburgs::load_config(write_tmp("[link.nack]\nsettle_ms = 5\n")); } catch (const std::exception&) { threw = true; }
+  CHECK(threw);   // the spike's knob is gone; settle is adaptive
+  threw = false;
+  try { maburgs::load_config(write_tmp("[link.nack]\nlookback = 600\n")); } catch (const std::exception&) { threw = true; }
+  CHECK(threw);   // must stay below fec.seq_horizon (512 default)
+  // ...and the bound follows fec.seq_horizon rather than a fixed number.
+  auto wide = maburgs::load_config(write_tmp(
+      "[fec]\nseq_horizon = 1024\n[link.nack]\nlookback = 600\n"));
+  CHECK(wide.link.nack.lookback == 600);
+}
+
+TEST(nack_disabled_sends_nothing) {
+  // Config off => the exporter never sees a block and the tracker is never
+  // constructed enabled; pinned here at the config/exporter seam, and in
+  // test_nack_tracker's disabled_tracker_is_inert for the tracker itself.
+  auto off = maburgs::load_config(write_tmp(""));
+  CHECK(!off.link.nack.enable);
+  auto bundle = maburgs::load_config(std::string(MABUR_GS_BUNDLE_DIR) + "/maburgs.default.toml");
+  CHECK(!bundle.link.nack.enable);
+}
+
 TEST(stale_video_out_key_throws) {
   bool threw = false;
   try { maburgs::load_config(write_tmp("[video_out]\nport = 5600\n")); }

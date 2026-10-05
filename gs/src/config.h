@@ -164,7 +164,8 @@ struct LinkCfg {
   // delay on the ladder's util input: 192 symbols is ~60 ms at rung 5,
   // ~165 ms at rung 0, both under the feedback period + probation.
   int arrival_guard_syms = 192;
-  // SPIKE 2026-10-05 (fec-nack): [link.nack] selective-repeat rig.
+  // Software NACK, base layer (spec 2026-10-05 fec-nack §7). Optional
+  // [link.nack]: absent = off. lookback < fec.seq_horizon (checked).
   mabur::NackCfg nack;
   // Static-link mode: when static_mcs >= 0 the adaptive controller is
   // bypassed entirely and every RCF commands exactly this MCS/FEC overhead

@@ -1253,4 +1253,48 @@ TEST(relay_card_exports_kind_relay_block_and_null_snr) {
   CHECK(!j["cards"][0]["classes"]["s0"]["snr"].is_null());   // when its has_ema is true
 }
 
+// fec-nack (spec 2026-10-05 section 8): link.nack exports the tracker's
+// cumulative counters + this window's fill latency (nearest-rank p50/p90),
+// only while [link.nack] is enabled; drone.nack carries Telem's counters.
+TEST(link_nack_block_and_drone_nack_counters) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  in.nack.enabled = true;
+  in.nack.cum.requests = 5; in.nack.cum.filled = 7; in.nack.cum.suppressed = 1;
+  in.nack.win.fill_ms = {40, 10, 30, 20};   // unsorted on purpose
+  in.nack.win.filled = 4; in.nack.win.late_ms_max = 9;
+  in.nack.settle_ms = 11; in.nack.interval_s = 2.0;
+  mabur::rc::Telem t;
+  t.nack_rx = 3; t.retx_syms = 44; t.retx_refused = 1;
+  in.telem = t; in.telem_rx_ms = 900;
+  ex.poll(1000, in);
+  json j = cap.last();
+  CHECK(j["link"]["nack"]["requests"] == 5);
+  CHECK(j["link"]["nack"]["filled"] == 7);
+  CHECK(j["link"]["nack"]["suppressed"] == 1);
+  CHECK(j["link"]["nack"]["repeats"] == 0 && j["link"]["nack"]["syms_requested"] == 0 &&
+        j["link"]["nack"]["tail_requests"] == 0 && j["link"]["nack"]["late_fill"] == 0 &&
+        j["link"]["nack"]["wasted"] == 0 && j["link"]["nack"]["dropped_deadline"] == 0);
+  CHECK(j["link"]["nack"]["fill_pps"] == 2.0);
+  CHECK(j["link"]["nack"]["fill_ms"]["p50"] == 20 && j["link"]["nack"]["fill_ms"]["p90"] == 40 &&
+        j["link"]["nack"]["fill_ms"]["max"] == 40);
+  CHECK(j["link"]["nack"]["settle_ms"] == 11 && j["link"]["nack"]["late_ms_max"] == 9);
+  CHECK(j["drone"]["nack"]["rx"] == 3 && j["drone"]["nack"]["retx_syms"] == 44 &&
+        j["drone"]["nack"]["retx_refused"] == 1);
+
+  // Empty window / first export: null percentiles and rate, not zeros.
+  in.nack.win = {};
+  in.nack.interval_s = 0.0;
+  ex.poll(1600, in);
+  j = cap.last();
+  CHECK(j["link"]["nack"]["fill_pps"].is_null());
+  CHECK(j["link"]["nack"]["fill_ms"]["p50"].is_null() && j["link"]["nack"]["fill_ms"]["p90"].is_null() &&
+        j["link"]["nack"]["fill_ms"]["max"].is_null());
+
+  in.nack.enabled = false;
+  ex.poll(2200, in);
+  CHECK(!cap.last()["link"].contains("nack"));
+}
+
 MTEST_MAIN

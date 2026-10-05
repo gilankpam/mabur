@@ -73,6 +73,11 @@ class FrameStream {
   void set_gap_timeout(int sid, uint64_t ms) {
     if (sid >= 0 && sid <= 1) gap_ms_[sid] = ms;
   }
+  // The gap timeout in force for `sid` (out-of-range sids read sid 0's).
+  // Also the NACK tracker's per-symbol deadline (main.cpp).
+  uint64_t gap_ms(uint8_t sid) const {
+    return gap_ms_[sid <= 1 ? sid : 0];
+  }
 
   uint64_t frames_clean() const { return clean_; }
   uint64_t frames_truncated() const { return truncated_; }
@@ -119,9 +124,6 @@ class FrameStream {
   void finish(Slot& s, bool complete);
   uint64_t unwrap_id(uint16_t id, uint8_t flags, bool* rebased);
 
-  uint64_t gap_ms(uint8_t sid) const {
-    return gap_ms_[sid <= 1 ? sid : 0];
-  }
   uint64_t gap_ms_max() const { return std::max(gap_ms_[0], gap_ms_[1]); }
 
   FrameStreamCfg cfg_;
