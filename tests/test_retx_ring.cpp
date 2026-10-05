@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <thread>
 #include <vector>
 #include "mabur/retx_ring.h"
@@ -26,21 +27,53 @@ TEST(put_get_hit_miss_and_overwrite) {
 }
 
 TEST(concurrent_reader_never_sees_a_torn_envelope) {
-  RetxRing r(64, 64);
+  // seq 0..63 only hits during the writer's first ~64 puts (a few us), so a
+  // reader fixed on that range goes from "racing the writer" to "100% miss"
+  // the instant the writer laps the ring -- CHECK(hits > 0) on that alone is
+  // a timing bet, not a concurrency test. Instead the writer publishes
+  // `latest`, and the reader keeps chasing the two highest-contention
+  // slots: the one just published (racing put()'s still-in-flight store
+  // sequence) and the one about to fall off the back of the ring (racing
+  // the writer's NEXT overwrite of that same slot). Each envelope's bytes
+  // are seq-derived, so a torn copy -- part of an old put, part of a new
+  // one -- is caught by recomputing the expected pattern from the seq the
+  // reader asked for, not by comparing bytes to each other.
+  constexpr size_t kSlots = 64, kLen = 64;
+  RetxRing r(kSlots, kLen);
   std::atomic<bool> stop{false};
+  std::atomic<uint32_t> latest{0};
   std::thread writer([&] {
-    std::vector<uint8_t> env(64);
-    for (uint32_t s = 0; !stop.load(); ++s) { std::fill(env.begin(), env.end(), static_cast<uint8_t>(s)); r.put(s, env.data(), env.size()); }
+    std::vector<uint8_t> env(kLen);
+    for (uint32_t seq = 0; !stop.load(std::memory_order_relaxed); ++seq) {
+      for (size_t k = 0; k < kLen; ++k) env[k] = static_cast<uint8_t>((seq + k) & 0xFFu);
+      r.put(seq, env.data(), env.size());
+      latest.store(seq, std::memory_order_release);
+    }
   });
-  uint8_t out[64];
+
+  uint8_t out[kLen];
   size_t hits = 0;
-  for (int i = 0; i < 200000; ++i) {
-    const uint32_t want = static_cast<uint32_t>(i % 64);
-    if (!r.get(want, out)) continue;
-    ++hits;
-    for (int k = 1; k < 64; ++k) REQUIRE(out[k] == out[0]);   // a torn read would mix two seqs
+  constexpr size_t kTargetHits = 2000;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  bool timed_out = false;
+  while (hits < kTargetHits) {
+    if (std::chrono::steady_clock::now() >= deadline) { timed_out = true; break; }
+    const uint32_t cur = latest.load(std::memory_order_acquire);
+    const uint32_t oldest_live = cur >= static_cast<uint32_t>(kSlots - 1) ? cur - static_cast<uint32_t>(kSlots - 1) : 0;
+    const uint32_t candidates[2] = {cur, oldest_live};
+    for (uint32_t want : candidates) {
+      if (!r.get(want, out)) continue;
+      ++hits;
+      for (size_t k = 0; k < kLen; ++k)
+        REQUIRE(out[k] == static_cast<uint8_t>((want + k) & 0xFFu));  // a torn read fails this
+    }
   }
-  stop = true; writer.join();
-  CHECK(hits > 0);
+  stop.store(true, std::memory_order_relaxed);
+  writer.join();
+  // Under a loaded box the writer thread may barely get scheduled before
+  // the deadline -- stay lenient there (some progress happened) rather
+  // than spuriously fail; off a loaded box this always clears the floor.
+  if (timed_out) CHECK(hits > 0);
+  else CHECK(hits >= kTargetHits);
 }
 MTEST_MAIN

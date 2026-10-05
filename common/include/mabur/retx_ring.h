@@ -26,6 +26,11 @@ class RetxRing {
     const double bytes = bitrate_max_kbps * 1000.0 / 8.0 * base_share * (ring_ms / 1000.0);
     return pow2_at_least(static_cast<size_t>(bytes / symbol_size) + 1);
   }
+  // Hot path: one memcpy of the envelope body (the shared bytes a seqlock
+  // deliberately data-races over -- formally UB, same accepted tradeoff as
+  // Linux's seqlock_t / folly's SeqLock, made safe by the state recheck in
+  // get() below) plus three atomic stores (state_[i]=1, seq_[i]=seq,
+  // state_[i]=2). No allocation, no lock.
   void put(uint32_t seq, const uint8_t* env, size_t len) {
     if (len != env_len_) return;
     const size_t i = seq & (slots_ - 1);
@@ -39,8 +44,15 @@ class RetxRing {
     const size_t i = seq & (slots_ - 1);
     if (state_[i].load(std::memory_order_acquire) != 2 || seq_[i].load(std::memory_order_relaxed) != seq) return false;
     std::memcpy(out, &data_[i * env_len_], env_len_);
-    std::atomic_thread_fence(std::memory_order_acquire);
-    return state_[i].load(std::memory_order_relaxed) == 2 && seq_[i].load(std::memory_order_relaxed) == seq;
+    // Recheck must itself be an acquire load, not a fence-guarded relaxed
+    // one: if the writer overwrote this slot (and even finished, leaving
+    // state back at 2) during the memcpy above, only an acquire load here
+    // that actually observes that store synchronizes-with it and forces
+    // the following seq_ read to see the NEW seq -- a relaxed load could
+    // be reordered ahead of the writer's release and still read the OLD
+    // (matching) seq after the writer's new state is already visible,
+    // which is exactly the torn-read-passes-as-a-hit bug this guards.
+    return state_[i].load(std::memory_order_acquire) == 2 && seq_[i].load(std::memory_order_relaxed) == seq;
   }
   size_t slots() const { return slots_; }
   size_t env_len() const { return env_len_; }
