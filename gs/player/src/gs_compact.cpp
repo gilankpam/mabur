@@ -31,9 +31,9 @@ constexpr GsBarField kOrder[] = {
     GsBarField::kCh,   GsBarField::kMcs, GsBarField::kAir,     GsBarField::kRssi,
     GsBarField::kSnr,  GsBarField::kTemp, GsBarField::kRec,    GsBarField::kBitrate,
     GsBarField::kRes,  GsBarField::kFps, GsBarField::kJit,     GsBarField::kLat,
-    GsBarField::kLoss,
+    GsBarField::kLoss, GsBarField::kRtx,
 };
-constexpr int kRow[] = {0, 0, 0, 0, 0, 0, GsCompactBar::kCorner, 1, 1, 1, 1, 1, 1};
+constexpr int kRow[] = {0, 0, 0, 0, 0, 0, GsCompactBar::kCorner, 1, 1, 1, 1, 1, 1, 1};
 static_assert(sizeof(kOrder) / sizeof(kOrder[0]) == (size_t)GsBarField::kCount,
               "every field must appear exactly once in the draw order");
 static_assert(sizeof(kRow) / sizeof(kRow[0]) == (size_t)GsBarField::kCount,
@@ -147,6 +147,11 @@ std::string GsCompactBar::worst_case(GsBarField id, int n_cards,
     case GsBarField::kJit:     return "jit:999.9";
     case GsBarField::kLat:     return "lat:999/999";
     case GsBarField::kLoss:    return "loss:100.0/100.0";
+    // Task 9 (software NACK): rounded retransmit fills/s, rendered empty
+    // below 0.5/null/absent -- "rtx:999" (the state_of_ clamp's own upper
+    // bound) is the widest live form, strictly wider than the empty string
+    // it most often is.
+    case GsBarField::kRtx:     return "rtx:999";
     // Sized on rec_worst(target) (gs_layer.h): the widest REC text this
     // dvr.target can produce -- "● REC FAULT" for "gs", as it always was.
     // Armed renders nothing and leaves the box blank -- the same
@@ -429,6 +434,17 @@ GsCompactBar::FieldState GsCompactBar::state_of_(const GsSnapshot& snap,
       st.text += snap.post_loss_pct
                      ? fmt_one_dp(std::clamp(*snap.post_loss_pct, 0.0, 100.0))
                      : "--";
+      break;
+    case GsBarField::kRtx:
+      // link.nack.fill_pps (Task 7): retransmit fills/s, rounded. Blank --
+      // not "rtx:0" -- below 0.5, at exactly 0, or when the whole block is
+      // absent/null: none of those are something the pilot can act on, and
+      // a permanently visible "rtx:0" would read as a feature that is
+      // always idle rather than one that is simply quiet right now.
+      st.rgb = link;
+      st.text = (snap.nack_fill_pps && *snap.nack_fill_pps >= 0.5)
+                    ? "rtx:" + fmt_int(std::clamp(*snap.nack_fill_pps, 0.0, 999.0))
+                    : "";
       break;
     case GsBarField::kRec: {
       // Byte-for-byte the essential overlay's kRec, deliberately: one

@@ -67,8 +67,14 @@ std::string row_of(const GsCompactBar& bar, const GsSnapshot& snap, bool stale,
   for (int i = 0; i < (int)GsBarField::kCount; ++i) {
     const GsBarField id = (GsBarField)i;
     if (GsCompactBar::row_of(id) != row) continue;
+    // kRtx is the first row-joining field that can render empty text (blank
+    // below 0.5 fills/s, or absent) -- skip it entirely rather than leaving
+    // a stray separator, same as the pilot sees on the glass (its box still
+    // reserves worst-case width, but no glyphs land in it).
+    const std::string text = bar.debug_field_text(snap, stale, ps, id);
+    if (text.empty()) continue;
     if (!out.empty()) out += " ";
-    out += bar.debug_field_text(snap, stale, ps, id);
+    out += text;
   }
   return out;
 }
@@ -123,6 +129,30 @@ TEST(compact_mcs_cell_shows_width_and_dashes_without_it) {
   s.bw.reset();
   CHECK(row_of(bar, s, false, player_nominal(), 0).find("mcs:3/--") != std::string::npos);
   CHECK(GsCompactBar::worst_case(GsBarField::kMcs, 2) == "mcs:9/40");
+}
+
+// link.nack.fill_pps (Task 7): retransmit fills/s, rounded. Blank -- not
+// "rtx:0" -- below 0.5, at exactly 0, and when the sideport never sent the
+// block at all: "no NACK activity" and "no NACK support" must look
+// identical, since neither is something the pilot can act on.
+TEST(compact_rtx_cell_shows_fills_per_second_and_blank_at_zero) {
+  GsFont f;
+  std::string err;
+  REQUIRE(f.load(GSFONT_SCALED, &err));
+  GsCompactBar bar(f);
+  REQUIRE(bar.layout(1920, 1080, &err));
+  GsSnapshot s = nominal();
+  const GsPlayerState ps = player_nominal();
+  s.nack_fill_pps = 3.4;
+  CHECK(bar.debug_field_text(s, false, ps, GsBarField::kRtx) == "rtx:3");
+  CHECK(row_of(bar, s, false, ps, 1).find("rtx:3") != std::string::npos);
+  s.nack_fill_pps = 0.0;
+  CHECK(bar.debug_field_text(s, false, ps, GsBarField::kRtx) == "");
+  CHECK(row_of(bar, s, false, ps, 1).find("rtx:") == std::string::npos);
+  s.nack_fill_pps.reset();
+  CHECK(bar.debug_field_text(s, false, ps, GsBarField::kRtx) == "");
+  CHECK(row_of(bar, s, false, ps, 1).find("rtx:") == std::string::npos);
+  CHECK(GsCompactBar::worst_case(GsBarField::kRtx, 2) == "rtx:999");
 }
 
 // radio.scan enabled on the GS: the channel carries an "(a)" suffix so the
@@ -296,10 +326,13 @@ TEST(the_recording_indicator_never_dims_on_a_stale_link) {
   ps.rec.kind = RecState::Kind::kRecording;
   std::vector<DirtyRect> rects;
   bar.update(s, false, ps, c.s, &rects);
-  // Fresh -> stale redraws only the seven LINK items (ch, mcs, air, rssi,
-  // snr, temp, loss); REC is not one of them.
+  // Fresh -> stale redraws only the eight LINK items (ch, mcs, air, rssi,
+  // snr, temp, loss, rtx); REC is not one of them. rtx dims like its
+  // neighbours even though nominal() leaves it blank: the colour still
+  // moves, so it still redraws, same as the other six would with absent
+  // (dash-rendered) values.
   rects.clear();
-  CHECK(bar.update(s, true, ps, c.s, &rects) == 7);
+  CHECK(bar.update(s, true, ps, c.s, &rects) == 8);
   CHECK(bar.debug_field_text(s, true, ps, GsBarField::kRec) ==
         bar.debug_field_text(s, false, ps, GsBarField::kRec));
 }
@@ -508,10 +541,11 @@ TEST(stale_dims_the_link_items_and_leaves_the_player_ones_lit) {
   // Text is unchanged by staleness -- the value is HELD, only dimmed.
   CHECK(line_of(bar, s, true, ps) == line_of(bar, s, false, ps));
   // Every field still redraws on the transition (the colour moved), and
-  // exactly the seven link items are the ones that changed colour.
+  // exactly the eight link items (ch, mcs, air, rssi, snr, temp, loss, rtx)
+  // are the ones that changed colour.
   rects.clear();
   const int drawn = bar.update(s, true, ps, c.s, &rects);
-  CHECK(drawn == 7);
+  CHECK(drawn == 8);
 }
 
 // --- geometry ---------------------------------------------------------

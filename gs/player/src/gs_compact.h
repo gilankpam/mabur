@@ -108,6 +108,7 @@ enum class GsBarField {
   kJit,
   kLat,
   kLoss,
+  kRtx,
   kRec,
   kCount,
 };

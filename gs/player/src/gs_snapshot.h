@@ -108,6 +108,12 @@ struct GsSnapshot {
   // every absolute latency number.
   std::optional<double> rtt_ms;         // link.rtt.ms
   std::optional<int64_t> pts_off_us;    // link.rtt.pts_off_us
+  // link.nack.fill_pps (Task 7, software NACK): retransmit fills/s over the
+  // export interval. Empty when the whole link.nack block is absent (NACK
+  // disabled, or an older maburgs) OR the key is JSON null (no samples in
+  // the interval) -- neither case is zero fills/s, so neither must render
+  // as one; the compact bar's rtx cell goes blank for both.
+  std::optional<double> nack_fill_pps;
   std::vector<GsCard> cards;            // in wire order
 };
 

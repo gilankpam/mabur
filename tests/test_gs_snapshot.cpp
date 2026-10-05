@@ -26,6 +26,7 @@ static const char* kLive = R"({
     "rtt": {"ms": 12.4, "min_ms": 8.0, "n": 42, "pts_off_us": -123456789,
             "floor_ms": 3.2},
     "ctl": {"rung": {"idx": 3, "mcs": 5, "bw": 40, "ov_base": 0.25}, "pre_fec_loss": 0.021},
+    "nack": {"fill_pps": 3.4},
     "video": {"fps": 60.0, "jitter_ms": 3.1, "mbps": 24.6}
   },
   "drone": null,
@@ -85,6 +86,27 @@ TEST(parses_a_live_datagram) {
   CHECK(*s.rtt_ms > 12.3 && *s.rtt_ms < 12.5);
   REQUIRE(s.pts_off_us.has_value());
   CHECK(*s.pts_off_us == -123456789);
+  // link.nack.fill_pps (Task 7): retransmit fills/s, the rtx cell's input.
+  REQUIRE(s.nack_fill_pps.has_value());
+  CHECK(*s.nack_fill_pps > 3.3 && *s.nack_fill_pps < 3.5);
+}
+
+// NACK disabled, or an older maburgs that never shipped the block: the
+// whole link.nack object is absent, not present-with-nulls -- must stay an
+// empty optional, never read as zero fills/s.
+TEST(nack_fill_pps_absent_when_block_is_missing) {
+  const char* j =
+      R"({"v":1,"cards":[],"link":{"channel":149,"air_pct":61.5}})";
+  GsSnapshot s;
+  REQUIRE(parse(j, &s));
+  CHECK(!s.nack_fill_pps.has_value());
+  // Block present but the key is JSON null (no samples this interval):
+  // num()'s is_number() guard rejects it, so it must stay empty too, never
+  // fall through to 0.0.
+  const char* j2 =
+      R"({"v":1,"cards":[],"link":{"channel":149,"nack":{"fill_pps":null}}})";
+  REQUIRE(parse(j2, &s));
+  CHECK(!s.nack_fill_pps.has_value());
 }
 
 // link.rtt is null until the estimator's first sample, and pts_off_us stays
