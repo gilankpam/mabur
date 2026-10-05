@@ -41,6 +41,10 @@ TEST(scan_log_records_are_byte_exact) {
   maburgs::ScoutDwell d3; d3.survey.def.primary = 149; d3.survey.observe_ms = 250; d3.survey.valid_igi = false;
   d3.busy_valid = true; d3.busy_pct = 78.4;
   log.dwell(1700, 1, d3);
+  maburgs::ScoutDwell rd; rd.survey.def.primary = 165; rd.survey.observe_ms = 20; rd.survey.valid_fa = true;
+  rd.survey.fa_ofdm = 9; rd.survey.frames = 3; rd.in_session = true;
+  rd.busy_valid = true; rd.busy_pct = 70.0; rd.rx_valid = true; rd.rx_pct = 10.0;
+  log.dwell(1800, 1, rd);
   std::vector<maburgs::RankEntry> all = {{136, 5, 3, true, -95, true, 0.0}, {149, 52, 3, false, 0, false, 0},
                                          {161, 812, 2, true, -93}};
   log.pick(2000, 149, 3, all, 3);
@@ -64,12 +68,13 @@ TEST(scan_log_records_are_byte_exact) {
   log.hop(h2);
   w.flush_now();
   std::string text = read_all(log.path());
-  CHECK(text.rfind("scanlog 5 channels=40,64,112,144 mode=auto dwell_ms=250\n", 0) == 0);
+  CHECK(text.rfind("scanlog 6 channels=40,64,112,144 mode=auto dwell_ms=250\n", 0) == 0);
   CHECK(text.find("\nC 1000 1 RTL8822E jaguar3 2x2 1f 5080-6165 1 1 1 1 0\n") != std::string::npos);
   CHECK(text.find("\nC 1001 0 ? ? 0x0 0 0-0 0 0 0 0 0\n") != std::string::npos);
-  CHECK(text.find("\nD 1300 1 161 2 250 812 790 3 2 42 -93 10 0 0 0 0 20 -\n") != std::string::npos);
-  CHECK(text.find("\nD 1600 1 149 0 250 0 0 0 0 - nan 0 0 0 0 0 40 -\n") != std::string::npos);
-  CHECK(text.find("\nD 1700 1 149 0 250 0 0 0 0 - nan 0 0 0 0 0 20 78.4\n") != std::string::npos);
+  CHECK(text.find("\nD 1300 1 161 2 250 812 790 3 2 42 -93 10 0 0 0 0 20 - -\n") != std::string::npos);
+  CHECK(text.find("\nD 1600 1 149 0 250 0 0 0 0 - nan 0 0 0 0 0 40 - -\n") != std::string::npos);
+  CHECK(text.find("\nD 1700 1 149 0 250 0 0 0 0 - nan 0 0 0 0 0 20 78.4 -\n") != std::string::npos);
+  CHECK(text.find("\nD 1800 1 165 0 20 0 9 0 3 - nan 0 1 0 0 0 20 70.0 10.0\n") != std::string::npos);
   CHECK(text.find("\nK 2000 149 3 136:5:-95:0.0 149:52:nan:- pair=149+153\n") != std::string::npos);
   CHECK(text.find("\nK 2001 none 0 pair=-\n") != std::string::npos);
   CHECK(text.find("\nM 2100 all 136 149 commit\n") != std::string::npos);

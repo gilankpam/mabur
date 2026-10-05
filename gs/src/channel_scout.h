@@ -41,6 +41,8 @@ struct ScoutDwell {
   int64_t to_us = 0, read_us = 0, back_us = 0;
   bool busy_valid = false;
   double busy_pct = 0;  // NHM busy % over the observe span (scanlog 4 D)
+  bool rx_valid = false;
+  double rx_pct = 0;  // relay sweep: rx % of the observe (scanlog 6 D)
 };
 
 // The GS's long-lived search + measure scheduler. Owns the spare card

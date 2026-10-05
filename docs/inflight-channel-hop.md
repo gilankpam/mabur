@@ -193,6 +193,17 @@ kEvRaised/kEvBlocked/kEvStarved`):
 | blocked | the MINIMUM, across cards with a busy reading, of that card's NHM busy % minus its own reconstructed airtime % >= `blocked_pct` | `busy_dbm` (−83), `blocked_pct` (50) |
 | starved (0x40) | at least one card valid this window and **zero** own frames on every valid card (`VerdictLinkIn::starved`, set in `main.cpp`'s per-card loop), **or** the window's AU count (`VerdictLinkIn::au_count`, the `au_seq` delta) < `starved_frac` × its trailing mean, when that mean is >= 2 AUs/window | `starved_frac` (0.25; 0 = zero-frames rule only) |
 
+**A CPE510 relay card's inputs (protocol v4, 2026-10-05,
+`docs/cpe510-relay.md` "Interference + hop on a relay"):** `cca` is always
+0 (ath9k has no CCA-event count), so `raised` on a relay reads off `fa`
+alone — OFDM/HT PHY-error count delta (`RemoteCard::read_energy_scout()`)
+— the same key, `fa_pps`. `blocked` reads off the relay's `SURVEY` stream
+instead of an NHM histogram: `busy_valid`/`nhm_busy_pct` come from a
+`SURVEY` delta (same `gen`, span >= 100 ms) as `100·Δbusy/Δactive`, and
+`own_air_pct` is `100·Δrx/Δactive` — on the op channel `rx` reads as our
+own video, so it plays `own_air_pct`'s usual role of being subtracted back
+out. No separate key: `blocked_pct` is shared with the USB NHM path.
+
 **`recovered_min` and `starved` (2026-09-26).** Two holes in `impaired`
 found on the long-frame jam bench run. (1) On a clean channel the
 recovered term's trailing mean sits near 0.2/window, so 1–5 recovered
@@ -415,9 +426,37 @@ whenever hop-free-and-triggered). Two cards are unaffected either way,
 since the periodic scout thread already keeps the ranker warm before any
 burst runs.
 
+**Which card bursts** (`pick_burst_card()`, `gs/src/scout_pick.h`, extended
+2026-10-05 for the CPE510 relay, `docs/cpe510-relay.md`), first match wins:
+
+1. scout-capable, not TX (USB spare — the link card stays on air)
+2. sweep-capable, not TX (relay spare — a v4 `SCAN`; the USB TX card keeps the link)
+3. scout-capable TX (one-card USB GS's existing acceptance)
+4. sweep-capable TX (**relay-only GS**: no other card exists)
+5. none → skip (`-1`)
+
+A sweep-capable pick (2/4 above) runs the relay's async `SCAN` instead of
+`InflightScout::burst()`: `ChannelCore` sends one `SCAN` for the dwell set
+minus the op channel, polls for the `SCAN_RESULT` on later ticks
+(`poll_sweep_()`), and only then feeds the entries into the ranker — the
+burst call itself returns immediately rather than blocking the tick for
+the sweep's ~280 ms. Each entry becomes one `HopVisit` with `src =
+VisitSrc::Relay` (`gs/src/relay_sweep_map.h`); `HopRanker::ranking()` uses
+only the **newest visit's source kind**, so a USB dwell set (5 ms,
+CCA-event counts) and a relay sweep set (20 ms, survey counts) are never
+averaged together. No result within the sweep timeout
+(`max(1000, passes·n·(observe_ms+40)+300)` ms, derived from the request;
+counted in sideport `hop.sweep_timeouts`) drops the burst
+(`sweep_timeout`); while a sweep is pending, `ChannelCore` holds
+`ht.verdict.trigger` false so the controller cannot enter `hold_exhausted`
+before the result (or the timeout) lands.
+
 The burst is **rate-limited to at most one per `hop.dwell_period_ms`**
-(333 ms default, `gs/src/main.cpp`'s `last_burst_ms`/`burst_due`) — reusing
-the scout thread's own duty-cycle knob rather than adding a new key.
+(333 ms, USB) **or `hop.relay_burst_period_ms`** (1000 ms default, when the
+picked card is a relay — a ~280 ms sweep every 333 ms in a sustained `Hold`
+would leave the relay deaf ~85 % of the time; `gs/src/channel_core.cpp`'s
+`last_burst_ms_`/`hop_burst_due()`) — reusing the scout thread's own
+duty-cycle knob rather than adding a new key for the USB case.
 Without this, a sustained `Hold` (every candidate backed off, interference
 persisting) re-enters `idle_tick` on every ~10 ms control tick with the
 trigger still latched true, and nothing else paces it: `cooldown_ms` only
@@ -876,10 +915,13 @@ config.
 locked by `tests/test_scan_log.cpp`; bumped from `scanlog 3` by the NHM
 airtime work, 2026-09-25 — see `docs/data-provenance.md` for the break).
 The marker has since moved on to `scanlog 5` (2026-10-03, the channel set
-replacing home + candidates — §7 above and `docs/channel-select.md`);
-every record kind this section documents is unchanged by that bump except
-`M` (loses the `split_home`/`reunite` reasons; gains `link_found`
-2026-10-04) and `H` (gains `relocate`, below).
+replacing home + candidates — §7 above and `docs/channel-select.md`), then
+`scanlog 6` (2026-10-05, the CPE510 relay's interference sweep/hop,
+`docs/cpe510-relay.md`); every record kind this section documents is
+unchanged by those bumps except `M` (loses the `split_home`/`reunite`
+reasons; gains `link_found` 2026-10-04), `H` (gains `relocate`, below) and
+`D` (gains a trailing `<rx|->` — a relay sweep entry's rx % of the
+observe, `-` for a USB dwell or an invalid relay reading; `scanlog 6`).
 The `A` (1 Hz in-flight energy) record and `radio.scan.energy_period_ms`
 are **gone** — the verdict engine's window reads replace them, feeding
 `cards[i].energy` on the sideport continuously in-session instead of once
@@ -947,7 +989,11 @@ H <t> <kind> <epoch> <target> <score> <elapsed_ms>            # a hop event
   (`-` when the card has no NHM or the dwell's busy read was invalid);
   format and the `K` pick line's matching `<busy|->` addition are in
   `docs/channel-select.md`, since both records are shared with the
-  boot-time scan.
+  boot-time scan. Since `scanlog 6` (2026-10-05) a further trailing
+  `<rx|->` carries a relay sweep entry's rx % of the observe (`-` for a
+  USB dwell, which has no rx reading, or an invalid relay reading);
+  `sweep_dwell()` (`gs/src/relay_sweep_map.h`) is what builds one of these
+  from a `SCAN_RESULT` entry — see `docs/cpe510-relay.md`.
 
 Full boot-time record formats (`C`/`K`/`M`) are unchanged and still
 documented in `docs/channel-select.md`.
@@ -1133,12 +1179,11 @@ observe-only flights per the spec's open items.
 
 Found on the 2026-09-15 bench (the handover page has the traces):
 
-- **Fixed 2026-10-02: the freshness burst now picks by `can_scout`.**
-  `burst_card` is `scout_pick.h`'s `pick_burst_card()` — a scout-capable
-  non-TX card, else the scout-capable TX card (the one-card GS's existing
-  acceptance, since the burst only runs once the verdict has fired), else
-  skipped (`-1`) when nothing can scout — so a CPE510 relay, which has no
-  FA/CCA/NHM reads and an async `TUNE`, never bursts.
+- ~~A CPE510 relay never bursts~~ — fixed 2026-10-02 for `can_scout` cards,
+  then fixed for the relay itself 2026-10-05: `pick_burst_card()` is now a
+  5-way order (scout non-TX, sweep non-TX, scout TX, sweep TX, none) and a
+  relay-only GS bursts via an async `SCAN` ("Which card bursts" in §3,
+  `docs/cpe510-relay.md`).
 
 - **A withdrawn two-card order strands the drone.** The drone retunes on
   the first RCF carrying the order; if the GS withdraws (no video on the

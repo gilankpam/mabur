@@ -558,6 +558,16 @@ TEST(hop_parses_and_validates) {
   catch (const std::runtime_error& e) { threw = std::string(e.what()).find("hop.verdict.bogus") != std::string::npos; }
   CHECK(threw);
 }
+TEST(hop_relay_burst_period_ms_default_and_range) {
+  CHECK(maburgs::load_config(write_tmp("")).hop.relay_burst_period_ms == 1000);
+  CHECK(maburgs::load_config(write_tmp("[hop]\nrelay_burst_period_ms = 500\n")).hop.relay_burst_period_ms == 500);
+  CHECK(what_of([] { maburgs::load_config(write_tmp("[hop]\nrelay_burst_period_ms = 50\n")); })
+            .find("relay_burst_period_ms") != std::string::npos);
+  // min 500: under ~450 ms a burst can re-fire on the tick the trigger
+  // returns after a result and starve the controller (final review item 5)
+  CHECK(what_of([] { maburgs::load_config(write_tmp("[hop]\nrelay_burst_period_ms = 400\n")); })
+            .find("relay_burst_period_ms") != std::string::npos);
+}
 TEST(radio_scan_energy_period_ms_is_gone) {
   bool threw = false;
   try { maburgs::load_config(write_tmp("[radio.scan]\nenergy_period_ms = 1000\n")); }

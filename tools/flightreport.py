@@ -1140,6 +1140,9 @@ def load_scanlog(path):
     word, and it costs nothing to keep it robust against a future kind that
     isn't.
 
+    scanlog 6 (2026-10-05 cpe-relay-hop): D gains a trailing rx % (relay
+    sweep entries; '-' for USB dwells); older D lines read rx None.
+
     Returns {"version": int, "V": [...], "H": [...], "D": [...], "M": [...]}.
     Silent on lines that don't parse (older/newer record shapes) rather
     than aborting the report -- CLAUDE.md: recordings outlive the code that
@@ -1212,6 +1215,7 @@ def load_scanlog(path):
                         "back_us": int(toks[16]),
                         "bw": int(toks[17]) if len(toks) >= 18 else 20,
                         "busy": (None if toks[18] == "-" else float(toks[18])) if len(toks) >= 19 else None,
+                        "rx": (None if toks[19] == "-" else float(toks[19])) if len(toks) >= 20 else None,
                     })
                 elif tag == "M" and len(toks) >= 6:
                     card = None if toks[2] == "all" else int(toks[2])

@@ -230,12 +230,15 @@ static int run_radio(const maburgs::Config& cfg) {
           std::this_thread::sleep_for(std::chrono::milliseconds(ms));
         });
     libusb_exit(scan_ctx);
-    if (scanned.empty()) {
+    if (scanned.empty() && cfg.radio.relays.empty()) {
       // Nothing to receive on. Exit rather than run blind: S96maburgs
       // respawns at 2 s, which is the retry a late-appearing card needs.
-      std::fprintf(stderr, "error: no supported radio found on USB\n");
+      std::fprintf(stderr, "error: no supported radio found on USB and no radio.relays\n");
       return 1;
     }
+    if (scanned.empty())
+      std::fprintf(stderr, "cards: no USB radio; running relay-only (%zu relay%s)\n",
+                   cfg.radio.relays.size(), cfg.radio.relays.size() == 1 ? "" : "s");
     for (size_t i = 0; i < scanned.size(); ++i)
       std::fprintf(stderr, "cards: card %zu = %04x:%04x at usb %s\n", i,
                    scanned[i].usb_vid, scanned[i].usb_pid,
@@ -263,9 +266,8 @@ static int run_radio(const maburgs::Config& cfg) {
                  start_remembered ? " (remembered)" : "");
   }
 
-  // Roster: USB cards first (0..n_usb-1), then radio.relays in config
-  // order. The "no supported radio" exit above runs before any relay is
-  // counted: a relay never rescues a USB-less GS.
+  // Roster: USB cards first (0..n_usb-1, possibly none), then radio.relays
+  // in config order (spec 2026-10-05 §5: a relay-only GS is supported).
   const int n_usb = cfg.radio.auto_scan ? static_cast<int>(scanned.size())
                                         : static_cast<int>(cfg.radio.cards.size());
   const int n_relays = static_cast<int>(cfg.radio.relays.size());
@@ -526,7 +528,7 @@ static int run_radio(const maburgs::Config& cfg) {
   // the end-of-AU callback calls chan.note_au_end().
   maburgs::VrxController vrx(maburgs::vrx_cfg_from(cfg, start_ch));
 
-  // scan.log (scanlog 5): the channel-selection record -- card caps, scout
+  // scan.log (scanlog 6): the channel-selection record -- card caps, scout
   // dwells (boot-time AND in-flight), the pick, every link move, and the
   // in-flight hop verdict/hop-event lines (spec 2026-10-03-auto-channel-set
   // section 7). Same session directory and writer as ctl.log, same

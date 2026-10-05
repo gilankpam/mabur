@@ -23,15 +23,27 @@ inline int pick_inflight_scout(const std::vector<bool>& can_scout, int tx) {
   return -1;
 }
 
-// scout_pick.h — the card for the hop freshness burst: a scout-capable card
-// that is not transmitting; else the last scout-capable card even if it IS
-// the TX card (the burst only runs once the verdict has fired, i.e. the link
-// is already impaired -- the same acceptance a one-card GS already has);
-// -1 when no card can scout at all (the burst is skipped).
-inline int pick_burst_card(const std::vector<bool>& can_scout, int tx) {
-  const int non_tx = pick_inflight_scout(can_scout, tx);
-  if (non_tx >= 0) return non_tx;
-  return pick_boot_scout(can_scout);   // last scout-capable card, TX or not; -1 if none
+// The card for the hop freshness burst (spec 2026-10-05 §4), first match:
+// a scout-capable (USB) card that is not transmitting; a sweep-capable
+// (relay) card that is not transmitting -- the USB TX card keeps the link
+// while the relay sweeps; the scout-capable TX card (the one-card GS's
+// acceptance: the burst only runs once the link is already impaired); the
+// sweep-capable TX card (a relay-only GS). -1 = nothing can burst.
+// can_scout and can_sweep are per card and must be the same size (the
+// roster); can_sweep is the caller's per-tick "can take a SCAN now" (v4
+// relay AND ready()), so a dead relay never takes the burst. A short
+// can_sweep reads as false past its end.
+inline int pick_burst_card(const std::vector<bool>& can_scout, const std::vector<bool>& can_sweep, int tx) {
+  const int n = static_cast<int>(can_scout.size());
+  auto last = [&](const std::vector<bool>& cap, bool non_tx) {
+    for (int i = n - 1; i >= 0; --i)
+      if (i < static_cast<int>(cap.size()) && cap[static_cast<size_t>(i)] && (!non_tx || i != tx)) return i;
+    return -1;
+  };
+  if (const int c = last(can_scout, true); c >= 0) return c;
+  if (const int c = last(can_sweep, true); c >= 0) return c;
+  if (const int c = last(can_scout, false); c >= 0) return c;
+  return last(can_sweep, false);
 }
 
 // DISC targets while the scout owns a card (spec 2026-10-03 §4.2).

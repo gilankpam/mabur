@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstring>
 #include <deque>
@@ -64,13 +65,13 @@ struct Rig {
 
 std::vector<uint8_t> status(uint8_t state, uint8_t ch, uint8_t sec, uint8_t you_own) {
   std::vector<uint8_t> b(kStatusLen, 0);
-  b[0] = 0x4D; b[1] = 0x52; b[2] = 3; b[3] = kStatus;
+  b[0] = 0x4D; b[1] = 0x52; b[2] = 4; b[3] = kStatus;
   b[6] = state; b[7] = ch; b[8] = sec; b[9] = 1; b[10] = you_own;
   return b;
 }
 std::vector<uint8_t> frame(uint32_t seq, uint8_t rx_ch, uint8_t flags, uint8_t mcs, bool canonical = true) {
   std::vector<uint8_t> b(kFrameHdrLen, 0);
-  b[0] = 0x4D; b[1] = 0x52; b[2] = 3; b[3] = kFrame;
+  b[0] = 0x4D; b[1] = 0x52; b[2] = 4; b[3] = kFrame;
   for (int i = 0; i < 4; ++i) b[4 + i] = (uint8_t)(seq >> (8 * i));
   b[8] = rx_ch; b[9] = 2; b[10] = flags; b[11] = mcs;
   b[12] = (uint8_t)-50; b[13] = (uint8_t)-52; b[14] = (uint8_t)-95; b[15] = (uint8_t)-95;
@@ -81,6 +82,14 @@ std::vector<uint8_t> frame(uint32_t seq, uint8_t rx_ch, uint8_t flags, uint8_t m
   if (!canonical) d[10] = 0x00;
   d[22] = 0x30; d[23] = 0x12; d[26] = 0xAA; d[27] = 0xBB; d[28] = 0xCC;
   b.insert(b.end(), d.begin(), d.end());
+  return b;
+}
+std::vector<uint8_t> survey(uint16_t gen, uint32_t act, uint32_t busy, uint32_t rx, uint32_t err, uint32_t foreign) {
+  std::vector<uint8_t> b(kSurveyLen, 0);
+  b[0] = 0x4D; b[1] = 0x52; b[2] = 4; b[3] = kSurvey; b[4] = 136; b[5] = 2;
+  b[6] = (uint8_t)gen; b[7] = (uint8_t)(gen >> 8);
+  auto put = [&](size_t o, uint32_t v) { for (int i = 0; i < 4; ++i) b[o + i] = (uint8_t)(v >> (8 * i)); };
+  put(8, act); put(12, busy); put(16, rx); put(24, err); put(28, foreign);
   return b;
 }
 size_t drained(BodyQueue& q, std::vector<mabur::node::RxBody>& out) { out.clear(); return q.drain(out, 0); }
@@ -456,4 +465,119 @@ TEST(owner_stuck_in_a_failed_tune_logs_after_the_grace) {
   r.card->tick(r.now_ms += 10);
   CHECK(r.card->transitions() == 4);              // "owned and tuned" again
 }
+// The survey tests poll frames().foreign to know the RX thread has processed
+// a pushed SURVEY (messages are handled in order): each sync sample carries a
+// foreign increment. The first SURVEY of a session is a baseline and adds
+// nothing, so it is always followed by such a sync sample.
+TEST(survey_window_is_the_delta_between_calls_on_one_gen) {
+  Rig g; REQUIRE(g.card->open_and_start());
+  g.t().push(status(0, 136, 2, 1));
+  g.t().push(survey(1, 100, 10, 5, 3, 1));          // session baseline: the relay's backlog is not counted
+  g.t().push(survey(1, 100, 10, 5, 3, 2));          // sync: foreign +1, no airtime
+  REQUIRE(g.soon([&] { return g.card->frames().foreign == 1; }));
+  CHECK(!g.card->read_survey_window().valid);       // first call: baseline only
+  g.t().push(survey(1, 250, 160, 10, 13, 4));       // +150 ms: busy +150 (100 %), rx +5, foreign +2
+  REQUIRE(g.soon([&] { return g.card->frames().foreign == 3; }));
+  const auto w = g.card->read_survey_window();
+  CHECK(w.valid);
+  CHECK(std::abs(w.busy_pct - 100.0) < 0.01);
+  CHECK(std::abs(w.rx_pct - 100.0 * 5 / 150) < 0.01);
+  const auto e = g.card->read_energy_scout();
+  CHECK(e.fa_valid);
+  CHECK(e.fa_ofdm == 10);                           // since the session baseline: 13 - 3
+  CHECK(g.card->read_energy_scout().fa_ofdm == 0);  // a delta: consumed
+  CHECK(g.card->frames().foreign == 3);             // 4 - 1
+}
+
+TEST(survey_window_invalid_across_a_gen_change_or_short_span) {
+  Rig g; REQUIRE(g.card->open_and_start());
+  g.t().push(status(0, 136, 2, 1));
+  g.t().push(survey(1, 100, 10, 5, 0, 0));          // session baseline
+  g.t().push(survey(1, 100, 10, 5, 0, 1));          // sync: foreign +1
+  REQUIRE(g.soon([&] { return g.card->frames().foreign == 1; }));
+  g.card->read_survey_window();                     // window baseline
+  g.t().push(survey(2, 250, 10, 5, 0, 1));          // new gen (a retune or sweep): raw span 150 ms, still invalid
+  REQUIRE(g.soon([&] { return g.card->frames().foreign == 2; }));   // a new gen adds its full count
+  CHECK(!g.card->read_survey_window().valid);
+  g.t().push(survey(2, 300, 20, 5, 0, 2));          // only 50 ms on gen 2
+  REQUIRE(g.soon([&] { return g.card->frames().foreign == 3; }));
+  CHECK(!g.card->read_survey_window().valid);
+}
+
+TEST(survey_reopen_does_not_re_add_the_relay_backlog) {
+  Rig g; REQUIRE(g.card->open_and_start());
+  g.t().push(status(0, 136, 2, 1));
+  g.t().push(survey(1, 100, 10, 5, 3, 1));          // baseline
+  g.t().push(survey(1, 100, 10, 5, 5, 2));          // +2 ofdm, +1 foreign
+  REQUIRE(g.soon([&] { return g.card->frames().foreign == 1; }));
+  CHECK(g.card->read_energy_scout().fa_ofdm == 2);
+  g.card->stop();
+  REQUIRE(g.card->open_and_start());                // reopen after a lost relay: same gen, counters kept
+  g.t().push(status(0, 136, 2, 1));
+  g.t().push(survey(1, 200, 20, 5, 5, 2));          // new session's baseline: cumulative 5 / 2 not re-added
+  g.t().push(survey(1, 200, 20, 5, 6, 3));          // +1 ofdm, +1 foreign
+  REQUIRE(g.soon([&] { return g.card->frames().foreign == 2; }));
+  CHECK(g.card->read_energy_scout().fa_ofdm == 1);
+}
+
+// Final review item 6: a counter that goes DOWN within one gen (a fast relay
+// restart that reused the gen) is a gen change, not a u32 wrap: the window
+// across it is invalid, and the totals add the new sample's full count (the
+// restarted counters began at 0), never ~4e9.
+TEST(survey_counter_decrease_within_a_gen_is_a_gen_change) {
+  Rig g; REQUIRE(g.card->open_and_start());
+  g.t().push(status(0, 136, 2, 1));
+  g.t().push(survey(1, 1000, 100, 50, 30, 10));     // session baseline
+  g.t().push(survey(1, 1000, 100, 50, 30, 11));     // sync: foreign +1
+  REQUIRE(g.soon([&] { return g.card->frames().foreign == 1; }));
+  g.card->read_survey_window();                     // window baseline
+  CHECK(g.card->read_energy_scout().fa_ofdm == 0);
+  g.t().push(survey(1, 20, 5, 1, 2, 1));            // restarted relay, same gen: everything dropped
+  REQUIRE(g.soon([&] { return g.card->frames().foreign == 2; }));   // +1 (full), not a wrap
+  CHECK(!g.card->read_survey_window().valid);       // across the restart: invalid
+  CHECK(g.card->read_energy_scout().fa_ofdm == 2);  // the new sample's full count
+  g.t().push(survey(1, 170, 20, 1, 4, 2));          // +150 ms on the restarted counters
+  REQUIRE(g.soon([&] { return g.card->frames().foreign == 3; }));
+  const auto w = g.card->read_survey_window();
+  CHECK(w.valid);
+  CHECK(std::abs(w.busy_pct - 10.0) < 0.01);        // 15 / 150
+  CHECK(g.card->read_energy_scout().fa_ofdm == 2);
+  // only ONE counter regressing still counts (a restart that already
+  // accumulated more active time than the old sample)
+  g.t().push(survey(1, 400, 25, 2, 1, 3));          // ofdm 4 -> 1
+  REQUIRE(g.soon([&] { return g.card->frames().foreign == 6; }));   // full 3 added
+  CHECK(!g.card->read_survey_window().valid);
+  CHECK(g.card->read_energy_scout().fa_ofdm == 1);
+}
+
+TEST(start_sweep_sends_scan_and_result_comes_back_once) {
+  Rig g; REQUIRE(g.card->open_and_start());
+  g.t().push(status(0, 136, 2, 1));
+  REQUIRE(g.soon([&] { return g.card->ready(); }));
+  CHECK(g.card->can_sweep());
+  CHECK(g.card->start_sweep({40, 64}, 2, 20));
+  CHECK(g.card->sweeping());
+  CHECK(g.t().count(kScan) == 1);
+  std::vector<uint8_t> scan_msg;
+  { std::lock_guard<std::mutex> lk(g.t().mu); for (auto& m : g.t().sent) if (msg_type(m.data(), m.size()) == kScan) scan_msg = m; }
+  const uint16_t id = (uint16_t)(scan_msg[4] | (scan_msg[5] << 8));
+  std::vector<uint8_t> res = {0x4D, 0x52, 0x04, 0x08, (uint8_t)id, (uint8_t)(id >> 8), 0, 136, 2, 1,
+                              64, 0, 1, 20, 0, 14, 0, 1, 0, 3, 0, 9, 0};
+  g.t().push(res);
+  REQUIRE(g.soon([&] { return !g.card->sweeping(); }));
+  auto r = g.card->take_sweep_result();
+  REQUIRE(r.has_value());
+  CHECK(r->entries.size() == 1 && r->entries[0].ch == 64 && r->entries[0].ofdm_err == 9);
+  CHECK(!g.card->take_sweep_result().has_value());
+  CHECK(g.card->relay_stats()->sweeps == 1);
+}
+
+TEST(start_sweep_refused_when_not_owned) {
+  Rig g; REQUIRE(g.card->open_and_start());
+  g.t().push(status(0, 136, 2, 0));                 // someone else owns it
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  CHECK(!g.card->start_sweep({40}, 2, 20));
+  CHECK(g.t().count(kScan) == 0);
+}
+
 MTEST_MAIN

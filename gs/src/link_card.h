@@ -8,6 +8,7 @@
 
 #include "relay_stats.h"
 #include "scout_radio.h"
+#include "sweep_types.h"
 
 namespace maburgs {
 
@@ -36,6 +37,16 @@ class LinkCard : public ScoutRadio {
   // Energy reads exist (FA/CCA/NHM): may serve as boot or in-flight scout.
   virtual bool can_scout() const = 0;
   virtual std::optional<RelayStatsIn> relay_stats() const { return std::nullopt; }
+  // Relay sweep (mabur-relay v4 SCAN, spec 2026-10-05-cpe-relay-hop §3):
+  // the card surveys a channel list itself and reports later -- an async
+  // burst, unlike ScoutRadio's synchronous dwells. USB cards: unsupported.
+  // read_survey_window(): op-channel airtime over the span since the
+  // previous call (relay SURVEY); invalid across a retune/sweep or < 100 ms.
+  virtual bool can_sweep() const { return false; }
+  virtual bool start_sweep(const std::vector<uint8_t>& ch, uint8_t passes, uint8_t observe_ms) { (void)ch; (void)passes; (void)observe_ms; return false; }
+  virtual std::optional<SweepResult> take_sweep_result() { return std::nullopt; }
+  virtual bool sweeping() const { return false; }
+  virtual SurveyWindow read_survey_window() { return {}; }
 };
 
 }  // namespace maburgs

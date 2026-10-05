@@ -5,16 +5,16 @@ import { HELLO, classifyReply, relayDisplay, connectRelay, LNA_DENIED, LNA_UNANS
 
 const bytes = (...b) => new Uint8Array(b).buffer;
 
-test('HELLO is magic 0x524D LE, version 3, type 2', () => {
-  assert.deepEqual([...HELLO], [0x4D, 0x52, 0x03, 0x02]);
+test('HELLO is magic 0x524D LE, version 4, type 2', () => {
+  assert.deepEqual([...HELLO], [0x4D, 0x52, 0x04, 0x02]);
 });
 
-test('classifyReply: any v3 mabur message is a relay, including an owned-by-other STATUS', () => {
+test('classifyReply: any v4 mabur message is a relay, including an owned-by-other STATUS', () => {
   // STATUS (type 4) with state byte 3 = "not owner": still a relay (Review Focus 2).
-  assert.equal(classifyReply(bytes(0x4D, 0x52, 0x03, 0x04, 0, 0, 3)), 'relay');
-  assert.equal(classifyReply(bytes(0x4D, 0x52, 0x03, 0x01)), 'relay');          // FRAME
+  assert.equal(classifyReply(bytes(0x4D, 0x52, 0x04, 0x04, 0, 0, 3)), 'relay');
+  assert.equal(classifyReply(bytes(0x4D, 0x52, 0x04, 0x01)), 'relay');          // FRAME
   assert.deepEqual(classifyReply(bytes(0x4D, 0x52, 0x02, 0x04)), { version: 2 });
-  assert.equal(classifyReply(bytes(0x00, 0x52, 0x03, 0x04)), 'none');           // bad magic
+  assert.equal(classifyReply(bytes(0x00, 0x52, 0x04, 0x04)), 'none');           // bad magic
   assert.equal(classifyReply(bytes(0x4D, 0x52)), 'none');                       // short
   assert.equal(classifyReply('hello'), 'none');                                 // text frame
 });
@@ -73,7 +73,7 @@ test('wrong protocol version', async () => {
   const r = rig(['granted'], { version: 2 });
   await assert.rejects(connectRelay(r.args()), (e) => {
     assert.equal(e.code, 'relay-version');
-    assert.equal(e.message, 'CPE relay at 10.83.11.1 runs protocol v2; this page needs v3 — update the CPE firmware.');
+    assert.equal(e.message, 'CPE relay at 10.83.11.1 runs protocol v2; this page needs v4 — update the CPE firmware.');
     return true;
   });
 });

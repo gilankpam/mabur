@@ -1,18 +1,21 @@
 #pragma once
-// RelayClient: the pure mabur-relay v3 client (HELLO keepalive, TUNE +
-// retry on refusal, ownership, FRAME -> RxBody, uplink TX). No sockets, no
-// clock: the caller passes now_ms and a SendFn. Not thread-safe -- a caller
-// with an RX thread wraps it in a mutex (gs/src/remote_card.h).
+// RelayClient: the pure mabur-relay v4 client (HELLO keepalive, TUNE +
+// retry on refusal, ownership, FRAME -> RxBody, uplink TX, SURVEY, SCAN /
+// SCAN_RESULT). No sockets, no clock: the caller passes now_ms and a
+// SendFn. Not thread-safe -- a caller with an RX thread wraps it in a
+// mutex (gs/src/remote_card.h).
 // TUNE retry: every kTuneRetryMs while not yet owned (only within
 // kTuneWindowMs of start), and again -- with no window limit -- whenever we
 // own the link but read back mistuned (channel/sec mismatch, not already
 // mid-retune per the relay's own state).
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <vector>
 
 #include "mabur/node.h"
 #include "relay_wire.h"
+#include "sweep_types.h"
 
 namespace maburgs {
 
@@ -24,9 +27,21 @@ class RelayClient {
   RelayClient(uint8_t channel, uint8_t sec, SendFn send);
   void start(uint64_t now_ms);
   void tick(uint64_t now_ms);
-  enum class Rx { None, Body, Status, Foreign };
+  enum class Rx { None, Body, Status, Foreign, Survey, ScanResult };
   Rx on_message(const uint8_t* b, size_t n, uint64_t now_ms, mabur::node::RxBody& out);
   bool send_control(const std::vector<uint8_t>& radiotap_frame);
+
+  // Survey, from the relay's SURVEY op-channel airtime report.
+  bool have_survey() const { return have_survey_; }
+  const relay::Survey& survey() const { return survey_; }
+
+  // Channel-set sweep (SCAN / SCAN_RESULT). start_scan() sends the request
+  // and returns its scan_id; scan_pending() reads true until a matching
+  // SCAN_RESULT arrives (a stale one, from an earlier scan_id, is ignored).
+  // take_scan_result() hands the result over once and clears it.
+  uint16_t start_scan(const std::vector<uint8_t>& ch, uint8_t passes, uint8_t observe_ms);
+  std::optional<SweepResult> take_scan_result();
+  bool scan_pending() const { return scan_pending_; }
 
   // New target channel/sec and a TUNE right now (hop lead, width change,
   // reconnect). owned_and_tuned() reads false until a STATUS confirms it.
@@ -67,6 +82,10 @@ class RelayClient {
   uint32_t last_seq_ = 0;
   relay::Status st_;
   uint64_t frames_ = 0, gaps_ = 0, bad_ = 0, tx_ = 0;
+  std::optional<SweepResult> result_;
+  relay::Survey survey_;
+  bool have_survey_ = false, scan_pending_ = false;
+  uint16_t scan_id_ = 0;
 };
 
 }  // namespace maburgs

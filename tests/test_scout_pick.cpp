@@ -20,14 +20,26 @@ TEST(inflight_scout_is_last_scout_capable_non_tx_card) {
   CHECK(pick_inflight_scout({true}, 0) == -1);         // one card never dwells
 }
 TEST(burst_card_prefers_non_tx_scout_capable_then_tx_scout_capable) {
-  CHECK(pick_burst_card({true, true}, 0) == 1);        // two USB: the non-TX one (unchanged)
-  CHECK(pick_burst_card({true, true}, 1) == 0);
-  CHECK(pick_burst_card({true}, 0) == 0);              // one card: itself (unchanged)
-  CHECK(pick_burst_card({true, false}, 1) == 0);       // relay transmits: USB card bursts
-  CHECK(pick_burst_card({true, false}, 0) == 0);       // USB transmits: USB card bursts anyway (never the relay)
-  CHECK(pick_burst_card({true, true, false}, 0) == 1);
-  CHECK(pick_burst_card({false}, 0) == -1);            // nothing can scout: skip
-  CHECK(pick_burst_card({false, false}, 1) == -1);
+  const auto nosweep = [](size_t n) { return std::vector<bool>(n, false); };
+  CHECK(pick_burst_card({true, true}, nosweep(2), 0) == 1);        // two USB: the non-TX one (unchanged)
+  CHECK(pick_burst_card({true, true}, nosweep(2), 1) == 0);
+  CHECK(pick_burst_card({true}, nosweep(1), 0) == 0);              // one card: itself (unchanged)
+  CHECK(pick_burst_card({true, false}, nosweep(2), 1) == 0);       // relay transmits: USB card bursts
+  CHECK(pick_burst_card({true, false}, nosweep(2), 0) == 0);       // USB transmits: USB card bursts anyway (never the relay)
+  CHECK(pick_burst_card({true, true, false}, nosweep(3), 0) == 1);
+  CHECK(pick_burst_card({false}, nosweep(1), 0) == -1);            // nothing can scout: skip
+  CHECK(pick_burst_card({false, false}, nosweep(2), 1) == -1);
+}
+TEST(burst_card_prefers_non_tx_then_scout_then_sweep) {
+  const std::vector<bool> scout = {true, false}, sweep = {false, true};   // USB 0, relay 1
+  CHECK(pick_burst_card(scout, sweep, /*tx=*/1) == 0);   // USB spare: fast, link card on air
+  CHECK(pick_burst_card(scout, sweep, /*tx=*/0) == 1);   // relay spare sweeps, USB TX keeps the link
+  const std::vector<bool> s1 = {false}, w1 = {true};     // relay-only
+  CHECK(pick_burst_card(s1, w1, 0) == 0);                // the sole relay, even as TX
+  const std::vector<bool> s2 = {true}, w2 = {false};     // one USB
+  CHECK(pick_burst_card(s2, w2, 0) == 0);
+  const std::vector<bool> s3 = {false}, w3 = {false};
+  CHECK(pick_burst_card(s3, w3, 0) == -1);
 }
 TEST(scan_disc_targets_never_rely_on_the_relay_alone) {
   using V = std::vector<int>;

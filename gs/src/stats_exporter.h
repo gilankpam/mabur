@@ -240,6 +240,9 @@ struct StatsHopIn {
   // nullopt until the first event of any kind (order/confirm/withdraw/
   // hold) has fired this session.
   std::optional<uint64_t> last_ms;
+  // Relay sweeps (SCANs) that got no SCAN_RESULT before their timeout,
+  // cumulative this process (ChannelCore::sweep_timeouts()).
+  uint64_t sweep_timeouts = 0;
 };
 
 struct StatsInput {

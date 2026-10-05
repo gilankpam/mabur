@@ -566,11 +566,12 @@ TEST(relay_stats_fields_keeps_the_page_keys) {
   r.state = 0; r.ch = 136; r.sec = 2; r.owned = true; r.frames = 1000; r.gaps = 3;
   r.your_drops = 4; r.tx = 20; r.tx_fail = 1; r.tx_refused = 2; r.reconnects = 0;
   r.you_own = true; r.rx_drops = 5; r.tx_drops = 6;
+  r.tx_scan_drop = 7; r.sweeps = 8;
   const std::string s = relay_stats_fields(r);
   CHECK(s == ",\"radio\":\"relay\",\"relay_state\":0,\"relay_ch\":136,\"relay_sec\":2,"
              "\"relay_owned\":1,\"relay_you_own\":1,\"relay_frames\":1000,\"relay_gaps\":3,"
              "\"relay_rx_drops\":5,\"relay_tx_ring_drops\":6,\"relay_tx\":20,\"relay_tx_fail\":1,"
-             "\"relay_tx_refused\":2,\"relay_your_drops\":4");
+             "\"relay_tx_refused\":2,\"relay_your_drops\":4,\"relay_tx_scan_drop\":7,\"relay_sweeps\":8");
 }
 
 MTEST_MAIN
@@ -743,6 +744,7 @@ struct GsRig {
     c.radio.width = 40;
     if (pinned) c.radio.pin = start;
     card.ch = start; card.width_mhz = n_usb == 1 ? 20 : 40;
+    card.relay = n_usb == 0;
     card2.ch = start; card2.width_mhz = 20;
     card.clk = card2.clk = &clk;
     clk.ms = t / 1000;
@@ -843,6 +845,35 @@ TEST(gs_one_card_auto_hops_on_interference_but_pinned_never) {
   CHECK(p.card.ch == 40);
   CHECK(std::string(p.g->stats().chan->hop.verdict) == "interfered");   // still measured for the page
 }
+
+// The web GS on a CPE relay (auto, spec 2026-10-05 §5): no boot measure
+// (search-only), but in flight interference makes the core ask the relay to
+// sweep; the result ranks every candidate in one burst and the page hops.
+TEST(gs_relay_page_sweeps_and_hops_on_interference) {
+  GsRig a(40, /*pinned=*/false, /*n_usb=*/0);
+  a.ticks(5);
+  a.g->inject_disc_ack_for_replay(a.t);       // SESSION on op
+  a.g->vrx()->test_set_move_edge();
+  REQUIRE(a.g->stats().session);
+  for (int i = 0; i < 20; ++i) { a.g->vrx()->on_video(static_cast<double>(a.t) / 1000.0); a.ticks(1); }
+  a.card.ch = a.g->channel_core()->op();
+  interfere_one_card(a, 4);
+  REQUIRE(a.card.sweeps.size() == 1);
+  CHECK((a.card.sweeps[0] == std::vector<uint8_t>{64, 112, 144}));
+  maburgs::SweepResult res;
+  for (int pass = 0; pass < 2; ++pass)
+    for (auto [ch, busy] : std::vector<std::pair<uint8_t, uint16_t>>{{64, 20}, {112, 1}, {144, 4}}) {
+      maburgs::SweepEntry e; e.ch = ch; e.pass = static_cast<uint8_t>(pass); e.valid = true;
+      e.active_ms = 20; e.busy_ms = busy;
+      res.entries.push_back(e);
+    }
+  a.card.pending_result = res;
+  interfere_one_card(a, 3);
+  REQUIRE(a.has_log("maburgs hop: order"));
+  for (int i = 0; i < 400 && a.card.ch != 112; ++i) { a.g->vrx()->on_video(static_cast<double>(a.t) / 1000.0); a.ticks(1); }
+  CHECK(a.card.ch == 112);                    // blocked 64 skipped; least-busy 112 won
+}
+
 TEST(gs_roster_sends_through_the_card_not_io_send) {
   GsRig r(40, /*pinned=*/true, /*n_usb=*/2);   // card 0 = the link card on op
   r.ticks(60);                                // beaconing

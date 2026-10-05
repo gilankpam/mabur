@@ -1,6 +1,6 @@
 // CPE relay connect check: one WebSocket probe to one address. The probe
-// sends HELLO and waits for any mabur v3 message (the relay answers HELLO
-// with STATUS), so a found relay is proven to be mabur-relay v3.
+// sends HELLO and waits for any mabur v4 message (the relay answers HELLO
+// with STATUS), so a found relay is proven to be mabur-relay v4.
 //
 // On https it also carries Chrome's Local Network Access (LNA) gate: a
 // public page reaching a private IP needs the 'local-network' permission
@@ -9,7 +9,7 @@
 // on a one-time prompt — the probe is what raises it, so it gets the long
 // timeout. See docs/web-gs.md "CPE relay radio".
 
-export const HELLO = new Uint8Array([0x4D, 0x52, 0x03, 0x02]);   // magic 0x524D LE, v3, HELLO
+export const HELLO = new Uint8Array([0x4D, 0x52, 0x04, 0x02]);   // magic 0x524D LE, v4, HELLO
 
 export const LNA_DENIED = 'Local network access is blocked for this site, so the page cannot reach the CPE relay. '
   + 'Allow it in the site settings (icon left of the address bar → Local network access), then press Connect.';
@@ -21,7 +21,7 @@ export function classifyReply(data) {
   if (!(data instanceof ArrayBuffer) || data.byteLength < 3) return 'none';
   const b = new Uint8Array(data);
   if (b[0] !== 0x4D || b[1] !== 0x52) return 'none';
-  return b[2] === 3 ? 'relay' : { version: b[2] };
+  return b[2] === 4 ? 'relay' : { version: b[2] };
 }
 
 export function relayDisplay(addr) {
@@ -45,7 +45,7 @@ export async function connectRelay({ addr, protocol, query, probe, promptMs = 60
     if (after !== 'granted') throw fail('lna-unanswered', LNA_UNANSWERED);
   }
   if (typeof r === 'object') {
-    throw fail('relay-version', `CPE relay at ${relayDisplay(addr)} runs protocol v${r.version}; this page needs v3 — update the CPE firmware.`);
+    throw fail('relay-version', `CPE relay at ${relayDisplay(addr)} runs protocol v${r.version}; this page needs v4 — update the CPE firmware.`);
   }
   throw fail('relay-not-found', `No CPE relay found at ${relayDisplay(addr)} — check the Ethernet cable and that the CPE is powered, or enter its address.`
     + (lna === 'unsupported' ? BROWSER_BLOCK : ''));

@@ -24,6 +24,13 @@ uint32_t HopRanker::score(const HopVisit& v) {
 }
 
 std::vector<HopRankEntry> HopRanker::ranking(double now_ms) const {
+  // Newest visit's source kind (fresh visits only); the other kind is ignored.
+  double newest_t = -1;
+  VisitSrc src = VisitSrc::Usb;
+  for (const auto& dq : visits_)
+    for (const auto& v : dq)
+      if (now_ms - v.t_ms <= cfg_.rank_max_age_ms && v.t_ms >= newest_t) { newest_t = v.t_ms; src = v.src; }
+
   std::vector<HopRankEntry> entries;
   entries.reserve(candidates_.size());
   for (size_t i = 0; i < candidates_.size(); ++i) {
@@ -34,6 +41,7 @@ std::vector<HopRankEntry> HopRanker::ranking(double now_ms) const {
     double busy_sum = 0;
     for (const auto& v : visits_[i]) {
       if (now_ms - v.t_ms > cfg_.rank_max_age_ms) continue;
+      if (v.src != src) continue;
       ++fresh;
       sum += score(v);
       if (v.busy_valid) { ++busy_n; busy_sum += v.busy_pct; }

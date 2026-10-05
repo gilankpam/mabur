@@ -1,5 +1,5 @@
 #pragma once
-// RemoteCard: a TP-Link CPE510 running mabur-relay (protocol v3) as a
+// RemoteCard: a TP-Link CPE510 running mabur-relay (protocol v4) as a
 // maburgs radio card -- FRAMEs in over UDP, RCFs out as TX messages
 // (spec 2026-10-02-maburgs-remote-card §2). RelayClient holds the protocol
 // state; this class gives it a socket, an RX thread, the LinkCard surface
@@ -73,12 +73,18 @@ class RemoteCard final : public LinkCard {
   int tuned_central() override { return -1; }
   bool can_scout() const override { return false; }
   std::optional<RelayStatsIn> relay_stats() const override;
+  bool can_sweep() const override { return true; }
+  bool start_sweep(const std::vector<uint8_t>& ch, uint8_t passes, uint8_t observe_ms) override;
+  std::optional<SweepResult> take_sweep_result() override;
+  bool sweeping() const override;
+  SurveyWindow read_survey_window() override;
+  static constexpr uint32_t kMinSurveyWindowMs = 100;
 
   // ScoutRadio
   bool retune(uint8_t ch) override;
   bool retune_width(uint8_t ch, uint8_t width_mhz) override { return set_width(ch, width_mhz); }
   ScoutEnergy read_energy(bool) override { return {}; }
-  ScoutEnergy read_energy_scout() override { return {}; }
+  ScoutEnergy read_energy_scout() override;   // fa_ofdm = relay OFDM errors since the previous call
   ScoutFrames frames() const override;
 
  private:
@@ -86,6 +92,7 @@ class RemoteCard final : public LinkCard {
   void rx_loop();
   void on_datagram(const uint8_t* b, size_t n);
   void log_transition(const char* what);
+  void on_survey_(const relay::Survey& s);   // under mu_
 
   Cfg cfg_;
   BodyQueue& out_;
@@ -105,6 +112,13 @@ class RemoteCard final : public LinkCard {
   bool opened_once_ = false;
   uint16_t tx_seq_ = 0;            // under mu_
   OwnAirAcc own_air_;              // RX thread only
+  relay::Survey sv_last_, win_base_;           // under mu_
+  bool have_sv_ = false, have_win_ = false;    // under mu_
+  // Bumped on every SURVEY baseline, gen change or within-gen counter
+  // regression; a window is valid only inside one era (under mu_).
+  uint64_t sv_era_ = 0, win_era_ = 0;
+  uint64_t ofdm_total_ = 0, ofdm_read_ = 0, sv_foreign_total_ = 0;   // under mu_
+  std::atomic<uint64_t> sweeps_{0};
   // last logged state, to log transitions once
   enum class St { Down, Waiting, Owned, Refused, Lost } last_st_ = St::Down;
   // When an owner-mid-retune first suppressed a Waiting transition (0 = not

@@ -1164,7 +1164,8 @@ def panel_gs_radios(model, wall):
             text = _grid_row(f"  r{_s(c.get('id'))}", [
                 f"relay st={_s(r.get('state'))} own={int(bool(r.get('owned')))} "
                 f"gaps={_s(r.get('gaps'))} drops={_s(r.get('your_drops'))} "
-                f"txref={_s(r.get('tx_refused'))} reconn={_s(r.get('reconnects'))}"
+                f"txref={_s(r.get('tx_refused'))} reconn={_s(r.get('reconnects'))} "
+                f"sw={_s(r.get('sweeps'))} txsd={_s(r.get('tx_scan_drop'))}"
                 .ljust(_grid_width(CARD_COLS) - LABEL_W - 1)])
             prev_r = (model.prev_cards.get(c.get("id")) or {}).get("relay") or {}
             warn = not r.get("owned") or _increased(r.get("gaps"), prev_r.get("gaps"))

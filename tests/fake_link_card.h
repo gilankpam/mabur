@@ -3,10 +3,12 @@
 // recorded; energy/frames are programmable; the clock is shared with the
 // core through FakeClock.
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "link_card.h"
+#include "sweep_types.h"
 
 struct FakeClock {
   uint64_t ms = 1000;
@@ -74,6 +76,24 @@ struct FakeCard : maburgs::LinkCard {
     if (with_nhm && !relay) { e.floor_valid = true; e.floor_dbm = -95; }
     return e;
   }
-  maburgs::ScoutEnergy read_energy_scout() override { maburgs::ScoutEnergy e; e.fa_valid = !relay; return e; }
+  maburgs::ScoutEnergy read_energy_scout() override { maburgs::ScoutEnergy e; e.fa_valid = true; e.fa_ofdm = fa_next; fa_next = 0; return e; }
   maburgs::ScoutFrames frames() const override { return fr; }
+  // Relay sweep / survey programmability (spec 2026-10-05 §3).
+  bool sweep_ok = true;
+  std::vector<std::vector<uint8_t>> sweeps;         // channel lists passed to start_sweep
+  std::optional<maburgs::SweepResult> pending_result;   // returned once by take_sweep_result
+  bool sweep_in_flight = false;
+  maburgs::SurveyWindow survey_win;                 // returned by read_survey_window
+  uint32_t fa_next = 0;                             // returned (once) by read_energy_scout's fa_ofdm
+  bool can_sweep() const override { return relay && sweep_ok; }
+  bool start_sweep(const std::vector<uint8_t>& ch, uint8_t, uint8_t) override {
+    if (!can_sweep() || !is_ready) return false;   // RemoteCard: running + owned_and_tuned
+    sweeps.push_back(ch); sweep_in_flight = true; return true;
+  }
+  std::optional<maburgs::SweepResult> take_sweep_result() override {
+    if (!pending_result) return std::nullopt;
+    auto r = std::move(pending_result); pending_result.reset(); sweep_in_flight = false; return r;
+  }
+  bool sweeping() const override { return sweep_in_flight; }
+  maburgs::SurveyWindow read_survey_window() override { return relay ? survey_win : maburgs::SurveyWindow{}; }
 };

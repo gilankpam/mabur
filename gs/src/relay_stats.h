@@ -11,5 +11,7 @@ struct RelayStatsIn {
   uint32_t reconnects = 0;             // client restarts (refused) + reopen after lost
   bool you_own = false;                // last STATUS you_own (this client holds the relay)
   uint64_t rx_drops = 0, tx_drops = 0; // the transport's own drops (the browser ring); 0 over UDP
+  uint32_t tx_scan_drop = 0;           // owner TX the relay dropped mid-sweep
+  uint64_t sweeps = 0;                 // SCANs this card sent
 };
 }  // namespace maburgs

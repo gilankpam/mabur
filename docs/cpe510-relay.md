@@ -4,7 +4,10 @@ A TP-Link CPE510 (AR9344, ath9k, 2×2 5 GHz panel) running `mabur-relay` acts
 as a **remote radio card** for mabur: it hears the drone's downlink on its
 panel antenna and forwards every mabur frame (FCS-failed ones included, for
 SBI salvage) over Ethernet to a ground station, and — since protocol v3 —
-injects uplink RCFs for the owning client too. The web GS consumes it today
+injects uplink RCFs for the owning client too; since protocol **v4**
+(2026-10-05) it also detects interference on the op channel and sweeps +
+ranks the channel set for a channel/hop ("Interference + hop on a relay",
+below). The web GS consumes it today
 (radio picker: USB card | CPE relay — see `docs/web-gs.md`), and since
 2026-10-02 so does `maburgs`: `[radio] relays` adds the relay as a
 `RemoteCard` next to the USB cards (below).
@@ -13,7 +16,7 @@ injects uplink RCFs for the owning client too. The web GS consumes it today
 |---|---|
 | Firmware repo | `../mabur-openwrt`, <https://github.com/gilankpam/mabur-openwrt> (OpenWrt 25.12.4 ath79, mabur-only image) |
 | Daemon source | `feed/net/mabur-relay/src` in that repo (C, libc only, single `poll()` loop) |
-| **Wire contract** | `docs/mabur-relay-protocol.md` in that repo — protocol **v3**. Code against that file, not this summary. |
+| **Wire contract** | `docs/mabur-relay-protocol.md` in that repo — protocol **v4**. Code against that file, not this summary. |
 | Bench record | `docs/verify-mabur-relay-on-device.md` in that repo (flash/boot check, v1/v2 full-rate runs, TX mode) |
 | Device | `root@10.83.11.1`; DHCP on the LAN (10.83.11.100-199, no router/DNS — mabur-openwrt `90-mabur-lan`); failsafe 192.168.1.1; the bench CPE is a v3 |
 | Ports | UDP **8310** (`maburgs`, native `webgs`), `ws://` **8311** (web GS) |
@@ -27,7 +30,7 @@ injects uplink RCFs for the owning client too. The web GS consumes it today
   `136 HT20` it heard almost nothing of an HT40 link; `136 HT40-` heard
   15,415 video frames in 5 s at 0.21 % dot11-seq loss.
 
-## Protocol v3 in one paragraph
+## Protocol v4 in one paragraph
 
 Clients subscribe with `HELLO` (every 500 ms; lapses after 2 s) and steer the
 radio with `TUNE` (channel + `sec`: 0 HT20, 1 HT40+, 2 HT40-). Only the
@@ -37,7 +40,7 @@ radio with `TUNE` (channel + `sec`: 0 HT20, 1 HT40+, 2 HT40-). Only the
 `rssi[2]`/`noise[2]` in dBm, `tsf_lo`) followed by the **802.11 frame with
 the FCS already stripped**. The relay parses radiotap on the CPE; clients
 never see radiotap on the RX side. All fields little-endian. `seq` gaps =
-relay→client loss, distinct from air loss in the dot11 seq. New in v3: `TX`
+relay→client loss, distinct from air loss in the dot11 seq. Since v3: `TX`
 (type 5) lets the **owner only** hand the relay `mcs + flags + an FCS-less
 802.11 frame (24–1500 B)` for injection; anything not from the owner, or
 with `mcs` > 7, a reserved flag bit set, or a bad length, is dropped and
@@ -46,7 +49,12 @@ high for that to be anything but spam. `STATUS` gained three `u32` counters
 (`tx`, `tx_fail`, `tx_refused`) after `uptime_s`, same wrap rule as the rest.
 On the relay's own `poll()` loop, client sockets (UDP/WS control + TX) are
 read **before** the monitor socket, so an owner's TX/TUNE is never starved
-behind a burst of inbound video.
+behind a burst of inbound video. Since v4 (2026-10-05): `SURVEY` (type 6,
+relay → every subscriber, periodic per-channel energy counters), `SCAN`/
+`SCAN_RESULT` (types 7/8, owner-only interference sweep) and `STATUS`'s
+fourth new counter `tx_scan_drop` — "Interference + hop on a relay", below.
+`ver` is 4 on every message; v3 is removed with no compatibility shim (a v3
+relay and a v4 client simply drop each other's traffic as a bad `ver`).
 
 ## ath9k quirks a consumer must respect
 
@@ -76,8 +84,12 @@ behind a burst of inbound video.
 
 `gs/src/remote_card.{h,cpp}` makes the relay one more `maburgs` radio card
 next to the USB cards: in the Aggregator, in the TX selector, a possible
-hop lead. A relay-only GS (no USB card) is not supported — the USB scan's
-"no supported radio found" exit runs before any relay is counted.
+hop lead. **A relay-only GS (no USB card) is supported since protocol v4**
+(2026-10-05): `main.cpp`'s "no supported radio found" exit only fires when
+the USB scan is empty **and** `radio.relays` is empty too (`cfg.radio.relays.empty()`,
+`gs/src/main.cpp:233`) — an `n_usb = 0` roster is valid. A relay-only roster's
+boot scan stays search-only (no energy reads to rank with); see
+"Interference + hop on a relay" below for what it gets instead.
 
 **Config.** `[radio] relays = ["10.83.11.1:8310"]` in `/etc/maburgs.toml`
 (default `[]`). Each entry is `ipv4:port` — a numeric dotted IPv4 address
@@ -99,7 +111,11 @@ only stable alongside an explicit card list.
 on every card; `RadioFrontend` and `RemoteCard` both implement it, with no
 per-card `is_relay` branches. `can_scout()` (energy reads exist) is true
 for USB, false for the relay; `relay_stats()` is `nullopt` except on a
-relay. `caps()`: chip `ath9k`, gen `CPE510`, 2x2, 20|40, `fast_retune`
+relay. Since protocol v4, `can_sweep()` (a v4 `SCAN` the relay can run) is
+false for USB, **statically true** for `RemoteCard` (a v3 relay cannot
+speak to a v4 GS at all — deliberate deviation from the spec's "true once a
+v4 STATUS is seen", `docs/superpowers/plans/2026-10-05-cpe-relay-hop.md`
+Global Constraints #2). `caps()`: chip `ath9k`, gen `CPE510`, 2x2, 20|40, `fast_retune`
 false, `fa_ok`/`igi_ok`/`nhm_ok`/`floor_ok`/`snr_ok` all false; the
 `scan.log` `C` record logs it like any card. Scout picks are by predicate
 (`gs/src/scout_pick.h`): the boot scout is the last scout-capable card and
@@ -316,6 +332,244 @@ found the boot scan committing home → 144 with the relay unable to tune
 there (see "ath9k quirks" above) — resolved by the 2026-10-03 CPE image
 (full channel grid); the GS's shipped candidates `[144, 112]` stand.
 
+## Interference + hop on a relay (protocol v4, 2026-10-05)
+
+A GS whose only radio is the CPE now gets the same verdict → freshness
+burst → ranker → hop flow a one-/two-card USB GS runs
+(`docs/inflight-channel-hop.md`): it detects interference on the op
+channel, sweeps the channel set over the relay, ranks it and hops. Design
+spec: `docs/superpowers/specs/2026-10-05-cpe-relay-hop-design.md`
+(gitignored); plan: `docs/superpowers/plans/2026-10-05-cpe-relay-hop.md`
+(gitignored) — this page is the durable record. Code: relay side
+`../mabur-openwrt` branch `relay-scan-v4` (`feed/net/mabur-relay/src/`),
+GS side this repo branch `relay-hop` (`gs/src/channel_core.{h,cpp}`,
+`gs/src/remote_card.{h,cpp}`, `gs/src/relay_sweep_map.h`,
+`gs/src/scout_pick.h`, `gs/src/hop_ranker.{h,cpp}`). Not done by this: a
+relay never joins the periodic in-flight scout (still no synchronous
+energy read) and relay boot-scan measurement stays out of scope (the
+relay-only boot stays search-only).
+
+**`SURVEY`/`SCAN` in one line.** `6 SURVEY` is the relay pushing per-channel
+hardware cycle counters (`active_ms`/`busy_ms`/`rx_ms`/`tx_ms`,
+`ofdm_err`, `foreign`) to every subscriber every 50 ms, cumulative since a
+`gen` counter that bumps on every retune and every sweep — it is how a
+client reads the **op** channel's condition without owning a scout card.
+`7 SCAN`/`8 SCAN_RESULT` is the owner asking the relay to leave the op
+channel, dwell every candidate at HT20, and come back — it is how a
+relay-only GS gets a ranking for a **candidate** it cannot otherwise
+measure (no FA/CCA/NHM reads on this card, ever). Full wire layout:
+`../mabur-openwrt/docs/mabur-relay-protocol.md`.
+
+**Evidence (2026-10-05 bench, live CPE, drone off): busy − rx is the
+interferer signature.** Manual sweeps (`iw dev mon0 set channel N HT20`,
+1 s dwell, `iw survey dump`) over channels 36–177:
+
+| source | busy % | rx % | busy − rx |
+|---|---|---|---|
+| WiFi traffic (e.g. ch153) | 34 | 33 | ≈ 0 |
+| analog VTX carrier, on-channel (ch153) | 100 / 97 | 0 / 11 | ≈ 100 |
+| analog VTX carrier, adjacent (ch157) | 12 / 82 | 6 | — |
+| DJI O4 (ch165+169, ≈40 MHz around 5835) | 64/64, 73/73 | 13/12, 5/4 | 50–70 |
+
+`busy` alone cannot tell WiFi from an interferer (both can read high);
+`rx` is the relay's own count of frames it could actually decode, so
+`busy − rx` is non-decodable airtime — near 0 for real WiFi, high for
+anything the relay can hear energy from but not demodulate. The hardware
+cycle counters **reset when the radio tunes onto a channel** (a
+before/after snapshot across a retune gives negative deltas — read after
+the dwell, or baseline right after the tune, which is what `SURVEY`'s
+`gen`-keyed baseline does) and carry a **~3 ms "busy" artifact right after
+every tune**, present even on a silent channel (subtracted the same way).
+**Noise is not a usable signal** (cal rejects out-of-range NF; bench
+2026-10-05): the same channel read noise −46 one pass and −95 the next —
+`busy − rx` is the metric, not `ah->noise`.
+
+**Verdict-input mapping** (`VerdictCardIn`, per 150 ms window, from a
+relay card — `gs/src/channel_core.cpp`'s per-card verdict loop):
+
+| field | source | feeds |
+|---|---|---|
+| `fa` | Δ`ofdm_err` (`RemoteCard::read_energy_scout()`) | `raised` |
+| `foreign` | Δ`foreign` (`RemoteCard::frames()`) | `contended` |
+| `busy_valid`, `nhm_busy_pct` | `SURVEY` delta valid (same `gen`, span ≥ 100 ms); `100·Δbusy/Δactive` | `blocked` |
+| `own_air_pct` | `100·Δrx/Δactive` — on the op channel `rx` ≈ our own video | subtracted in `blocked` (decodable foreign WiFi is already `contended`) |
+| `rssi`, `snr_valid=false` | unchanged (RSSI from the FRAME header; the relay has no second measurement, "The relay has no SNR" above) | `weak`, `fading` |
+
+`cca` reads 0 on a relay (ath9k has no CCA-event count the relay exposes),
+so `raised` on a relay card is `fa` (OFDM/HT PHY errors) alone.
+
+**Async sweep (spec §4).** On a trigger, `ChannelCore` sends one `SCAN`
+for `radio.channels` minus the op channel, `passes = 2`, `observe_ms = 20`
+(`kSweepPasses`/`kSweepObserveMs`, `gs/src/channel_core.h`); the relay
+dwells every candidate at HT20 both passes before returning. Budget
+(4-channel set, 3 candidates): ~40 ms/channel (18 ms retune + 20 ms observe
++ 2 ms reads) × 3 × 2 passes + an 18 ms return ≈ **280 ms the relay is off
+the op channel** — link gap on a relay-only GS, since there is no spare
+card to carry video meanwhile. Two passes give two visits per candidate
+with distinct timestamps, so **one burst ranks the whole set**
+(`HopRanker` needs `fresh >= 2`). No result within the sweep timeout —
+**`max(1000, passes·n·(observe_ms+40) + 300)` ms**, derived from the
+request when the `SCAN` leaves (`n` = channels in the `SCAN`; a 4-member
+set sits on the 1000 ms floor, an 8-member set gets 1140 ms) — → the burst
+is dropped, `sweep_timeout` logged, `hop.sweep_timeouts` bumped on the
+sideport, and a later burst may run again — this is also what covers a
+relay reboot or a lost `SCAN_RESULT` mid-sweep.
+
+**`hop.relay_burst_period_ms`** (new key, default 1000, range 500–60000,
+`gs/src/config.{h,cpp}`, `gs/bundle/maburgs.default.toml`): `hop_burst_due()`
+uses this instead of `hop.dwell_period_ms` (333 ms) when the burst card is
+a relay — a 280 ms sweep every 333 ms in a sustained `Hold` would leave the
+relay deaf ~85 % of the time. The first burst after a trigger is still
+immediate, as for a USB burst.
+
+**Burst-card order** (`pick_burst_card()`, `gs/src/scout_pick.h`), first
+match wins:
+
+1. scout-capable, not TX (USB spare card — 40 ms, the link card stays on air)
+2. sweep-capable, not TX (relay spare — the USB TX card keeps the link while the relay sweeps)
+3. scout-capable TX (one-card USB GS's existing acceptance)
+4. sweep-capable TX (**relay-only GS**)
+5. none → skip (`-1`)
+
+"Sweep-capable" is evaluated **per tick**: a v4 relay (`can_sweep()`)
+**that is `ready()`** — owned, tuned, not lost. A relay that is down,
+booting or owned by another client therefore never takes the burst, and on
+a relay + USB GS with USB as TX the USB card bursts itself (rule 3) instead
+of the burst being spent on a dead relay. A `start_sweep()` that still
+fails (a ready → down race, or a one-member set with nothing to sweep) does
+not spend the burst (`last_burst_ms_` is restored). While a sweep is
+pending the TX selector is frozen (`tx_selection_frozen`, like an in-flight
+dwell), so TX never moves onto the sweeping relay.
+
+**Relay `HopVisit` mapping** (`gs/src/relay_sweep_map.h`'s `sweep_visit()`):
+`fa = ofdm_err`, `foreign = foreign`, `cca = own = 0` (so `fa + 4·foreign`
+is the whole score contribution), `busy_valid = true`, `busy_pct = 100·busy/active`
+— **raw busy, no rx subtraction** (none of our own frames land on a
+candidate, same as the USB ranker's candidate NHM reading) — and `src =
+VisitSrc::Relay`. `HopRanker::ranking()` (`gs/src/hop_ranker.cpp`) uses
+only the **newest visit's source kind**: a USB 5 ms CCA-event visit and a
+relay 20 ms survey visit are different scales, and one burst always covers
+the whole candidate set with one card, so a ranking is never built mixing
+the two.
+
+**Deliberate deviations from the spec** (plan Global Constraints, carried
+here as as-built facts):
+
+1. `TUNE` keeps the relay's `iw` fork/exec (the spec moved it to nl80211
+   too); only the sweep and `SURVEY` use nl80211 directly. The relay loop
+   tests stub `iw`, and 7 ms on a hop `TUNE` does not matter.
+2. `RemoteCard::can_sweep()` is **statically true**, not "true once a v4
+   `STATUS` is seen" — a v3 relay cannot speak to a v4 GS at all (`ver`
+   mismatch is dropped on both sides), so there is no intermediate state
+   to detect.
+3. `SURVEY` is **paused during a sweep** (the spec kept it running with
+   `gen` bumps mid-sweep); `gen` bumps **once, on return** —
+   `survey_rebase()` (`../mabur-openwrt/feed/net/mabur-relay/src/relay.c`)
+   runs at startup, in `finish_tune()` and in `finish_sweep()`, never at
+   sweep start (`handle_scan()` does not call it), and the SURVEY send
+   itself is gated off while `R.sw.active` (`relay.c`'s poll loop). The GS
+   already treats a sweeping card as busy/unusable for the op verdict
+   regardless (below), so the paused stream costs nothing.
+4. While a sweep is pending, `ChannelCore` feeds the hop controller
+   `trigger = false` so it cannot enter `hold_exhausted` before the
+   `SCAN_RESULT` (or the timeout) lands.
+5. The spec's "resync `cur_ch_` from the `SCAN_RESULT`'s `back_channel`"
+   was **not implemented**. Harmless: the core never retunes the relay as
+   part of a sweep (the relay returns itself), so `cur_ch_` is still right
+   after a normal return; a `status 3` return (radio read back elsewhere,
+   `STATUS state 2`) is recovered by `RelayClient`'s re-`TUNE`, the same
+   path as any failed retune.
+6. The sweep timeout is **derived from the request**
+   (`max(1000, passes·n·(observe_ms+40) + 300)` ms), not the spec's fixed
+   1000 ms — a larger set would otherwise time out mid-sweep (final-review
+   fix wave).
+7. `hop.relay_burst_period_ms`'s minimum is **500**, not 100: under
+   ~450 ms a burst can re-fire on the tick the trigger returns after a
+   result and starve the controller (final-review fix wave).
+8. Final-review fix wave additions: the sideport `hop.sweep_timeouts`
+   counter (`docs/observability.md`, `docs/data-provenance.md` 2026-10-05
+   entry); the per-tick ready-gated burst pick and the TX freeze above; a
+   `SURVEY` counter that goes **down within one `gen`** (a fast relay
+   restart reusing the gen) is treated by `RemoteCard` as a gen change —
+   window invalid, totals take the new sample's full count — instead of
+   wrapping u32.
+
+**Other as-built facts found during implementation** (not spec deviations,
+behaviour the spec left underspecified):
+
+- **A `SCAN_RESULT` to a WS client is priority** — it evicts a queued video
+  frame when that client's WS send queue is full (`relay.c`'s prio
+  enqueue; `SURVEY` is not prio and can itself be dropped under load).
+- **A sweep that cannot return (`status 3`)**: the relay reads the radio
+  back, **adopts** whatever channel that read shows, sets `STATUS state =
+  2` and broadcasts it — the GS's `RelayClient` sees the mistune and
+  re-`TUNE`s, the same recovery path an ordinary failed retune uses.
+- **The relay forgets a sweep's requester if that client is reaped or its
+  slot is reused** mid-sweep (UDP 2 s silence, WS socket closed): the
+  finished sweep's result is computed and then simply dropped — nobody
+  claims it, and a new client reusing the same subscriber slot never sees
+  a stale result land on it.
+- **`RemoteCard::on_survey_()`** (`gs/src/remote_card.cpp`): the **first**
+  `SURVEY` after (re)connect is a baseline only — its counters are the
+  relay's backlog for that `gen`, not this session's traffic, so nothing
+  is added to the cumulative OFDM-error/foreign totals. A `gen` change
+  mid-session (a sweep, or another client's retune) instead adds the **new
+  gen's full counts** — there is no prior sample in that `gen` to delta
+  against.
+- **`ChannelCore`'s op verdict skips a card only while its own sweep is
+  pending** (`sweep_.on && sweep_.card == i`), deliberately **not**
+  `RemoteCard::sweeping()`: a lost `SCAN_RESULT` leaves the card-level flag
+  on past `ChannelCore`'s own sweep timeout, and skipping the op verdict
+  on it for good would blind a one-card (relay-only) GS permanently. The
+  timeout (expiry) is checked **before** the result arrival, so a result
+  that lands late loses to the timeout rather than reviving a dropped
+  sweep.
+
+**Timing budget — derived (spec §7), now superseded by the bench below**
+(4-channel set / 3 candidates, 2 × 20 ms observe):
+
+| milestone | relay-only (derived) | relay-only (bench 2026-10-05) |
+|---|---|---|
+| detection (2 of 3 × 150 ms) | ~300–350 ms | first interfered window +0, trigger +150–300 ms |
+| sweep (2 passes) done | ~630 ms | SCAN_RESULT +376–525 ms (sweep itself 224 ms) |
+| order (5 RCF × 50 ms) | ~880 ms | +625–774 ms |
+| relay `TUNE` + video lands → Confirm | **~0.9–1.05 s** | **+895 ms (jam) / +1121 ms (O4)** |
+| `verify_pass` | +1 s | +1 s |
+
+### Bench 2026-10-05 (relay v4 + `relay-hop`)
+
+Rig: CPE510 on the v4 relay (`relay-scan-v4`, hot-swapped binary; the v3
+binary kept at `/root/mabur-relay.pre-v4`), wired to the **host** (USB NIC,
+10.83.11.1), not the GS. Relay-only rows ran the host-built `maburgs` with
+the bench GS's `maburgs` stopped (one commander); the host's RTL8822EU was
+first unplugged, then (for the jam rows) used as the jammer with `maburgs`
+run in an unprivileged user+mount namespace whose `/dev/bus/usb` is an
+empty tmpfs (`unshare -r -m`), so the auto-scan finds no USB card. Drone
+disarmed (30 fps), set `{40, 64, 112, 144}`, auto.
+
+| row | result |
+|---|---|
+| 1 nl80211 timing | **PASS** — `sweep id=77 done in 224 ms (max retune 19 ms)` for 3 ch × 2 passes × 20 ms; silent channels read 0 % busy (the 3 ms tune artifact is gone); SURVEY every ~52 ms; relay CPU 0 % → 2–3 % with a subscriber and SURVEY on |
+| 2 `ofdm_err` under the jam | **barely moves** — 0–3 OFDM/HT PHY errors per verdict window under a decodable 802.11 jam (decodable frames are not PHY errors). `raised` contributes nothing on a relay; relay detection rests on `blocked` (non-WiFi) and `contended` (WiFi). `fa_pps` stays shared |
+| 3 relay-only, clean | **PASS** — `cards: no USB radio; running relay-only (1 relay)`, owned and tuned, search finds the drone, top rung mcs4/40; ausniff 616 AUs / 20 s, 0 gaps, 0 resyncs; verdict healthy, no false sweep/hop while clean (relay busy ≈ rx ≈ our own video) |
+| 4 analog VTX | not run (skipped by the operator) |
+| 5 DJI O4 co-channel on 144 | **PASS** — relay busy 65 %, own airtime 12.5 % → `blocked` (evidence 0x61); SCAN 40/64/112 all 0 %; order 64, `one_card_retune` +224 ms, `lead_confirm` +347 ms; **~1.12 s from the first impaired window to video on 64**; verify_pass; ausniff on 64 clean (466 AUs / 15 s, 0 gaps) |
+| 6 WiFi jam on 144 (`benchjam`, 6M/1000 B/500 pps) | **PASS** — evidence 0x09 (impaired + `contended`, ~71 foreign/window; busy ≈ rx 67 % — a decodable jam is `contended`, not `blocked`); order 40, `lead_confirm` +895 ms from the first interfered window (≈1.05 s from onset). 11 s later real foreign traffic on 40 (the 36–48 neighbour router) → a second hop: that sweep saw the still-jammed 144 at 62–65 % busy and the ranker chose 112; ausniff clean on 112 |
+| 7 web GS relay mode (headless Chrome 147 over CDP, page built from `relay-hop`) | **PASS** — owned the relay, found the drone on 112 (30 AU/s, 0 hitches, 0 relay seq gaps); jam on 112 → `order 64`, `one_card_retune` +244 ms, `lead_confirm` +312 ms, `CHANNEL 64`, verify_pass; healthy on 64 for the remaining ~110 s; clean Disconnect/`DONE`. The page stayed healthy (29–31 AU/s) for ~15 s of jam before the link was actually impaired — no hop while healthy, by design |
+| 8 relay + 8812EU | **partial** — clean channel PASS (both cards up, relay own=1 gaps 0, ausniff 616 AUs / 20 s clean, relay busy 17.4 % ≈ rx 18.9 % in the V record, no false sweep); the interference half was not run with the dongle in |
+
+Findings (not fixed in this branch):
+- **~250 ms lost between SCAN_RESULT and the order** on every relay hop:
+  the trigger is held off while the sweep is pending and the verdict then
+  needs 2 interfered windows again. Keeping the trigger latched across the
+  sweep would bring onset → video to ~0.8 s.
+- **Relay-only auto boot relocates to `channels[0]`** after "link where
+  found" with no measurement behind it (seen: 64 → 144 at every start).
+  Harmless, but a pointless hop on each relay-only boot.
+- **The web page shows a ~1.5 s video gap after a hop** (AU/s 13 → 0 → 15
+  → 27; 56 truncated AUs over the run) where `maburgs` resumes within
+  ~300 ms — likely the page's key-frame wait after a channel change.
+
 ## Measured limits (full rate, mcs4/40, ~3.2k frames/s, 36 Mb/s)
 
 | Subscriber | CPE CPU | Loss |
@@ -343,7 +597,7 @@ a `PACKET_MMAP` receive ring (RX costs ~18 pts).
   broken, which stalls the ImageBuilder's wget; run the image stage with an
   IPv4-only `WGETRC` (see the relay repo README).
 
-## TX mode (as built, protocol v3, 2026-09-29)
+## TX mode (as built, originally protocol v3, 2026-09-29; unchanged under v4)
 
 The relay builds the 13-byte radiotap header itself (TX_FLAGS NOACK + MCS)
 around the client's `mcs + flags + FCS-less dot11` payload and injects on
@@ -428,8 +682,10 @@ or `.local` name once the user allows local network access — see
 
 - **Multi-relay on hardware**: needs a second CPE and per-device addressing
   in `mabur-openwrt` (every unit ships at `10.83.11.1` with its own DHCP).
-- **ath9k `noise` as a slow in-band energy sensor** for the relay (does NF
-  calibration run in monitor mode? log `noise` next to an interferer).
+- ~~**ath9k `noise` as a slow in-band energy sensor** for the relay~~ —
+  SETTLED 2026-10-05: noise is not a usable signal (cal rejects
+  out-of-range NF; bench 2026-10-05) — busy − rx is ("Interference + hop on
+  a relay" above).
 - **Web GS showing the relay's SNR as "RSSI above floor"** (its own
   assembler).
 - **wss for phones at capped rungs** (the mbedTLS test server hung in the

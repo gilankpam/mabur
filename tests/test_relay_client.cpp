@@ -1,4 +1,4 @@
-// RelayClient (gs/src/relay_client.h): the pure mabur-relay v3 client.
+// RelayClient (gs/src/relay_client.h): the pure mabur-relay v4 client.
 #include <cstring>
 #include "dot11.h"
 #include "mtest.h"
@@ -19,7 +19,7 @@ struct Sink {
 
 std::vector<uint8_t> status(uint8_t state, uint8_t ch, uint8_t sec, uint8_t you_own) {
   std::vector<uint8_t> b(kStatusLen, 0);
-  b[0] = 0x4D; b[1] = 0x52; b[2] = 3; b[3] = kStatus;
+  b[0] = 0x4D; b[1] = 0x52; b[2] = 4; b[3] = kStatus;
   b[6] = state; b[7] = ch; b[8] = sec; b[9] = 1 /* owner kind: UDP */; b[10] = you_own;
   return b;
 }
@@ -27,7 +27,7 @@ std::vector<uint8_t> status(uint8_t state, uint8_t ch, uint8_t sec, uint8_t you_
 std::vector<uint8_t> frame(uint32_t seq, uint8_t rx_ch, uint8_t flags, uint8_t mcs, int8_t r0,
                            int8_t r1, int8_t n0, int8_t n1) {
   std::vector<uint8_t> b(kFrameHdrLen, 0);
-  b[0] = 0x4D; b[1] = 0x52; b[2] = 3; b[3] = kFrame;
+  b[0] = 0x4D; b[1] = 0x52; b[2] = 4; b[3] = kFrame;
   for (int i = 0; i < 4; ++i) b[4 + i] = static_cast<uint8_t>(seq >> (8 * i));
   b[8] = rx_ch; b[9] = 2; b[10] = flags; b[11] = mcs;
   b[12] = static_cast<uint8_t>(r0); b[13] = static_cast<uint8_t>(r1);
@@ -369,6 +369,44 @@ TEST(foreign_sa_is_reported_not_swallowed) {
   auto g = frame(2, 136, kFlagPhyValid | kFlagBadFcs, 4, -50, -52, -95, -95);
   g[kFrameHdrLen + 10] = 0x00;                 // CRC-failed: SA proves nothing, still a body
   CHECK(c.on_message(g.data(), g.size(), 11, b) == RelayClient::Rx::Body);
+}
+
+TEST(scan_result_matches_only_the_last_scan) {
+  std::vector<std::vector<uint8_t>> sent;
+  RelayClient c(112, 0, [&](const std::vector<uint8_t>& m) { sent.push_back(m); });
+  c.start(1000);
+  const uint16_t id = c.start_scan({40, 64}, 2, 20);
+  CHECK(c.scan_pending());
+  REQUIRE(!sent.empty());
+  CHECK(relay::msg_type(sent.back().data(), sent.back().size()) == relay::kScan);
+  auto res = [](uint16_t sid) {
+    std::vector<uint8_t> b = {0x4D, 0x52, 0x04, 0x08, (uint8_t)sid, (uint8_t)(sid >> 8), 0, 112, 0, 0};
+    return b;
+  };
+  mabur::node::RxBody body;
+  const auto stale = res(static_cast<uint16_t>(id - 1));
+  CHECK(c.on_message(stale.data(), stale.size(), 1010, body) == RelayClient::Rx::None);
+  CHECK(c.scan_pending());
+  const auto mine = res(id);
+  CHECK(c.on_message(mine.data(), mine.size(), 1020, body) == RelayClient::Rx::ScanResult);
+  CHECK(!c.scan_pending());
+  auto r = c.take_scan_result();
+  REQUIRE(r.has_value());
+  CHECK(r->scan_id == id);
+  CHECK(!c.take_scan_result().has_value());          // once
+}
+
+TEST(survey_is_kept) {
+  RelayClient c(112, 0, [](const std::vector<uint8_t>&) {});
+  c.start(1000);
+  std::vector<uint8_t> b(relay::kSurveyLen, 0);
+  b[0] = 0x4D; b[1] = 0x52; b[2] = 4; b[3] = relay::kSurvey; b[4] = 112; b[6] = 5;
+  b[8] = 150;                                        // active_ms = 150
+  mabur::node::RxBody body;
+  CHECK(!c.have_survey());
+  CHECK(c.on_message(b.data(), b.size(), 1050, body) == RelayClient::Rx::Survey);
+  CHECK(c.have_survey());
+  CHECK(c.survey().gen == 5 && c.survey().active_ms == 150);
 }
 
 MTEST_MAIN

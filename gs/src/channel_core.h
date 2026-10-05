@@ -34,6 +34,7 @@
 #include "mabur/link_key.h"
 #include "mabur/rc_proto.h"
 #include "nhm_window.h"
+#include "relay_sweep_map.h"
 #include "s1_loss.h"
 #include "stats_exporter.h"
 #include "vrx_controller.h"
@@ -155,10 +156,15 @@ class ChannelCore {
   // Live reads of the cross-thread state at call time (not the end-of-tick
   // ChannelTickOut copy): the send path runs after tick(), and a dwell the
   // scout thread starts in between must still freeze TX / hold the cal cmd.
-  bool tx_frozen() const { return tx_selection_frozen(dwell_busy_.load(), plan_.hopping()); }
+  // A relay sweep in flight freezes it too (the selector must not move TX
+  // onto a card that is off op for up to the sweep timeout).
+  bool tx_frozen() const { return tx_selection_frozen(dwell_busy_.load() || sweep_.on, plan_.hopping()); }
   bool dwell_busy() const { return dwell_busy_.load(); }
   uint64_t scout_gated_sends() const { return scout_gated_sends_; }
   bool pick_open() const { return boot_pick_.open(); }
+  // Relay sweep seams (spec 2026-10-05): a SCAN is in flight / timed out.
+  bool sweep_pending() const { return sweep_.on; }
+  uint64_t sweep_timeouts() const { return sweep_timeouts_; }
   bool scout_working() const { return scout_ && scout_->working(); }       // card reopen gate
   bool scout_owns_card(int card) const { return scout_owns_() && card == scout_card_; }  // TX snapshots
 
@@ -180,6 +186,7 @@ class ChannelCore {
   bool pinned_ = false;
   bool reactive_ = true;       // !pinned_: the in-flight hop + its scout and burst run only in auto mode
   std::vector<bool> can_scout_;
+  std::vector<bool> can_sweep_;   // LinkCard::can_sweep(): a relay that takes a v4 SCAN
   std::vector<bool> snr_ok_;
   int scout_card_ = -1;        // pick_boot_scout(can_scout_)
   bool one_card_ = false;      // n_usb == 1 (scout mode); the hop's one-card path is lead<0
@@ -235,6 +242,18 @@ class ChannelCore {
   VerdictOut last_verdict_out_;
   std::optional<uint64_t> last_hop_event_ms_;
   double last_burst_ms_ = -1e18;
+  // ---- relay sweep (spec 2026-10-05-cpe-relay-hop) ----
+  // One SCAN in flight at most; it ends on its SCAN_RESULT, on the timeout,
+  // or on the card dying. A reopened relay drops a pending scan without a
+  // result, so !sweeping() never means "result ready".
+  // The timeout is derived from the request when the SCAN leaves:
+  // max(1000, passes * n * (observe_ms + 40) + 300) -- 40 ms per channel
+  // covers the relay's retune + settle, 300 ms the round trip and slack. A
+  // 4-member set (3 swept) sits on the 1000 ms floor; 8 members -> 1140 ms.
+  struct PendingSweep { bool on = false; int card = -1; double sent_ms = 0; double timeout_ms = 1000; } sweep_;
+  uint64_t sweep_round_ = 0, sweep_timeouts_ = 0;
+  static constexpr double kSweepTimeoutMinMs = 1000, kSweepPerChannelMs = 40, kSweepSlackMs = 300;
+  static constexpr uint8_t kSweepPasses = 2, kSweepObserveMs = 20;
   uint64_t rcf_sent_total_ = 0, rcf_sent_at_order_ = 0, ctrl_sent_total_ = 0;
   mutable uint64_t scout_gated_sends_ = 0;   // bumped inside the const gate query
   uint8_t last_video_ch_ = 0;
@@ -275,6 +294,7 @@ class ChannelCore {
   void step_drains_();
   void step_width_resync_();
   void step_mechanical_retune_();
+  void poll_sweep_(double now_ms);
   void inflight_body_();
   void scout_loop_();
   std::string logf_(const char* fmt, ...);
