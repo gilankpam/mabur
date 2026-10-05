@@ -23,6 +23,9 @@ cd /home/gilankpam/Projects/drone/mabur
 G=root@10.18.0.1
 DUR=${DUR:-300}; PPS=${PPS:-180}; CH=${CH:-144}
 GSBIN=${GSBIN:-/usr/local/bin/maburgs.fecnack}; GSARGS=${GSARGS:-}
+# Each arm killalls GSBIN by basename: never let that name the production
+# daemon (its wrapper would respawn it beside the arm's instance).
+[ "$(basename "$GSBIN")" = maburgs ] && { echo "refusing: GSBIN is the production daemon name"; exit 1; }
 S=$(dirname "$0")
 
 # ssh with retry: 18 tries, 5 s apart. Returns the last ssh's status.

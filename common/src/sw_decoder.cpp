@@ -194,7 +194,12 @@ void SwDecoder::ingest(uint64_t v, std::vector<uint8_t> sym, Origin origin,
   while (!queue.empty()) {
     auto [s, payload] = std::move(queue.back());
     queue.pop_back();
-    const Origin o = first ? origin : Origin::kRepair;  // cascades are repair-recovered
+    // Cascades are repair-recovered -- unless the symbol that set them off
+    // was a retx: without it none of them would be known, so they inherit
+    // the retx class (R20; retx_await_src_ then holds them, and a late
+    // direct copy still books syms_retx_arrived).
+    const Origin o =
+        first ? origin : (origin == Origin::kRetx ? Origin::kRetx : Origin::kRepair);
     first = false;
     if (s < live_floor() || known_.count(s)) continue;
     unpack_symbol(payload.data(), out);

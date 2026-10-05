@@ -160,18 +160,64 @@ TEST(tail_trigger_needs_header) {
   CHECK(t.stats().tail_requests == 0);
 }
 
-TEST(clear_drops_everything_and_restarts_counter) {
+TEST(clear_drops_entries_but_keeps_counter) {
+  // A frame_wire edge (e.g. a >= 1 s video dropout) clears entries, but the
+  // drone still holds the last counter under the same vtx nonce: the counter
+  // must keep climbing or every NACK after the rejoin is refused.
   World w; w.lose({100});
   NackTracker t(cfg_on());
   CHECK(!t.poll(1000, w.in()).has_value());
   REQUIRE(t.poll(1012, w.in()).has_value());
   t.clear();
   CHECK(t.outstanding() == 0);
+  w.missing.clear(); w.st.clear();
   w.lose({500});
   CHECK(!t.poll(2000, w.in()).has_value());
   auto n = t.poll(2012, w.in());
   REQUIRE(n.has_value());
+  CHECK(n->counter == 2);
+  CHECK(n->n == 1 && n->e[0].first_seq == 500 && n->e[0].bitmap == 0x1u);
+}
+
+TEST(restart_counter_starts_at_one) {
+  World w; w.lose({100});
+  NackTracker t(cfg_on());
+  CHECK(!t.poll(1000, w.in()).has_value());
+  REQUIRE(t.poll(1012, w.in()).has_value());
+  REQUIRE(t.poll(1028, w.in()).has_value());           // counter 2
+  t.restart_counter();                                 // new vtx nonce
+  w.missing.clear(); w.st.clear();
+  w.lose({500});
+  t.clear();
+  CHECK(!t.poll(2000, w.in()).has_value());
+  auto n = t.poll(2012, w.in());
+  REQUIRE(n.has_value());
   CHECK(n->counter == 1);
+}
+
+TEST(fill_ms_window_is_capped_when_never_drained) {
+  // NACK on + sideport off: nobody calls take_window(). The fill_ms sample
+  // vector stops appending at kMaxFillSamples; the filled counters still
+  // count every fill.
+  World w;
+  NackTracker t(cfg_on());
+  uint64_t now = 1000;
+  uint32_t base = 1000;
+  uint64_t fills = 0;
+  while (fills < NackWindow::kMaxFillSamples + 500) {
+    w.missing.clear(); w.st.clear();
+    for (uint32_t k = 0; k < 128; ++k) w.lose({base + k});
+    CHECK(!t.poll(now, w.in()).has_value());
+    REQUIRE(t.poll(now + 12, w.in()).has_value());
+    for (uint32_t k = 0; k < 128; ++k) w.st[base + k] = S::kRetx;
+    w.missing.clear();
+    t.poll(now + 13, w.in());
+    fills += 128; base += 128; now += 100;
+  }
+  CHECK(t.stats().filled == fills);
+  auto win = t.take_window();
+  CHECK(win.filled == fills);
+  CHECK(win.fill_ms.size() == NackWindow::kMaxFillSamples);
 }
 
 MTEST_MAIN

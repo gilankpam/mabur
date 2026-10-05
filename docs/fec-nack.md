@@ -120,16 +120,24 @@ and resolve normally.
 
 **Packing and send.** Due seqs, ascending, go into ≤ 4 runs of 32; what
 does not fit stays due for the next poll. At most one frame per poll, with
-`counter` = the tracker's per-session counter (starts at 1). It is sent
-**directly** through `send_control_frame` on the selected TX card,
+`counter` = the tracker's counter (1 on each new vtx nonce, see below). It
+is sent **directly** through `send_control_frame` on the selected TX card,
 mid-burst, gated like every control frame by `ChannelCore::may_send` and
 the calibration radio-silence gate. Never through the RcfSlotter: in the
 spike the slotted send filled at p50 44 ms, by which time the frame had
 usually been truncated.
 
-**Session clears.** `nack.clear()` (entries and counter) runs every poll
+**Session clears.** `nack.clear()` drops the tracked entries every poll
 while there is no session nonce or the peer is not on the frame wire, and on
-every `frame_wire` edge, together with the decoder continuity reset.
+every `frame_wire` edge, together with the decoder continuity reset. It
+keeps the counter: the drone's `accept_nack_counter` holds the last counter
+for as long as the vtx nonce is unchanged, and a GS that drops to
+BEACONING after `link_lost_ms` of video silence re-enters SESSION on the
+first video body under that same nonce (`VrxRendezvous::feed_video`, no
+DISC). The counter restarts (`NackTracker::restart_counter`, next NACK is
+counter 1) only when `session_ctx().vtx_nonce` turns non-zero and differs
+from the last one seen (`nack_vtx_seen` in `gs/src/main.cpp`) — the same
+point the drone starts its own count over.
 
 **Config** (`gs/src/config.cpp`, `gs/bundle/maburgs.default.toml`):
 
@@ -166,12 +174,16 @@ miss.
 **Handler** (`nack_hook` in `drone/src/main.cpp`, on the **RX thread**;
 `rx_callback` routes `T_NACK` there instead of the agent queue):
 
-1. `parse_nack`, `sid == 0`, `RcAgent::verify_session_tagged(…, counter)`
-   against the published session, `RcAgent::accept_nack_counter(counter,
-   session)`. The counter is one atomic word `(vtx_nonce << 32) | last`:
-   accept iff `counter > last` under the current vtx nonce; a new nonce
-   starts again from 0. **Any** failure (parse, sid, tag, counter) raises
-   `auth_reject` (Telem flags bit1) and returns.
+1. `RcAgent::check_nack`: `parse_nack`, `sid == 0`,
+   `RcAgent::verify_session_tagged(…, counter)` against the published
+   session, `RcAgent::accept_nack_counter(counter, session)`. The counter is
+   one atomic word `(vtx_nonce << 32) | last`: accept iff `counter > last`
+   under the current vtx nonce; a new nonce starts again from 0. Every
+   failure counts `nack_bad` and returns, but only a tag or counter failure
+   raises `auth_reject` (Telem flags bit1). A parse failure (`rx_callback`
+   routes frames regardless of `crc_err`, so this is mostly radio
+   corruption) or `sid != 0` is not an auth failure and raises nothing,
+   like the RCF path's silent parse drop.
 2. `nack_rx++`; refill the bucket.
 3. For each requested seq: ring `get` (miss → skip), bucket `take(cost)`
    (refused → `retx_refused++`, skip), `retx_syms++`, pack into a fresh SBI
@@ -212,6 +224,12 @@ air_pct = 5     # bucket refill, % of the rung's delivered sid-0 capacity; 0..50
   `syms_retx` (not delivered, not recovered); if its direct copy shows up
   later it also books `syms_retx_arrived`. A retx of an already-known seq
   is a stale drop. `LossEpisode` gains `retx` (feclog 3's `rtx` column).
+  Seqs a retx body cascade-solves off a pending repair row (one row
+  covering two holes, the retx fills one, the row then yields the other)
+  inherit the retx class: they book `syms_retx`, read `kRetx` to the
+  tracker (`filled`, not `wasted`) and count in the episode's `retx`
+  (`SwDecoder::ingest`): without the retx the row could not have yielded
+  them.
 - **Residual inputs** use `abandoned + syms_retx` on both paths
   (`gs/src/ladder_residual.cpp`, the s3 path in `gs/src/link_health.cpp`).
   A retx-filled symbol counts as loss even if its direct copy arrives
@@ -247,8 +265,10 @@ air_pct = 5     # bucket refill, % of the rung's delivered sid-0 capacity; 0..50
   static-pin mode, so on a pinned bench read `flight.jsonl` or
   `tools/bench/nack/arm_report.py` instead.
 - **flightreport.py**: a NACK section (`print_nack_report`: requests/min,
-  repeats, outcomes, refused, fill p50/p90/max, settle) and a `retx=` count
-  per group in FEC EPISODES; `load_feclog` reads feclog 1/2/3 by marker.
+  counter-reset tolerant; repeats, outcomes; drone `rx`/`retx_syms`/
+  `refused` summed once per `tlm_seq`; fill p50/p90/max, settle) and a
+  `retx=` count per group in FEC EPISODES; `load_feclog` reads feclog
+  1/2/3 by marker.
 - **Player OSD** compact bar: `rtx:N`, `link.nack.fill_pps` rounded, blank
   below 0.5 (`gs/player/src/gs_compact.cpp`).
 
@@ -302,19 +322,14 @@ arm. Under loss-sim the direct NACK took truncated AUs 314 → 8 and dropped
 
 ## Known limitations
 
-- **Counter reset on a session rejoin under the same vtx nonce (open,
-  found while writing this page).** `nack.clear()` restarts the GS counter
-  on every `frame_wire` edge, including a drop to BEACONING after 1 s of
-  video silence. If video returns before the drone leaves LINKED, the GS
-  re-enters SESSION under the same `vtx_nonce` (`VrxRendezvous::feed_video`)
-  while the drone's `accept_nack_counter` still holds the old last counter
-  under that nonce: every NACK is refused and raises `auth_reject` until the
-  GS counter overtakes it. Not yet reproduced on hardware.
 - The tail-trigger geometry guard in `gs/src/main.cpp` is a tautology:
   one fragment == one symbol holds today by construction. A fragmenter
   change needs a test, not that guard.
-- `NackWindow::fill_ms` is drained only by the sideport export, so it grows
-  without bound when NACK is on and the stats sideport is off.
+- `NackWindow::fill_ms` is drained only by the sideport export. It is
+  capped at `NackWindow::kMaxFillSamples` (4096): past that it stops
+  appending, so the export's `fill_ms` percentiles cover the window's
+  first 4096 fills (`filled` and `fill_pps` still count all). With NACK on
+  and the stats sideport off it sits full at 16 kB instead of growing.
 - `link.nack.lookback < fec.seq_horizon` is checked even without a
   `[link.nack]` section (default 256: a `seq_horizon` ≤ 256 fails boot).
 - The stop rule reads the ladder controller's util, which static-pin mode
@@ -325,8 +340,9 @@ arm. Under loss-sim the direct NACK took truncated AUs 314 → 8 and dropped
 - The bucket starts full (64) and does not refill until the first op is
   published (refill rate 0 without one).
 - `nack_bad` and `retx_miss` are counted on the drone but reported nowhere
-  (no Telem field, no log line); `auth_reject` is the only sign of a bad
-  NACK and a ring miss is invisible.
+  (no Telem field, no log line); `auth_reject` is the only sign of a NACK
+  that failed its tag or counter, a corrupted one is invisible, and so is
+  a ring miss.
 
 ## Deploy and rollback
 

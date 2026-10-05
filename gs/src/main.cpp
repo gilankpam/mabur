@@ -528,6 +528,10 @@ static int run_radio(const maburgs::Config& cfg) {
   // owned, like the decoder it reads. nack_interval_t0 = previous sideport
   // export, for link.nack.fill_pps.
   mabur::NackTracker nack(cfg.link.nack);
+  // The vtx nonce the NACK counter belongs to. The drone accepts counter >
+  // last under one vtx nonce and starts over only on a new one, so the GS
+  // restarts its counter exactly there -- not on a frame_wire edge.
+  uint32_t nack_vtx_seen = 0;
   uint64_t nack_interval_t0 = 0;
   // Tail-trigger geometry (spec §3.1): the tail trigger maps fragment k of
   // the newest frame to wire seq seq_at_max + (k - max_idx), which holds
@@ -1214,6 +1218,11 @@ static int run_radio(const maburgs::Config& cfg) {
     // the video only; every ladder input still books the loss.
     if (cfg.link.nack.enable) {
       const auto sctx = vrx.session_ctx();
+      // != 0: session_ctx() keeps reporting the held nonce in BEACONING.
+      if (sctx.vtx_nonce != 0 && sctx.vtx_nonce != nack_vtx_seen) {
+        nack_vtx_seen = sctx.vtx_nonce;
+        nack.restart_counter();
+      }
       if (sctx.vtx_nonce == 0 || !frame_wire) {
         nack.clear();
       } else {
@@ -1301,7 +1310,7 @@ static int run_radio(const maburgs::Config& cfg) {
       frame_wire = fw;
       agg.decoder().reset_continuity();
       fstream.reset();
-      nack.clear();  // the new session's seqs are unrelated to the old one's
+      nack.clear();  // tracked seqs dropped; the counter is kept (nack_vtx_seen)
       lat_anchor.reset();  // new session's pts space is unrelated to the old one's
       // Drop any pre-reset samples too: without this, the anchor re-warms
       // (kWarmFrames) before the next flush, but the window itself still

@@ -1629,6 +1629,9 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
   // at the 1 Hz build); nack_bad / retx_miss are drone-local only.
   const size_t retx_env_len = static_cast<size_t>(mabur::sw::kSwHeaderLen) + static_cast<size_t>(cfg.fec.symbol_size[0]);
   mabur::RetxRing retx(mabur::RetxRing::slots_for(cfg.encoder.bitrate_max_kbps, cfg.nack.ring_ms, cfg.fec.symbol_size[0]), retx_env_len);
+  std::fprintf(stderr, "maburd: nack retx ring %zu slots x %zu B = %zu B (ring_ms %d at %d kbps)\n",
+               retx.slots(), retx_env_len, retx.slots() * retx_env_len, cfg.nack.ring_ms,
+               cfg.encoder.bitrate_max_kbps);
   std::function<void(const uint8_t*, size_t)> nack_hook;
   std::atomic<uint64_t> nack_rx{0}, nack_bad{0}, retx_syms{0}, retx_refused{0}, retx_miss{0};
   auto rx_callback = [&](const Packet& pkt) {
@@ -1781,14 +1784,14 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
   std::vector<uint8_t> retx_env(retx_env_len);
   std::vector<std::vector<uint8_t>> retx_out;
   nack_hook = [&](const uint8_t* body, size_t len) {
-    auto n = rc::parse_nack(body, len);
-    uint64_t session = 0;
-    if (!n || n->sid != 0 || !agent.verify_session_tagged(body, len, n->counter, &session) ||
-        !agent.accept_nack_counter(n->counter, session)) {
+    // A malformed frame (radio corruption, sid != 0) counts nack_bad only;
+    // check_nack raises auth_reject itself for a tag/counter failure.
+    rc::Nack nk;
+    if (agent.check_nack(body, len, &nk) != RcAgent::NackCheck::kOk) {
       nack_bad.fetch_add(1, std::memory_order_relaxed);
-      agent.note_auth_reject();
       return;
     }
+    const rc::Nack* n = &nk;
     nack_rx.fetch_add(1, std::memory_order_relaxed);
     const auto op = shared_op.load();
     const double sym_per_s =

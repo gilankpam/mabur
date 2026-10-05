@@ -28,10 +28,13 @@ namespace maburgs {
 // flatten sid 1 is the SHED-ABLE enh layer, which has its own demote path
 // in block 5a; pooling it here let enh loss demote through both.
 //
-// abandoned also folds in syms_retx: a symbol a NACK retransmit filled is
-// video-whole but the direct copy never arrived -- plus symbols a NACK
-// retransmit filled -- option A, spec 2026-10-05: the ladder sees the
-// loss, only the video does not.
+// abandoned also folds in syms_retx: a symbol a NACK retransmit filled
+// (or cascade-solved off a repair row) is video-whole but its direct copy
+// never arrived -- option A, spec 2026-10-05: the ladder sees the loss,
+// only the video does not. syms_retx has no stale split: a retx filling a
+// pre-transition seq counts as current residual loss even under `cur`
+// (negligible -- the drone only answers seqs within ring_ms, and a
+// transition gap is a handful of symbols).
 ResidualCounts residual_counts(const mabur::UepDecoder& dec, int sid,
                                bool cur) {
   const auto s = dec.stats(sid);

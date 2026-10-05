@@ -1906,6 +1906,32 @@ def test_nack_section_from_sideport_rows():
     assert re.search(r"filled=20", text), text
     assert re.search(r"refused=3", text), text
     assert re.search(r"fill_ms p50/p90/max=12/20/30", text), text
+    # drone.nack is a per-Telem-period delta the exporter repeats on every
+    # record until the next Telem: count it once per drone.tlm_seq.
+    rows2 = []
+    for i, (req, tseq, rx, syms, refused) in enumerate(
+            [(0, 1, 2, 20, 3), (10, 1, 2, 20, 3), (25, 2, 1, 10, 4)]):
+        rows2.append({"t_ms": 1000 + 30000 * i, "seq": i, "v": 1,
+                      "link": {"nack": {"requests": req}},
+                      "drone": {"tlm_seq": tseq,
+                                "nack": {"rx": rx, "retx_syms": syms, "retx_refused": refused}}})
+    out3 = io.StringIO()
+    with contextlib.redirect_stdout(out3):
+        flightreport.print_nack_report(rows2)
+    t3 = out3.getvalue()
+    assert re.search(r"refused=7\b", t3), t3          # 3 + 4, not 3 + 3 + 4
+    assert re.search(r"rx=3\b", t3), t3
+    assert re.search(r"retx_syms=30\b", t3), t3
+    assert re.search(r"\(25\.0/min\)", t3), t3      # 25 requests over 60 s
+    # A maburgs rejoin restarts link.nack's counters: the rate counts the
+    # post-reset value, never a negative delta.
+    rows3 = [{"t_ms": 0, "link": {"nack": {"requests": 40}}},
+             {"t_ms": 30000, "link": {"nack": {"requests": 50}}},
+             {"t_ms": 60000, "link": {"nack": {"requests": 5}}}]
+    out4 = io.StringIO()
+    with contextlib.redirect_stdout(out4):
+        flightreport.print_nack_report(rows3)
+    assert re.search(r"\(15\.0/min\)", out4.getvalue()), out4.getvalue()
     # rows without the block (old recordings) print nothing
     out2 = io.StringIO()
     with contextlib.redirect_stdout(out2):

@@ -525,6 +525,47 @@ TEST(arrival_open_boundary_books_everything_stale) {
   CHECK(d.arr_expected() - d.arr_expected_stale() == 0);  // current side: flat
 }
 
+TEST(retx_cascade_solve_inherits_retx_class) {
+  // Controller ruling R20: one pending repair row covers two missing seqs
+  // (4, 5). The retx of 4 cascade-solves 5 off that row. Without the retx
+  // neither would be known, so 5 is retx-filled too -- it must not read
+  // kRecovered (the tracker would book it `wasted`) nor stay out of
+  // abandoned + retx in the residual inputs.
+  SwConfig cfg{64, 8, 1.0};
+  auto envs = encode_stream(cfg, 60, nullptr);
+  size_t keep = envs.size(), src4 = envs.size();
+  for (size_t i = 0; i < envs.size(); ++i) {
+    sw::SwHeader h;
+    REQUIRE(sw::parse_header(envs[i].data(), envs[i].size(), &h));
+    if (!h.repair && h.seq == 4) src4 = i;
+    if (h.repair && keep == envs.size() && h.seq <= 4 && h.seq + h.window_len > 5) keep = i;
+  }
+  REQUIRE(keep < envs.size() && src4 < envs.size());
+  SwDecoder d(cfg);
+  for (size_t i = 0; i < envs.size(); ++i) {
+    sw::SwHeader h;
+    REQUIRE(sw::parse_header(envs[i].data(), envs[i].size(), &h));
+    if (!h.repair && (h.seq == 4 || h.seq == 5)) continue;               // the two holes
+    if (h.repair && i != keep && h.seq <= 5 && h.seq + h.window_len > 4) continue;  // one row only
+    d.add_symbol(envs[i].data(), envs[i].size(), 1000);
+    if (i == keep) {
+      REQUIRE(d.source_state(4) == SwDecoder::SourceState::kUnknown);
+      REQUIRE(d.source_state(5) == SwDecoder::SourceState::kUnknown);
+      auto out = d.add_symbol(envs[src4].data(), envs[src4].size(), 1005, SwBoundary::kNone,
+                              true, /*retx=*/true);
+      CHECK(out.size() == 2);
+      CHECK(d.source_state(4) == SwDecoder::SourceState::kRetx);
+      CHECK(d.source_state(5) == SwDecoder::SourceState::kRetx);
+    }
+  }
+  CHECK(d.syms_retx() == 2);
+  CHECK(d.syms_recovered() == 0);
+  CHECK(d.syms_abandoned() == 0);
+  auto eps = d.take_episodes();
+  REQUIRE(eps.size() == 1);
+  CHECK(eps[0].missing == 2 && eps[0].retx == 2 && eps[0].recovered == 0 && eps[0].abandoned == 0);
+}
+
 MTEST_MAIN
 
 TEST(arrival_salvage_only_from_corrupt_body_copies) {

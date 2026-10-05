@@ -1040,17 +1040,31 @@ def print_drone_tx_report(rows):
 
 def print_nack_report(rows):
     """NACK (spec 2026-10-05 fec-nack): the software selective-repeat on the
-    base layer. link.nack counters are cumulative; drone.nack are per Telem
-    period from the drone. Silent on recordings without the block."""
+    base layer. link.nack counters are cumulative (a maburgs rejoin
+    restarts them: the rate counts the post-reset value, never a negative
+    delta); drone.nack are per Telem period from the drone, repeated on
+    every record until the next Telem, so they are summed once per
+    drone.tlm_seq (the drone_tx_samples idiom). Silent on recordings
+    without the block."""
     nrows = [r for r in rows if (r.get("link") or {}).get("nack")]
     if not nrows:
         return
     last = nrows[-1]["link"]["nack"]
-    first = nrows[0]["link"]["nack"]
     span_s = max(1e-9, (nrows[-1]["t_ms"] - nrows[0]["t_ms"]) / 1000.0)
     def d(k):
-        return (last.get(k) or 0) - (first.get(k) or 0)
-    refused = sum((r.get("drone") or {}).get("nack", {}).get("retx_refused") or 0 for r in nrows)
+        return _counter_growth([r["link"]["nack"].get(k) for r in nrows])[0]
+    dn = {"rx": 0, "retx_syms": 0, "retx_refused": 0}
+    last_tseq = None
+    for r in nrows:
+        dr = r.get("drone")
+        if not isinstance(dr, dict):
+            continue
+        tseq = dr.get("tlm_seq")
+        if tseq is not None and tseq == last_tseq:
+            continue
+        last_tseq = tseq
+        for k in dn:
+            dn[k] += (dr.get("nack") or {}).get(k) or 0
     p50 = [r["link"]["nack"].get("fill_ms", {}).get("p50") for r in nrows]
     p90 = [r["link"]["nack"].get("fill_ms", {}).get("p90") for r in nrows]
     mx = [r["link"]["nack"].get("fill_ms", {}).get("max") for r in nrows]
@@ -1059,7 +1073,8 @@ def print_nack_report(rows):
     print(f"  requests={last.get('requests', 0)} ({d('requests') / span_s * 60:.1f}/min) repeats={last.get('repeats', 0)}"
           f" syms={last.get('syms_requested', 0)} tail={last.get('tail_requests', 0)}")
     print(f"  filled={last.get('filled', 0)} late_fill={last.get('late_fill', 0)} wasted={last.get('wasted', 0)}"
-          f" dropped_deadline={last.get('dropped_deadline', 0)} suppressed={last.get('suppressed', 0)} refused={refused}")
+          f" dropped_deadline={last.get('dropped_deadline', 0)} suppressed={last.get('suppressed', 0)}")
+    print(f"  drone (once per tlm_seq): rx={dn['rx']} retx_syms={dn['retx_syms']} refused={dn['retx_refused']}")
     if p50:
         print(f"  fill_ms p50/p90/max={_pct(p50, 0.5)}/{_pct(p90, 0.5)}/{max(mx) if mx else 0}"
               f"  settle_ms last={last.get('settle_ms')} late_ms_max={max(r['link']['nack'].get('late_ms_max') or 0 for r in nrows)}")

@@ -12,6 +12,10 @@ SBI_HDR_LEN = struct.calcsize(SBI_HDR_STRUCT)  # 13 bytes
 SBI_Q_MS_OFF = 7
 SBI_ENC_US_OFF = 9
 SBI_AIR_MS_OFF = 11
+# Retransmit mark (fec-nack, mirrors common/include/mabur/sbi.h): bit 7 of
+# the stream_id byte marks a NACK retransmit; the low 7 bits are the stream.
+SBI_RETX_MARK = 0x80
+SBI_STREAM_ID_MASK = 0x7F
 
 
 class SubBlockPacker:
@@ -93,7 +97,8 @@ class SubBlockPacker:
 
 def unpack(body: bytes, block_payload: int) -> dict:
     """Unpack an SBI body into surviving sub-blocks (ver 2).
-    Returns: {survivors: list of valid payloads, n_blocks, n_failed, header_ok, stream_id, q_ms, enc_us, air_ms}
+    Returns: {survivors: list of valid payloads, n_blocks, n_failed, header_ok, stream_id, retx, q_ms, enc_us, air_ms}
+    stream_id is the low 7 bits; retx is the SBI_RETX_MARK bit (common/src/sbi.cpp).
     """
     result = {
         "survivors": [],
@@ -101,6 +106,7 @@ def unpack(body: bytes, block_payload: int) -> dict:
         "n_failed": 0,
         "header_ok": False,
         "stream_id": 0,
+        "retx": False,
         "q_ms": 0,
         "enc_us": 0,
         "air_ms": 0,
@@ -113,7 +119,8 @@ def unpack(body: bytes, block_payload: int) -> dict:
         SBI_HDR_STRUCT, body
     )
 
-    result["stream_id"] = stream_id
+    result["stream_id"] = stream_id & SBI_STREAM_ID_MASK
+    result["retx"] = bool(stream_id & SBI_RETX_MARK)
     result["header_ok"] = (
         magic == SBI_MAGIC and ver == SBI_VER and hdr_bp == block_payload
     )
@@ -141,10 +148,11 @@ def unpack(body: bytes, block_payload: int) -> dict:
 
 
 def peek_stream_id(body: bytes) -> int:
-    """Peek stream_id from SBI header (ver 2), or -1 on invalid header."""
+    """Peek stream_id from SBI header (ver 2), or -1 on invalid header.
+    The retx mark is masked off, so a retransmit routes as its stream (base)."""
     if len(body) < SBI_HDR_LEN:
         return -1
     magic, ver, stream_id, _, _, _, _, _ = struct.unpack_from(SBI_HDR_STRUCT, body)
     if magic != SBI_MAGIC or ver != SBI_VER:
         return -1
-    return stream_id
+    return stream_id & SBI_STREAM_ID_MASK

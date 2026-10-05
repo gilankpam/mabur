@@ -8,9 +8,13 @@ using S = SwDecoder::SourceState;
 
 NackTracker::NackTracker(NackCfg cfg) : cfg_(cfg), settle_ms_(cfg.settle_seed_ms) {}
 
-// Session edge: entries and the request counter reset; the settle estimate
-// (a property of the link, not the session) is kept.
-void NackTracker::clear() { entries_.clear(); counter_ = 0; }
+// frame_wire edge: entries reset; the request counter is kept, because the
+// drone's accept_nack_counter keeps the last counter for as long as the vtx
+// nonce is unchanged -- a GS that drops to BEACONING after link_lost_ms and
+// rejoins on the first video body (no DISC) is still under that nonce. Only
+// a new vtx nonce restarts it (restart_counter(), gs/src/main.cpp). The
+// settle estimate (a property of the link, not the session) is kept.
+void NackTracker::clear() { entries_.clear(); }
 const NackStats& NackTracker::stats() const { return stats_; }
 int NackTracker::settle_ms() const { return settle_ms_; }
 
@@ -59,7 +63,8 @@ void NackTracker::resolve(uint64_t now_ms, const NackInputs& in) {
         if (e.tries > 0) {
           ++stats_.filled;
           ++win_.filled;
-          win_.fill_ms.push_back(static_cast<uint32_t>(now_ms - e.first_sent_ms));
+          if (win_.fill_ms.size() < NackWindow::kMaxFillSamples)  // cap: stop appending
+            win_.fill_ms.push_back(static_cast<uint32_t>(now_ms - e.first_sent_ms));
         }
         break;
       case S::kDirect:

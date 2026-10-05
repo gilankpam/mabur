@@ -64,6 +64,10 @@ struct NackStats {            // cumulative
 };
 
 struct NackWindow {           // since the last take_window()
+  // Only the stats sideport export drains the window, so fill_ms is capped:
+  // past kMaxFillSamples it stops appending (keeps the window's first
+  // samples); `filled` still counts every fill.
+  static constexpr size_t kMaxFillSamples = 4096;
   std::vector<uint32_t> fill_ms;  // first request -> retx-filled
   uint32_t late_ms_max = 0;        // natural lateness seen (never-requested seqs)
   uint64_t filled = 0;
@@ -73,7 +77,8 @@ class NackTracker {
  public:
   explicit NackTracker(NackCfg cfg);
   std::optional<rc::Nack> poll(uint64_t now_ms, const NackInputs& in);
-  void clear();                      // session edge
+  void clear();                      // frame_wire edge: entries only, counter kept
+  void restart_counter() { counter_ = 0; }  // new vtx nonce: next NACK is counter 1
   const NackStats& stats() const;
   NackWindow take_window();
   int settle_ms() const;

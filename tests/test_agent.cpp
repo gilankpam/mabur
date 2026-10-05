@@ -1876,6 +1876,45 @@ TEST(nack_verified_under_a_replaced_pair_is_refused) {
   CHECK(agent.accept_nack_counter(1));                       // new pair's space untouched
 }
 
+// A T_NACK the radio corrupted (CRC/parse failure) or that names a stream
+// other than sid 0 is malformed, not an auth failure: it must not raise
+// auth_reject (the uplink corrupts NACKs routinely under a jammer, and AUTH!
+// would flash for the wrong reason). Only a frame that parsed but failed the
+// tag or the counter is a rejection.
+TEST(nack_check_separates_malformed_from_rejected) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  const uint32_t vtx = link_agent(agent, act, cfg);
+  CHECK(!agent.take_auth_reject());
+  Nack n; n.counter = 3; n.n = 1; n.e[0].first_seq = 100; n.e[0].bitmap = 1;
+  auto good = pack_nack(n, mabur::kDefaultLinkKey, TagCtx{kVrx, vtx, 3});
+  Nack out;
+  // Radio corruption: one flipped payload bit fails the CRC.
+  auto corrupt = good;
+  corrupt[12] ^= 0x10;
+  CHECK(agent.check_nack(corrupt.data(), corrupt.size(), &out) == RcAgent::NackCheck::kMalformed);
+  CHECK(!agent.take_auth_reject());
+  CHECK(agent.check_nack(good.data(), 5, &out) == RcAgent::NackCheck::kMalformed);  // truncated
+  CHECK(!agent.take_auth_reject());
+  // Wrong stream: malformed too.
+  Nack s1 = n; s1.sid = 1;
+  auto wsid = pack_nack(s1, mabur::kDefaultLinkKey, TagCtx{kVrx, vtx, 3});
+  CHECK(agent.check_nack(wsid.data(), wsid.size(), &out) == RcAgent::NackCheck::kMalformed);
+  CHECK(!agent.take_auth_reject());
+  // Parsed, but tagged under the wrong ctx: rejected, auth_reject raised.
+  auto badtag = pack_nack(n, mabur::kDefaultLinkKey, TagCtx{kVrx, vtx, 4});
+  CHECK(agent.check_nack(badtag.data(), badtag.size(), &out) == RcAgent::NackCheck::kRejected);
+  CHECK(agent.take_auth_reject());
+  // Good frame: accepted, counter stored, out filled.
+  CHECK(agent.check_nack(good.data(), good.size(), &out) == RcAgent::NackCheck::kOk);
+  CHECK(out.counter == 3 && out.n == 1 && out.e[0].first_seq == 100);
+  CHECK(!agent.take_auth_reject());
+  // Replay of the same counter: rejected.
+  CHECK(agent.check_nack(good.data(), good.size(), &out) == RcAgent::NackCheck::kRejected);
+  CHECK(agent.take_auth_reject());
+}
+
 MTEST_MAIN
 
 // A restarted GS resets its RCF seq to ~1 while the drone's tracker holds

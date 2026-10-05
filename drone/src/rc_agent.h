@@ -281,6 +281,14 @@ class RcAgent {
   // Raise the auth_reject flag (Telem flags bit1) for a control frame
   // refused outside the agent: the RX thread's T_NACK handler.
   void note_auth_reject() { auth_reject_.store(true, std::memory_order_relaxed); }
+  // The RX thread's whole T_NACK gate: parse_nack, sid == 0,
+  // verify_session_tagged, accept_nack_counter. kMalformed = parse (CRC,
+  // length, version) failed or sid != 0 -- radio corruption, NOT an auth
+  // failure, so auth_reject stays down (the RCF path drops a parse failure
+  // silently too). kRejected = parsed but the tag or the counter failed:
+  // raises auth_reject. kOk fills *out. Any thread.
+  enum class NackCheck { kOk, kMalformed, kRejected };
+  NackCheck check_nack(const uint8_t* body, size_t len, rc::Nack* out);
   static constexpr size_t kCalNonceRing = 8;
   // Replay harness only (maburd --dry-run): install a known pair so a file
   // of RCFs tagged under (vrx, vtx) verifies without a DISC exchange.
