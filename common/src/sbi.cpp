@@ -80,7 +80,8 @@ SbiUnpackResult sbi_unpack(const uint8_t* body, size_t len, int block_payload) {
   if (len >= static_cast<size_t>(SBI_HDR_LEN)) {
     const uint16_t magic = sbi_rd_u16(body);
     const uint8_t ver = body[2];
-    r.stream_id = body[3];
+    r.stream_id = body[3] & kSbiStreamIdMask;
+    r.retx = (body[3] & kSbiRetxMark) != 0;
     const uint16_t hdr_bp = sbi_rd_u16(body + 4);
     r.header_ok = magic == SBI_MAGIC && ver == SBI_VER && hdr_bp == block_payload;
     if (r.header_ok) {
@@ -108,7 +109,7 @@ SbiUnpackResult sbi_unpack(const uint8_t* body, size_t len, int block_payload) {
 int sbi_peek_stream_id(const uint8_t* body, size_t len) {
   if (len < static_cast<size_t>(SBI_HDR_LEN)) return -1;
   if (sbi_rd_u16(body) != SBI_MAGIC || body[2] != SBI_VER) return -1;
-  return body[3];
+  return body[3] & kSbiStreamIdMask;
 }
 
 void sbi_set_q_ms(uint8_t* body, size_t len, uint16_t ms) {

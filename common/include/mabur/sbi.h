@@ -60,6 +60,13 @@ constexpr uint8_t kMspStreamId = 4;
 // Routed to the GS ProbeTrack, never the video decoder.
 constexpr uint8_t kProbeStreamId = 5;
 
+// Retransmit mark (spec 2026-10-05 fec-nack §5): bit 7 of the SBI stream_id
+// byte. A body the drone re-sent on a T_NACK carries it; routing and the
+// per-layer decoder read the low 7 bits, the decoder's accounting and the
+// latency anchor read the bit. Header layout and SBI_VER unchanged.
+constexpr uint8_t kSbiRetxMark = 0x80;
+constexpr uint8_t kSbiStreamIdMask = 0x7F;
+
 // Packs fixed-size FEC envelopes into SBI radio bodies, each sub-block
 // guarded by its own CRC16-CCITT so a corrupted body still yields its
 // surviving sub-blocks as usable symbols. Byte-exact port of
@@ -117,7 +124,8 @@ struct SbiUnpackResult {
   int n_blocks = 0;                             // sub-blocks scanned
   int n_failed = 0;                             // CRC-mismatched (erasures)
   bool header_ok = false;
-  uint8_t stream_id = 0;                        // 0 when the header is short
+  uint8_t stream_id = 0;                        // 0 when the header is short; low 7 bits
+  bool retx = false;                            // kSbiRetxMark was set
   uint16_t q_ms = 0;                            // TxQueue wait, ms; 0 = unknown
   uint16_t enc_us = 0;                          // encoder latency, µs; 0 = unknown
   uint16_t air_ms = 0;  // drone air-clock backlog, ms; 0 = unknown
