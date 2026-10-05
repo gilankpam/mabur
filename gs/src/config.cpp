@@ -555,9 +555,7 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
       nc.max_tries = static_cast<int>(get_int(nj, "max_tries", 2, 0, 16, "link.nack"));  // 0 = observe only
       nc.lookback = static_cast<int>(get_int(nj, "lookback", 256, 8, 500, "link.nack"));
       nc.slotted = get_bool(nj, "slotted", nc.slotted, "link.nack");
-    } else {
-      note_default("link", "nack", "(section absent)");
-    }
+    }  // absent = rig off; not reported as a defaulted key (bench knob)
 
     if (r.contains("rung_stats")) {
       const Value& rs = r["rung_stats"];
