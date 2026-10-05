@@ -23,6 +23,7 @@ struct DecodedFrag {
   uint16_t q_ms = 0;          // SBI q_ms of that body (0 = unknown)
   uint16_t enc_us = 0;        // SBI enc_us of that body (0 = unknown)
   uint16_t air_ms = 0;        // SBI air_ms of that body (0 = unknown)
+  uint32_t sw_seq = 0;        // wire seq of the symbol this fragment came from
 };
 
 // Receiver mirror of UepEncoder: route a body by its SBI stream_id to that
@@ -116,6 +117,9 @@ class UepDecoder {
     // subblocks_salvaged is its upper bound -- the other card's clean copy
     // shadows most of it (docs/sbi-salvage-flights-2026-09-09.md).
     uint64_t arr_salvage_only = 0;
+    // Symbols first made known by a NACK retransmit body (fec-nack,
+    // SwDecoder::syms_retx): neither delivered nor recovered.
+    uint64_t syms_retx = 0;
   };
   LayerStats stats(int sid) const;
   uint64_t bodies_misrouted() const { return bodies_misrouted_; }

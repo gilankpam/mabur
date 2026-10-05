@@ -31,8 +31,9 @@ enum class SwBoundary : uint8_t { kNone = 0, kPre, kPost };
 struct LossEpisode {
   uint64_t first_seq = 0;  // virtual seq of the first missing source
   uint32_t span = 0;       // last missing - first missing + 1
-  uint32_t missing = 0;    // recovered + abandoned
+  uint32_t missing = 0;    // recovered + retx + abandoned
   uint32_t recovered = 0;  // repaired, direct copy never heard
+  uint32_t retx = 0;       // filled by a retransmit, direct copy never heard
   uint32_t abandoned = 0;  // fell off the horizon unknown
   uint32_t stale = 0;      // of missing, below the transition watermark
   uint32_t repairs = 0;    // distinct covering repairs received
@@ -68,10 +69,19 @@ class SwDecoder {
   // config-mismatched envelopes are counted and dropped, never applied.
   // clean: the carrying body's FCS verdict (ArrivalTracker::on_source);
   // decode is identical either way, only arr_salvage_only depends on it.
+  // retx: the carrying body is a NACK retransmit (kSbiRetxMark). It fixes
+  // the video only (spec 2026-10-05 option A): never touches the arrival
+  // tracker, counts syms_retx (not delivered, not recovered), and a retx of
+  // a seq already known changes nothing.
   std::vector<std::vector<uint8_t>> add_symbol(const uint8_t* env, size_t len,
                                                uint64_t now_ms,
                                                SwBoundary b = SwBoundary::kNone,
-                                               bool clean = true);
+                                               bool clean = true,
+                                               bool retx = false);
+  // Wire seq of the symbol each packet of the last add_symbol() came from,
+  // parallel to its return vector (cascade-recovered packets carry their
+  // own symbol's seq).
+  const std::vector<uint32_t>& last_out_seqs() const { return last_out_seqs_; }
 
   // Drops repair rows first seen more than deadline_ms ago. Call ~1 Hz.
   // Precondition: now_ms monotonic non-decreasing.
@@ -86,6 +96,11 @@ class SwDecoder {
   // phantom pre-FEC loss on a clean bench, 2026-07-27).
   uint64_t syms_recovered_arrived() const { return syms_recovered_arrived_; }
   uint64_t syms_abandoned() const { return syms_abandoned_; }
+  // Symbols first made known by a retransmit body, and of those, how many
+  // a direct (non-retx) copy later showed for (the channel delivered after
+  // all -- same race as syms_recovered_arrived).
+  uint64_t syms_retx() const { return syms_retx_; }
+  uint64_t syms_retx_arrived() const { return syms_retx_arrived_; }
   // Symbol-space transition watermark (loss attribution). mark_transition()
   // snapshots the newest seq; while the boundary is open every abandonment
   // books stale, kPre envelopes advance the watermark, and the first kPost
@@ -136,8 +151,9 @@ class SwDecoder {
   // that are above the live floor and not known (neither delivered nor
   // repair-recovered) -- the decoder's current erasure set, ascending.
   std::vector<uint32_t> missing_sources(uint32_t lookback) const;
-  enum class SourceState : uint8_t { kUnknown, kDirect, kRecovered, kBelowFloor };
-  // kDirect = a source copy was heard; kRecovered = known via repair only.
+  enum class SourceState : uint8_t { kUnknown, kDirect, kRecovered, kRetx, kBelowFloor };
+  // kDirect = a source copy was heard; kRecovered = known via repair only;
+  // kRetx = known via a retransmit only.
   SourceState source_state(uint32_t wire_seq) const;
 
  private:
@@ -157,8 +173,12 @@ class SwDecoder {
   // Reduce r against existing pivot rows, normalize, insert. Newly solved
   // (seq, payload) pairs are appended to solved.
   void insert_row(Row r, std::vector<std::pair<uint64_t, std::vector<uint8_t>>>& solved);
+  // How a symbol became known: a direct source copy, a repair solve
+  // (including every cascade), or a retransmit body.
+  enum class Origin : uint8_t { kSource, kRepair, kRetx };
   // Deliver symbol v, register known, substitute into rows, cascade.
-  void ingest(uint64_t v, std::vector<uint8_t> sym, bool source,
+  // origin applies to v itself; cascades are always kRepair.
+  void ingest(uint64_t v, std::vector<uint8_t> sym, Origin origin,
               std::vector<std::vector<uint8_t>>& out);
   void unpack_symbol(const uint8_t* sym, std::vector<std::vector<uint8_t>>& out);
 
@@ -170,9 +190,12 @@ class SwDecoder {
   std::map<uint64_t, std::vector<uint8_t>> known_;  // vseq -> payload
   std::map<uint64_t, Row> rows_;                    // pivot vseq -> row
   std::set<uint64_t> recovered_await_src_;  // recovered, direct copy not yet seen
+  std::set<uint64_t> retx_await_src_;       // retx-filled, direct copy not yet seen
+  std::vector<uint32_t> last_out_seqs_;     // see last_out_seqs()
 
   uint64_t syms_delivered_ = 0, syms_recovered_ = 0, syms_abandoned_ = 0;
   uint64_t syms_recovered_arrived_ = 0;
+  uint64_t syms_retx_ = 0, syms_retx_arrived_ = 0;
   uint64_t symbols_in_ = 0, symbols_dropped_bad_cfg_ = 0;
   uint64_t symbols_dropped_stale_ = 0, packets_out_ = 0, resets_ = 0;
   int repair_window_hwm_ = 0;
@@ -194,7 +217,9 @@ class SwDecoder {
   uint64_t episode_window() const;
   void note_repair(uint64_t ws, uint64_t we, uint32_t key);
   // Per evicted seq: books it into the open episode (or opens one).
-  void note_missing(uint64_t v, bool recovered, bool stale);
+  // known_via: kRepair = recovered, kRetx = retx, kSource = never known
+  // (abandoned).
+  void note_missing(uint64_t v, Origin known_via, bool stale);
   // Closes the open episode if eviction has passed it, prunes repairs_seen_.
   void settle_episodes(uint64_t evict_end);
 
