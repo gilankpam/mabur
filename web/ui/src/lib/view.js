@@ -141,6 +141,23 @@ export function debugGroups({ connected, mode, core, rcfPct, ausRate, hitches60,
       ['qdrop', v(core?.qdrop ?? D)],
     ]) },
   ];
+  // Software NACK (fec-nack): the core's "nack" block, null when off or in
+  // spotter mode. Cumulative counts; fill ms + /s over the core's last 1 s.
+  const nk = core?.nack;
+  const nv = (x) => (x == null ? D : x);
+  groups.push({ title: 'NACK', rows: rows(!on ? [['state', D]]
+    : spot ? [['state', 'n/a']]
+      : !nk ? [['state', 'off']]
+        : [
+          ['requests', `${nk.req} (${nk.syms} syms, ${nk.tail} tail)`],
+          ['sent / repeats', `${nk.sent} / ${nk.rep}`],
+          ['filled / late / wasted', `${nk.fill} / ${nk.late} / ${nk.waste}`],
+          ['dropped / suppressed / lead', `${nk.drop} / ${nk.sup} / ${nk.lead}`],
+          ['fill ms p50 / p90 / max', `${nv(nk.fill_p50)} / ${nv(nk.fill_p90)} / ${nv(nk.fill_max)}`
+            + (nk.fill_pps == null ? '' : ` (${fmt(nk.fill_pps, 1)}/s)`)],
+          ['settle', `${nk.settle_ms} ms`],
+          ['drone rx / syms / refused', `${nk.drone_rx} / ${nk.drone_syms} / ${nk.drone_refused}`],
+        ]) });
   if (isRelay) {
     const SEC = ['HT20', 'HT40+', 'HT40-'];
     groups.push({ title: 'Relay', rows: rows([

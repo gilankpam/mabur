@@ -613,7 +613,9 @@ spotter can ask for it.
 The Config tab (`web/ui/src/components/ConfigPanel.svelte`, and
 `ConfigSide.svelte` for the immersive/mobile layout) edits the channel set,
 the link channel and width in both modes (see "Channel set" under Use),
-plus — GS mode only — Fixed MCS (`static_mcs`, −1 = adaptive) and the
+plus — GS mode only — Fixed MCS (`static_mcs`, −1 = adaptive), the
+"Retransmit (NACK)" switch (`[link.nack] enable`, default on; see
+"Software NACK" below) and the
 ladder rungs (mcs/bw/FEC overhead per rung, add/
 remove up to 8, drag the ⋮⋮ handle — or focus it and use ↑/↓ — to reorder;
 `applyRungEdit(cfg, from, '__move', to)`). `web/ui/src/lib/config.js` normalizes and persists the
@@ -623,7 +625,8 @@ default, so a stale or hand-edited entry can never break the page), and
 width on load the same way `?mode=` overrides the saved mode. On Connect,
 the form (always, even when it matches the embedded default) is serialized
 to TOML (`toOverlayToml()`: `[radio] channels/channel/width` in both modes, and
-in GS mode `[link] static_mcs/static_bw/max_mcs` plus one
+in GS mode `[link] static_mcs/static_bw/max_mcs`, a `[link.nack]
+enable = true|false` table (the bundle's other NACK keys stay), plus one
 `[[link.ladder]]` block per rung, `static_bw` carrying the form's width,
 `max_mcs` always 7 — the form has no Max MCS since 2026-09-29, the ladder
 as listed is the whole policy) and
@@ -787,6 +790,14 @@ this build — the panel is measurement-only, by design (see the spec's
 The core stats line also carries `osd_snaps` (MSP snapshots out of the FEC
 sink) and `osd_screens` (OSD screens handed to the page); see MSP OSD below.
 
+The Debug tab's **NACK** group (`debugGroups()` in `view.js`) reads the
+stats line's `nack` block — `null` in spotter mode or with the switch off,
+else the tracker's cumulatives (`req rep syms tail fill late waste drop sup
+lead`, `sent` = T_NACK frames that left the card), `settle_ms`, the last
+1 s window's fill latencies (`fill_p50/p90/max`, `fill_pps`; null while no
+fill landed) and the drone's Telem counters summed once per `tlm_seq`
+(`drone_rx`, `drone_syms`, `drone_refused`). See "Software NACK" below.
+
 ## MSP OSD
 
 The flight controller's MSP DisplayPort OSD is drawn over the video in both
@@ -819,6 +830,31 @@ that session (it is not refetched per screen), and the next Connect tries
 once more. The 5 s blank counts from the last *published* screen, where
 `maburplay` counts from the last datagram — the same thing in practice,
 since Betaflight sends DRAW_SCREEN continuously.
+
+## Software NACK
+
+GS mode runs `docs/fec-nack.md`'s base-layer selective repeat with the same
+`mabur::NackTracker` maburgs polls, over the same `SwDecoder` erasure view,
+`FrameStream` tail view and ladder util (`WebGs::poll_nack_`, built only
+in GS mode with `[link.nack] enable`; a spotter has no tracker, as it has
+no `VrxController`). Per `tick()`, after the FrameStream poll: a new
+`vtx_nonce` restarts the counter, no nonce or a dropped frame wire clears
+the entries (the counter is kept, as the drone's `accept_nack_counter`
+holds it under the same nonce), otherwise one `T_NACK` at most goes out
+through `send_()` — direct, never the `RcfSlotter`, gated by the scout's
+`may_send` like every control frame, counted in `sends` but not
+`rcf_sent`. There is no calibration radio-silence gate (the page has no
+calibration) and no `hdr_retx` latency-anchor rule (the page's
+capture→glass uses the RTT pts offset, not a first-fragment anchor). The
+`FragArrival` now carries `sw_seq`/`retx`, which is what makes the tail
+trigger live. Option A as on maburgs: a retransmit-filled symbol still
+counts as loss for the ladder. Over the CPE relay radio the request rides
+the relay's TX round trip, so expect more `lead_skipped` there than over
+WebUSB. Readout: the Debug tab's NACK group (Stats panel, above); switch:
+the Config tab (Config form, above). Pinned by `tests/test_web_gs.cpp`
+(tagged counter-1 frame under unrepairable loss, counter across a
+same-nonce rejoin vs a new nonce, the stats block, the overlay loader) and
+`web/tests/{config,view}.test.mjs`.
 
 ## Colour correction
 

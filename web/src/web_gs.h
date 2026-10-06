@@ -53,6 +53,7 @@
 #include "gap_timeout_policy.h"
 #include "link_card.h"
 #include "link_health.h"
+#include "mabur/nack_tracker.h"
 #include "mabur/node.h"
 #include "mabur/rc_proto.h"
 #include "msp_sink.h"
@@ -84,6 +85,21 @@ struct ChanStats {              // GS mode with a roster; mirrors ChannelSnapsho
   uint64_t scan_rounds = 0;
   std::optional<int> scan_pick;
   maburgs::StatsHopIn hop;
+};
+
+// Software NACK readout (fec-nack): the tracker's cumulatives, the fill
+// latencies of the last 1 s window (drained in tick(), nullopt while the
+// window had no fill), and the drone's Telem counters summed once per
+// tlm_seq (the sideport repeats a Telem on every record; flightreport.py
+// dedups the same way). Present in Gs mode with [link.nack] enable only.
+struct NackStatsOut {
+  mabur::NackStats cum;
+  uint64_t sent = 0;                 // T_NACK frames that left the card
+  int settle_ms = 0;
+  std::optional<double> fill_pps;    // last window; nullopt before the first window
+  std::optional<uint32_t> fill_p50_ms, fill_p90_ms, fill_max_ms;
+  uint32_t late_ms_max = 0;          // last window's natural lateness
+  uint64_t drone_rx = 0, drone_retx_syms = 0, drone_retx_refused = 0;
 };
 
 struct Stats {
@@ -120,8 +136,12 @@ struct Stats {
   // the number of hop orders followed. Unset in Gs mode and without a roster.
   std::optional<std::string> follow_state;
   std::optional<uint64_t> follows;
+  std::optional<NackStatsOut> nack;   // Gs with [link.nack] enable only
 };
-// One line, no trailing newline. Channel fields: "channel": int;
+// One line, no trailing newline. "nack": {req, rep, syms, tail, fill, late,
+// waste, drop, sup, lead, sent, settle_ms, fill_pps|null, fill_p50|null,
+// fill_p90|null, fill_max|null, late_max, drone_rx, drone_syms,
+// drone_refused} | null (spotter, or NACK off). Channel fields: "channel": int;
 // "scan_state": str|null; "scan_rounds": int|null; "scan_pick": int|null;
 // "hop": {enable, verdict, evidence, ref_rung|null, epoch, state,
 // target|null, hops, holds, last_ms|null} | null (null without a core);
@@ -240,6 +260,25 @@ class WebGs {
   uint64_t msp_tick_ms_ = 0;
   std::unique_ptr<maburgs::VrxController> vrx_;   // Gs only
   std::unique_ptr<maburgs::RcfSlotter> slot_;     // Gs only
+  // Software NACK (fec-nack): Gs only, and only with [link.nack] enable --
+  // null otherwise, so a spotter has no tracker at all. The same poll block
+  // as maburgs main.cpp, sent directly (never the slotter) through send_().
+  std::unique_ptr<mabur::NackTracker> nack_;
+  uint32_t nack_lookback_ = 256;
+  double nack_down_util_ = 0.35;
+  uint32_t nack_vtx_seen_ = 0;                    // vtx nonce the counter belongs to
+  uint64_t nack_sent_ = 0;
+  mabur::LinkKey key_{};
+  void poll_nack_(uint64_t now_ms);
+  void drain_nack_window_(uint64_t now_ms);
+  // The 1 s fill window: take_window() is destructive and stats() is const,
+  // so tick() drains it on a timer and stats() reports the last drain.
+  uint64_t nack_win_t0_ms_ = 0;
+  std::optional<double> nack_fill_pps_;
+  std::optional<uint32_t> nack_fill_p50_, nack_fill_p90_, nack_fill_max_;
+  uint32_t nack_late_max_ = 0;
+  std::optional<uint16_t> nack_tlm_seen_;   // last tlm_seq whose counters were summed
+  uint64_t drone_nack_rx_ = 0, drone_retx_syms_ = 0, drone_retx_refused_ = 0;
   maburgs::RttEstimator rtt_;
   // Gs: in SESSION && peer CAP_FRAME_WIRE (edge-reset). Spotter: always true.
   bool frame_wire_ = false;

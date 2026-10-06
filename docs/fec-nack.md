@@ -16,10 +16,13 @@ as loss for every ladder input, so the ladder demotes exactly as it would
 without the NACK. Base layer only; the wire carries a `sid` byte so enh can
 follow, but the drone refuses any `sid != 0` today.
 
-**Scope: `maburgs` only.** The web GS (`web/`) never sends `T_NACK`, and its
-FrameStream tail view is inert (its `FragArrival` carries no `sw_seq`); the
-spec's rollout (§9) lists the web GS as a later step. There is no
-capability bit: a GS without `[link.nack] enable = true` simply never asks.
+**Scope: `maburgs` and the web GS in GS mode.** Since 2026-10-06 the
+browser GS (`web/`, `docs/web-gs.md` "Software NACK") runs the same
+`NackTracker` over the same decoder, FrameStream and ladder, sent directly
+through its one card; its Config form's "Retransmit (NACK)" switch is the
+`[link.nack] enable` overlay (default on). A spotter never sends one: it
+has no tracker and no send path by construction. There is no capability
+bit: a GS without `[link.nack] enable = true` simply never asks.
 
 ## Wire
 

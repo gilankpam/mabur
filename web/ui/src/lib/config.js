@@ -3,7 +3,8 @@
 // both modes; --ch carries the start member, startChannel), width (--w and
 // [radio] width) and,
 // in GS mode, static_mcs / ladder (the overlay's [link], with max_mcs = 7 so
-// the ladder flies as listed). The core merges the overlay into its embedded
+// the ladder flies as listed) and the software NACK switch ([link.nack]
+// enable, fec-nack). The core merges the overlay into its embedded
 // maburgs.default.toml, then validates with maburgs's own loader.
 import { ht40Offset, DEFAULT_KEY_HEX } from './logic.mjs';
 
@@ -27,6 +28,10 @@ export function defaultConfig() {
     colortrans: true,
     // Page-only: which recorder(s) Record drives (lib/localrec.js).
     dvr: 'web',
+    // GS mode: ask the drone to re-send base-layer symbols FEC could not
+    // repair ([link.nack] enable, docs/fec-nack.md). Default on, as the
+    // deployed maburgs flies; off is the in-page control arm.
+    nack: true,
   };
 }
 
@@ -71,6 +76,7 @@ export function normalizeConfig(raw) {
     ladder,
     colortrans: typeof raw.colortrans === 'boolean' ? raw.colortrans : d.colortrans,
     dvr: ['web', 'vtx', 'both'].includes(raw.dvr) ? raw.dvr : d.dvr,
+    nack: typeof raw.nack === 'boolean' ? raw.nack : d.nack,
   };
 }
 
@@ -196,6 +202,9 @@ export function toOverlayToml(cfg, keyHex = null, mode = 'gs') {
   // max_mcs 7: the form has no Max MCS -- the ladder is the whole policy, so
   // override the bundle's max_mcs filter rather than let it drop rungs.
   t += `\n[link]\n${keyHex ? `key = "${keyHex}"\n` : ''}static_mcs = ${cfg.staticMcs}\nstatic_bw = ${cfg.width}\nmax_mcs = 7\n`;
+  // Software NACK: the core's own tracker, the same [link.nack] maburgs reads
+  // (the other keys stay at the bundle's values).
+  t += `\n[link.nack]\nenable = ${cfg.nack ? 'true' : 'false'}\n`;
   // Pinned, the form hides the ladder and the link never walks it, but
   // maburgs's loader still validates it (a 40 MHz rung at width
   // 20 fails boot). Send one rung that always loads instead; the saved
@@ -253,6 +262,7 @@ const EDIT_LABEL = { channels: 'Channels', link: 'Link channel', width: 'Channel
 export function describeEdit(key, val) {
   if (key === 'dvr') return `Recording target set to ${{ web: 'mabur web', vtx: 'VTX', both: 'Both' }[val]}`;
   if (key === 'colortrans') return `Colour correction ${val ? 'on' : 'off'}`;
+  if (key === 'nack') return `Retransmit (NACK) ${val ? 'on' : 'off'}`;
   const shown = key === 'channels' ? val.join(', ') : key === 'link' ? (val === 'auto' ? 'Auto' : val)
     : key === 'width' ? `${val} MHz` : key === 'staticMcs' && val < 0 ? 'Adaptive' : val;
   return `${EDIT_LABEL[key]} set to ${shown}`;
