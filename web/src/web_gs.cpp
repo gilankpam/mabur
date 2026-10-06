@@ -114,6 +114,7 @@ WebGs::WebGs(const maburgs::Config& cfg, Mode mode, uint8_t start_ch, int width,
                cur_.cap_to_complete_us =
                    cap_to_complete_us(cur_.pts_us, cur_.t_complete_us, rtt_.pts_off_us());
              ++(complete ? aus_complete_ : aus_truncated_);
+             if (!complete && cur_.sid == 0) ++aus_truncated_base_;
              if (io_.on_au) io_.on_au(std::move(cur_));
              cur_ = Au{};
            }}),
@@ -546,6 +547,7 @@ Stats WebGs::stats() const {
   s.bodies = bodies_;
   s.aus_complete = aus_complete_;
   s.aus_truncated = aus_truncated_;
+  s.aus_truncated_base = aus_truncated_base_;
   s.sends = sends_;
   s.rcf_sent = rcf_sent_;
   s.idr_req = idr_req_;
@@ -638,6 +640,7 @@ std::string stats_json(const Stats& s) {
   j["bodies"] = s.bodies;
   j["aus"] = s.aus_complete;
   j["trunc"] = s.aus_truncated;
+  j["trunc_base"] = s.aus_truncated_base;
   j["sends"] = s.sends;
   j["rcf_sent"] = s.rcf_sent;
   j["idr_req"] = s.idr_req;

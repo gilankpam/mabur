@@ -115,6 +115,7 @@ struct Stats {
   std::optional<double> rtt_ms, rtt_min_ms;
   std::optional<int64_t> pts_off_us;
   uint64_t bodies = 0, aus_complete = 0, aus_truncated = 0, sends = 0;
+  uint64_t aus_truncated_base = 0;   // of aus_truncated: sid 0 (the layer the NACK protects)
   // RCFs only (sends minus DISC beacons/keep-alives): the denominator for
   // "RCF heard %" against the drone's Telem.rcf_rx, which counts RCFs only.
   uint64_t rcf_sent = 0;
@@ -289,6 +290,7 @@ class WebGs {
   std::optional<mabur::rc::Telem> telem_;
   Au cur_;
   uint64_t bodies_ = 0, aus_complete_ = 0, aus_truncated_ = 0, sends_ = 0, rcf_sent_ = 0;
+  uint64_t aus_truncated_base_ = 0;
   uint64_t resets_ = 0;
   uint32_t idr_req_ = 0;
   std::string key_fp_;   // mabur::key_fingerprint(cfg.link.key), set at construction

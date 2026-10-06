@@ -136,6 +136,7 @@ export function debugGroups({ connected, mode, core, rcfPct, ausRate, hitches60,
     ]) },
     { title: 'Counters', rows: rows([
       ['bodies', v(core?.bodies ?? D)], ['aus', v(core?.aus ?? D)], ['trunc', v(core?.trunc ?? D)],
+      ['trunc base', v(core?.trunc_base ?? D)],
       ['sends', v(core?.sends ?? D)], ['rcf_sent', v(core?.rcf_sent ?? D)],
       ...(isRelay ? [] : [['txfail', v(core?.txfail ?? D)]]),
       ['qdrop', v(core?.qdrop ?? D)],

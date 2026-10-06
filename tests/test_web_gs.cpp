@@ -172,6 +172,29 @@ TEST(gs_beacons_then_rcf_after_ack) {
   CHECK(stats_json(g.stats()).find("\"rcf_sent\":" + std::to_string(rcf)) != std::string::npos);
 }
 
+// trunc_base (bench 2026-10-07): the sid-0 share of the truncated AUs, the
+// layer the NACK protects. Counted from the same AU-end the page sees.
+TEST(trunc_base_counts_sid0_truncations) {
+  uint64_t base_trunc = 0, enh_trunc = 0;
+  Io io;
+  io.on_au = [&](Au&& au) {
+    if (!au.complete) ++(au.sid == 0 ? base_trunc : enh_trunc);
+  };
+  WebGs g(cfg(), Mode::Spotter, 136, 40, {}, 0, io);
+  uint64_t t = 0;
+  for (auto& b : gen_bodies(/*aus=*/600, /*dt_ms=*/16.0, /*drop_every=*/3)) {
+    t = b.mono_us;
+    g.on_rx(b);
+    g.tick(t);
+  }
+  REQUIRE(base_trunc > 0);
+  REQUIRE(enh_trunc > 0);
+  CHECK(g.stats().aus_truncated_base == base_trunc);
+  CHECK(g.stats().aus_truncated == base_trunc + enh_trunc);
+  CHECK(stats_json(g.stats()).find("\"trunc_base\":" + std::to_string(base_trunc)) !=
+        std::string::npos);
+}
+
 TEST(probe_expectation_wired_from_frame_stream) {
   // AU begin must reach LinkHealthAssembler::on_au_begin: with a probe
   // commanded, every video AU books bpb expected blocks after finalize.
