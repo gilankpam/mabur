@@ -5,9 +5,10 @@
 // host could pin which decision windows get settle-blanked at an edge.
 //
 // On a COMMANDED op change (mcs, bw or base overhead) this (1) marks the decoder's per-sid transition
-// watermark and (2) settle-blanks the two residual decision windows; the
-// util windows stopped being blanked on 2026-09-05 when they moved to the
-// ArrivalTracker -- the base (s1) residual window since 2026-09-02 (flight
+// watermark, (2) settle-blanks the two residual decision windows and (3)
+// clears the two util decision windows (back since 2026-10-06, flight
+// 0026; see on_tick). The util windows stopped being blanked on 2026-09-05
+// when they moved to the ArrivalTracker -- the base (s1) residual window since 2026-09-02 (flight
 // ctl-0160: one residual event walked the ladder to rung 0 at 50 ms/rung),
 // and the enh (s3) residual window since 2026-09-05 (flights 20/21: 13 of
 // 14 s3_residual cascades took a second step at exactly s3_settle_ms and
@@ -22,10 +23,11 @@
 // earlier, so more have aged out of the window by the time the gate opens,
 // (ii) contributes no entries from the boundary-open interval, and (iii)
 // dilutes them faster with post-close current entries. The residual
-// exposure this leaves: old-rung util entries can survive up to 500 ms
-// into the new rung while the in-regime confirm is fade.confirm_ms
-// (100 ms); bench campaign 2 (8 pulses, docs/arrival-loss-findings-2026-09-05.md)
-// showed zero re-fires, but the control arm also showed none. Observability
+// exposure that left -- old-rung util entries surviving up to 500 ms into
+// the new rung while the in-regime confirm is fade.confirm_ms (100 ms);
+// bench campaign 2 (8 pulses, docs/arrival-loss-findings-2026-09-05.md)
+// showed zero re-fires, but the control arm also showed none -- is what
+// flight 0026 then showed in every 5->0 cascade, hence (3). Observability
 // windows (pool_resid*, s1_loss, s3_loss) stay untouched -- they report,
 // they don't decide.
 #include "mabur/profile.h"
@@ -52,15 +54,23 @@ struct TransitionEdge {
   int last_enh_mcs = -1;
   int last_enh_bw = -1;
 
-  // Returns true when any edge fired this tick. Only the two RESIDUAL
-  // (post-FEC) windows are settle-blanked: abandonment books ~80 ms late.
-  // The util (pre-FEC) windows read the ArrivalTracker (2026-09-05 spec),
-  // which classifies every missing symbol by the watermark at booking
-  // time, so they carry no transition debris and are not blanked. They
-  // are still blind while the decoder's attribution boundary is open --
-  // an adaptive blank rather than none, see docs/link-adaptation.md.
+  // Returns true when any edge fired this tick. The two RESIDUAL (post-FEC)
+  // windows are settle-blanked: abandonment books ~80 ms late. The two
+  // UTIL (pre-FEC) windows are CLEARED, with no swallow: they read the
+  // ArrivalTracker (2026-09-05 spec), which classifies every missing symbol
+  // by the watermark at booking time, so nothing booked after the edge is
+  // old-rung debris -- but the 500 ms of old-rung loss legitimately booked
+  // BEFORE the edge stayed in them, and in the fade regime (100 ms confirm,
+  // 150 ms spacing) one real demote kept re-deciding on it every 150 ms,
+  // two or three rungs past where the fade stopped (flight 0026,
+  // 2026-10-06: u collapsed to 0 in one tick exactly 500 ms after the
+  // booking, 17 of 82 cascade steps). That loss already produced its
+  // demote; the new rung is judged on its own entries only, so a genuine
+  // continuing fade now steps ~250 ms/rung (confirm on fresh entries)
+  // instead of 150.
   bool on_tick(const OpPoint& op, mabur::UepDecoder& dec,
                S1LossWindow& s1_resid_cur, S1LossWindow& s3_resid_cur,
+               S1LossWindow& s1_loss_cur, S1LossWindow& s3_loss_cur,
                double now_ms) {
     bool fired = false;
     // sid 0 (base) rides the rung mcs (rc::ladder_from(...)[0].mcs, the same
@@ -74,6 +84,7 @@ struct TransitionEdge {
       dec.mark_transition(0, static_cast<uint8_t>(base_spec.mcs),
                           static_cast<uint64_t>(now_ms));
       s1_resid_cur.blank_until(now_ms + kResidSettleMs);
+      s1_loss_cur.blank_until(now_ms);  // clear only; adds from this tick on are kept
       last_op_mcs = op.mcs;
       last_op_bw = op.bw;
       last_op_ov = op.overhead_base;
@@ -86,6 +97,7 @@ struct TransitionEdge {
       dec.mark_transition(1, static_cast<uint8_t>(op.mcs),
                           static_cast<uint64_t>(now_ms));
       s3_resid_cur.blank_until(now_ms + kResidSettleMs);
+      s3_loss_cur.blank_until(now_ms);
       last_enh_mcs = op.mcs;
       last_enh_bw = op.bw;
       fired = true;

@@ -58,11 +58,12 @@ LinkHealthAssembler::Tick LinkHealthAssembler::tick(double now_ms,
                                                     const LinkHealthInputs& in) {
   Tick out;
   // Transition boundaries for loss attribution + settle-blank of the two
-  // residual decision windows: gs/src/transition_edge.h (extracted
-  // 2026-09-05 so tests/test_transition_edge.cpp can pin what an edge
-  // blanks). The util windows read the ArrivalTracker below and are no
-  // longer reachable from the edge at all.
-  edge_.on_tick(in.op, agg.decoder(), s1_resid_cur_, s3_resid_cur_, now_ms);
+  // residual decision windows + clear of the two util decision windows:
+  // gs/src/transition_edge.h (extracted 2026-09-05 so
+  // tests/test_transition_edge.cpp can pin what an edge blanks; the util
+  // windows rejoined it 2026-10-06, flight 0026).
+  edge_.on_tick(in.op, agg.decoder(), s1_resid_cur_, s3_resid_cur_,
+                s1_loss_cur_, s3_loss_cur_, now_ms);
 
   // Control step: post-FEC residual from the FEC decoder's own abandonment
   // counters — ONE formula for every consumer since 2026-09-02, see
