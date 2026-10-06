@@ -118,12 +118,6 @@ bool parse_gs_snapshot(const char* data, size_t n, GsSnapshot* out) {
       out->rtt_ms = num(*rtt, "ms");
       out->pts_off_us = integer64(*rtt, "pts_off_us");
     }
-    // link.nack.fill_pps (Task 7): num()'s is_number() guard already
-    // rejects a JSON null fill_pps the same way it rejects a missing key,
-    // so no extra check is needed here to keep "no samples" from reading
-    // as zero.
-    if (const json* nk = obj(*link, "nack"))
-      out->nack_fill_pps = num(*nk, "fill_pps");
     // The LOSS row's pre-FEC half: link.pre_fec_loss, the always-exported
     // link-level gauge, which since 2026-09-23 pools BOTH video layers
     // (base + enh arrival-tracker counts over one window). The controller's

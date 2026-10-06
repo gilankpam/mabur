@@ -286,8 +286,6 @@ burst_ms = 20   # bucket depth, ms of air at the current op; 1..200
   `refused` summed once per `tlm_seq`; fill p50/p90/max, settle) and a
   `retx=` count per group in FEC EPISODES; `load_feclog` reads feclog
   1/2/3 by marker.
-- **Player OSD** compact bar: `rtx:N`, `link.nack.fill_pps` rounded, blank
-  below 0.5 (`gs/player/src/gs_compact.cpp`).
 
 ## Bench
 
