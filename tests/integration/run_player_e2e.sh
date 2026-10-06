@@ -110,18 +110,7 @@ GS_SHA_EXPECTED=a8f4637f98c88e78cad41f3c67107df355e1bf04059565c22ad87cf82fbb2099
 # the bar's size (nearest baked; 19 px here). Pixel diff old vs new: 11768 px
 # changed, all inside x 1639..1886 y 42..94 (the REC field), 0 outside; REC
 # ink still ends flush at x 1886 and its top stays on the 40 px inset.
-# Re-blessed 2026-10-06 (was 6e8c67a6...): Task 9 (software NACK) added the
-# rtx cell to row 1; the fixture carries no link.nack block, so it renders
-# BLANK -- but its worst-case width is still reserved (every field's box is
-# sized from worst_case(), live or not), which widens row 1's total and
-# re-centres every item already on it. Pixel diff old vs new, rebuilt
-# maburplay against the pre-commit (70884f3) sources with the fixture and
-# CLI flags unchanged exactly reproduces the old hash: 57,791 px differ, ALL
-# of them inside y 1003..1055 (row 1's own band), 0 in the REC corner band
-# (y 42..94) or row 0 (y 944..996). Total lit count is UNCHANGED (129,731 ->
-# 129,731): no new glyphs draw, this is purely row 1's existing ink sliding
-# sideways to the new centre.
-BAR_SHA_EXPECTED=6801e6724cc1a1a2cd2ded6719ba9c70ba61179b04bd5f49446dfc101bd31b6c
+BAR_SHA_EXPECTED=6e8c67a6a3c8b0a498736d2a04ed56dc8acf5cabe41e3773528b08a328650d7c
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 

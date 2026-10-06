@@ -16,26 +16,24 @@ namespace {
 // size. 32/24 still clears the panel bezel on the GS's own display.
 constexpr int kInsetX = 32, kInsetY = 24;
 
-// The fourteen items, in draw order, and the row each one lands on. This IS
+// The eleven items, in draw order, and the row each one lands on. This IS
 // the reading order on the glass: row 0 is the radio (what the link is
 // doing), row 1 the picture (what came out of it). Split by source rather
 // than by width -- an even split would put `snr` next to `bitrate`, which
 // reads as one continuous line of unrelated figures.
 //
-// Row 1 is the WIDER of the two since the rtx cell (Task 9) joined it:
-// summing worst_case() over each row's own items, row 0's six items are 76
-// worst-case characters plus 5 gaps, row 1's seven are also 76 characters
-// but plus 6 gaps -- the extra gap (one more item, same total text) is what
-// tips it, and row 1 is therefore what decides the type size now. Moving an
-// item between rows changes the size the whole bar renders at -- which is
-// one of the reasons REC is in the corner instead (see gs_compact.h).
+// Row 0 is the WIDER of the two since the temp cell joined it (71
+// worst-case characters plus 5 gaps, against row 1's 69 plus 5), so it is
+// what decides the type size. Moving an item between rows changes the size
+// the whole bar renders at -- which is one of the reasons REC is in the
+// corner instead (see gs_compact.h).
 constexpr GsBarField kOrder[] = {
     GsBarField::kCh,   GsBarField::kMcs, GsBarField::kAir,     GsBarField::kRssi,
     GsBarField::kSnr,  GsBarField::kTemp, GsBarField::kRec,    GsBarField::kBitrate,
     GsBarField::kRes,  GsBarField::kFps, GsBarField::kJit,     GsBarField::kLat,
-    GsBarField::kLoss, GsBarField::kRtx,
+    GsBarField::kLoss,
 };
-constexpr int kRow[] = {0, 0, 0, 0, 0, 0, GsCompactBar::kCorner, 1, 1, 1, 1, 1, 1, 1};
+constexpr int kRow[] = {0, 0, 0, 0, 0, 0, GsCompactBar::kCorner, 1, 1, 1, 1, 1, 1};
 static_assert(sizeof(kOrder) / sizeof(kOrder[0]) == (size_t)GsBarField::kCount,
               "every field must appear exactly once in the draw order");
 static_assert(sizeof(kRow) / sizeof(kRow[0]) == (size_t)GsBarField::kCount,
@@ -149,11 +147,6 @@ std::string GsCompactBar::worst_case(GsBarField id, int n_cards,
     case GsBarField::kJit:     return "jit:999.9";
     case GsBarField::kLat:     return "lat:999/999";
     case GsBarField::kLoss:    return "loss:100.0/100.0";
-    // Task 9 (software NACK): rounded retransmit fills/s, rendered empty
-    // below 0.5/null/absent -- "rtx:999" (the state_of_ clamp's own upper
-    // bound) is the widest live form, strictly wider than the empty string
-    // it most often is.
-    case GsBarField::kRtx:     return "rtx:999";
     // Sized on rec_worst(target) (gs_layer.h): the widest REC text this
     // dvr.target can produce -- "● REC FAULT" for "gs", as it always was.
     // Armed renders nothing and leaves the box blank -- the same
@@ -436,17 +429,6 @@ GsCompactBar::FieldState GsCompactBar::state_of_(const GsSnapshot& snap,
       st.text += snap.post_loss_pct
                      ? fmt_one_dp(std::clamp(*snap.post_loss_pct, 0.0, 100.0))
                      : "--";
-      break;
-    case GsBarField::kRtx:
-      // link.nack.fill_pps (Task 7): retransmit fills/s, rounded. Blank --
-      // not "rtx:0" -- below 0.5, at exactly 0, or when the whole block is
-      // absent/null: none of those are something the pilot can act on, and
-      // a permanently visible "rtx:0" would read as a feature that is
-      // always idle rather than one that is simply quiet right now.
-      st.rgb = link;
-      st.text = (snap.nack_fill_pps && *snap.nack_fill_pps >= 0.5)
-                    ? "rtx:" + fmt_int(std::clamp(*snap.nack_fill_pps, 0.0, 999.0))
-                    : "";
       break;
     case GsBarField::kRec: {
       // Byte-for-byte the essential overlay's kRec, deliberately: one
