@@ -238,6 +238,7 @@ struct RecordCfg {
 struct NackDroneCfg {
   int ring_ms = 150;
   int air_pct = 5;
+  int burst_ms = 20;  // bucket depth: this much air of re-sends at the current op
 };
 
 struct Config {

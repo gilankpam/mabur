@@ -105,6 +105,15 @@ estimate (it is a property of the link, not of the session).
 again, up to `max_tries` (2). A frame carrying any second-try seq sets the
 repeat flag. `max_tries = 0` is observe-only: lateness stats, no sends.
 
+**Minimum lead** (2026-10-06, after flight 0026). A request, first try or
+repeat, is withheld when `now + min_lead_ms` (12) is past the entry's
+deadline: the answer could not land in time, and in a demote cascade such
+deadline-doomed seqs were packed first (ascending) and ate the drone's air
+bucket ahead of seqs that could still have been filled. The entry is dead
+on the spot and counts `lead_skipped` (per seq); it books
+`dropped_deadline` later only if it had been requested before. The
+flight's fill p50 was 11 ms, the bench's 10.
+
 **Deadline.** An entry still Unknown `gap_ms(0)` after `t0` is **dead**:
 never requested again. `gap_ms(0)` is the rate-aware sid-0 frame gap
 timeout (`GapTimeoutPolicy`: `clamp(w / seq_rate + 15 ms,
@@ -147,6 +156,7 @@ enable    = false
 lookback  = 256      # symbols behind newest the erasure view scans; 8..4096, must be < fec.seq_horizon
 repeat_ms = 16       # 1..1000
 max_tries = 2        # 0..16; 0 = observe only
+min_lead_ms = 12     # 1..100; withhold a request this close to the deadline
 ```
 
 The removed spike keys `settle_ms` and `slotted` fail boot.
@@ -192,8 +202,14 @@ miss.
    request order ahead of queued video), each booked on the air clock; with
    the repeat flag the whole answer is pushed twice.
 
-**Bucket** (`drone/src/nack_bucket.h`). Tokens are symbols, depth 64,
-starting full. Refilled at each verified NACK at
+**Bucket** (`drone/src/nack_bucket.h`). Tokens are symbols. Depth is
+`nack.burst_ms` (20) of air at the current op's delivered sid-0 rate,
+re-set at every verified NACK (`TokenBucket::depth_for`; growing it only
+raises the ceiling, shrinking it clamps what is held): about 44 symbols at
+mcs0/20, 146 at mcs1/40, 450 at mcs4/40. Until 2026-10-06 the depth was a
+fixed 64 symbols, 4 ms of air at rung 5 and 30 ms at rung 0, and flight
+0026 refused 49 % of what it was asked, two thirds of it at rungs 0-1 in
+demote cascades. Tokens start full at 64. Refilled at each verified NACK at
 
 ```
 rate = delivered_mbps(op.ladder[0]) × 1e6/8 / 346 B × nack.air_pct/100   symbols/s
@@ -210,6 +226,7 @@ order up to the tokens and the rest is counted `retx_refused`.
 [nack]
 ring_ms = 150   # history kept, at encoder.bitrate_max_kbps; 50..1000
 air_pct = 5     # bucket refill, % of the rung's delivered sid-0 capacity; 0..50
+burst_ms = 20   # bucket depth, ms of air at the current op; 1..200
 ```
 
 ## Accounting (option A)
@@ -250,7 +267,7 @@ air_pct = 5     # bucket refill, % of the rung's delivered sid-0 capacity; 0..50
 
 - **Sideport `link.nack`** (only while enabled; `gs/src/stats_exporter.cpp`):
   cumulative `requests, repeats, syms_requested, tail_requests, filled,
-  late_fill, wasted, dropped_deadline, suppressed`; per export window
+  late_fill, wasted, dropped_deadline, suppressed, lead_skipped`; per export window
   `fill_pps`, `fill_ms{p50,p90,max}` (first request → retx-filled,
   nearest-rank), `late_ms_max`; gauge `settle_ms`.
 - **Sideport `drone.nack{rx, retx_syms, retx_refused}`**: the Telem fields,
@@ -337,8 +354,8 @@ arm. Under loss-sim the direct NACK took truncated AUs 314 → 8 and dropped
 - `TxQueue::push` sheds from the front when over cap, so under a heavy
   backlog the retx bodies at the head are the first dropped; they count in
   `txq_drops`.
-- The bucket starts full (64) and does not refill until the first op is
-  published (refill rate 0 without one).
+- The bucket starts full (64) and neither refills nor re-sizes until the
+  first op is published (refill rate 0 without one).
 - `nack_bad` and `retx_miss` are counted on the drone but reported nowhere
   (no Telem field, no log line); `auth_reject` is the only sign of a NACK
   that failed its tag or counter, a corrupted one is invisible, and so is

@@ -575,11 +575,13 @@ void parse_record(const Value& j, RecordCfg& r) {
 }
 
 void parse_nack(const Value& j, NackDroneCfg& n) {
-  check_known_keys(j, {"ring_ms", "air_pct"}, "nack");
+  check_known_keys(j, {"ring_ms", "air_pct", "burst_ms"}, "nack");
   assign_if_present(j, "ring_ms", n.ring_ms, "nack");
   assign_if_present(j, "air_pct", n.air_pct, "nack");
+  assign_if_present(j, "burst_ms", n.burst_ms, "nack");
   if (n.ring_ms < 50 || n.ring_ms > 1000) fail("nack.ring_ms", "must be in [50,1000]");
   if (n.air_pct < 0 || n.air_pct > 50) fail("nack.air_pct", "must be in [0,50]");
+  if (n.burst_ms < 1 || n.burst_ms > 200) fail("nack.burst_ms", "must be in [1,200]");
 }
 
 void parse_ampdu(const Value& j, AmpduCfg& a) {

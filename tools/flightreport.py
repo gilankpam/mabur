@@ -1073,7 +1073,8 @@ def print_nack_report(rows):
     print(f"  requests={last.get('requests', 0)} ({d('requests') / span_s * 60:.1f}/min) repeats={last.get('repeats', 0)}"
           f" syms={last.get('syms_requested', 0)} tail={last.get('tail_requests', 0)}")
     print(f"  filled={last.get('filled', 0)} late_fill={last.get('late_fill', 0)} wasted={last.get('wasted', 0)}"
-          f" dropped_deadline={last.get('dropped_deadline', 0)} suppressed={last.get('suppressed', 0)}")
+          f" dropped_deadline={last.get('dropped_deadline', 0)} suppressed={last.get('suppressed', 0)}"
+          f" lead_skipped={last.get('lead_skipped', 0)}")
     print(f"  drone (once per tlm_seq): rx={dn['rx']} retx_syms={dn['retx_syms']} refused={dn['retx_refused']}")
     if p50:
         print(f"  fill_ms p50/p90/max={_pct(p50, 0.5)}/{_pct(p90, 0.5)}/{max(mx) if mx else 0}"

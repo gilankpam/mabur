@@ -1453,12 +1453,23 @@ TEST(nack_section_defaults_and_bounds) {
     auto path = write_temp_toml("");
     auto cfg = load_config(path.string());
     CHECK(cfg.nack.ring_ms == 150 && cfg.nack.air_pct == 5);
+    CHECK(cfg.nack.burst_ms == 20);
     std::filesystem::remove(path);
   }
   {
-    auto path = write_temp_toml("[nack]\nring_ms = 300\nair_pct = 10\n");
+    auto path = write_temp_toml("[nack]\nring_ms = 300\nair_pct = 10\nburst_ms = 40\n");
     auto cfg = load_config(path.string());
     CHECK(cfg.nack.ring_ms == 300 && cfg.nack.air_pct == 10);
+    CHECK(cfg.nack.burst_ms == 40);
+    std::filesystem::remove(path);
+  }
+  {
+    // burst_ms is the first-answer air a NACK may take at the TxQueue head;
+    // 0 would refuse everything, past 200 ms it is past any gap timeout.
+    auto path = write_temp_toml("[nack]\nburst_ms = 0\n");
+    bool threw = false;
+    try { load_config(path.string()); } catch (const std::exception&) { threw = true; }
+    CHECK(threw);
     std::filesystem::remove(path);
   }
   {

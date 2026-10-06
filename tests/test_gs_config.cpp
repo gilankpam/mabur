@@ -319,10 +319,15 @@ TEST(link_nack_section_parses_and_defaults_off) {
   auto off = maburgs::load_config(write_tmp(""));
   CHECK(!off.link.nack.enable && off.link.nack.lookback == 256 &&
         off.link.nack.repeat_ms == 16 && off.link.nack.max_tries == 2);
+  CHECK(off.link.nack.min_lead_ms == 12);
   auto on = maburgs::load_config(write_tmp(
-      "[link.nack]\nenable = true\nlookback = 128\nrepeat_ms = 20\nmax_tries = 1\n"));
+      "[link.nack]\nenable = true\nlookback = 128\nrepeat_ms = 20\nmax_tries = 1\nmin_lead_ms = 8\n"));
   CHECK(on.link.nack.enable && on.link.nack.lookback == 128 &&
         on.link.nack.repeat_ms == 20 && on.link.nack.max_tries == 1);
+  CHECK(on.link.nack.min_lead_ms == 8);
+  bool lead_threw = false;
+  try { maburgs::load_config(write_tmp("[link.nack]\nmin_lead_ms = 0\n")); } catch (const std::exception&) { lead_threw = true; }
+  CHECK(lead_threw);  // 0 would send requests that cannot be answered in time
   bool threw = false;
   try { maburgs::load_config(write_tmp("[link.nack]\nsettle_ms = 5\n")); } catch (const std::exception&) { threw = true; }
   CHECK(threw);   // the spike's knob is gone; settle is adaptive

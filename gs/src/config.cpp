@@ -546,12 +546,13 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
     // Software NACK (spec 2026-10-05 fec-nack §7). settle is adaptive (no key).
     if (r.contains("nack")) {
       const Value& nj = r["nack"];
-      check_keys(nj, "link.nack", {"enable", "lookback", "repeat_ms", "max_tries"});
+      check_keys(nj, "link.nack", {"enable", "lookback", "repeat_ms", "max_tries", "min_lead_ms"});
       auto& nc = c.link.nack;
       nc.enable = get_bool(nj, "enable", nc.enable, "link.nack");
       nc.lookback = static_cast<int>(get_int(nj, "lookback", 256, 8, 4096, "link.nack"));
       nc.repeat_ms = static_cast<int>(get_int(nj, "repeat_ms", 16, 1, 1000, "link.nack"));
       nc.max_tries = static_cast<int>(get_int(nj, "max_tries", 2, 0, 16, "link.nack"));  // 0 = observe only
+      nc.min_lead_ms = static_cast<int>(get_int(nj, "min_lead_ms", 12, 1, 100, "link.nack"));
     }  // absent = off; not a defaulted key (bench knob)
     // Cross-section: [fec] is parsed above. A lookback at or past the
     // decoder's seq horizon would ask about seqs the decoder has already

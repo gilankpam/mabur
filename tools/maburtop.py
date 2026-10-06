@@ -1079,7 +1079,7 @@ def panel_ladder(model, wall):
         dn = (d.get("drone") or {}).get("nack") or {}
         fm = nk.get("fill_ms") or {}
         body.append((f" nack: req{_s(nk.get('requests'))} fill{_s(nk.get('filled'))}"
-                     f" waste{_s(nk.get('wasted'))} sup{_s(nk.get('suppressed'))}"
+                     f" waste{_s(nk.get('wasted'))} sup{_s(nk.get('suppressed'))} lead{_s(nk.get('lead_skipped'))}"
                      f" {_s(fm.get('p50'))}/{_s(fm.get('p90'))}/{_s(fm.get('max'))}ms"
                      f" settle{_s(nk.get('settle_ms'))} | drone rx{_s(dn.get('rx'))}"
                      f" syms{_s(dn.get('retx_syms'))} refused{_s(dn.get('retx_refused'))}", []))

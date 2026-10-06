@@ -269,6 +269,7 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     nk["wasted"] = c.wasted;
     nk["dropped_deadline"] = c.dropped_deadline;
     nk["suppressed"] = c.suppressed;
+    nk["lead_skipped"] = c.lead_skipped;
     nk["fill_pps"] = in.nack.interval_s > 0
                          ? json(static_cast<double>(in.nack.win.filled) / in.nack.interval_s)
                          : json(nullptr);

@@ -110,12 +110,19 @@ std::optional<rc::Nack> NackTracker::poll(uint64_t now_ms, const NackInputs& in)
   resolve(now_ms, in);
   admit(now_ms, in);  // admitted even while stopped: entries age and resolve normally
   std::vector<uint32_t> due;
-  for (const auto& [s, e] : entries_) {
+  for (auto& [s, e] : entries_) {
     if (e.dead || e.tries >= cfg_.max_tries) continue;
     const uint64_t since = e.tries == 0 ? e.first_missing_ms : e.last_sent_ms;
     const uint64_t wait = e.tries == 0 ? static_cast<uint64_t>(settle_ms_)
                                        : static_cast<uint64_t>(cfg_.repeat_ms);
-    if (now_ms >= since + wait) due.push_back(s);
+    if (now_ms < since + wait) continue;
+    const uint64_t deadline = e.first_missing_ms + in.gap_timeout_ms;
+    if (now_ms + static_cast<uint64_t>(cfg_.min_lead_ms) > deadline) {
+      e.dead = true;  // the answer could not land in time: never asked (again)
+      ++stats_.lead_skipped;
+      continue;
+    }
+    due.push_back(s);
   }
   if (due.empty()) return std::nullopt;
   if (in.util() >= in.down_util) {

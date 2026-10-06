@@ -157,6 +157,7 @@ enable    = false
 lookback  = 256    # symbols behind the newest heard that are checked; keep below fec.seq_horizon
 repeat_ms = 16     # second request after this if still missing
 max_tries = 2      # requests per symbol; 0 = measure only, never ask
+min_lead_ms = 12   # do not ask when the answer could not arrive this long before the frame gives up
 
 # Per-rung link history shown in the stats (it does not steer the link).
 [link.rung_stats]

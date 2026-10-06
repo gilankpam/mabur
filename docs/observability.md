@@ -946,7 +946,7 @@ crcfail = 0) and its encoder-fps / sent→inj cross-check row is gone.
 USB fails, CPU, shed periods, once per `tlm_seq`).
 
 **2026-10-06 (software NACK, RC_VERSION 15; `docs/fec-nack.md`).**
-`link.nack{requests, repeats, syms_requested, tail_requests, filled, late_fill, wasted, dropped_deadline, suppressed, fill_pps, fill_ms{p50,p90,max}, settle_ms, late_ms_max}`: the GS NackTracker, counters cumulative, `fill_*`/`late_ms_max` per export window; present only while `[link.nack] enable`.
+`link.nack{requests, repeats, syms_requested, tail_requests, filled, late_fill, wasted, dropped_deadline, suppressed, lead_skipped, fill_pps, fill_ms{p50,p90,max}, settle_ms, late_ms_max}`: the GS NackTracker, counters cumulative, `fill_*`/`late_ms_max` per export window; present only while `[link.nack] enable`. `lead_skipped` (2026-10-06 post-flight-0026): seqs whose request was withheld by `link.nack.min_lead_ms` because the answer could not land before the deadline.
 `drone.nack{rx, retx_syms, retx_refused}`: the drone's T_NACK answers from Telem, per Telem period (repeated until the next Telem; count once per `drone.tlm_seq`).
 
 **2026-09-06 (air clock).** `drone.air_backlog_max_ms` was the per-window

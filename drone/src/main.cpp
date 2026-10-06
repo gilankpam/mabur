@@ -1772,13 +1772,16 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
   // Software NACK answer (spec 2026-10-05 fec-nack §4.2-4.3), RX thread.
   // Verified request -> ring lookups -> fresh SBI bodies marked retx ->
   // TxQueue head, under a token bucket of nack.air_pct of the base layer's
-  // delivered capacity. A repeat-flagged request is answered twice (and
-  // draws two tokens per symbol). The bucket, packer and scratch envelope
-  // are RX-thread-only; ring, txq, air_clock and agent are thread-safe.
+  // delivered capacity, nack.burst_ms of that capacity deep (flight 0026,
+  // 2026-10-06: a fixed 64-symbol depth was 4 ms of air at rung 5 and 30 ms
+  // at rung 0, and refused half of every cascade's requests). A
+  // repeat-flagged request is answered twice (and draws two tokens per
+  // symbol). The bucket, packer and scratch envelope are RX-thread-only;
+  // ring, txq, air_clock and agent are thread-safe.
   // The UepBody carries stream_id 0, so RadioTx::build_frame and the air
   // clock see plain base-layer bodies; the retx mark lives only in the SBI
   // stream byte, which the GS routes as base and decodes as a retransmit.
-  TokenBucket retx_bucket(64.0);
+  TokenBucket retx_bucket(64.0);  // re-sized from the op at every refill
   mabur::SbiPacker retx_packer(static_cast<int>(retx_env_len), cfg.fec.blocks_per_body[0],
                                static_cast<uint8_t>(0 | mabur::kSbiRetxMark));
   std::vector<uint8_t> retx_env(retx_env_len);
@@ -1797,6 +1800,7 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
     const double sym_per_s =
         op ? delivered_mbps(op->ladder[0], cfg.air_clock) * 1e6 / 8.0 / static_cast<double>(retx_env_len)
            : 0.0;
+    if (op) retx_bucket.set_depth(TokenBucket::depth_for(sym_per_s, cfg.nack.burst_ms));
     retx_bucket.refill(now_steady_us(), sym_per_s * cfg.nack.air_pct / 100.0);
     const bool twice = (n->flags & rc::kNackFlagRepeat) != 0;
     const double cost = twice ? 2.0 : 1.0;

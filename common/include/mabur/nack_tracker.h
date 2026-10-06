@@ -15,7 +15,11 @@
 //
 // Deadline: an entry still unknown gap_timeout_ms after t0 is dead (never
 // requested again) but stays tracked until the decoder's state is
-// terminal, so the erasure set cannot re-admit it. A requested entry books
+// terminal, so the erasure set cannot re-admit it. A request (first try or
+// repeat) that would go out with less than min_lead_ms left before that
+// deadline is withheld and the entry is dead on the spot (`lead_skipped`):
+// flight 0026 (2026-10-06) packed deadline-doomed seqs first in every
+// cascade, and they ate the drone's air bucket ahead of fillable ones. A requested entry books
 // one resolution (filled / late_fill / wasted) when its state turns
 // terminal, and dropped_deadline once if it is still unknown at the
 // deadline or falls below the floor -- the buckets are NOT disjoint: an
@@ -43,6 +47,7 @@ struct NackCfg {
   int lookback = 256;        // symbols behind newest the erasure view scans (< fec.seq_horizon)
   int repeat_ms = 16;
   int max_tries = 2;         // 0 = observe only
+  int min_lead_ms = 12;      // a request whose answer cannot land this long before the deadline is not sent
   int settle_min_ms = 4, settle_max_ms = 24, settle_seed_ms = 12;
   int settle_window_ms = 10000, settle_min_samples = 50;
 };
@@ -61,6 +66,7 @@ struct NackInputs {           // all sid 0
 struct NackStats {            // cumulative
   uint64_t requests = 0, repeats = 0, syms_requested = 0, tail_requests = 0;
   uint64_t filled = 0, late_fill = 0, wasted = 0, dropped_deadline = 0, suppressed = 0;
+  uint64_t lead_skipped = 0;  // requests (first or repeat) withheld by min_lead_ms, per seq
 };
 
 struct NackWindow {           // since the last take_window()

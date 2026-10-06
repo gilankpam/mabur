@@ -92,6 +92,47 @@ TEST(deadline_drops_without_retry) {
   CHECK(t.stats().dropped_deadline == 1 && t.outstanding() == 0);
 }
 
+TEST(request_needs_min_lead_before_the_deadline) {
+  // Flight 0026 (2026-10-06): in a demote cascade the oldest, deadline-doomed
+  // seqs were packed first and ate the drone's air bucket ahead of seqs that
+  // could still have been filled. A request (first try or repeat) whose
+  // answer cannot land min_lead_ms before the entry's deadline is not sent;
+  // the entry is dead on the spot and books dropped_deadline as usual.
+  NackCfg c = cfg_on();                     // min_lead_ms 12, gap 50
+  {
+    World w; w.lose({100});
+    NackTracker t(c);
+    CHECK(!t.poll(1000, w.in()).has_value());
+    // A sparse poll: first try is due, but 1045 + 12 > deadline 1050.
+    CHECK(!t.poll(1045, w.in()).has_value());
+    CHECK(t.outstanding() == 0 && t.stats().requests == 0);
+    CHECK(t.stats().lead_skipped == 1);
+    CHECK(!t.poll(1060, w.in()).has_value());
+    CHECK(t.stats().dropped_deadline == 0);     // never requested: not a dropped request
+  }
+  {
+    World w; w.lose({100});
+    NackTracker t(c);
+    CHECK(!t.poll(1000, w.in()).has_value());
+    REQUIRE(t.poll(1012, w.in()).has_value());   // first try, 38 ms of lead
+    // Repeat due since 1028, but at 1040 only 10 ms of lead remain.
+    CHECK(!t.poll(1040, w.in()).has_value());
+    CHECK(t.outstanding() == 0 && t.stats().requests == 1);
+    CHECK(t.stats().lead_skipped == 1);
+    CHECK(!t.poll(1060, w.in()).has_value());
+    CHECK(t.stats().dropped_deadline == 1);     // the first try was a real request
+  }
+  {
+    World w; w.lose({100});
+    NackTracker t(c);
+    CHECK(!t.poll(1000, w.in()).has_value());
+    REQUIRE(t.poll(1012, w.in()).has_value());
+    auto r = t.poll(1030, w.in());             // 20 ms of lead: repeat goes out
+    REQUIRE(r.has_value());
+    CHECK((r->flags & rc::kNackFlagRepeat) != 0);
+  }
+}
+
 TEST(stop_rule_suppresses_while_util_high) {
   World w; w.lose({100}); w.util = 0.5;
   NackTracker t(cfg_on());

@@ -130,3 +130,4 @@ size         = "1920x1080"        # recording resolution, same aspect ratio as v
 [nack]
 ring_ms = 150     # history of base-layer symbols kept, at encoder.bitrate_max_kbps
 air_pct = 5       # re-send budget, % of the rung's delivered capacity
+burst_ms = 20     # first-answer burst: this much air of re-sends at the current rung
