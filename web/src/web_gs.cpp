@@ -1,5 +1,6 @@
 #include "web_gs.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -113,6 +114,7 @@ WebGs::WebGs(const maburgs::Config& cfg, Mode mode, uint8_t start_ch, int width,
                cur_.cap_to_complete_us =
                    cap_to_complete_us(cur_.pts_us, cur_.t_complete_us, rtt_.pts_off_us());
              ++(complete ? aus_complete_ : aus_truncated_);
+             if (!complete && cur_.sid == 0) ++aus_truncated_base_;
              if (io_.on_au) io_.on_au(std::move(cur_));
              cur_ = Au{};
            }}),
@@ -140,6 +142,12 @@ WebGs::WebGs(const maburgs::Config& cfg, Mode mode, uint8_t start_ch, int width,
     vrx_ = std::make_unique<maburgs::VrxController>(vc);
     slot_ = std::make_unique<maburgs::RcfSlotter>(
         maburgs::RcfSlotCfg{cfg.link.rcf_slot_hold_ms, 100, 2, 3, 1});
+    if (cfg.link.nack.enable) {
+      nack_ = std::make_unique<mabur::NackTracker>(cfg.link.nack);
+      nack_lookback_ = static_cast<uint32_t>(cfg.link.nack.lookback);
+      nack_down_util_ = cfg.link.ladder_cfg.down_util;
+      key_ = cfg.link.key;
+    }
     if (!cards_.empty()) {
       sink_ = std::make_unique<Sink>(this);
       maburgs::ChannelCoreCfg cc;
@@ -173,7 +181,7 @@ WebGs::WebGs(const maburgs::Config& cfg, Mode mode, uint8_t start_ch, int width,
   agg_.set_frag_sink([this](const mabur::DecodedFrag& f) {
     if (!frame_wire_) return;
     fs_.push_fragment(f.stream_id, f.frag.data(), f.frag.size(), now_us_ / 1000,
-                      {f.body_mono_us, f.q_ms, f.enc_us, f.air_ms});
+                      {f.body_mono_us, f.q_ms, f.enc_us, f.air_ms, f.sw_seq, true, f.retx});
   });
   agg_.set_rc_sink([this](uint8_t, const std::vector<uint8_t>& f, uint64_t us) {
     if (mabur::rc::frame_type(f.data(), f.size()) == mabur::rc::T_TELEM) {
@@ -188,6 +196,13 @@ WebGs::WebGs(const maburgs::Config& cfg, Mode mode, uint8_t start_ch, int width,
         if (vrx_)
           rtt_.on_telem(t->rcf_seq_echo, (t->flags & 0x08) != 0, t->rcf_age_ms,
                         t->pts_at_build, us);
+        // Drone NACK counters are per Telem period: sum each period once.
+        if (nack_ && (!nack_tlm_seen_ || *nack_tlm_seen_ != t->tlm_seq)) {
+          nack_tlm_seen_ = t->tlm_seq;
+          drone_nack_rx_ += t->nack_rx;
+          drone_retx_syms_ += t->retx_syms;
+          drone_retx_refused_ += t->retx_refused;
+        }
       }
       return;
     }
@@ -295,8 +310,68 @@ void WebGs::on_rx(const mabur::node::RxBody& m) {
 void WebGs::reset_video_() {
   agg_.decoder().reset_continuity();
   fs_.reset();   // closes in-flight frames as truncated AUs (end_frame)
+  if (nack_) nack_->clear();   // tracked seqs dropped; the counter is kept (nack_vtx_seen_)
   cur_ = Au{};
   ++resets_;
+}
+
+// maburgs main.cpp's NACK block (spec 2026-10-05 fec-nack §3): base-layer
+// selective repeat. Direct send, mid-burst -- never the RcfSlotter (bench:
+// slotted fill p50 44 ms, past the gap timeout). Option A: the retransmit
+// fixes the video only; every ladder input still books the loss. No
+// calibration radio-silence gate here: the page has no calibration.
+void WebGs::poll_nack_(uint64_t now_ms) {
+  const auto sctx = vrx_->session_ctx();
+  // != 0: session_ctx() keeps reporting the held nonce in BEACONING.
+  if (sctx.vtx_nonce != 0 && sctx.vtx_nonce != nack_vtx_seen_) {
+    nack_vtx_seen_ = sctx.vtx_nonce;
+    nack_->restart_counter();
+  }
+  if (sctx.vtx_nonce == 0 || !frame_wire_) {
+    nack_->clear();
+    return;
+  }
+  mabur::NackInputs ni;
+  ni.missing = [&] { return agg_.decoder().missing_sources(0, nack_lookback_); };
+  ni.state = [&](uint32_t s) { return agg_.decoder().source_state(0, s); };
+  ni.tail = [&]() -> std::optional<mabur::NackTailView> {
+    auto tv = fs_.tail_view(0);
+    if (!tv) return std::nullopt;
+    return mabur::NackTailView{tv->count, tv->max_idx, tv->seq_at_max, tv->last_progress_ms};
+  };
+  // The stop rule's util is the ladder's own demote input (LadderController::u_).
+  ni.util = [&] { return vrx_->ctl().util(); };
+  ni.down_util = nack_down_util_;
+  ni.gap_timeout_ms = fs_.gap_ms(0);
+  if (auto n = nack_->poll(now_ms, ni)) {
+    mabur::rc::TagCtx ctx = sctx;
+    ctx.seq32 = n->counter;
+    maburgs::SlotFrame sf{mabur::rc::pack_nack(*n, key_, ctx), 0, 0, false};
+    sf.offered_ms = now_ms;
+    if (send_(sf)) ++nack_sent_;
+  }
+}
+
+// Drain the tracker's window once a second into the stats readout
+// (nearest-rank percentiles, as the sideport exporter computes them).
+void WebGs::drain_nack_window_(uint64_t now_ms) {
+  if (nack_win_t0_ms_ == 0) { nack_win_t0_ms_ = now_ms; return; }
+  if (now_ms < nack_win_t0_ms_ + 1000) return;
+  auto w = nack_->take_window();
+  const double secs = static_cast<double>(now_ms - nack_win_t0_ms_) / 1000.0;
+  nack_win_t0_ms_ = now_ms;
+  nack_fill_pps_ = static_cast<double>(w.filled) / secs;
+  nack_late_max_ = w.late_ms_max;
+  std::sort(w.fill_ms.begin(), w.fill_ms.end());
+  auto pct = [&w](double p) -> std::optional<uint32_t> {
+    if (w.fill_ms.empty()) return std::nullopt;
+    const double rank = std::ceil(p * static_cast<double>(w.fill_ms.size()));
+    const size_t i = rank < 1.0 ? 0 : static_cast<size_t>(rank) - 1;
+    return w.fill_ms[std::min(w.fill_ms.size() - 1, i)];
+  };
+  nack_fill_p50_ = pct(0.5);
+  nack_fill_p90_ = pct(0.9);
+  nack_fill_max_ = w.fill_ms.empty() ? std::nullopt : std::optional<uint32_t>(w.fill_ms.back());
 }
 
 bool WebGs::send_(const maburgs::SlotFrame& f) {
@@ -359,6 +434,10 @@ void WebGs::tick(uint64_t now_us) {
     }
   }
   if (frame_wire_) fs_.poll(now_ms_u);
+  if (nack_) {
+    poll_nack_(now_ms_u);
+    drain_nack_window_(now_ms_u);
+  }
   maburgs::LinkHealthInputs in;
   if (vrx_) {
     in.op = vrx_->cur_op();
@@ -435,6 +514,21 @@ Stats WebGs::stats() const {
     s.bw = vrx_->cur_op().bw;
     s.probe_state = maburgs::to_string(vrx_->ctl().probe_gate(now_ms).state);
     s.key_mismatch = vrx_->key_mismatch();
+    if (nack_) {
+      NackStatsOut n;
+      n.cum = nack_->stats();
+      n.sent = nack_sent_;
+      n.settle_ms = nack_->settle_ms();
+      n.fill_pps = nack_fill_pps_;
+      n.fill_p50_ms = nack_fill_p50_;
+      n.fill_p90_ms = nack_fill_p90_;
+      n.fill_max_ms = nack_fill_max_;
+      n.late_ms_max = nack_late_max_;
+      n.drone_rx = drone_nack_rx_;
+      n.drone_retx_syms = drone_retx_syms_;
+      n.drone_retx_refused = drone_retx_refused_;
+      s.nack = n;
+    }
   } else {
     s.bw = spotter_op_.bw;   // configured width
     s.mcs = air_mcs_;        // base-stream RX MCS, -1 until one is heard
@@ -453,6 +547,7 @@ Stats WebGs::stats() const {
   s.bodies = bodies_;
   s.aus_complete = aus_complete_;
   s.aus_truncated = aus_truncated_;
+  s.aus_truncated_base = aus_truncated_base_;
   s.sends = sends_;
   s.rcf_sent = rcf_sent_;
   s.idr_req = idr_req_;
@@ -545,11 +640,42 @@ std::string stats_json(const Stats& s) {
   j["bodies"] = s.bodies;
   j["aus"] = s.aus_complete;
   j["trunc"] = s.aus_truncated;
+  j["trunc_base"] = s.aus_truncated_base;
   j["sends"] = s.sends;
   j["rcf_sent"] = s.rcf_sent;
   j["idr_req"] = s.idr_req;
   j["osd_snaps"] = s.osd_snaps;
   j["osd_screens"] = s.osd_screens;
+  if (s.nack) {
+    nlohmann::json n;
+    const auto& c = s.nack->cum;
+    n["req"] = c.requests;
+    n["rep"] = c.repeats;
+    n["syms"] = c.syms_requested;
+    n["tail"] = c.tail_requests;
+    n["fill"] = c.filled;
+    n["late"] = c.late_fill;
+    n["waste"] = c.wasted;
+    n["drop"] = c.dropped_deadline;
+    n["sup"] = c.suppressed;
+    n["lead"] = c.lead_skipped;
+    n["sent"] = s.nack->sent;
+    n["settle_ms"] = s.nack->settle_ms;
+    auto o = [&n](const char* k, const auto& v) {
+      if (v) n[k] = *v; else n[k] = nullptr;
+    };
+    o("fill_pps", s.nack->fill_pps);
+    o("fill_p50", s.nack->fill_p50_ms);
+    o("fill_p90", s.nack->fill_p90_ms);
+    o("fill_max", s.nack->fill_max_ms);
+    n["late_max"] = s.nack->late_ms_max;
+    n["drone_rx"] = s.nack->drone_rx;
+    n["drone_syms"] = s.nack->drone_retx_syms;
+    n["drone_refused"] = s.nack->drone_retx_refused;
+    j["nack"] = n;
+  } else {
+    j["nack"] = nullptr;
+  }
   return j.dump();
 }
 

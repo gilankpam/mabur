@@ -106,6 +106,16 @@
       {/if}
       {#if !spotter}
         <div class="field">
+          <span id="{uid}nack-label" class="fieldlabel">Retransmit (NACK)</span>
+          <div class="seg" role="radiogroup" aria-labelledby="{uid}nack-label">
+            <label class="seg-opt"><input type="radio" name="{uid}nack" checked={cfg.nack} onchange={() => set('nack', true)}>On</label>
+            <label class="seg-opt"><input type="radio" name="{uid}nack" checked={!cfg.nack} onchange={() => set('nack', false)}>Off</label>
+          </div>
+          <div class="hint">Asks the drone to re-send base-layer pieces FEC could not repair, inside the frame's own wait. The ladder still sees the loss.</div>
+        </div>
+      {/if}
+      {#if !spotter}
+        <div class="field">
           <span id="{uid}key-label" class="fieldlabel">Link key</span>
           <div style="display:flex;gap:8px;align-items:center">
             <span class="tag {keyFp === 'default' ? 'tag-neutral' : 'tag-accent'}">{keyFp}</span>

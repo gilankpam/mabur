@@ -613,7 +613,9 @@ spotter can ask for it.
 The Config tab (`web/ui/src/components/ConfigPanel.svelte`, and
 `ConfigSide.svelte` for the immersive/mobile layout) edits the channel set,
 the link channel and width in both modes (see "Channel set" under Use),
-plus — GS mode only — Fixed MCS (`static_mcs`, −1 = adaptive) and the
+plus — GS mode only — Fixed MCS (`static_mcs`, −1 = adaptive), the
+"Retransmit (NACK)" switch (`[link.nack] enable`, default on; see
+"Software NACK" below) and the
 ladder rungs (mcs/bw/FEC overhead per rung, add/
 remove up to 8, drag the ⋮⋮ handle — or focus it and use ↑/↓ — to reorder;
 `applyRungEdit(cfg, from, '__move', to)`). `web/ui/src/lib/config.js` normalizes and persists the
@@ -623,7 +625,8 @@ default, so a stale or hand-edited entry can never break the page), and
 width on load the same way `?mode=` overrides the saved mode. On Connect,
 the form (always, even when it matches the embedded default) is serialized
 to TOML (`toOverlayToml()`: `[radio] channels/channel/width` in both modes, and
-in GS mode `[link] static_mcs/static_bw/max_mcs` plus one
+in GS mode `[link] static_mcs/static_bw/max_mcs`, a `[link.nack]
+enable = true|false` table (the bundle's other NACK keys stay), plus one
 `[[link.ladder]]` block per rung, `static_bw` carrying the form's width,
 `max_mcs` always 7 — the form has no Max MCS since 2026-09-29, the ladder
 as listed is the whole policy) and
@@ -787,6 +790,18 @@ this build — the panel is measurement-only, by design (see the spec's
 The core stats line also carries `osd_snaps` (MSP snapshots out of the FEC
 sink) and `osd_screens` (OSD screens handed to the page); see MSP OSD below.
 
+`trunc` counts truncated AUs of both layers; `trunc_base` is the sid-0
+share of it (Debug tab Counters, `trunc base`) — the layer the NACK
+protects, and the one whose loss smears until the next GDR/IDR.
+
+The Debug tab's **NACK** group (`debugGroups()` in `view.js`) reads the
+stats line's `nack` block — `null` in spotter mode or with the switch off,
+else the tracker's cumulatives (`req rep syms tail fill late waste drop sup
+lead`, `sent` = T_NACK frames that left the card), `settle_ms`, the last
+1 s window's fill latencies (`fill_p50/p90/max`, `fill_pps`; null while no
+fill landed) and the drone's Telem counters summed once per `tlm_seq`
+(`drone_rx`, `drone_syms`, `drone_refused`). See "Software NACK" below.
+
 ## MSP OSD
 
 The flight controller's MSP DisplayPort OSD is drawn over the video in both
@@ -819,6 +834,78 @@ that session (it is not refetched per screen), and the next Connect tries
 once more. The 5 s blank counts from the last *published* screen, where
 `maburplay` counts from the last datagram — the same thing in practice,
 since Betaflight sends DRAW_SCREEN continuously.
+
+## Software NACK
+
+GS mode runs `docs/fec-nack.md`'s base-layer selective repeat with the same
+`mabur::NackTracker` maburgs polls, over the same `SwDecoder` erasure view,
+`FrameStream` tail view and ladder util (`WebGs::poll_nack_`, built only
+in GS mode with `[link.nack] enable`; a spotter has no tracker, as it has
+no `VrxController`). Per `tick()`, after the FrameStream poll: a new
+`vtx_nonce` restarts the counter, no nonce or a dropped frame wire clears
+the entries (the counter is kept, as the drone's `accept_nack_counter`
+holds it under the same nonce), otherwise one `T_NACK` at most goes out
+through `send_()` — direct, never the `RcfSlotter`, gated by the scout's
+`may_send` like every control frame, counted in `sends` but not
+`rcf_sent`. There is no calibration radio-silence gate (the page has no
+calibration) and no `hdr_retx` latency-anchor rule (the page's
+capture→glass uses the RTT pts offset, not a first-fragment anchor). The
+`FragArrival` now carries `sw_seq`/`retx`, which is what makes the tail
+trigger live. Option A as on maburgs: a retransmit-filled symbol still
+counts as loss for the ladder. Over the CPE relay radio the request rides
+the relay's TX round trip; on the bench that showed up as more repeats
+(26 % of requests vs 11-15 % over USB) and a lower `drone_rx`/`sent`, not
+as `lead_skipped` (0 in every arm). Readout: the Debug tab's NACK group (Stats panel, above); switch:
+the Config tab (Config form, above). Pinned by `tests/test_web_gs.cpp`
+(tagged counter-1 frame under unrepairable loss, counter across a
+same-nonce rejoin vs a new nonce, the stats block, the overlay loader) and
+`web/tests/{config,view}.test.mjs`.
+
+**Bench (2026-10-07).** Native `webgs live --overlay` against the bench
+drone (fec-nack maburd), pinned mcs2/40 on 144 (stop rule inert),
+control (`[link.nack] enable = false`) vs NACK, 5 min per arm, counters
+taken from 5 s in (see the join burst below). Interference: devourer
+`txdemo` on one of the GS's 8822EU cards with maburgs stopped,
+`benchjam.sh`'s frame shape (6M, 1000 B QoS-Data, foreign SA) at 333
+frames/s — 180 was too gentle from that card (1 truncation/min), 500
+starved the drone's TX (AUs/s fell to 30-50, frames lost whole, nothing a
+NACK can fill). Order A1, B1, B2, A2 over USB, then RA, RB over the CPE
+relay (`--relay 10.83.11.1:8310`):
+
+| arm | AUs | trunc | trunc_base | req | syms | fill | waste | drop | drone_rx | drone_refused |
+|---|---|---|---|---|---|---|---|---|---|---|
+| A1 control | 17512 | 149 | 79 | | | | | | | |
+| B1 NACK | 17619 | 63 | 3 | 335 | 6596 | 4787 | 868 | 41 | 296 | 0 |
+| B2 NACK | 17606 | 75 | 5 | 374 | 6977 | 4627 | 1057 | 155 | 313 | 0 |
+| A2 control | 17550 | 115 | 54 | | | | | | | |
+| RA relay control | 17521 | 140 | 57 | | | | | | | |
+| RB relay NACK | 17589 | 89 | 6 | 529 | 10035 | 5170 | 1663 | 247 | 437 | 4 |
+
+- **USB: pass.** Base truncations 133 → 8 (0.06×) at equal AUs;
+  wasted 13-15 % of requested symbols; `drone_refused` 0; `suppressed` 0;
+  `drone_rx`/`sent` 84-88 % (the jam hits the uplink too, repeats cover
+  it). Fill latency only exists per 1 s window on this line: the
+  fill-weighted median of the per-window p90 was 13-14 ms, the 90th
+  percentile of it 25-28 ms, max 38/50 ms.
+- **Relay: borderline.** 57 → 6 (0.105×, the 0.1 mark), wasted 17 %,
+  `drone_refused` 4, repeats 26 %, `drone_rx`/`sent` 83 %.
+- **Surviving base truncations** (~1/min with NACK) all fall in seconds
+  with a 70-115-symbol request burst where the uplink NACK was lost
+  (`drone_rx` < `sent`) or entries hit the deadline (`drop`). The page
+  requests no IDR on a truncated AU (`Gate.onAu` → `skip: 'truncated'`),
+  so each is a silent smear until the drone's GDR/IDR. Not acted on: a
+  conditional IDR trigger stays the next bounded change if flights show it.
+- **Join burst.** The first poll after link-up books the whole gap before
+  the first heard symbol as missing (850-1000 syms, 400-430 `drop`, 4-18 requests),
+  and the drone refuses most of it from its bucket (`drone_refused` ≈165
+  in one shot). Harmless, but it inflates every cumulative counter read
+  from link-up — take deltas.
+- **Browser (headless Chrome, WebUSB, same pin + jam, 75 s):** linked,
+  Debug NACK group moving (requests 18 → 101, filled 104 → 710, `drone rx`
+  13 → 84), base truncations 3 in ~70 s. Most fill windows read 12-22 ms
+  p50, but 3 of 14 read 62-114 ms — past the 50 ms gap timeout, where a
+  fill is too late to save the AU. Native never showed that tail; it is
+  the page's own scheduling (worker/WebUSB), unmeasured beyond this run.
 
 ## Colour correction
 

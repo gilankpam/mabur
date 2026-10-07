@@ -77,7 +77,7 @@ test('debug groups carry the handoff keys verbatim + counters', () => {
   const g = debugGroups({ connected: true, mode: 'gs', core, rcfPct: 97.2, ausRate: 60,
     hitches60: 0, hitchesTotal: 18, seg: { w1: {}, w60: {} } });
   assert.deepEqual(g.map((x) => x.title), ['Link', 'Channel', 'Radio', 'Drone', 'Client',
-    'Latency (ms; 1 s | 60 s windows)', 'Counters']);
+    'Latency (ms; 1 s | 60 s windows)', 'Counters', 'NACK']);
   assert.deepEqual(g[0].rows.map((r) => r.k),
     ['mode', 'session', 'peer_acked', 'rung', 'mcs', 'width', 'probe', 'key', 'key_mismatch']);
   assert.deepEqual(g[2].rows.map((r) => r.k), ['pre-FEC loss', 'residual', 'SNR', 'RSSI', 'RTT', 'RCF heard %']);
@@ -276,4 +276,33 @@ test('debugGroups Channel group for a spotter: channel + follow rows', () => {
   // replay-shaped spotter stats (no follower): channel only, as before
   const sp = debugGroups({ connected: true, mode: 'spotter', core: { mode: 'spotter', channel: 64, scan_state: null, hop: null, follow_state: null, follows: null }, rcfPct: null, ausRate: 0, hitches60: 0, hitchesTotal: 0, seg: { w1: {}, w60: {} }, lrec: null });
   assert.equal(sp.find((x) => x.title === 'Channel').rows.length, 1);
+});
+
+// Software NACK group (fec-nack web port 2026-10-06): the core's "nack"
+// block (null = off or spotter).
+test('debug NACK group: tracker outcomes, fill ms, drone counters; off/null/spotter read as such', () => {
+  const nack = { req: 120, rep: 18, syms: 140, tail: 9, fill: 100, late: 12, waste: 20, drop: 8, sup: 1,
+    lead: 3, sent: 118, settle_ms: 14, fill_pps: 6.5, fill_p50: 11, fill_p90: 19, fill_max: 31, late_max: 9,
+    drone_rx: 115, drone_syms: 133, drone_refused: 2 };
+  const args = { connected: true, mode: 'gs', core: { ...core, nack }, rcfPct: 97.2, ausRate: 60,
+    hitches60: 0, hitchesTotal: 0, seg: { w1: {}, w60: {} } };
+  const grp = (a) => debugGroups(a).find((x) => x.title === 'NACK');
+  const g = grp(args);
+  assert.deepEqual(g.rows.map((r) => r.k), ['requests', 'sent / repeats', 'filled / late / wasted',
+    'dropped / suppressed / lead', 'fill ms p50 / p90 / max', 'settle', 'drone rx / syms / refused']);
+  assert.equal(g.rows[0].v, '120 (140 syms, 9 tail)');
+  assert.equal(g.rows[1].v, '118 / 18');
+  assert.equal(g.rows[2].v, '100 / 12 / 20');
+  assert.equal(g.rows[3].v, '8 / 1 / 3');
+  assert.equal(g.rows[4].v, '11 / 19 / 31 (6.5/s)');
+  assert.equal(g.rows[5].v, '14 ms');
+  assert.equal(g.rows[6].v, '115 / 133 / 2');
+  // No fill in the window yet: nulls read as dashes, not "null".
+  const quiet = grp({ ...args, core: { ...core, nack: { ...nack, fill_pps: null, fill_p50: null, fill_p90: null, fill_max: null } } });
+  assert.equal(quiet.rows[4].v, '– / – / –');
+  // GS with NACK off: one row saying so. Spotter: n/a. Disconnected: dashes.
+  assert.deepEqual(grp({ ...args, core: { ...core, nack: null } }).rows, [{ k: 'state', v: 'off' }]);
+  assert.deepEqual(grp({ ...args, mode: 'spotter', core: { ...core, mode: 'spotter', nack: null } }).rows,
+    [{ k: 'state', v: 'n/a' }]);
+  assert.ok(grp({ ...args, connected: false, core: null }).rows.every((r) => r.v === '–'));
 });
