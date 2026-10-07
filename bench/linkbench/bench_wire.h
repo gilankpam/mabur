@@ -14,8 +14,9 @@ namespace linkbench {
 
 // SBI stream id for the bench stream — distinct from UEP layers 0..3 so a
 // stray maburd/maburgs on the same channel ignores bench traffic and
-// vice versa.
-constexpr uint8_t kBenchStreamId = 0xB0;
+// vice versa. Stream ids live in the low 7 bits: bit 7 is kSbiRetxMark
+// (common/include/mabur/sbi.h), so this must stay below 0x80.
+constexpr uint8_t kBenchStreamId = 0x30;
 constexpr size_t kDot11HeaderLen = 24;
 
 // Bench app packet: u32 seq LE | u16 len LE | fill, where every fill byte

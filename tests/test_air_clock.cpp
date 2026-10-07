@@ -1,6 +1,8 @@
 // AirClock: the drone's per-frame virtual air-serialization model (spec
 // 2026-09-06 air-clock §2). Every number below is the spec's worked
 // example: rung 2 = 19.5 Mb/s, efficiency 1.0, 60 fps (16 667 µs period).
+#include <thread>
+
 #include "../drone/src/air_clock.h"
 #include "mtest.h"
 
@@ -110,6 +112,21 @@ TEST(air_clock_backlog_saturates_u32) {
   c.book(0, 1, 0);
   c.book(0, 1, 0);                                  // ~8e9 µs ahead
   CHECK(c.backlog_us(0) == 0xFFFFFFFFu);
+}
+
+// fec-nack (spec 2026-10-05 §4.3): the RX thread books retransmit bodies
+// while the hot thread books video and reads the backlog. free_at_us_ is
+// mutex-guarded; this is the shape (run it under -fsanitize=thread to see
+// the race the lock closes).
+TEST(air_clock_book_is_safe_from_two_threads) {
+  AirClock c;
+  c.set_rates(19.5, 19.5, 0.0, 0);
+  std::thread t([&] { for (int i = 0; i < 10000; ++i) c.book(1000 + i, 1400, 0); });
+  uint64_t seen = 0;   // consumed, so the reads cannot be optimized away
+  for (int i = 0; i < 10000; ++i) seen += c.backlog_us(1000 + i);
+  t.join();
+  CHECK(c.backlog_us(0) > 0);
+  CHECK(seen < 0xFFFFFFFFull * 10000);
 }
 
 MTEST_MAIN

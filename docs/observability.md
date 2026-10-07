@@ -311,7 +311,7 @@ Consume the same numbers programmatically with:
   (`docs/probe-blanking-fix-findings-2026-09-05.md`). Never fatal, like
   the ctl log.
 
-  **fec.log (feclog 2; feclog 1 from 2026-09-15 had no `bw`).** Per-episode FEC loss record, the
+  **fec.log (feclog 3; feclog 1 from 2026-09-15 had no `bw`, feclog 2 from 2026-09-24 no `rtx`).** Per-episode FEC loss record, the
   measurement behind "is the rung table's overhead pair oversized" —
   written by maburgs into the session directory (`gs/src/fec_log.h`),
   rotating with it, never fatal. A *loss episode* is a run of source
@@ -321,13 +321,14 @@ Consume the same numbers programmatically with:
   window of it, since those compete for the same repairs. `SwDecoder`
   books it at horizon eviction — the only point where "never delivered" is
   final — so a row lands roughly a horizon after the loss. Header
-  `feclog 2`, then `<t_ms> <sid> <mcs> <bw> <ov> <first_seq> <span> <m>
-  <rec> <aband> <stale> <r> <w>` per row: drain tick (mono ms, ~10 ms coarse),
+  `feclog 3`, then `<t_ms> <sid> <mcs> <bw> <ov> <first_seq> <span> <m>
+  <rec> <rtx> <aband> <stale> <r> <w>` per row: drain tick (mono ms, ~10 ms coarse),
   video layer (0 base / 1 enh), the op MCS and width (`feclog 1` rows are
   20 MHz) and that sid's commanded
   overhead at drain time (so a row scores against its own rung with no
   ctl.log join), wire seq of the first missing source, seqs spanned,
-  missing = recovered + abandoned, of those how many fell below the
+  missing = recovered + rtx + abandoned (`rtx`: filled by a software-NACK
+  retransmit, `docs/fec-nack.md`; feclog 1/2 rows read as 0), of those how many fell below the
   transition watermark (`stale`, the same debris class the ladder
   excludes), distinct covering repairs received (`r`, a two-card copy
   counts once) and the repair window as flown (`w`). `flightreport.py`'s
@@ -943,6 +944,10 @@ maburtop's `DEAF` cell is now derived from `radio.rx` (own + foreign +
 crcfail = 0) and its encoder-fps / sent→inj cross-check row is gone.
 `flightreport.py` gained a DRONE TX PATH section (txq wait, txq drops,
 USB fails, CPU, shed periods, once per `tlm_seq`).
+
+**2026-10-06 (software NACK, RC_VERSION 15; `docs/fec-nack.md`).**
+`link.nack{requests, repeats, syms_requested, tail_requests, filled, late_fill, wasted, dropped_deadline, suppressed, lead_skipped, fill_pps, fill_ms{p50,p90,max}, settle_ms, late_ms_max}`: the GS NackTracker, counters cumulative, `fill_*`/`late_ms_max` per export window; present only while `[link.nack] enable`. `lead_skipped` (2026-10-06 post-flight-0026): seqs whose request was withheld by `link.nack.min_lead_ms` because the answer could not land before the deadline.
+`drone.nack{rx, retx_syms, retx_refused}`: the drone's T_NACK answers from Telem, per Telem period (repeated until the next Telem; count once per `drone.tlm_seq`).
 
 **2026-09-06 (air clock).** `drone.air_backlog_max_ms` was the per-window
 max of the drone's modelled air backlog (`AirClock`, spec

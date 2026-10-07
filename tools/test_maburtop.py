@@ -491,6 +491,33 @@ class LinksPanelTest(unittest.TestCase):
         self.assertNotIn("--", joined.split("\n")[1])  # current rung row
         self.assertIn("probe: r1 mcs3 clean 54b u0.12 n60 | c0 0.00 c1 0.05", joined)
 
+    def test_ladder_panel_shows_nack_line_when_present(self):
+        # spec 2026-10-05 fec-nack: link.nack / drone.nack render as one
+        # extra LADDER row right after the probe line.
+        d = dict(DGRAM)
+        d["link"] = dict(DGRAM["link"], ctl={
+            "rung": {"idx": 1, "mcs": 3, "ov_base": 0.5, "ov_enh": 0.25},
+            "util": 0.1, "down_util": 0.05, "up_util": 0.5,
+            "pre_fec_loss": 0.01, "budget": 0.4,
+            "probation_ms_left": 0, "penalized": [],
+            "ladder": [
+                {"mcs": 1, "bw": 20, "ov_base": 1.0, "ov_enh": 1.0},
+                {"mcs": 3, "bw": 40, "ov_base": 0.5, "ov_enh": 0.25},
+            ],
+            "counters": {"demotes_residual": 0, "demotes_util": 0, "promotes": 0,
+                         "probation_fails": 0, "starved_drops": 0, "timeout_drops": 0},
+            "last_event": {"t_ms": 0, "from": 0, "to": 0, "reason": "none", "u": 0.0},
+        }, nack={"requests": 12, "filled": 9, "wasted": 2, "suppressed": 0,
+                 "fill_pps": 3.0, "fill_ms": {"p50": 11, "p90": 18, "max": 40},
+                 "settle_ms": 12, "late_ms_max": 8})
+        d["drone"] = dict(DGRAM["drone"], nack={"rx": 12, "retx_syms": 120, "retx_refused": 0})
+        rows = panel_ladder(_fresh(d), 100.2)
+        joined = "\n".join(t for t, _ in rows)
+        self.assertIn("nack:", joined)
+        self.assertIn("req12", joined)
+        self.assertIn("fill9", joined)
+        self.assertIn("11/18/40", joined)
+
 
 class GsRadiosPanelTest(unittest.TestCase):
     def test_content(self):

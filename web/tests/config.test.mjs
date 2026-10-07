@@ -17,7 +17,7 @@ const mem = (init = {}) => {
 test('defaults match maburgs.default.toml', () => {
   const c = defaultConfig();
   assert.deepEqual(c, { channels: [40, 64, 112, 144], link: 'auto', width: 40, staticMcs: -1,
-    ladder: [0, 1, 2, 3, 4].map((mcs) => ({ mcs, bw: 40, ob: 0.5, oe: 0.25 })), colortrans: true, dvr: 'web' });
+    ladder: [0, 1, 2, 3, 4].map((mcs) => ({ mcs, bw: 40, ob: 0.5, oe: 0.25 })), colortrans: true, dvr: 'web', nack: true });
   c.ladder[0].mcs = 7;
   assert.equal(defaultConfig().ladder[0].mcs, 0, 'fresh copy each call');
   assert.ok(CHANNELS.includes(136) && CHANNELS.includes(165) && CHANNELS.length === 25);
@@ -109,6 +109,7 @@ test('overlay TOML, pinned: one always-loadable rung, max_mcs 7, saved ladder un
   const t = toOverlayToml(c);
   assert.equal(t, '[radio]\nchannels = [40, 64, 112, 144]\nchannel = "auto"\nwidth = 20\n'
     + '\n[link]\nstatic_mcs = 3\nstatic_bw = 20\nmax_mcs = 7\n'
+    + '\n[link.nack]\nenable = true\n'
     + '\n[[link.ladder]]\nmcs = 3\nbw = 20\noverhead_base = 0.5\noverhead_enh = 0.25\n');
   assert.equal(c.ladder.length, 5);
   // hidden fields never block a pinned connect
@@ -270,4 +271,25 @@ test('?ch=N against a full 8-member set that lacks N is ignored (set and link un
   assert.equal(c.link, 'auto');
   // a member of the full set still pins
   assert.equal(loadConfig(s, new URLSearchParams('ch=48')).link, 48);
+});
+
+// Software NACK (fec-nack web port 2026-10-06): a GS-mode switch, default on
+// (the deployed maburgs flies with it), carried to the core as [link.nack].
+test('nack: default on, normalized, described, overlay [link.nack] in GS mode only', () => {
+  assert.equal(defaultConfig().nack, true);
+  assert.equal(normalizeConfig({ nack: false }).nack, false);
+  assert.equal(normalizeConfig({ nack: 'no' }).nack, true);     // non-boolean -> default on
+  assert.equal(normalizeConfig({}).nack, true);
+  assert.equal(describeEdit('nack', false), 'Retransmit (NACK) off');
+  assert.equal(describeEdit('nack', true), 'Retransmit (NACK) on');
+  assert.match(toOverlayToml(defaultConfig()), /\n\[link\.nack\]\nenable = true\n/);
+  assert.match(toOverlayToml(applyEdit(defaultConfig(), 'nack', false)), /\n\[link\.nack\]\nenable = false\n/);
+  // Pinned (Fixed MCS) still carries it: the tracker reads the ladder util the
+  // pin never ticks, so the stop rule is inert there, but requests still go out.
+  assert.match(toOverlayToml(applyEdit(defaultConfig(), 'staticMcs', 2)), /\[link\.nack\]\nenable = true\n/);
+  assert.ok(!/link\.nack/.test(toOverlayToml(defaultConfig(), null, 'spotter')));
+  // [link.nack] sits between [link] and the [[link.ladder]] array: pinned so
+  // the overlay's shape stays the one the loader is exercised with.
+  const t = toOverlayToml(defaultConfig());
+  assert.ok(t.indexOf('[link.nack]') < t.indexOf('[[link.ladder]]'));
 });

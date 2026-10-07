@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <optional>
 #include <vector>
 #include "au_ring.h"
 #include "mabur/frame_wire.h"
@@ -18,6 +19,20 @@ struct FragArrival {
   uint16_t q_ms = 0;          // SBI q_ms of that body (0 = unknown)
   uint16_t enc_us = 0;        // SBI enc_us of that body (0 = unknown)
   uint16_t air_ms = 0;        // SBI air_ms of that body (0 = unknown)
+  uint32_t sw_seq = 0;        // wire seq of the symbol this fragment came from
+  bool have_sw_seq = false;   // false => sw_seq unknown (tests, pre-Task-3 feed)
+  bool retx = false;          // this fragment's body was a NACK retransmit
+};
+
+// Newest (highest id64) slot's tail state for sid, for the NACK tail trigger
+// (Task 6/7): how many fragments the slot wants, how far the highest-seq
+// fragment reaches, and when the slot last made progress.
+struct TailView {
+  uint16_t count = 0;
+  uint16_t max_idx = 0;
+  uint32_t seq_at_max = 0;
+  uint64_t last_progress_ms = 0;  // last FRAGMENT ARRIVAL of this AU (not try_emit's prefix progress)
+  uint64_t first_ms = 0;
 };
 
 struct FrameStreamCfg {
@@ -58,12 +73,22 @@ class FrameStream {
   void set_gap_timeout(int sid, uint64_t ms) {
     if (sid >= 0 && sid <= 1) gap_ms_[sid] = ms;
   }
+  // The gap timeout in force for `sid` (out-of-range sids read sid 0's).
+  // Also the NACK tracker's per-symbol deadline (main.cpp).
+  uint64_t gap_ms(uint8_t sid) const {
+    return gap_ms_[sid <= 1 ? sid : 0];
+  }
 
   uint64_t frames_clean() const { return clean_; }
   uint64_t frames_truncated() const { return truncated_; }
   uint64_t frames_dropped() const { return dropped_; }
   uint64_t bad_fragments() const { return bad_frags_; }
   uint64_t stall_resets() const { return stall_resets_; }
+
+  // Newest (highest id64) slot of `sid` that has its header, is not
+  // finished, and has at least one fragment with a known sw_seq; nullopt
+  // otherwise. Consumed by the NACK tail trigger (Task 6/7).
+  std::optional<TailView> tail_view(uint8_t sid) const;
 
  private:
   struct Slot {
@@ -76,7 +101,11 @@ class FrameStream {
     uint64_t id64 = 0;              // unwrapped frame_id (valid iff have_hdr)
     uint64_t first_ms = 0;          // first fragment arrival
     uint64_t last_progress_ms = 0;  // last time emitted_upto advanced
+    uint64_t last_arrival_ms = 0;   // last fragment arrival of this AU (any idx)
     uint16_t emitted_upto = 0;      // next chunk idx to emit
+    uint16_t max_idx = 0;           // highest idx seen with a known sw_seq
+    uint32_t seq_at_max = 0;        // sw_seq of that fragment
+    bool have_seq_at_max = false;   // false => no fragment with a known sw_seq yet
     bool began = false;
     bool discont = false;           // this frame re-based the id64 space
     // Per-AU latency latch (Task 8), passed to end_frame at finish():
@@ -95,9 +124,6 @@ class FrameStream {
   void finish(Slot& s, bool complete);
   uint64_t unwrap_id(uint16_t id, uint8_t flags, bool* rebased);
 
-  uint64_t gap_ms(uint8_t sid) const {
-    return gap_ms_[sid <= 1 ? sid : 0];
-  }
   uint64_t gap_ms_max() const { return std::max(gap_ms_[0], gap_ms_[1]); }
 
   FrameStreamCfg cfg_;

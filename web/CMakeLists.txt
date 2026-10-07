@@ -45,6 +45,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     ${MABUR_DIR}/common/src/dvr_mux.cpp ${MABUR_DIR}/common/src/raw_dvr.cpp
     ${MABUR_DIR}/common/src/probe_wire.cpp ${MABUR_DIR}/common/src/msp_dp.cpp
     ${MABUR_DIR}/common/src/siphash.cpp ${MABUR_DIR}/common/src/link_key.cpp
+    ${MABUR_DIR}/common/src/nack_tracker.cpp
     ${MABUR_DIR}/gs/src/aggregator.cpp ${MABUR_DIR}/gs/src/frame_stream.cpp
     ${MABUR_DIR}/gs/src/frame_file_source.cpp ${MABUR_DIR}/gs/src/config.cpp
     ${MABUR_DIR}/gs/src/link_health.cpp ${MABUR_DIR}/gs/src/probe_track.cpp

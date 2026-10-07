@@ -58,11 +58,12 @@ LinkHealthAssembler::Tick LinkHealthAssembler::tick(double now_ms,
                                                     const LinkHealthInputs& in) {
   Tick out;
   // Transition boundaries for loss attribution + settle-blank of the two
-  // residual decision windows: gs/src/transition_edge.h (extracted
-  // 2026-09-05 so tests/test_transition_edge.cpp can pin what an edge
-  // blanks). The util windows read the ArrivalTracker below and are no
-  // longer reachable from the edge at all.
-  edge_.on_tick(in.op, agg.decoder(), s1_resid_cur_, s3_resid_cur_, now_ms);
+  // residual decision windows + clear of the two util decision windows:
+  // gs/src/transition_edge.h (extracted 2026-09-05 so
+  // tests/test_transition_edge.cpp can pin what an edge blanks; the util
+  // windows rejoined it 2026-10-06, flight 0026).
+  edge_.on_tick(in.op, agg.decoder(), s1_resid_cur_, s3_resid_cur_,
+                s1_loss_cur_, s3_loss_cur_, now_ms);
 
   // Control step: post-FEC residual from the FEC decoder's own abandonment
   // counters — ONE formula for every consumer since 2026-09-02, see
@@ -155,7 +156,10 @@ LinkHealthAssembler::Tick LinkHealthAssembler::tick(double now_ms,
   s3_loss_.add(s3.arr_expected, s3.arr_arrived, now_ms);
   const auto s3_sample = s3_loss_.sample(now_ms);
 
-  const uint64_t s3_ab_cur = s3.syms_abandoned - s3.syms_abandoned_stale;
+  // + syms_retx mirrors ladder_residual.cpp's abandoned term (enh never has
+  // retx today; keeps the two paths symmetric).
+  const uint64_t s3_ab_cur =
+      s3.syms_abandoned - s3.syms_abandoned_stale + s3.syms_retx;
   const uint64_t s3_exp_cur = s3.syms_delivered + s3.syms_recovered + s3_ab_cur;
   s3_loss_cur_.add(s3.arr_expected - s3.arr_expected_stale,
                   s3.arr_arrived - s3.arr_arrived_stale, now_ms);

@@ -650,3 +650,68 @@ TEST(arrival_guard_is_plumbed_from_the_constructor) {
   UepDecoder d64(layers, 0, 64);
   CHECK(d64.arrival_guard(0) == 64 && d64.arrival_guard(1) == 64);
 }
+
+TEST(uep_decoder_marks_retx_bodies_and_reports_sw_seq) {
+  // Encode a few base-layer bodies; re-mark one as a retransmit by setting
+  // the SBI stream_id bit and decode it into a fresh decoder that lacks it.
+  std::array<UepLayerCfg, 2> L{};
+  L[0].fec = SwConfig{64, 8, 0.0}; L[0].blocks_per_body = 1;
+  L[1].fec = SwConfig{64, 8, 0.0}; L[1].blocks_per_body = 1;
+  UepEncoder enc(L, 0);
+  std::vector<uint8_t> frame(300, 0x5A);
+  auto bodies = enc.add_frame(0, frame.data(), frame.size(), 1000);
+  for (auto& b : enc.flush_all()) bodies.push_back(std::move(b));
+  std::vector<UepBody> src;
+  for (auto& b : bodies) {
+    auto r = sbi_unpack(b.body.data(), b.body.size(),
+                        static_cast<int>(sw::kSwHeaderLen) + 64);
+    sw::SwHeader h;
+    if (r.survivors.size() == 1 &&
+        sw::parse_header(r.survivors[0].data(), r.survivors[0].size(), &h) && !h.repair)
+      src.push_back(b);
+  }
+  REQUIRE(src.size() >= 3);
+  UepDecoder dec(L);
+  for (size_t i = 0; i < src.size(); ++i)
+    if (i != 1) dec.add_body(src[i].body.data(), src[i].body.size(), 1000);
+  CHECK(dec.missing_sources(0, 64).size() == 1);
+  auto marked = src[1].body;
+  marked[3] |= kSbiRetxMark;
+  auto frags = dec.add_body(marked.data(), marked.size(), 1010);
+  REQUIRE(frags.size() == 1);
+  CHECK(frags[0].stream_id == 0);
+  CHECK(dec.missing_sources(0, 64).empty());
+  CHECK(dec.stats(0).syms_retx == 1);
+  CHECK(dec.source_state(0, frags[0].sw_seq) == SwDecoder::SourceState::kRetx);
+}
+
+TEST(uep_retx_body_does_not_close_boundary) {
+  std::array<UepLayerCfg, 2> L{};
+  L[0].fec = SwConfig{64, 8, 0.0}; L[0].blocks_per_body = 1;
+  L[1].fec = SwConfig{64, 8, 0.0}; L[1].blocks_per_body = 1;
+  UepEncoder enc(L, 0);
+  std::vector<uint8_t> frame(300, 0x5A);
+  auto bodies = enc.add_frame(0, frame.data(), frame.size(), 1000);
+  for (auto& b : enc.flush_all()) bodies.push_back(std::move(b));
+  std::vector<UepBody> src;
+  for (auto& b : bodies) {
+    auto r = sbi_unpack(b.body.data(), b.body.size(),
+                        static_cast<int>(sw::kSwHeaderLen) + 64);
+    sw::SwHeader h;
+    if (r.survivors.size() == 1 &&
+        sw::parse_header(r.survivors[0].data(), r.survivors[0].size(), &h) && !h.repair)
+      src.push_back(b);
+  }
+  REQUIRE(src.size() >= 3);
+  UepDecoder dec(L);
+  dec.add_body(src[0].body.data(), src[0].body.size(), 1000, 3);
+  dec.mark_transition(0, 3, 1000);  // establishes expected mcs 3
+  dec.mark_transition(0, 5, 1000);  // real rate change: boundary opens
+  auto marked = src[1].body;
+  marked[3] |= kSbiRetxMark;
+  CHECK(dec.add_body(marked.data(), marked.size(), 1010, 5).size() == 1);
+  CHECK(dec.stats(0).syms_retx == 1);
+  CHECK(dec.last_boundary_close_ms(0) < 0);  // retx at the new MCS: still open
+  dec.add_body(src[2].body.data(), src[2].body.size(), 1020, 5);
+  CHECK(dec.last_boundary_close_ms(0) == 20.0);  // the real first post body closes it
+}

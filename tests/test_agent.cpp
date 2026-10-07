@@ -1802,6 +1802,119 @@ TEST(gs_frame_confirms_move_and_rendezvous_entry_never_retunes) {
   CHECK(agent.channel() == 149);                       // stays put, never "home"
 }
 
+// fec-nack (spec 2026-10-05 §4.2): a T_NACK's counter must be strictly
+// greater than the last one accepted in this link session (replay guard);
+// a new vtx nonce restarts the counter space, because the GS restarts its
+// counter at 1 on every pair it adopts.
+TEST(nack_counter_is_monotonic_per_session) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  link_agent(agent, act, cfg);                               // link RCF at t=110
+  CHECK(agent.accept_nack_counter(1));
+  CHECK(agent.accept_nack_counter(5));
+  CHECK(!agent.accept_nack_counter(5));                      // replay
+  CHECK(!agent.accept_nack_counter(3));                      // stale
+  CHECK(agent.accept_nack_counter(6));
+  // New session (failsafe clears it; the keep-alive DISC re-pairs under a
+  // fresh vtx nonce): the counter space restarts.
+  agent.tick(110 + cfg.link.failsafe_ms + 1, RadioHealth{});
+  REQUIRE(agent.state() == RcAgent::State::FAILSAFE);
+  const uint32_t vtx2 = ack_agent(agent, act, 136, kVrx, 2000);
+  auto first = make_rcf_wire(1, encode_profile(PhyMode::HT, 0, 20), 8, vtx2);
+  agent.on_rc_frame(first.data(), first.size(), 2010);
+  REQUIRE(agent.state() == RcAgent::State::LINKED);
+  CHECK(agent.accept_nack_counter(1));
+  CHECK(!agent.accept_nack_counter(1));
+}
+
+// Same, for the other way a session changes: a promotion while LINKED (a
+// restarted GS's new vrx_nonce proves itself with its first RCF).
+TEST(nack_counter_restarts_on_promotion_while_linked) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  link_agent(agent, act, cfg);
+  CHECK(agent.accept_nack_counter(100));
+  auto disc = make_disc_wire(kVrx + 7, 136, 20, 0, 1);
+  agent.on_rc_frame(disc.data(), disc.size(), 300);
+  auto ack = parse_disc_ack(act.controls.back().data(), act.controls.back().size());
+  REQUIRE(ack.has_value());
+  CHECK(!agent.accept_nack_counter(50));                     // still the old pair
+  auto first = make_rcf_wire(1, encode_profile(PhyMode::HT, 0, 20), 8, 8, kNoProbeProfile,
+                             ack->vtx_nonce, 1, kVrx + 7);
+  agent.on_rc_frame(first.data(), first.size(), 320);
+  REQUIRE(agent.take_session_promoted());
+  CHECK(agent.accept_nack_counter(1));
+}
+
+// A T_NACK that verified under a pair which is no longer published (the
+// session changed between verify and accept, on another thread) is refused
+// rather than charged to the new pair's counter space.
+TEST(nack_verified_under_a_replaced_pair_is_refused) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  const uint32_t vtx = link_agent(agent, act, cfg);
+  Nack n; n.counter = 7; n.n = 1; n.e[0].first_seq = 100;
+  auto wire = pack_nack(n, mabur::kDefaultLinkKey, TagCtx{kVrx, vtx, 7});
+  uint64_t used = 0;
+  CHECK(agent.verify_session_tagged(wire.data(), wire.size(), 7, &used));
+  CHECK(used == ((static_cast<uint64_t>(kVrx) << 32) | vtx));
+  auto bad = pack_nack(n, mabur::kDefaultLinkKey, TagCtx{kVrx, vtx, 8});
+  CHECK(!agent.verify_session_tagged(bad.data(), bad.size(), 7));   // wrong ctx
+  // Session changes (promotion) before the accept lands.
+  auto disc = make_disc_wire(kVrx + 7, 136, 20, 0, 1);
+  agent.on_rc_frame(disc.data(), disc.size(), 300);
+  auto ack = parse_disc_ack(act.controls.back().data(), act.controls.back().size());
+  REQUIRE(ack.has_value());
+  auto first = make_rcf_wire(1, encode_profile(PhyMode::HT, 0, 20), 8, 8, kNoProbeProfile,
+                             ack->vtx_nonce, 1, kVrx + 7);
+  agent.on_rc_frame(first.data(), first.size(), 320);
+  REQUIRE(agent.take_session_promoted());
+  CHECK(!agent.accept_nack_counter(7, used));                // old pair: refused
+  CHECK(agent.accept_nack_counter(1));                       // new pair's space untouched
+}
+
+// A T_NACK the radio corrupted (CRC/parse failure) or that names a stream
+// other than sid 0 is malformed, not an auth failure: it must not raise
+// auth_reject (the uplink corrupts NACKs routinely under a jammer, and AUTH!
+// would flash for the wrong reason). Only a frame that parsed but failed the
+// tag or the counter is a rejection.
+TEST(nack_check_separates_malformed_from_rejected) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  const uint32_t vtx = link_agent(agent, act, cfg);
+  CHECK(!agent.take_auth_reject());
+  Nack n; n.counter = 3; n.n = 1; n.e[0].first_seq = 100; n.e[0].bitmap = 1;
+  auto good = pack_nack(n, mabur::kDefaultLinkKey, TagCtx{kVrx, vtx, 3});
+  Nack out;
+  // Radio corruption: one flipped payload bit fails the CRC.
+  auto corrupt = good;
+  corrupt[12] ^= 0x10;
+  CHECK(agent.check_nack(corrupt.data(), corrupt.size(), &out) == RcAgent::NackCheck::kMalformed);
+  CHECK(!agent.take_auth_reject());
+  CHECK(agent.check_nack(good.data(), 5, &out) == RcAgent::NackCheck::kMalformed);  // truncated
+  CHECK(!agent.take_auth_reject());
+  // Wrong stream: malformed too.
+  Nack s1 = n; s1.sid = 1;
+  auto wsid = pack_nack(s1, mabur::kDefaultLinkKey, TagCtx{kVrx, vtx, 3});
+  CHECK(agent.check_nack(wsid.data(), wsid.size(), &out) == RcAgent::NackCheck::kMalformed);
+  CHECK(!agent.take_auth_reject());
+  // Parsed, but tagged under the wrong ctx: rejected, auth_reject raised.
+  auto badtag = pack_nack(n, mabur::kDefaultLinkKey, TagCtx{kVrx, vtx, 4});
+  CHECK(agent.check_nack(badtag.data(), badtag.size(), &out) == RcAgent::NackCheck::kRejected);
+  CHECK(agent.take_auth_reject());
+  // Good frame: accepted, counter stored, out filled.
+  CHECK(agent.check_nack(good.data(), good.size(), &out) == RcAgent::NackCheck::kOk);
+  CHECK(out.counter == 3 && out.n == 1 && out.e[0].first_seq == 100);
+  CHECK(!agent.take_auth_reject());
+  // Replay of the same counter: rejected.
+  CHECK(agent.check_nack(good.data(), good.size(), &out) == RcAgent::NackCheck::kRejected);
+  CHECK(agent.take_auth_reject());
+}
+
 MTEST_MAIN
 
 // A restarted GS resets its RCF seq to ~1 while the drone's tracker holds

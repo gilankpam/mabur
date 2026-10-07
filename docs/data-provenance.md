@@ -10,6 +10,7 @@ Quick index: carrier sense off 2026-08-05 · carrier sense ON again + RC_VERSION
 pick), `air_clock.efficiency`/`ampdu.min_mcs` → `_20`/`_40`, new required
 `link.ladder[].bw` — 2026-09-24 (`docs/bw40.md`) ·
 `feclog 2` adds a `bw` column after `mcs` 2026-09-24 (`feclog 1` rows are 20 MHz) ·
+`feclog 3` (2026-10): rtx column after rec; feclog 1/2 rows read as rtx 0 ·
 `probelog 3` adds a `bw` column after `mcs` 2026-09-24 (`probelog 1`/`2` rows are 20 MHz) ·
 NHM airtime evidence — `scanlog 4` (V card block gains `nhm_busy`/`own_air`,
 D gains `busy`, K entries reshape to `ch:worst_busy:floor:busy`), `[hop.verdict]`

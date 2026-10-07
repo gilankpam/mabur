@@ -63,7 +63,11 @@ constexpr uint16_t RC_MAGIC = 0x5243;  // "RC"
 // key is the identity, spec 2026-10-01-link-pairing-design.md §2); the same
 // bump carries the per-frame auth tag, DISC_ACK's vtx_nonce + flags and
 // Telem flags bit1 (Task 3 of the plan). Flag day.
-constexpr uint8_t RC_VERSION = 14;
+// Bumped 14 -> 15 on 2026-10-06: T_NACK's final layout (GS->drone
+// selective-repeat request, counter + sid + repeat flag + up to
+// kMaxNackEntries runs) replaces the 2026-10-05 spike's wire; Telem gains
+// nack_rx/retx_syms/retx_refused. Spec 2026-10-05-fec-nack-design.md §5.
+constexpr uint8_t RC_VERSION = 15;
 
 // RCF probe_profile sentinel: the drone runs no probe stream.
 constexpr uint8_t kNoProbeProfile = 0xFF;
@@ -78,6 +82,11 @@ constexpr uint8_t T_DISC_ACK = 3;
 constexpr uint8_t T_TELEM = 4;
 constexpr uint8_t T_CAL_CMD = 5;
 constexpr uint8_t T_CAL_RESULT = 6;
+// T_NACK (spec 2026-10-05 fec-nack §5): GS -> drone selective-repeat
+// request. Lists source symbols the sliding-window decoder could not
+// recover; the drone re-sends them from its retransmit ring at the head of
+// the TxQueue.
+constexpr uint8_t T_NACK = 7;
 
 constexpr uint8_t F_DISCOVERY = 0x04;
 
@@ -249,6 +258,10 @@ struct Telem {
   // VTX recorder (spec 2026-09-26): bits 0-1 RecState (0 off, 1 recording,
   // 2 error), bits 2-7 RecErr (drone/src/vtx_recorder.h).
   uint8_t rec_status = 0;
+
+  // Software NACK (spec 2026-10-05 fec-nack §5), per Telem period, saturating:
+  // requests verified, source symbols re-sent, symbols refused by the air bucket.
+  uint16_t nack_rx = 0, retx_syms = 0, retx_refused = 0;
 };
 
 // One rate's index range for a calibration phase. idx_step 4 is the coarse
@@ -321,6 +334,27 @@ std::optional<Telem> parse_telem(const uint8_t* buf, size_t len);
 std::vector<uint8_t> pack_cal_cmd(const CalCmd& c, const LinkKey& key = kDefaultLinkKey,
                                   const TagCtx& ctx = {});
 std::optional<CalCmd> parse_cal_cmd(const uint8_t* buf, size_t len);
+
+// T_NACK (spec 2026-10-05 fec-nack §5): GS -> drone selective-repeat
+// request for base-layer source symbols. counter is the GS's per-session
+// request counter and the tag ctx seq32; the drone accepts only a counter
+// greater than the last one it verified this session.
+constexpr uint8_t kNackFlagRepeat = 0x01;  // >= 1 seq inside is on its 2nd try: drone doubles the send
+constexpr int kMaxNackEntries = 4;
+struct NackEntry {
+  uint32_t first_seq = 0;
+  uint32_t bitmap = 1;  // bit i = wire seq first_seq + i requested; bit 0 always set on the wire
+};
+struct Nack {
+  uint32_t counter = 0;
+  uint8_t sid = 0;      // 0 only today; carried for an enh follow-up
+  uint8_t flags = 0;
+  uint8_t n = 0;        // 1..kMaxNackEntries
+  NackEntry e[kMaxNackEntries];
+};
+std::vector<uint8_t> pack_nack(const Nack& n, const LinkKey& key = kDefaultLinkKey,
+                               const TagCtx& ctx = TagCtx{});
+std::optional<Nack> parse_nack(const uint8_t* buf, size_t len);
 
 std::vector<uint8_t> pack_cal_result(const CalResult& r, const LinkKey& key = kDefaultLinkKey,
                                      const TagCtx& ctx = {});

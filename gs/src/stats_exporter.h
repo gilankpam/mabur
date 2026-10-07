@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "lat_window.h"
+#include "mabur/nack_tracker.h"
 #include "mabur/rc_proto.h"
 #include "op_point.h"
 #include "relay_stats.h"
@@ -187,6 +188,17 @@ struct StatsRcfSlotIn {
   int tail_ub_ms = 0;   // learned completion->probe deadline, ms
 };
 
+// Software NACK (spec 2026-10-05 fec-nack §8): the GS NackTracker's
+// cumulative counters plus the per-export window (fill latencies, natural
+// lateness), exported as link.nack only while [link.nack] is enabled.
+struct StatsNackIn {
+  bool enabled = false;
+  mabur::NackStats cum;          // cumulative
+  mabur::NackWindow win;         // since last export
+  int settle_ms = 0;
+  double interval_s = 0.0;       // for fill_pps; 0 = no window yet -> null
+};
+
 // Continuous probe gate snapshot (probe-stream, 2026-09-04), straight from
 // LadderController::probe_gate() -- plain values only, same no-controller-
 // reference pattern as StatsCtlIn. Unlike StatsCtlIn::ctl this is NOT
@@ -257,6 +269,7 @@ struct StatsInput {
   uint64_t scan_rounds = 0;
   std::optional<int> scan_pick;
   StatsRcfSlotIn rcf_slot;
+  StatsNackIn nack;
   bool in_session = false;  // VrxState::SESSION
   bool key_mismatch = false;   // VrxState::KEY_MISMATCH (spec 2026-10-01 §8)
   std::string key_fp;          // mabur::key_fingerprint(cfg.link.key)

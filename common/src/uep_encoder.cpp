@@ -1,4 +1,5 @@
 #include "mabur/uep_encoder.h"
+#include "mabur/sw_wire.h"
 
 #include <algorithm>
 
@@ -30,9 +31,18 @@ UepEncoder::UepEncoder(const std::array<UepLayerCfg, 2>& layers, int flush_ms,
 
 SwEnvSink UepEncoder::env_sink(Layer& layer, const UepBodySink& sink) {
   return [&layer, &sink](const uint8_t* env, size_t n) {
+    if (layer.tap) {
+      sw::SwHeader h;
+      if (sw::parse_header(env, n, &h) && !h.repair) (*layer.tap)(layer.sid, h.seq, env, n);
+    }
     auto b = layer.packer.add_one(env, n);
     if (!b.empty()) sink(UepBody{layer.sid, std::move(b)});
   };
+}
+
+void UepEncoder::set_source_tap(UepSourceTap tap) {
+  tap_ = std::move(tap);
+  for (auto& l : layers_) l.tap = tap_ ? &tap_ : nullptr;
 }
 
 void UepEncoder::emit_flush(Layer& layer, const UepBodySink& sink) {

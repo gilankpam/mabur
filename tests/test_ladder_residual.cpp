@@ -10,6 +10,7 @@
 #include "mtest.h"
 #include "ladder_residual.h"
 #include "mabur/frame_wire.h"
+#include "mabur/sbi.h"
 #include "mabur/uep_decoder.h"
 #include "mabur/uep_encoder.h"
 using namespace mabur;
@@ -111,6 +112,42 @@ TEST(dropped_unit_is_residual_loss) {
   const auto rc = maburgs::ladder_residual_counts(dec);
   CHECK(rc.expected > 0);
   CHECK(rc.arrived < rc.expected);
+}
+
+// The same scaffold as dropped_unit_is_residual_loss, but the withheld
+// body arrives later as a retransmit: the video is whole (the retx fills
+// the content), yet the ladder must still see the loss (option A, spec
+// 2026-10-05 fec-nack) -- a NACK retransmit fixes the video only.
+TEST(retx_filled_symbol_is_still_residual_loss) {
+  auto layers = one_symbol_layers();
+  UepEncoder enc(layers, /*flush_ms=*/15);
+  UepDecoder dec(layers);
+  std::mt19937 rng(7);
+  uint64_t now = 1000;
+
+  for (uint32_t i = 0; i < 60; ++i) {
+    auto unit = make_unit(i, 64, rng);
+    auto bodies = enc.add_frame(0, unit.data(), unit.size(), now);
+    REQUIRE(!bodies.empty());
+    now += 5;
+    if (i == 1) {
+      // Unit 1's direct copy never arrives -- instead the drone's NACK
+      // retransmit shows up right away, re-marked exactly as
+      // uep_decoder_marks_retx_bodies_and_reports_sw_seq builds one.
+      auto marked = bodies[0].body;
+      marked[3] |= mabur::kSbiRetxMark;
+      dec.add_body(marked.data(), marked.size(), now);
+      continue;
+    }
+    dec.add_body(bodies[0].body.data(), bodies[0].body.size(), now);
+  }
+  // Remaining units already carried the stream past the horizon (same as
+  // dropped_unit_is_residual_loss), so the retx-filled seq has long since
+  // aged out of the live window by the time residual_counts reads it.
+
+  const auto rc = maburgs::residual_counts(dec, 0, /*cur=*/false);
+  CHECK(rc.expected > rc.arrived);      // the retx-filled seq counts as not arrived
+  CHECK(dec.stats(0).syms_retx >= 1);
 }
 
 // The pooled observability view is exactly the two layers summed -- the

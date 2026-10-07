@@ -1,6 +1,7 @@
 // WebGs (web/src/web_gs.h): the web GS core. Pins spotter silence, the Gs
 // rendezvous/RCF cadence, and the wiring into the shared units.
 #include <algorithm>
+#include <cstdio>
 #include <memory>
 #include <stdexcept>
 
@@ -169,6 +170,29 @@ TEST(gs_beacons_then_rcf_after_ack) {
   CHECK(g.stats().sends == sends_before + sent.size());
   CHECK(g.stats().rcf_sent < g.stats().sends);
   CHECK(stats_json(g.stats()).find("\"rcf_sent\":" + std::to_string(rcf)) != std::string::npos);
+}
+
+// trunc_base (bench 2026-10-07): the sid-0 share of the truncated AUs, the
+// layer the NACK protects. Counted from the same AU-end the page sees.
+TEST(trunc_base_counts_sid0_truncations) {
+  uint64_t base_trunc = 0, enh_trunc = 0;
+  Io io;
+  io.on_au = [&](Au&& au) {
+    if (!au.complete) ++(au.sid == 0 ? base_trunc : enh_trunc);
+  };
+  WebGs g(cfg(), Mode::Spotter, 136, 40, {}, 0, io);
+  uint64_t t = 0;
+  for (auto& b : gen_bodies(/*aus=*/600, /*dt_ms=*/16.0, /*drop_every=*/3)) {
+    t = b.mono_us;
+    g.on_rx(b);
+    g.tick(t);
+  }
+  REQUIRE(base_trunc > 0);
+  REQUIRE(enh_trunc > 0);
+  CHECK(g.stats().aus_truncated_base == base_trunc);
+  CHECK(g.stats().aus_truncated == base_trunc + enh_trunc);
+  CHECK(stats_json(g.stats()).find("\"trunc_base\":" + std::to_string(base_trunc)) !=
+        std::string::npos);
 }
 
 TEST(probe_expectation_wired_from_frame_stream) {
@@ -1147,4 +1171,209 @@ TEST(stats_json_carries_follow_fields_for_spotter_only) {
   js = stats_json(s.stats());
   CHECK(js.find("\"follow_state\":null") != std::string::npos);
   CHECK(!s.stats().follow_state.has_value());
+}
+
+// ---- software NACK (fec-nack, web port 2026-10-06) ----
+// Same tracker and send rule as maburgs (gs/src/main.cpp): base-layer seqs
+// the FEC cannot repair are asked back over a direct, tagged T_NACK.
+namespace {
+std::vector<std::vector<uint8_t>> nacks_of(const std::vector<std::vector<uint8_t>>& sent) {
+  std::vector<std::vector<uint8_t>> out;
+  for (auto& s : sent)
+    if (mabur::rc::frame_type(s.data(), s.size()) == mabur::rc::T_NACK) out.push_back(s);
+  return out;
+}
+}
+
+TEST(gs_nack_requests_unrepairable_base_loss_with_a_tagged_counter_1_frame) {
+  std::vector<std::vector<uint8_t>> sent;
+  Io io;
+  io.on_au = [](Au&&) {};
+  io.send = [&](const std::vector<uint8_t>& b) { sent.push_back(b); };
+  auto c = cfg();
+  c.link.nack.enable = true;
+  WebGs g(c, Mode::Gs, 136, 40, {}, 0, io);
+  uint64_t t = 1'000'000;
+  g.inject_disc_ack_for_replay(t);
+  // Every 2nd body gone: 50 % loss against 0.5 overhead leaves holes the
+  // sliding window never fills, so they age past settle and get requested.
+  feed(g, 120, t, /*drop_every=*/2);
+  const auto nacks = nacks_of(sent);
+  REQUIRE(!nacks.empty());
+  const auto n = mabur::rc::parse_nack(nacks[0].data(), nacks[0].size());
+  REQUIRE(n.has_value());
+  CHECK(n->counter == 1);
+  CHECK(n->sid == 0);
+  CHECK(n->n >= 1);
+  // Tagged like the drone verifies it: session nonces + the counter as seq32.
+  mabur::rc::TagCtx ctx = g.vrx()->session_ctx();
+  ctx.seq32 = n->counter;
+  CHECK(mabur::rc::verify_control(nacks[0].data(), nacks[0].size(), c.link.key, ctx));
+  // Counters climb by one per frame.
+  if (nacks.size() > 1) {
+    const auto n2 = mabur::rc::parse_nack(nacks[1].data(), nacks[1].size());
+    REQUIRE(n2.has_value());
+    CHECK(n2->counter == 2);
+  }
+  // NACKs are sends but never RCFs (rcf_sent is the "RCF heard %" denominator).
+  CHECK(g.stats().sends == sent.size());
+  CHECK(g.stats().rcf_sent + nacks.size() <= g.stats().sends);
+}
+
+TEST(gs_nack_disabled_never_sends_one) {
+  std::vector<std::vector<uint8_t>> sent;
+  Io io;
+  io.on_au = [](Au&&) {};
+  io.send = [&](const std::vector<uint8_t>& b) { sent.push_back(b); };
+  auto c = cfg();
+  REQUIRE(!c.link.nack.enable);   // the bundle default is off
+  WebGs g(c, Mode::Gs, 136, 40, {}, 0, io);
+  uint64_t t = 1'000'000;
+  g.inject_disc_ack_for_replay(t);
+  feed(g, 120, t, /*drop_every=*/2);
+  CHECK(nacks_of(sent).empty());
+}
+
+namespace {
+// A DISC_ACK from a drone with the given vtx nonce (inject_disc_ack_for_replay
+// always says 1), through on_rx like a real one.
+void ack_with_nonce(WebGs& g, uint32_t vtx_nonce, uint64_t t_us) {
+  mabur::rc::DiscAck ack;
+  ack.vrx_nonce = g.vrx()->rz_nonce();
+  ack.vtx_nonce = vtx_nonce;
+  ack.chip_caps = mabur::rc::CAP_FRAME_WIRE;
+  ack.agreed_channel = g.vrx()->proposal();
+  ack.seq = 1;
+  g.on_rx(rc_body(mabur::rc::pack_disc_ack(ack), t_us));
+  g.tick(t_us);
+}
+uint32_t last_counter(const std::vector<std::vector<uint8_t>>& sent) {
+  const auto n = nacks_of(sent);
+  REQUIRE(!n.empty());
+  return mabur::rc::parse_nack(n.back().data(), n.back().size())->counter;
+}
+}
+
+TEST(gs_nack_counter_continues_over_a_same_nonce_rejoin_and_restarts_on_a_new_nonce) {
+  std::vector<std::vector<uint8_t>> sent;
+  Io io;
+  io.on_au = [](Au&&) {};
+  io.send = [&](const std::vector<uint8_t>& b) { sent.push_back(b); };
+  auto c = cfg();
+  c.link.nack.enable = true;
+  WebGs g(c, Mode::Gs, 136, 40, {}, 0, io);
+  uint64_t t = 1'000'000;
+  ack_with_nonce(g, 1, t);
+  t = feed(g, 120, t, 2);
+  const uint32_t c1 = last_counter(sent);
+  CHECK(c1 >= 1);
+  // 1.5 s of silence: session lost (BEACONING), video tail reset. The drone
+  // kept its nonce, so its accept_nack_counter still holds our last value:
+  // the next NACK must count on from c1, never from 1.
+  for (int i = 0; i < 150; ++i) g.tick(t += 10000);
+  REQUIRE(g.vrx()->link_state() == maburgs::VrxState::BEACONING);
+  ack_with_nonce(g, 1, t);
+  sent.clear();
+  t = feed(g, 120, t + 16'000, 2);
+  const auto first = nacks_of(sent);
+  REQUIRE(!first.empty());
+  CHECK(mabur::rc::parse_nack(first[0].data(), first[0].size())->counter == c1 + 1);
+  // A rebooted drone (new vtx nonce) starts its count over: so do we.
+  for (int i = 0; i < 150; ++i) g.tick(t += 10000);
+  REQUIRE(g.vrx()->link_state() == maburgs::VrxState::BEACONING);
+  ack_with_nonce(g, 2, t);
+  sent.clear();
+  feed(g, 120, t + 16'000, 2);
+  const auto fresh = nacks_of(sent);
+  REQUIRE(!fresh.empty());
+  const auto n = mabur::rc::parse_nack(fresh[0].data(), fresh[0].size());
+  CHECK(n->counter == 1);
+  mabur::rc::TagCtx ctx = g.vrx()->session_ctx();
+  CHECK(ctx.vtx_nonce == 2);
+  ctx.seq32 = 1;
+  CHECK(mabur::rc::verify_control(fresh[0].data(), fresh[0].size(), c.link.key, ctx));
+}
+
+namespace {
+mabur::node::RxBody telem_nack_body(uint16_t tlm_seq, uint16_t rx, uint16_t syms, uint16_t refused,
+                                   uint64_t mono_us) {
+  mabur::rc::Telem t;
+  t.tlm_seq = tlm_seq;
+  t.nack_rx = rx;
+  t.retx_syms = syms;
+  t.retx_refused = refused;
+  return rc_body(mabur::rc::pack_telem(t), mono_us);
+}
+}
+
+TEST(gs_nack_stats_block_tracker_counters_and_drone_telem_once_per_tlm_seq) {
+  std::vector<std::vector<uint8_t>> sent;
+  Io io;
+  io.on_au = [](Au&&) {};
+  io.send = [&](const std::vector<uint8_t>& b) { sent.push_back(b); };
+  auto c = cfg();
+  c.link.nack.enable = true;
+  WebGs g(c, Mode::Gs, 136, 40, {}, 0, io);
+  uint64_t t = 1'000'000;
+  g.inject_disc_ack_for_replay(t);
+  t = feed(g, 120, t, 2);
+  const auto st = g.stats();
+  REQUIRE(st.nack.has_value());
+  CHECK(st.nack->cum.requests >= 1);
+  CHECK(st.nack->cum.syms_requested >= st.nack->cum.requests);
+  CHECK(st.nack->sent == nacks_of(sent).size());
+  CHECK(st.nack->settle_ms >= c.link.nack.settle_min_ms);
+  CHECK(st.nack->settle_ms <= c.link.nack.settle_max_ms);
+  // Telem is repeated per record on the sideport; here the drone's per-period
+  // counters are summed once per tlm_seq (as flightreport.py does).
+  g.on_rx(telem_nack_body(7, 3, 5, 1, t += 1000));
+  g.on_rx(telem_nack_body(7, 3, 5, 1, t += 1000));   // same period again: not re-added
+  g.on_rx(telem_nack_body(8, 1, 2, 0, t += 1000));
+  g.tick(t);
+  const auto s2 = g.stats();
+  REQUIRE(s2.nack.has_value());
+  CHECK(s2.nack->drone_rx == 4);
+  CHECK(s2.nack->drone_retx_syms == 7);
+  CHECK(s2.nack->drone_retx_refused == 1);
+  const std::string js = stats_json(s2);
+  CHECK(js.find("\"nack\":{") != std::string::npos);
+  CHECK(js.find("\"drone_rx\":4") != std::string::npos);
+  CHECK(js.find("\"req\":" + std::to_string(s2.nack->cum.requests)) != std::string::npos);
+  CHECK(js.find("\"settle_ms\":") != std::string::npos);
+}
+
+TEST(nack_stats_null_in_spotter_and_with_nack_off) {
+  Io io;
+  io.on_au = [](Au&&) {};
+  WebGs s(cfg(), Mode::Spotter, 136, 40, {}, 0, io);
+  CHECK(!s.stats().nack.has_value());
+  CHECK(stats_json(s.stats()).find("\"nack\":null") != std::string::npos);
+  io.send = [](const std::vector<uint8_t>&) {};
+  WebGs g(cfg(), Mode::Gs, 136, 40, {}, 0, io);   // bundle default: off
+  CHECK(!g.stats().nack.has_value());
+  CHECK(stats_json(g.stats()).find("\"nack\":null") != std::string::npos);
+}
+
+// The page's overlay (web/ui/src/lib/config.js toOverlayToml, GS mode) carries
+// [link.nack] between [link] and the ladder; the loader must take the switch
+// and leave the bundle's other NACK keys alone. The string is the JS test's
+// pinned fixture (config.test.mjs "overlay TOML, pinned"), byte for byte.
+TEST(web_overlay_link_nack_switch_loads_over_the_bundle) {
+  const std::string overlay =
+      "[radio]\nchannels = [40, 64, 112, 144]\nchannel = \"auto\"\nwidth = 20\n"
+      "\n[link]\nstatic_mcs = 3\nstatic_bw = 20\nmax_mcs = 7\n"
+      "\n[link.nack]\nenable = true\n"
+      "\n[[link.ladder]]\nmcs = 3\nbw = 20\noverhead_base = 0.5\noverhead_enh = 0.25\n";
+  const std::string path = "/tmp/webgs_nack_overlay_test.toml";
+  { FILE* f = std::fopen(path.c_str(), "w"); REQUIRE(f); std::fputs(overlay.c_str(), f); std::fclose(f); }
+  const auto c = maburgs::load_config(MABUR_SOURCE_DIR "/gs/bundle/maburgs.default.toml", nullptr, path);
+  CHECK(c.link.nack.enable);
+  CHECK(c.link.nack.lookback == 256);
+  CHECK(c.link.nack.max_tries == 2);
+  CHECK(c.link.static_mcs == 3);
+  std::string off = overlay;
+  off.replace(off.find("enable = true"), 13, "enable = false");
+  { FILE* f = std::fopen(path.c_str(), "w"); REQUIRE(f); std::fputs(off.c_str(), f); std::fclose(f); }
+  CHECK(!maburgs::load_config(MABUR_SOURCE_DIR "/gs/bundle/maburgs.default.toml", nullptr, path).link.nack.enable);
+  std::remove(path.c_str());
 }

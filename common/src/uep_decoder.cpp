@@ -55,6 +55,10 @@ std::vector<DecodedFrag> UepDecoder::add_body(const uint8_t* body, size_t len,
       hint = rx_mcs == L.cur_mcs ? SwBoundary::kPost : SwBoundary::kPre;
     }
   }
+  // Retransmit bodies are boundary-neutral (SwDecoder::add_symbol): one
+  // re-sent at the new rate must not close the boundary nor set close_ms.
+  // sbi_peek_stream_id validated the header, so body[3] is in range.
+  if (body[3] & kSbiRetxMark) hint = SwBoundary::kNone;
   if (hint == SwBoundary::kPost && L.bnd_open) {
     L.bnd_open = false;
     if (L.bnd_arm_ms <= now_ms)
@@ -67,16 +71,21 @@ std::vector<DecodedFrag> UepDecoder::add_body(const uint8_t* body, size_t len,
     L.subblocks_salvaged += static_cast<uint64_t>(r.survivors.size());
   }
   std::vector<DecodedFrag> out;
+  const bool retx = r.retx;  // kSbiRetxMark: a NACK retransmit body
   for (const auto& env : r.survivors) {
-    for (const auto& pkt :
-         L.sw.add_symbol(env.data(), env.size(), now_ms, hint, body_crc_ok)) {
+    const auto pkts =
+        L.sw.add_symbol(env.data(), env.size(), now_ms, hint, body_crc_ok, retx);
+    const auto& seqs = L.sw.last_out_seqs();
+    for (size_t k = 0; k < pkts.size(); ++k) {
+      const auto& pkt = pkts[k];
       if (pkt.size() < Fragmenter::kHdrLen) continue;
       // q_ms/enc_us are outside the per-block CRCs: only an FCS-clean body
       // may vouch for them (0 = unknown downstream, header comment).
       out.push_back(DecodedFrag{static_cast<uint8_t>(sid), pkt, body_mono_us,
                                 body_crc_ok ? r.q_ms : static_cast<uint16_t>(0),
                                 body_crc_ok ? r.enc_us : static_cast<uint16_t>(0),
-                                body_crc_ok ? r.air_ms : static_cast<uint16_t>(0)});
+                                body_crc_ok ? r.air_ms : static_cast<uint16_t>(0),
+                                k < seqs.size() ? seqs[k] : 0u, retx});
     }
   }
   return out;
@@ -124,11 +133,22 @@ UepDecoder::LayerStats UepDecoder::stats(int sid) const {
                     L.sw.arr_expected_stale(), L.sw.arr_arrived_stale(),
                     L.sw.arr_late(),
                     L.bodies_corrupt,      L.subblocks_salvaged,
-                    L.sw.arr_salvage_only()};
+                    L.sw.arr_salvage_only(),
+                    L.sw.syms_retx()};
 }
 
 double UepDecoder::last_boundary_close_ms(int sid) const {
   return layers_[static_cast<size_t>(sid)].bnd_close_ms;
+}
+
+std::vector<uint32_t> UepDecoder::missing_sources(int sid, uint32_t lookback) const {
+  if (sid < 0 || sid >= 2) return {};
+  return layers_[static_cast<size_t>(sid)].sw.missing_sources(lookback);
+}
+
+SwDecoder::SourceState UepDecoder::source_state(int sid, uint32_t wire_seq) const {
+  if (sid < 0 || sid >= 2) return SwDecoder::SourceState::kUnknown;
+  return layers_[static_cast<size_t>(sid)].sw.source_state(wire_seq);
 }
 
 }  // namespace mabur

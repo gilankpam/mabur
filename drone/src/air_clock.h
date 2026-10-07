@@ -1,6 +1,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 
 namespace mabur {
 
@@ -23,14 +24,21 @@ namespace mabur {
 // half-duplex RCF/telemetry slots, aggregation and USB pacing.
 //
 // No clock of its own: every call takes the caller's steady-clock µs, like
-// RcAgent's now_ms contract, so tests drive it synthetically. Hot-thread
-// only; not thread-safe.
+// RcAgent's now_ms contract, so tests drive it synthetically.
+//
+// Thread-safe (fec-nack, spec 2026-10-05 §4.3): the hot thread prices it
+// (set_rates on an op change), books every video/probe body and reads the
+// backlog per frame; the RX thread's T_NACK handler books every retransmit
+// body. All three members take m_. The lock is per BODY (book) or per frame
+// (backlog_us, set_rates), never per symbol, and the RX side holds it for a
+// few arithmetic ops, so the hot thread's contention is negligible.
 class AirClock {
  public:
   static constexpr int kProbeSid = 2;   // sid 0 = base, 1 = enh, 2 = probe body
 
   void set_rates(double base_mbps, double enh_mbps, double probe_mbps,
                  uint32_t body_us) {
+    std::lock_guard<std::mutex> l(m_);
     us_per_byte_[0] = per_byte(base_mbps);
     us_per_byte_[1] = per_byte(enh_mbps);
     us_per_byte_[2] = per_byte(probe_mbps);
@@ -41,6 +49,7 @@ class AirClock {
   // out-of-range sid) books nothing: better an unbooked body than a body
   // priced at a rate the op never commanded.
   void book(uint64_t now_us, size_t bytes, int sid) {
+    std::lock_guard<std::mutex> l(m_);
     if (sid < 0 || sid > kProbeSid) return;
     const double upb = us_per_byte_[sid];
     if (upb <= 0.0) return;
@@ -51,6 +60,7 @@ class AirClock {
   }
 
   uint32_t backlog_us(uint64_t now_us) const {
+    std::lock_guard<std::mutex> l(m_);
     if (free_at_us_ <= now_us) return 0;
     const uint64_t d = free_at_us_ - now_us;
     return d > 0xFFFFFFFFull ? 0xFFFFFFFFu : static_cast<uint32_t>(d);
@@ -61,6 +71,7 @@ class AirClock {
   double us_per_byte_[3] = {0.0, 0.0, 0.0};
   uint32_t body_us_ = 0;
   uint64_t free_at_us_ = 0;
+  mutable std::mutex m_;   // guards every member above
 };
 
 }  // namespace mabur

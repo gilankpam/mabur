@@ -525,6 +525,47 @@ TEST(arrival_open_boundary_books_everything_stale) {
   CHECK(d.arr_expected() - d.arr_expected_stale() == 0);  // current side: flat
 }
 
+TEST(retx_cascade_solve_inherits_retx_class) {
+  // Controller ruling R20: one pending repair row covers two missing seqs
+  // (4, 5). The retx of 4 cascade-solves 5 off that row. Without the retx
+  // neither would be known, so 5 is retx-filled too -- it must not read
+  // kRecovered (the tracker would book it `wasted`) nor stay out of
+  // abandoned + retx in the residual inputs.
+  SwConfig cfg{64, 8, 1.0};
+  auto envs = encode_stream(cfg, 60, nullptr);
+  size_t keep = envs.size(), src4 = envs.size();
+  for (size_t i = 0; i < envs.size(); ++i) {
+    sw::SwHeader h;
+    REQUIRE(sw::parse_header(envs[i].data(), envs[i].size(), &h));
+    if (!h.repair && h.seq == 4) src4 = i;
+    if (h.repair && keep == envs.size() && h.seq <= 4 && h.seq + h.window_len > 5) keep = i;
+  }
+  REQUIRE(keep < envs.size() && src4 < envs.size());
+  SwDecoder d(cfg);
+  for (size_t i = 0; i < envs.size(); ++i) {
+    sw::SwHeader h;
+    REQUIRE(sw::parse_header(envs[i].data(), envs[i].size(), &h));
+    if (!h.repair && (h.seq == 4 || h.seq == 5)) continue;               // the two holes
+    if (h.repair && i != keep && h.seq <= 5 && h.seq + h.window_len > 4) continue;  // one row only
+    d.add_symbol(envs[i].data(), envs[i].size(), 1000);
+    if (i == keep) {
+      REQUIRE(d.source_state(4) == SwDecoder::SourceState::kUnknown);
+      REQUIRE(d.source_state(5) == SwDecoder::SourceState::kUnknown);
+      auto out = d.add_symbol(envs[src4].data(), envs[src4].size(), 1005, SwBoundary::kNone,
+                              true, /*retx=*/true);
+      CHECK(out.size() == 2);
+      CHECK(d.source_state(4) == SwDecoder::SourceState::kRetx);
+      CHECK(d.source_state(5) == SwDecoder::SourceState::kRetx);
+    }
+  }
+  CHECK(d.syms_retx() == 2);
+  CHECK(d.syms_recovered() == 0);
+  CHECK(d.syms_abandoned() == 0);
+  auto eps = d.take_episodes();
+  REQUIRE(eps.size() == 1);
+  CHECK(eps[0].missing == 2 && eps[0].retx == 2 && eps[0].recovered == 0 && eps[0].abandoned == 0);
+}
+
 MTEST_MAIN
 
 TEST(arrival_salvage_only_from_corrupt_body_copies) {
@@ -731,4 +772,150 @@ TEST(episode_queue_is_bounded_when_never_drained) {
   CHECK(eps.size() == SwDecoder::kMaxQueuedEpisodes);
   // The oldest were dropped: the first kept episode is not the first hole.
   CHECK(eps.front().first_seq > (1ull << 32) + 5);
+}
+
+// --- fec-nack: retransmit-marked symbols (spec 2026-10-05 option A) ---
+namespace {
+// Source envelopes only: repairs (incl. flush()'s tail repair) are filtered
+// out so a held-back source stays a hole. flush() is still needed to seal
+// the last symbol (sealing is lazy, on the next packet that doesn't fit).
+std::vector<std::vector<uint8_t>> sources_only(const SwConfig& cfg, int n, uint32_t seq0) {
+  SwEncoder e(cfg, seq0);
+  std::vector<std::vector<uint8_t>> out;
+  auto keep = [&](std::vector<std::vector<uint8_t>> envs) {
+    for (auto& env : envs) {
+      sw::SwHeader h;
+      if (sw::parse_header(env.data(), env.size(), &h) && !h.repair) out.push_back(env);
+    }
+  };
+  for (int i = 0; i < n; ++i) {
+    auto p = pat(62, i);
+    keep(e.add_packet(p.data(), p.size()));
+  }
+  keep(e.flush());
+  return out;
+}
+}  // namespace
+
+TEST(retx_symbol_fills_hole_without_touching_arrival) {
+  SwConfig cfg{64, 8, 0.0};
+  auto envs = sources_only(cfg, 10, 500);
+  REQUIRE(envs.size() == 10);
+  SwDecoder d(cfg);
+  for (size_t i = 0; i < envs.size(); ++i)
+    if (i != 3) d.add_symbol(envs[i].data(), envs[i].size(), 1000);
+  const uint64_t exp_before = d.arr_expected(), arr_before = d.arr_arrived();
+  CHECK(d.source_state(503) == SwDecoder::SourceState::kUnknown);
+  auto out = d.add_symbol(envs[3].data(), envs[3].size(), 1010, SwBoundary::kNone, true, /*retx=*/true);
+  CHECK(out.size() == 1);
+  CHECK(d.last_out_seqs().size() == 1 && d.last_out_seqs()[0] == 503);
+  CHECK(d.source_state(503) == SwDecoder::SourceState::kRetx);
+  CHECK(d.syms_retx() == 1);
+  CHECK(d.syms_delivered() == 9);
+  CHECK(d.arr_expected() == exp_before && d.arr_arrived() == arr_before);  // option A
+  CHECK(d.missing_sources(64).empty());
+  // the late original: channel did deliver after all
+  d.add_symbol(envs[3].data(), envs[3].size(), 1020);
+  CHECK(d.source_state(503) == SwDecoder::SourceState::kDirect);
+  CHECK(d.syms_retx_arrived() == 1);
+}
+
+TEST(retx_duplicate_of_known_symbol_counts_nothing) {
+  SwConfig cfg{64, 8, 0.0};
+  auto envs = sources_only(cfg, 4, 100);
+  SwDecoder d(cfg);
+  for (auto& e : envs) d.add_symbol(e.data(), e.size(), 1000);
+  const uint64_t del = d.syms_delivered(), exp = d.arr_expected(), arr = d.arr_arrived();
+  auto out = d.add_symbol(envs[1].data(), envs[1].size(), 1001, SwBoundary::kNone, true, true);
+  CHECK(out.empty());
+  CHECK(d.syms_delivered() == del && d.syms_retx() == 0);
+  CHECK(d.arr_expected() == exp && d.arr_arrived() == arr);
+  CHECK(d.source_state(101) == SwDecoder::SourceState::kDirect);
+}
+
+TEST(retx_filled_seq_books_retx_in_episode_not_abandoned) {
+  SwConfig cfg{64, 8, 0.0};
+  const uint32_t horizon = 16;
+  auto envs = sources_only(cfg, 40, 700);
+  SwDecoder d(cfg, horizon);
+  for (size_t i = 0; i < 12; ++i)
+    if (i != 5) d.add_symbol(envs[i].data(), envs[i].size(), 1000);
+  d.add_symbol(envs[5].data(), envs[5].size(), 1005, SwBoundary::kNone, true, true);
+  for (size_t i = 12; i < envs.size(); ++i) d.add_symbol(envs[i].data(), envs[i].size(), 1100);
+  CHECK(d.syms_abandoned() == 0);
+  auto eps = d.take_episodes();
+  REQUIRE(eps.size() == 1);
+  CHECK(eps[0].first_seq == (1ull << 32) + 705 && eps[0].missing == 1 && eps[0].retx == 1 &&
+        eps[0].recovered == 0 && eps[0].abandoned == 0);
+}
+
+TEST(retx_inside_arrival_guard_is_not_heard) {
+  // The brief-level test above never crosses the settle line, so it cannot
+  // see on_source(). Guard 4: the retx of seq 803 lands while 803 is still
+  // inside the guard -- had it set the heard bit, expected == arrived.
+  SwConfig cfg{64, 8, 0.0};
+  auto envs = sources_only(cfg, 20, 800);
+  REQUIRE(envs.size() == 20);
+  SwDecoder d(cfg, 0, 4);
+  for (size_t i = 0; i < 6; ++i)
+    if (i != 3) d.add_symbol(envs[i].data(), envs[i].size(), 1000);
+  d.add_symbol(envs[3].data(), envs[3].size(), 1005, SwBoundary::kNone, true, true);
+  // A second retx of the same seq: known already, changes nothing.
+  CHECK(d.add_symbol(envs[3].data(), envs[3].size(), 1006, SwBoundary::kNone, true, true).empty());
+  for (size_t i = 6; i < envs.size(); ++i) d.add_symbol(envs[i].data(), envs[i].size(), 1010);
+  CHECK(d.arr_expected() >= 10);
+  CHECK(d.arr_expected() - d.arr_arrived() == 1);  // 803 booked not-arrived
+  CHECK(d.arr_late() == 0);
+  CHECK(d.syms_retx() == 1 && d.syms_retx_arrived() == 0);
+  CHECK(d.syms_delivered() == 19);
+}
+
+TEST(retx_copy_of_recovered_symbol_counts_nothing) {
+  // The duplicate early-return only matters for a seq still awaiting its
+  // direct copy: a retx of a repair-recovered seq must NOT read as "the
+  // channel delivered it" (syms_recovered_arrived) nor clear kRecovered.
+  SwConfig cfg{64, 8, 1.0};
+  auto envs = encode_stream(cfg, 10, nullptr);
+  size_t hole = envs.size();
+  for (size_t i = 0; i < envs.size(); ++i) {
+    sw::SwHeader h;
+    if (sw::parse_header(envs[i].data(), envs[i].size(), &h) && !h.repair && h.seq == 2) hole = i;
+  }
+  REQUIRE(hole < envs.size());
+  SwDecoder d(cfg);
+  for (size_t i = 0; i < envs.size(); ++i)
+    if (i != hole) d.add_symbol(envs[i].data(), envs[i].size(), 1000);
+  REQUIRE(d.syms_recovered() == 1);
+  REQUIRE(d.source_state(2) == SwDecoder::SourceState::kRecovered);
+  const uint64_t exp = d.arr_expected(), arr = d.arr_arrived();
+  auto out = d.add_symbol(envs[hole].data(), envs[hole].size(), 1001, SwBoundary::kNone, true, true);
+  CHECK(out.empty() && d.last_out_seqs().empty());
+  CHECK(d.syms_recovered_arrived() == 0 && d.syms_retx() == 0);
+  CHECK(d.source_state(2) == SwDecoder::SourceState::kRecovered);
+  CHECK(d.arr_expected() == exp && d.arr_arrived() == arr);
+  // The direct copy afterwards still books the race.
+  d.add_symbol(envs[hole].data(), envs[hole].size(), 1002);
+  CHECK(d.syms_recovered_arrived() == 1);
+}
+
+TEST(retx_is_boundary_neutral) {
+  // A retx of a pre-transition seq heard at the NEW rate (kPost) must not
+  // close the boundary: else wm_ stays at the snapshot and the transition
+  // gap (lost 906, 907) books as current, not stale, abandonment.
+  SwConfig cfg{64, 8, 0.0};
+  auto envs = sources_only(cfg, 40, 900);
+  SwDecoder d(cfg, 16);
+  for (size_t i = 0; i < 6; ++i)
+    if (i != 3) d.add_symbol(envs[i].data(), envs[i].size(), 1000);
+  d.mark_transition();  // wm = 905
+  REQUIRE(d.boundary_open());
+  d.add_symbol(envs[3].data(), envs[3].size(), 1005, SwBoundary::kPost, true, /*retx=*/true);
+  CHECK(d.boundary_open());
+  CHECK(d.syms_retx() == 1);
+  // 906, 907 lost in the transition; 908 is the first post-transition source.
+  d.add_symbol(envs[8].data(), envs[8].size(), 1010, SwBoundary::kPost);
+  CHECK(!d.boundary_open());
+  for (size_t i = 9; i < envs.size(); ++i) d.add_symbol(envs[i].data(), envs[i].size(), 1020);
+  CHECK(d.syms_abandoned() == 2);
+  CHECK(d.syms_abandoned_stale() == 2);
 }

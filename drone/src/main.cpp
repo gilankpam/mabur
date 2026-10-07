@@ -41,6 +41,7 @@
 #endif
 
 #include "air_clock.h"
+#include "nack_bucket.h"
 #include "air_rate.h"
 #include "ampdu_policy.h"
 #include "cal_apply.h"
@@ -73,6 +74,7 @@
 #include "vtx_recorder.h"
 #include "tick_gate.h"
 #include "tx_queue.h"
+#include "mabur/retx_ring.h"
 #include "usb_tx_pool.h"
 #ifdef MABUR_HAVE_VENC
 #include "venc_core.h"  // ARM only: drone/venc is not compiled on host builds
@@ -1618,6 +1620,20 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
   // RX callback: pulls RC frames (rc::frame_type >= 0) off the air and
   // queues them for the agent thread. Runs on the main thread (inside
   // rtl_device->Init's blocking RX loop).
+  // 2026-10-05 (fec-nack, Task 10): retransmit ring of base-layer source
+  // envelopes (hot thread writes via the UepEncoder source tap, RX thread
+  // reads) and the T_NACK handler, bound once txq exists (it is declared
+  // after this callback). Sized by [nack].ring_ms of base-layer history at
+  // encoder.bitrate_max_kbps; env_len is the sealed base envelope (sw
+  // header + base symbol_size). Counters are per Telem period (exchanged
+  // at the 1 Hz build); nack_bad / retx_miss are drone-local only.
+  const size_t retx_env_len = static_cast<size_t>(mabur::sw::kSwHeaderLen) + static_cast<size_t>(cfg.fec.symbol_size[0]);
+  mabur::RetxRing retx(mabur::RetxRing::slots_for(cfg.encoder.bitrate_max_kbps, cfg.nack.ring_ms, cfg.fec.symbol_size[0]), retx_env_len);
+  std::fprintf(stderr, "maburd: nack retx ring %zu slots x %zu B = %zu B (ring_ms %d at %d kbps)\n",
+               retx.slots(), retx_env_len, retx.slots() * retx_env_len, cfg.nack.ring_ms,
+               cfg.encoder.bitrate_max_kbps);
+  std::function<void(const uint8_t*, size_t)> nack_hook;
+  std::atomic<uint64_t> nack_rx{0}, nack_bad{0}, retx_syms{0}, retx_refused{0}, retx_miss{0};
   auto rx_callback = [&](const Packet& pkt) {
     rx_beat.fetch_add(1, std::memory_order_relaxed);
     if (pkt.RxAtrib.crc_err) rx_crcfail_frames.fetch_add(1, std::memory_order_relaxed);
@@ -1631,6 +1647,8 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
       // not the agent thread rc_queue feeds.
       if (rc_type == rc::T_CAL_CMD || rc_type == rc::T_CAL_RESULT) {
         cal_queue.push(body, body_len);
+      } else if (rc_type == rc::T_NACK) {
+        if (nack_hook) nack_hook(body, body_len);  // RX thread (fec-nack)
       } else {
         rc_queue.push(body, body_len);
       }
@@ -1745,6 +1763,72 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
   // glitch root cause). ~256 bodies ≈ 150 ms at 1700 bodies/s.
   constexpr size_t kTxQueueCap = 256;  // also feeds Telem.txq_cap
   TxQueue txq(kTxQueueCap);
+  // spec 2026-09-06 air clock. Lives out here, not in the hot thread, since
+  // fec-nack: the hot thread prices it (set_rates via apply_op_to_clock),
+  // books every video/probe body and reads the backlog; the RX thread's
+  // T_NACK handler below books every retransmit body. AirClock's own mutex
+  // guards it; both sides lock per BODY, never per symbol.
+  AirClock air_clock;
+  // Software NACK answer (spec 2026-10-05 fec-nack §4.2-4.3), RX thread.
+  // Verified request -> ring lookups -> fresh SBI bodies marked retx ->
+  // TxQueue head, under a token bucket of nack.air_pct of the base layer's
+  // delivered capacity, nack.burst_ms of that capacity deep (flight 0026,
+  // 2026-10-06: a fixed 64-symbol depth was 4 ms of air at rung 5 and 30 ms
+  // at rung 0, and refused half of every cascade's requests). A
+  // repeat-flagged request is answered twice (and draws two tokens per
+  // symbol). The bucket, packer and scratch envelope are RX-thread-only;
+  // ring, txq, air_clock and agent are thread-safe.
+  // The UepBody carries stream_id 0, so RadioTx::build_frame and the air
+  // clock see plain base-layer bodies; the retx mark lives only in the SBI
+  // stream byte, which the GS routes as base and decodes as a retransmit.
+  TokenBucket retx_bucket(64.0);  // re-sized from the op at every refill
+  mabur::SbiPacker retx_packer(static_cast<int>(retx_env_len), cfg.fec.blocks_per_body[0],
+                               static_cast<uint8_t>(0 | mabur::kSbiRetxMark));
+  std::vector<uint8_t> retx_env(retx_env_len);
+  std::vector<std::vector<uint8_t>> retx_out;
+  nack_hook = [&](const uint8_t* body, size_t len) {
+    // A malformed frame (radio corruption, sid != 0) counts nack_bad only;
+    // check_nack raises auth_reject itself for a tag/counter failure.
+    rc::Nack nk;
+    if (agent.check_nack(body, len, &nk) != RcAgent::NackCheck::kOk) {
+      nack_bad.fetch_add(1, std::memory_order_relaxed);
+      return;
+    }
+    const rc::Nack* n = &nk;
+    nack_rx.fetch_add(1, std::memory_order_relaxed);
+    const auto op = shared_op.load();
+    const double sym_per_s =
+        op ? delivered_mbps(op->ladder[0], cfg.air_clock) * 1e6 / 8.0 / static_cast<double>(retx_env_len)
+           : 0.0;
+    if (op) retx_bucket.set_depth(TokenBucket::depth_for(sym_per_s, cfg.nack.burst_ms));
+    retx_bucket.refill(now_steady_us(), sym_per_s * cfg.nack.air_pct / 100.0);
+    const bool twice = (n->flags & rc::kNackFlagRepeat) != 0;
+    const double cost = twice ? 2.0 : 1.0;
+    retx_out.clear();
+    for (uint8_t i = 0; i < n->n; ++i) {
+      for (int b = 0; b < 32; ++b) {
+        if (!(n->e[i].bitmap & (1u << b))) continue;
+        const uint32_t seq = n->e[i].first_seq + static_cast<uint32_t>(b);
+        if (!retx.get(seq, retx_env.data())) { retx_miss.fetch_add(1, std::memory_order_relaxed); continue; }
+        if (!retx_bucket.take(cost)) { retx_refused.fetch_add(1, std::memory_order_relaxed); continue; }
+        retx_syms.fetch_add(1, std::memory_order_relaxed);
+        auto out = retx_packer.add_one(retx_env.data(), retx_env.size());
+        if (!out.empty()) retx_out.push_back(std::move(out));
+      }
+    }
+    auto tail = retx_packer.flush_one();
+    if (!tail.empty()) retx_out.push_back(std::move(tail));
+    // push_front stacks, so push each pass back-to-front: the bodies then
+    // leave in request order (pass 1 then pass 2) ahead of queued video.
+    const uint32_t now_ms = static_cast<uint32_t>(now_steady_ms());
+    for (int rep = 0; rep < (twice ? 2 : 1); ++rep)
+      for (auto it = retx_out.rbegin(); it != retx_out.rend(); ++it) {
+        const uint64_t p_us = now_steady_us();
+        const size_t bytes = it->size();
+        txq.push_front(UepBody{0, *it, now_ms, p_us, false});
+        air_clock.book(p_us, bytes, 0);
+      }
+  };
   // fec.feed_batch: group the TX writer's wakeups so bodies leave in
   // URB-filling batches (see TxQueue::set_batch); the hot thread flushes at
   // every AU end so a tail group never waits on the next frame.
@@ -1764,7 +1848,6 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
     // is behaviourally identical to the old default "mabur_f".
     FrameSource fsrc(VENC_RING_NAME);
     FramePipeline pipe;
-    AirClock air_clock;   // spec 2026-09-06; priced by apply_op_to_clock
     std::vector<uint8_t> fbuf(VENC_FRAME_META_SIZE + 512 * 1024);
     uint64_t last_reattach = 0;
     uint64_t last_ring_stats_ms = 0;
@@ -1782,6 +1865,9 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
     // unpinned). Sending it to kRestCore is what makes the policy a win.
     FecWorker fec_worker(two_core_target() ? kRestCore : -1);
     UepEncoder uep(cfg.uep_layers(), cfg.fec.flush_ms, &fec_worker);
+    uep.set_source_tap([&retx](uint8_t sid, uint32_t seq, const uint8_t* env, size_t n) {
+      if (sid == 0) retx.put(seq, env, n);  // base layer only (fec-nack)
+    });
 
     // Probe stream (spec 2026-09-04 §2): same FEC geometry as the enh layer
     // (block_payload/bpb), so a probe body is the same wire size as a video
@@ -2637,6 +2723,11 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
       ti.txq_drops = txq.dropped();
       ti.txq_wait_max_ms = txq_wait_max_ms.exchange(0, std::memory_order_relaxed);
       ti.usb_fail = telem_usb_fail;
+      // fec-nack, per period (spec 2026-10-05 §5): bumped by the RX
+      // thread's T_NACK handler, drained here.
+      ti.nack_rx = nack_rx.exchange(0, std::memory_order_relaxed);
+      ti.retx_syms = retx_syms.exchange(0, std::memory_order_relaxed);
+      ti.retx_refused = retx_refused.exchange(0, std::memory_order_relaxed);
       // RX-side channel view for this period (cca-on 2026-09-23): the
       // RX callback's frame split, drained per Telem. No register read
       // here -- see rx_own_frames' declaration for why.

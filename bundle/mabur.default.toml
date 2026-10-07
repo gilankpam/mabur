@@ -124,3 +124,10 @@ size         = "1920x1080"        # recording resolution, same aspect ratio as v
                                   # from venc.size (e.g. fly 1280x720, record 1920x1080). Above
                                   # 1920x1080 the whole camera drops to 30 fps (set venc.fps = 30)
                                   # and the live video lags badly, so 1920x1080 is the practical max
+
+# Software NACK answers (base layer): how much sent video the drone keeps for
+# re-sending, and the air it may spend on re-sends.
+[nack]
+ring_ms = 150     # history of base-layer symbols kept, at encoder.bitrate_max_kbps
+air_pct = 5       # re-send budget, % of the rung's delivered capacity
+burst_ms = 20     # first-answer burst: this much air of re-sends at the current rung

@@ -181,4 +181,20 @@ TEST(sbi_add_one_matches_add) {
     CHECK(b.add_one(junk, 5).empty());
   }
 }
+
+TEST(sbi_retx_mark_is_stream_id_bit7) {
+  mabur::SbiPacker p(8, 1, static_cast<uint8_t>(0 | mabur::kSbiRetxMark));
+  std::vector<uint8_t> env(8, 0xAB);
+  auto b = p.add_one(env.data(), env.size());
+  REQUIRE(!b.empty());
+  CHECK(b[3] == 0x80);
+  CHECK(mabur::sbi_peek_stream_id(b.data(), b.size()) == 0);   // routes as base
+  auto r = mabur::sbi_unpack(b.data(), b.size(), 8);
+  CHECK(r.header_ok && r.stream_id == 0 && r.retx);
+  CHECK(r.survivors.size() == 1);
+  mabur::SbiPacker q(8, 1, 1);
+  auto c = q.add_one(env.data(), env.size());
+  CHECK(!mabur::sbi_unpack(c.data(), c.size(), 8).retx);
+  CHECK(mabur::sbi_peek_stream_id(c.data(), c.size()) == 1);
+}
 MTEST_MAIN

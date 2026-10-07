@@ -23,6 +23,9 @@ struct DecodedFrag {
   uint16_t q_ms = 0;          // SBI q_ms of that body (0 = unknown)
   uint16_t enc_us = 0;        // SBI enc_us of that body (0 = unknown)
   uint16_t air_ms = 0;        // SBI air_ms of that body (0 = unknown)
+  uint32_t sw_seq = 0;        // wire seq of the symbol this fragment came from
+  bool retx = false;          // set from SbiUnpackResult::retx: the carrying
+                              // body was a NACK retransmit (kSbiRetxMark)
 };
 
 // Receiver mirror of UepEncoder: route a body by its SBI stream_id to that
@@ -83,6 +86,10 @@ class UepDecoder {
   // bad sid.
   uint32_t arrival_guard(int sid) const;
 
+  // SPIKE 2026-10-05 (fec-nack): per-layer erasure view (SwDecoder).
+  std::vector<uint32_t> missing_sources(int sid, uint32_t lookback) const;
+  SwDecoder::SourceState source_state(int sid, uint32_t wire_seq) const;
+
   // Drops per-layer decode state — call on a session change, where the peer's
   // seqs restart from an unrelated value.
   void reset_continuity();
@@ -112,6 +119,9 @@ class UepDecoder {
     // subblocks_salvaged is its upper bound -- the other card's clean copy
     // shadows most of it (docs/sbi-salvage-flights-2026-09-09.md).
     uint64_t arr_salvage_only = 0;
+    // Symbols first made known by a NACK retransmit body (fec-nack,
+    // SwDecoder::syms_retx): neither delivered nor recovered.
+    uint64_t syms_retx = 0;
   };
   LayerStats stats(int sid) const;
   uint64_t bodies_misrouted() const { return bodies_misrouted_; }

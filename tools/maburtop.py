@@ -1074,6 +1074,15 @@ def panel_ladder(model, wall):
         streak = pb.get("streak_bodies") or 0
         body.append((f" probe: r{_s(pb.get('rung'))} mcs{_s(pb.get('mcs'))} {pb.get('state', '?')}"
                      f" {streak}b u{_s(pb.get('u'), 2)} n{_s(pb.get('n'))} | {cards}", []))
+    nk = (d.get("link") or {}).get("nack") or {}
+    if nk:
+        dn = (d.get("drone") or {}).get("nack") or {}
+        fm = nk.get("fill_ms") or {}
+        body.append((f" nack: req{_s(nk.get('requests'))} fill{_s(nk.get('filled'))}"
+                     f" waste{_s(nk.get('wasted'))} sup{_s(nk.get('suppressed'))} lead{_s(nk.get('lead_skipped'))}"
+                     f" {_s(fm.get('p50'))}/{_s(fm.get('p90'))}/{_s(fm.get('max'))}ms"
+                     f" settle{_s(nk.get('settle_ms'))} | drone rx{_s(dn.get('rx'))}"
+                     f" syms{_s(dn.get('retx_syms'))} refused{_s(dn.get('retx_refused'))}", []))
     return _panel("LADDER", body, min_width=34)
 
 

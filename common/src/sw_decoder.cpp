@@ -30,6 +30,7 @@ void SwDecoder::reset_state(uint64_t v) {
   known_.clear();
   rows_.clear();
   recovered_await_src_.clear();
+  retx_await_src_.clear();
   newest_v_ = v;
   base_ = v;
   arr_.reset(v);
@@ -64,6 +65,27 @@ void SwDecoder::mark_transition() {
 // during the join window and is identical to base_ in steady state.
 uint64_t SwDecoder::live_floor() const { return newest_v_ - horizon_; }
 
+std::vector<uint32_t> SwDecoder::missing_sources(uint32_t lookback) const {
+  std::vector<uint32_t> out;
+  if (!have_seq_) return out;
+  const uint64_t floor = live_floor();
+  uint64_t from = newest_v_ > lookback ? newest_v_ - lookback : 0;
+  if (from < floor) from = floor;
+  if (from < base_) from = base_;
+  for (uint64_t v = from; v < newest_v_; ++v)
+    if (!known_.count(v)) out.push_back(static_cast<uint32_t>(v));
+  return out;
+}
+
+SwDecoder::SourceState SwDecoder::source_state(uint32_t wire_seq) const {
+  if (!have_seq_) return SourceState::kUnknown;
+  const uint64_t v = unwrap(wire_seq);
+  if (v < live_floor() || v < base_) return SourceState::kBelowFloor;
+  if (!known_.count(v)) return SourceState::kUnknown;
+  if (retx_await_src_.count(v)) return SourceState::kRetx;
+  return recovered_await_src_.count(v) ? SourceState::kRecovered : SourceState::kDirect;
+}
+
 void SwDecoder::advance(uint64_t newest_candidate) {
   if (newest_candidate <= newest_v_) return;
   newest_v_ = newest_candidate;
@@ -85,8 +107,11 @@ void SwDecoder::advance(uint64_t newest_candidate) {
   // the state below is torn down. One seq per iteration in steady state.
   for (uint64_t s = base_; s < nb; ++s) {
     const bool known = known_.count(s) != 0;
-    if (known && !recovered_await_src_.count(s)) continue;  // heard directly
-    note_missing(s, /*recovered=*/known, s < stale_end);
+    const bool rec = known && recovered_await_src_.count(s);
+    const bool rtx = known && retx_await_src_.count(s);
+    if (known && !rec && !rtx) continue;  // heard directly
+    note_missing(s, rtx ? Origin::kRetx : (rec ? Origin::kRepair : Origin::kSource),
+                 s < stale_end);
   }
   settle_episodes(nb);
   for (auto it = known_.begin(); it != known_.end() && it->first < nb;) {
@@ -103,6 +128,7 @@ void SwDecoder::advance(uint64_t newest_candidate) {
   // for good: within the horizon the channel never delivered it.
   recovered_await_src_.erase(recovered_await_src_.begin(),
                              recovered_await_src_.lower_bound(nb));
+  retx_await_src_.erase(retx_await_src_.begin(), retx_await_src_.lower_bound(nb));
   // Rows are keyed by pivot = their smallest referenced seq, so everything
   // that references an evicted seq is at the front of the map.
   while (!rows_.empty() && rows_.begin()->first < nb) rows_.erase(rows_.begin());
@@ -160,7 +186,7 @@ void SwDecoder::insert_row(Row r, std::vector<std::pair<uint64_t, std::vector<ui
   }
 }
 
-void SwDecoder::ingest(uint64_t v, std::vector<uint8_t> sym, bool source,
+void SwDecoder::ingest(uint64_t v, std::vector<uint8_t> sym, Origin origin,
                        std::vector<std::vector<uint8_t>>& out) {
   std::vector<std::pair<uint64_t, std::vector<uint8_t>>> queue;
   queue.emplace_back(v, std::move(sym));
@@ -168,12 +194,22 @@ void SwDecoder::ingest(uint64_t v, std::vector<uint8_t> sym, bool source,
   while (!queue.empty()) {
     auto [s, payload] = std::move(queue.back());
     queue.pop_back();
-    const bool count_as_source = source && first;
+    // Cascades are repair-recovered -- unless the symbol that set them off
+    // was a retx: without it none of them would be known, so they inherit
+    // the retx class (R20; retx_await_src_ then holds them, and a late
+    // direct copy still books syms_retx_arrived).
+    const Origin o =
+        first ? origin : (origin == Origin::kRetx ? Origin::kRetx : Origin::kRepair);
     first = false;
     if (s < live_floor() || known_.count(s)) continue;
     unpack_symbol(payload.data(), out);
-    if (count_as_source) {
+    for (size_t k = last_out_seqs_.size(); k < out.size(); ++k)
+      last_out_seqs_.push_back(static_cast<uint32_t>(s));
+    if (o == Origin::kSource) {
       ++syms_delivered_;
+    } else if (o == Origin::kRetx) {
+      ++syms_retx_;
+      retx_await_src_.insert(s);
     } else {
       ++syms_recovered_;
       recovered_await_src_.insert(s);
@@ -204,7 +240,8 @@ void SwDecoder::ingest(uint64_t v, std::vector<uint8_t> sym, bool source,
 
 std::vector<std::vector<uint8_t>> SwDecoder::add_symbol(const uint8_t* env, size_t len,
                                                         uint64_t now_ms, SwBoundary b,
-                                                        bool clean) {
+                                                        bool clean, bool retx) {
+  last_out_seqs_.clear();
   std::vector<std::vector<uint8_t>> out;
   sw::SwHeader h;
   if (!sw::parse_header(env, len, &h)) return out;
@@ -229,6 +266,11 @@ std::vector<std::vector<uint8_t>> SwDecoder::add_symbol(const uint8_t* env, size
       reset_state(kAnchor + h.seq);
       v = newest_v_;
     }
+    // A retransmit is boundary-neutral: the drone re-sends old seqs at the
+    // CURRENT rate, so its PHY rate says nothing about which op the seq
+    // belongs to -- letting it close the boundary would leave the transition
+    // gap booked as current loss (option A: retx never moves a ladder input).
+    if (retx) b = SwBoundary::kNone;
     if (b == SwBoundary::kPre && wm_valid_ && v > wm_) wm_ = v;
     if (b == SwBoundary::kPost && wm_open_) {
       wm_open_ = false;
@@ -236,20 +278,32 @@ std::vector<std::vector<uint8_t>> SwDecoder::add_symbol(const uint8_t* env, size
     }
     // Arrival accounting BEFORE the dedup/stale early-return: a second-card
     // copy still sets the heard bit (idempotent), a copy behind the settle
-    // line counts late.
-    arr_.on_source(v, arr_stale_end(), clean);
-    arr_.advance(v, arr_stale_end());
+    // line counts late. A retransmit never touches the tracker (option A):
+    // it is the drone answering a NACK, not the channel delivering.
+    if (!retx) {
+      arr_.on_source(v, arr_stale_end(), clean);
+      arr_.advance(v, arr_stale_end());
+    }
     if (v < live_floor() || known_.count(v)) {
-      // First direct copy of a repair-recovered symbol: the channel did
-      // deliver it, the repair just won the race. Not a stale dup.
+      // A retx of something we already have: nothing to learn.
+      if (retx) {
+        ++symbols_dropped_stale_;
+        return out;
+      }
+      // First direct copy of a repair- or retx-filled symbol: the channel
+      // did deliver it, the repair/retransmit just won the race. Not a
+      // stale dup.
       if (recovered_await_src_.erase(v))
         ++syms_recovered_arrived_;
+      else if (retx_await_src_.erase(v))
+        ++syms_retx_arrived_;
       else
         ++symbols_dropped_stale_;
       return out;
     }
     advance(v);
-    ingest(v, std::vector<uint8_t>(payload, payload + ss), /*source=*/true, out);
+    ingest(v, std::vector<uint8_t>(payload, payload + ss),
+           retx ? Origin::kRetx : Origin::kSource, out);
     return out;
   }
 
@@ -295,7 +349,7 @@ std::vector<std::vector<uint8_t>> SwDecoder::add_symbol(const uint8_t* env, size
   }
   std::vector<std::pair<uint64_t, std::vector<uint8_t>>> solved;
   insert_row(std::move(r), solved);
-  for (auto& [sv, sym] : solved) ingest(sv, std::move(sym), /*source=*/false, out);
+  for (auto& [sv, sym] : solved) ingest(sv, std::move(sym), Origin::kRepair, out);
   return out;
 }
 
@@ -315,7 +369,7 @@ void SwDecoder::note_repair(uint64_t ws, uint64_t we, uint32_t key) {
   repairs_seen_.push_back(RepairSpan{ws, we, key});
 }
 
-void SwDecoder::note_missing(uint64_t v, bool recovered, bool stale) {
+void SwDecoder::note_missing(uint64_t v, Origin known_via, bool stale) {
   if (ep_open_ && v > ep_last_ + episode_window()) settle_episodes(v);  // too far: close first
   if (!ep_open_) {
     ep_ = LossEpisode{};
@@ -324,7 +378,12 @@ void SwDecoder::note_missing(uint64_t v, bool recovered, bool stale) {
   }
   ep_last_ = v;
   ++ep_.missing;
-  if (recovered) ++ep_.recovered; else ++ep_.abandoned;
+  if (known_via == Origin::kRepair)
+    ++ep_.recovered;
+  else if (known_via == Origin::kRetx)
+    ++ep_.retx;
+  else
+    ++ep_.abandoned;
   if (stale) ++ep_.stale;
 }
 

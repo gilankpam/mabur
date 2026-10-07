@@ -262,6 +262,33 @@ class RcAgent {
   // Owned by verify_cal_frame's caller thread (the TX writer); not
   // thread-safe against concurrent verify_cal_frame calls.
   bool verify_cal_frame(const uint8_t* body, size_t len, bool sweep_running = false);
+  // fec-nack (spec 2026-10-05 §4.2): verify a T_NACK's tag against the
+  // published session with the frame's own counter as seq32 ctx. Any
+  // thread. On success, *session (if given) is the published pair the tag
+  // verified under -- hand it to accept_nack_counter so a session change
+  // between the two calls cannot charge this request to the new pair.
+  bool verify_session_tagged(const uint8_t* body, size_t len, uint32_t seq32,
+                             uint64_t* session = nullptr) const;
+  // T_NACK replay guard: true iff `counter` is greater than the last one
+  // accepted in this link session, and stores it. The counter space is the
+  // session's (keyed by its vtx nonce, which every new pair draws fresh), so
+  // the first counter after the drone adopts a new pair is accepted again.
+  // `session` is what verify_session_tagged reported; a request verified
+  // under a pair that is no longer published is refused. The one-argument
+  // form uses the currently published pair. Any thread (lock-free CAS).
+  bool accept_nack_counter(uint32_t counter);
+  bool accept_nack_counter(uint32_t counter, uint64_t session);
+  // Raise the auth_reject flag (Telem flags bit1) for a control frame
+  // refused outside the agent: the RX thread's T_NACK handler.
+  void note_auth_reject() { auth_reject_.store(true, std::memory_order_relaxed); }
+  // The RX thread's whole T_NACK gate: parse_nack, sid == 0,
+  // verify_session_tagged, accept_nack_counter. kMalformed = parse (CRC,
+  // length, version) failed or sid != 0 -- radio corruption, NOT an auth
+  // failure, so auth_reject stays down (the RCF path drops a parse failure
+  // silently too). kRejected = parsed but the tag or the counter failed:
+  // raises auth_reject. kOk fills *out. Any thread.
+  enum class NackCheck { kOk, kMalformed, kRejected };
+  NackCheck check_nack(const uint8_t* body, size_t len, rc::Nack* out);
   static constexpr size_t kCalNonceRing = 8;
   // Replay harness only (maburd --dry-run): install a known pair so a file
   // of RCFs tagged under (vrx, vtx) verifies without a DISC exchange.
@@ -354,6 +381,9 @@ class RcAgent {
   bool have_cal_current_ = false;
   uint32_t cal_current_ = 0;           // newest accepted cal nonce
   std::atomic<bool> auth_reject_{false};
+  // accept_nack_counter's state: (vtx_nonce << 32) | last accepted counter.
+  // A vtx other than the current pair's means "nothing accepted yet".
+  std::atomic<uint64_t> nack_last_{0};
   bool session_promoted_ = false;
   uint8_t deferred_move_ch_ = 0;   // executed in tick() after main sent the promote Telem
   uint32_t fresh_vtx_nonce_();

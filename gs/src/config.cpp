@@ -385,6 +385,7 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
                 "s3_settle_ms", "s3_min_syms",
                 "rung_stats", "fade", "probe",
                 "rcf_slot_hold_ms", "arrival_guard_syms",
+                "nack",
                 "key_file", "key"});
     c.link.key_file = get_str(r, "key_file", "/etc/mabur.key", "link");
     // Read by presence: link.key is an optional web-overlay key (spec §2),
@@ -542,6 +543,23 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
     } else {
       note_default("link", "fade", "(section absent)");
     }
+    // Software NACK (spec 2026-10-05 fec-nack §7). settle is adaptive (no key).
+    if (r.contains("nack")) {
+      const Value& nj = r["nack"];
+      check_keys(nj, "link.nack", {"enable", "lookback", "repeat_ms", "max_tries", "min_lead_ms"});
+      auto& nc = c.link.nack;
+      nc.enable = get_bool(nj, "enable", nc.enable, "link.nack");
+      nc.lookback = static_cast<int>(get_int(nj, "lookback", 256, 8, 4096, "link.nack"));
+      nc.repeat_ms = static_cast<int>(get_int(nj, "repeat_ms", 16, 1, 1000, "link.nack"));
+      nc.max_tries = static_cast<int>(get_int(nj, "max_tries", 2, 0, 16, "link.nack"));  // 0 = observe only
+      nc.min_lead_ms = static_cast<int>(get_int(nj, "min_lead_ms", 12, 1, 100, "link.nack"));
+    }  // absent = off; not a defaulted key (bench knob)
+    // Cross-section: [fec] is parsed above. A lookback at or past the
+    // decoder's seq horizon would ask about seqs the decoder has already
+    // forgotten (source_state reads them as unknown forever).
+    if (c.link.nack.lookback >= c.fec.seq_horizon)
+      fail("link.nack.lookback", "must be < fec.seq_horizon (" +
+                                     std::to_string(c.fec.seq_horizon) + ")");
 
     if (r.contains("rung_stats")) {
       const Value& rs = r["rung_stats"];

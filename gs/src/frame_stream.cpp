@@ -37,6 +37,12 @@ void FrameStream::push_fragment(uint8_t sid, const uint8_t* pkt, size_t len,
   if (s.chunks.empty()) { s.sid = sid; s.fseq = fseq; s.first_ms = now_ms;
                           s.last_progress_ms = now_ms; s.count = count; }
   s.chunks[idx].assign(pkt + 6, pkt + len);
+  if (arr.have_sw_seq && (!s.have_seq_at_max || idx > s.max_idx)) {
+    s.max_idx = idx;
+    s.seq_at_max = arr.sw_seq;
+    s.have_seq_at_max = true;
+  }
+  s.last_arrival_ms = now_ms;
   if (arr.body_mono_us &&
       (s.lat.t_first_us == 0 || arr.body_mono_us < s.lat.t_first_us))
     s.lat.t_first_us = arr.body_mono_us;
@@ -49,6 +55,7 @@ void FrameStream::push_fragment(uint8_t sid, const uint8_t* pkt, size_t len,
     s.lat.drone_q_ms = arr.q_ms;
     s.lat.enc_us = arr.enc_us;
     s.lat.drone_air_ms = arr.air_ms;
+    s.lat.hdr_retx = arr.retx;
     s.hdr = *h;
     bool rebased = false;
     s.id64 = unwrap_id(h->frame_id, h->flags, &rebased);
@@ -168,6 +175,16 @@ void FrameStream::poll(uint64_t now_ms) {
     }
   }
   try_emit(now_ms);
+}
+
+std::optional<TailView> FrameStream::tail_view(uint8_t sid) const {
+  const Slot* best = nullptr;
+  for (const auto& [k, s] : slots_)
+    if (s.sid == sid && s.have_hdr && s.have_seq_at_max && s.emitted_upto < s.count &&
+        (!best || s.id64 > best->id64))
+      best = &s;
+  if (!best) return std::nullopt;
+  return TailView{best->count, best->max_idx, best->seq_at_max, best->last_arrival_ms, best->first_ms};
 }
 
 void FrameStream::reset() {
