@@ -427,15 +427,31 @@ split is open.
 
 ### A missing middle slice (2026-10-10)
 
-`cap4` with slice 2 removed from every 7th picture (83 pictures), decoded
-whole and streamed (stream mode told 3 slices): no hang, **no reset**, 600/600
-frames. In the first holed picture slices 1 and 4 are bit-exact with a
-software decode; the missing band (rows 316–642) is concealed from a reference
-(close to, but not equal to, the previous frame); slice 3 is *mostly* exact
-(rows 643–735 exact) but rows 736–917 differ slightly. Slice 3 has no
-in-picture dependency on slice 2 in HEVC beyond the in-loop filters at the
-boundary, so this is decoder behaviour, cause unknown. The scene was static,
-so the visibility of the difference is not judged here. Using slices after a
-hole would need maburgs to keep chunks past the hole (today `finish()` erases
-them) and resync at the next start code; how often slices after a hole
-actually arrive is still unmeasured (counter in `FrameStream::finish`).
+`cap4` with one middle slice removed from every 7th picture (83 pictures),
+decoded whole and streamed (identical results): no hang, **no reset, no error
+flag**, 600/600 frames. All four segments in the stream are independent
+slices (CTU addresses 0/150/300/450, `dependent_slice_segment_flag` 0), even
+though the PPS has `dependent_slice_segments_enabled_flag` 1. CTU-level
+comparison with a software decode of the intact stream:
+
+- **The missing band is never written.** Its CTUs equal frame 3 exactly, not
+  the previous frame 4: whatever the recycled output buffer last held. Since
+  the hardware sees no error, nothing conceals it, unlike the tail cut, where
+  the decoder errors at the end of the data and fills the rest from the
+  previous frame. In motion this band shows an older frame; how old depends on
+  the buffer pool.
+- **3 pixel rows each side of the gap differ:** the in-loop filters run
+  across slice edges (`pps_loop_filter_across_slices_enabled_flag` 1) against
+  the stale pixels. Expected.
+- **Slice 2 removed:** slice 1 and slice 4 exact; slice 3 interior has ±1–2
+  errors in 2431 pixels (rows 736–917, ~0.4 % of the band); some of its CTUs
+  equal the reference frame where the true decode differs from it. **Slice 3
+  removed:** slice 2 exact, slice 4 exact apart from its 3 edge rows. So the
+  interior error is not "the slice after a gap always breaks"; cause unknown.
+  Static scene, so visibility is not judged.
+
+Using slices after a hole would need maburgs to keep chunks past the hole
+(today `finish()` erases them) and resync at the next start code, and the
+missing band needs real concealment (e.g. a synthesized all-skip slice for the
+gap). How often slices after a hole actually arrive is still unmeasured
+(counter in `FrameStream::finish`).
