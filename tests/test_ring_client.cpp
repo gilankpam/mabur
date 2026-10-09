@@ -426,4 +426,36 @@ TEST(open_with_bounded_wait_times_out_on_missing_ring) {
   CHECK(ms < 3000);
 }
 
+// Slice salvage (spec 2026-10-10-h265-slices §5.5): a salvaged AU (sid 0 or
+// sid 1) is a legal, gap-free picture (kept slices + skip-slice fills) --
+// deliver it like any other AU, just counted separately from a plain
+// truncation.
+TEST(salvaged_sid1_and_sid0_are_delivered_and_counted) {
+  const std::string ring = tmp_path("ring_salv");
+  maburgs::AuRingWriter w;
+  REQUIRE(w.open(ring, {4096, 8}));
+  auto publish_salvaged = [&](uint8_t sid, uint8_t seed) {
+    FrameHdr h;
+    const auto au = au_bytes(100, seed);
+    w.begin(h, sid);
+    w.append(au.data(), au.size());
+    maburgs::AuLatMeta lat;
+    lat.slice.salvaged = true;
+    w.finish(false, lat);
+  };
+  publish_salvaged(1, 1);
+  publish_salvaged(0, 2);
+
+  Collector c;
+  RingClient rc({ring, tmp_path("nosock_salv")}, c.sink());
+  REQUIRE(rc.open());
+  CHECK(rc.pump(5) == 2);
+  CHECK(c.events.size() == 2);
+  CHECK(rc.dropped_enhance_incomplete() == 0);
+  CHECK(rc.salvaged_enhance() == 1);
+  CHECK(rc.salvaged_base() == 1);
+  CHECK(rc.truncated_base() == 0);
+  unlink(ring.c_str());
+}
+
 MTEST_MAIN

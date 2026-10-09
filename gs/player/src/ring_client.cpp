@@ -92,12 +92,14 @@ size_t RingClient::drain_ring_() {
     // kOk: a real record. It may still be dropped whole by policy below,
     // in which case flush carries forward exactly as for kResync.
     const bool complete = (m.flags & maburgs::kRecFlagComplete) != 0;
+    const bool salvaged = (m.flags & maburgs::kRecFlagSliceSalvaged) != 0;
     if (m.flags & mabur::framewire::kFlagDiscont) pending_flush_ = true;
-    if (m.sid == 1 && !complete) {  // sid 1 = enhance (2-stream space)
+    if (m.sid == 1 && !maburgs::au_decodable(m.flags)) {  // sid 1 = enhance (2-stream space)
       ++dropped_enhance_incomplete_;
       continue;
     }
-    if (!complete) ++truncated_base_;  // base AU: delivered anyway, just counted
+    if (salvaged) ++(m.sid == 0 ? salvaged_base_ : salvaged_enhance_);
+    if (!complete && !salvaged) ++truncated_base_;  // base AU: delivered anyway, just counted
     AuEvent ev{m, std::move(au), pending_flush_};
     pending_flush_ = false;
     ++delivered_;

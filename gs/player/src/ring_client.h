@@ -54,6 +54,11 @@ class RingClient {
   uint64_t delivered() const { return delivered_; }
   uint64_t dropped_enhance_incomplete() const { return dropped_enhance_incomplete_; }
   uint64_t truncated_base() const { return truncated_base_; }
+  // Slice salvage (spec 2026-10-10-h265-slices §5.5): counted separately
+  // from truncated_base/dropped_enhance_incomplete -- a salvaged AU is
+  // delivered (it is decodable), just not a plain complete record.
+  uint64_t salvaged_base() const { return salvaged_base_; }
+  uint64_t salvaged_enhance() const { return salvaged_enhance_; }
   uint64_t resyncs() const { return reader_.resyncs(); }
   bool dead() const { return reader_.dead(); }
   // Stall diagnostics: one line of reader/doorbell internals for fps-log.
@@ -61,9 +66,13 @@ class RingClient {
 
  private:
   // POLICY (the point of the native player, spec §maburplay):
-  //  - meta.sid == 1 && !(flags & kRecFlagComplete)  -> drop whole, count.
+  //  - meta.sid == 1 && !maburgs::au_decodable(flags) -> drop whole, count.
+  //    (Slice salvage, spec 2026-10-10-h265-slices §5.5: a salvaged AU is
+  //    decodable even though it is not complete, so it is NOT dropped here
+  //    -- counted via salvaged_enhance() instead.)
   //  - base AU (sid != 1, i.e. sid == 0) delivered always; truncated base
-  //    counted. 2-stream space (spec 2026-08-29-airtime-balance-uep):
+  //    counted (salvaged base counted via salvaged_base() instead).
+  //    2-stream space (spec 2026-08-29-airtime-balance-uep):
   //    sid 0 = base, sid 1 = enhance — was sid 3 pre-fold, {0,1,2,3}.
   //  - flags & kFlagDiscont, or reader returned kResync -> next delivered
   //    AU carries flush_before = true.
@@ -84,6 +93,8 @@ class RingClient {
   uint64_t delivered_ = 0;
   uint64_t dropped_enhance_incomplete_ = 0;
   uint64_t truncated_base_ = 0;
+  uint64_t salvaged_base_ = 0;
+  uint64_t salvaged_enhance_ = 0;
 
   int door_fd_ = -1;
   bool door_hello_ok_ = false;

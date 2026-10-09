@@ -1190,6 +1190,9 @@ int main(int argc, char** argv) {
   // happens before the backend ever sees the AU), then (b) backend submit.
   auto sink = [&](maburplay::AuEvent&& ev) {
     const bool complete = (ev.meta.flags & maburgs::kRecFlagComplete) != 0;
+    // Slice salvage (spec 2026-10-10-h265-slices §5.5): a salvaged AU is a
+    // legal, gap-free picture (kept slices + skip-slice fills) -- decode it.
+    const bool decodable = maburgs::au_decodable(ev.meta.flags);
 
     // GS overlay video figures, measured HERE -- at AU delivery -- and not
     // at flip: the presenter is a mailbox on the panel vsync, so flip
@@ -1208,7 +1211,7 @@ int main(int argc, char** argv) {
     // the raw path's rules itself (complete AUs only, file begins at a
     // parameter-set AU) and ignores AUs while not armed.
     if (rec_on && !burned_mode && rec_gs)
-      dvr.feed(ev.au.data(), ev.au.size(), ev.meta.pts_us, complete);
+      dvr.feed(ev.au.data(), ev.au.size(), ev.meta.pts_us, decodable);
 
     if (ev.flush_before) {
       // Flush-ordering contract carried from Task 8's review:
@@ -1248,12 +1251,16 @@ int main(int argc, char** argv) {
     // arm the decoder and then discard the very parameter sets that made
     // it a sync point (review finding -- everything until the next sid0
     // would be param-less P slices, spuriously tripping the watchdog).
-    if (!complete) {
+    // Salvaged AUs pass: they contain no partial slice.
+    if (!decodable) {
       ++truncated_skipped;
       return;
     }
     if (!backend_armed) {
-      if (ev.meta.sid != 0) return;
+      // A salvaged AU never arms the decoder: it is not a sync point. Only
+      // a genuinely complete sid0 AU carries the fresh parameter sets that
+      // make it one (see the comment above backend_armed's declaration).
+      if (ev.meta.sid != 0 || !complete) return;
       backend_armed = true;
       if (!t_sync_seen) {
         t_sync_seen = true;
@@ -1284,11 +1291,14 @@ int main(int argc, char** argv) {
     dvr.stop();
     std::printf(
         "{\"delivered\":%llu,\"dropped_enhance_incomplete\":%llu,"
-        "\"truncated_base\":%llu,\"resyncs\":%llu,\"dvr_samples\":%llu,"
+        "\"truncated_base\":%llu,\"salvaged_base\":%llu,\"salvaged_enhance\":%llu,"
+        "\"resyncs\":%llu,\"dvr_samples\":%llu,"
         "\"dvr_fragments\":%llu,\"backend_submits\":%llu}\n",
         static_cast<unsigned long long>(ring.delivered()),
         static_cast<unsigned long long>(ring.dropped_enhance_incomplete()),
         static_cast<unsigned long long>(ring.truncated_base()),
+        static_cast<unsigned long long>(ring.salvaged_base()),
+        static_cast<unsigned long long>(ring.salvaged_enhance()),
         static_cast<unsigned long long>(ring.resyncs()), static_cast<unsigned long long>(dvr.samples()),
         static_cast<unsigned long long>(dvr.fragments()),
         static_cast<unsigned long long>(backend_submits));
