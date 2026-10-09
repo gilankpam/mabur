@@ -1,7 +1,8 @@
 // The writer's bins are checked by an independent arithmetic DECODER built
 // from the same tables (catches renorm/flush/termination bugs); the syntax
-// walk is checked structurally here and against ffmpeg + the GS decoder by
-// tools/slices/slicefill_check.py (catches table/context/semantic bugs).
+// walk is checked structurally here and against ffmpeg (the only oracle) by
+// tools/slices/slicefill_check.py (catches table/context/semantic bugs). The
+// GS hardware decoder is not part of it: that is checked on the bench.
 #include <vector>
 #include "mabur/hevc_cabac.h"
 #include "mabur/hevc_ps.h"

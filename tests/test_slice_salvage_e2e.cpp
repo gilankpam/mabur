@@ -1,7 +1,6 @@
 // Fixture AUs through the real encoder -> body loss -> decoder ->
 // FrameStream: salvaged AUs appear, and each is a gap-free 4-slice picture
 // whose kept slices are byte-identical to the originals.
-#include <cstdio>
 #include <cstring>
 #include <vector>
 #include "frame_stream.h"
@@ -69,13 +68,12 @@ TEST(salvaged_aus_are_gapfree_pictures_with_exact_kept_slices) {
   }
   fs.poll(now + 200);
   REQUIRE(evs.size() == sent.size());
-  size_t salvaged = 0, passthrough = 0;
-  uint8_t fallback_seen[maburgs::kSliceFbCount] = {};
+  size_t salvaged = 0;
   for (size_t i = 0; i < evs.size(); ++i) {
     const auto& e = evs[i];
     const auto& orig = aus[sent[i]];
     if (e.complete) { CHECK(e.b == orig); continue; }
-    if (!e.s.salvaged) { ++passthrough; ++fallback_seen[e.s.fallback]; continue; }
+    if (!e.s.salvaged) continue;
     ++salvaged;
     const auto got = mtest::slice_nals(e.b);
     const auto want = mtest::slice_nals(orig);
@@ -88,13 +86,6 @@ TEST(salvaged_aus_are_gapfree_pictures_with_exact_kept_slices) {
       CHECK(sh.address == 150u * k);
     }
   }
-  // Report what happened, so a reader (or reviewer) can see the test isn't
-  // vacuous: how many damaged AUs came out salvaged vs passthrough, and why
-  // the passthrough ones fell back.
-  std::printf("damaged AUs: %zu salvaged, %zu passthrough\n", salvaged, passthrough);
-  for (uint8_t fb = 0; fb < maburgs::kSliceFbCount; ++fb)
-    if (fallback_seen[fb])
-      std::printf("  passthrough fallback reason %u: %u AU(s)\n", fb, fallback_seen[fb]);
   CHECK(salvaged >= 2);
   CHECK(fs.slice_salvaged() == salvaged);
 }
