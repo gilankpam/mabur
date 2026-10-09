@@ -794,6 +794,12 @@ sink) and `osd_screens` (OSD screens handed to the page); see MSP OSD below.
 share of it (Debug tab Counters, `trunc base`) — the layer the NACK
 protects, and the one whose loss smears until the next GDR/IDR.
 
+`salvaged` (web stat `aus_salvaged`) counts AUs the core rebuilt by H.265
+slice salvage (`docs/slices.md`): a truncated AU whose lost row slices
+were filled with skip slices instead of being passed through truncated.
+The JS Gate decodes a salvaged AU once armed, same as any other AU, but
+never arms the decoder on one — only a complete AU is a sync point.
+
 The Debug tab's **NACK** group (`debugGroups()` in `view.js`) reads the
 stats line's `nack` block — `null` in spotter mode or with the switch off,
 else the tracker's cumulatives (`req rep syms tail fill late waste drop sup

@@ -891,3 +891,12 @@ Rollback is paired, as always: the old binary needs its old config
 Keep `maburd.pre-chanset` / `maburgs.pre-chanset` binary copies (with
 their old configs saved alongside) before swapping, the same convention
 as every other dated section on this page.
+
+## 2026-10-10 FrameHdr byte 3 codec→slice_rows (H.265 row slices, `docs/slices.md`)
+
+FrameHdr byte 3 was an always-H.265 codec id; it is now `slice_rows` (64-px
+CTU rows per slice of the AU, 0 = one slice). Deploy maburd and maburgs
+together — a mismatched pair reads the other byte 3 meaning, a video-wire
+flag day exactly like the `CAP_FRAME_WIRE` cases above. `[venc] slices` is
+a new drone key (default 1 = off, so an old config still boots the new
+binary unchanged) — binary before config, as always.

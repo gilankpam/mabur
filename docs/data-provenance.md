@@ -45,7 +45,11 @@ removed — 2026-10-03 (`docs/channel-select.md`) · same marker: H
 `boot_order` renamed `relocate`, M gains `link_found`, `scan.pick`
 latched — 2026-10-04 · CPE relay interference sweep/hop (protocol v4) —
 `scanlog 6` (D gains trailing `rx`), sideport `cards[i].relay.tx_scan_drop`/
-`.sweeps`, `hop.sweep_timeouts` — 2026-10-05 (`docs/cpe510-relay.md`).
+`.sweeps`, `hop.sweep_timeouts` — 2026-10-05 (`docs/cpe510-relay.md`) ·
+2026-10-10: `au.log` marker `# aulog 5` (+4 salvage columns); sideport
+`link.video.slice_*` keys added; FrameHdr byte 3 is `slice_rows` (was
+codec id 0x01 — recordings before this date read as slice_rows 1 in no
+tool, the byte was never logged) (`docs/slices.md`).
 
 **`link.pre_fec_loss` scale break 2026-09-23, twice.** The ArrivalTracker
 guard behind `link.pre_fec_loss` (and the OSD LOSS row, `ctl.pre_fec_loss`,
