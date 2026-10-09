@@ -72,6 +72,7 @@ SliceParse parse_slice_header(const uint8_t* nal, size_t n, const Sps& sps, cons
       nl0 = r.ue() + 1;
       if (h.slice_type == 0) nl1 = r.ue() + 1;
     }
+    if (nl0 > 15 || nl1 > 15) return SliceParse::kMalformed;  // num_ref_idx_{l0,l1}_active_minus1 <= 14
     if (pps.lists_modification && num_pic_total_curr > 1) {
       const int bits = static_cast<int>(ceil_log2(num_pic_total_curr));
       if (r.u(1)) for (uint32_t i = 0; i < nl0; ++i) r.u(bits);

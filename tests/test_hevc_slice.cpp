@@ -86,4 +86,52 @@ TEST(pps_id_mismatch_is_unsupported) {
         SliceParse::kUnsupported);
 }
 
+// A hand-built, otherwise-complete P-slice header on an IDR NAL (nal_type
+// 19/20 skips the POC/RPS section, so nothing else needs faking) with
+// num_ref_idx_l0_active_minus1 = 15 -> nl0 = 16, outside the spec's 0..14.
+// NumPicTotalCurr stays 0 here (POC/RPS skipped), so the dangerous
+// lists_modification loop never runs even without the guard -- this pins
+// just the missing bounds check: without it this fully-formed header
+// parses as kOk with a garbage nl0 that a later NumPicTotalCurr > 1 header
+// would turn into the GS-thread stall the guard exists to prevent.
+TEST(num_ref_idx_active_override_out_of_range_is_malformed) {
+  Ctx c = ctx();
+  const auto& sps = c.t.sps();
+  const auto& pps = c.t.pps();
+  const auto idr = mtest::slice_nals(c.aus[0])[0];
+  const size_t ib = body_of(idr);
+  REQUIRE((idr[ib] >> 1 & 0x3F) == 19 || (idr[ib] >> 1 & 0x3F) == 20);  // IDR: no POC/RPS section
+
+  BitWriter w;
+  w.put(1);                                  // first_slice_segment_in_pic_flag
+  w.put(1);                                  // no_output_of_prior_pics_flag (IRAP range)
+  w.ue(pps.pps_id);                          // slice_pic_parameter_set_id
+  w.u(0, static_cast<int>(pps.extra_bits));  // num_extra_slice_header_bits
+  w.ue(1);                                   // slice_type = 1 (P)
+  // pps.output_flag is false in this fixture; nal_type is IDR so the
+  // POC/RPS section and slice_temporal_mvp_enabled_flag are both skipped.
+  REQUIRE(!pps.output_flag);
+  w.put(0);                                  // slice_sao_luma_flag = 0
+  w.put(0);                                  // slice_sao_chroma_flag = 0
+  w.put(1);                                  // num_ref_idx_active_override_flag
+  w.ue(15);                                  // num_ref_idx_l0_active_minus1 = 15 -> nl0 = 16
+  // lists_modification && NumPicTotalCurr > 1 -- NumPicTotalCurr is 0 here,
+  // so nothing is written regardless of nl0.
+  w.ue(0);                                   // five_minus_max_num_merge_cand = 0
+  w.ue(0);                                   // slice_qp_delta se(0) == 0
+  REQUIRE(!pps.chroma_qp_offsets_present);
+  REQUIRE(!pps.deblocking_override_enabled);
+  const bool lf_present =
+      pps.loop_filter_across_slices && !pps.deblocking_disabled;  // sao flags both 0 above
+  if (lf_present) w.put(0);                  // slice_loop_filter_across_slices_enabled_flag
+  w.put(1);                                  // byte_alignment(): alignment_bit_equal_to_one
+  w.align_zero();
+
+  std::vector<uint8_t> nal = {idr[ib], idr[ib + 1]};
+  const auto esc = escape(w.bytes().data(), w.bytes().size());
+  nal.insert(nal.end(), esc.begin(), esc.end());
+  SliceHeader h;
+  CHECK(parse_slice_header(nal.data(), nal.size(), sps, pps, &h) == SliceParse::kMalformed);
+}
+
 MTEST_MAIN
