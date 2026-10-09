@@ -455,3 +455,15 @@ Using slices after a hole would need maburgs to keep chunks past the hole
 missing band needs real concealment (e.g. a synthesized all-skip slice for the
 gap). How often slices after a hole actually arrive is still unmeasured
 (counter in `FrameStream::finish`).
+
+### Web GS decodes sliced streams (2026-10-10)
+
+`cap4` (4 slices, 1080p60) through Chrome's WebCodecs on this host's Intel
+iGPU (headed Chrome with VAAPI; headless Chrome reports HEVC unsupported here),
+using the web GS's own `annexbToLengthPrefixed` and an hvcC from the stream's
+VPS/SPS/PPS: 600/600 frames, 0 decoder errors. The BGRA output of frames 0, 1,
+5, 299, 300 and 599 matches a software decode at a uniform 47–48 dB in every
+slice band (YUV→RGB rounding only; a broken slice would drop one band). The
+web code itself makes no one-slice assumption: the conversion splits on every
+start code, the gate looks only for VPS/SPS/PPS + an IRAP. Other browsers and
+platform decoders are not checked.
