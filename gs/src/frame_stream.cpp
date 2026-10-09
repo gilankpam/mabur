@@ -60,6 +60,7 @@ void FrameStream::push_fragment(uint8_t sid, const uint8_t* pkt, size_t len,
     bool rebased = false;
     s.id64 = unwrap_id(h->frame_id, h->flags, &rebased);
     s.discont = rebased;
+    if (rebased) params_.reset();  // producer restart may change resolution
     if ((h->flags & mabur::framewire::kFlagDiscont) != 0)
       discont_seen_since_emit_ = true;
     if (have_next_emit_ && !stall_armed_) {
@@ -133,17 +134,27 @@ void FrameStream::try_emit(uint64_t now_ms) {
     }
     if (!have_next_emit_) { have_next_emit_ = true; next_emit_id64_ = head->id64; }
 
-    if (!head->began) { head->began = true; cb_.begin_frame(head->hdr, head->sid); }
-    // Stream the contiguous chunk prefix (fragment 0 minus the FrameHdr).
+    if (!head->began) {
+      head->began = true;
+      cb_.begin_frame(head->hdr, head->sid);
+      if (head->hdr.slice_rows > 0 && params_.usable())
+        head->sa.emplace(params_.sps(), params_.pps(), head->hdr.slice_rows, head->count,
+                         mabur::framewire::kFrameHdrLen);
+    }
+    // Stream the contiguous chunk prefix (fragment 0 minus the FrameHdr) --
+    // through the slice assembler for a split AU, raw otherwise.
     while (true) {
       auto it = head->chunks.find(head->emitted_upto);
       if (it == head->chunks.end()) break;
-      const auto& c = it->second;
-      size_t skip = head->emitted_upto == 0 ? mabur::framewire::kFrameHdrLen : 0;
-      if (c.size() > skip) cb_.frame_data(c.data() + skip, c.size() - skip);
+      if (!head->sa) {
+        const auto& c = it->second;
+        size_t skip = head->emitted_upto == 0 ? mabur::framewire::kFrameHdrLen : 0;
+        if (c.size() > skip) cb_.frame_data(c.data() + skip, c.size() - skip);
+      }
       ++head->emitted_upto;
       head->last_progress_ms = now_ms;
     }
+    if (head->sa) head->sa->drain(head->chunks, cb_.frame_data);
     if (head->emitted_upto == head->count) { finish(*head, true); continue; }
     // Mid-frame gap: give repairs gap_timeout_ms to fill it; force-advance
     // if the stream has run lookahead frames ahead.
@@ -155,12 +166,49 @@ void FrameStream::try_emit(uint64_t now_ms) {
 }
 
 void FrameStream::finish(Slot& s, bool complete) {
+  if (s.sa) {
+    s.sa->finish(s.chunks, cb_.frame_data);
+    s.lat.slice = s.sa->result();
+  } else if (!complete && s.hdr.slice_rows > 0) {
+    s.lat.slice.fallback = params_.unsupported() ? kSliceFbUnsupported : kSliceFbNoParams;
+  }
+  if (complete) feed_params(s);
+  if (s.lat.slice.salvaged) {
+    ++slice_salvaged_;
+    slices_kept_ += s.lat.slice.kept;
+    slices_filled_ += s.lat.slice.filled;
+    slices_after_hole_ += s.lat.slice.kept_after_hole;
+  } else if (!complete && s.lat.slice.fallback < kSliceFbCount && s.lat.slice.fallback != kSliceFbNone) {
+    ++slice_fallback_[s.lat.slice.fallback];
+  }
   cb_.end_frame(complete, s.lat);
   complete ? ++clean_ : ++truncated_;
   next_emit_id64_ = s.id64 + 1;
   stall_armed_ = false;
   discont_seen_since_emit_ = false;
   slots_.erase((static_cast<uint32_t>(s.sid) << 16) | s.fseq);
+}
+
+// A complete AU that opens with a parameter set (refresh start, IDR) feeds
+// the slice-salvage tracker: one copy per such AU, 2 Hz at GOP 0.5 s.
+void FrameStream::feed_params(const Slot& s) {
+  const auto c0 = s.chunks.find(0);
+  if (c0 == s.chunks.end()) return;
+  const auto& b = c0->second;
+  const size_t h = mabur::framewire::kFrameHdrLen;
+  size_t p = h;
+  if (b.size() >= h + 5 && b[h] == 0 && b[h + 1] == 0 && b[h + 2] == 0 && b[h + 3] == 1) p = h + 4;
+  else if (b.size() >= h + 4 && b[h] == 0 && b[h + 1] == 0 && b[h + 2] == 1) p = h + 3;
+  else return;
+  const uint8_t type = static_cast<uint8_t>((b[p] >> 1) & 0x3F);
+  if (type < 32 || type > 34) return;
+  std::vector<uint8_t> au(b.begin() + static_cast<long>(h), b.end());
+  for (uint16_t i = 1; i < s.count; ++i) {
+    const auto it = s.chunks.find(i);
+    if (it == s.chunks.end()) return;
+    au.insert(au.end(), it->second.begin(), it->second.end());
+  }
+  params_.feed(au.data(), au.size());
 }
 
 void FrameStream::poll(uint64_t now_ms) {
@@ -200,6 +248,7 @@ void FrameStream::reset() {
   in_discont_run_ = false;
   stall_armed_ = false;
   discont_seen_since_emit_ = false;
+  params_.reset();
 }
 
 }  // namespace maburgs

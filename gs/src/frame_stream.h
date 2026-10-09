@@ -7,6 +7,8 @@
 #include <vector>
 #include "au_ring.h"
 #include "mabur/frame_wire.h"
+#include "mabur/hevc_ps.h"
+#include "slice_assembler.h"
 
 namespace maburgs {
 
@@ -85,6 +87,16 @@ class FrameStream {
   uint64_t bad_fragments() const { return bad_frags_; }
   uint64_t stall_resets() const { return stall_resets_; }
 
+  // Slice salvage (spec 2026-10-10-h265-slices §5.3). salvaged is a subset
+  // of frames_truncated(): the AU still finished with a hole.
+  uint64_t slice_salvaged() const { return slice_salvaged_; }
+  uint64_t slices_kept() const { return slices_kept_; }
+  uint64_t slices_filled() const { return slices_filled_; }
+  uint64_t slices_after_hole() const { return slices_after_hole_; }
+  uint64_t slice_fallback(uint8_t reason) const {
+    return reason < kSliceFbCount ? slice_fallback_[reason] : 0;
+  }
+
   // Newest (highest id64) slot of `sid` that has its header, is not
   // finished, and has at least one fragment with a known sw_seq; nullopt
   // otherwise. Consumed by the NACK tail trigger (Task 6/7).
@@ -119,10 +131,15 @@ class FrameStream {
     //    idx-0 chunk.
     //  - t_complete_us: left 0 here — the ring writer stamps finish time.
     AuLatMeta lat;
+    // Slice salvage (Task 9): engaged in try_emit's begin-frame step when
+    // the AU is split (slice_rows > 0) and params_ has a usable SPS/PPS.
+    // nullopt for an unsplit AU or one with no usable parameter set yet.
+    std::optional<SliceAssembler> sa;
   };
   void try_emit(uint64_t now_ms);
   void finish(Slot& s, bool complete);
   uint64_t unwrap_id(uint16_t id, uint8_t flags, bool* rebased);
+  void feed_params(const Slot& s);
 
   uint64_t gap_ms_max() const { return std::max(gap_ms_[0], gap_ms_[1]); }
 
@@ -141,6 +158,9 @@ class FrameStream {
   uint64_t last_stall_log_ms_ = 0;
   uint64_t clean_ = 0, truncated_ = 0, dropped_ = 0, bad_frags_ = 0;
   uint64_t stall_resets_ = 0;
+  mabur::hevc::ParamTracker params_;   // SPS/PPS from complete parameter-set AUs
+  uint64_t slice_salvaged_ = 0, slices_kept_ = 0, slices_filled_ = 0, slices_after_hole_ = 0;
+  uint64_t slice_fallback_[kSliceFbCount] = {};
 };
 
 }  // namespace maburgs

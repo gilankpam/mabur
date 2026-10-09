@@ -496,4 +496,24 @@ TEST(last_record_stamps_t_complete_when_caller_passes_zero) {
   CHECK((w.last_record().flags & 0x80) == 0);  // not complete
 }
 
+TEST(salvaged_au_carries_the_flag_and_is_decodable) {
+  ScratchFile sf("test_au_ring", ".ring");
+  maburgs::AuRingWriter w;
+  REQUIRE(w.open(sf.path, maburgs::AuRingGeom{4096, 4}));
+  mabur::framewire::FrameHdr h;
+  h.frame_id = 3;
+  w.begin(h, 1);
+  const uint8_t payload[] = {0, 0, 0, 1, 0x02, 0x01, 0xAA};
+  w.append(payload, sizeof(payload));
+  maburgs::AuLatMeta lat;
+  lat.slice.salvaged = true;
+  lat.slice.slices = 4; lat.slice.kept = 3; lat.slice.filled = 1; lat.slice.kept_after_hole = 2;
+  REQUIRE(w.finish(false, lat) != UINT64_MAX);
+  CHECK(w.last_record().flags & maburgs::kRecFlagSliceSalvaged);
+  CHECK(!(w.last_record().flags & maburgs::kRecFlagComplete));
+  CHECK(maburgs::au_decodable(w.last_record().flags));
+  CHECK(w.last_record().slice.kept_after_hole == 2);
+  CHECK(!maburgs::au_decodable(0x01));
+}
+
 MTEST_MAIN

@@ -100,6 +100,9 @@ struct AuRecordMeta {
   uint16_t drone_q_ms = 0;
   uint16_t enc_us = 0;
   uint16_t drone_air_ms = 0;
+  // Writer side only: last_record() copies it from AuLatMeta; readers leave
+  // it default.
+  SliceSalvage slice;
 };
 
 // GS-side per-AU latency stamps (SlotHdr v2). Passed to finish() so the
@@ -122,6 +125,10 @@ struct AuLatMeta {
   // retransmit filled the AU's header fragment, so the latency-anchor guard
   // (Task 7) must not trust this AU's arrival time as a clean anchor sample.
   bool hdr_retx = false;
+  // Slice salvage (spec 2026-10-10-h265-slices §5): FrameStream's verdict
+  // for this AU. finish() turns slice.salvaged into kRecFlagSliceSalvaged;
+  // the counts ride to AuLog through last_record(). Not in the SlotHdr.
+  SliceSalvage slice;
 };
 
 // Creates/truncates the ring file and publishes AUs accumulated between
