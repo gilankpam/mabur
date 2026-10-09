@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 
+#include "au_ring.h"
 #include "json.hpp"
 #include "mabur/profile.h"
 #include "snr_units.h"
@@ -496,6 +497,15 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
   v["truncated"] = in.frames_truncated;
   v["dropped"] = in.frames_dropped;
   v["stall_resets"] = in.stall_resets;
+  v["slice_salvaged"] = in.slice_salvaged;
+  v["slices_kept"] = in.slices_kept;
+  v["slices_filled"] = in.slices_filled;
+  v["slices_after_hole"] = in.slices_after_hole;
+  v["slice_fallback"] = {{"no_params", in.slice_fallback[kSliceFbNoParams]},
+                         {"unsupported", in.slice_fallback[kSliceFbUnsupported]},
+                         {"islice", in.slice_fallback[kSliceFbISlice]},
+                         {"no_template", in.slice_fallback[kSliceFbNoTemplate]},
+                         {"geometry", in.slice_fallback[kSliceFbGeometry]}};
   // PR C schema note: the "rtp" and "udp" blocks are GONE (the subsystem
   // they measured was deleted); "ring" replaces them. v stays 1 --
   // consumers must tolerate missing keys the same way they must ignore

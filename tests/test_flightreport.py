@@ -1939,6 +1939,27 @@ def test_nack_section_from_sideport_rows():
     assert out2.getvalue() == ""
 
 
+def test_slice_salvage_section():
+    rows = []
+    for i, (salv, kept, filled, after) in enumerate([(0, 0, 0, 0), (3, 9, 3, 2), (5, 14, 6, 3)]):
+        rows.append({"t_ms": 1000 + 500 * i, "seq": i, "v": 1,
+                     "link": {"video": {"truncated": salv + 1, "slice_salvaged": salv, "slices_kept": kept,
+                                        "slices_filled": filled, "slices_after_hole": after,
+                                        "slice_fallback": {"no_params": 1, "unsupported": 0, "islice": 0,
+                                                           "no_template": 0, "geometry": 0}}}})
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        flightreport.print_slice_salvage_report(rows)
+    text = out.getvalue()
+    assert "SLICE SALVAGE" in text, text
+    assert re.search(r"salvaged=5", text), text
+    assert re.search(r"kept=14 filled=6 after_hole=3", text), text
+    out2 = io.StringIO()
+    with contextlib.redirect_stdout(out2):
+        flightreport.print_slice_salvage_report([{"t_ms": 0, "link": {"video": {"truncated": 1}}}])
+    assert out2.getvalue() == ""   # silent on recordings without the keys
+
+
 def test_session_dir_mode_prints_fec_section():
     """A session directory carrying fec.log gets the FEC section after the
     ctl report, from the sibling file (session.resolve pairing)."""
@@ -1958,6 +1979,7 @@ if __name__ == "__main__":
     test_fec_section_feclog1_rows_default_bw_20()
     test_fec_section_feclog3_reads_rtx_and_keeps_old_versions()
     test_nack_section_from_sideport_rows()
+    test_slice_salvage_section()
     test_flightreport_structure()
     test_old_scale_snr_warns_on_stderr()
     test_overhead_scale_break_warns_on_stderr()

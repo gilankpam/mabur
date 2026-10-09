@@ -1710,6 +1710,11 @@ static int run_radio(const maburgs::Config& cfg) {
       sin.frames_truncated = fstream.frames_truncated();
       sin.frames_dropped = fstream.frames_dropped();
       sin.stall_resets = fstream.stall_resets();
+      sin.slice_salvaged = fstream.slice_salvaged();
+      sin.slices_kept = fstream.slices_kept();
+      sin.slices_filled = fstream.slices_filled();
+      sin.slices_after_hole = fstream.slices_after_hole();
+      for (uint8_t r = 0; r < maburgs::kSliceFbCount; ++r) sin.slice_fallback[r] = fstream.slice_fallback(r);
       sin.ring_published = au_ring.published();
       sin.ring_dropped_oversize = au_ring.dropped_oversize();
       sin.ring_bytes = au_ring.bytes_published();

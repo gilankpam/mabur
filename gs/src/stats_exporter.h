@@ -309,6 +309,9 @@ struct StatsInput {
   StatsHopIn hop;
   uint64_t frames_clean = 0, frames_truncated = 0, frames_dropped = 0;
   uint64_t stall_resets = 0;
+  // Slice salvage (spec 2026-10-10-h265-slices §5.6): FrameStream counters.
+  uint64_t slice_salvaged = 0, slices_kept = 0, slices_filled = 0, slices_after_hole = 0;
+  uint64_t slice_fallback[6] = {};  // indexed by maburgs::SliceFallback
   // AU ring publish health (PR C: replaced the rtp/udp blocks -- video
   // leaves maburgs via the shm ring now; schema note in stats_exporter.cpp).
   uint64_t ring_published = 0, ring_dropped_oversize = 0, ring_bytes = 0;

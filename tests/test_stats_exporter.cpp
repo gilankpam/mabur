@@ -2,6 +2,7 @@
 #include <limits>
 #include <string>
 #include <vector>
+#include "au_ring.h"
 #include "json.hpp"
 #include "mabur/profile.h"
 #include "mtest.h"
@@ -1295,6 +1296,22 @@ TEST(link_nack_block_and_drone_nack_counters) {
   in.nack.enabled = false;
   ex.poll(2200, in);
   CHECK(!cap.last()["link"].contains("nack"));
+}
+
+TEST(video_exports_slice_salvage_counters) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  auto in = base_input();
+  in.slice_salvaged = 7; in.slices_kept = 20; in.slices_filled = 8; in.slices_after_hole = 5;
+  in.slice_fallback[maburgs::kSliceFbISlice] = 2;
+  CHECK(ex.poll(1000, in));
+  const json v = cap.last()["link"]["video"];
+  CHECK(v["slice_salvaged"] == 7);
+  CHECK(v["slices_kept"] == 20);
+  CHECK(v["slices_filled"] == 8);
+  CHECK(v["slices_after_hole"] == 5);
+  CHECK(v["slice_fallback"]["islice"] == 2);
+  CHECK(v["slice_fallback"]["no_params"] == 0);
 }
 
 MTEST_MAIN

@@ -21,6 +21,10 @@ MAGIC = 0x4D425541
 # parsed by read_slot below.
 VERSION = 3
 FLAG_IDR, FLAG_DISCONT, FLAG_COMPLETE = 0x01, 0x02, 0x80
+# kRecFlagSliceSalvaged (gs/src/au_ring.h, spec 2026-10-10-h265-slices): the
+# AU was truncated but maburgs rebuilt it from its complete slices plus
+# skip-slice fills, rather than dropping it whole.
+FLAG_SALVAGED = 0x40
 
 
 def read_slot(mm, base, slot_bytes):
@@ -103,6 +107,7 @@ def main():
     aus = 0
     complete = {}
     incomplete = {}
+    salvaged = {}
     gaps = 0
     resyncs = 0
     total_bytes = 0
@@ -181,6 +186,8 @@ def main():
             complete[key] = complete.get(key, 0) + 1
             if dump:
                 dump.write(m["payload"])
+        elif m["flags"] & FLAG_SALVAGED:
+            salvaged[key] = salvaged.get(key, 0) + 1
         else:
             incomplete[key] = incomplete.get(key, 0) + 1
         if last_fid is not None and m["fid"] > last_fid + 1:
@@ -192,6 +199,7 @@ def main():
     dropped = struct.unpack_from("<Q", mm, 24)[0]
     dur = (last_t - first_t) if (first_t is not None and last_t > first_t) else 0.0
     out = {"aus": aus, "complete": complete, "incomplete": incomplete,
+           "salvaged": salvaged,
            "frame_id_gaps": gaps, "resyncs": resyncs, "bytes": total_bytes,
            "dropped_oversize": dropped,
            "fps": round(aus / dur, 1) if dur > 0 else None}
@@ -199,6 +207,7 @@ def main():
         print(json.dumps(out))
     else:
         print(f"aus={aus} complete={complete} incomplete={incomplete} "
+              f"salvaged={salvaged} "
               f"fid_gaps={gaps} resyncs={resyncs} bytes={total_bytes} "
               f"dropped_oversize={dropped} fps={out['fps']}")
     sys.exit(0 if aus > 0 else 1)

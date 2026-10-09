@@ -1081,6 +1081,25 @@ def print_nack_report(rows):
               f"  settle_ms last={last.get('settle_ms')} late_ms_max={max(r['link']['nack'].get('late_ms_max') or 0 for r in nrows)}")
 
 
+def print_slice_salvage_report(rows):
+    """SLICE SALVAGE (spec 2026-10-10-h265-slices): truncated AUs maburgs
+    rebuilt from their complete slices plus skip-slice fills. Cumulative
+    link.video counters (a maburgs restart restarts them; _counter_growth
+    sums the post-reset value). Silent on recordings without the keys."""
+    vrows = [r for r in rows if "slice_salvaged" in ((r.get("link") or {}).get("video") or {})]
+    if not vrows:
+        return
+    def d(k):
+        return _counter_growth([r["link"]["video"].get(k) for r in vrows])[0]
+    fb = {}
+    for k in ("no_params", "unsupported", "islice", "no_template", "geometry"):
+        fb[k] = _counter_growth([(r["link"]["video"].get("slice_fallback") or {}).get(k) for r in vrows])[0]
+    print("\nSLICE SALVAGE")
+    print(f"  truncated={d('truncated')} salvaged={d('slice_salvaged')}  "
+          f"slices kept={d('slices_kept')} filled={d('slices_filled')} after_hole={d('slices_after_hole')}")
+    print("  fallback " + " ".join(f"{k}={v}" for k, v in fb.items()))
+
+
 def print_salvage_report(rows):
     """SALVAGE: what rx.keep_corrupted (2026-09-08) bought. The sideport's
     per-card crc_fail and per-stream corrupt/salvaged/sub_fail are
@@ -1806,6 +1825,7 @@ def main(path, aulog=None, probelog_path=None, scanlog_path=None):
 
     print_salvage_report(rows)
     print_nack_report(rows)
+    print_slice_salvage_report(rows)
     print_drone_rx_report(rows)
     print_drone_tx_report(rows)
 
@@ -1848,6 +1868,7 @@ if __name__ == "__main__":
             flight_rows = load(s.flight)
             print_salvage_report(flight_rows)
             print_nack_report(flight_rows)
+            print_slice_salvage_report(flight_rows)
             print_drone_rx_report(flight_rows)
             print_drone_tx_report(flight_rows)
         # fec.log (2026-09-15) is a sibling too: the FEC EPISODES section
