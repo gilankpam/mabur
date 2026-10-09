@@ -424,3 +424,18 @@ split is open.
 - The drone's TRAIL_N rewrite patches only the first NAL of each table entry,
   but the SDK already writes TRAIL_N on every slice of the non-reference
   pictures, so nothing is mixed.
+
+### A missing middle slice (2026-10-10)
+
+`cap4` with slice 2 removed from every 7th picture (83 pictures), decoded
+whole and streamed (stream mode told 3 slices): no hang, **no reset**, 600/600
+frames. In the first holed picture slices 1 and 4 are bit-exact with a
+software decode; the missing band (rows 316–642) is concealed from a reference
+(close to, but not equal to, the previous frame); slice 3 is *mostly* exact
+(rows 643–735 exact) but rows 736–917 differ slightly. Slice 3 has no
+in-picture dependency on slice 2 in HEVC beyond the in-loop filters at the
+boundary, so this is decoder behaviour, cause unknown. The scene was static,
+so the visibility of the difference is not judged here. Using slices after a
+hole would need maburgs to keep chunks past the hole (today `finish()` erases
+them) and resync at the next start code; how often slices after a hole
+actually arrive is still unmeasured (counter in `FrameStream::finish`).
