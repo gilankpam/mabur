@@ -165,7 +165,8 @@ void emit_au(webgs::Au&& a) {
         if ($8) { hvcc = HEAPU8.slice($7, $7 + $8).buffer; _free($7); }
         Module['onAu'](buf, $2, $3, $4, $5, $6, hvcc, $9, $10, $11);
       },
-      p, static_cast<int>(a.data.size()), static_cast<double>(a.pts_us), a.sid, a.flags,
+      p, static_cast<int>(a.data.size()), static_cast<double>(a.pts_us), a.sid,
+      static_cast<int>(a.flags | (a.salvaged ? 0x40 : 0)),
       a.complete ? 1 : 0, static_cast<double>(a.t_complete_us), hv, hv_len, cap_us, t_emit_ms,
       // FEC/assembly segment (fix round 1, Ruling R7): first body -> AU
       // complete, core clock; 0 when FrameStream never saw a nonzero

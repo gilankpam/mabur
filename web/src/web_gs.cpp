@@ -104,6 +104,8 @@ WebGs::WebGs(const maburgs::Config& cfg, Mode mode, uint8_t start_ch, int width,
              // main.cpp: every AU end, clean or truncated (in-flight scout alignment).
              if (chan_) chan_->note_au_end();
              cur_.complete = complete;
+             cur_.salvaged = !complete && lat.slice.salvaged;
+             if (cur_.salvaged) ++aus_salvaged_;
              cur_.t_first_us = lat.t_first_us;
              cur_.t_complete_us = now_us_;
              if (slot_)
@@ -548,6 +550,7 @@ Stats WebGs::stats() const {
   s.aus_complete = aus_complete_;
   s.aus_truncated = aus_truncated_;
   s.aus_truncated_base = aus_truncated_base_;
+  s.aus_salvaged = aus_salvaged_;
   s.sends = sends_;
   s.rcf_sent = rcf_sent_;
   s.idr_req = idr_req_;
@@ -641,6 +644,7 @@ std::string stats_json(const Stats& s) {
   j["aus"] = s.aus_complete;
   j["trunc"] = s.aus_truncated;
   j["trunc_base"] = s.aus_truncated_base;
+  j["salvaged"] = s.aus_salvaged;
   j["sends"] = s.sends;
   j["rcf_sent"] = s.rcf_sent;
   j["idr_req"] = s.idr_req;
