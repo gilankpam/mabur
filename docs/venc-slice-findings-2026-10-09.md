@@ -315,3 +315,112 @@ The test feeds one picture at a time and waits for its frame, so it does not
 exercise maburplay's pipelining. It also sets `disable_error`, so lost-tail
 frames come out unflagged (0 "flagged with errors"); the player has to know
 from its own feed that a picture was cut.
+
+## Slice cost, slice count, and fit with the transport — 2026-10-10
+
+### What a slice costs in bits
+
+Two measurements, both at fixed QP (under CBR the cost is hidden as quality):
+
+- **SSC338Q hardware**, bench scene (static), spike knob `MABUR_SPIKE_FIXQP`
+  (H265QP rate mode), 240–360 frames per run, two interleaved reps:
+
+  | QP (1-slice frame) | 2 | 3 | 4 | 6 | 9 | 17 slices |
+  |---|---|---|---|---|---|---|
+  | 16 (27.6 kB, flight-sized) | | | +0.65 % | | +2.4 % | +4.2 % |
+  | 22 (5.6 kB) | | | +3.9 % | | +7.6 % | +14.2 % |
+  | 30 (1.2 kB) | +1.4 % | +4.4 % | +9.0 % | +11.3 % | +18.5 % | +36.7 % |
+
+  A fixed **25–35 B per extra slice** on near-empty frames (header, CABAC and
+  skip-run restart), 50–80 B per extra slice at flight-sized frames. Rep noise
+  ≈ ±0.7 % at QP 16.
+- **x265 proxy on flight content** (DVR record-0013, two 600-frame
+  segments, `--preset veryfast --tune zerolatency`, P-only GOP 30, QP 30 and
+  36, 8–17 Mb/s). Very consistent across segments and QPs: about **0.3 % of
+  bytes and −0.01 dB Y-PSNR per extra slice** — 2: +0.4 %, 3: +0.85 %,
+  4: +1.2 % (−0.04 dB), 6: +1.9 %, 9: +3.0 % (−0.10 dB), 17: +5.4 % (−0.17 dB).
+
+Both agree: ~1 % at 4 slices, ~3 % at 9, ~5 % at 17, at flight frame sizes. The
+fixed per-slice part weighs more on small frames, so it is relatively dearer at
+the bottom rungs (rung 0 frames ≈ 10 kB: estimate ~2 % at 4 slices).
+
+### What a slice buys
+
+- **Loss confinement — measured on the decoder.** A truncated picture cut at
+  its last complete slice and submitted *whole* decodes on the stock MPP
+  path: no hang, head bit-exact with a software decode, one rkvdec reset per
+  picture (`cap4_cut7`, 83 cut pictures). **The missing band is filled with
+  the previous frame's pixels** (bottom rows of the cut picture = the previous
+  frame, exactly). The hang that makes maburplay drop truncated base AUs
+  comes from a *partial* slice, not from missing slices — so loss
+  confinement needs no kernel/MPP patch, only the player cutting at a slice
+  boundary. (Checked with the newer MPP's whole-picture path; the GS's older
+  system MPP is still to confirm.)
+- **Loss confinement — expected gain from the flight logs** (sessions 0026,
+  0028–0033; 145 truncated base AUs, 443 enh; 9 of the base ones are the
+  unsplit refresh-start pictures). Share of a truncated picture that would be
+  shown, using the SDK's fixed-row geometry (17 CTU rows), bytes ∝ rows:
+
+  | slices (rows each) | base | enh |
+  |---|---|---|
+  | 1 | 4 % | 6 % |
+  | 2 (9,8) | 18 % | 21 % |
+  | 3 (6,6,5) | 23 % | 27 % |
+  | **4 (5,5,5,2)** | **25 %** | 29 % |
+  | 5 (4,4,4,4,1) | 28 % | 32 % |
+  | 6 (3×5,2) | 30 % | 34 % |
+  | 9 (2×8,1) | 34 % | 37 % |
+  | 17 | 36 % | 39 % (bound: mean head 39 %) |
+
+  Base head fraction p25/p50/p75 = 0.15 / 0.32 / 0.59. The curve flattens
+  fast: 1→4 slices gets 2/3 of what any slicing could, 4→17 the last third
+  at 4× the cost. The 504 whole-frame losses (fragment 0 never arrived) get
+  nothing.
+- **Decode overlap (needs the stream-mode patches).** Measured 4.38 →
+  1.69 ms at 4 slices. Modelled as a fixed ~1.2 ms plus the last slice's share
+  of the whole-picture decode (4.38 ms × rows/17): 2 slices ≈ 3.2 ms, 3 ≈ 2.5,
+  4 ≈ 1.7, 5 / 9 / 17 ≈ 1.4 (last slice one CTU row). Beyond a small last
+  slice, more slices buy nothing.
+
+### The pictures that do not split
+
+The refresh-start pictures (VPS/SPS/PPS + TRAIL_R, `refType` 2, every 30th
+frame at GOP 0.5 s) come out as one slice with the split on, and they are
+the largest P pictures in the stream (p50 34 kB vs 26.5 kB for the others in
+`cap4`). They get neither benefit: a truncation of one is lost whole as
+today, and in stream mode it decodes after its last byte, so a 2 Hz ~3 ms
+latency step would remain. Whether another intra-refresh setting lets them
+split is open.
+
+### Fit with the transport
+
+- **No wire or FEC change is needed to carry slices.** All N slices sit in
+  the one AU; fragments are fixed 324 B of AU bytes per symbol, so the GS
+  knows every byte's offset and can find slice boundaries by scanning start
+  codes in the contiguous prefix. Do **not** align slices to symbols: it would
+  cost ~160 B of padding per slice and break `nack_tracker`'s "1 fragment =
+  1 symbol" tail rule.
+- **Per rung:** the bitrate is set so a frame occupies ~65 % of its interval
+  on every rung (airtime_budget 0.65 of delivered capacity), so a frame's
+  serialization is ~9–11 ms on every rung while its size runs 10 → 50 kB
+  (rung 0 → 4). Slices are 2.5 → 12.5 kB at 4 slices (8 → 38 symbols each).
+  Arrival is spread over 4–11 ms (`fec` segment), at least the ~4 ms a whole
+  picture takes to decode, so the decoder keeps up and the overlap gain is
+  roughly the same on every rung. The split is set at channel start, so it is
+  one N for all rungs.
+- **Loss-confinement path:** player-only. maburgs already publishes a
+  truncated AU's contiguous prefix; maburplay would cut it at the last start
+  code whose slice is complete and submit it instead of `truncated_skipped`.
+  Needs the slice split on the drone (one config key).
+- **Latency path:** maburgs's AU ring publishes only at `finish`
+  (`AuRingWriter::append` buffers privately), so streaming needs the ring to
+  expose a growing valid prefix of the head-of-line AU, and maburplay to poll
+  it and feed each slice once the next start code arrives. The hardware is
+  given the slice count up front (`reg017.slice_num` from
+  `MPP_PACKET_STREAM_SLICES(n)`), so the GS must know N before slice 1. The
+  drone can count VCL NALs (it already scans the AU in `classify_frame`) and
+  send the count in FrameHdr; refresh-start pictures then read 1. Stream mode
+  also needs MPP fast-parse off.
+- The drone's TRAIL_N rewrite patches only the first NAL of each table entry,
+  but the SDK already writes TRAIL_N on every slice of the non-reference
+  pictures, so nothing is mixed.
