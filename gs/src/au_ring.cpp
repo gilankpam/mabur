@@ -185,7 +185,7 @@ uint64_t AuRingWriter::finish(bool complete, const AuLatMeta& lat) {
   slot[kSOffSid] = sid_;
   slot[kSOffFlags] =
       static_cast<uint8_t>(hdr_.flags | (complete ? kRecFlagComplete : 0));
-  slot[kSOffCodec] = hdr_.codec;
+  slot[kSOffCodec] = kRingCodecH265;
   AuLatMeta l = lat;
   if (l.t_complete_us == 0) l.t_complete_us = now_monotonic_us();
   put64(slot + kSOffTFirst, l.t_first_us);
@@ -204,7 +204,7 @@ uint64_t AuRingWriter::finish(bool complete, const AuLatMeta& lat) {
   last_.len = static_cast<uint32_t>(bytes);
   last_.sid = sid_;
   last_.flags = static_cast<uint8_t>(hdr_.flags | (complete ? kRecFlagComplete : 0));
-  last_.codec = hdr_.codec;
+  last_.codec = kRingCodecH265;
   last_.t_first_us = l.t_first_us;
   last_.t_complete_us = l.t_complete_us;
   last_.drone_q_ms = l.drone_q_ms;

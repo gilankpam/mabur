@@ -76,7 +76,7 @@ inline std::vector<uint8_t> frame_unit(const FrameRecord& r, uint16_t frame_id,
   h.frame_id = frame_id;
   h.flags = static_cast<uint8_t>((r.idr() ? mabur::framewire::kFlagIdr : 0) |
                                  (discont ? mabur::framewire::kFlagDiscont : 0));
-  h.codec = r.codec;
+  h.slice_rows = 0;  // fixture frames are unsplit
   h.pts_us = r.pts_us;
   std::vector<uint8_t> unit(mabur::framewire::kFrameHdrLen + r.annexb.size());
   mabur::framewire::pack_frame_hdr(h, unit.data());

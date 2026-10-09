@@ -70,7 +70,7 @@ TEST(frame_pipeline_stamps_hdr_over_meta_in_place) {
   REQUIRE(h.has_value());
   CHECK(h->frame_id == 0);
   CHECK(h->pts_us == 123456);
-  CHECK(h->codec == framewire::kCodecH265);
+  CHECK(h->slice_rows == 0);  // no slice geometry set: never stamped
   // Annex-B bytes after the header are untouched — the unit is contiguous.
   CHECK(std::memcmp(buf.data() + framewire::kFrameHdrLen, annexb.data(),
                     annexb.size()) == 0);

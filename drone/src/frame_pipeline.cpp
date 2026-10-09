@@ -75,7 +75,6 @@ void FramePipeline::encode(UepEncoder& uep, uint8_t* buf, size_t payload_len,
   h.frame_id = next_frame_id_++;
   h.flags = static_cast<uint8_t>((meta_idr ? framewire::kFlagIdr : 0) |
                                  (discont ? framewire::kFlagDiscont : 0));
-  h.codec = meta.codec;
   h.pts_us = meta.pts;
   framewire::pack_frame_hdr(h, buf);
 

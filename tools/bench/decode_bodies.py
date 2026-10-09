@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.join(ROOT, "tools", "pyref"))
 import sbi, sw_fec  # noqa: E402
 
 FRAG_HDR = struct.Struct("<HHH")     # seq, idx, count
-FRAME_HDR = struct.Struct("<HBBI")   # frame_id, flags, codec, pts_us
+FRAME_HDR = struct.Struct("<HBBI")   # frame_id, flags, slice_rows, pts_us
 FLAG_IDR = 0x01
 FLAG_DISCONT = 0x02
 FLAG_ENHANCE = 0x04
@@ -88,13 +88,14 @@ def expected_unit(rec, frame_id):
     frame_pipeline.cpp): FrameHdr stamped over the producer meta. FLAG_DISCONT
     is stripped by mask_discont() before comparing: the flag rides on every
     frame for kDiscontStickyMs after start, so which frames carry it depends
-    on wall-clock timing, not fixture content."""
+    on wall-clock timing, not fixture content. Byte 3 carries slice_rows (wire
+    flag day 2026-10-10), which maburd stamps as 0 for unsplit frames."""
     flags = FLAG_IDR if rec["flags"] & FLAG_IDR else 0
-    return FRAME_HDR.pack(frame_id, flags, rec["codec"], rec["pts"]) + rec["annexb"]
+    return FRAME_HDR.pack(frame_id, flags, 0, rec["pts"]) + rec["annexb"]
 
 def mask_discont(unit):
-    fid, flags, codec, pts = FRAME_HDR.unpack_from(unit)
-    return FRAME_HDR.pack(fid, flags & ~FLAG_DISCONT, codec, pts) + unit[FRAME_HDR.size:]
+    fid, flags, slice_rows, pts = FRAME_HDR.unpack_from(unit)
+    return FRAME_HDR.pack(fid, flags & ~FLAG_DISCONT, slice_rows, pts) + unit[FRAME_HDR.size:]
 
 def main():
     ap = argparse.ArgumentParser()

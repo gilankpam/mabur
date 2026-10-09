@@ -48,4 +48,16 @@ bool frame_is_trail_n(const uint8_t* annexb, size_t len) {
   return false;
 }
 
+int count_vcl_nals(const uint8_t* annexb, size_t len) {
+  if (!annexb || len < 5) return 0;
+  int n = 0;
+  for (size_t i = 0; i + 4 < len; ++i) {
+    if (annexb[i] != 0x00 || annexb[i + 1] != 0x00 || annexb[i + 2] != 0x01)
+      continue;
+    if (((annexb[i + 3] >> 1) & 0x3F) < 32) ++n;
+    i += 2;
+  }
+  return n;
+}
+
 }  // namespace mabur

@@ -63,6 +63,11 @@ inline constexpr size_t kAuSlotHdrBytes = 64;
 // bits grow upward from there).
 inline constexpr uint8_t kRecFlagComplete = 0x80;
 
+// The ring slot's codec byte (offset 30). The wire stopped carrying a codec
+// id on 2026-10-10 (FrameHdr byte 3 became slice_rows); mabur is H.265 only,
+// so the writer stamps this constant. Part 2's ring v4 drops the byte.
+inline constexpr uint8_t kRingCodecH265 = 0x01;
+
 struct AuRingGeom {
   uint32_t slot_bytes = 512 * 1024;
   uint32_t slot_count = 16;

@@ -158,4 +158,17 @@ TEST(classify_two_stream_space) {
   CHECK(classify_from_nal_type(33, 0) == 0);
 }
 
+TEST(count_vcl_nals_counts_slices_not_parameter_sets) {
+  // VPS, SPS, PPS, then four TRAIL_R slices (4-byte and 3-byte start codes).
+  const std::vector<uint8_t> au = {
+      0, 0, 0, 1, 0x40, 0x01, 0xAA,  0, 0, 0, 1, 0x42, 0x01, 0xAA,
+      0, 0, 1, 0x44, 0x01, 0xAA,     0, 0, 0, 1, 0x02, 0x01, 0xAA,
+      0, 0, 0, 1, 0x02, 0x01, 0xAA,  0, 0, 1, 0x02, 0x01, 0xAA,
+      0, 0, 0, 1, 0x02, 0x01, 0xAA};
+  CHECK(count_vcl_nals(au.data(), au.size()) == 4);
+  const std::vector<uint8_t> one = {0, 0, 0, 1, 0x00, 0x01, 0x55, 0x66};
+  CHECK(count_vcl_nals(one.data(), one.size()) == 1);
+  CHECK(count_vcl_nals(nullptr, 0) == 0);
+}
+
 MTEST_MAIN

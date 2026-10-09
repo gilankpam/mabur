@@ -455,7 +455,7 @@ TEST(last_record_matches_the_published_slot) {
   mabur::framewire::FrameHdr h;
   h.frame_id = 7;
   h.flags = 0x01;  // kFlagIdr
-  h.codec = mabur::framewire::kCodecH265;
+  h.slice_rows = 0;
   h.pts_us = 4242;
   w.begin(h, /*sid=*/1);
   const uint8_t payload[] = {0, 0, 0, 1, 0x40, 0x01};
@@ -480,6 +480,7 @@ TEST(last_record_matches_the_published_slot) {
   CHECK(m.enc_us == 7000);
   CHECK(m.drone_q_ms == 3);
   CHECK(m.drone_air_ms == 21);
+  CHECK(w.last_record().codec == maburgs::kRingCodecH265);
 }
 
 TEST(last_record_stamps_t_complete_when_caller_passes_zero) {

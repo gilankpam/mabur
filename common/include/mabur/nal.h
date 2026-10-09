@@ -44,4 +44,9 @@ int classify_frame(const uint8_t* annexb, size_t len);
 // producer-flag agreement check (spec 2026-07-26 svct-enable).
 bool frame_is_trail_n(const uint8_t* annexb, size_t len);
 
+// Number of VCL NAL units (type < 32: slice segments) in an Annex-B access
+// unit, by the same start-code walk as classify_frame. maburd stamps
+// FrameHdr.slice_rows only when this equals the configured slice count.
+int count_vcl_nals(const uint8_t* annexb, size_t len);
+
 }  // namespace mabur
