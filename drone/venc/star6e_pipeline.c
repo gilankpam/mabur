@@ -661,6 +661,8 @@ static void star6e_pipeline_fill_h26x_attr(i6_venc_attr_h26x *attr,
 
 static int star6e_pipeline_pre_start_apply_ref_pred(MI_VENC_CHN chn,
 	const VencCfg *cfg);
+static int star6e_pipeline_pre_start_apply_slices(MI_VENC_CHN chn,
+	const VencCfg *cfg, uint32_t height);
 
 static int star6e_pipeline_start_venc(uint32_t width, uint32_t height,
 	uint32_t bitrate, uint32_t framerate, uint32_t gop,
@@ -706,6 +708,11 @@ static int star6e_pipeline_start_venc(uint32_t width, uint32_t height,
 
 		if (svct_applied)
 			*svct_applied = applied;
+	}
+
+	if (star6e_pipeline_pre_start_apply_slices(*chn, cfg, height) != 0) {
+		MI_VENC_DestroyChn(*chn);
+		return -1;
 	}
 
 	ret = MI_VENC_StartRecvPic(*chn);
@@ -831,6 +838,47 @@ static int star6e_pipeline_pre_start_apply_ref_pred(MI_VENC_CHN chn,
 	fprintf(stderr, "[venc] refPred: chn=%d base=%u enhance=%u pred=%u "
 		"(applied pre-Start)\n", chn, ref.u32Base, ref.u32Enhance,
 		ref.bEnablePred);
+	return 0;
+}
+
+/* H.265 row slices (spec 2026-10-10-h265-slices §5.1). SDK rule, like
+ * refPred: between CreateChn and StartRecvPic. u32SliceRowCount counts
+ * 32-px rows; the SDK rounds to whole 64-px CTU rows, so 2k asks for k CTU
+ * rows per slice. A failed set or a readback that differs fails channel
+ * start: the operator asked for slices, and flying without them silently
+ * would make every downstream counter lie. */
+static int star6e_pipeline_pre_start_apply_slices(MI_VENC_CHN chn,
+	const VencCfg *cfg, uint32_t height)
+{
+	MI_VENC_ParamH265SliceSplit_t split, rb;
+	uint8_t k;
+
+	if (!cfg || cfg->slices <= 1)
+		return 0;
+	k = venc_cfg_slice_rows((uint16_t)height, cfg->slices);
+	if (k == 0) {
+		fprintf(stderr, "[venc] ERROR: slices=%u not achievable at %u lines\n",
+			cfg->slices, height);
+		return -1;
+	}
+	if (!g_mi_venc.fnSetH265SliceSplit || !g_mi_venc.fnGetH265SliceSplit) {
+		fprintf(stderr, "[venc] ERROR: slices=%u requested but libmi_venc.so "
+			"lacks MI_VENC_Set/GetH265SliceSplit\n", cfg->slices);
+		return -1;
+	}
+	memset(&split, 0, sizeof(split));
+	memset(&rb, 0, sizeof(rb));
+	split.bSplitEnable = 1;
+	split.u32SliceRowCount = 2u * k;
+	if (MI_VENC_SetH265SliceSplit(chn, &split) != 0 ||
+	    MI_VENC_GetH265SliceSplit(chn, &rb) != 0 ||
+	    !rb.bSplitEnable || rb.u32SliceRowCount != split.u32SliceRowCount) {
+		fprintf(stderr, "[venc] ERROR: SetH265SliceSplit(chn=%d, rows32=%u) "
+			"failed or did not read back\n", chn, split.u32SliceRowCount);
+		return -1;
+	}
+	fprintf(stderr, "[venc] slices: chn=%d %u slices of %u CTU rows "
+		"(applied pre-Start)\n", chn, cfg->slices, k);
 	return 0;
 }
 

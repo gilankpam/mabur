@@ -9,6 +9,8 @@
 #include "star6e_ipu.h"
 #include "star6e_pipeline.h"
 
+#include "h26x_util.h"
+
 #include <errno.h>
 #include <pthread.h>
 #include <sched.h>
@@ -60,28 +62,19 @@ static void idle_wait(int timeout_ms)
  * 4 (HiSilicon value) — wrong for the SigmaStar enum, so the TRAIL_N rewrite
  * marked referenced-enhance frames (or nothing under shallow SVC-T). */
 
-/* Locate the NAL header byte 0 inside a payload buffer that may or may not
- * begin with a start-code prefix (00 00 01 / 00 00 00 01).  Returns the
- * index of NAL byte 0, or len on failure. */
-static size_t star6e_nal_header_idx(const uint8_t *buf, size_t len)
-{
-	size_t i = 0;
-	while (i < len && buf[i] == 0) i++;
-	if (i < len && buf[i] == 0x01) i++;
-	return i < len ? i : len;
-}
-
-/* If a NAL is TRAIL_R (type 1) and the SDK marked this frame as
- * ENHANCE_P_NOTFORREF, rewrite the NAL header to TRAIL_N (type 0).
+/* If the SDK marked this frame as ENHANCE_P_NOTFORREF, rewrite every
+ * TRAIL_R (type 1) NAL header in the pack to TRAIL_N (type 0), via
+ * h26x_util_hevc_patch_trail_r_to_n() (layer 0 only, per that helper).
  *
  * Byte 0 bit layout: forbidden_zero(1) | nal_unit_type(6) | layer_id_msb(1)
  *   TRAIL_R = 0x02   (type=1, layer_msb=0)
  *   TRAIL_N = 0x00   (type=0, layer_msb=0)
  *
- * No-op if NAL layer_id_msb != 0 (we only touch single-layer streams), if
- * the NAL is anything other than TRAIL_R, or if no slice NALs are present
- * in the pack (we never touch VPS/SPS/PPS — those are nal_type >= 32 and
- * fail the TRAIL_R check). */
+ * A by-frame + H.265 slice-split pack puts every slice of the picture in
+ * ONE packetInfo entry (findings 2026-10-09), so each entry must be walked
+ * whole rather than patched at its first NAL only — otherwise a split
+ * picture could land with some slices TRAIL_R and some TRAIL_N.  No-op on
+ * VPS/SPS/PPS or any already-TRAIL_N/layered NAL, left to the helper. */
 static void star6e_patch_pack_to_trail_n(MI_VENC_Pack_t *pack)
 {
 	if (!pack || !pack->data || pack->length == 0)
@@ -97,26 +90,15 @@ static void star6e_patch_pack_to_trail_n(MI_VENC_Pack_t *pack)
 			if (off >= pack->length || nlen == 0 ||
 			    off + nlen > pack->length)
 				continue;
-			size_t hdr = star6e_nal_header_idx(pack->data + off, nlen);
-			if (hdr >= nlen) continue;
-			if (pack->data[off + hdr] == 0x02) {
-				pack->data[off + hdr] = 0x00;
-			}
+			(void)h26x_util_hevc_patch_trail_r_to_n(pack->data + off, nlen);
 		}
 		return;
 	}
 	/* packNum == 0: single NAL */
 	if (pack->offset >= pack->length)
 		return;
-	{
-		MI_U32 off = pack->offset;
-		MI_U32 nlen = pack->length - off;
-		size_t hdr = star6e_nal_header_idx(pack->data + off, nlen);
-		if (hdr >= nlen) return;
-		if (pack->data[off + hdr] == 0x02) {
-			pack->data[off + hdr] = 0x00;
-		}
-	}
+	(void)h26x_util_hevc_patch_trail_r_to_n(pack->data + pack->offset,
+		pack->length - pack->offset);
 }
 
 static void star6e_patch_stream_to_trail_n(MI_VENC_Stream_t *s)

@@ -111,4 +111,13 @@ TEST(hevc_patch_trail_r_to_n) {
   CHECK(h26x_util_hevc_patch_trail_r_to_n(nullptr, 0) == 0);
 }
 
+TEST(trail_n_rewrite_covers_every_slice_of_a_split_picture) {
+  uint8_t au[] = {0, 0, 0, 1, 0x02, 0x01, 0xAA, 0xBB,
+                  0, 0, 0, 1, 0x02, 0x01, 0xAA, 0xBB,
+                  0, 0, 1,    0x02, 0x01, 0xAA,
+                  0, 0, 0, 1, 0x02, 0x01, 0xAA, 0xBB};
+  CHECK(h26x_util_hevc_patch_trail_r_to_n(au, sizeof(au)) == 4);
+  CHECK(au[4] == 0x00 && au[12] == 0x00 && au[19] == 0x00 && au[26] == 0x00);
+}
+
 MTEST_MAIN
