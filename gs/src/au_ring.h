@@ -63,6 +63,20 @@ inline constexpr size_t kAuSlotHdrBytes = 64;
 // bits grow upward from there).
 inline constexpr uint8_t kRecFlagComplete = 0x80;
 
+// Slice salvage (spec 2026-10-10-h265-slices §5): an AU FrameStream could
+// not complete, rebuilt as a decodable picture -- every slice that arrived
+// whole, plus one synthetic all-skip fill per lost slice. Ring-local flag,
+// next to kRecFlagComplete at the top of the byte. A salvaged AU is never
+// also complete; consumers decode either (au_decodable), and only a
+// complete one may arm a decoder.
+enum SliceFallback : uint8_t { kSliceFbNone = 0, kSliceFbNoParams, kSliceFbUnsupported,
+                               kSliceFbISlice, kSliceFbNoTemplate, kSliceFbGeometry, kSliceFbCount };
+struct SliceSalvage { bool salvaged = false; uint8_t slices = 0, kept = 0, filled = 0,
+                      kept_after_hole = 0; uint8_t fallback = kSliceFbNone; };
+inline constexpr uint8_t kRecFlagSliceSalvaged = 0x40;
+inline bool au_decodable(uint8_t flags) {
+  return (flags & (kRecFlagComplete | kRecFlagSliceSalvaged)) != 0; }
+
 // The ring slot's codec byte (offset 30). The wire stopped carrying a codec
 // id on 2026-10-10 (FrameHdr byte 3 became slice_rows); mabur is H.265 only,
 // so the writer stamps this constant. Part 2's ring v4 drops the byte.
