@@ -305,4 +305,36 @@ TEST(short_prefix_fragment_passes_through) {
   CHECK(r.fallback == kSliceFbGeometry);
 }
 
+TEST(non_64px_ctb_passes_through_unsupported) {
+  // FrameHdr.slice_rows counts 64-px CTU rows. At any other CTB size the
+  // slice span and count would be in the wrong unit and a fill could
+  // overlap a real slice: salvage is off, passthrough + kSliceFbUnsupported.
+  Au a = au(5);
+  const uint16_t c = inner_chunk(a, 1);
+  a.chunks.erase(c);
+  Sps sps = a.t.sps();
+  REQUIRE(sps.log2_ctb == 6u);
+  sps.log2_ctb = 5;
+  SliceAssembler sa(sps, a.t.pps(), 5, a.count, kHdr);
+  Out o;
+  ChunkMap partial;
+  for (auto& [i, ch] : a.chunks) { partial[i] = ch; sa.drain(partial, o.sink()); }
+  sa.finish(partial, o.sink());
+  CHECK(!sa.result().salvaged);
+  CHECK(sa.result().fallback == kSliceFbUnsupported);
+  CHECK(o.b == std::vector<uint8_t>(a.bytes.begin(), a.bytes.begin() + static_cast<long>(c * a.frag - kHdr)));
+}
+
+TEST(slice_count_over_64_is_rejected_before_narrowing) {
+  // 257 CTU rows at one row per slice: 257 slices, which a uint8_t cast
+  // would wrap to 1 -- a plausible-looking count. It must read as none.
+  const auto aus = mtest::load_slice_fixture();
+  ParamTracker t;
+  t.feed(aus[3].data(), aus[3].size());
+  Sps sps = t.sps();
+  sps.height = 257u * 64u;
+  SliceAssembler sa(sps, t.pps(), 1, 10, kHdr);
+  CHECK(sa.slices() == 0);
+}
+
 MTEST_MAIN

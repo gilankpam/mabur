@@ -238,6 +238,8 @@ std::optional<TailView> FrameStream::tail_view(uint8_t sid) const {
 void FrameStream::reset() {
   // Close any in-flight frame at the packetizer with a truncated end so its
   // in-flight FU doesn't dangle across the session/format-flip boundary.
+  // Deliberately NOT through finish()/sa->finish(): reset must not touch the
+  // counters, so a split AU in flight emits only its drained NAL-aligned prefix.
   for (auto& [k, s] : slots_)
     if (s.began) cb_.end_frame(false, s.lat);
   slots_.clear();
@@ -248,6 +250,8 @@ void FrameStream::reset() {
   in_discont_run_ = false;
   stall_armed_ = false;
   discont_seen_since_emit_ = false;
+  // Also implied: have_id_base_ is cleared, so the next AU header rebases and
+  // resets params_ again. Kept so reset() alone never leaves a stale SPS/PPS.
   params_.reset();
 }
 

@@ -14,6 +14,10 @@ using mabur::hevc::SliceParse;
 
 struct Code { size_t pos, len; };
 
+constexpr uint32_t kCtbLog2 = 6;          // FrameHdr.slice_rows unit: 64-px CTU rows
+constexpr uint32_t kMaxSlices = 64;
+constexpr size_t kReserveCap = 1u << 20;  // prefix buffer pre-size, bytes
+
 void find_codes(const uint8_t* b, size_t n, size_t from, std::vector<Code>* out) {
   for (size_t j = from; j + 3 <= n; ++j) {
     if (b[j] != 0 || b[j + 1] != 0) continue;
@@ -27,8 +31,13 @@ void find_codes(const uint8_t* b, size_t n, size_t from, std::vector<Code>* out)
 SliceAssembler::SliceAssembler(const mabur::hevc::Sps& sps, const mabur::hevc::Pps& pps,
                                uint8_t slice_rows, uint16_t count, size_t hdr_len)
     : sps_(sps), pps_(pps), slice_rows_(slice_rows), count_(count), hdr_len_(hdr_len) {
+  // slice_rows counts 64-px CTU rows (FrameHdr): the count means nothing at
+  // another CTB size, and plan() refuses that geometry outright. Computed
+  // wide and range-checked before narrowing: a wrapped count could look sane.
+  if (sps_.log2_ctb != kCtbLog2 || slice_rows_ == 0) return;
   const uint32_t rows = sps_.pic_h_ctbs();
-  n_ = slice_rows_ ? static_cast<uint8_t>((rows + slice_rows_ - 1) / slice_rows_) : 0;
+  const uint32_t n = (rows + slice_rows_ - 1) / slice_rows_;
+  n_ = n <= kMaxSlices ? static_cast<uint8_t>(n) : 0;
 }
 
 void SliceAssembler::extend_prefix(const ChunkMap& chunks) {
@@ -38,6 +47,7 @@ void SliceAssembler::extend_prefix(const ChunkMap& chunks) {
     const auto& c = it->second;
     if (prefix_chunks_ == 0) {
       frag_ = c.size();
+      buf_.reserve(std::min(static_cast<size_t>(count_) * frag_, kReserveCap));
       if (c.size() > hdr_len_) buf_.insert(buf_.end(), c.begin() + static_cast<long>(hdr_len_), c.end());
     } else {
       buf_.insert(buf_.end(), c.begin(), c.end());
@@ -90,7 +100,8 @@ void SliceAssembler::finish(const ChunkMap& chunks, const ByteSink& out) {
 
 SliceFallback SliceAssembler::plan(const ChunkMap& chunks,
                                    std::vector<std::vector<uint8_t>>* pieces, SliceSalvage* res) {
-  if (n_ == 0 || n_ > 64 || frag_ <= hdr_len_) return kSliceFbGeometry;
+  if (sps_.log2_ctb != kCtbLog2) return kSliceFbUnsupported;   // slice_rows is in 64-px rows
+  if (n_ == 0 || frag_ <= hdr_len_) return kSliceFbGeometry;
   // Every prefix chunk is a non-last fragment (the AU is incomplete): F each.
   if (buf_.size() != static_cast<size_t>(prefix_chunks_) * frag_ - hdr_len_) return kSliceFbGeometry;
   // 1. Runs of consecutive fragments as AU byte ranges; run 0 is the prefix.
@@ -178,7 +189,7 @@ SliceFallback SliceAssembler::plan(const ChunkMap& chunks,
   const uint32_t total = sps_.pic_w_ctbs() * sps_.pic_h_ctbs();
   for (uint32_t k = done; k < n_; ++k) {
     if (slices[k]) {
-      pieces->push_back(slices[k]->bytes);
+      pieces->push_back(std::move(slices[k]->bytes));
       continue;
     }
     auto fill = mabur::hevc::make_skip_slice(sps_, pps_, *tmpl, k * span, std::min((k + 1) * span, total));
