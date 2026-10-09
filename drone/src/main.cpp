@@ -923,6 +923,9 @@ int run_dry_run(const Config& cfg, uint8_t start_ch, const std::string& in_path,
 
   auto frames = read_frame_file(in_path);
   FramePipeline pipe;
+  pipe.set_slice_geometry(
+      venc_cfg_ctb64_rows(static_cast<uint16_t>(cfg.venc.core.height)),
+      venc_cfg_slice_rows(static_cast<uint16_t>(cfg.venc.core.height), cfg.venc.core.slices));
   auto rc_recs = read_rc_in(rc_in_path);
   size_t rc_idx = 0;
 
@@ -1848,6 +1851,9 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
     // is behaviourally identical to the old default "mabur_f".
     FrameSource fsrc(VENC_RING_NAME);
     FramePipeline pipe;
+    pipe.set_slice_geometry(
+        venc_cfg_ctb64_rows(static_cast<uint16_t>(cfg.venc.core.height)),
+        venc_cfg_slice_rows(static_cast<uint16_t>(cfg.venc.core.height), cfg.venc.core.slices));
     std::vector<uint8_t> fbuf(VENC_FRAME_META_SIZE + 512 * 1024);
     uint64_t last_reattach = 0;
     uint64_t last_ring_stats_ms = 0;
@@ -2111,7 +2117,7 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
           std::fprintf(stderr,
               "maburd frame_ring: fill=%u%% (%u/%u) reads=%llu oversize=%llu "
               "bad_slot=%llu idr_disagree=%llu enhance_disagree=%llu "
-              "vanished=%llu/%llu self_idr_refused=%llu\n",
+              "vanished=%llu/%llu self_idr_refused=%llu slice_mismatch=%llu\n",
               f.fill_pct, f.used_slots, f.slot_count,
               (unsigned long long)f.reads,
               (unsigned long long)f.oversize_drops,
@@ -2120,7 +2126,8 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
               (unsigned long long)pipe.enhance_disagreements(),
               (unsigned long long)pipe.vanished_base(),
               (unsigned long long)pipe.vanished_enhance(),
-              (unsigned long long)pipe.self_idr_refused());
+              (unsigned long long)pipe.self_idr_refused(),
+              (unsigned long long)pipe.slice_mismatch());
         }
         // dq_split window report (dq-spike follow-up): the pre-push half of
         // the interval the wire q_ms spans. The post-push half (true queue

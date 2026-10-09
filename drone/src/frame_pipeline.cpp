@@ -76,6 +76,12 @@ void FramePipeline::encode(UepEncoder& uep, uint8_t* buf, size_t payload_len,
   h.flags = static_cast<uint8_t>((meta_idr ? framewire::kFlagIdr : 0) |
                                  (discont ? framewire::kFlagDiscont : 0));
   h.pts_us = meta.pts;
+  h.slice_rows = 0;
+  if (slice_rows_) {
+    const int c = count_vcl_nals(payload, payload_len);
+    if (c == expected_slices_) h.slice_rows = slice_rows_;
+    else if (c != 1) ++slice_mismatch_;
+  }
   framewire::pack_frame_hdr(h, buf);
 
   uep.add_frame(sid, buf, framewire::kFrameHdrLen + payload_len, now_ms, sink);

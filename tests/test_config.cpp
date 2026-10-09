@@ -1597,6 +1597,28 @@ TEST(record_size_parses) {
   CHECK(cfg.record.width == 3840 && cfg.record.height == 2160);
 }
 
+TEST(venc_slices_parses_and_rejects_unachievable_counts) {
+  auto good = write_temp_toml(
+      "[venc]\nsensor_bin = \"/etc/sensors/x.bin\"\nsize = \"1920x1080\"\nslices = 4\n");
+  Config c = load_config(good.string());
+  CHECK(c.venc.core.slices == 4);
+  std::filesystem::remove(good);
+
+  auto bad = [](const char* v) {
+    auto path = write_temp_toml(
+        std::string("[venc]\nsensor_bin = \"/etc/sensors/x.bin\"\nsize = \"1920x1080\"\nslices = ") + v + "\n");
+    std::string msg = what_of([&] { (void)load_config(path.string()); });
+    std::filesystem::remove(path);
+    return msg;
+  };
+  const std::string seven = bad("7");
+  CHECK(seven.find("venc.slices") != std::string::npos);
+  CHECK(seven.find("1, 2, 3, 4, 5, 6, 9, 17") != std::string::npos);  // the achievable list
+  CHECK(bad("0").find("venc.slices") != std::string::npos);
+  CHECK(bad("18").find("venc.slices") != std::string::npos);
+  CHECK(bad("17").empty());
+}
+
 MTEST_MAIN
 
 // "Every knob is in the bundle": the loader reports each known key the file

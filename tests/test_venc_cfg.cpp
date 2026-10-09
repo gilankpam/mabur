@@ -72,4 +72,26 @@ TEST(superframe_p_bytes_follows_the_rung_budget) {
   CHECK(venc_superframe_p_bytes(1000, 200000, 1) > 0);     // no overflow at the rails
 }
 
+// The SSC338Q cuts slices in whole 64-px CTU rows (findings 2026-10-09):
+// 1080p = 17 rows, and only counts whose fixed row height reproduces the
+// count are achievable.
+TEST(slice_rows_follow_the_sdk_row_geometry) {
+  CHECK(venc_cfg_ctb64_rows(1080) == 17);
+  CHECK(venc_cfg_ctb64_rows(720) == 12);
+  CHECK(venc_cfg_slice_rows(1080, 4) == 5);    // 5/5/5/2
+  CHECK(venc_cfg_slice_rows(1080, 5) == 4);    // 4/4/4/4/1
+  CHECK(venc_cfg_slice_rows(1080, 9) == 2);
+  CHECK(venc_cfg_slice_rows(1080, 17) == 1);
+  CHECK(venc_cfg_slice_rows(1080, 7) == 0);    // k=3 gives 6 slices, not 7
+  CHECK(venc_cfg_slice_rows(1080, 18) == 0);   // more slices than rows
+  CHECK(venc_cfg_slice_rows(1080, 1) == 0);    // off
+  CHECK(venc_cfg_slice_rows(1080, 0) == 0);
+}
+
+TEST(slices_default_off) {
+  VencCfg c{};
+  venc_cfg_defaults(&c);
+  CHECK(c.slices == 1);
+}
+
 MTEST_MAIN

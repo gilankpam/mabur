@@ -42,6 +42,7 @@ void venc_cfg_defaults(VencCfg *cfg)
 	cfg->ref_base = 1;
 	cfg->ref_enhance = 1;
 	cfg->ref_pred = true;
+	cfg->slices = 1; /* split off */
 	cfg->roi_enabled = true;
 	cfg->roi_steps = 2;
 	cfg->roi_center = 0.4;
@@ -63,6 +64,24 @@ uint16_t venc_cfg_intra_rows(uint16_t height, uint16_t frames)
 	if (frames == 0 || total == 0)
 		return 0;
 	return (uint16_t)((total + frames - 1u) / frames);
+}
+
+uint16_t venc_cfg_ctb64_rows(uint16_t height)
+{
+	return (uint16_t)((height + 63u) / 64u);
+}
+
+uint8_t venc_cfg_slice_rows(uint16_t height, uint8_t slices)
+{
+	uint16_t r = venc_cfg_ctb64_rows(height);
+	uint16_t k;
+
+	if (slices <= 1 || r == 0 || slices > r)
+		return 0;
+	k = (uint16_t)((r + slices - 1u) / slices);
+	if ((uint16_t)((r + k - 1u) / k) != slices)
+		return 0;
+	return (uint8_t)k;
 }
 
 uint32_t venc_superframe_p_bytes(unsigned pct, unsigned kbps, unsigned fps)

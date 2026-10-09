@@ -137,6 +137,20 @@ class FramePipeline {
     self_idr_refused_ = 0;
   }
 
+  // H.265 row-slice geometry (spec 2026-10-10-h265-slices §5.1).
+  // ctb64_rows = the picture's 64-px CTU rows; slice_rows = rows per slice
+  // the encoder was asked for (0 = split off). encode() then stamps
+  // FrameHdr.slice_rows per AU: slice_rows when the AU carries exactly
+  // ceil(ctb64_rows / slice_rows) slice NALs, 0 for a one-slice AU (the SDK
+  // leaves refresh-start pictures whole), and 0 + slice_mismatch() for any
+  // other count -- the GS then treats the AU as unsplit, never as a wrong
+  // geometry.
+  void set_slice_geometry(uint16_t ctb64_rows, uint8_t slice_rows) {
+    slice_rows_ = slice_rows;
+    expected_slices_ = slice_rows ? (ctb64_rows + slice_rows - 1) / slice_rows : 0;
+  }
+  uint64_t slice_mismatch() const { return slice_mismatch_; }
+
   static constexpr uint64_t kDiscontStickyMs = 1000;
   static constexpr uint64_t kSelfIdrGuardMs = 500;
 
@@ -173,6 +187,10 @@ class FramePipeline {
   uint64_t vanished_enh_ = 0;
   uint64_t self_idr_refused_ = 0;
   bool self_idr_pending_ = false;
+
+  uint8_t slice_rows_ = 0;
+  int expected_slices_ = 0;
+  uint64_t slice_mismatch_ = 0;
 
   void track_vanish(const VencFrameMeta& meta, bool meta_idr, bool meta_enhance,
                     uint64_t now_ms);

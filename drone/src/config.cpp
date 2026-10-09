@@ -272,7 +272,7 @@ void parse_venc(const Value& j, VencSectionCfg& v) {
                     {"sensor_bin", "size", "fps", "gop_s", "qp_delta",
                      "max_ipprop", "min_iqp", "superframe_p_pct",
                      "intra_refresh_frames", "intra_refresh_qp",
-                     "ref_base", "ref_enhance", "ref_pred",
+                     "ref_base", "ref_enhance", "ref_pred", "slices",
                      "roi", "ae_fps", "awb_fps", "snapshot_quality",
                      "debug_port"},
                     "venc");
@@ -411,6 +411,31 @@ void parse_venc(const Value& j, VencSectionCfg& v) {
   // did not ask for. Checked after both keys are read so either order works.
   if (v.core.ref_base != 0 && v.core.ref_enhance == 0)
     fail("venc.ref_enhance", "must be >= 1 when venc.ref_base is nonzero");
+
+  // H.265 row slices (spec 2026-10-10-h265-slices §5.1). Checked against
+  // the configured size, parsed above: the encoder cuts whole 64-px CTU
+  // rows, so only some counts exist, and asking for one that doesn't must
+  // fail boot rather than fly a different split.
+  if (j.contains("slices")) {
+    int n = 0;
+    assign_if_present(j, "slices", n, "venc");
+    const int rows = venc_cfg_ctb64_rows(static_cast<uint16_t>(v.core.height));
+    const bool ok = n == 1 || (n >= 2 && n <= rows &&
+                               venc_cfg_slice_rows(static_cast<uint16_t>(v.core.height),
+                                                   static_cast<uint8_t>(n)) != 0);
+    if (!ok) {
+      std::string legal = "1";
+      for (int c = 2; c <= rows; ++c)
+        if (venc_cfg_slice_rows(static_cast<uint16_t>(v.core.height), static_cast<uint8_t>(c)))
+          legal += ", " + std::to_string(c);
+      fail("venc.slices", "must be one of " + legal + " at " +
+                              std::to_string(v.core.height) +
+                              " lines (the encoder cuts whole 64-px CTU rows)");
+    }
+    v.core.slices = static_cast<uint8_t>(n);
+  } else {
+    note_default("venc", "slices", to_text(static_cast<int>(kDef.core.slices)));
+  }
 
   if (j.contains("roi")) {
     const Value& r = j.at("roi");
