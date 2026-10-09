@@ -78,9 +78,12 @@ void FramePipeline::encode(UepEncoder& uep, uint8_t* buf, size_t payload_len,
   h.pts_us = meta.pts;
   h.slice_rows = 0;
   if (slice_rows_) {
-    const int c = count_vcl_nals(payload, payload_len);
-    if (c == expected_slices_) h.slice_rows = slice_rows_;
-    else if (c != 1) ++slice_mismatch_;
+    // A one-slice AU is expected only with parameter sets (refresh start,
+    // IDR). Without them the SDK has dropped the split (e.g. after a runtime
+    // SetChnAttr): unsplit, and counted -- salvage must never go off silently.
+    const AuNalCount c = count_au_nals(payload, payload_len);
+    if (c.vcl == expected_slices_) h.slice_rows = slice_rows_;
+    else if (c.vcl != 1 || !c.param_set) ++slice_mismatch_;
   }
   framewire::pack_frame_hdr(h, buf);
 

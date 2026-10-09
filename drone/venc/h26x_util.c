@@ -123,3 +123,19 @@ size_t h26x_util_hevc_patch_trail_r_to_n(uint8_t *data, size_t len)
 	}
 	return changed;
 }
+
+size_t h26x_util_hevc_patch_entry_trail_r_to_n(uint8_t *data, size_t len)
+{
+	size_t changed;
+
+	if (!data)
+		return 0;
+	changed = h26x_util_hevc_patch_trail_r_to_n(data, len);
+	/* An entry opening with a start code has data[0] == 0, so this only
+	 * fires for one that begins at a bare NAL header. */
+	if (len > 1 && data[0] == 0x02 && (data[1] & 0xf8u) == 0) {
+		data[0] = 0x00;
+		changed++;
+	}
+	return changed;
+}

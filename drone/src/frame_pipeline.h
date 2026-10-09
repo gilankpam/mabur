@@ -141,10 +141,11 @@ class FramePipeline {
   // ctb64_rows = the picture's 64-px CTU rows; slice_rows = rows per slice
   // the encoder was asked for (0 = split off). encode() then stamps
   // FrameHdr.slice_rows per AU: slice_rows when the AU carries exactly
-  // ceil(ctb64_rows / slice_rows) slice NALs, 0 for a one-slice AU (the SDK
-  // leaves refresh-start pictures whole), and 0 + slice_mismatch() for any
-  // other count -- the GS then treats the AU as unsplit, never as a wrong
-  // geometry.
+  // ceil(ctb64_rows / slice_rows) slice NALs, 0 for a one-slice AU carrying
+  // VPS/SPS/PPS (the SDK leaves refresh-start pictures and IDRs whole), and
+  // 0 + slice_mismatch() for anything else, a bare one-slice AU included (the
+  // SDK dropped the split) -- the GS then treats the AU as unsplit, never as
+  // a wrong geometry.
   void set_slice_geometry(uint16_t ctb64_rows, uint8_t slice_rows) {
     slice_rows_ = slice_rows;
     expected_slices_ = slice_rows ? (ctb64_rows + slice_rows - 1) / slice_rows : 0;

@@ -73,8 +73,10 @@ static void idle_wait(int timeout_ms)
  * A by-frame + H.265 slice-split pack puts every slice of the picture in
  * ONE packetInfo entry (findings 2026-10-09), so each entry must be walked
  * whole rather than patched at its first NAL only — otherwise a split
- * picture could land with some slices TRAIL_R and some TRAIL_N.  No-op on
- * VPS/SPS/PPS or any already-TRAIL_N/layered NAL, left to the helper. */
+ * picture could land with some slices TRAIL_R and some TRAIL_N.  An entry
+ * that begins directly at its NAL header (no start code) still gets that
+ * header patched.  No-op on VPS/SPS/PPS or any already-TRAIL_N/layered NAL,
+ * left to h26x_util_hevc_patch_entry_trail_r_to_n(). */
 static void star6e_patch_pack_to_trail_n(MI_VENC_Pack_t *pack)
 {
 	if (!pack || !pack->data || pack->length == 0)
@@ -90,14 +92,14 @@ static void star6e_patch_pack_to_trail_n(MI_VENC_Pack_t *pack)
 			if (off >= pack->length || nlen == 0 ||
 			    off + nlen > pack->length)
 				continue;
-			(void)h26x_util_hevc_patch_trail_r_to_n(pack->data + off, nlen);
+			(void)h26x_util_hevc_patch_entry_trail_r_to_n(pack->data + off, nlen);
 		}
 		return;
 	}
 	/* packNum == 0: single NAL */
 	if (pack->offset >= pack->length)
 		return;
-	(void)h26x_util_hevc_patch_trail_r_to_n(pack->data + pack->offset,
+	(void)h26x_util_hevc_patch_entry_trail_r_to_n(pack->data + pack->offset,
 		pack->length - pack->offset);
 }
 

@@ -120,4 +120,29 @@ TEST(trail_n_rewrite_covers_every_slice_of_a_split_picture) {
   CHECK(au[4] == 0x00 && au[12] == 0x00 && au[19] == 0x00 && au[26] == 0x00);
 }
 
+TEST(patch_entry_walks_start_codes_or_patches_a_bare_header) {
+  // A packetInfo entry with start codes: every TRAIL_R slice patched.
+  uint8_t coded[] = {0, 0, 0, 1, 0x02, 0x01, 0xAA, 0xBB,
+                     0, 0, 1,    0x02, 0x01, 0xAA};
+  CHECK(h26x_util_hevc_patch_entry_trail_r_to_n(coded, sizeof(coded)) == 2);
+  CHECK(coded[4] == 0x00 && coded[11] == 0x00);
+
+  // An entry that begins directly at the NAL header (no start code): the
+  // start-code walk finds nothing, the entry's first header is patched.
+  uint8_t bare[] = {0x02, 0x01, 0xAA, 0xBB};
+  CHECK(h26x_util_hevc_patch_trail_r_to_n(bare, sizeof(bare)) == 0);
+  CHECK(h26x_util_hevc_patch_entry_trail_r_to_n(bare, sizeof(bare)) == 1);
+  CHECK(bare[0] == 0x00 && bare[1] == 0x01 && bare[2] == 0xAA);
+
+  // Layer 0 only, and a bare TRAIL_N entry is left alone: its payload is
+  // never mistaken for a header (00 01 is the TRAIL_N header, not a code).
+  uint8_t layered[] = {0x02, 0x09, 0xAA};
+  CHECK(h26x_util_hevc_patch_entry_trail_r_to_n(layered, sizeof(layered)) == 0);
+  CHECK(layered[0] == 0x02);
+  uint8_t trail_n[] = {0x00, 0x01, 0x02, 0x01, 0xAA};
+  CHECK(h26x_util_hevc_patch_entry_trail_r_to_n(trail_n, sizeof(trail_n)) == 0);
+  CHECK(trail_n[2] == 0x02);
+  CHECK(h26x_util_hevc_patch_entry_trail_r_to_n(nullptr, 0) == 0);
+}
+
 MTEST_MAIN
