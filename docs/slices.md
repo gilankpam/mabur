@@ -91,6 +91,40 @@ is not built yet.
   3 pictures × 4 fill modes = 12 cases; rerun it after touching
   `common/src/hevc_*`.
 
-## Bench
+## Bench 2026-10-10
 
-Bench: pending (plan Task 15).
+Bench drone (1080p60, 8812EU) + GS restored to the stock CI image (p1
+`p1.orig.img`, kernel Sep 26; the rkvdec2 stream-mode spike kernel is off
+it). Both ends at 6c27e74, live adaptive GS config.
+
+- **No loss, slices = 4:** maburd logs `[venc] slices: chn=0 4 slices of
+  5 CTU rows`; `slice_mismatch=0`, `enhance_disagree=0` through the ladder
+  climb to mcs4. ausniff 30 s: 60.5 fps, every AU complete. aucadence
+  offset +0.26 ms (gate ±4.0). A ring dump: 189 pictures of 4 slices, 7 of
+  1 (refresh starts). au.log is `aulog 5` with `slices 4 kept 4`.
+  slices = 1 baseline: 60.5 fps, `slice_mismatch=0`.
+- **Loss-sim A/B** (`MABUR_LOSS_SIM` maburgs, `s0`+`s1 eff=1.5 burst=4`,
+  5 min per arm):
+
+  | | slices = 4 | slices = 1 |
+  |---|---|---|
+  | truncated | 258 | 275 |
+  | slice_salvaged | 249 (96.5 %) | 0 |
+  | fallback | no_template 9 | — |
+  | slices kept / filled / after_hole | 491 / 505 / 216 | — |
+  | ausniff 30 s window: incomplete / salvaged | 3 / 15 | 24 / 0 |
+  | rkvdec `resetting` (dmesg) | 0 | 0 |
+  | maburplay e2e p50/p99 ms | 48/66, 34/83 | 46/79, 47/81 |
+  | drone cpu_pct p50 | 23.0 | 22.9 |
+
+  The 9 `no_template` AUs lost every slice. `slice_mismatch` stayed 0.
+- **Decoder legality of real salvaged AUs:** 60 s ring dump under the same
+  loss (complete + 59 salvaged AUs, in ring order) through ffmpeg:
+  3 584 frames, zero slice-data / CABAC errors; the only errors are a
+  missing-ref chain after dropped AUs (fid gaps) and the dump's mid-GOP
+  start. MPP on the GS decoded both arms with no decoder reset.
+- **Not done yet:** the visual check with motion (plan Task 15 Step 5)
+  and the web GS with a USB card (Step 6) need an operator; the bundle
+  stays at `slices = 1` until they pass. The bench drone's own
+  `/etc/mabur.toml` is at `slices = 4` (`.pre-slice` backups of binary
+  and config on both devices).
