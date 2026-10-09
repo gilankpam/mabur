@@ -6,8 +6,9 @@ original and the rewritten stream with ffmpeg (-err_detect explode), and
 check (1) the rewritten stream decodes with no error and the same frame
 count, (2) every frame before the picture is bit-exact, (3) the picture is
 bit-exact outside the filled band (+-8 rows for deblocking at the edges),
-(4) the filled band is a plausible motion-compensated copy (PSNR >= 30 dB
-against the intact decode on this static bench scene).
+(4) the filled band is a plausible motion-compensated copy (PSNR >= 40 dB
+against the intact decode on this static bench scene; calibrated on cap4,
+see BAND_MIN_DB).
 
 usage: slicefill_check.py --cli build/tests/slicefill --in CAP4.h265
 """
@@ -19,6 +20,9 @@ import sys
 import tempfile
 
 W, H = 1920, 1080
+# Calibrated on cap4: planted CABAC bugs passed single modes at 31.7-34.2 dB,
+# correct fills measure >= 42.2 dB. Recalibrate for a different capture.
+BAND_MIN_DB = 40.0
 
 
 def decode_y(path):
@@ -61,7 +65,7 @@ def main():
                 g, f = got[pic], ref[pic]
                 ok = ok and g[:lo * W] == f[:lo * W] and g[hi * W:] == f[hi * W:]
                 band = psnr(g[y0 * W:y1 * W], f[y0 * W:y1 * W])
-                ok = ok and band >= 30.0
+                ok = ok and band >= BAND_MIN_DB
                 print(f"{'PASS' if ok else 'FAIL'} picture {pic} {mode}: rows {y0}-{y1} band {band:.1f} dB"
                       + (f" ffmpeg: {err}" if err else ""))
                 fails += not ok

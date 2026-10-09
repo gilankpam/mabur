@@ -32,6 +32,11 @@ int main(int argc, char** argv) {
   const std::vector<uint8_t> b((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
   const long want = std::stol(argv[3]);
   const std::string mode = argv[4];
+  if (mode != "first" && mode != "middle" && mode != "last" && mode != "tail2") {
+    std::fprintf(stderr, "slicefill: unknown MODE '%s' (first|middle|last|tail2)\n"
+                         "usage: slicefill IN OUT PICTURE MODE\n", mode.c_str());
+    return 2;
+  }
 
   std::vector<Nal> nals;
   for (const mabur::NalView& v : mabur::split_nals(b.data(), b.size()))

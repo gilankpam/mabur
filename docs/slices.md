@@ -11,11 +11,21 @@ is not built yet.
   whole-64-px-CTU-row geometry reproduces boot (1080p: 1,2,3,4,5,6,9,17).
 - FrameHdr byte 3 = `slice_rows` (64-px CTU rows per slice of this AU, 0 =
   one slice). maburd stamps it only when the AU carries the expected slice
-  count; refresh-start pictures (one slice) send 0; anything else sends 0
-  and counts `slice_mismatch` (5 s `frame_ring` line). Wire flag day — byte
-  3 was an always-H.265 codec id before 2026-10-10.
-- TRAIL_N rewrite covers every slice of a split picture (`star6e_patch_pack_to_trail_n`
-  runs over every packet in the stream, not just the first).
+  count; a one-slice AU carrying VPS/SPS/PPS (refresh start, IDR — the SDK
+  leaves those whole) sends 0; anything else sends 0 and counts
+  `slice_mismatch` (5 s `frame_ring` line). That includes a bare one-slice
+  AU without parameter sets: the SDK dropped the split (e.g. after a
+  runtime `MI_VENC_SetChnAttr`), and salvage must not switch off silently.
+  Wire flag day — byte 3 was an always-H.265 codec id before 2026-10-10.
+- maburd stamps the geometry from the configured `[venc] size` height, the
+  encoder splits the ENCODED height (clamped/auto-sized). Channel start
+  fails (`[venc] ERROR: slices=…`) when the two give a different 64-px row
+  count or rows per slice.
+- TRAIL_N rewrite covers every slice of a split picture:
+  `star6e_patch_pack_to_trail_n` patches every NAL inside each packetInfo
+  entry (a by-frame split pack puts all slices in one entry), and an entry
+  that begins directly at its NAL header, with no start code, still gets
+  that first header patched (`h26x_util_hevc_patch_entry_trail_r_to_n`).
 
 ## GS core (maburgs and the web GS)
 
@@ -28,16 +38,21 @@ is not built yet.
   decoder error, no rkvdec reset.
 - A slice is complete only if its start code and every byte up to the next
   start code (or the known AU end) lie in one run of consecutive fragments.
-  A 3-byte start code that opens a run right after a hole is never trusted
-  (it could be the tail of a 4-byte code whose leading zero was lost) — that
-  slice is treated as missing and filled, conservatively, rather than risking
-  the wrong bytes.
+  A 3-byte start code that opens a run right after a hole is never trusted:
+  it could be the tail of a 4-byte code whose leading zero was lost. That is
+  spec-mandated conservatism, not a correctness need — the slice behind a
+  "00 | 00 00 01" split is in fact intact — and it costs about 1/F of the
+  slices next to a hole (F = fragment size), which are filled instead.
 - Non-VCL NALs that follow the first slice (e.g. a suffix SEI) are dropped
   from salvaged output; only the run-0 prefix's leading non-VCL NALs are
   kept.
+- Salvage runs only at a 64-px CTB (`slice_rows` counts 64-px CTU rows; at
+  another CTB size a fill could overlap real slices): any other CTB size is
+  `unsupported` passthrough.
 - Passthrough (today's truncated prefix) when: unsplit AU, no parameter
-  sets yet, unsupported stream, I-slice picture, no complete slice to copy
-  a header from, or slice addresses that don't match `slice_rows`. A
+  sets yet, unsupported stream (incl. a non-64-px CTB), I-slice picture,
+  no complete slice to copy a header from, or slice addresses that don't
+  match `slice_rows`. A
   contiguous-prefix fragment shorter than the first fragment's size, or
   losing fragment 0 itself (the fragment size is unknown), both fall under
   this geometry fallback. Each reason is a counter.

@@ -49,7 +49,9 @@ latched — 2026-10-04 · CPE relay interference sweep/hop (protocol v4) —
 2026-10-10: `au.log` marker `# aulog 5` (+4 salvage columns); sideport
 `link.video.slice_*` keys added; FrameHdr byte 3 is `slice_rows` (was
 codec id 0x01 — recordings before this date read as slice_rows 1 in no
-tool, the byte was never logged) (`docs/slices.md`).
+tool, the byte was never logged) (`docs/slices.md`) · 2026-10-10:
+maburplay submits slice-salvaged AUs, so LAT / e2e latency tails during
+loss include frames that were skipped before (section below).
 
 **`link.pre_fec_loss` scale break 2026-09-23, twice.** The ArrivalTracker
 guard behind `link.pre_fec_loss` (and the OSD LOSS row, `ctl.pre_fec_loss`,
@@ -1002,3 +1004,14 @@ relay", `docs/inflight-channel-hop.md` §2/§3/§8.
   maburgs process; added in the final-review fix wave, same date) —
   `docs/observability.md`. A recording before 2026-10-05 has none of the
   three; absent means "not recorded", not 0.
+
+## 2026-10-10 — slice salvage: salvaged AUs reach the glass
+
+From 2026-10-10 maburplay (and the web GS) decode slice-salvaged AUs
+(`kRecFlagSliceSalvaged`, `docs/slices.md`) instead of skipping the
+damaged AU. Those frames now reach the glass and are timed, so the LAT /
+e2e latency distribution during loss includes frames that before
+2026-10-10 were skipped and never measured — typically the late ones
+that waited out `gap_ms`. A latency tail that grew across this date is
+not by itself a regression: compare flights across it knowingly, and
+split by `au.log`'s salvage columns (`# aulog 5`) where it matters.

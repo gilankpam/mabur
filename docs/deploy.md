@@ -895,8 +895,12 @@ as every other dated section on this page.
 ## 2026-10-10 FrameHdr byte 3 codec→slice_rows (H.265 row slices, `docs/slices.md`)
 
 FrameHdr byte 3 was an always-H.265 codec id; it is now `slice_rows` (64-px
-CTU rows per slice of the AU, 0 = one slice). Deploy maburd and maburgs
-together — a mismatched pair reads the other byte 3 meaning, a video-wire
-flag day exactly like the `CAP_FRAME_WIRE` cases above. `[venc] slices` is
+CTU rows per slice of the AU, 0 = one slice). Unlike the `CAP_FRAME_WIRE`
+cases above, a mismatched pair still has video: an old maburd sends byte 3
+= 1, which a new maburgs reads as `slice_rows` 1 (damaged AUs then pass
+through as `no_template` instead of being salvaged); a new maburd's
+`slice_rows` is ignored by an old maburgs. Video continues, salvage is off
+or miscounted until both ends match — still deploy maburd and maburgs
+together. `[venc] slices` is
 a new drone key (default 1 = off, so an old config still boots the new
 binary unchanged) — binary before config, as always.
