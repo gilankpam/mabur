@@ -263,3 +263,55 @@ the drone: stream 0 vs 1 bit-exact, `lose_every` for the lost-tail case,
   live on master (`drone/venc/star6e.h`, `star6e_mi.c`); nothing on master
   calls them.
 - Analyzer: `spike_analyze.py` in the session scratchpad (not kept).
+
+## RK3566 GS: fpvOS stream-mode decode works — spike 2026-10-09 (late)
+
+Step 1 of the follow-up plan, run on the bench GS. **All three checks pass.**
+
+Build: image-repo branch `spike-rkvdec2-stream` (sbc-groundstations-gilankpam).
+The kernel patch went in as `board/radxa/zero3/linux-patches/0102-…` unchanged
+(offsets only). The MPP patches needed more than the three header hunks
+expected above: the image's MPP snapshot (HermanChen develop, `dl/` tarball
+`develop-git4`) has `mpp.cpp`/`mpp_dec.cpp` converted to C, so 0002 got four
+hunks hand-placed plus `mDec` → `mpp->mDec`; 0001 one context line; 0003 clean.
+The patch leaves `Module.symvers` unchanged, and all imported-symbol CRCs of the
+GS's loaded modules matched the rebuilt Image before it was flashed.
+
+**How the GS boots — correction to the plan above.** U-Boot reads
+`/boot/Image` out of the squashfs on p1 (`CONFIG_CMD_SQUASHFS`, p1 is the only
+bootable partition), not through the overlay, and the kernel has no kexec. An
+Image dropped beside the old one is never booted. The swap was done by
+repacking the GS's own (CI-built) squashfs with only `/boot/Image` replaced
+(`/boot/Image.orig` = the old kernel, file-by-file diff otherwise empty) and
+writing it to p1; the backup of p1 is the recovery. The test MPP runs from
+`/root/mpp-stream` via `LD_LIBRARY_PATH`. The system MPP and maburplay are
+untouched, and live video decodes normally on the patched kernel with the
+stock MPP. The GS's stock MPP is an *older* snapshot than the `dl/` one
+(no `libmpp_ext.so`, where the newer one registers its codecs), so the image
+needs an MPP pin before the patches can ship.
+
+Input: 600 frames from the bench drone, spike binary by-frame +
+`MABUR_SPIKE_SLICE_ROWS=10` + the new `MABUR_SPIKE_DUMP` (frames written as
+the SDK hands them out, before the TRAIL_N rewrite), `bitrate_min_kbps 12000`,
+1080p60. 582 pictures with 4 slices (byte shares p50 29 / 31 / 30 / 11 %; the
+last slice is the 2-CTU-row bottom band), 18 single-slice (GDR refresh starts).
+Picture p50 26.4 kB. Note: in this dump the SDK already writes TRAIL_N (type 0)
+on *every* slice of the non-reference enhance pictures, never mixed with
+TRAIL_R in one picture.
+
+`mpi_dec_stream_test` (fpvOS), 1080p60, RK3566:
+
+| check | result |
+|---|---|
+| streamed (slices 5 ms apart) vs whole | **bit-exact, 600/600 frames**; both also match an ffmpeg software decode 600/600 |
+| lost tail, `lose_every 7` (empty LAST append) | no hang, 600/600 frames out; the first lost picture's top 952 rows bit-exact with the software decode; damage gone after p50 11 / max 28 frames (GDR) |
+| lost tail, `lose_every -60` (nothing ends it) | no hang, the next picture's start ends it; 9/9 lost pictures' tops bit-exact; 599/600 frames out (one picture produced no frame) |
+| last slice → frame, whole | 4.38 ms p50 / 4.80 p90 |
+| last slice → frame, streamed (5 ms spread) | **1.69 ms p50 / 2.00 p90** (gap 0 control: 4.34, no overlap so no gain) |
+| `top 1`: first slice sent → top slice decoded | 1.75 ms p50, 582/582 ready |
+
+Every lost tail costs exactly one rkvdec reset (83/83, 10/10, 0 in clean runs).
+The test feeds one picture at a time and waits for its frame, so it does not
+exercise maburplay's pipelining. It also sets `disable_error`, so lost-tail
+frames come out unflagged (0 "flagged with errors"); the player has to know
+from its own feed that a picture was cut.
