@@ -219,3 +219,30 @@ it). Both ends at 6c27e74, live adaptive GS config.
 - **Turned on:** `bundle/mabur.default.toml` ships `slices = 4`; the bench
   drone runs it (`.pre-slice` backups of binary and config on both
   devices).
+
+## Part 2 bench — platform (GS image `slice-stream`)
+
+Image: kernel + fpvOS 0102, MPP rockchip-linux/mpp `14729dd5` + mabur's
+`gs/player/mpp-patches` (no `libmpp_ext.so`). Link mode off at boot:
+task-capacity 16 → 1. Bench 2026-10-10, default image
+`rootfs.default.squashfs` md5 `f75f5f3f…`, `rootfs.stream0.squashfs`
+`bb65f087…`; drone on bundle `slices = 4`, `intra_refresh_frames = 1`.
+
+| check | result |
+|---|---|
+| `mpi_dec_stream_test` cap4, whole vs streamed (5 ms spread) | md5 equal (`94bdc50b…`), 600/600 frames out both, 0 resets; whole 4506 µs, streamed 1544 µs (repeat 4479 / 1550) |
+| `lose_every 7` | 600 frames out, 83 resets (one per lost tail) |
+| maburplay whole-AU on the new image | `dec` p50/p99 6/11 ms, `e2e` 36/46.5, 0 resets (second sample 6/10, 36/47) |
+| link mode on (`rk_vcodec.rkvdec2_stream=0`) | `dec` p50/p99 7/12.5 ms → link-mode-off cost −1.0 ms p50 (none) |
+
+- The `mpi_dec_stream_test` medians are with the YUV going to `/dev/null`.
+  Written into a fifo for `md5sum` (the bit-exactness run) they read
+  16 846 / 10 168 µs: the test stamps a frame before writing the one
+  before it, so the consumer's speed is in the number. The spike's own logs
+  through its python hasher read 28.7 / 22.7 ms for the same reason.
+- `dec`/`e2e` are medians over 120 of maburplay's 1 Hz `lat:` lines
+  (anchor=ok), integer ms. The means of the per-second p50s resolve
+  further: `dec` 6.58 / 6.64 ms on the default image vs 7.14 ms link mode
+  on, so turning link mode off costs nothing (≈ −0.5 ms). Stock CI image
+  (stock MPP, link mode on), same maburplay binary, same drone: `dec`
+  7/12, `e2e` 40/49 (means 7.38 / 40.04).

@@ -904,3 +904,53 @@ or miscounted until both ends match — still deploy maburd and maburgs
 together. `[venc] slices` is
 a new drone key (default 1 = off, so an old config still boots the new
 binary unchanged) — binary before config, as always.
+
+## GS image: p1 squashfs swap (2026-10, rkvdec2 stream mode)
+
+The GS boots U-Boot → `/boot/Image` + `/boot/extlinux/extlinux.conf`, read
+out of the squashfs on p1 (`/dev/mmcblk1p1`, 264160 KiB = 270,499,840
+bytes; U-Boot `CONFIG_CMD_SQUASHFS`). The kernel command line is the
+`append` line of that extlinux.conf (image repo:
+`board/common/overlay/boot/extlinux/extlinux.conf`), so a kernel parameter
+(`rk_vcodec.rkvdec2_stream=0`: the rkvdec2 driver is built in) means a new
+squashfs. Everything else the GS keeps — `/etc` configs,
+`/usr/local/bin/maburgs`/`maburplay` — lives on the overlayfs partition
+(upper dir `/overlay/root`) and survives a p1 swap. A library copied into
+the upper dir's `usr/` shadows the image's: check
+`find /overlay/root/usr -name 'librockchip_mpp*'` is empty after a swap
+(`/root/mpp-stream/` holds the 2026-10-09 spike's private copies, used only
+through `LD_LIBRARY_PATH` by its `run.sh`; they shadow nothing).
+
+Flash any image `IMG` (from the image repo's `output/`):
+
+    IMG=<squashfs>; SZ=$(stat -c %s $IMG); MD5=$(md5sum < $IMG | cut -d' ' -f1)
+    scp -O $IMG root@10.18.0.1:/tmp/p1.new.img
+    ssh root@10.18.0.1 'md5sum /tmp/p1.new.img'                 # == $MD5
+    ssh root@10.18.0.1 '/etc/init.d/S97maburplay stop'
+    ssh root@10.18.0.1 '/etc/init.d/S96maburgs stop'
+    ssh root@10.18.0.1 'pidof maburplay maburgs || echo none'   # none
+    timeout 60 ssh root@10.18.0.1 'dd if=/tmp/p1.new.img of=/dev/mmcblk1p1 bs=1M conv=fsync && sync && echo written && echo 1 > /proc/sys/kernel/sysrq && echo s > /proc/sysrq-trigger && echo b > /proc/sysrq-trigger' || true
+    # once it is back up (~25 s): the partition holds the image
+    ssh root@10.18.0.1 "head -c $SZ /dev/mmcblk1p1 | md5sum"   # == $MD5
+
+Write and reboot in **one** ssh command, and reboot through sysrq only:
+once p1 is rewritten, nothing on the old lower filesystem can be exec'd
+except what is still in the page cache — BusyBox `reboot` cannot, and after
+`echo 3 > /proc/sys/vm/drop_caches` neither can `head`/`md5sum` nor sshd
+itself (every new ssh connection is reset; 2026-10-10, a read-back
+attempted that way). If that happens anyway, power-cycle the GS (`GS
+Plug`): the `sync` has already landed the image. Verify the write after the
+boot, as above; to check it before rebooting, the read-back needs a static
+binary in `/tmp` and must run in the same ssh command as the `dd`.
+
+Back up p1 first
+(`ssh root@10.18.0.1 'dd if=/dev/mmcblk1p1 bs=1M' > p1.orig.img`, 270,499,840
+bytes); rollback is the same sequence with that file. The backups of record:
+`output/gs-p1-backup-2026-10-09/p1.orig.img` (stock CI image, before the
+spike) and `output/gs-p1-backup-2026-10-10/p1.orig.img` (stock, before Part
+2; byte-identical to the 10-09 one, md5 `8e38695a…`). The SD-card image
+stays the last resort if p1 does not boot.
+
+Verify after boot: `uname -v`, `cat /proc/cmdline`,
+`cat /sys/module/rk_vcodec/parameters/rkvdec2_stream` (`Y` on the stream-mode
+image), `dmesg | grep "link mode off"`.
