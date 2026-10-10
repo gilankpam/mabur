@@ -4,6 +4,7 @@ add_library(mabur_player_core STATIC
   src/ring_client.cpp
   src/stream_feeder.cpp
   src/au_router.cpp
+  src/feed_loop.cpp
   src/osd_font.cpp
   src/gs_font.cpp
   src/gs_draw.cpp
@@ -27,7 +28,7 @@ add_library(mabur_player_core STATIC
 target_include_directories(mabur_player_core
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src
   PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
-target_link_libraries(mabur_player_core PUBLIC mabur_gs_core)
+target_link_libraries(mabur_player_core PUBLIC mabur_gs_core pthread)
 
 # Hardware backends (rockchip mpp decode + libdrm KMS presenter): aarch64
 # cross build only. OFF by default -- the host has neither SDK, and the

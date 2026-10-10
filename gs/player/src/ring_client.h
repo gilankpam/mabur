@@ -67,6 +67,10 @@ class RingClient {
   // connected, plain timeout sleep otherwise (doorbell is an optimization,
   // never a correctness dependency — state lives in the ring).
   size_t pump(int timeout_ms);
+  // A second fd pump()'s wait also ends on (FeedLoop's eventfd: a park, a
+  // drain or a stop must not wait for the next doorbell). Polled, never read
+  // here -- its owner clears it. -1 = none.
+  void set_wake_fd(int fd) { wake_fd_ = fd; }
   bool oneshot_drain();            // read retained records, then return (e2e)
 
   // Policy counters:
@@ -144,6 +148,7 @@ class RingClient {
   std::vector<uint32_t> wake_us_;
 
   int door_fd_ = -1;
+  int wake_fd_ = -1;
   bool door_hello_ok_ = false;
   uint64_t door_last_attempt_ms_ = 0;   // 0 = never attempted
   bool door_mismatch_logged_ = false;   // suppress repeat log spam until a good hello lands

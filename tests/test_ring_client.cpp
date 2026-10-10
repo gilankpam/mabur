@@ -4,6 +4,7 @@
 #include <ctime>
 #include <memory>
 #include <string>
+#include <sys/eventfd.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <thread>
@@ -710,6 +711,33 @@ TEST(wake_window_is_delivery_minus_t_complete) {
   CHECK(wk.p50 >= 3000);
   CHECK(wk.p50 < 1000000);
   CHECK(rc.take_wake().n == 0);                  // the window was cleared
+  unlink(ring.c_str());
+}
+
+TEST(wake_fd_ends_a_pump_wait_early) {
+  const std::string ring = tmp_path("wake1");
+  maburgs::AuRingWriter w;
+  REQUIRE(w.open(ring, {4096, 8}));
+  const std::string nosock = tmp_path("nosock_wake1");
+  unlink(nosock.c_str());
+  Collector c;
+  RingClient rc({ring, nosock}, c.sink());
+  REQUIRE(rc.open());
+  const int efd = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+  REQUIRE(efd >= 0);
+  rc.set_wake_fd(efd);
+  std::thread t([efd] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    const uint64_t one = 1;
+    (void)!::write(efd, &one, sizeof one);
+  });
+  const auto t0 = std::chrono::steady_clock::now();
+  rc.pump(2000);
+  const auto el = std::chrono::steady_clock::now() - t0;
+  t.join();
+  CHECK(el >= std::chrono::milliseconds(15));
+  CHECK(el < std::chrono::milliseconds(500));
+  ::close(efd);
   unlink(ring.c_str());
 }
 

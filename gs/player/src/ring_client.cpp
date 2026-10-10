@@ -268,22 +268,26 @@ void RingClient::handle_door_datagram_(const uint8_t* buf, ssize_t n) {
 
 void RingClient::service_door_(int timeout_ms) {
   maybe_connect_door_();
-  if (door_fd_ < 0) {
+  pollfd pfd[2];
+  nfds_t n = 0;
+  if (door_fd_ >= 0) pfd[n++] = pollfd{door_fd_, POLLIN, 0};
+  if (wake_fd_ >= 0) pfd[n++] = pollfd{wake_fd_, POLLIN, 0};
+  if (n == 0) {
     // No doorbell: correctness never depends on it, just fall back to a
     // plain sleep so pump() has the same wait-then-drain cadence.
     if (timeout_ms > 0)
       std::this_thread::sleep_for(std::chrono::milliseconds(timeout_ms));
     return;
   }
-  pollfd pfd{door_fd_, POLLIN, 0};
-  const int pr = ::poll(&pfd, 1, timeout_ms);
-  if (pr <= 0) return;  // timeout or interrupted: ring still gets drained by the caller
-  if (pfd.revents & (POLLHUP | POLLERR | POLLNVAL)) {
+  const int pr = ::poll(pfd, n, timeout_ms);
+  if (pr <= 0 || door_fd_ < 0) return;  // timeout, interrupted, or only the wake fd
+  const short rev = pfd[0].revents;     // door_fd_ is pfd[0] whenever it is set
+  if (rev & (POLLHUP | POLLERR | POLLNVAL)) {
     drop_door_();
     door_last_attempt_ms_ = now_ms();
     return;
   }
-  if (!(pfd.revents & POLLIN)) return;
+  if (!(rev & POLLIN)) return;
   // Drain every queued datagram (hello and/or notify wakeups) before
   // returning to the ring read — they carry no data of their own.
   for (;;) {
