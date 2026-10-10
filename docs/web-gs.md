@@ -1,7 +1,7 @@
 # Web GS — mabur ground station in the browser
 
 `web/` is a browser page (WebUSB + WebAssembly) that runs the same receive
-and ladder-control core as `maburgs`, on one RTL8812EU or RTL8812AU card, with no
+and ladder-control core as `maburgs`, on one RTL8812EU, RTL8812AU or RTL8812CU card, with no
 native daemon involved. It supersedes the throwaway `spike/wasm/` (deleted on this
 branch; branch `wasm-spike`, d54a9b2) — the spike answered "can devourer run
 in Chrome over WebUSB and keep up with live video" (yes), this is that
@@ -19,7 +19,7 @@ one-card reactive hop as `maburgs`, through the shared `ChannelCore`
 `docs/inflight-channel-hop.md`); no DVR on the VTX side beyond its SD
 recorder, no multi-card. Local raw recording
 into the browser's own storage exists (see Record, below). The page's radio
-is either one USB card (WebUSB, RTL8812EU/8812AU) or the CPE510 relay
+is either one USB card (WebUSB, RTL8812EU/8812AU/8812CU) or the CPE510 relay
 (`ws://`, see "CPE relay radio" under Use, below) — picked before Connect,
 alongside the mode. Two modes, picked before Connect:
 
@@ -511,13 +511,29 @@ requested while the card is still initialising (~5 s after Connect) takes
 effect only once init finishes.
 
 The browser's own device
-chooser asks for the card — an RTL8812EU (Jaguar3), an RTL8812AU
-(Jaguar1), or a TP-Link RTL8821AU (Jaguar1 1T1R: Archer T2U Plus
-2357:0120, plus 011e/0122 — the chooser filters on vendors 0bda and 2357,
-the core on exact VID:PID — `web_main.cpp`'s `kCards`, handed to
-`RadioFrontend::Cfg::ids`); the WASM core builds both devourer drivers (WebUSB's per-origin
+chooser asks for the card — an RTL8812EU (Jaguar3 8822E), an RTL8812CU
+(Jaguar3 8822C, 0bda:c812 — tested on a Comfast CF-924AC V3, sold as
+"RTL8812BU"; chip-id 0x13 says 8822C), an RTL8812AU (Jaguar1), or a TP-Link RTL8821AU
+(Jaguar1 1T1R: Archer T2U Plus 2357:0120, plus 011e/0122 — the chooser
+filters on vendors 0bda and 2357, the core on exact VID:PID —
+`web_main.cpp`'s `kCards`, handed to `RadioFrontend::Cfg::ids`); the WASM
+core builds the Jaguar1 and both Jaguar3 variants of devourer (the 8822C
+added 622 KB to `webgs.wasm`, 2.46 → 3.09 MB) (WebUSB's per-origin
 device grant — pick it once and later `getDevices()` calls see it without asking again on the same
 origin).
+
+**Comfast CF-924AC (RTL8812CU): eject its driver disk before Connect.**
+The stick powers up as a USB disk (0bda:1a2b "DISK", Realtek's driver-CD
+mode) and only becomes the Wi-Fi card (0bda:c812) once that disk is
+ejected — on every plug-in. The page cannot do it for you: in that mode the
+stick is mass storage, a WebUSB protected class, so Chrome neither lists
+nor opens it. On Android, where nothing ejects it, the CU does not work in
+the web GS — use an 8812EU/AU. The CU's bring-up also runs ~20 s (efuse
+read 6.7 s, BB/AGC/RF tables 9.8 s, firmware 2.2 s over native libusb)
+against ~5 s for the others.
+Bench 2026-10-10, native `webgs live --mode spotter`, drone on ch 144 HT40:
+79 s locked, 60 AU/s, pre-FEC and residual loss 0, RSSI −46…−50 dBm, SNR
+35–37 dB, USB p99 ~1.7 ms.
 
 **The RTL8821AU cannot decode LDPC**, and the drone codes every frame
 (video, probe, DISC_ACK, telemetry, MSP) with LDPC by default, so with this
@@ -551,8 +567,8 @@ What the status overlay shows after that:
   banner (GS mode only) confirming the ladder and RCF sends do not pause
   when the tab loses visibility; the worker keeps running headless.
 - `Card busy — maburgs or another tab has it. Close that and press
-  Connect.` / `No RTL8812EU/8812AU/8821AU card found — plug it in and press
-  Connect.` / `Card lost (unplugged?). Press Connect to restart.` /
+  Connect.` / `No RTL8812EU/8812AU/8812CU/8821AU card found — plug it in and
+  press Connect.` / `Card lost (unplugged?). Press Connect to restart.` /
   `WebUSB unavailable in this browser.` / `Unsupported card chip.` — mapped
   from the core's `ERROR <reason>` lines (`web/ui/src/lib/logic.mjs`'s
   `errorText()`); Connect re-enables so trying again costs nothing.
@@ -993,6 +1009,10 @@ rule).
   2026-09-28: with the module unloaded, GS mode on an 8812AU (C-cut 2T2R,
   USB 3) connects, flies the ladder and plays video. The TP-Link
   RTL8821AU has the same problem with `rtw88_8821au`; unload that one.
+  The RTL8812CU has `rtw88_8822cu`, and worse: right after the eject its
+  bring-up holds the kernel's network lock for 30 s+ and freezes a GNOME
+  desktop (NetworkManager, rfkill and the shell's net widgets all wait on
+  it) — blacklist it before switching a CU on a Linux host.
 - **Oilpan GC spikes.** Blink's incremental GC sweep of per-transfer WebUSB
   objects (`cppgc::Sweeper::IncrementalSweepTask`) runs on the thread that
   owns those objects and, after a major GC roughly every 8–13 s, costs one
