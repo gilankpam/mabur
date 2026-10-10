@@ -103,8 +103,10 @@ it). Both ends at 6c27e74, live adaptive GS config.
   offset +0.26 ms (gate ±4.0). A ring dump: 189 pictures of 4 slices, 7 of
   1 (refresh starts). au.log is `aulog 5` with `slices 4 kept 4`.
   slices = 1 baseline: 60.5 fps, `slice_mismatch=0`.
-- **Loss-sim A/B** (`MABUR_LOSS_SIM` maburgs, `s0`+`s1 eff=1.5 burst=4`,
-  5 min per arm):
+- **Loss-sim A/B, NACK on** (`MABUR_LOSS_SIM` maburgs on the live GS
+  config, `[link.nack] enable = true`: ~500 requests / ~3 600 symbols filled
+  per arm; `s0`+`s1 eff=1.5 burst=4`, 5 min per arm). Salvage acts on the
+  truncations NACK could not repair in time:
 
   | | slices = 4 | slices = 1 |
   |---|---|---|
@@ -118,6 +120,23 @@ it). Both ends at 6c27e74, live adaptive GS config.
   | drone cpu_pct p50 | 23.0 | 22.9 |
 
   The 9 `no_template` AUs lost every slice. `slice_mismatch` stayed 0.
+- **Loss-sim A/B, NACK off** (same rig, a config copy with
+  `[link.nack] enable = false`, sideport `link.nack` null):
+
+  | | slices = 4 | slices = 1 |
+  |---|---|---|
+  | truncated | 200 | 200 |
+  | slice_salvaged | 189 (94.5 %) | 0 |
+  | fallback | no_template 4 | — |
+  | ausniff 30 s window: incomplete / salvaged | 0 / 11 | 22 (14 base) / 0 |
+  | dropped (never emitted) | 303 | 304 |
+  | rkvdec `resetting` (dmesg) | 0 | 0 |
+
+  The 7 truncated AUs neither salvaged nor counted as a fallback are
+  unsplit refresh starts (`slice_rows` 0). Across the two A/Bs, NACK turns
+  some would-be drops into truncations (dropped ~210 vs ~300) rather than
+  cutting the total of damaged AUs much at this loss pattern; the runs were
+  minutes apart on an adaptive ladder, so treat that as indicative.
 - **Decoder legality of real salvaged AUs:** 60 s ring dump under the same
   loss (complete + 59 salvaged AUs, in ring order) through ffmpeg:
   3 584 frames, zero slice-data / CABAC errors; the only errors are a
