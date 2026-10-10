@@ -461,6 +461,7 @@ def render_rows_compact(model, wall, width):
         f"clean {_f(video.get('clean'), 7)}   "
         f"trunc {_f(video.get('truncated'), 4)}   "
         f"drop {_f(video.get('dropped'), 4)}"
+        f"   salv {_f(video.get('slice_salvaged'), 4)}"
     )
 
     # --- AU ring (PR C: replaced the RTP row -- video leaves maburgs via
@@ -780,6 +781,7 @@ def panel_video(model, wall):
     if _increased(video.get("dropped"), prev_video.get("dropped")):
         idx = line2.index(f"drop {drop_s}")
         spans2.append((idx, len(f"drop {drop_s}"), "bad"))
+    line2 += f"    salv {_f(video.get('slice_salvaged'), 4)}"
     body.append((line2, spans2))
 
     drop_ring_s, qdrop_s = _f(ring.get("dropped_oversize"), 3), _f(video.get("q_drop"), 3)

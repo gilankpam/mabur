@@ -33,6 +33,7 @@ add_library(mabur_gs_core STATIC
   src/rcf_slot.cpp
   src/msp_sink.cpp
   src/frame_stream.cpp
+  src/slice_assembler.cpp
   src/au_ring.cpp
   src/au_log.cpp
   src/au_doorbell.cpp

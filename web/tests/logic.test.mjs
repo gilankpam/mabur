@@ -56,6 +56,15 @@ test('mid-stream join: many plain AUs before params never produce a decode (revi
   assert.equal(g.onAu(au(PARAMS)).type, 'key');
 });
 
+test('salvaged AUs decode once armed but never arm the gate', () => {
+  const g = new Gate();
+  const SALVAGED = 0x40;
+  assert.equal(g.onAu(au(PARAMS, { complete: false, flags: SALVAGED })).skip, 'gated');
+  assert.equal(g.onAu(au(PARAMS)).type, 'key');
+  assert.deepEqual(g.onAu(au([1], { complete: false, flags: SALVAGED })), { type: 'delta', reset: false, skip: null });
+  assert.equal(g.onAu(au([1], { complete: false })).skip, 'truncated');
+});
+
 test('PtsUnwrap is monotone across the u32 wrap', () => {
   const u = new PtsUnwrap();
   assert.equal(u.add(0xffff0000), 0xffff0000);

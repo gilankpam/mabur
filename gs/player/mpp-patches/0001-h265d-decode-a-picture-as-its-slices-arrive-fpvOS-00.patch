@@ -1,0 +1,1280 @@
+From e990e17a2839d627ee9a64320842556a749a6fa5 Mon Sep 17 00:00:00 2001
+From: Gee <gehee@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 10:53:38 +0700
+Subject: [PATCH 1/3] h265d: decode a picture as its slices arrive (fpvOS 0002,
+ ported to 14729dd5)
+
+Ported from the GS image spike's HermanChen-develop port
+(sbc-groundstations-gilankpam 5dffa21) to rockchip-linux/mpp 14729dd5:
+parser hunks moved to the rewritten h265 parser (h265d_api.c h265d_prepare,
+h265d_ctx.h H265dPrs, h265d_syntax.c h265d_syntax_fill_slice); vdpu34x
+names Vdpu34xRegSet, comm_gen, comm_paras.reg64.stream_mode/stream_lastpacket,
+reg_ctx->cfg->dev, reg_ctx->cfg->frame_slots; designated-initializer
+MppDevApi tables. No logic change.
+---
+ inc/rk_mpi_cmd.h                        |  13 +
+ inc/rk_vdec_cmd.h                       |  44 +++
+ mpp/codec/dec/h265/h265d_api.c          |   6 +
+ mpp/codec/dec/h265/h265d_ctx.h          |   2 +
+ mpp/codec/dec/h265/h265d_syntax.c       |   7 +
+ mpp/codec/inc/mpp_dec.h                 |   1 +
+ mpp/codec/mpp_dec.c                     |  48 +++
+ mpp/common/h265d_syntax.h               |   5 +
+ mpp/hal/inc/mpp_hal.h                   |   7 +
+ mpp/hal/rkdec/h265d/hal_h265d_ctx.h     |   3 +
+ mpp/hal/rkdec/h265d/hal_h265d_vdpu34x.c | 436 ++++++++++++++++++++++++
+ mpp/mpp.c                               |   4 +
+ osal/driver/mpp_device.c                |   3 +
+ osal/driver/mpp_service.c               |  18 +
+ osal/driver/vcodec_service.c            |   2 +
+ osal/inc/mpp_device.h                   |  34 ++
+ osal/inc/mpp_service.h                  |   5 +
+ test/CMakeLists.txt                     |   3 +
+ test/mpi_dec_stream_test.c              | 301 ++++++++++++++++
+ 19 files changed, 942 insertions(+)
+ create mode 100644 test/mpi_dec_stream_test.c
+
+diff --git a/inc/rk_mpi_cmd.h b/inc/rk_mpi_cmd.h
+index 55861c0..1eba8c6 100644
+--- a/inc/rk_mpi_cmd.h
++++ b/inc/rk_mpi_cmd.h
+@@ -105,6 +105,19 @@ typedef enum {
+     MPP_DEC_SET_DISABLE_DPB_CHECK,      /* disable dpb discontinuous check */
+     MPP_DEC_SET_CODEC_MODE,             /* select codec mode */
+     MPP_DEC_SET_DIS_ERR_CLR_MARK,
++    /*
++     * fpvOS: more of a picture that went in with MPP_PACKET_FLAG_STREAM_START,
++     * as MppDecStreamAppend. Taken on the caller's thread, while the picture
++     * decodes. NULL asks whether this decoder can stream: MPP_OK if it can.
++     */
++    MPP_DEC_SET_STREAM_APPEND,
++    /*
++     * fpvOS: wait until the streamed picture named by MppDecStreamTop.pts has
++     * decoded the data it has so far - its first slice(s) are then in its
++     * output buffer, before the rest arrives - or is done. On the caller's
++     * thread, like MPP_DEC_SET_STREAM_APPEND.
++     */
++    MPP_DEC_GET_STREAM_TOP,
+ 
+     MPP_DEC_CMD_QUERY                   = MPP_FLAG_OR(CMD_MODULE_CODEC, CMD_CTX_ID_DEC, CMD_DEC_QUERY),
+     /* query decoder runtime information for decode stage */
+diff --git a/inc/rk_vdec_cmd.h b/inc/rk_vdec_cmd.h
+index fc333d5..09fc92a 100644
+--- a/inc/rk_vdec_cmd.h
++++ b/inc/rk_vdec_cmd.h
+@@ -66,4 +66,48 @@ typedef struct MppDecQueryCfg_t {
+ typedef void* MppExtCbCtx;
+ typedef MPP_RET (*MppExtCbFunc)(MppExtCbCtx cb_ctx, MppCtx mpp, RK_S32 cmd, void *arg);
+ 
++/*
++ * fpvOS: pictures decoded as their slices arrive (H.265, RK3568).
++ *
++ * A packet flagged MPP_PACKET_FLAG_STREAM_START holds the first slice(s) of
++ * a picture of MPP_PACKET_STREAM_SLICES(n) slices in all; the decoder starts
++ * on it at once. The rest follows by MPP_DEC_SET_STREAM_APPEND, one slice at
++ * a time, Annex-B start code included, the picture named by the packet's
++ * pts; the last with MPP_STREAM_APPEND_LAST. An append with no data and that
++ * flag ends a picture whose rest is lost. Appends may come before the decoder
++ * has taken the packet: they wait for it.
++ */
++#define MPP_PACKET_FLAG_STREAM_START    (0x00100000)
++#define MPP_PACKET_STREAM_SLICES(n)     ((((RK_U32)(n)) & 0xff) << 24)
++#define MPP_PACKET_STREAM_SLICES_OF(f)  ((((RK_U32)(f)) >> 24) & 0xff)
++
++#define MPP_STREAM_APPEND_LAST          (0x00000001)
++
++typedef struct MppDecStreamAppend_t {
++    const void  *data;
++    RK_U32      size;
++    RK_U32      flags;
++    RK_S64      pts;
++} MppDecStreamAppend;
++
++/*
++ * MPP_DEC_GET_STREAM_TOP: pts and timeout_ms in; state out - READY with
++ * buf_fd the picture's output buffer (the one its frame will come out in)
++ * and time_us when what it has was decoded (CLOCK_MONOTONIC), DONE if it
++ * finished first (its frame follows the usual way), NONE if neither came in
++ * time or the picture was never streamed.
++ */
++#define MPP_STREAM_TOP_NONE             (0)
++#define MPP_STREAM_TOP_READY            (1)
++#define MPP_STREAM_TOP_DONE             (2)
++
++typedef struct MppDecStreamTop_t {
++    RK_S64      pts;
++    RK_S32      timeout_ms;
++    RK_S32      state;
++    RK_S32      buf_fd;
++    RK_S64      time_us;
++} MppDecStreamTop;
++
++
+ #endif /* RK_VDEC_CMD_H */
+diff --git a/mpp/codec/dec/h265/h265d_api.c b/mpp/codec/dec/h265/h265d_api.c
+index f8f0552..9f44a4e 100644
+--- a/mpp/codec/dec/h265/h265d_api.c
++++ b/mpp/codec/dec/h265/h265d_api.c
+@@ -87,6 +87,12 @@ MPP_RET h265d_prepare(void *ctx, MppPacket pkt, HalDecTask *task)
+ 
+     task->valid = 0;
+     s->eos = mpp_packet_get_eos(pkt);
++    {
++        RK_U32 flag = mpp_packet_get_flag(pkt);
++
++        s->stream_slices = (flag & MPP_PACKET_FLAG_STREAM_START) ?
++                           MPP_PACKET_STREAM_SLICES_OF(flag) : 0;
++    }
+ 
+     if (p->cfg->base.split_parse && NULL == spl) {
+         h265d_spliter_init(&p->spliter);
+diff --git a/mpp/codec/dec/h265/h265d_ctx.h b/mpp/codec/dec/h265/h265d_ctx.h
+index 0f9cfd3..37f94e0 100644
+--- a/mpp/codec/dec/h265/h265d_ctx.h
++++ b/mpp/codec/dec/h265/h265d_ctx.h
+@@ -169,6 +169,8 @@ typedef struct H265dPrs_t {
+ 
+     RK_S64 pts;
+     RK_S64 dts;
++    /* fpvOS: slices of a picture streamed in, from its packet's flag; 0 if whole */
++    RK_U32 stream_slices;
+     RK_U8  miss_ref_flag;
+     RK_U8  pre_pps_id;
+     RK_U8  ps_need_upate;
+diff --git a/mpp/codec/dec/h265/h265d_syntax.c b/mpp/codec/dec/h265/h265d_syntax.c
+index 04d542f..954cb53 100644
+--- a/mpp/codec/dec/h265/h265d_syntax.c
++++ b/mpp/codec/dec/h265/h265d_syntax.c
+@@ -394,6 +394,12 @@ RK_S32 h265d_syntax_fill_slice(H265dCtx *ctx, RK_S32 input_index)
+             length += p->nals[i].size + 4;
+         }
+         length = MPP_ALIGN(length, 16) + 64;
++        /* fpvOS: a streamed picture's later slices are copied into the
++         * stream buffer sized from this packet, but only its first slice is
++         * here: make room for a whole key picture (4 MB), or a large one
++         * would be cut short at its first append. */
++        if (p->stream_slices && length < (4 << 20))
++            length = 4 << 20;
+         if (length > size) {
+             mpp_free(current);
+             buff_size = MPP_ALIGN(length + 10 * 1024, 1024);
+@@ -453,6 +459,7 @@ RK_S32 h265d_syntax_fill_slice(H265dCtx *ctx, RK_S32 input_index)
+     }
+ 
+     ctx_pic->slice_count = count;
++    ctx_pic->stream_slices = p->stream_slices > (RK_U32)count ? p->stream_slices : 0;
+     ctx_pic->bitstream_size = position;
+ 
+     if (-1 != input_index) {
+diff --git a/mpp/codec/inc/mpp_dec.h b/mpp/codec/inc/mpp_dec.h
+index f264bb0..b05c95c 100644
+--- a/mpp/codec/inc/mpp_dec.h
++++ b/mpp/codec/inc/mpp_dec.h
+@@ -51,6 +51,7 @@ MPP_RET mpp_dec_stop(MppDec ctx);
+ MPP_RET mpp_dec_reset(MppDec ctx);
+ MPP_RET mpp_dec_flush(MppDec ctx);
+ MPP_RET mpp_dec_control(MppDec ctx, MpiCmd cmd, void *param);
++MPP_RET mpp_dec_stream_control(MppDec ctx, MpiCmd cmd, void *param);
+ MPP_RET mpp_dec_notify(MppDec ctx, RK_U32 flag);
+ MPP_RET mpp_dec_callback(MppDec ctx, MppDecEvent event, void *arg);
+ 
+diff --git a/mpp/codec/mpp_dec.c b/mpp/codec/mpp_dec.c
+index b63293b..bb0c697 100644
+--- a/mpp/codec/mpp_dec.c
++++ b/mpp/codec/mpp_dec.c
+@@ -849,6 +849,24 @@ MPP_RET mpp_dec_start(MppDec ctx)
+     return ret;
+ }
+ 
++/*
++ * A reset or a stop waits for the decoder, and a streamed picture still open
++ * there holds it until the kernel's deadline (rk_vcodec.rkvdec2_stream_wait_ms,
++ * 400 ms) for parts that are not coming: the caller resets because its input
++ * stalled. End that picture first, and any that opens before the hal is reset.
++ */
++static void mpp_dec_stream_stop(MppDecImpl *dec)
++{
++    MppDecStreamAppend a;
++
++    if (NULL == dec->hal || dec->coding != MPP_VIDEO_CodingHEVC)
++        return;
++
++    memset(&a, 0, sizeof(a));
++    a.flags = MPP_STREAM_APPEND_LAST | MPP_STREAM_APPEND_STOP;
++    mpp_hal_control(dec->hal, MPP_DEC_SET_STREAM_APPEND, &a);
++}
++
+ MPP_RET mpp_dec_stop(MppDec ctx)
+ {
+     MPP_RET ret = MPP_OK;
+@@ -856,6 +874,8 @@ MPP_RET mpp_dec_stop(MppDec ctx)
+ 
+     dec_dbg_func("%p in\n", dec);
+ 
++    mpp_dec_stream_stop(dec);
++
+     if (dec->thread_parser)
+         mpp_thread_stop(dec->thread_parser);
+ 
+@@ -888,6 +908,8 @@ MPP_RET mpp_dec_reset(MppDec ctx)
+ 
+     dec_dbg_func("%p in\n", dec);
+ 
++    mpp_dec_stream_stop(dec);
++
+     if (dec->api && dec->api->reset)
+         ret = dec->api->reset(dec);
+ 
+@@ -976,6 +998,32 @@ MPP_RET mpp_dec_control(MppDec ctx, MpiCmd cmd, void *param)
+     return ret;
+ }
+ 
++/*
++ * MPP_DEC_SET_STREAM_APPEND and MPP_DEC_GET_STREAM_TOP go straight to the hal,
++ * on the caller's thread: a control through mpp_dec_control waits for the
++ * decode thread, and that one may be waiting for the very picture an append
++ * completes.
++ */
++MPP_RET mpp_dec_stream_control(MppDec ctx, MpiCmd cmd, void *param)
++{
++    MppDecImpl *dec = (MppDecImpl *)ctx;
++
++    if (NULL == dec || NULL == dec->hal)
++        return MPP_ERR_NULL_PTR;
++
++    /* MPP_STREAM_APPEND_STOP is MPP's own: a caller's append is just an append */
++    if (cmd == MPP_DEC_SET_STREAM_APPEND && param &&
++        (((MppDecStreamAppend *)param)->flags & MPP_STREAM_APPEND_STOP)) {
++        MppDecStreamAppend a = *(MppDecStreamAppend *)param;
++
++        a.flags &= ~MPP_STREAM_APPEND_STOP;
++        return mpp_hal_control(dec->hal, cmd, &a);
++    }
++
++    return mpp_hal_control(dec->hal, cmd, param);
++}
++
++
+ MPP_RET mpp_dec_set_cfg_by_cmd(MppDecCfg cfg, MpiCmd cmd, void *param)
+ {
+     MppDecCfgSet *dst = (MppDecCfgSet *)kmpp_obj_to_entry(cfg);
+diff --git a/mpp/common/h265d_syntax.h b/mpp/common/h265d_syntax.h
+index 0f920b1..d38ca75 100644
+--- a/mpp/common/h265d_syntax.h
++++ b/mpp/common/h265d_syntax.h
+@@ -232,6 +232,11 @@ typedef struct h265d_dxva2_picture_context {
+     RK_U32                      bitstream_size;
+     DXVA_Slice_HEVC_Cut_Param   *slice_cut_param;
+     RK_S32                      max_slice_num;
++    /*
++     * fpvOS: the picture came with MPP_PACKET_FLAG_STREAM_START - this many
++     * slices in all, the rest appended while it decodes; 0 for a whole one
++     */
++    RK_U32                      stream_slices;
+ } h265d_dxva2_picture_context_t;
+ 
+ #endif /* H265D_SYNTAX_H */
+diff --git a/mpp/hal/inc/mpp_hal.h b/mpp/hal/inc/mpp_hal.h
+index 9245312..124d404 100644
+--- a/mpp/hal/inc/mpp_hal.h
++++ b/mpp/hal/inc/mpp_hal.h
+@@ -28,6 +28,13 @@
+ #include "mpp_dec_cfg.h"
+ #include "mpp_device.h"
+ 
++/*
++ * fpvOS: a MppDecStreamAppend flag of MPP's own, never a caller's
++ * (mpp_dec_stream_control clears it): end the streamed picture that is open,
++ * whatever its pts, and each one that opens until the hal is reset.
++ */
++#define MPP_STREAM_APPEND_STOP          (0x80000000)
++
+ typedef enum VpuHwMode_e {
+     MODE_NULL   = 0,
+     RKVDEC_MODE = 0x01,
+diff --git a/mpp/hal/rkdec/h265d/hal_h265d_ctx.h b/mpp/hal/rkdec/h265d/hal_h265d_ctx.h
+index f4abdf8..d5fb5e4 100644
+--- a/mpp/hal/rkdec/h265d/hal_h265d_ctx.h
++++ b/mpp/hal/rkdec/h265d/hal_h265d_ctx.h
+@@ -89,6 +89,9 @@ typedef struct HalH265dCtx_t {
+     RK_U32          ps_buf_init;
+ 
+     HalDbgCtx       *dbg_ctx;
++
++    /* fpvOS: pictures streamed in slice by slice (vdpu34x only) */
++    void            *strm;
+ } HalH265dCtx;
+ 
+ typedef struct ScalingList_t {
+diff --git a/mpp/hal/rkdec/h265d/hal_h265d_vdpu34x.c b/mpp/hal/rkdec/h265d/hal_h265d_vdpu34x.c
+index 7d8ce40..c1bb43c 100644
+--- a/mpp/hal/rkdec/h265d/hal_h265d_vdpu34x.c
++++ b/mpp/hal/rkdec/h265d/hal_h265d_vdpu34x.c
+@@ -98,6 +98,429 @@ static const FilterdColBufRatio filterd_fbc_off[CTU][FMT] = {
+ #define RPS_OFFSET(pos)                 (SPSPPS_OFFSET(pos) + SPSPPS_ALIGNED_SIZE)
+ #define SCALIST_OFFSET(pos)             (RPS_OFFSET(pos) + RPS_ALIGEND_SIZE)
+ 
++/*
++ * fpvOS: pictures decoded as their slices arrive.
++ *
++ * A packet with MPP_PACKET_FLAG_STREAM_START holds a picture's first slice;
++ * the hardware is started on it in stream mode (h26x_stream_mode, no
++ * lastpacket), and the fpvOS kernel holds the decoder when that data runs out.
++ * Each later slice comes by MPP_DEC_SET_STREAM_APPEND on the caller's thread:
++ * it is copied into the picture's stream buffer behind the data before it and
++ * handed to the kernel (MPP_DEV_STREAM_APPEND), which feeds it to the
++ * decoder. The vdpu34x parses every slice header itself, so nothing about the
++ * later slices has to be known when the picture starts.
++ *
++ * One picture takes appends at a time: the one sent (start) and not yet
++ * waited for. Appends for a picture the decoder has not been sent yet - the
++ * caller runs ahead of the decode thread - wait in pending, matched by pts.
++ *
++ * A caller sends a picture's parts before the next picture's, so a part of a
++ * later picture says the open one gets no more: it is ended then, not left to
++ * hold the decoder until the kernel's deadline for parts that are not coming.
++ * A reset or stop ends it too (MPP_STREAM_APPEND_STOP).
++ */
++#include <pthread.h>
++
++/*
++ * Appends for pictures MPP holds and has not started: the four packets of its
++ * input queue, one parsed and one waiting for the decoder - eight with room -
++ * of up to 16 parts each (kestrel's have one to four). Full, it drops its
++ * oldest part, in the log; the picture that part belonged to is ended when it
++ * opens, the parts of later pictures being there behind it.
++ */
++#define STRM_PENDING_MAX        128
++
++typedef struct H265dStrmPart_t {
++    RK_S64      pts;
++    RK_U8       *data;
++    RK_U32      size;
++    RK_U32      flags;
++} H265dStrmPart;
++
++typedef struct H265dStrm_t {
++    pthread_mutex_t lock;
++    RK_U32      supported;
++
++    /* prepared by gen_regs, opened by start once it is sent */
++    RK_U32      next_valid;
++    RK_S64      next_pts;
++    MppBuffer   next_buf;
++    RK_U32      next_pos;
++    RK_S32      next_out_fd;
++
++    /* the picture on the decoder that takes appends */
++    RK_U32      open;
++    RK_S64      pts;
++    MppBuffer   buf;
++    RK_U8       *ptr;
++    RK_U32      cap;
++    RK_U32      pos;
++    RK_S32      out_fd;         /* its output buffer, for MPP_DEC_GET_STREAM_TOP */
++
++    /* the newest picture opened: appends naming an older one are late */
++    RK_U32      opened_any;
++    RK_S64      newest_pts;
++
++    H265dStrmPart pending[STRM_PENDING_MAX];
++    RK_U32      pending_cnt;
++    RK_U32      dropped;
++
++    /* a reset or stop is on its way: end what opens, the decode thread waits on it */
++    RK_U32      stopping;
++
++    RK_U32      pictures;
++    RK_U32      late;
++    RK_U32      debug;
++    RK_U32      can_wait;       /* the kernel takes MPP_STREAM_WAIT */
++} H265dStrm;
++
++#define strm_dbg(s, fmt, ...) do { if ((s)->debug) mpp_log("h265d strm: " fmt, ##__VA_ARGS__); } while (0)
++
++static void h265d_strm_init(HalH265dCtx *reg_ctx)
++{
++    H265dStrm *s;
++    MppDevStreamAppend probe;
++    RK_U32 enable = 1;
++
++    mpp_env_get_u32("h265d_stream", &enable, 1);
++    /* fast mode has two pictures in flight; one at a time is what streams */
++    if (!enable || reg_ctx->fast_mode)
++        return;
++
++    memset(&probe, 0, sizeof(probe));
++    probe.flags = MPP_STREAM_PROBE;
++    if (mpp_dev_ioctl(reg_ctx->cfg->dev, MPP_DEV_STREAM_APPEND, &probe) ||
++        probe.result != MPP_STREAM_SUPPORTED)
++        return;
++
++    s = mpp_calloc(H265dStrm, 1);
++    if (!s)
++        return;
++    pthread_mutex_init(&s->lock, NULL);
++    s->supported = 1;
++    /* a kernel without MPP_STREAM_WAIT would take it for an append */
++    s->can_wait = !!(probe.length & MPP_STREAM_CAP_WAIT);
++    mpp_env_get_u32("h265d_stream_debug", &s->debug, 0);
++    reg_ctx->strm = s;
++    mpp_log("h265d: the kernel takes streamed pictures%s\n",
++            s->can_wait ? ", and says when their first part is decoded" : "");
++}
++
++static void h265d_strm_deinit(HalH265dCtx *reg_ctx)
++{
++    H265dStrm *s = (H265dStrm *)reg_ctx->strm;
++    RK_U32 i;
++
++    if (!s)
++        return;
++    for (i = 0; i < s->pending_cnt; i++)
++        MPP_FREE(s->pending[i].data);
++    pthread_mutex_destroy(&s->lock);
++    MPP_FREE(reg_ctx->strm);
++}
++
++/* Under lock, the picture open: put a part behind its data, hand it over. */
++static void h265d_strm_send(HalH265dCtx *reg_ctx, H265dStrm *s,
++                            const void *data, RK_U32 size, RK_U32 flags)
++{
++    MppDevStreamAppend a;
++    RK_U32 pad;
++    RK_U32 last = flags & MPP_STREAM_APPEND_LAST;
++
++    memset(&a, 0, sizeof(a));
++    /*
++     * Zero-padded as gen_regs pads a whole picture's stream (to 16 bytes, and
++     * 64 more): the decoder reads ahead, and a part that ends at its last
++     * byte leaves it waiting for data that never comes. Zeros between NAL
++     * units are allowed (trailing_zero_8bits), so the next part follows them.
++     */
++    pad = MPP_ALIGN(s->pos + size, 16) + 64 - (s->pos + size);
++    if (size && s->pos + size + pad <= s->cap) {
++        memcpy(s->ptr + s->pos, data, size);
++        memset(s->ptr + s->pos + size, 0, pad);
++        mpp_buffer_sync_partial_end(s->buf, s->pos, size + pad);
++        a.offset = s->pos;
++        a.length = size + pad;
++        s->pos += size + pad;
++    } else if (size) {
++        /* no room: what came is all the picture gets */
++        mpp_err("h265d: streamed picture overflows its %d byte buffer\n", s->cap);
++        last = 1;
++    }
++    if (!a.length && !last)
++        return;
++    a.flags = last ? MPP_STREAM_LAST : 0;
++    {
++        MPP_RET r = mpp_dev_ioctl(reg_ctx->cfg->dev, MPP_DEV_STREAM_APPEND, &a);
++
++        strm_dbg(s, "pts %lld append off %u len %u flags %x -> ret %d result %u\n",
++                 (long long)s->pts, a.offset, a.length, a.flags, r, a.result);
++        if (r && !last) {
++            /*
++             * Refused outright - an older kernel's full queue or a range it
++             * does not take - the kernel's picture stays open, the decoder
++             * waiting for a part that will not come: end it. A kernel that
++             * ends a picture whose part it cannot take says so in result.
++             */
++            memset(&a, 0, sizeof(a));
++            a.flags = MPP_STREAM_LAST;
++            r = mpp_dev_ioctl(reg_ctx->cfg->dev, MPP_DEV_STREAM_APPEND, &a);
++            strm_dbg(s, "pts %lld refused: ended -> ret %d result %u\n",
++                     (long long)s->pts, r, a.result);
++            r = MPP_NOK;
++        }
++        if (r || a.result != MPP_STREAM_TAKEN || last)
++            s->open = 0;
++    }
++}
++
++/* gen_regs: a streamed picture starts on its first slice. */
++static void h265d_strm_regs(HalH265dCtx *reg_ctx, Vdpu34xRegSet *regs,
++                            h265d_dxva2_picture_context_t *dxva_cxt, MppBuffer streambuf)
++{
++    H265dStrm *s = (H265dStrm *)reg_ctx->strm;
++    MppFrame mframe = NULL;
++
++    if (!s)
++        return;
++    pthread_mutex_lock(&s->lock);
++    s->next_valid = 0;
++    if (dxva_cxt->stream_slices > dxva_cxt->slice_count && streambuf) {
++        regs->comm_paras.reg64.stream_mode = 1;
++        regs->comm_paras.reg64.stream_lastpacket = 0;
++        regs->comm_gen.reg017.slice_num = dxva_cxt->stream_slices;
++        /* exactly the data there is: the next part follows it */
++        regs->comm_gen.reg016_str_len = dxva_cxt->bitstream_size;
++        /* it counts while the decoder waits: the kernel keeps the watch instead */
++        regs->comm_gen.reg011.dec_timeout_e = 0;
++        /* dec_e may be written again mid-picture: that is how it resumes */
++        regs->comm_gen.reg011.dec_e_rewrite_valid = 1;
++
++        MppBuffer outbuf = NULL;
++
++        mpp_buf_slot_get_prop(reg_ctx->cfg->frame_slots, dxva_cxt->pp.CurrPic.Index7Bits,
++                              SLOT_FRAME_PTR, &mframe);
++        mpp_buf_slot_get_prop(reg_ctx->cfg->frame_slots, dxva_cxt->pp.CurrPic.Index7Bits,
++                              SLOT_BUFFER, &outbuf);
++        s->next_out_fd = outbuf ? mpp_buffer_get_fd(outbuf) : -1;
++        s->next_valid = 1;
++        s->next_pts = mframe ? mpp_frame_get_pts(mframe) : 0;
++        s->next_buf = streambuf;
++        s->next_pos = dxva_cxt->bitstream_size;
++        strm_dbg(s, "regs pts %lld slices %u of %u len %u\n", (long long)s->next_pts,
++                 dxva_cxt->slice_count, dxva_cxt->stream_slices, dxva_cxt->bitstream_size);
++    }
++    pthread_mutex_unlock(&s->lock);
++}
++
++/* start, once the task is sent: the picture takes appends, waiting ones first. */
++static void h265d_strm_sent(HalH265dCtx *reg_ctx)
++{
++    H265dStrm *s = (H265dStrm *)reg_ctx->strm;
++    RK_U32 i, kept = 0;
++
++    if (!s)
++        return;
++    pthread_mutex_lock(&s->lock);
++    if (s->next_valid) {
++        s->next_valid = 0;
++        s->open = 1;
++        s->pts = s->next_pts;
++        s->buf = s->next_buf;
++        s->ptr = (RK_U8 *)mpp_buffer_get_ptr(s->buf);
++        s->cap = (RK_U32)mpp_buffer_get_size(s->buf);
++        s->pos = s->next_pos;
++        s->out_fd = s->next_out_fd;
++        s->opened_any = 1;
++        s->newest_pts = s->pts;
++        s->pictures++;
++        strm_dbg(s, "sent pts %lld, %u waiting\n", (long long)s->pts, s->pending_cnt);
++    }
++    for (i = 0; i < s->pending_cnt; i++) {
++        H265dStrmPart *p = &s->pending[i];
++
++        if (s->opened_any && p->pts <= s->newest_pts) {
++            if (s->open && p->pts == s->pts)
++                h265d_strm_send(reg_ctx, s, p->data, p->size, p->flags);
++            MPP_FREE(p->data);
++        } else {
++            s->pending[kept++] = *p;
++        }
++    }
++    s->pending_cnt = kept;
++    /*
++     * Parts of a later picture wait behind it, or a reset is on its way: what
++     * has not come of this one never will. End it now.
++     */
++    if (s->open && (kept || s->stopping)) {
++        strm_dbg(s, "pts %lld ended at once: %u later parts waiting, stopping %u\n",
++                 (long long)s->pts, kept, s->stopping);
++        h265d_strm_send(reg_ctx, s, NULL, 0, MPP_STREAM_APPEND_LAST);
++    }
++    pthread_mutex_unlock(&s->lock);
++}
++
++/* wait: the picture is done, whatever of it has not come is too late. */
++static void h265d_strm_done(HalH265dCtx *reg_ctx)
++{
++    H265dStrm *s = (H265dStrm *)reg_ctx->strm;
++
++    if (!s)
++        return;
++    pthread_mutex_lock(&s->lock);
++    strm_dbg(s, "done pts %lld (open %u)\n", (long long)s->pts, s->open);
++    s->open = 0;
++    pthread_mutex_unlock(&s->lock);
++}
++
++/* a decoder reset: nothing is open, nothing waits, pts may start over */
++static void h265d_strm_reset(HalH265dCtx *reg_ctx)
++{
++    H265dStrm *s = (H265dStrm *)reg_ctx->strm;
++    RK_U32 i;
++
++    if (!s)
++        return;
++    pthread_mutex_lock(&s->lock);
++    for (i = 0; i < s->pending_cnt; i++)
++        MPP_FREE(s->pending[i].data);
++    s->pending_cnt = 0;
++    s->next_valid = 0;
++    s->open = 0;
++    s->opened_any = 0;
++    s->stopping = 0;
++    pthread_mutex_unlock(&s->lock);
++}
++
++/* MPP_DEC_GET_STREAM_TOP, on the caller's thread */
++static MPP_RET h265d_strm_top(HalH265dCtx *reg_ctx, MppDecStreamTop *t)
++{
++    H265dStrm *s = (H265dStrm *)reg_ctx->strm;
++    MppDevStreamAppend a;
++    struct timespec ts;
++    RK_S64 now, end;
++    RK_S32 fd = -1;
++
++    if (!s || !t || !s->can_wait)
++        return MPP_NOK;
++    t->state = MPP_STREAM_TOP_NONE;
++    t->buf_fd = -1;
++    t->time_us = 0;
++    clock_gettime(CLOCK_MONOTONIC, &ts);
++    now = ts.tv_sec * 1000000LL + ts.tv_nsec / 1000;
++    end = now + (RK_S64)t->timeout_ms * 1000;
++
++    /* the picture has to be on the decoder: the decode thread may not have sent it yet */
++    for (;;) {
++        RK_U32 gone;
++
++        pthread_mutex_lock(&s->lock);
++        if (s->open && s->pts == t->pts)
++            fd = s->out_fd;
++        gone = fd < 0 && s->opened_any && s->newest_pts >= t->pts;
++        pthread_mutex_unlock(&s->lock);
++        if (fd >= 0)
++            break;
++        if (gone) {
++            t->state = MPP_STREAM_TOP_DONE;
++            return MPP_OK;
++        }
++        if (now >= end)
++            return MPP_OK;
++        usleep(200);
++        clock_gettime(CLOCK_MONOTONIC, &ts);
++        now = ts.tv_sec * 1000000LL + ts.tv_nsec / 1000;
++    }
++
++    /* then the kernel says when it has decoded what it has */
++    memset(&a, 0, sizeof(a));
++    a.flags = MPP_STREAM_WAIT;
++    a.length = end > now ? (RK_U32)((end - now + 999) / 1000) : 1;
++    if (mpp_dev_ioctl(reg_ctx->cfg->dev, MPP_DEV_STREAM_APPEND, &a))
++        return MPP_OK;
++    if (a.result == MPP_STREAM_PAUSED) {
++        t->state = MPP_STREAM_TOP_READY;
++        t->buf_fd = fd;
++        t->time_us = (RK_S64)a.time_us;
++    } else if (a.result == MPP_STREAM_DONE) {
++        t->state = MPP_STREAM_TOP_DONE;
++    }
++    strm_dbg(s, "top pts %lld -> state %d fd %d at %lld\n", (long long)t->pts,
++             t->state, t->buf_fd, (long long)t->time_us);
++    return MPP_OK;
++}
++
++/* MPP_DEC_SET_STREAM_APPEND, on the caller's thread */
++static MPP_RET h265d_strm_append(HalH265dCtx *reg_ctx, MppDecStreamAppend *a)
++{
++    H265dStrm *s = (H265dStrm *)reg_ctx->strm;
++    MPP_RET ret = MPP_OK;
++
++    if (!s)
++        return MPP_NOK;
++    if (!a)
++        return MPP_OK;
++    if (a->flags & MPP_STREAM_APPEND_STOP) {
++        /* MPP's own, at a reset or stop (mpp_dec_stream_stop) */
++        pthread_mutex_lock(&s->lock);
++        strm_dbg(s, "stop: open %u pts %lld\n", s->open, (long long)s->pts);
++        s->stopping = 1;
++        if (s->open)
++            h265d_strm_send(reg_ctx, s, NULL, 0, MPP_STREAM_APPEND_LAST);
++        pthread_mutex_unlock(&s->lock);
++        return MPP_OK;
++    }
++    if (a->size && !a->data)
++        return MPP_ERR_NULL_PTR;
++
++    pthread_mutex_lock(&s->lock);
++    strm_dbg(s, "append pts %lld size %u flags %x: open %u pts %lld newest %lld\n",
++             (long long)a->pts, a->size, a->flags, s->open, (long long)s->pts,
++             (long long)s->newest_pts);
++    if (s->open && a->pts == s->pts) {
++        h265d_strm_send(reg_ctx, s, a->data, a->size, a->flags);
++    } else if (!s->opened_any || a->pts > s->newest_pts) {
++        /* its picture is not on the decoder yet */
++        H265dStrmPart *p;
++
++        if (s->open) {
++            /* the one that is gets no more: its caller has moved on */
++            strm_dbg(s, "pts %lld ended by a part of pts %lld\n",
++                     (long long)s->pts, (long long)a->pts);
++            h265d_strm_send(reg_ctx, s, NULL, 0, MPP_STREAM_APPEND_LAST);
++        }
++        if (s->pending_cnt == STRM_PENDING_MAX) {
++            if (++s->dropped <= 3 || !(s->dropped % 1000))
++                mpp_err("h265d: %d stream parts wait for their pictures: the oldest dropped (%u so far)\n",
++                        STRM_PENDING_MAX, s->dropped);
++            MPP_FREE(s->pending[0].data);
++            memmove(&s->pending[0], &s->pending[1], sizeof(s->pending[0]) * (STRM_PENDING_MAX - 1));
++            s->pending_cnt--;
++        }
++        p = &s->pending[s->pending_cnt];
++        p->pts = a->pts;
++        p->size = a->size;
++        p->flags = a->flags;
++        p->data = NULL;
++        if (a->size) {
++            p->data = mpp_malloc(RK_U8, a->size);
++            if (!p->data)
++                ret = MPP_ERR_MALLOC;
++            else
++                memcpy(p->data, a->data, a->size);
++        }
++        if (!ret)
++            s->pending_cnt++;
++    } else {
++        /* its picture is done, or was never streamed */
++        s->late++;
++        ret = MPP_NOK;
++    }
++    pthread_mutex_unlock(&s->lock);
++
++    return ret;
++}
++
+ static MPP_RET hal_h265d_vdpu34x_init(void *hal, MppHalCfg *cfg)
+ {
+     RK_S32 ret = 0;
+@@ -173,6 +596,7 @@ static MPP_RET hal_h265d_vdpu34x_init(void *hal, MppHalCfg *cfg)
+ #ifdef dump
+     fp = fopen("/data/hal.bin", "wb");
+ #endif
++    h265d_strm_init(reg_ctx);
+     return MPP_OK;
+ }
+ 
+@@ -213,6 +637,8 @@ static MPP_RET hal_h265d_vdpu34x_deinit(void *hal)
+         reg_ctx->cmv_bufs = NULL;
+     }
+ 
++    h265d_strm_deinit(reg_ctx);
++
+     return MPP_OK;
+ }
+ 
+@@ -1150,6 +1576,7 @@ static MPP_RET hal_h265d_vdpu34x_gen_regs(void *hal,  HalTaskInfo *syn)
+                       (VdpuRcbInfo*)reg_ctx->rcb_info);
+     vdpu34x_setup_statistic(&hw_regs->comm_gen, &hw_regs->statistic);
+     mpp_buffer_sync_end(reg_ctx->bufs);
++    h265d_strm_regs(reg_ctx, hw_regs, dxva_cxt, streambuf);
+ 
+     return ret;
+ }
+@@ -1264,6 +1691,7 @@ static MPP_RET hal_h265d_vdpu34x_start(void *hal, HalTaskInfo *task)
+             mpp_err_f("send cmd failed %d\n", ret);
+             break;
+         }
++        h265d_strm_sent(reg_ctx);
+     } while (0);
+ 
+     return ret;
+@@ -1297,6 +1725,7 @@ static MPP_RET hal_h265d_vdpu34x_wait(void *hal, HalTaskInfo *task)
+     ret = mpp_dev_ioctl(cfg->dev, MPP_DEV_CMD_POLL, NULL);
+     if (ret)
+         mpp_err_f("poll cmd failed %d\n", ret);
++    h265d_strm_done(reg_ctx);
+ 
+ ERR_PROC:
+     if (task->dec.flags.parse_err ||
+@@ -1364,6 +1793,7 @@ static MPP_RET hal_h265d_vdpu34x_reset(void *hal)
+     MPP_RET ret = MPP_OK;
+     HalH265dCtx *p_hal = (HalH265dCtx *)hal;
+     p_hal->fast_mode_err_found = 0;
++    h265d_strm_reset(p_hal);
+     (void)hal;
+     return ret;
+ }
+@@ -1394,6 +1824,12 @@ static MPP_RET hal_h265d_vdpu34x_control(void *hal, MpiCmd cmd_type, void *param
+     }
+     case MPP_DEC_SET_OUTPUT_FORMAT: {
+     } break;
++    case MPP_DEC_SET_STREAM_APPEND: {
++        ret = h265d_strm_append(p_hal, (MppDecStreamAppend *)param);
++    } break;
++    case MPP_DEC_GET_STREAM_TOP: {
++        ret = h265d_strm_top(p_hal, (MppDecStreamTop *)param);
++    } break;
+     default:
+         break;
+     }
+diff --git a/mpp/mpp.c b/mpp/mpp.c
+index 64e7566..042f29e 100644
+--- a/mpp/mpp.c
++++ b/mpp/mpp.c
+@@ -1495,6 +1495,10 @@ MPP_RET mpp_control_dec(Mpp *mpp, MpiCmd cmd, MppParam param)
+ 
+         ret = mpp_dec_set_cfg_by_cmd(mpp->mDecCfg, cmd, param);
+     } break;
++    case MPP_DEC_SET_STREAM_APPEND:
++    case MPP_DEC_GET_STREAM_TOP: {
++        ret = mpp->mDec ? mpp_dec_stream_control(mpp->mDec, cmd, param) : MPP_NOK;
++    } break;
+     case MPP_DEC_GET_STREAM_COUNT: {
+         mpp_mutex_cond_lock(&mpp->mPktIn->cond_lock);
+         *((RK_S32 *)param) = mpp_list_size(mpp->mPktIn);
+diff --git a/osal/driver/mpp_device.c b/osal/driver/mpp_device.c
+index 60e470b..4961c79 100644
+--- a/osal/driver/mpp_device.c
++++ b/osal/driver/mpp_device.c
+@@ -179,6 +179,9 @@ MPP_RET mpp_dev_ioctl(MppDev ctx, RK_S32 cmd, void *param)
+         if (api->cmd_send)
+             ret = api->cmd_send(impl_ctx);
+     } break;
++    case MPP_DEV_STREAM_APPEND : {
++        ret = api->stream_append ? api->stream_append(impl_ctx, param) : MPP_NOK;
++    } break;
+     case MPP_DEV_CMD_POLL : {
+         if (api->cmd_poll)
+             ret = api->cmd_poll(impl_ctx, param);
+diff --git a/osal/driver/mpp_service.c b/osal/driver/mpp_service.c
+index 0346164..45ca6be 100644
+--- a/osal/driver/mpp_service.c
++++ b/osal/driver/mpp_service.c
+@@ -842,6 +842,23 @@ MPP_RET mpp_service_cmd_poll(void *ctx, MppDevPollCfg *cfg)
+     return ret;
+ }
+ 
++/*
++ * One ioctl of its own on the client fd: it may come from another thread than
++ * the one building and polling the task, so it stays out of p->reqs.
++ */
++MPP_RET mpp_service_stream_append(void *ctx, MppDevStreamAppend *cfg)
++{
++    MppDevMppService *p = (MppDevMppService *)ctx;
++    RK_S32 ret = mpp_service_ioctl(p->client, MPP_CMD_STREAM_APPEND, sizeof(*cfg), cfg);
++
++    if (ret) {
++        mpp_dev_dbg_msg("stream append failed %d errno %d\n", ret, errno);
++        return MPP_NOK;
++    }
++
++    return MPP_OK;
++}
++
+ const MppDevApi mpp_service_api = {
+     .name               = "mpp_service",
+     .ctx_size           = sizeof(MppDevMppService),
+@@ -865,4 +882,5 @@ const MppDevApi mpp_service_api = {
+     .detach_fd          = mpp_service_detach_fd,
+     .cmd_send           = mpp_service_cmd_send,
+     .cmd_poll           = mpp_service_cmd_poll,
++    .stream_append      = mpp_service_stream_append,
+ };
+diff --git a/osal/driver/vcodec_service.c b/osal/driver/vcodec_service.c
+index fce9889..87a3814 100644
+--- a/osal/driver/vcodec_service.c
++++ b/osal/driver/vcodec_service.c
+@@ -707,6 +707,7 @@ MPP_RET vcodec_service_set_info(void *ctx, MppDevInfoCfg *cfg)
+     return MPP_OK;
+ }
+ 
++/* the old vcodec_service kernel interface: no stream mode */
+ const MppDevApi vcodec_service_api = {
+     .name               = "vcodec_service",
+     .ctx_size           = sizeof(MppDevVcodecService),
+@@ -730,4 +731,5 @@ const MppDevApi vcodec_service_api = {
+     .detach_fd          = NULL,
+     .cmd_send           = vcodec_service_cmd_send,
+     .cmd_poll           = vcodec_service_cmd_poll,
++    .stream_append      = NULL,
+ };
+diff --git a/osal/inc/mpp_device.h b/osal/inc/mpp_device.h
+index 168e96a..341cd48 100644
+--- a/osal/inc/mpp_device.h
++++ b/osal/inc/mpp_device.h
+@@ -41,9 +41,40 @@ typedef enum MppDevIoctlCmd_e {
+     MPP_DEV_CMD_SEND,
+     MPP_DEV_CMD_POLL,
+ 
++    /* fpvOS: more of the picture being decoded in stream mode, MppDevStreamAppend */
++    MPP_DEV_STREAM_APPEND,
++
+     MPP_DEV_IOCTL_CMD_BUTT,
+ } MppDevIoctlCmd;
+ 
++/*
++ * MPP_DEV_STREAM_APPEND: the bytes are in the running task's stream buffer at
++ * offset. Safe from any thread: it is one ioctl of its own, outside the
++ * request list a task is built in. The struct, flags and results are the
++ * fpvOS kernel's (struct mpp_stream_append, MPP_CMD_STREAM_APPEND).
++ */
++#define MPP_STREAM_LAST                 (0x00000001)
++#define MPP_STREAM_WAIT                 (0x40000000)
++#define MPP_STREAM_PROBE                (0x80000000)
++
++#define MPP_STREAM_TAKEN                (0)
++#define MPP_STREAM_NO_PICTURE           (1)
++#define MPP_STREAM_SUPPORTED            (2)
++#define MPP_STREAM_PAUSED               (3)
++#define MPP_STREAM_DONE                 (4)
++#define MPP_STREAM_TIMEOUT              (5)
++
++/* MPP_STREAM_PROBE's answer in length: what the kernel can do besides appends */
++#define MPP_STREAM_CAP_WAIT             (0x00000001)
++
++typedef struct MppDevStreamAppend_t {
++    RK_U32      offset;
++    RK_U32      length;
++    RK_U32      flags;
++    RK_U32      result;
++    RK_U64      time_us;        /* MPP_STREAM_WAIT: when it paused (CLOCK_MONOTONIC) */
++} MppDevStreamAppend;
++
+ /* for MPP_DEV_REG_WR */
+ typedef struct MppDevRegWrCfg_t {
+     void    *reg;
+@@ -173,6 +204,9 @@ typedef struct MppDevApi_t {
+ 
+     /* poll cmd from hardware */
+     MPP_RET     (*cmd_poll)(void *ctx, MppDevPollCfg *cfg);
++
++    /* more of a streamed picture, while it decodes */
++    MPP_RET     (*stream_append)(void *ctx, MppDevStreamAppend *cfg);
+ } MppDevApi;
+ 
+ #ifdef __cplusplus
+diff --git a/osal/inc/mpp_service.h b/osal/inc/mpp_service.h
+index 213c07f..8f0e1c6 100644
+--- a/osal/inc/mpp_service.h
++++ b/osal/inc/mpp_service.h
+@@ -80,6 +80,11 @@ typedef enum MppServiceCmdType_e {
+     MPP_CMD_SET_ERR_REF_HACK        = MPP_CMD_CONTROL_BASE + 4,
+     MPP_CMD_CONTROL_BUTT,
+ 
++    /* fpvOS kernel: a picture streamed into a running decode */
++    MPP_CMD_STREAM_BASE             = 0x800,
++    MPP_CMD_STREAM_APPEND           = MPP_CMD_STREAM_BASE + 0,
++    MPP_CMD_STREAM_BUTT,
++
+     MPP_CMD_BUTT,
+ } MppServiceCmdType;
+ 
+diff --git a/test/CMakeLists.txt b/test/CMakeLists.txt
+index 6ec4a6b..1769c97 100644
+--- a/test/CMakeLists.txt
++++ b/test/CMakeLists.txt
+@@ -44,6 +44,9 @@ add_mpp_test(mpi_rc2 c)
+ # new dec multi unit test
+ add_mpp_test(mpi_dec_multi c)
+ 
++# fpvOS: pictures streamed in slice by slice
++add_mpp_test(mpi_dec_stream c)
++
+ macro(add_legacy_test module)
+     set(test_name ${module}_test)
+     string(TOUPPER ${test_name} test_tag)
+diff --git a/test/mpi_dec_stream_test.c b/test/mpi_dec_stream_test.c
+new file mode 100644
+index 0000000..62b88ec
+--- /dev/null
++++ b/test/mpi_dec_stream_test.c
+@@ -0,0 +1,301 @@
++/*
++ * fpvOS: decode an H.265 Annex-B file picture by picture, each picture either
++ * whole or streamed - its first slice as a packet flagged
++ * MPP_PACKET_FLAG_STREAM_START, the others by MPP_DEC_SET_STREAM_APPEND after a
++ * delay, standing in for the radio - and write every picture out, errors
++ * included. Times the last slice (or the whole picture) to the frame.
++ *
++ *   mpi_dec_stream_test in.h265 out.yuv [stream 0|1] [gap_us] [lose_every] [top 0|1]
++ *
++ * lose_every N drops the last slice of every Nth picture, which then ends by
++ * an empty last append; with a negative N nothing ends it, and the kernel's
++ * wait (rk_vcodec.rkvdec2_stream_wait_ms) has to. top 1 asks, after each
++ * first slice, when the decoder has decoded it (MPP_DEC_GET_STREAM_TOP).
++ */
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <pthread.h>
++#include <time.h>
++#include <unistd.h>
++
++#include "rk_mpi.h"
++
++#define MAX_PICS    4096
++#define MAX_SLICES  16
++
++typedef struct {
++    size_t      off[MAX_SLICES];    /* each slice, start code included */
++    size_t      len[MAX_SLICES];
++    int         n;
++    size_t      ps_off, ps_len;     /* parameter sets before the picture */
++} Pic;
++
++static RK_S64 now_us(void)
++{
++    struct timespec ts;
++
++    clock_gettime(CLOCK_MONOTONIC, &ts);
++    return ts.tv_sec * 1000000LL + ts.tv_nsec / 1000;
++}
++
++static RK_S64 done_at[MAX_PICS];   /* when the picture was all given to MPP */
++static RK_S64 out_at[MAX_PICS];
++static int frames_out, frames_err;
++static FILE *fo;
++static MppCtx ctx;
++static MppApi *mpi;
++static volatile int stop;
++static int lose_no_end;
++static RK_S64 top_lat[MAX_PICS];
++static int ntop, top_ready, top_done, top_none;
++
++static void *out_thread(void *arg)
++{
++    (void)arg;
++    while (!stop) {
++        MppFrame f = NULL;
++
++        if (mpi->decode_get_frame(ctx, &f) || !f) {
++            usleep(1000);
++            continue;
++        }
++        if (mpp_frame_get_info_change(f)) {
++            mpi->control(ctx, MPP_DEC_SET_INFO_CHANGE_READY, NULL);
++        } else {
++            RK_S64 pts = mpp_frame_get_pts(f);
++            MppBuffer b = mpp_frame_get_buffer(f);
++
++            if (pts >= 0 && pts < MAX_PICS)
++                out_at[pts] = now_us();
++            if (mpp_frame_get_errinfo(f) || mpp_frame_get_discard(f))
++                frames_err++;
++            if (b && fo) {
++                RK_U32 w = mpp_frame_get_width(f), h = mpp_frame_get_height(f);
++                RK_U32 hs = mpp_frame_get_hor_stride(f), vs = mpp_frame_get_ver_stride(f);
++                RK_U8 *p = (RK_U8 *)mpp_buffer_get_ptr(b);
++                RK_U32 y;
++
++                for (y = 0; y < h; y++)
++                    fwrite(p + y * hs, 1, w, fo);
++                for (y = 0; y < h / 2; y++)
++                    fwrite(p + hs * vs + y * hs, 1, w, fo);
++            }
++            frames_out++;
++            if (mpp_frame_get_eos(f))
++                stop = 1;
++        }
++        mpp_frame_deinit(&f);
++    }
++    return NULL;
++}
++
++static void put(const void *data, size_t len, RK_S64 pts, RK_U32 flag)
++{
++    MppPacket pkt = NULL;
++
++    mpp_packet_init(&pkt, (void *)data, len);
++    mpp_packet_set_pts(pkt, pts);
++    if (flag)
++        mpp_packet_set_flag(pkt, flag);
++    while (mpi->decode_put_packet(ctx, pkt))
++        usleep(200);
++    mpp_packet_deinit(&pkt);
++}
++
++static int cmp_s64(const void *a, const void *b)
++{
++    RK_S64 x = *(const RK_S64 *)a, y = *(const RK_S64 *)b;
++
++    return x < y ? -1 : x > y;
++}
++
++int main(int argc, char **argv)
++{
++    static Pic pics[MAX_PICS];
++    int stream, gap_us, lose_every, npics = 0, i, k;
++    RK_U8 *buf, *tmp;
++    size_t size, pos, ps_off = 0, ps_len = 0;
++    FILE *fi;
++    pthread_t th;
++    RK_U32 v;
++    MppDecCfg cfg = NULL;
++    RK_S64 lat[MAX_PICS];
++    int nlat = 0;
++    int want_top;
++
++    if (argc < 3) {
++        fprintf(stderr, "usage: %s in.h265 out.yuv [stream 0|1] [gap_us] [lose_every]\n", argv[0]);
++        return 1;
++    }
++    stream = argc > 3 ? atoi(argv[3]) : 1;
++    gap_us = argc > 4 ? atoi(argv[4]) : 5000;
++    lose_every = argc > 5 ? atoi(argv[5]) : 0;
++    want_top = argc > 6 ? atoi(argv[6]) : 0;
++    {
++        int no_end = lose_every < 0;
++
++        if (no_end)
++            lose_every = -lose_every;
++        lose_no_end = no_end;
++    }
++
++    fi = fopen(argv[1], "rb");
++    if (!fi)
++        return 1;
++    fseek(fi, 0, SEEK_END);
++    size = ftell(fi);
++    fseek(fi, 0, SEEK_SET);
++    buf = malloc(size + 16);
++    tmp = malloc(size + 16);
++    if (fread(buf, 1, size, fi) != size)
++        return 1;
++    fclose(fi);
++
++    /* NALs by 4-byte start codes, grouped into pictures */
++    pos = 0;
++    while (pos + 4 < size) {
++        size_t end = pos + 4;
++        int type, first;
++
++        while (end + 4 <= size && memcmp(buf + end, "\0\0\0\1", 4))
++            end++;
++        if (end + 4 > size)
++            end = size;
++        type = (buf[pos + 4] >> 1) & 63;
++        first = buf[pos + 6] >> 7;
++        if (type >= 32 && type <= 34) {
++            if (!ps_len)
++                ps_off = pos;
++            ps_len = end - ps_off;
++        } else if (type <= 21) {
++            if (first) {
++                if (npics == MAX_PICS)
++                    break;
++                pics[npics].n = 0;
++                pics[npics].ps_off = ps_off;
++                pics[npics].ps_len = ps_len;
++                ps_len = 0;
++                npics++;
++            }
++            if (npics && pics[npics - 1].n < MAX_SLICES) {
++                Pic *p = &pics[npics - 1];
++
++                p->off[p->n] = pos;
++                p->len[p->n] = end - pos;
++                p->n++;
++            }
++        }
++        pos = end;
++    }
++
++    fo = fopen(argv[2], "wb");
++    if (mpp_create(&ctx, &mpi))
++        return 1;
++    /* before init: the hal streams only without fast mode, and decides at init */
++    v = 0;
++    mpi->control(ctx, MPP_DEC_SET_PARSER_FAST_MODE, &v);
++    mpi->control(ctx, MPP_DEC_SET_PARSER_SPLIT_MODE, &v);
++    if (mpp_init(ctx, MPP_CTX_DEC, MPP_VIDEO_CodingHEVC))
++        return 1;
++    mpp_dec_cfg_init(&cfg);
++    mpi->control(ctx, MPP_DEC_GET_CFG, cfg);
++    mpp_dec_cfg_set_u32(cfg, "base:split_parse", 0);
++    mpp_dec_cfg_set_u32(cfg, "base:fast_parse", 0);
++    mpp_dec_cfg_set_u32(cfg, "base:disable_error", 1);
++    mpi->control(ctx, MPP_DEC_SET_CFG, cfg);
++    v = 1;
++    mpi->control(ctx, MPP_DEC_SET_IMMEDIATE_OUT, &v);
++    if (stream && mpi->control(ctx, MPP_DEC_SET_STREAM_APPEND, NULL)) {
++        printf("no stream mode here: decoding whole pictures\n");
++        stream = 0;
++    }
++    pthread_create(&th, NULL, out_thread, NULL);
++
++    for (i = 0; i < npics; i++) {
++        Pic *p = &pics[i];
++        int lose = lose_every && (i % lose_every) == lose_every - 1 && p->n > 1;
++        size_t n0 = p->ps_len;
++
++        memcpy(tmp, buf + p->ps_off, p->ps_len);
++        if (!stream || p->n < 2) {
++            for (k = 0; k < p->n; k++) {
++                memcpy(tmp + n0, buf + p->off[k], p->len[k]);
++                n0 += p->len[k];
++            }
++            put(tmp, n0, i, 0);
++            done_at[i] = now_us();
++        } else {
++            RK_S64 sent;
++
++            memcpy(tmp + n0, buf + p->off[0], p->len[0]);
++            put(tmp, n0 + p->len[0], i,
++                MPP_PACKET_FLAG_STREAM_START | MPP_PACKET_STREAM_SLICES(p->n));
++            sent = now_us();
++            if (want_top) {
++                MppDecStreamTop t;
++
++                memset(&t, 0, sizeof(t));
++                t.pts = i;
++                t.timeout_ms = 20;
++                mpi->control(ctx, MPP_DEC_GET_STREAM_TOP, &t);
++                if (t.state == MPP_STREAM_TOP_READY) {
++                    top_ready++;
++                    top_lat[ntop++] = t.time_us - sent;
++                } else if (t.state == MPP_STREAM_TOP_DONE) {
++                    top_done++;
++                } else {
++                    top_none++;
++                }
++            }
++            for (k = 1; k < p->n; k++) {
++                MppDecStreamAppend a;
++                int last = k == p->n - 1;
++
++                usleep(gap_us / (p->n - 1));
++                a.pts = i;
++                if (last && lose && lose_no_end)
++                    break;
++                if (last && lose) {
++                    a.data = NULL;
++                    a.size = 0;
++                } else {
++                    a.data = buf + p->off[k];
++                    a.size = p->len[k];
++                }
++                a.flags = last ? MPP_STREAM_APPEND_LAST : 0;
++                if (mpi->control(ctx, MPP_DEC_SET_STREAM_APPEND, &a))
++                    printf("picture %d: slice %d not taken\n", i, k);
++            }
++            done_at[i] = now_us();
++        }
++        /* one picture at a time, as from the air: wait for it */
++        while (!out_at[i] && now_us() - done_at[i] < 200000)
++            usleep(100);
++        if (out_at[i])
++            lat[nlat++] = out_at[i] - done_at[i];
++    }
++    usleep(100000);
++    stop = 1;
++    pthread_join(th, NULL);
++
++    qsort(lat, nlat, sizeof(lat[0]), cmp_s64);
++    printf("%s: %d pictures, %d frames out (%d flagged with errors); "
++           "all given -> frame: median %lld us, p90 %lld us, max %lld us\n",
++           stream ? "streamed" : "whole", npics, frames_out, frames_err,
++           nlat ? (long long)lat[nlat / 2] : -1LL,
++           nlat ? (long long)lat[nlat * 9 / 10] : -1LL,
++           nlat ? (long long)lat[nlat - 1] : -1LL);
++
++    if (want_top) {
++        qsort(top_lat, ntop, sizeof(top_lat[0]), cmp_s64);
++        printf("top half: %d ready, %d done first, %d neither; first slice sent -> top half decoded: "
++               "median %lld us, max %lld us\n", top_ready, top_done, top_none,
++               ntop ? (long long)top_lat[ntop / 2] : -1LL, ntop ? (long long)top_lat[ntop - 1] : -1LL);
++    }
++
++    mpi->reset(ctx);
++    mpp_destroy(ctx);
++    fclose(fo);
++    return 0;
++}
+-- 
+2.51.2
+

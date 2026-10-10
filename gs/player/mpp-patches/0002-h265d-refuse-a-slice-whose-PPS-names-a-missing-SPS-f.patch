@@ -1,0 +1,32 @@
+From 898d34d10d23ffc1e51b6f505846f04ee789b49f Mon Sep 17 00:00:00 2001
+From: Gee <gehee@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 10:54:16 +0700
+Subject: [PATCH 2/3] h265d: refuse a slice whose PPS names a missing SPS
+ (fpvOS 0001, ported to 14729dd5)
+
+The guard moves to the rewritten slice-header parse (h265d_flow.c), right
+where the PPS's sps_id is read.
+---
+ mpp/codec/dec/h265/h265d_flow.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/mpp/codec/dec/h265/h265d_flow.c b/mpp/codec/dec/h265/h265d_flow.c
+index e0c0836..6df78b3 100644
+--- a/mpp/codec/dec/h265/h265d_flow.c
++++ b/mpp/codec/dec/h265/h265d_flow.c
+@@ -258,6 +258,12 @@ static RK_S32 h265d_slice_head(H265dPrs *p)
+ 
+     /* Check if SPS changed using bitmap - bit set means SPS was (re)parsed */
+     RK_U32 sps_id = p->pps->sps_id;
++    /* A PPS that failed to re-parse in place keeps whatever sps_id it read,
++     * which need not name an SPS that exists: set_sps(NULL) below. */
++    if (sps_id >= MAX_SPS_COUNT || !p->sps_list[sps_id]) {
++        mpp_loge("pps %d refers to sps %u, which does not exist\n", slice->pps_id, sps_id);
++        return MPP_ERR_STREAM;
++    }
+     if (MPP_GET_BIT(p->sps_update_mask, sps_id)) {
+         h265d_dbg_ref("seq_decode %d -> %d (SPS updated sps_id %u)\n",
+                       p->seq_decode, (p->seq_decode + 1) & 0xff, sps_id);
+-- 
+2.51.2
+

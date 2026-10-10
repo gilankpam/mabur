@@ -30,6 +30,7 @@ DGRAM = {
         "air_pct": 31.3,
         "video": {"fps": 59.9, "mbps": 9.31, "jitter_ms": 1.8,
                   "clean": 21500, "truncated": 3, "dropped": 0, "stall_resets": 0,
+                  "slice_salvaged": 2,
                   "ring": {"published": 812345, "dropped_oversize": 0,
                            "bytes": 123456789},
                   "q_drop": 0},
@@ -270,7 +271,7 @@ class VideoPanelTest(unittest.TestCase):
         joined = "\n".join(texts(rows))
         for cell in ("59.9 fps", "9.31 Mbps", "jitter", "1.8 ms", "clean",
                      "21500", "trunc", "drop", "812345", "ring",
-                     "pub", "q_drop", "residual"):
+                     "pub", "q_drop", "residual", "salv"):
             self.assertIn(cell, joined)
 
     def test_increased_truncated_bad_span(self):

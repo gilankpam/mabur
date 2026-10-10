@@ -40,9 +40,10 @@ import argparse, json, mmap, statistics, struct, sys, time
 HDR = 4096
 SLOT_HDR = 64
 MAGIC = 0x4D425541
-# SlotHdr v3 (kAuRingVersion 3, 2026-09-06 air-clock): +u16 drone_air_ms at
-# slot offset 52 (the drone's modelled air backlog at the AU's arrival, ms).
-VERSION = 3
+# Ring v4 (kAuRingVersion 4): codec byte gone, offset 54 u8 state (0 closed,
+# 1 open, 2 aborted), 55 nslices, 56 valid_len. Only closed records count.
+VERSION = 4
+STATE_CLOSED = 0
 FLAG_IDR = 0x01
 
 
@@ -80,11 +81,12 @@ def main():
         l1 = struct.unpack_from("<I", mm, base)[0]
         if l1 & 1:
             return None
-        ln, rec, fid, pts, sid, flags, codec = struct.unpack_from(
-            "<IQQIBBB", mm, base + 4)
+        ln, rec, fid, pts, sid, flags = struct.unpack_from(
+            "<IQQIBB", mm, base + 4)
         t_complete = struct.unpack_from("<Q", mm, base + 40)[0]
+        state = struct.unpack_from("<B", mm, base + 54)[0]
         l2 = struct.unpack_from("<I", mm, base)[0]
-        if l1 != l2:
+        if l1 != l2 or state != STATE_CLOSED:
             return None
         return ln, pts, sid, flags, t_complete
 

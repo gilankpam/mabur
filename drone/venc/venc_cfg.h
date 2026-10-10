@@ -82,6 +82,14 @@ typedef struct {
                                 * is doing the recovering, not the stripe. */
   bool ref_pred;               /* venc.ref_pred: bEnablePred, enhance->base
                                 * prediction. */
+  uint8_t slices;              /* venc.slices: H.265 row slices per picture on
+                                * the LINK channel (the SD recorder is never
+                                * split). 1 = off. Applied with
+                                * MI_VENC_SetH265SliceSplit in the CreateChn ->
+                                * StartRecvPic window; only counts the SDK's
+                                * whole-CTU-row geometry reproduces are legal
+                                * (venc_cfg_slice_rows). Spec
+                                * 2026-10-10-h265-slices §5.1. */
   bool roi_enabled;          /* venc.roi.enabled */
   uint8_t roi_steps;         /* venc.roi.steps */
   double roi_center;         /* venc.roi.center */
@@ -140,6 +148,17 @@ uint16_t venc_cfg_ctu_rows(uint16_t height);
  * 0 when frames or height is 0. The actual sweep, ceil(ctu_rows / rows), is
  * never longer than `frames`. Pure, host-tested. */
 uint16_t venc_cfg_intra_rows(uint16_t height, uint16_t frames);
+
+/* 64-px CTU rows of a `height`-line picture: the H.265 CTB the SSC338Q
+ * encodes with (venc_cfg_ctu_rows() above counts 32-px rows, the unit of
+ * the intra-refresh and slice-split SDK fields). */
+uint16_t venc_cfg_ctb64_rows(uint16_t height);
+
+/* CTU rows per slice for `slices` slices: k = ceil(R / slices), returned
+ * only when that fixed row height really yields `slices` slices
+ * (ceil(R / k) == slices) -- the SDK cuts whole rows of one height. 0 when
+ * slices <= 1, slices > R, or the count is not achievable at this height. */
+uint8_t venc_cfg_slice_rows(uint16_t height, uint8_t slices);
 
 /* P-frame SuperFrame threshold in BYTES for a pct-of-budget cap at the
  * given programmed rate and frame rate: pct * (kbps*1024) / (fps*8*100).

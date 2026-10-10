@@ -210,6 +210,11 @@ Consume the same numbers programmatically with:
   the FEC/SBI CPU (~6 ms standing; see the scale-break note in
   `docs/data-provenance.md`).
 
+  Since 2026-10-10 (slice salvage) the marker is `# aulog 5`: the
+  `aulog 4` twelve columns plus four trailing `slices kept filled
+  after_hole` columns (`gs/src/au_log.h`) — all 0 on an AU that was
+  neither split nor salvaged.
+
   `tools/flightjitter.py` is the analyzer: reproduces the player's jitter
   EMA from the AU rows — using each row's `t_complete` as the arrival
   basis when present (the writer-stamped ring completion time, sharper
@@ -492,6 +497,24 @@ read the sideport. Reach for other tools only in these cases:**
   mode is best-effort — Python cannot fence.) Host-side, the same
   invariant is `ctest -R 'gs_e2e|gs_au_e2e|player_e2e'` (byte-exact
   fixture-to-ring/AU comparisons via `verify_aus.py`/`--out-aus`).
+  Ring v4 (`docs/slices.md` Part 2): maburgs publishes a slot while it fills
+  it; ausniff counts closed records only (it waits on a slot still open and
+  skips one whose AU overflowed, as a resync) and reports `nslices` —
+  records per slice count, `1` = whole AU (refresh starts, unsplit AUs).
+  maburplay's side of it is the `stream:` stderr line every 5 s
+  (`/tmp/maburplay.log`), printed by the decoder-input thread (FeedLoop):
+  `on|off:<reason>`, `streamed` (of them `salvaged`), `aborted`
+  (`stream_aborted`, one rkvdec reset each), `whole`, `opened`/
+  `open_aborted` (ring records seen open / ended without closing),
+  `wake_us=p50/p99` (closed-record delivery − maburgs' `t_complete`, µs)
+  and `refused` (STREAM_APPENDs the decoder refused,
+  `MppBackend::stream_errors`). `maburplay --oneshot` JSON carries
+  `streamed`, `stream_aborted` and `stream`. On shutdown maburplay also
+  logs `maburplay: shutdown: <stream idle|stream finished|stream aborted>
+  pts=… waited=… ms…` (how the picture that was streaming when SIGTERM
+  arrived was finished before decoder teardown) and `maburplay: feed:
+  delivered=… submits=… parks=… notes_dropped=…` (the feed thread's own
+  tally for the run).
 - **Per-frame `air` excess around rung transitions → `tools/bench/airdrain.py`**
   (`python3 tools/bench/airdrain.py ctl-NNNN_<date>.log log/au-NNNN.log
   [--profiles]`, host-side, no lat log needed). Replays the player's
@@ -948,6 +971,16 @@ USB fails, CPU, shed periods, once per `tlm_seq`).
 **2026-10-06 (software NACK, RC_VERSION 15; `docs/fec-nack.md`).**
 `link.nack{requests, repeats, syms_requested, tail_requests, filled, late_fill, wasted, dropped_deadline, suppressed, lead_skipped, fill_pps, fill_ms{p50,p90,max}, settle_ms, late_ms_max}`: the GS NackTracker, counters cumulative, `fill_*`/`late_ms_max` per export window; present only while `[link.nack] enable`. `lead_skipped` (2026-10-06 post-flight-0026): seqs whose request was withheld by `link.nack.min_lead_ms` because the answer could not land before the deadline.
 `drone.nack{rx, retx_syms, retx_refused}`: the drone's T_NACK answers from Telem, per Telem period (repeated until the next Telem; count once per `drone.tlm_seq`).
+
+**2026-10-10 (H.265 row slices, slice salvage; `docs/slices.md`).**
+`link.video` gains five keys from `FrameStream`'s per-AU `SliceAssembler`
+result: `slice_salvaged` (AUs rebuilt this window), `slices_kept` /
+`slices_filled` (slices that arrived complete vs. were skip-slice fills,
+summed over those AUs), `slices_after_hole` (kept slices whose position
+is past the first missing one), and `slice_fallback{no_params,
+unsupported, islice, no_template, geometry}` (why a damaged split AU fell
+back to the old truncated-prefix passthrough instead of salvaging).
+maburtop shows `salv`; `flightreport.py` gained a SLICE SALVAGE section.
 
 **2026-09-06 (air clock).** `drone.air_backlog_max_ms` was the per-window
 max of the drone's modelled air backlog (`AirClock`, spec

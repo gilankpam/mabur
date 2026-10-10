@@ -44,4 +44,15 @@ int classify_frame(const uint8_t* annexb, size_t len);
 // producer-flag agreement check (spec 2026-07-26 svct-enable).
 bool frame_is_trail_n(const uint8_t* annexb, size_t len);
 
+// One start-code walk (the same as classify_frame's) over an Annex-B access
+// unit: vcl = VCL NAL units (type < 32: slice segments), param_set = a
+// VPS/SPS/PPS (type 32..34) is present. maburd stamps FrameHdr.slice_rows
+// only when vcl equals the configured slice count; a one-slice AU is
+// expected only with parameter sets (refresh start, IDR).
+struct AuNalCount {
+  int vcl = 0;
+  bool param_set = false;
+};
+AuNalCount count_au_nals(const uint8_t* annexb, size_t len);
+
 }  // namespace mabur

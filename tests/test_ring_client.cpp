@@ -1,8 +1,10 @@
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <ctime>
 #include <memory>
 #include <string>
+#include <sys/eventfd.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <thread>
@@ -424,6 +426,319 @@ TEST(open_with_bounded_wait_times_out_on_missing_ring) {
       std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
   CHECK(ms >= 300);
   CHECK(ms < 3000);
+}
+
+// Slice salvage (spec 2026-10-10-h265-slices §5.5): a salvaged AU (sid 0 or
+// sid 1) is a legal, gap-free picture (kept slices + skip-slice fills) --
+// deliver it like any other AU, just counted separately from a plain
+// truncation.
+TEST(salvaged_sid1_and_sid0_are_delivered_and_counted) {
+  const std::string ring = tmp_path("ring_salv");
+  maburgs::AuRingWriter w;
+  REQUIRE(w.open(ring, {4096, 8}));
+  auto publish_salvaged = [&](uint8_t sid, uint8_t seed) {
+    FrameHdr h;
+    const auto au = au_bytes(100, seed);
+    w.begin(h, sid);
+    w.append(au.data(), au.size());
+    maburgs::AuLatMeta lat;
+    lat.slice.salvaged = true;
+    w.finish(false, lat);
+  };
+  publish_salvaged(1, 1);
+  publish_salvaged(0, 2);
+
+  Collector c;
+  RingClient rc({ring, tmp_path("nosock_salv")}, c.sink());
+  REQUIRE(rc.open());
+  CHECK(rc.pump(5) == 2);
+  CHECK(c.events.size() == 2);
+  CHECK(rc.dropped_enhance_incomplete() == 0);
+  CHECK(rc.salvaged_enhance() == 1);
+  CHECK(rc.salvaged_base() == 1);
+  CHECK(rc.truncated_base() == 0);
+  unlink(ring.c_str());
+}
+
+// --- Ring v4: open records (spec 2026-10-10-h265-slices §6.2-6.3) ---
+
+using maburplay::AuEventKind;
+
+TEST(open_record_surfaces_open_grow_then_close) {
+  const std::string ring = tmp_path("open1");
+  maburgs::AuRingWriter w;
+  REQUIRE(w.open(ring, {4096, 8}));
+  Collector c;
+  RingClient rc({ring, tmp_path("nosock_open1")}, c.sink());
+  REQUIRE(rc.open());
+  FrameHdr h;
+  h.pts_us = 111;
+  const auto au = au_bytes(300, 9);
+  w.begin(h, 0, 4);
+  w.append(au.data(), 100);
+  CHECK(rc.pump(0) == 0);                        // pump counts closed records only
+  REQUIRE(c.events.size() == 1);
+  CHECK(c.events[0].kind == AuEventKind::kOpen);
+  CHECK(c.events[0].meta.nslices == 4);
+  CHECK(c.events[0].meta.pts_us == 111u);
+  CHECK(c.events[0].au == std::vector<uint8_t>(au.begin(), au.begin() + 100));
+  CHECK(!c.events[0].flush_before);
+  w.append(au.data() + 100, 150);
+  rc.pump(0);
+  REQUIRE(c.events.size() == 2);
+  CHECK(c.events[1].kind == AuEventKind::kGrow);
+  CHECK(c.events[1].au == std::vector<uint8_t>(au.begin(), au.begin() + 250));
+  rc.pump(0);
+  CHECK(c.events.size() == 2);                   // nothing new, no event
+  w.append(au.data() + 250, 50);
+  w.finish(true, maburgs::AuLatMeta{});
+  CHECK(rc.pump(0) == 1);
+  REQUIRE(c.events.size() == 3);
+  CHECK(c.events[2].kind == AuEventKind::kClose);
+  CHECK(!c.events[2].aborted);
+  CHECK(c.events[2].au == au);
+  CHECK(c.events[2].meta.nslices == 4);
+  CHECK(rc.opened() == 1);
+  CHECK(rc.open_aborted() == 0);
+  CHECK(rc.delivered() == 1);
+  unlink(ring.c_str());
+}
+
+TEST(writer_restart_mid_open_emits_aborted_close) {   // Review Focus 4
+  const std::string ring = tmp_path("open_restart");
+  Collector c;
+  auto w1 = std::make_unique<maburgs::AuRingWriter>();
+  REQUIRE(w1->open(ring, {4096, 8}));
+  RingClient rc({ring, tmp_path("nosock_restart")}, c.sink());
+  REQUIRE(rc.open());
+  FrameHdr h;
+  h.pts_us = 7;
+  const auto au = au_bytes(200, 3);
+  w1->begin(h, 0, 4);
+  w1->append(au.data(), au.size());
+  rc.pump(0);
+  REQUIRE(c.events.size() == 1);
+  CHECK(c.events[0].kind == AuEventKind::kOpen);
+  w1.reset();                                    // maburgs dies mid-AU
+  maburgs::AuRingWriter w2;
+  REQUIRE(w2.open(ring, {4096, 8}));             // restart: new epoch
+  publish(w2, 0, true, 64, 5, 0, 99);
+  CHECK(rc.pump(0) == 1);
+  REQUIRE(c.events.size() == 3);
+  CHECK(c.events[1].kind == AuEventKind::kClose);
+  CHECK(c.events[1].aborted);                    // the open one ends first ...
+  CHECK(c.events[1].meta.pts_us == 7u);
+  CHECK(c.events[1].au.empty());
+  CHECK(c.events[2].kind == AuEventKind::kClose);
+  CHECK(!c.events[2].aborted);                   // ... then the new writer's record
+  CHECK(c.events[2].meta.pts_us == 99u);
+  CHECK(c.events[2].flush_before);
+  CHECK(rc.open_aborted() == 1);
+  unlink(ring.c_str());
+}
+
+TEST(writer_restart_with_new_au_open_never_grows_the_old_view) {
+  const std::string ring = tmp_path("open_restart2");
+  Collector c;
+  auto w1 = std::make_unique<maburgs::AuRingWriter>();
+  REQUIRE(w1->open(ring, {4096, 8}));
+  RingClient rc({ring, tmp_path("nosock_restart2")}, c.sink());
+  REQUIRE(rc.open());
+  FrameHdr h;
+  h.pts_us = 7;
+  const auto au1 = au_bytes(200, 3);
+  w1->begin(h, 0, 4);
+  w1->append(au1.data(), au1.size());
+  rc.pump(0);
+  REQUIRE(c.events.size() == 1);
+  CHECK(c.events[0].kind == AuEventKind::kOpen);
+  CHECK(c.events[0].meta.pts_us == 7u);
+
+  w1.reset();                                    // maburgs dies mid-AU
+  maburgs::AuRingWriter w2;
+  REQUIRE(w2.open(ring, {4096, 8}));             // restart: new epoch
+  FrameHdr h2;
+  h2.pts_us = 99;
+  const auto au2 = au_bytes(300, 200);           // a DIFFERENT byte pattern
+  w2.begin(h2, 0, 4);
+  w2.append(au2.data(), au2.size());             // leave it OPEN; do not finish
+
+  rc.pump(0);
+  REQUIRE(c.events.size() == 3);
+  CHECK(c.events[0].kind == AuEventKind::kOpen);
+  CHECK(c.events[0].meta.pts_us == 7u);
+  CHECK(c.events[1].kind == AuEventKind::kClose);
+  CHECK(c.events[1].aborted);
+  CHECK(c.events[1].meta.pts_us == 7u);
+  CHECK(c.events[1].au.empty());
+  CHECK(c.events[2].kind == AuEventKind::kOpen);
+  CHECK(c.events[2].meta.pts_us == 99u);
+  CHECK(c.events[2].au == au2);
+  for (const auto& ev : c.events) CHECK(ev.kind != AuEventKind::kGrow);
+  CHECK(rc.open_aborted() == 1);
+  unlink(ring.c_str());
+  // Revert check: deleting end_open_() in drain_ring_'s kResync branch must fail this test.
+}
+
+TEST(overflowing_open_record_ends_with_aborted_close) {   // Review Focus 2
+  const std::string ring = tmp_path("open_over");
+  maburgs::AuRingWriter w;
+  REQUIRE(w.open(ring, {1024, 4}));
+  Collector c;
+  RingClient rc({ring, tmp_path("nosock_over")}, c.sink());
+  REQUIRE(rc.open());
+  FrameHdr h;
+  h.pts_us = 1;
+  const auto big = au_bytes(1500, 1);
+  w.begin(h, 0, 4);
+  w.append(big.data(), 600);
+  rc.pump(0);
+  REQUIRE(c.events.size() == 1);                 // kOpen, 600 B
+  w.append(big.data() + 600, 600);               // 1200 > 1024: aborted mid-stream
+  CHECK(rc.pump(0) == 0);
+  REQUIRE(c.events.size() == 2);
+  CHECK(c.events[1].kind == AuEventKind::kClose);
+  CHECK(c.events[1].aborted);
+  CHECK(c.events[1].au.empty());
+  CHECK(w.finish(true, maburgs::AuLatMeta{}) == UINT64_MAX);
+  publish(w, 0, true, 100, 2, 0, 2);             // the next AU reuses rec_no 0
+  CHECK(rc.pump(0) == 1);
+  REQUIRE(c.events.size() == 3);                 // its close only: never a grow of old bytes
+  CHECK(c.events[2].kind == AuEventKind::kClose);
+  CHECK(!c.events[2].aborted);
+  CHECK(c.events[2].au == au_bytes(100, 2));
+  CHECK(rc.open_aborted() == 1);
+  unlink(ring.c_str());
+}
+
+TEST(close_of_a_reused_rec_no_aborts_the_followed_record) {   // Review Focus 1, client side
+  const std::string ring = tmp_path("open_reuse");
+  maburgs::AuRingWriter w;
+  REQUIRE(w.open(ring, {1024, 4}));
+  Collector c;
+  RingClient rc({ring, tmp_path("nosock_reuse")}, c.sink());
+  REQUIRE(rc.open());
+  FrameHdr h;
+  h.pts_us = 1;
+  const auto big = au_bytes(1500, 1);
+  w.begin(h, 0, 4);
+  w.append(big.data(), 600);
+  rc.pump(0);
+  REQUIRE(c.events.size() == 1);                 // following rec 0, pts 1
+  w.append(big.data() + 600, 600);               // overflow ...
+  CHECK(w.finish(true, maburgs::AuLatMeta{}) == UINT64_MAX);
+  publish(w, 0, true, 100, 2, 0, 2);             // ... and rec 0 again, closed, unseen
+  CHECK(rc.pump(0) == 1);
+  REQUIRE(c.events.size() == 3);
+  CHECK(c.events[1].aborted);
+  CHECK(c.events[1].meta.pts_us == 1u);
+  CHECK(!c.events[2].aborted);
+  CHECK(c.events[2].meta.pts_us == 2u);
+  CHECK(c.events[2].au == au_bytes(100, 2));
+  unlink(ring.c_str());
+}
+
+TEST(enhance_dropped_by_policy_after_open_still_ends_its_stream) {
+  const std::string ring = tmp_path("open_enh");
+  maburgs::AuRingWriter w;
+  REQUIRE(w.open(ring, {4096, 8}));
+  Collector c;
+  RingClient rc({ring, tmp_path("nosock_enh")}, c.sink());
+  REQUIRE(rc.open());
+  FrameHdr h;
+  h.pts_us = 3;
+  const auto au = au_bytes(200, 4);
+  w.begin(h, 1, 4);
+  w.append(au.data(), 100);
+  rc.pump(0);
+  REQUIRE(c.events.size() == 1);
+  w.append(au.data() + 100, 100);
+  w.finish(false, maburgs::AuLatMeta{});         // truncated enhance: policy drops it
+  CHECK(rc.pump(0) == 0);
+  REQUIRE(c.events.size() == 2);
+  CHECK(c.events[1].kind == AuEventKind::kClose);
+  CHECK(c.events[1].aborted);
+  CHECK(rc.dropped_enhance_incomplete() == 1);
+  CHECK(rc.delivered() == 0);
+  CHECK(rc.open_aborted() == 0);                 // a policy drop, not a ring abort
+  unlink(ring.c_str());
+}
+
+TEST(open_preview_carries_the_discont_flush) {
+  const std::string ring = tmp_path("open_disc");
+  maburgs::AuRingWriter w;
+  REQUIRE(w.open(ring, {4096, 8}));
+  Collector c;
+  RingClient rc({ring, tmp_path("nosock_disc")}, c.sink());
+  REQUIRE(rc.open());
+  FrameHdr h;
+  h.flags = kFlagDiscont;
+  const auto au = au_bytes(80, 6);
+  w.begin(h, 0, 4);
+  w.append(au.data(), au.size());
+  rc.pump(0);
+  REQUIRE(c.events.size() == 1);
+  CHECK(c.events[0].kind == AuEventKind::kOpen);
+  CHECK(c.events[0].flush_before);               // preview: its close will flush
+  w.finish(true, maburgs::AuLatMeta{});
+  rc.pump(0);
+  REQUIRE(c.events.size() == 2);
+  CHECK(c.events[1].flush_before);
+  unlink(ring.c_str());
+}
+
+TEST(wake_window_is_delivery_minus_t_complete) {
+  const std::string ring = tmp_path("wake");
+  maburgs::AuRingWriter w;
+  REQUIRE(w.open(ring, {4096, 8}));
+  Collector c;
+  RingClient rc({ring, tmp_path("nosock_wake")}, c.sink());
+  REQUIRE(rc.open());
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  const uint64_t now_us = static_cast<uint64_t>(ts.tv_sec) * 1000000ull +
+                          static_cast<uint64_t>(ts.tv_nsec) / 1000ull;
+  FrameHdr h;
+  const auto au = au_bytes(64, 1);
+  w.begin(h, 0);
+  w.append(au.data(), au.size());
+  maburgs::AuLatMeta lat;
+  lat.t_complete_us = now_us - 3000;
+  w.finish(true, lat);
+  CHECK(rc.pump(0) == 1);
+  const auto wk = rc.take_wake();
+  CHECK(wk.n == 1);
+  CHECK(wk.p50 >= 3000);
+  CHECK(wk.p50 < 1000000);
+  CHECK(rc.take_wake().n == 0);                  // the window was cleared
+  unlink(ring.c_str());
+}
+
+TEST(wake_fd_ends_a_pump_wait_early) {
+  const std::string ring = tmp_path("wake1");
+  maburgs::AuRingWriter w;
+  REQUIRE(w.open(ring, {4096, 8}));
+  const std::string nosock = tmp_path("nosock_wake1");
+  unlink(nosock.c_str());
+  Collector c;
+  RingClient rc({ring, nosock}, c.sink());
+  REQUIRE(rc.open());
+  const int efd = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+  REQUIRE(efd >= 0);
+  rc.set_wake_fd(efd);
+  std::thread t([efd] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    const uint64_t one = 1;
+    (void)!::write(efd, &one, sizeof one);
+  });
+  const auto t0 = std::chrono::steady_clock::now();
+  rc.pump(2000);
+  const auto el = std::chrono::steady_clock::now() - t0;
+  t.join();
+  CHECK(el >= std::chrono::milliseconds(15));
+  CHECK(el < std::chrono::milliseconds(500));
+  ::close(efd);
+  unlink(ring.c_str());
 }
 
 MTEST_MAIN

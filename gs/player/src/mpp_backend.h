@@ -1,10 +1,12 @@
 #ifndef MABUR_PLAYER_MPP_BACKEND_H_
 #define MABUR_PLAYER_MPP_BACKEND_H_
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 
 #include "video_backend.h"
+#include "stream_decoder.h"
 
 namespace maburplay {
 
@@ -25,7 +27,7 @@ namespace maburplay {
 // itself (pure video_backend.h types + std only). All mpp includes and
 // the actual MppCtx/MppApi/MppFrame state live behind the Impl pimpl in
 // mpp_backend.cpp.
-class MppBackend : public VideoBackend {
+class MppBackend : public VideoBackend, public StreamDecoder {
  public:
   MppBackend();
   ~MppBackend() override;
@@ -43,9 +45,29 @@ class MppBackend : public VideoBackend {
   uint64_t errors() const;     // hard failures only (see .cpp counter split)
   uint64_t concealed() const;  // errinfo frames emitted for display
 
+  // Streamed decode (spec 2026-10-10-h265-slices §6.3; StreamDecoder).
+  // set_stream(true) BEFORE init(): parser fast mode off, which the h265d
+  // hal needs to stream at all (it decides at its init). Off = today's
+  // decoder setup, untouched.
+  void set_stream(bool on) { stream_wanted_ = on; }
+  bool probe() override;
+  bool start(const uint8_t* p, size_t n, uint8_t nslices, uint32_t pts_us) override;
+  bool append(const uint8_t* p, size_t n, uint32_t pts_us, bool last) override;
+  void abort(uint32_t pts_us) override;
+  uint64_t stream_errors() const;  // refused STREAM_APPENDs
+
+  // Decoder input on its own thread (FeedLoop; design-reader-thread.md):
+  // put_packet's BUFFER_FULL retry then never drains frames (the FrameSink
+  // belongs to the output thread) and gives up once *cancel is set (a
+  // watchdog park or a stop). Before init() or after; survives nothing --
+  // set again on a re-created backend. nullptr = one thread (decode-only).
+  void set_input_cancel(const std::atomic<bool>* cancel);
+
  private:
+  bool stream_wanted_ = false;
   struct Impl;
   std::unique_ptr<Impl> impl_;
+  const std::atomic<bool>* input_cancel_ = nullptr;
 };
 
 }  // namespace maburplay

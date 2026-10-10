@@ -14,8 +14,11 @@ namespace maburgs {
 // so it has every field at hand: no mmap, no seqlock retry, no epoch resync,
 // and no rows lost to a reader overrun.
 //
-// Format (`# aulog 4`), 12 columns, field order unchanged from aulog 3:
+// Format (`# aulog 5`), 16 columns -- the aulog 4 twelve plus 4 trailing
+// slice-salvage columns (spec 2026-10-10-h265-slices §5.6), all 0 for an
+// unsplit/complete-unsplit AU:
 //   t_us pts sid fid len flags nal0 t_first t_complete enc dq air
+//   slices kept filled after_hole
 // t_us is CLOCK_MONOTONIC µs. In aulog <= 3 it was WALL-clock µs and the log
 // carried `# sync` anchors to bridge to the jsonl; one process writing both
 // files on one clock makes the bridge unnecessary (docs/data-provenance.md).

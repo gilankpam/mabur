@@ -1,0 +1,40 @@
+From 77ea0f3e5fc9b04a9f780f262042a84157ea703e Mon Sep 17 00:00:00 2001
+From: Gee <gehee@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 10:54:25 +0700
+Subject: [PATCH 3/3] h265d: stream each appended part on a page of its own
+ (fpvOS 0003)
+
+---
+ mpp/hal/rkdec/h265d/hal_h265d_vdpu34x.c | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/mpp/hal/rkdec/h265d/hal_h265d_vdpu34x.c b/mpp/hal/rkdec/h265d/hal_h265d_vdpu34x.c
+index c1bb43c..5c51852 100644
+--- a/mpp/hal/rkdec/h265d/hal_h265d_vdpu34x.c
++++ b/mpp/hal/rkdec/h265d/hal_h265d_vdpu34x.c
+@@ -234,6 +234,22 @@ static void h265d_strm_send(HalH265dCtx *reg_ctx, H265dStrm *s,
+      * byte leaves it waiting for data that never comes. Zeros between NAL
+      * units are allowed (trailing_zero_8bits), so the next part follows them.
+      */
++    /*
++     * Each part on a page of its own, a whole page or more past the end of
++     * the last one, where the room is there. The decoder reads ahead past the
++     * end of the part it has; a part written straight after the last one's
++     * padding, while the decoder was paused there, was now and then decoded
++     * wrong from its start (1080p60, four slices a picture: about one paused
++     * part in a thousand, the damage carried by the pictures that reference
++     * it). Not once in 1200 pictures with the gap. The next page boundary
++     * alone is no gap when the padding ends on one, as one part in 256 does.
++     */
++    if (size) {
++        RK_U32 at = MPP_ALIGN(s->pos + 4096, 4096);
++
++        if (at + size + 64 + 16 <= s->cap)
++            s->pos = at;
++    }
+     pad = MPP_ALIGN(s->pos + size, 16) + 64 - (s->pos + size);
+     if (size && s->pos + size + pad <= s->cap) {
+         memcpy(s->ptr + s->pos, data, size);
+-- 
+2.51.2
+

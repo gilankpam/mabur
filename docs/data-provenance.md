@@ -45,7 +45,13 @@ removed — 2026-10-03 (`docs/channel-select.md`) · same marker: H
 `boot_order` renamed `relocate`, M gains `link_found`, `scan.pick`
 latched — 2026-10-04 · CPE relay interference sweep/hop (protocol v4) —
 `scanlog 6` (D gains trailing `rx`), sideport `cards[i].relay.tx_scan_drop`/
-`.sweeps`, `hop.sweep_timeouts` — 2026-10-05 (`docs/cpe510-relay.md`).
+`.sweeps`, `hop.sweep_timeouts` — 2026-10-05 (`docs/cpe510-relay.md`) ·
+2026-10-10: `au.log` marker `# aulog 5` (+4 salvage columns); sideport
+`link.video.slice_*` keys added; FrameHdr byte 3 is `slice_rows` (was
+codec id 0x01 — recordings before this date read as slice_rows 1 in no
+tool, the byte was never logged) (`docs/slices.md`) · 2026-10-10:
+maburplay submits slice-salvaged AUs, so LAT / e2e latency tails during
+loss include frames that were skipped before (section below).
 
 **`link.pre_fec_loss` scale break 2026-09-23, twice.** The ArrivalTracker
 guard behind `link.pre_fec_loss` (and the OSD LOSS row, `ctl.pre_fec_loss`,
@@ -998,3 +1004,28 @@ relay", `docs/inflight-channel-hop.md` §2/§3/§8.
   maburgs process; added in the final-review fix wave, same date) —
   `docs/observability.md`. A recording before 2026-10-05 has none of the
   three; absent means "not recorded", not 0.
+
+## 2026-10-10 — slice salvage: salvaged AUs reach the glass
+
+From 2026-10-10 maburplay (and the web GS) decode slice-salvaged AUs
+(`kRecFlagSliceSalvaged`, `docs/slices.md`) instead of skipping the
+damaged AU. Those frames now reach the glass and are timed, so the LAT /
+e2e latency distribution during loss includes frames that before
+2026-10-10 were skipped and never measured — typically the late ones
+that waited out `gap_ms`. A latency tail that grew across this date is
+not by itself a regression: compare flights across it knowingly, and
+split by `au.log`'s salvage columns (`# aulog 5`) where it matters.
+
+## 2026-10-10 — AU ring v4: slots published while they fill
+
+`kAuRingVersion` 3 → 4 (`gs/src/au_ring.h`, spec 2026-10-10-h265-slices
+§6.2). SlotHdr byte 30 (`codec`, a constant 0x01 since 2026-10-10) is gone;
+bytes 54/55/56 carry `state` (0 closed, 1 open, 2 aborted), `nslices` (0/1 =
+whole AU) and `valid_len`; RingHdr offset 40 is `open_rec`. maburgs claims a
+slot at the AU's first byte and readers may follow it while it fills. An AU
+that outgrows its slot leaves an `aborted` slot and still counts
+`dropped_oversize`. `ausniff.py`/`aucadence.py` read v4 only and count
+closed records only. No recording format changes: `au.log` stays `aulog 5`
+(it is written from the writer's own record meta, not the ring bytes), and
+the ring itself is never recorded — an old ausniff against a new ring
+refuses on the version.

@@ -158,4 +158,25 @@ TEST(classify_two_stream_space) {
   CHECK(classify_from_nal_type(33, 0) == 0);
 }
 
+TEST(count_au_nals_counts_slices_and_sees_parameter_sets) {
+  // VPS, SPS, PPS, then four TRAIL_R slices (4-byte and 3-byte start codes).
+  const std::vector<uint8_t> au = {
+      0, 0, 0, 1, 0x40, 0x01, 0xAA,  0, 0, 0, 1, 0x42, 0x01, 0xAA,
+      0, 0, 1, 0x44, 0x01, 0xAA,     0, 0, 0, 1, 0x02, 0x01, 0xAA,
+      0, 0, 0, 1, 0x02, 0x01, 0xAA,  0, 0, 1, 0x02, 0x01, 0xAA,
+      0, 0, 0, 1, 0x02, 0x01, 0xAA};
+  CHECK(count_au_nals(au.data(), au.size()).vcl == 4);
+  CHECK(count_au_nals(au.data(), au.size()).param_set);
+  const std::vector<uint8_t> one = {0, 0, 0, 1, 0x00, 0x01, 0x55, 0x66};
+  CHECK(count_au_nals(one.data(), one.size()).vcl == 1);
+  CHECK(!count_au_nals(one.data(), one.size()).param_set);
+  // Only VPS/SPS/PPS (32..34) count as parameter sets: an SEI (39) does not.
+  const std::vector<uint8_t> sei = {0, 0, 1, 0x4E, 0x01, 0xAA, 0, 0, 1, 0x02, 0x01, 0xBB};
+  CHECK(!count_au_nals(sei.data(), sei.size()).param_set);
+  const std::vector<uint8_t> pps = {0, 0, 1, 0x44, 0x01, 0xAA, 0, 0, 1, 0x02, 0x01, 0xBB};
+  CHECK(count_au_nals(pps.data(), pps.size()).param_set);
+  CHECK(count_au_nals(nullptr, 0).vcl == 0);
+  CHECK(!count_au_nals(nullptr, 0).param_set);
+}
+
 MTEST_MAIN

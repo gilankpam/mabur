@@ -197,6 +197,14 @@ test('debugGroups: owner shows you_own, tuned shows relay_owned -- they can disa
   assert.equal(g.rows.find((r) => r.k === 'tuned').v, 'no');
 });
 
+test('debugGroups shows the slice-salvage counter next to trunc', () => {
+  const base = { connected: true, mode: 'gs', rcfPct: 90, ausRate: 60, hitches60: 0, hitchesTotal: 0, seg: {}, lrec: null };
+  const counters = (core) => debugGroups({ ...base, core }).find((g) => g.title === 'Counters').rows;
+  assert.equal(counters({ radio: 'usb', trunc: 9, salvaged: 7 }).find((r) => r.k === 'salvaged').v, '7');
+  assert.equal(counters({ radio: 'usb', trunc: 9 }).find((r) => r.k === 'salvaged').v,
+               counters({ radio: 'usb' }).find((r) => r.k === 'trunc').v);  // absent -> the same dash
+});
+
 test('debugGroups hides the USB-only rows (usb latency, txfail) over the relay radio', () => {
   const base = { connected: true, mode: 'gs', rcfPct: 90, ausRate: 60, hitches60: 0, hitchesTotal: 0, seg: {}, lrec: null };
   const usbCore = { radio: 'usb', usb_p99_us: 200, usb_max_us: 250, txfail: 3 };

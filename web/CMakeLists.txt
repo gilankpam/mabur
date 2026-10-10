@@ -41,12 +41,16 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     ${MABUR_DIR}/common/src/sw_wire.cpp ${MABUR_DIR}/common/src/sw_decoder.cpp
     ${MABUR_DIR}/common/src/frame_wire.cpp ${MABUR_DIR}/common/src/rc_proto.cpp
     ${MABUR_DIR}/common/src/profile.cpp ${MABUR_DIR}/common/src/node.cpp
-    ${MABUR_DIR}/common/src/hevc_params.cpp ${MABUR_DIR}/common/src/toml.cpp
+    ${MABUR_DIR}/common/src/hevc_params.cpp ${MABUR_DIR}/common/src/hevc_bits.cpp
+    ${MABUR_DIR}/common/src/hevc_ps.cpp ${MABUR_DIR}/common/src/hevc_slice.cpp
+    ${MABUR_DIR}/common/src/hevc_cabac.cpp ${MABUR_DIR}/common/src/hevc_skip_slice.cpp
+    ${MABUR_DIR}/common/src/toml.cpp
     ${MABUR_DIR}/common/src/dvr_mux.cpp ${MABUR_DIR}/common/src/raw_dvr.cpp
     ${MABUR_DIR}/common/src/probe_wire.cpp ${MABUR_DIR}/common/src/msp_dp.cpp
     ${MABUR_DIR}/common/src/siphash.cpp ${MABUR_DIR}/common/src/link_key.cpp
     ${MABUR_DIR}/common/src/nack_tracker.cpp
     ${MABUR_DIR}/gs/src/aggregator.cpp ${MABUR_DIR}/gs/src/frame_stream.cpp
+    ${MABUR_DIR}/gs/src/slice_assembler.cpp
     ${MABUR_DIR}/gs/src/frame_file_source.cpp ${MABUR_DIR}/gs/src/config.cpp
     ${MABUR_DIR}/gs/src/link_health.cpp ${MABUR_DIR}/gs/src/probe_track.cpp
     ${MABUR_DIR}/gs/src/ladder_residual.cpp ${MABUR_DIR}/gs/src/vrx_controller.cpp

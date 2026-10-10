@@ -75,6 +75,10 @@ struct Au {
   uint8_t sid = 0;                 // 0 base, 1 enh
   uint8_t flags = 0;               // framewire: 0x01 IDR, 0x02 DISCONT
   bool complete = false;
+  // Slice salvage (spec 2026-10-10-h265-slices §5.5): rebuilt from its
+  // complete slices plus skip-slice fills -- decodable, never a sync point.
+  // Mutually exclusive with complete.
+  bool salvaged = false;
   uint64_t t_first_us = 0;         // core clock
   uint64_t t_complete_us = 0;      // core clock
   std::optional<int64_t> cap_to_complete_us;  // GS mode once RTT has an offset
@@ -116,6 +120,9 @@ struct Stats {
   std::optional<int64_t> pts_off_us;
   uint64_t bodies = 0, aus_complete = 0, aus_truncated = 0, sends = 0;
   uint64_t aus_truncated_base = 0;   // of aus_truncated: sid 0 (the layer the NACK protects)
+  // Slice salvage (spec 2026-10-10-h265-slices §5.5): of aus_truncated, the
+  // ones FrameStream rebuilt into a decodable picture (kept slices + fills).
+  uint64_t aus_salvaged = 0;
   // RCFs only (sends minus DISC beacons/keep-alives): the denominator for
   // "RCF heard %" against the drone's Telem.rcf_rx, which counts RCFs only.
   uint64_t rcf_sent = 0;
@@ -291,6 +298,7 @@ class WebGs {
   Au cur_;
   uint64_t bodies_ = 0, aus_complete_ = 0, aus_truncated_ = 0, sends_ = 0, rcf_sent_ = 0;
   uint64_t aus_truncated_base_ = 0;
+  uint64_t aus_salvaged_ = 0;
   uint64_t resets_ = 0;
   uint32_t idr_req_ = 0;
   std::string key_fp_;   // mabur::key_fingerprint(cfg.link.key), set at construction

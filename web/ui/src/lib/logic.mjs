@@ -17,14 +17,21 @@ export function nalTypes(u8) {
 }
 
 const VPS = 32, SPS = 33, PPS = 34, DISCONT = 0x02;
+// Slice salvage (spec 2026-10-10-h265-slices §5.5): the GS core rebuilt a
+// truncated AU from its complete slices plus skip-slice fills -- a legal
+// picture, decodable, but never a sync point.
+const SALVAGED = 0x40;
 
 export class Gate {
   constructor() { this.armed = false; }
   onAu({ flags, complete, data }) {
     let reset = false;
     if ((flags & DISCONT) && this.armed) { this.armed = false; reset = true; }
-    if (!complete) return { type: null, reset, skip: 'truncated' };
+    const salvaged = !complete && (flags & SALVAGED) !== 0;
+    if (!complete && !salvaged) return { type: null, reset, skip: 'truncated' };
     if (!this.armed) {
+      // A salvaged AU never arms the gate: it is not a sync point.
+      if (!complete) return { type: null, reset, skip: 'gated' };
       const t = nalTypes(data);
       if (t.includes(VPS) && t.includes(SPS) && t.includes(PPS)) {
         // WebCodecs rejects a non-IRAP first key chunk (Annex-B and hvcC

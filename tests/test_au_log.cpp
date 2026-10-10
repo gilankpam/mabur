@@ -49,9 +49,9 @@ TEST(header_and_row_bytes) {
   au.row(555000, meta());
   w.flush_now();
   const std::string text = slurp(dir + "/au.log");
-  CHECK(text.rfind("# aulog 4\n", 0) == 0);
+  CHECK(text.rfind("# aulog 5\n", 0) == 0);
   CHECK(text.find(
-      "\n555000 123456 1 70000 4321 0x81 32 900000 912000 7000 3 21\n") !=
+      "\n555000 123456 1 70000 4321 0x81 32 900000 912000 7000 3 21 0 0 0 0\n") !=
       std::string::npos);
 }
 
@@ -145,6 +145,20 @@ TEST(head_is_latched_across_fragmented_payload_and_reset_by_begin) {
   const std::string text = slurp(dir + "/au.log");
   CHECK(text.find("\n1 123456 1 70000 4321 0x81 32 ") != std::string::npos);
   CHECK(text.find("\n2 123456 1 70000 4321 0x81 1 ") != std::string::npos);
+}
+
+TEST(salvage_columns) {
+  const std::string dir = make_dir("salv");
+  maburgs::LogWriter w;
+  maburgs::AuLog au(w, dir);
+  REQUIRE(au.ok());
+  au.begin();
+  auto m = meta();
+  m.flags = 0x40;
+  m.slice.salvaged = true; m.slice.slices = 4; m.slice.kept = 3; m.slice.filled = 1; m.slice.kept_after_hole = 2;
+  au.row(1, m);
+  w.flush_now();
+  CHECK(slurp(dir + "/au.log").find(" 0x40 -1 900000 912000 7000 3 21 4 3 1 2\n") != std::string::npos);
 }
 
 MTEST_MAIN

@@ -67,7 +67,7 @@ TEST(frame_e2e_clean_and_lossy) {
   // main.cpp), so the e2e captures frames and header pts directly.
   maburgs::FrameStream fs(
       {50, 8},
-      {[&](const framewire::FrameHdr& h, uint8_t) { cur_pts = h.pts_us; cur.clear(); },
+      {[&](const framewire::FrameHdr& h, uint8_t, uint8_t) { cur_pts = h.pts_us; cur.clear(); },
        [&](const uint8_t* d, size_t n) { cur.insert(cur.end(), d, d + n); },
        [&](bool c, const maburgs::AuLatMeta&) {
          if (c) { ++clean; emitted_frames.push_back(cur);
@@ -126,7 +126,7 @@ TEST(frame_e2e_sustained_shed_no_gaps_no_stalls) {
   uint64_t clean = 0, truncated = 0;
   maburgs::FrameStream fs(
       {50, 8},
-      {[&](const framewire::FrameHdr&, uint8_t) {},
+      {[&](const framewire::FrameHdr&, uint8_t, uint8_t) {},
        [&](const uint8_t*, size_t) {},
        [&](bool c, const maburgs::AuLatMeta&) { c ? ++clean : ++truncated; }});
 

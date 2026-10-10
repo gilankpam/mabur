@@ -55,6 +55,7 @@ intra_refresh_qp   = 36    # quality of the refreshed areas: lower = sharper, mo
 ref_base    = 1            # temporal layering: a base layer every frame can decode from...
 ref_enhance = 1            # ...plus droppable enhance frames between them
 ref_pred    = true         # enhance frames may also predict from the base layer
+slices      = 4            # H.265 row slices on the link channel (1 = off); salvage of truncated AUs needs >1 (docs/slices.md)
 ae_fps      = 15           # auto-exposure update rate
 awb_fps     = 15           # auto-white-balance update rate
 snapshot_quality = 80      # JPEG quality of camera snapshots

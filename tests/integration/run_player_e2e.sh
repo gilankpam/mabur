@@ -177,6 +177,9 @@ assert s["dropped_enhance_incomplete"] == 0, s
 assert s["resyncs"] == 0, s
 assert s["dvr_samples"] == 13, s
 assert s["dvr_fragments"] >= 1, s
+assert s["stream"] == "off:no_decoder", s   # null backend: no stream mode, whole AUs
+assert s["streamed"] == 0, s
+assert s["stream_aborted"] == 0, s
 print(f"OK stats: {s}")
 EOF
 
@@ -496,5 +499,62 @@ if [ "$BAR_SHA" != "$BAR_SHA_EXPECTED" ]; then
   echo "GS compact bar render hash changed (expected $BAR_SHA_EXPECTED)" >&2
   exit 1
 fi
+
+# --- PART F: live run, SIGTERM -> clean shutdown (Task 11a) ------------
+# The oneshot drain never reaches the run loop. Run it for real on the ring
+# maburgs left behind (null backend, no doorbell, no DVR, no overlays), then
+# stop it the way S97maburplay does: exit 0, promptly, through the shutdown
+# drain (null backend: nothing streams -> "stream idle").
+echo "== PART F: live run, SIGTERM =="
+cat > "$TMP/live.toml" <<EOF
+ring_path = "$TMP/au-ring"
+socket = "$TMP/none.sock"
+backend = "null"
+
+[dvr]
+autostart = false
+dir = "$TMP"
+
+[osd]
+enable = false
+
+[osd.gs]
+enable = false
+EOF
+"$MABURPLAY" -c "$TMP/live.toml" > "$TMP/live.out" 2> "$TMP/live.err" &
+LIVE=$!
+# SIGTERM only once the handler is in: main installs it (std::signal) well
+# before it starts the feed thread and prints "feed thread on", so that line
+# proves both. A fixed sleep could land before it under load, and SIGTERM's
+# default action would kill the player (exit 143) instead of draining.
+READY=0
+for _ in $(seq 1 100); do   # up to 5 s
+  if grep -q '^maburplay: feed thread on' "$TMP/live.err" 2>/dev/null; then READY=1; break; fi
+  kill -0 "$LIVE" 2>/dev/null || break
+  sleep 0.05
+done
+if [ "$READY" != 1 ]; then
+  echo "FAIL: no 'maburplay: feed thread on' line within 5 s" >&2
+  kill -9 "$LIVE" 2>/dev/null; cat "$TMP/live.err" >&2; exit 1
+fi
+# The delivered=13 check below needs the feed's first pump (the 13 retained
+# AUs, read in well under a millisecond) to run before the drain request:
+# there is no line for that, so give it a moment. The handler race above does
+# not depend on this.
+sleep 0.2
+kill -TERM "$LIVE"
+for _ in $(seq 1 50); do kill -0 "$LIVE" 2>/dev/null || break; sleep 0.1; done
+if kill -0 "$LIVE" 2>/dev/null; then
+  echo "FAIL: maburplay still running 5 s after SIGTERM" >&2
+  kill -9 "$LIVE"; cat "$TMP/live.err" >&2; exit 1
+fi
+set +e; wait "$LIVE"; RC_LIVE=$?; set -e
+cat "$TMP/live.err"
+[ "$RC_LIVE" = 0 ] || { echo "FAIL: exit $RC_LIVE after SIGTERM (want 0)" >&2; exit 1; }
+grep -q '^maburplay: shutdown: stream idle' "$TMP/live.err" || {
+  echo "FAIL: no 'maburplay: shutdown: stream idle' line" >&2; exit 1; }
+grep -q '^maburplay: feed thread on' "$TMP/live.err" || { echo "FAIL: no feed thread" >&2; exit 1; }
+grep -q '^maburplay: feed: delivered=13 ' "$TMP/live.err" || {
+  echo "FAIL: the feed thread did not read the 13 retained AUs" >&2; exit 1; }
 
 echo "== player_e2e passed =="

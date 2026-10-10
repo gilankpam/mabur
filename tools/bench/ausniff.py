@@ -4,8 +4,10 @@
 # claims to publish. Layout mirrors gs/src/au_ring.h byte-for-byte — change
 # both together (RingHdr offset 32 = u64 epoch, writer boot stamp, nonzero;
 # 0 means a pre-epoch ring). Seqlock read: copy, re-check lock word, accept
-# only stable even generations; newer-lap records are accepted and counted
-# as resyncs.
+# only stable even generations of CLOSED records; newer-lap records are
+# accepted and counted as resyncs. Ring v4: a slot maburgs is still filling
+# (odd lock, state open) is waited for, one whose AU overflowed (state
+# aborted) is skipped and counted as a resync.
 # Live mode is best-effort on aarch64 (Python cannot issue memory fences;
 # the seqlock re-check is advisory); oneshot/post-hoc reads of a quiescent
 # ring are exact.
@@ -16,30 +18,44 @@ import argparse, json, mmap, struct, sys, time
 HDR = 4096
 SLOT_HDR = 64
 MAGIC = 0x4D425541
-# SlotHdr v3 (kAuRingVersion 3, 2026-09-06 air-clock): +u16 drone_air_ms at
-# slot offset 52 (the drone's modelled air backlog at the AU's arrival, ms);
-# parsed by read_slot below.
-VERSION = 3
+# Ring v4 (kAuRingVersion 4): SlotHdr byte 30 (codec) is gone; offset 54 u8
+# state (0 closed, 1 open, 2 aborted), 55 u8 nslices (0/1 = whole AU),
+# 56 u32 valid_len; RingHdr offset 40 u64 open_rec. SlotHdr v3's u16
+# drone_air_ms at 52 is unchanged.
+VERSION = 4
+STATE_CLOSED, STATE_OPEN, STATE_ABORTED = 0, 1, 2
 FLAG_IDR, FLAG_DISCONT, FLAG_COMPLETE = 0x01, 0x02, 0x80
+# kRecFlagSliceSalvaged (gs/src/au_ring.h, spec 2026-10-10-h265-slices): the
+# AU was truncated but maburgs rebuilt it from its complete slices plus
+# skip-slice fills, rather than dropping it whole.
+FLAG_SALVAGED = 0x40
 
 
 def read_slot(mm, base, slot_bytes):
-    """One seqlock-validated copy attempt. Returns meta dict or None."""
+    """One seqlock-validated copy attempt.
+
+    Returns the meta dict of a closed record, {"aborted": True} for a slot
+    whose AU overflowed (never published), or None (mid-write/torn: retry).
+    """
     l1 = struct.unpack_from("<I", mm, base)[0]
     if l1 & 1:
         return None
-    ln, rec, fid, pts, sid, flags, codec = struct.unpack_from(
-        "<IQQIBBB", mm, base + 4)
+    ln, rec, fid, pts, sid, flags = struct.unpack_from("<IQQIBB", mm, base + 4)
     t_first, t_complete = struct.unpack_from("<QQ", mm, base + 32)
     dq_ms, enc_us, air_ms = struct.unpack_from("<HHH", mm, base + 48)
+    state, nslices = struct.unpack_from("<BB", mm, base + 54)
     if ln > slot_bytes:
         return None
     payload = bytes(mm[base + SLOT_HDR:base + SLOT_HDR + ln])
     l2 = struct.unpack_from("<I", mm, base)[0]
     if l1 != l2:
         return None
+    if state == STATE_ABORTED:
+        return {"aborted": True}
+    if state != STATE_CLOSED:
+        return None
     return {"rec": rec, "len": ln, "fid": fid, "pts": pts, "sid": sid,
-            "flags": flags, "codec": codec, "payload": payload,
+            "flags": flags, "nslices": nslices, "payload": payload,
             "t_first": t_first, "t_complete": t_complete,
             "dq_ms": dq_ms, "enc_us": enc_us, "air_ms": air_ms}
 
@@ -98,11 +114,31 @@ def main():
     def slot_base(n):
         return HDR + (n % slot_count) * (SLOT_HDR + slot_bytes)
 
+    def open_rec():
+        return struct.unpack_from("<Q", mm, 40)[0]
+
+    def slot_state(base):
+        return struct.unpack_from("<B", mm, base + 54)[0]
+
+    def start_cursor(w):
+        # Mirrors au_ring.cpp's AuRingReader::open(): the oldest slot still
+        # guaranteed retained is w - slot_count, one later when that slot is
+        # the one maburgs is filling (open_rec set) or stable-but-not-closed
+        # (its AU overflowed/aborted) -- either way it no longer holds
+        # record w - slot_count. Starting on it would count a phantom resync
+        # for a live run that happens to start mid-AU.
+        cur = w - slot_count if w > slot_count else 0
+        if w >= slot_count and (open_rec() != 0 or slot_state(slot_base(w)) != STATE_CLOSED):
+            cur = w - slot_count + 1
+        return cur
+
     w = wseq()
-    cursor = w - slot_count if w > slot_count else 0
+    cursor = start_cursor(w)
     aus = 0
     complete = {}
     incomplete = {}
+    salvaged = {}
+    nslices = {}
     gaps = 0
     resyncs = 0
     total_bytes = 0
@@ -140,7 +176,7 @@ def main():
             f, mm, slot_bytes, slot_count, epoch = (
                 new_f, new_mm, new_slot_bytes, new_slot_count, new_epoch)
             w = wseq()
-            cursor = w - slot_count if w > slot_count else 0
+            cursor = start_cursor(w)
             resyncs += 1
             last_fid = None  # new writer session: don't diff fid across it
             stall = 0
@@ -152,6 +188,13 @@ def main():
             time.sleep(0.002)
             continue
         m = read_slot(mm, slot_base(cursor), slot_bytes)
+        if m is not None and m.get("aborted"):
+            # The slot was claimed for a later record whose AU overflowed:
+            # the record at the cursor is gone (C++ reader: kResync).
+            resyncs += 1
+            cursor += 1
+            stall = 0
+            continue
         if m is None or m["rec"] < cursor:
             stall += 1
             if stall > 500:
@@ -177,10 +220,14 @@ def main():
         first_t = first_t if first_t is not None else now
         last_t = now
         key = str(m["sid"])
+        nkey = str(m["nslices"])
+        nslices[nkey] = nslices.get(nkey, 0) + 1
         if m["flags"] & FLAG_COMPLETE:
             complete[key] = complete.get(key, 0) + 1
             if dump:
                 dump.write(m["payload"])
+        elif m["flags"] & FLAG_SALVAGED:
+            salvaged[key] = salvaged.get(key, 0) + 1
         else:
             incomplete[key] = incomplete.get(key, 0) + 1
         if last_fid is not None and m["fid"] > last_fid + 1:
@@ -192,6 +239,7 @@ def main():
     dropped = struct.unpack_from("<Q", mm, 24)[0]
     dur = (last_t - first_t) if (first_t is not None and last_t > first_t) else 0.0
     out = {"aus": aus, "complete": complete, "incomplete": incomplete,
+           "salvaged": salvaged, "nslices": nslices,
            "frame_id_gaps": gaps, "resyncs": resyncs, "bytes": total_bytes,
            "dropped_oversize": dropped,
            "fps": round(aus / dur, 1) if dur > 0 else None}
@@ -199,6 +247,7 @@ def main():
         print(json.dumps(out))
     else:
         print(f"aus={aus} complete={complete} incomplete={incomplete} "
+              f"salvaged={salvaged} nslices={nslices} "
               f"fid_gaps={gaps} resyncs={resyncs} bytes={total_bytes} "
               f"dropped_oversize={dropped} fps={out['fps']}")
     sys.exit(0 if aus > 0 else 1)

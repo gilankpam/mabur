@@ -29,4 +29,11 @@ int h26x_util_annexb_next(const uint8_t *data, size_t len, size_t *cursor,
  * is not used for reference. */
 size_t h26x_util_hevc_patch_trail_r_to_n(uint8_t *data, size_t len);
 
+/** The same rewrite over one MI_VENC packetInfo entry, which may begin with a
+ * start code (every NAL behind one is patched, as above) or directly at its
+ * NAL header. In the second case the start-code walk cannot see that first
+ * header, so it is patched here: TRAIL_R (0x02, layer 0) -> TRAIL_N. Returns
+ * the number of NAL headers changed. */
+size_t h26x_util_hevc_patch_entry_trail_r_to_n(uint8_t *data, size_t len);
+
 #endif /* H26X_UTIL_H */

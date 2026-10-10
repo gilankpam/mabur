@@ -662,6 +662,7 @@ static int run_radio(const maburgs::Config& cfg) {
   maburgs::LatWindow lat_win;
   uint32_t cur_au_pts = 0;
   uint8_t cur_au_sid = 0;
+  uint8_t cur_au_nslices = 1;  // ring v4: >= 2 = published slice by slice
 
   // Probe stream (spec 2026-09-04 section 3): scored by ProbeTrack against
   // the enh AU count; the ENH layer's geometry gives bpb/block_payload, so
@@ -702,10 +703,11 @@ static int run_radio(const maburgs::Config& cfg) {
   maburgs::FrameStream fstream(
       {static_cast<uint64_t>(cfg.video.frame_gap_timeout_ms),
        cfg.video.frame_lookahead},
-      {[&](const mabur::framewire::FrameHdr& h, uint8_t sid) {
+      {[&](const mabur::framewire::FrameHdr& h, uint8_t sid, uint8_t nslices) {
          cur_au_pts = h.pts_us;
          cur_au_sid = sid;
-         if (au_on) au_ring.begin(h, sid);
+         cur_au_nslices = nslices;
+         if (au_on) au_ring.begin(h, sid, nslices);
          if (au_log) au_log->begin();
          rcf_slot.on_au_first(mono_ms());
          // One probe expectation per video access unit, base and enh alike
@@ -715,7 +717,13 @@ static int run_radio(const maburgs::Config& cfg) {
          lha.on_au_begin(sid, h.frame_id, static_cast<double>(mono_ms()));
        },
        [&](const uint8_t* d, size_t n) {
-         if (au_on) au_ring.append(d, n);
+         if (au_on) {
+           au_ring.append(d, n);
+           // Ring v4: a split AU is readable while it fills; wake the player
+           // for every slice, not just the finished AU (spec §6.2). Cheap:
+           // one 8-byte SEQPACKET datagram, ~4 per AU, best-effort.
+           if (cur_au_nslices >= 2) au_bell.notify(au_ring.published());
+         }
          if (au_log) au_log->payload(d, n);
        },
        [&](bool c, const maburgs::AuLatMeta& lat) {
@@ -814,6 +822,13 @@ static int run_radio(const maburgs::Config& cfg) {
              }
            }
          }
+       },
+       [&](const uint8_t* d, size_t n) {
+         // frame_tail: a passthrough remainder that may end mid-NAL. In the
+         // record (len), never published as valid_len, no doorbell: the
+         // player must never feed a partial NAL (ring v4 writer contract).
+         if (au_on) au_ring.append_unaligned(d, n);
+         if (au_log) au_log->payload(d, n);
        }});
   // Only fragments from a peer that advertised the frame wire format may reach
   // FrameStream: an older drone's bodies carry a mutually unparseable frag
@@ -1710,6 +1725,11 @@ static int run_radio(const maburgs::Config& cfg) {
       sin.frames_truncated = fstream.frames_truncated();
       sin.frames_dropped = fstream.frames_dropped();
       sin.stall_resets = fstream.stall_resets();
+      sin.slice_salvaged = fstream.slice_salvaged();
+      sin.slices_kept = fstream.slices_kept();
+      sin.slices_filled = fstream.slices_filled();
+      sin.slices_after_hole = fstream.slices_after_hole();
+      for (uint8_t r = 0; r < maburgs::kSliceFbCount; ++r) sin.slice_fallback[r] = fstream.slice_fallback(r);
       sin.ring_published = au_ring.published();
       sin.ring_dropped_oversize = au_ring.dropped_oversize();
       sin.ring_bytes = au_ring.bytes_published();
@@ -1985,15 +2005,20 @@ int main(int argc, char** argv) {
   // shortcut. --out-aus captures each reassembled AU as an LP record for
   // the e2e's NAL-exact comparison (tests/integration/verify_aus.py). No
   // session negotiation here: the input file IS the drone's own output.
+  uint8_t dry_nslices = 1;  // ring v4, as run_radio's cur_au_nslices
   maburgs::FrameStream fstream(
       {static_cast<uint64_t>(cfg.video.frame_gap_timeout_ms),
        cfg.video.frame_lookahead},
-      {[&](const mabur::framewire::FrameHdr& h, uint8_t sid) {
-         if (au_on) au_ring.begin(h, sid);
+      {[&](const mabur::framewire::FrameHdr& h, uint8_t sid, uint8_t nslices) {
+         dry_nslices = nslices;
+         if (au_on) au_ring.begin(h, sid, nslices);
          file_out.begin(h, sid);
        },
        [&](const uint8_t* d, size_t n) {
-         if (au_on) au_ring.append(d, n);
+         if (au_on) {
+           au_ring.append(d, n);
+           if (dry_nslices >= 2) au_bell.notify(au_ring.published());  // as run_radio
+         }
          file_out.append(d, n);
        },
        [&](bool c, const maburgs::AuLatMeta& lat) {
@@ -2002,6 +2027,10 @@ int main(int argc, char** argv) {
            if (rec != UINT64_MAX) au_bell.notify(rec);
          }
          file_out.finish(c);
+       },
+       [&](const uint8_t* d, size_t n) {  // frame_tail, as run_radio
+         if (au_on) au_ring.append_unaligned(d, n);
+         file_out.append(d, n);
        }});
   uint64_t replay_ms = 0;  // clock of the body being fed, for gap timeouts
   agg.set_frag_sink([&](const mabur::DecodedFrag& f) {

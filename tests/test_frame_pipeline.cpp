@@ -70,7 +70,7 @@ TEST(frame_pipeline_stamps_hdr_over_meta_in_place) {
   REQUIRE(h.has_value());
   CHECK(h->frame_id == 0);
   CHECK(h->pts_us == 123456);
-  CHECK(h->codec == framewire::kCodecH265);
+  CHECK(h->slice_rows == 0);  // no slice geometry set: never stamped
   // Annex-B bytes after the header are untouched — the unit is contiguous.
   CHECK(std::memcmp(buf.data() + framewire::kFrameHdrLen, annexb.data(),
                     annexb.size()) == 0);
@@ -495,6 +495,52 @@ TEST(frame_pipeline_pts_resync_jump_is_not_counted_as_vanish) {
   f.feed(5 * kStepUs + 5000000u + 8 * kStepUs, 0,
          1400);  // slot 7 (enhance) vanished post-resync
   CHECK(f.pipe.vanished_base() + f.pipe.vanished_enhance() == 1);
+}
+
+namespace {
+// Ring buffer holding `n_slices` TRAIL_R slice NALs (4-byte start codes),
+// optionally after a VPS/SPS/PPS prefix.
+std::vector<uint8_t> ring_buf_slices(int n_slices, bool param_sets = false) {
+  std::vector<uint8_t> buf(VENC_FRAME_META_SIZE, 0);
+  if (param_sets)
+    for (uint8_t t : {0x40, 0x42, 0x44})
+      for (uint8_t b : {uint8_t{0x00}, uint8_t{0x00}, uint8_t{0x00}, uint8_t{0x01}, t, uint8_t{0x01}, uint8_t{0xAA}})
+        buf.push_back(b);
+  for (int s = 0; s < n_slices; ++s) {
+    for (uint8_t b : {0x00, 0x00, 0x00, 0x01, 0x02, 0x01}) buf.push_back(b);
+    buf.resize(buf.size() + 200, 0x5A);
+  }
+  return buf;
+}
+}  // namespace
+
+TEST(frame_pipeline_stamps_slice_rows_only_for_the_expected_count) {
+  UepEncoder enc(layers(), 15);
+  FramePipeline pipe;
+  pipe.set_slice_geometry(/*ctb64_rows=*/17, /*slice_rows=*/5);  // 4 slices
+
+  auto four = ring_buf_slices(4);
+  pipe.encode(enc, four.data(), payload_len(four), meta_of(1, false), 1);
+  CHECK(framewire::parse_frame_hdr(four.data(), four.size())->slice_rows == 5);
+
+  // Refresh starts (and IDRs) stay whole and carry VPS/SPS/PPS: unsplit,
+  // not a mismatch.
+  auto one_ps = ring_buf_slices(1, /*param_sets=*/true);
+  pipe.encode(enc, one_ps.data(), payload_len(one_ps), meta_of(2, false), 2);
+  CHECK(framewire::parse_frame_hdr(one_ps.data(), one_ps.size())->slice_rows == 0);
+  CHECK(pipe.slice_mismatch() == 0);
+
+  // A bare one-slice TRAIL_R AU: the SDK dropped the split (e.g. after a
+  // runtime SetChnAttr) -- unsplit AND counted, never silent.
+  auto one = ring_buf_slices(1);
+  pipe.encode(enc, one.data(), payload_len(one), meta_of(3, false), 3);
+  CHECK(framewire::parse_frame_hdr(one.data(), one.size())->slice_rows == 0);
+  CHECK(pipe.slice_mismatch() == 1);
+
+  auto three = ring_buf_slices(3);  // neither 1 nor 4: unsplit + counted
+  pipe.encode(enc, three.data(), payload_len(three), meta_of(4, false), 4);
+  CHECK(framewire::parse_frame_hdr(three.data(), three.size())->slice_rows == 0);
+  CHECK(pipe.slice_mismatch() == 2);
 }
 
 MTEST_MAIN

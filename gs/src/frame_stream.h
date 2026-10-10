@@ -7,6 +7,8 @@
 #include <vector>
 #include "au_ring.h"
 #include "mabur/frame_wire.h"
+#include "mabur/hevc_ps.h"
+#include "slice_assembler.h"
 
 namespace maburgs {
 
@@ -50,11 +52,21 @@ struct FrameStreamCfg {
 class FrameStream {
  public:
   struct Callbacks {
-    std::function<void(const mabur::framewire::FrameHdr&, uint8_t sid)> begin_frame;
+    // nslices (ring v4, spec 2026-10-10-h265-slices §6.2): the picture's
+    // slice count when a SliceAssembler emits it slice by slice, 1 for a
+    // whole AU (unsplit, or no usable SPS/PPS yet), 0 when the assembler
+    // could not size it. Known here because the assembler is built first.
+    std::function<void(const mabur::framewire::FrameHdr&, uint8_t sid, uint8_t nslices)> begin_frame;
     std::function<void(const uint8_t*, size_t)> frame_data;  // Annex-B bytes, in order
     // lat.t_complete_us is always 0 here — the ring writer stamps finish
     // time (Task 6). See Slot::lat below for the other fields' latch rules.
     std::function<void(bool complete, const AuLatMeta& lat)> end_frame;
+    // Ring v4 writer contract (spec 2026-10-10-h265-slices §6.2): the one
+    // piece of a split AU that may end mid-NAL -- SliceAssembler's
+    // passthrough remainder at finish -- comes here instead of frame_data,
+    // so a consumer can keep it out of what it publishes as NAL-aligned.
+    // Optional: unset = frame_data. Unsplit AUs never use it.
+    std::function<void(const uint8_t*, size_t)> frame_tail;
   };
 
   FrameStream(FrameStreamCfg cfg, Callbacks cb) : cfg_(cfg), cb_(std::move(cb)) {
@@ -84,6 +96,16 @@ class FrameStream {
   uint64_t frames_dropped() const { return dropped_; }
   uint64_t bad_fragments() const { return bad_frags_; }
   uint64_t stall_resets() const { return stall_resets_; }
+
+  // Slice salvage (spec 2026-10-10-h265-slices §5.3). salvaged is a subset
+  // of frames_truncated(): the AU still finished with a hole.
+  uint64_t slice_salvaged() const { return slice_salvaged_; }
+  uint64_t slices_kept() const { return slices_kept_; }
+  uint64_t slices_filled() const { return slices_filled_; }
+  uint64_t slices_after_hole() const { return slices_after_hole_; }
+  uint64_t slice_fallback(uint8_t reason) const {
+    return reason < kSliceFbCount ? slice_fallback_[reason] : 0;
+  }
 
   // Newest (highest id64) slot of `sid` that has its header, is not
   // finished, and has at least one fragment with a known sw_seq; nullopt
@@ -119,10 +141,15 @@ class FrameStream {
     //    idx-0 chunk.
     //  - t_complete_us: left 0 here — the ring writer stamps finish time.
     AuLatMeta lat;
+    // Slice salvage (Task 9): engaged in try_emit's begin-frame step when
+    // the AU is split (slice_rows > 0) and params_ has a usable SPS/PPS.
+    // nullopt for an unsplit AU or one with no usable parameter set yet.
+    std::optional<SliceAssembler> sa;
   };
   void try_emit(uint64_t now_ms);
   void finish(Slot& s, bool complete);
   uint64_t unwrap_id(uint16_t id, uint8_t flags, bool* rebased);
+  void feed_params(const Slot& s);
 
   uint64_t gap_ms_max() const { return std::max(gap_ms_[0], gap_ms_[1]); }
 
@@ -141,6 +168,9 @@ class FrameStream {
   uint64_t last_stall_log_ms_ = 0;
   uint64_t clean_ = 0, truncated_ = 0, dropped_ = 0, bad_frags_ = 0;
   uint64_t stall_resets_ = 0;
+  mabur::hevc::ParamTracker params_;   // SPS/PPS from complete parameter-set AUs
+  uint64_t slice_salvaged_ = 0, slices_kept_ = 0, slices_filled_ = 0, slices_after_hole_ = 0;
+  uint64_t slice_fallback_[kSliceFbCount] = {};
 };
 
 }  // namespace maburgs
