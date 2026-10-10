@@ -535,5 +535,8 @@ cat "$TMP/live.err"
 [ "$RC_LIVE" = 0 ] || { echo "FAIL: exit $RC_LIVE after SIGTERM (want 0)" >&2; exit 1; }
 grep -q '^maburplay: shutdown: stream idle' "$TMP/live.err" || {
   echo "FAIL: no 'maburplay: shutdown: stream idle' line" >&2; exit 1; }
+grep -q '^maburplay: feed thread on' "$TMP/live.err" || { echo "FAIL: no feed thread" >&2; exit 1; }
+grep -q '^maburplay: feed: delivered=13 ' "$TMP/live.err" || {
+  echo "FAIL: the feed thread did not read the 13 retained AUs" >&2; exit 1; }
 
 echo "== player_e2e passed =="

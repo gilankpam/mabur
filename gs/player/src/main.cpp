@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <string>
 #include <thread>
@@ -19,6 +20,7 @@
 #include "au_ring.h"
 #include "au_router.h"
 #include "colortrans.h"  // ColorTrans, build_cubic_lut, LutAxis (docs/colortrans.md)
+#include "feed_loop.h"
 #include "mabur/dvr_mux.h"
 #include "mabur/dvr_name.h"
 #include "mabur/raw_dvr.h"
@@ -1032,7 +1034,9 @@ int main(int argc, char** argv) {
     presenter->present(f);
   };
 #endif
+  std::function<void()> drain_notes_fn;  // set once a FeedLoop exists; run before lat.on_decoded
   const maburplay::VideoBackend::FrameSink frame_sink = [&](const maburplay::DmaFrame& f) {
+    if (drain_notes_fn) drain_notes_fn();  // on_submit for this pts is out before its frame
 #ifdef MABUR_PLAYER_HW
     lat.on_decoded(f.pts_us, mono_us());
 #endif
@@ -1227,7 +1231,11 @@ int main(int argc, char** argv) {
     router.disarm();    // resync at the next sid0
   };
   router.set_hooks({process_note, [&]() { do_flush(); return true; }, [] { return mono_us(); }});
-  auto sink = [&](maburplay::AuEvent&& ev) { router.on_event(std::move(ev)); };
+  maburplay::FeedLoop* feed_ptr = nullptr;
+  auto sink = [&](maburplay::AuEvent&& ev) {
+    if (feed_ptr && !feed_ptr->checkpoint()) return;  // parked for the main thread, or stopping
+    router.on_event(std::move(ev));
+  };
 
   maburplay::RingClient ring({cfg.ring_path, cfg.socket}, sink);
   // Wait indefinitely for maburgs to create the ring (GS boot race,
@@ -1358,6 +1366,59 @@ int main(int argc, char** argv) {
     return ring_died ? 1 : 0;
   }
 
+  // The decoder-input thread (design-reader-thread.md). From here on the
+  // ring, the StreamFeeder and the router are its; this thread keeps the
+  // display, OSD, DVR, stats, the watchdog and the decoder's OUTPUT side.
+  maburplay::FeedLoop feed(ring, router, feeder, {});
+  auto drain_notes = [&]() {
+    std::vector<maburplay::FeedNote> got;
+    feed.take_notes(&got);
+    for (maburplay::FeedNote& n : got) process_note(std::move(n));
+  };
+  // Notes first, then a waiting flush: everything before the flush record
+  // reaches lat/DVR before lat.flush_all() runs -- today's order.
+  auto service_feed = [&]() {
+    drain_notes();
+    if (feed.flush_waiting()) {
+      drain_notes();
+      do_flush();
+      feed.resume();
+    }
+  };
+  drain_notes_fn = drain_notes;
+  router.set_hooks({[&feed](maburplay::FeedNote&& n) { feed.push_note(std::move(n)); },
+                    [&feed]() { return feed.park_for_flush(); }, [] { return mono_us(); }});
+  feed_ptr = &feed;
+#ifdef MABUR_PLAYER_HW
+  if (auto* mpp = dynamic_cast<maburplay::MppBackend*>(backend.get()))
+    mpp->set_input_cancel(&feed.cancel_flag());
+#endif
+  // Streamed-decode counters + ring wake latency, every 5 s, from the feed
+  // thread (it owns every input). wake = closed-record delivery - t_complete.
+  feed.set_periodic([&]() {
+    const auto wk = ring.take_wake();
+    uint64_t stream_refused = 0;
+#ifdef MABUR_PLAYER_HW
+    // backend read on the feed thread: safe only because the watchdog re-creates it while the feed is parked.
+    if (auto* mpp = dynamic_cast<maburplay::MppBackend*>(backend.get()))
+      stream_refused = mpp->stream_errors();
+#endif
+    std::fprintf(stderr,
+                 "stream: %s streamed=%llu salvaged=%llu aborted=%llu whole=%llu "
+                 "opened=%llu open_aborted=%llu wake_us=%u/%u n=%u refused=%llu parks=%llu\n",
+                 maburplay::stream_off_name(feeder.off_reason()),
+                 static_cast<unsigned long long>(feeder.streamed()),
+                 static_cast<unsigned long long>(feeder.streamed_salvaged()),
+                 static_cast<unsigned long long>(feeder.stream_aborted()),
+                 static_cast<unsigned long long>(feeder.whole_submits()),
+                 static_cast<unsigned long long>(ring.opened()),
+                 static_cast<unsigned long long>(ring.open_aborted()), wk.p50, wk.p99, wk.n,
+                 static_cast<unsigned long long>(stream_refused),
+                 static_cast<unsigned long long>(feed.parks()));
+  }, 5000);
+  feed.start();
+  std::fprintf(stderr, "maburplay: feed thread on (ring reader + decoder input off the render loop)\n");
+
   // --fps-log bookkeeping: a once-per-second stderr line, computed off the
   // same frame_count the FrameSink above already maintains.
   auto t_last_fps_log = std::chrono::steady_clock::now();
@@ -1367,7 +1428,6 @@ int main(int argc, char** argv) {
 #endif
 
   uint64_t flips_at_last_fps_log = 0;
-  uint64_t last_stream_log_ms = mono_ms();
   // Decode watchdog: rkvdec2 can hang on malformed/mid-session bitstream
   // and the kernel's force-reset leaves userspace MPP wedged (parser+hal
   // parked on futexes, decode_get_frame silent forever, kernel log shows
@@ -1440,7 +1500,8 @@ int main(int argc, char** argv) {
       }
     }
 #endif
-    ring.pump(pump_ms);
+    feed.wait_main(pump_ms);
+    service_feed();
 #ifdef MABUR_PLAYER_HW
     if (presenter) {
       const uint64_t nr1 = regulator.next_release_us();
@@ -1862,31 +1923,6 @@ int main(int argc, char** argv) {
       }
     }
 #endif
-    // Streamed-decode counters + ring wake latency, every 5 s on stderr
-    // (/tmp/maburplay.log; not the lat: line, which lat.log records). The
-    // wake window (delivery - t_complete, µs) is the spec §6.2 futex
-    // question's measurement. refused= is MppBackend's refused
-    // STREAM_APPENDs (0 on a backend that cannot stream).
-    if (mono_ms() - last_stream_log_ms >= 5000) {
-      last_stream_log_ms = mono_ms();
-      const auto wk = ring.take_wake();
-      uint64_t stream_refused = 0;
-#ifdef MABUR_PLAYER_HW
-      if (auto* mpp = dynamic_cast<maburplay::MppBackend*>(backend.get()))
-        stream_refused = mpp->stream_errors();
-#endif
-      std::fprintf(stderr,
-                   "stream: %s streamed=%llu salvaged=%llu aborted=%llu whole=%llu "
-                   "opened=%llu open_aborted=%llu wake_us=%u/%u n=%u refused=%llu\n",
-                   maburplay::stream_off_name(feeder.off_reason()),
-                   static_cast<unsigned long long>(feeder.streamed()),
-                   static_cast<unsigned long long>(feeder.streamed_salvaged()),
-                   static_cast<unsigned long long>(feeder.stream_aborted()),
-                   static_cast<unsigned long long>(feeder.whole_submits()),
-                   static_cast<unsigned long long>(ring.opened()),
-                   static_cast<unsigned long long>(ring.open_aborted()), wk.p50, wk.p99, wk.n,
-                   static_cast<unsigned long long>(stream_refused));
-    }
     {
       const auto now = std::chrono::steady_clock::now();
       if (frame_count != wd_frames) {
@@ -1905,6 +1941,18 @@ int main(int argc, char** argv) {
                      "for 2 s; resetting decoder and resyncing (attempt %d)\n",
                      static_cast<unsigned long long>(router.submits() - wd_submits),
                      wd_consecutive);
+        // The decoder's input side is the feed thread's: park it (between two
+        // events, outside every MPP call) before anything below resets or
+        // re-creates the decoder. A feed that cannot park in 2 s is wedged
+        // beyond this process: respawn.
+        if (!feed.park(std::chrono::seconds(2))) {
+          std::fprintf(stderr,
+                       "maburplay: decode watchdog -- the feed thread did not park in 2 s; "
+                       "exiting for respawn\n");
+          std::fflush(stderr);
+          std::_Exit(1);
+        }
+        drain_notes();
         drop_holders();
         feeder.on_flush();  // end a streamed picture before reset/teardown
         if (wd_consecutive < 3) {
@@ -1929,6 +1977,10 @@ int main(int argc, char** argv) {
             return 1;
           }
           feeder.set_decoder(dynamic_cast<maburplay::StreamDecoder*>(backend.get()));
+#ifdef MABUR_PLAYER_HW
+          if (auto* mpp = dynamic_cast<maburplay::MppBackend*>(backend.get()))
+            mpp->set_input_cancel(&feed.cancel_flag());
+#endif
         } else {
           // Even a fresh context won't decode: something below us (VPU,
           // kernel, stream) needs a full process restart. The init wrapper
@@ -1939,6 +1991,7 @@ int main(int argc, char** argv) {
           return 1;
         }
         router.disarm();  // resync at the next sid0 AU
+        feed.resume();
         wd_submits = router.submits();
         wd_last_progress = now;
       }
@@ -2001,8 +2054,7 @@ int main(int argc, char** argv) {
           // delivery chain froze somewhere -- dump where the reader sits
           // relative to the ring so the stuck stage is identifiable.
           if (fps < 0.5 && frame_count > 0)
-            std::fprintf(stderr, "fps-log: STALL %s trunc_skip=%llu\n", ring.debug_line().c_str(),
-                         static_cast<unsigned long long>(router.truncated_skipped()));
+            feed.request_debug_line();  // printed by the feed thread, which owns the ring
         } else
 #endif
         {
@@ -2013,7 +2065,7 @@ int main(int argc, char** argv) {
         frames_at_last_fps_log = frame_count;
       }
     }
-    if (ring.dead()) {
+    if (feed.dead()) {
       std::fprintf(stderr, "maburplay: ring reader dead, exiting\n");
       break;
     }
@@ -2044,11 +2096,29 @@ int main(int argc, char** argv) {
                      ? " -- its close never came: expect one rkvdec reset"
                      : "");
   };
-  if (g_stop.load() && !ring.dead()) {
-    router.set_draining();
-    report_drain(maburplay::drain_stream(feeder, [&](int ms) { ring.pump(ms); },
-                                         [] { return mono_ms(); }, 100));
+  if (g_stop.load() && !feed.dead()) {
+    feed.begin_drain();
+    const uint64_t t0 = mono_ms();
+    while (!feed.finished() && mono_ms() - t0 < 500) {  // the feed's own budget is 100 ms
+      feed.wait_main(1);
+      service_feed();   // a flush can still park it
+      backend->poll();  // keep the output side moving (a BUFFER_FULL needs it)
+    }
   }
+  feed.stop_and_join();
+  drain_notes();
+  if (g_stop.load()) {
+    if (feed.drained()) {
+      report_drain(feed.drain_result());
+    } else {
+      std::fprintf(stderr, "maburplay: shutdown: the feed thread did not finish its drain\n");
+    }
+  }
+  std::fprintf(stderr, "maburplay: feed: delivered=%llu submits=%llu parks=%llu notes_dropped=%llu\n",
+               static_cast<unsigned long long>(ring.delivered()),
+               static_cast<unsigned long long>(router.submits()),
+               static_cast<unsigned long long>(feed.parks()),
+               static_cast<unsigned long long>(feed.notes_dropped()));
 
 #ifdef MABUR_PLAYER_HW
   // Final tally -- same line the 1 Hz stats block above already printed all
