@@ -1,5 +1,7 @@
 #include "mpp_backend.h"
 
+#include "pts_unwrap.h"
+
 #include <unistd.h>  // usleep
 
 #include <cstdio>
@@ -32,6 +34,29 @@ struct MppBackend::Impl {
   uint64_t concealed_count = 0;  // errinfo frames emitted for display
   std::atomic<uint64_t> stream_errors{0};   // MPP_DEC_SET_STREAM_APPEND refused
   const std::atomic<bool>* input_cancel = nullptr;
+
+  // The u32 wire pts as a monotonic 64-bit value for every packet and
+  // append MPP sees (pts_unwrap.h: the stream hal refuses a part whose pts
+  // is not newer than the newest picture it opened, so a raw u32 goes
+  // "late" at each 71.6-min wrap). Input side only: submit_au/start/append/
+  // abort, all on the feed thread (or main while the feed is parked).
+  // Output frames keep the low 32 bits (drain_frames), which ARE the wire
+  // pts, so the lat tracker, regulator, DVR and shutdown pts match as before.
+  //
+  // Lives as long as this MPP context and is NOT reset by flush():
+  //  - flush() = mpi->reset(), which (synchronously: mpp_dec_reset_normal
+  //    waits on parser_reset) runs the hal's h265d_strm_reset(): opened_any
+  //    = 0, so the hal takes ANY pts after it -- continuing the unwrap is
+  //    always accepted, a re-seed would be too.
+  //  - but a reset that fails leaves the hal's newest_pts in place; a
+  //    re-seed at pts + 2^32 could then land below it (after one wrap the
+  //    unwrapped value is past 2^33) and every streamed picture would be
+  //    refused until the unwrap caught up. Continuing never goes backwards
+  //    except for a genuine step back, which the hal refuses either way.
+  //  - a recreate (init() again, a new hal with opened_any = 0) builds a
+  //    new Impl, so the unwrap starts over with its MPP context.
+  PtsUnwrap pts_unwrap;
+  RK_S64 ext_pts(uint32_t pts_us) { return static_cast<RK_S64>(pts_unwrap(pts_us)); }
 
   ~Impl() {
     if (ctx) mpp_destroy(ctx);
@@ -110,6 +135,7 @@ struct MppBackend::Impl {
       df.height = static_cast<int>(mpp_frame_get_height(frame));
       df.stride = static_cast<int>(mpp_frame_get_hor_stride(frame));
       df.vstride = static_cast<int>(mpp_frame_get_ver_stride(frame));
+      // The low 32 bits of the unwrapped pts (Impl::pts_unwrap) = the wire pts.
       df.pts_us = static_cast<uint32_t>(mpp_frame_get_pts(frame));
       df.opaque = frame;  // ownership transferred; release_frame() deinits
 
@@ -244,7 +270,7 @@ void MppBackend::submit_au(const uint8_t* au, size_t n, uint32_t pts_us) {
     ++impl_->error_count;
     return;
   }
-  mpp_packet_set_pts(pkt, static_cast<RK_S64>(pts_us));
+  mpp_packet_set_pts(pkt, impl_->ext_pts(pts_us));
   impl_->put_packet(pkt);
   mpp_packet_deinit(&pkt);
 }
@@ -301,7 +327,7 @@ bool MppBackend::start(const uint8_t* p, size_t n, uint8_t nslices, uint32_t pts
     ++impl_->error_count;
     return false;
   }
-  mpp_packet_set_pts(pkt, static_cast<RK_S64>(pts_us));
+  mpp_packet_set_pts(pkt, impl_->ext_pts(pts_us));
   // The decoder starts on this first part at once and is told the
   // picture's slice count up front (rkvdec2 reg017.slice_num).
   mpp_packet_set_flag(pkt, MPP_PACKET_FLAG_STREAM_START | MPP_PACKET_STREAM_SLICES(nslices));
@@ -319,7 +345,7 @@ bool MppBackend::append(const uint8_t* p, size_t n, uint32_t pts_us, bool last) 
   a.data = p;
   a.size = static_cast<RK_U32>(n);
   a.flags = last ? MPP_STREAM_APPEND_LAST : 0;
-  a.pts = static_cast<RK_S64>(pts_us);
+  a.pts = impl_->ext_pts(pts_us);
   const MPP_RET ret = impl_->mpi->control(impl_->ctx, MPP_DEC_SET_STREAM_APPEND, &a);
   if (ret != MPP_OK) {
     if (impl_->stream_errors++ == 0)
