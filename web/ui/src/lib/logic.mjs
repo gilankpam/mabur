@@ -409,7 +409,7 @@ export function errorText(line) {
     return 'CPE relay connection lost. Press Connect to restart.';
   }
   if (line.includes('no RTL card')) {
-    return 'No RTL8812EU/8812AU/8821AU card found — plug it in and press Connect.';
+    return 'No RTL8812EU/8812AU/8812CU/8821AU card found — plug it in and press Connect.';
   }
   if (line.includes('claim failed')) {
     return 'Card busy — maburgs or another tab has it. Close that and press Connect.';
