@@ -512,7 +512,8 @@ effect only once init finishes.
 
 The browser's own device
 chooser asks for the card — an RTL8812EU (Jaguar3 8822E), an RTL8812CU
-(Jaguar3 8822C, 0bda:c812), an RTL8812AU (Jaguar1), or a TP-Link RTL8821AU
+(Jaguar3 8822C, 0bda:c812 — tested on a Comfast CF-924AC V3, sold as
+"RTL8812BU"; chip-id 0x13 says 8822C), an RTL8812AU (Jaguar1), or a TP-Link RTL8821AU
 (Jaguar1 1T1R: Archer T2U Plus 2357:0120, plus 011e/0122 — the chooser
 filters on vendors 0bda and 2357, the core on exact VID:PID —
 `web_main.cpp`'s `kCards`, handed to `RadioFrontend::Cfg::ids`); the WASM

@@ -531,8 +531,9 @@ int live_loop(const LiveOpts& o, const maburgs::Config& cfg, uint8_t ch, int wid
 
 // Cards the web core opens; devourer's chip-id read picks the driver.
 // 0bda:a81a/881a = RTL8812EU (Jaguar3), 0bda:8812 = RTL8812AU or EU,
-// 0bda:c812 = RTL8812CU (Jaguar3 8822C; the page ejects its 0bda:1a2b
-// driver-CD mode first, zerocd.js), 2357:011e/0120/0122 = TP-Link RTL8821AU
+// 0bda:c812 = RTL8812CU (Jaguar3 8822C, e.g. Comfast CF-924AC V3; the OS
+// must eject its 0bda:1a2b driver-CD mode first, docs/web-gs.md),
+// 2357:011e/0120/0122 = TP-Link RTL8821AU
 // (Jaguar1, 1T1R). The page's WebUSB chooser filters by vendor only
 // (logic.mjs USB_FILTERS).
 const std::vector<maburgs::RadioFrontend::UsbId> kCards = {
