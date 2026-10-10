@@ -109,6 +109,10 @@ bool StreamFeeder::owns(uint64_t rec_no, uint32_t pts_us) const {
 }
 
 bool StreamFeeder::finish_(const std::vector<uint8_t>& au) {
+  // The writer contract says the closed record extends what was fed. These
+  // bytes come from another process's shm, though: a close shorter than the
+  // fed prefix would underflow e - fed below into a ~4 GB read. Abort instead.
+  if (au.size() < cur_.fed) return false;
   scan_(au);
   if (cur_.vcl.size() != cur_.n || cur_.parts == 0 || cur_.parts >= cur_.n) return false;
   for (size_t k = cur_.parts; k < cur_.n; ++k) {

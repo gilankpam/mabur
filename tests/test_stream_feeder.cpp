@@ -30,6 +30,10 @@ struct FakeDecoder : maburplay::StreamDecoder {
     return start_ok;
   }
   bool append(const uint8_t* p, size_t n, uint32_t pts, bool last) override {
+    if (n > (1u << 20)) {   // an underflowed length: record it, never read it
+      calls.push_back({'!', {}, 0, pts, last});
+      return append_ok;
+    }
     calls.push_back({'A', std::vector<uint8_t>(p, p + n), 0, pts, last});
     return append_ok;
   }
@@ -307,6 +311,28 @@ TEST(slice_count_mismatch_at_close_aborts) {
   CHECK(f.on_close(ev(AuEventKind::kClose, 9, 90, 4, au, kComplete), true) ==
         StreamFeeder::Close::kAborted);
   CHECK(d.calls.back().op == 'X');
+}
+
+TEST(close_shorter_than_what_was_fed_aborts) {
+  // A writer-contract violation (the closed record is shorter than the
+  // prefix already handed to the decoder) must abort the picture -- one
+  // empty LAST -- not underflow the last piece's length into a wild read.
+  std::vector<size_t> s;
+  const auto au = make_au(4, false, &s);
+  FakeDecoder d;
+  StreamFeeder f(true);
+  f.set_decoder(&d);
+  f.on_open(ev(AuEventKind::kOpen, 6, 60, 4, au), true);
+  REQUIRE(d.calls.size() == 3);              // S + slices 1, 2: fed up to s[3]
+  const auto shorter = prefix(au, s[2]);     // decodable-looking, but < fed
+  CHECK(f.on_close(ev(AuEventKind::kClose, 6, 60, 4, shorter, kComplete), true) ==
+        StreamFeeder::Close::kAborted);
+  REQUIRE(d.calls.size() == 4);              // exactly one more call: the abort
+  CHECK(d.calls[3].op == 'X');
+  CHECK(d.calls[3].b.empty());
+  for (const auto& c : d.calls) CHECK(c.op != '!');
+  CHECK(f.stream_aborted() == 1);
+  CHECK(f.streamed() == 0);
 }
 
 TEST(refused_start_leaves_the_au_to_the_whole_path) {
