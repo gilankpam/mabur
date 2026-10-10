@@ -522,20 +522,15 @@ added 622 KB to `webgs.wasm`, 2.46 → 3.09 MB) (WebUSB's per-origin
 device grant — pick it once and later `getDevices()` calls see it without asking again on the same
 origin).
 
-**The RTL8812CU starts as a fake CD drive.** It powers up as a
-mass-storage "DISK", 0bda:1a2b (Realtek's driver-CD mode, shared by the
-8811CU/8821CU/8812CU family), and only enumerates its Wi-Fi id 0bda:c812
-after a SCSI eject. The page cannot send that eject: the stick's only
-interface in that mode is mass storage, a WebUSB *protected interface
-class*, so `claimInterface()` rejects with SecurityError for any page that
-is not an Isolated Web App (WebUSB spec, `usb-unrestricted`) — and desktop
-Chrome does not even list 0bda:1a2b in the chooser (bench 2026-10-10). The
-OS has to switch it before Connect: Linux `usb_modeswitch -K -v 0bda -p
-1a2b` (or a udev rule running it on add), Windows the Realtek driver, macOS
-ejecting the CD in Finder. Android has nothing that switches it, so the CU
-does not work in the web GS there — use an 8812EU/AU. The switch does not
-survive a replug. Its bring-up also runs ~20 s (efuse read 6.7 s, BB/AGC/RF
-tables 9.8 s, firmware 2.2 s over native libusb) against ~5 s for the others.
+**Comfast CF-924AC (RTL8812CU): eject its driver disk before Connect.**
+The stick powers up as a USB disk (0bda:1a2b "DISK", Realtek's driver-CD
+mode) and only becomes the Wi-Fi card (0bda:c812) once that disk is
+ejected — on every plug-in. The page cannot do it for you: in that mode the
+stick is mass storage, a WebUSB protected class, so Chrome neither lists
+nor opens it. On Android, where nothing ejects it, the CU does not work in
+the web GS — use an 8812EU/AU. The CU's bring-up also runs ~20 s (efuse
+read 6.7 s, BB/AGC/RF tables 9.8 s, firmware 2.2 s over native libusb)
+against ~5 s for the others.
 Bench 2026-10-10, native `webgs live --mode spotter`, drone on ch 144 HT40:
 79 s locked, 60 AU/s, pre-FEC and residual loss 0, RSSI −46…−50 dBm, SNR
 35–37 dB, USB p99 ~1.7 ms.
