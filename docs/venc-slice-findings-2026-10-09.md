@@ -381,6 +381,12 @@ the bottom rungs (rung 0 frames ≈ 10 kB: estimate ~2 % at 4 slices).
   of the whole-picture decode (4.38 ms × rows/17): 2 slices ≈ 3.2 ms, 3 ≈ 2.5,
   4 ≈ 1.7, 5 / 9 / 17 ≈ 1.4 (last slice one CTU row). Beyond a small last
   slice, more slices buy nothing.
+- **Measured on the live link (2026-10-10):** `docs/slices.md`
+  "Slice-count sweep 2026-10-10 — measured vs predicted". In short, the
+  decode gain stops improving at about −2.65 ms from 3 slices on, and 17
+  is worse than 4. The truncated share tracks this model on the bench's
+  own truncation distribution. The bitrate cost cannot be measured on the
+  CBR link.
 
 ### The pictures that do not split
 

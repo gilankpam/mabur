@@ -10,6 +10,7 @@ is built: see "Part 2 (as built)" below.
   2026-10-10 bench): row slices on the link channel, applied
   with `MI_VENC_SetH265SliceSplit` before StartRecvPic; only counts the SDK's
   whole-64-px-CTU-row geometry reproduces boot (1080p: 1,2,3,4,5,6,9,17).
+  How the count trades off: "Slice-count sweep 2026-10-10" at the end.
 - FrameHdr byte 3 = `slice_rows` (64-px CTU rows per slice of this AU, 0 =
   one slice). maburd stamps it only when the AU carries the expected slice
   count; a one-slice AU carrying VPS/SPS/PPS (refresh start, IDR — the SDK
@@ -464,3 +465,122 @@ teardown.
 - The 5 s stream: line's MppBackend read on the feed thread is
   hardware-only and not ThreadSanitizer-covered; it is safe because the
   watchdog recreates the backend only while the feed is parked.
+
+## Slice-count sweep 2026-10-10 — measured vs predicted
+
+Every count the 1080p geometry allows (1, 2, 3, 4, 5, 6, 9, 17), checked
+against the predictions in `docs/venc-slice-findings-2026-10-09.md`
+"Slice cost, slice count, and fit with the transport". Rig: GS on the
+`slice-stream` image, maburplay `eed579d8` with `[decoder] stream = true`,
+maburgs = the `MABUR_LOSS_SIM` build of the ring-v4 code (`--loss-sim
+8310`, run from a shell loop in place of `S96maburgs`), live adaptive GS
+config with NACK on. Bench drone 1080p60 at `cmd_kbps` 24000, `/etc/mabur.toml`
+`slices` edited per count plus a `maburd` restart (one session directory
+per count: GS `/media/dvr/log/0066`–`0073`, control `0074`/`0075`). Per
+count: 45 s settle, 120 s clean, then 180 s `s0` + `s1 eff=1.5 burst=4`
+(the ladder sits at rung 0, mcs0/40, under that loss). Afterwards a
+control re-run of 1 and 4, to measure run-to-run noise. `dec`/`e2e` are
+the means of `lat.log`'s 1 Hz p50s (anchor=ok); loss counters are
+sideport deltas over the loss arm; the shares come from `au.log`
+(`aulog 5`) rows.
+
+### Decode overlap (clean arm)
+
+Δdec vs the 1-slice arm (whole-AU decode, `dec` 6.24 ms; control
+6.38). Prediction = the findings model (a fixed ~1.2 ms plus the last
+slice's share of the 4.38 ms harness whole-picture decode) minus 4.38.
+
+| slices (CTU rows) | Δdec measured | Δdec predicted | ring wake p99 | streamed |
+|---|---|---|---|---|
+| 2 (9/8) | −1.92 | −1.12 | 351 µs | 96.4 % |
+| 3 (6/6/5) | −2.57 | −1.89 | 616 µs | 96.3 % |
+| 4 (5/5/5/2) | −2.63 (control −2.71) | −2.66 | 882 µs | 96.6 % |
+| 5 (4/4/4/4/1) | −2.69 | −2.92 | 925 µs | 96.6 % |
+| 6 (3×5, 2) | −2.67 | −2.66 | 993 µs | 96.6 % |
+| 9 (2×8, 1) | −2.58 | −2.92 | 1463 µs | 96.4 % |
+| 17 (1 each) | −2.15 | −2.92 | 2717 µs | 96.6 % |
+
+- The model is right at 4 and 6. It under-predicts the gain at 2 and 3:
+  the live whole-picture decode (~6.3 ms) is longer than the harness's
+  4.38 ms, so each row is worth more than the model assumes.
+- It over-predicts 5, 9 and 17. From 3 slices on the gain sits at a
+  floor of about −2.65 ms (`dec` ~3.6 ms); the 3–9 spread is within
+  run-to-run noise (control: ~0.1 ms). 17 is clearly worse (−2.15): the
+  ring wake grows with the number of doorbells per AU, and so does the
+  per-append work.
+- `e2e` p50 is 1–2 ms lower than the 1-slice arm at every count (42 →
+  40–41 ms).
+- `dec` p99 is 7.5–8 ms at every count (10 ms whole).
+- `whole` ≈ 2 /s at every count = the refresh-start pictures, which stay
+  one slice at every count, as predicted (~230 `nslices` 0 AUs per
+  120 s arm).
+
+### Loss confinement (loss arm)
+
+On this rig almost every truncation is an enhance AU. Base AUs are
+dropped whole (94–128 per arm, flat across counts; slicing cannot help a
+picture whose first fragment never arrived — also predicted), or
+truncated 0–4 times per arm. The base predictions are therefore
+untested. Share of a truncated enhance picture that is shown, in % of
+the 17 CTU rows:
+
+| slices | head only, measured | bench model | flight prediction | incl. kept slices after the hole | salvaged / truncated |
+|---|---|---|---|---|---|
+| 1 | 0 | 6 | 6 | 0 | 0 / 131 |
+| 2 | 24 | 26 | 21 | 34 | 93 / 140 |
+| 3 | 27 | 32 | 27 | 43 | 131 / 147 |
+| 4 | 32.5 (control 35) | 35 (37) | 29 | 52 | 138 / 141 (154 / 155) |
+| 5 | 36 | 37 | 32 | 56 | 152 / 153 |
+| 6 | 40 | 40 | 34 | 59 | 138 / 141 |
+| 9 | 41 | 41 | 37 | 62 | 163 / 163 |
+| 17 | 47 | 45 | 39 | 67 | 140 / 140 |
+
+- **Head only** = the rows of the slices before the first missing one
+  (`kept − after_hole`), the quantity the findings predicted; an
+  unsalvaged truncation counts as 0.
+- **Bench model** = the findings' method (bytes ∝ rows, cut at the last
+  complete slice) applied to this bench's own truncated-prefix
+  distribution, measured in the 1-slice arm. The enhance prefix p25/p50/p75
+  is 0.23/0.46/0.75, against 0.15/0.32/0.59 in the flight logs. That is
+  why the flight prediction runs low here.
+- **Head only vs bench model.** The measured head share tracks the bench
+  model within 2–5 points (the control's model moves by 2 points on
+  sampling alone).
+- **Salvage beats the head-only prediction.** Salvage also keeps complete
+  slices past the hole. Counting those (their rows estimated at the mean
+  row count of the slices past the hole) adds 10–20 points.
+- **2 slices is weak.** A third of its truncations lost every slice
+  (`no_template` 45). `no_template` falls to 16, 3, 1, 2, 0, 0 from 3
+  slices up.
+- Under loss: `dec` p50 4 ms (6 at 1 slice), `stream_aborted` 0, rkvdec
+  resets 0, `slice_mismatch` 0 at every count.
+
+### Cost
+
+- **Bitrate cost: untestable on this link.** The encoder is CBR, so
+  bytes are pinned: the link carries 23.4–23.7 Mb/s at every count.
+  Clean-arm AU p50 also drifted 44 → 51 kB over the hour, independent of
+  the slice count, which swamps a ~1 % effect. The findings'
+  fixed-QP numbers (+0.65 % at 4 slices, +4.2 % at 17 on the SSC338Q;
+  x265 +1.2 % / +1.9 % / +5.4 % at 4 / 6 / 17) stay the only cost
+  data.
+- **The first 1-slice arm's base/enhance gap was drift.** That arm
+  showed base 56 kB vs enhance 44 kB, where every sliced arm had them
+  equal. It ran first, ~15 min after a cold drone power-on; the control
+  1-slice arm read 50.9 / 50.2 kB.
+- **Drone `cpu_pct`** p50: 30.4–31.5 at 1 slice, 32.6–34.3 in every
+  sliced arm except 3 slices (30.7). That is about +2 points, noisy, with
+  no trend across counts.
+
+### Verdict
+
+- 4 is at the decode knee.
+- 6 decodes as fast and shows ~8 points more of a truncated picture
+  (head only 40 vs 32.5–35 %, with the after-hole slices 59 vs 52 %).
+  The price is the findings' predicted +0.7 % bytes at flight frame sizes
+  (more on the small bottom-rung frames, where the per-slice part
+  weighs more), unmeasured here.
+- 5 vs 4 (spec open question 6): +3 points of picture, no decode gain.
+- 17 costs decode time and bytes for the last ~7 points.
+- The bundle stays at 4 until a flight shows how often base truncations
+  (untested here) happen.
