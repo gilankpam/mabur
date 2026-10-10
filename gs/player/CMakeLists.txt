@@ -2,6 +2,7 @@ add_library(mabur_player_core STATIC
   src/player_config.cpp
   src/rec_button.cpp
   src/ring_client.cpp
+  src/stream_feeder.cpp
   src/osd_font.cpp
   src/gs_font.cpp
   src/gs_draw.cpp
