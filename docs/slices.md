@@ -6,7 +6,8 @@ is not built yet.
 
 ## Drone
 
-- `[venc] slices` (default 1 = off): row slices on the link channel, applied
+- `[venc] slices` (compiled default 1 = off; the bundle ships 4 since the
+  2026-10-10 bench): row slices on the link channel, applied
   with `MI_VENC_SetH265SliceSplit` before StartRecvPic; only counts the SDK's
   whole-64-px-CTU-row geometry reproduces boot (1080p: 1,2,3,4,5,6,9,17).
 - FrameHdr byte 3 = `slice_rows` (64-px CTU rows per slice of this AU, 0 =
@@ -196,6 +197,7 @@ it). Both ends at 6c27e74, live adaptive GS config.
     error the page drops its decoder and waits for a key frame (IDR
     request), so it freezes where MPP conceals and keeps decoding — the
     page shows a salvaged picture only between such resets. Not a slice
-    salvage defect; a web GS limit (Known limits). The bench drone's own
-  `/etc/mabur.toml` is at `slices = 4` (`.pre-slice` backups of binary
-  and config on both devices).
+    salvage defect; a web GS limit (Known limits).
+- **Turned on:** `bundle/mabur.default.toml` ships `slices = 4`; the bench
+  drone runs it (`.pre-slice` backups of binary and config on both
+  devices).
