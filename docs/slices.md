@@ -98,6 +98,20 @@ is not built yet.
 
 ## Follow-ups
 
+- **Pending: prove the web GS shows the salvaged picture, with motion.**
+  A replay of 31 salvaged AUs through Chrome WebCodecs (VAAPI, the page's
+  own config) matches libavcodec at 45.3–46.9 dB (colour-conversion
+  rounding only), fill bands ≥ 43.9 dB, one output per chunk, no error.
+  But those captures were static (kept bands changed ~0.15 grey levels
+  frame to frame), so "decoded" and "repeated the previous frame" are not
+  told apart. Redo with an IDR-start ring capture under loss-sim while
+  someone waves in front of the camera: on each salvaged AU the kept bands
+  must change vs the previous output and match libavcodec's decode of the
+  new AU, the filled bands must stay near the previous output; render
+  Chrome's own before/salvaged frames. The operator saw no band edge on
+  the phone (/edge, jam, 2026-10-10), which this would explain or refute.
+  Harness: aucap (ausniff with framed AU dump) + a WebCodecs page that
+  reads frames back via canvas — rebuild, it lived in a session scratchpad.
 - **Cover dropped frames, not just truncated ones.** A base AU that never
   arrives (nothing received, or no complete slice to copy a header from)
   still leaves later pictures without their reference. maburplay/MPP
