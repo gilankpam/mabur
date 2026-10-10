@@ -467,3 +467,32 @@ slice band (YUV→RGB rounding only; a broken slice would drop one band). The
 web code itself makes no one-slice assumption: the conversion splits on every
 start code, the gate looks only for VPS/SPS/PPS + an IRAP. Other browsers and
 platform decoders are not checked.
+
+## Can the refresh-start picture be split? (spike 2026-10-10)
+
+Config-only sweep on the bench drone (slices = 4, `ref_base`/`ref_enhance`
+1/1, `gop_s` 0.5), 4 s GS ring dump per case, static scene:
+
+| `intra_refresh_frames` (refresh rows / 34) | GOP-start picture | size p50 | one base AU dropped mid-GOP |
+|---|---|---|---|
+| 1 (34, flown) | 1 P slice, TRAIL_R + VPS/SPS/PPS | 61 kB | 17/17 CTU rows wrong → **0/17 at the next GOP start** |
+| 2 (17) | 2 P slices | 39 kB | not measured |
+| 4 (9) | **4 P slices** | 29 kB | 14/17 wrong → 9/17 at the next GOP start → **4/17 still wrong two GOPs later** |
+| 0 (GDR off) | IDR, 4 I slices | 3.8 kB (`min_iqp` cap) | — |
+
+The SDK does not cut a slice through the refresh stripe: a stripe taller
+than the slice height (10 32-px rows at 4 slices) keeps the GOP-start
+picture in fewer slices; at ≤ 10 rows it splits like any P picture. The
+refresh-start picture is a **P** picture, so if it were split, salvage
+could fill its slices.
+
+But a stripe spread over several frames does not heal under SVC-T 1:1 —
+the stripes after the first never stick (the 2026-09-17 GDR finding,
+re-measured here with a drop-one-base decode). Splitting the refresh start
+therefore costs self-healing of a lost base frame, which is the reason the
+flown config refreshes the whole picture in one frame. Verdict: keep
+`intra_refresh_frames = 1`; the refresh-start picture stays one slice.
+Untested: SVC-T off (`ref_base = 0`) + a 4-frame stripe heals per the
+2026-09-17 sweep and would split, but drops the base/enhance layering UEP
+is built on.
+

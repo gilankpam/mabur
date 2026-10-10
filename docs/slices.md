@@ -79,7 +79,11 @@ is not built yet.
 
 ## Known limits
 
-- Refresh-start pictures stay one slice (SDK); damaged ones pass through.
+- Refresh-start pictures stay one slice (SDK: it won't cut through the
+  whole-picture refresh stripe); damaged ones pass through. Splitting them
+  needs `intra_refresh_frames >= 4`, which breaks base-loss self-healing
+  under SVC-T — measured, `docs/venc-slice-findings-2026-10-09.md`
+  "Can the refresh-start picture be split?".
 - A damaged IDR passes through (`islice`).
 - The web GS's local/replay recorder (`RawDvr` in `web/src/web_main.cpp`)
   still records complete AUs only — its `on_au` callback feeds `a.complete`
