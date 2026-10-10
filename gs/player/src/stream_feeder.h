@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <vector>
 
 #include "ring_client.h"
@@ -52,6 +53,12 @@ class StreamFeeder {
   // The decoder is about to be flushed, reset or re-created: end any
   // streamed picture first (counted stream_aborted).
   void on_flush();
+  // Shutdown (Task 11a): from here on no picture starts streaming; the one
+  // already streaming keeps taking its slices and ends at its own close.
+  void stop_new() { stop_new_ = true; }
+  // A picture is on the decoder: started, neither finished nor ended.
+  bool streaming() const { return cur_.started && !cur_.ended; }
+  uint32_t streaming_pts() const { return cur_.pts; }
   void count_whole() { ++whole_submits_; }
 
   uint64_t streamed() const { return streamed_; }
@@ -88,12 +95,31 @@ class StreamFeeder {
   void abort_cur_();
 
   bool enable_;
+  bool stop_new_ = false;
   StreamDecoder* dec_ = nullptr;
   StreamOff off_ = StreamOff::kNoDecoder;
   Cur cur_;
   Ended ended_;
   uint64_t streamed_ = 0, streamed_salvaged_ = 0, stream_aborted_ = 0, whole_submits_ = 0;
 };
+
+// Shutdown (Task 11a, design-reader-thread.md): what drain_stream() did with
+// the picture that was streaming when the player was told to stop.
+struct DrainResult {
+  enum Kind : uint8_t { kIdle, kFinished, kAborted };
+  Kind kind = kIdle;
+  uint32_t pts = 0;
+  uint32_t waited_ms = 0;
+};
+const char* drain_name(DrainResult::Kind k);  // "stream idle" / "stream finished" / "stream aborted"
+
+// Finish the picture in flight with its own last slice: stop_new(), then
+// pump(1) until its close has gone through the feeder, at most budget_ms; a
+// close that does not come gets the empty LAST (on_flush). MPP teardown would
+// end it with that same empty LAST -- 64 zero bytes in the kernel
+// (rkvdec2_strm_cut), an error IRQ, one rkvdec reset (task-11D-report.md).
+DrainResult drain_stream(StreamFeeder& f, const std::function<void(int)>& pump,
+                         const std::function<uint64_t()>& now_ms, uint32_t budget_ms);
 
 }  // namespace maburplay
 

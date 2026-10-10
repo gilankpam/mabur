@@ -66,7 +66,7 @@ void StreamFeeder::on_open(const AuEvent& ev, bool armed) {
     cur_.rec_no = ev.meta.rec_no;
     cur_.pts = ev.meta.pts_us;
     cur_.n = ev.meta.nslices;
-    cur_.eligible = off_ == StreamOff::kNone && armed && ev.meta.nslices >= 2 &&
+    cur_.eligible = off_ == StreamOff::kNone && !stop_new_ && armed && ev.meta.nslices >= 2 &&
                     !ev.flush_before &&
                     (ev.meta.flags & mabur::framewire::kFlagDiscont) == 0;
   } else if (!same) {
@@ -163,6 +163,34 @@ void StreamFeeder::abort_cur_() {
   ++stream_aborted_;
   cur_.ended = true;
   ended_ = Ended{true, cur_.rec_no, cur_.pts};
+}
+
+const char* drain_name(DrainResult::Kind k) {
+  switch (k) {
+    case DrainResult::kIdle: return "stream idle";
+    case DrainResult::kFinished: return "stream finished";
+    case DrainResult::kAborted: return "stream aborted";
+  }
+  return "stream ?";
+}
+
+DrainResult drain_stream(StreamFeeder& f, const std::function<void(int)>& pump,
+                         const std::function<uint64_t()>& now_ms, uint32_t budget_ms) {
+  f.stop_new();
+  DrainResult r;
+  if (!f.streaming()) return r;
+  r.pts = f.streaming_pts();
+  const uint64_t aborted0 = f.stream_aborted();
+  const uint64_t t0 = now_ms();
+  while (f.streaming() && now_ms() - t0 < budget_ms) pump(1);
+  r.waited_ms = static_cast<uint32_t>(now_ms() - t0);
+  if (f.streaming()) {
+    f.on_flush();  // its close never came: one empty LAST
+    r.kind = DrainResult::kAborted;
+  } else {
+    r.kind = f.stream_aborted() != aborted0 ? DrainResult::kAborted : DrainResult::kFinished;
+  }
+  return r;
 }
 
 }  // namespace maburplay

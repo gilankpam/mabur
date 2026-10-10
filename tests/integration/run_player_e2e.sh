@@ -500,4 +500,40 @@ if [ "$BAR_SHA" != "$BAR_SHA_EXPECTED" ]; then
   exit 1
 fi
 
+# --- PART F: live run, SIGTERM -> clean shutdown (Task 11a) ------------
+# The oneshot drain never reaches the run loop. Run it for real on the ring
+# maburgs left behind (null backend, no doorbell, no DVR, no overlays), then
+# stop it the way S97maburplay does: exit 0, promptly, through the shutdown
+# drain (null backend: nothing streams -> "stream idle").
+echo "== PART F: live run, SIGTERM =="
+cat > "$TMP/live.toml" <<EOF
+ring_path = "$TMP/au-ring"
+socket = "$TMP/none.sock"
+backend = "null"
+
+[dvr]
+autostart = false
+dir = "$TMP"
+
+[osd]
+enable = false
+
+[osd.gs]
+enable = false
+EOF
+"$MABURPLAY" -c "$TMP/live.toml" > "$TMP/live.out" 2> "$TMP/live.err" &
+LIVE=$!
+sleep 1
+kill -TERM "$LIVE"
+for _ in $(seq 1 50); do kill -0 "$LIVE" 2>/dev/null || break; sleep 0.1; done
+if kill -0 "$LIVE" 2>/dev/null; then
+  echo "FAIL: maburplay still running 5 s after SIGTERM" >&2
+  kill -9 "$LIVE"; cat "$TMP/live.err" >&2; exit 1
+fi
+set +e; wait "$LIVE"; RC_LIVE=$?; set -e
+cat "$TMP/live.err"
+[ "$RC_LIVE" = 0 ] || { echo "FAIL: exit $RC_LIVE after SIGTERM (want 0)" >&2; exit 1; }
+grep -q '^maburplay: shutdown: stream idle' "$TMP/live.err" || {
+  echo "FAIL: no 'maburplay: shutdown: stream idle' line" >&2; exit 1; }
+
 echo "== player_e2e passed =="

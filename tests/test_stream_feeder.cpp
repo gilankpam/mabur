@@ -399,4 +399,101 @@ TEST(flush_before_start_never_starts) {
   CHECK(f.stream_aborted() == 0);
 }
 
+TEST(stop_new_lets_the_streaming_picture_finish_and_starts_no_other) {
+  std::vector<size_t> s;
+  const auto au = make_au(4, false, &s);
+  FakeDecoder d;
+  StreamFeeder f(true);
+  f.set_decoder(&d);
+  f.on_open(ev(AuEventKind::kOpen, 7, 70, 4, prefix(au, s[2])), true);   // S + slice 1
+  REQUIRE(f.streaming());
+  CHECK(f.streaming_pts() == 70u);
+  f.stop_new();
+  f.on_open(ev(AuEventKind::kGrow, 7, 70, 4, au), true);                 // slice 2 still goes in
+  CHECK(d.calls.size() == 3);
+  CHECK(f.on_close(ev(AuEventKind::kClose, 7, 70, 4, au, kComplete), true) ==
+        StreamFeeder::Close::kStreamed);
+  CHECK(!f.streaming());
+  CHECK(d.fed() == au);
+  f.on_open(ev(AuEventKind::kOpen, 8, 80, 4, au), true);                 // the next picture
+  CHECK(d.calls.size() == 4);                                            // never started
+  CHECK(!f.owns(8, 80));
+  CHECK(f.on_close(ev(AuEventKind::kClose, 8, 80, 4, au, kComplete), true) ==
+        StreamFeeder::Close::kWhole);
+}
+
+TEST(drain_stream_finishes_the_picture_on_its_close) {
+  std::vector<size_t> s;
+  const auto au = make_au(4, false, &s);
+  FakeDecoder d;
+  StreamFeeder f(true);
+  f.set_decoder(&d);
+  f.on_open(ev(AuEventKind::kOpen, 7, 70, 4, prefix(au, s[2])), true);
+  uint64_t now = 5000;
+  int pumps = 0;
+  const auto r = maburplay::drain_stream(
+      f,
+      [&](int ms) {
+        now += static_cast<uint64_t>(ms);
+        if (++pumps == 3) f.on_close(ev(AuEventKind::kClose, 7, 70, 4, au, kComplete), true);
+      },
+      [&] { return now; }, 100);
+  CHECK(r.kind == maburplay::DrainResult::kFinished);
+  CHECK(r.pts == 70u);
+  CHECK(r.waited_ms == 3);
+  REQUIRE(!d.calls.empty());
+  CHECK(d.calls.back().op == 'A');
+  CHECK(d.calls.back().last);
+  CHECK(!d.calls.back().b.empty());   // its own last slice, not the empty LAST
+  CHECK(f.stream_aborted() == 0);
+}
+
+TEST(drain_stream_ends_the_picture_once_when_its_close_never_comes) {
+  std::vector<size_t> s;
+  const auto au = make_au(4, false, &s);
+  FakeDecoder d;
+  StreamFeeder f(true);
+  f.set_decoder(&d);
+  f.on_open(ev(AuEventKind::kOpen, 7, 70, 4, prefix(au, s[2])), true);
+  uint64_t now = 0;
+  const auto r = maburplay::drain_stream(
+      f, [&](int ms) { now += static_cast<uint64_t>(ms); }, [&] { return now; }, 20);
+  CHECK(r.kind == maburplay::DrainResult::kAborted);
+  CHECK(r.waited_ms == 20);
+  CHECK(d.calls.back().op == 'X');
+  CHECK(f.stream_aborted() == 1);
+  CHECK(f.on_close(ev(AuEventKind::kClose, 7, 70, 4, au, kComplete), true) ==
+        StreamFeeder::Close::kAborted);   // its straggling close never goes whole
+}
+
+TEST(drain_stream_is_idle_when_nothing_streams) {
+  FakeDecoder d;
+  StreamFeeder f(true);
+  f.set_decoder(&d);
+  int pumps = 0;
+  const auto r = maburplay::drain_stream(f, [&](int) { ++pumps; }, [] { return uint64_t{0}; }, 100);
+  CHECK(r.kind == maburplay::DrainResult::kIdle);
+  CHECK(pumps == 0);
+  CHECK(d.calls.empty());
+}
+
+TEST(drain_stream_reports_an_aborted_close_as_aborted) {
+  std::vector<size_t> s;
+  const auto au = make_au(4, false, &s);
+  FakeDecoder d;
+  StreamFeeder f(true);
+  f.set_decoder(&d);
+  f.on_open(ev(AuEventKind::kOpen, 7, 70, 4, prefix(au, s[2])), true);
+  uint64_t now = 0;
+  const auto r = maburplay::drain_stream(
+      f,
+      [&](int ms) {
+        now += static_cast<uint64_t>(ms);
+        f.on_close(ev(AuEventKind::kClose, 7, 70, 4, {}, 0, false, /*aborted=*/true), false);
+      },
+      [&] { return now; }, 100);
+  CHECK(r.kind == maburplay::DrainResult::kAborted);
+  CHECK(d.calls.back().op == 'X');
+}
+
 MTEST_MAIN

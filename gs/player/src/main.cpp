@@ -1006,6 +1006,8 @@ int main(int argc, char** argv) {
   // just carries the extra bookkeeping for free.
   uint64_t frame_count = 0;
   bool have_first_frame = false;
+  bool have_decoded_pts = false;  // shutdown waits for the drained picture's frame
+  uint32_t last_decoded_pts = 0;
   std::chrono::steady_clock::time_point t_first_frame, t_last_frame;
   // Named so the watchdog's backend-recreation path can re-wire the same
   // sink into the fresh decoder instance.
@@ -1034,6 +1036,8 @@ int main(int argc, char** argv) {
     lat.on_decoded(f.pts_us, mono_us());
 #endif
     ++frame_count;
+    have_decoded_pts = true;
+    last_decoded_pts = f.pts_us;
     // The DECODED picture size, which is what the OSD's res: field means --
     // not screen_mode (the panel) and not bcfg (the burn encoder), both of
     // which stay at 1080p while the drone streams 720p. Latched here rather
@@ -1199,6 +1203,7 @@ int main(int argc, char** argv) {
   bool t_sync_seen = false;
   std::chrono::steady_clock::time_point t_sync;
   uint64_t truncated_skipped = 0;
+  bool shutting_down = false;  // shutdown drain: nothing new reaches the decoder
 
   // RingClient sink: (a) DVR write (must not depend on decode health, so it
   // happens before the backend ever sees the AU), then (b) the decode feed.
@@ -1285,6 +1290,7 @@ int main(int argc, char** argv) {
       return;
     }
     feeder.on_close(ev, decodable);  // seen open but not streamed: the whole path below
+    if (shutting_down) return;
     // Never feed a truncated AU to the decoder. The spec's original policy
     // (submit truncated base, let MPP conceal) HANGS rkvdec2 on this
     // hardware: a truncated slice declares more bitstream than exists, the
@@ -2127,6 +2133,37 @@ int main(int argc, char** argv) {
       std::fprintf(stderr, "maburplay: ring reader dead, exiting\n");
       break;
     }
+  }
+
+  // Clean shutdown (Task 11a; task-11D-report.md). A streamed picture still
+  // open in rkvdec when MPP is torn down gets mpp_dec_stop's empty LAST
+  // (mpp_dec.c:877) -- 64 zero bytes in the kernel -- and decodes into an
+  // error IRQ: one rkvdec reset per such kill (3 of 13). Finish it with its
+  // own last slice instead (its close is at most a frame away), then let it
+  // decode. Only on a signal: the watchdog and dead-ring exits are faults.
+  auto report_drain = [&](const maburplay::DrainResult& dr) {
+    bool decoded = false;
+    if (dr.kind == maburplay::DrainResult::kFinished) {
+      const uint64_t t1 = mono_ms();
+      for (;;) {
+        decoded = have_decoded_pts && last_decoded_pts == dr.pts;
+        if (decoded || mono_ms() - t1 >= 50) break;
+        backend->poll();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
+    }
+    std::fprintf(stderr, "maburplay: shutdown: %s pts=%u waited=%u ms%s\n",
+                 maburplay::drain_name(dr.kind), dr.pts, dr.waited_ms,
+                 dr.kind == maburplay::DrainResult::kFinished
+                     ? (decoded ? ", decoded" : ", not decoded in 50 ms")
+                 : dr.kind == maburplay::DrainResult::kAborted
+                     ? " -- its close never came: expect one rkvdec reset"
+                     : "");
+  };
+  if (g_stop.load() && !ring.dead()) {
+    shutting_down = true;
+    report_drain(maburplay::drain_stream(feeder, [&](int ms) { ring.pump(ms); },
+                                         [] { return mono_ms(); }, 100));
   }
 
 #ifdef MABUR_PLAYER_HW
