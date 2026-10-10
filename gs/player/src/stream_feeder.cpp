@@ -153,6 +153,9 @@ StreamFeeder::Close StreamFeeder::on_close(const AuEvent& ev, bool decodable) {
 
 void StreamFeeder::on_flush() {
   if (cur_.started && !cur_.ended) abort_cur_();
+  // A picture seen open but not started yet (only leading non-VCL NALs so
+  // far) must not START on the decoder just flushed: it goes whole at close.
+  cur_.eligible = false;
 }
 
 void StreamFeeder::abort_cur_() {

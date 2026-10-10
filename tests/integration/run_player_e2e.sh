@@ -177,6 +177,9 @@ assert s["dropped_enhance_incomplete"] == 0, s
 assert s["resyncs"] == 0, s
 assert s["dvr_samples"] == 13, s
 assert s["dvr_fragments"] >= 1, s
+assert s["stream"] == "off:no_decoder", s   # null backend: no stream mode, whole AUs
+assert s["streamed"] == 0, s
+assert s["stream_aborted"] == 0, s
 print(f"OK stats: {s}")
 EOF
 

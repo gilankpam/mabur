@@ -375,4 +375,28 @@ TEST(decoder_rebuild_keeps_the_aborted_picture_aborted) {
   CHECK(f.whole_submits() == 0);
 }
 
+TEST(flush_before_start_never_starts) {
+  // A picture seen open (eligible) but not yet started -- only its leading
+  // prefix SEI is valid -- when the decoder is flushed (watchdog reset, or a
+  // flush_before AU). Its later growth must not send START on the decoder
+  // that was just flushed: on_flush() ends its eligibility too, and its
+  // close takes the whole-AU path.
+  std::vector<size_t> s;
+  const auto au = make_au(4, true, &s);
+  FakeDecoder d;
+  StreamFeeder f(true);
+  f.set_decoder(&d);
+  f.on_open(ev(AuEventKind::kOpen, 12, 120, 4, prefix(au, s[0])), true);   // SEI only
+  CHECK(d.calls.empty());
+  f.on_flush();
+  CHECK(d.calls.empty());                    // nothing started: nothing to abort
+  f.on_open(ev(AuEventKind::kGrow, 12, 120, 4, prefix(au, s[2])), true);   // slices 0-1 valid
+  CHECK(d.calls.empty());                    // never START after the flush
+  CHECK(!f.owns(12, 120));
+  CHECK(f.on_close(ev(AuEventKind::kClose, 12, 120, 4, au, kComplete), true) ==
+        StreamFeeder::Close::kWhole);
+  CHECK(d.calls.empty());
+  CHECK(f.stream_aborted() == 0);
+}
+
 MTEST_MAIN

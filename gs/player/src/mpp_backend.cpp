@@ -30,6 +30,7 @@ struct MppBackend::Impl {
   uint64_t info_change_count = 0;
   uint64_t error_count = 0;      // hard failures: no buffer / bad fd / put_packet
   uint64_t concealed_count = 0;  // errinfo frames emitted for display
+  uint64_t stream_errors = 0;   // MPP_DEC_SET_STREAM_APPEND refused
 
   ~Impl() {
     if (ctx) mpp_destroy(ctx);
@@ -118,6 +119,29 @@ struct MppBackend::Impl {
       }
     }
   }
+
+  // decode_put_packet with the BUFFER_FULL retry discipline: drain ready
+  // frames first to make room, then a capped 1 ms sleep (never busy-spin).
+  // kMaxRetries bounds this at ~0.5 s so a genuinely wedged decoder can't
+  // hang the player forever; at the ~16.7 ms/frame cadence this stream
+  // runs, the healthy path never gets remotely close to that ceiling.
+  bool put_packet(MppPacket pkt) {
+    constexpr int kMaxRetries = 500;
+    for (int attempt = 0; attempt < kMaxRetries; ++attempt) {
+      const MPP_RET ret = mpi->decode_put_packet(ctx, pkt);
+      if (ret == MPP_OK) return true;
+      if (ret != MPP_ERR_BUFFER_FULL) {
+        std::fprintf(stderr, "MppBackend: decode_put_packet failed ret=%d\n", ret);
+        ++error_count;
+        return false;
+      }
+      drain_frames();
+      usleep(1000);
+    }
+    std::fprintf(stderr, "MppBackend: decode_put_packet stayed BUFFER_FULL, dropping AU\n");
+    ++error_count;
+    return false;
+  }
 };
 
 MppBackend::MppBackend() = default;
@@ -132,6 +156,24 @@ bool MppBackend::init(const BackendCfg&, FrameSink sink) {
     std::fprintf(stderr, "MppBackend: mpp_create failed ret=%d\n", ret);
     impl_.reset();
     return false;
+  }
+
+  if (stream_wanted_) {
+    // [decoder] stream: parser fast mode off BEFORE mpp_init. The h265d hal
+    // decides at its own init whether it can stream (h265d_strm_init():
+    // never in fast mode -- two pictures in flight), from base:fast_parse,
+    // which MPP defaults to 1 (mpp_dec_cfg.c). A pre-init MPP_DEC_SET_CFG
+    // lands in the config mpp_init hands the decoder (mpp.c
+    // mpp_control_dec). A failure here just makes probe() refuse.
+    MppDecCfg dcfg = nullptr;
+    MPP_RET cr = mpp_dec_cfg_init(&dcfg);
+    if (cr == MPP_OK) cr = impl_->mpi->control(impl_->ctx, MPP_DEC_GET_CFG, dcfg);
+    if (cr == MPP_OK) cr = mpp_dec_cfg_set_u32(dcfg, "base:fast_parse", 0);
+    if (cr == MPP_OK) cr = impl_->mpi->control(impl_->ctx, MPP_DEC_SET_CFG, dcfg);
+    if (dcfg) mpp_dec_cfg_deinit(dcfg);
+    if (cr != MPP_OK)
+      std::fprintf(stderr, "MppBackend: base:fast_parse = 0 failed ret=%d (stream probe will refuse)\n",
+                   cr);
   }
 
   ret = mpp_init(impl_->ctx, MPP_CTX_DEC, MPP_VIDEO_CodingHEVC);
@@ -184,40 +226,13 @@ bool MppBackend::init(const BackendCfg&, FrameSink sink) {
 
 void MppBackend::submit_au(const uint8_t* au, size_t n, uint32_t pts_us) {
   if (!impl_ || !impl_->ctx || !au || n == 0) return;
-
   MppPacket pkt = nullptr;
   if (mpp_packet_init(&pkt, const_cast<uint8_t*>(au), n) != MPP_OK) {
     ++impl_->error_count;
     return;
   }
   mpp_packet_set_pts(pkt, static_cast<RK_S64>(pts_us));
-
-  // Retry discipline (brief step 3): loop decode_put_packet until it's
-  // accepted. MPP_ERR_BUFFER_FULL means the decoder's internal packet
-  // queue is full -- drain ready frames first to make room, then a
-  // capped 1 ms sleep (never busy-spin), then retry. kMaxRetries bounds
-  // this at ~0.5 s so a genuinely wedged decoder can't hang the player
-  // forever; at the ~16.7 ms/frame cadence this stream runs, the healthy
-  // path never gets remotely close to that ceiling.
-  constexpr int kMaxRetries = 500;
-  for (int attempt = 0; attempt < kMaxRetries; ++attempt) {
-    const MPP_RET ret = impl_->mpi->decode_put_packet(impl_->ctx, pkt);
-    if (ret == MPP_OK) {
-      mpp_packet_deinit(&pkt);
-      return;
-    }
-    if (ret != MPP_ERR_BUFFER_FULL) {
-      std::fprintf(stderr, "MppBackend: decode_put_packet failed ret=%d\n", ret);
-      ++impl_->error_count;
-      mpp_packet_deinit(&pkt);
-      return;
-    }
-    impl_->drain_frames();
-    usleep(1000);
-  }
-
-  std::fprintf(stderr, "MppBackend: decode_put_packet stayed BUFFER_FULL, dropping AU\n");
-  ++impl_->error_count;
+  impl_->put_packet(pkt);
   mpp_packet_deinit(&pkt);
 }
 
@@ -247,5 +262,59 @@ uint64_t MppBackend::info_changes() const { return impl_ ? impl_->info_change_co
 
 uint64_t MppBackend::concealed() const { return impl_ ? impl_->concealed_count : 0; }
 uint64_t MppBackend::errors() const { return impl_ ? impl_->error_count : 0; }
+
+bool MppBackend::probe() {
+  if (!impl_ || !impl_->ctx || !stream_wanted_) return false;
+  // NULL asks whether this decoder can stream (fpvOS MPP 0001): MPP_OK if
+  // the hal opened stream mode at init -- fast mode off and a kernel that
+  // answers MPP_STREAM_PROBE with "supported".
+  const MPP_RET ret = impl_->mpi->control(impl_->ctx, MPP_DEC_SET_STREAM_APPEND, nullptr);
+  std::fprintf(stderr, "MppBackend: stream mode %s (probe ret=%d)\n",
+               ret == MPP_OK ? "available" : "refused", ret);
+  return ret == MPP_OK;
+}
+
+bool MppBackend::start(const uint8_t* p, size_t n, uint8_t nslices, uint32_t pts_us) {
+  if (!impl_ || !impl_->ctx || !p || n == 0) return false;
+  MppPacket pkt = nullptr;
+  if (mpp_packet_init(&pkt, const_cast<uint8_t*>(p), n) != MPP_OK) {
+    ++impl_->error_count;
+    return false;
+  }
+  mpp_packet_set_pts(pkt, static_cast<RK_S64>(pts_us));
+  // The decoder starts on this first part at once and is told the
+  // picture's slice count up front (rkvdec2 reg017.slice_num).
+  mpp_packet_set_flag(pkt, MPP_PACKET_FLAG_STREAM_START | MPP_PACKET_STREAM_SLICES(nslices));
+  const bool ok = impl_->put_packet(pkt);
+  mpp_packet_deinit(&pkt);
+  return ok;
+}
+
+bool MppBackend::append(const uint8_t* p, size_t n, uint32_t pts_us, bool last) {
+  if (!impl_ || !impl_->ctx) return false;
+  // Taken on this thread while the picture decodes; MPP copies the bytes
+  // (into the picture's stream buffer, or a pending part until the decode
+  // thread starts that picture), so the caller's buffer may go at once.
+  MppDecStreamAppend a{};
+  a.data = p;
+  a.size = static_cast<RK_U32>(n);
+  a.flags = last ? MPP_STREAM_APPEND_LAST : 0;
+  a.pts = static_cast<RK_S64>(pts_us);
+  const MPP_RET ret = impl_->mpi->control(impl_->ctx, MPP_DEC_SET_STREAM_APPEND, &a);
+  if (ret != MPP_OK) {
+    if (impl_->stream_errors++ == 0)
+      std::fprintf(stderr, "MppBackend: STREAM_APPEND refused ret=%d (first of possibly many)\n", ret);
+    return false;
+  }
+  return true;
+}
+
+void MppBackend::abort(uint32_t pts_us) {
+  // No data + LAST: the kernel gives the picture 64 zero bytes as its last
+  // part and ends it -- the decoder errors and resets once, no hang.
+  append(nullptr, 0, pts_us, true);
+}
+
+uint64_t MppBackend::stream_errors() const { return impl_ ? impl_->stream_errors : 0; }
 
 }  // namespace maburplay

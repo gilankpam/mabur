@@ -36,6 +36,7 @@
 #include "rec_button.h"
 #include "rec_control.h"  // maburgs::kRecControlPort (Task 7)
 #include "ring_client.h"
+#include "stream_feeder.h"
 #include "video_backend.h"
 #include "vtx_rec_client.h"  // sends the button's VTX wish to maburgs (Task 8)
 #include "splash_image.h"  // startup splash asset + cover-fit painter
@@ -1067,11 +1068,24 @@ int main(int argc, char** argv) {
 #endif
     backend->release_frame(f);
   };
+#ifdef MABUR_PLAYER_HW
+  // [decoder] stream: MppBackend sets its parser up for streaming at init.
+  if (auto* mpp = dynamic_cast<maburplay::MppBackend*>(backend.get()))
+    mpp->set_stream(cfg.decoder.stream);
+#endif
   const bool init_ok = backend->init(bcfg, frame_sink);
   if (!init_ok) {
     std::fprintf(stderr, "maburplay: backend \"%s\" init failed\n", cfg.backend.c_str());
     return 2;
   }
+  // Streamed decode (spec 2026-10-10-h265-slices §6.3): split AUs go to the
+  // decoder slice by slice as ring v4 publishes them. The VideoBackend seam
+  // stays frozen; a backend that can stream also implements StreamDecoder
+  // (MppBackend), reached by dynamic_cast like its other extensions.
+  maburplay::StreamFeeder feeder(cfg.decoder.stream);
+  feeder.set_decoder(dynamic_cast<maburplay::StreamDecoder*>(backend.get()));
+  std::fprintf(stderr, "maburplay: decoder stream: %s\n",
+               maburplay::stream_off_name(feeder.off_reason()));
 
   // Raw-mode recorder (common/raw_dvr.h): sync gate + params + mux. Its
   // Error state is what the GS overlay's REC "broken" reads.
@@ -1187,8 +1201,24 @@ int main(int argc, char** argv) {
   uint64_t truncated_skipped = 0;
 
   // RingClient sink: (a) DVR write (must not depend on decode health, so it
-  // happens before the backend ever sees the AU), then (b) backend submit.
+  // happens before the backend ever sees the AU), then (b) the decode feed.
+  // Ring v4 (spec 2026-10-10-h265-slices §6.2-6.3): a split AU surfaces
+  // while maburgs fills it (kOpen, then kGrow as slices land) and
+  // StreamFeeder hands its slices to the decoder as they become whole.
+  // Everything else here -- DVR, flush, the decodable gate, arming,
+  // latency -- happens once per record, at kClose, exactly as before.
   auto sink = [&](maburplay::AuEvent&& ev) {
+    if (ev.kind != maburplay::AuEventKind::kClose) {
+      feeder.on_open(ev, backend_armed);
+      return;
+    }
+    if (ev.aborted) {
+      // The record that surfaced open ends with nothing to decode (writer
+      // overflow, resync, writer restart, enhance dropped by policy): end
+      // what the feeder started. Not a delivery -- nothing else to do.
+      feeder.on_close(ev, false);
+      return;
+    }
     const bool complete = (ev.meta.flags & maburgs::kRecFlagComplete) != 0;
     // Slice salvage (spec 2026-10-10-h265-slices §5.5): a salvaged AU is a
     // legal, gap-free picture (kept slices + skip-slice fills) -- decode it.
@@ -1236,9 +1266,25 @@ int main(int argc, char** argv) {
       }
       lat.flush_all();  // discont: the old session's pts space is dead
 #endif
+      feeder.on_flush();  // never reset under an open streamed picture
       backend->flush();
       backend_armed = false;
     }
+    // A record the feeder started streaming is finished (or already ended)
+    // there and NEVER also submitted whole. dec keeps its definition
+    // (t_complete -> decoded): maburgs stamped t_complete before this close
+    // and the frame cannot come out before the LAST append in on_close(),
+    // so on_submit goes first.
+    if (feeder.owns(ev.meta.rec_no, ev.meta.pts_us)) {
+      if (!decodable) ++truncated_skipped;
+#ifdef MABUR_PLAYER_HW
+      if (decodable) lat.on_submit(ev.meta, mono_us());
+#endif
+      if (feeder.on_close(ev, decodable) == maburplay::StreamFeeder::Close::kStreamed)
+        ++backend_submits;
+      return;
+    }
+    feeder.on_close(ev, decodable);  // seen open but not streamed: the whole path below
     // Never feed a truncated AU to the decoder. The spec's original policy
     // (submit truncated base, let MPP conceal) HANGS rkvdec2 on this
     // hardware: a truncated slice declares more bitstream than exists, the
@@ -1272,6 +1318,7 @@ int main(int argc, char** argv) {
 #endif
     backend->submit_au(ev.au.data(), ev.au.size(), ev.meta.pts_us);
     ++backend_submits;
+    feeder.count_whole();
   };
 
   maburplay::RingClient ring({cfg.ring_path, cfg.socket}, sink);
@@ -1293,7 +1340,8 @@ int main(int argc, char** argv) {
         "{\"delivered\":%llu,\"dropped_enhance_incomplete\":%llu,"
         "\"truncated_base\":%llu,\"salvaged_base\":%llu,\"salvaged_enhance\":%llu,"
         "\"resyncs\":%llu,\"dvr_samples\":%llu,"
-        "\"dvr_fragments\":%llu,\"backend_submits\":%llu}\n",
+        "\"dvr_fragments\":%llu,\"backend_submits\":%llu,"
+        "\"streamed\":%llu,\"stream_aborted\":%llu,\"stream\":\"%s\"}\n",
         static_cast<unsigned long long>(ring.delivered()),
         static_cast<unsigned long long>(ring.dropped_enhance_incomplete()),
         static_cast<unsigned long long>(ring.truncated_base()),
@@ -1301,7 +1349,10 @@ int main(int argc, char** argv) {
         static_cast<unsigned long long>(ring.salvaged_enhance()),
         static_cast<unsigned long long>(ring.resyncs()), static_cast<unsigned long long>(dvr.samples()),
         static_cast<unsigned long long>(dvr.fragments()),
-        static_cast<unsigned long long>(backend_submits));
+        static_cast<unsigned long long>(backend_submits),
+        static_cast<unsigned long long>(feeder.streamed()),
+        static_cast<unsigned long long>(feeder.stream_aborted()),
+        maburplay::stream_off_name(feeder.off_reason()));
     return 0;
   }
 
@@ -1408,6 +1459,7 @@ int main(int argc, char** argv) {
 #endif
 
   uint64_t flips_at_last_fps_log = 0;
+  uint64_t last_stream_log_ms = mono_ms();
   // Decode watchdog: rkvdec2 can hang on malformed/mid-session bitstream
   // and the kernel's force-reset leaves userspace MPP wedged (parser+hal
   // parked on futexes, decode_get_frame silent forever, kernel log shows
@@ -1902,6 +1954,31 @@ int main(int argc, char** argv) {
       }
     }
 #endif
+    // Streamed-decode counters + ring wake latency, every 5 s on stderr
+    // (/tmp/maburplay.log; not the lat: line, which lat.log records). The
+    // wake window (delivery - t_complete, µs) is the spec §6.2 futex
+    // question's measurement. refused= is MppBackend's refused
+    // STREAM_APPENDs (0 on a backend that cannot stream).
+    if (mono_ms() - last_stream_log_ms >= 5000) {
+      last_stream_log_ms = mono_ms();
+      const auto wk = ring.take_wake();
+      uint64_t stream_refused = 0;
+#ifdef MABUR_PLAYER_HW
+      if (auto* mpp = dynamic_cast<maburplay::MppBackend*>(backend.get()))
+        stream_refused = mpp->stream_errors();
+#endif
+      std::fprintf(stderr,
+                   "stream: %s streamed=%llu salvaged=%llu aborted=%llu whole=%llu "
+                   "opened=%llu open_aborted=%llu wake_us=%u/%u n=%u refused=%llu\n",
+                   maburplay::stream_off_name(feeder.off_reason()),
+                   static_cast<unsigned long long>(feeder.streamed()),
+                   static_cast<unsigned long long>(feeder.streamed_salvaged()),
+                   static_cast<unsigned long long>(feeder.stream_aborted()),
+                   static_cast<unsigned long long>(feeder.whole_submits()),
+                   static_cast<unsigned long long>(ring.opened()),
+                   static_cast<unsigned long long>(ring.open_aborted()), wk.p50, wk.p99, wk.n,
+                   static_cast<unsigned long long>(stream_refused));
+    }
     {
       const auto now = std::chrono::steady_clock::now();
       if (frame_count != wd_frames) {
@@ -1939,6 +2016,7 @@ int main(int argc, char** argv) {
         }
         lat.flush_all();  // decoder reset: inflight frames will never complete
 #endif
+        feeder.on_flush();  // end a streamed picture before reset/teardown
         if (wd_consecutive < 3) {
           backend->flush();
         } else if (wd_consecutive == 3) {
@@ -1951,11 +2029,16 @@ int main(int argc, char** argv) {
                        "decoder context\n");
           backend.reset();  // destroy the wedged context BEFORE creating anew
           backend = maburplay::make_backend(cfg.backend);
+#ifdef MABUR_PLAYER_HW
+          if (auto* mpp = dynamic_cast<maburplay::MppBackend*>(backend.get()))
+            mpp->set_stream(cfg.decoder.stream);
+#endif
           if (!backend || !backend->init(bcfg, frame_sink)) {
             std::fprintf(stderr,
                          "maburplay: decoder recreation failed -- exiting for respawn\n");
             return 1;
           }
+          feeder.set_decoder(dynamic_cast<maburplay::StreamDecoder*>(backend.get()));
         } else {
           // Even a fresh context won't decode: something below us (VPU,
           // kernel, stream) needs a full process restart. The init wrapper
