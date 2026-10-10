@@ -1,4 +1,4 @@
-From fa89d0d0a82100b960184301ee6768076092bd7f Mon Sep 17 00:00:00 2001
+From 77ea0f3e5fc9b04a9f780f262042a84157ea703e Mon Sep 17 00:00:00 2001
 From: Gee <gehee@users.noreply.github.com>
 Date: Sat, 10 Oct 2026 10:54:25 +0700
 Subject: [PATCH 3/3] h265d: stream each appended part on a page of its own
@@ -9,7 +9,7 @@ Subject: [PATCH 3/3] h265d: stream each appended part on a page of its own
  1 file changed, 16 insertions(+)
 
 diff --git a/mpp/hal/rkdec/h265d/hal_h265d_vdpu34x.c b/mpp/hal/rkdec/h265d/hal_h265d_vdpu34x.c
-index 8f7633f..fdc2736 100644
+index c1bb43c..5c51852 100644
 --- a/mpp/hal/rkdec/h265d/hal_h265d_vdpu34x.c
 +++ b/mpp/hal/rkdec/h265d/hal_h265d_vdpu34x.c
 @@ -234,6 +234,22 @@ static void h265d_strm_send(HalH265dCtx *reg_ctx, H265dStrm *s,

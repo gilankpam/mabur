@@ -1,11 +1,11 @@
-From 32d572a898c7cbceec4f936957c549aab1185f73 Mon Sep 17 00:00:00 2001
+From e990e17a2839d627ee9a64320842556a749a6fa5 Mon Sep 17 00:00:00 2001
 From: Gee <gehee@users.noreply.github.com>
 Date: Sat, 10 Oct 2026 10:53:38 +0700
 Subject: [PATCH 1/3] h265d: decode a picture as its slices arrive (fpvOS 0002,
- ported to df4864bd)
+ ported to 14729dd5)
 
 Ported from the GS image spike's HermanChen-develop port
-(sbc-groundstations-gilankpam 5dffa21) to rockchip-linux/mpp df4864bd:
+(sbc-groundstations-gilankpam 5dffa21) to rockchip-linux/mpp 14729dd5:
 parser hunks moved to the rewritten h265 parser (h265d_api.c h265d_prepare,
 h265d_ctx.h H265dPrs, h265d_syntax.c h265d_syntax_fill_slice); vdpu34x
 names Vdpu34xRegSet, comm_gen, comm_paras.reg64.stream_mode/stream_lastpacket,
@@ -129,10 +129,10 @@ index f8f0552..9f44a4e 100644
      if (p->cfg->base.split_parse && NULL == spl) {
          h265d_spliter_init(&p->spliter);
 diff --git a/mpp/codec/dec/h265/h265d_ctx.h b/mpp/codec/dec/h265/h265d_ctx.h
-index 72b2188..7017801 100644
+index 0f9cfd3..37f94e0 100644
 --- a/mpp/codec/dec/h265/h265d_ctx.h
 +++ b/mpp/codec/dec/h265/h265d_ctx.h
-@@ -171,6 +171,8 @@ typedef struct H265dPrs_t {
+@@ -169,6 +169,8 @@ typedef struct H265dPrs_t {
  
      RK_S64 pts;
      RK_S64 dts;
@@ -293,11 +293,11 @@ index 9245312..124d404 100644
      MODE_NULL   = 0,
      RKVDEC_MODE = 0x01,
 diff --git a/mpp/hal/rkdec/h265d/hal_h265d_ctx.h b/mpp/hal/rkdec/h265d/hal_h265d_ctx.h
-index 525b930..fc9357a 100644
+index f4abdf8..d5fb5e4 100644
 --- a/mpp/hal/rkdec/h265d/hal_h265d_ctx.h
 +++ b/mpp/hal/rkdec/h265d/hal_h265d_ctx.h
-@@ -88,6 +88,9 @@ typedef struct HalH265dCtx_t {
-     RK_U32          missing_ref_buf_size;
+@@ -89,6 +89,9 @@ typedef struct HalH265dCtx_t {
+     RK_U32          ps_buf_init;
  
      HalDbgCtx       *dbg_ctx;
 +
@@ -307,7 +307,7 @@ index 525b930..fc9357a 100644
  
  typedef struct ScalingList_t {
 diff --git a/mpp/hal/rkdec/h265d/hal_h265d_vdpu34x.c b/mpp/hal/rkdec/h265d/hal_h265d_vdpu34x.c
-index c700366..8f7633f 100644
+index 7d8ce40..c1bb43c 100644
 --- a/mpp/hal/rkdec/h265d/hal_h265d_vdpu34x.c
 +++ b/mpp/hal/rkdec/h265d/hal_h265d_vdpu34x.c
 @@ -98,6 +98,429 @@ static const FilterdColBufRatio filterd_fbc_off[CTU][FMT] = {
@@ -757,7 +757,7 @@ index c700366..8f7633f 100644
      return MPP_OK;
  }
  
-@@ -1145,6 +1571,7 @@ static MPP_RET hal_h265d_vdpu34x_gen_regs(void *hal,  HalTaskInfo *syn)
+@@ -1150,6 +1576,7 @@ static MPP_RET hal_h265d_vdpu34x_gen_regs(void *hal,  HalTaskInfo *syn)
                        (VdpuRcbInfo*)reg_ctx->rcb_info);
      vdpu34x_setup_statistic(&hw_regs->comm_gen, &hw_regs->statistic);
      mpp_buffer_sync_end(reg_ctx->bufs);
@@ -765,7 +765,7 @@ index c700366..8f7633f 100644
  
      return ret;
  }
-@@ -1259,6 +1686,7 @@ static MPP_RET hal_h265d_vdpu34x_start(void *hal, HalTaskInfo *task)
+@@ -1264,6 +1691,7 @@ static MPP_RET hal_h265d_vdpu34x_start(void *hal, HalTaskInfo *task)
              mpp_err_f("send cmd failed %d\n", ret);
              break;
          }
@@ -773,7 +773,7 @@ index c700366..8f7633f 100644
      } while (0);
  
      return ret;
-@@ -1292,6 +1720,7 @@ static MPP_RET hal_h265d_vdpu34x_wait(void *hal, HalTaskInfo *task)
+@@ -1297,6 +1725,7 @@ static MPP_RET hal_h265d_vdpu34x_wait(void *hal, HalTaskInfo *task)
      ret = mpp_dev_ioctl(cfg->dev, MPP_DEV_CMD_POLL, NULL);
      if (ret)
          mpp_err_f("poll cmd failed %d\n", ret);
@@ -781,7 +781,7 @@ index c700366..8f7633f 100644
  
  ERR_PROC:
      if (task->dec.flags.parse_err ||
-@@ -1359,6 +1788,7 @@ static MPP_RET hal_h265d_vdpu34x_reset(void *hal)
+@@ -1364,6 +1793,7 @@ static MPP_RET hal_h265d_vdpu34x_reset(void *hal)
      MPP_RET ret = MPP_OK;
      HalH265dCtx *p_hal = (HalH265dCtx *)hal;
      p_hal->fast_mode_err_found = 0;
@@ -789,7 +789,7 @@ index c700366..8f7633f 100644
      (void)hal;
      return ret;
  }
-@@ -1389,6 +1819,12 @@ static MPP_RET hal_h265d_vdpu34x_control(void *hal, MpiCmd cmd_type, void *param
+@@ -1394,6 +1824,12 @@ static MPP_RET hal_h265d_vdpu34x_control(void *hal, MpiCmd cmd_type, void *param
      }
      case MPP_DEC_SET_OUTPUT_FORMAT: {
      } break;
@@ -803,10 +803,10 @@ index c700366..8f7633f 100644
          break;
      }
 diff --git a/mpp/mpp.c b/mpp/mpp.c
-index bb9e258..e1c11d6 100644
+index 64e7566..042f29e 100644
 --- a/mpp/mpp.c
 +++ b/mpp/mpp.c
-@@ -1437,6 +1437,10 @@ MPP_RET mpp_control_dec(Mpp *mpp, MpiCmd cmd, MppParam param)
+@@ -1495,6 +1495,10 @@ MPP_RET mpp_control_dec(Mpp *mpp, MpiCmd cmd, MppParam param)
  
          ret = mpp_dec_set_cfg_by_cmd(mpp->mDecCfg, cmd, param);
      } break;

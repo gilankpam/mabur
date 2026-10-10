@@ -157,18 +157,22 @@ export MABUR_DRM_ROOT="$PWD/toolchain/drm-arm64"
 #        musl/cross-compilation; a plain `cmake -S .` on any host hits the
 #        same "Cannot find source file" error at every tag). `develop` HEAD
 #        has a complete, consistent tree (full h265 decoder rewrite), so
-#        that's what's pinned here — commit df4864bd1e907cbfd427c397348976c5b2b05ee9
-#        ("fix[mpi_enc_utils]: Restore ref_cfg setup", 2026-07-28). Bump by
+#        that's what's pinned here — commit 14729dd578e570e5f00fd1dd2113f5429012d64b
+#        ("feat[vepu511]: Setup quant registers for H.264", develop HEAD,
+#        2026-09-17). Bumped from df4864bd1e907cbfd427c397348976c5b2b05ee9
+#        ("fix[mpi_enc_utils]: Restore ref_cfg setup", 2026-07-28) for
+#        8f88b50d ("fix[h265d]: Force PS/RPS update for the first sent
+#        task"), an upstream h265d fix landed between the two refs. Bump by
 #        changing MPP_REF below; re-verify h265/CMakeLists.txt's file list
 #        still matches the tree before trusting a new ref.
-MPP_REF=df4864bd1e907cbfd427c397348976c5b2b05ee9
+MPP_REF=14729dd578e570e5f00fd1dd2113f5429012d64b
 
 # fpvOS rkvdec2 stream-mode patches (docs/slices.md "Part 2"), ported to
 # MPP_REF. CANONICAL here: sbc-groundstations-gilankpam's
 # package/rockchip-mpp/ carries byte-identical copies, so the GS image's
 # shared librockchip_mpp is the same decoder as this static one -- change
 # them here first, then copy them there.
-# What MPP_REF (df4864bd) is, checked when porting (2026-10):
+# What MPP_REF (14729dd5) is, checked when porting (2026-10):
 #  - no libmpp_ext.so split: every codec lives in librockchip_mpp;
 #  - the h265d hal's fast_mode = base:fast_parse && support_fast_mode, read
 #    once at hal init (hal_h265d_vdpu34x.c); MPP_DEC_SET_ENABLE_FAST_PLAY
