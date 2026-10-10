@@ -1015,3 +1015,17 @@ e2e latency distribution during loss includes frames that before
 that waited out `gap_ms`. A latency tail that grew across this date is
 not by itself a regression: compare flights across it knowingly, and
 split by `au.log`'s salvage columns (`# aulog 5`) where it matters.
+
+## 2026-10-10 — AU ring v4: slots published while they fill
+
+`kAuRingVersion` 3 → 4 (`gs/src/au_ring.h`, spec 2026-10-10-h265-slices
+§6.2). SlotHdr byte 30 (`codec`, a constant 0x01 since 2026-10-10) is gone;
+bytes 54/55/56 carry `state` (0 closed, 1 open, 2 aborted), `nslices` (0/1 =
+whole AU) and `valid_len`; RingHdr offset 40 is `open_rec`. maburgs claims a
+slot at the AU's first byte and readers may follow it while it fills. An AU
+that outgrows its slot leaves an `aborted` slot and still counts
+`dropped_oversize`. `ausniff.py`/`aucadence.py` read v4 only and count
+closed records only. No recording format changes: `au.log` stays `aulog 5`
+(it is written from the writer's own record meta, not the ring bytes), and
+the ring itself is never recorded — an old ausniff against a new ring
+refuses on the version.

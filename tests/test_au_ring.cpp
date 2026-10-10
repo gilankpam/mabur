@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -457,7 +458,7 @@ TEST(last_record_matches_the_published_slot) {
   h.flags = 0x01;  // kFlagIdr
   h.slice_rows = 0;
   h.pts_us = 4242;
-  w.begin(h, /*sid=*/1);
+  w.begin(h, /*sid=*/1, /*nslices=*/4);
   const uint8_t payload[] = {0, 0, 0, 1, 0x40, 0x01};
   w.append(payload, sizeof(payload));
   maburgs::AuLatMeta lat;
@@ -480,7 +481,7 @@ TEST(last_record_matches_the_published_slot) {
   CHECK(m.enc_us == 7000);
   CHECK(m.drone_q_ms == 3);
   CHECK(m.drone_air_ms == 21);
-  CHECK(w.last_record().codec == maburgs::kRingCodecH265);
+  CHECK(w.last_record().nslices == 4);
 }
 
 TEST(last_record_stamps_t_complete_when_caller_passes_zero) {
@@ -514,6 +515,239 @@ TEST(salvaged_au_carries_the_flag_and_is_decodable) {
   CHECK(maburgs::au_decodable(w.last_record().flags));
   CHECK(w.last_record().slice.kept_after_hole == 2);
   CHECK(!maburgs::au_decodable(0x01));
+}
+
+// --- Ring v4: slots published while they fill (spec 2026-10-10-h265-slices §6.2) ---
+
+TEST(open_record_is_readable_while_it_fills) {
+  const std::string path = tmp_ring();
+  maburgs::AuRingWriter w;
+  REQUIRE(w.open(path, {4096, 4}));
+  maburgs::AuRingReader r;
+  REQUIRE(r.open(path));
+  maburgs::AuRingReader::OpenView v;
+  maburgs::AuRecordMeta m;
+  std::vector<uint8_t> got;
+  using OR = maburgs::AuRingReader::OpenRes;
+  CHECK(r.peek_open(&v) == OR::kNone);                 // nothing open yet
+  FrameHdr h;
+  h.frame_id = 9;
+  h.flags = kFlagIdr;
+  h.pts_us = 4321;
+  const auto au = au_bytes(900, 4);
+  w.begin(h, 0, 4);
+  CHECK(r.peek_open(&v) == OR::kOpen);                 // first sight, before any byte
+  CHECK(v.meta.rec_no == 0);
+  CHECK(v.meta.pts_us == 4321u);
+  CHECK(v.meta.nslices == 4);
+  CHECK(v.meta.sid == 0);
+  CHECK((v.meta.flags & kFlagIdr) != 0);
+  CHECK(v.bytes.empty());
+  w.append(au.data(), 300);
+  CHECK(r.peek_open(&v) == OR::kGrow);
+  CHECK(v.bytes == std::vector<uint8_t>(au.begin(), au.begin() + 300));
+  CHECK(r.peek_open(&v) == OR::kNone);                 // no new bytes
+  w.append(au.data() + 300, 600);
+  CHECK(r.peek_open(&v) == OR::kGrow);
+  CHECK(v.bytes == au);
+  CHECK(v.meta.len == 900u);
+  CHECK(r.next(&m, &got) == maburgs::AuRingReader::Res::kNone);   // not a record until finish
+  CHECK(w.finish(true, maburgs::AuLatMeta{}) == 0);
+  CHECK(r.peek_open(&v) == OR::kNone);                 // closed: next() delivers it
+  REQUIRE(r.next(&m, &got) == maburgs::AuRingReader::Res::kOk);
+  CHECK(got == au);
+  CHECK(m.nslices == 4);
+  CHECK((m.flags & maburgs::kRecFlagComplete) != 0);
+  unlink(path.c_str());
+}
+
+TEST(append_unaligned_grows_len_but_never_valid_len) {
+  const std::string path = tmp_ring();
+  maburgs::AuRingWriter w;
+  REQUIRE(w.open(path, {4096, 4}));
+  maburgs::AuRingReader r;
+  REQUIRE(r.open(path));
+  maburgs::AuRingReader::OpenView v;
+  using OR = maburgs::AuRingReader::OpenRes;
+  FrameHdr h;
+  h.pts_us = 8;
+  const auto au = au_bytes(150, 8);
+  w.begin(h, 0, 4);
+  w.append(au.data(), 100);                            // NAL-aligned part
+  w.append_unaligned(au.data() + 100, 50);             // passthrough tail, may end mid-NAL
+  REQUIRE(r.peek_open(&v) == OR::kOpen);
+  CHECK(v.bytes == std::vector<uint8_t>(au.begin(), au.begin() + 100));
+  CHECK(r.peek_open(&v) == OR::kNone);                 // the tail is never exposed open
+  CHECK(w.finish(false, maburgs::AuLatMeta{}) == 0);
+  CHECK(w.last_record().len == 150u);
+  maburgs::AuRecordMeta m;
+  std::vector<uint8_t> got;
+  REQUIRE(r.next(&m, &got) == maburgs::AuRingReader::Res::kOk);
+  CHECK(got == au);                                    // the closed record has it all
+  unlink(path.c_str());
+}
+
+TEST(reused_open_slot_is_reported_aborted_not_grown) {   // Review Focus 1
+  const std::string path = tmp_ring();
+  maburgs::AuRingWriter w;
+  REQUIRE(w.open(path, {1024, 4}));
+  maburgs::AuRingReader r;
+  REQUIRE(r.open(path));
+  maburgs::AuRingReader::OpenView v;
+  using OR = maburgs::AuRingReader::OpenRes;
+  FrameHdr h1;
+  h1.pts_us = 1;
+  const auto first = au_bytes(1200, 1);
+  w.begin(h1, 0, 4);
+  w.append(first.data(), 400);
+  REQUIRE(r.peek_open(&v) == OR::kOpen);
+  CHECK(v.bytes.size() == 400);
+  w.append(first.data() + 400, 800);                   // 1200 > 1024: the AU is aborted
+  CHECK(w.finish(true, maburgs::AuLatMeta{}) == UINT64_MAX);
+  FrameHdr h2;
+  h2.pts_us = 2;
+  const auto second = au_bytes(500, 2);
+  w.begin(h2, 0, 4);                                   // same slot, same rec_no 0
+  w.append(second.data(), second.size());
+  CHECK(r.peek_open(&v) == OR::kAborted);              // never a grow of the old view
+  CHECK(v.meta.pts_us == 1u);                          // still names the dead record
+  CHECK(v.bytes.empty());
+  v = maburgs::AuRingReader::OpenView{};
+  CHECK(r.peek_open(&v) == OR::kOpen);                 // the new AU, from byte 0
+  CHECK(v.meta.pts_us == 2u);
+  CHECK(v.bytes == second);
+  unlink(path.c_str());
+}
+
+TEST(overflow_mid_open_reports_aborted_and_publishes_nothing) {
+  const std::string path = tmp_ring();
+  maburgs::AuRingWriter w;
+  REQUIRE(w.open(path, {1024, 4}));
+  maburgs::AuRingReader r;
+  REQUIRE(r.open(path));
+  maburgs::AuRingReader::OpenView v;
+  maburgs::AuRecordMeta m;
+  std::vector<uint8_t> got;
+  using OR = maburgs::AuRingReader::OpenRes;
+  FrameHdr h;
+  h.pts_us = 5;
+  const auto big = au_bytes(1200, 5);
+  w.begin(h, 1, 4);
+  w.append(big.data(), 600);
+  REQUIRE(r.peek_open(&v) == OR::kOpen);
+  w.append(big.data() + 600, 600);                     // overflow while still open
+  CHECK(r.peek_open(&v) == OR::kAborted);              // ended now, not at finish
+  v = maburgs::AuRingReader::OpenView{};
+  CHECK(r.peek_open(&v) == OR::kNone);                 // the aborted AU never re-surfaces
+  CHECK(w.finish(true, maburgs::AuLatMeta{}) == UINT64_MAX);
+  CHECK(w.dropped_oversize() == 1);
+  CHECK(w.published() == 0);
+  CHECK(r.next(&m, &got) == maburgs::AuRingReader::Res::kNone);
+  unlink(path.c_str());
+}
+
+TEST(next_skips_the_slot_an_overflow_destroyed) {
+  const std::string path = tmp_ring();
+  maburgs::AuRingWriter w;
+  REQUIRE(w.open(path, {256, 4}));
+  write_n(w, 4, 64);                                   // recs 0..3 fill all four slots
+  maburgs::AuRingReader r;
+  REQUIRE(r.open(path));                               // cursor at rec 0 (slot 0)
+  FrameHdr h;
+  h.pts_us = 77;
+  const auto big = au_bytes(300, 7);
+  w.begin(h, 0, 4);                                    // rec 4 claims slot 0 ...
+  w.append(big.data(), big.size());                    // ... and overflows it
+  CHECK(w.finish(true, maburgs::AuLatMeta{}) == UINT64_MAX);
+  maburgs::AuRecordMeta m;
+  std::vector<uint8_t> got;
+  CHECK(r.next(&m, &got) == maburgs::AuRingReader::Res::kResync);   // rec 0 is gone
+  for (uint64_t i = 1; i < 4; ++i) {
+    REQUIRE(r.next(&m, &got) == maburgs::AuRingReader::Res::kOk);
+    CHECK(m.rec_no == i);
+    CHECK(got == au_bytes(64, static_cast<uint8_t>(i)));
+  }
+  CHECK(r.next(&m, &got) == maburgs::AuRingReader::Res::kNone);
+  unlink(path.c_str());
+}
+
+TEST(reader_open_skips_the_slot_being_filled) {
+  const std::string path = tmp_ring();
+  maburgs::AuRingWriter w;
+  REQUIRE(w.open(path, {256, 4}));
+  write_n(w, 4, 64);
+  FrameHdr h;
+  w.begin(h, 0, 4);                                    // rec 4 open in slot 0
+  const auto part = au_bytes(32, 9);
+  w.append(part.data(), part.size());
+  maburgs::AuRingReader r;
+  REQUIRE(r.open(path));
+  maburgs::AuRecordMeta m;
+  std::vector<uint8_t> got;
+  REQUIRE(r.next(&m, &got) == maburgs::AuRingReader::Res::kOk);
+  CHECK(m.rec_no == 1);                                // not a stall/lap on slot 0
+  CHECK(r.resyncs() == 0);
+  unlink(path.c_str());
+}
+
+TEST(hammer_open_reader_never_sees_foreign_bytes) {     // Review Focus 1
+  // Writer: AUs appended in 200-byte steps with yields between; every 5th
+  // overflows the 512-byte slot and is aborted, so the next AU re-begins the
+  // same rec_no. Reader: next() + peek_open() as RingClient drives them.
+  // Every open view must be a prefix of ITS AU (pts picks the pattern).
+  const std::string path = tmp_ring();
+  maburgs::AuRingWriter w;
+  REQUIRE(w.open(path, {512, 4}));
+  auto len_of = [](uint32_t pts) -> size_t { return pts % 5 == 0 ? 600 : 96 + (pts % 7) * 48; };
+  std::atomic<bool> stop{false};
+  std::thread wr([&] {
+    uint32_t pts = 1;
+    while (!stop.load(std::memory_order_relaxed)) {
+      FrameHdr h;
+      h.pts_us = pts;
+      const auto au = au_bytes(len_of(pts), static_cast<uint8_t>(pts % 251));
+      w.begin(h, 0, 4);
+      for (size_t off = 0; off < au.size(); off += 200) {
+        w.append(au.data() + off, std::min<size_t>(200, au.size() - off));
+        std::this_thread::yield();
+      }
+      w.finish(true, maburgs::AuLatMeta{});
+      ++pts;
+    }
+  });
+  maburgs::AuRingReader r;
+  REQUIRE(r.open(path));
+  maburgs::AuRingReader::OpenView v;
+  maburgs::AuRecordMeta m;
+  std::vector<uint8_t> got;
+  uint64_t views = 0, closes = 0, bad = 0;
+  const auto t0 = std::chrono::steady_clock::now();
+  while (std::chrono::steady_clock::now() - t0 < std::chrono::seconds(2)) {
+    const auto res = r.next(&m, &got);
+    if (res == maburgs::AuRingReader::Res::kOk) {
+      v = maburgs::AuRingReader::OpenView{};
+      if (got != au_bytes(len_of(m.pts_us), static_cast<uint8_t>(m.pts_us % 251))) ++bad;
+      ++closes;
+      continue;
+    }
+    if (res == maburgs::AuRingReader::Res::kResync) {
+      v = maburgs::AuRingReader::OpenView{};
+      continue;
+    }
+    const auto pr = r.peek_open(&v);
+    if (pr == maburgs::AuRingReader::OpenRes::kOpen || pr == maburgs::AuRingReader::OpenRes::kGrow) {
+      const auto full = au_bytes(len_of(v.meta.pts_us), static_cast<uint8_t>(v.meta.pts_us % 251));
+      if (v.bytes.size() > full.size() || !std::equal(v.bytes.begin(), v.bytes.end(), full.begin()))
+        ++bad;
+      ++views;
+    }
+  }
+  stop = true;
+  wr.join();
+  CHECK(bad == 0);
+  CHECK(closes > 100);
+  CHECK(views > 10);
+  unlink(path.c_str());
 }
 
 MTEST_MAIN

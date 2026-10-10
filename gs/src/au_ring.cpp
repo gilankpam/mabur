@@ -7,6 +7,7 @@
 #include <unistd.h>
 
 #include <cstring>
+#include <utility>
 
 namespace maburgs {
 namespace {
@@ -14,15 +15,19 @@ namespace {
 // RingHdr field offsets (see au_ring.h layout comment / ausniff.py mirror).
 constexpr size_t kOffMagic = 0, kOffVersion = 4, kOffSlotBytes = 8,
                  kOffSlotCount = 12, kOffWriteSeq = 16, kOffDropped = 24,
-                 kOffEpoch = 32;
+                 kOffEpoch = 32, kOffOpenRec = 40;
 // SlotHdr field offsets.
 constexpr size_t kSOffLock = 0, kSOffLen = 4, kSOffRecNo = 8,
                  kSOffFrameId = 16, kSOffPts = 24, kSOffSid = 28,
-                 kSOffFlags = 29, kSOffCodec = 30;
-// SlotHdr v2 additions (kAuRingVersion 2).
+                 kSOffFlags = 29;
+// SlotHdr v2/v3 additions.
 constexpr size_t kSOffTFirst = 32, kSOffTComplete = 40, kSOffDroneQ = 48,
                  kSOffEncUs = 50, kSOffAirMs = 52;
+// Ring v4: open-slot publication.
+constexpr size_t kSOffState = 54, kSOffNslices = 55, kSOffValidLen = 56;
 
+uint8_t load8(const uint8_t* p) { return __atomic_load_n(p, __ATOMIC_ACQUIRE); }
+void store8(uint8_t* p, uint8_t v) { __atomic_store_n(p, v, __ATOMIC_RELEASE); }
 uint32_t load32(const uint8_t* p) {
   return __atomic_load_n(reinterpret_cast<const uint32_t*>(p), __ATOMIC_ACQUIRE);
 }
@@ -142,71 +147,110 @@ uint8_t* AuRingWriter::slot_base_(uint64_t rec_no) const {
              (kAuSlotHdrBytes + static_cast<size_t>(geom_.slot_bytes));
 }
 
-void AuRingWriter::begin(const mabur::framewire::FrameHdr& h, uint8_t sid) {
+void AuRingWriter::close_slot_(uint8_t state) {
+  store8(slot_ + kSOffState, state);
+  store32(slot_ + kSOffLock, lock_ + 1);  // even: stable, release
+  store64(map_ + kOffOpenRec, 0);
+  in_au_ = false;
+}
+
+void AuRingWriter::begin(const mabur::framewire::FrameHdr& h, uint8_t sid, uint8_t nslices) {
+  if (!map_) return;
+  if (in_au_) close_slot_(kSlotAborted);  // begin without finish: that AU never publishes
   hdr_ = h;
   sid_ = sid;
-  au_.clear();
+  nslices_ = nslices;
+  // frame_id64: FrameStream's already-ordered stream, whose u16 frame_id the
+  // writer unwraps monotonically. Committed to last_id_ only at a successful
+  // finish(), so an aborted AU does not move the unwrap reference.
+  const uint16_t prev = static_cast<uint16_t>(last_id_);
+  const uint16_t d = static_cast<uint16_t>(h.frame_id - prev);
+  cur_id64_ = have_id_ ? last_id_ + static_cast<uint64_t>(d)
+                       : static_cast<uint64_t>(h.frame_id);
+  slot_ = slot_base_(published_);
+  const uint32_t old = load32(slot_ + kSOffLock);
+  lock_ = (old & 1u) ? old + 2 : old + 1;  // odd: write in progress, for the whole AU
+  store32_relaxed(slot_ + kSOffLock, lock_);
+  // The odd lock is visible before any slot write (seqlock writer side).
+  __atomic_thread_fence(__ATOMIC_RELEASE);
+  put32(slot_ + kSOffLen, 0);
+  put64(slot_ + kSOffRecNo, published_);
+  put64(slot_ + kSOffFrameId, cur_id64_);
+  put32(slot_ + kSOffPts, h.pts_us);
+  slot_[kSOffSid] = sid;
+  slot_[kSOffFlags] = h.flags;
+  slot_[kSOffNslices] = nslices;
+  store32(slot_ + kSOffValidLen, 0);
+  store8(slot_ + kSOffState, kSlotOpen);
+  copied_ = 0;
+  valid_ = 0;
+  overflow_ = false;
   in_au_ = true;
+  // Release: a reader that sees open_rec sees the odd lock and the header.
+  store64(map_ + kOffOpenRec, published_ + 1);
+}
+
+bool AuRingWriter::copy_(const uint8_t* p, size_t n) {
+  if (!in_au_ || overflow_ || n == 0) return false;
+  if (static_cast<size_t>(copied_) + n > geom_.slot_bytes) {
+    // Never truncated into the slot: abort now so a reader following this
+    // AU ends it at once, not at finish().
+    overflow_ = true;
+    store8(slot_ + kSOffState, kSlotAborted);
+    return false;
+  }
+  std::memcpy(slot_ + kAuSlotHdrBytes + copied_, p, n);
+  copied_ += static_cast<uint32_t>(n);
+  return true;
 }
 
 void AuRingWriter::append(const uint8_t* p, size_t n) {
-  if (!in_au_) return;
-  au_.insert(au_.end(), p, p + n);
+  if (!copy_(p, n)) return;
+  valid_ = copied_;
+  store32(slot_ + kSOffValidLen, valid_);  // release: the bytes above first
+}
+
+void AuRingWriter::append_unaligned(const uint8_t* p, size_t n) {
+  copy_(p, n);  // valid_len stays put: an open-slot reader never sees these bytes
 }
 
 uint64_t AuRingWriter::finish(bool complete, const AuLatMeta& lat) {
   if (!map_ || !in_au_) return UINT64_MAX;
-  in_au_ = false;
-  if (au_.size() > geom_.slot_bytes) {
+  if (overflow_) {
     ++dropped_oversize_;
     store64(map_ + kOffDropped, dropped_oversize_);
-    au_.clear();
+    close_slot_(kSlotAborted);  // write_seq does not move: nothing published
     return UINT64_MAX;
   }
   const uint64_t n = published_;
-  const size_t bytes = au_.size();
-  uint8_t* slot = slot_base_(n);
-  const uint32_t lock = load32(slot + kSOffLock);
-  store32_relaxed(slot + kSOffLock, lock + 1);  // odd: write in progress
-  // Ensure odd lock value is visible to readers before payload writes.
-  __atomic_thread_fence(__ATOMIC_RELEASE);
-  std::memcpy(slot + kAuSlotHdrBytes, au_.data(), au_.size());
-  put32(slot + kSOffLen, static_cast<uint32_t>(au_.size()));
-  put64(slot + kSOffRecNo, n);
-  // frame_id64: PR A publishes FrameStream's already-ordered stream, whose
-  // u16 frame_id the writer unwraps monotonically here.
-  const uint16_t prev = static_cast<uint16_t>(last_id_);
-  const uint16_t d = static_cast<uint16_t>(hdr_.frame_id - prev);
-  last_id_ = have_id_ ? last_id_ + static_cast<uint64_t>(d)
-                      : static_cast<uint64_t>(hdr_.frame_id);
-  have_id_ = true;
-  put64(slot + kSOffFrameId, last_id_);
-  put32(slot + kSOffPts, hdr_.pts_us);
-  slot[kSOffSid] = sid_;
   const uint8_t rec_flags = static_cast<uint8_t>(
       hdr_.flags | (complete ? kRecFlagComplete : 0) |
       (!complete && lat.slice.salvaged ? kRecFlagSliceSalvaged : 0));
-  slot[kSOffFlags] = rec_flags;
-  slot[kSOffCodec] = kRingCodecH265;
   AuLatMeta l = lat;
   if (l.t_complete_us == 0) l.t_complete_us = now_monotonic_us();
-  put64(slot + kSOffTFirst, l.t_first_us);
-  put64(slot + kSOffTComplete, l.t_complete_us);
-  put16(slot + kSOffDroneQ, l.drone_q_ms);
-  put16(slot + kSOffEncUs, l.enc_us);
-  put16(slot + kSOffAirMs, l.drone_air_ms);
-  store32(slot + kSOffLock, lock + 2);  // even: stable, release
+  put32(slot_ + kSOffLen, copied_);
+  slot_[kSOffFlags] = rec_flags;
+  put64(slot_ + kSOffTFirst, l.t_first_us);
+  put64(slot_ + kSOffTComplete, l.t_complete_us);
+  put16(slot_ + kSOffDroneQ, l.drone_q_ms);
+  put16(slot_ + kSOffEncUs, l.enc_us);
+  put16(slot_ + kSOffAirMs, l.drone_air_ms);
+  store8(slot_ + kSOffState, kSlotClosed);
+  store32(slot_ + kSOffLock, lock_ + 1);  // even: stable, release
+  in_au_ = false;
+  last_id_ = cur_id64_;
+  have_id_ = true;
   ++published_;
-  bytes_published_ += au_.size();
+  bytes_published_ += copied_;
   store64(map_ + kOffWriteSeq, published_);
-  au_.clear();
+  store64(map_ + kOffOpenRec, 0);
   last_.rec_no = n;
-  last_.frame_id64 = last_id_;
+  last_.frame_id64 = cur_id64_;
   last_.pts_us = hdr_.pts_us;
-  last_.len = static_cast<uint32_t>(bytes);
+  last_.len = copied_;
   last_.sid = sid_;
   last_.flags = rec_flags;
-  last_.codec = kRingCodecH265;
+  last_.nslices = nslices_;
   last_.t_first_us = l.t_first_us;
   last_.t_complete_us = l.t_complete_us;
   last_.drone_q_ms = l.drone_q_ms;
@@ -251,6 +295,12 @@ bool AuRingReader::open(const std::string& path) {
   epoch_ = get64(map_ + kOffEpoch);
   const uint64_t wseq = load64(map_ + kOffWriteSeq);
   cursor_ = wseq > geom_.slot_count ? wseq - geom_.slot_count : 0;
+  // Ring v4: slot (wseq % slot_count) may be one maburgs is filling (open)
+  // or one whose AU it aborted -- either way it no longer holds record
+  // wseq - slot_count. Start one later rather than open on a lap.
+  if (wseq >= geom_.slot_count &&
+      (load64(map_ + kOffOpenRec) != 0 || load8(slot_base_(wseq) + kSOffState) != kSlotClosed))
+    cursor_ = wseq - geom_.slot_count + 1;
   last_wseq_ = wseq;
   // A successful (re)open means we have a good mapping again: clear any
   // stale failure state from a previous reopen attempt.
@@ -333,7 +383,7 @@ AuRingReader::Res AuRingReader::next(AuRecordMeta* meta,
   if (cursor_ >= wseq) return Res::kNone;
   const uint8_t* slot = slot_base_(cursor_);
   const uint32_t l1 = load32(slot + kSOffLock);
-  if (l1 & 1) return Res::kNone;  // mid-write; caller retries
+  if (l1 & 1) return Res::kNone;  // mid-write (v4: possibly a whole AU long); caller retries
   AuRecordMeta m;
   m.len = get32(slot + kSOffLen);
   m.rec_no = get64(slot + kSOffRecNo);
@@ -341,12 +391,13 @@ AuRingReader::Res AuRingReader::next(AuRecordMeta* meta,
   m.pts_us = get32(slot + kSOffPts);
   m.sid = slot[kSOffSid];
   m.flags = slot[kSOffFlags];
-  m.codec = slot[kSOffCodec];
+  m.nslices = slot[kSOffNslices];
   m.t_first_us = get64(slot + kSOffTFirst);
   m.t_complete_us = get64(slot + kSOffTComplete);
   m.drone_q_ms = get16(slot + kSOffDroneQ);
   m.enc_us = get16(slot + kSOffEncUs);
   m.drone_air_ms = get16(slot + kSOffAirMs);
+  const uint8_t state = slot[kSOffState];
   if (m.len > geom_.slot_bytes) {  // torn beyond repair
     ++resyncs_;
     cursor_ = wseq > geom_.slot_count ? wseq - geom_.slot_count : 0;
@@ -361,6 +412,14 @@ AuRingReader::Res AuRingReader::next(AuRecordMeta* meta,
     cursor_ = wseq > geom_.slot_count ? wseq - geom_.slot_count : 0;
     return Res::kResync;
   }
+  if (state != kSlotClosed) {
+    // Ring v4: a stable slot that is not a closed record is one claimed for
+    // rec wseq whose AU overflowed (aborted). The record the cursor wanted
+    // from it is gone; the next slot_count - 1 are intact.
+    ++resyncs_;
+    cursor_ = wseq >= geom_.slot_count ? wseq - geom_.slot_count + 1 : wseq;
+    return Res::kResync;
+  }
   if (m.rec_no > cursor_) {
     // Slot already holds a newer lap: records [cursor_, m.rec_no) are gone.
     ++resyncs_;
@@ -372,6 +431,60 @@ AuRingReader::Res AuRingReader::next(AuRecordMeta* meta,
   *meta = m;
   ++cursor_;
   return Res::kOk;
+}
+
+int AuRingReader::grow_(const uint8_t* slot, uint32_t lock, OpenView* v) const {
+  const size_t have = v->bytes.size();
+  const uint32_t vlen = load32(slot + kSOffValidLen);
+  if (vlen > geom_.slot_bytes) return -1;
+  if (vlen > have)
+    v->bytes.insert(v->bytes.end(), slot + kAuSlotHdrBytes + have, slot + kAuSlotHdrBytes + vlen);
+  // Bytes below valid_len never change within one open instance; the lock
+  // re-check proves the instance (and the header read before it) held still.
+  __atomic_thread_fence(__ATOMIC_ACQUIRE);
+  if (load32_relaxed(slot + kSOffLock) != lock) {
+    v->bytes.resize(have);
+    return -1;
+  }
+  if (vlen <= have) return 0;
+  v->meta.len = vlen;
+  return 1;
+}
+
+AuRingReader::OpenRes AuRingReader::peek_open(OpenView* v) {
+  if (dead_ || !map_) return OpenRes::kNone;
+  if (get64(map_ + kOffEpoch) != epoch_) return OpenRes::kNone;      // next() resyncs first
+  if (cursor_ != load64(map_ + kOffWriteSeq)) return OpenRes::kNone; // closed records first
+  if (v->lock != 0 && v->meta.rec_no != cursor_) *v = OpenView{};    // caller skipped a reset
+  const uint8_t* slot = slot_base_(cursor_);
+  const uint64_t open_rec = load64(map_ + kOffOpenRec);
+  const uint32_t l1 = load32(slot + kSOffLock);
+  const uint8_t state = load8(slot + kSOffState);
+  if (v->lock != 0) {
+    const bool same = l1 == v->lock;
+    // Ended without closing: overflowed in place (same instance, aborted),
+    // aborted and stable, or re-begun by the next AU (another odd lock).
+    if ((same && state == kSlotAborted) || (!same && ((l1 & 1u) != 0 || state == kSlotAborted))) {
+      v->bytes.clear();
+      v->lock = 0;
+      return OpenRes::kAborted;
+    }
+    if (!same) return OpenRes::kNone;  // closed: next() delivers it
+    return grow_(slot, l1, v) > 0 ? OpenRes::kGrow : OpenRes::kNone;
+  }
+  if (open_rec != cursor_ + 1 || (l1 & 1u) == 0 || state != kSlotOpen) return OpenRes::kNone;
+  OpenView fresh;
+  fresh.meta.rec_no = get64(slot + kSOffRecNo);
+  fresh.meta.frame_id64 = get64(slot + kSOffFrameId);
+  fresh.meta.pts_us = get32(slot + kSOffPts);
+  fresh.meta.sid = slot[kSOffSid];
+  fresh.meta.flags = slot[kSOffFlags];
+  fresh.meta.nslices = slot[kSOffNslices];
+  fresh.lock = l1;
+  if (grow_(slot, l1, &fresh) < 0) return OpenRes::kNone;  // moved on mid-read
+  if (fresh.meta.rec_no != cursor_) return OpenRes::kNone;
+  *v = std::move(fresh);
+  return OpenRes::kOpen;
 }
 
 }  // namespace maburgs

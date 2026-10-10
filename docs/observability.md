@@ -497,6 +497,10 @@ read the sideport. Reach for other tools only in these cases:**
   mode is best-effort — Python cannot fence.) Host-side, the same
   invariant is `ctest -R 'gs_e2e|gs_au_e2e|player_e2e'` (byte-exact
   fixture-to-ring/AU comparisons via `verify_aus.py`/`--out-aus`).
+  Ring v4 (`docs/slices.md` Part 2): maburgs publishes a slot while it fills
+  it; ausniff counts closed records only (it waits on a slot still open and
+  skips one whose AU overflowed, as a resync) and reports `nslices` —
+  records per slice count, `1` = whole AU (refresh starts, unsplit AUs).
 - **Per-frame `air` excess around rung transitions → `tools/bench/airdrain.py`**
   (`python3 tools/bench/airdrain.py ctl-NNNN_<date>.log log/au-NNNN.log
   [--profiles]`, host-side, no lat log needed). Replays the player's
