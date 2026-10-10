@@ -523,7 +523,25 @@ enable = false
 EOF
 "$MABURPLAY" -c "$TMP/live.toml" > "$TMP/live.out" 2> "$TMP/live.err" &
 LIVE=$!
-sleep 1
+# SIGTERM only once the handler is in: main installs it (std::signal) well
+# before it starts the feed thread and prints "feed thread on", so that line
+# proves both. A fixed sleep could land before it under load, and SIGTERM's
+# default action would kill the player (exit 143) instead of draining.
+READY=0
+for _ in $(seq 1 100); do   # up to 5 s
+  if grep -q '^maburplay: feed thread on' "$TMP/live.err" 2>/dev/null; then READY=1; break; fi
+  kill -0 "$LIVE" 2>/dev/null || break
+  sleep 0.05
+done
+if [ "$READY" != 1 ]; then
+  echo "FAIL: no 'maburplay: feed thread on' line within 5 s" >&2
+  kill -9 "$LIVE" 2>/dev/null; cat "$TMP/live.err" >&2; exit 1
+fi
+# The delivered=13 check below needs the feed's first pump (the 13 retained
+# AUs, read in well under a millisecond) to run before the drain request:
+# there is no line for that, so give it a moment. The handler race above does
+# not depend on this.
+sleep 0.2
 kill -TERM "$LIVE"
 for _ in $(seq 1 50); do kill -0 "$LIVE" 2>/dev/null || break; sleep 0.1; done
 if kill -0 "$LIVE" 2>/dev/null; then
