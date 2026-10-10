@@ -9,7 +9,8 @@ namespace maburplay {
 // A decoder that takes a picture slice by slice while it decodes (rkvdec2
 // stream mode through the fpvOS-patched MPP; spec 2026-10-10-h265-slices
 // §6.3). MppBackend implements it next to VideoBackend (whose shape stays
-// frozen); StreamFeeder drives it; tests use a fake. Main thread only.
+// frozen); StreamFeeder drives it; tests use a fake. One thread only: the
+// decoder-input thread (main when there is none).
 // Kept free of any SDK include: mpp_backend.h pulls it in on every build.
 class StreamDecoder {
  public:
