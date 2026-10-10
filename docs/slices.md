@@ -246,3 +246,92 @@ task-capacity 16 → 1. Bench 2026-10-10, default image
   on, so turning link mode off costs nothing (≈ −0.5 ms). Stock CI image
   (stock MPP, link mode on), same maburplay binary, same drone: `dec`
   7/12, `e2e` 40/49 (means 7.38 / 40.04).
+
+## Part 2 bench — streamed decode
+
+GS on the `slice-stream` image (Part 2 platform bench above), ring v4
+(maburgs md5 `113fce18…`). Bench drone `/etc/mabur.toml` `[venc]`:
+`size = "1920x1080"`, `fps = 60`, `slices = 4`, `intra_refresh_frames = 1`,
+`intra_refresh_qp = 36`. `dec`/`e2e` are medians of maburplay's 1 Hz `lat:`
+lines (anchor=ok, integer ms), 2 × 120 s arms per side, each arm a fresh
+maburplay process; Δ = mean(on1, on2) − mean(off1, off2).
+
+Ring wake is measured on closed-record delivery (t_complete → delivery);
+the per-slice wake rides the same doorbell path, so it stands in for the
+per-append wake. The on arms also run the parser with
+base:fast_parse = 0 (required for stream mode); Δdec includes that.
+
+### First bench (Task 11, ring read on the render thread)
+
+| | stream on | stream off |
+|---|---|---|
+| `dec` p50 / p99 ms | 6 / 9.5 | 7 / 11 |
+| `e2e` p50 / p99 ms | 37.5 / 48.5 | 38.5 / 48.25 |
+| rkvdec `resetting` during decode, on arms | 0 | — |
+| `stream_aborted`, no loss | 0 | — |
+
+- Δdec p50 −1.0 ms (means of lines −1.15), Δdec p99 −1.5 ms, Δe2e p50
+  −1.0 ms.
+- Ring wake p50 682 µs, p99 5797 µs (medians of the 5 s `stream:` lines).
+- `whole` ≈ 7.0 /s with stream on (+836 and +798 over 115 s): ≈ 90 % of
+  split AUs streamed, the rest closed before the player saw their first
+  slice and went whole.
+- One rkvdec reset in the A/B window, at the on2 → off2 restart (see the
+  attribution below), none while a stream-on player was decoding.
+
+### Reset attribution: killing a stream-on player (Task 11D)
+
+- 26 restarts with uptime stamps: kills of a stream-on maburplay reset
+  rkvdec 3 of 13 times (4 of 14 with Task 11's on2 kill); kills of a
+  stream-off maburplay 0 of 13; a 600 s stream-off soak with no restarts
+  0.
+- Each reset lands 0.13–0.14 s after the kill, before the next maburplay
+  is spawned (≈ 1.1 s after the kill): it belongs to the teardown of the
+  killed stream-on process, whatever mode the next process runs.
+- The picture the kill leaves open is ended with an empty LAST / abort,
+  and that empty LAST / abort itself causes the reset (`resetting… /
+  reset done`, 0.4 ms, no other kernel output).
+- The dmesg (printk) clock on this GS runs 7.17 s ahead of
+  CLOCK_MONOTONIC (`/proc/uptime`, `lat.log`, `au.log` stamps): convert
+  with monotonic = dmesg − 7.17 s, and re-measure after a reboot
+  (`echo mark > /dev/kmsg` bracketed by `/proc/uptime`; +7.16 s on the
+  Task 11g boot).
+
+### With the decoder-input thread (Task 11g)
+
+maburplay `9271c81` (md5 `eed579d8…`): FeedLoop reads the ring and feeds
+the decoder on its own thread, woken by the AU doorbell; on SIGTERM it
+finishes an open streamed picture with its real last slice before MPP
+teardown.
+
+| | stream on | stream off |
+|---|---|---|
+| `dec` p50 / p99 ms | 3 / 8 | 6 / 9.5 |
+| `e2e` p50 / p99 ms | 40 / 49.5 | 42 / 49.75 |
+| rkvdec `resetting`, no loss (Steps 3–5, A/B incl. its 5 restarts and on3) | 0 | 0 |
+| `stream_aborted`, no loss | 0 | — |
+
+- Δdec p50 −3.0 ms (means of lines 3.83 vs 6.49 → −2.67), Δdec p99
+  −1.5 ms (means −1.95), Δe2e p50 −2.0 ms (means 39.85 vs 42.13 → −2.28),
+  Δe2e p99 −0.25 ms. Regulator: Δe2e p50 is more than half of Δdec p50,
+  so the gain passes through.
+- Absolute `e2e` is higher than in the first bench in both arms (off 42
+  vs 38.5); the difference sits upstream of maburplay (`enc` p50 8 vs 7,
+  `fec` p50 7–8 vs 5 on this drone boot), while `dec` off dropped from 7
+  to 6. Compare Δ within a bench, not absolutes across the two.
+- Ring wake p50 350.5 µs, p99 825.5 µs (medians of the on1 + on2 `stream:`
+  lines; per-line p99 710–1011 µs).
+- `whole` 2.10–2.23 /s with stream on (on1/on2/on3 +256/+242/+244 over
+  115 s) vs 60.0 /s off; `streamed` ≈ 289 per 5 s line, 96.3–96.5 % of
+  records; `parks` 0 in every on arm.
+- Kills mid-stream: `kill_resets` 0/10 (10 restarts of a stream-on
+  maburplay, 20 s apart): `stream finished` 2 (both `, decoded`, waited
+  5 ms and 3 ms), `stream idle` 8, `stream aborted` 0. The A/B's 3
+  stream-on kills and the loss-sim's restart were `stream idle`, 0 resets.
+- Loss-sim (`s0` + `s1 eff=1.5 burst=4`, 5 min, stream on): streamed
+  20181 (salvaged 167), `stream_aborted` 0, rkvdec resets 0, decode
+  watchdog 0; ausniff (30 s) salvaged 11 (s1) + 1 (s0), incomplete 0,
+  frame_id_gaps 3; `dec` 4/11, `e2e` 40/78.5 (300 lines).
+- The 5 s stream: line's MppBackend read on the feed thread is
+  hardware-only and not ThreadSanitizer-covered; it is safe because the
+  watchdog recreates the backend only while the feed is parked.
