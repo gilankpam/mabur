@@ -95,6 +95,20 @@ is not built yet.
   3 pictures × 4 fill modes = 12 cases; rerun it after touching
   `common/src/hevc_*`.
 
+## Follow-ups
+
+- **Cover dropped frames, not just truncated ones.** A base AU that never
+  arrives (nothing received, or no complete slice to copy a header from)
+  still leaves later pictures without their reference. maburplay/MPP
+  conceals and keeps decoding; the web GS's WebCodecs decoder errors, the
+  page drops it and freezes until a requested key frame (bench Step 6).
+  Idea: the GS core synthesizes a whole-picture fill for the missing base
+  AU (every CTU skip, like a slice fill) so no consumer ever sees a missing
+  reference. Harder than a slice fill: with no slice received, the header
+  (POC, short-term RPS, slice QP, NAL type) has to be derived from the
+  neighbouring AUs instead of copied, and it must stay consistent with what
+  the encoder's next pictures reference. Needs a design of its own.
+
 ## Bench 2026-10-10
 
 Bench drone (1080p60, 8812EU) + GS restored to the stock CI image (p1
