@@ -123,8 +123,23 @@ it). Both ends at 6c27e74, live adaptive GS config.
   3 584 frames, zero slice-data / CABAC errors; the only errors are a
   missing-ref chain after dropped AUs (fid gaps) and the dump's mid-GOP
   start. MPP on the GS decoded both arms with no decoder reset.
-- **Not done yet:** the visual check with motion (plan Task 15 Step 5)
-  and the web GS with a USB card (Step 6) need an operator; the bundle
-  stays at `slices = 1` until they pass. The bench drone's own
+- **Visual check with motion** (operator waving a hand in front of the
+  camera, 60 s, same loss; every complete + salvaged AU captured off the
+  ring and decoded with libavcodec one packet per AU, 0 decode errors,
+  39 salvaged: 36 enhance, 3 base):
+  - The salvaged picture itself: each filled band is a slightly stale
+    copy of the previous frame, seamless with the kept slices. No garbage,
+    no blocks.
+  - Enhance fills (non-reference, TRAIL_N) never propagate: the next
+    frames are clean.
+  - Base fills are references, so later pictures predict moving content
+    from the stale band. Blocky drift appears inside that band only, and
+    it clears at the next refresh-start picture (one refresh period,
+    ≤ 0.5 s; 67 ms and 200 ms in the two decodable cases). On a static
+    scene it is invisible.
+  - The missing-middle-slice "slice-3 anomaly" of the findings doc did
+    not appear (the decoder never sees a gap).
+- **Not done yet:** the web GS with a USB card (Step 6) needs an
+  operator; the bundle stays at `slices = 1` until it passes. The bench drone's own
   `/etc/mabur.toml` is at `slices = 4` (`.pre-slice` backups of binary
   and config on both devices).
