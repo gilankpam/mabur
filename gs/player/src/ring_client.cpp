@@ -1,5 +1,6 @@
 #include "ring_client.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
@@ -22,6 +23,15 @@ uint64_t now_ms() {
   return static_cast<uint64_t>(ts.tv_sec) * 1000ull +
          static_cast<uint64_t>(ts.tv_nsec) / 1000000ull;
 }
+
+uint64_t now_us() {
+  struct timespec ts;
+  ::clock_gettime(CLOCK_MONOTONIC, &ts);
+  return static_cast<uint64_t>(ts.tv_sec) * 1000000ull +
+         static_cast<uint64_t>(ts.tv_nsec) / 1000ull;
+}
+
+constexpr size_t kWakeCap = 4096;  // samples kept between take_wake() calls
 
 constexpr uint64_t kDoorReconnectBackoffMs = 1000;
 
@@ -81,21 +91,34 @@ size_t RingClient::drain_ring_() {
   std::vector<uint8_t> au;
   for (;;) {
     const auto res = reader_.next(&m, &au);
-    if (res == maburgs::AuRingReader::Res::kNone) break;
+    if (res == maburgs::AuRingReader::Res::kNone) {
+      if (peek_open_()) continue;
+      break;
+    }
     if (res == maburgs::AuRingReader::Res::kResync) {
       // Reader-observed discontinuity (epoch restart, lap overrun beyond
       // repair, or reopen recovery). meta/au are not populated on this
       // return; the flag rides forward to whatever AU is next delivered.
+      // A record followed open will never close here: end it first.
+      end_open_();
       pending_flush_ = true;
       continue;
     }
-    // kOk: a real record. It may still be dropped whole by policy below,
-    // in which case flush carries forward exactly as for kResync.
+    // kOk. It closes the record followed open only if it is the same
+    // instance: same rec_no AND pts (an overflow-aborted AU and the next
+    // one share a rec_no).
+    const bool was_open = open_.lock != 0 && open_.meta.rec_no == m.rec_no &&
+                          open_.meta.pts_us == m.pts_us;
+    if (!was_open) end_open_();
+    open_ = maburgs::AuRingReader::OpenView{};
+    // It may still be dropped whole by policy below, in which case flush
+    // carries forward exactly as for kResync.
     const bool complete = (m.flags & maburgs::kRecFlagComplete) != 0;
     const bool salvaged = (m.flags & maburgs::kRecFlagSliceSalvaged) != 0;
     if (m.flags & mabur::framewire::kFlagDiscont) pending_flush_ = true;
     if (m.sid == 1 && !maburgs::au_decodable(m.flags)) {  // sid 1 = enhance (2-stream space)
       ++dropped_enhance_incomplete_;
+      if (was_open) emit_aborted_(m);  // a consumer may have started it: end it, deliver nothing
       continue;
     }
     if (salvaged) ++(m.sid == 0 ? salvaged_base_ : salvaged_enhance_);
@@ -104,10 +127,70 @@ size_t RingClient::drain_ring_() {
     pending_flush_ = false;
     ++delivered_;
     ++n;
+    note_wake_(m.t_complete_us);
     sink_(std::move(ev));
     au.clear();  // au may be left moved-from; next() always assign()s it fresh
   }
   return n;
+}
+
+bool RingClient::peek_open_() {
+  switch (reader_.peek_open(&open_)) {
+    case maburgs::AuRingReader::OpenRes::kOpen:
+      ++opened_;
+      emit_open_(AuEventKind::kOpen);
+      return false;
+    case maburgs::AuRingReader::OpenRes::kGrow:
+      emit_open_(AuEventKind::kGrow);
+      return false;
+    case maburgs::AuRingReader::OpenRes::kAborted: {
+      ++open_aborted_;
+      emit_aborted_(open_.meta);
+      open_ = maburgs::AuRingReader::OpenView{};
+      return true;
+    }
+    case maburgs::AuRingReader::OpenRes::kNone:
+      break;
+  }
+  return false;
+}
+
+void RingClient::emit_open_(AuEventKind kind) {
+  AuEvent ev{open_.meta, open_.bytes,
+             pending_flush_ || (open_.meta.flags & mabur::framewire::kFlagDiscont) != 0};
+  ev.kind = kind;
+  sink_(std::move(ev));
+}
+
+void RingClient::end_open_() {
+  if (open_.lock == 0) return;
+  ++open_aborted_;
+  emit_aborted_(open_.meta);
+  open_ = maburgs::AuRingReader::OpenView{};
+}
+
+void RingClient::emit_aborted_(const maburgs::AuRecordMeta& m) {
+  AuEvent ev{m, {}, false};
+  ev.aborted = true;
+  sink_(std::move(ev));
+}
+
+void RingClient::note_wake_(uint64_t t_complete_us) {
+  if (t_complete_us == 0 || wake_us_.size() >= kWakeCap) return;
+  const uint64_t now = now_us();
+  if (now <= t_complete_us) return;
+  wake_us_.push_back(static_cast<uint32_t>(std::min<uint64_t>(now - t_complete_us, UINT32_MAX)));
+}
+
+RingClient::Wake RingClient::take_wake() {
+  Wake w;
+  if (wake_us_.empty()) return w;
+  std::sort(wake_us_.begin(), wake_us_.end());
+  w.n = static_cast<uint32_t>(wake_us_.size());
+  w.p50 = wake_us_[wake_us_.size() / 2];
+  w.p99 = wake_us_[std::min(wake_us_.size() - 1, wake_us_.size() * 99 / 100)];
+  wake_us_.clear();
+  return w;
 }
 
 bool RingClient::oneshot_drain() {
