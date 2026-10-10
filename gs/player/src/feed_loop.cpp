@@ -114,7 +114,9 @@ void FeedLoop::push_note(FeedNote&& n) {
 
 bool FeedLoop::flush_waiting() const {
   std::lock_guard<std::mutex> lk(mu_);
-  return parked_ == Park::kFlush;
+  // Resumed but not yet out (parked_ is the feed's to clear): that flush is
+  // already served -- serving it again would race the feed's next decoder call.
+  return parked_ == Park::kFlush && !resume_;
 }
 
 bool FeedLoop::park_locked_(std::unique_lock<std::mutex>& lk, Park why) {
@@ -123,6 +125,10 @@ bool FeedLoop::park_locked_(std::unique_lock<std::mutex>& lk, Park why) {
   parks_.fetch_add(1);
   cv_.notify_all();
   cv_.wait(lk, [this] { return resume_ || stop_.load(); });
+  // Out of the park, under mu_: only now is parked_ kNone. Between resume()
+  // and here, parked_ still names the old park with resume_ set -- park() and
+  // flush_waiting() read that pair as "not parked". Clearing resume_ here (and
+  // at entry, against a stale resume()) lets the next park hold.
   parked_ = Park::kNone;
   resume_ = false;
   return !stop_.load();
@@ -138,6 +144,10 @@ bool FeedLoop::checkpoint() {
 bool FeedLoop::park_for_flush() {
   std::unique_lock<std::mutex> lk(mu_);
   poke(main_efd_);  // main reads flush_waiting() under mu_: it sees kFlush once we wait
+  // On true the router submits the flush record itself. If a watchdog park()
+  // follows the resume() at once, cancel_ is already set again and that
+  // submit may give way (BUFFER_FULL) and be lost -- fine: the watchdog
+  // flushes and disarms anyway, and the next sync point re-arms.
   return park_locked_(lk, Park::kFlush);
 }
 
@@ -146,8 +156,12 @@ bool FeedLoop::park(std::chrono::milliseconds limit) {
   park_req_.store(true);
   cancel_.store(true);  // a BUFFER_FULL retry on the feed gives way at once
   poke(feed_efd_);      // and a pump wait ends
-  const bool ok =
-      cv_.wait_for(lk, limit, [this] { return parked_ != Park::kNone || finished_.load(); });
+  // Parked = parked_ set AND not merely resumed: right after resume() the
+  // feed has not left its old park yet (parked_ is stale until it runs), and
+  // it makes decoder calls on its way out -- design §4 rule 1.
+  const bool ok = cv_.wait_for(lk, limit, [this] {
+    return (parked_ != Park::kNone && !resume_) || finished_.load();
+  });
   if (!ok) {
     park_req_.store(false);
     cancel_.store(false);

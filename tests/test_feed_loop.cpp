@@ -310,6 +310,36 @@ TEST(periodic_runs_on_the_feed_thread) {
   CHECK(id != std::this_thread::get_id());
 }
 
+// Design §4 rule 1 across back-to-back park gates: maburplay's loop resumes a
+// flush park (service_feed) and may call the watchdog's park() right after.
+// park() must not return while the resumed feed is still leaving its park --
+// on its way out it submits the flush record -- and a served flush must not
+// read as waiting again.
+TEST(park_right_after_resume_waits_for_the_feed_to_leave_its_park) {
+  Rig r("reresume");
+  r.start_and_connect();
+  r.publish_whole(100, 0, true);
+  REQUIRE(r.fake->wait_for('W', 100, 500ms));
+  int raced = 0, stale_flush = 0;
+  for (uint32_t i = 0; i < 500; ++i) {
+    r.publish_whole(1000 + i, 0, true, mabur::framewire::kFlagDiscont);  // flush_before
+    for (int k = 0; k < 5000 && !r.feed->flush_waiting(); ++k) std::this_thread::sleep_for(100us);
+    REQUIRE(r.feed->flush_waiting());
+    r.feeder.on_flush();  // service_feed(), feed parked for the flush
+    r.backend->flush();
+    r.router->disarm();
+    r.feed->resume();
+    if (r.feed->flush_waiting()) ++stale_flush;
+    REQUIRE(r.feed->park(2000ms));  // the watchdog, at once
+    const size_t calls = r.fake->count();
+    std::this_thread::sleep_for(300us);  // a feed wrongly still running lands its submit
+    if (r.fake->count() != calls) ++raced;
+    r.feed->resume();
+  }
+  CHECK(raced == 0);
+  CHECK(stale_flush == 0);
+}
+
 TEST(destroying_a_parked_loop_does_not_hang) {
   // The whole Rig lives and dies on another thread so the destruction is
   // bounded and asserted: ~FeedLoop with the feed parked must stop + join.
