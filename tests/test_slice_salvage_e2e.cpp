@@ -37,7 +37,7 @@ TEST(salvaged_aus_are_gapfree_pictures_with_exact_kept_slices) {
   std::vector<Ev> evs;
   std::vector<uint8_t> cur;
   maburgs::FrameStream fs({50, 8},
-      {[&](const framewire::FrameHdr&, uint8_t) { cur.clear(); },
+      {[&](const framewire::FrameHdr&, uint8_t, uint8_t) { cur.clear(); },
        [&](const uint8_t* d, size_t n) { cur.insert(cur.end(), d, d + n); },
        [&](bool c, const maburgs::AuLatMeta& lat) { evs.push_back({cur, c, lat.slice}); }});
   std::vector<size_t> sent;   // fixture index per frame

@@ -90,7 +90,7 @@ WebGs::WebGs(const maburgs::Config& cfg, Mode mode, uint8_t start_ch, int width,
       agg_(cfg.uep_layers(), static_cast<uint32_t>(cfg.fec.seq_horizon), 1,
            static_cast<uint32_t>(cfg.link.arrival_guard_syms)),
       fs_({static_cast<uint64_t>(cfg.video.frame_gap_timeout_ms), cfg.video.frame_lookahead},
-          {[this](const mabur::framewire::FrameHdr& h, uint8_t sid) {
+          {[this](const mabur::framewire::FrameHdr& h, uint8_t sid, uint8_t /*nslices: no streamed decode in the browser*/) {
              cur_ = Au{};
              cur_.pts_us = h.pts_us;
              cur_.sid = sid;

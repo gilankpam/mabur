@@ -12,14 +12,23 @@ using mabur::framewire::FrameHdr;
 
 namespace {
 struct Capture {
-  struct Ev { char kind; FrameHdr hdr; std::vector<uint8_t> bytes; bool complete; uint8_t sid = 0; AuLatMeta lat; };
+  struct Ev { char kind; FrameHdr hdr; std::vector<uint8_t> bytes; bool complete; uint8_t sid = 0; AuLatMeta lat; uint8_t nslices = 0; };
   std::vector<Ev> evs;
   std::vector<uint8_t> cur;
+  std::vector<uint8_t> tail;   // bytes that came through frame_tail (cbs_with_tail only)
   FrameStream::Callbacks cbs() {
     return {
-        [this](const FrameHdr& h, uint8_t sid) { evs.push_back({'B', h, {}, false, sid, {}}); cur.clear(); },
+        [this](const FrameHdr& h, uint8_t sid, uint8_t ns) { evs.push_back({'B', h, {}, false, sid, {}, ns}); cur.clear(); },
         [this](const uint8_t* d, size_t n) { cur.insert(cur.end(), d, d + n); },
         [this](bool c, const AuLatMeta& lat) { evs.push_back({'E', {}, cur, c, 0, lat}); cur.clear(); }};
+  }
+  FrameStream::Callbacks cbs_with_tail() {
+    FrameStream::Callbacks c = cbs();
+    c.frame_tail = [this](const uint8_t* d, size_t n) {
+      tail.insert(tail.end(), d, d + n);
+      cur.insert(cur.end(), d, d + n);   // still part of the AU's bytes
+    };
+    return c;
   }
 };
 
@@ -559,6 +568,80 @@ TEST(producer_rebase_forgets_params) {             // Review Focus 5
   REQUIRE(cap.evs.size() == 4);
   CHECK(cap.evs[3].lat.slice.fallback == kSliceFbNoParams);
   CHECK(fs.slice_salvaged() == 0);
+}
+
+// --- Part 2: begin_frame tells the ring how many slices the picture has ---
+
+TEST(begin_frame_carries_the_slice_count) {
+  const auto aus = mtest::load_slice_fixture();
+  Capture cap;
+  FrameStream fs({50, 8}, cap.cbs());
+  for (auto& p : frag_au(0, aus[3], 0, 0)) fs.push_fragment(0, p.data(), p.size(), 1);  // refresh start: params, one slice
+  for (auto& p : frag_au(1, aus[5], 5, 1)) fs.push_fragment(0, p.data(), p.size(), 2);  // 4 slices of 5 CTU rows
+  REQUIRE(cap.evs.size() == 4);
+  CHECK(cap.evs[0].kind == 'B');
+  CHECK(cap.evs[0].nslices == 1);   // unsplit AU: whole
+  CHECK(cap.evs[2].kind == 'B');
+  CHECK(cap.evs[2].nslices == 4);   // 17 CTU rows / 5 per slice
+}
+
+TEST(split_au_before_params_begins_whole) {
+  const auto aus = mtest::load_slice_fixture();
+  Capture cap;
+  FrameStream fs({50, 8}, cap.cbs());
+  for (auto& p : frag_au(0, aus[5], 5, 0)) fs.push_fragment(0, p.data(), p.size(), 1);  // no SPS/PPS yet
+  REQUIRE(!cap.evs.empty());
+  CHECK(cap.evs[0].kind == 'B');
+  CHECK(cap.evs[0].nslices == 1);   // no assembler: the ring gets a whole AU
+}
+
+// --- Part 2: the ring v4 writer contract (a split AU's valid_len ends on a NAL boundary) ---
+
+TEST(passthrough_remainder_goes_to_frame_tail) {
+  // The picture of split_au_fallback_with_assembler_is_the_raw_prefix: the
+  // IDR with a hole in slice 1 passes through (kSliceFbISlice). What drain()
+  // streamed is NAL-aligned frame_data; the remainder emitted at finish (it
+  // ends at the hole, mid-NAL) arrives through frame_tail.
+  const auto aus = mtest::load_slice_fixture();
+  const auto sl = mtest::slice_nals(aus[0]);
+  const size_t off1 = static_cast<size_t>(
+      std::search(aus[0].begin(), aus[0].end(), sl[1].begin(), sl[1].end()) - aus[0].begin());
+  const size_t hole = (off1 + 8) / 324 + 1;   // inside slice 1: slice 0 drained whole
+  Capture cap;
+  FrameStream fs({50, 8}, cap.cbs_with_tail());
+  for (auto& p : frag_au(0, aus[3], 0, 0)) fs.push_fragment(0, p.data(), p.size(), 1);
+  auto frags = frag_au(1, aus[0], 5, 1);
+  REQUIRE(hole + 1 < frags.size());
+  frags.erase(frags.begin() + static_cast<long>(hole));
+  for (auto& p : frags) fs.push_fragment(0, p.data(), p.size(), 2);
+  CHECK(cap.tail.empty());             // nothing unaligned before finish
+  fs.poll(100);
+  REQUIRE(cap.evs.size() == 4);
+  CHECK(cap.evs[3].lat.slice.fallback == kSliceFbISlice);
+  const auto& b = cap.evs[3].bytes;
+  CHECK(b == std::vector<uint8_t>(aus[0].begin(), aus[0].begin() + static_cast<long>(hole * 324 - 8)));
+  REQUIRE(!cap.tail.empty());
+  REQUIRE(cap.tail.size() < b.size());
+  const size_t cut = b.size() - cap.tail.size();   // where frame_data stopped
+  CHECK(b[cut] == 0 && b[cut + 1] == 0 &&
+        (b[cut + 2] == 1 || (b[cut + 2] == 0 && b[cut + 3] == 1)));   // a start code: NAL boundary
+  CHECK(std::equal(cap.tail.begin(), cap.tail.end(), b.begin() + static_cast<long>(cut)));
+}
+
+TEST(whole_slices_never_use_frame_tail) {
+  const auto aus = mtest::load_slice_fixture();
+  Capture cap;
+  FrameStream fs({50, 8}, cap.cbs_with_tail());
+  for (auto& p : frag_au(0, aus[3], 0, 0)) fs.push_fragment(0, p.data(), p.size(), 1);  // params
+  for (auto& p : frag_au(1, aus[5], 5, 1)) fs.push_fragment(0, p.data(), p.size(), 2);  // complete split AU
+  auto frags = frag_au(2, aus[5], 5, 2);   // the same picture again, now with a hole
+  frags.erase(frags.begin() + 20);     // in slice 1 (as salvage_rebuilds_a_holed_split_au): salvaged
+  for (auto& p : frags) fs.push_fragment(0, p.data(), p.size(), 3);
+  fs.poll(100);
+  REQUIRE(cap.evs.size() == 6);
+  CHECK(cap.evs[3].complete);
+  CHECK(cap.evs[5].lat.slice.salvaged);
+  CHECK(cap.tail.empty());
 }
 
 MTEST_MAIN

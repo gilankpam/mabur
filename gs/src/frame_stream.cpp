@@ -136,10 +136,10 @@ void FrameStream::try_emit(uint64_t now_ms) {
 
     if (!head->began) {
       head->began = true;
-      cb_.begin_frame(head->hdr, head->sid);
       if (head->hdr.slice_rows > 0 && params_.usable())
         head->sa.emplace(params_.sps(), params_.pps(), head->hdr.slice_rows, head->count,
                          mabur::framewire::kFrameHdrLen);
+      cb_.begin_frame(head->hdr, head->sid, head->sa ? head->sa->slices() : 1);
     }
     // Stream the contiguous chunk prefix (fragment 0 minus the FrameHdr) --
     // through the slice assembler for a split AU, raw otherwise.
@@ -167,7 +167,7 @@ void FrameStream::try_emit(uint64_t now_ms) {
 
 void FrameStream::finish(Slot& s, bool complete) {
   if (s.sa) {
-    s.sa->finish(s.chunks, cb_.frame_data);
+    s.sa->finish(s.chunks, cb_.frame_data, cb_.frame_tail);
     s.lat.slice = s.sa->result();
   } else if (!complete && s.hdr.slice_rows > 0) {
     s.lat.slice.fallback = params_.unsupported() ? kSliceFbUnsupported : kSliceFbNoParams;

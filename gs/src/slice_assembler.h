@@ -34,7 +34,11 @@ class SliceAssembler {
                  uint16_t count, size_t hdr_len);
 
   void drain(const ChunkMap& chunks, const ByteSink& out);
-  void finish(const ChunkMap& chunks, const ByteSink& out);
+  // raw_out (optional): where the passthrough remainder goes -- the rest of
+  // the contiguous prefix, which may end mid-NAL. Unset = out. Everything
+  // else finish() and drain() emit ends on a NAL boundary (ring v4's
+  // writer contract, spec 2026-10-10-h265-slices §6.2).
+  void finish(const ChunkMap& chunks, const ByteSink& out, const ByteSink& raw_out = {});
 
   const SliceSalvage& result() const { return result_; }
   uint8_t slices() const { return n_; }

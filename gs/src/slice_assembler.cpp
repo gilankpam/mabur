@@ -76,7 +76,7 @@ void SliceAssembler::drain(const ChunkMap& chunks, const ByteSink& out) {
   }
 }
 
-void SliceAssembler::finish(const ChunkMap& chunks, const ByteSink& out) {
+void SliceAssembler::finish(const ChunkMap& chunks, const ByteSink& out, const ByteSink& raw_out) {
   extend_prefix(chunks);
   if (prefix_chunks_ == count_) {             // complete
     out(buf_.data() + emitted_, buf_.size() - emitted_);
@@ -90,7 +90,7 @@ void SliceAssembler::finish(const ChunkMap& chunks, const ByteSink& out) {
   const SliceFallback fb = plan(chunks, &pieces, &res);
   if (fb != kSliceFbNone) {
     result_.fallback = fb;
-    out(buf_.data() + emitted_, buf_.size() - emitted_);
+    (raw_out ? raw_out : out)(buf_.data() + emitted_, buf_.size() - emitted_);
     emitted_ = buf_.size();
     return;
   }

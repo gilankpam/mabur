@@ -52,11 +52,21 @@ struct FrameStreamCfg {
 class FrameStream {
  public:
   struct Callbacks {
-    std::function<void(const mabur::framewire::FrameHdr&, uint8_t sid)> begin_frame;
+    // nslices (ring v4, spec 2026-10-10-h265-slices §6.2): the picture's
+    // slice count when a SliceAssembler emits it slice by slice, 1 for a
+    // whole AU (unsplit, or no usable SPS/PPS yet), 0 when the assembler
+    // could not size it. Known here because the assembler is built first.
+    std::function<void(const mabur::framewire::FrameHdr&, uint8_t sid, uint8_t nslices)> begin_frame;
     std::function<void(const uint8_t*, size_t)> frame_data;  // Annex-B bytes, in order
     // lat.t_complete_us is always 0 here — the ring writer stamps finish
     // time (Task 6). See Slot::lat below for the other fields' latch rules.
     std::function<void(bool complete, const AuLatMeta& lat)> end_frame;
+    // Ring v4 writer contract (spec 2026-10-10-h265-slices §6.2): the one
+    // piece of a split AU that may end mid-NAL -- SliceAssembler's
+    // passthrough remainder at finish -- comes here instead of frame_data,
+    // so a consumer can keep it out of what it publishes as NAL-aligned.
+    // Optional: unset = frame_data. Unsplit AUs never use it.
+    std::function<void(const uint8_t*, size_t)> frame_tail;
   };
 
   FrameStream(FrameStreamCfg cfg, Callbacks cb) : cfg_(cfg), cb_(std::move(cb)) {

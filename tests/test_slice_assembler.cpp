@@ -337,4 +337,32 @@ TEST(slice_count_over_64_is_rejected_before_narrowing) {
   CHECK(sa.slices() == 0);
 }
 
+TEST(fallback_remainder_goes_to_raw_out_when_given) {   // ring v4 writer contract
+  Au a = au(0);  // IDR: a hole makes it an islice passthrough
+  const uint16_t c = chunk_of(a, offset_of(a, 2));
+  a.chunks.erase(c);
+  SliceAssembler sa(a.t.sps(), a.t.pps(), 5, a.count, kHdr);
+  Out o, raw;
+  sa.finish(a.chunks, o.sink(), raw.sink());
+  CHECK(sa.result().fallback == kSliceFbISlice);
+  CHECK(o.b.empty());                  // nothing was drained; the remainder is all raw
+  CHECK(raw.b == std::vector<uint8_t>(a.bytes.begin(), a.bytes.begin() + static_cast<long>(c * a.frag - kHdr)));
+
+  Au s = au(5);                        // salvageable: whole slices + a fill
+  s.chunks.erase(inner_chunk(s, 1));
+  SliceAssembler sa2(s.t.sps(), s.t.pps(), 5, s.count, kHdr);
+  Out o2, raw2;
+  sa2.finish(s.chunks, o2.sink(), raw2.sink());
+  CHECK(sa2.result().salvaged);
+  CHECK(raw2.b.empty());
+  CHECK(mtest::slice_nals(o2.b).size() == 4);
+
+  Au w = au(5);                        // complete
+  SliceAssembler sa3(w.t.sps(), w.t.pps(), 5, w.count, kHdr);
+  Out o3, raw3;
+  sa3.finish(w.chunks, o3.sink(), raw3.sink());
+  CHECK(o3.b == w.bytes);
+  CHECK(raw3.b.empty());
+}
+
 MTEST_MAIN
