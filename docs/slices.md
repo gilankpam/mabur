@@ -84,6 +84,10 @@ is not built yet.
   still records complete AUs only — its `on_au` callback feeds `a.complete`
   (not the salvaged-inclusive flag maburplay's raw DVR feeds), unlike
   maburplay's raw DVR, which records salvaged AUs too.
+- The web GS's WebCodecs decoder dies on a missing reference (a dropped
+  or unsalvageable base AU) and the page waits for a key frame; it
+  freezes there where maburplay/MPP conceals. Salvage removes most base
+  truncations from that path but not the drops (bench Step 6).
 - Fill bitstreams are checked by `tools/slices/slicefill_check.py`
   (ffmpeg oracle) against the bench drone's `cap4` capture
   (`tools/slices/make_slice_fixture.py`'s docstring:
@@ -158,7 +162,26 @@ it). Both ends at 6c27e74, live adaptive GS config.
     scene it is invisible.
   - The missing-middle-slice "slice-3 anomaly" of the findings doc did
     not appear (the decoder never sees a gap).
-- **Not done yet:** the web GS with a USB card (Step 6) needs an
-  operator; the bundle stays at `slices = 1` until it passes. The bench drone's own
+- **Web GS** (this branch's page served locally, Chrome on the host's
+  Intel iGPU / VAAPI, host a81a card, page NACK off; jammer = devourer
+  `txdemo` on one GS card, ch 144, 6M 1000 B, ~243 fps on air, 5 min):
+  `trunc` 43 (13 base), `salvaged` 37. The video froze at times and the
+  console showed `[webgs] decoder error EncodingError`; it never showed the
+  stale bands maburplay shows.
+  - Attribution, by replaying two ring captures that start at an IDR
+    through WebCodecs with the page's own config (`hvc1.1.6.L120.B0` +
+    hvcC, `prefer-hardware`, `annexbToLengthPrefixed`): loss on the
+    enhance stream only, 4 957 AUs incl. 18 salvaged → 0 errors. Loss on
+    both streams, salvaged AUs included → decodes through 9 salvaged base
+    + 4 salvaged enhance AUs; the first error is the enhance AU right
+    after a base AU that never arrived (fid gap). Same capture with the
+    salvaged AUs skipped (the page before slice salvage) → error at the
+    first skipped base AU, 808 AUs earlier.
+  - So WebCodecs decodes salvaged AUs fine; the errors are missing
+    references from dropped or unsalvageable base AUs. On any decoder
+    error the page drops its decoder and waits for a key frame (IDR
+    request), so it freezes where MPP conceals and keeps decoding — the
+    page shows a salvaged picture only between such resets. Not a slice
+    salvage defect; a web GS limit (Known limits). The bench drone's own
   `/etc/mabur.toml` is at `slices = 4` (`.pre-slice` backups of binary
   and config on both devices).
