@@ -325,7 +325,8 @@ it). Both ends at 6c27e74, live adaptive GS config.
   line reads): `on|off:<reason> streamed salvaged aborted whole opened
   open_aborted wake_us=p50/p99 n refused parks`. `refused` counts
   `MppBackend`'s refused `STREAM_APPEND`s (`stream_errors`); `parks`
-  counts every park the feed took since the last line — a flush park (one
+  counts every park the feed took since it started (cumulative, never
+  reset between lines) — a flush park (one
   per discont record, e.g. during maburd's 1 s sticky-discont window after
   a drone restart) and a watchdog park both land in the same counter.
   Oneshot JSON `streamed`, `stream_aborted`, `stream`. ausniff `nslices`.
