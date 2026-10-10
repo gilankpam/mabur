@@ -501,6 +501,20 @@ read the sideport. Reach for other tools only in these cases:**
   it; ausniff counts closed records only (it waits on a slot still open and
   skips one whose AU overflowed, as a resync) and reports `nslices` —
   records per slice count, `1` = whole AU (refresh starts, unsplit AUs).
+  maburplay's side of it is the `stream:` stderr line every 5 s
+  (`/tmp/maburplay.log`), printed by the decoder-input thread (FeedLoop):
+  `on|off:<reason>`, `streamed` (of them `salvaged`), `aborted`
+  (`stream_aborted`, one rkvdec reset each), `whole`, `opened`/
+  `open_aborted` (ring records seen open / ended without closing),
+  `wake_us=p50/p99` (closed-record delivery − maburgs' `t_complete`, µs)
+  and `refused` (STREAM_APPENDs the decoder refused,
+  `MppBackend::stream_errors`). `maburplay --oneshot` JSON carries
+  `streamed`, `stream_aborted` and `stream`. On shutdown maburplay also
+  logs `maburplay: shutdown: <stream idle|stream finished|stream aborted>
+  pts=… waited=… ms…` (how the picture that was streaming when SIGTERM
+  arrived was finished before decoder teardown) and `maburplay: feed:
+  delivered=… submits=… parks=… notes_dropped=…` (the feed thread's own
+  tally for the run).
 - **Per-frame `air` excess around rung transitions → `tools/bench/airdrain.py`**
   (`python3 tools/bench/airdrain.py ctl-NNNN_<date>.log log/au-NNNN.log
   [--profiles]`, host-side, no lat log needed). Replays the player's

@@ -2,7 +2,7 @@
 
 Spec: `docs/superpowers/specs/2026-10-10-h265-slices-design.md` (gitignored).
 Evidence: `docs/venc-slice-findings-2026-10-09.md`. Part 2 (streamed decode)
-is not built yet.
+is built: see "Part 2 (as built)" below.
 
 ## Drone
 
@@ -127,6 +127,25 @@ is not built yet.
   (POC, short-term RPS, slice QP, NAL type) has to be derived from the
   neighbouring AUs instead of copied, and it must stay consistent with what
   the encoder's next pictures reference. Needs a design of its own.
+- **Futex: closed by measurement, don't re-open it.** The ring header's
+  futex idea was never about a slow doorbell; the wake latency the first
+  Part 2 bench saw was the busy render loop reading its own wakeup late,
+  which moving the ring read onto FeedLoop fixed outright (wake p99 5.8 ms
+  → 0.83 ms, Task 11 vs Task 11g). A futex on top would save only tens of
+  µs on an already-~100 µs doorbell — not worth building.
+- The watchdog's park/recreate path (design-reader-thread.md §4) has not
+  yet run on hardware: no decode watchdog fired in any Part 2 bench.
+- An output thread blocking in `decode_get_frame` (design option E, not
+  built) would cut main's ≤2 ms frame-pickup delay from `dec` in both the
+  stream-on and stream-off arms — a further absolute −0.5 to −1 ms, not a
+  change to Δdec.
+- `parks=` on the `stream:` line mixes flush parks and watchdog parks (one
+  counter, `FeedLoop::parks_`). Split it if watchdog parks ever need
+  counting on their own.
+- Task 11g's on arms ran about +0.7 ms mean `fec` over the off arms
+  (8.1–8.5 ms vs 7.4–7.6 ms) — not investigated; could be noise, or the
+  feed thread's CPU competing with maburgs on the same core
+  (`task-11g-report.md`).
 
 ## Bench 2026-10-10
 
@@ -219,6 +238,115 @@ it). Both ends at 6c27e74, live adaptive GS config.
 - **Turned on:** `bundle/mabur.default.toml` ships `slices = 4`; the bench
   drone runs it (`.pre-slice` backups of binary and config on both
   devices).
+
+## Part 2 (as built): streamed decode
+
+- **Platform.** GS image branch `slice-stream` (sbc-groundstations-gilankpam):
+  the fpvOS rkvdec2 stream-mode kernel patch
+  (`board/radxa/zero3/linux-patches/0102-…`; `rk_vcodec.rkvdec2_stream`,
+  default on, turns rkvdec2 link mode off for every decode) and MPP pinned to
+  rockchip-linux/mpp `14729dd5` (develop 2026-09-17, re-pinned from `df4864bd` for its h265d PS/RPS first-task fix) — the commit `tools/build-arm64.sh` builds —
+  with the fpvOS MPP patches ported to it. The canonical patches are
+  `gs/player/mpp-patches/`; the image's `package/rockchip-mpp/` carries
+  byte-identical copies; `build-arm64.sh` applies them and keys its MPP cache
+  on `MPP_REF` + their sha256. `14729dd5` has no `libmpp_ext.so`. Flashing:
+  `docs/deploy.md` "GS image: p1 squashfs swap".
+- **AU ring v4.** maburgs claims a slot at the AU's first byte (`begin()`:
+  odd seqlock for the whole AU, `state` open, RingHdr `open_rec`), copies
+  every emitted piece into it and store-releases `valid_len`; `finish()`
+  closes it as before. Writer contract: a split AU's `valid_len` always
+  ends on a NAL boundary. Everything FrameStream emits for a split AU does
+  (drained NAL runs, a complete remainder, salvage pieces) except the
+  passthrough remainder at finish, which leaves through FrameStream's
+  `frame_tail` callback (SliceAssembler `raw_out`) and is written with
+  `append_unaligned()`: in the record's `len`, never in `valid_len`. `nslices` = the SliceAssembler's slice count (1 =
+  whole AU). An AU that outgrows its slot is aborted on the spot (`state`
+  aborted, never published, `dropped_oversize`). A reader follows the record
+  at its cursor with `AuRingReader::peek_open()`: bytes below `valid_len`
+  never change within one open instance, and the lock re-check catches a
+  re-begun slot. maburgs rings the doorbell after every aligned append of a
+  split AU.
+- **maburplay StreamFeeder.** `RingClient` turns that into `kOpen`/`kGrow`/`kClose`
+  events; a record that ends without closing (overflow, resync, writer
+  restart, an enhance AU the policy drops) ends with an aborted `kClose`.
+  `StreamFeeder` streams an AU when `[decoder] stream` is on, the decoder's
+  probe passed, the backend is armed, `nslices >= 2`, and there is no
+  discont or pending flush. Trusting the writer contract, it hands over
+  every VCL NAL as soon as it is in the valid bytes: START = slice 0 and
+  what precedes it (`MPP_PACKET_FLAG_STREAM_START |
+  MPP_PACKET_STREAM_SLICES(n)`), each later slice by
+  `MPP_DEC_SET_STREAM_APPEND` on the event that makes it valid — slice k
+  goes in when slice k+1's start code reaches maburgs, the assembler's one
+  inherent hold-back — never more than n−1 before the close, the last one
+  at the close with `MPP_STREAM_APPEND_LAST`. A
+  close that is not decodable (passthrough), or an aborted one, ends the
+  picture with an empty LAST: `stream_aborted`, one rkvdec reset. A streamed
+  AU is never also submitted whole. DVR, flush, arming, the decodable gate
+  and `lat.on_submit` stay at the close, so `dec` keeps its meaning
+  (t_complete → decoded). With streaming on, `MppBackend` sets
+  `base:fast_parse = 0` before `mpp_init` (MPP defaults it to 1; the h265d
+  hal only streams without it); `[decoder] stream = false` leaves the decoder
+  set up exactly as before Part 2.
+- **Decoder-input thread (FeedLoop).** The ring, the StreamFeeder and the
+  AuRouter moved off the render loop onto their own thread (Task 11g, after
+  the first hardware bench gained only the Δ below): `FeedLoop` blocks on
+  the AU doorbell and owns `RingClient`, `StreamFeeder` and `AuRouter` —
+  every MPP *input* call (a whole AU's `put_packet`, START, each append,
+  LAST). The main thread keeps frame *output* (`get_frame`/release), the
+  presenter, the regulator, OSD compose, the raw DVR and `lat`, plus the
+  watchdog; it learns of submits, delivered bytes and figures through a
+  bounded note queue (`FeedNote`, `kSubmit` before the MPP call so `lat`
+  sees submit before decode, `kDelivery` after, with the AU's bytes moved
+  in for the DVR — beyond 256 queued notes a note keeps its meta and drops
+  its bytes, counted `notes_dropped`). A flush and the watchdog "park" the
+  feed between ring events (outside every decoder call, the only place MPP
+  reset/destroy/create is safe): main releases the frames the presenter,
+  regulator and recorder hold and resets or recreates MPP while the feed is
+  parked, then resumes it. A park that does not happen within 2 s exits the
+  player for respawn (the feed is wedged beyond this process). Why: this
+  thread split is what the bench numbers below are measuring — "First bench
+  (Task 11, ring read on the render thread)" vs "With the decoder-input
+  thread (Task 11g)" in the "Part 2 bench — streamed decode" section.
+- **Clean shutdown.** On SIGTERM no new picture starts (`StreamFeeder::stop_new()`):
+  the feed keeps pumping the ring until the open streamed picture's own
+  close reaches the feeder and sends LAST with its real last slice
+  (`drain_stream`, budget ≤100 ms), then main waits up to 50 ms more for
+  that picture's frame before anything tears MPP down. Only then does
+  `mpp_destroy` run. Reason: ending the picture with an empty LAST/abort —
+  which is what `mpi->reset()`/`mpp_destroy` do to a picture still open in
+  the hal — makes the kernel pad it with 64 zero bytes
+  (`rkvdec2_strm_cut`), the decode errors, and rkvdec resets; finishing it
+  with its own last slice first avoids that. Logged: `maburplay: shutdown:
+  <stream idle|stream finished|stream aborted> pts=… waited=… ms[, decoded]`
+  and, always, `maburplay: feed: delivered=… submits=… parks=…
+  notes_dropped=…`.
+- **Observability.** maburplay stderr (`/tmp/maburplay.log`), a `stream:`
+  line every 5 s, printed by the feed thread (it owns every counter the
+  line reads): `on|off:<reason> streamed salvaged aborted whole opened
+  open_aborted wake_us=p50/p99 n refused parks`. `refused` counts
+  `MppBackend`'s refused `STREAM_APPEND`s (`stream_errors`); `parks`
+  counts every park the feed took since the last line — a flush park (one
+  per discont record, e.g. during maburd's 1 s sticky-discont window after
+  a drone restart) and a watchdog park both land in the same counter.
+  Oneshot JSON `streamed`, `stream_aborted`, `stream`. ausniff `nslices`.
+
+### Known limits (Part 2)
+
+- The assembler's hold-back: slice k is only known whole when slice k+1's
+  start code arrives, so of a 4-slice picture slices 0–2 decode while the
+  air delivers the rest and slice 3 goes in at the close.
+- Refresh-start pictures stay one slice: they decode whole, and pay the
+  link-mode-off cost.
+- Every stream abort still costs one rkvdec reset (the kernel pads the
+  picture and the decoder errors); salvaged AUs stream without one. But a
+  plain restart of maburplay no longer causes one: the clean-shutdown drain
+  above finishes the open streamed picture with its own last slice before
+  teardown (Task 11g bench, kills mid-stream: 0/10 resets). The exception
+  is a picture whose close does not arrive within the 100 ms drain budget
+  — that one still gets an empty LAST/abort and its one reset, same as
+  before.
+- The web GS does not stream; `MPP_DEC_GET_STREAM_TOP` (early top display)
+  is unused. Both are spec non-goals.
 
 ## Part 2 bench — platform (GS image `slice-stream`)
 

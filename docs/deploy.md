@@ -921,6 +921,8 @@ the upper dir's `usr/` shadows the image's: check
 (`/root/mpp-stream/` holds the 2026-10-09 spike's private copies, used only
 through `LD_LIBRARY_PATH` by its `run.sh`; they shadow nothing).
 
+Back up p1 first (below).
+
 Flash any image `IMG` (from the image repo's `output/`):
 
     IMG=<squashfs>; SZ=$(stat -c %s $IMG); MD5=$(md5sum < $IMG | cut -d' ' -f1)
@@ -954,3 +956,42 @@ stays the last resort if p1 does not boot.
 Verify after boot: `uname -v`, `cat /proc/cmdline`,
 `cat /sys/module/rk_vcodec/parameters/rkvdec2_stream` (`Y` on the stream-mode
 image), `dmesg | grep "link mode off"`.
+
+## 2026-10-10 AU ring v4 + stream-mode GS image + `[decoder] stream` (`docs/slices.md` Part 2)
+
+GS-only flag day; the drone is untouched.
+
+1. **Image first** ("GS image: p1 squashfs swap" above): the image-repo
+   `slice-stream` build (`output/gs-p1-stream/rootfs.default.squashfs`).
+   The old maburgs/maburplay keep running on it (ring v3 both, whole-AU
+   decode with link mode off) — check video before going on.
+2. **maburgs and maburplay together.** Stop `S97maburplay` and
+   `S96maburgs` (each in its own ssh call), keep `.pre-ringv4` copies of
+   both binaries and of `/config/maburplay.toml`, then swap both binaries.
+   `/etc/maburplay.toml` is a symlink to `/config/maburplay.toml` (the vfat
+   partition) — back up and edit the **target**, `/config/maburplay.toml`,
+   not the link: BusyBox `sed -i` on the symlink itself replaces it with a
+   regular overlay file, after which the `/config` copy goes silently dead
+   (it is no longer what `/etc/maburplay.toml` resolves to), and `cp -a`
+   on the link backs up only the link, not the config. Write every config
+   path in this entry as `/config/maburplay.toml` for that reason. A
+   mismatched maburgs/maburplay pair shows no video and no crash: either
+   maburplay keeps waiting on a ring of the other version. Finish the
+   swap; restarting either side does not help.
+3. **Binary before config:** add `[decoder]` / `stream = true` to
+   `/config/maburplay.toml` only once the new maburplay is in place — an
+   old maburplay exits 2 on the unknown key and `S97maburplay` does not
+   respawn on exit 2.
+4. Start `S96maburgs`, then `S97maburplay`. Verify in
+   `/tmp/maburplay.log`: `maburplay: decoder stream: on`,
+   `MppBackend: stream mode available`, and `stream:` lines with
+   `aborted=0`; `ausniff.py` (v4) clean.
+
+Kill switch without a rollback: `stream = false` in `/config/maburplay.toml`
+plus a restart of `S97maburplay`. Rollback: both `.pre-ringv4` binaries and
+the `.pre-ringv4` copy of `/config/maburplay.toml` together; the image can
+stay, or p1 rolls back to `output/gs-p1-backup-2026-10-10/p1.orig.img`. The
+bench GS additionally carries `.pre-feed` copies of maburplay (from before
+Task 11g's decoder-input thread, `docs/slices.md` "Part 2 bench — streamed
+decode"): don't confuse the two — `.pre-ringv4` is the pre-Part-2 baseline,
+`.pre-feed` is the pre-FeedLoop one, one step later.
