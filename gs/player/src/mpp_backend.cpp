@@ -28,9 +28,10 @@ struct MppBackend::Impl {
   MppBufferGroup frm_grp = nullptr;  // external decode buffer pool (see file comment)
   FrameSink sink;
   uint64_t info_change_count = 0;
-  uint64_t error_count = 0;      // hard failures: no buffer / bad fd / put_packet
+  std::atomic<uint64_t> error_count{0};  // both threads: put_packet (input), drain_frames (output)
   uint64_t concealed_count = 0;  // errinfo frames emitted for display
-  uint64_t stream_errors = 0;   // MPP_DEC_SET_STREAM_APPEND refused
+  std::atomic<uint64_t> stream_errors{0};   // MPP_DEC_SET_STREAM_APPEND refused
+  const std::atomic<bool>* input_cancel = nullptr;
 
   ~Impl() {
     if (ctx) mpp_destroy(ctx);
@@ -135,7 +136,18 @@ struct MppBackend::Impl {
         ++error_count;
         return false;
       }
-      drain_frames();
+      if (input_cancel) {
+        // Split threads: the output side is the main loop's, which keeps
+        // releasing frames; draining here would run the FrameSink on this
+        // thread. Give way at once to a park or a stop.
+        if (input_cancel->load(std::memory_order_relaxed)) {
+          ++error_count;
+          std::fprintf(stderr, "MppBackend: decode_put_packet BUFFER_FULL, given up (feed parked)\n");
+          return false;
+        }
+      } else {
+        drain_frames();
+      }
       usleep(1000);
     }
     std::fprintf(stderr, "MppBackend: decode_put_packet stayed BUFFER_FULL, dropping AU\n");
@@ -150,6 +162,7 @@ MppBackend::~MppBackend() = default;
 bool MppBackend::init(const BackendCfg&, FrameSink sink) {
   impl_ = std::make_unique<Impl>();
   impl_->sink = std::move(sink);
+  impl_->input_cancel = input_cancel_;
 
   MPP_RET ret = mpp_create(&impl_->ctx, &impl_->mpi);
   if (ret != MPP_OK || !impl_->ctx || !impl_->mpi) {
@@ -258,10 +271,17 @@ void MppBackend::poll() {
   impl_->drain_frames();
 }
 
+void MppBackend::set_input_cancel(const std::atomic<bool>* cancel) {
+  input_cancel_ = cancel;
+  if (impl_) impl_->input_cancel = cancel;
+}
+
 uint64_t MppBackend::info_changes() const { return impl_ ? impl_->info_change_count : 0; }
 
 uint64_t MppBackend::concealed() const { return impl_ ? impl_->concealed_count : 0; }
-uint64_t MppBackend::errors() const { return impl_ ? impl_->error_count : 0; }
+uint64_t MppBackend::errors() const {
+  return impl_ ? impl_->error_count.load(std::memory_order_relaxed) : 0;
+}
 
 bool MppBackend::probe() {
   if (!impl_ || !impl_->ctx || !stream_wanted_) return false;
@@ -315,6 +335,8 @@ void MppBackend::abort(uint32_t pts_us) {
   append(nullptr, 0, pts_us, true);
 }
 
-uint64_t MppBackend::stream_errors() const { return impl_ ? impl_->stream_errors : 0; }
+uint64_t MppBackend::stream_errors() const {
+  return impl_ ? impl_->stream_errors.load(std::memory_order_relaxed) : 0;
+}
 
 }  // namespace maburplay

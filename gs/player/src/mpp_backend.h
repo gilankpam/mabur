@@ -1,6 +1,7 @@
 #ifndef MABUR_PLAYER_MPP_BACKEND_H_
 #define MABUR_PLAYER_MPP_BACKEND_H_
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 
@@ -55,10 +56,18 @@ class MppBackend : public VideoBackend, public StreamDecoder {
   void abort(uint32_t pts_us) override;
   uint64_t stream_errors() const;  // refused STREAM_APPENDs
 
+  // Decoder input on its own thread (FeedLoop; design-reader-thread.md):
+  // put_packet's BUFFER_FULL retry then never drains frames (the FrameSink
+  // belongs to the output thread) and gives up once *cancel is set (a
+  // watchdog park or a stop). Before init() or after; survives nothing --
+  // set again on a re-created backend. nullptr = one thread (decode-only).
+  void set_input_cancel(const std::atomic<bool>* cancel);
+
  private:
   bool stream_wanted_ = false;
   struct Impl;
   std::unique_ptr<Impl> impl_;
+  const std::atomic<bool>* input_cancel_ = nullptr;
 };
 
 }  // namespace maburplay
