@@ -121,6 +121,15 @@ struct ColorTransCfg {
   bool enable = false;
 };
 
+// [decoder] (spec 2026-10-10-h265-slices §6.3). stream = true hands a split
+// picture to MPP slice by slice while maburgs still receives it (rkvdec2
+// stream mode); false submits every AU whole, the pre-Part-2 path. A/B and
+// kill switch. Needs the stream-mode GS image (docs/slices.md); anywhere
+// else the decoder's probe refuses and maburplay submits whole AUs anyway.
+struct DecoderCfg {
+  bool stream = true;
+};
+
 struct Config {
   std::string ring_path = "/dev/shm/mabur-au";
   std::string socket = "/run/mabur-au.sock";
@@ -131,6 +140,7 @@ struct Config {
   InputCfg input;
   DisplayCfg display;
   ColorTransCfg colortrans;
+  DecoderCfg decoder;
 };
 
 Config load_config(const std::string& path,

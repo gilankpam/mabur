@@ -428,3 +428,23 @@ TEST(colortrans_enable_key) {
   }
   CHECK(threw);
 }
+
+TEST(decoder_stream_key) {
+  // [decoder] stream (spec 2026-10-10-h265-slices §6.3): A/B and kill switch
+  // for the streamed decode. Default on; the bundle sets it.
+  CHECK(maburplay::load_config(write_tmp_play("")).decoder.stream);
+  CHECK(!maburplay::load_config(write_tmp_play("[decoder]\nstream = false\n")).decoder.stream);
+  std::vector<std::string> defaulted;
+  maburplay::load_config(write_tmp_play("backend = \"null\"\n"), &defaulted);
+  bool noted = false;
+  for (const auto& d : defaulted) if (d.find("decoder") != std::string::npos) noted = true;
+  CHECK(noted);                               // absent section is reported
+  std::string msg;
+  try { maburplay::load_config(write_tmp_play("[decoder]\nstreams = true\n")); }
+  catch (const std::exception& e) { msg = e.what(); }
+  CHECK(msg.find("decoder.streams") != std::string::npos);
+  msg.clear();
+  try { maburplay::load_config(write_tmp_play("[decoder]\nstream = 1\n")); }
+  catch (const std::exception& e) { msg = e.what(); }
+  CHECK(msg.find("decoder.stream") != std::string::npos);
+}

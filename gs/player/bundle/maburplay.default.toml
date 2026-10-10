@@ -56,3 +56,7 @@ chain_budget  = 3          # after this many frames shown back-to-back, drop one
 # drone's venc.sensor_bin) on the screen, the OSD and the recording.
 [colortrans]
 enable = true
+
+# Video decoder.
+[decoder]
+stream = true              # start decoding a picture slice by slice as it arrives (needs the stream-mode GS image); false = decode whole pictures
