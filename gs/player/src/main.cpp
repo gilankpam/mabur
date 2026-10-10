@@ -2107,7 +2107,7 @@ int main(int argc, char** argv) {
   }
   feed.stop_and_join();
   drain_notes();
-  if (g_stop.load()) {
+  if (g_stop.load() && !feed.dead()) {  // a dead ring asked for no drain: nothing to report
     if (feed.drained()) {
       report_drain(feed.drain_result());
     } else {

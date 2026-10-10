@@ -252,6 +252,10 @@ class AuRingReader {
   //  kNone    nothing new: no open record, no new bytes, or it just closed
   //           (next() delivers it)
   // Reset the view (*v = {}) whenever next() returns anything but kNone.
+  // Instance identity: peek_open tells a re-begun slot from the one it
+  // followed by lock value AND rec_no; a consumer matching the record next()
+  // closes to the one it saw open (RingClient) uses rec_no + pts_us, which
+  // assumes distinct pts when a rec_no is reused after an overflow abort.
   OpenRes peek_open(OpenView* v);
   uint64_t resyncs() const { return resyncs_; }
   AuRingGeom geom() const { return geom_; }

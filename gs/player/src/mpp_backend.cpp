@@ -68,9 +68,11 @@ struct MppBackend::Impl {
   // sink/DmaFrame::opaque, released by release_frame()), acks info_change
   // in place. Hard failures (discard/no-buffer/bad-fd) are counted and
   // dropped; errinfo (concealment) frames are counted AND emitted -- see
-  // the comment at the emission site. Called both from poll()
-  // (steady-state drain) and from submit_au()'s BUFFER_FULL retry path
-  // (drain to make room before retrying put).
+  // the comment at the emission site. Called from poll() (steady-state
+  // drain), and from put_packet()'s BUFFER_FULL retry (drain to make room
+  // before retrying) ONLY in the one-thread mode (decode-only): with
+  // set_input_cancel() set -- the FeedLoop split, input on the feed thread
+  // -- that retry never drains, since the FrameSink is the output thread's.
   void drain_frames() {
     for (;;) {
       MppFrame frame = nullptr;
