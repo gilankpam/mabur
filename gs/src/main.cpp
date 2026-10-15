@@ -750,38 +750,6 @@ static int run_radio(const maburgs::Config& cfg) {
                           static_cast<unsigned long long>(mono_us()), c ? 1 : 0);
          }
          if (stats) stats->on_frame(mono_ms());
-         // au_tail gauge (usb-feed probe): fec = arrival span
-         // (last body mono - first body mono) + publish tail (now - last
-         // body: repair/decode/assembly/ring write). Core-thread-owned,
-         // 5 s stderr windows. Names where the fec residual lives when the
-         // air span is known from rx_pace.
-         if (lat.t_first_us && lat.t_last_arr_us >= lat.t_first_us) {
-           static uint64_t at_n = 0, at_span_sum = 0, at_span_max = 0;
-           static uint64_t at_tail_sum = 0, at_tail_max = 0, at_last_rep = 0;
-           const uint64_t now = mono_us();
-           const uint64_t span = lat.t_last_arr_us - lat.t_first_us;
-           const uint64_t tail =
-               now > lat.t_last_arr_us ? now - lat.t_last_arr_us : 0;
-           ++at_n;
-           at_span_sum += span;
-           at_tail_sum += tail;
-           if (span > at_span_max) at_span_max = span;
-           if (tail > at_tail_max) at_tail_max = tail;
-           if (at_last_rep == 0) at_last_rep = now;
-           if (now - at_last_rep >= 5000000 && at_n > 0) {
-             std::fprintf(stderr,
-                          "maburgs au_tail: n=%llu span_us mean=%llu max=%llu "
-                          "tail_us mean=%llu max=%llu\n",
-                          (unsigned long long)at_n,
-                          (unsigned long long)(at_span_sum / at_n),
-                          (unsigned long long)at_span_max,
-                          (unsigned long long)(at_tail_sum / at_n),
-                          (unsigned long long)at_tail_max);
-             at_n = at_span_sum = at_span_max = 0;
-             at_tail_sum = at_tail_max = 0;
-             at_last_rep = now;
-           }
-         }
          // Head-segment latency: t_first_us is the radio's mono stamp on
          // the AU's first body and t_complete_us (via mono_us() below,
          // the "now" at this closure) shares its timebase -- steady_clock
@@ -833,11 +801,14 @@ static int run_radio(const maburgs::Config& cfg) {
   // obvious failure. Core-thread-owned, like everything else in this loop.
   bool frame_wire = false;
   bool refused_peer = false;  // one loud line per run, not per tick
+  // When the batch being processed left the RX queue (au.log t_drain).
+  uint64_t batch_drain_us = 0;
 
   agg.set_frag_sink([&](const mabur::DecodedFrag& f) {
     if (frame_wire)
       fstream.push_fragment(f.stream_id, f.frag.data(), f.frag.size(), mono_ms(),
-                            {f.body_mono_us, f.q_ms, f.enc_us, f.air_ms, f.sw_seq, true, f.retx});
+                            {f.body_mono_us, f.q_ms, f.enc_us, f.air_ms, f.sw_seq, true, f.retx,
+                             batch_drain_us, mono_us()});
   });
 
   // Dedicated adaptive-link log: maburgs' own compact S/E/P/N record of
@@ -1092,6 +1063,7 @@ static int run_radio(const maburgs::Config& cfg) {
     // Drain (blocks <=10 ms: this IS the control tick cadence).
     batch.clear();
     queue.drain(batch, 10);
+    batch_drain_us = mono_us();
     for (const auto& m : batch) {
       // Calibration sweep frames (cal_wire.h) are a distinct body type, not
       // video, and must be recognized BEFORE agg.on_rx_body() routes the
@@ -1618,7 +1590,11 @@ static int run_radio(const maburgs::Config& cfg) {
       std::fprintf(stderr, "\n");
     }
 
-    if (stats) {
+    // The sideport snapshot is built only when the exporter will emit: the
+    // loop wakes on every RX batch (~300/s at video rates) and the build is
+    // ~200 us of reads on the core thread, which delays the next drain --
+    // and so every packet still in the queue -- for a datagram sent at 5 Hz.
+    if (stats && stats->due(drained_ms)) {
       maburgs::StatsInput sin;
       // Live channel of the TX card, not the configured home: with a pick
       // committed they differ. Straight off the
@@ -1735,9 +1711,9 @@ static int run_radio(const maburgs::Config& cfg) {
       sin.rcf_slot = {rcf_slot.released_au(), rcf_slot.released_timeout(),
                       rcf_slot.passthru(), rcf_slot.released_probe(),
                       rcf_slot.tail_ub_ms()};
-      // link.nack: take_window() is destructive, so only on a poll that
-      // will emit (same reasoning as lat_win.flush() below).
-      if (cfg.link.nack.enable && stats->due(drained_ms)) {
+      // link.nack: take_window() is destructive; safe here because the
+      // block runs only on a poll that will emit.
+      if (cfg.link.nack.enable) {
         sin.nack.enabled = true;
         sin.nack.cum = nack.stats();
         sin.nack.win = nack.take_window();
@@ -1762,14 +1738,10 @@ static int run_radio(const maburgs::Config& cfg) {
         }
         sin.rtt = ri;
       }
-      // lat_win.flush() is destructive (reads AND clears): only pay for it
-      // on a poll that stats->due() says will actually emit. This loop
-      // iterates roughly every 10ms (the drain() cadence above) while
-      // interval_ms is >= 100ms, so an unconditional flush() here would
-      // clear the window ~10x more often than it is ever read, reporting
-      // only the last loop tick's handful of samples instead of a real
-      // rolling window.
-      if (lat_anchor.usable() && stats->due(drained_ms))
+      // lat_win.flush() is destructive (reads AND clears); safe here because
+      // the block runs only on a poll that will emit, so the window spans
+      // the whole interval rather than the last loop tick.
+      if (lat_anchor.usable())
         sin.video_lat = lat_win.flush();
       // Ladder controller snapshot: absent in static-pin mode, where the
       // controller exists but is never ticked (see VrxController::ctl()).

@@ -2,6 +2,7 @@
 #define MABUR_PLAYER_LAT_TRACKER_H_
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -37,7 +38,31 @@ class LatTracker {
   void on_drop(uint32_t pts_us);  // displaced/flushed: forget, count
   void flush_all();               // discont/flush points
 
-  // 1 Hz consumption: aggregates + clears the completed-frame window.
+  // One completed frame, as frame.log records it: the AU meta copied at
+  // submit (join key pts, plus what au.log also carries so a row reads on
+  // its own), every absolute stamp of the chain (mono µs) and the segment
+  // tuple. t_submit precedes t_complete for a streamed frame (slices fed
+  // as they arrive), so dec = t_decoded - t_complete can be split into the
+  // ring-to-decoder hand-off and the decoder's own time.
+  struct FrameRow {
+    uint32_t pts_us = 0;
+    uint64_t frame_id64 = 0;
+    uint8_t sid = 0;
+    uint32_t len = 0;
+    uint8_t flags = 0;
+    uint8_t nslices = 0;
+    uint64_t t_submit_us = 0;
+    uint64_t t_complete_us = 0;
+    uint64_t t_decoded_us = 0;
+    uint64_t t_release_us = 0;
+    uint64_t t_flip_us = 0;
+    bool exact = false;  // the flip stamp came from a real vblank event
+    uint32_t seg[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+  };
+
+  // 1 Hz consumption: aggregates + clears the completed-frame window. The
+  // window's frames leave as `rows`, the same set the percentiles rank, so
+  // frame.log and the lat: line always describe the same frames.
   struct Line {
     int n = 0;  // per-seg p50/p99 µs: enc,dq,air,fec,dec,reg,dsp,e2e
     uint32_t p50[8] = {0, 0, 0, 0, 0, 0, 0, 0};
@@ -45,6 +70,7 @@ class LatTracker {
     double chk_ms = 0.0;   // mean of (t_flip - map(pts64)) - Σsegs
     bool anchor_ok = false;
     bool dsp_exact = false;
+    std::vector<FrameRow> rows;
   };
   Line flush_line();
 
@@ -85,6 +111,12 @@ class LatTracker {
     bool has_decoded = false;
     bool has_present = false;
     uint32_t seg[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    // AU meta carried through to the FrameRow (not used by the chain).
+    uint64_t frame_id64 = 0;
+    uint32_t len = 0;
+    uint8_t sid = 0;
+    uint8_t flags = 0;
+    uint8_t nslices = 0;
   };
 
   int find_(uint32_t pts_us) const;
@@ -98,13 +130,19 @@ class LatTracker {
   maburgs::PtsAnchor anchor_;
 
   // Completed-frame window, since the last flush_line() (or construction).
-  std::vector<std::array<uint32_t, 8>> completed_;
+  std::vector<FrameRow> completed_;
   double chk_sum_us_ = 0.0;
   int chk_n_ = 0;
   bool dsp_exact_window_ = true;
 
   Breakdown p99_frame_, p50_frame_;
 };
+
+// frame.log's format marker and one row's payload (everything after the
+// writer's t_flip column), in the order docs/observability.md lists.
+// snprintf semantics: returns the length the full row needs.
+inline constexpr const char* kFrameLogHeader = "# framelog 2";
+int format_frame_row(const LatTracker::FrameRow& r, char* buf, size_t n);
 
 }  // namespace maburplay
 

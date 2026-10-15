@@ -331,6 +331,41 @@ TEST(lat_t_first_is_min_body_time_q_enc_latched_from_idx0) {
   CHECK(cap.evs[1].lat.t_complete_us == 0);  // ring writer stamps this, not us
 }
 
+TEST(lat_drain_and_push_latch_from_the_last_pushed_fragment) {
+  // The AU's GS tail is split by the stamps of the fragment that completes
+  // it. idx1 is pushed LAST but carries the SMALLER drain stamp (its batch
+  // left the queue earlier and waited behind other bodies): a per-field max
+  // would pair idx1's push with idx0's drain. Both must come from idx1.
+  Capture cap;
+  FrameStream fs({50, 8}, cap.cbs());
+  mabur::Fragmenter frag;
+  std::vector<uint8_t> pay(200, 0x55);
+  auto frags = frag_frame(frag, 0, pay);
+  REQUIRE(frags.size() == 2);
+  FragArrival a0; a0.body_mono_us = 1000; a0.drain_mono_us = 1600; a0.push_mono_us = 1700;
+  FragArrival a1; a1.body_mono_us = 1100; a1.drain_mono_us = 1500; a1.push_mono_us = 1900;
+  fs.push_fragment(1, frags[0].data(), frags[0].size(), 10, a0);
+  fs.push_fragment(1, frags[1].data(), frags[1].size(), 11, a1);
+  REQUIRE(cap.evs.size() == 2);
+  CHECK(cap.evs[1].lat.t_push_us == 1900);
+  CHECK(cap.evs[1].lat.t_drain_us == 1500);   // idx1's, not max(1600, 1500)
+  CHECK(cap.evs[1].lat.t_last_arr_us == 1100);
+}
+
+TEST(lat_unknown_push_stamp_never_latches) {
+  // Callers without core-thread stamps (tests, the dry-run replay) leave
+  // both 0; the AU must report 0, not a stray drain value.
+  Capture cap;
+  FrameStream fs({50, 8}, cap.cbs());
+  mabur::Fragmenter frag;
+  auto frags = frag_frame(frag, 0, std::vector<uint8_t>(200, 0x55));
+  FragArrival a; a.body_mono_us = 1000; a.drain_mono_us = 1500;  // push unknown
+  for (auto& p : frags) fs.push_fragment(1, p.data(), p.size(), 10, a);
+  REQUIRE(cap.evs.size() == 2);
+  CHECK(cap.evs[1].lat.t_push_us == 0);
+  CHECK(cap.evs[1].lat.t_drain_us == 0);
+}
+
 TEST(lat_truncated_finish_still_carries_latched_values) {
   // Same shape as gap_timeout_truncates_prefix: fragment 2 of a 4+-fragment
   // frame never arrives, so the gap timeout force-finishes it truncated —
@@ -434,14 +469,14 @@ TEST(tail_view_hdr_retx_latches_through_end_frame) {
 namespace {
 // FrameHdr + AU, split into fragments of 324-byte payload like production.
 std::vector<std::vector<uint8_t>> frag_au(uint16_t frame_id, const std::vector<uint8_t>& au,
-                                          uint8_t slice_rows, uint16_t fseq, uint8_t flags = 0) {
+                                          uint8_t slice_rows, uint16_t fseq, uint8_t flags = 0,
+                                          size_t F = 324) {
   std::vector<uint8_t> unit(mabur::framewire::kFrameHdrLen + au.size());
   FrameHdr h; h.frame_id = frame_id; h.slice_rows = slice_rows; h.pts_us = 16667u * frame_id;
   h.flags = flags;
   mabur::framewire::pack_frame_hdr(h, unit.data());
   std::memcpy(unit.data() + 8, au.data(), au.size());
   std::vector<std::vector<uint8_t>> out;
-  const size_t F = 324;
   const uint16_t count = static_cast<uint16_t>((unit.size() + F - 1) / F);
   for (uint16_t i = 0; i < count; ++i) {
     std::vector<uint8_t> p = {static_cast<uint8_t>(fseq), static_cast<uint8_t>(fseq >> 8),
@@ -471,6 +506,43 @@ TEST(salvage_rebuilds_a_holed_split_au) {
   CHECK(fs.slice_salvaged() == 1);
   CHECK(fs.slices_filled() == 1);
   CHECK(fs.frames_truncated() == 1);   // still a truncation; salvaged is a subset
+}
+
+TEST(params_split_across_small_fragments_still_arm_salvage) {
+  // 40-byte fragments cut the VPS/SPS/PPS of the refresh start across
+  // several chunks: feed_params must keep appending until a VCL NAL starts,
+  // or it hands the tracker a truncated SPS and salvage never arms.
+  const auto aus = mtest::load_slice_fixture();
+  Capture cap;
+  FrameStream fs({50, 8}, cap.cbs());
+  for (auto& p : frag_au(0, aus[3], 0, 0, 0, 40)) fs.push_fragment(0, p.data(), p.size(), 1);
+  auto frags = frag_au(1, aus[5], 5, 1);
+  frags.erase(frags.begin() + 20);
+  for (auto& p : frags) fs.push_fragment(0, p.data(), p.size(), 2);
+  fs.poll(100);
+  REQUIRE(cap.evs.size() == 4);
+  CHECK(cap.evs[3].lat.slice.salvaged);
+}
+
+TEST(params_after_the_first_slice_are_never_read) {
+  // feed_params reads only the leading parameter sets, never the slice data
+  // behind them. Pin it with a corrupt SPS appended AFTER the refresh
+  // start's slice: a whole-AU scan would parse it, fail, and leave the
+  // tracker unusable (salvage would fall back to kSliceFbNoParams).
+  const auto aus = mtest::load_slice_fixture();
+  std::vector<uint8_t> refresh = aus[3];
+  const uint8_t bad_sps[] = {0, 0, 0, 1, 0x42, 0x01, 0xff, 0xff, 0xff, 0xff};
+  refresh.insert(refresh.end(), std::begin(bad_sps), std::end(bad_sps));
+  Capture cap;
+  FrameStream fs({50, 8}, cap.cbs());
+  for (auto& p : frag_au(0, refresh, 0, 0)) fs.push_fragment(0, p.data(), p.size(), 1);
+  auto frags = frag_au(1, aus[5], 5, 1);
+  frags.erase(frags.begin() + 20);
+  for (auto& p : frags) fs.push_fragment(0, p.data(), p.size(), 2);
+  fs.poll(100);
+  REQUIRE(cap.evs.size() == 4);
+  CHECK(cap.evs[3].lat.slice.salvaged);
+  CHECK(fs.slice_fallback(kSliceFbNoParams) == 0);
 }
 
 TEST(late_fill_before_finish_yields_identical_complete_au) {   // Review Focus 4

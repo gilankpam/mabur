@@ -89,6 +89,55 @@ TEST(burst_loss_within_budget_recovered) {
   CHECK(d.syms_recovered() == 4);
 }
 
+static int count_repairs(const std::vector<std::vector<uint8_t>>& envs) {
+  int n = 0;
+  for (const auto& env : envs) {
+    sw::SwHeader h;
+    if (sw::parse_header(env.data(), env.size(), &h) && h.repair) ++n;
+  }
+  return n;
+}
+
+TEST(clean_stream_skips_every_repair) {
+  // Every repair arrives with its whole window already known: it can solve
+  // nothing, so it is skipped before any row is built (on the GS that work
+  // was ~35 us per repair, all of it cancelling to zero).
+  SwConfig cfg{64, 8, 1.0};
+  auto envs = encode_stream(cfg, 20, nullptr);
+  SwDecoder d(cfg);
+  for (auto& env : envs) d.add_symbol(env.data(), env.size(), 1000);
+  CHECK(count_repairs(envs) > 0);
+  CHECK(d.repairs_skipped() == static_cast<uint64_t>(count_repairs(envs)));
+  CHECK(d.rows_in_flight() == 0);
+}
+
+TEST(second_card_copy_of_a_useful_repair_is_skipped) {
+  // A repair that covers a lost source is used once; its second-card copy
+  // is the same equation and is skipped even though the loss it covers may
+  // already be solved by the first copy or still be open.
+  SwConfig cfg{64, 8, 1.0};
+  std::vector<std::vector<uint8_t>> pkts;
+  auto envs = encode_stream(cfg, 10, &pkts);
+  SwDecoder d(cfg);
+  std::vector<std::vector<uint8_t>> got;
+  int useful = 0;
+  for (auto& env : envs) {
+    sw::SwHeader h;
+    REQUIRE(sw::parse_header(env.data(), env.size(), &h));
+    if (!h.repair && h.seq == 2) continue;  // lost on both cards
+    const uint64_t before = d.repairs_skipped();
+    for (auto& p : d.add_symbol(env.data(), env.size(), 1000)) got.push_back(std::move(p));
+    if (h.repair && d.repairs_skipped() == before) {
+      ++useful;
+      for (auto& p : d.add_symbol(env.data(), env.size(), 1000)) got.push_back(std::move(p));
+      CHECK(d.repairs_skipped() == before + 1);  // the copy
+    }
+  }
+  CHECK(useful == 1);  // exactly one repair saw seq 2 unknown
+  CHECK(to_set(got) == to_set(pkts));
+  CHECK(d.syms_recovered() == 1);
+}
+
 TEST(duplicate_sources_and_repairs_idempotent) {
   SwConfig cfg{64, 8, 1.0};
   std::vector<std::vector<uint8_t>> pkts;

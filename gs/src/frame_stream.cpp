@@ -2,6 +2,8 @@
 
 #include <cstdio>
 
+#include "mabur/hevc_params.h"
+
 namespace maburgs {
 
 void FrameStream::push_fragment(uint8_t sid, const uint8_t* pkt, size_t len,
@@ -48,6 +50,12 @@ void FrameStream::push_fragment(uint8_t sid, const uint8_t* pkt, size_t len,
     s.lat.t_first_us = arr.body_mono_us;
   if (arr.body_mono_us > s.lat.t_last_arr_us)
     s.lat.t_last_arr_us = arr.body_mono_us;
+  // The AU completes on its last-pushed fragment: latch that fragment's
+  // drain and push stamps together, so both describe the same body.
+  if (arr.push_mono_us && arr.push_mono_us >= s.lat.t_push_us) {
+    s.lat.t_push_us = arr.push_mono_us;
+    s.lat.t_drain_us = arr.drain_mono_us;
+  }
   if (idx == 0 && !s.have_hdr) {
     auto h = mabur::framewire::parse_frame_hdr(s.chunks[0].data(), s.chunks[0].size());
     if (!h) { ++bad_frags_; slots_.erase(key); return; }
@@ -190,7 +198,11 @@ void FrameStream::finish(Slot& s, bool complete) {
 }
 
 // A complete AU that opens with a parameter set (refresh start, IDR) feeds
-// the slice-salvage tracker: one copy per such AU, 2 Hz at GOP 0.5 s.
+// the slice-salvage tracker, 2 Hz at GOP 0.5 s. Only the leading parameter
+// sets are copied: chunks are appended until a VCL NAL has started, so
+// every VPS/SPS/PPS before it is whole, and the slice data (tens of kB)
+// is never copied or scanned. That runs inside the AU's publish tail, and
+// a whole-AU copy plus NAL scan cost ~0.4 ms per refresh frame on the GS.
 void FrameStream::feed_params(const Slot& s) {
   const auto c0 = s.chunks.find(0);
   if (c0 == s.chunks.end()) return;
@@ -202,13 +214,18 @@ void FrameStream::feed_params(const Slot& s) {
   else return;
   const uint8_t type = static_cast<uint8_t>((b[p] >> 1) & 0x3F);
   if (type < 32 || type > 34) return;
-  std::vector<uint8_t> au(b.begin() + static_cast<long>(h), b.end());
-  for (uint16_t i = 1; i < s.count; ++i) {
+  std::vector<uint8_t> head(b.begin() + static_cast<long>(h), b.end());
+  const auto vcl_started = [&head] {
+    for (const mabur::NalView& v : mabur::split_nals(head.data(), head.size()))
+      if (v.type < 32) return true;
+    return false;
+  };
+  for (uint16_t i = 1; i < s.count && !vcl_started(); ++i) {
     const auto it = s.chunks.find(i);
     if (it == s.chunks.end()) return;
-    au.insert(au.end(), it->second.begin(), it->second.end());
+    head.insert(head.end(), it->second.begin(), it->second.end());
   }
-  params_.feed(au.data(), au.size());
+  params_.feed(head.data(), head.size());
 }
 
 void FrameStream::poll(uint64_t now_ms) {

@@ -230,8 +230,8 @@ clock are what break it.
    Record: `docs/findings/2026-09-05-probe-blanking-fix.md` §6.
 2. **Open-loop airtime budget.** Nothing feeds measured duty back into
    `airtime_budget`. A closed loop exists only in pieces: the drone's air
-   clock (`au.log` `air_ms`), GS `link.air_pct`, and the `au_tail` span
-   gauge. One lever is to measure `burst/T` on the drone, which knows
+   clock (`au.log` `air_ms`), GS `link.air_pct`, and the per-AU arrival
+   span in `au.log` (`t_last − t_first`). One lever is to measure `burst/T` on the drone, which knows
    every body's push→pop time, and trim the command. The other is to lower
    the config budget, at a bitrate cost.
 3. **The NACK uplink is unslotted.** T_NACK goes out mid-burst by design,

@@ -76,7 +76,7 @@ Bench record: `docs/findings/2026-10-10-slice-salvage.md`.
 
 - Sideport `link.video.slice_salvaged / slices_kept / slices_filled /
   slices_after_hole / slice_fallback{...}`; maburtop `salv`; flightreport
-  SLICE SALVAGE; `au.log` aulog 5 (+ `slices kept filled after_hole`);
+  SLICE SALVAGE; `au.log` columns `slices kept filled after_hole` (since aulog 5);
   ausniff `salvaged`.
 - Web GS STATS carries `salvaged` (web stat `aus_salvaged` → JSON key
   `salvaged`): the count of AUs the core rebuilt by slice salvage. The

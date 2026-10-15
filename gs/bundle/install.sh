@@ -2,6 +2,9 @@
 # Build + deploy maburgs to an OpenIPC SBC GS (BusyBox init): binary + init
 # script + config, then restart the service.
 # Usage: gs/bundle/install.sh root@<gs-ip> [path/to/maburgs]
+# Without a binary argument it builds, then picks the glibc build for the
+# board it finds: out/arm64/maburgs on the Radxa ZERO 3, out/arm64/maburgs-opi
+# on the Orange Pi Zero 2W (out/arm64/maburgs-static is the musl rollback).
 #
 # This targets the BusyBox/init.d GS image (service = /etc/init.d/S96maburgs).
 # A systemd Radxa uses gs/bundle/maburgs.service instead; that unit file is
@@ -16,7 +19,19 @@ if [ $# -lt 2 ]; then
 fi
 
 HOST=${1:?usage: install.sh root@<gs-ip> [binary]}
-BIN=${2:-out/arm64/maburgs}
+if [ $# -ge 2 ]; then
+  BIN=$2
+else
+  # The glibc builds are per board (each links that image's own sysroot), so
+  # the board decides which one ships.
+  MODEL=$(ssh "$HOST" 'tr -d "\0" < /proc/device-tree/model' || true)
+  case "$MODEL" in
+    *OrangePi*) BIN=out/arm64/maburgs-opi ;;
+    *Radxa*) BIN=out/arm64/maburgs ;;
+    *) echo "error: unknown GS board '$MODEL' -- pass the binary as the second argument" >&2
+       exit 1 ;;
+  esac
+fi
 [ -f "$BIN" ] || { echo "error: $BIN not built (run tools/build-arm64.sh)"; exit 1; }
 
 # Stop maburgs (keeping one rollback) before overwriting its binary: a running
@@ -28,6 +43,10 @@ ssh "$HOST" '
   # maburgs is not running, or no wrapper yet: never let that abort the
   # install before anything is copied.
   [ -x /etc/init.d/S96maburgs ] && /etc/init.d/S96maburgs stop
+  # stop returns before the daemon has exited; copying over a binary that is
+  # still running fails with "Text file busy".
+  for i in 1 2 3 4 5 6 7 8 9 10; do pidof maburgs >/dev/null || break; sleep 1; done
+  if pidof maburgs >/dev/null; then echo "error: maburgs did not exit" >&2; exit 1; fi
   true
 '
 

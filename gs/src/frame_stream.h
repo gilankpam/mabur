@@ -24,6 +24,12 @@ struct FragArrival {
   uint32_t sw_seq = 0;        // wire seq of the symbol this fragment came from
   bool have_sw_seq = false;   // false => sw_seq unknown (tests, pre-Task-3 feed)
   bool retx = false;          // this fragment's body was a NACK retransmit
+  // Core-thread stamps (mono µs, 0 = unknown): when the batch holding the
+  // completing body was drained off the RX queue, and when this fragment
+  // reached push_fragment (after FEC). They split the GS tail of an AU into
+  // queue wait, batch + FEC work, and FrameStream emit.
+  uint64_t drain_mono_us = 0;
+  uint64_t push_mono_us = 0;
 };
 
 // Newest (highest id64) slot's tail state for sid, for the NACK tail

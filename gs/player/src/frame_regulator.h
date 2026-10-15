@@ -3,6 +3,7 @@
 
 #include <cstdint>
 
+#include "lateness_window.h"
 #include "pts_anchor.h"
 #include "vblank_estimator.h"
 #include "video_backend.h"
@@ -50,11 +51,13 @@ namespace maburplay {
 class FrameRegulator {
  public:
   FrameRegulator(int regulate_ms, bool vsync_lock = false,
-                 int vsync_lead_ms = 3, int chain_budget = 0)
+                 int vsync_lead_ms = 3, int chain_budget = 0,
+                 int sched_cap_ms = 0)
       : d_us_(static_cast<int64_t>(regulate_ms) * 1000),
         vsync_lock_(vsync_lock),
         lead_us_(static_cast<uint64_t>(vsync_lead_ms) * 1000),
-        chain_budget_(static_cast<uint64_t>(chain_budget)) {}
+        chain_budget_(static_cast<uint64_t>(chain_budget)),
+        sched_cap_us_(static_cast<int64_t>(sched_cap_ms) * 1000) {}
 
   bool enabled() const { return d_us_ > 0; }
 
@@ -116,6 +119,19 @@ class FrameRegulator {
   // drop re-aligns the stream. 0 = unbounded. chain_cuts counts those.
   uint64_t chain_cuts() const { return chain_cuts_; }
   uint64_t fallback_frames() const { return fallback_frames_; }
+  // Capture-time scheduling (display.sched_cap_ms > 0): the AU with this
+  // pts was salvaged or truncated (loss), so its delivery time says nothing
+  // about clean-link jitter and stays out of the lateness window. Call
+  // before the frame is offered (the submit note precedes its decode).
+  void note_incomplete(uint32_t pts_us) {
+    incomplete_[incomplete_head_] = pts_us;
+    incomplete_head_ = (incomplete_head_ + 1) % kIncomplete;
+  }
+  // Current allowance (ms): how late past the fast path a frame may be
+  // and still keep its capture-time slot. 0 when the mode is off.
+  double allowance_ms() const { return static_cast<double>(allowance_us_) / 1000.0; }
+  // Frames that missed their capture-time slot and were placed by arrival.
+  uint64_t late_slot_count() const { return late_slot_; }
   bool servo_locked() const { return servo_now_; }
 
   // Chain-break heal (hw): a single missed latch puts the
@@ -146,11 +162,21 @@ class FrameRegulator {
     uint64_t target_v = 0;  // 0 = untargeted (fallback rule)
   };
   void displace(int idx, Displaced* out);
+  // Capture-time placement. True when the frame got its capture slot
+  // (release/target filled in); false sends it down the arrival path.
+  bool place_by_capture(uint64_t pts64, uint32_t pts32, uint64_t mono_us,
+                        uint64_t* release, uint64_t* target_v, Displaced* out);
+  bool was_incomplete(uint32_t pts_us) const {
+    for (uint32_t p : incomplete_) if (p == pts_us) return true;
+    return false;
+  }
+  static constexpr int kIncomplete = 8;
 
   const int64_t d_us_;
   const bool vsync_lock_;
   const uint64_t lead_us_;
   const uint64_t chain_budget_;
+  const int64_t sched_cap_us_;
 
   maburgs::PtsAnchor anchor_;
   VblankEstimator est_;
@@ -171,6 +197,12 @@ class FrameRegulator {
   uint64_t chain_cuts_ = 0;
   uint64_t heals_ = 0;
   uint64_t fallback_frames_ = 0;
+
+  LatenessWindow win_;
+  int64_t allowance_us_ = 0;
+  uint64_t late_slot_ = 0;
+  uint32_t incomplete_[kIncomplete] = {1, 1, 1, 1, 1, 1, 1, 1};  // odd: no real pts match at start
+  int incomplete_head_ = 0;
 };
 
 }  // namespace maburplay

@@ -31,6 +31,9 @@ maburgs::AuRecordMeta meta() {
   m.flags = 0x81;         // kFlagIdr | kRecFlagComplete
   m.t_first_us = 900000;
   m.t_complete_us = 912000;
+  m.t_last_arr_us = 909500;
+  m.t_drain_us = 910100;
+  m.t_push_us = 910400;
   m.enc_us = 7000;
   m.drone_q_ms = 3;
   m.drone_air_ms = 21;
@@ -49,9 +52,9 @@ TEST(header_and_row_bytes) {
   au.row(555000, meta());
   w.flush_now();
   const std::string text = slurp(dir + "/au.log");
-  CHECK(text.rfind("# aulog 5\n", 0) == 0);
+  CHECK(text.rfind("# aulog 6\n", 0) == 0);
   CHECK(text.find(
-      "\n555000 123456 1 70000 4321 0x81 32 900000 912000 7000 3 21 0 0 0 0\n") !=
+      "\n555000 123456 1 70000 4321 0x81 32 900000 912000 7000 3 21 0 0 0 0 909500 910100 910400\n") !=
       std::string::npos);
 }
 
@@ -158,7 +161,7 @@ TEST(salvage_columns) {
   m.slice.salvaged = true; m.slice.slices = 4; m.slice.kept = 3; m.slice.filled = 1; m.slice.kept_after_hole = 2;
   au.row(1, m);
   w.flush_now();
-  CHECK(slurp(dir + "/au.log").find(" 0x40 -1 900000 912000 7000 3 21 4 3 1 2\n") != std::string::npos);
+  CHECK(slurp(dir + "/au.log").find(" 0x40 -1 900000 912000 7000 3 21 4 3 1 2 909500 910100 910400\n") != std::string::npos);
 }
 
 MTEST_MAIN

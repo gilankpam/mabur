@@ -47,9 +47,10 @@
 #include "burn_recorder.h"  // dvr.mode "burned": re-encode with the OSD burnt in
 #include "drm_presenter.h"  // KMS atomic NV12 presenter, the default display path
 #include "frame_regulator.h"  // phase-aware pts+D display release
+#include "release_wait.h"  // the pre-release wait that keeps collecting decoded frames
 #include "gs_draw.h"         // set_colour_inverse() for the GS overlay pre-invert
 #include "lat_tracker.h"    // tail latency segments + 1 Hz lat line
-#include "lat_log.h"        // persist 1 Hz lat line to <dvr>/log/lat-NNNN.log
+#include "lat_log.h"        // lat.log (1 Hz lat: line) and frame.log (per frame) in the session dir
 #include "osd_palette.h"    // build_palette() for the encoder-side OSD
 #endif
 #ifdef MABUR_PLAYER_MPP
@@ -643,8 +644,15 @@ int main(int argc, char** argv) {
   maburplay::FrameRegulator regulator(cfg.display.regulate_ms,
                                       cfg.display.vsync_lock,
                                       cfg.display.vsync_lead_ms,
-                                      cfg.display.chain_budget);
+                                      cfg.display.chain_budget,
+                                      cfg.display.sched_cap_ms);
   maburplay::LatLog lat_log;
+  // Per-frame rows of the same window as the lat: line (docs/observability.md
+  // "frame.log"), written in the same idle-gated 1 Hz burst so a stalled
+  // DVR write can never sit on the flip or decode path. Batched: the
+  // burst's rows leave in one write at flush(), not one syscall per row.
+  maburplay::LatLog frame_log(maburplay::kSessionMarker, "frame.log",
+                              maburplay::kFrameLogHeader, /*batched=*/true);
   // Installs the display stage: the CUBIC_LUT (always a table on a LUT
   // CRTC, identity when off) or the video-plane CTM, and pre-inverts both
   // overlays only for the LUT. Runs once per presenter acquire, BEFORE
@@ -781,7 +789,8 @@ int main(int argc, char** argv) {
                    "regulator: held=%llu late=%llu replaced=%llu disconts=%llu "
                    "hold_ema=%.2fms present_jitter=%.2fms vsync=%s skips=%llu "
                    "fallback=%llu pend=%llu heals=%llu pdrop=%llu "
-                   "chained=%llu chain=%llu chain_max=%llu chains=%llu cuts=%llu\n",
+                   "chained=%llu chain=%llu chain_max=%llu chains=%llu cuts=%llu "
+                   "alw=%.1fms lslot=%llu\n",
                    static_cast<unsigned long long>(regulator.held_count()),
                    static_cast<unsigned long long>(regulator.late_count()),
                    static_cast<unsigned long long>(regulator.replaced_count()),
@@ -798,7 +807,9 @@ int main(int argc, char** argv) {
                    static_cast<unsigned long long>(regulator.chain_run()),
                    static_cast<unsigned long long>(regulator.chain_max()),
                    static_cast<unsigned long long>(regulator.chains_count()),
-                   static_cast<unsigned long long>(regulator.chain_cuts()));
+                   static_cast<unsigned long long>(regulator.chain_cuts()),
+                   regulator.allowance_ms(),
+                   static_cast<unsigned long long>(regulator.late_slot_count()));
     } else {
       std::fprintf(stderr, "regulator: off present_jitter=%.2fms\n",
                    present_jitter_ema_ms);
@@ -1217,6 +1228,10 @@ int main(int argc, char** argv) {
     if (n.kind == maburplay::FeedNote::Kind::kSubmit) {
 #ifdef MABUR_PLAYER_HW
       lat.on_submit(n.meta, n.t_us);
+      // A salvaged (incomplete) AU is a loss event: keep its delivery time
+      // out of the capture-time scheduler's lateness window.
+      if (!(n.meta.flags & maburgs::kRecFlagComplete))
+        regulator.note_incomplete(n.meta.pts_us);
 #endif
       return;
     }
@@ -1560,8 +1575,17 @@ int main(int argc, char** argv) {
       const uint64_t nr1 = regulator.next_release_us();
       if (nr1 != 0) {
         const uint64_t now1 = mono_us();
+        // Not a plain sleep: the decoder's output is collected only by
+        // backend->poll(), so the wait keeps polling (release_wait.h) --
+        // a picture finishing here is offered to the regulator within one
+        // step instead of after the release and the commit.
         if (nr1 > now1 && nr1 - now1 <= 2'500)
-          std::this_thread::sleep_for(std::chrono::microseconds(nr1 - now1));
+          maburplay::wait_until_polling(
+              nr1, 500, mono_us,
+              [](uint64_t us) {
+                std::this_thread::sleep_for(std::chrono::microseconds(us));
+              },
+              [&] { backend->poll(); });
         presenter->poll_events();
         maburplay::DmaFrame due;
         while (regulator.release_due(mono_us(), &due)) present_now(due);
@@ -1909,6 +1933,13 @@ int main(int argc, char** argv) {
             L.anchor_ok ? "ok" : "warm");
         std::fprintf(stderr, "%s\n", lat_buf);
         lat_log.write(mono_us(), lat_buf);
+        // t_flip is the row's own time column; the rest is the chain.
+        for (const auto& r : L.rows) {
+          char row[256];
+          maburplay::format_frame_row(r, row, sizeof(row));
+          frame_log.write(r.t_flip_us, row);
+        }
+        frame_log.flush();
       }
       // Same 1 Hz tick as the lat: line above, so the bench fallback-drill
       // gate ("fallback= climbs then stops after re-warm") has a periodic

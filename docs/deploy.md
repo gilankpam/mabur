@@ -49,7 +49,13 @@ script, then check the target's config before touching it:
 Then they start the service. Neither migrates an existing config: a key
 change still has to be made by hand. `gs/bundle/install.sh` also keeps
 `/usr/local/bin/maburgs.prev` and installs `tools/maburtop.py` and
-`gs/bundle/maburcal` to `/usr/bin`. There is no installer for `maburplay`
+`gs/bundle/maburcal` to `/usr/bin`. Without a binary argument it reads the
+board's `/proc/device-tree/model` and ships that board's glibc build
+(`out/arm64/maburgs` on a Radxa, `out/arm64/maburgs-opi` on an Orange Pi),
+and it waits for maburgs to exit after `S96maburgs stop`: stop returns
+before the daemon is gone, and copying over a running binary fails with
+"Text file busy". A hand swap needs the same wait
+(`while pidof maburgs; do sleep 1; done`). There is no installer for `maburplay`
 (see "Device facts").
 
 **Restarting the drone daemon over ssh: use `setsid`.** `S00mabur`'s
@@ -322,6 +328,14 @@ prints it, only the fingerprint).
   channel is `/etc/maburgs.channel`.
 - Never load the 8812eu kernel module on the GS cards; `S96maburgs`
   unloads it on start.
+- `maburgs` is glibc-DYNAMIC, built per board against that image's
+  Buildroot sysroot (`tools/build-arm64.sh` stage 6 → `out/arm64/maburgs`,
+  stage 7 → `out/arm64/maburgs-opi`). NEEDED: `libusb-1.0.so.0` plus
+  libstdc++/libm/libgcc_s/libc and the loader, all on both images. The
+  image repo's own package builds it the same way. `out/arm64/maburgs-static`
+  is the musl-static build of the same daemon, a rollback that runs on any
+  board but costs ~2 ms of GS latency per frame
+  (`docs/findings/2026-10-15-gs-musl-latency.md`).
 - **`/etc/maburplay.toml` is a symlink to `/config/maburplay.toml`** (the
   vfat partition). Back up and edit the **target**, not the link: BusyBox
   `sed -i` on the symlink replaces it with a regular overlay file, after
@@ -342,7 +356,9 @@ prints it, only the fingerprint).
   without the GPU stage, for an image that lacks Mesa.
 
 **Orange Pi Zero 2W GS** (`docs/opi-zero2w.md`). Same layout and init
-scripts as above; the player binary is `out/arm64/maburplay-opi`
+scripts as above; the daemon is `out/arm64/maburgs-opi` (installed as
+`/usr/local/bin/maburgs`, `gs/bundle/install.sh` picks it by model) and
+the player binary is `out/arm64/maburplay-opi`
 (installed as `/usr/local/bin/maburplay`), glibc-dynamic against the OPi
 image's libav: NEEDED `libavcodec.so.61`, `libavutil`, `libdrm.so.2`,
 libstdc++. Its config must say `backend = "v4l2req"`, `dvr.mode = "raw"`

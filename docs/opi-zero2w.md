@@ -1,7 +1,8 @@
 # Orange Pi Zero 2W ground station (Allwinner H618)
 
 The Orange Pi Zero 2W runs the same GS as the Radxa ZERO 3 — `maburgs`
-(musl-static, unchanged) and `maburplay` — with a different decoder:
+(same source, its own glibc build `out/arm64/maburgs-opi` against the OPi
+sysroot) and `maburplay` — with a different decoder:
 Cedrus, the H618's V4L2 stateless (request API) HEVC decoder, driven
 through libav's `v4l2request` hwaccel.
 

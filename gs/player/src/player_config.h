@@ -98,10 +98,22 @@ struct DisplayCfg {
   int vsync_lead_ms = 6;
   // Frames a sequential-slot chain may run before the regulator cuts it
   // with one dropped frame (frame_regulator.h chain_cuts). 0 = unbounded,
-  // no chain cut at all. Default 3 (operator choice after the bench A/B in
-  // docs/findings/2026-09-02-regulator-chain-budget.md: e2e p50 -3.9 ms for
-  // 1.44 drops/s; 6 was -2.4 ms for 0.56/s; p99 unchanged at any value).
-  int chain_budget = 3;
+  // no chain cut at all: the default, and the bundle's. On a clean link the
+  // refresh-start frame misses its release in about half of each
+  // sensor/panel beat cycle, and a budget then turns every miss into a
+  // repeat plus a drop; with no cut the stream runs one refresh late
+  // through that phase and nothing is dropped (+12.5 ms e2e p50, judder
+  // seconds 73 % -> 14 %; docs/findings/2026-10-15-regulator-chain-cuts.md).
+  int chain_budget = 0;
+  // Capture-time scheduling (frame_regulator.h place_by_capture), servo
+  // mode only: a frame's vblank follows its capture time plus an adaptive
+  // allowance (p99 - p1 of recent frame lateness + 1 ms), capped at this
+  // many ms, instead of following its arrival. Late-tail frames within the
+  // allowance keep their slot, so the clean-link repeat/skip judder in the
+  // phases where frames arrive near the latch goes away, at up to one extra
+  // refresh of latency in those phases. 0 = off (arrival-based servo),
+  // also the bundle's choice: at 16 it cost ~+10 ms median on the bench.
+  int sched_cap_ms = 0;
 };
 
 // GS-side reverse of the drone's ColorTrans sensor tuning (docs/colortrans.md).

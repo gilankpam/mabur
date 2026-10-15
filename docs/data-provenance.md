@@ -90,6 +90,12 @@ Chronological; each line names the section below that carries the detail.
   The same day the bar's text labels (`ch:`, `rssi:`, …) become icons and
   `res:1280x720` becomes `720p` — a display change only, at the same type
   size; the figures themselves are unchanged.
+- 2026-10-15 — `# aulog 6`: three GS stamp columns, `t_last t_drain
+  t_push` (19 columns); aulog ≤ 5 rows have none of them.
+- 2026-10-15 — `frame.log` appears as `# framelog 1`; the same day
+  `# framelog 2` prints its `flags` column in hex (`0x80`) as `au.log`
+  does. A `framelog 1` file carries the same byte in decimal (`128`); the
+  columns are otherwise identical. `int(x, 0)` reads both.
 
 ## 2026-09-23 — `link.pre_fec_loss` scale break, twice
 
@@ -1204,3 +1210,21 @@ closed records only. No recording format changes: `au.log` stays `aulog 5`
 (it is written from the writer's own record meta, not the ring bytes), and
 the ring itself is never recorded — an old ausniff against a new ring
 refuses on the version.
+
+## 2026-10-15 — `# aulog 6`: per-AU GS stamps
+
+`au.log` gains columns 17–19, `t_last t_drain t_push` (mono µs). `t_last`
+is the AU's last body arrival, the stamp the `maburgs au_tail:` stderr gauge
+averaged over 5 s windows (the gauge is removed the same day); `t_drain`/`t_push` are core-thread stamps of the AU's
+last-pushed fragment. Together they split each frame's
+`t_complete − t_first` into the arrival span and the GS tail's queue wait,
+batch + FEC work, and emit (`docs/observability.md`). Recordings up to
+`aulog 5` carry only the combined figure, so a per-frame split is possible
+from this date only. Every in-repo reader indexes the first columns
+positionally and ignores the extra ones.
+
+A bench session that a maburgs restart rejoined can hold rows of both
+widths under the file's original marker: the marker is written when the
+file is created, not when a newer binary appends. Key per-row on the
+column count, not the marker, when reading such a file.
+

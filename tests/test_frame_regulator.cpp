@@ -1,4 +1,8 @@
+#include <algorithm>
 #include <cstdint>
+#include <functional>
+#include <utility>
+#include <vector>
 
 #include "frame_regulator.h"
 #include "mtest.h"
@@ -183,6 +187,13 @@ constexpr uint64_t kLead = 3'000;   // vsync_lead_ms 3
 // Warm a servo regulator: 8 exact flips on the kT0 grid.
 void warm(FrameRegulator& reg) {
   for (int i = 0; i < 8; ++i) reg.on_flip(kT0 + i * kVb, true);
+}
+
+// Keeps a warmed regulator's servo live: every flip on the kT0 grid up to
+// t (the estimator goes stale after a few missed periods, and a stale one
+// never reaches capture-time placement). *next is the next flip's index.
+void flips_until(FrameRegulator& reg, uint64_t* next, uint64_t t) {
+  while (kT0 + *next * kVb <= t) reg.on_flip(kT0 + (*next)++ * kVb, true);
 }
 }  // namespace
 
@@ -817,4 +828,208 @@ TEST(chain_budget_zero_never_cuts) {
   CHECK(reg.chain_run() == 3);
   CHECK(reg.chain_cuts() == 0);
   CHECK(disp.n == 0);
+}
+
+// ---- capture-time scheduling (display.sched_cap_ms) ----
+//
+// What the operator sees is the frame on screen at each refresh, so these
+// tests model the presenter: a frame released at r latches at the first
+// flip >= r, the newest of several wins the flip, and the displayed index
+// sequence is scored for repeats (same frame shown twice) and skips
+// (indices jumped). Delivery = capture + 20 ms + jitter; capture runs at
+// the source period, the panel at 60.000 Hz.
+namespace {
+struct ScreenSim {
+  uint64_t offered = 0, repeats = 0, skips = 0, late_slot = 0, flips = 0;
+  uint64_t backwards = 0;          // a latched frame older than one already shown
+  std::vector<double> hitch_s;     // when each repeat/skip happened, s from start
+};
+
+ScreenSim run_screen_sim(int sched_cap_ms, double src_period_us, double seconds,
+                         const std::function<double(uint64_t)>& jitter_us) {
+  FrameRegulator reg(12, true, 3, 3, sched_cap_ms);
+  const double kPanel = 1e6 / 60.0;
+  reg.set_panel_period(kPanel);
+  FrameRegulator::Displaced disp;
+  DmaFrame out;
+  ScreenSim s;
+  double flip_t = static_cast<double>(kT0);
+  for (int i = 0; i < 8; ++i) {
+    reg.on_flip(static_cast<uint64_t>(flip_t), true);
+    flip_t += kPanel;
+  }
+  // Frames waiting to latch: (release time, index). Newest wins a flip.
+  std::vector<std::pair<double, int64_t>> pending;
+  int64_t shown = -1;
+  uint64_t idx = 0;
+  const double cap0 = flip_t + 3'000.0;
+  double prev_dec = 0.0;
+  auto dec_time = [&](uint64_t i) {
+    const double t = cap0 + i * src_period_us + 20'000.0 + jitter_us(i);
+    prev_dec = t > prev_dec + 300.0 ? t : prev_dec + 300.0;
+    return prev_dec;
+  };
+  double next_dec = dec_time(0);
+  const double t_end = static_cast<double>(kT0) + seconds * 1e6;
+  auto index_of = [](const DmaFrame& f) {
+    return static_cast<int64_t>(reinterpret_cast<uintptr_t>(f.opaque) >> 1);
+  };
+  while (flip_t < t_end) {
+    const double t = flip_t <= next_dec ? flip_t : next_dec;
+    while (reg.release_due(static_cast<uint64_t>(t), &out)) pending.push_back({t, index_of(out)});
+    if (flip_t <= next_dec) {
+      int64_t best = -1;
+      for (const auto& p : pending) if (p.first <= flip_t && p.second > best) best = p.second;
+      pending.erase(std::remove_if(pending.begin(), pending.end(),
+                                   [&](const auto& p) { return p.first <= flip_t; }),
+                    pending.end());
+      const double now_s = (flip_t - static_cast<double>(kT0)) / 1e6;
+      if (best >= 0 && shown >= 0) {
+        if (best > shown + 1) {
+          s.skips += static_cast<uint64_t>(best - shown - 1);
+          s.hitch_s.push_back(now_s);
+        } else if (best < shown) {
+          ++s.backwards;
+        }
+      } else if (best < 0 && shown >= 0) {
+        ++s.repeats;  // nothing new latched: the panel shows the old frame again
+        s.hitch_s.push_back(now_s);
+      }
+      if (best > shown) shown = best;
+      ++s.flips;
+      reg.on_flip(static_cast<uint64_t>(flip_t), true);
+      flip_t += kPanel;
+    } else {
+      DmaFrame f;
+      f.pts_us = static_cast<uint32_t>(idx * src_period_us);
+      f.opaque = reinterpret_cast<void*>(static_cast<uintptr_t>((idx << 1) | 1u));
+      if (reg.offer(f, static_cast<uint64_t>(next_dec), &disp))
+        pending.push_back({next_dec, static_cast<int64_t>(idx)});
+      ++s.offered;
+      ++idx;
+      next_dec = dec_time(idx);
+    }
+  }
+  s.late_slot = reg.late_slot_count();
+  return s;
+}
+
+// Clean-link delivery: 0-2 ms noise, the GOP-start frame (every 30th) 8 ms
+// late, and ~1 % of frames 6 ms late -- the shape measured on the bench.
+double clean_jitter(uint64_t i) {
+  uint64_t h = i * 2654435761u;
+  double j = static_cast<double>(h % 2000);
+  if (i % 30 == 0) j += 8'000.0;
+  else if ((h >> 13) % 100 == 0) j += 6'000.0;
+  return j;
+}
+}  // namespace
+
+TEST(capture_sched_hides_clean_link_jitter) {
+  // 59.99 fps vs 60 Hz: one beat every ~100 s, so 210 s covers two full
+  // sweeps of the arrival phase. Arrival-based servo turns the late tail
+  // into repeat+skip pairs for half of each sweep; capture-time slots
+  // absorb it, leaving only the beat's own repeats (one per wrap).
+  const ScreenSim arrival = run_screen_sim(0, 1e6 / 59.99, 210, clean_jitter);
+  const ScreenSim capture = run_screen_sim(16, 1e6 / 59.99, 210, clean_jitter);
+  // Two beat wraps give two repeats; the allowance settling as samples
+  // age out may move a slot once or twice. Everything else is gone.
+  CHECK(capture.repeats + capture.skips <= 8);
+  CHECK(capture.backwards == 0);
+  CHECK(arrival.skips + arrival.repeats > 50);  // the judder being fixed
+}
+
+TEST(capture_sched_loss_stall_hitches_stay_local) {
+  // Frame 1200 waits 40 ms for FEC repair, holding the frames behind it
+  // (in-order delivery). The screen must freeze across the stall and then
+  // be back on capture-time slots: every extra hitch within ~0.15 s of the
+  // stall, none later, nothing shown backwards.
+  auto jit = [](uint64_t i) { return clean_jitter(i) + (i == 1200 ? 40'000.0 : 0.0); };
+  const ScreenSim base = run_screen_sim(16, 1e6 / 59.99, 40, clean_jitter);
+  const ScreenSim loss = run_screen_sim(16, 1e6 / 59.99, 40, jit);
+  const double t_stall = 1200 * (1e6 / 59.99) / 1e6 + 8 * (1.0 / 60.0);
+  int extra_local = 0, extra_far = 0;
+  for (double t : loss.hitch_s) {
+    bool in_base = false;
+    for (double b : base.hitch_s) in_base = in_base || (b > t - 0.002 && b < t + 0.002);
+    if (in_base) continue;
+    if (t > t_stall - 0.05 && t < t_stall + 0.15) ++extra_local;
+    else ++extra_far;
+  }
+  CHECK(extra_local >= 1);   // the stall is visible...
+  CHECK(extra_local <= 6);   // ...as a freeze plus catch-up, bounded
+  CHECK(extra_far == 0);     // and nothing trails it
+  CHECK(loss.backwards == 0);
+}
+
+TEST(capture_sched_sustained_shift_beyond_cap_keeps_frames_flowing) {
+  // A slower rung: every frame from t=20 s on is 25 ms later (beyond the
+  // cap). Until the window's p1 catches up, every frame misses its capture
+  // slot and falls back to arrival-based placement -- frames keep flowing
+  // one per refresh rather than being dropped.
+  auto jit = [](uint64_t i) { return clean_jitter(i) + (i >= 1200 ? 25'000.0 : 0.0); };
+  const ScreenSim s = run_screen_sim(16, 1e6 / 59.99, 60, jit);
+  CHECK(s.late_slot > 0);         // the transition was seen as late
+  CHECK(s.skips <= 3);            // but nothing was mass-dropped
+  CHECK(s.repeats <= 6);
+}
+
+TEST(capture_sched_salvaged_frames_do_not_widen_allowance) {
+  // Salvaged frames (loss) are excluded from the lateness window: a burst
+  // of them must not push the allowance to the cap.
+  FrameRegulator reg(12, true, 3, 3, 16);
+  warm(reg);
+  FrameRegulator::Displaced disp;
+  DmaFrame out;
+  uint64_t next_flip = 8;
+  for (uint64_t i = 0; i < 300; ++i) {
+    const uint32_t pts = static_cast<uint32_t>(i * kFrame);
+    const bool salvaged = i % 50 == 0;
+    if (salvaged) reg.note_incomplete(pts);
+    const uint64_t t = kT0 + 8 * kVb + i * kFrame + (salvaged ? 30'000 : 0);
+    flips_until(reg, &next_flip, t);
+    reg.offer(frame(pts), t, &disp);
+    while (reg.release_due(t, &out)) {}
+  }
+  CHECK(reg.allowance_ms() < 3.0);
+}
+
+TEST(capture_sched_one_fast_frame_does_not_widen_allowance) {
+  // A single frame delivered 5 ms faster than any before it is one sample
+  // of the window -- below p1, so it moves nothing. It must not shift the
+  // frames after it either: lateness measured against the pts anchor
+  // jumps by 5 ms for every later frame (the anchor's floor snaps down to
+  // the fast one), and the window, still full of samples taken against
+  // the old floor, would read that as 5 ms of spread.
+  FrameRegulator reg(12, true, 3, 3, 16);
+  warm(reg);
+  FrameRegulator::Displaced disp;
+  DmaFrame out;
+  uint64_t next_flip = 8;
+  for (uint64_t i = 0; i < 400; ++i) {
+    const uint32_t pts = static_cast<uint32_t>(i * kFrame);
+    const uint64_t noise = (i * 7919) % 1000;
+    const uint64_t t = kT0 + 8 * kVb + 5'000 + i * kFrame + noise - (i == 300 ? 5'000 : 0);
+    flips_until(reg, &next_flip, t);
+    reg.offer(frame(pts), t, &disp);
+    while (reg.release_due(t, &out)) {}
+  }
+  CHECK(reg.allowance_ms() < 3.0);
+}
+
+TEST(capture_sched_never_shows_a_frame_backwards) {
+  // Rough link: bursts of 10-60 ms repair delays and a drifting late tail,
+  // so the allowance keeps moving and late frames keep falling back to the
+  // arrival path. However slots get assigned, the screen must never show a
+  // frame older than one it already showed.
+  auto rough = [](uint64_t i) {
+    uint64_t h = i * 2654435761u;
+    double j = static_cast<double>(h % 3000);
+    if ((i / 600) % 2 == 0 && i % 30 == 0) j += 12'000.0;  // tail comes and goes
+    if ((h >> 11) % 97 == 0) j += 10'000.0 + static_cast<double>((h >> 3) % 50'000);
+    return j;
+  };
+  const ScreenSim s = run_screen_sim(16, 1e6 / 59.99, 120, rough);
+  CHECK(s.late_slot > 0);  // the rough link really did push frames late
+  CHECK(s.backwards == 0);
 }

@@ -49,7 +49,9 @@ bias       = "pull-up"     # "pull-up" | "pull-down" | "none"
 regulate_ms   = 12         # fallback delay before showing a frame, used until refresh timing is learned
 vsync_lock    = true       # time frames to the screen refresh
 vsync_lead_ms = 6          # hand a frame to the display this long before the refresh
-chain_budget  = 3          # after this many frames shown back-to-back, drop one to cut latency; 0 = never
+chain_budget  = 0          # 0 = never drop a frame to cut a one-refresh-late run (smooth; the run ends on its own);
+                           # N = drop one after N such frames to regain the refresh (lower latency, visible drops)
+sched_cap_ms  = 0          # time frames by when they were captured, letting one up to this many ms late keep its slot: no judder from late frames, but ~+10 ms median latency at 16; 0 = time them by arrival
 
 # Undo the drone camera's colour tuning (the "colortrans" sensor file in the
 # drone's venc.sensor_bin) on the screen, the OSD and the recording.

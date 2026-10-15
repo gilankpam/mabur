@@ -81,6 +81,18 @@ class VblankEstimator {
     return {v, v - lead_us};
   }
 
+  // Earliest v = phase + n*period with v - lead >= t, for ANY integer n --
+  // unlike next_release(), a t before the last flip yields a vblank in the
+  // past. The capture-time scheduler needs that to tell a frame whose slot
+  // has already gone by from one whose slot is still ahead.
+  Release release_at_or_after(uint64_t t_us, uint64_t lead_us) const {
+    const double target = static_cast<double>(t_us) + static_cast<double>(lead_us);
+    const double n = std::ceil((target - static_cast<double>(phase_us_)) / period_us_);
+    const double v = static_cast<double>(phase_us_) + n * period_us_;
+    const uint64_t vu = v > 0 ? static_cast<uint64_t>(v) : 0;
+    return {vu, vu > lead_us ? vu - lead_us : 0};
+  }
+
   double period_us() const { return period_us_; }
   int exact_flips() const { return exact_flips_; }
 

@@ -1,7 +1,9 @@
 #include "lat_tracker.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
+#include <utility>
 
 namespace maburplay {
 
@@ -53,6 +55,11 @@ void LatTracker::on_submit(const maburgs::AuRecordMeta& m, uint64_t mono_us) {
   e.t_complete_us = m.t_complete_us;
   e.t_submit_us = mono_us;
   e.seq = next_seq_++;
+  e.frame_id64 = m.frame_id64;
+  e.len = m.len;
+  e.sid = m.sid;
+  e.flags = m.flags;
+  e.nslices = m.nslices;
 
   // Same gate as gs/src/main.cpp: a zero t_first_us is an unknown stamp,
   // not a real timestamp of zero -- feeding it to the anchor would warm
@@ -144,9 +151,21 @@ void LatTracker::on_flip(uint32_t pts_us, uint64_t flip_mono_us, bool exact) {
     ++chk_n_;
     dsp_exact_window_ = dsp_exact_window_ && exact;
 
-    std::array<uint32_t, 8> snap{};
-    for (int i = 0; i < 8; ++i) snap[static_cast<std::size_t>(i)] = e.seg[i];
-    completed_.push_back(snap);
+    FrameRow r;
+    r.pts_us = e.pts_us;
+    r.frame_id64 = e.frame_id64;
+    r.sid = e.sid;
+    r.len = e.len;
+    r.flags = e.flags;
+    r.nslices = e.nslices;
+    r.t_submit_us = e.t_submit_us;
+    r.t_complete_us = e.t_complete_us;
+    r.t_decoded_us = e.t_decoded_us;
+    r.t_release_us = e.t_release_us;
+    r.t_flip_us = flip_mono_us;
+    r.exact = exact;
+    for (int i = 0; i < 8; ++i) r.seg[i] = e.seg[i];
+    completed_.push_back(r);
   }
 
   invalidate_(idx);
@@ -180,7 +199,7 @@ LatTracker::Line LatTracker::flush_line() {
     for (int s = 0; s < 8; ++s) {
       std::vector<uint32_t> col(completed_.size());
       for (std::size_t i = 0; i < completed_.size(); ++i)
-        col[i] = completed_[i][static_cast<std::size_t>(s)];
+        col[i] = completed_[i].seg[s];
       L.p50[s] = percentile_(col, 50);
       L.p99[s] = percentile_(col, 99);
     }
@@ -192,14 +211,13 @@ LatTracker::Line LatTracker::flush_line() {
     // so the OSD's two rows stay comparable segment by segment.
     auto rank_frame = [&](int pct, Breakdown& out) {
       std::vector<uint32_t> e2es(completed_.size());
-      for (std::size_t i = 0; i < completed_.size(); ++i) e2es[i] = completed_[i][7];
+      for (std::size_t i = 0; i < completed_.size(); ++i) e2es[i] = completed_[i].seg[7];
       const uint32_t target = percentile_(e2es, pct);
       for (const auto& c : completed_) {
-        if (c[7] == target) {
+        if (c.seg[7] == target) {
           out.valid = true;
           for (int i = 0; i < 8; ++i)
-            out.ms[i] =
-                static_cast<uint32_t>((c[static_cast<std::size_t>(i)] + 500) / 1000);
+            out.ms[i] = static_cast<uint32_t>((c.seg[i] + 500) / 1000);
           return;
         }
       }
@@ -208,6 +226,7 @@ LatTracker::Line LatTracker::flush_line() {
     rank_frame(50, p50_frame_);
   }
 
+  L.rows = std::move(completed_);
   completed_.clear();
   chk_sum_us_ = 0.0;
   chk_n_ = 0;
@@ -217,5 +236,19 @@ LatTracker::Line LatTracker::flush_line() {
 
 LatTracker::Breakdown LatTracker::p99_frame() const { return p99_frame_; }
 LatTracker::Breakdown LatTracker::p50_frame() const { return p50_frame_; }
+
+int format_frame_row(const LatTracker::FrameRow& r, char* buf, size_t n) {
+  return std::snprintf(buf, n,
+      "%u %llu %u %u 0x%02x %u %llu %llu %llu %llu %u %u %u %u %u %u %u %u %u",
+      r.pts_us, static_cast<unsigned long long>(r.frame_id64),
+      static_cast<unsigned>(r.sid), r.len, static_cast<unsigned>(r.flags),
+      static_cast<unsigned>(r.nslices),
+      static_cast<unsigned long long>(r.t_submit_us),
+      static_cast<unsigned long long>(r.t_complete_us),
+      static_cast<unsigned long long>(r.t_decoded_us),
+      static_cast<unsigned long long>(r.t_release_us),
+      r.seg[0], r.seg[1], r.seg[2], r.seg[3], r.seg[4], r.seg[5],
+      r.seg[6], r.seg[7], r.exact ? 1u : 0u);
+}
 
 }  // namespace maburplay

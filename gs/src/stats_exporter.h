@@ -322,11 +322,10 @@ struct StatsInput {
   std::optional<mabur::rc::Telem> telem;
   uint64_t telem_rx_ms = 0;   // GS monotonic arrival stamp
 
-  // Head-segment latency aggregates (latency accounting): nullopt while the pts anchor isn't usable() yet, or while
-  // it's usable but due() said this poll() won't actually emit -- the core
-  // loop only pays LatWindow::flush()'s destructive read+clear on a poll
-  // that is about to emit (see main.cpp), so this is deliberately absent
-  // far more often than video_lat's would-be n==0 case suggests.
+  // Head-segment latency aggregates (latency accounting): nullopt while the
+  // pts anchor isn't usable() yet. The core loop builds a StatsInput only on
+  // a poll that due() says will emit, so LatWindow::flush()'s destructive
+  // read+clear always spans the whole interval.
   std::optional<LatWindow::Out> video_lat;
 };
 

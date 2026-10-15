@@ -1,6 +1,6 @@
 # Regulator one-vsync-late chains and the `display.chain_budget` A/B
 
-**Status:** chain_budget 3 shipped as the default (0 = unbounded). The regulator line's chain counters are documented in docs/observability.md ("Player stderr lines").
+**Status:** superseded — the bundle ships `chain_budget = 0` since the cut turned out to be most of the clean-link judder (`docs/findings/2026-10-15-regulator-chain-cuts.md`). The regulator line's chain counters are documented in docs/observability.md ("Player stderr lines").
 
 Extracted from docs/observability.md during the 2026-10-11 docs tidy.
 

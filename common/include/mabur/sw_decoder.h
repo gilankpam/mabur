@@ -142,6 +142,10 @@ class SwDecoder {
   int repair_window() const { return repair_window_hwm_; }
   uint64_t symbols_dropped_bad_cfg() const { return symbols_dropped_bad_cfg_; }
   uint64_t symbols_dropped_stale() const { return symbols_dropped_stale_; }
+  // Repairs that could solve nothing -- a second-card copy of one already
+  // admitted, or one whose whole window is already known -- and were not
+  // eliminated. On a clean link this is every repair.
+  uint64_t repairs_skipped() const { return repairs_skipped_; }
   uint64_t packets_out() const { return packets_out_; }
   uint64_t resets() const { return resets_; }
   size_t rows_in_flight() const { return rows_.size(); }
@@ -196,7 +200,7 @@ class SwDecoder {
   uint64_t syms_recovered_arrived_ = 0;
   uint64_t syms_retx_ = 0, syms_retx_arrived_ = 0;
   uint64_t symbols_in_ = 0, symbols_dropped_bad_cfg_ = 0;
-  uint64_t symbols_dropped_stale_ = 0, packets_out_ = 0, resets_ = 0;
+  uint64_t symbols_dropped_stale_ = 0, packets_out_ = 0, resets_ = 0, repairs_skipped_ = 0;
   int repair_window_hwm_ = 0;
 
   bool wm_open_ = false, wm_valid_ = false;
@@ -214,7 +218,8 @@ class SwDecoder {
   bool ep_open_ = false;
   std::vector<LossEpisode> episodes_;    // closed, awaiting take_episodes()
   uint64_t episode_window() const;
-  void note_repair(uint64_t ws, uint64_t we, uint32_t key);
+  // Records an admitted repair; false if it is a copy of one already seen.
+  bool note_repair(uint64_t ws, uint64_t we, uint32_t key);
   // Per evicted seq: books it into the open episode (or opens one).
   // known_via: kRepair = recovered, kRetx = retx, kSource = never known
   // (abandoned).

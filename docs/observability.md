@@ -275,8 +275,9 @@ fields once per `drone.tlm_seq` (`flightreport.py` does).
 maburgs writes a per-session directory when `debug_log.enable` is set
 (shipped default `false` — the bench GS turns it on): `<debug_log.dir>/NNNN/`
 holding `flight.jsonl`, `ctl.log`, `probe.log`, `au.log`, `fec.log` and
-`scan.log` (`au.log` only while `[au_ring] enable`); maburplay writes `lat.log` into the same directory by following
-the `/tmp/mabur-session` marker and holds no logging config of its own
+`scan.log` (`au.log` only while `[au_ring] enable`); maburplay writes
+`lat.log` and `frame.log` into the same directory by following the
+`/tmp/mabur-session` marker and holds no logging config of its own
 (`gs/src/debug_session.h`). Nothing is written until the knob is set, and
 `enable = false` removes the marker, which stops maburplay too.
 
@@ -290,7 +291,7 @@ the `/tmp/mabur-session` marker and holds no logging config of its own
   re-rendezvous keeps it climbing; `gs/src/drone_restart.h`) maburgs rotates
   in place — next NNNN, marker rewritten, all six files reopened under it
   with their format marker at the top — with no process restart and no video
-  blink; maburplay's `lat.log` follows the marker within 5 s. Cumulative
+  blink; maburplay's `lat.log` and `frame.log` follow the marker within 5 s. Cumulative
   sideport counters do NOT reset at a rotation (same maburgs process), so the
   new `flight.jsonl` starts at nonzero values; `flightreport.py` differences
   within the file. A maburd crash-restart mid-flight therefore splits that
@@ -370,22 +371,30 @@ print the completion→probe offset percentiles. `tools/bench/probesend.py`
 adds the GS send stamps from a `MABUR_GAPLOG=1` run to place every send
 against the probe (`docs/findings/2026-09-05-probe-blanking-fix.md`).
 
-### `au.log` (`# aulog 5`)
+### `au.log` (`# aulog 6`)
 
 Per-AU meta rows, fed in-process from `AuRingWriter::last_record()`
 (`gs/src/main.cpp`'s FrameStream finish callback; `gs/src/au_log.h`) —
 maburgs is the ring WRITER, so the log cannot miss an AU to a ring overrun.
-Sixteen columns:
+Nineteen columns:
 
-    t_us pts sid fid len flags nal0 t_first t_complete enc dq air slices kept filled after_hole
+    t_us pts sid fid len flags nal0 t_first t_complete enc dq air slices kept filled after_hole t_last t_drain t_push
 
 `t_us` is CLOCK_MONOTONIC µs. `t_first`/`t_complete` are the AU's mono-µs
 latency stamps (first body / finish()). `enc`/`dq` are the drone's
 SBI-latched `enc_us`/`drone_q_ms` (venc encode time, true TxQueue wait —
 ~0 when healthy) carried on the AU's first fragment. `air` is the drone's
 modelled air backlog at that frame (`AirClock`, `docs/link-adaptation.md`
-"Drone air clock"). The last four are slice salvage (`docs/slices.md`), all
-0 on an AU that was neither split nor salvaged.
+"Drone air clock"). `slices kept filled after_hole` are slice salvage
+(`docs/slices.md`), all 0 on an AU that was neither split nor salvaged.
+The last three are GS stamps (mono µs, 0 = unknown) that split the fec
+segment per frame. `t_last` is the arrival of the AU's LAST body:
+`t_last − t_first` is the arrival span (drone hand-off plus air),
+`t_complete − t_last` the GS publish tail. `t_drain` and `t_push` belong to
+the AU's last-pushed fragment and split that tail further: `t_drain −
+t_last` is the wait in the RX queue before the core thread drained the
+body's batch, `t_push − t_drain` the work on earlier bodies of that batch
+plus FEC decode, `t_complete − t_push` FrameStream emit and the ring write.
 
 ### `fec.log` (`feclog 3`)
 
@@ -457,6 +466,31 @@ prints the vsync A/B verdict (four log-derived gates: `e2e` p50 B≤A−8,
 (flatness) — `anchor=warm` windows are excluded from all four, with a
 printed count).
 
+### `frame.log` (`# framelog 2`)
+
+The per-frame rows behind the `lat:` line, from the same `LatTracker`
+window (`gs/player/src/lat_tracker.h` `FrameRow`): one row per frame that
+completed the whole chain and joined the window — a displaced frame or one
+submitted on a cold anchor gets no row, exactly as it is absent from the
+`lat:` percentiles. Written by the same follow-the-marker writer as
+`lat.log`, in the same idle-gated 1 Hz burst (never on the flip or decode
+path), buffered so each burst reaches the file in one write. Twenty columns:
+
+    t_flip pts fid sid len flags slices t_submit t_complete t_decoded t_release enc dq air fec dec reg dsp e2e exact
+
+`t_flip` is the frame's scanout-start stamp (mono µs); `t_submit` is when
+the player handed the AU (or its first slice) to the decoder, `t_complete`
+the ring's finish stamp (as `au.log`), `t_decoded` when the decoded picture
+came back, `t_release` when the regulator released it. `enc dq air fec dec
+reg dsp e2e` are the frame's own segments (µs, `dec = t_decoded −
+t_complete`, `e2e` the sum); `exact` is 1 when `t_flip` came from a real
+vblank event. `pts` joins the row to `au.log` (same value), which carries
+`nal0`, `t_first` and the GS stamps; `fid`, `sid`, `len`, `flags` and
+`slices` are copied from the AU record so a row reads on its own, `flags`
+in hex as `au.log` prints it (`framelog 1` printed it in decimal). A
+streamed frame has `t_submit < t_complete`, so `t_decoded − t_submit` is
+not decode time for it; split `dec` with `t_complete` instead.
+
 ### `cal.log` (`callog 3`)
 
 The TX-power calibration record (`gs/src/cal_log.h`). It writes regardless
@@ -513,7 +547,7 @@ submits=… parks=… notes_dropped=…` (the feed thread's tally for the run).
 
 The 1 Hz `regulator:` line: `held= late= replaced= disconts= hold_ema=
 present_jitter= vsync= skips= fallback= pend= heals= pdrop= chained= chain=
-chain_max= chains= cuts=`.
+chain_max= chains= cuts= alw= lslot=`.
 
 - `vsync=locked|fallback` — whether the vblank estimator is locked (servo
   release) or has fallen back to the `anchor_floor(pts) + regulate_ms`
@@ -552,9 +586,37 @@ chain_max= chains= cuts=`.
   frame that would extend a run past the budget takes its natural slot and
   the held occupant is displaced — one dropped frame, counted in
   `replaced=` too). The extra period lands in the `lat:` line's `reg`
-  segment, so read `chained/held` per second next to `reg` p50. Shipped
-  budget 3; 0 = unbounded. Bench A/B behind that default:
-  `docs/findings/2026-09-02-regulator-chain-budget.md`.
+  segment, so read `chained/held` per second next to `reg` p50. Code and
+  bundle default to budget 0 (never cut): a chain then ends only on an arrival gap, so
+  through the part of the sensor/panel beat where arrivals sit just past
+  the release point the whole stream runs one period late (the `lat:` p50
+  sawtooth) but nothing is dropped, and the refresh-start frame's ~10 ms
+  of extra encode, air and decode fits inside that slack. A budget N
+  instead keeps the lower latency and pays one dropped frame per cut; on a
+  clean link the refresh-start frame misses its release in about half of
+  each beat cycle and every miss then costs a repeat plus a cut (bench:
+  budget 3 = 59–73 % of seconds with a visible event and 1.6–2.5 drops/s,
+  budget 0 = 14 % and 0.16 drops/s, at +12.5 ms median). Records:
+  `docs/findings/2026-09-02-regulator-chain-budget.md` (budget 3 chosen),
+  `docs/findings/2026-10-15-regulator-chain-cuts.md` (budget 0 chosen).
+- `alw=`/`lslot=` — capture-time scheduling (`display.sched_cap_ms`, 0 = off
+  in code and bundle; bench result and cost:
+  `docs/findings/2026-10-15-capture-sched.md`). In servo mode a frame's vblank follows its
+  capture time, not its arrival: the first vblank whose release is at or
+  after capture + delivery floor + `alw`. The window holds each frame's
+  transit, arrival − capture pts on the raw clocks, measured before the
+  regulator's own hold (enc+dq+air+fec+dec, not `reg`/`dsp`); raw rather
+  than against the pts anchor, whose floor snaps down on one fast frame
+  and would shift every later sample. The floor is its p1 over the last
+  600 frames (~10 s), `alw` is p99 − p1 + 1 ms capped at `sched_cap_ms`,
+  and salvaged AUs stay out of the window. A late-tail frame within `alw`
+  keeps its slot, so in the phases where frames arrive near the latch the
+  repeat/skip judder (OSD LAT p99 a refresh above p50) becomes one extra
+  refresh on every frame instead (p50 meets p99). `lslot` counts frames
+  that missed their capture slot (loss, or a delivery shift beyond the
+  cap); they are placed by the arrival rule above, and the next on-time
+  frame that claims the same vblank wins it, so a stall costs a local
+  freeze and catch-up with no trailing chain.
 
 ### fps-log, display bring-up, MSP OSD
 

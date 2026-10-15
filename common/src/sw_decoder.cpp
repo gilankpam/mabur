@@ -332,7 +332,22 @@ std::vector<std::vector<uint8_t>> SwDecoder::add_symbol(const uint8_t* env, size
     return out;
   }
 
-  note_repair(ws, wend, h.repair_key);
+  // A repair that can solve nothing is skipped before any row is built:
+  // a second-card copy is the same equation as the one already admitted,
+  // and one whose whole window is known eliminates to an empty row. Both
+  // used to cost a full lincomb per covered seq (~35 us on the GS) to reach
+  // insert_row's linearly-dependent return -- on a clean link, every
+  // repair, ~20 % of the core thread.
+  bool solvable = note_repair(ws, wend, h.repair_key);
+  if (solvable) {
+    solvable = false;
+    for (int i = 0; i < wl && !solvable; ++i)
+      solvable = known_.count(ws + static_cast<uint64_t>(i)) == 0;
+  }
+  if (!solvable) {
+    ++repairs_skipped_;
+    return out;
+  }
 
   Row r;
   r.payload.assign(payload, payload + ss);
@@ -361,12 +376,13 @@ uint64_t SwDecoder::episode_window() const {
                                 : static_cast<uint64_t>(cfg_.window);
 }
 
-void SwDecoder::note_repair(uint64_t ws, uint64_t we, uint32_t key) {
+bool SwDecoder::note_repair(uint64_t ws, uint64_t we, uint32_t key) {
   // A second-card copy of the same repair arrives within a few ms, so a
   // backward scan finds it near the tail.
   for (auto it = repairs_seen_.rbegin(); it != repairs_seen_.rend(); ++it)
-    if (it->ws == ws && it->key == key) return;
+    if (it->ws == ws && it->key == key) return false;
   repairs_seen_.push_back(RepairSpan{ws, we, key});
+  return true;
 }
 
 void SwDecoder::note_missing(uint64_t v, Origin known_via, bool stale) {
