@@ -287,6 +287,19 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
     nk["settle_ms"] = in.nack.settle_ms;
     nk["late_ms_max"] = in.nack.win.late_ms_max;
   }
+  // Demand refresh (docs/fec-nack.md "Demand refresh"): counters cumulative.
+  if (in.refresh.present) {
+    json& rf = link["refresh"];
+    const auto& c = in.refresh.c;
+    rf["armed"] = in.refresh.armed;
+    rf["requests"] = c.requests;
+    rf["retries"] = c.retries;
+    rf["heals"] = c.heals;
+    rf["heal_ms_last"] = c.heal_ms_last;
+    json& br = rf["by_reason"];
+    for (size_t i = 0; i < RefreshRequester::kReasons; ++i)
+      br[RefreshRequester::reason_name(static_cast<RefreshRequester::Reason>(i))] = c.by_reason[i];
+  }
 
   // Measured-loss ladder controller snapshot; static-pin mode never ticks
   // the controller, so it emits null rather than a frozen/meaningless state.
@@ -551,6 +564,7 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
   hop["holds"] = in.hop.holds;
   if (in.hop.last_ms) hop["last_ms"] = *in.hop.last_ms; else hop["last_ms"] = nullptr;
   hop["sweep_timeouts"] = in.hop.sweep_timeouts;
+  hop["sampler_dropped"] = in.hop.sampler_dropped;
 
   if (in.telem) {
     const mabur::rc::Telem& t = *in.telem;

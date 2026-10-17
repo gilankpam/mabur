@@ -14,10 +14,13 @@ namespace maburgs {
 // so it has every field at hand: no mmap, no seqlock retry, no epoch resync,
 // and no rows lost to a reader overrun.
 //
-// Format (`# aulog 6`), 19 columns -- the aulog 4 twelve, 4 slice-salvage
-// columns (all 0 for an unsplit/complete-unsplit AU), and three GS stamps:
+// Format (`# aulog 7`), 20 columns -- the aulog 4 twelve, 4 slice-salvage
+// columns (all 0 for an unsplit/complete-unsplit AU), three GS stamps, and
+// vcl:
 //   t_us pts sid fid len flags nal0 t_first t_complete enc dq air
-//   slices kept filled after_hole t_last t_drain t_push
+//   slices kept filled after_hole t_last t_drain t_push vcl
+// vcl: first slice NAL type of a parameter-set-led AU (IRAP 16..21, refresh
+// start 1), 0 otherwise.
 // All mono µs, 0 = unknown. t_last is the AU's LAST body arrival, so
 // t_last - t_first is the arrival span (drone hand-off + air) and
 // t_complete - t_last the GS publish tail. t_drain/t_push belong to the

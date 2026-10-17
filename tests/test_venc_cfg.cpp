@@ -95,4 +95,16 @@ TEST(slices_default_off) {
   CHECK(c.slices == 1);
 }
 
+TEST(gop_frames_zero_seconds_is_the_no_refresh_sentinel) {
+  CHECK(venc_cfg_gop_frames(0.0, 60) == VENC_GOP_NONE);
+  CHECK(venc_cfg_gop_frames(-1.0, 60) == VENC_GOP_NONE);
+}
+
+TEST(gop_frames_scales_seconds_by_fps) {
+  CHECK(venc_cfg_gop_frames(0.5, 60) == 30);
+  CHECK(venc_cfg_gop_frames(10.0, 60) == 600);
+  CHECK(venc_cfg_gop_frames(0.5, 0) == 15);    // fps 0 reads as 30 (the waybeam default)
+  CHECK(venc_cfg_gop_frames(0.001, 60) == 1);  // never below one frame
+}
+
 MTEST_MAIN

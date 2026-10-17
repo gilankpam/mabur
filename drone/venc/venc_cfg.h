@@ -8,7 +8,7 @@ typedef struct {
   char sensor_bin[128];      /* venc.sensor_bin */
   uint16_t width, height;    /* venc.size "1920x1080" */
   uint16_t fps;              /* venc.fps */
-  double gop_s;              /* venc.gop_s */
+  double gop_s;              /* venc.gop_s: seconds between refresh starts; 0 = no periodic refresh (the GS asks for IDRs on demand) */
   int8_t qp_delta;           /* venc.qp_delta */
   uint8_t max_ipprop;        /* venc.max_ipprop: 0 (default) = leave the
                               * firmware default (0 = unbounded); 1..100 =
@@ -56,9 +56,13 @@ typedef struct {
                                 * venc_cfg_intra_rows(). Shorter = faster
                                 * self-heal, more bitrate per P and more
                                 * frame-size swing. */
-  uint8_t intra_refresh_qp;    /* venc.intra_refresh_qp: u32ReqIQp, the QP
-                                * of the stripe. 1..51. Lower = cleaner
-                                * recovery anchor, more bits. Unused while
+  uint8_t intra_refresh_qp;    /* venc.intra_refresh_qp: u32ReqIQp, the
+                                * requested QP of the stripe, 1..51. Star6E
+                                * CBR ignores it: 36..51 give the same
+                                * stripe size, PSNR and encode time, the
+                                * stripe is coded at the rate control's
+                                * QP (docs/findings/2026-10-15-gdr-slices.md).
+                                * Passed through as asked; unused while
                                 * intra_refresh_frames is 0. */
   /* MI_VENC_ParamRef_t {u32Base, u32Enhance, bEnablePred} — SVC-T temporal
    * hierarchy, applied once between CreateChn and StartRecvPic: */
@@ -108,6 +112,16 @@ typedef struct {
  * with drone/src/frame_source.cpp (config default "mabur_f"); the ring
  * layer normalises the leading '/'. */
 #define VENC_RING_NAME "/mabur_f"
+
+/* GOP frame count the rate attribute carries for venc.gop_s = 0: "never".
+ * Not infinite -- the SDK takes a frame count -- but long enough that the
+ * stream is refreshed only by IDRs the link asks for (bitrate change,
+ * chain break, GS request): 65535 frames is 18 min at 60 fps. It is the
+ * largest count tried that the star6e SDK accepts; 216000 passes
+ * MI_VENC_CreateChn but StartRecvPic refuses it ("Cbr invalid parameter").
+ * See docs/findings/2026-10-17-sdk-gop-ceiling.md and
+ * docs/findings/2026-10-17-long-gop-spike.md. */
+#define VENC_GOP_NONE 65535u
 
 /* Practical VENC bitrate rails, ported verbatim from
  * waybeam_venc f956a52:include/venc_config.h.  Below ~1 Mbit/s the H.26x
@@ -165,6 +179,10 @@ uint8_t venc_cfg_slice_rows(uint16_t height, uint8_t slices);
  * fps the rate the RC budgets at. 0 when pct or fps is 0 (= off). Pure,
  * host-tested (tests/test_venc_cfg.cpp). */
 uint32_t venc_superframe_p_bytes(unsigned pct, unsigned kbps, unsigned fps);
+
+/* GOP seconds -> frames at fps. gop_s <= 0 means VENC_GOP_NONE; fps 0 is
+ * read as 30; never below one frame. */
+uint32_t venc_cfg_gop_frames(double gop_s, uint32_t fps);
 
 #ifdef __cplusplus
 }

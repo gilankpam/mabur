@@ -34,6 +34,11 @@ class LatTracker {
   void on_submit(const maburgs::AuRecordMeta& m, uint64_t mono_us);
   void on_decoded(uint32_t pts_us, uint64_t mono_us);
   void on_present(uint32_t pts_us, uint64_t mono_us);  // t_release
+  // Right after the presenter took the frame: when its atomic commit ioctl
+  // returned (0 = no commit, the frame was parked) and the presenter's
+  // commit bits (DrmPresenter::CommitInfo). Splits dsp into the commit's
+  // own cost and the kernel's latch.
+  void on_commit(uint32_t pts_us, uint64_t commit_mono_us, uint8_t bits);
   void on_flip(uint32_t pts_us, uint64_t flip_mono_us, bool exact);
   void on_drop(uint32_t pts_us);  // displaced/flushed: forget, count
   void flush_all();               // discont/flush points
@@ -58,6 +63,8 @@ class LatTracker {
     uint64_t t_flip_us = 0;
     bool exact = false;  // the flip stamp came from a real vblank event
     uint32_t seg[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    uint64_t t_commit_us = 0;  // atomic commit returned (0 = parked, never committed)
+    uint8_t pbits = 0;         // presenter commit bits (DrmPresenter::CommitInfo)
   };
 
   // 1 Hz consumption: aggregates + clears the completed-frame window. The
@@ -106,6 +113,8 @@ class LatTracker {
     uint64_t t_submit_us = 0;   // diagnostic only -- dec folds t_submit..t_complete in
     uint64_t t_decoded_us = 0;
     uint64_t t_release_us = 0;
+    uint64_t t_commit_us = 0;
+    uint8_t pbits = 0;
     uint64_t seq = 0;           // insertion order, for drop-oldest eviction
     bool anchor_ok_at_submit = false;
     bool has_decoded = false;
@@ -141,7 +150,7 @@ class LatTracker {
 // frame.log's format marker and one row's payload (everything after the
 // writer's t_flip column), in the order docs/observability.md lists.
 // snprintf semantics: returns the length the full row needs.
-inline constexpr const char* kFrameLogHeader = "# framelog 2";
+inline constexpr const char* kFrameLogHeader = "# framelog 3";
 int format_frame_row(const LatTracker::FrameRow& r, char* buf, size_t n);
 
 }  // namespace maburplay

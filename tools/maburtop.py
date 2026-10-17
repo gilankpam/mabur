@@ -1080,6 +1080,13 @@ def panel_ladder(model, wall):
                      f" {_s(fm.get('p50'))}/{_s(fm.get('p90'))}/{_s(fm.get('max'))}ms"
                      f" settle{_s(nk.get('settle_ms'))} | drone rx{_s(dn.get('rx'))}"
                      f" syms{_s(dn.get('retx_syms'))} refused{_s(dn.get('retx_refused'))}", []))
+    rf = (d.get("link") or {}).get("refresh") or {}
+    if rf:
+        br = rf.get("by_reason") or {}
+        body.append((f" refresh: {'ARMED' if rf.get('armed') else 'idle'} req{_s(rf.get('requests'))}"
+                     f" retry{_s(rf.get('retries'))} heal{_s(rf.get('heals'))} last{_s(rf.get('heal_ms_last'))}ms"
+                     f" | hole{_s(br.get('hole'))} salv{_s(br.get('salvaged'))} lost{_s(br.get('lost'))}"
+                     f" player{_s((br.get('start') or 0) + (br.get('resync') or 0) + (br.get('decoder') or 0) + (br.get('dvr') or 0))}", []))
     return _panel("LADDER", body, min_width=34)
 
 

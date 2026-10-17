@@ -619,9 +619,9 @@ port **8310**, not the browser's WebSocket 8311) runs the same
 
 ### Key-frame recovery
 
-The gate arms only on an IRAP, and the drone's periodic refresh is GDR. After
-a DISCONT or a decoder error the page therefore cannot heal on its own, so in
-GS mode it asks:
+The gate arms only on an IRAP, and the drone ships with no periodic refresh
+at all (bundle `venc.gop_s` 0). After a DISCONT or a decoder error the page
+therefore cannot heal on its own, so in GS mode it asks:
 
 1. `IdrRequester` (`logic.mjs`) fires on the drop and every 300 ms while
    unarmed.
@@ -651,12 +651,15 @@ frames than requests.
 
 **Spotter key frames.** WebCodecs will only start decoding on a real IRAP
 (IRAP NAL types 16–21: BLA/IDR/CRA), never on the drone's GDR parameter-set
-refresh (`32 33 34 1`, TRAIL_R). The drone emits a real IDR unsolicited on a
-rung change, link-up, or chain break, and, in GS mode only, on request (see
-"Key-frame recovery" above). Spotter mode has no request path. A spotter
-opened mid-flight on a steady link can therefore sit unarmed until one of
-those unsolicited IDRs happens to land, and there is no drone, wire or
-config change to force one (see Follow-ups).
+refresh (`32 33 34 1`, TRAIL_R). The drone emits a real IDR on a rung
+change, link-up, or chain break; on a GS-mode page's own request (see
+"Key-frame recovery" above); and on maburgs's request when its base
+picture is damaged (`docs/fec-nack.md` "Demand refresh") — there is no
+periodic refresh any more, so a spotter on a steady link waits for one of
+those. Spotter mode has no request path of its own. A spotter opened
+mid-flight on a steady link can therefore sit unarmed until one of those
+IDRs happens to land, and there is no drone, wire or config change to
+force one (see Follow-ups).
 
 GS mode does not have this gap. On first link, a self-linking GS's own
 link-up already produces a key frame roughly a second after DISC_ACK.

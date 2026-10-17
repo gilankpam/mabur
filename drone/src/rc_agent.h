@@ -183,6 +183,11 @@ class RcAgent {
   // Telem.idr_gs; kept as the observable the request/pacer tests pin.
   uint64_t idr_gs_total() const { return idr_gs_total_; }
 
+  // Chain-break IDRs actually issued, lifetime (served, not merely
+  // requested -- a request deferred by the pacer is not counted until it
+  // fires).
+  uint64_t idr_chain_total() const { return idr_chain_total_; }
+
   // Telemetry accessors: read-only
   // snapshots of RcAgent-internal state the T_TELEM collector needs but
   // that isn't otherwise exposed. All same-thread reads (the agent thread
@@ -400,6 +405,19 @@ class RcAgent {
   // venc thread's handoff (see note_chain_break); the two timestamps are
   // agent-thread-only.
   std::atomic<bool> chain_break_pending_{false};
+  // A chain break the pacer refused (floor or chain holdoff) waits here
+  // for the next due tick instead of being dropped: without a periodic
+  // refresh there is no GOP to self-clear an unhealed break. Agent-thread
+  // only; cleared at every session edge. A failsafe or rendezvous edge
+  // ends in the link-up IDR, which heals whatever broke while unlinked. A
+  // session promotion while LINKED (a fast GS restart) has no link-up IDR:
+  // there only the new GS session's own request covers it -- its first RCF
+  // reads as one whenever its epoch is non-zero (the drone's seen epoch
+  // restarts at 0), and otherwise it asks once one of its own arming
+  // sources fires (a damaged or lost base AU, a player report). A break
+  // dropped before the frame ring leaves no frame-id gap for the GS to see.
+  bool chain_idr_pending_ = false;
+  uint64_t idr_chain_total_ = 0;
   // have_* companions rather than a 0 sentinel (the file's own idiom, cf.
   // have_last_fb_/have_last_bitrate_eval_): now_ms is a caller-supplied
   // clock that legitimately starts at 0, and a first IDR at t=0 must still

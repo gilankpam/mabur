@@ -96,6 +96,15 @@ Chronological; each line names the section below that carries the detail.
   `# framelog 2` prints its `flags` column in hex (`0x80`) as `au.log`
   does. A `framelog 1` file carries the same byte in decimal (`128`); the
   columns are otherwise identical. `int(x, 0)` reads both.
+- 2026-10-16 — `# framelog 3` appends `t_commit pbits` (22 columns): when
+  the frame's atomic commit returned and the presenter's commit bits.
+  Rows of `framelog ≤ 2` end at `exact`. The same day `reg.log`
+  (`# reglog 1`) appears beside it: the player's 1 Hz `regulator:` line,
+  whose trailing `present= acq= req= ioctl=` fields are the present()
+  stage split (the first build of the day printed `fd2h= addfb=` in
+  their place, for the few minutes before the framebuffer cache).
+- 2026-10-17 — demand refresh: `# aulog 7` (+vcl column), `feclog 4`
+  (I/H rows), sideport `link.refresh` (docs/fec-nack.md "Demand refresh").
 
 ## 2026-09-23 — `link.pre_fec_loss` scale break, twice
 
@@ -465,7 +474,8 @@ which, and latency/air numbers across that break are not comparable.
 
 When `display.vsync_lock` is on, `reg` becomes hold-to-vblank (grows to
 ~½ panel period mean, up from the old D=12 dejitter hold); `dsp`
-collapses to ≈ lead (`display.vsync_lead_ms`, default 6 ms) + flip
+collapses to ≈ lead (`display.vsync_lead_ms`, 6 ms then, 5 since
+2026-10-17) + flip
 completion, down from the old 10–25 ms beat sweep. Their SUM is
 comparable across the change — total release→latched time moves the way
 the vsync-locked-regulator spec predicts — but the SPLIT between the two

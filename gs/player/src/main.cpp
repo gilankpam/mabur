@@ -40,7 +40,7 @@
 #include "ring_client.h"
 #include "stream_feeder.h"
 #include "video_backend.h"
-#include "vtx_rec_client.h"  // sends the button's VTX wish to maburgs
+#include "core_control_client.h"  // sends the button's VTX wish + refresh reports to maburgs
 #include "splash_image.h"  // startup splash asset + cover-fit painter
 
 #ifdef MABUR_PLAYER_HW
@@ -653,6 +653,10 @@ int main(int argc, char** argv) {
   // burst's rows leave in one write at flush(), not one syscall per row.
   maburplay::LatLog frame_log(maburplay::kSessionMarker, "frame.log",
                               maburplay::kFrameLogHeader, /*batched=*/true);
+  // The 1 Hz regulator: line, into the session too (docs/observability.md
+  // "reg.log"): its pend/pdrop/heals counters are the presenter's side of
+  // a missed latch, and /tmp/maburplay.log does not outlive a power-off.
+  maburplay::LatLog reg_log(maburplay::kSessionMarker, "reg.log", "# reglog 1");
   // Installs the display stage: the CUBIC_LUT (always a table on a LUT
   // CRTC, identity when off) or the video-plane CTM, and pre-inverts both
   // overlays only for the LUT. Runs once per presenter acquire, BEFORE
@@ -782,15 +786,16 @@ int main(int argc, char** argv) {
   // the DrmPresenter's mailbox engagement count (frame parked, or displacing
   // one already parked because a flip was in flight) -- 0 when there is no
   // presenter (decode-only, or init failed).
-  auto log_regulator_line = [&regulator, &presenter, &present_jitter_ema_ms]() {
+  auto log_regulator_line = [&regulator, &presenter, &present_jitter_ema_ms, &reg_log]() {
+    char line[512];
     if (regulator.enabled()) {
       const uint64_t pend = presenter ? presenter->mailbox_engagements() : 0;
-      std::fprintf(stderr,
+      std::snprintf(line, sizeof(line),
                    "regulator: held=%llu late=%llu replaced=%llu disconts=%llu "
                    "hold_ema=%.2fms present_jitter=%.2fms vsync=%s skips=%llu "
                    "fallback=%llu pend=%llu heals=%llu pdrop=%llu "
                    "chained=%llu chain=%llu chain_max=%llu chains=%llu cuts=%llu "
-                   "alw=%.1fms lslot=%llu\n",
+                   "alw=%.1fms lslot=%llu",
                    static_cast<unsigned long long>(regulator.held_count()),
                    static_cast<unsigned long long>(regulator.late_count()),
                    static_cast<unsigned long long>(regulator.replaced_count()),
@@ -810,10 +815,25 @@ int main(int argc, char** argv) {
                    static_cast<unsigned long long>(regulator.chain_cuts()),
                    regulator.allowance_ms(),
                    static_cast<unsigned long long>(regulator.late_slot_count()));
+      if (presenter) {
+        // present() stage cost over the last window (µs p50/max):
+        // framebuffer acquire (cached dma-buf import + AddFB2), request
+        // build, atomic commit ioctl. The lead (display.vsync_lead_ms) has
+        // to cover their sum; a frame whose sum exceeds it misses its latch
+        // and the next one is pdropped.
+        const auto pt = presenter->present_timing();
+        const size_t used = std::strlen(line);
+        std::snprintf(line + used, sizeof(line) - used,
+                      " present=%u acq=%u/%u req=%u/%u ioctl=%u/%u",
+                      pt.n, pt.p50[0], pt.max[0], pt.p50[1], pt.max[1],
+                      pt.p50[2], pt.max[2]);
+      }
     } else {
-      std::fprintf(stderr, "regulator: off present_jitter=%.2fms\n",
-                   present_jitter_ema_ms);
+      std::snprintf(line, sizeof(line), "regulator: off present_jitter=%.2fms",
+                    present_jitter_ema_ms);
     }
+    std::fprintf(stderr, "%s\n", line);
+    reg_log.write(mono_us(), line);
   };
 #endif
 
@@ -899,9 +919,11 @@ int main(int argc, char** argv) {
   // dvr.target: which recorders the button drives.
   const bool rec_gs = cfg.dvr.target != "vtx";
   const bool rec_vtx = cfg.dvr.target != "gs";
-  maburplay::VtxRecClient vtx_rec;
-  if (!vtx_rec.open(maburgs::kRecControlPort))
-    std::fprintf(stderr, "maburplay: rec: VTX wish socket failed -- the drone recorder will not follow the button\n");
+  maburplay::CoreControlClient core_ctl;
+  if (!core_ctl.open(maburgs::kRecControlPort))
+    std::fprintf(stderr,
+                 "maburplay: rec: core control socket failed -- the drone recorder will not "
+                 "follow the button and refresh reports will not reach maburgs\n");
   // dvr.mode "burned": the recording is produced by re-encoding decoded
   // frames with the OSD composited in by the hardware encoder, so the
   // BurnRecorder owns the file and the raw remux in the ring sink below is
@@ -1069,6 +1091,8 @@ int main(int argc, char** argv) {
     last_present_us = t;
     lat.on_present(f.pts_us, t);  // t_release
     presenter->present(f);
+    const auto ci = presenter->last_commit();
+    lat.on_commit(f.pts_us, ci.t_commit_us, ci.bits);
   };
 #endif
   std::function<void()> drain_notes_fn;  // set once a FeedLoop exists; run before lat.on_decoded
@@ -1140,8 +1164,10 @@ int main(int argc, char** argv) {
   // Autostart: dvr.autostart armed rec_on before this point (see rec_on's
   // declaration above), but the actual start() call has to wait until here,
   // where bcfg is in scope.
-  if (rec_on && rec_gs && !burned_mode)
+  if (rec_on && rec_gs && !burned_mode) {
     dvr.start(dvr_filename(cfg.dvr.dir), bcfg.width, bcfg.height, cfg.dvr.fragment_ms);
+    core_ctl.send_line("refresh dvr");
+  }
 
   // The button's two actions. Both modes are handled here so the press
   // handler stays one line; the raw path is a flag plus a close, the
@@ -1177,7 +1203,10 @@ int main(int argc, char** argv) {
       }
     }
 #endif
-    if (!burned_mode) dvr.start(dvr_filename(cfg.dvr.dir), bcfg.width, bcfg.height, cfg.dvr.fragment_ms);
+    if (!burned_mode) {
+      dvr.start(dvr_filename(cfg.dvr.dir), bcfg.width, bcfg.height, cfg.dvr.fragment_ms);
+      core_ctl.send_line("refresh dvr");
+    }
     std::fprintf(stderr, "maburplay: rec: START (%s)\n", cfg.dvr.mode.c_str());
   };
 
@@ -1290,6 +1319,9 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "maburplay: cannot open ring %s\n", cfg.ring_path.c_str());
     return 2;
   }
+  // A fresh decoder has no key frame to arm on and nothing periodic will
+  // bring one: ask through maburgs. The core retries until an IRAP lands.
+  if (!oneshot) core_ctl.send_line("refresh start");
 
   if (oneshot) {
     ring.oneshot_drain();
@@ -1542,6 +1574,8 @@ int main(int argc, char** argv) {
   uint64_t display_retry_next_ms = 0;
   bool display_retry_announced = false;
 #endif
+  // The ring reader fell behind and skipped AUs that held references.
+  uint64_t resyncs_seen = ring.resyncs();
   while (!g_stop.load()) {
     // 2 ms pump: flip events must be reaped at sub-vsync latency or the
     // mailbox frame waits for the NEXT AU burst before anyone submits it
@@ -1602,8 +1636,12 @@ int main(int argc, char** argv) {
         rec_start();
       }
     }
-    // Every iteration: sends on change, re-sends each second (VtxRecClient).
-    vtx_rec.tick(rec_on && rec_vtx, mono_ms());
+    // Every iteration: sends on change, re-sends each second (CoreControlClient).
+    core_ctl.tick(rec_on && rec_vtx, mono_ms());
+    if (ring.resyncs() != resyncs_seen) {
+      resyncs_seen = ring.resyncs();
+      core_ctl.send_line("refresh resync");
+    }
     // Idle window: true when no release is due within the next 8 ms, so
     // the heavy 1 Hz blocks below (stats/statvfs, lat flush, OSD compose)
     // run clear of a release deadline. This REDUCES misses, it does not
@@ -2072,6 +2110,7 @@ int main(int argc, char** argv) {
                        "respawn\n");
           return 1;
         }
+        core_ctl.send_line("refresh decoder");
         router.disarm();  // resync at the next sid0 AU
         feed.resume();
         wd_submits = router.submits();

@@ -62,6 +62,7 @@
 #include "fec_log.h"
 #include "probe_track.h"
 #include "rcf_slot.h"
+#include "refresh_requester.h"
 #include "rtt_estimator.h"
 #include "link_card.h"
 #include "radio_frontend.h"
@@ -367,6 +368,12 @@ static int run_radio(const maburgs::Config& cfg) {
     std::fprintf(stderr,
                  "warning: record control port %d unusable; the VTX recorder "
                  "will not follow the record button\n", maburgs::kRecControlPort);
+  // Demand refresh: decides when the RCF's idr_epoch byte changes (an IDR
+  // request). Fed by the FrameStream end_frame callback, the stream's
+  // dropped-AU count and the player's `refresh <reason>` lines; every
+  // timestamp it sees is a mono_ms() read, so its heal arithmetic never runs
+  // on a clock older than the arming stamp.
+  maburgs::RefreshRequester refresh;
   // Telem (the drone's only calibration ack signal, flags bit6 cal_active)
   // carries no nonce of its own, so this is what the T_TELEM handler below
   // hands back to CalSession::on_ack() -- stashed from the CalCmd the last
@@ -729,6 +736,7 @@ static int run_radio(const maburgs::Config& cfg) {
          // boundary to start
          // its dwell on, not a specific outcome.
          chan.note_au_end();
+         refresh.note_au(cur_au_sid, c, lat.slice.salvaged, lat.vcl_nal, lat.skipped_before, mono_ms());
          if (au_on) {
            const uint64_t rec = au_ring.finish(c, lat);
            if (rec != UINT64_MAX) au_bell.notify(rec);
@@ -1036,8 +1044,15 @@ static int run_radio(const maburgs::Config& cfg) {
       // before the scout thread exists.
       if (!fe.alive() && !(chan.scout_working() && chan.scout_owns_card(i)) &&
           now_ms_u >= retry_at_ms[static_cast<size_t>(i)]) {
-        fe.stop();
-        if (!fe.open_and_start())
+        bool opened = false;
+        {
+          // Off the card's device first: a window-sampler pass or an
+          // in-flight dwell on it finishes before stop() frees the device.
+          auto hold = chan.hold_card(i);
+          fe.stop();
+          opened = fe.open_and_start();
+        }
+        if (!opened)
           std::fprintf(stderr, "card %d: open failed, retrying\n", i);
         else {
           // USB: InitWrite tunes start_ch; the relay re-asserts its last target.
@@ -1243,6 +1258,15 @@ static int run_radio(const maburgs::Config& cfg) {
     cal_ctl.poll(cal_session);
     rec_ctl.poll();
     vrx.set_rec_wish(rec_ctl.wire());
+    for (const std::string& r : rec_ctl.take_refresh()) {
+      const auto reason = maburgs::RefreshRequester::reason_from(r);
+      if (!reason) {
+        std::fprintf(stderr, "maburgs: unknown refresh reason from the player: %s\n", r.c_str());
+        continue;
+      }
+      std::fprintf(stderr, "maburgs: refresh request from the player: %s\n", r.c_str());
+      refresh.request(*reason, drained_ms);
+    }
     // Loud, exactly once per accepted `maburcal start` (Idle/Done/Failed ->
     // AwaitAck): the operator's own terminal is streaming CalControl's
     // "CAL start -> ok started" reply already, but this is the one place
@@ -1319,6 +1343,24 @@ static int run_radio(const maburgs::Config& cfg) {
     }
     if (frame_wire) fstream.poll(drained_ms);
     if (au_on) au_bell.poll();
+    // Demand refresh, after every arming source of this tick (the AUs
+    // finished in the drain and the poll above, the player's reports) so
+    // this tick's RCF already carries the new epoch. Events are taken every
+    // tick whether or not fec.log is open, so they never pile up. Retries
+    // only run in a session: with no drone to hear them (the player's boot
+    // `start` arrives long before the drone powers up, and every outage)
+    // they would only pile up `I` rows; arming still bumps at once, and the
+    // first in-session poll retries at once if the last bump is 300 ms old.
+    if (in_session) refresh.poll(drained_ms);
+    vrx.set_idr_epoch(refresh.epoch());
+    for (const auto& e : refresh.take_events()) {
+      if (!fec_log) continue;
+      if (e.kind == 'I')
+        fec_log->request(static_cast<double>(e.t_ms),
+                         maburgs::RefreshRequester::reason_name(e.reason), e.epoch);
+      else
+        fec_log->heal(static_cast<double>(e.t_ms), e.heal_ms, e.retries);
+    }
 
     // Ladder input: every window + the LinkHealth build, gs/src/link_health.cpp.
     const auto lh = lha.tick(now_ms, agg,
@@ -1697,6 +1739,9 @@ static int run_radio(const maburgs::Config& cfg) {
       sin.frames_truncated = fstream.frames_truncated();
       sin.frames_dropped = fstream.frames_dropped();
       sin.stall_resets = fstream.stall_resets();
+      sin.refresh.present = true;
+      sin.refresh.armed = refresh.armed();
+      sin.refresh.c = refresh.counters();
       sin.slice_salvaged = fstream.slice_salvaged();
       sin.slices_kept = fstream.slices_kept();
       sin.slices_filled = fstream.slices_filled();
@@ -1974,11 +2019,20 @@ int main(int argc, char** argv) {
   // the e2e's NAL-exact comparison (tests/integration/verify_aus.py). No
   // session negotiation here: the input file IS the drone's own output.
   uint8_t dry_nslices = 1;  // ring v4, as run_radio's cur_au_nslices
+  uint8_t dry_sid = 0;      // as run_radio's cur_au_sid
+  // Clock of the body being fed: FrameStream's gap timeouts and the
+  // requester's stamps.
+  uint64_t replay_ms = 0;
+  // The radio path's demand-refresh requester, fed the same way on the
+  // replay clock, so the summary says whether this replay would have asked
+  // the drone for an IDR.
+  maburgs::RefreshRequester dry_refresh;
   maburgs::FrameStream fstream(
       {static_cast<uint64_t>(cfg.video.frame_gap_timeout_ms),
        cfg.video.frame_lookahead},
       {[&](const mabur::framewire::FrameHdr& h, uint8_t sid, uint8_t nslices) {
          dry_nslices = nslices;
+         dry_sid = sid;
          if (au_on) au_ring.begin(h, sid, nslices);
          file_out.begin(h, sid);
        },
@@ -1990,6 +2044,7 @@ int main(int argc, char** argv) {
          file_out.append(d, n);
        },
        [&](bool c, const maburgs::AuLatMeta& lat) {
+         dry_refresh.note_au(dry_sid, c, lat.slice.salvaged, lat.vcl_nal, lat.skipped_before, replay_ms);
          if (au_on) {
            const uint64_t rec = au_ring.finish(c, lat);
            if (rec != UINT64_MAX) au_bell.notify(rec);
@@ -2000,7 +2055,6 @@ int main(int argc, char** argv) {
          if (au_on) au_ring.append_unaligned(d, n);
          file_out.append(d, n);
        }});
-  uint64_t replay_ms = 0;  // clock of the body being fed, for gap timeouts
   agg.set_frag_sink([&](const mabur::DecodedFrag& f) {
     fstream.push_fragment(f.stream_id, f.frag.data(), f.frag.size(), replay_ms);
   });
@@ -2017,9 +2071,11 @@ int main(int argc, char** argv) {
     last_ms = now_ms;
   }
   // Let FrameStream time out whatever is still half-assembled (its gap timeout
-  // is what turns an unrecoverable hole into a truncated frame).
-  fstream.poll(last_ms + static_cast<uint64_t>(cfg.video.frame_gap_timeout_ms) +
-               1);
+  // is what turns an unrecoverable hole into a truncated frame). replay_ms
+  // follows, so an AU ended by this flush reaches the requester on the
+  // flush's clock.
+  replay_ms = last_ms + static_cast<uint64_t>(cfg.video.frame_gap_timeout_ms) + 1;
+  fstream.poll(replay_ms);
 
   if (au_on)
     std::fprintf(stderr, "au_ring: published=%llu dropped_oversize=%llu\n",
@@ -2062,11 +2118,13 @@ int main(int argc, char** argv) {
                      maburgs::residual_counts(agg.decoder(), s, false)));
   }
   std::fprintf(stderr,
-               "frames_out: clean=%llu truncated=%llu dropped=%llu bad_frag=%llu\n",
+               "frames_out: clean=%llu truncated=%llu dropped=%llu bad_frag=%llu "
+               "refresh_requests=%llu\n",
                static_cast<unsigned long long>(fstream.frames_clean()),
                static_cast<unsigned long long>(fstream.frames_truncated()),
                static_cast<unsigned long long>(fstream.frames_dropped()),
-               static_cast<unsigned long long>(fstream.bad_fragments()));
+               static_cast<unsigned long long>(fstream.bad_fragments()),
+               static_cast<unsigned long long>(dry_refresh.counters().requests));
   if (!out_aus_path.empty())
     std::fprintf(stderr, "aus_out=%llu (file)\n",
                  static_cast<unsigned long long>(file_out.written));

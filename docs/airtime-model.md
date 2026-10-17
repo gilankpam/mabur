@@ -122,10 +122,16 @@ their variance into jitter. Knobs, in order of proven usefulness:
   droppable with enhance→base prediction, which keeps base and enhance
   payloads equal. A 2-back reference structure is structurally 1.8:1
   (windowed CBR won't equalize it) — don't run it if jitter matters.
-  Intra cost is spread by the rolling refresh (`venc.intra_refresh_frames`
-  / `intra_refresh_qp`, `MI_VENC_IntraRefresh_t`; bundle 1 frame, QP 36)
-  so the picture heals without IDRs; `drone/venc/venc_cfg.h` documents
-  each field.
+  The rolling refresh (`venc.intra_refresh_frames` / `intra_refresh_qp`,
+  `MI_VENC_IntraRefresh_t`) would spread intra cost across P frames, but
+  it only runs at a GOP start and the bundle has no periodic refresh
+  (`venc.gop_s` 0), so the sweep ships off too (`intra_refresh_frames`
+  0). The QP field is a no-op on star6e CBR regardless — the stripe is
+  coded at the RC's P QP and the I-frame knobs below do not catch it;
+  only the `superframe_p_pct` re-encode cap does, at +4 ms encode:
+  `docs/findings/2026-10-15-gdr-slices.md`. The picture now heals on
+  demand instead (`docs/fec-nack.md` "Demand refresh");
+  `drone/venc/venc_cfg.h` documents each field.
 - **`venc.max_ipprop`** (config, 0=off; also volatile via
   `:8301 POST /venc/set?max_ipprop=N`) programs `u32MaxIPProp` — the ONE
   RC size cap star6e actually enforces (dose-response measured). It bounds
@@ -178,12 +184,12 @@ their variance into jitter. Knobs, in order of proven usefulness:
   stays gated on the last readout line. FRAMEBASE is the only accepted
   mode for this hop (comment at the bind site,
   `drone/venc/star6e_pipeline.c`).
-- **GOP is not a free knob**: SigmaStar CBR converges over the GOP
-  window, so every bitrate step (= every ladder rung transition) becomes
-  an overshoot/undershoot sawtooth as long as the GOP. A 10 s GOP made
-  every promote fail probation (TxQueue pinned, fabricated 13–41% "loss"
-  on a clean channel). Keep `venc.gop_s` ≤ ~2 s while the ladder
-  re-commands bitrate per rung (bundle 0.5).
+- **GOP length is not a rate-control window.** A bitrate step emits its
+  own keyframe and the rate control settles within a second whatever the
+  GOP (`statTime` 1 s); the bundle ships `venc.gop_s = 0`, no periodic
+  refresh, and heals on demand (`docs/fec-nack.md`). Measured:
+  `docs/findings/2026-10-17-long-gop-spike.md`,
+  `docs/findings/2026-10-17-sdk-gop-ceiling.md`.
 - **The sensor does not run at `venc.fps`, and the VPE→VENC bind must not
   try to make it.** The IMX415's frame period is a whole number of sensor
   lines: the driver answers `SetFps(60)` with VMAX 3375 at HMAX 365, which

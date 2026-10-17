@@ -9,19 +9,21 @@
 
 namespace maburplay {
 
-// Sends the record button's VTX wish to maburgs' RecControl
-// (gs/src/rec_control.h) on 127.0.0.1. Fire-and-forget UDP: tick() sends on
-// every change and re-sends the current wish every kPeriodMs, so a lost
-// datagram or a restarted maburgs converges within a second. Always ticked,
-// whatever dvr.target says: with the VTX not a target the wish is "off".
-class VtxRecClient {
+// maburplay's line to maburgs' RecControl (gs/src/rec_control.h) on
+// 127.0.0.1: fire-and-forget UDP. tick() carries the record button's VTX
+// wish (sent on change and re-sent every kPeriodMs, so a lost datagram or a
+// restarted maburgs converges within a second). send_line() carries one-shot
+// reports ("refresh <reason>": the picture needs a key frame); loopback
+// does not lose datagrams, and the core keeps asking the drone until an
+// IRAP lands, so one send is enough.
+class CoreControlClient {
  public:
   static constexpr uint64_t kPeriodMs = 1000;
 
-  ~VtxRecClient() { if (fd_ >= 0) close(fd_); }
-  VtxRecClient() = default;
-  VtxRecClient(const VtxRecClient&) = delete;
-  VtxRecClient& operator=(const VtxRecClient&) = delete;
+  ~CoreControlClient() { if (fd_ >= 0) close(fd_); }
+  CoreControlClient() = default;
+  CoreControlClient(const CoreControlClient&) = delete;
+  CoreControlClient& operator=(const CoreControlClient&) = delete;
 
   bool open(int port) {
     fd_ = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 0);
@@ -41,6 +43,13 @@ class VtxRecClient {
     have_sent_ = true;
     last_on_ = on;
     last_ms_ = now_ms;
+    ++sent_;
+  }
+
+  void send_line(const char* line) {
+    if (fd_ < 0) return;
+    (void)sendto(fd_, line, std::strlen(line), 0, reinterpret_cast<const sockaddr*>(&addr_),
+                 sizeof(addr_));
     ++sent_;
   }
 

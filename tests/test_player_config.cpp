@@ -289,7 +289,7 @@ TEST(input_rec_rejects_a_missing_pin_bad_bias_and_unknown_keys) {
 TEST(display_vsync_defaults) {
   const auto cfg = maburplay::load_config(write_tmp_play(""));
   CHECK(cfg.display.vsync_lock == true);
-  CHECK(cfg.display.vsync_lead_ms == 6);
+  CHECK(cfg.display.vsync_lead_ms == 5);
 }
 
 TEST(display_vsync_lead_range_enforced) {

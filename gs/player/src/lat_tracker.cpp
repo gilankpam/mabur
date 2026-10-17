@@ -123,6 +123,14 @@ void LatTracker::on_present(uint32_t pts_us, uint64_t mono_us) {
   e.has_present = true;
 }
 
+void LatTracker::on_commit(uint32_t pts_us, uint64_t commit_mono_us, uint8_t bits) {
+  const int idx = find_(pts_us);
+  if (idx < 0) return;
+  Entry& e = map_[static_cast<std::size_t>(idx)];
+  e.t_commit_us = commit_mono_us;
+  e.pbits = bits;
+}
+
 void LatTracker::on_flip(uint32_t pts_us, uint64_t flip_mono_us, bool exact) {
   const int idx = find_(pts_us);
   if (idx < 0) return;
@@ -165,6 +173,8 @@ void LatTracker::on_flip(uint32_t pts_us, uint64_t flip_mono_us, bool exact) {
     r.t_flip_us = flip_mono_us;
     r.exact = exact;
     for (int i = 0; i < 8; ++i) r.seg[i] = e.seg[i];
+    r.t_commit_us = e.t_commit_us;
+    r.pbits = e.pbits;
     completed_.push_back(r);
   }
 
@@ -239,7 +249,7 @@ LatTracker::Breakdown LatTracker::p50_frame() const { return p50_frame_; }
 
 int format_frame_row(const LatTracker::FrameRow& r, char* buf, size_t n) {
   return std::snprintf(buf, n,
-      "%u %llu %u %u 0x%02x %u %llu %llu %llu %llu %u %u %u %u %u %u %u %u %u",
+      "%u %llu %u %u 0x%02x %u %llu %llu %llu %llu %u %u %u %u %u %u %u %u %u %llu 0x%02x",
       r.pts_us, static_cast<unsigned long long>(r.frame_id64),
       static_cast<unsigned>(r.sid), r.len, static_cast<unsigned>(r.flags),
       static_cast<unsigned>(r.nslices),
@@ -248,7 +258,8 @@ int format_frame_row(const LatTracker::FrameRow& r, char* buf, size_t n) {
       static_cast<unsigned long long>(r.t_decoded_us),
       static_cast<unsigned long long>(r.t_release_us),
       r.seg[0], r.seg[1], r.seg[2], r.seg[3], r.seg[4], r.seg[5],
-      r.seg[6], r.seg[7], r.exact ? 1u : 0u);
+      r.seg[6], r.seg[7], r.exact ? 1u : 0u,
+      static_cast<unsigned long long>(r.t_commit_us), static_cast<unsigned>(r.pbits));
 }
 
 }  // namespace maburplay

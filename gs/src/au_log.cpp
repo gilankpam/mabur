@@ -7,7 +7,7 @@
 namespace maburgs {
 
 AuLog::AuLog(LogWriter& w, const std::string& dir)
-    : w_(w), s_(w.open(dir, "au.log", "# aulog 6")) {}
+    : w_(w), s_(w.open(dir, "au.log", "# aulog 7")) {}
 
 void AuLog::payload(const uint8_t* d, size_t n) {
   if (head_n_ >= kHead || n == 0) return;
@@ -28,7 +28,7 @@ void AuLog::row(uint64_t t_us, const AuRecordMeta& m) {
   if (s_ == LogWriter::kBadStream) return;
   char buf[256];
   const int n = std::snprintf(
-      buf, sizeof(buf), "%llu %u %u %llu %u 0x%02x %d %llu %llu %u %u %u %u %u %u %u %llu %llu %llu",
+      buf, sizeof(buf), "%llu %u %u %llu %u 0x%02x %d %llu %llu %u %u %u %u %u %u %u %llu %llu %llu %u",
       static_cast<unsigned long long>(t_us), m.pts_us,
       static_cast<unsigned>(m.sid),
       static_cast<unsigned long long>(m.frame_id64), m.len,
@@ -41,7 +41,8 @@ void AuLog::row(uint64_t t_us, const AuRecordMeta& m) {
       static_cast<unsigned>(m.slice.filled), static_cast<unsigned>(m.slice.kept_after_hole),
       static_cast<unsigned long long>(m.t_last_arr_us),
       static_cast<unsigned long long>(m.t_drain_us),
-      static_cast<unsigned long long>(m.t_push_us));
+      static_cast<unsigned long long>(m.t_push_us),
+      static_cast<unsigned>(m.vcl_nal));
   if (n > 0)
     w_.line(s_, buf, std::min(static_cast<size_t>(n), sizeof(buf) - 1));
 }

@@ -1,5 +1,6 @@
 /* ported from waybeam_venc f956a52:src/pipeline_common.c */
 #include "pipeline_common.h"
+#include "venc_cfg.h"
 
 #include <ctype.h>
 #include <dlfcn.h>
@@ -9,15 +10,7 @@
 
 uint32_t pipeline_common_gop_frames(double gop_seconds, uint32_t fps)
 {
-	uint32_t gop_fps = fps ? fps : 30;
-	uint32_t gop_frames;
-
-	if (gop_seconds <= 0.0) {
-		return 1;
-	}
-
-	gop_frames = (uint32_t)(gop_seconds * gop_fps + 0.5);
-	return gop_frames < 1 ? 1 : gop_frames;
+	return venc_cfg_gop_frames(gop_seconds, fps);
 }
 
 #ifndef PLATFORM_CV610

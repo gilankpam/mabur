@@ -498,8 +498,9 @@ TEST(rows_follow_the_window_gate) {
 TEST(frame_row_formats_in_the_documented_column_order) {
   // frame.log's row after its t_flip column (docs/observability.md):
   // pts fid sid len flags slices t_submit t_complete t_decoded t_release
-  // enc dq air fec dec reg dsp e2e exact. flags print as au.log prints
-  // them (0x%02x), so a joined pair reads the same byte the same way.
+  // enc dq air fec dec reg dsp e2e exact t_commit pbits. flags print as
+  // au.log prints them (0x%02x), so a joined pair reads the same byte the
+  // same way; pbits are the presenter's commit bits, hex too.
   LatTracker::FrameRow r;
   r.pts_us = 1000;
   r.frame_id64 = 7;
@@ -513,12 +514,47 @@ TEST(frame_row_formats_in_the_documented_column_order) {
   r.t_release_us = 400;
   for (int i = 0; i < 8; ++i) r.seg[i] = static_cast<uint32_t>(10 + i);
   r.exact = true;
+  r.t_commit_us = 450;
+  r.pbits = 0x03;
   char buf[256];
   const int n = maburplay::format_frame_row(r, buf, sizeof(buf));
   const std::string want =
-      "1000 7 1 61234 0x80 4 100 200 300 400 10 11 12 13 14 15 16 17 1";
+      "1000 7 1 61234 0x80 4 100 200 300 400 10 11 12 13 14 15 16 17 1 450 0x03";
   CHECK(n == static_cast<int>(want.size()));
   CHECK(std::string(buf) == want);
+}
+
+TEST(on_commit_stamps_the_row_and_defaults_to_zero) {
+  LatTracker lat;
+  warm(lat);
+  maburgs::AuRecordMeta m{};
+  m.pts_us = 1000;
+  m.frame_id64 = 7;
+  m.t_first_us = 106'000;
+  m.t_complete_us = 109'000;
+  lat.on_submit(m, 108'000);
+  lat.on_decoded(1000, 111'000);
+  lat.on_present(1000, 112'000);
+  lat.on_commit(1000, 112'400, 0x02);
+  lat.on_flip(1000, 116'000, /*exact=*/true);
+  const auto L = lat.flush_line();
+  CHECK(L.rows.size() == 1);
+  CHECK(L.rows[0].t_commit_us == 112'400);
+  CHECK(L.rows[0].pbits == 0x02);
+
+  // A frame the presenter parked (no commit) keeps 0 / the parked bit only.
+  m.pts_us = 2000;
+  m.t_first_us = 122'000;
+  m.t_complete_us = 125'000;
+  lat.on_submit(m, 124'000);
+  lat.on_decoded(2000, 127'000);
+  lat.on_present(2000, 128'000);
+  lat.on_commit(2000, 0, 0x04);
+  lat.on_flip(2000, 133'000, /*exact=*/true);
+  const auto L2 = lat.flush_line();
+  CHECK(L2.rows.size() == 1);
+  CHECK(L2.rows[0].t_commit_us == 0);
+  CHECK(L2.rows[0].pbits == 0x04);
 }
 
 MTEST_MAIN

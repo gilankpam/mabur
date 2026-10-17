@@ -84,11 +84,25 @@ Bench record: `docs/findings/2026-10-10-slice-salvage.md`.
 
 ## Known limits
 
-- Refresh-start pictures stay one slice (SDK: it won't cut through the
-  whole-picture refresh stripe); damaged ones pass through. Splitting them
-  needs `intra_refresh_frames >= 4`, which breaks base-loss self-healing
-  under SVC-T — measured, `docs/findings/2026-10-09-venc-slice.md`
-  "Can the refresh-start picture be split?".
+- Refresh-start pictures (the GDR sweep, only with `venc.gop_s > 0`)
+  stay one slice; damaged ones pass through. The bundle ships the sweep
+  off (`gop_s = 0`, `intra_refresh_frames = 0`), and then the IDR — the
+  only key frame — is split by the configured `slices` like any other
+  picture. With the sweep on, the
+  SDK slices a refresh picture at its intra-stripe bands, not at the
+  configured split: `intra_refresh_frames = F` gives F slices, and the
+  whole-picture stripe of F = 1 is one slice by construction. Spreading
+  the stripe (F ≥ 2) splits the picture but never heals below the top
+  band under SVC-T — stripes 1 … F−1 land on the frames after the refresh
+  start, which no later base frame references, whatever `ref_enhance` or
+  the GOP length — so a periodic-refresh config keeps F = 1. The SDK exports no other slice or
+  refresh verb, and the order of `SetH265SliceSplit` and
+  `SetIntraRefresh` around `StartRecvPic` makes no difference. A refresh
+  picture whose slice count differs from `slices` is stamped
+  `slice_rows = 0` (`slice_mismatch`).
+  Measured: `docs/findings/2026-10-15-gdr-slices.md`,
+  `docs/findings/2026-10-09-venc-slice.md` "Can the refresh-start picture
+  be split?".
 - A damaged IDR passes through (`islice`).
 - The web GS's local/replay recorder (`RawDvr` in `web/src/web_main.cpp`)
   records complete AUs only — its `on_au` callback feeds `a.complete`, not
@@ -208,8 +222,15 @@ Bench record: `docs/findings/2026-10-10-slice-salvage.md`.
 - The assembler's hold-back: slice k is only known whole when slice k+1's
   start code arrives, so of a 4-slice picture slices 0–2 decode while the
   air delivers the rest and slice 3 goes in at the close.
-- Refresh-start pictures stay one slice: they decode whole, and pay the
-  link-mode-off cost.
+- Refresh-start pictures (GDR, `venc.gop_s > 0`) stay one slice: they
+  decode whole, and pay the link-mode-off cost. With the sweep off (the
+  bundle) the IDR is sliced by the normal split and streams like a P
+  picture; a damaged one still passes through whole (`islice`: there is
+  no skip-slice fill for an I picture). rkvdec2's stream mode is slice-granular — a slice
+  handed over in byte parts is not decoded as it arrives (the decoder
+  ignores a `str_len` inside a slice, and runs into unwritten bytes when
+  they are not there: corruption and a reset every time), measured in
+  `docs/findings/2026-10-15-gdr-slices.md`.
 - Every stream abort costs one rkvdec reset (the kernel pads the picture
   and the decoder errors); salvaged AUs stream without one. A plain restart
   of maburplay does not: the clean-shutdown drain above finishes the open
@@ -228,10 +249,13 @@ Full record: `docs/findings/2026-10-10-slice-salvage.md`.
   in ffmpeg with zero slice-data/CABAC errors. A filled band is a slightly
   stale copy of the previous frame. Enhance fills never propagate; a base
   fill is a reference, so moving content drifts blocky inside that band
-  until the next refresh-start picture (≤ 0.5 s).
+  until the IDR the GS requests for it (`docs/fec-nack.md` "Demand
+  refresh").
 - **Streamed decode** (with FeedLoop): `dec` p50 −2.7 ms (means), `e2e`
-  p50 −2.3 ms; ~96 % of AUs stream, the rest are the one-slice
-  refresh starts, which decode whole. Turning rkvdec2 link mode off costs nothing
+  p50 −2.3 ms; ~96 % of AUs stream, the rest were the one-slice
+  refresh-start pictures of the GDR refresh the bench ran, which
+  decode whole (with the sweep off, as the bundle ships, the IDR is
+  sliced and streams too). Turning rkvdec2 link mode off costs nothing
   measurable. Killing a stream-on maburplay mid-stream: 0 of 10 resets.
 
 ## Choosing the slice count

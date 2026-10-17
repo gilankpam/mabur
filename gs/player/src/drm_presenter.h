@@ -154,6 +154,33 @@ class DrmPresenter {
   void set_paced(bool paced);
   uint64_t mailbox_dropped_paced() const;
 
+  // What the last present() did, for frame.log's t_commit/pbits columns:
+  // when the atomic commit ioctl returned (mono µs; 0 when the frame was
+  // parked in the mailbox or the commit failed) and how it was shaped.
+  enum CommitBits : uint8_t {
+    kCommitOsd = 0x01,      // the OSD plane rode along (vsync-paced, no ASYNC)
+    kCommitAsync = 0x02,    // DRM_MODE_PAGE_FLIP_ASYNC was set
+    kCommitParked = 0x04,   // a flip was still in flight: frame went to the mailbox
+    kCommitFailed = 0x08,   // the commit ioctl failed (frame released)
+    kCommitModeset = 0x10,  // blocking ALLOW_MODESET commit
+  };
+  struct CommitInfo {
+    uint64_t t_commit_us = 0;
+    uint8_t bits = 0;
+  };
+  CommitInfo last_commit() const;
+
+  // Where present()'s time goes, per stage, over the frames since the
+  // last call (then cleared): framebuffer acquire (the cached dma-buf
+  // import + AddFB2, fb_cache.h), request build, the atomic commit ioctl.
+  // µs, p50 and max of the window.
+  struct PresentTiming {
+    uint32_t n = 0;
+    uint32_t p50[3] = {0, 0, 0};
+    uint32_t max[3] = {0, 0, 0};
+  };
+  PresentTiming present_timing();
+
   // Vsync timestamp sink for LatTracker: called at the pending ->
   // on_screen promotion inside on_flip() with the frame's pts and the
   // kernel-reported (or, absent DRM_CAP_TIMESTAMP_MONOTONIC, mono_us()

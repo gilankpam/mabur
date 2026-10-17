@@ -21,7 +21,7 @@ TEST(fec_log_header_row_and_name) {
   log.row(1234.6, 1, 5, 40, 0.5, e);
   w.flush_now();
   std::string text = read_all(log.path());
-  CHECK(text.rfind("feclog 3\n", 0) == 0);
+  CHECK(text.rfind("feclog 4\n", 0) == 0);
   CHECK(text.find("\n1235 1 5 40 0.50 3 7 12 11 4 1 2 32 32\n") != std::string::npos);
 }
 TEST(fec_log_bad_dir_is_nonfatal) {
@@ -29,5 +29,20 @@ TEST(fec_log_bad_dir_is_nonfatal) {
   maburgs::FecLog log(w, "/nonexistent-dir-xyz");
   CHECK(!log.ok());
   log.row(0, 0, 0, 20, 0.0, mabur::LossEpisode{});
+}
+TEST(fec_log_request_and_heal_rows) {
+  std::string dir = "build_fec_log_test_rh";
+  (void)std::system(("rm -rf " + dir).c_str()); mkdir(dir.c_str(), 0755);
+  maburgs::LogWriter w;
+  maburgs::FecLog log(w, dir);
+  REQUIRE(log.ok());
+  log.request(2000.4, "hole", 1);
+  log.request(2300.0, "hole", 2);
+  log.heal(2412.0, 412, 1);
+  w.flush_now();
+  std::string text = read_all(log.path());
+  CHECK(text.find("\nI 2000 hole 1\n") != std::string::npos);
+  CHECK(text.find("\nI 2300 hole 2\n") != std::string::npos);
+  CHECK(text.find("\nH 2412 412 1\n") != std::string::npos);
 }
 MTEST_MAIN

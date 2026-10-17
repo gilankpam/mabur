@@ -1970,6 +1970,113 @@ def test_session_dir_mode_prints_fec_section():
     assert "FEC EPISODES" in result.stdout, result.stdout
 
 
+class RefreshTieOrderTest(unittest.TestCase):
+    # maburgs writes I/H rows in event order. A new request in the same
+    # millisecond as the heal before it is a new request, not a retry.
+    FEC = ("feclog 4\n"
+           "I 1000 hole 1\n"
+           "H 1100 100 0\n"
+           "I 1100 hole 2\n"
+           "H 1200 100 0\n")
+
+    def test_same_ms_request_after_a_heal_is_a_new_request(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "fec.log")
+            open(p, "w").write(self.FEC)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                flightreport.print_refresh_report(flightreport.load_refresh_rows(p))
+            text = out.getvalue()
+            self.assertIn("requests=2", text)
+            self.assertIn("retries=0", text)
+
+
+class RefreshReportTest(unittest.TestCase):
+    # The second FEC episode row sits at t=12000, 2.5 s after the dvr
+    # request at t=9000 -- outside the 2 s join window -- so only the
+    # hole request at t=1052 (0.052 s before the first episode's t=1000)
+    # lines up with an episode.
+    FEC = ("feclog 4\n"
+           "1000 0 4 40 0.50 10 7 12 11 4 1 0 32 32\n"
+           "I 1052 hole 1\n"
+           "I 1352 hole 2\n"
+           "H 1480 428 1\n"
+           "I 9000 dvr 3\n"
+           "H 9120 120 0\n"
+           "12000 1 4 40 0.25 90 3 3 3 0 0 0 8 32\n")
+
+    def test_episode_loader_skips_request_rows(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "fec.log")
+            open(p, "w").write(self.FEC)
+            rows = flightreport.load_feclog(p)
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(rows[0]["rtx"], 4)
+
+    def test_refresh_rows_and_report(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "fec.log")
+            open(p, "w").write(self.FEC)
+            rr = flightreport.load_refresh_rows(p)
+            self.assertEqual([r["reason"] for r in rr["I"]], ["hole", "hole", "dvr"])
+            self.assertEqual(rr["H"][0]["heal_ms"], 428)
+            ctl_E = [{"t_ms": 1500.0, "from": 4, "to": 3, "reason": "s3_residual"}]
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                flightreport.print_refresh_report(rr, ctl_E=ctl_E, fec_rows=flightreport.load_feclog(p))
+            text = out.getvalue()
+            self.assertIn("REFRESH", text)
+            self.assertIn("hole=1", text)        # requests by reason (retries excluded)
+            self.assertIn("dvr=1", text)
+            self.assertIn("retries=1", text)
+            self.assertIn("heal_ms p50/p90/max=120/428/428", text)
+            self.assertIn("with demote within 2 s: 1", text)
+            self.assertIn("with fec episode within 2 s: 1", text)
+            self.assertNotIn("/min", text)       # no session span given: no rate
+
+    def _report(self, rr, **kw):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            flightreport.print_refresh_report(rr, **kw)
+        return out.getvalue()
+
+    def test_rate_is_per_session_minute(self):
+        rr = {"I": [{"t_ms": 1000.0, "reason": "hole", "epoch": 1},
+                    {"t_ms": 2000.0, "reason": "dvr", "epoch": 2}],
+              "H": [{"t_ms": 1150.0, "heal_ms": 150, "retries": 0},
+                    {"t_ms": 2150.0, "heal_ms": 150, "retries": 0}]}
+        # Two requests one second apart in a two-minute session: 1.0/min,
+        # not the 2-per-1.15 s figure the I/H rows alone would give.
+        self.assertIn("requests=2 (1.0/min)", self._report(rr, span_ms=120000.0))
+
+    def test_single_request_prints_no_rate(self):
+        rr = {"I": [{"t_ms": 1000.0, "reason": "start", "epoch": 1}],
+              "H": [{"t_ms": 1150.0, "heal_ms": 150, "retries": 0}]}
+        text = self._report(rr, span_ms=120000.0)
+        self.assertIn("requests=1 start=1", text)
+        self.assertNotIn("/min", text)        # one request is not a rate
+
+    def test_refresh_span_takes_the_session_extent(self):
+        rr = {"I": [{"t_ms": 5000.0, "reason": "hole", "epoch": 1}],
+              "H": [{"t_ms": 5200.0, "heal_ms": 200, "retries": 0}]}
+        ctl = {"S": [{"t_ms": 0.0}, {"t_ms": 60000.0}], "E": []}
+        self.assertEqual(flightreport.refresh_span_ms(rr, ctl=ctl), 60000.0)
+        fec = [{"t_ms": 1000.0}, {"t_ms": 9000.0}]
+        self.assertEqual(flightreport.refresh_span_ms(rr, fec_rows=fec), 8000.0)
+        # Only the I/H rows themselves: the span is unknown.
+        self.assertIsNone(flightreport.refresh_span_ms(rr))
+
+    def test_bare_feclog_single_request_prints_no_absurd_rate(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "fec.log")
+            open(p, "w").write("feclog 4\nI 1000 hole 1\nH 1150 150 0\n")
+            result = subprocess.run([sys.executable, "tools/flightreport.py", p],
+                                    capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("requests=1 hole=1", result.stdout)
+        self.assertNotIn("/min", result.stdout)
+
+
 if __name__ == "__main__":
     test_fec_section_counterfactual_overhead_per_sid_and_rung()
     test_session_dir_mode_prints_fec_section()

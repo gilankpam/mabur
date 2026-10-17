@@ -118,8 +118,8 @@ class VrxController {
   void set_keepalive_hold(bool hold) { keepalive_hold_ = hold; }
   // VTX recorder wish for every RCF (RecControl::wire()).
   void set_rec_wish(uint8_t w) { rec_wish_ = w; }
-  // GS-requested IDR epoch for every RCF. Only the web GS
-  // calls this; maburgs leaves it at 0.
+  // GS-requested IDR epoch for every RCF: maburgs sets it from its
+  // RefreshRequester each tick, the web GS from its own request counter.
   void set_idr_epoch(uint8_t e) { idr_epoch_ = e; }
   uint8_t proposal() const { return rz_.proposal(); }
   // Last accepted ack's agreed_channel (0 before any accept). Set BEFORE

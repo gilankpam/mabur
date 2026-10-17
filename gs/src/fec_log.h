@@ -36,6 +36,13 @@ namespace maburgs {
 // still residual loss to the ladder (ladder_residual.cpp counts them the
 // same way).
 //
+// feclog 4 adds two row kinds that start with a letter, so an episode row
+// still starts with its t_ms:
+//   I <t_ms> <reason> <epoch>       an IDR request went out (reason: what
+//                                   armed it -- hole, salvaged, lost, start,
+//                                   resync, decoder, dvr; a retry repeats it)
+//   H <t_ms> <heal_ms> <retries>    a complete base IRAP cleared the request
+//
 // Every failure mode is non-fatal: ok() reads false and row() is a no-op.
 class FecLog {
  public:
@@ -49,6 +56,9 @@ class FecLog {
   const std::string& path() const { return w_.path(s_); }
 
   void row(double t_ms, int sid, int mcs, int bw, double ov, const mabur::LossEpisode& e);
+
+  void request(double t_ms, const char* reason, uint8_t epoch);
+  void heal(double t_ms, uint64_t heal_ms, uint64_t retries);
 
  private:
   LogWriter& w_;

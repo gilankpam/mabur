@@ -35,9 +35,11 @@ EOF
 # is added anyway for symmetry with --min-stream0 and to be explicit about
 # what's being gated.
 echo "== clean: all 13 frames recovered NAL-exact, both streams =="
-"$MABURGS" -c "$GSCFG" --dry-run --in "$TMP/frames.bin" --out-aus "$TMP/aus0.bin"
+"$MABURGS" -c "$GSCFG" --dry-run --in "$TMP/frames.bin" --out-aus "$TMP/aus0.bin" \
+  2> "$TMP/clean.err"
 python3 tests/integration/verify_aus.py "$TMP/aus0.bin" "$FIX" --require-all \
   --min-stream0 1.0 --min-stream1 1.0
+grep -qE 'refresh_requests=0$' "$TMP/clean.err" || { echo "clean replay must not ask for a refresh"; cat "$TMP/clean.err"; exit 1; }
 
 echo "== 15% single-card loss: both streams must fully deliver =="
 # Seed pinned to 3: 15% loss lands across the WHOLE 30-body population (IDR
@@ -66,5 +68,17 @@ echo "== 2 cards, 20% independent loss each: union recovers everything, both str
   --cards 2 --drop-pct 20 --seed 2 --out-aus "$TMP/aus2.bin"
 python3 tests/integration/verify_aus.py "$TMP/aus2.bin" "$FIX" --require-all \
   --min-stream0 1.0 --min-stream1 1.0
+
+echo "== 40% loss past the FEC: a lost or truncated AU must raise a refresh request =="
+# Seed 2 truncates a base AU and skips a whole AU mid-stream (frames_out
+# truncated=1), so this run arms on a base hole and on an AU the stream
+# skipped ("lost": the skipped AU's layer is unknown, so it counts as base;
+# the AU emitted after the skip carries it). AUs lost after the fixture's
+# last AU have no successor to carry them and arm nothing here. The
+# fixture's only IRAP is its first frame, so the request never heals and
+# the count stays at 1.
+"$MABURGS" -c "$GSCFG" --dry-run --in "$TMP/frames.bin" \
+  --drop-pct 40 --seed 2 --out-aus "$TMP/aus3.bin" 2> "$TMP/lossy.err" || true
+grep -E 'refresh_requests=[1-9]' "$TMP/lossy.err" || { echo "lossy replay produced no refresh request"; cat "$TMP/lossy.err"; exit 1; }
 
 echo "== all GS E2E checks passed =="

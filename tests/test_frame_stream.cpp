@@ -140,6 +140,33 @@ TEST(lookahead_forces_advance) {
   CHECK(fs.frames_clean() == 3);
 }
 
+// Whole AUs the stream skips ride on the AU emitted right after them, in
+// stream order, so the refresh requester can tell a skip healed by the IDR
+// that follows it from a skip that needs one. A late copy of a skipped AU is
+// evicted, not booked again.
+TEST(skipped_aus_ride_on_the_next_emitted_au) {
+  Capture cap;
+  FrameStream fs({50, 8}, cap.cbs());
+  mabur::Fragmenter frag;
+  std::vector<uint8_t> pay(400, 0x5A);
+  auto f0 = frag_frame(frag, 0, pay);
+  auto f1 = frag_frame(frag, 1, pay);    // frame 1: wholly lost for now
+  auto f2 = frag_frame(frag, 2, pay);
+  auto f3 = frag_frame(frag, 3, pay);
+  for (auto& p : f0) fs.push_fragment(1, p.data(), p.size(), 10);
+  for (auto& p : f2) fs.push_fragment(1, p.data(), p.size(), 11);
+  for (auto& p : f3) fs.push_fragment(1, p.data(), p.size(), 11);
+  fs.poll(80);                           // the gap before frame 2 goes stale
+  REQUIRE(cap.evs.size() == 6);          // B E (0), B E (2), B E (3)
+  CHECK(cap.evs[1].lat.skipped_before == 0);
+  CHECK(cap.evs[2].hdr.frame_id == 2);
+  CHECK(cap.evs[3].lat.skipped_before == 1);
+  CHECK(cap.evs[5].lat.skipped_before == 0);
+  for (auto& p : f1) fs.push_fragment(1, p.data(), p.size(), 90);   // late copy
+  fs.poll(91);
+  CHECK(cap.evs.size() == 6);            // evicted, never emitted, never re-booked
+}
+
 TEST(discontinuity_resets_ordering) {
   Capture cap;
   FrameStream fs({50, 8}, cap.cbs());
@@ -506,6 +533,45 @@ TEST(salvage_rebuilds_a_holed_split_au) {
   CHECK(fs.slice_salvaged() == 1);
   CHECK(fs.slices_filled() == 1);
   CHECK(fs.frames_truncated() == 1);   // still a truncation; salvaged is a subset
+}
+
+TEST(vcl_nal_is_the_first_slice_type_of_a_complete_param_set_au) {
+  const auto aus = mtest::load_slice_fixture();
+  // The fixture's refresh start (aus[3]) is VPS/SPS/PPS + TRAIL_R slices.
+  Capture cap;
+  FrameStream fs({50, 8}, cap.cbs_with_tail());
+  for (auto& p : frag_au(0, aus[3], 0, 0)) fs.push_fragment(0, p.data(), p.size(), 1);
+  REQUIRE(cap.evs.size() == 2);
+  CHECK(cap.evs[1].complete);
+  CHECK(cap.evs[1].lat.vcl_nal == 1);          // TRAIL_R: a refresh start, not an IRAP
+
+  // The same parameter sets ahead of a hand-built IDR_W_RADL slice header.
+  std::vector<uint8_t> idr;
+  for (const mabur::NalView& v : mabur::split_nals(aus[3].data(), aus[3].size())) {
+    if (v.type < 32) break;
+    const size_t s = mtest::start_code_pos(aus[3], v.p);
+    const size_t e = static_cast<size_t>(v.p - aus[3].data()) + v.n;
+    idr.insert(idr.end(), aus[3].begin() + static_cast<long>(s), aus[3].begin() + static_cast<long>(e));
+  }
+  const uint8_t slice[] = {0, 0, 0, 1, static_cast<uint8_t>(19 << 1), 0x01, 0xAF, 0x08, 0x12};
+  idr.insert(idr.end(), slice, slice + sizeof(slice));
+  Capture cap2;
+  FrameStream fs2({50, 8}, cap2.cbs_with_tail());
+  for (auto& p : frag_au(0, idr, 0, 0)) fs2.push_fragment(0, p.data(), p.size(), 1);
+  REQUIRE(cap2.evs.size() == 2);
+  CHECK(cap2.evs[1].complete);
+  CHECK(cap2.evs[1].lat.vcl_nal == 19);
+}
+
+TEST(vcl_nal_is_zero_on_an_au_without_param_sets) {
+  Capture cap;
+  FrameStream fs({50, 8}, cap.cbs());
+  mabur::Fragmenter frag;
+  const std::vector<uint8_t> p_frame = {0, 0, 0, 1, static_cast<uint8_t>(1 << 1), 0x01, 0xE0, 0x10, 0x22};  // TRAIL_R
+  for (auto& p : frag_frame(frag, 0, p_frame))
+    fs.push_fragment(0, p.data(), p.size(), 10);
+  REQUIRE(cap.evs.size() == 2);
+  CHECK(cap.evs[1].lat.vcl_nal == 0);
 }
 
 TEST(params_split_across_small_fragments_still_arm_salvage) {

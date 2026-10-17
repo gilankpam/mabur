@@ -155,7 +155,7 @@ class FrameStream {
   void try_emit(uint64_t now_ms);
   void finish(Slot& s, bool complete);
   uint64_t unwrap_id(uint16_t id, uint8_t flags, bool* rebased);
-  void feed_params(const Slot& s);
+  void feed_params(Slot& s);
 
   uint64_t gap_ms_max() const { return std::max(gap_ms_[0], gap_ms_[1]); }
 

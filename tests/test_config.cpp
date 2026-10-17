@@ -541,6 +541,19 @@ TEST(venc_range_checks) {
   }
 }
 
+TEST(venc_gop_s_zero_means_no_periodic_refresh) {
+  // Everything else from the valid block; gop_s 0 is the "never" switch,
+  // not an out-of-range value.
+  std::string toml = valid_venc_block();
+  const auto p = toml.find("gop_s = 2.0");
+  REQUIRE(p != std::string::npos);
+  toml.replace(p, std::string("gop_s = 2.0").size(), "gop_s = 0");
+  auto path = write_temp_toml(toml);
+  Config c = load_config(path.string());
+  CHECK(c.venc.core.gop_s == 0.0);
+  std::filesystem::remove(path);
+}
+
 TEST(uep_layers_overhead_is_literal_base_overhead) {
   Config cfg;  // defaults: base_overhead = 0.5, literal
   auto layers = cfg.uep_layers();

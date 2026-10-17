@@ -512,20 +512,24 @@ See `docs/airtime-model.md` §1 and §7.
   encoder's own chain-break signal.
   - The pacer enforces a 100 ms floor between any two IDRs, plus a 1 s
     holdoff between chain-break IDRs.
-  - A refused request is DROPPED, not queued; the next real break
-    re-raises it.
   - The chain-break path is an atomic flag set from the venc callback and
     consumed at the top of `tick()`. It is evaluated against the state as
     of tick entry, so a break arriving on the same tick as a missed
     feedback deadline still heals.
-  - Dropping rather than deferring is affordable because the GOP is the
-    backstop: an unhealed break self-clears within one `venc.gop_s`. The
-    bundle ships 0.5; the code default is 2.0. Raising `gop_s` stretches
-    that safety net, and the drop-vs-defer choice would need re-arguing.
+  - A refused chain-break request is deferred, not dropped: with no
+    periodic refresh (`venc.gop_s` 0, the bundle default) there is no GOP
+    to self-clear an unhealed break. It is served on the first tick past
+    the floor and the holdoff; session edges clear it, the link-up IDR
+    covers whatever broke while unlinked. Served count:
+    `RcAgent::idr_chain_total()`.
   - The one exception is a **GS-requested** IDR (RCF `idr_epoch`). An epoch
     change raises a pending request that survives a pacer refusal and goes
-    out on the first tick past the floor. The requester (the web GS page)
-    is frozen waiting on it, and its own retry is 300 ms.
+    out on the first tick past the floor. maburgs's `RefreshRequester` and
+    the web GS page both drive `idr_epoch`; each retries every 300 ms.
+    Only the web page actually freezes waiting on it — maburplay/MPP
+    conceals and keeps decoding instead (`docs/slices.md`,
+    `docs/web-gs.md` "Known limits"). See `docs/fec-nack.md` "Demand
+    refresh".
   - Session edges (DISC, unconfirmed move, FAILSAFE) clear the pending
     request. The entering-LINKED IDR on a return from FAILSAFE/RENDEZVOUS
     also clears it, so no redundant second IDR follows.

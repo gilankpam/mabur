@@ -45,13 +45,12 @@ roi_qp_normal      = 0
 sensor_bin = "/etc/sensors/imx415_greg_fpvXIX_colortrans.bin"  # camera sensor tuning file
 size       = "1920x1080"
 fps        = 60
-gop_s      = 0.5           # seconds between keyframes
+gop_s      = 0             # seconds between refresh starts; 0 = none: the GS asks for an IDR when its picture is damaged
 qp_delta   = 4             # quality offset between keyframes and P-frames
 max_ipprop = 2             # keyframe may be at most this many times a P-frame's size
 min_iqp    = 34            # keyframe quality floor: higher = smaller keyframes
-intra_refresh_frames = 1   # frames to refresh the whole picture, so a lost frame heals without
-                           # a keyframe (1 = fastest; larger = steadier bitrate, slower recovery; 0 = off)
-intra_refresh_qp   = 36    # quality of the refreshed areas: lower = sharper, more bits
+intra_refresh_frames = 0   # rolling-refresh sweep length; 0 = off (it only runs at a GOP start, so 0 whenever gop_s is 0)
+intra_refresh_qp   = 36    # requested QP of the refreshed areas; star6e CBR ignores it (coded at the RC's QP)
 ref_base    = 1            # temporal layering: a base layer every frame can decode from...
 ref_enhance = 1            # ...plus droppable enhance frames between them
 ref_pred    = true         # enhance frames may also predict from the base layer

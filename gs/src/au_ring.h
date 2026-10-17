@@ -123,6 +123,7 @@ struct AuRecordMeta {
   uint64_t t_drain_us = 0;
   uint64_t t_push_us = 0;
   SliceSalvage slice;
+  uint8_t vcl_nal = 0;  // writer side only, from AuLatMeta
 };
 
 // GS-side per-AU latency stamps (SlotHdr v2). Passed to finish() so the
@@ -156,6 +157,16 @@ struct AuLatMeta {
   // for this AU. finish() turns slice.salvaged into kRecFlagSliceSalvaged;
   // the counts ride to AuLog through last_record(). Not in the SlotHdr.
   SliceSalvage slice;
+  // First VCL NAL type of a complete parameter-set-led AU (VPS/SPS/PPS
+  // first), 0 otherwise: FrameStream::feed_params scans exactly that
+  // prefix, so this is free. 16..21 is an IRAP; a refresh start is TRAIL_R.
+  // au.log's vcl column and the refresh requester's clearing condition.
+  uint8_t vcl_nal = 0;
+  // Whole AUs FrameStream skipped (never emitted) immediately before this
+  // one, in stream order. The refresh requester reads them here, on the
+  // AU that follows them, so a skip healed by the IRAP right after it asks
+  // for nothing. Not in the SlotHdr or au.log.
+  uint32_t skipped_before = 0;
 };
 
 // Creates/truncates the ring file and publishes AUs. Never blocks on

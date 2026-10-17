@@ -1147,6 +1147,7 @@ TEST(exports_hop_block_and_card_dwell) {
   in.hop.holds = 0;
   in.hop.last_ms = 250;
   in.hop.sweep_timeouts = 3;
+  in.hop.sampler_dropped = 4;
   in.cards[0].dwell = StatsDwellIn{12, 13, 9800};
   in.cards.push_back(StatsCardIn{});  // card 1: never scouted -> dwell stays null
   Capture cap;
@@ -1158,6 +1159,7 @@ TEST(exports_hop_block_and_card_dwell) {
   CHECK(j["hop"]["evidence"] == 6);
   CHECK(j["hop"]["ref_rung"] == 3);
   CHECK(j["hop"]["epoch"] == 2);
+  CHECK(j["hop"]["sampler_dropped"] == 4);
   CHECK(j["hop"]["state"] == "ordered");
   CHECK(j["hop"]["target"] == 149);
   CHECK(j["hop"]["hops"] == 1);
@@ -1296,6 +1298,30 @@ TEST(link_nack_block_and_drone_nack_counters) {
   in.nack.enabled = false;
   ex.poll(2200, in);
   CHECK(!cap.last()["link"].contains("nack"));
+}
+
+// Demand refresh: link.refresh carries the RefreshRequester's cumulative
+// counters and the per-reason arming tally, only when the core has one.
+TEST(link_refresh_block) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  ex.poll(1000, in);
+  CHECK(!cap.last()["link"].contains("refresh"));   // absent until the core has one
+  in.refresh.present = true;
+  in.refresh.armed = true;
+  in.refresh.c.requests = 3; in.refresh.c.retries = 1; in.refresh.c.heals = 2;
+  in.refresh.c.heal_ms_last = 140;
+  in.refresh.c.by_reason[static_cast<size_t>(maburgs::RefreshRequester::Reason::kHole)] = 2;
+  in.refresh.c.by_reason[static_cast<size_t>(maburgs::RefreshRequester::Reason::kDvr)] = 1;
+  ex.poll(1600, in);
+  json j = cap.last();
+  CHECK(j["link"]["refresh"]["armed"] == true);
+  CHECK(j["link"]["refresh"]["requests"] == 3 && j["link"]["refresh"]["retries"] == 1 &&
+        j["link"]["refresh"]["heals"] == 2 && j["link"]["refresh"]["heal_ms_last"] == 140);
+  CHECK(j["link"]["refresh"]["by_reason"]["hole"] == 2);
+  CHECK(j["link"]["refresh"]["by_reason"]["dvr"] == 1);
+  CHECK(j["link"]["refresh"]["by_reason"]["resync"] == 0);
 }
 
 TEST(video_exports_slice_salvage_counters) {

@@ -46,10 +46,10 @@ ChannelCore::ChannelCore(ChannelCoreCfg cfg, std::vector<LinkCard*> cards, VrxCo
       window_prev_crc_(static_cast<size_t>(n_cards_), 0),
       window_prev_ok_(static_cast<size_t>(n_cards_), false),
       window_prev_ms_(static_cast<size_t>(n_cards_), 0),
-      nhm_win_(static_cast<size_t>(n_cards_)),
-      dwell_gen_(static_cast<size_t>(n_cards_)) {
+      dwell_gen_(static_cast<size_t>(n_cards_)),
+      tune_gen_(static_cast<size_t>(n_cards_)),
+      card_blocked_(static_cast<size_t>(n_cards_)) {
   gs_start_ms_ = now_ms_();
-  nhm_op_period_ = nhm_period_4us(std::max(cfg_.hop.window_ms - 10, 1));
   can_scout_.assign(static_cast<size_t>(n_cards_), false);
   can_sweep_.assign(static_cast<size_t>(n_cards_), false);
   for (int i = 0; i < n_cards_; ++i)
@@ -116,6 +116,15 @@ ChannelCore::ChannelCore(ChannelCoreCfg cfg, std::vector<LinkCard*> cards, VrxCo
   if (pinned_) frozen_pick_ = cfg_.start_ch;
   tx_card_now_.store(0);
   last_video_ch_ = cfg_.start_ch;   // old main.cpp: uint8_t last_video_ch = start_ch;
+  op_atomic_.store(cfg_.start_ch, std::memory_order_relaxed);
+  WindowSamplerCfg wsc;
+  wsc.window_ms = cfg_.hop.window_ms;
+  wsc.nhm_period_4us = nhm_period_4us(std::max(cfg_.hop.window_ms - 10, 1));
+  wsc.busy_dbm = cfg_.radio.scan.busy.busy_dbm;
+  sampler_ = std::make_unique<WindowSampler>(
+      cards_, wsc,
+      WindowGates{in_session_atomic_, cal_running_atomic_, op_atomic_, dwell_busy_, dwell_card_,
+                  dwell_gen_, tune_gen_, card_blocked_});
 }
 
 ChannelCore::~ChannelCore() { shutdown(); }
@@ -143,6 +152,7 @@ ChannelSnapshot ChannelCore::snapshot(int tx_card) const {
   s.hop.holds = hopc_.holds();
   s.hop.last_ms = last_hop_event_ms_;
   s.hop.sweep_timeouts = sweep_timeouts_;
+  s.hop.sampler_dropped = sampler_dropped();
   s.energy = energy_last_;
   s.dwell = dwell_stats_;
   s.scout_gated_sends = scout_gated_sends_;
@@ -166,6 +176,7 @@ ChannelTickOut ChannelCore::tick(const ChannelTickIn& in) {
   step_scout_inputs_();
   step_boot_pick_(in);
   step_store_();
+  step_gates_();
   step_hop_edge_and_window_(in);
   step_controller_(in);
   step_move_edge_(in);
@@ -177,6 +188,9 @@ ChannelTickOut ChannelCore::tick(const ChannelTickIn& in) {
                     static_cast<unsigned>(ev.from), static_cast<unsigned>(ev.to)));
   }
   step_mechanical_retune_();
+  // Again at the end: a scout search or relay sweep started during this
+  // tick is gated before the sampler's next pass, not a tick later.
+  step_gates_();
   // s1_hop_loss is fed from the same base-sid arrival counters as the
   // assembler's s1_loss, on the same now_ms.
   // Fed at the end of tick() (old main.cpp: right after fstream.poll);
@@ -194,6 +208,16 @@ ChannelTickOut ChannelCore::tick(const ChannelTickIn& in) {
 
 void ChannelCore::run_scout_step() { if (scout_) scout_->run_once(); }
 void ChannelCore::run_inflight_step() { inflight_body_(); }
+
+void ChannelCore::step_gates_() {
+  op_atomic_.store(plan_.op(), std::memory_order_relaxed);
+  for (int i = 0; i < n_cards_; ++i)
+    card_blocked_[static_cast<size_t>(i)].store(
+        (scout_owns_() && i == scout_card_) || (sweep_.on && sweep_.card == i),
+        std::memory_order_release);
+}
+
+void ChannelCore::run_sampler_step() { sampler_->step_now(now_ms_u_cur_); }
 
 void ChannelCore::on_card_died(int card) {
   if (sweep_.on && sweep_.card == card) sweep_ = PendingSweep{};   // no result coming; not a timeout
@@ -220,6 +244,7 @@ void ChannelCore::on_card_reopened(int card) {
 void ChannelCore::shutdown() {
   if (shut_) return;
   shut_ = true;
+  if (sampler_) sampler_->stop();
   scout_run_.store(false);
   if (inflight_started_ && scout_thread2_.joinable()) scout_thread2_.join();
   if (scout_) scout_->stop();
@@ -456,67 +481,63 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
                                     : 0;
     au_seq_prev_ = au_seq_.load(std::memory_order_relaxed);
     verdict_.new_session();
-    last_window_ms_ = now_ms_u;
+    sampler_->reset(now_ms_u);
   }
-  if (!(active && now_ms_u - last_window_ms_ >= static_cast<uint64_t>(cfg_.hop.window_ms))) return;
-  last_window_ms_ = now_ms_u;
+  if (!active) return;
+  if (cfg_.threaded) {
+    // One thread for the window's card reads, started once the hop is
+    // live; it stays up across sessions and samples only while active.
+    if (!sampler_started_) {
+      sampler_started_ = true;
+      sampler_->start(now_ms_, sleep_);
+    }
+  } else {
+    sampler_->step(now_ms_u);
+  }
+  const auto rec = sampler_->take();
+  if (!rec) return;
+  const uint64_t t_ms = rec->t_ms;   // the sample instant: every per-window span is measured to it
   std::vector<VerdictCardIn> vc(static_cast<size_t>(n_cards_));
   int starved_valid = 0;
   bool starved_all_zero = true;
   for (int i = 0; i < n_cards_; ++i) {
-    auto& fe = *cards_[static_cast<size_t>(i)];
     const size_t si = static_cast<size_t>(i);
-    const SurveyWindow sw = fe.read_survey_window();   // always: rebases the card's window
-    const bool busy = (dwell_busy_.load() && dwell_card_.load() == i) ||
-                      (scout_owns_() && i == scout_card_) ||
-                      (sweep_.on && sweep_.card == i);   // NOT fe.sweeping(): a relay's
-    // scan_pending_ outlives a lost SCAN_RESULT, and skipping the card on it
-    // past our own timeout blinds a one-card verdict for good.
-    if (!verdict_card_usable(fe.ready(), busy, fe.channel(), plan_.op())) {
+    const CardSample& cs = rec->cards[si];
+    if (!cs.valid || cs.channel != plan_.op()) {
       window_prev_ok_[si] = false;
-      nhm_win_[si].invalidate();
       continue;
     }
-    const NhmBusyRead nb = fe.read_nhm_busy();
-    const bool nhm_ok = nhm_win_[si].usable(nb, fe.channel(), dwell_gen_[si].load(std::memory_order_acquire));
-    const ScoutEnergy e = fe.read_energy_scout();
-    const ScoutFrames f = fe.frames();
     const uint64_t crc_fail = in.agg ? in.agg->card(i).crc_fail : 0;
     const double rssi_raw = in.agg ? in.agg->card(i).rssi_a_ema : 0.0;
     const double snr_raw = in.agg ? in.agg->card(i).snr_ema : 0.0;
-    const uint8_t arm_ch = fe.channel();
-    const uint32_t arm_gen = dwell_gen_[si].load(std::memory_order_acquire);
-    if (fe.arm_nhm_busy(nhm_op_period_)) nhm_win_[si].armed(arm_ch, nhm_op_period_, arm_gen);
-    else nhm_win_[si].invalidate();
     if (window_prev_ok_[si]) {
       vc[si].valid = true;
       ++starved_valid;
-      if (f.own - window_prev_[si].own != 0) starved_all_zero = false;
-      vc[si].fa = e.fa_ofdm;
-      vc[si].cca = e.cca_ofdm;
-      vc[si].foreign = static_cast<uint32_t>(f.foreign - window_prev_[si].foreign);
+      if (cs.frames.own - window_prev_[si].own != 0) starved_all_zero = false;
+      vc[si].fa = cs.energy.fa_ofdm;
+      vc[si].cca = cs.energy.cca_ofdm;
+      vc[si].foreign = static_cast<uint32_t>(cs.frames.foreign - window_prev_[si].foreign);
       vc[si].crc_fail = static_cast<uint32_t>(crc_fail - window_prev_crc_[si]);
       vc[si].rssi_dbm = rssi_raw_to_dbm(rssi_raw);
       vc[si].snr_db = snr_ok_[si] ? snr_raw_to_db(snr_raw) : std::nan("");
       vc[si].snr_valid = snr_ok_[si];
-      const double win_us = static_cast<double>(now_ms_u - window_prev_ms_[si]) * 1000.0;
+      const double win_us = static_cast<double>(t_ms - window_prev_ms_[si]) * 1000.0;
       const double own_pct = win_us > 0
-          ? std::min(100.0, 100.0 * static_cast<double>(f.own_air_us - window_prev_[si].own_air_us) / win_us)
+          ? std::min(100.0, 100.0 * static_cast<double>(cs.frames.own_air_us - window_prev_[si].own_air_us) / win_us)
           : 0.0;
-      const auto nhm_pct = nhm_ok ? nhm_busy_pct(nb, cfg_.radio.scan.busy.busy_dbm) : std::nullopt;
       // A relay reports op-channel airtime through SURVEY (busy %, rx %);
       // rx ~ our own video on the op, so it plays own_air.
-      const auto busy_pct = sw.valid ? std::optional<double>(sw.busy_pct) : nhm_pct;
-      const double own_used = sw.valid ? sw.rx_pct : own_pct;
+      const auto busy_pct = cs.survey.valid ? std::optional<double>(cs.survey.busy_pct) : cs.nhm_busy_pct;
+      const double own_used = cs.survey.valid ? cs.survey.rx_pct : own_pct;
       vc[si].busy_valid = busy_pct.has_value();
       vc[si].nhm_busy_pct = busy_pct.value_or(0.0);
       vc[si].own_air_pct = own_used;
-      energy_last_[si] = StatsEnergyIn{e.cca_ofdm, e.fa_ofdm, f.own - window_prev_[si].own,
-                                       f.foreign - window_prev_[si].foreign, std::nullopt, busy_pct, own_used};
+      energy_last_[si] = StatsEnergyIn{cs.energy.cca_ofdm, cs.energy.fa_ofdm, cs.frames.own - window_prev_[si].own,
+                                       cs.frames.foreign - window_prev_[si].foreign, std::nullopt, busy_pct, own_used};
     }
-    window_prev_[si] = f;
+    window_prev_[si] = cs.frames;
     window_prev_crc_[si] = crc_fail;
-    window_prev_ms_[si] = now_ms_u;
+    window_prev_ms_[si] = t_ms;
     window_prev_ok_[si] = true;
   }
   VerdictLinkIn vl;
@@ -606,11 +627,24 @@ void ChannelCore::step_controller_(const ChannelTickIn& in) {
       std::lock_guard<std::mutex> ilk(inflight_mu_);
       auto& fe = *cards_[static_cast<size_t>(burst_card)];
       inflight_->set_radio(fe);
+      // The burst leaves the op channel and returns to it, so only the
+      // generation (not the channel number) can mark an NHM arm as stale
+      // if it spans the burst; bump before and after so a read on either
+      // side of the retune-away sees a generation newer than its arm.
+      // The burst holds the card's device-use lock throughout: the
+      // sampler's op-channel check cannot see the retune-away (the card
+      // stores its channel only after each retune returns), and a pass
+      // landing mid-burst would cut the dwells' FA/CCA delta and re-arm
+      // NHM over theirs. Taken after inflight_mu_, the order every holder
+      // of both follows.
+      auto hold = sampler_->hold_card(static_cast<size_t>(burst_card));
+      tune_gen_[static_cast<size_t>(burst_card)].fetch_add(1, std::memory_order_release);
       std::vector<ScoutDwell> recs;
       for (const auto& v : inflight_->burst(plan_.op(), recs)) ranker_.add(v);
-      for (const auto& d : recs) sink_.dwell(now_ms, burst_card, d);
       cur_ch_[static_cast<size_t>(burst_card)] = fe.channel();
-      nhm_win_[static_cast<size_t>(burst_card)].invalidate();
+      tune_gen_[static_cast<size_t>(burst_card)].fetch_add(1, std::memory_order_release);
+      hold.unlock();
+      for (const auto& d : recs) sink_.dwell(now_ms, burst_card, d);
       fill_hop_targets(ht);
     }
   }
@@ -723,7 +757,7 @@ void ChannelCore::step_width_resync_() {
     const uint8_t ch = fe.channel();
     if (fe.set_width(ch, cfg_.radio.width)) {
       cur_ch_[static_cast<size_t>(i)] = fe.channel();
-      nhm_win_[static_cast<size_t>(i)].invalidate();
+      tune_gen_[static_cast<size_t>(i)].fetch_add(1, std::memory_order_release);
     } else {
       sink_.log(logf_("maburgs radio: card %d width resync to %u MHz on ch %u failed", i,
                       static_cast<unsigned>(cfg_.radio.width), static_cast<unsigned>(ch)));
@@ -740,7 +774,7 @@ void ChannelCore::step_mechanical_retune_() {
     const uint8_t want = plan_.desired(i);
     if (cur_ch_[static_cast<size_t>(i)] != want && fe.retune(want)) {
       cur_ch_[static_cast<size_t>(i)] = want;
-      nhm_win_[static_cast<size_t>(i)].invalidate();
+      tune_gen_[static_cast<size_t>(i)].fetch_add(1, std::memory_order_release);
     }
   }
 }
@@ -795,15 +829,23 @@ void ChannelCore::inflight_body_() {
     for (int i = 0; i < 20 && au_seq_.load() == s0; ++i) sleep_(1);
   }
   std::lock_guard<std::mutex> ilk(inflight_mu_);
-  inflight_->set_radio(fe);
-  dwell_card_.store(card);
-  dwell_busy_.store(true);
   ScoutDwell d;
   HopVisit v;
-  const bool ok = inflight_->dwell(*dwell_ch, fe.channel(), d, v);
-  dwell_gen_[static_cast<size_t>(card)].fetch_add(1, std::memory_order_release);
-  dwell_busy_.store(false);
-  dwell_card_.store(-1);
+  bool ok = false;
+  {
+    // The card's device-use lock (after inflight_mu_, as the burst takes
+    // it): the sampler skips a dwelling card, but its dwell_busy check and
+    // this dwell are otherwise unordered; the lock makes a pass either
+    // finish before the dwell starts or start after it has ended.
+    auto hold = sampler_->hold_card(static_cast<size_t>(card));
+    inflight_->set_radio(fe);
+    dwell_card_.store(card);
+    dwell_busy_.store(true);
+    ok = inflight_->dwell(*dwell_ch, fe.channel(), d, v);
+    dwell_gen_[static_cast<size_t>(card)].fetch_add(1, std::memory_order_release);
+    dwell_busy_.store(false);
+    dwell_card_.store(-1);
+  }
   std::lock_guard<std::mutex> lk(dwell_mu_);
   dwell_recs_.emplace_back(card, d);
   if (ok) dwell_visits_.push_back(v);

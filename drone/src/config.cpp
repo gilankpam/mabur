@@ -316,8 +316,8 @@ void parse_venc(const Value& j, VencSectionCfg& v) {
 
   if (j.contains("gop_s")) {
     assign_if_present(j, "gop_s", v.core.gop_s, "venc");
-    if (v.core.gop_s < 0.5 || v.core.gop_s > 10.0)
-      fail("venc.gop_s", "must be in [0.5,10]");
+    if (v.core.gop_s != 0.0 && (v.core.gop_s < 0.5 || v.core.gop_s > 10.0))
+      fail("venc.gop_s", "must be 0 (no periodic refresh) or in [0.5,10]");
   } else {
     note_default("venc", "gop_s", to_text(kDef.core.gop_s));
   }

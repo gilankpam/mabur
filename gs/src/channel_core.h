@@ -33,10 +33,10 @@
 #include "link_card.h"
 #include "mabur/link_key.h"
 #include "mabur/rc_proto.h"
-#include "nhm_window.h"
 #include "relay_sweep_map.h"
 #include "s1_loss.h"
 #include "stats_exporter.h"
+#include "window_sampler.h"
 #include "vrx_controller.h"
 
 namespace maburgs {
@@ -167,10 +167,18 @@ class ChannelCore {
   uint64_t sweep_timeouts() const { return sweep_timeouts_; }
   bool scout_working() const { return scout_ && scout_->working(); }       // card reopen gate
   bool scout_owns_card(int card) const { return scout_owns_() && card == scout_card_; }  // TX snapshots
+  uint64_t sampler_dropped() const { return sampler_ ? sampler_->dropped() : 0; }
+  // The card's device-use lock (WindowSampler::hold_card): the card
+  // lifecycle holds it across stop() + open_and_start() so no window read
+  // or dwell is on the device while it is torn down. Not across shutdown().
+  std::unique_lock<std::mutex> hold_card(int card) {
+    return sampler_->hold_card(static_cast<size_t>(card));
+  }
 
   // ---- test seam (threaded = false) ----
   void run_scout_step();      // one ChannelScout::run_once()
   void run_inflight_step();   // one body of the in-flight loop (no sleep)
+  void run_sampler_step();    // WindowSampler::step_now() at the tick's time: sample, publish, restart the cadence
 
  private:
   // ---- construction-time ----
@@ -213,8 +221,6 @@ class ChannelCore {
   std::vector<uint64_t> window_prev_crc_;
   std::vector<bool> window_prev_ok_;
   std::vector<uint64_t> window_prev_ms_;
-  std::vector<NhmWindowTracker> nhm_win_;
-  uint16_t nhm_op_period_ = 0;
 
   // ---- scout thread state ----
   std::thread scout_thread_;
@@ -233,7 +239,6 @@ class ChannelCore {
 
   // ---- hop state ----
   int hop_lead_latched_ = -1;
-  uint64_t last_window_ms_ = 0;
   uint64_t recovered_prev_window_ = 0;
   uint64_t au_seq_prev_ = 0;
   bool hop_was_active_ = false;
@@ -269,6 +274,17 @@ class ChannelCore {
   std::atomic<int> tx_card_now_{0};
   std::atomic<bool> scout_working_atomic_{false};
   std::vector<std::atomic<uint32_t>> dwell_gen_;
+  // Bumped after every core-thread retune / width change of a card
+  // (step_mechanical_retune_, step_width_resync_) and on both sides of a
+  // dwell burst (step_controller_): pins an NHM arm to the tune the card
+  // had when it was armed.
+  std::vector<std::atomic<uint32_t>> tune_gen_;
+  // The sampler's view of the op channel and of "the core owns this card
+  // right now" (boot scout on it, relay sweep on it), written each tick.
+  std::atomic<uint8_t> op_atomic_{0};
+  std::vector<std::atomic<bool>> card_blocked_;
+  std::unique_ptr<WindowSampler> sampler_;
+  bool sampler_started_ = false;
   std::atomic<uint64_t> au_seq_{0};
   std::mutex dwell_mu_;
   std::vector<std::pair<int, ScoutDwell>> dwell_recs_;
@@ -288,6 +304,7 @@ class ChannelCore {
   void step_scout_inputs_();
   void step_boot_pick_(const ChannelTickIn& in);
   void step_store_();
+  void step_gates_();
   void step_hop_edge_and_window_(const ChannelTickIn& in);
   void step_controller_(const ChannelTickIn& in);
   void step_move_edge_(const ChannelTickIn& in);

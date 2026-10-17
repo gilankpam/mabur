@@ -9,6 +9,7 @@ add_library(mabur_gs_core STATIC
   src/pair_pick.cpp
   src/inflight_scout.cpp
   src/channel_core.cpp
+  src/window_sampler.cpp
   src/config.cpp
   src/card_scan.cpp
   src/aggregator.cpp

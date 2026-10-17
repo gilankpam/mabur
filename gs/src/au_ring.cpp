@@ -260,6 +260,7 @@ uint64_t AuRingWriter::finish(bool complete, const AuLatMeta& lat) {
   last_.t_drain_us = l.t_drain_us;
   last_.t_push_us = l.t_push_us;
   last_.slice = lat.slice;
+  last_.vcl_nal = lat.vcl_nal;
   return n;
 }
 

@@ -52,9 +52,9 @@ TEST(header_and_row_bytes) {
   au.row(555000, meta());
   w.flush_now();
   const std::string text = slurp(dir + "/au.log");
-  CHECK(text.rfind("# aulog 6\n", 0) == 0);
+  CHECK(text.rfind("# aulog 7\n", 0) == 0);
   CHECK(text.find(
-      "\n555000 123456 1 70000 4321 0x81 32 900000 912000 7000 3 21 0 0 0 0 909500 910100 910400\n") !=
+      "\n555000 123456 1 70000 4321 0x81 32 900000 912000 7000 3 21 0 0 0 0 909500 910100 910400 0\n") !=
       std::string::npos);
 }
 
@@ -161,7 +161,23 @@ TEST(salvage_columns) {
   m.slice.salvaged = true; m.slice.slices = 4; m.slice.kept = 3; m.slice.filled = 1; m.slice.kept_after_hole = 2;
   au.row(1, m);
   w.flush_now();
-  CHECK(slurp(dir + "/au.log").find(" 0x40 -1 900000 912000 7000 3 21 4 3 1 2 909500 910100 910400\n") != std::string::npos);
+  CHECK(slurp(dir + "/au.log").find(" 0x40 -1 900000 912000 7000 3 21 4 3 1 2 909500 910100 910400 0\n") != std::string::npos);
+}
+
+TEST(row_carries_the_first_slice_nal_type) {
+  const std::string dir = make_dir("vcl");
+  maburgs::LogWriter w;
+  maburgs::AuLog au(w, dir);
+  REQUIRE(au.ok());
+  au.begin();
+  const uint8_t payload[] = {0, 0, 0, 1, 0x40, 0x01};
+  au.payload(payload, sizeof(payload));
+  maburgs::AuRecordMeta m = meta();
+  m.vcl_nal = 19;
+  au.row(555000, m);
+  w.flush_now();
+  const std::string text = slurp(dir + "/au.log");
+  CHECK(text.find(" 909500 910100 910400 19\n") != std::string::npos);
 }
 
 MTEST_MAIN

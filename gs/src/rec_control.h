@@ -8,17 +8,20 @@
 #include <cstdint>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 #include "mabur/rc_proto.h"
 
 namespace maburgs {
 
-// maburplay's VtxRecClient sends here. Next to CalControl's 8400; the 830x
-// block belongs to the stats sideport and the OSD feed.
+// maburplay's CoreControlClient sends here. Next to CalControl's 8400; the
+// 830x block belongs to the stats sideport and the OSD feed.
 constexpr int kRecControlPort = 8401;
 
 // Loopback-only UDP listener for the record button's VTX wish.
-// Commands: "vtx_rec on" / "vtx_rec off".
+// Commands: "vtx_rec on" / "vtx_rec off" (the record wish, held), "refresh
+// <reason>" (a one-shot report that the player's picture needs a key
+// frame; reasons are RefreshRequester's names, unknown ones are ignored).
 // The wish is HELD until the next command -- no decay: a crashed player
 // must never stop the onboard recording by silence. It starts UNKNOWN
 // (wire byte 0), so a maburgs restart does not stop it either; the player
@@ -65,10 +68,17 @@ class RecControl {
     return changed;
   }
 
-  // Parses one command; true iff the wish changed. I/O-free for tests.
+  // Parses one command; true iff the VTX wish changed. A refresh line is
+  // queued for take_refresh() and never changes the wish. I/O-free for tests.
   bool apply(const std::string& line) {
     std::string s = line;
     while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back()))) s.pop_back();
+    static const std::string kRefresh = "refresh ";
+    if (s.size() > kRefresh.size() && s.compare(0, kRefresh.size(), kRefresh) == 0) {
+      const std::string reason = s.substr(kRefresh.size());
+      if (!reason.empty() && reason.find(' ') == std::string::npos) refresh_.push_back(reason);
+      return false;
+    }
     bool on;
     if (s == "vtx_rec on") on = true;
     else if (s == "vtx_rec off") on = false;
@@ -77,6 +87,13 @@ class RecControl {
     known_ = true;
     on_ = on;
     return changed;
+  }
+
+  // Refresh reasons received since the last call, in arrival order.
+  std::vector<std::string> take_refresh() {
+    std::vector<std::string> out;
+    out.swap(refresh_);
+    return out;
   }
 
   // The RCF byte: 0 until the first command, then kRecKnown | (kRecOn if on).
@@ -89,6 +106,7 @@ class RecControl {
   int fd_ = -1;
   bool known_ = false;
   bool on_ = false;
+  std::vector<std::string> refresh_;
 };
 
 }  // namespace maburgs

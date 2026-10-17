@@ -85,6 +85,14 @@ struct FakeCard : maburgs::LinkCard {
   bool sweep_in_flight = false;
   maburgs::SurveyWindow survey_win;                 // returned by read_survey_window
   uint32_t fa_next = 0;                             // returned (once) by read_energy_scout's fa_ofdm
+  // NHM busy window programmability (ScoutRadio defaults are "unsupported").
+  bool nhm_arm_ok = false;                          // arm_nhm_busy() result
+  maburgs::NhmBusyRead nhm_read;                    // returned by read_nhm_busy()
+  bool arm_nhm_busy(uint16_t period_4us) override {
+    calls.push_back("arm_nhm " + std::to_string(period_4us));
+    return nhm_arm_ok;
+  }
+  maburgs::NhmBusyRead read_nhm_busy() override { calls.push_back("read_nhm"); return nhm_read; }
   bool can_sweep() const override { return relay && sweep_ok; }
   bool start_sweep(const std::vector<uint8_t>& ch, uint8_t, uint8_t) override {
     if (!can_sweep() || !is_ready) return false;   // RemoteCard: running + owned_and_tuned
@@ -95,5 +103,8 @@ struct FakeCard : maburgs::LinkCard {
     auto r = std::move(pending_result); pending_result.reset(); sweep_in_flight = false; return r;
   }
   bool sweeping() const override { return sweep_in_flight; }
-  maburgs::SurveyWindow read_survey_window() override { return relay ? survey_win : maburgs::SurveyWindow{}; }
+  maburgs::SurveyWindow read_survey_window() override {
+    calls.push_back("survey");
+    return relay ? survey_win : maburgs::SurveyWindow{};
+  }
 };

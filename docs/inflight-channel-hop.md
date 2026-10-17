@@ -123,7 +123,35 @@ of its own.
 
 `HopVerdict::window()` runs every `hop.window_ms` (150 ms) while
 `hop_active()` (`gs/src/hop_burst_gate.h`: the link is in `SESSION` and no
-calibration run is active). On every edge of `hop_active`, `ChannelCore::
+calibration run is active).
+
+The card reads the window needs -- the NHM busy counters and their re-arm,
+the OFDM FA/CCA delta, the frame counters, a relay's survey window -- are
+synchronous USB register I/O, and devourer serializes them with the card's
+own coex tick (10-26 ms every 2 s) on one per-device lock. They therefore
+run on `WindowSampler` (`gs/src/window_sampler.{h,cpp}`), not on the core
+thread: every `hop.window_ms` the sampler samples each card and publishes
+one `WindowRecord`; `ChannelCore::step_hop_edge_and_window_` takes the
+latest record and runs the verdict on it, reading its own in-memory inputs
+(per-card CRC failures, RSSI/SNR EMAs, recovered symbols, AU count) at that
+moment. Per-window spans (`own_air_pct`) are measured between sample
+instants. The sampler runs on its own thread wherever `ChannelCore` runs
+threaded -- maburgs, and the web GS page build (`core_threads`); with
+`threaded = false` (tests, the web GS without `core_threads`) `tick()` runs
+one sampler step inline. The core tells the sampler what it may touch
+through atomics: the op channel, a card the boot scout owns or a relay
+sweep holds, a dwell in progress, and two per-card generation counters --
+one bumped after every in-flight scout dwell, one around every core-thread
+retune, width change or dwell burst -- that pin an NHM arm to the state the
+card had when it was armed. Device use itself is serialized per card by
+the sampler's device-use lock (`WindowSampler::hold_card`, forwarded as
+`ChannelCore::hold_card`): a sampler pass holds it across all of a card's
+reads, the core's dwell burst and the in-flight scout's dwell hold it for
+their whole retune-away-and-back, and maburgs's card lifecycle holds it
+across `stop()` + `open_and_start()`, so no read lands on a card being
+torn down or tuned away. Lock order: `inflight_mu_` before the card lock.
+
+On every edge of `hop_active`, `ChannelCore::
 step_hop_edge_and_window_()` resets the engine, re-primes the `au_seq` and
 recovered baselines and calls `HopVerdict::new_session()`; on the falling
 edge it also hands `HopController::on_session_lost()`'s action to the
@@ -190,10 +218,13 @@ invalid — `blocked` can't fire off it — when the chip has no NHM, the card
 was mid-dwell, its channel changed mid-window, or an in-flight scout dwell
 landed inside the armed window (per-card dwell-generation counter, since
 `InflightScout::dwell()`'s `FastRetune` does not disturb devourer's
-NHM-ready state). The MINIMUM across cards is taken because a weakly
-receiving diversity card counts our own frames in its NHM busy but decodes
-few of them, so it reads "foreign" busy with no interferer present. Bench
-numbers: `docs/findings/2026-09-25-nhm-airtime-spike.md`.
+NHM-ready state); the arm is also pinned to the card's tune-generation
+counter, so a window armed before a core-thread retune or width change is
+never read against the card's post-retune state. The MINIMUM across cards
+is taken because a weakly receiving diversity card counts our own frames
+in its NHM busy but decodes few of them, so it reads "foreign" busy with
+no interferer present. Bench numbers:
+`docs/findings/2026-09-25-nhm-airtime-spike.md`.
 
 **A CPE510 relay card's inputs** (protocol v4, `docs/cpe510-relay.md`
 "Interference + hop on a relay"): `cca` is always 0 (ath9k has no CCA-event

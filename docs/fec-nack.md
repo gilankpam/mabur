@@ -365,3 +365,93 @@ end the binary goes in before a config that carries `[nack]` /
 keys). Turning the feature off is config-only on the GS (`[link.nack]
 enable = false`, the shipped default); a drone that is never asked never
 re-sends.
+
+## Demand refresh
+
+The bundle runs the drone with no periodic refresh at all
+(`venc.gop_s = 0` → the SigmaStar SDK's largest GOP, `VENC_GOP_NONE` =
+65535 frames; `venc.intra_refresh_frames = 0`, since the GDR sweep only
+fires at a GOP start and there is none). Healing a damaged base picture is
+therefore on demand: `RefreshRequester` (`gs/src/refresh_requester.h`) in
+`maburgs` decides when the RCF's `idr_epoch` byte changes, and
+`RcAgent` on the drone serves one paced IDR per change
+(`docs/link-adaptation.md` "RcAgent is the only IDR authority").
+
+**Order.** FEC recovery and the software NACK retransmit (above) run
+first, inside `FrameStream`'s reassembly; only once an access unit is
+finished — complete, truncated, or slice-salvaged — does
+`RefreshRequester::note_au()` see it and decide whether to arm. A request
+then rides `idr_epoch` on every RCF until `RcAgent` serves the IDR and a
+later complete base IRAP clears it: FEC → NACK → request → IDR → clear.
+
+**Arms on:** a base AU (`sid 0`) that finishes incomplete (the NACK's
+repair window has already passed; reason `hole`); a base AU rebuilt by
+slice salvage (a filled band is a stale reference; `FrameStream` reports
+it incomplete with the salvaged flag set, and it books as `salvaged`, not
+`hole`); whole AUs the stream skipped (reason `lost`; their layer is
+unknown, so they count as base); or one of four one-shot reports from
+`maburplay` over
+the same loopback control socket that carries the record button's VTX
+wish (`gs/player/src/core_control_client.h`, `docs/vtx-recorder.md`
+"Wire"): `start` (ring open, nothing to arm on yet), `resync` (the ring
+reader skipped AUs), `decoder` (the decode watchdog reset or recreated
+the backend — not raised on an ordinary decode error), and `dvr` (the
+raw DVR opened and needs a key frame to begin on). Never arms on enhance
+damage: nothing references an enhance frame.
+
+A skip is reported on the AU emitted right after it
+(`AuLatMeta::skipped_before`), in stream order. When that AU is a complete
+base IRAP the skip is already healed and arms nothing, so the answering
+IDR arriving behind a skipped AU does not buy a second one. A late copy of
+a skipped AU is evicted, and a headerless slot aged out, without booking
+anything: the skip itself already did (both still count in
+`frames_dropped()`). AUs lost at the end of a stream with no successor arm
+nothing until the next AU arrives.
+
+**Clears on:** a complete base AU whose first slice NAL is an IRAP
+(16..21), requested or not — a refresh-start (TRAIL_R) picture does not
+clear it: only an IRAP restarts every reference. While armed the byte is
+bumped again every 300 ms (`RefreshRequester::kRetryMs`): the expected heal is one RCF period plus
+the IDR's transit, so a retry only means the IDR itself was lost or
+truncated.
+
+**Across an outage.** Retries only run while maburgs is in a session
+(`vrx.link_state() == SESSION`): with no drone to hear them, they would
+only pile up `I` rows. Arming still bumps the epoch at once whatever the
+link state, and the first in-session tick retries at once if the last
+bump is 300 ms old.
+`heal_ms` counts from arming, though, so a request armed before the link
+is up — the player's boot `start`, which usually lands long before the
+drone powers up, or a hole at the start of an outage — reads as a long
+heal that includes the dead time. `RcAgent` only serves a pending GS/chain request while
+`state_ == LINKED`, so the request just waits; the entering-LINKED IDR it
+serves on reconnect covers whatever broke while unlinked, and that same
+IDR clears the request. A drone restart looks the same from the GS side:
+the old in-flight base AU ends incomplete and arms one request, which the
+new producer's link-up IDR clears. The GS's epoch is not reset per
+session, while the drone's `idr_epoch_seen_` is reset to 0 at every
+session edge, so the first RCF of a new session reads as a request:
+absorbed by the link-up IDR when the session starts with one, otherwise
+one extra IDR.
+
+**The 65535-frame GOP is not forever.** With nothing else restarting it
+first, the encoder still emits a GOP-start picture every ~65535 frames —
+about 18 minutes at 60 fps
+(`docs/findings/2026-10-17-sdk-gop-ceiling.md`). Any chain-break, rung
+change, or demand-refresh IDR restarts the count, so this ceiling only
+matters on a flight with none of those for that long.
+
+**Observability:** `fec.log`'s `I <t_ms> <reason> <epoch>` / `H <t_ms>
+<heal_ms> <retries>` rows (`feclog 4`) and the sideport's `link.refresh`
+block (`docs/observability.md`) carry the same counters;
+`flightreport.py`'s REFRESH section and maburtop's `refresh:` line read
+them.
+
+**What this gives up.** A periodic refresh used to bound how long
+undetected wire corruption — a frame that decodes without error but is
+wrong — could propagate: at most one `venc.gop_s` period. Demand refresh
+has no such bound, because nothing arms it unless FEC/NACK/the stream
+already know a frame is damaged, salvaged, or lost. The only mitigation
+left is the player's own decode-watchdog report (`refresh decoder`),
+which catches a decoder that is visibly failing, not a reference that is
+silently wrong.

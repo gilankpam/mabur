@@ -91,11 +91,13 @@ struct DisplayCfg {
   // hold. lead covers
   // the present-path submission cost incl. the ~2 ms main-loop tick.
   bool vsync_lock = true;
-  // Default 6 (bench-measured): with release-deadline wakeups
-  // the submit lands ~0.2 ms after schedule, but decode work can still
-  // block the drain for a few ms -- 6 keeps misses at ~0.2/s where 4
-  // measured ~12/s and 9 wastes 3 ms of glass latency per frame.
-  int vsync_lead_ms = 6;
+  // Default 5 (bench-measured, docs/findings/2026-10-17-vsync-lead-sweep.md):
+  // the lead covers the main loop's release lateness (p99.9 ~2.1 ms in
+  // flight), the present path (p99 0.8 ms with the framebuffer cache) and
+  // the kernel's ~1 ms latch deadline. 5 keeps the flight tail clear; 4
+  // costs about one missed latch a minute in flight; every ms is a ms of
+  // glass latency on every frame.
+  int vsync_lead_ms = 5;
   // Frames a sequential-slot chain may run before the regulator cuts it
   // with one dropped frame (frame_regulator.h chain_cuts). 0 = unbounded,
   // no chain cut at all: the default, and the bundle's. On a clean link the

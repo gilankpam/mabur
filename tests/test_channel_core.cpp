@@ -1146,4 +1146,32 @@ TEST(tx_frozen_while_relay_sweeps) {
   CHECK(!out2.tx_frozen);
 }
 
+// The sampler stamps a record with its own time; a record the core takes a
+// tick later must still read own_air over the sampled span, or the airtime
+// percentage shrinks by the consume delay on every late sample.
+TEST(sampled_record_consumed_next_tick_uses_sample_span) {
+  Rig g(1, 0, /*pinned=*/true, 40);
+  link_up(g);
+  // past the hop-active edge, with at least one window consumed
+  for (int i = 0; i < 2 * (g.cfg.hop.window_ms / 10) + 2; ++i) g.tick(true);
+  // a record at a known time T1 (the seam restarts the cadence from T1)
+  g.core->run_sampler_step();
+  g.clk.ms += 10;
+  g.core->tick(g.in(true));                // consumed at T1 + 10: window_prev_ms_[0] = T1
+  for (int i = 0; i < 13; ++i) g.tick(true);   // now T1 + 140, no window due before T1 + 150
+  g.cards[0]->fr.own_air_us += 70000;      // 50 % of the 140 ms since T1
+  g.cards[0]->fr.own += 10;
+  g.core->run_sampler_step();              // sample at T1 + 140
+  g.clk.ms += 30;
+  g.cards[0]->fr.own_air_us += 5000;       // airtime after the sample: must not count
+  g.core->tick(g.in(true));                // consumed at T1 + 170; nothing else is due
+  const auto e = g.core->snapshot(0).energy[0];
+  REQUIRE(e.has_value());
+  REQUIRE(e->own_air_pct.has_value());
+  // 70000 us over the 140 ms sample span (T1 -> T1 + 140) = 50 %. The two
+  // consume delays differ (10 ms, 30 ms), so a span measured between the
+  // consumes (T1 + 10 -> T1 + 170, 160 ms) reads 43.75 % instead.
+  CHECK(*e->own_air_pct > 49.0 && *e->own_air_pct < 51.0);
+}
+
 MTEST_MAIN

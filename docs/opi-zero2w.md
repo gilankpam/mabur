@@ -22,12 +22,14 @@ NV12 either way and are handed to `DrmPresenter` unchanged.
   `flush()`.
 - **Entry gate.** After init and every flush, AUs are dropped until the
   first entry point (`mabur::au_is_entry_point`: an IRAP, or an AU carrying
-  an SPS), counted as `gated`. The drone's intra-refresh stream sends a
-  real IRAP only at session start and on an encoder reconfiguration; its
-  periodic refresh AU is VPS/SPS/PPS + TRAIL_R (every `venc.gop_s`), so
-  that is where a mid-session join starts. Joining on a bare P
-  picture would make Cedrus reference never-decoded buffers. Not re-armed
-  on decode errors.
+  an SPS), counted as `gated`. With `venc.gop_s` nonzero the drone's
+  periodic refresh AU (VPS/SPS/PPS + TRAIL_R, every `venc.gop_s`) is where
+  a mid-session join usually starts; the bundle ships `venc.gop_s = 0`
+  (no periodic refresh), so a join now waits for the next real IRAP
+  instead — a rung change, link-up, chain break, or maburgs's own
+  demand-refresh request (`docs/fec-nack.md` "Demand refresh"). Joining
+  on a bare P picture would make Cedrus reference never-decoded buffers.
+  Not re-armed on decode errors.
 - **Synchronous.** The hwaccel waits for the capture buffer before
   returning a frame. Whole-AU decode (`stream = false`) blocks the feed
   thread in `submit_au` for the whole decode; when streaming (the

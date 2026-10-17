@@ -751,7 +751,9 @@ static int star6e_pipeline_apply_intra_refresh(MI_VENC_CHN chn,
 	uint32_t rows;
 	uint32_t sweep_frames;
 
-	if (!cfg || cfg->intra_refresh_frames == 0)
+	/* No GOP means no GOP start for a sweep to run at: the stripe is off
+	 * whatever intra_refresh_frames says. */
+	if (!cfg || cfg->intra_refresh_frames == 0 || cfg->gop_s <= 0.0)
 		return 0;
 	if (!g_mi_venc.fnSetIntraRefresh) {
 		fprintf(stderr, "[venc] WARNING: intra_refresh_frames=%u requested "
