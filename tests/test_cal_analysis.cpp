@@ -171,4 +171,75 @@ TEST(empty_input_is_undetermined) {
   CHECK((w.flags & kCalUndetermined) != 0);
 }
 
+// mcs4/HT20, long GI: phy_rate_mbps gives 39 Mbps. A 2 s dwell that
+// delivered 56.8e6 air bits on the best card is 56.8e6 / (2 * 39e6) =
+// 0.7282..., which rounds to 0.73.
+TEST(efficiency_is_delivered_over_nominal) {
+  CapCell c;
+  c.offered = 1000;
+  c.blocked_pct = 80;  // well clear of tx_bound
+  c.frames = {980, 0};
+  c.air_bits = {56800000, 0};
+  c.rssi_dbm = {-70, 0};
+  c.have_rssi = {true, false};
+  const auto r = analyze_capacity(c, /*mcs=*/4, /*bw=*/20, /*dwell_ms=*/2000,
+                                   CalThresholds{});
+  CHECK(r.eff == 0.73);
+  CHECK(r.best_card == 0);
+}
+
+TEST(best_card_is_the_one_with_more_bits) {
+  CapCell c;
+  c.offered = 1000;
+  c.blocked_pct = 80;
+  c.frames = {400, 900};
+  c.air_bits = {10000000, 56800000};
+  c.rssi_dbm = {-70, -70};
+  c.have_rssi = {true, true};
+  const auto r = analyze_capacity(c, 4, 20, 2000, CalThresholds{});
+  CHECK(r.best_card == 1);
+}
+
+TEST(tx_bound_when_the_sender_was_rarely_blocked) {
+  CapCell c;
+  c.offered = 1000;
+  c.blocked_pct = 30;  // under the default 50 % threshold
+  c.frames = {980, 0};
+  c.air_bits = {56800000, 0};
+  c.rssi_dbm = {-70, 0};
+  c.have_rssi = {true, false};
+  const auto r = analyze_capacity(c, 4, 20, 2000, CalThresholds{});
+  CHECK((r.flags & kCalTxBound) != 0);
+}
+
+TEST(lossy_when_fewer_than_nine_tenths_arrive) {
+  CapCell c;
+  c.offered = 1000;
+  c.blocked_pct = 80;
+  c.frames = {800, 0};  // 80 % < 90 % of offered
+  c.air_bits = {46000000, 0};
+  c.rssi_dbm = {-70, 0};
+  c.have_rssi = {true, false};
+  const auto r = analyze_capacity(c, 4, 20, 2000, CalThresholds{});
+  CHECK((r.flags & kCalLossy) != 0);
+}
+
+TEST(zero_frames_floors_efficiency_and_flags_lossy) {
+  CapCell c;
+  c.offered = 1000;
+  c.blocked_pct = 80;
+  c.frames = {0, 0};
+  c.air_bits = {0, 0};
+  c.rssi_dbm = {-70, 0};
+  c.have_rssi = {true, false};
+  const auto r = analyze_capacity(c, 4, 20, 2000, CalThresholds{});
+  CHECK(r.eff == 0.05);
+  CHECK((r.flags & kCalLossy) != 0);
+}
+
+TEST(drift_flag_bit_is_not_reused) {
+  CHECK(kCalTxBound == 64);
+  CHECK(kCalLossy == 128);
+}
+
 MTEST_MAIN

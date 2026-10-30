@@ -456,9 +456,10 @@ void CalSession::finish_phase(uint64_t now_ms) {
     if (fw.flags & (kCalNoDip | kCalUndetermined))
       continue;  // truncated-window misread; keep the coarse wall.
 
-    RateWall merged = fw;
-    if (std::abs(fw.wall - cw.wall) > 1) merged.flags |= kCalDrift;
-    final_walls_[static_cast<size_t>(r)] = merged;
+    // The coarse-vs-fine disagreement this used to flag (kCalDrift, bit 32)
+    // is retired; nothing currently distinguishes that case from an ordinary
+    // sharpened wall.
+    final_walls_[static_cast<size_t>(r)] = fw;
   }
   if (log_)
     for (int r = 0; r < 8; ++r)
