@@ -8,7 +8,6 @@
 #include <utility>
 #include <vector>
 
-#include "cal_analysis.h"
 #include "mabur/cal_proto.h"
 #include "mabur/rc_proto.h"
 
@@ -56,16 +55,5 @@ uint32_t sweep_duration_ms(const mabur::cal::SweepCmd& c);
 // How long a verify pass over `cells` parked rates takes: cells *
 // (kPowerSettleMs + kVerifyFrames * kGapUs / 1000).
 uint32_t verify_duration_ms(size_t cells);
-
-// --- Legacy shim -----------------------------------------------------
-// gs/src/cal_session.cpp still drives the old coarse/fine/verify phase
-// machine over mabur::rc::CalCmd; it is rewritten to the SweepCmd protocol
-// above in a later task. These keep it compiling until then.
-mabur::rc::CalCmd make_coarse_plan(uint32_t nonce);
-mabur::rc::CalCmd make_fine_plan(uint32_t nonce,
-                                 const std::array<RateWall, 8>& coarse);
-mabur::rc::CalCmd make_verify_plan(uint32_t nonce,
-                                   const std::array<int, 8>& park_idx);
-uint32_t plan_duration_ms(const mabur::rc::CalCmd& c);
 
 }  // namespace maburgs

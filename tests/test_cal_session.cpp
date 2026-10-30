@@ -1,22 +1,55 @@
 #include "mtest.h"
 #include "cal_session.h"
-#include "cal_plan.h"
+#include "cal_analysis.h"
 #include "cal_log.h"
+#include "cal_picker.h"
+#include "cal_plan.h"
 
+#include "mabur/cal_park.h"
+#include "mabur/cal_proto.h"
+#include "mabur/cal_wire.h"
+
+#include <cmath>
 #include <cstdlib>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <sys/stat.h>
 #include <vector>
 
 using namespace maburgs;
+namespace cal = mabur::cal;
 
 namespace {
 
-// Mirrors tests/test_cal_log.cpp's own fresh_dir(): a clean scratch
-// directory per test, under the build tree (MABUR_TEST_SCRATCH_DIR), not
-// /tmp. Best-effort cleanup, deliberately unchecked (see that file's
-// comment on system()'s warn_unused_result).
+using cal::Kind;
+using State = CalSession::State;
+
+constexpr uint8_t kFlags = cal::kFlagLdpc | cal::kFlagStbc;
+constexpr size_t kPowerAir = 24 + cal::kCalPayloadLen + 4;
+constexpr int kRows = kSweepHi - kSweepLo + 1;  // cells per rate row
+
+struct FakePicker : CalPicker {
+  Mode m = Mode::Auto;
+  uint8_t op_ch = 36;
+  std::optional<uint8_t> best;
+  bool accept_reloc = true;
+  std::optional<bool> settled;
+  int measures = 0, relocs = 0, cancels = 0;
+  uint8_t reloc_to = 0;
+  Mode mode() const override { return m; }
+  uint8_t op() const override { return op_ch; }
+  void begin_measure(uint64_t) override { ++measures; }
+  std::optional<uint8_t> measured_best() override { return best; }
+  bool order_relocate(uint8_t ch) override {
+    ++relocs;
+    reloc_to = ch;
+    return accept_reloc;
+  }
+  std::optional<bool> relocate_settled() override { return settled; }
+  void cancel() override { ++cancels; }
+};
+
 std::string fresh_dir(const char* name) {
   const std::string d = std::string(MABUR_TEST_SCRATCH_DIR) + "/" + name;
   if (std::system(("rm -rf " + d).c_str()) != 0) { /* best-effort */ }
@@ -31,779 +64,764 @@ std::vector<std::string> cal_log_lines(const std::string& dir) {
   return out;
 }
 
-// The real TXAGC transfer curve is a flat floor below idx ~28, a ~0.3 dB/idx
-// ramp to ~91, then a flat ceiling to 127 (docs/findings/2026-07-16-txagc-calibration.md). A
-// CONSTANT curve is not a simplification of that, it is a different physical
-// claim -- power that never rises -- whose knee correctly sits at the bottom
-// of the sweep. Feeding one here made this test assert against a degenerate
-// case rather than against the behavior it is named for.
-int ramp_rssi(int idx) {
-  if (idx <= 28) return -80;
-  if (idx <= 91) return -80 + (idx - 28) * 3 / 10;
-  return -80 + (91 - 28) * 3 / 10;
+// Every frame goes through the real stamp codec, as maburgs' RX path does.
+cal::CalFrameInfo stamp(Kind k, uint8_t rate, int idx, uint8_t bw, uint8_t flags,
+                        uint32_t seq = 0) {
+  const auto p = cal::build_cal_payload(k, rate, static_cast<int8_t>(idx), bw, flags, seq);
+  cal::CalFrameInfo f;
+  REQUIRE(cal::parse_cal_payload(p.data(), p.size(), &f));
+  return f;
 }
 
-// Feeds a whole phase's worth of frames at `pct` delivery on card 0.
-void feed_phase(CalSession& s, const mabur::rc::CalCmd& c, int pct,
-                uint64_t now_ms) {
-  uint16_t seq = 0;
-  for (const auto& w : c.windows) {
-    for (int i = w.idx_lo; i <= w.idx_hi; i += w.idx_step) {
-      const int n = c.frames_per_cell * pct / 100;
-      for (int k = 0; k < n; ++k) {
-        mabur::cal::CalFrameInfo f{w.rate, static_cast<int8_t>(i), c.phase,
-                                   seq++};
-        s.on_cal_frame(0, f, ramp_rssi(i), /*crc_ok=*/true, now_ms);
-      }
-    }
-  }
+template <class T>
+std::optional<T> as(const std::optional<cal::CalMsg>& m) {
+  if (!m) return std::nullopt;
+  if (const T* p = std::get_if<T>(&*m)) return *p;
+  return std::nullopt;
 }
 
-// Feeds one phase, delivering pct(rate, idx) percent of each cell -- the
-// variable-delivery sibling of feed_phase, needed to produce a row that
-// actually dips.
-template <typename F>
-void feed_phase_fn(CalSession& s, const mabur::rc::CalCmd& c, F pct,
-                   uint64_t now_ms) {
-  uint16_t seq = 0;
-  for (const auto& w : c.windows) {
-    for (int i = w.idx_lo; i <= w.idx_hi; i += w.idx_step) {
-      const int n = c.frames_per_cell * pct(w.rate, i) / 100;
-      for (int k = 0; k < n; ++k) {
-        mabur::cal::CalFrameInfo f{w.rate, static_cast<int8_t>(i), c.phase,
-                                   seq++};
-        s.on_cal_frame(0, f, ramp_rssi(i), /*crc_ok=*/true, now_ms);
-      }
-    }
-  }
+void ack(CalSession& s, uint32_t nonce, uint8_t seq, uint64_t now, uint8_t flags = kFlags,
+         cal::AckResult r = cal::AckResult::Accepted) {
+  s.on_mav(cal::SweepAck{nonce, seq, r, /*start_in_ms=*/0, flags}, now);
 }
+
+// Feeds one power sweep at `bw`: rate r delivers `per_cell` frames in every
+// cell up to walls[r] and nothing above it; kNoWall delivers nothing.
+void feed_power(CalSession& s, uint8_t bw, const std::array<int, 8>& walls, uint64_t now,
+                uint8_t flags = kFlags, int per_cell = kPowerFrames) {
+  for (uint8_t r = 0; r < 8; ++r)
+    for (int idx = kSweepLo; idx <= kSweepHi; ++idx) {
+      if (walls[r] == kNoWall || idx > walls[r]) continue;
+      for (int k = 0; k < per_cell; ++k)
+        s.on_cal_frame(0, stamp(Kind::Power, r, idx, bw, flags, k), -60, true, kPowerAir, now);
+    }
+}
+
+cal::SweepDone power_done(uint32_t nonce, uint8_t seq, int per_cell = kPowerFrames) {
+  cal::SweepDone d;
+  d.nonce = nonce;
+  d.seq = seq;
+  d.offered.fill(static_cast<uint32_t>(kRows * per_cell));
+  return d;
+}
+
+// Drives one power sweep from its SweepCmd to the first ApplyCmd.
+cal::ApplyCmd run_power(CalSession& s, uint32_t nonce, uint8_t seq, uint8_t bw,
+                        const std::array<int, 8>& walls, uint64_t t) {
+  const auto cmd = as<cal::SweepCmd>(s.due_mav(t));
+  REQUIRE(cmd.has_value());
+  REQUIRE(cmd->kind == Kind::Power && cmd->bw == bw && cmd->seq == seq);
+  ack(s, nonce, seq, t + 10);
+  feed_power(s, bw, walls, t + 20);
+  s.on_mav(power_done(nonce, seq), t + 30);
+  const auto a = as<cal::ApplyCmd>(s.due_mav(t + 40));
+  REQUIRE(a.has_value());
+  return *a;
+}
+
+const std::array<int, 8> kWalls = {20, 10, 5, 0, -5, -10, -20, kNoWall};
 
 }  // namespace
 
-TEST(start_refuses_without_capability) {
+TEST(start_sorts_and_dedups_the_sweep_list) {
+  CalSession s(CalSessionCfg{});
+  s.set_peer(true, true);
+  std::string err;
+  REQUIRE(s.start(1,
+                  {{Kind::Capacity, 40}, {Kind::Power, 20}, {Kind::Capacity, 20},
+                   {Kind::Power, 40}, {Kind::Power, 20}, {Kind::Capacity, 40}},
+                  0, &err));
+  const auto& v = s.sweeps();
+  REQUIRE(v.size() == 4);
+  CHECK(v[0].kind == Kind::Power && v[0].bw == 20);
+  CHECK(v[1].kind == Kind::Capacity && v[1].bw == 20);
+  CHECK(v[2].kind == Kind::Power && v[2].bw == 40);
+  CHECK(v[3].kind == Kind::Capacity && v[3].bw == 40);
+  CHECK(s.snapshot().sweep_n == 4);
+  CHECK(s.snapshot().sweep_i == 0);
+
+  const auto cmd = as<cal::SweepCmd>(s.due_mav(0));
+  REQUIRE(cmd.has_value());
+  const auto want = make_power_sweep(1, 0, 20);
+  CHECK(cmd->nonce == 1 && cmd->seq == 0 && cmd->kind == Kind::Power && cmd->bw == 20);
+  CHECK(cmd->frames_per_cell == want.frames_per_cell && cmd->idx_lo == want.idx_lo &&
+        cmd->idx_hi == want.idx_hi && cmd->settle_ms == want.settle_ms);
+
+  CalSession t(CalSessionCfg{});
+  t.set_peer(true, true);
+  CHECK(!t.start(2, {}, 0, &err));
+  CHECK(!t.start(2, {{Kind::Verify, 20}}, 0, &err));
+  CHECK(!t.start(2, {{Kind::Power, 30}}, 0, &err));
+  CHECK(t.state() == State::Idle);
+}
+
+TEST(start_refuses_without_capability_or_link) {
   CalSession s(CalSessionCfg{});
   std::string err;
   s.set_peer(/*linked=*/false, /*cal_capable=*/true);
-  CHECK(!s.start(1, 0, &err));
+  CHECK(!s.start(1, {{Kind::Power, 20}}, 0, &err));
   CHECK(err.find("link") != std::string::npos);
 
   s.set_peer(/*linked=*/true, /*cal_capable=*/false);
-  CHECK(!s.start(1, 0, &err));
+  CHECK(!s.start(1, {{Kind::Power, 20}}, 0, &err));
   CHECK(err.find("CAP_CALIBRATE") != std::string::npos);
-}
 
-TEST(start_refuses_while_a_session_runs) {
-  CalSession s(CalSessionCfg{});
   s.set_peer(true, true);
-  std::string err;
-  REQUIRE(s.start(1, 0, &err));
-  CHECK(!s.start(2, 10, &err));
+  REQUIRE(s.start(1, {{Kind::Power, 20}}, 0, &err));
+  CHECK(!s.start(2, {{Kind::Power, 20}}, 10, &err));
   CHECK(err.find("running") != std::string::npos);
+
+  // A pick in progress is a run too, though not yet running().
+  FakePicker p;
+  CalSession q(CalSessionCfg{}, nullptr, &p);
+  q.set_peer(true, true);
+  REQUIRE(q.start(3, {{Kind::Power, 20}}, 0, &err));
+  REQUIRE(q.state() == State::Picking);
+  CHECK(!q.start(4, {{Kind::Power, 20}}, 10, &err));
 }
 
-TEST(repeats_command_until_acknowledged) {
+TEST(picking_relocates_to_the_best_member_then_awaits_ack) {
+  FakePicker p;
+  p.op_ch = 36;
+  CalSession s(CalSessionCfg{}, nullptr, &p);
+  s.set_peer(true, true);
+  std::string err;
+  REQUIRE(s.start(5, {{Kind::Power, 20}}, 0, &err));
+  CHECK(s.state() == State::Picking);
+  CHECK(p.measures == 1);
+  CHECK(!s.running());
+  CHECK(!s.radio_silent(0));
+  CHECK(!s.due_mav(100).has_value());  // round still measuring
+
+  p.best = 44;
+  CHECK(!s.due_mav(200).has_value());
+  CHECK(p.relocs == 1 && p.reloc_to == 44);
+  CHECK(s.state() == State::Picking);
+  CHECK(!s.due_mav(400).has_value());  // relocate pending
+  CHECK(p.relocs == 1);                // ordered once
+
+  p.settled = true;
+  p.op_ch = 44;
+  const auto cmd = as<cal::SweepCmd>(s.due_mav(600));
+  REQUIRE(cmd.has_value());
+  CHECK(s.state() == State::AwaitAck);
+  CHECK(s.running());
+  const auto snap = s.snapshot();
+  CHECK(snap.channel == 44);
+  CHECK(snap.pick_note.find("44") != std::string::npos);
+  CHECK(p.cancels == 0);
+
+  // Already on the best member: no relocate at all.
+  FakePicker q;
+  q.op_ch = 36;
+  q.best = 36;
+  CalSession t(CalSessionCfg{}, nullptr, &q);
+  t.set_peer(true, true);
+  REQUIRE(t.start(6, {{Kind::Power, 20}}, 0, &err));
+  CHECK(as<cal::SweepCmd>(t.due_mav(10)).has_value());
+  CHECK(q.relocs == 0);
+  CHECK(t.snapshot().channel == 36);
+}
+
+TEST(pinned_picker_skips_picking_with_a_note) {
+  std::string err;
+  FakePicker p;
+  p.m = CalPicker::Mode::Pinned;
+  p.op_ch = 149;
+  CalSession s(CalSessionCfg{}, nullptr, &p);
+  s.set_peer(true, true);
+  REQUIRE(s.start(7, {{Kind::Power, 20}}, 0, &err));
+  CHECK(s.state() == State::AwaitAck);
+  CHECK(p.measures == 0);
+  CHECK(s.snapshot().pick_note == "pinned");
+  CHECK(s.snapshot().channel == 149);
+  CHECK(as<cal::SweepCmd>(s.due_mav(0)).has_value());
+
+  FakePicker q;
+  q.m = CalPicker::Mode::OneCard;
+  CalSession t(CalSessionCfg{}, nullptr, &q);
+  t.set_peer(true, true);
+  REQUIRE(t.start(8, {{Kind::Power, 20}}, 0, &err));
+  CHECK(t.state() == State::AwaitAck);
+  CHECK(q.measures == 0);
+  CHECK(t.snapshot().pick_note == "onecard");
+
+  // No picker at all: same as pinned -- the run does not choose.
+  CalSession u(CalSessionCfg{});
+  u.set_peer(true, true);
+  REQUIRE(u.start(9, {{Kind::Power, 20}}, 0, &err));
+  CHECK(u.state() == State::AwaitAck);
+  CHECK(u.snapshot().pick_note == "pinned");
+}
+
+TEST(unconfirmed_relocate_stays_on_op_and_proceeds) {
+  std::string err;
+  FakePicker p;
+  p.op_ch = 36;
+  p.best = 44;
+  CalSession s(CalSessionCfg{}, nullptr, &p);
+  s.set_peer(true, true);
+  REQUIRE(s.start(10, {{Kind::Power, 20}}, 0, &err));
+  CHECK(!s.due_mav(10).has_value());
+  REQUIRE(p.relocs == 1);
+  p.settled = false;
+  CHECK(as<cal::SweepCmd>(s.due_mav(20)).has_value());
+  CHECK(s.state() == State::AwaitAck);
+  CHECK(s.snapshot().channel == 36);
+  CHECK(s.snapshot().pick_note == "stayed on 36, relocate unconfirmed");
+  CHECK(p.cancels == 1);
+
+  // A refused order stays the same way.
+  FakePicker q;
+  q.op_ch = 36;
+  q.best = 44;
+  q.accept_reloc = false;
+  CalSession t(CalSessionCfg{}, nullptr, &q);
+  t.set_peer(true, true);
+  REQUIRE(t.start(11, {{Kind::Power, 20}}, 0, &err));
+  CHECK(as<cal::SweepCmd>(t.due_mav(10)).has_value());
+  CHECK(t.snapshot().channel == 36);
+  CHECK(t.snapshot().pick_note.find("stayed on 36") == 0);
+  CHECK(q.cancels == 1);
+}
+
+TEST(sweep_command_repeats_until_acked_then_silence_opens) {
+  CalSessionCfg cfg;
+  CalSession s(cfg);
+  s.set_peer(true, true);
+  std::string err;
+  REQUIRE(s.start(42, {{Kind::Power, 20}}, 0, &err));
+  REQUIRE(as<cal::SweepCmd>(s.due_mav(0)).has_value());
+  CHECK(!s.due_mav(100).has_value());
+  CHECK(as<cal::SweepCmd>(s.due_mav(200)).has_value());
+  CHECK(!s.radio_silent(250));
+
+  ack(s, 42, /*seq=*/1, 280);  // another sweep's ack: ignored
+  CHECK(s.state() == State::AwaitAck);
+  ack(s, 41, /*seq=*/0, 290);  // another run's ack: ignored
+  CHECK(s.state() == State::AwaitAck);
+
+  s.on_mav(cal::SweepAck{42, 0, cal::AckResult::Accepted, /*start_in_ms=*/200, kFlags}, 300);
+  CHECK(s.state() == State::Sweep);
+  CHECK(!s.due_mav(400).has_value());
+  CHECK(s.radio_silent(400));
+
+  const uint64_t end = 300 + 200 + sweep_duration_ms(make_power_sweep(42, 0, 20));
+  CHECK(!s.due_mav(end - 1).has_value());
+  CHECK(s.state() == State::Sweep);
+  CHECK(!s.due_mav(end).has_value());
+  CHECK(s.state() == State::AwaitDone);
+  CHECK(s.radio_silent(end + cfg.phase_slack_ms - 1));
+  CHECK(!s.radio_silent(end + cfg.phase_slack_ms));
+  s.due_mav(end + cfg.phase_slack_ms);
+  CHECK(s.state() != State::AwaitDone);
+  CHECK(!s.radio_silent(end + cfg.phase_slack_ms));
+}
+
+TEST(a_frame_with_the_wrong_width_or_flags_is_not_tallied) {
   CalSession s(CalSessionCfg{});
   s.set_peer(true, true);
   std::string err;
-  REQUIRE(s.start(42, 0, &err));
-  const auto a = s.due_cmd(0);
+  REQUIRE(s.start(12, {{Kind::Power, 20}}, 0, &err));
+  REQUIRE(s.due_mav(0).has_value());
+  ack(s, 12, 0, 10, kFlags);
+  s.on_cal_frame(0, stamp(Kind::Power, 0, 0, 40, kFlags), -60, true, kPowerAir, 20);
+  s.on_cal_frame(0, stamp(Kind::Power, 0, 0, 20, cal::kFlagStbc), -60, true, kPowerAir, 20);
+  s.on_cal_frame(0, stamp(Kind::Capacity, 0, 0, 20, kFlags), -60, true, kPowerAir, 20);
+  s.on_cal_frame(0, stamp(Kind::Verify, 0, 0, 20, kFlags), -60, true, kPowerAir, 20);
+  CHECK(s.cell_received(0, 0, 0) == 0);
+  CHECK(s.snapshot().stamp_mismatch == 4);
+  s.on_cal_frame(0, stamp(Kind::Power, 0, 0, 20, kFlags), -60, true, kPowerAir, 20);
+  CHECK(s.cell_received(0, 0, 0) == 1);
+  CHECK(s.snapshot().stamp_mismatch == 4);
+  // CRC-bad frames are loss, never delivery.
+  s.on_cal_frame(1, stamp(Kind::Power, 0, 0, 20, kFlags), -60, false, kPowerAir, 20);
+  CHECK(s.cell_received(0, 0, 1) == 0);
+}
+
+TEST(done_closes_the_window_early) {
+  CalSession s(CalSessionCfg{});
+  s.set_peer(true, true);
+  std::string err;
+  REQUIRE(s.start(13, {{Kind::Power, 20}}, 0, &err));
+  REQUIRE(s.due_mav(0).has_value());
+  ack(s, 13, 0, 10);
+  feed_power(s, 20, kWalls, 20);
+  CHECK(s.radio_silent(1000));
+  s.on_mav(power_done(99, 0), 1000);  // another run's Done: ignored
+  CHECK(s.radio_silent(1000));
+  s.on_mav(power_done(13, 0), 1000);
+  CHECK(!s.radio_silent(1000));
+  CHECK(s.state() == State::Apply);
+  CHECK(as<cal::ApplyCmd>(s.due_mav(1000)).has_value());
+}
+
+TEST(power_sweep_yields_an_apply_with_leave_for_undetermined) {
+  CalSession s(CalSessionCfg{});
+  s.set_peer(true, true);
+  std::string err;
+  REQUIRE(s.start(14, {{Kind::Power, 20}}, 0, &err));
+  const auto a = run_power(s, 14, 0, 20, kWalls, 0);
+  CHECK(a.nonce == 14 && a.bw == 20);
+  CHECK(a.has_walls && !a.has_eff);
+  for (size_t r = 0; r < 7; ++r) CHECK(a.walls[r] == kWalls[r]);
+  CHECK(a.walls[7] == cal::kWallLeave);
+  CHECK(a.legacy == 20);  // mcs0's wall at 20 MHz
+  const auto snap = s.snapshot();
+  CHECK(snap.width[0].have_walls);
+  CHECK(snap.width[0].walls[7].flags & kCalUndetermined);
+  CHECK(snap.width[0].walls[0].wall == 20);
+  // The apply repeats until Applied.
+  CHECK(!s.due_mav(100).has_value());
+  CHECK(as<cal::ApplyCmd>(s.due_mav(240)).has_value());
+}
+
+TEST(expected_per_cell_comes_from_the_done) {
+  // The drone aired 10 frames per cell, not the commanded 20: delivery is
+  // judged against what it says it offered.
+  CalSession s(CalSessionCfg{});
+  s.set_peer(true, true);
+  std::string err;
+  REQUIRE(s.start(15, {{Kind::Power, 20}}, 0, &err));
+  REQUIRE(s.due_mav(0).has_value());
+  ack(s, 15, 0, 10);
+  feed_power(s, 20, kWalls, 20, kFlags, /*per_cell=*/10);
+  s.on_mav(power_done(15, 0, /*per_cell=*/10), 30);
+  const auto a = as<cal::ApplyCmd>(s.due_mav(40));
   REQUIRE(a.has_value());
-  CHECK(a->phase == mabur::cal::kPhaseCoarse);
-  CHECK(a->nonce == 42);
-  // Still unacknowledged: the GS must offer it again.
-  const auto b = s.due_cmd(300);
-  CHECK(b.has_value());
-  s.on_ack(42, 400);
-  // Acknowledged: nothing more to send, and the air must go quiet.
-  CHECK(!s.due_cmd(500).has_value());
-  CHECK(s.radio_silent(500));
+  CHECK(a->walls[0] == 20);
+  CHECK(a->walls[6] == -20);
 }
 
-TEST(radio_is_silent_for_the_whole_phase_and_opens_after) {
-  // A GS send deafens both RX cards for ~180 us; during a sweep that loss is
-  // counted as PA compression. Silence is what makes the numbers mean what
-  // they say.
+TEST(applied_ok_opens_verify_and_tallies_by_rate) {
   CalSessionCfg cfg;
-  cfg.phase_slack_ms = 1000;
   CalSession s(cfg);
   s.set_peer(true, true);
   std::string err;
-  REQUIRE(s.start(7, 0, &err));
-  REQUIRE(s.due_cmd(0).has_value());
-  s.on_ack(7, 100);
+  REQUIRE(s.start(16, {{Kind::Power, 20}}, 0, &err));
+  const auto a = run_power(s, 16, 0, 20, kWalls, 0);
+  const auto parks = mabur::park_rel_for(a.walls, cfg.margin_db);
 
-  const auto plan = make_coarse_plan(7);
-  const uint32_t dur = plan_duration_ms(plan);
+  s.on_mav(cal::Applied{16, 40, true, ""}, 100);  // other width: ignored
+  CHECK(s.state() == State::Apply);
+  s.on_mav(cal::Applied{16, 20, true, ""}, 100);
+  CHECK(s.state() == State::Verify);
   CHECK(s.radio_silent(100));
-  CHECK(s.radio_silent(100 + dur / 2));
-  CHECK(s.radio_silent(100 + dur));            // still inside the slack
-  CHECK(!s.radio_silent(100 + dur + 1001));    // listen window is open
-}
+  CHECK(!s.due_mav(400).has_value());  // no more apply repeats
 
-TEST(ack_timeout_fails_the_session_without_writing_anything) {
-  CalSessionCfg cfg;
-  cfg.ack_timeout_ms = 3000;
-  CalSession s(cfg);
-  s.set_peer(true, true);
-  std::string err;
-  REQUIRE(s.start(1, 0, &err));
-  s.due_cmd(0);
-  CHECK(s.state() == CalSession::State::AwaitAck);
-  s.due_cmd(3500);
-  CHECK(s.state() == CalSession::State::Failed);
-  CHECK(!s.due_result(3600).has_value());
-}
-
-TEST(coarse_then_fine_then_result) {
-  CalSessionCfg cfg;
-  cfg.phase_slack_ms = 0;
-  CalSession s(cfg);
-  s.set_peer(true, true);
-  std::string err;
-  REQUIRE(s.start(5, 0, &err));
-  s.due_cmd(0);
-  s.on_ack(5, 1);
-
-  // Coarse: every rate clean everywhere -> all no-dip, parked at the rail.
-  const auto coarse = make_coarse_plan(5);
-  feed_phase(s, coarse, 100, 10);
-  const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
-
-  // With no dips there is no fine phase; the session goes straight to result.
-  const auto res = s.due_result(t1 + 2000);
-  REQUIRE(res.has_value());
-  CHECK(res->nonce == 5);
-  // Every rate is clean everywhere, so every row is no-dip and parks at the
-  // constant rail, kRailRel -- the drone's own anchor never enters this
-  // computation. The result carries that RAW wall verbatim -- no margin
-  // subtracted here. margin_db is applied exactly once, on the drone, by
-  // power_plan.h's diff[r] = walls[r] - m (two independently configured
-  // margins in one derivation is the bug this shape avoids).
-  for (int r = 0; r < 8; ++r) CHECK(res->walls[r] == kRailRel);
-}
-
-// The coarse pass locates a dip at 4-index resolution; the fine pass is what
-// turns that estimate into the index actually written to the drone's config.
-// This is the path that produces the number, so it gets pinned end to end.
-TEST(fine_phase_sharpens_a_real_dip_and_flags_drift) {
-  CalSessionCfg cfg;
-  cfg.phase_slack_ms = 0;
-  CalSession s(cfg);
-  s.set_peer(true, true);
-  std::string err;
-  REQUIRE(s.start(11, 0, &err));
-  s.due_cmd(0);
-  s.on_ack(11, 1);
-
-  // Every rate clean except rate 5, which dips above idx 55. At coarse
-  // resolution (the grid is -41, -37, ..., 55, 59, 63) the last clean cell
-  // is therefore 55.
-  const auto coarse = make_coarse_plan(11);
-  feed_phase_fn(s, coarse,
-                [](uint8_t r, int i) { return r != 5 ? 100 : (i <= 55 ? 100 : 10); },
-                10);
-  const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
-
-  // A fine phase must now be commanded, for rate 5 alone.
-  const auto fine = s.due_cmd(t1);
-  REQUIRE(fine.has_value());
-  CHECK(fine->phase == mabur::cal::kPhaseFine);
-  REQUIRE(fine->windows.size() == 1);
-  CHECK(fine->windows[0].rate == 5);
-  CHECK(fine->windows[0].idx_step == 1);
-  s.on_ack(11, t1 + 1);
-
-  // At full resolution the true wall is 53 -- two steps below the coarse
-  // estimate. The merge must adopt 53 and flag the disagreement.
-  feed_phase_fn(s, *fine, [](uint8_t, int i) { return i <= 53 ? 100 : 10; },
-                t1 + 2);
-  const uint64_t t2 = t1 + 1 + plan_duration_ms(*fine) + 1;
-
-  const auto res = s.due_result(t2 + 5000);
-  REQUIRE(res.has_value());
-  CHECK(res->walls[5] == 53);              // fine wall, raw -- no margin subtracted
-  CHECK(res->walls[0] == kRailRel);        // untouched rows keep the constant rail
-  CHECK((s.walls()[5].flags & kCalDrift) != 0);   // coarse 55 vs fine 53
-}
-
-TEST(undetermined_rate_reaches_the_result_as_minus_one) {
-  CalSessionCfg cfg;
-  cfg.phase_slack_ms = 0;
-  CalSession s(cfg);
-  s.set_peer(true, true);
-  std::string err;
-  REQUIRE(s.start(6, 0, &err));
-  s.due_cmd(0);
-  s.on_ack(6, 1);
-  // Nothing heard at all: every rate is undetermined.
-  const auto coarse = make_coarse_plan(6);
-  const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
-  const auto res = s.due_result(t1 + 5000);
-  REQUIRE(res.has_value());
-  for (int r = 0; r < 8; ++r)
-    CHECK(res->walls[r] == mabur::rc::kWallUndetermined);
-}
-
-TEST(verify_phase_tallies_by_rate_despite_a_margin_mismatch) {
-  // The GS seeds verify cells at wall - m_gs; the
-  // drone independently derives wall - m_drone. If the two configs'
-  // margin_db values ever disagree (nothing enforces they match -- both
-  // default to 1.0, hand-set on each end separately), an exact-index match
-  // would read ZERO delivery on every rate: a silent, total verify failure
-  // sitting right next to a correct table already written to disk.
-  // Tallying by rate alone -- there is exactly one verify cell per rate,
-  // so the index carries no information the rate does not already -- is
-  // what removes that coupling entirely.
-  CalSessionCfg cfg;
-  cfg.phase_slack_ms = 0;
-  CalSession s(cfg);
-  s.set_peer(true, true);
-  std::string err;
-  REQUIRE(s.start(9, 0, &err));
-  s.due_cmd(0);
-  s.on_ack(9, 1);
-
-  // Every rate clean everywhere -> the constant rail wall (kRailRel), this
-  // session's own park index kRailRel - 4 = 59 (1 dB margin -> 4 TXAGC
-  // steps).
-  const auto coarse = make_coarse_plan(9);
-  feed_phase(s, coarse, 100, 10);
-  const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
-  REQUIRE(s.due_result(t1 + 2000).has_value());  // arms verify (begin_verify)
-
-  // The drone parks one index off from what THIS session predicted --
-  // standing in for a disagreeing drone-side margin_db -- yet every frame
-  // must still land and be counted.
-  for (int r = 0; r < 8; ++r) {
-    mabur::cal::CalFrameInfo f{static_cast<uint8_t>(r), 60,
-                              mabur::cal::kPhaseVerify, 0};
-    s.on_cal_frame(0, f, -60, /*crc_ok=*/true, t1 + 3000);
-  }
-  for (int r = 0; r < 8; ++r) CHECK(s.cell_received(r, 59, 0) == 1);
-}
-
-TEST(corrupt_frames_count_as_loss_not_delivery) {
-  CalSessionCfg cfg;
-  CalSession s(cfg);
-  s.set_peer(true, true);
-  std::string err;
-  REQUIRE(s.start(8, 0, &err));
-  s.due_cmd(0);
-  s.on_ack(8, 1);
-  mabur::cal::CalFrameInfo f{0, 39, mabur::cal::kPhaseCoarse, 0};
   for (int k = 0; k < 20; ++k)
-    s.on_cal_frame(0, f, -70, /*crc_ok=*/false, 10);
-  CHECK(s.cell_received(0, 39, 0) == 0);
-  CHECK(s.cell_corrupt(0, 39) == 20);
+    s.on_cal_frame(0, stamp(Kind::Verify, 0, parks[0], 20, kFlags, k), -60, true, kPowerAir, 200);
+  // Tallied by rate: an index other than the predicted park still counts.
+  for (int k = 0; k < 10; ++k)
+    s.on_cal_frame(1, stamp(Kind::Verify, 1, parks[1] + 1, 20, kFlags, k), -60, true, kPowerAir,
+                   200);
+  s.on_cal_frame(0, stamp(Kind::Verify, 2, parks[2], 40, kFlags), -60, true, kPowerAir, 200);
+  CHECK(s.snapshot().stamp_mismatch == 1);
+
+  const uint64_t close = 100 + verify_duration_ms(7) + cfg.phase_slack_ms;
+  CHECK(s.radio_silent(close - 1));
+  s.due_mav(close);
+  CHECK(!s.radio_silent(close));
+  CHECK(s.state() == State::Done);
+  const auto w = s.snapshot().width[0];
+  CHECK(w.applied);
+  CHECK(w.verify_pct[0] == 100);
+  CHECK(w.verify_pct[1] == 50);
+  CHECK(w.verify_pct[2] == 0);   // parked, heard nothing
+  CHECK(w.verify_pct[7] == -1);  // never parked
 }
 
-TEST(frames_from_a_stale_phase_are_ignored) {
-  CalSessionCfg cfg;
-  CalSession s(cfg);
-  s.set_peer(true, true);
-  std::string err;
-  REQUIRE(s.start(9, 0, &err));
-  s.due_cmd(0);
-  s.on_ack(9, 1);
-  mabur::cal::CalFrameInfo f{0, 40, mabur::cal::kPhaseVerify, 0};  // wrong phase
-  s.on_cal_frame(0, f, -70, true, 10);
-  CHECK(s.cell_received(0, 40, 0) == 0);
-}
-
-TEST(abort_returns_to_idle_and_reopens_the_air) {
+TEST(refused_apply_fails_with_the_drones_reason) {
   CalSession s(CalSessionCfg{});
   s.set_peer(true, true);
   std::string err;
-  REQUIRE(s.start(1, 0, &err));
-  s.due_cmd(0);
-  s.on_ack(1, 1);
-  CHECK(s.radio_silent(100));
-  s.abort("operator");
+  REQUIRE(s.start(17, {{Kind::Power, 20}, {Kind::Capacity, 20}}, 0, &err));
+  run_power(s, 17, 0, 20, kWalls, 0);
+  s.on_mav(cal::Applied{17, 20, false, "config line not found"}, 100);
+  CHECK(s.state() == State::Failed);
+  const auto snap = s.snapshot();
+  CHECK(snap.fail_reason.find("config line not found") != std::string::npos);
+  CHECK(!snap.width[0].applied);
+  CHECK(snap.width[0].apply_reason == "config line not found");
   CHECK(!s.radio_silent(100));
-  CHECK(s.state() == CalSession::State::Idle);
 }
 
-TEST(radio_silent_is_true_from_ack_until_abort) {
-  // Named for what it can actually check. main.cpp must gate RCF, the
-  // slotter drain, the DISC keepalive and T_CAL_CMD on radio_silent()
-  // (T_CAL_RESULT is the deliberate exception -- see due_result()), but
-  // nothing here can fail against an ungated call site; only reading
-  // main.cpp, or the loopback in tests/test_cal_e2e.cpp -- which watches
-  // the invariant continuously against a transcription of those call
-  // sites -- can. This pins the predicate itself: shut from the ack,
-  // open again the instant a session is aborted.
+TEST(capacity_sweep_yields_eff_and_zero_for_tx_bound) {
   CalSessionCfg cfg;
-  cfg.phase_slack_ms = 500;
   CalSession s(cfg);
   s.set_peer(true, true);
   std::string err;
-  REQUIRE(s.start(3, 0, &err));
-  s.due_cmd(0);
-  s.on_ack(3, 10);
-  CHECK(s.radio_silent(11));
-  // ... and after abort, everything may transmit again immediately.
-  s.abort("test");
-  CHECK(!s.radio_silent(12));
+  REQUIRE(s.start(18, {{Kind::Capacity, 20}}, 0, &err));
+  const auto cmd = as<cal::SweepCmd>(s.due_mav(0));
+  REQUIRE(cmd.has_value());
+  CHECK(cmd->kind == Kind::Capacity && cmd->dwell_ms == kCapDwellMs);
+  ack(s, 18, 0, 10, cal::kFlagStbc);
+  constexpr size_t kAir = 1500;
+  for (uint8_t r = 0; r < 2; ++r)
+    for (int k = 0; k < 900; ++k)
+      s.on_cal_frame(0, stamp(Kind::Capacity, r, 0, 20, cal::kFlagStbc, k), -60, true, kAir,
+                     100);
+  cal::SweepDone d;
+  d.nonce = 18;
+  d.seq = 0;
+  d.offered = {1000, 1000, 0, 0, 0, 0, 0, 0};
+  d.blocked_pct = {80, 10, 0, 0, 0, 0, 0, 0};
+  s.on_mav(d, 200);
+  const auto a = as<cal::ApplyCmd>(s.due_mav(210));
+  REQUIRE(a.has_value());
+  CHECK(a->has_eff && !a->has_walls);
+  CHECK(a->bw == 20);
+
+  CapCell c0;
+  c0.offered = 1000;
+  c0.blocked_pct = 80;
+  c0.frames = {900, 0};
+  c0.air_bits = {900ull * kAir * 8, 0};
+  c0.rssi_dbm = {-60, 0};
+  c0.have_rssi = {true, false};
+  const CapResult r0 = analyze_capacity(c0, 0, 20, kCapDwellMs, cfg.th);
+  REQUIRE(!(r0.flags & kCalTxBound));
+  CHECK(a->eff_x1000[0] == static_cast<uint16_t>(std::lround(r0.eff * 1000.0)));
+  CHECK(a->eff_x1000[0] > 0);
+  CHECK(a->eff_x1000[1] == 0);  // blocked 10 %: tx_bound, never written
+  for (size_t r = 2; r < 8; ++r) CHECK(a->eff_x1000[r] == 0);
+  const auto w = s.snapshot().width[0];
+  CHECK(w.have_eff);
+  CHECK(w.cap[1].flags & kCalTxBound);
+
+  s.on_mav(cal::Applied{18, 20, true, ""}, 300);
+  CHECK(s.state() == State::Done);  // no verify after a capacity apply
+  CHECK(!s.radio_silent(300));
 }
 
-TEST(null_log_sink_is_inert) {
-  // The gap this covers: CalLog::cell()/wall()/verify() went unwired for
-  // eleven tasks with nothing catching it -- every existing test above
-  // constructs a CalSession with no CalLog* and none of them noticed a
-  // real cal.log was never getting written. This makes the "no sink ->
-  // nothing happens, no crash" contract an explicit assertion rather than
-  // an accident of every other test's setup.
+TEST(capacity_without_done_writes_no_eff) {
   CalSessionCfg cfg;
-  cfg.phase_slack_ms = 0;
-  CalSession s(cfg);  // no CalLog* -- log_ defaults to nullptr
+  CalSession s(cfg);
   s.set_peer(true, true);
   std::string err;
-  REQUIRE(s.start(30, 0, &err));
-  s.due_cmd(0);
-  s.on_ack(30, 1);
-  const auto coarse = make_coarse_plan(30);
-  feed_phase(s, coarse, 100, 10);
-  const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
-  // finish_phase() and finalize_result() run their log_ calls right here;
-  // with log_ == nullptr this must complete exactly as every other test
-  // above does, not crash or silently change the result.
-  const auto res = s.due_result(t1 + 2000);
-  REQUIRE(res.has_value());
-  for (int r = 0; r < 8; ++r) CHECK(res->walls[r] == kRailRel);
+  REQUIRE(s.start(19, {{Kind::Capacity, 20}}, 0, &err));
+  REQUIRE(s.due_mav(0).has_value());
+  ack(s, 19, 0, 10, cal::kFlagStbc);
+  for (int k = 0; k < 900; ++k)
+    s.on_cal_frame(0, stamp(Kind::Capacity, 0, 0, 20, cal::kFlagStbc, k), -60, true, 1500, 100);
+  const uint64_t close =
+      10 + sweep_duration_ms(make_capacity_sweep(19, 0, 20)) + cfg.phase_slack_ms;
+  for (uint64_t t = 200; t <= close + 2000; t += 100)
+    CHECK(!as<cal::ApplyCmd>(s.due_mav(t)).has_value());
+  CHECK(s.state() == State::Done);
+  const auto w = s.snapshot().width[0];
+  CHECK(w.eff_unknown);
+  CHECK(!w.have_eff);
+  for (size_t r = 0; r < 8; ++r) CHECK(w.eff_x1000[r] == 0);
 }
 
-TEST(cal_log_records_cells_and_walls_at_phase_end) {
-  // The actual regression test for the gap: a real CalLog wired in must
-  // come out of a coarse-only run holding a C row per swept cell and a W
-  // row per rate, with an unheard rate's wall/floor written as the
-  // documented kNoWall sentinels (cal_log.h) rather than 0 or garbage.
-  const std::string dir = fresh_dir("cal_session_log_cells");
-  {
-    // Scoped: LogWriter's writer thread flushes on ~LogWriter (joined from
-    // CalLog's destructor), so the file is only guaranteed complete once
-    // `log` (and the CalSession pointing at it) goes out of scope --
-    // exactly the pattern tests/test_cal_log.cpp uses.
-    CalLog log(dir);
-    log.header();
+TEST(legacy_comes_from_the_20_table_when_both_are_swept) {
+  CalSessionCfg cfg;
+  CalSession s(cfg);
+  s.set_peer(true, true);
+  std::string err;
+  REQUIRE(s.start(20, {{Kind::Power, 40}, {Kind::Power, 20}}, 0, &err));
+  const auto a20 = run_power(s, 20, 0, 20, kWalls, 0);
+  CHECK(a20.legacy == 20);
+  s.on_mav(cal::Applied{20, 20, true, ""}, 100);
+  const uint64_t t = 100 + verify_duration_ms(7) + cfg.phase_slack_ms;
+  const std::array<int, 8> w40 = {15, 10, 5, 0, -5, -10, -20, -30};
+  const auto a40 = run_power(s, 20, 1, 40, w40, t);
+  CHECK(a40.bw == 40);
+  CHECK(a40.walls[0] == 15);
+  CHECK(a40.legacy == cal::kWallLeave);
 
-    CalSessionCfg cfg;
-    cfg.phase_slack_ms = 0;
-    CalSession s(cfg, &log);
+  // No 20 MHz table in the run: the 40 MHz mcs0 wall is all there is.
+  CalSession u(cfg);
+  u.set_peer(true, true);
+  REQUIRE(u.start(21, {{Kind::Power, 40}}, 0, &err));
+  const auto b40 = run_power(u, 21, 0, 40, w40, 0);
+  CHECK(b40.legacy == 15);
+}
+
+TEST(ack_timeout_fails_without_an_apply) {
+  CalSessionCfg cfg;
+  CalSession s(cfg);
+  s.set_peer(true, true);
+  std::string err;
+  REQUIRE(s.start(22, {{Kind::Power, 20}}, 0, &err));
+  int applies = 0, aborts = 0;
+  for (uint64_t t = 0; t <= cfg.ack_timeout_ms + 1000; t += 50) {
+    const auto m = s.due_mav(t);
+    if (as<cal::ApplyCmd>(m)) ++applies;
+    if (as<cal::Abort>(m)) ++aborts;
+  }
+  CHECK(s.state() == State::Failed);
+  CHECK(s.snapshot().fail_reason.find("ack") != std::string::npos);
+  CHECK(applies == 0);
+  CHECK(aborts == 1);  // the drone may have heard a SweepCmd: close its run
+  CHECK(!s.radio_silent(cfg.ack_timeout_ms + 1000));
+}
+
+TEST(refused_ack_fails_with_its_reason) {
+  const std::pair<cal::AckResult, const char*> cases[] = {
+      {cal::AckResult::AnchorUnreadable, "anchor_unreadable"},
+      {cal::AckResult::Busy, "busy"},
+      {cal::AckResult::Unsupported, "unsupported"}};
+  for (const auto& [res, word] : cases) {
+    CalSession s(CalSessionCfg{});
     s.set_peer(true, true);
     std::string err;
-    REQUIRE(s.start(31, 0, &err));
-    log.run(31, s.margin_db());
-    s.due_cmd(0);
-    s.on_ack(31, 1);
-
-    // Every rate clean except rate 3, which hears nothing at all -> that
-    // row never reaches deliver_pct anywhere and comes out kCalUndetermined.
-    const auto coarse = make_coarse_plan(31);
-    feed_phase_fn(s, coarse, [](uint8_t r, int) { return r == 3 ? 0 : 100; }, 10);
-    const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
-    // Undetermined and no-dip rows both skip the fine phase (make_fine_plan),
-    // so this coarse-only run goes straight to Result -- finish_phase() has
-    // already logged everything by the time due_result() returns.
-    REQUIRE(s.due_result(t1 + 2000).has_value());
+    REQUIRE(s.start(23, {{Kind::Power, 20}}, 0, &err));
+    REQUIRE(s.due_mav(0).has_value());
+    ack(s, 23, 0, 10, kFlags, res);
+    CHECK(s.state() == State::Failed);
+    CHECK(s.snapshot().fail_reason.find(word) != std::string::npos);
+    CHECK(!s.radio_silent(10));
   }
-
-  const auto lines = cal_log_lines(dir);
-  int c_count = 0, w_count = 0;
-  bool saw_undetermined_wall = false;
-  const std::string want_undetermined =
-      "W 3 " + std::to_string(kNoWall) + " " + std::to_string(kNoWall) +
-      " 0 2";
-  for (const auto& l : lines) {
-    if (l.rfind("C ", 0) == 0) ++c_count;
-    if (l.rfind("W ", 0) == 0) {
-      ++w_count;
-      if (l == want_undetermined) saw_undetermined_wall = true;
-    }
-  }
-  // Coarse sweeps [kCoarseLo, kCoarseHi] step kCoarseStep = -41..63 step 4 =
-  // 27 cells/rate * 8 rates.
-  CHECK(c_count == 216);
-  CHECK(w_count == 8);
-  CHECK(saw_undetermined_wall);
 }
 
-TEST(cal_log_records_verify_results) {
-  const std::string dir = fresh_dir("cal_session_log_verify");
-  {
-    // Scoped for the same reason as the test above: read only after both
-    // `log` and `s` (which holds a pointer into it) are gone.
-    CalLog log(dir);
-    log.header();
-
-    CalSessionCfg cfg;
-    cfg.phase_slack_ms = 0;
-    CalSession s(cfg, &log);
-    s.set_peer(true, true);
-    std::string err;
-    REQUIRE(s.start(32, 0, &err));
-    log.run(32, s.margin_db());
-    s.due_cmd(0);
-    s.on_ack(32, 1);
-
-    // Every rate clean everywhere -> the constant rail wall (kRailRel), this
-    // session's own park index kRailRel - 4 = 59 (1 dB margin).
-    const auto coarse = make_coarse_plan(32);
-    feed_phase(s, coarse, 100, 10);
-    const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
-    REQUIRE(s.due_result(t1 + 2000).has_value());  // arms verify
-
-    // 97/100 on card 0 for rate 0's verify cell.
-    for (int k = 0; k < 97; ++k) {
-      mabur::cal::CalFrameInfo f{0, 59, mabur::cal::kPhaseVerify,
-                                static_cast<uint16_t>(k)};
-      s.on_cal_frame(0, f, -60, /*crc_ok=*/true, t1 + 3000);
-    }
-    // Close the verify window: phase_slack_ms is 0, and a verify plan with
-    // all 8 rates parked (none undetermined here) runs well under a
-    // minute, so this tick is guaranteed past phase_end_ms_ regardless of
-    // the exact per-cell timing math.
-    s.due_cmd(t1 + 2000 + 60000);
-    CHECK(s.state() == CalSession::State::Done);
-  }
-
-  const auto lines = cal_log_lines(dir);
-  bool saw_rate0_verify = false;
-  for (const auto& l : lines)
-    if (l == "V 0 59 97") saw_rate0_verify = true;
-  CHECK(saw_rate0_verify);
-}
-
-TEST(result_is_repeated_until_a_verify_frame_acks_it) {
-  // T_CAL_RESULT carries the whole run's measured table over an uplink
-  // that loses 30-50% of frames, and there is no explicit ack for it. A
-  // single send that lost the coin flip ended the run with the drone's
-  // config untouched -- while the report claimed it had been written.
-  // The drone's verify sweep is the implicit ack (it only sweeps verify
-  // after a successful apply), so the repeats run until the first
-  // verify-phase frame arrives and then stop for good.
-  CalSessionCfg cfg;
-  cfg.phase_slack_ms = 0;
-  CalSession s(cfg);
-  s.set_peer(true, true);
-  std::string err;
-  REQUIRE(s.start(21, 0, &err));
-  s.due_cmd(0);
-  s.on_ack(21, 1);
-  const auto coarse = make_coarse_plan(21);
-  feed_phase(s, coarse, 100, 10);
-  const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
-
-  const uint64_t t_first = t1 + 2000;
-  REQUIRE(s.due_result(t_first).has_value());   // first send, arms verify
-  CHECK(s.radio_silent(t_first));               // ...and the window is open
-  // Too soon: the cadence matches T_CAL_CMD's own ~200 ms.
-  CHECK(!s.due_result(t_first + 50).has_value());
-  const auto again = s.due_result(t_first + 200);
-  REQUIRE(again.has_value());
-  CHECK(again->nonce == 21);
-  CHECK(again->walls[0] == kRailRel);                // the same table, verbatim
-  REQUIRE(s.due_result(t_first + 400).has_value());
-
-  // The drone applied and started sweeping: one verify frame is the ack.
-  mabur::cal::CalFrameInfo f{0, 59, mabur::cal::kPhaseVerify, 0};
-  s.on_cal_frame(0, f, -60, /*crc_ok=*/true, t_first + 500);
-  CHECK(!s.due_result(t_first + 600).has_value());
-  CHECK(!s.due_result(t_first + 5000).has_value());
-}
-
-TEST(a_crc_bad_verify_frame_still_stops_the_repeats) {
-  // Attribution survives corruption by design (cal_wire.h), and a corrupt
-  // verify frame proves just as much as a clean one: the drone applied and
-  // is on the air. Continuing to transmit into that sweep is exactly what
-  // the radio-silence rule forbids.
-  CalSessionCfg cfg;
-  cfg.phase_slack_ms = 0;
-  CalSession s(cfg);
-  s.set_peer(true, true);
-  std::string err;
-  REQUIRE(s.start(22, 0, &err));
-  s.due_cmd(0);
-  s.on_ack(22, 1);
-  const auto coarse = make_coarse_plan(22);
-  feed_phase(s, coarse, 100, 10);
-  const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
-  REQUIRE(s.due_result(t1 + 2000).has_value());
-  mabur::cal::CalFrameInfo f{3, 59, mabur::cal::kPhaseVerify, 0};
-  s.on_cal_frame(0, f, -60, /*crc_ok=*/false, t1 + 2100);
-  CHECK(!s.due_result(t1 + 2200).has_value());
-}
-
-TEST(result_repeats_are_bounded_when_the_drone_never_applies) {
-  // The drone is gone (or its apply was refused): no verify frame will
-  // ever arrive. The repeats must stop on their own rather than filling
-  // the whole verify window with uplink traffic.
-  CalSessionCfg cfg;
-  cfg.phase_slack_ms = 0;
-  CalSession s(cfg);
-  s.set_peer(true, true);
-  std::string err;
-  REQUIRE(s.start(23, 0, &err));
-  s.due_cmd(0);
-  s.on_ack(23, 1);
-  const auto coarse = make_coarse_plan(23);
-  feed_phase(s, coarse, 100, 10);
-  const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
-
-  uint64_t t = t1 + 2000;
-  int sends = 0;
-  for (int i = 0; i < 200; ++i) {
-    if (s.due_result(t).has_value()) ++sends;
-    t += 200;
-    if (s.state() != CalSession::State::Verify) break;
-  }
-  // First send plus a bounded number of repeats -- not one per tick for
-  // the whole window.
-  CHECK(sends >= 2);
-  CHECK(sends <= 20);
-}
-
-TEST(all_zero_verify_rows_are_logged_for_a_totally_silent_result) {
-  // due_result() opens the GS's own verify window optimistically -- there
-  // is no ack for T_CAL_RESULT -- so a run whose result frame was lost on
-  // the uplink, or whose apply was refused, still gets a full set of V
-  // rows: every rate that was planned, all of them 0%. That is
-  // deliberate: a V row means "this rate was IN THE PLAN", never "this
-  // rate verified clean" (see cal_log.h), and suppressing the row for a
-  // silent rate is what made a single genuinely dead rate indistinguish-
-  // able from one that was never parked at all (see
-  // silent_verify_cell_is_distinguishable_from_a_never_planned_rate
-  // below). The `written:` claim this used to feed maburcal now keys on a
-  // NONZERO pct somewhere in the run instead of a row's mere presence --
-  // exercised in tests/test_maburcal.py's written:-gating tests -- so
-  // this all-zero set must still read as "not written" there even though
-  // every planned rate gets a row here.
-  const std::string dir = fresh_dir("cal_session_log_verify_empty");
-  {
-    CalLog log(dir);
-    log.header();
-    CalSessionCfg cfg;
-    cfg.phase_slack_ms = 0;
-    CalSession s(cfg, &log);
-    s.set_peer(true, true);
-    std::string err;
-    REQUIRE(s.start(33, 0, &err));
-    log.run(33, s.margin_db());
-    s.due_cmd(0);
-    s.on_ack(33, 1);
-    const auto coarse = make_coarse_plan(33);
-    feed_phase(s, coarse, 100, 10);
-    const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
-    REQUIRE(s.due_result(t1 + 2000).has_value());  // arms verify
-    // ...and nothing at all comes back: the result never reached the
-    // drone, or the drone refused to apply it.
-    s.due_cmd(t1 + 2000 + 60000);
-    CHECK(s.state() == CalSession::State::Done);
-  }
-  int v_count = 0;
-  for (const auto& l : cal_log_lines(dir)) {
-    if (l.rfind("V ", 0) != 0) continue;
-    ++v_count;
-    // "V <rate> <idx> 0" -- every planned rate came back at 0%.
-    CHECK(l.size() >= 2 && l.compare(l.size() - 2, 2, " 0") == 0);
-  }
-  // All 8 rates were clean during coarse (feed_phase 100%), so all 8 had a
-  // real wall and therefore a real verify cell.
-  CHECK(v_count == 8);
-}
-
-TEST(silent_verify_cell_is_distinguishable_from_a_never_planned_rate) {
-  // Two failure shapes that used to render identically in maburcal's
-  // report: a rate whose wall came back undetermined (make_verify_plan
-  // never seeds a cell for it -- nothing to verify, by design, and
-  // therefore no V row ever) versus a rate that WAS parked and verified
-  // but heard nothing at wall - margin (dead at its own parked power).
-  // The fix is that the second case now still gets a V row, at 0%; the
-  // first never does. This is the single most important signal the
-  // verify pass exists to produce, and it must not look like "nothing to
-  // report" (see docs/calibration.md).
-  const std::string dir = fresh_dir("cal_session_log_verify_one_silent");
-  {
-    CalLog log(dir);
-    log.header();
-    CalSessionCfg cfg;
-    cfg.phase_slack_ms = 0;
-    CalSession s(cfg, &log);
-    s.set_peer(true, true);
-    std::string err;
-    REQUIRE(s.start(34, 0, &err));
-    log.run(34, s.margin_db());
-    s.due_cmd(0);
-    s.on_ack(34, 1);
-
-    // Rate 3 hears nothing the whole coarse sweep -> undetermined wall,
-    // never planned for verify at all. Every other rate is clean -> a
-    // real wall (kRailRel, matching cal_log_records_verify_results), and
-    // therefore a real park index (kRailRel - 4 = 59, margin 1.0 dB = 4 steps) seeded
-    // into the verify plan.
-    const auto coarse = make_coarse_plan(34);
-    feed_phase_fn(
-        s, coarse, [](uint8_t r, int) { return r == 3 ? 0 : 100; }, 10);
-    const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
-    REQUIRE(s.due_result(t1 + 2000).has_value());  // arms verify
-
-    // Rate 0's parked cell hears real traffic, proving the run genuinely
-    // applied and is on the air sweeping verify. Every other planned rate
-    // (1, 2, 4, 5, 6, 7) hears nothing at its own cell -- each is dead at
-    // its parked power, not a casualty of a lost result frame, since
-    // rate 0's frames already prove the drone applied and is sweeping.
-    for (int k = 0; k < 55; ++k) {
-      mabur::cal::CalFrameInfo f{0, 59, mabur::cal::kPhaseVerify,
-                                static_cast<uint16_t>(k)};
-      s.on_cal_frame(0, f, -60, /*crc_ok=*/true, t1 + 3000);
-    }
-    s.due_cmd(t1 + 2000 + 60000);
-    CHECK(s.state() == CalSession::State::Done);
-  }
-
-  bool saw_rate0_55pct = false, saw_rate1_zero = false, saw_rate3 = false;
-  for (const auto& l : cal_log_lines(dir)) {
-    if (l == "V 0 59 55") saw_rate0_55pct = true;
-    if (l == "V 1 59 0") saw_rate1_zero = true;
-    if (l.rfind("V 3 ", 0) == 0) saw_rate3 = true;
-  }
-  CHECK(saw_rate0_55pct);   // planned, heard, and measured correctly
-  CHECK(saw_rate1_zero);    // planned, silent -- gets a row, at 0%
-  CHECK(!saw_rate3);        // never planned (undetermined wall) -- no row
-}
-
-TEST(records_are_on_disk_as_soon_as_the_run_reaches_done) {
-  // LogWriter flushes at 1 Hz; `maburcal start` polls `status` every
-  // 500 ms and reads cal.log the instant it sees state=done. The V
-  // records are written at the Verify->Done transition, so without a
-  // flush at that transition roughly half of successful runs rendered
-  // from a file missing its tail -- and printed "no verify pass
-  // completed" for a run that worked. Read here WITHOUT destroying the
-  // CalLog first (the destructor would flush and hide the bug).
-  const std::string dir = fresh_dir("cal_session_flush_on_done");
-  CalLog log(dir);
-  log.header();
-  CalSessionCfg cfg;
-  cfg.phase_slack_ms = 0;
-  CalSession s(cfg, &log);
-  s.set_peer(true, true);
-  std::string err;
-  REQUIRE(s.start(34, 0, &err));
-  log.run(34, s.margin_db());
-  s.due_cmd(0);
-  s.on_ack(34, 1);
-  const auto coarse = make_coarse_plan(34);
-  feed_phase(s, coarse, 100, 10);
-  const uint64_t t1 = 1 + plan_duration_ms(coarse) + 1;
-  REQUIRE(s.due_result(t1 + 2000).has_value());
-  for (int k = 0; k < 97; ++k) {
-    mabur::cal::CalFrameInfo f{0, 59, mabur::cal::kPhaseVerify,
-                              static_cast<uint16_t>(k)};
-    s.on_cal_frame(0, f, -60, /*crc_ok=*/true, t1 + 3000);
-  }
-  s.due_cmd(t1 + 2000 + 60000);
-  REQUIRE(s.state() == CalSession::State::Done);
-
-  bool saw_verify = false;
-  for (const auto& l : cal_log_lines(dir))
-    if (l == "V 0 59 97") saw_verify = true;
-  CHECK(saw_verify);
-}
-
-TEST(a_sweep_frame_is_an_implicit_ack_for_the_phase_it_names) {
-  // The drone's ack rides a Telem, and Telem is lost like anything else.
-  // Until one arrives the session sits in AwaitAck, where it (a) keeps
-  // transmitting T_CAL_CMD repeats every 200 ms straight into the drone's
-  // live sweep -- contaminating the measurement the radio-silence rule
-  // exists to protect, and blanking its own RX cards with every send --
-  // and (b) DROPS every frame that arrives meanwhile, so those cells keep
-  // their seeded 0-received tally and score as total loss.
-  //
-  // A sweep frame for the phase being commanded proves exactly what the
-  // ack would have: the drone accepted this phase and is on the air with
-  // it. Found by tests/test_cal_e2e.cpp.
-  CalSessionCfg cfg;
-  cfg.phase_slack_ms = 0;
-  CalSession s(cfg);
-  s.set_peer(true, true);
-  std::string err;
-  REQUIRE(s.start(71, 0, &err));
-  REQUIRE(s.due_cmd(0).has_value());
-  CHECK(!s.radio_silent(10));   // no ack yet: the air is still open
-
-  mabur::cal::CalFrameInfo f{0, 7, mabur::cal::kPhaseCoarse, 0};
-  s.on_cal_frame(0, f, -70, /*crc_ok=*/true, 100);
-  CHECK(s.state() == CalSession::State::Sweep);
-  CHECK(s.radio_silent(101));               // ...and now it is shut
-  CHECK(!s.due_cmd(300).has_value());       // no more repeats into the sweep
-  CHECK(s.cell_received(0, 7, 0) == 1);     // and the frame itself counted
-
-  // The window is sized from the frame's arrival, so the phase still gets
-  // its full planned duration of silence.
-  const uint32_t dur = plan_duration_ms(make_coarse_plan(71));
-  CHECK(s.radio_silent(100 + dur - 1));
-  CHECK(!s.radio_silent(100 + dur + 1));
-}
-
-TEST(a_frame_from_another_phase_is_not_an_implicit_ack) {
-  // Only the phase currently being commanded counts. A straggler from a
-  // phase this session already left (or one it has not asked for yet)
-  // must not open the sweep window early or be tallied into it.
+TEST(apply_timeout_fails) {
   CalSessionCfg cfg;
   CalSession s(cfg);
   s.set_peer(true, true);
   std::string err;
-  REQUIRE(s.start(72, 0, &err));
-  REQUIRE(s.due_cmd(0).has_value());
-  mabur::cal::CalFrameInfo f{0, 8, mabur::cal::kPhaseVerify, 0};
-  s.on_cal_frame(0, f, -70, true, 100);
-  CHECK(s.state() == CalSession::State::AwaitAck);
-  CHECK(s.cell_received(0, 8, 0) == 0);
+  REQUIRE(s.start(24, {{Kind::Power, 20}}, 0, &err));
+  run_power(s, 24, 0, 20, kWalls, 0);  // first ApplyCmd at t = 40
+  int applies = 1;
+  for (uint64_t t = 50; t < 40 + cfg.apply_timeout_ms; t += 50)
+    if (as<cal::ApplyCmd>(s.due_mav(t))) ++applies;
+  CHECK(s.state() == State::Apply);
+  CHECK(applies >= 20);  // every 200 ms
+  s.due_mav(40 + cfg.apply_timeout_ms);
+  CHECK(s.state() == State::Failed);
+  CHECK(s.snapshot().fail_reason.find("apply") != std::string::npos);
 }
 
-TEST(no_dip_rows_park_at_the_constant_rail_without_any_ack) {
-  // The rail no longer depends on anything the drone reports: a run whose
-  // ack Telem was lost (sweep frames are the implicit ack) still parks
-  // every clean row at kRailRel.
+TEST(abort_emits_one_abort_and_reopens_the_air) {
+  CalSession s(CalSessionCfg{});
+  s.set_peer(true, true);
+  std::string err;
+  REQUIRE(s.start(25, {{Kind::Power, 20}}, 0, &err));
+  REQUIRE(s.due_mav(0).has_value());
+  ack(s, 25, 0, 10);
+  REQUIRE(s.radio_silent(100));
+  s.abort("operator abort");
+  CHECK(!s.radio_silent(100));
+  CHECK(s.state() == State::Idle);
+  CHECK(!s.running());
+  const auto m = as<cal::Abort>(s.due_mav(110));
+  REQUIRE(m.has_value());
+  CHECK(m->nonce == 25);
+  CHECK(!s.due_mav(120).has_value());
+  CHECK(!s.due_mav(1000).has_value());
+  CHECK(s.snapshot().fail_reason == "operator abort");
+  // A late frame or ack of the aborted run changes nothing.
+  ack(s, 25, 0, 130);
+  CHECK(s.state() == State::Idle);
+}
+
+TEST(picker_is_cancelled_on_pick_timeout_and_abort) {
   CalSessionCfg cfg;
-  cfg.phase_slack_ms = 0;
+  std::string err;
+  FakePicker p;
+  p.op_ch = 36;
+  CalSession s(cfg, nullptr, &p);
+  s.set_peer(true, true);
+  REQUIRE(s.start(26, {{Kind::Power, 20}}, 0, &err));
+  CHECK(!s.due_mav(cfg.pick_timeout_ms - 1).has_value());
+  CHECK(p.cancels == 0);
+  CHECK(as<cal::SweepCmd>(s.due_mav(cfg.pick_timeout_ms)).has_value());
+  CHECK(p.cancels == 1);
+  CHECK(s.snapshot().channel == 36);
+  CHECK(s.snapshot().pick_note.find("stayed on 36") == 0);
+
+  FakePicker q;
+  CalSession t(cfg, nullptr, &q);
+  t.set_peer(true, true);
+  REQUIRE(t.start(27, {{Kind::Power, 20}}, 0, &err));
+  t.abort("operator abort");
+  CHECK(q.cancels == 1);
+  CHECK(t.state() == State::Idle);
+  CHECK(!t.due_mav(10).has_value());  // nothing reached the drone: no Abort
+}
+
+TEST(implicit_ack_from_the_first_matching_frame) {
+  CalSession s(CalSessionCfg{});
+  s.set_peer(true, true);
+  std::string err;
+  REQUIRE(s.start(28, {{Kind::Power, 20}}, 0, &err));
+  REQUIRE(s.due_mav(0).has_value());
+  // Neither a capacity frame nor a 40 MHz one stands in for the ack.
+  s.on_cal_frame(0, stamp(Kind::Capacity, 0, 0, 20, cal::kFlagStbc), -60, true, 1500, 50);
+  s.on_cal_frame(0, stamp(Kind::Power, 0, kSweepLo, 40, cal::kFlagStbc), -60, true, kPowerAir,
+                 60);
+  CHECK(s.state() == State::AwaitAck);
+  s.on_cal_frame(0, stamp(Kind::Power, 0, kSweepLo, 20, cal::kFlagStbc), -60, true, kPowerAir,
+                 100);
+  CHECK(s.state() == State::Sweep);
+  CHECK(s.radio_silent(100));
+  CHECK(s.snapshot().flags == cal::kFlagStbc);  // adopted from the frame
+  CHECK(s.cell_received(0, kSweepLo, 0) == 1);
+  CHECK(!s.due_mav(300).has_value());  // no more SweepCmd repeats
+  // The adopted flags now filter like an ack's.
+  s.on_cal_frame(0, stamp(Kind::Power, 0, kSweepLo, 20, kFlags), -60, true, kPowerAir, 110);
+  CHECK(s.cell_received(0, kSweepLo, 0) == 1);
+}
+
+TEST(verify_parks_match_the_drone_rule) {
+  CalSessionCfg cfg;
+  cfg.margin_db = 7.0;  // 28 steps: pushes a low wall past kRelMin
   CalSession s(cfg);
   s.set_peer(true, true);
   std::string err;
-  REQUIRE(s.start(41, 0, &err));
-  s.due_cmd(0);
-  const auto coarse = make_coarse_plan(41);
-  feed_phase(s, coarse, 100, 10);
-  const auto res = s.due_result(1 + plan_duration_ms(coarse) + 2001);
-  REQUIRE(res.has_value());
-  for (int r = 0; r < 8; ++r) CHECK(res->walls[r] == kRailRel);
+  REQUIRE(s.start(29, {{Kind::Power, 20}}, 0, &err));
+  const std::array<int, 8> walls = {kSweepLo, 30, kNoWall, kNoWall,
+                                    kNoWall,  kNoWall, kNoWall, kNoWall};
+  const auto a = run_power(s, 29, 0, 20, walls, 0);
+  REQUIRE(a.walls[0] == kSweepLo);
+  s.on_mav(cal::Applied{29, 20, true, ""}, 100);
+  REQUIRE(s.state() == State::Verify);
+  const auto drone = mabur::park_rel_for(a.walls, cfg.margin_db);
+  const auto w = s.snapshot().width[0];
+  for (size_t r = 0; r < 8; ++r) CHECK(w.park[r] == drone[r]);
+  CHECK(w.park[0] == mabur::rc::kRelMin);  // clamped, as the drone clamps
+  CHECK(w.park[1] == 30 - 28);
+  CHECK(w.park[2] == cal::kWallLeave);
+  // The window covers exactly the drone's two verify cells.
+  const uint64_t close = 100 + verify_duration_ms(verify_cells(drone).size()) + cfg.phase_slack_ms;
+  CHECK(s.radio_silent(close - 1));
+  CHECK(!s.radio_silent(close));
 }
 
-// The GS keeps beaconing between phases, and a DISC_ACK there hands it a
-// new pair the drone has only issued, not promoted -- the drone verifies the
-// run's frames against the pair the run opened under (RcAgent's sweep
-// latch). So every command and result of one run carries the tag context
-// set_peer() reported at start(), whatever set_peer() says later. Bench
-// repro: a mid-run re-pair re-tagged the result, all 15 rejected.
-TEST(the_tag_context_is_frozen_at_start_for_the_whole_run) {
-  CalSessionCfg cfg;
-  cfg.phase_slack_ms = 0;
-  CalSession s(cfg);
+TEST(snapshot_tracks_sweep_and_cell_progress) {
+  CalSession s(CalSessionCfg{});
+  s.set_peer(true, true);
+  std::string err;
+  REQUIRE(s.start(30, {{Kind::Capacity, 20}, {Kind::Power, 20}}, 0, &err));
+  REQUIRE(s.due_mav(0).has_value());
+  ack(s, 30, 0, 10);
+  auto snap = s.snapshot();
+  CHECK(snap.state == State::Sweep);
+  CHECK(snap.sweep_i == 0 && snap.sweep_n == 2);
+  CHECK(snap.cur.kind == Kind::Power && snap.cur.bw == 20);
+  CHECK(snap.cell_n == static_cast<uint32_t>(8 * kRows));
+  CHECK(snap.cell_i == 0);
+  CHECK(snap.flags == kFlags);
+  s.on_cal_frame(0, stamp(Kind::Power, 1, kSweepLo, 20, kFlags), -60, true, kPowerAir, 20);
+  CHECK(s.snapshot().cell_i == static_cast<uint32_t>(kRows + 1));
+  s.on_cal_frame(0, stamp(Kind::Power, 1, kSweepLo + 1, 20, kFlags), -60, true, kPowerAir, 30);
+  CHECK(s.snapshot().cell_i == static_cast<uint32_t>(kRows + 2));
+
+  // Close the power sweep with nothing determined -> straight to sweep 1.
+  s.on_mav(power_done(30, 0), 40);
+  const auto cmd = as<cal::SweepCmd>(s.due_mav(50));
+  REQUIRE(cmd.has_value());
+  CHECK(cmd->kind == Kind::Capacity && cmd->seq == 1);
+  ack(s, 30, 1, 60);
+  snap = s.snapshot();
+  CHECK(snap.sweep_i == 1);
+  CHECK(snap.cur.kind == Kind::Capacity);
+  CHECK(snap.cell_n == 8);
+  s.on_cal_frame(0, stamp(Kind::Capacity, 3, 0, 20, kFlags), -60, true, 1500, 70);
+  CHECK(s.snapshot().cell_i == 4);
+}
+
+TEST(tag_context_is_frozen_at_start) {
+  CalSession s(CalSessionCfg{});
   s.set_peer(true, true, mabur::rc::TagCtx{11, 22, 0});
   std::string err;
-  CHECK(!s.running());
-  REQUIRE(s.start(43, 0, &err));
-  CHECK(s.running());
+  REQUIRE(s.start(31, {{Kind::Power, 20}}, 0, &err));
   s.set_peer(true, true, mabur::rc::TagCtx{11, 33, 0});   // re-paired mid-run
   s.set_peer(false, true, mabur::rc::TagCtx{11, 33, 0});  // and lost again
   CHECK(s.tag_ctx().vrx_nonce == 11);
   CHECK(s.tag_ctx().vtx_nonce == 22);
-  CHECK(s.tag_ctx().seq32 == 0);
-  // The next run takes whatever the link holds when it starts.
   s.abort("test");
-  CHECK(!s.running());
   s.set_peer(true, true, mabur::rc::TagCtx{11, 44, 0});
-  REQUIRE(s.start(44, 10, &err));
+  REQUIRE(s.start(32, {{Kind::Power, 20}}, 10, &err));
   CHECK(s.tag_ctx().vtx_nonce == 44);
+
+  // With a pick, nothing reaches the drone until the pick ends, so the
+  // context is the one the link holds when the first SweepCmd is due.
+  FakePicker p;
+  p.best = 36;
+  CalSession t(CalSessionCfg{}, nullptr, &p);
+  t.set_peer(true, true, mabur::rc::TagCtx{1, 2, 0});
+  REQUIRE(t.start(33, {{Kind::Power, 20}}, 0, &err));
+  t.set_peer(true, true, mabur::rc::TagCtx{1, 3, 0});
+  REQUIRE(as<cal::SweepCmd>(t.due_mav(10)).has_value());
+  CHECK(t.tag_ctx().vtx_nonce == 3);
+  t.set_peer(true, true, mabur::rc::TagCtx{1, 4, 0});
+  CHECK(t.tag_ctx().vtx_nonce == 3);
+}
+
+TEST(cal_log_gets_sweep_cell_wall_cap_verify_and_applied_rows) {
+  const std::string dir = fresh_dir("cal_session_log");
+  CalLog log(dir);
+  REQUIRE(log.ok());
+  log.header();
+  CalSessionCfg cfg;
+  FakePicker p;
+  p.m = CalPicker::Mode::Pinned;
+  p.op_ch = 36;
+  CalSession s(cfg, &log, &p);
+  s.set_peer(true, true);
+  std::string err;
+  REQUIRE(s.start(77, {{Kind::Capacity, 20}, {Kind::Power, 20}}, 0, &err));
+  run_power(s, 77, 0, 20, kWalls, 0);
+  s.on_mav(cal::Applied{77, 20, true, ""}, 100);
+  const auto parks = mabur::park_rel_for(
+      {20, 10, 5, 0, -5, -10, -20, cal::kWallLeave}, cfg.margin_db);
+  for (int k = 0; k < 20; ++k)
+    s.on_cal_frame(0, stamp(Kind::Verify, 0, parks[0], 20, kFlags, k), -60, true, kPowerAir, 200);
+  uint64_t t = 100 + verify_duration_ms(7) + cfg.phase_slack_ms;
+  const auto cmd = as<cal::SweepCmd>(s.due_mav(t));
+  REQUIRE(cmd.has_value() && cmd->kind == Kind::Capacity);
+  ack(s, 77, 1, t + 10);
+  for (int k = 0; k < 100; ++k)
+    s.on_cal_frame(0, stamp(Kind::Capacity, 0, 0, 20, kFlags, k), -60, true, 1500, t + 20);
+  cal::SweepDone d;
+  d.nonce = 77;
+  d.seq = 1;
+  d.offered.fill(100);
+  d.blocked_pct.fill(90);
+  s.on_mav(d, t + 30);
+  REQUIRE(as<cal::ApplyCmd>(s.due_mav(t + 40)).has_value());
+  s.on_mav(cal::Applied{77, 20, true, ""}, t + 50);
+  REQUIRE(s.state() == State::Done);
+
+  // On disk the moment the run reaches Done, without closing the log.
+  const auto lines = cal_log_lines(dir);
+  std::vector<std::string> seq;
+  for (const auto& l : lines) {
+    const std::string tag = l.substr(0, l.find(' '));
+    if (seq.empty() || seq.back() != tag) seq.push_back(tag);
+  }
+  const std::vector<std::string> want = {"callog", "R", "S", "C", "W", "A",
+                                         "V",      "S", "P", "A"};
+  CHECK(seq == want);
+  REQUIRE(lines.size() > 3);
+  CHECK(lines[1] == "R 77 1.00 36 pinned 1");
+  CHECK(lines[2] == "S 0 power 20 20");
+  size_t c = 0, w = 0, v = 0, pr = 0;
+  for (const auto& l : lines) {
+    if (l[0] == 'C') ++c;
+    if (l[0] == 'W') ++w;
+    if (l[0] == 'V') ++v;
+    if (l[0] == 'P') ++pr;
+    if (l[0] == 'S' && l.find("capacity") != std::string::npos)
+      CHECK(l == "S 1 capacity 20 2000");
+  }
+  CHECK(c == static_cast<size_t>(8 * kRows));
+  CHECK(w == 8);
+  CHECK(v == 7);  // every parked rate, heard or not
+  CHECK(pr == 8);
+}
+
+TEST(null_log_sink_is_inert) {
+  CalSession s(CalSessionCfg{});
+  s.set_peer(true, true);
+  std::string err;
+  REQUIRE(s.start(34, {{Kind::Power, 20}}, 0, &err));
+  run_power(s, 34, 0, 20, kWalls, 0);
+  s.on_mav(cal::Applied{34, 20, true, ""}, 100);
+  s.due_mav(100 + verify_duration_ms(7) + 1000);
+  CHECK(s.state() == State::Done);
 }
 
 MTEST_MAIN

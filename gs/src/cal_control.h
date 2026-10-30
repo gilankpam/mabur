@@ -114,7 +114,7 @@ class CalControl {
     if (tok.empty()) { *reply = "err empty"; return false; }
 
     if (tok[0] == "status") {
-      *reply = "ok " + s.progress();
+      *reply = std::string("ok state=") + state_name(s.state());
       return false;
     }
 
@@ -149,7 +149,7 @@ class CalControl {
       static std::random_device rd;
       const uint32_t nonce = rd();
       std::string err;
-      if (!s.start(nonce, now_ms(), &err)) {
+      if (!s.start(nonce, {{mabur::cal::Kind::Power, 20}}, now_ms(), &err)) {
         *reply = "err " + err;
         return false;
       }
@@ -162,6 +162,22 @@ class CalControl {
   }
 
  private:
+  static const char* state_name(CalSession::State st) {
+    switch (st) {
+      case CalSession::State::Idle: return "idle";
+      case CalSession::State::Picking: return "picking";
+      case CalSession::State::AwaitAck: return "await_ack";
+      case CalSession::State::Sweep: return "sweep";
+      case CalSession::State::AwaitDone: return "await_done";
+      case CalSession::State::Analyze: return "analyze";
+      case CalSession::State::Apply: return "apply";
+      case CalSession::State::Verify: return "verify";
+      case CalSession::State::Done: return "done";
+      case CalSession::State::Failed: return "failed";
+    }
+    return "?";
+  }
+
   static uint64_t now_ms() {
     timespec ts{};
     clock_gettime(CLOCK_MONOTONIC, &ts);
