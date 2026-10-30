@@ -495,9 +495,11 @@ TEST(capacity_sweep_yields_eff_and_zero_for_tx_bound) {
   CHECK(!s.radio_silent(300));
 }
 
-TEST(done_sends_one_abort_so_the_drone_resumes_at_once) {
+TEST(done_sends_three_aborts_so_the_drone_resumes_at_once) {
   // The drone otherwise sits in its await window (power parked, video
-  // off) until it times out; its close keeps the written config.
+  // off) until it times out; its close keeps the written config. Three
+  // copies 200 ms apart, since the uplink is lossy and the drone ignores
+  // a nonce it already closed.
   CalSessionCfg cfg;
   CalSession s(cfg);
   s.set_peer(true, true);
@@ -506,17 +508,53 @@ TEST(done_sends_one_abort_so_the_drone_resumes_at_once) {
   run_power(s, 35, 0, 20, kWalls, 0);
   s.on_mav(cal::Applied{35, 0, 20, true, ""}, 100);
   const uint64_t close = 100 + verify_duration_ms(7) + cfg.phase_slack_ms;
-  int aborts = 0;
+  std::vector<uint64_t> at;
   for (uint64_t t = close; t < close + 2000; t += 50) {
     const auto m = s.due_mav(t);
     if (const auto a = as<cal::Abort>(m)) {
-      ++aborts;
+      at.push_back(t);
       CHECK(a->nonce == 35);
     }
     CHECK(!as<cal::SweepCmd>(m).has_value());
   }
   CHECK(s.state() == State::Done);
-  CHECK(aborts == 1);
+  REQUIRE(at.size() == 3);
+  CHECK(at[1] - at[0] == 200);
+  CHECK(at[2] - at[1] == 200);
+}
+
+TEST(a_repeated_done_after_analyze_is_ignored) {
+  // The drone repeats SweepDone every 200 ms until the GS's next command
+  // reaches it, so repeats keep landing after the sweep was analysed: in
+  // Apply, in Verify and in the next sweep's AwaitAck. None may move the
+  // session or change what it sends.
+  CalSessionCfg cfg;
+  CalSession s(cfg);
+  s.set_peer(true, true);
+  std::string err;
+  REQUIRE(s.start(37, {{Kind::Power, 20}, {Kind::Capacity, 20}}, 0, &err));
+  const auto a = run_power(s, 37, 0, 20, kWalls, 0);
+  REQUIRE(s.state() == State::Apply);
+  s.on_mav(power_done(37, 0), 50);
+  CHECK(s.state() == State::Apply);
+  const auto again = as<cal::ApplyCmd>(s.due_mav(240));
+  REQUIRE(again.has_value());
+  CHECK(again->seq == a.seq && again->walls == a.walls && again->legacy == a.legacy);
+
+  s.on_mav(cal::Applied{37, 0, 20, true, ""}, 250);
+  REQUIRE(s.state() == State::Verify);
+  s.on_mav(power_done(37, 0), 260);
+  CHECK(s.state() == State::Verify);
+  CHECK(s.radio_silent(260));
+
+  const uint64_t next = 250 + verify_duration_ms(7) + cfg.phase_slack_ms;
+  const auto cmd = as<cal::SweepCmd>(s.due_mav(next));
+  REQUIRE(cmd.has_value());
+  CHECK(cmd->seq == 1);
+  s.on_mav(power_done(37, 0), next + 10);
+  CHECK(s.state() == State::AwaitAck);
+  CHECK(s.snapshot().width[0].have_walls);
+  CHECK(s.snapshot().width[0].walls[0].wall == 20);
 }
 
 TEST(a_stale_applied_for_the_power_seq_does_not_satisfy_the_capacity_apply) {
@@ -628,7 +666,7 @@ TEST(ack_timeout_fails_without_an_apply) {
   CHECK(s.state() == State::Failed);
   CHECK(s.snapshot().fail_reason.find("ack") != std::string::npos);
   CHECK(applies == 0);
-  CHECK(aborts == 1);  // the drone may have heard a SweepCmd: close its run
+  CHECK(aborts == 3);  // the drone may have heard a SweepCmd: close its run
   CHECK(!s.radio_silent(cfg.ack_timeout_ms + 1000));
 }
 
@@ -667,7 +705,7 @@ TEST(apply_timeout_fails) {
   CHECK(s.snapshot().fail_reason.find("apply") != std::string::npos);
 }
 
-TEST(abort_emits_one_abort_and_reopens_the_air) {
+TEST(abort_emits_three_aborts_and_reopens_the_air) {
   CalSession s(CalSessionCfg{});
   s.set_peer(true, true);
   std::string err;
@@ -683,6 +721,13 @@ TEST(abort_emits_one_abort_and_reopens_the_air) {
   REQUIRE(m.has_value());
   CHECK(m->nonce == 25);
   CHECK(!s.due_mav(120).has_value());
+  CHECK(!s.due_mav(309).has_value());
+  CHECK(as<cal::Abort>(s.due_mav(310)).has_value());
+  CHECK(!s.due_mav(400).has_value());
+  const auto last = as<cal::Abort>(s.due_mav(510));
+  REQUIRE(last.has_value());
+  CHECK(last->nonce == 25);
+  CHECK(!s.due_mav(710).has_value());
   CHECK(!s.due_mav(1000).has_value());
   CHECK(s.snapshot().fail_reason == "operator abort");
   // A late frame or ack of the aborted run changes nothing.

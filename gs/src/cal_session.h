@@ -77,6 +77,9 @@ struct CalSnapshot;
 
 class CalSession {
  public:
+  // How many copies of each Abort due_mav() offers.
+  static constexpr int kAbortCopies = 3;
+
   // Picking runs the channel pick before anything reaches the drone; it is
   // outside running(). Analyze is transient (entered and left within one
   // call) and only ever visible as a state name in passing.
@@ -102,8 +105,10 @@ class CalSession {
 
   // The message to send right now, or nullopt: a SweepCmd (repeated every
   // 200 ms until acked), an ApplyCmd (repeated every 200 ms until
-  // Applied), or the one Abort that closes the drone's run after Done, a
-  // failure or abort(). The caller sends it as is, never gated on
+  // Applied), or the Abort that closes the drone's run after Done, a
+  // failure or abort() -- kAbortCopies copies 200 ms apart, since the
+  // uplink is lossy and the drone ignores a nonce it has already closed.
+  // The caller sends it as is, never gated on
   // radio_silent(): the session only offers something when the air is the
   // GS's to use. Advances time-driven transitions first.
   std::optional<mabur::cal::CalMsg> due_mav(uint64_t now_ms);
@@ -130,7 +135,7 @@ class CalSession {
   // running()'s set of states, for a caller holding only a snapshot.
   static bool is_running(State st);
 
-  // Abandons the run from any state: one Abort goes out through due_mav()
+  // Abandons the run from any state: the Aborts go out through due_mav()
   // (if the run already reached the drone), a pick in progress is
   // cancelled, the air reopens and the session goes Idle. The snapshot
   // keeps `why` as its fail_reason.
@@ -173,6 +178,7 @@ class CalSession {
   void finish_verify(uint64_t now_ms);
   void next_sweep(uint64_t now_ms);
   void fail(const std::string& why);
+  void queue_abort();
   void tally_power(int card, const mabur::cal::CalFrameInfo& f, int rssi_dbm, bool crc_ok);
   void tally_capacity(int card, const mabur::cal::CalFrameInfo& f, int rssi_dbm, bool crc_ok,
                       size_t air_bytes);
@@ -211,7 +217,10 @@ class CalSession {
   uint64_t last_sent_ms_ = 0;
   bool sent_once_ = false;
   bool reached_drone_ = false;  // at least one SweepCmd was offered
+  // The Abort still owed to the drone, and how many more copies of it.
   std::optional<mabur::cal::Abort> pending_abort_;
+  int aborts_left_ = 0;
+  uint64_t next_abort_ms_ = 0;
 
   // Sweep / AwaitDone / Verify windows.
   uint8_t ack_flags_ = 0;

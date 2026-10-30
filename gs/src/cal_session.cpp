@@ -93,8 +93,8 @@ bool CalSession::start(uint32_t nonce, std::vector<cal::SweepSpec> sweeps, uint6
   done_.reset();
   width_ = {};
   reloc_ordered_ = false;
-  // pending_abort_ is deliberately kept: an Abort for the previous run
-  // that has not gone out yet still must.
+  // pending_abort_ is deliberately kept: copies of the previous run's
+  // Abort that have not gone out yet still must.
 
   channel_ = picker_ ? picker_->op() : 0;
   if (picker_ == nullptr || picker_->mode() != CalPicker::Mode::Auto) {
@@ -138,9 +138,10 @@ void CalSession::on_mav(const cal::CalMsg& m, uint64_t now_ms) {
 
 std::optional<cal::CalMsg> CalSession::due_mav(uint64_t now_ms) {
   step(now_ms);
-  if (pending_abort_) {
+  if (pending_abort_ && now_ms >= next_abort_ms_) {
     const cal::Abort a = *pending_abort_;
-    pending_abort_.reset();
+    if (--aborts_left_ == 0) pending_abort_.reset();
+    next_abort_ms_ = now_ms + kResendMs;
     return cal::CalMsg{a};
   }
   if (state_ != State::AwaitAck && state_ != State::Apply) return std::nullopt;
@@ -219,7 +220,7 @@ void CalSession::abort(const char* why) {
     // Only a run that offered the drone a SweepCmd can have opened one
     // there; the drone closes it (restoring its power table) at once
     // rather than at its own await timeout.
-    if (reached_drone_) pending_abort_ = cal::Abort{nonce_};
+    if (reached_drone_) queue_abort();
     fail_reason_ = why ? why : "aborted";
     if (log_) log_->flush();
   }
@@ -612,7 +613,7 @@ void CalSession::next_sweep(uint64_t now_ms) {
   // Closes the drone's run now -- restoring its operating power and video
   // -- instead of after its await window; the drone's close keeps the
   // config the applies wrote.
-  pending_abort_ = cal::Abort{nonce_};
+  queue_abort();
   // maburcal reads cal.log the moment it sees a terminal state; the
   // writer's own 1 Hz flush would race it.
   if (log_) log_->flush();
@@ -622,10 +623,16 @@ void CalSession::fail(const std::string& why) {
   if (state_ == State::Picking && picker_) picker_->cancel();
   // A run the drone may have opened is closed there at once, restoring
   // its power table, rather than at its own await timeout.
-  if (reached_drone_) pending_abort_ = cal::Abort{nonce_};
+  if (reached_drone_) queue_abort();
   fail_reason_ = why;
   state_ = State::Failed;
   if (log_) log_->flush();
+}
+
+void CalSession::queue_abort() {
+  pending_abort_ = cal::Abort{nonce_};
+  aborts_left_ = kAbortCopies;
+  next_abort_ms_ = 0;  // the first copy goes out at the next due_mav()
 }
 
 int CalSession::cells_per_row() const { return std::max(0, cmd_.idx_hi - cmd_.idx_lo + 1); }
