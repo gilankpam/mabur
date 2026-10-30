@@ -1,8 +1,6 @@
 #pragma once
 // MESSAGE ALTITUDE PACKING
 
-#include <stdint.h>
-
 #define MAVLINK_MSG_ID_ALTITUDE 141
 
 
@@ -70,7 +68,7 @@ typedef struct __mavlink_altitude_t {
  * @param bottom_clearance [m] This is not the altitude, but the clear space below the system according to the fused clearance estimate. It generally should max out at the maximum range of e.g. the laser altimeter. It is generally a moving target. A negative value indicates no measurement available.
  * @return length of the message in bytes (excluding serial stream start sign)
  */
-static inline uint16_t mavlink_msg_altitude_pack(uint32_t system_id, uint8_t component_id, mavlink_message_t* msg,
+static inline uint16_t mavlink_msg_altitude_pack(uint8_t system_id, uint8_t component_id, mavlink_message_t* msg,
                                uint64_t time_usec, float altitude_monotonic, float altitude_amsl, float altitude_local, float altitude_relative, float altitude_terrain, float bottom_clearance)
 {
 #if MAVLINK_NEED_BYTE_SWAP || !MAVLINK_ALIGNED_FIELDS
@@ -117,7 +115,7 @@ static inline uint16_t mavlink_msg_altitude_pack(uint32_t system_id, uint8_t com
  * @param bottom_clearance [m] This is not the altitude, but the clear space below the system according to the fused clearance estimate. It generally should max out at the maximum range of e.g. the laser altimeter. It is generally a moving target. A negative value indicates no measurement available.
  * @return length of the message in bytes (excluding serial stream start sign)
  */
-static inline uint16_t mavlink_msg_altitude_pack_status(uint32_t system_id, uint8_t component_id, mavlink_status_t *_status, mavlink_message_t* msg,
+static inline uint16_t mavlink_msg_altitude_pack_status(uint8_t system_id, uint8_t component_id, mavlink_status_t *_status, mavlink_message_t* msg,
                                uint64_t time_usec, float altitude_monotonic, float altitude_amsl, float altitude_local, float altitude_relative, float altitude_terrain, float bottom_clearance)
 {
 #if MAVLINK_NEED_BYTE_SWAP || !MAVLINK_ALIGNED_FIELDS
@@ -148,7 +146,7 @@ static inline uint16_t mavlink_msg_altitude_pack_status(uint32_t system_id, uint
 #if MAVLINK_CRC_EXTRA
     return mavlink_finalize_message_buffer(msg, system_id, component_id, _status, MAVLINK_MSG_ID_ALTITUDE_MIN_LEN, MAVLINK_MSG_ID_ALTITUDE_LEN, MAVLINK_MSG_ID_ALTITUDE_CRC);
 #else
-    return mavlink_finalize_message_buffer(msg, system_id, component_id, _status, MAVLINK_MSG_ID_ALTITUDE_MIN_LEN, MAVLINK_MSG_ID_ALTITUDE_LEN, 0);
+    return mavlink_finalize_message_buffer(msg, system_id, component_id, _status, MAVLINK_MSG_ID_ALTITUDE_MIN_LEN, MAVLINK_MSG_ID_ALTITUDE_LEN);
 #endif
 }
 
@@ -167,7 +165,7 @@ static inline uint16_t mavlink_msg_altitude_pack_status(uint32_t system_id, uint
  * @param bottom_clearance [m] This is not the altitude, but the clear space below the system according to the fused clearance estimate. It generally should max out at the maximum range of e.g. the laser altimeter. It is generally a moving target. A negative value indicates no measurement available.
  * @return length of the message in bytes (excluding serial stream start sign)
  */
-static inline uint16_t mavlink_msg_altitude_pack_chan(uint32_t system_id, uint8_t component_id, uint8_t chan,
+static inline uint16_t mavlink_msg_altitude_pack_chan(uint8_t system_id, uint8_t component_id, uint8_t chan,
                                mavlink_message_t* msg,
                                    uint64_t time_usec,float altitude_monotonic,float altitude_amsl,float altitude_local,float altitude_relative,float altitude_terrain,float bottom_clearance)
 {
@@ -207,7 +205,7 @@ static inline uint16_t mavlink_msg_altitude_pack_chan(uint32_t system_id, uint8_
  * @param msg The MAVLink message to compress the data into
  * @param altitude C-struct to read the message contents from
  */
-static inline uint16_t mavlink_msg_altitude_encode(uint32_t system_id, uint8_t component_id, mavlink_message_t* msg, const mavlink_altitude_t* altitude)
+static inline uint16_t mavlink_msg_altitude_encode(uint8_t system_id, uint8_t component_id, mavlink_message_t* msg, const mavlink_altitude_t* altitude)
 {
     return mavlink_msg_altitude_pack(system_id, component_id, msg, altitude->time_usec, altitude->altitude_monotonic, altitude->altitude_amsl, altitude->altitude_local, altitude->altitude_relative, altitude->altitude_terrain, altitude->bottom_clearance);
 }
@@ -221,7 +219,7 @@ static inline uint16_t mavlink_msg_altitude_encode(uint32_t system_id, uint8_t c
  * @param msg The MAVLink message to compress the data into
  * @param altitude C-struct to read the message contents from
  */
-static inline uint16_t mavlink_msg_altitude_encode_chan(uint32_t system_id, uint8_t component_id, uint8_t chan, mavlink_message_t* msg, const mavlink_altitude_t* altitude)
+static inline uint16_t mavlink_msg_altitude_encode_chan(uint8_t system_id, uint8_t component_id, uint8_t chan, mavlink_message_t* msg, const mavlink_altitude_t* altitude)
 {
     return mavlink_msg_altitude_pack_chan(system_id, component_id, chan, msg, altitude->time_usec, altitude->altitude_monotonic, altitude->altitude_amsl, altitude->altitude_local, altitude->altitude_relative, altitude->altitude_terrain, altitude->bottom_clearance);
 }
@@ -235,7 +233,7 @@ static inline uint16_t mavlink_msg_altitude_encode_chan(uint32_t system_id, uint
  * @param msg The MAVLink message to compress the data into
  * @param altitude C-struct to read the message contents from
  */
-static inline uint16_t mavlink_msg_altitude_encode_status(uint32_t system_id, uint8_t component_id, mavlink_status_t* _status, mavlink_message_t* msg, const mavlink_altitude_t* altitude)
+static inline uint16_t mavlink_msg_altitude_encode_status(uint8_t system_id, uint8_t component_id, mavlink_status_t* _status, mavlink_message_t* msg, const mavlink_altitude_t* altitude)
 {
     return mavlink_msg_altitude_pack_status(system_id, component_id, _status, msg,  altitude->time_usec, altitude->altitude_monotonic, altitude->altitude_amsl, altitude->altitude_local, altitude->altitude_relative, altitude->altitude_terrain, altitude->bottom_clearance);
 }
@@ -427,5 +425,4 @@ static inline void mavlink_msg_altitude_decode(const mavlink_message_t* msg, mav
         memset(altitude, 0, MAVLINK_MSG_ID_ALTITUDE_LEN);
     memcpy(altitude, _MAV_PAYLOAD(msg), len);
 #endif
-
 }

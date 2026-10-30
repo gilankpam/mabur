@@ -1,8 +1,6 @@
 #pragma once
 // MESSAGE GIMBAL_MANAGER_SET_PITCHYAW PACKING
 
-#include <stdint.h>
-
 #define MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW 287
 
 
@@ -74,8 +72,8 @@ typedef struct __mavlink_gimbal_manager_set_pitchyaw_t {
  * @param yaw_rate [rad/s] Yaw angular rate (positive: to the right, negative: to the left, NaN to be ignored).
  * @return length of the message in bytes (excluding serial stream start sign)
  */
-static inline uint16_t mavlink_msg_gimbal_manager_set_pitchyaw_pack(uint32_t system_id, uint8_t component_id, mavlink_message_t* msg,
-                               uint32_t target_system, uint8_t target_component, uint32_t flags, uint8_t gimbal_device_id, float pitch, float yaw, float pitch_rate, float yaw_rate)
+static inline uint16_t mavlink_msg_gimbal_manager_set_pitchyaw_pack(uint8_t system_id, uint8_t component_id, mavlink_message_t* msg,
+                               uint8_t target_system, uint8_t target_component, uint32_t flags, uint8_t gimbal_device_id, float pitch, float yaw, float pitch_rate, float yaw_rate)
 {
 #if MAVLINK_NEED_BYTE_SWAP || !MAVLINK_ALIGNED_FIELDS
     char buf[MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_LEN];
@@ -84,7 +82,7 @@ static inline uint16_t mavlink_msg_gimbal_manager_set_pitchyaw_pack(uint32_t sys
     _mav_put_float(buf, 8, yaw);
     _mav_put_float(buf, 12, pitch_rate);
     _mav_put_float(buf, 16, yaw_rate);
-    _mav_put_uint8_t(buf, 20, mavlink_msg_target_field(target_system));
+    _mav_put_uint8_t(buf, 20, target_system);
     _mav_put_uint8_t(buf, 21, target_component);
     _mav_put_uint8_t(buf, 22, gimbal_device_id);
 
@@ -96,7 +94,7 @@ static inline uint16_t mavlink_msg_gimbal_manager_set_pitchyaw_pack(uint32_t sys
     packet.yaw = yaw;
     packet.pitch_rate = pitch_rate;
     packet.yaw_rate = yaw_rate;
-    packet.target_system = mavlink_msg_target_field(target_system);
+    packet.target_system = target_system;
     packet.target_component = target_component;
     packet.gimbal_device_id = gimbal_device_id;
 
@@ -104,7 +102,7 @@ static inline uint16_t mavlink_msg_gimbal_manager_set_pitchyaw_pack(uint32_t sys
 #endif
 
     msg->msgid = MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW;
-    return mavlink_finalize_message_target(msg, system_id, component_id, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_MIN_LEN, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_LEN, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_CRC, target_system);
+    return mavlink_finalize_message(msg, system_id, component_id, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_MIN_LEN, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_LEN, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_CRC);
 }
 
 /**
@@ -124,8 +122,8 @@ static inline uint16_t mavlink_msg_gimbal_manager_set_pitchyaw_pack(uint32_t sys
  * @param yaw_rate [rad/s] Yaw angular rate (positive: to the right, negative: to the left, NaN to be ignored).
  * @return length of the message in bytes (excluding serial stream start sign)
  */
-static inline uint16_t mavlink_msg_gimbal_manager_set_pitchyaw_pack_status(uint32_t system_id, uint8_t component_id, mavlink_status_t *_status, mavlink_message_t* msg,
-                               uint32_t target_system, uint8_t target_component, uint32_t flags, uint8_t gimbal_device_id, float pitch, float yaw, float pitch_rate, float yaw_rate)
+static inline uint16_t mavlink_msg_gimbal_manager_set_pitchyaw_pack_status(uint8_t system_id, uint8_t component_id, mavlink_status_t *_status, mavlink_message_t* msg,
+                               uint8_t target_system, uint8_t target_component, uint32_t flags, uint8_t gimbal_device_id, float pitch, float yaw, float pitch_rate, float yaw_rate)
 {
 #if MAVLINK_NEED_BYTE_SWAP || !MAVLINK_ALIGNED_FIELDS
     char buf[MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_LEN];
@@ -134,7 +132,7 @@ static inline uint16_t mavlink_msg_gimbal_manager_set_pitchyaw_pack_status(uint3
     _mav_put_float(buf, 8, yaw);
     _mav_put_float(buf, 12, pitch_rate);
     _mav_put_float(buf, 16, yaw_rate);
-    _mav_put_uint8_t(buf, 20, mavlink_msg_target_field(target_system));
+    _mav_put_uint8_t(buf, 20, target_system);
     _mav_put_uint8_t(buf, 21, target_component);
     _mav_put_uint8_t(buf, 22, gimbal_device_id);
 
@@ -146,7 +144,7 @@ static inline uint16_t mavlink_msg_gimbal_manager_set_pitchyaw_pack_status(uint3
     packet.yaw = yaw;
     packet.pitch_rate = pitch_rate;
     packet.yaw_rate = yaw_rate;
-    packet.target_system = mavlink_msg_target_field(target_system);
+    packet.target_system = target_system;
     packet.target_component = target_component;
     packet.gimbal_device_id = gimbal_device_id;
 
@@ -155,9 +153,9 @@ static inline uint16_t mavlink_msg_gimbal_manager_set_pitchyaw_pack_status(uint3
 
     msg->msgid = MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW;
 #if MAVLINK_CRC_EXTRA
-    return mavlink_finalize_message_buffer_target(msg, system_id, component_id, _status, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_MIN_LEN, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_LEN, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_CRC, target_system);
+    return mavlink_finalize_message_buffer(msg, system_id, component_id, _status, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_MIN_LEN, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_LEN, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_CRC);
 #else
-    return mavlink_finalize_message_buffer_target(msg, system_id, component_id, _status, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_MIN_LEN, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_LEN, 0, target_system);
+    return mavlink_finalize_message_buffer(msg, system_id, component_id, _status, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_MIN_LEN, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_LEN);
 #endif
 }
 
@@ -177,9 +175,9 @@ static inline uint16_t mavlink_msg_gimbal_manager_set_pitchyaw_pack_status(uint3
  * @param yaw_rate [rad/s] Yaw angular rate (positive: to the right, negative: to the left, NaN to be ignored).
  * @return length of the message in bytes (excluding serial stream start sign)
  */
-static inline uint16_t mavlink_msg_gimbal_manager_set_pitchyaw_pack_chan(uint32_t system_id, uint8_t component_id, uint8_t chan,
+static inline uint16_t mavlink_msg_gimbal_manager_set_pitchyaw_pack_chan(uint8_t system_id, uint8_t component_id, uint8_t chan,
                                mavlink_message_t* msg,
-                                   uint32_t target_system,uint8_t target_component,uint32_t flags,uint8_t gimbal_device_id,float pitch,float yaw,float pitch_rate,float yaw_rate)
+                                   uint8_t target_system,uint8_t target_component,uint32_t flags,uint8_t gimbal_device_id,float pitch,float yaw,float pitch_rate,float yaw_rate)
 {
 #if MAVLINK_NEED_BYTE_SWAP || !MAVLINK_ALIGNED_FIELDS
     char buf[MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_LEN];
@@ -188,7 +186,7 @@ static inline uint16_t mavlink_msg_gimbal_manager_set_pitchyaw_pack_chan(uint32_
     _mav_put_float(buf, 8, yaw);
     _mav_put_float(buf, 12, pitch_rate);
     _mav_put_float(buf, 16, yaw_rate);
-    _mav_put_uint8_t(buf, 20, mavlink_msg_target_field(target_system));
+    _mav_put_uint8_t(buf, 20, target_system);
     _mav_put_uint8_t(buf, 21, target_component);
     _mav_put_uint8_t(buf, 22, gimbal_device_id);
 
@@ -200,7 +198,7 @@ static inline uint16_t mavlink_msg_gimbal_manager_set_pitchyaw_pack_chan(uint32_
     packet.yaw = yaw;
     packet.pitch_rate = pitch_rate;
     packet.yaw_rate = yaw_rate;
-    packet.target_system = mavlink_msg_target_field(target_system);
+    packet.target_system = target_system;
     packet.target_component = target_component;
     packet.gimbal_device_id = gimbal_device_id;
 
@@ -208,7 +206,7 @@ static inline uint16_t mavlink_msg_gimbal_manager_set_pitchyaw_pack_chan(uint32_
 #endif
 
     msg->msgid = MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW;
-    return mavlink_finalize_message_chan_target(msg, system_id, component_id, chan, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_MIN_LEN, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_LEN, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_CRC, target_system);
+    return mavlink_finalize_message_chan(msg, system_id, component_id, chan, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_MIN_LEN, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_LEN, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_CRC);
 }
 
 /**
@@ -219,7 +217,7 @@ static inline uint16_t mavlink_msg_gimbal_manager_set_pitchyaw_pack_chan(uint32_
  * @param msg The MAVLink message to compress the data into
  * @param gimbal_manager_set_pitchyaw C-struct to read the message contents from
  */
-static inline uint16_t mavlink_msg_gimbal_manager_set_pitchyaw_encode(uint32_t system_id, uint8_t component_id, mavlink_message_t* msg, const mavlink_gimbal_manager_set_pitchyaw_t* gimbal_manager_set_pitchyaw)
+static inline uint16_t mavlink_msg_gimbal_manager_set_pitchyaw_encode(uint8_t system_id, uint8_t component_id, mavlink_message_t* msg, const mavlink_gimbal_manager_set_pitchyaw_t* gimbal_manager_set_pitchyaw)
 {
     return mavlink_msg_gimbal_manager_set_pitchyaw_pack(system_id, component_id, msg, gimbal_manager_set_pitchyaw->target_system, gimbal_manager_set_pitchyaw->target_component, gimbal_manager_set_pitchyaw->flags, gimbal_manager_set_pitchyaw->gimbal_device_id, gimbal_manager_set_pitchyaw->pitch, gimbal_manager_set_pitchyaw->yaw, gimbal_manager_set_pitchyaw->pitch_rate, gimbal_manager_set_pitchyaw->yaw_rate);
 }
@@ -233,7 +231,7 @@ static inline uint16_t mavlink_msg_gimbal_manager_set_pitchyaw_encode(uint32_t s
  * @param msg The MAVLink message to compress the data into
  * @param gimbal_manager_set_pitchyaw C-struct to read the message contents from
  */
-static inline uint16_t mavlink_msg_gimbal_manager_set_pitchyaw_encode_chan(uint32_t system_id, uint8_t component_id, uint8_t chan, mavlink_message_t* msg, const mavlink_gimbal_manager_set_pitchyaw_t* gimbal_manager_set_pitchyaw)
+static inline uint16_t mavlink_msg_gimbal_manager_set_pitchyaw_encode_chan(uint8_t system_id, uint8_t component_id, uint8_t chan, mavlink_message_t* msg, const mavlink_gimbal_manager_set_pitchyaw_t* gimbal_manager_set_pitchyaw)
 {
     return mavlink_msg_gimbal_manager_set_pitchyaw_pack_chan(system_id, component_id, chan, msg, gimbal_manager_set_pitchyaw->target_system, gimbal_manager_set_pitchyaw->target_component, gimbal_manager_set_pitchyaw->flags, gimbal_manager_set_pitchyaw->gimbal_device_id, gimbal_manager_set_pitchyaw->pitch, gimbal_manager_set_pitchyaw->yaw, gimbal_manager_set_pitchyaw->pitch_rate, gimbal_manager_set_pitchyaw->yaw_rate);
 }
@@ -247,7 +245,7 @@ static inline uint16_t mavlink_msg_gimbal_manager_set_pitchyaw_encode_chan(uint3
  * @param msg The MAVLink message to compress the data into
  * @param gimbal_manager_set_pitchyaw C-struct to read the message contents from
  */
-static inline uint16_t mavlink_msg_gimbal_manager_set_pitchyaw_encode_status(uint32_t system_id, uint8_t component_id, mavlink_status_t* _status, mavlink_message_t* msg, const mavlink_gimbal_manager_set_pitchyaw_t* gimbal_manager_set_pitchyaw)
+static inline uint16_t mavlink_msg_gimbal_manager_set_pitchyaw_encode_status(uint8_t system_id, uint8_t component_id, mavlink_status_t* _status, mavlink_message_t* msg, const mavlink_gimbal_manager_set_pitchyaw_t* gimbal_manager_set_pitchyaw)
 {
     return mavlink_msg_gimbal_manager_set_pitchyaw_pack_status(system_id, component_id, _status, msg,  gimbal_manager_set_pitchyaw->target_system, gimbal_manager_set_pitchyaw->target_component, gimbal_manager_set_pitchyaw->flags, gimbal_manager_set_pitchyaw->gimbal_device_id, gimbal_manager_set_pitchyaw->pitch, gimbal_manager_set_pitchyaw->yaw, gimbal_manager_set_pitchyaw->pitch_rate, gimbal_manager_set_pitchyaw->yaw_rate);
 }
@@ -267,7 +265,7 @@ static inline uint16_t mavlink_msg_gimbal_manager_set_pitchyaw_encode_status(uin
  */
 #ifdef MAVLINK_USE_CONVENIENCE_FUNCTIONS
 
-static inline void mavlink_msg_gimbal_manager_set_pitchyaw_send(mavlink_channel_t chan, uint32_t target_system, uint8_t target_component, uint32_t flags, uint8_t gimbal_device_id, float pitch, float yaw, float pitch_rate, float yaw_rate)
+static inline void mavlink_msg_gimbal_manager_set_pitchyaw_send(mavlink_channel_t chan, uint8_t target_system, uint8_t target_component, uint32_t flags, uint8_t gimbal_device_id, float pitch, float yaw, float pitch_rate, float yaw_rate)
 {
 #if MAVLINK_NEED_BYTE_SWAP || !MAVLINK_ALIGNED_FIELDS
     char buf[MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_LEN];
@@ -276,11 +274,11 @@ static inline void mavlink_msg_gimbal_manager_set_pitchyaw_send(mavlink_channel_
     _mav_put_float(buf, 8, yaw);
     _mav_put_float(buf, 12, pitch_rate);
     _mav_put_float(buf, 16, yaw_rate);
-    _mav_put_uint8_t(buf, 20, mavlink_msg_target_field(target_system));
+    _mav_put_uint8_t(buf, 20, target_system);
     _mav_put_uint8_t(buf, 21, target_component);
     _mav_put_uint8_t(buf, 22, gimbal_device_id);
 
-    _mav_finalize_message_chan_send_target(chan, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW, buf, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_MIN_LEN, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_LEN, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_CRC, target_system);
+    _mav_finalize_message_chan_send(chan, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW, buf, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_MIN_LEN, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_LEN, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_CRC);
 #else
     mavlink_gimbal_manager_set_pitchyaw_t packet;
     packet.flags = flags;
@@ -288,11 +286,11 @@ static inline void mavlink_msg_gimbal_manager_set_pitchyaw_send(mavlink_channel_
     packet.yaw = yaw;
     packet.pitch_rate = pitch_rate;
     packet.yaw_rate = yaw_rate;
-    packet.target_system = mavlink_msg_target_field(target_system);
+    packet.target_system = target_system;
     packet.target_component = target_component;
     packet.gimbal_device_id = gimbal_device_id;
 
-    _mav_finalize_message_chan_send_target(chan, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW, (const char *)&packet, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_MIN_LEN, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_LEN, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_CRC, target_system);
+    _mav_finalize_message_chan_send(chan, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW, (const char *)&packet, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_MIN_LEN, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_LEN, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_CRC);
 #endif
 }
 
@@ -318,7 +316,7 @@ static inline void mavlink_msg_gimbal_manager_set_pitchyaw_send_struct(mavlink_c
   is usually the receive buffer for the channel, and allows a reply to an
   incoming message with minimum stack space usage.
  */
-static inline void mavlink_msg_gimbal_manager_set_pitchyaw_send_buf(mavlink_message_t *msgbuf, mavlink_channel_t chan,  uint32_t target_system, uint8_t target_component, uint32_t flags, uint8_t gimbal_device_id, float pitch, float yaw, float pitch_rate, float yaw_rate)
+static inline void mavlink_msg_gimbal_manager_set_pitchyaw_send_buf(mavlink_message_t *msgbuf, mavlink_channel_t chan,  uint8_t target_system, uint8_t target_component, uint32_t flags, uint8_t gimbal_device_id, float pitch, float yaw, float pitch_rate, float yaw_rate)
 {
 #if MAVLINK_NEED_BYTE_SWAP || !MAVLINK_ALIGNED_FIELDS
     char *buf = (char *)msgbuf;
@@ -327,11 +325,11 @@ static inline void mavlink_msg_gimbal_manager_set_pitchyaw_send_buf(mavlink_mess
     _mav_put_float(buf, 8, yaw);
     _mav_put_float(buf, 12, pitch_rate);
     _mav_put_float(buf, 16, yaw_rate);
-    _mav_put_uint8_t(buf, 20, mavlink_msg_target_field(target_system));
+    _mav_put_uint8_t(buf, 20, target_system);
     _mav_put_uint8_t(buf, 21, target_component);
     _mav_put_uint8_t(buf, 22, gimbal_device_id);
 
-    _mav_finalize_message_chan_send_target(chan, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW, buf, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_MIN_LEN, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_LEN, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_CRC, target_system);
+    _mav_finalize_message_chan_send(chan, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW, buf, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_MIN_LEN, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_LEN, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_CRC);
 #else
     mavlink_gimbal_manager_set_pitchyaw_t *packet = (mavlink_gimbal_manager_set_pitchyaw_t *)msgbuf;
     packet->flags = flags;
@@ -339,11 +337,11 @@ static inline void mavlink_msg_gimbal_manager_set_pitchyaw_send_buf(mavlink_mess
     packet->yaw = yaw;
     packet->pitch_rate = pitch_rate;
     packet->yaw_rate = yaw_rate;
-    packet->target_system = mavlink_msg_target_field(target_system);
+    packet->target_system = target_system;
     packet->target_component = target_component;
     packet->gimbal_device_id = gimbal_device_id;
 
-    _mav_finalize_message_chan_send_target(chan, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW, (const char *)packet, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_MIN_LEN, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_LEN, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_CRC, target_system);
+    _mav_finalize_message_chan_send(chan, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW, (const char *)packet, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_MIN_LEN, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_LEN, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_CRC);
 #endif
 }
 #endif
@@ -352,6 +350,16 @@ static inline void mavlink_msg_gimbal_manager_set_pitchyaw_send_buf(mavlink_mess
 
 // MESSAGE GIMBAL_MANAGER_SET_PITCHYAW UNPACKING
 
+
+/**
+ * @brief Get field target_system from gimbal_manager_set_pitchyaw message
+ *
+ * @return  System ID
+ */
+static inline uint8_t mavlink_msg_gimbal_manager_set_pitchyaw_get_target_system(const mavlink_message_t* msg)
+{
+    return _MAV_RETURN_uint8_t(msg,  20);
+}
 
 /**
  * @brief Get field target_component from gimbal_manager_set_pitchyaw message
@@ -437,7 +445,7 @@ static inline void mavlink_msg_gimbal_manager_set_pitchyaw_decode(const mavlink_
     gimbal_manager_set_pitchyaw->yaw = mavlink_msg_gimbal_manager_set_pitchyaw_get_yaw(msg);
     gimbal_manager_set_pitchyaw->pitch_rate = mavlink_msg_gimbal_manager_set_pitchyaw_get_pitch_rate(msg);
     gimbal_manager_set_pitchyaw->yaw_rate = mavlink_msg_gimbal_manager_set_pitchyaw_get_yaw_rate(msg);
-    gimbal_manager_set_pitchyaw->target_system = _MAV_RETURN_uint8_t(msg, 20);
+    gimbal_manager_set_pitchyaw->target_system = mavlink_msg_gimbal_manager_set_pitchyaw_get_target_system(msg);
     gimbal_manager_set_pitchyaw->target_component = mavlink_msg_gimbal_manager_set_pitchyaw_get_target_component(msg);
     gimbal_manager_set_pitchyaw->gimbal_device_id = mavlink_msg_gimbal_manager_set_pitchyaw_get_gimbal_device_id(msg);
 #else
@@ -445,11 +453,4 @@ static inline void mavlink_msg_gimbal_manager_set_pitchyaw_decode(const mavlink_
         memset(gimbal_manager_set_pitchyaw, 0, MAVLINK_MSG_ID_GIMBAL_MANAGER_SET_PITCHYAW_LEN);
     memcpy(gimbal_manager_set_pitchyaw, _MAV_PAYLOAD(msg), len);
 #endif
-    if (msg->incompat_flags & MAVLINK_IFLAG_TARGET32) {
-        // This uint8_t field cannot retain a wide target. The sentinel is NOT reserved.
-        // For routing use mavlink_msg_get_target_sysid(msg, mavlink_get_msg_entry(msg->msgid)).
-        // To relay after edits, pass that full target to _pack*(); _encode*() loses it.
-        gimbal_manager_set_pitchyaw->target_system = mavlink_msg_target_field(msg->target_sysid);
-    }
-
 }

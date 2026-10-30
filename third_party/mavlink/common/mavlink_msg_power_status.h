@@ -1,8 +1,6 @@
 #pragma once
 // MESSAGE POWER_STATUS PACKING
 
-#include <stdint.h>
-
 #define MAVLINK_MSG_ID_POWER_STATUS 125
 
 
@@ -54,7 +52,7 @@ typedef struct __mavlink_power_status_t {
  * @param flags  Bitmap of power supply status flags.
  * @return length of the message in bytes (excluding serial stream start sign)
  */
-static inline uint16_t mavlink_msg_power_status_pack(uint32_t system_id, uint8_t component_id, mavlink_message_t* msg,
+static inline uint16_t mavlink_msg_power_status_pack(uint8_t system_id, uint8_t component_id, mavlink_message_t* msg,
                                uint16_t Vcc, uint16_t Vservo, uint16_t flags)
 {
 #if MAVLINK_NEED_BYTE_SWAP || !MAVLINK_ALIGNED_FIELDS
@@ -89,7 +87,7 @@ static inline uint16_t mavlink_msg_power_status_pack(uint32_t system_id, uint8_t
  * @param flags  Bitmap of power supply status flags.
  * @return length of the message in bytes (excluding serial stream start sign)
  */
-static inline uint16_t mavlink_msg_power_status_pack_status(uint32_t system_id, uint8_t component_id, mavlink_status_t *_status, mavlink_message_t* msg,
+static inline uint16_t mavlink_msg_power_status_pack_status(uint8_t system_id, uint8_t component_id, mavlink_status_t *_status, mavlink_message_t* msg,
                                uint16_t Vcc, uint16_t Vservo, uint16_t flags)
 {
 #if MAVLINK_NEED_BYTE_SWAP || !MAVLINK_ALIGNED_FIELDS
@@ -112,7 +110,7 @@ static inline uint16_t mavlink_msg_power_status_pack_status(uint32_t system_id, 
 #if MAVLINK_CRC_EXTRA
     return mavlink_finalize_message_buffer(msg, system_id, component_id, _status, MAVLINK_MSG_ID_POWER_STATUS_MIN_LEN, MAVLINK_MSG_ID_POWER_STATUS_LEN, MAVLINK_MSG_ID_POWER_STATUS_CRC);
 #else
-    return mavlink_finalize_message_buffer(msg, system_id, component_id, _status, MAVLINK_MSG_ID_POWER_STATUS_MIN_LEN, MAVLINK_MSG_ID_POWER_STATUS_LEN, 0);
+    return mavlink_finalize_message_buffer(msg, system_id, component_id, _status, MAVLINK_MSG_ID_POWER_STATUS_MIN_LEN, MAVLINK_MSG_ID_POWER_STATUS_LEN);
 #endif
 }
 
@@ -127,7 +125,7 @@ static inline uint16_t mavlink_msg_power_status_pack_status(uint32_t system_id, 
  * @param flags  Bitmap of power supply status flags.
  * @return length of the message in bytes (excluding serial stream start sign)
  */
-static inline uint16_t mavlink_msg_power_status_pack_chan(uint32_t system_id, uint8_t component_id, uint8_t chan,
+static inline uint16_t mavlink_msg_power_status_pack_chan(uint8_t system_id, uint8_t component_id, uint8_t chan,
                                mavlink_message_t* msg,
                                    uint16_t Vcc,uint16_t Vservo,uint16_t flags)
 {
@@ -159,7 +157,7 @@ static inline uint16_t mavlink_msg_power_status_pack_chan(uint32_t system_id, ui
  * @param msg The MAVLink message to compress the data into
  * @param power_status C-struct to read the message contents from
  */
-static inline uint16_t mavlink_msg_power_status_encode(uint32_t system_id, uint8_t component_id, mavlink_message_t* msg, const mavlink_power_status_t* power_status)
+static inline uint16_t mavlink_msg_power_status_encode(uint8_t system_id, uint8_t component_id, mavlink_message_t* msg, const mavlink_power_status_t* power_status)
 {
     return mavlink_msg_power_status_pack(system_id, component_id, msg, power_status->Vcc, power_status->Vservo, power_status->flags);
 }
@@ -173,7 +171,7 @@ static inline uint16_t mavlink_msg_power_status_encode(uint32_t system_id, uint8
  * @param msg The MAVLink message to compress the data into
  * @param power_status C-struct to read the message contents from
  */
-static inline uint16_t mavlink_msg_power_status_encode_chan(uint32_t system_id, uint8_t component_id, uint8_t chan, mavlink_message_t* msg, const mavlink_power_status_t* power_status)
+static inline uint16_t mavlink_msg_power_status_encode_chan(uint8_t system_id, uint8_t component_id, uint8_t chan, mavlink_message_t* msg, const mavlink_power_status_t* power_status)
 {
     return mavlink_msg_power_status_pack_chan(system_id, component_id, chan, msg, power_status->Vcc, power_status->Vservo, power_status->flags);
 }
@@ -187,7 +185,7 @@ static inline uint16_t mavlink_msg_power_status_encode_chan(uint32_t system_id, 
  * @param msg The MAVLink message to compress the data into
  * @param power_status C-struct to read the message contents from
  */
-static inline uint16_t mavlink_msg_power_status_encode_status(uint32_t system_id, uint8_t component_id, mavlink_status_t* _status, mavlink_message_t* msg, const mavlink_power_status_t* power_status)
+static inline uint16_t mavlink_msg_power_status_encode_status(uint8_t system_id, uint8_t component_id, mavlink_status_t* _status, mavlink_message_t* msg, const mavlink_power_status_t* power_status)
 {
     return mavlink_msg_power_status_pack_status(system_id, component_id, _status, msg,  power_status->Vcc, power_status->Vservo, power_status->flags);
 }
@@ -315,5 +313,4 @@ static inline void mavlink_msg_power_status_decode(const mavlink_message_t* msg,
         memset(power_status, 0, MAVLINK_MSG_ID_POWER_STATUS_LEN);
     memcpy(power_status, _MAV_PAYLOAD(msg), len);
 #endif
-
 }

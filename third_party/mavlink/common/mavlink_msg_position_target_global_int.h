@@ -1,8 +1,6 @@
 #pragma once
 // MESSAGE POSITION_TARGET_GLOBAL_INT PACKING
 
-#include <stdint.h>
-
 #define MAVLINK_MSG_ID_POSITION_TARGET_GLOBAL_INT 87
 
 
@@ -20,7 +18,7 @@ typedef struct __mavlink_position_target_global_int_t {
  float yaw; /*< [rad] yaw setpoint*/
  float yaw_rate; /*< [rad/s] yaw rate setpoint*/
  uint16_t type_mask; /*<  Bitmap to indicate which dimensions should be ignored by the vehicle.*/
- uint8_t coordinate_frame; /*<  Valid options are: MAV_FRAME_GLOBAL = 0, MAV_FRAME_GLOBAL_RELATIVE_ALT = 3, MAV_FRAME_GLOBAL_TERRAIN_ALT = 10 (MAV_FRAME_GLOBAL_INT, MAV_FRAME_GLOBAL_RELATIVE_ALT_INT, MAV_FRAME_GLOBAL_TERRAIN_ALT_INT are allowed synonyms, but have been superseded)*/
+ uint8_t coordinate_frame; /*<  Valid options are: MAV_FRAME_GLOBAL = 0, MAV_FRAME_GLOBAL_RELATIVE_ALT = 3, MAV_FRAME_GLOBAL_TERRAIN_ALT = 10 (MAV_FRAME_GLOBAL_INT, MAV_FRAME_GLOBAL_RELATIVE_ALT_INT, MAV_FRAME_GLOBAL_TERRAIN_ALT_INT are allowed synonyms, but have been deprecated)*/
 } mavlink_position_target_global_int_t;
 
 #define MAVLINK_MSG_ID_POSITION_TARGET_GLOBAL_INT_LEN 51
@@ -83,7 +81,7 @@ typedef struct __mavlink_position_target_global_int_t {
  * @param msg The MAVLink message to compress the data into
  *
  * @param time_boot_ms [ms] Timestamp (time since system boot). The rationale for the timestamp in the setpoint is to allow the system to compensate for the transport delay of the setpoint. This allows the system to compensate processing latency.
- * @param coordinate_frame  Valid options are: MAV_FRAME_GLOBAL = 0, MAV_FRAME_GLOBAL_RELATIVE_ALT = 3, MAV_FRAME_GLOBAL_TERRAIN_ALT = 10 (MAV_FRAME_GLOBAL_INT, MAV_FRAME_GLOBAL_RELATIVE_ALT_INT, MAV_FRAME_GLOBAL_TERRAIN_ALT_INT are allowed synonyms, but have been superseded)
+ * @param coordinate_frame  Valid options are: MAV_FRAME_GLOBAL = 0, MAV_FRAME_GLOBAL_RELATIVE_ALT = 3, MAV_FRAME_GLOBAL_TERRAIN_ALT = 10 (MAV_FRAME_GLOBAL_INT, MAV_FRAME_GLOBAL_RELATIVE_ALT_INT, MAV_FRAME_GLOBAL_TERRAIN_ALT_INT are allowed synonyms, but have been deprecated)
  * @param type_mask  Bitmap to indicate which dimensions should be ignored by the vehicle.
  * @param lat_int [degE7] Latitude in WGS84 frame
  * @param lon_int [degE7] Longitude in WGS84 frame
@@ -98,7 +96,7 @@ typedef struct __mavlink_position_target_global_int_t {
  * @param yaw_rate [rad/s] yaw rate setpoint
  * @return length of the message in bytes (excluding serial stream start sign)
  */
-static inline uint16_t mavlink_msg_position_target_global_int_pack(uint32_t system_id, uint8_t component_id, mavlink_message_t* msg,
+static inline uint16_t mavlink_msg_position_target_global_int_pack(uint8_t system_id, uint8_t component_id, mavlink_message_t* msg,
                                uint32_t time_boot_ms, uint8_t coordinate_frame, uint16_t type_mask, int32_t lat_int, int32_t lon_int, float alt, float vx, float vy, float vz, float afx, float afy, float afz, float yaw, float yaw_rate)
 {
 #if MAVLINK_NEED_BYTE_SWAP || !MAVLINK_ALIGNED_FIELDS
@@ -151,7 +149,7 @@ static inline uint16_t mavlink_msg_position_target_global_int_pack(uint32_t syst
  * @param msg The MAVLink message to compress the data into
  *
  * @param time_boot_ms [ms] Timestamp (time since system boot). The rationale for the timestamp in the setpoint is to allow the system to compensate for the transport delay of the setpoint. This allows the system to compensate processing latency.
- * @param coordinate_frame  Valid options are: MAV_FRAME_GLOBAL = 0, MAV_FRAME_GLOBAL_RELATIVE_ALT = 3, MAV_FRAME_GLOBAL_TERRAIN_ALT = 10 (MAV_FRAME_GLOBAL_INT, MAV_FRAME_GLOBAL_RELATIVE_ALT_INT, MAV_FRAME_GLOBAL_TERRAIN_ALT_INT are allowed synonyms, but have been superseded)
+ * @param coordinate_frame  Valid options are: MAV_FRAME_GLOBAL = 0, MAV_FRAME_GLOBAL_RELATIVE_ALT = 3, MAV_FRAME_GLOBAL_TERRAIN_ALT = 10 (MAV_FRAME_GLOBAL_INT, MAV_FRAME_GLOBAL_RELATIVE_ALT_INT, MAV_FRAME_GLOBAL_TERRAIN_ALT_INT are allowed synonyms, but have been deprecated)
  * @param type_mask  Bitmap to indicate which dimensions should be ignored by the vehicle.
  * @param lat_int [degE7] Latitude in WGS84 frame
  * @param lon_int [degE7] Longitude in WGS84 frame
@@ -166,7 +164,7 @@ static inline uint16_t mavlink_msg_position_target_global_int_pack(uint32_t syst
  * @param yaw_rate [rad/s] yaw rate setpoint
  * @return length of the message in bytes (excluding serial stream start sign)
  */
-static inline uint16_t mavlink_msg_position_target_global_int_pack_status(uint32_t system_id, uint8_t component_id, mavlink_status_t *_status, mavlink_message_t* msg,
+static inline uint16_t mavlink_msg_position_target_global_int_pack_status(uint8_t system_id, uint8_t component_id, mavlink_status_t *_status, mavlink_message_t* msg,
                                uint32_t time_boot_ms, uint8_t coordinate_frame, uint16_t type_mask, int32_t lat_int, int32_t lon_int, float alt, float vx, float vy, float vz, float afx, float afy, float afz, float yaw, float yaw_rate)
 {
 #if MAVLINK_NEED_BYTE_SWAP || !MAVLINK_ALIGNED_FIELDS
@@ -211,7 +209,7 @@ static inline uint16_t mavlink_msg_position_target_global_int_pack_status(uint32
 #if MAVLINK_CRC_EXTRA
     return mavlink_finalize_message_buffer(msg, system_id, component_id, _status, MAVLINK_MSG_ID_POSITION_TARGET_GLOBAL_INT_MIN_LEN, MAVLINK_MSG_ID_POSITION_TARGET_GLOBAL_INT_LEN, MAVLINK_MSG_ID_POSITION_TARGET_GLOBAL_INT_CRC);
 #else
-    return mavlink_finalize_message_buffer(msg, system_id, component_id, _status, MAVLINK_MSG_ID_POSITION_TARGET_GLOBAL_INT_MIN_LEN, MAVLINK_MSG_ID_POSITION_TARGET_GLOBAL_INT_LEN, 0);
+    return mavlink_finalize_message_buffer(msg, system_id, component_id, _status, MAVLINK_MSG_ID_POSITION_TARGET_GLOBAL_INT_MIN_LEN, MAVLINK_MSG_ID_POSITION_TARGET_GLOBAL_INT_LEN);
 #endif
 }
 
@@ -222,7 +220,7 @@ static inline uint16_t mavlink_msg_position_target_global_int_pack_status(uint32
  * @param chan The MAVLink channel this message will be sent over
  * @param msg The MAVLink message to compress the data into
  * @param time_boot_ms [ms] Timestamp (time since system boot). The rationale for the timestamp in the setpoint is to allow the system to compensate for the transport delay of the setpoint. This allows the system to compensate processing latency.
- * @param coordinate_frame  Valid options are: MAV_FRAME_GLOBAL = 0, MAV_FRAME_GLOBAL_RELATIVE_ALT = 3, MAV_FRAME_GLOBAL_TERRAIN_ALT = 10 (MAV_FRAME_GLOBAL_INT, MAV_FRAME_GLOBAL_RELATIVE_ALT_INT, MAV_FRAME_GLOBAL_TERRAIN_ALT_INT are allowed synonyms, but have been superseded)
+ * @param coordinate_frame  Valid options are: MAV_FRAME_GLOBAL = 0, MAV_FRAME_GLOBAL_RELATIVE_ALT = 3, MAV_FRAME_GLOBAL_TERRAIN_ALT = 10 (MAV_FRAME_GLOBAL_INT, MAV_FRAME_GLOBAL_RELATIVE_ALT_INT, MAV_FRAME_GLOBAL_TERRAIN_ALT_INT are allowed synonyms, but have been deprecated)
  * @param type_mask  Bitmap to indicate which dimensions should be ignored by the vehicle.
  * @param lat_int [degE7] Latitude in WGS84 frame
  * @param lon_int [degE7] Longitude in WGS84 frame
@@ -237,7 +235,7 @@ static inline uint16_t mavlink_msg_position_target_global_int_pack_status(uint32
  * @param yaw_rate [rad/s] yaw rate setpoint
  * @return length of the message in bytes (excluding serial stream start sign)
  */
-static inline uint16_t mavlink_msg_position_target_global_int_pack_chan(uint32_t system_id, uint8_t component_id, uint8_t chan,
+static inline uint16_t mavlink_msg_position_target_global_int_pack_chan(uint8_t system_id, uint8_t component_id, uint8_t chan,
                                mavlink_message_t* msg,
                                    uint32_t time_boot_ms,uint8_t coordinate_frame,uint16_t type_mask,int32_t lat_int,int32_t lon_int,float alt,float vx,float vy,float vz,float afx,float afy,float afz,float yaw,float yaw_rate)
 {
@@ -291,7 +289,7 @@ static inline uint16_t mavlink_msg_position_target_global_int_pack_chan(uint32_t
  * @param msg The MAVLink message to compress the data into
  * @param position_target_global_int C-struct to read the message contents from
  */
-static inline uint16_t mavlink_msg_position_target_global_int_encode(uint32_t system_id, uint8_t component_id, mavlink_message_t* msg, const mavlink_position_target_global_int_t* position_target_global_int)
+static inline uint16_t mavlink_msg_position_target_global_int_encode(uint8_t system_id, uint8_t component_id, mavlink_message_t* msg, const mavlink_position_target_global_int_t* position_target_global_int)
 {
     return mavlink_msg_position_target_global_int_pack(system_id, component_id, msg, position_target_global_int->time_boot_ms, position_target_global_int->coordinate_frame, position_target_global_int->type_mask, position_target_global_int->lat_int, position_target_global_int->lon_int, position_target_global_int->alt, position_target_global_int->vx, position_target_global_int->vy, position_target_global_int->vz, position_target_global_int->afx, position_target_global_int->afy, position_target_global_int->afz, position_target_global_int->yaw, position_target_global_int->yaw_rate);
 }
@@ -305,7 +303,7 @@ static inline uint16_t mavlink_msg_position_target_global_int_encode(uint32_t sy
  * @param msg The MAVLink message to compress the data into
  * @param position_target_global_int C-struct to read the message contents from
  */
-static inline uint16_t mavlink_msg_position_target_global_int_encode_chan(uint32_t system_id, uint8_t component_id, uint8_t chan, mavlink_message_t* msg, const mavlink_position_target_global_int_t* position_target_global_int)
+static inline uint16_t mavlink_msg_position_target_global_int_encode_chan(uint8_t system_id, uint8_t component_id, uint8_t chan, mavlink_message_t* msg, const mavlink_position_target_global_int_t* position_target_global_int)
 {
     return mavlink_msg_position_target_global_int_pack_chan(system_id, component_id, chan, msg, position_target_global_int->time_boot_ms, position_target_global_int->coordinate_frame, position_target_global_int->type_mask, position_target_global_int->lat_int, position_target_global_int->lon_int, position_target_global_int->alt, position_target_global_int->vx, position_target_global_int->vy, position_target_global_int->vz, position_target_global_int->afx, position_target_global_int->afy, position_target_global_int->afz, position_target_global_int->yaw, position_target_global_int->yaw_rate);
 }
@@ -319,7 +317,7 @@ static inline uint16_t mavlink_msg_position_target_global_int_encode_chan(uint32
  * @param msg The MAVLink message to compress the data into
  * @param position_target_global_int C-struct to read the message contents from
  */
-static inline uint16_t mavlink_msg_position_target_global_int_encode_status(uint32_t system_id, uint8_t component_id, mavlink_status_t* _status, mavlink_message_t* msg, const mavlink_position_target_global_int_t* position_target_global_int)
+static inline uint16_t mavlink_msg_position_target_global_int_encode_status(uint8_t system_id, uint8_t component_id, mavlink_status_t* _status, mavlink_message_t* msg, const mavlink_position_target_global_int_t* position_target_global_int)
 {
     return mavlink_msg_position_target_global_int_pack_status(system_id, component_id, _status, msg,  position_target_global_int->time_boot_ms, position_target_global_int->coordinate_frame, position_target_global_int->type_mask, position_target_global_int->lat_int, position_target_global_int->lon_int, position_target_global_int->alt, position_target_global_int->vx, position_target_global_int->vy, position_target_global_int->vz, position_target_global_int->afx, position_target_global_int->afy, position_target_global_int->afz, position_target_global_int->yaw, position_target_global_int->yaw_rate);
 }
@@ -329,7 +327,7 @@ static inline uint16_t mavlink_msg_position_target_global_int_encode_status(uint
  * @param chan MAVLink channel to send the message
  *
  * @param time_boot_ms [ms] Timestamp (time since system boot). The rationale for the timestamp in the setpoint is to allow the system to compensate for the transport delay of the setpoint. This allows the system to compensate processing latency.
- * @param coordinate_frame  Valid options are: MAV_FRAME_GLOBAL = 0, MAV_FRAME_GLOBAL_RELATIVE_ALT = 3, MAV_FRAME_GLOBAL_TERRAIN_ALT = 10 (MAV_FRAME_GLOBAL_INT, MAV_FRAME_GLOBAL_RELATIVE_ALT_INT, MAV_FRAME_GLOBAL_TERRAIN_ALT_INT are allowed synonyms, but have been superseded)
+ * @param coordinate_frame  Valid options are: MAV_FRAME_GLOBAL = 0, MAV_FRAME_GLOBAL_RELATIVE_ALT = 3, MAV_FRAME_GLOBAL_TERRAIN_ALT = 10 (MAV_FRAME_GLOBAL_INT, MAV_FRAME_GLOBAL_RELATIVE_ALT_INT, MAV_FRAME_GLOBAL_TERRAIN_ALT_INT are allowed synonyms, but have been deprecated)
  * @param type_mask  Bitmap to indicate which dimensions should be ignored by the vehicle.
  * @param lat_int [degE7] Latitude in WGS84 frame
  * @param lon_int [degE7] Longitude in WGS84 frame
@@ -468,7 +466,7 @@ static inline uint32_t mavlink_msg_position_target_global_int_get_time_boot_ms(c
 /**
  * @brief Get field coordinate_frame from position_target_global_int message
  *
- * @return  Valid options are: MAV_FRAME_GLOBAL = 0, MAV_FRAME_GLOBAL_RELATIVE_ALT = 3, MAV_FRAME_GLOBAL_TERRAIN_ALT = 10 (MAV_FRAME_GLOBAL_INT, MAV_FRAME_GLOBAL_RELATIVE_ALT_INT, MAV_FRAME_GLOBAL_TERRAIN_ALT_INT are allowed synonyms, but have been superseded)
+ * @return  Valid options are: MAV_FRAME_GLOBAL = 0, MAV_FRAME_GLOBAL_RELATIVE_ALT = 3, MAV_FRAME_GLOBAL_TERRAIN_ALT = 10 (MAV_FRAME_GLOBAL_INT, MAV_FRAME_GLOBAL_RELATIVE_ALT_INT, MAV_FRAME_GLOBAL_TERRAIN_ALT_INT are allowed synonyms, but have been deprecated)
  */
 static inline uint8_t mavlink_msg_position_target_global_int_get_coordinate_frame(const mavlink_message_t* msg)
 {
@@ -623,5 +621,4 @@ static inline void mavlink_msg_position_target_global_int_decode(const mavlink_m
         memset(position_target_global_int, 0, MAVLINK_MSG_ID_POSITION_TARGET_GLOBAL_INT_LEN);
     memcpy(position_target_global_int, _MAV_PAYLOAD(msg), len);
 #endif
-
 }
