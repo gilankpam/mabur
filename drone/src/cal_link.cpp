@@ -66,10 +66,17 @@ void CalApplyLedger::record(const cal::Applied& a) {
   by_bw_[a.bw == 40 ? 1 : 0] = a;
 }
 
+namespace {
+// 20 always (control frames, and 20 rungs fly on a 40-tuned radio's
+// primary); 40 only on a radio tuned to 40.
+bool width_flown(const RadioCfg& r, int bw) { return bw == 20 || r.width == 40; }
+}  // namespace
+
 std::vector<std::string> ldpc_mismatch_warnings(const RadioCfg& r) {
   std::vector<std::string> out;
   if (r.power_mode != "offset") return out;
   for (const int bw : {20, 40}) {
+    if (!width_flown(r, bw)) continue;
     if (!r.has_walls(static_cast<uint8_t>(bw))) continue;
     const auto mask = cal_flags_mask(bw == 40 ? r.cal_flags_40 : r.cal_flags_20);
     if (!mask) continue;
@@ -90,6 +97,7 @@ std::vector<std::string> missing_wall_notes(const RadioCfg& r) {
   if (r.power_mode != "offset") return out;
   for (const int bw : {20, 40}) {
     const int other = bw == 40 ? 20 : 40;
+    if (!width_flown(r, bw)) continue;
     if (r.has_walls(static_cast<uint8_t>(bw)) || !r.has_walls(static_cast<uint8_t>(other)))
       continue;
     char line[96];

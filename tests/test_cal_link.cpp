@@ -1,5 +1,7 @@
 #include "cal_link.h"
 
+#include "cal_sweep.h"
+
 #include "mabur/cal_wire.h"
 #include "mabur/rc_proto.h"
 #include "mtest.h"
@@ -110,6 +112,9 @@ TEST(ldpc_mismatch_warns_per_flown_width) {
 
   r.rate_walls_rel_40 = std::array<int, 8>{63, 63, 63, 63, 45, 28, 28, 23};
   r.ldpc = true;
+  r.width = 20;  // a 20 MHz radio never flies 40: its table is not warned about
+  CHECK(ldpc_mismatch_warnings(r).empty());
+  r.width = 40;
   w = ldpc_mismatch_warnings(r);
   REQUIRE(w.size() == 1);
   CHECK(w[0] ==
@@ -123,7 +128,10 @@ TEST(ldpc_mismatch_warns_per_flown_width) {
 TEST(missing_wall_notes_name_the_fallback_width) {
   RadioCfg r;
   r.power_mode = "offset";
+  r.width = 20;
   r.rate_walls_rel_20 = std::array<int, 8>{63, 63, 63, 63, 45, 23, 22, 21};
+  CHECK(missing_wall_notes(r).empty());  // a 20 MHz radio never flies 40
+  r.width = 40;
   auto n = missing_wall_notes(r);
   REQUIRE(n.size() == 1);
   CHECK(n[0] == "radio: no 40 MHz walls, flying the 20 MHz table at 40");
@@ -140,6 +148,56 @@ TEST(missing_wall_notes_name_the_fallback_width) {
   r.rate_walls_rel_40.reset();
   r.power_mode = "none";
   CHECK(missing_wall_notes(r).empty());
+}
+
+namespace {
+struct NullPower : CalSweep::PowerCtl {
+  bool set_index_override(int) override { return true; }
+  bool zero_rate_diffs() override { return true; }
+  int read_anchor_idx() override { return anchor; }
+  int anchor = 50;
+};
+cal::SweepCmd power_sweep(uint32_t nonce) {
+  cal::SweepCmd c;
+  c.nonce = nonce;
+  c.kind = cal::Kind::Power;
+  return c;
+}
+}  // namespace
+
+// The restore is owed from the first device write of a sweep until no run
+// is open, however briefly the run lived: a SWEEP and an ABORT drained in
+// the same pass open and close a run before the owner looks at active().
+TEST(restore_is_owed_even_for_a_run_opened_and_closed_in_one_pass) {
+  NullPower pwr;
+  CalSweep s(CalSweepCfg{});
+  CalRestoreOwed owed;
+  CHECK(!owed.take_due(s.active()));  // nothing touched yet
+
+  const auto c = power_sweep(7);
+  REQUIRE(s.starts_sweep(c));
+  owed.note_device_touched();
+  s.on_cmd(c, 0, pwr);
+  s.on_abort(cal::Abort{7}, 1, pwr);
+  REQUIRE(!s.active());
+  CHECK(owed.take_due(s.active()));
+  CHECK(!owed.take_due(s.active()));  // once
+
+  // A run still open owes its restore until it closes.
+  const auto d = power_sweep(8);
+  owed.note_device_touched();
+  s.on_cmd(d, 10, pwr);
+  REQUIRE(s.active());
+  CHECK(!owed.take_due(s.active()));
+  s.on_abort(cal::Abort{8}, 11, pwr);
+  CHECK(owed.take_due(s.active()));
+
+  // A refused sweep (anchor unreadable) never opens a run but still owes it.
+  pwr.anchor = -1;
+  owed.note_device_touched();
+  s.on_cmd(power_sweep(9), 20, pwr);
+  REQUIRE(!s.active());
+  CHECK(owed.take_due(s.active()));
 }
 
 MTEST_MAIN

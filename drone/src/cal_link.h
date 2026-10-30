@@ -61,17 +61,41 @@ class CalApplyLedger {
   std::optional<cal::Applied> by_bw_[2];  // [0] = 20 MHz, [1] = 40 MHz
 };
 
+// The TX writer's "calibration touched the device, the operating power is
+// owed back" latch. Noted at a sweep's first device write; due once no run
+// is open -- however briefly the run lived. A run can open and close inside
+// one drain of the calibration queue (a SWEEP and an ABORT together), never
+// once reading as active between passes, and a refused sweep never opens
+// one at all; both leave the diffs zeroed and the override parked.
+class CalRestoreOwed {
+ public:
+  void note_device_touched() { owed_ = true; }
+  // True once, clearing the latch, when a restore is owed and no run is open.
+  bool take_due(bool run_active) {
+    if (!owed_ || run_active) return false;
+    owed_ = false;
+    return true;
+  }
+
+ private:
+  bool owed_ = false;
+};
+
 // One line per width whose own wall table the drone flies (power_mode
 // "offset") while radio.ldpc disagrees with the ldpc flag the table was
 // measured under (cal_flags_<bw>). Flags-off walls sit below flags-on
 // ones, so an ldpc-on table flown with ldpc off is the overdriving
 // direction. Empty when nothing disagrees, or when power_mode is "none"
-// and no table is flown at all.
+// and no table is flown at all. Only widths the radio can fly count: 40
+// only with radio.width 40 (a 20 MHz-tuned radio never airs a 40 rung; the
+// ladder itself is the GS's, which refuses a 40 rung unless its radio is
+// at 40 too).
 std::vector<std::string> ldpc_mismatch_warnings(const RadioCfg& r);
 
 // One line per width that has no wall table of its own and so flies the
 // other width's (RadioCfg::walls_for's fallback), under power_mode
-// "offset". Empty when both widths have a table, or neither does.
+// "offset", among the widths the radio can fly (as above). Empty when both
+// widths have a table, or neither does.
 std::vector<std::string> missing_wall_notes(const RadioCfg& r);
 
 }  // namespace mabur
