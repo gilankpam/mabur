@@ -43,6 +43,25 @@ endif()
 target_include_directories(maburd PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(maburd PRIVATE mabur_drone_core mabur_common devourer pthread)
 
+# Build stamp: the boot line names the mabur and devourer commits this binary
+# was built from, so a log says which code runs on a drone. Taken at
+# configure time; tools/build-arm.sh reconfigures on every run, so its
+# binaries always carry the current heads.
+# Submodules do not make the stamp dirty: no build reads third_party/devourer
+# (DEVOURER_DIR is the sibling checkout, stamped on its own).
+function(mabur_git_stamp dir out)
+  execute_process(COMMAND git -C ${dir} -c diff.ignoreSubmodules=all describe --always --dirty --abbrev=8
+                  OUTPUT_VARIABLE s OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+  if(s STREQUAL "")
+    set(s "unknown")
+  endif()
+  set(${out} ${s} PARENT_SCOPE)
+endfunction()
+mabur_git_stamp(${CMAKE_SOURCE_DIR} MABUR_GIT_STAMP)
+mabur_git_stamp(${DEVOURER_DIR} DEVOURER_GIT_STAMP)
+target_compile_definitions(maburd PRIVATE MABUR_GIT_STAMP="${MABUR_GIT_STAMP}"
+                                          DEVOURER_GIT_STAMP="${DEVOURER_GIT_STAMP}")
+
 # Venc core: waybeam_venc star6e encoder folded in (spec
 # docs/superpowers/specs/2026-08-28-venc-foldin-design.md). ARM-only: it
 # drives SigmaStar MI via dlopen and has no host-runnable pipeline.

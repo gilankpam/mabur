@@ -3431,6 +3431,9 @@ int main(int argc, char** argv) {
     return 1;
   }
 
+  std::fprintf(stderr, "maburd: build mabur %s devourer %s RC_VERSION %u\n", MABUR_GIT_STAMP,
+               DEVOURER_GIT_STAMP, static_cast<unsigned>(rc::RC_VERSION));
+
   Config cfg;
   std::vector<std::string> defaulted;
   try {
