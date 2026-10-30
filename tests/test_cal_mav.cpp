@@ -103,6 +103,7 @@ TEST(every_message_round_trips) {
   {
     ApplyCmd a;
     a.nonce = 0x99;
+    a.seq = 3;
     a.bw = 40;
     a.has_walls = true;
     a.has_eff = true;
@@ -119,6 +120,7 @@ TEST(every_message_round_trips) {
     auto* got = std::get_if<ApplyCmd>(&*decoded);
     REQUIRE(got != nullptr);
     CHECK(got->nonce == a.nonce);
+    CHECK(got->seq == a.seq);
     CHECK(got->bw == a.bw);
     CHECK(got->has_walls == a.has_walls);
     CHECK(got->has_eff == a.has_eff);
@@ -129,6 +131,7 @@ TEST(every_message_round_trips) {
   {
     Applied a;
     a.nonce = 0x77;
+    a.seq = 2;
     a.bw = 20;
     a.ok = true;
     a.reason = "ok";
@@ -140,6 +143,7 @@ TEST(every_message_round_trips) {
     auto* got = std::get_if<Applied>(&*decoded);
     REQUIRE(got != nullptr);
     CHECK(got->nonce == a.nonce);
+    CHECK(got->seq == a.seq);
     CHECK(got->bw == a.bw);
     CHECK(got->ok == a.ok);
     CHECK(got->reason == a.reason);

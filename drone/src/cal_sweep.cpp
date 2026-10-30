@@ -164,10 +164,12 @@ void CalSweep::on_apply(const cal::ApplyCmd& a, uint64_t now_ms) {
   // follows a drained apply, never races one.
   if (state_ == State::Sweeping) return;
   // The GS resends APPLY every 200 ms until it hears APPLIED. A repeat
-  // of a (nonce, bw) already handed out by take_pending_apply() must be
+  // of a (nonce, seq) already handed out by take_pending_apply() must be
   // a no-op -- not a re-queue, which would restart Applying and disturb
-  // a verify sweep the owner already armed from the first delivery.
-  if (handed_out_apply_ && a.nonce == handed_out_nonce_ && a.bw == handed_out_bw_) return;
+  // a verify sweep the owner already armed from the first delivery. Keyed
+  // on the sweep's seq, not the width: a run applies a power sweep and
+  // then a capacity sweep at the same width, and the second is new.
+  if (handed_out_apply_ && a.nonce == handed_out_nonce_ && a.seq == handed_out_seq_) return;
   pending_apply_ = a;
   state_ = State::Applying;
   // The wait-for-next-event window starts now, at acceptance -- not
@@ -198,13 +200,13 @@ std::optional<cal::ApplyCmd> CalSweep::take_pending_apply() {
   if (!pending_apply_.has_value()) return std::nullopt;
   auto a = *pending_apply_;
   pending_apply_.reset();
-  // Remember this (nonce, bw) as handed out so a GS resend of the same
+  // Remember this (nonce, seq) as handed out so a GS resend of the same
   // apply -- it keeps resending until it hears APPLIED -- is ignored by
   // on_apply() rather than re-queued over the verify sweep this apply is
   // about to trigger.
   handed_out_apply_ = true;
   handed_out_nonce_ = a.nonce;
-  handed_out_bw_ = a.bw;
+  handed_out_seq_ = a.seq;
   if (state_ == State::Applying) state_ = State::Idle;
   return a;
 }

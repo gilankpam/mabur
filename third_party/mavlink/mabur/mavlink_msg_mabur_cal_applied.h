@@ -6,18 +6,19 @@
 
 typedef struct __mavlink_mabur_cal_applied_t {
  uint32_t nonce; /*<  Echoes the apply's nonce.*/
+ uint8_t seq; /*<  Echoes the apply's sweep seq.*/
  uint8_t bw; /*<  Echoes the bandwidth the apply targeted.*/
  uint8_t ok; /*<  1 if the table was adopted, 0 otherwise.*/
  char reason[50]; /*<  Human-readable refusal reason, empty on success.*/
 } mavlink_mabur_cal_applied_t;
 
-#define MAVLINK_MSG_ID_MABUR_CAL_APPLIED_LEN 56
-#define MAVLINK_MSG_ID_MABUR_CAL_APPLIED_MIN_LEN 56
-#define MAVLINK_MSG_ID_60004_LEN 56
-#define MAVLINK_MSG_ID_60004_MIN_LEN 56
+#define MAVLINK_MSG_ID_MABUR_CAL_APPLIED_LEN 57
+#define MAVLINK_MSG_ID_MABUR_CAL_APPLIED_MIN_LEN 57
+#define MAVLINK_MSG_ID_60004_LEN 57
+#define MAVLINK_MSG_ID_60004_MIN_LEN 57
 
-#define MAVLINK_MSG_ID_MABUR_CAL_APPLIED_CRC 99
-#define MAVLINK_MSG_ID_60004_CRC 99
+#define MAVLINK_MSG_ID_MABUR_CAL_APPLIED_CRC 5
+#define MAVLINK_MSG_ID_60004_CRC 5
 
 #define MAVLINK_MSG_MABUR_CAL_APPLIED_FIELD_REASON_LEN 50
 
@@ -25,21 +26,23 @@ typedef struct __mavlink_mabur_cal_applied_t {
 #define MAVLINK_MESSAGE_INFO_MABUR_CAL_APPLIED { \
     60004, \
     "MABUR_CAL_APPLIED", \
-    4, \
+    5, \
     {  { "nonce", NULL, MAVLINK_TYPE_UINT32_T, 0, 0, offsetof(mavlink_mabur_cal_applied_t, nonce) }, \
-         { "bw", NULL, MAVLINK_TYPE_UINT8_T, 0, 4, offsetof(mavlink_mabur_cal_applied_t, bw) }, \
-         { "ok", NULL, MAVLINK_TYPE_UINT8_T, 0, 5, offsetof(mavlink_mabur_cal_applied_t, ok) }, \
-         { "reason", NULL, MAVLINK_TYPE_CHAR, 50, 6, offsetof(mavlink_mabur_cal_applied_t, reason) }, \
+         { "seq", NULL, MAVLINK_TYPE_UINT8_T, 0, 4, offsetof(mavlink_mabur_cal_applied_t, seq) }, \
+         { "bw", NULL, MAVLINK_TYPE_UINT8_T, 0, 5, offsetof(mavlink_mabur_cal_applied_t, bw) }, \
+         { "ok", NULL, MAVLINK_TYPE_UINT8_T, 0, 6, offsetof(mavlink_mabur_cal_applied_t, ok) }, \
+         { "reason", NULL, MAVLINK_TYPE_CHAR, 50, 7, offsetof(mavlink_mabur_cal_applied_t, reason) }, \
          } \
 }
 #else
 #define MAVLINK_MESSAGE_INFO_MABUR_CAL_APPLIED { \
     "MABUR_CAL_APPLIED", \
-    4, \
+    5, \
     {  { "nonce", NULL, MAVLINK_TYPE_UINT32_T, 0, 0, offsetof(mavlink_mabur_cal_applied_t, nonce) }, \
-         { "bw", NULL, MAVLINK_TYPE_UINT8_T, 0, 4, offsetof(mavlink_mabur_cal_applied_t, bw) }, \
-         { "ok", NULL, MAVLINK_TYPE_UINT8_T, 0, 5, offsetof(mavlink_mabur_cal_applied_t, ok) }, \
-         { "reason", NULL, MAVLINK_TYPE_CHAR, 50, 6, offsetof(mavlink_mabur_cal_applied_t, reason) }, \
+         { "seq", NULL, MAVLINK_TYPE_UINT8_T, 0, 4, offsetof(mavlink_mabur_cal_applied_t, seq) }, \
+         { "bw", NULL, MAVLINK_TYPE_UINT8_T, 0, 5, offsetof(mavlink_mabur_cal_applied_t, bw) }, \
+         { "ok", NULL, MAVLINK_TYPE_UINT8_T, 0, 6, offsetof(mavlink_mabur_cal_applied_t, ok) }, \
+         { "reason", NULL, MAVLINK_TYPE_CHAR, 50, 7, offsetof(mavlink_mabur_cal_applied_t, reason) }, \
          } \
 }
 #endif
@@ -51,24 +54,27 @@ typedef struct __mavlink_mabur_cal_applied_t {
  * @param msg The MAVLink message to compress the data into
  *
  * @param nonce  Echoes the apply's nonce.
+ * @param seq  Echoes the apply's sweep seq.
  * @param bw  Echoes the bandwidth the apply targeted.
  * @param ok  1 if the table was adopted, 0 otherwise.
  * @param reason  Human-readable refusal reason, empty on success.
  * @return length of the message in bytes (excluding serial stream start sign)
  */
 static inline uint16_t mavlink_msg_mabur_cal_applied_pack(uint8_t system_id, uint8_t component_id, mavlink_message_t* msg,
-                               uint32_t nonce, uint8_t bw, uint8_t ok, const char *reason)
+                               uint32_t nonce, uint8_t seq, uint8_t bw, uint8_t ok, const char *reason)
 {
 #if MAVLINK_NEED_BYTE_SWAP || !MAVLINK_ALIGNED_FIELDS
     char buf[MAVLINK_MSG_ID_MABUR_CAL_APPLIED_LEN];
     _mav_put_uint32_t(buf, 0, nonce);
-    _mav_put_uint8_t(buf, 4, bw);
-    _mav_put_uint8_t(buf, 5, ok);
-    _mav_put_char_array(buf, 6, reason, 50);
+    _mav_put_uint8_t(buf, 4, seq);
+    _mav_put_uint8_t(buf, 5, bw);
+    _mav_put_uint8_t(buf, 6, ok);
+    _mav_put_char_array(buf, 7, reason, 50);
         memcpy(_MAV_PAYLOAD_NON_CONST(msg), buf, MAVLINK_MSG_ID_MABUR_CAL_APPLIED_LEN);
 #else
     mavlink_mabur_cal_applied_t packet;
     packet.nonce = nonce;
+    packet.seq = seq;
     packet.bw = bw;
     packet.ok = ok;
     mav_array_assign_char(packet.reason, reason, 50);
@@ -87,24 +93,27 @@ static inline uint16_t mavlink_msg_mabur_cal_applied_pack(uint8_t system_id, uin
  * @param msg The MAVLink message to compress the data into
  *
  * @param nonce  Echoes the apply's nonce.
+ * @param seq  Echoes the apply's sweep seq.
  * @param bw  Echoes the bandwidth the apply targeted.
  * @param ok  1 if the table was adopted, 0 otherwise.
  * @param reason  Human-readable refusal reason, empty on success.
  * @return length of the message in bytes (excluding serial stream start sign)
  */
 static inline uint16_t mavlink_msg_mabur_cal_applied_pack_status(uint8_t system_id, uint8_t component_id, mavlink_status_t *_status, mavlink_message_t* msg,
-                               uint32_t nonce, uint8_t bw, uint8_t ok, const char *reason)
+                               uint32_t nonce, uint8_t seq, uint8_t bw, uint8_t ok, const char *reason)
 {
 #if MAVLINK_NEED_BYTE_SWAP || !MAVLINK_ALIGNED_FIELDS
     char buf[MAVLINK_MSG_ID_MABUR_CAL_APPLIED_LEN];
     _mav_put_uint32_t(buf, 0, nonce);
-    _mav_put_uint8_t(buf, 4, bw);
-    _mav_put_uint8_t(buf, 5, ok);
-    _mav_put_char_array(buf, 6, reason, 50);
+    _mav_put_uint8_t(buf, 4, seq);
+    _mav_put_uint8_t(buf, 5, bw);
+    _mav_put_uint8_t(buf, 6, ok);
+    _mav_put_char_array(buf, 7, reason, 50);
         memcpy(_MAV_PAYLOAD_NON_CONST(msg), buf, MAVLINK_MSG_ID_MABUR_CAL_APPLIED_LEN);
 #else
     mavlink_mabur_cal_applied_t packet;
     packet.nonce = nonce;
+    packet.seq = seq;
     packet.bw = bw;
     packet.ok = ok;
     mav_array_memcpy(packet.reason, reason, sizeof(char)*50);
@@ -126,6 +135,7 @@ static inline uint16_t mavlink_msg_mabur_cal_applied_pack_status(uint8_t system_
  * @param chan The MAVLink channel this message will be sent over
  * @param msg The MAVLink message to compress the data into
  * @param nonce  Echoes the apply's nonce.
+ * @param seq  Echoes the apply's sweep seq.
  * @param bw  Echoes the bandwidth the apply targeted.
  * @param ok  1 if the table was adopted, 0 otherwise.
  * @param reason  Human-readable refusal reason, empty on success.
@@ -133,18 +143,20 @@ static inline uint16_t mavlink_msg_mabur_cal_applied_pack_status(uint8_t system_
  */
 static inline uint16_t mavlink_msg_mabur_cal_applied_pack_chan(uint8_t system_id, uint8_t component_id, uint8_t chan,
                                mavlink_message_t* msg,
-                                   uint32_t nonce,uint8_t bw,uint8_t ok,const char *reason)
+                                   uint32_t nonce,uint8_t seq,uint8_t bw,uint8_t ok,const char *reason)
 {
 #if MAVLINK_NEED_BYTE_SWAP || !MAVLINK_ALIGNED_FIELDS
     char buf[MAVLINK_MSG_ID_MABUR_CAL_APPLIED_LEN];
     _mav_put_uint32_t(buf, 0, nonce);
-    _mav_put_uint8_t(buf, 4, bw);
-    _mav_put_uint8_t(buf, 5, ok);
-    _mav_put_char_array(buf, 6, reason, 50);
+    _mav_put_uint8_t(buf, 4, seq);
+    _mav_put_uint8_t(buf, 5, bw);
+    _mav_put_uint8_t(buf, 6, ok);
+    _mav_put_char_array(buf, 7, reason, 50);
         memcpy(_MAV_PAYLOAD_NON_CONST(msg), buf, MAVLINK_MSG_ID_MABUR_CAL_APPLIED_LEN);
 #else
     mavlink_mabur_cal_applied_t packet;
     packet.nonce = nonce;
+    packet.seq = seq;
     packet.bw = bw;
     packet.ok = ok;
     mav_array_assign_char(packet.reason, reason, 50);
@@ -165,7 +177,7 @@ static inline uint16_t mavlink_msg_mabur_cal_applied_pack_chan(uint8_t system_id
  */
 static inline uint16_t mavlink_msg_mabur_cal_applied_encode(uint8_t system_id, uint8_t component_id, mavlink_message_t* msg, const mavlink_mabur_cal_applied_t* mabur_cal_applied)
 {
-    return mavlink_msg_mabur_cal_applied_pack(system_id, component_id, msg, mabur_cal_applied->nonce, mabur_cal_applied->bw, mabur_cal_applied->ok, mabur_cal_applied->reason);
+    return mavlink_msg_mabur_cal_applied_pack(system_id, component_id, msg, mabur_cal_applied->nonce, mabur_cal_applied->seq, mabur_cal_applied->bw, mabur_cal_applied->ok, mabur_cal_applied->reason);
 }
 
 /**
@@ -179,7 +191,7 @@ static inline uint16_t mavlink_msg_mabur_cal_applied_encode(uint8_t system_id, u
  */
 static inline uint16_t mavlink_msg_mabur_cal_applied_encode_chan(uint8_t system_id, uint8_t component_id, uint8_t chan, mavlink_message_t* msg, const mavlink_mabur_cal_applied_t* mabur_cal_applied)
 {
-    return mavlink_msg_mabur_cal_applied_pack_chan(system_id, component_id, chan, msg, mabur_cal_applied->nonce, mabur_cal_applied->bw, mabur_cal_applied->ok, mabur_cal_applied->reason);
+    return mavlink_msg_mabur_cal_applied_pack_chan(system_id, component_id, chan, msg, mabur_cal_applied->nonce, mabur_cal_applied->seq, mabur_cal_applied->bw, mabur_cal_applied->ok, mabur_cal_applied->reason);
 }
 
 /**
@@ -193,7 +205,7 @@ static inline uint16_t mavlink_msg_mabur_cal_applied_encode_chan(uint8_t system_
  */
 static inline uint16_t mavlink_msg_mabur_cal_applied_encode_status(uint8_t system_id, uint8_t component_id, mavlink_status_t* _status, mavlink_message_t* msg, const mavlink_mabur_cal_applied_t* mabur_cal_applied)
 {
-    return mavlink_msg_mabur_cal_applied_pack_status(system_id, component_id, _status, msg,  mabur_cal_applied->nonce, mabur_cal_applied->bw, mabur_cal_applied->ok, mabur_cal_applied->reason);
+    return mavlink_msg_mabur_cal_applied_pack_status(system_id, component_id, _status, msg,  mabur_cal_applied->nonce, mabur_cal_applied->seq, mabur_cal_applied->bw, mabur_cal_applied->ok, mabur_cal_applied->reason);
 }
 
 /**
@@ -201,24 +213,27 @@ static inline uint16_t mavlink_msg_mabur_cal_applied_encode_status(uint8_t syste
  * @param chan MAVLink channel to send the message
  *
  * @param nonce  Echoes the apply's nonce.
+ * @param seq  Echoes the apply's sweep seq.
  * @param bw  Echoes the bandwidth the apply targeted.
  * @param ok  1 if the table was adopted, 0 otherwise.
  * @param reason  Human-readable refusal reason, empty on success.
  */
 #ifdef MAVLINK_USE_CONVENIENCE_FUNCTIONS
 
-static inline void mavlink_msg_mabur_cal_applied_send(mavlink_channel_t chan, uint32_t nonce, uint8_t bw, uint8_t ok, const char *reason)
+static inline void mavlink_msg_mabur_cal_applied_send(mavlink_channel_t chan, uint32_t nonce, uint8_t seq, uint8_t bw, uint8_t ok, const char *reason)
 {
 #if MAVLINK_NEED_BYTE_SWAP || !MAVLINK_ALIGNED_FIELDS
     char buf[MAVLINK_MSG_ID_MABUR_CAL_APPLIED_LEN];
     _mav_put_uint32_t(buf, 0, nonce);
-    _mav_put_uint8_t(buf, 4, bw);
-    _mav_put_uint8_t(buf, 5, ok);
-    _mav_put_char_array(buf, 6, reason, 50);
+    _mav_put_uint8_t(buf, 4, seq);
+    _mav_put_uint8_t(buf, 5, bw);
+    _mav_put_uint8_t(buf, 6, ok);
+    _mav_put_char_array(buf, 7, reason, 50);
     _mav_finalize_message_chan_send(chan, MAVLINK_MSG_ID_MABUR_CAL_APPLIED, buf, MAVLINK_MSG_ID_MABUR_CAL_APPLIED_MIN_LEN, MAVLINK_MSG_ID_MABUR_CAL_APPLIED_LEN, MAVLINK_MSG_ID_MABUR_CAL_APPLIED_CRC);
 #else
     mavlink_mabur_cal_applied_t packet;
     packet.nonce = nonce;
+    packet.seq = seq;
     packet.bw = bw;
     packet.ok = ok;
     mav_array_assign_char(packet.reason, reason, 50);
@@ -234,7 +249,7 @@ static inline void mavlink_msg_mabur_cal_applied_send(mavlink_channel_t chan, ui
 static inline void mavlink_msg_mabur_cal_applied_send_struct(mavlink_channel_t chan, const mavlink_mabur_cal_applied_t* mabur_cal_applied)
 {
 #if MAVLINK_NEED_BYTE_SWAP || !MAVLINK_ALIGNED_FIELDS
-    mavlink_msg_mabur_cal_applied_send(chan, mabur_cal_applied->nonce, mabur_cal_applied->bw, mabur_cal_applied->ok, mabur_cal_applied->reason);
+    mavlink_msg_mabur_cal_applied_send(chan, mabur_cal_applied->nonce, mabur_cal_applied->seq, mabur_cal_applied->bw, mabur_cal_applied->ok, mabur_cal_applied->reason);
 #else
     _mav_finalize_message_chan_send(chan, MAVLINK_MSG_ID_MABUR_CAL_APPLIED, (const char *)mabur_cal_applied, MAVLINK_MSG_ID_MABUR_CAL_APPLIED_MIN_LEN, MAVLINK_MSG_ID_MABUR_CAL_APPLIED_LEN, MAVLINK_MSG_ID_MABUR_CAL_APPLIED_CRC);
 #endif
@@ -248,18 +263,20 @@ static inline void mavlink_msg_mabur_cal_applied_send_struct(mavlink_channel_t c
   is usually the receive buffer for the channel, and allows a reply to an
   incoming message with minimum stack space usage.
  */
-static inline void mavlink_msg_mabur_cal_applied_send_buf(mavlink_message_t *msgbuf, mavlink_channel_t chan,  uint32_t nonce, uint8_t bw, uint8_t ok, const char *reason)
+static inline void mavlink_msg_mabur_cal_applied_send_buf(mavlink_message_t *msgbuf, mavlink_channel_t chan,  uint32_t nonce, uint8_t seq, uint8_t bw, uint8_t ok, const char *reason)
 {
 #if MAVLINK_NEED_BYTE_SWAP || !MAVLINK_ALIGNED_FIELDS
     char *buf = (char *)msgbuf;
     _mav_put_uint32_t(buf, 0, nonce);
-    _mav_put_uint8_t(buf, 4, bw);
-    _mav_put_uint8_t(buf, 5, ok);
-    _mav_put_char_array(buf, 6, reason, 50);
+    _mav_put_uint8_t(buf, 4, seq);
+    _mav_put_uint8_t(buf, 5, bw);
+    _mav_put_uint8_t(buf, 6, ok);
+    _mav_put_char_array(buf, 7, reason, 50);
     _mav_finalize_message_chan_send(chan, MAVLINK_MSG_ID_MABUR_CAL_APPLIED, buf, MAVLINK_MSG_ID_MABUR_CAL_APPLIED_MIN_LEN, MAVLINK_MSG_ID_MABUR_CAL_APPLIED_LEN, MAVLINK_MSG_ID_MABUR_CAL_APPLIED_CRC);
 #else
     mavlink_mabur_cal_applied_t *packet = (mavlink_mabur_cal_applied_t *)msgbuf;
     packet->nonce = nonce;
+    packet->seq = seq;
     packet->bw = bw;
     packet->ok = ok;
     mav_array_assign_char(packet->reason, reason, 50);
@@ -284,13 +301,23 @@ static inline uint32_t mavlink_msg_mabur_cal_applied_get_nonce(const mavlink_mes
 }
 
 /**
+ * @brief Get field seq from mabur_cal_applied message
+ *
+ * @return  Echoes the apply's sweep seq.
+ */
+static inline uint8_t mavlink_msg_mabur_cal_applied_get_seq(const mavlink_message_t* msg)
+{
+    return _MAV_RETURN_uint8_t(msg,  4);
+}
+
+/**
  * @brief Get field bw from mabur_cal_applied message
  *
  * @return  Echoes the bandwidth the apply targeted.
  */
 static inline uint8_t mavlink_msg_mabur_cal_applied_get_bw(const mavlink_message_t* msg)
 {
-    return _MAV_RETURN_uint8_t(msg,  4);
+    return _MAV_RETURN_uint8_t(msg,  5);
 }
 
 /**
@@ -300,7 +327,7 @@ static inline uint8_t mavlink_msg_mabur_cal_applied_get_bw(const mavlink_message
  */
 static inline uint8_t mavlink_msg_mabur_cal_applied_get_ok(const mavlink_message_t* msg)
 {
-    return _MAV_RETURN_uint8_t(msg,  5);
+    return _MAV_RETURN_uint8_t(msg,  6);
 }
 
 /**
@@ -310,7 +337,7 @@ static inline uint8_t mavlink_msg_mabur_cal_applied_get_ok(const mavlink_message
  */
 static inline uint16_t mavlink_msg_mabur_cal_applied_get_reason(const mavlink_message_t* msg, char *reason)
 {
-    return _MAV_RETURN_char_array(msg, reason, 50,  6);
+    return _MAV_RETURN_char_array(msg, reason, 50,  7);
 }
 
 /**
@@ -323,6 +350,7 @@ static inline void mavlink_msg_mabur_cal_applied_decode(const mavlink_message_t*
 {
 #if MAVLINK_NEED_BYTE_SWAP || !MAVLINK_ALIGNED_FIELDS
     mabur_cal_applied->nonce = mavlink_msg_mabur_cal_applied_get_nonce(msg);
+    mabur_cal_applied->seq = mavlink_msg_mabur_cal_applied_get_seq(msg);
     mabur_cal_applied->bw = mavlink_msg_mabur_cal_applied_get_bw(msg);
     mabur_cal_applied->ok = mavlink_msg_mabur_cal_applied_get_ok(msg);
     mavlink_msg_mabur_cal_applied_get_reason(msg, mabur_cal_applied->reason);

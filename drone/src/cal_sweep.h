@@ -172,7 +172,7 @@ class CalSweep {
   // Accepts an ApplyCmd for the run currently in flight. Ignored if there
   // is no open run, the nonce doesn't match, a sweep is actively
   // Sweeping (accepting one now would silently abandon that sweep's
-  // progress), or this exact (nonce, bw) has already been handed out by
+  // progress), or this exact (nonce, seq) has already been handed out by
   // take_pending_apply() -- the GS resends APPLY every 200 ms until it
   // hears back APPLIED, and a repeat landing after the owner has already
   // applied it and armed Verify must not re-queue anything or disturb
@@ -336,13 +336,13 @@ class CalSweep {
   // yet airs.
   uint64_t sweep_start_ms_ = 0;
 
-  // The (nonce, bw) of the last ApplyCmd handed out by
+  // The (nonce, seq) of the last ApplyCmd handed out by
   // take_pending_apply(), so a GS resend of that same apply (it keeps
   // resending until it hears APPLIED) is ignored by on_apply() rather
   // than re-queued over a verify sweep already running from it.
   bool handed_out_apply_ = false;
   uint32_t handed_out_nonce_ = 0;
-  uint8_t handed_out_bw_ = 0;
+  uint8_t handed_out_seq_ = 0;
 
   // Current sweep's plan.
   cal::Kind current_kind_ = cal::Kind::Power;

@@ -8,6 +8,7 @@
 
 #include <array>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -40,15 +41,17 @@ std::array<int, 8> verify_parks(const cal::ApplyCmd& a, double margin_db);
 // Per-run bookkeeping for applies, owned by the TX writer thread.
 //
 // The GS resends MABUR_CAL_APPLY every 200 ms until it hears
-// MABUR_CAL_APPLIED, so the APPLIED of every (nonce, bw) already applied
-// is kept and re-sent for each resend instead of applying again. The
+// MABUR_CAL_APPLIED, so the APPLIED of every (nonce, seq) already applied
+// is kept and re-sent for each resend instead of applying again. Keyed on
+// the sweep's seq, not the width: a run applies a power sweep and then a
+// capacity sweep at the same width, and the second must be applied. The
 // "<config>.pre-cal" backup belongs to the first successful apply of a
 // run only, so it holds the file as it was before the run. A nonce other
 // than the one recorded starts a fresh ledger.
 class CalApplyLedger {
  public:
-  // The APPLIED already sent for (nonce, bw), if any.
-  std::optional<cal::Applied> cached(uint32_t nonce, uint8_t bw) const;
+  // The APPLIED already sent for (nonce, seq), if any.
+  std::optional<cal::Applied> cached(uint32_t nonce, uint8_t seq) const;
   // True until an apply of `nonce` has succeeded.
   bool want_backup(uint32_t nonce) const;
   // Records the outcome of one apply.
@@ -58,7 +61,7 @@ class CalApplyLedger {
   bool have_nonce_ = false;
   uint32_t nonce_ = 0;
   bool backed_up_ = false;
-  std::optional<cal::Applied> by_bw_[2];  // [0] = 20 MHz, [1] = 40 MHz
+  std::map<uint8_t, cal::Applied> by_seq_;
 };
 
 // The TX writer's "calibration touched the device, the operating power is

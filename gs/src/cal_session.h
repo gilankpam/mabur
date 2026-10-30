@@ -102,10 +102,10 @@ class CalSession {
 
   // The message to send right now, or nullopt: a SweepCmd (repeated every
   // 200 ms until acked), an ApplyCmd (repeated every 200 ms until
-  // Applied), or the one Abort after abort()/a failure. The caller sends
-  // it as is, never gated on radio_silent(): the session only offers
-  // something when the air is the GS's to use. Advances time-driven
-  // transitions first.
+  // Applied), or the one Abort that closes the drone's run after Done, a
+  // failure or abort(). The caller sends it as is, never gated on
+  // radio_silent(): the session only offers something when the air is the
+  // GS's to use. Advances time-driven transitions first.
   std::optional<mabur::cal::CalMsg> due_mav(uint64_t now_ms);
 
   // A received calibration frame. `air_bytes` is the frame's size on the
@@ -113,7 +113,9 @@ class CalSession {
   // delivered air bits. A frame counts only if its kind is the running
   // sweep's (Verify during the verify pass), its width is the sweep's and
   // its flags are the ones the drone's ack announced; anything else is
-  // counted in the snapshot's stamp_mismatch and never tallied.
+  // counted in the snapshot's stamp_mismatch and never tallied. Before the
+  // ack, the first CRC-clean frame of the commanded kind and width stands
+  // in for it and its flags become the run's.
   void on_cal_frame(int card, const mabur::cal::CalFrameInfo& f, int rssi_dbm, bool crc_ok,
                     size_t air_bytes, uint64_t now_ms);
 

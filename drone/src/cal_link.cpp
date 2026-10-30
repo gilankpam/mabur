@@ -40,9 +40,11 @@ std::array<int, 8> verify_parks(const cal::ApplyCmd& a, double margin_db) {
   return park_rel_for(a.walls, margin_db);
 }
 
-std::optional<cal::Applied> CalApplyLedger::cached(uint32_t nonce, uint8_t bw) const {
+std::optional<cal::Applied> CalApplyLedger::cached(uint32_t nonce, uint8_t seq) const {
   if (!have_nonce_ || nonce != nonce_) return std::nullopt;
-  return by_bw_[bw == 40 ? 1 : 0];
+  const auto it = by_seq_.find(seq);
+  if (it == by_seq_.end()) return std::nullopt;
+  return it->second;
 }
 
 bool CalApplyLedger::want_backup(uint32_t nonce) const {
@@ -54,11 +56,10 @@ void CalApplyLedger::record(const cal::Applied& a) {
     have_nonce_ = true;
     nonce_ = a.nonce;
     backed_up_ = false;
-    by_bw_[0].reset();
-    by_bw_[1].reset();
+    by_seq_.clear();
   }
   if (a.ok) backed_up_ = true;
-  by_bw_[a.bw == 40 ? 1 : 0] = a;
+  by_seq_[a.seq] = a;
 }
 
 namespace {

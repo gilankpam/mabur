@@ -2988,6 +2988,7 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
       }
       cal::Applied out;
       out.nonce = a.nonce;
+      out.seq = a.seq;
       out.bw = a.bw;
       out.ok = ar == ApplyResult::Ok;
       if (out.ok) {
@@ -3078,8 +3079,8 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
                          "operating power\n");
         } else if (const auto* ap = std::get_if<cal::ApplyCmd>(&in.msg)) {
           // The GS resends APPLY every 200 ms until it hears APPLIED: a
-          // (nonce, bw) already applied is answered again, never re-applied.
-          if (auto hit = apply_ledger.cached(ap->nonce, ap->bw))
+          // (nonce, seq) already applied is answered again, never re-applied.
+          if (auto hit = apply_ledger.cached(ap->nonce, ap->seq))
             send_cal(*hit);
           else
             cal_sweep.on_apply(*ap, cal_now);

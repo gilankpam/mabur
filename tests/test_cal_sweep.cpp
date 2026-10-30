@@ -537,6 +537,47 @@ TEST(repeated_apply_already_handed_out_does_not_disturb_a_running_verify) {
   CHECK(!s.take_pending_apply().has_value());
 }
 
+TEST(a_new_seq_at_the_same_width_is_a_new_apply) {
+  // power20 then cap20 in one run: both apply at 20 MHz, so the handed-out
+  // latch must key on the sweep's seq, not on the width.
+  CaptureSink sink;
+  RadioTx tx(sink);
+  FakePowerCtl pwr;
+  FakeCapacityCtl cap;
+  pwr.anchor = 53;
+  CalSweep s(CalSweepCfg{});
+  s.on_cmd(power_cmd(1, 0, 0x01, 0, 0, 20, 1), 0, pwr);
+  REQUIRE(s.take_ack().has_value());
+  run_to_quiescence(s, tx, pwr, cap);
+
+  cal::ApplyCmd walls;
+  walls.nonce = 1;
+  walls.seq = 0;
+  walls.bw = 20;
+  s.on_apply(walls, 2000);
+  REQUIRE(s.take_pending_apply().has_value());
+
+  s.on_cmd(capacity_cmd(1, 1, 0x01, 20, /*dwell*/ 0, /*settle*/ 0), 3000, pwr);
+  REQUIRE(s.take_ack().has_value());
+  run_to_quiescence(s, tx, pwr, cap, 3000);
+  REQUIRE(s.state() == CalSweep::State::Idle);
+
+  cal::ApplyCmd eff;
+  eff.nonce = 1;
+  eff.seq = 1;
+  eff.bw = 20;
+  eff.has_eff = true;
+  s.on_apply(eff, 6000);
+  CHECK(s.state() == CalSweep::State::Applying);
+  const auto got = s.take_pending_apply();
+  REQUIRE(got.has_value());
+  CHECK(got->seq == 1 && got->has_eff);
+
+  // Its own repeat is then ignored, as the power apply's was.
+  s.on_apply(eff, 6200);
+  CHECK(!s.take_pending_apply().has_value());
+}
+
 TEST(await_timeout_while_applying_closes_the_run) {
   CaptureSink sink;
   RadioTx tx(sink);

@@ -67,31 +67,42 @@ TEST(verify_parks_are_wall_minus_margin_for_written_walls_only) {
   for (int v : verify_parks(eff_only, 1.0)) CHECK(v == cal::kWallLeave);
 }
 
-TEST(ledger_caches_applied_per_nonce_and_width) {
+TEST(ledger_caches_applied_per_nonce_and_seq) {
   CalApplyLedger l;
-  CHECK(!l.cached(1, 20).has_value());
+  CHECK(!l.cached(1, 0).has_value());
   CHECK(l.want_backup(1));
 
-  l.record(cal::Applied{1, 20, false, "walls out of range"});
-  REQUIRE(l.cached(1, 20).has_value());
-  CHECK(!l.cached(1, 20)->ok && l.cached(1, 20)->reason == "walls out of range");
-  CHECK(!l.cached(1, 40).has_value());
+  l.record(cal::Applied{1, 0, 20, false, "walls out of range"});
+  REQUIRE(l.cached(1, 0).has_value());
+  CHECK(!l.cached(1, 0)->ok && l.cached(1, 0)->reason == "walls out of range");
+  CHECK(l.cached(1, 0)->bw == 20);
+  CHECK(!l.cached(1, 1).has_value());
   CHECK(l.want_backup(1));  // a failed apply wrote nothing to back up
 
-  l.record(cal::Applied{1, 40, true, ""});
-  CHECK(l.cached(1, 40).has_value() && l.cached(1, 40)->ok);
+  l.record(cal::Applied{1, 1, 40, true, ""});
+  CHECK(l.cached(1, 1).has_value() && l.cached(1, 1)->ok);
   CHECK(!l.want_backup(1));  // the run's backup is taken
 
-  // A later apply of the same width replaces the cached answer.
-  l.record(cal::Applied{1, 20, true, ""});
-  CHECK(l.cached(1, 20)->ok);
+  // A later apply of the same seq replaces the cached answer.
+  l.record(cal::Applied{1, 0, 20, true, ""});
+  CHECK(l.cached(1, 0)->ok);
 
   // Another nonce: nothing cached for it, and it wants its own backup.
-  CHECK(!l.cached(2, 20).has_value());
+  CHECK(!l.cached(2, 0).has_value());
   CHECK(l.want_backup(2));
-  l.record(cal::Applied{2, 20, true, ""});
-  CHECK(!l.cached(1, 40).has_value());  // the old run's answers are gone
+  l.record(cal::Applied{2, 0, 20, true, ""});
+  CHECK(!l.cached(1, 1).has_value());  // the old run's answers are gone
   CHECK(!l.want_backup(2));
+}
+
+TEST(ledger_treats_a_new_seq_at_the_same_width_as_a_new_apply) {
+  // A run applies twice at one width: the power sweep's walls, then the
+  // capacity sweep's efficiency. Answering the second from the first's
+  // cache would leave the efficiency table unwritten.
+  CalApplyLedger l;
+  l.record(cal::Applied{7, 0, 20, true, ""});
+  REQUIRE(l.cached(7, 0).has_value());  // a repeat of the power apply
+  CHECK(!l.cached(7, 1).has_value());   // the capacity apply at 20 is new
 }
 
 TEST(ldpc_mismatch_warns_per_flown_width) {

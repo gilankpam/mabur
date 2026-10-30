@@ -116,6 +116,7 @@ cal::ApplyCmd run_power(CalSession& s, uint32_t nonce, uint8_t seq, uint8_t bw,
   s.on_mav(power_done(nonce, seq), t + 30);
   const auto a = as<cal::ApplyCmd>(s.due_mav(t + 40));
   REQUIRE(a.has_value());
+  REQUIRE(a->seq == seq);
   return *a;
 }
 
@@ -402,9 +403,9 @@ TEST(applied_ok_opens_verify_and_tallies_by_rate) {
   const auto a = run_power(s, 16, 0, 20, kWalls, 0);
   const auto parks = mabur::park_rel_for(a.walls, cfg.margin_db);
 
-  s.on_mav(cal::Applied{16, 40, true, ""}, 100);  // other width: ignored
+  s.on_mav(cal::Applied{16, 0, 40, true, ""}, 100);  // other width: ignored
   CHECK(s.state() == State::Apply);
-  s.on_mav(cal::Applied{16, 20, true, ""}, 100);
+  s.on_mav(cal::Applied{16, 0, 20, true, ""}, 100);
   CHECK(s.state() == State::Verify);
   CHECK(s.radio_silent(100));
   CHECK(!s.due_mav(400).has_value());  // no more apply repeats
@@ -437,7 +438,7 @@ TEST(refused_apply_fails_with_the_drones_reason) {
   std::string err;
   REQUIRE(s.start(17, {{Kind::Power, 20}, {Kind::Capacity, 20}}, 0, &err));
   run_power(s, 17, 0, 20, kWalls, 0);
-  s.on_mav(cal::Applied{17, 20, false, "config line not found"}, 100);
+  s.on_mav(cal::Applied{17, 0, 20, false, "config line not found"}, 100);
   CHECK(s.state() == State::Failed);
   const auto snap = s.snapshot();
   CHECK(snap.fail_reason.find("config line not found") != std::string::npos);
@@ -489,9 +490,82 @@ TEST(capacity_sweep_yields_eff_and_zero_for_tx_bound) {
   CHECK(w.have_eff);
   CHECK(w.cap[1].flags & kCalTxBound);
 
-  s.on_mav(cal::Applied{18, 20, true, ""}, 300);
+  s.on_mav(cal::Applied{18, 0, 20, true, ""}, 300);
   CHECK(s.state() == State::Done);  // no verify after a capacity apply
   CHECK(!s.radio_silent(300));
+}
+
+TEST(done_sends_one_abort_so_the_drone_resumes_at_once) {
+  // The drone otherwise sits in its await window (power parked, video
+  // off) until it times out; its close keeps the written config.
+  CalSessionCfg cfg;
+  CalSession s(cfg);
+  s.set_peer(true, true);
+  std::string err;
+  REQUIRE(s.start(35, {{Kind::Power, 20}}, 0, &err));
+  run_power(s, 35, 0, 20, kWalls, 0);
+  s.on_mav(cal::Applied{35, 0, 20, true, ""}, 100);
+  const uint64_t close = 100 + verify_duration_ms(7) + cfg.phase_slack_ms;
+  int aborts = 0;
+  for (uint64_t t = close; t < close + 2000; t += 50) {
+    const auto m = s.due_mav(t);
+    if (const auto a = as<cal::Abort>(m)) {
+      ++aborts;
+      CHECK(a->nonce == 35);
+    }
+    CHECK(!as<cal::SweepCmd>(m).has_value());
+  }
+  CHECK(s.state() == State::Done);
+  CHECK(aborts == 1);
+}
+
+TEST(a_stale_applied_for_the_power_seq_does_not_satisfy_the_capacity_apply) {
+  CalSessionCfg cfg;
+  CalSession s(cfg);
+  s.set_peer(true, true);
+  std::string err;
+  REQUIRE(s.start(36, {{Kind::Power, 20}, {Kind::Capacity, 20}}, 0, &err));
+  run_power(s, 36, 0, 20, kWalls, 0);
+  s.on_mav(cal::Applied{36, 0, 20, true, ""}, 100);
+  const uint64_t t = 100 + verify_duration_ms(7) + cfg.phase_slack_ms;
+  const auto cmd = as<cal::SweepCmd>(s.due_mav(t));
+  REQUIRE(cmd.has_value() && cmd->kind == Kind::Capacity && cmd->seq == 1);
+  ack(s, 36, 1, t + 10);
+  for (int k = 0; k < 100; ++k)
+    s.on_cal_frame(0, stamp(Kind::Capacity, 0, 0, 20, kFlags, k), -60, true, 1500, t + 20);
+  cal::SweepDone d;
+  d.nonce = 36;
+  d.seq = 1;
+  d.offered.fill(100);
+  d.blocked_pct.fill(90);
+  s.on_mav(d, t + 30);
+  const auto a = as<cal::ApplyCmd>(s.due_mav(t + 40));
+  REQUIRE(a.has_value());
+  CHECK(a->seq == 1 && a->bw == 20 && a->has_eff);
+  // The drone's cached answer to the power apply (same nonce, same width)
+  // arriving again must not count as the capacity apply's.
+  s.on_mav(cal::Applied{36, 0, 20, true, ""}, t + 50);
+  CHECK(s.state() == State::Apply);
+  CHECK(as<cal::ApplyCmd>(s.due_mav(t + 240)).has_value());
+  s.on_mav(cal::Applied{36, 1, 20, true, ""}, t + 250);
+  CHECK(s.state() == State::Done);
+}
+
+TEST(a_crc_bad_frame_is_not_an_implicit_ack) {
+  // maburgs keeps corrupted frames, and a flipped LDPC/STBC bit still
+  // parses: such a frame must not set the run's flags.
+  CalSession s(CalSessionCfg{});
+  s.set_peer(true, true);
+  std::string err;
+  REQUIRE(s.start(37, {{Kind::Power, 20}}, 0, &err));
+  REQUIRE(s.due_mav(0).has_value());
+  s.on_cal_frame(0, stamp(Kind::Power, 0, kSweepLo, 20, cal::kFlagLdpc), -60, /*crc_ok=*/false,
+                 kPowerAir, 50);
+  CHECK(s.state() == State::AwaitAck);
+  CHECK(as<cal::SweepCmd>(s.due_mav(200)).has_value());  // still commanding
+  s.on_cal_frame(0, stamp(Kind::Power, 0, kSweepLo, 20, kFlags), -60, true, kPowerAir, 250);
+  CHECK(s.state() == State::Sweep);
+  CHECK(s.snapshot().flags == kFlags);
 }
 
 TEST(capacity_without_done_writes_no_eff) {
@@ -523,7 +597,7 @@ TEST(legacy_comes_from_the_20_table_when_both_are_swept) {
   REQUIRE(s.start(20, {{Kind::Power, 40}, {Kind::Power, 20}}, 0, &err));
   const auto a20 = run_power(s, 20, 0, 20, kWalls, 0);
   CHECK(a20.legacy == 20);
-  s.on_mav(cal::Applied{20, 20, true, ""}, 100);
+  s.on_mav(cal::Applied{20, 0, 20, true, ""}, 100);
   const uint64_t t = 100 + verify_duration_ms(7) + cfg.phase_slack_ms;
   const std::array<int, 8> w40 = {15, 10, 5, 0, -5, -10, -20, -30};
   const auto a40 = run_power(s, 20, 1, 40, w40, t);
@@ -675,7 +749,7 @@ TEST(verify_parks_match_the_drone_rule) {
                                     kNoWall,  kNoWall, kNoWall, kNoWall};
   const auto a = run_power(s, 29, 0, 20, walls, 0);
   REQUIRE(a.walls[0] == kSweepLo);
-  s.on_mav(cal::Applied{29, 20, true, ""}, 100);
+  s.on_mav(cal::Applied{29, 0, 20, true, ""}, 100);
   REQUIRE(s.state() == State::Verify);
   const auto drone = mabur::park_rel_for(a.walls, cfg.margin_db);
   const auto w = s.snapshot().width[0];
@@ -764,7 +838,7 @@ TEST(cal_log_gets_sweep_cell_wall_cap_verify_and_applied_rows) {
   std::string err;
   REQUIRE(s.start(77, {{Kind::Capacity, 20}, {Kind::Power, 20}}, 0, &err));
   run_power(s, 77, 0, 20, kWalls, 0);
-  s.on_mav(cal::Applied{77, 20, true, ""}, 100);
+  s.on_mav(cal::Applied{77, 0, 20, true, ""}, 100);
   const auto parks = mabur::park_rel_for(
       {20, 10, 5, 0, -5, -10, -20, cal::kWallLeave}, cfg.margin_db);
   for (int k = 0; k < 20; ++k)
@@ -782,7 +856,7 @@ TEST(cal_log_gets_sweep_cell_wall_cap_verify_and_applied_rows) {
   d.blocked_pct.fill(90);
   s.on_mav(d, t + 30);
   REQUIRE(as<cal::ApplyCmd>(s.due_mav(t + 40)).has_value());
-  s.on_mav(cal::Applied{77, 20, true, ""}, t + 50);
+  s.on_mav(cal::Applied{77, 1, 20, true, ""}, t + 50);
   REQUIRE(s.state() == State::Done);
 
   // On disk the moment the run reaches Done, without closing the log.
@@ -819,7 +893,7 @@ TEST(null_log_sink_is_inert) {
   std::string err;
   REQUIRE(s.start(34, {{Kind::Power, 20}}, 0, &err));
   run_power(s, 34, 0, 20, kWalls, 0);
-  s.on_mav(cal::Applied{34, 20, true, ""}, 100);
+  s.on_mav(cal::Applied{34, 0, 20, true, ""}, 100);
   s.due_mav(100 + verify_duration_ms(7) + 1000);
   CHECK(s.state() == State::Done);
 }

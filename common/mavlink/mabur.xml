@@ -69,6 +69,7 @@
     <message id="60003" name="MABUR_CAL_APPLY">
       <description>Ground pushes the walls and efficiency table a sweep produced for the drone to adopt.</description>
       <field type="uint32_t" name="nonce">Session nonce for this apply.</field>
+      <field type="uint8_t" name="seq">Seq of the sweep that produced this table.</field>
       <field type="uint8_t" name="bw">Channel bandwidth (MHz) the table applies to.</field>
       <field type="uint8_t" name="has">Bitmask of which wall/efficiency slots are present.</field>
       <field type="int8_t[8]" name="walls">Rel power-index wall per rung.</field>
@@ -78,6 +79,7 @@
     <message id="60004" name="MABUR_CAL_APPLIED">
       <description>Drone reports whether it adopted a MABUR_CAL_APPLY table.</description>
       <field type="uint32_t" name="nonce">Echoes the apply's nonce.</field>
+      <field type="uint8_t" name="seq">Echoes the apply's sweep seq.</field>
       <field type="uint8_t" name="bw">Echoes the bandwidth the apply targeted.</field>
       <field type="uint8_t" name="ok">1 if the table was adopted, 0 otherwise.</field>
       <field type="char[50]" name="reason">Human-readable refusal reason, empty on success.</field>

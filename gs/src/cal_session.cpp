@@ -127,7 +127,12 @@ void CalSession::on_mav(const cal::CalMsg& m, uint64_t now_ms) {
     done_ = *d;
     finish_sweep(now_ms);
   } else if (const auto* ap = std::get_if<cal::Applied>(&m)) {
-    if (state_ != State::Apply || ap->nonce != nonce_ || ap->bw != cmd_.bw) return;
+    // Matched on the sweep's seq as well as the width: a run applies twice
+    // at one width (power, then capacity), and the drone keeps answering
+    // repeats of the first from its cache.
+    if (state_ != State::Apply || ap->nonce != nonce_ || ap->seq != cmd_.seq ||
+        ap->bw != cmd_.bw)
+      return;
     on_applied(*ap, now_ms);
   }
 }
@@ -159,11 +164,14 @@ void CalSession::on_cal_frame(int card, const cal::CalFrameInfo& f, int rssi_dbm
     // what it would have -- the drone accepted this sweep and is airing it
     // -- and its stamp carries the flags the ack would have announced.
     // Without this the GS would keep sending SweepCmd repeats into the
-    // live sweep and drop every frame of it.
+    // live sweep and drop every frame of it. Only a CRC-clean frame: a
+    // corrupted one still parses with a flipped LDPC/STBC bit, and the
+    // flags it would adopt filter every frame of the sweep.
     if (f.kind != cmd_.kind || f.bw != cmd_.bw) {
       ++stamp_mismatch_;
       return;
     }
+    if (!crc_ok) return;
     on_accepted(f.flags, 0, now_ms);
   }
   if (state_ == State::Sweep || state_ == State::AwaitDone) {
@@ -445,6 +453,7 @@ bool CalSession::analyze_power() {
   const int n = cells_per_row();
   apply_ = cal::ApplyCmd{};
   apply_.nonce = nonce_;
+  apply_.seq = cmd_.seq;
   apply_.bw = cmd_.bw;
 
   std::array<std::vector<CalCell>, 8> rows;
@@ -499,6 +508,7 @@ bool CalSession::analyze_capacity_sweep() {
   WidthResult& w = width_result();
   apply_ = cal::ApplyCmd{};
   apply_.nonce = nonce_;
+  apply_.seq = cmd_.seq;
   apply_.bw = cmd_.bw;
   apply_wrote_walls_ = false;
   if (!done_) {
@@ -598,6 +608,10 @@ void CalSession::next_sweep(uint64_t now_ms) {
     return;
   }
   state_ = State::Done;
+  // Closes the drone's run now -- restoring its operating power and video
+  // -- instead of after its await window; the drone's close keeps the
+  // config the applies wrote.
+  pending_abort_ = cal::Abort{nonce_};
   // maburcal reads cal.log the moment it sees a terminal state; the
   // writer's own 1 Hz flush would race it.
   if (log_) log_->flush();

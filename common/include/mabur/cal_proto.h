@@ -60,9 +60,12 @@ struct SweepDone {
 constexpr int8_t kWallLeave = -128;  // walls[i]: leave the config entry; eff_x1000 0 = leave
 
 // Ground -> drone: the walls and/or efficiency table a sweep produced, for
-// the drone to adopt at `bw`.
+// the drone to adopt at `bw`. `seq` names that sweep: a run applies twice
+// at one width (power, then capacity), so (nonce, bw) alone cannot tell
+// the second apply from a repeat of the first.
 struct ApplyCmd {
   uint32_t nonce = 0;
+  uint8_t seq = 0;
   uint8_t bw = 20;
   bool has_walls = false;
   bool has_eff = false;
@@ -72,10 +75,12 @@ struct ApplyCmd {
   std::array<uint16_t, 8> eff_x1000{};
 };
 
-// Drone -> ground: whether it adopted an ApplyCmd. reason is empty on
-// success; at most 49 chars (the wire field is char[50], NUL-terminated).
+// Drone -> ground: whether it adopted an ApplyCmd; nonce, seq and bw echo
+// it. reason is empty on success; at most 49 chars (the wire field is
+// char[50], NUL-terminated).
 struct Applied {
   uint32_t nonce = 0;
+  uint8_t seq = 0;
   uint8_t bw = 20;
   bool ok = false;
   std::string reason;

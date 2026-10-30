@@ -38,12 +38,12 @@ std::vector<uint8_t> encode(const CalMsg& m, uint8_t sysid, uint8_t compid, uint
                                                      v.offered.data(), v.blocked_pct.data());
         } else if constexpr (std::is_same_v<T, ApplyCmd>) {
           const uint8_t has = (v.has_walls ? 1u : 0u) | (v.has_eff ? 2u : 0u);
-          mavlink_msg_mabur_cal_apply_pack_chan(sysid, compid, chan, &msg, v.nonce, v.bw, has,
+          mavlink_msg_mabur_cal_apply_pack_chan(sysid, compid, chan, &msg, v.nonce, v.seq, v.bw, has,
                                                 v.walls.data(), v.legacy, v.eff_x1000.data());
         } else if constexpr (std::is_same_v<T, Applied>) {
           char reason[50];
           pack_reason(v.reason, reason);
-          mavlink_msg_mabur_cal_applied_pack_chan(sysid, compid, chan, &msg, v.nonce, v.bw,
+          mavlink_msg_mabur_cal_applied_pack_chan(sysid, compid, chan, &msg, v.nonce, v.seq, v.bw,
                                                   v.ok ? 1u : 0u, reason);
         } else if constexpr (std::is_same_v<T, Abort>) {
           mavlink_msg_mabur_cal_abort_pack_chan(sysid, compid, chan, &msg, v.nonce);
@@ -103,6 +103,7 @@ std::optional<CalMsg> decode(const mavlink_message_t& msg) {
       mavlink_msg_mabur_cal_apply_decode(&msg, &d);
       ApplyCmd a;
       a.nonce = d.nonce;
+      a.seq = d.seq;
       a.bw = d.bw;
       a.has_walls = (d.has & 1u) != 0;
       a.has_eff = (d.has & 2u) != 0;
@@ -116,6 +117,7 @@ std::optional<CalMsg> decode(const mavlink_message_t& msg) {
       mavlink_msg_mabur_cal_applied_decode(&msg, &d);
       Applied a;
       a.nonce = d.nonce;
+      a.seq = d.seq;
       a.bw = d.bw;
       a.ok = d.ok != 0;
       a.reason = std::string(d.reason, strnlen(d.reason, sizeof(d.reason)));
