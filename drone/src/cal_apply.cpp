@@ -1,12 +1,8 @@
 #include "cal_apply.h"
 
-#include <fcntl.h>
-#include <unistd.h>
-
 #include <algorithm>
 #include <cctype>
 #include <cmath>
-#include <cstdio>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -230,6 +226,7 @@ std::string patch_toml(const std::string& text, const CalWrite& w, PatchStatus* 
   const std::string cflag_key = "cal_flags_" + bw_s;
   const std::string cflag_other_key = "cal_flags_" + other_s;
   const std::string eff_key = "efficiency_" + bw_s;
+  const std::string eff_other_key = "efficiency_" + other_s;
 
   const int idx_rate_bw = find_key_line(lines, rate_key);
   const int idx_rate_other = find_key_line(lines, rate_other_key);
@@ -238,6 +235,7 @@ std::string patch_toml(const std::string& text, const CalWrite& w, PatchStatus* 
   const int idx_legacy = find_key_line(lines, "legacy_wall_rel");
   const int idx_power_mode = find_key_line(lines, "power_mode");
   const int idx_eff_bw = find_key_line(lines, eff_key);
+  const int idx_eff_other = find_key_line(lines, eff_other_key);
   const int idx_shed_ms = find_key_line(lines, "shed_ms");
   // Which line owns rate_walls_rel_20 specifically, independent of which
   // width this call is writing -- legacy_wall_rel's patch condition reads
@@ -317,18 +315,26 @@ std::string patch_toml(const std::string& text, const CalWrite& w, PatchStatus* 
     if (idx_eff_bw >= 0) {
       if (rewrite_double_array(lines, idx_eff_bw, eff_key, w.eff))
         if (status) status->eff = true;
-    } else if (idx_shed_ms >= 0) {
-      // Same reasoning as the walls insertion above: a left-at-0 ("leave")
-      // entry has nothing to inherit when the line doesn't exist yet, so
-      // it takes AirClockCfg::efficiency_20/_40's own struct default
-      // (1.0, nominal) instead.
-      std::array<double, 8> vals{};
-      for (int i = 0; i < 8; ++i) {
-        const size_t s = static_cast<size_t>(i);
-        vals[s] = (w.eff[s] == 0.0) ? 1.0 : w.eff[s];
+    } else {
+      // Same anchoring rule as the walls/cal_flags insertions above: sit
+      // next to the other width's line of the same key so the file keeps
+      // reading as one per-width pair, falling back to shed_ms (the
+      // table's own first key) only when there is no other-width line
+      // either.
+      const int anchor = (idx_eff_other >= 0) ? idx_eff_other : idx_shed_ms;
+      if (anchor >= 0) {
+        // Same reasoning as the walls insertion above: a left-at-0
+        // ("leave") entry has nothing to inherit when the line doesn't
+        // exist yet, so it takes AirClockCfg::efficiency_20/_40's own
+        // struct default (1.0, nominal) instead.
+        std::array<double, 8> vals{};
+        for (int i = 0; i < 8; ++i) {
+          const size_t s = static_cast<size_t>(i);
+          vals[s] = (w.eff[s] == 0.0) ? 1.0 : w.eff[s];
+        }
+        pending.push_back({anchor, eff_key + " = " + render_double_array(vals)});
+        if (status) status->eff = true;
       }
-      pending.push_back({idx_shed_ms, eff_key + " = " + render_double_array(vals)});
-      if (status) status->eff = true;
     }
   }
 
@@ -446,36 +452,6 @@ bool patch_covered_required_keys(const PatchStatus& s, const CalWrite& w,
   return true;
 }
 
-void fsync_parent_dir(const std::string& path) {
-  const size_t slash = path.find_last_of('/');
-  const std::string dir = (slash == std::string::npos) ? "." : path.substr(0, slash);
-  const int dfd = ::open(dir.c_str(), O_RDONLY);
-  if (dfd >= 0) {
-    ::fsync(dfd);
-    ::close(dfd);
-  }
-}
-
-// Best-effort restore of a backup file a publish_config() call just
-// overwrote, used only when THIS apply did not ask to own the session's
-// backup (see apply_calibration's `backup` comment). Not safety-critical
-// the way the live config's own write-then-rename is: a backup is purely
-// an operator's undo copy, never read by anything that boots, so a failure
-// here is swallowed rather than turned into a calibration failure the
-// caller would see as the write itself having gone wrong.
-void restore_backup_best_effort(const std::string& backup_path, const std::string& content) {
-  const std::string tmp = backup_path + ".tmp";
-  if (!write_file_fsync(tmp, content)) {
-    std::remove(tmp.c_str());
-    return;
-  }
-  if (::rename(tmp.c_str(), backup_path.c_str()) != 0) {
-    std::remove(tmp.c_str());
-    return;
-  }
-  fsync_parent_dir(backup_path);
-}
-
 // Shared body of apply_calibration() and its corrupt-writer test seam.
 // `content_override`, when set, replaces the real patch_toml() output --
 // the seam tests need a way to get deliberate garbage onto disk without a
@@ -531,27 +507,15 @@ ApplyResult apply_calibration_impl(const std::string& path, const CalWrite& w,
     }
   }
 
-  // If this apply does not own the session's backup, read whatever is
-  // already at "<path>.pre-cal" before publish_config's own (unconditional)
-  // backup step overwrites it with this call's pre-state -- restored right
-  // after on success, or the just-written one removed if there was nothing
-  // to restore. Either way the end state is "this call did not write a
-  // backup", without destroying one an earlier call in the same session
-  // already wrote.
-  const std::string backup_path = path + ".pre-cal";
-  std::string saved_backup;
-  const bool had_backup = !backup && read_text_file(backup_path, &saved_backup);
-
-  // Steps 3-6: write "<path>.new", verify it with load_config, back up,
-  // rename -- the shared publisher, see config_write.h.
+  // Steps 3-6: write "<path>.new", verify it with load_config, conditionally
+  // back up, rename -- the shared publisher, see config_write.h. Passing
+  // `backup` straight through as publish_config's write_backup means a
+  // call that doesn't own the session's backup never touches
+  // "<path>.pre-cal" at all -- it is not written and then reverted, so an
+  // earlier call's real backup in the same session is never at risk.
   std::string pub_err;
-  const PublishResult pr = publish_config(path, content, "pre-cal", &pub_err);
-  if (pr == PublishResult::Ok && !backup) {
-    if (had_backup)
-      restore_backup_best_effort(backup_path, saved_backup);
-    else
-      std::remove(backup_path.c_str());
-  }
+  const PublishResult pr =
+      publish_config(path, content, "pre-cal", &pub_err, /*write_backup=*/backup);
   switch (pr) {
     case PublishResult::Ok:
       return ApplyResult::Ok;

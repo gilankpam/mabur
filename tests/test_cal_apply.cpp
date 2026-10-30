@@ -81,6 +81,14 @@ efficiency_40 = [0.77, 0.75, 0.75, 0.75, 0.74, 0.77, 0.76, 0.75]
 body_us       = 0
 )";
 
+// [air_clock] has shed_ms but neither efficiency_20 nor efficiency_40 --
+// stands in for the shed_ms fallback anchor when there is no other-width
+// efficiency line to sit next to either.
+const char* kSampleNoEff = R"([air_clock]
+shed_ms = 25
+body_us = 0
+)";
+
 // Same as kSample but with the rate_walls_rel_20 line removed and nothing
 // else changed -- stands in for "unexpected file structure" (missing,
 // hand-edited, reformatted): patch_toml can't find the line to rewrite, and
@@ -169,17 +177,34 @@ TEST(patch_inserts_a_missing_40_table_after_the_20_one) {
   CHECK(!threw);
 }
 
-TEST(patch_inserts_a_missing_efficiency_table_after_shed_ms) {
+TEST(patch_inserts_a_missing_efficiency_table_after_efficiency_other) {
+  // efficiency_20 is present, efficiency_40 is not: the new line must sit
+  // right after efficiency_20 (the same other-width anchoring rule as
+  // walls/cal_flags), not merely somewhere after shed_ms.
   PatchStatus status;
   const auto out = patch_toml(kSampleOnly20, eff_write(40), &status);
   CHECK(status.eff);
-  const size_t shed = out.find("shed_ms       = 25");
+  const size_t eff20 = out.find("efficiency_20 = [0.93, 0.88, 0.84, 0.8, 0.76, 0.76, 0.78, 0.76]");
   const size_t eff40 = out.find("efficiency_40 = [0.9, 1, 0.85, 1, 1, 1, 1, 1]");
-  REQUIRE(shed != std::string::npos);
+  REQUIRE(eff20 != std::string::npos);
   REQUIRE(eff40 != std::string::npos);
-  CHECK(shed < eff40);
+  CHECK(eff20 < eff40);
+  CHECK(eff40 - eff20 < 80);  // directly adjacent, not merely "somewhere after"
   // An eff-only apply never touches the radio section.
   CHECK(out.find("power_mode = \"none\"") != std::string::npos);
+}
+
+TEST(patch_inserts_efficiency_after_shed_ms_when_no_other_width_eff) {
+  // Neither efficiency_20 nor efficiency_40 exists yet: the fallback
+  // anchor is shed_ms, the table's own first key.
+  PatchStatus status;
+  const auto out = patch_toml(kSampleNoEff, eff_write(20), &status);
+  CHECK(status.eff);
+  const size_t shed = out.find("shed_ms = 25");
+  const size_t eff20 = out.find("efficiency_20 = [0.9, 1, 0.85, 1, 1, 1, 1, 1]");
+  REQUIRE(shed != std::string::npos);
+  REQUIRE(eff20 != std::string::npos);
+  CHECK(shed < eff20);
 }
 
 TEST(patch_writes_efficiency_and_leaves_zero_entries) {
@@ -304,14 +329,33 @@ TEST(backup_is_written_only_when_asked) {
   CHECK(b.str() == before_second);
 
   // A later call in the same session with backup=false must not disturb
-  // that backup, even though publish_config's own backup step runs on
-  // every call underneath.
+  // that backup at all: publish_config's own backup step is skipped
+  // entirely for this call, not run-then-reverted.
   CHECK(apply_calibration(path, eff_write(40), 1.0, /*backup=*/false, &err) ==
         ApplyResult::Ok);
   std::ifstream backup2(path + ".pre-cal");
   CHECK(backup2.good());
   std::stringstream b2; b2 << backup2.rdbuf();
   CHECK(b2.str() == before_second);   // unchanged by the backup=false call
+}
+
+TEST(backup_false_never_touches_an_existing_pre_cal_file) {
+  // Pins the fix directly: an existing ".pre-cal" is byte-identical before
+  // and after a backup=false apply, with no window where publish_config's
+  // unconditional backup step could have overwritten it first.
+  const std::string path = std::string(MABUR_TEST_SCRATCH_DIR) + "/cal_backup2.toml";
+  { std::ofstream f(path); f << kSample; }
+  const std::string kUnrelatedBackup = "# this is an earlier session's real backup\n";
+  { std::ofstream f(path + ".pre-cal"); f << kUnrelatedBackup; }
+
+  std::string err;
+  CHECK(apply_calibration(path, walls_write(40), 1.0, /*backup=*/false, &err) ==
+        ApplyResult::Ok);
+
+  std::ifstream backup(path + ".pre-cal");
+  REQUIRE(backup.good());
+  std::stringstream b; b << backup.rdbuf();
+  CHECK(b.str() == kUnrelatedBackup);
 }
 
 TEST(apply_refuses_out_of_range_without_touching_the_file) {

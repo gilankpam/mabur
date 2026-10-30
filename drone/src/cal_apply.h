@@ -90,10 +90,9 @@ struct CalWrite {
 // comment). apply_calibration uses this to tell those cases apart from
 // "found, rewritten or inserted", since only the first is an error.
 // inserted_walls/inserted_cal_flags additionally say which of those two
-// took the insert path rather than rewriting an existing line -- there is
-// no inserted_eff: efficiency_<bw> has one fixed anchor (shed_ms), so
-// there's nothing else to disambiguate the way the two widths' wall/flag
-// lines can anchor on each other.
+// took the insert path rather than rewriting an existing line; there is no
+// equivalent inserted_eff -- nothing downstream needs to tell an inserted
+// efficiency_<bw> line apart from a rewritten one.
 struct PatchStatus {
   bool walls = false, cal_flags = false, legacy_wall_rel = false,
        power_mode = false, eff = false, inserted_walls = false,
