@@ -1155,10 +1155,8 @@ static int run_radio(const maburgs::Config& cfg) {
       if (mabur::cal::parse_cal_payload(m.body.data(), m.body.size(), &cal_info)) {
         const int rssi_dbm =
             static_cast<int>(std::max(m.rssi[0], m.rssi[1])) - 110;
-        // Size on the air: the 24-byte dot11 header and the 4-byte FCS
-        // around the body -- a capacity sweep sums it into delivered bits.
         cal_session.on_cal_frame(m.card_id, cal_info, rssi_dbm, m.crc_ok,
-                                 24 + m.body.size() + 4, m.mono_us / 1000);
+                                 maburgs::cal_air_bytes(m.body.size()), m.mono_us / 1000);
         continue;
       }
       chan.on_rc_body(m.rx_channel);   // read by the rc sink inside on_rx_body()

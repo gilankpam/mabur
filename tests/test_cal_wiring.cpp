@@ -37,6 +37,15 @@ CalSnapshot snap(State st, size_t sweep_i, cal::SweepSpec cur = {cal::Kind::Powe
 
 // --- feed_cal_packet ----------------------------------------------------
 
+TEST(air_bytes_count_the_qos_data_header_and_the_fcs) {
+  // The drone's RadioTx sends every calibration frame as QoS-Data: a
+  // 24-byte dot11 header plus 2 bytes of QoS control, then the body, then
+  // the 4-byte FCS.
+  CHECK(kCalDot11HeaderLen == 26);
+  CHECK(cal_air_bytes(mabur::cal::kCalPayloadLen) == 26 + 64 + 4);
+  CHECK(cal_air_bytes(1405) == 1435);
+}
+
 TEST(a_sweep_ack_from_the_tunnel_moves_the_session_on) {
   CalSession s(CalSessionCfg{});
   s.set_peer(true, true);

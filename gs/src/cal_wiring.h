@@ -26,6 +26,19 @@ const char* cal_kind_name(const CalSnapshot& snap);
 // The operator's token for one sweep: power20, power40, cap20, cap40.
 std::string cal_sweep_token(const mabur::cal::SweepSpec& spec);
 
+// The dot11 header every calibration frame flies under: the drone's
+// RadioTx sends QoS-Data, a 24-byte header plus 2 bytes of QoS control.
+// The RX path strips it before the body reaches the session, so the
+// session is told the frame's size on the air separately.
+constexpr size_t kCalDot11HeaderLen = 26;
+constexpr size_t kCalFcsLen = 4;
+
+// A received calibration frame's size on the air from its body: header,
+// body, FCS. A capacity sweep sums it into the delivered air bits.
+constexpr size_t cal_air_bytes(size_t body_len) {
+  return kCalDot11HeaderLen + body_len + kCalFcsLen;
+}
+
 // One whole MAVLink packet the tunnel delivered from the drone: every
 // calibration message in it goes to the session (anything else is not the
 // session's and is skipped). The drone sends its replies whatever the

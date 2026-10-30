@@ -1,5 +1,6 @@
 #include "mtest.h"
 #include "cal_session.h"
+#include "cal_wiring.h"
 #include "cal_analysis.h"
 #include "cal_log.h"
 #include "cal_picker.h"
@@ -26,7 +27,7 @@ using cal::Kind;
 using State = CalSession::State;
 
 constexpr uint8_t kFlags = cal::kFlagLdpc | cal::kFlagStbc;
-constexpr size_t kPowerAir = 24 + cal::kCalPayloadLen + 4;
+constexpr size_t kPowerAir = cal_air_bytes(cal::kCalPayloadLen);
 constexpr int kRows = kSweepHi - kSweepLo + 1;  // cells per rate row
 
 struct FakePicker : CalPicker {
