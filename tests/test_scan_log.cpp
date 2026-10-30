@@ -66,9 +66,12 @@ TEST(scan_log_records_are_byte_exact) {
   log.hop(h);
   maburgs::HopEvent h2{10000.0, "relocate", 1, 144, 0, 0.0};
   log.hop(h2);
+  maburgs::HopEvent h3{12000.0, "relocate", 2, 112, 0, 0.0};
+  h3.reason = "cal";
+  log.hop(h3);
   w.flush_now();
   std::string text = read_all(log.path());
-  CHECK(text.rfind("scanlog 6 channels=40,64,112,144 mode=auto dwell_ms=250\n", 0) == 0);
+  CHECK(text.rfind("scanlog 7 channels=40,64,112,144 mode=auto dwell_ms=250\n", 0) == 0);
   CHECK(text.find("\nC 1000 1 RTL8822E jaguar3 2x2 1f 5080-6165 1 1 1 1 0\n") != std::string::npos);
   CHECK(text.find("\nC 1001 0 ? ? 0x0 0 0-0 0 0 0 0 0\n") != std::string::npos);
   CHECK(text.find("\nD 1300 1 161 2 250 812 790 3 2 42 -93 10 0 0 0 0 20 - -\n") != std::string::npos);
@@ -83,8 +86,9 @@ TEST(scan_log_records_are_byte_exact) {
       "\nV 1234.5 interfered 09 5 6.1 80 0 36 2 0 5 -55.4 33.1 2.5 - 0.0 "
       "1 35 1 1 6 -56.0 nan 2.5 - 0.0\n") !=
       std::string::npos);
-  CHECK(text.find("\nH 1300.0 order 1 149 20 0.0\n") != std::string::npos);
-  CHECK(text.find("\nH 10000.0 relocate 1 144 0 0.0\n") != std::string::npos);
+  CHECK(text.find("\nH 1300.0 order 1 149 20 0.0 -\n") != std::string::npos);
+  CHECK(text.find("\nH 10000.0 relocate 1 144 0 0.0 -\n") != std::string::npos);
+  CHECK(text.find("\nH 12000.0 relocate 2 112 0 0.0 cal\n") != std::string::npos);
   CHECK(log.path() == dir + "/scan.log");
 }
 

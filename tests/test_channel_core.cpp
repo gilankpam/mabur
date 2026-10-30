@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "mtest.h"
+#include "cal_picker.h"
 #include "channel_core.h"
 #include "fake_link_card.h"
 #include "mabur/rc_proto.h"
@@ -1172,6 +1173,171 @@ TEST(sampled_record_consumed_next_tick_uses_sample_span) {
   // consume delays differ (10 ms, 30 ms), so a span measured between the
   // consumes (T1 + 10 -> T1 + 170, 160 ms) reads 43.75 % instead.
   CHECK(*e->own_air_pct > 49.0 && *e->own_air_pct < 51.0);
+}
+
+// ---- calibration channel pick (CalPicker / ChannelCore) ----
+
+// One linked tick with the TX card (card 0) on op hearing its own video and
+// `op_foreign` foreign frames: own frames keep the verdict out of `starved`,
+// foreign frames are what op's live reading scores. Card 1 is the scout card.
+static void live_tick(Rig& g, uint32_t op_foreign = 0) {
+  g.cards[0]->fr.own += 5;
+  g.cards[0]->fr.foreign += op_foreign;
+  g.vrx->on_video(static_cast<double>(g.clk.ms));
+  g.tick(true);
+}
+
+static const HopEvent* find_hop(const RecordingSink& s, const char* kind) {
+  for (const auto& e : s.hops) if (e.kind == kind) return &e;
+  return nullptr;
+}
+
+// Auto, two cards, linked, the boot pick long closed: one measure round
+// dwells every half outside op's own pair exactly once, reads op from the
+// verdict's live window, emits one K record and names the best member.
+// Op (40) reads busy (foreign frames on the TX card), 64's pair reads busy
+// on the scout: 112 is the first clean member in config order.
+TEST(cal_measure_round_ranks_the_set_once) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 30; ++i) live_tick(g, 200);
+  g.cards[1]->cca_per_ms_on[60] = 5;
+  g.cards[1]->cca_per_ms_on[64] = 5;
+  ChannelCorePicker p(*g.core);
+  REQUIRE(p.mode() == CalPicker::Mode::Auto);
+  CHECK(p.op() == 40);
+  const size_t picks0 = g.sink.picks.size(), dwells0 = g.sink.dwells.size();
+  p.begin_measure(g.clk.ms);
+  CHECK(!p.measured_best().has_value());
+  for (int i = 0; i < 50 && !p.measured_best(); ++i) live_tick(g, 200);
+  REQUIRE(p.measured_best().has_value());
+  CHECK(*p.measured_best() == 112);
+  CHECK(g.sink.picks.size() == picks0 + 1);
+  REQUIRE(g.sink.picks.back().has_value());
+  CHECK(*g.sink.picks.back() == 112);
+  std::vector<uint8_t> chs;
+  for (size_t i = dwells0; i < g.sink.dwells.size(); ++i) {
+    CHECK(g.sink.dwells[i].first == 1);
+    chs.push_back(g.sink.dwells[i].second.survey.def.primary);
+  }
+  std::sort(chs.begin(), chs.end());
+  CHECK((chs == std::vector<uint8_t>{60, 64, 108, 112, 140, 144}));   // op's 36/40 never dwelt on
+  CHECK(g.core->op() == 40);                                          // measuring moves nothing
+  for (int i = 0; i < 3; ++i) live_tick(g, 200);
+  CHECK(!g.core->scout_owns_card(1));                                 // parked again ...
+  CHECK(g.cards[1]->ch == 40 && g.cards[1]->width_mhz == 40);         // ... on op at the link width
+  const size_t dwells1 = g.sink.dwells.size();
+  for (int i = 0; i < 20; ++i) live_tick(g, 200);
+  CHECK(g.sink.dwells.size() == dwells1);                             // one round, not a loop
+  CHECK(g.sink.picks.size() == picks0 + 1);
+  CHECK(*p.measured_best() == 112);
+}
+
+// The same round over a quiet op: a candidate must beat op by pick_margin,
+// so a clean op stays the target.
+TEST(cal_measure_round_keeps_a_clean_op) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 30; ++i) live_tick(g);
+  g.cards[1]->cca_per_ms_on[60] = 5;
+  g.cards[1]->cca_per_ms_on[64] = 5;
+  ChannelCorePicker p(*g.core);
+  p.begin_measure(g.clk.ms);
+  for (int i = 0; i < 50 && !p.measured_best(); ++i) live_tick(g);
+  REQUIRE(p.measured_best().has_value());
+  CHECK(*p.measured_best() == 40);
+}
+
+// The boot pick's relocate, tagged cal: H relocate with reason "cal", the
+// order rides the RCF, the confirm lands it (no verify window), the store
+// follows op. One relocate at a time; none while a hop is in flight.
+TEST(cal_relocate_orders_a_move_and_settles_on_confirm) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  ChannelCorePicker p(*g.core);
+  CHECK(!p.relocate_settled().has_value());
+  CHECK(!p.order_relocate(40));                   // already there: nothing to order
+  CHECK(!p.order_relocate(36));                   // not a member
+  REQUIRE(p.order_relocate(112));
+  CHECK(!p.order_relocate(144));                  // one relocate at a time
+  for (int i = 0; i < 20 && !g.sink.has_line("relocate 40 -> 112 placed"); ++i) live_tick(g);
+  REQUIRE(g.sink.has_line("maburgs channel: relocate 40 -> 112 placed (cal)"));
+  const HopEvent* h = find_hop(g.sink, "relocate");
+  REQUIRE(h != nullptr);
+  CHECK(h->target == 112);
+  CHECK(h->reason == "cal");
+  CHECK(!p.relocate_settled().has_value());
+  CHECK(!p.order_relocate(144));                  // a hop in flight
+  const auto r = pump_rcf(g);
+  REQUIRE(r.has_value() && r->hop_ch == 112);
+  g.core->note_video(112);
+  g.tick(true);
+  REQUIRE(g.sink.has_hop("lead_confirm"));
+  for (int i = 0; i < 3 && !p.relocate_settled(); ++i) g.tick(true);
+  REQUIRE(p.relocate_settled().has_value());
+  CHECK(*p.relocate_settled());
+  CHECK(g.sink.has_hop("verify_pass"));
+  CHECK(std::string(g.core->snapshot(0).hop.state) == "idle");
+  CHECK(g.core->op() == 112);
+  CHECK(p.op() == 112);
+  CHECK(!g.stored.empty() && g.stored.back() == 112);   // the remembered channel follows
+  for (const auto& e : g.sink.hops)
+    if (e.kind != "relocate") CHECK(e.reason.empty());   // only the order carries the reason
+}
+
+// The drone never shows up on the target: the order withdraws at
+// confirm_ms, the relocate settles false and the link stays on op.
+TEST(cal_relocate_settles_false_when_the_drone_does_not_follow) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  ChannelCorePicker p(*g.core);
+  REQUIRE(p.order_relocate(112));
+  for (int i = 0; i < 20 && !g.sink.has_line("relocate 40 -> 112 placed"); ++i) live_tick(g);
+  REQUIRE(g.sink.has_line("relocate 40 -> 112 placed (cal)"));
+  for (int i = 0; i < g.cfg.hop.confirm_ms / 10 + 20 && !p.relocate_settled(); ++i) live_tick(g);
+  REQUIRE(p.relocate_settled().has_value());
+  CHECK(!*p.relocate_settled());
+  CHECK(g.sink.has_hop("withdraw"));
+  CHECK(g.core->op() == 40);
+  for (int i = 0; i < 20; ++i) live_tick(g);
+  CHECK(g.sink.has_line("relocation to 112 did not land; staying on 40"));   // BootPick accepts op
+  CHECK(g.cards[0]->ch == 40 && g.cards[1]->ch == 40);
+  const auto placed = std::count_if(g.sink.lines.begin(), g.sink.lines.end(), [](const std::string& l) {
+    return l.find("relocate 40 -> 112 placed") != std::string::npos;
+  });
+  CHECK(placed == 1);                               // no retry behind the run's back
+}
+
+// Pinned and one-card GSs cannot measure: no round runs, op is the answer
+// at once.
+TEST(pinned_core_has_no_measure) {
+  Rig g(2, 0, /*pinned=*/true, 64);
+  link_up(g);
+  for (int i = 0; i < 10; ++i) live_tick(g);
+  ChannelCorePicker p(*g.core);
+  CHECK(p.mode() == CalPicker::Mode::Pinned);
+  const size_t dwells0 = g.sink.dwells.size(), picks0 = g.sink.picks.size();
+  p.begin_measure(g.clk.ms);
+  REQUIRE(p.measured_best().has_value());
+  CHECK(*p.measured_best() == p.op());
+  CHECK(p.op() == 64);
+  for (int i = 0; i < 20; ++i) live_tick(g);
+  CHECK(g.sink.dwells.size() == dwells0);
+  CHECK(g.sink.picks.size() == picks0);
+  CHECK(!g.core->scout_owns_card(1));
+
+  Rig h(1, 0);
+  ChannelCorePicker q(*h.core);
+  CHECK(q.mode() == CalPicker::Mode::OneCard);
+  q.begin_measure(h.clk.ms);
+  REQUIRE(q.measured_best().has_value());
+  CHECK(*q.measured_best() == q.op());
 }
 
 MTEST_MAIN

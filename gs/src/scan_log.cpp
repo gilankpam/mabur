@@ -8,7 +8,7 @@
 namespace maburgs {
 
 ScanLog::ScanLog(LogWriter& w, const std::string& dir, const std::string& header_info)
-    : w_(w), s_(w.open(dir, "scan.log", "scanlog 6 " + header_info)) {}
+    : w_(w), s_(w.open(dir, "scan.log", "scanlog 7 " + header_info)) {}
 
 void ScanLog::put_(const char* b, int n) {
   if (s_ == LogWriter::kBadStream || n <= 0) return;
@@ -126,9 +126,10 @@ void ScanLog::verdict(double t_ms, const VerdictOut& o, const std::vector<Verdic
 
 void ScanLog::hop(const HopEvent& e) {
   char b[128];
-  const int n = std::snprintf(b, sizeof(b), "H %.1f %s %u %u %u %.1f", e.t_ms, e.kind.c_str(),
+  const int n = std::snprintf(b, sizeof(b), "H %.1f %s %u %u %u %.1f %s", e.t_ms, e.kind.c_str(),
                               static_cast<unsigned>(e.epoch), static_cast<unsigned>(e.target),
-                              static_cast<unsigned>(e.score), e.elapsed_ms);
+                              static_cast<unsigned>(e.score), e.elapsed_ms,
+                              e.reason.empty() ? "-" : e.reason.c_str());
   put_(b, std::min(n, static_cast<int>(sizeof(b) - 1)));
 }
 

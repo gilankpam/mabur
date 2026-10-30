@@ -72,7 +72,44 @@ bool ChannelScout::has_work_() const {
 }
 
 bool ChannelScout::measuring_() const {
-  return cfg_.measure && !frozen_.load(std::memory_order_acquire);
+  return cfg_.measure && (!frozen_.load(std::memory_order_acquire) ||
+                          round_.load(std::memory_order_acquire) == kRoundMeasuring);
+}
+
+void ChannelScout::begin_round() {
+  {
+    std::lock_guard<std::mutex> lk(mu_);
+    ranker_ = ChannelRanker(dwell_channels(cfg_), cfg_.min_rounds, cfg_.pick_margin, cfg_.blocked_pct);
+    round_dwells_ = 0;
+  }
+  round_.store(kRoundMeasuring, std::memory_order_release);
+}
+
+void ChannelScout::add_sample(const RankSample& s) {
+  std::lock_guard<std::mutex> lk(mu_);
+  ranker_.add(s);
+}
+
+void ChannelScout::end_round_measuring_() {
+  int m = kRoundMeasuring;
+  round_.compare_exchange_strong(m, kRoundMeasured, std::memory_order_acq_rel);
+}
+
+// The round is over once every dwell channel it does not skip has a visit,
+// or after two passes' worth of dwells (a half whose retune or read keeps
+// failing must not hold the run's channel pick forever).
+void ChannelScout::note_round_dwell_() {
+  if (!round_measuring()) return;
+  const int cap = 2 * static_cast<int>(dwell_channels(cfg_).size());
+  bool all = true;
+  int taken = 0;
+  {
+    std::lock_guard<std::mutex> lk(mu_);
+    taken = ++round_dwells_;
+    for (const RankEntry& e : ranker_.all())
+      if (!skip_op_half_(e.ch) && e.visits == 0) all = false;
+  }
+  if (all || taken >= cap) end_round_measuring_();
 }
 
 bool ChannelScout::member_(uint8_t ch) const {
@@ -161,8 +198,11 @@ bool ChannelScout::step_dwell_(bool burst_ok, bool observe) {
     const bool ok = dwell(p.bin_ch, p.round, burst, observe);
     sched_.complete(p, now_(), ok);
     rounds_.store(sched_.rounds_complete(), std::memory_order_release);
+    if (observe) note_round_dwell_();
     return true;
   }
+  // Every bin is one of op's (a one-member set): a round has nothing to visit.
+  end_round_measuring_();
   return false;
 }
 
@@ -170,6 +210,8 @@ bool ChannelScout::run_once() {
   if (t0_ < 0) t0_ = now_();
   if (!has_work_()) {
     if (working_.load(std::memory_order_acquire)) park_();
+    int m = kRoundMeasured;   // a round that just ended is over once parked
+    round_.compare_exchange_strong(m, kRoundIdle, std::memory_order_acq_rel);
     return false;
   }
   working_.store(true, std::memory_order_release);
@@ -294,12 +336,18 @@ void ChannelScout::publish_() {
   // must not be overwritten by a proposal computed against a stale op.
   std::lock_guard<std::mutex> lk(mu_);
   const uint8_t op = op_.load(std::memory_order_acquire);
-  const int mr = eff_min_rounds_();
-  const uint8_t p = cfg_.link_width_mhz == 40
-                        ? pair_proposal(ranker_.all(), op, cfg_.channels, mr, cfg_.pick_margin,
-                                        cfg_.blocked_pct)
-                        : ranker_.proposal(op, mr);
-  proposal_.store(p, std::memory_order_release);
+  proposal_.store(proposal_locked_(op, eff_min_rounds_()), std::memory_order_release);
+}
+
+uint8_t ChannelScout::proposal_locked_(uint8_t op, int mr) const {
+  return cfg_.link_width_mhz == 40
+             ? pair_proposal(ranker_.all(), op, cfg_.channels, mr, cfg_.pick_margin, cfg_.blocked_pct)
+             : ranker_.proposal(op, mr);
+}
+
+uint8_t ChannelScout::round_proposal(uint8_t op) const {
+  std::lock_guard<std::mutex> lk(mu_);
+  return proposal_locked_(op, 1);
 }
 
 bool ChannelScout::op_ranked_locked_(int mr) const {

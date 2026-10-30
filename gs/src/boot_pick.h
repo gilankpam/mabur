@@ -93,6 +93,10 @@ class BootPick {
     return in.in_session && in.relocate_due && !tried_ && !relocating_;
   }
   bool pick_wanted() const { return pick_wanted_; }   // WantPick issued, relocation not resolved
+  // Something else moved want this link-up (a calibration run's channel
+  // pick): one more relocation, placed and resolved exactly like the
+  // first -- VerifyPass done, anything else accepts op.
+  void rearm_relocation() { tried_ = false; }
 
  private:
   BootPickOut freeze(const char* why, bool accept_op);

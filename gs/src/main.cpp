@@ -583,7 +583,7 @@ static int run_radio(const maburgs::Config& cfg) {
   // the end-of-AU callback calls chan.note_au_end().
   maburgs::VrxController vrx(maburgs::vrx_cfg_from(cfg, start_ch));
 
-  // scan.log (scanlog 6): the channel-selection record -- card caps, scout
+  // scan.log (scanlog 7): the channel-selection record -- card caps, scout
   // dwells (boot-time AND in-flight), the pick, every link move, and the
   // in-flight hop verdict/hop-event lines. Same session directory and
   // writer as ctl.log, same debug_log.enable gate.

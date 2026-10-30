@@ -66,6 +66,10 @@ struct HopEvent {
   uint8_t target = 0;
   uint32_t score = 0;
   double elapsed_ms = 0;
+  // Why, when the kind alone does not say: "cal" on the relocate a
+  // calibration run orders to start on the quietest member. Empty
+  // otherwise. Set by the caller (ChannelCore), never by the controller.
+  std::string reason;
 };
 
 // Turns a persistent HopVerdict::trigger into an actual hop order, confirms
@@ -92,6 +96,9 @@ class HopController {
   // undelivered after a confirm extension. The escape's skip list.
   std::vector<uint8_t> backed_off_failed(double now_ms) const;
   std::vector<HopEvent> take_events();
+  // max_hops_per_min orders already placed in the trailing 60 s: the next
+  // order (a relocation included) would hold on hold_cap instead.
+  bool hop_cap_reached(double now_ms) const;
   uint32_t hops() const;
   // Hold EPISODES entered, not ticks spent holding: idle_tick() runs from
   // Hold as well as Idle, so a held controller with the trigger latched

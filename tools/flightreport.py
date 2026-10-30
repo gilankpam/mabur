@@ -1441,6 +1441,10 @@ def load_scanlog(path):
     scanlog 6 (cpe-relay-hop): D gains a trailing rx % (relay
     sweep entries; '-' for USB dwells); older D lines read rx None.
 
+    scanlog 7: H gains a trailing reason ('cal' on the relocate a
+    calibration run orders, '-' otherwise), popped off before the
+    end-anchored fields; older H lines read reason None.
+
     Returns {"version": int, "V": [...], "H": [...], "D": [...], "M": [...]}.
     Silent on lines that don't parse (older/newer record shapes) rather
     than aborting the report -- CLAUDE.md: recordings outlive the code that
@@ -1494,11 +1498,18 @@ def load_scanlog(path):
                         "cards": cards,
                     })
                 elif tag == "H" and len(toks) >= 7:
+                    reason = None
+                    if version >= 7:
+                        if len(toks) < 8:
+                            continue
+                        reason = None if toks[-1] == "-" else toks[-1]
+                        toks = toks[:-1]
                     kind = " ".join(toks[2:-4])
                     H.append({
                         "t_ms": float(toks[1]), "kind": kind,
                         "epoch": int(toks[-4]), "target": int(toks[-3]),
                         "score": int(toks[-2]), "elapsed_ms": float(toks[-1]),
+                        "reason": reason,
                     })
                 elif tag == "D" and len(toks) >= 17:
                     igi = None if toks[10] == "-" else int(toks[10])
