@@ -2,137 +2,155 @@
 
 #include <algorithm>
 
-#include "mabur/cal_wire.h"
-
 namespace mabur {
 
-void CalSweep::on_cmd(const rc::CalCmd& c, uint64_t now_ms, PowerCtl& pwr) {
+namespace {
+// Verify has no SweepCmd of its own to copy pacing from (arm_verify is
+// called directly by the owner, not over the wire) -- it runs at the same
+// pacing the protocol's own SweepCmd defaults use.
+constexpr uint16_t kVerifyFramesPerCell = 20;
+constexpr uint32_t kVerifySettleMs = 5;
+constexpr uint32_t kVerifyGapUs = 1000;
+}  // namespace
+
+uint8_t CalSweep::stamp_flags() const {
+  return cal::kFlagStbc | (cfg_.ldpc ? cal::kFlagLdpc : 0);
+}
+
+void CalSweep::build_cells(const cal::SweepCmd& c) {
+  cells_.clear();
+  if (c.kind == cal::Kind::Capacity) {
+    for (int mcs = 0; mcs < 8; ++mcs)
+      if (c.mcs_mask & (1 << mcs)) cells_.push_back(Cell{static_cast<uint8_t>(mcs), 0});
+    return;
+  }
+  for (int mcs = 0; mcs < 8; ++mcs) {
+    if (!(c.mcs_mask & (1 << mcs))) continue;
+    for (int idx = c.idx_lo; idx <= c.idx_hi; ++idx)
+      cells_.push_back(Cell{static_cast<uint8_t>(mcs), idx});
+  }
+}
+
+void CalSweep::build_verify_cells(const std::array<int, 8>& park_rel) {
+  cells_.clear();
+  for (int mcs = 0; mcs < 8; ++mcs)
+    if (park_rel[mcs] != cal::kWallLeave)
+      cells_.push_back(Cell{static_cast<uint8_t>(mcs), park_rel[mcs]});
+}
+
+void CalSweep::on_cmd(const cal::SweepCmd& c, uint64_t now_ms, PowerCtl& pwr) {
   const bool new_session = !has_session_ || c.nonce != nonce_;
   if (new_session) {
-    // A brand-new nonce ARRIVING WHILE A SESSION IS STILL LIVE is a real
-    // case, not a theoretical one: new_session is `!has_session_ ||
-    // nonce != nonce_`, and the second disjunct fires for any second
+    // A brand-new nonce arriving while a run is still live -- any second
     // `maburcal start` after an abort, after a GS restart, or within
-    // await_next_ms (15 s) of the previous run's last frame. At that
-    // moment the TXAGC override is still parked at the PREVIOUS session's
-    // last swept cell (pump_sweeping never restores between cells or
-    // phases; only close_session() does), and devourer's GetTxPowerState
-    // reports that override rather than the anchor -- so read_anchor_idx()
-    // below would latch a swept cell's index as this session's anchor.
-    // Every cell of the new session would then be programmed relative to
-    // that wrong anchor: a parked cell BELOW the true anchor makes every
-    // rate transmit ABOVE its intended TXAGC index for the rest of the
-    // session. The same-nonce version of this hazard is guarded by reusing
-    // the latched value (see take_ack()); this is its mirror -- restore
-    // the anchor before reading, so the chip is in the same clean state a
-    // genuinely first session would find it in.
+    // await_next_ms of the previous run's last frame -- finds the TXAGC
+    // override still parked at the PREVIOUS run's last swept cell (only
+    // close_session() restores it). Undo that park before reading the
+    // anchor, so this read sees the same clean reference a genuinely
+    // first run would.
     if (has_session_) pwr.set_index_override(anchor_idx_);
-    // A brand-new nonce: reset every piece of session state, including the
-    // hard cap, which is measured from THIS command, not from whenever the
-    // drone happened to boot.
-    nonce_ = c.nonce;
-    power_restored_ = false;
-    result_accepted_ = false;
-    hard_cap_deadline_ms_ = now_ms + cfg_.hard_cap_ms;
-    last_started_phase_ = -1;
-    // Global constraint: per-rate walls must be measured against a common
-    // base, so the wall-equalized diff table comes off -- and this
-    // session's anchor is captured -- HERE, synchronously, at acceptance,
-    // not lazily on pump()'s first call. The chip is clean by the time of
-    // the read: no phase of THIS session has parked the TXAGC at a swept
-    // cell's index yet, and any PREVIOUS session's park was just undone
-    // above (a later phase of the same session reuses anchor_idx_ below
-    // rather than reading again for exactly that reason -- see
-    // take_ack()).
-    pwr.zero_rate_diffs();
+    const bool zero_now = (c.kind == cal::Kind::Power);
+    // Zero BEFORE reading: per-rate walls must be measured against a
+    // common base, so the wall-equalized diff table comes off before the
+    // anchor this run's cells are placed relative to is captured.
+    if (zero_now) pwr.zero_rate_diffs();
     const int anchor = pwr.read_anchor_idx();
     if (anchor < 0) {
-      // Cannot place a relative cell without the reference: refuse the
-      // session outright (no ack -> the GS times out in AwaitAck). This
-      // must be a FULL teardown, not just clearing has_session_: if the
-      // session this new nonce is preempting was still actively Sweeping,
-      // leaving state_/cursor_/cells_ untouched would leave pump()'s
-      // switch(state_) still dispatching to pump_sweeping() on the stale
-      // Sweeping state forever -- has_session_ being false gates only the
-      // hard-cap/await guards, not the state machine's dispatch -- which
-      // would keep reprogramming the override for the OLD (now-abandoned)
-      // cells with no close_session() path left to ever restore it
-      // (constraint 2's exact hazard). The override was already restored
-      // to the previous session's anchor by the `if (has_session_)
-      // pwr.set_index_override(anchor_idx_);` line above, before this
-      // read -- nothing left to undo on the PowerCtl side here.
+      // Cannot place a relative cell without the reference: refuse this
+      // command, answering with an explicit ack rather than staying
+      // silent. Full teardown (not just has_session_ = false), so
+      // pump()'s switch(state_) never keeps dispatching into a stale
+      // Sweeping state for cells nobody owns any more.
+      has_session_ = false;
       state_ = State::Idle;
       cursor_ = 0;
       cell_entered_ = false;
       cells_.clear();
-      pending_ack_ = false;
-      pending_result_.reset();
-      has_session_ = false;
-      zeroed_for_session_ = false;
-      // The pwr.zero_rate_diffs() above already happened and nothing here
-      // undoes it -- this class's PowerCtl has no concept of the operating
-      // plan (see close_session()'s note), so only the caller can put the
-      // real table back. has_session_ is false, so the caller's cal_active
-      // falling edge will never fire; this flag is the only signal it gets.
-      // Un-drained, the drone flies a flat table forever.
-      pending_refusal_ = true;
+      pending_done_.reset();
+      pending_apply_.reset();
+      pending_ack_ = cal::SweepAck{c.nonce, c.seq, cal::AckResult::AnchorUnreadable, 200,
+                                   stamp_flags()};
+      // zero_rate_diffs() above already flattened the table and nothing
+      // here undoes it -- this class's PowerCtl has no concept of the
+      // operating plan, so only the caller can put the real table back.
+      if (zero_now) pending_refusal_ = true;
       return;
     }
     anchor_idx_ = anchor;
+    nonce_ = c.nonce;
     has_session_ = true;
-    zeroed_for_session_ = true;
-  } else if (static_cast<int>(c.phase) == last_started_phase_) {
-    // An exact repeat of the phase already running -- the GS resends its
-    // CalCmd every 200 ms and gives up at 3000 ms (gs/src/cal_session.cpp),
-    // over an uplink that loses 30-50% of frames. Rule: re-arm the ack every
-    // time this happens, not just once per phase. The ack is the only
-    // non-redundant frame in this protocol -- a single lost ack Telem
-    // otherwise costs the GS the WHOLE phase (it never leaves AwaitAck, so it
-    // never stops transmitting retries into the live sweep, which is
-    // precisely the airtime contamination the radio-silence rule exists to
-    // prevent) -- and CalSession::on_ack() is a no-op outside AwaitAck
-    // (gs/src/cal_session.h), so answering a retransmission a second (or
-    // fifth) time is harmless. This does NOT restart the phase:
-    // cells_/cursor_/frames_per_cell_ etc. are left exactly as they are, only
-    // the ack gets re-armed.
-    pending_ack_ = true;
-    return;
-  } else if (static_cast<int>(c.phase) < last_started_phase_) {
-    // Constraint 3, the other half: a phase STRICTLY BEHIND the one
-    // already accepted can only be a stale retransmission of an EARLIER
-    // phase arriving late (a delayed coarse repeat landing after fine has
-    // started, or after a result is already sitting undrained in
-    // Applying) -- ignored outright, with NO ack (unlike the exact-repeat
-    // case above): the GS is not awaiting an ack for this old phase any
-    // more, and re-sending one now would tell it its stale phase was just
-    // accepted while the session has actually moved on. Silently
-    // discarding the in-progress phase's cursor and any undrained
-    // CalResult would be the failure mode a plain == guard (instead of
-    // this <) would reintroduce.
-    return;
+    hard_cap_deadline_ms_ = now_ms + cfg_.hard_cap_ms;
+    last_started_seq_ = -1;
+  } else {
+    if (static_cast<int>(c.seq) == last_started_seq_) {
+      // Exact repeat of the sweep already running: re-arm the ack every
+      // time (the GS resends into a 30-50%-lossy uplink, and a single
+      // lost ack must not cost the whole sweep), but touch nothing else
+      // -- the cell cursor is left exactly as it is.
+      pending_ack_ = cal::SweepAck{nonce_, c.seq, cal::AckResult::Accepted, 200, stamp_flags()};
+      return;
+    }
+    if (static_cast<int>(c.seq) < last_started_seq_) {
+      // Stale duplicate of an EARLIER sweep arriving late: ignored
+      // outright, no ack -- the GS is not waiting on this seq any more.
+      return;
+    }
+    // Seq strictly ahead: a new sweep within the same run, reusing the
+    // anchor already captured above.
+    if (c.kind == cal::Kind::Power) pwr.zero_rate_diffs();
   }
 
-  last_started_phase_ = c.phase;
-  current_phase_ = c.phase;
-  build_cells(c.windows);
-  cursor_ = 0;
-  cell_entered_ = false;
+  last_started_seq_ = c.seq;
+  current_kind_ = c.kind;
+  current_bw_ = c.bw;
   frames_per_cell_ = c.frames_per_cell;
   settle_ms_ = c.settle_ms;
   gap_ms_ = c.gap_us / 1000;
+  dwell_ms_ = c.dwell_ms;
+  offered_.fill(0);
+  blocked_pct_.fill(0);
+  build_cells(c);
+  cursor_ = 0;
+  cell_entered_ = false;
   state_ = State::Sweeping;
-  pending_result_.reset();
-  // Arm this phase's ack -- a plain flag (the anchor, captured once above or
-  // by an earlier phase of this same session, never rides the ack -- see
-  // take_ack()'s header comment for why a fresh read here would be wrong for
-  // any phase after the first anyway).
-  pending_ack_ = true;
+  pending_done_.reset();
+  pending_ack_ = cal::SweepAck{nonce_, c.seq, cal::AckResult::Accepted, 200, stamp_flags()};
 }
 
-bool CalSweep::take_ack() {
-  const bool v = pending_ack_;
-  pending_ack_ = false;
-  return v;
+void CalSweep::on_apply(const cal::ApplyCmd& a, uint64_t now_ms) {
+  if (!has_session_ || a.nonce != nonce_) return;
+  pending_apply_ = a;
+  state_ = State::Applying;
+  // The wait-for-next-event window starts now, at acceptance -- not
+  // inherited from whenever the last sweep happened to finish.
+  await_deadline_ms_ = now_ms + cfg_.await_next_ms;
+}
+
+void CalSweep::on_abort(const cal::Abort& a, uint64_t now_ms, PowerCtl& pwr) {
+  (void)now_ms;
+  if (has_session_ && a.nonce == nonce_) close_session(pwr);
+}
+
+std::optional<cal::SweepAck> CalSweep::take_ack() {
+  if (!pending_ack_.has_value()) return std::nullopt;
+  auto a = *pending_ack_;
+  pending_ack_.reset();
+  return a;
+}
+
+std::optional<cal::SweepDone> CalSweep::take_done() {
+  if (!pending_done_.has_value()) return std::nullopt;
+  auto d = *pending_done_;
+  pending_done_.reset();
+  return d;
+}
+
+std::optional<cal::ApplyCmd> CalSweep::take_pending_apply() {
+  if (!pending_apply_.has_value()) return std::nullopt;
+  auto a = *pending_apply_;
+  pending_apply_.reset();
+  if (state_ == State::Applying) state_ = State::Idle;
+  return a;
 }
 
 bool CalSweep::take_refused() {
@@ -141,58 +159,26 @@ bool CalSweep::take_refused() {
   return v;
 }
 
-void CalSweep::on_result(const rc::CalResult& r, uint64_t now_ms) {
-  // Stale/foreign session: a result whose nonce doesn't match the one in
-  // flight (or arriving with no session open at all) is ignored outright,
-  // same as a repeated command -- see stale_nonce_result_is_ignored.
-  if (!has_session_ || r.nonce != nonce_) return;
-  // Idempotent by nonce, same spirit as on_cmd's (nonce, phase) guard: the
-  // uplink can duplicate a result frame exactly as it duplicates commands,
-  // and a second acceptance means a second trip through the apply path --
-  // a second /etc/mabur.toml flash write. cal_apply.h's whole design is
-  // one write per session (a past bug wore out flash writing config on
-  // every bitrate change), so a repeat of the nonce already accepted here
-  // must be a no-op, not a re-arm of Applying.
-  if (result_accepted_) return;
-  result_accepted_ = true;
-  pending_result_ = r;
-  state_ = State::Applying;
-  // The verify window starts now, at acceptance -- not inherited from
-  // whenever the last phase happened to finish. A result can legitimately
-  // arrive with its own now_ms already past a stale await_deadline_ms_
-  // (pump() just hasn't been called with a time that late yet), and
-  // leaving the old value in place would let the very next pump() close
-  // the session before the caller gets a chance to drain this result and
-  // drive the verify phase.
-  await_deadline_ms_ = now_ms + cfg_.await_next_ms;
+void CalSweep::arm_verify(const std::array<int, 8>& park_rel, uint8_t bw, uint64_t now_ms) {
+  (void)now_ms;  // pump() computes each cell's own settle deadline from its own now_ms
+  current_kind_ = cal::Kind::Verify;
+  current_bw_ = bw;
+  frames_per_cell_ = kVerifyFramesPerCell;
+  settle_ms_ = kVerifySettleMs;
+  gap_ms_ = kVerifyGapUs / 1000;
+  offered_.fill(0);
+  blocked_pct_.fill(0);
+  build_verify_cells(park_rel);
+  cursor_ = 0;
+  cell_entered_ = false;
+  pending_done_.reset();
+  state_ = State::Sweeping;
 }
 
-std::optional<rc::CalResult> CalSweep::take_pending_result() {
-  if (!pending_result_.has_value()) return std::nullopt;
-  auto r = pending_result_;
-  pending_result_.reset();
-  // Nothing left to apply: fall back to the same "awaiting the next session
-  // event" limbo a finished phase leaves behind. await_deadline_ms_ was
-  // already set fresh by on_result() at acceptance time, so the window for
-  // the caller to drive the verify-phase CalCmd is well-defined regardless of
-  // how long the result took to arrive.
-  if (state_ == State::Applying) state_ = State::Idle;
-  return r;
-}
-
-void CalSweep::build_cells(const std::vector<rc::CalWindow>& windows) {
-  cells_.clear();
-  for (const auto& w : windows) {
-    if (w.idx_step == 0) continue;  // malformed window: never advances, skip
-    for (int idx = w.idx_lo; idx <= w.idx_hi; idx += w.idx_step)
-      cells_.push_back(Cell{w.rate, static_cast<int8_t>(idx)});
-  }
-}
-
-void CalSweep::pump(uint64_t now_ms, RadioTx& tx, PowerCtl& pwr) {
-  // Constraint 2, checked before anything else: losing the link mid-sweep
+void CalSweep::pump(uint64_t now_ms, RadioTx& tx, PowerCtl& pwr, CapacityCtl& cap) {
+  // Constraint 2, checked before anything else: losing the link mid-run
   // is the expected case, not an error, so a GS that never sends another
-  // byte must never leave the drone parked at a swept TXAGC index.
+  // byte must never leave the drone parked mid-sweep.
   if (has_session_ && now_ms >= hard_cap_deadline_ms_) {
     close_session(pwr);
     return;
@@ -200,60 +186,47 @@ void CalSweep::pump(uint64_t now_ms, RadioTx& tx, PowerCtl& pwr) {
 
   switch (state_) {
     case State::Idle:
-      // Between phases (or between the last phase and a result, or
-      // between draining a result and the verify phase it should trigger):
-      // give the GS up to await_next_ms to move things along before this
-      // session gives up on its own.
       if (has_session_ && now_ms >= await_deadline_ms_) close_session(pwr);
       return;
     case State::Applying:
-      // Waiting on the caller to drain take_pending_result(); the shared
+      // Waiting on the caller to drain take_pending_apply() and either
+      // call arm_verify() or let the next command land; the shared
       // hard-cap check above is this state's deadline.
       return;
     case State::Sweeping:
-      pump_sweeping(now_ms, tx, pwr);
+      if (current_kind_ == cal::Kind::Capacity) {
+        pump_capacity(now_ms, cap);
+      } else {
+        pump_power_verify(now_ms, tx, pwr);
+      }
       return;
   }
 }
 
-void CalSweep::pump_sweeping(uint64_t now_ms, RadioTx& tx, PowerCtl& pwr) {
-  // Global constraint ("per-rate walls must be measured against a common
-  // base"): the wall-equalized diff table comes off, and anchor_idx_ is
-  // captured, once per session -- inside on_cmd() at acceptance, not here. By
-  // the time this is ever reached, on_cmd() has already run at least once for
-  // this session and zeroed_for_session_ is therefore already true; nothing
-  // left to do here.
+void CalSweep::pump_power_verify(uint64_t now_ms, RadioTx& tx, PowerCtl& pwr) {
   if (!cell_entered_) {
     if (cursor_ >= cells_.size()) {
-      // Phase exhausted. Session stays open -- fine follows coarse, and
-      // the verify pass follows a result -- so this is Idle-but-active,
-      // not a full close: only the await_next timer (or the hard cap)
-      // closes the session and restores power from here.
-      state_ = State::Idle;
-      await_deadline_ms_ = now_ms + cfg_.await_next_ms;
+      finish_sweep(now_ms);
       return;
     }
-    const Cell cell = cells_[cursor_];
     if (frames_per_cell_ == 0) {
       // Nothing to attribute to this cell -- step over it rather than
-      // parking the radio there (index write + ladder swap) to send a
-      // frame nobody asked for.
+      // parking the radio there to send a frame nobody asked for.
       ++cursor_;
       return;
     }
-    active_rate_ = cell.rate;
+    const Cell cell = cells_[cursor_];
+    active_mcs_ = cell.mcs;
     active_idx_ = cell.idx;
-    // Every frame is stamped with the RELATIVE cell it's sent in
-    // (attribution IS the measurement), so the ladder and the TXAGC index
-    // are both pinned to this cell before the first frame goes out --
-    // programmed as the anchor plus the relative offset, clamped to the
-    // chip's real [0, 127] index range (a window's rel can legally land
-    // outside it near the rails, kRelMin/kRelMax being wider than any one
-    // chip's usable span).
-    pwr.set_index_override(
-        std::clamp(anchor_idx_ + static_cast<int>(cell.idx), 0, 127));
-    tx.set_ladder({rc::LayerTxSpec{rc::PhyMode::HT, cell.rate, 20},
-                   rc::LayerTxSpec{}},
+    // Every frame is stamped with the RELATIVE cell it's sent in, so the
+    // ladder and the TXAGC index are both pinned to this cell before the
+    // first frame goes out -- programmed as the anchor plus the relative
+    // offset, clamped to the chip's real [0, 127] index range.
+    pwr.set_index_override(std::clamp(anchor_idx_ + active_idx_, 0, 127));
+    tx.set_ladder({rc::LayerTxSpec{rc::PhyMode::HT, active_mcs_, current_bw_, false, cfg_.ldpc,
+                                   true},
+                   rc::LayerTxSpec{rc::PhyMode::HT, active_mcs_, current_bw_, false, cfg_.ldpc,
+                                   true}},
                   std::nullopt);
     cell_seq_ = 0;
     settle_deadline_ms_ = now_ms + settle_ms_;
@@ -264,25 +237,15 @@ void CalSweep::pump_sweeping(uint64_t now_ms, RadioTx& tx, PowerCtl& pwr) {
 
   if (now_ms < settle_deadline_ms_ || now_ms < next_send_ms_) return;
 
-  const auto payload = cal::build_cal_payload(
-      static_cast<cal::Kind>(current_phase_), active_rate_, active_idx_,
-      /*bw=*/20, /*flags=*/0, cell_seq_);
+  const auto payload = cal::build_cal_payload(current_kind_, active_mcs_,
+                                               static_cast<int8_t>(active_idx_), current_bw_,
+                                               stamp_flags(), cell_seq_);
   tx.send_body(0, payload.data(), payload.size());
   ++cell_seq_;
+  if (current_kind_ == cal::Kind::Power) ++offered_[active_mcs_];
   // DEADLINE-based, not now_ms-based: the next frame is due gap_ms_ after
-  // the one that was DUE, not after the one that was SENT. This matters
-  // because the writer thread now SLEEPS between pumps (drone/src/main.cpp
-  // stopped spinning a core for the whole session), and the phase is
-  // measured against a GS listen window sized from plan_duration_ms()
-  // (settle + frames*gap per cell) that leaves one gap -- 2 ms -- of slack
-  // per 140 ms cell. Re-basing off the observed clock charges every late
-  // wake to the phase and can only push it later; the deadline form
-  // absorbs a late wake instead (it simply fires the next frame
-  // immediately, catching the phase back up to its plan) and stays
-  // anchored to the plan the GS is timing against no matter what the
-  // caller's loop costs. tests/test_cal_e2e.cpp pins the realized
-  // duration against plan_duration_ms() for both the shipped 200 us
-  // sleep and a 1 ms one.
+  // the one that was DUE, not after the one that was SENT, so a late
+  // wake absorbs itself instead of pushing every later frame later too.
   next_send_ms_ += gap_ms_;
 
   if (cell_seq_ >= frames_per_cell_) {
@@ -291,30 +254,64 @@ void CalSweep::pump_sweeping(uint64_t now_ms, RadioTx& tx, PowerCtl& pwr) {
   }
 }
 
+void CalSweep::pump_capacity(uint64_t now_ms, CapacityCtl& cap) {
+  if (!cell_entered_) {
+    if (cursor_ >= cells_.size()) {
+      finish_sweep(now_ms);
+      return;
+    }
+    const Cell cell = cells_[cursor_];
+    active_mcs_ = cell.mcs;
+    cap.set_point(active_mcs_, current_bw_);
+    settle_deadline_ms_ = now_ms + settle_ms_;
+    cell_entered_ = true;
+    return;
+  }
+
+  if (now_ms < settle_deadline_ms_) return;
+
+  const auto payload = cal::build_cal_payload(cal::Kind::Capacity, active_mcs_, /*idx=*/0,
+                                               current_bw_, stamp_flags(), /*seq=*/0,
+                                               cfg_.capacity_frame_len);
+  // Blocks for the dwell by design -- see the class comment.
+  const BlastResult r = cap.blast(payload.data(), payload.size(), dwell_ms_);
+  offered_[active_mcs_] = r.offered;
+  blocked_pct_[active_mcs_] = r.blocked_pct;
+  ++cursor_;
+  cell_entered_ = false;
+}
+
+void CalSweep::finish_sweep(uint64_t now_ms) {
+  // Verify emits no SweepDone -- the GS times its own verify window.
+  if (current_kind_ != cal::Kind::Verify) {
+    pending_done_ = cal::SweepDone{nonce_, static_cast<uint8_t>(last_started_seq_), offered_,
+                                   blocked_pct_};
+  }
+  // The run stays open -- Capacity can follow Power, and a result's
+  // verify can follow an apply -- so this is Idle-but-active, not a full
+  // close: only the await timer (or the hard cap) closes the run.
+  state_ = State::Idle;
+  cell_entered_ = false;
+  cursor_ = 0;
+  await_deadline_ms_ = now_ms + cfg_.await_next_ms;
+}
+
 void CalSweep::close_session(PowerCtl& pwr) {
-  // zeroed_for_session_ is set unconditionally inside on_cmd()'s
-  // new_session branch, before this class's caller could ever call
-  // pump() -- and therefore this function -- for the session. So by the
-  // time close_session() can run for any session that ever set
-  // has_session_, this is always true. Kept as a defensive check, not
-  // because the false branch still happens.
-  //
-  // NOTE this restores a FLAT INDEX OVERRIDE parked at the anchor, not "no
-  // override at all" -- main.cpp's cal_active falling edge is what
-  // actually clears the override (SetTxPowerIndexOverride(-1)) and
-  // re-applies the real operating plan (rate diffs + global offset) on
-  // top, because THIS class's narrow PowerCtl interface has no concept of
-  // "the operating plan" (that is config/power_mode-driven, main.cpp's
-  // business, not this one's).
-  if (zeroed_for_session_) {
+  // NOTE this restores a FLAT INDEX OVERRIDE parked at the anchor, not
+  // "no override at all" -- the caller's falling-edge handler is what
+  // actually clears the override and re-applies the real operating plan
+  // on top, because this class's narrow PowerCtl interface has no
+  // concept of "the operating plan".
+  if (has_session_) {
     pwr.set_index_override(anchor_idx_);
     power_restored_ = true;
   }
   has_session_ = false;
   state_ = State::Idle;
-  pending_result_.reset();
-  cell_entered_ = false;
   cursor_ = 0;
+  cell_entered_ = false;
+  pending_done_.reset();
+  pending_apply_.reset();
 }
 
 }  // namespace mabur
