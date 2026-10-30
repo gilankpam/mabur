@@ -7,7 +7,6 @@
 
 #include "hop_blank.h"
 #include "hop_burst_gate.h"
-#include "mabur/ht40.h"
 #include "pair_pick.h"
 #include "scout_pick.h"
 #include "width_resync.h"
@@ -519,7 +518,7 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
   if (!rec) return;
   const uint64_t t_ms = rec->t_ms;   // the sample instant: every per-window span is measured to it
   std::vector<VerdictCardIn> vc(static_cast<size_t>(n_cards_));
-  std::optional<RankSample> op_read;   // the worst valid card's reading of op this window
+  std::optional<CalReading> op_read;   // the worst valid card's reading of op this window
   int starved_valid = 0;
   bool starved_all_zero = true;
   for (int i = 0; i < n_cards_; ++i) {
@@ -556,30 +555,21 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
       vc[si].own_air_pct = own_used;
       energy_last_[si] = StatsEnergyIn{cs.energy.cca_ofdm, cs.energy.fa_ofdm, cs.frames.own - window_prev_[si].own,
                                        cs.frames.foreign - window_prev_[si].foreign, std::nullopt, busy_pct, own_used};
-      // Op as a scout sample (a calibration run's pick reads op from here:
-      // the scout never dwells on op's halves while linked). Counts scale
-      // from this window's span to one dwell_ms observe; busy airtime is
-      // the foreign share (our own video is not interference). No leak
-      // term: the leak models the TX card's frames heard by the adjacent
-      // scout card, and here the reading is the link cards' own.
+      // Op's reading for a calibration run's pick (the scout never dwells
+      // on op's halves while linked): decoded foreign frames scaled from
+      // this window's span to one dwell_ms observe, and the foreign share
+      // of the NHM busy airtime (our own video is not interference). The
+      // worst card on each term, as the scout keeps a half's worst visit.
       if (win_us > 0) {
         const double k = static_cast<double>(cfg_.radio.scan.dwell_ms) * 1000.0 / win_us;
-        auto scaled = [k](uint64_t n) { return static_cast<uint32_t>(std::lround(static_cast<double>(n) * k)); };
-        RankSample rs;
-        rs.ch = plan_.op();
-        rs.cca = scaled(cs.energy.cca_ofdm);
-        rs.fa = scaled(cs.energy.fa_ofdm);
-        rs.own = scaled(cs.frames.own - window_prev_[si].own);
-        rs.foreign = scaled(cs.frames.foreign - window_prev_[si].foreign);
-        rs.busy_valid = busy_pct.has_value();
-        rs.busy_pct = busy_pct ? std::max(*busy_pct - own_used, 0.0) : 0.0;
-        // The worst card's counts and the worst busy reading, as the
-        // ranker keeps a channel's worst visit.
-        const bool busy_valid = rs.busy_valid || (op_read && op_read->busy_valid);
-        const double busy_max = std::max(rs.busy_pct, op_read ? op_read->busy_pct : 0.0);
-        if (!op_read || ChannelRanker::busy(rs) > ChannelRanker::busy(*op_read)) op_read = rs;
-        op_read->busy_valid = busy_valid;
-        op_read->busy_pct = busy_max;
+        const auto foreign = static_cast<uint32_t>(std::lround(
+            static_cast<double>(cs.frames.foreign - window_prev_[si].foreign) * k));
+        if (!op_read) op_read = CalReading{plan_.op(), 0, false, 0.0};
+        op_read->foreign = std::max(op_read->foreign, foreign);
+        if (busy_pct) {
+          op_read->busy_valid = true;
+          op_read->busy_pct = std::max(op_read->busy_pct, std::max(*busy_pct - own_used, 0.0));
+        }
       }
     }
     window_prev_[si] = cs.frames;
@@ -871,10 +861,21 @@ bool ChannelCore::cal_can_measure() const {
 }
 
 void ChannelCore::begin_cal_measure(double now_ms) {
-  cal_reloc_ = CalReloc{};
+  if (cal_reloc_.s != CalReloc::Waiting && cal_reloc_.s != CalReloc::InFlight) cal_reloc_ = CalReloc{};
   if (!cal_can_measure()) return;
   if (cal_meas_.s == CalMeasure::Waiting || cal_meas_.s == CalMeasure::Running) return;
   cal_meas_ = CalMeasure{CalMeasure::Waiting, now_ms, 0};
+}
+
+void ChannelCore::cancel_cal_measure() {
+  if (cal_meas_.s == CalMeasure::Running) {
+    scout_->cancel_round(/*force_idle=*/!scout_started_);
+    sink_.log("maburgs channel: calibration measure round cancelled");
+  }
+  cal_meas_ = CalMeasure{};
+  if (cal_reloc_.s == CalReloc::Waiting && !plan_.hopping()) plan_.set_want(now_ms_cur_, plan_.op());
+  cal_reloc_ = CalReloc{};
+  cal_reloc_tick_ = false;
 }
 
 std::optional<uint8_t> ChannelCore::cal_measure_best() {
@@ -932,8 +933,17 @@ void ChannelCore::step_cal_(const ChannelTickIn& in) {
     settle_cal_reloc_(true, "landed");
   }
 
-  if (cal_meas_.s == CalMeasure::Waiting && active && !scout_owns_() && !boot_pick_.open() &&
-      !boot_pick_.relocating() && !plan_.hopping() && !sweep_.on && !dwell_busy_.load() &&
+  // A round still pending when the run is already calibrating has missed
+  // its moment: it must never take the scout card later, outside any pick.
+  if (cal_meas_.s == CalMeasure::Waiting && in.cal_running) {
+    cal_meas_ = CalMeasure{};
+    sink_.log("maburgs channel: calibration measure round dropped: a run is calibrating");
+  }
+  // Only with the scout thread up and its card alive: a round on a scout
+  // that never steps would hold the card for good.
+  if (cal_meas_.s == CalMeasure::Waiting && active && scout_started_ && !scout_card_down_ &&
+      !scout_owns_() && !boot_pick_.open() && !boot_pick_.relocating() && !plan_.hopping() &&
+      !sweep_.on && !dwell_busy_.load() &&
       (hopc_.state() == HopState::Idle || hopc_.state() == HopState::Hold)) {
     {
       // inflight_mu_ then the card's device-use lock, the order every
@@ -948,10 +958,23 @@ void ChannelCore::step_cal_(const ChannelTickIn& in) {
     }
     cal_meas_.s = CalMeasure::Running;
     cal_meas_.t0 = now_ms;
+    // Twice a full round's dwell time (every dwell channel, op's included,
+    // at dwell_ms + settle_ms), never under a second.
+    const size_t n = cfg_.radio.width == 40 ? scan_half_set(cfg_.radio.channels).size()
+                                            : cfg_.radio.channels.size();
+    cal_meas_.bound_ms = std::max(
+        1000.0, 2.0 * static_cast<double>(n) *
+                    static_cast<double>(cfg_.radio.scan.dwell_ms + cfg_.radio.scan.settle_ms));
     sink_.log(logf_("maburgs channel: calibration measure round on card %d (op %u)", scout_card_,
                     static_cast<unsigned>(plan_.op())));
   } else if (cal_meas_.s == CalMeasure::Running && !scout_->round_measuring()) {
     finish_cal_measure_(now_ms);
+  } else if (cal_meas_.s == CalMeasure::Running && now_ms - cal_meas_.t0 >= cal_meas_.bound_ms) {
+    scout_->cancel_round(/*force_idle=*/!scout_started_);
+    cal_meas_.s = CalMeasure::Done;
+    cal_meas_.best = plan_.op();
+    sink_.log(logf_("maburgs channel: calibration measure round overran %.0f ms; staying on %u",
+                    cal_meas_.bound_ms, static_cast<unsigned>(plan_.op())));
   }
 }
 
@@ -961,18 +984,15 @@ void ChannelCore::finish_cal_measure_(double now_ms) {
   // one op is unmeasured and a working link is not moved on a one-sided
   // comparison (the boot pick's "op unmeasured" rule).
   const bool have_op = op_live_.has_value() && op_live_ms_ >= cal_meas_.t0;
-  if (have_op) {
-    RankSample s = *op_live_;
-    s.ch = op;
-    scout_->add_sample(s);
-    const uint8_t other = cfg_.radio.width == 40 ? mabur::ht40_pair_other(op) : 0;
-    if (other != 0) {
-      s.ch = other;
-      scout_->add_sample(s);
-    }
-  }
-  const uint8_t best = have_op ? scout_->round_proposal(op) : op;
-  sink_.pick(now_ms, best, scout_->rounds(), scout_->ranking(), 1);
+  std::vector<CalReading> halves;
+  for (const RankSample& s : scout_->round_samples())
+    halves.push_back(CalReading{s.ch, s.foreign, s.busy_valid, s.busy_pct});
+  const CalPickOut pick =
+      cal_round_pick(halves, have_op ? op_live_ : std::nullopt, op, cfg_.radio.channels,
+                     cfg_.radio.width, static_cast<uint32_t>(cfg_.radio.scan.pick_margin),
+                     cfg_.radio.scan.busy.blocked_pct);
+  const uint8_t best = pick.best;
+  sink_.pick(now_ms, best, scout_->rounds(), pick.rows, 1);
   sink_.log(logf_("maburgs channel: calibration measure picks %u (op %u%s)", static_cast<unsigned>(best),
                   static_cast<unsigned>(op), have_op ? "" : " unread: staying"));
   cal_meas_.s = CalMeasure::Done;

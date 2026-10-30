@@ -21,4 +21,6 @@ bool ChannelCorePicker::order_relocate(uint8_t ch) { return core_.order_cal_relo
 
 std::optional<bool> ChannelCorePicker::relocate_settled() { return core_.cal_relocate_settled(); }
 
+void ChannelCorePicker::cancel() { core_.cancel_cal_measure(); }
+
 }  // namespace maburgs

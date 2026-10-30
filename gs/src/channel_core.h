@@ -16,14 +16,17 @@
 // the boot scout (ChannelScout::begin_round): once the boot pick has closed
 // and nothing else holds the scout card, a hop or the controller, the
 // scout measures every 20 MHz half of the set (every member at width 20)
-// once on a fresh ranker -- the same dwell_ms observes, settle, leak
-// subtraction and send gating as the boot pick -- skipping op's own halves,
-// which carry the drone's video. Op's row is the verdict window's live
-// reading of op (the worst valid card on op, counts scaled to dwell_ms,
-// NHM busy minus our own airtime), booked on both halves. The round's pick
-// is the boot pick's rule (pair_proposal / ChannelRanker::proposal, one
-// visit, pick_margin against op; op unread = stay); it is logged as a K
-// record. order_cal_relocate() moves want and re-arms BootPick's
+// once on a fresh ranker -- the same dwell_ms observes, settle and send
+// gating as the boot pick -- skipping op's own halves, which carry the
+// drone's video. Op is read from the verdict window instead
+// (the worst valid card on op: decoded foreign frames scaled to dwell_ms,
+// NHM busy minus our own airtime). The pick compares only those two terms
+// on both sides, with pick_margin against op in every tier
+// (cal_round_pick.h); it is logged as a K record. The round starts only
+// with the scout thread up and its card alive, is dropped when a run is
+// already calibrating, and ends at a wall-clock bound (twice a full
+// round's dwell time) with op as the answer; cancel_cal_measure() releases
+// it at any point. order_cal_relocate() moves want and re-arms BootPick's
 // relocation, so the move is the boot pick's own relocate order (H
 // relocate, reason "cal"), landed by the confirm (no verify window: the run
 // calibrates wherever it lands) and resolved through BootPick (a failure
@@ -42,6 +45,7 @@
 
 #include "aggregator.h"
 #include "boot_pick.h"
+#include "cal_round_pick.h"
 #include "channel_plan.h"
 #include "channel_scout.h"
 #include "config.h"
@@ -202,6 +206,11 @@ class ChannelCore {
   // Arms one measure round (restarts nothing while one is pending or
   // running). Not measurable: a no-op, cal_measure_best() is op.
   void begin_cal_measure(double now_ms);
+  // The run is done with the pick (timeout, abort, failure): drop a pending
+  // round, end a running one (the scout parks), and stop tracking a cal
+  // relocate -- one not yet placed is withdrawn by want following op; one
+  // already placed proceeds or withdraws like any relocate.
+  void cancel_cal_measure();
   // The round's best member; nullopt while it waits or runs, op when the
   // GS cannot measure.
   std::optional<uint8_t> cal_measure_best();
@@ -335,6 +344,7 @@ class ChannelCore {
   struct CalMeasure {
     enum S { Off, Waiting, Running, Done } s = Off;
     double t0 = 0;       // round start (op's reading must be newer)
+    double bound_ms = 0; // Running: ends the round here, op the answer
     uint8_t best = 0;
   } cal_meas_;
   struct CalReloc {
@@ -345,9 +355,9 @@ class ChannelCore {
     bool ok = false;
   } cal_reloc_;
   bool cal_reloc_tick_ = false;      // this tick's Relocate is the calibration's
-  // The latest verdict window's reading of op, as a scout sample: the worst
-  // valid card on op, counts scaled to radio.scan.dwell_ms.
-  std::optional<RankSample> op_live_;
+  // The latest verdict window's reading of op: the worst valid card on op,
+  // foreign frames scaled to radio.scan.dwell_ms.
+  std::optional<CalReading> op_live_;
   double op_live_ms_ = -1;
   bool in_session_cur_ = false, cal_running_cur_ = false;
   // the tick's current inputs, for helpers

@@ -35,6 +35,11 @@ class CalPicker {
   // true: the drone followed (confirmed); false: it did not (withdrawn,
   // session lost, never placed); nullopt: pending, or nothing ordered.
   virtual std::optional<bool> relocate_settled() = 0;
+  // The run is done with the pick (timeout, abort, failure): a pending or
+  // running round is dropped and the scout card released; a relocate not
+  // yet placed is withdrawn, one already placed is left to the hop
+  // machinery and no longer tracked.
+  virtual void cancel() = 0;
 };
 
 class ChannelCorePicker : public CalPicker {
@@ -46,6 +51,7 @@ class ChannelCorePicker : public CalPicker {
   std::optional<uint8_t> measured_best() override;
   bool order_relocate(uint8_t ch) override;
   std::optional<bool> relocate_settled() override;
+  void cancel() override;
 
  private:
   ChannelCore& core_;

@@ -66,7 +66,7 @@ struct ScoutDwell {
 //    begin_round() measures again exactly once -- a fresh ranker, every
 //    dwell channel visited once except op's own halves (skipped as above
 //    while the search is off), then no work again and it parks. The core
-//    adds its own reading of op (add_sample) and asks round_proposal().
+//    takes the round's samples (round_samples) and makes the pick.
 //
 // One card: with measure on, a silent prelude of one_card_ms (observe-only
 // dwells, no DISC anywhere) runs first and never re-arms; afterwards every
@@ -97,9 +97,11 @@ class ChannelScout {
   // it measures. round_open() reads true from this call until the scout
   // has parked again, so the core never touches the card in between.
   void begin_round();
-  // A row the scout cannot measure itself (op's halves while linked: they
-  // carry the drone's video), booked like a dwell's sample.
-  void add_sample(const RankSample& s);
+  // Ends a round early (the run gave up on it, or it overran its bound): no
+  // more measuring; the run thread parks the card on its next step.
+  // force_idle: the run thread is not running (it never started), so
+  // nothing will park -- release the card at once.
+  void cancel_round(bool force_idle);
 
   // scout -> core
   bool working() const { return working_.load(std::memory_order_acquire); }
@@ -129,9 +131,8 @@ class ChannelScout {
   bool done() const { return done_.load(std::memory_order_acquire); }
   bool round_measuring() const { return round_.load(std::memory_order_acquire) == kRoundMeasuring; }
   bool round_open() const { return round_.load(std::memory_order_acquire) != kRoundIdle; }
-  // The round's pick against op: publish_()'s rule (pair_proposal at width
-  // 40, ChannelRanker::proposal at 20, pick_margin against op) on one visit.
-  uint8_t round_proposal(uint8_t op) const;
+  // Every observed sample of the current (or last) round, in dwell order.
+  std::vector<RankSample> round_samples() const;
 
  private:
   bool has_work_() const;
@@ -144,7 +145,6 @@ class ChannelScout {
   bool is_op_half_(uint8_t ch) const;
   bool skip_op_half_(uint8_t ch) const;
   bool op_ranked_locked_(int mr) const;   // mu_ held
-  uint8_t proposal_locked_(uint8_t op, int mr) const;   // mu_ held
   void note_round_dwell_();               // run thread: a round dwell finished
   void end_round_measuring_();
   // Retune, settle, [burst + gap,] [discard read, observe dwell_ms, read];
@@ -174,6 +174,7 @@ class ChannelScout {
   static constexpr int kRoundIdle = 0, kRoundMeasuring = 1, kRoundMeasured = 2;
   std::atomic<int> round_{kRoundIdle};
   int round_dwells_ = 0;     // under mu_: dwells taken this round (bounds a dead half)
+  std::vector<RankSample> round_samples_;   // under mu_
   bool need_width_ = true;   // run thread only: the next tune switches the card to 20 MHz
   int64_t t0_ = -1;          // run thread only: first run_once() (one-card prelude start)
 };
