@@ -68,11 +68,12 @@ void CalSweep::on_cmd(const cal::SweepCmd& c, uint64_t now_ms, PowerCtl& pwr) {
     // anchor, so this read sees the same clean reference a genuinely
     // first run would.
     if (has_session_) pwr.set_index_override(anchor_idx_);
-    const bool zero_now = (c.kind == cal::Kind::Power);
-    // Zero BEFORE reading: per-rate walls must be measured against a
-    // common base, so the wall-equalized diff table comes off before the
-    // anchor this run's cells are placed relative to is captured.
-    if (zero_now) pwr.zero_rate_diffs();
+    // Zero BEFORE reading, whatever the kind: with a custom diff table live
+    // the chip reports reference + diff, not the reference, and every
+    // Power/Verify cell of this run is placed relative to what this read
+    // returns. A capacity-first run's owner programs its width's plan back
+    // after accepting the command.
+    pwr.zero_rate_diffs();
     const int anchor = pwr.read_anchor_idx();
     if (anchor < 0) {
       // Cannot place a relative cell without the reference: refuse this
@@ -92,7 +93,7 @@ void CalSweep::on_cmd(const cal::SweepCmd& c, uint64_t now_ms, PowerCtl& pwr) {
       // zero_rate_diffs() above already flattened the table and nothing
       // here undoes it -- this class's PowerCtl has no concept of the
       // operating plan, so only the caller can put the real table back.
-      if (zero_now) pending_refusal_ = true;
+      pending_refusal_ = true;
       return;
     }
     anchor_idx_ = anchor;

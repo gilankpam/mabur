@@ -169,7 +169,11 @@ TEST(a_second_power_sweep_zeroes_again_but_reads_the_anchor_once) {
   CHECK(pwr.read_anchor_calls == 1);  // not re-read
 }
 
-TEST(verify_and_capacity_do_not_zero) {
+// A run's anchor is read with the diffs zeroed whatever kind opens it (a
+// custom table live would read reference + diff), so a capacity-first run
+// zeroes once, before its one anchor read; after that neither a later
+// capacity sweep of the run nor a verify zeroes.
+TEST(capacity_first_run_zeroes_before_the_anchor_read_then_verify_and_capacity_do_not) {
   CaptureSink sink;
   RadioTx tx(sink);
   FakePowerCtl pwr;
@@ -178,16 +182,39 @@ TEST(verify_and_capacity_do_not_zero) {
   CalSweep s(CalSweepCfg{});
   auto c = capacity_cmd(1, 0, 0x01, 20, /*dwell*/ 0, /*settle*/ 0);
   s.on_cmd(c, 0, pwr);
-  CHECK(pwr.zero_diff_calls == 0);
+  CHECK(pwr.zero_diff_calls == 1);
+  CHECK(pwr.read_anchor_calls == 1);
+  CHECK(s.anchor_idx() == 53);
   run_to_quiescence(s, tx, pwr, cap);  // let the Capacity sweep finish: arm_verify refuses mid-sweep
-  CHECK(pwr.zero_diff_calls == 0);
+  CHECK(pwr.zero_diff_calls == 1);
+
+  auto c2 = capacity_cmd(1, 1, 0x01, 40, /*dwell*/ 0, /*settle*/ 0);
+  s.on_cmd(c2, 2000, pwr);  // a later capacity sweep of the same run
+  CHECK(pwr.zero_diff_calls == 1);
+  CHECK(pwr.read_anchor_calls == 1);
+  run_to_quiescence(s, tx, pwr, cap);
 
   std::array<int, 8> park{};
   park.fill(cal::kWallLeave);
   park[0] = 5;
-  s.arm_verify(park, 20, 1000);
-  CHECK(pwr.zero_diff_calls == 0);
+  s.arm_verify(park, 20, 5000);
+  CHECK(pwr.zero_diff_calls == 1);
   CHECK(s.state() == CalSweep::State::Sweeping);
+}
+
+// The table is flattened before every new run's anchor read, so a refusal
+// owes the caller a restore whatever kind was refused.
+TEST(unreadable_anchor_on_a_capacity_command_also_flags_the_refusal) {
+  FakePowerCtl pwr;
+  pwr.anchor = -1;
+  CalSweep s(CalSweepCfg{});
+  s.on_cmd(capacity_cmd(1, 0), 0, pwr);
+  CHECK(!s.active());
+  auto ack = s.take_ack();
+  REQUIRE(ack.has_value());
+  CHECK(ack->result == cal::AckResult::AnchorUnreadable);
+  CHECK(pwr.zero_diff_calls == 1);
+  CHECK(s.take_refused());
 }
 
 TEST(seq_behind_is_ignored_equal_rearms_ack_ahead_starts) {

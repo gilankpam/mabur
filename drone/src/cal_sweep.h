@@ -151,15 +151,18 @@ class CalSweep {
   // this run (take_pending_apply() would otherwise hand out a result for
   // a sweep this new command just superseded).
   //
-  // Every accepted Power-kind command -- new run or a later sweep of the
-  // same run -- zeroes the per-rate diff table again (per-rate walls must
-  // be measured against a common base every time Power runs, not just
-  // once per run); Capacity never zeroes, but DOES restore the TXAGC
+  // A new run zeroes the per-rate diff table before its one anchor read,
+  // whatever the kind (the chip reports reference + diff while a custom
+  // table is live). Every accepted Power-kind command -- new run or a
+  // later sweep of the same run -- zeroes it again (per-rate walls must be
+  // measured against a common base every time Power runs); a later
+  // Capacity sweep of a run never zeroes. Capacity DOES restore the TXAGC
   // override to the anchor on acceptance (a prior Power/Verify sweep of
-  // the same run may have left it parked at a swept cell) so a Capacity
-  // point flies the production power plan the owner programs for this
-  // width, not a leftover sweep offset. The anchor itself is read only
-  // once, at the run's first accepted command, regardless of kind. The
+  // the same run may have left it parked at a swept cell); the owner then
+  // programs this width's production plan and its CapacityCtl clears the
+  // override per point, since a live override flattens the per-rate
+  // table. The anchor itself is read only once, at the run's first
+  // accepted command, regardless of kind. The
   // first cell of any accepted sweep does not open until 200 ms after
   // acceptance (see pump()): the ack has to have a chance to reach the GS
   // before frames the GS is not listening for yet start using up the
@@ -246,9 +249,9 @@ class CalSweep {
   std::optional<cal::ApplyCmd> take_pending_apply();
 
   // Drains the "this command was REFUSED after flattening the rate-diff
-  // table" flag, armed once by on_cmd()'s anchor-read failure (only when
-  // the failing command was itself Power-kind, so zero_rate_diffs() had
-  // already run) and cleared by this call.
+  // table" flag, armed once by on_cmd()'s anchor-read failure (a new run
+  // zeroes before that read whatever its kind, so the table is always
+  // flattened by then) and cleared by this call.
   //
   // Why the caller must act on it: a chip that cannot report its anchor
   // right after being zeroed leaves the drone with a FLATTENED table and
@@ -320,7 +323,7 @@ class CalSweep {
   // sweep, drained by take_ack().
   std::optional<cal::SweepAck> pending_ack_;
 
-  // Set by on_cmd() when it refuses a Power-kind command AFTER
+  // Set by on_cmd() when it refuses a new run's command AFTER
   // zero_rate_diffs() has already flattened the table, drained by
   // take_refused().
   bool pending_refusal_ = false;
