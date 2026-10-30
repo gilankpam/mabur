@@ -275,6 +275,7 @@ void parse_venc(const Value& j, VencSectionCfg& v) {
                      "max_ipprop", "min_iqp", "superframe_p_pct",
                      "intra_refresh_frames", "intra_refresh_qp",
                      "ref_base", "ref_enhance", "ref_pred", "slices",
+                     "mirror", "flip",
                      "roi", "ae_fps", "awb_fps", "snapshot_quality",
                      "debug_port"},
                     "venc");
@@ -406,6 +407,11 @@ void parse_venc(const Value& j, VencSectionCfg& v) {
   }
 
   assign_if_present(j, "ref_pred", v.core.ref_pred, "venc");
+
+  // Sensor orientation. Booleans, boot-time: programmed with MI_SNR_SetOrien
+  // before the sensor is enabled.
+  assign_if_present(j, "mirror", v.core.mirror, "venc");
+  assign_if_present(j, "flip", v.core.flip, "venc");
 
   // u32Enhance is a period (one non-referenced frame per enhance+1), so 0
   // has no meaning while SVC-T is on. The apply site used to paper over it
