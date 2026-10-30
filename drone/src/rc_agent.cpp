@@ -7,6 +7,7 @@
 #include <random>
 #include <utility>
 
+#include "mabur/cal_mav.h"
 #include "mabur/link_key.h"
 #include "mabur/rc_proto.h"
 #include "mabur/uep_encoder.h"
@@ -123,13 +124,18 @@ bool RcAgent::verify_rcf_(const uint8_t* body, size_t len, const rc::Rcf& r,
   return true;
 }
 
+bool RcAgent::verifies_under_(const uint8_t* body, size_t len, uint64_t session,
+                              uint32_t seq32) const {
+  return session != 0 &&
+         rc::verify_control(body, len, cfg_.link.key,
+             rc::TagCtx{static_cast<uint32_t>(session >> 32),
+                        static_cast<uint32_t>(session & 0xFFFFFFFFu), seq32});
+}
+
 bool RcAgent::verify_session_tagged(const uint8_t* body, size_t len, uint32_t seq32,
                                     uint64_t* session) const {
   const uint64_t p = published_session_.load(std::memory_order_acquire);
-  if (p == 0) return false;
-  if (!rc::verify_control(body, len, cfg_.link.key,
-          rc::TagCtx{static_cast<uint32_t>(p >> 32), static_cast<uint32_t>(p & 0xFFFFFFFFu), seq32}))
-    return false;
+  if (!verifies_under_(body, len, p, seq32)) return false;
   if (session) *session = p;
   return true;
 }
@@ -155,6 +161,12 @@ bool RcAgent::accept_mav_counter(uint32_t counter, uint64_t session) {
 bool RcAgent::accept_session_counter_(std::atomic<uint64_t>& last_word, uint32_t counter,
                                       uint64_t session) {
   if (session == 0 || session != published_session_.load(std::memory_order_acquire)) return false;
+  return advance_counter_(last_word, counter, session);
+}
+
+bool RcAgent::advance_counter_(std::atomic<uint64_t>& last_word, uint32_t counter,
+                               uint64_t session) {
+  if (session == 0) return false;
   const uint64_t key = session & 0xFFFFFFFFu;   // vtx_nonce
   uint64_t cur = last_word.load(std::memory_order_relaxed);
   for (;;) {
@@ -178,64 +190,38 @@ RcAgent::NackCheck RcAgent::check_nack(const uint8_t* body, size_t len, rc::Nack
   return NackCheck::kOk;
 }
 
-RcAgent::MavCheck RcAgent::check_mav(const uint8_t* body, size_t len, rc::Mav* out) {
+RcAgent::MavCheck RcAgent::check_mav(const uint8_t* body, size_t len, rc::Mav* out,
+                                     bool cal_run_open) {
   auto m = rc::parse_mav(body, len, /*tagged=*/true);
   if (!m) return MavCheck::kMalformed;
+  const bool cal_only = cal::all_packets_are_cal(m->payload.data(), m->payload.size());
+  std::atomic<uint64_t>& domain = cal_only ? cal_last_ : mav_last_;
+  MavCheck verdict = MavCheck::kRejected;
   uint64_t session = 0;
-  if (!verify_session_tagged(body, len, m->counter, &session) ||
-      !accept_mav_counter(m->counter, session)) {
+  if (verify_session_tagged(body, len, m->counter, &session)) {
+    // Published path: a verified tag settles which pair the frame belongs
+    // to, so a stale counter is a rejection, never a fall-through to the
+    // run pair.
+    if (accept_session_counter_(domain, m->counter, session)) verdict = MavCheck::kOk;
+  } else {
+    // Latched path: cal-only frames of an open run, under the run pair
+    // when it is not the published one (that pair just failed above).
+    const uint64_t run = cal_run_session_;
+    if (cal_run_open && cal_only && run != 0 &&
+        run != published_session_.load(std::memory_order_acquire) &&
+        verifies_under_(body, len, run, m->counter) &&
+        advance_counter_(cal_last_, m->counter, run)) {
+      session = run;
+      verdict = MavCheck::kOkLatched;
+    }
+  }
+  if (verdict == MavCheck::kRejected) {
     note_auth_reject();
-    return MavCheck::kRejected;
+    return verdict;
   }
+  if (cal_only) cal_run_session_ = session;
   *out = std::move(*m);
-  return MavCheck::kOk;
-}
-
-bool RcAgent::verify_cal_frame(const uint8_t* body, size_t len, bool sweep_running) {
-  auto verifies = [&](uint64_t s) {
-    return s != 0 && rc::verify_control(body, len, cfg_.link.key,
-        rc::TagCtx{static_cast<uint32_t>(s >> 32), static_cast<uint32_t>(s & 0xFFFFFFFFu), 0});
-  };
-  // The latch only outlives the published session while a sweep runs: the
-  // GS is radio-silent for every phase, so the drone reaches FAILSAFE (and
-  // clears current_) inside every run, yet the run's later CAL_CMDs and its
-  // CAL_RESULT are still tagged under the pair it was going under.
-  if (!sweep_running) cal_latch_session_ = 0;
-  const uint64_t p = published_session_.load(std::memory_order_acquire);
-  uint64_t used = 0;
-  if (verifies(p)) used = p;
-  else if (cal_latch_session_ != p && verifies(cal_latch_session_)) used = cal_latch_session_;
-  bool ok = used != 0;
-  if (ok) {
-    cal_latch_session_ = used;
-    if (used != cal_ring_session_) {
-      // New pair: the seen nonces belonged to the old one, whose tags no
-      // longer verify anyway (the latch has moved off it too).
-      cal_ring_session_ = used;
-      cal_seen_n_ = cal_seen_next_ = 0;
-      have_cal_current_ = false;
-    }
-  }
-  if (ok && rc::frame_type(body, len) == rc::T_CAL_CMD) {
-    // In-session freshness: a cal nonce already seen
-    // in this session, other than the running one, is a replay.
-    if (auto c = rc::parse_cal_cmd(body, len)) {
-      if (!have_cal_current_ || c->nonce != cal_current_) {
-        const auto seen_end = cal_seen_.begin() + static_cast<std::ptrdiff_t>(cal_seen_n_);
-        if (std::find(cal_seen_.begin(), seen_end, c->nonce) != seen_end) {
-          ok = false;
-        } else {
-          cal_seen_[cal_seen_next_] = c->nonce;
-          cal_seen_next_ = (cal_seen_next_ + 1) % kCalNonceRing;
-          if (cal_seen_n_ < kCalNonceRing) ++cal_seen_n_;
-          cal_current_ = c->nonce;
-          have_cal_current_ = true;
-        }
-      }
-    }
-  }
-  if (!ok) auth_reject_.store(true, std::memory_order_relaxed);
-  return ok;
+  return verdict;
 }
 
 void RcAgent::install_session_for_replay(uint32_t vrx_nonce, uint32_t vtx_nonce) {
