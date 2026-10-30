@@ -25,6 +25,14 @@
 // channel state to carry a parse across calls. Neither shares the other's
 // channel state.
 //
+// common/src/cal_mav.cpp is a further such TU: it is the only place that
+// calls the calibration dialect's mavlink_msg_mabur_cal_*_pack_chan
+// helpers, so the per-channel tx sequence counter those keep lives here
+// and nowhere else. It never parses on a channel index -- all_packets_are_cal
+// splits a byte buffer with mavlink_frame_char_buffer over fresh local
+// state, the same stateless pattern param_client.cpp uses -- so it carries
+// no per-channel parse state for a caller elsewhere to collide with.
+//
 // The vendored headers are MIT-licensed generated output (see
 // third_party/mavlink/LICENSE).
 
