@@ -38,8 +38,20 @@ void CalSweep::build_verify_cells(const std::array<int, 8>& park_rel) {
       cells_.push_back(Cell{static_cast<uint8_t>(mcs), park_rel[mcs]});
 }
 
+uint16_t CalSweep::remaining_start_ms(uint64_t now_ms) const {
+  if (sweep_start_ms_ <= now_ms) return 0;
+  const uint64_t remaining = sweep_start_ms_ - now_ms;
+  return static_cast<uint16_t>(remaining > 65535 ? 65535 : remaining);
+}
+
 void CalSweep::on_cmd(const cal::SweepCmd& c, uint64_t now_ms, PowerCtl& pwr) {
   const bool new_session = !has_session_ || c.nonce != nonce_;
+  // A closed run (hard cap, abort, or await timeout) never reopens: a
+  // straggler or a GS resend of that exact nonce arriving after the
+  // close is ignored outright, with no ack and no PowerCtl touched, so
+  // hard_cap_ms keeps bounding the run it was armed for and an abort
+  // cannot be undone by a late retransmission.
+  if (new_session && last_nonce_valid_ && c.nonce == last_closed_nonce_) return;
   if (new_session) {
     // A brand-new nonce arriving while a run is still live -- any second
     // `maburcal start` after an abort, after a GS restart, or within
@@ -81,13 +93,18 @@ void CalSweep::on_cmd(const cal::SweepCmd& c, uint64_t now_ms, PowerCtl& pwr) {
     has_session_ = true;
     hard_cap_deadline_ms_ = now_ms + cfg_.hard_cap_ms;
     last_started_seq_ = -1;
+    // Per-run state from any earlier run must not leak into this one.
+    power_restored_ = false;
+    handed_out_apply_ = false;
   } else {
     if (static_cast<int>(c.seq) == last_started_seq_) {
       // Exact repeat of the sweep already running: re-arm the ack every
       // time (the GS resends into a 30-50%-lossy uplink, and a single
       // lost ack must not cost the whole sweep), but touch nothing else
-      // -- the cell cursor is left exactly as it is.
-      pending_ack_ = cal::SweepAck{nonce_, c.seq, cal::AckResult::Accepted, 200, stamp_flags()};
+      // -- the cell cursor is left exactly as it is. start_in_ms reports
+      // what's left of the ORIGINAL 200 ms start delay, not a fresh one.
+      pending_ack_ = cal::SweepAck{nonce_, c.seq, cal::AckResult::Accepted,
+                                   remaining_start_ms(now_ms), stamp_flags()};
       return;
     }
     if (static_cast<int>(c.seq) < last_started_seq_) {
@@ -114,11 +131,35 @@ void CalSweep::on_cmd(const cal::SweepCmd& c, uint64_t now_ms, PowerCtl& pwr) {
   cell_entered_ = false;
   state_ = State::Sweeping;
   pending_done_.reset();
-  pending_ack_ = cal::SweepAck{nonce_, c.seq, cal::AckResult::Accepted, 200, stamp_flags()};
+  // This sweep supersedes any ApplyCmd still queued from an earlier
+  // sweep of this run -- take_pending_apply() must not hand out a result
+  // for a sweep that just got superseded.
+  pending_apply_.reset();
+  // Capacity flies the production power plan the owner programs for
+  // this width -- restore the override to the anchor in case a
+  // Power/Verify sweep earlier in this run left it parked at a swept
+  // cell. Power/Verify instead program the override per cell, inside
+  // pump().
+  if (c.kind == cal::Kind::Capacity) pwr.set_index_override(anchor_idx_);
+  // The first cell does not open until 200 ms from now (pump_power_verify
+  // / pump_capacity check this): the ack needs a chance to reach the GS
+  // first.
+  sweep_start_ms_ = now_ms + 200;
+  pending_ack_ = cal::SweepAck{nonce_, c.seq, cal::AckResult::Accepted,
+                               remaining_start_ms(now_ms), stamp_flags()};
 }
 
 void CalSweep::on_apply(const cal::ApplyCmd& a, uint64_t now_ms) {
   if (!has_session_ || a.nonce != nonce_) return;
+  // A sweep actively running owns the radio right now; accepting an
+  // apply here would silently abandon its progress. Verify only ever
+  // follows a drained apply, never races one.
+  if (state_ == State::Sweeping) return;
+  // The GS resends APPLY every 200 ms until it hears APPLIED. A repeat
+  // of a (nonce, bw) already handed out by take_pending_apply() must be
+  // a no-op -- not a re-queue, which would restart Applying and disturb
+  // a verify sweep the owner already armed from the first delivery.
+  if (handed_out_apply_ && a.nonce == handed_out_nonce_ && a.bw == handed_out_bw_) return;
   pending_apply_ = a;
   state_ = State::Applying;
   // The wait-for-next-event window starts now, at acceptance -- not
@@ -149,6 +190,13 @@ std::optional<cal::ApplyCmd> CalSweep::take_pending_apply() {
   if (!pending_apply_.has_value()) return std::nullopt;
   auto a = *pending_apply_;
   pending_apply_.reset();
+  // Remember this (nonce, bw) as handed out so a GS resend of the same
+  // apply -- it keeps resending until it hears APPLIED -- is ignored by
+  // on_apply() rather than re-queued over the verify sweep this apply is
+  // about to trigger.
+  handed_out_apply_ = true;
+  handed_out_nonce_ = a.nonce;
+  handed_out_bw_ = a.bw;
   if (state_ == State::Applying) state_ = State::Idle;
   return a;
 }
@@ -160,7 +208,13 @@ bool CalSweep::take_refused() {
 }
 
 void CalSweep::arm_verify(const std::array<int, 8>& park_rel, uint8_t bw, uint64_t now_ms) {
-  (void)now_ms;  // pump() computes each cell's own settle deadline from its own now_ms
+  // No run to verify, or a Power/Capacity sweep is actively Sweeping and
+  // owns the radio right now -- never interrupt it. Without this guard,
+  // calling arm_verify() with no open run would build a cell plan and
+  // flip state_ to Sweeping with has_session_ still false: pump()'s
+  // hard-cap/await guards are gated on has_session_, so nothing would
+  // ever close this "run" or restore power again.
+  if (!has_session_ || state_ == State::Sweeping) return;
   current_kind_ = cal::Kind::Verify;
   current_bw_ = bw;
   frames_per_cell_ = kVerifyFramesPerCell;
@@ -172,6 +226,8 @@ void CalSweep::arm_verify(const std::array<int, 8>& park_rel, uint8_t bw, uint64
   cursor_ = 0;
   cell_entered_ = false;
   pending_done_.reset();
+  // Same 200 ms start delay as an on_cmd sweep -- see that method.
+  sweep_start_ms_ = now_ms + 200;
   state_ = State::Sweeping;
 }
 
@@ -190,8 +246,11 @@ void CalSweep::pump(uint64_t now_ms, RadioTx& tx, PowerCtl& pwr, CapacityCtl& ca
       return;
     case State::Applying:
       // Waiting on the caller to drain take_pending_apply() and either
-      // call arm_verify() or let the next command land; the shared
-      // hard-cap check above is this state's deadline.
+      // call arm_verify() or let the next command land. Bounded by both
+      // the shared hard cap above and this state's own await deadline --
+      // a GS that stops talking mid-apply must not leave the drone
+      // stuck here forever either.
+      if (has_session_ && now_ms >= await_deadline_ms_) close_session(pwr);
       return;
     case State::Sweeping:
       if (current_kind_ == cal::Kind::Capacity) {
@@ -204,6 +263,9 @@ void CalSweep::pump(uint64_t now_ms, RadioTx& tx, PowerCtl& pwr, CapacityCtl& ca
 }
 
 void CalSweep::pump_power_verify(uint64_t now_ms, RadioTx& tx, PowerCtl& pwr) {
+  // The ack (or, for Verify, the owner's applied config) needs a chance
+  // to reach the GS before the first cell starts using up the air.
+  if (now_ms < sweep_start_ms_) return;
   if (!cell_entered_) {
     if (cursor_ >= cells_.size()) {
       finish_sweep(now_ms);
@@ -255,6 +317,8 @@ void CalSweep::pump_power_verify(uint64_t now_ms, RadioTx& tx, PowerCtl& pwr) {
 }
 
 void CalSweep::pump_capacity(uint64_t now_ms, CapacityCtl& cap) {
+  // Same start delay as Power/Verify -- see pump_power_verify().
+  if (now_ms < sweep_start_ms_) return;
   if (!cell_entered_) {
     if (cursor_ >= cells_.size()) {
       finish_sweep(now_ms);
@@ -305,6 +369,10 @@ void CalSweep::close_session(PowerCtl& pwr) {
   if (has_session_) {
     pwr.set_index_override(anchor_idx_);
     power_restored_ = true;
+    // Remember this nonce as closed so a straggler or a GS resend of it
+    // can never reopen a run (see on_cmd()).
+    last_closed_nonce_ = nonce_;
+    last_nonce_valid_ = true;
   }
   has_session_ = false;
   state_ = State::Idle;
@@ -312,6 +380,7 @@ void CalSweep::close_session(PowerCtl& pwr) {
   cell_entered_ = false;
   pending_done_.reset();
   pending_apply_.reset();
+  handed_out_apply_ = false;
 }
 
 }  // namespace mabur

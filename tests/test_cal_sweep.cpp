@@ -170,11 +170,16 @@ TEST(a_second_power_sweep_zeroes_again_but_reads_the_anchor_once) {
 }
 
 TEST(verify_and_capacity_do_not_zero) {
+  CaptureSink sink;
+  RadioTx tx(sink);
   FakePowerCtl pwr;
+  FakeCapacityCtl cap;
   pwr.anchor = 53;
   CalSweep s(CalSweepCfg{});
-  auto c = capacity_cmd(1, 0, 0x01);
+  auto c = capacity_cmd(1, 0, 0x01, 20, /*dwell*/ 0, /*settle*/ 0);
   s.on_cmd(c, 0, pwr);
+  CHECK(pwr.zero_diff_calls == 0);
+  run_to_quiescence(s, tx, pwr, cap);  // let the Capacity sweep finish: arm_verify refuses mid-sweep
   CHECK(pwr.zero_diff_calls == 0);
 
   std::array<int, 8> park{};
@@ -332,6 +337,264 @@ TEST(arm_verify_skips_leave_entries) {
   }
   CHECK(mcs_seen.size() == 2);        // only the two parked MCS, every other skipped
   CHECK(!s.take_done().has_value());  // Verify emits no SweepDone
+}
+
+// --- Fix round 1 ---------------------------------------------------------
+
+TEST(start_delay_blocks_frames_and_set_point_before_t200) {
+  // Power/Verify: no frame airs before the 200 ms start deadline.
+  {
+    CaptureSink sink;
+    RadioTx tx(sink);
+    FakePowerCtl pwr;
+    FakeCapacityCtl cap;
+    pwr.anchor = 53;
+    CalSweep s(CalSweepCfg{});
+    auto c = power_cmd(1, 0, /*mask*/ 0x01, /*lo*/ 0, /*hi*/ 0, /*bw*/ 20, /*fpc*/ 1);
+    s.on_cmd(c, 0, pwr);
+    REQUIRE(s.take_ack().has_value());
+    for (uint64_t t = 0; t < 200; t += 20) s.pump(t, tx, pwr, cap);
+    CHECK(sink.frames.empty());
+    CHECK(pwr.index_writes.empty());  // the cell was never entered either
+    run_to_quiescence(s, tx, pwr, cap, 200);
+    CHECK(!sink.frames.empty());
+  }
+  // Capacity: no set_point before the same deadline.
+  {
+    CaptureSink sink;
+    RadioTx tx(sink);
+    FakePowerCtl pwr;
+    FakeCapacityCtl cap;
+    pwr.anchor = 53;
+    CalSweep s(CalSweepCfg{});
+    auto c = capacity_cmd(1, 0, 0x01, 20, /*dwell*/ 0, /*settle*/ 0);
+    s.on_cmd(c, 0, pwr);
+    REQUIRE(s.take_ack().has_value());
+    for (uint64_t t = 0; t < 200; t += 20) s.pump(t, tx, pwr, cap);
+    CHECK(cap.points.empty());
+    run_to_quiescence(s, tx, pwr, cap, 200);
+    CHECK(!cap.points.empty());
+  }
+}
+
+TEST(a_closed_nonce_does_not_reopen) {
+  CaptureSink sink;
+  RadioTx tx(sink);
+  FakePowerCtl pwr;
+  FakeCapacityCtl cap;
+  pwr.anchor = 53;
+  CalSweep s(CalSweepCfg{});
+  auto c = power_cmd(1, 0, 0xFF, -41, 63, 20, /*fpc*/ 60000);  // never finishes on its own
+  s.on_cmd(c, 0, pwr);
+  REQUIRE(s.take_ack().has_value());
+  run_to_quiescence(s, tx, pwr, cap, 0, 1, 300);  // past the 200 ms start delay, mid-sweep
+
+  cal::Abort a{1};
+  s.on_abort(a, 300, pwr);
+  REQUIRE(s.power_restored_for_test());
+  const size_t writes_before = pwr.index_writes.size();
+  const size_t frames_before = sink.frames.size();
+
+  // A straggler/resend of the aborted nonce+seq arrives after the close.
+  s.on_cmd(c, 301, pwr);
+  CHECK(!s.active());
+  CHECK(!s.take_ack().has_value());
+  CHECK(pwr.index_writes.size() == writes_before);  // power untouched by the attempt
+  s.pump(301, tx, pwr, cap);
+  s.pump(302, tx, pwr, cap);
+  CHECK(sink.frames.size() == frames_before);  // nothing airs
+  CHECK(pwr.index_writes.size() == writes_before);
+  CHECK(s.power_restored_for_test());  // still restored -- no new run reopened
+}
+
+TEST(arm_verify_without_a_session_is_a_no_op) {
+  CalSweep s(CalSweepCfg{});
+  std::array<int, 8> park{};
+  park.fill(cal::kWallLeave);
+  park[0] = 5;
+  s.arm_verify(park, 20, 0);
+  CHECK(s.state() == CalSweep::State::Idle);
+  CHECK(!s.active());
+}
+
+TEST(arm_verify_is_refused_while_a_sweep_is_sweeping) {
+  CaptureSink sink;
+  RadioTx tx(sink);
+  FakePowerCtl pwr;
+  FakeCapacityCtl cap;
+  pwr.anchor = 53;
+  CalSweep s(CalSweepCfg{});
+  auto c = power_cmd(1, 0, 0xFF, -41, 63, 20, /*fpc*/ 60000);  // stays Sweeping
+  s.on_cmd(c, 0, pwr);
+  REQUIRE(s.take_ack().has_value());
+  CHECK(s.state() == CalSweep::State::Sweeping);
+
+  std::array<int, 8> park{};
+  park.fill(cal::kWallLeave);
+  park[0] = 5;
+  s.arm_verify(park, 20, 0);
+  CHECK(s.state() == CalSweep::State::Sweeping);  // unchanged -- still the Power sweep
+  CHECK(s.active());
+
+  // Prove it's still the Power sweep, not a Verify sweep that silently
+  // replaced it: the next frame sent still carries kind == Power.
+  run_to_quiescence(s, tx, pwr, cap, 0, 1, 500);
+  REQUIRE(!sink.frames.empty());
+  cal::CalFrameInfo info;
+  REQUIRE(payload_of(sink.frames.back(), &info));
+  CHECK(info.kind == cal::Kind::Power);
+}
+
+TEST(capacity_sweep_restores_power_to_the_anchor_before_its_first_point) {
+  CaptureSink sink;
+  RadioTx tx(sink);
+  FakePowerCtl pwr;
+  FakeCapacityCtl cap;
+  pwr.anchor = 53;
+  CalSweep s(CalSweepCfg{});
+  auto power = power_cmd(1, 0, /*mask*/ 0x01, /*lo*/ 63, /*hi*/ 63, /*bw*/ 20, /*fpc*/ 1);
+  s.on_cmd(power, 0, pwr);
+  REQUIRE(s.take_ack().has_value());
+  run_to_quiescence(s, tx, pwr, cap);
+  CHECK(pwr.index_writes.back() == 53 + 63);  // parked away from the anchor
+
+  auto capacity = capacity_cmd(1, 1, 0x01, 20, /*dwell*/ 0, /*settle*/ 0);
+  s.on_cmd(capacity, 1000, pwr);
+  REQUIRE(s.take_ack().has_value());
+  CHECK(pwr.index_writes.back() == 53);  // restored to the anchor immediately on accept
+
+  run_to_quiescence(s, tx, pwr, cap, 1000);
+  REQUIRE(!cap.points.empty());
+  CHECK(pwr.index_writes.back() == 53);  // still at the anchor through the point
+}
+
+TEST(repeated_apply_already_handed_out_does_not_disturb_a_running_verify) {
+  CaptureSink sink;
+  RadioTx tx(sink);
+  FakePowerCtl pwr;
+  FakeCapacityCtl cap;
+  pwr.anchor = 53;
+  CalSweep s(CalSweepCfg{});
+  auto c = power_cmd(1, 0, /*mask*/ 0x01, /*lo*/ 0, /*hi*/ 0, /*bw*/ 20, /*fpc*/ 1);
+  s.on_cmd(c, 0, pwr);
+  REQUIRE(s.take_ack().has_value());
+  run_to_quiescence(s, tx, pwr, cap);
+
+  cal::ApplyCmd a;
+  a.nonce = 1;
+  a.bw = 20;
+  s.on_apply(a, 2000);
+  CHECK(s.state() == CalSweep::State::Applying);
+  REQUIRE(s.take_pending_apply().has_value());
+  CHECK(s.state() == CalSweep::State::Idle);
+
+  std::array<int, 8> park{};
+  park.fill(cal::kWallLeave);
+  park[0] = 7;
+  s.arm_verify(park, 20, 2100);
+  CHECK(s.state() == CalSweep::State::Sweeping);
+
+  // The GS resends the same APPLY (it hasn't heard APPLIED yet) while
+  // the verify sweep it already triggered is running.
+  s.on_apply(a, 2200);
+  CHECK(s.state() == CalSweep::State::Sweeping);     // undisturbed
+  CHECK(!s.take_pending_apply().has_value());        // not re-queued
+
+  // And after the verify sweep finishes (back to Idle), a further
+  // resend of that exact (nonce, bw) is still ignored on its own merits
+  // -- not just because a sweep happened to be running.
+  run_to_quiescence(s, tx, pwr, cap, 2200);
+  CHECK(s.state() == CalSweep::State::Idle);
+  s.on_apply(a, 5000);
+  CHECK(s.state() == CalSweep::State::Idle);          // did not re-enter Applying
+  CHECK(!s.take_pending_apply().has_value());
+}
+
+TEST(await_timeout_while_applying_closes_the_run) {
+  CaptureSink sink;
+  RadioTx tx(sink);
+  FakePowerCtl pwr;
+  FakeCapacityCtl cap;
+  pwr.anchor = 53;
+  CalSweepCfg cfg;
+  cfg.await_next_ms = 100;
+  CalSweep s(cfg);
+  auto c = power_cmd(1, 0, /*mask*/ 0x01, /*lo*/ 0, /*hi*/ 0, /*bw*/ 20, /*fpc*/ 1);
+  s.on_cmd(c, 0, pwr);
+  REQUIRE(s.take_ack().has_value());
+  run_to_quiescence(s, tx, pwr, cap);
+
+  cal::ApplyCmd a;
+  a.nonce = 1;
+  a.bw = 20;
+  s.on_apply(a, 1000);
+  CHECK(s.state() == CalSweep::State::Applying);
+  s.pump(1200, tx, pwr, cap);  // past await_deadline_ms_ (1000 + 100)
+  CHECK(s.state() == CalSweep::State::Idle);
+  CHECK(!s.active());
+  CHECK(s.power_restored_for_test());
+}
+
+TEST(on_apply_is_ignored_while_a_sweep_is_sweeping) {
+  FakePowerCtl pwr;
+  pwr.anchor = 53;
+  CalSweep s(CalSweepCfg{});
+  auto c = power_cmd(1, 0, 0xFF, -41, 63, 20, /*fpc*/ 60000);  // stays Sweeping
+  s.on_cmd(c, 0, pwr);
+  REQUIRE(s.take_ack().has_value());
+  CHECK(s.state() == CalSweep::State::Sweeping);
+
+  cal::ApplyCmd a;
+  a.nonce = 1;
+  a.bw = 20;
+  s.on_apply(a, 100);
+  CHECK(s.state() == CalSweep::State::Sweeping);  // undisturbed
+  CHECK(!s.take_pending_apply().has_value());     // not queued
+}
+
+TEST(an_ahead_seq_sweep_clears_a_stale_pending_apply) {
+  CaptureSink sink;
+  RadioTx tx(sink);
+  FakePowerCtl pwr;
+  FakeCapacityCtl cap;
+  pwr.anchor = 53;
+  CalSweep s(CalSweepCfg{});
+  auto c = power_cmd(1, 0, /*mask*/ 0x01, /*lo*/ 0, /*hi*/ 0, /*bw*/ 20, /*fpc*/ 1);
+  s.on_cmd(c, 0, pwr);
+  REQUIRE(s.take_ack().has_value());
+  run_to_quiescence(s, tx, pwr, cap);
+
+  cal::ApplyCmd a;
+  a.nonce = 1;
+  a.bw = 20;
+  s.on_apply(a, 1000);
+  CHECK(s.state() == CalSweep::State::Applying);
+
+  auto c2 = power_cmd(1, 1, /*mask*/ 0x01, /*lo*/ 0, /*hi*/ 0, /*bw*/ 20, /*fpc*/ 1);  // ahead seq
+  s.on_cmd(c2, 1100, pwr);
+  CHECK(s.state() == CalSweep::State::Sweeping);
+  CHECK(!s.take_pending_apply().has_value());  // the stale apply was cleared, not handed out
+}
+
+TEST(power_restored_flag_resets_when_a_new_run_opens) {
+  CaptureSink sink;
+  RadioTx tx(sink);
+  FakePowerCtl pwr;
+  FakeCapacityCtl cap;
+  pwr.anchor = 53;
+  CalSweep s(CalSweepCfg{});
+  auto c = power_cmd(1, 0, 0xFF, -41, 63, 20, /*fpc*/ 60000);
+  s.on_cmd(c, 0, pwr);
+  REQUIRE(s.take_ack().has_value());
+  run_to_quiescence(s, tx, pwr, cap, 0, 1, 300);
+
+  cal::Abort a{1};
+  s.on_abort(a, 300, pwr);
+  CHECK(s.power_restored_for_test());
+
+  auto c2 = power_cmd(2, 0, 0xFF, -41, 63, 20, /*fpc*/ 60000);  // a different, new nonce
+  s.on_cmd(c2, 301, pwr);
+  CHECK(!s.power_restored_for_test());  // reset for the new run
 }
 
 MTEST_MAIN

@@ -101,8 +101,7 @@ class CalSweep {
   // drone's real power path (drone/src/power_plan.h in production):
   // parking the TXAGC index at a candidate cell, zeroing the
   // wall-equalized per-rate diff table so every rate is swept from the
-  // same anchor, and reading that anchor back. Unchanged from the
-  // pre-revamp engine.
+  // same anchor, and reading that anchor back.
   struct PowerCtl {
     virtual ~PowerCtl() = default;
     virtual bool set_index_override(int idx) = 0;
@@ -130,33 +129,55 @@ class CalSweep {
   // Accepts a sweep command (Power or Capacity -- Verify never arrives
   // this way, see arm_verify). A brand-new nonce starts a fresh run
   // (state -> Sweeping, cell cursor reset, the chip's anchor captured
-  // right here, synchronously). A chip that cannot report its anchor
-  // right now (read_anchor_idx() < 0) cannot place a single relative
-  // cell: the command is refused with AckResult::AnchorUnreadable rather
-  // than silently dropped -- unlike the pre-revamp engine, the ack always
-  // answers (take_ack() returns a value), so the GS does not have to
-  // infer the refusal from a timeout. A seq strictly BEHIND the one
-  // already accepted for this nonce -- a late duplicate of an earlier
-  // sweep -- is ignored outright with no ack. An EXACT repeat of the seq
-  // already running re-arms the same Accepted ack every time (the GS
-  // resends its SweepCmd into a 30-50%-lossy uplink, and a single lost
-  // ack must not cost the whole sweep) without touching the cell cursor.
-  // A seq strictly AHEAD of the one already accepted (matching nonce)
-  // starts a new sweep from this command's own fields, reusing the
-  // nonce's already-captured anchor.
+  // right here, synchronously), UNLESS that nonce is the one this engine
+  // just closed (hard cap, abort, or the await timeout) -- a straggler or
+  // a GS resend of an already-closed nonce is ignored outright, with no
+  // ack, so a closed run can never reopen and hard_cap_ms keeps bounding
+  // the run it was armed for. A chip that cannot report its anchor right
+  // now (read_anchor_idx() < 0) cannot place a single relative cell: the
+  // command is refused with AckResult::AnchorUnreadable rather than
+  // silently dropped, so the GS does not have to infer the refusal from a
+  // timeout. A seq strictly BEHIND the one already accepted for this
+  // nonce -- a late duplicate of an earlier sweep -- is ignored outright
+  // with no ack. An EXACT repeat of the seq already running re-arms the
+  // same Accepted ack every time (the GS resends its SweepCmd into a
+  // 30-50%-lossy uplink, and a single lost ack must not cost the whole
+  // sweep) without touching the cell cursor; the re-armed ack's
+  // start_in_ms reports whatever is left of the original 200 ms start
+  // delay, clamped to 0 once cells are already airing. A seq strictly
+  // AHEAD of the one already accepted (matching nonce) starts a new sweep
+  // from this command's own fields, reusing the nonce's already-captured
+  // anchor, and drops any ApplyCmd still queued from an earlier sweep of
+  // this run (take_pending_apply() would otherwise hand out a result for
+  // a sweep this new command just superseded).
   //
   // Every accepted Power-kind command -- new run or a later sweep of the
   // same run -- zeroes the per-rate diff table again (per-rate walls must
   // be measured against a common base every time Power runs, not just
-  // once per run); Capacity never zeroes. The anchor itself is read only
-  // once, at the run's first accepted command, regardless of kind.
+  // once per run); Capacity never zeroes, but DOES restore the TXAGC
+  // override to the anchor on acceptance (a prior Power/Verify sweep of
+  // the same run may have left it parked at a swept cell) so a Capacity
+  // point flies the production power plan the owner programs for this
+  // width, not a leftover sweep offset. The anchor itself is read only
+  // once, at the run's first accepted command, regardless of kind. The
+  // first cell of any accepted sweep does not open until 200 ms after
+  // acceptance (see pump()): the ack has to have a chance to reach the GS
+  // before frames the GS is not listening for yet start using up the
+  // air.
   void on_cmd(const cal::SweepCmd& c, uint64_t now_ms, PowerCtl& pwr);
 
   // Accepts an ApplyCmd for the run currently in flight. Ignored if there
-  // is no open run or the nonce doesn't match -- a stale/foreign apply.
-  // Queues it for take_pending_apply() and moves to Applying; the run
-  // stays open (close_session is not called) so a silent GS still times
-  // out through the normal await/hard-cap path.
+  // is no open run, the nonce doesn't match, a sweep is actively
+  // Sweeping (accepting one now would silently abandon that sweep's
+  // progress), or this exact (nonce, bw) has already been handed out by
+  // take_pending_apply() -- the GS resends APPLY every 200 ms until it
+  // hears back APPLIED, and a repeat landing after the owner has already
+  // applied it and armed Verify must not re-queue anything or disturb
+  // the verify sweep running. Otherwise queues it for take_pending_apply()
+  // and moves to Applying; the run stays open (close_session is not
+  // called) so a silent GS still times out through the normal
+  // await/hard-cap path -- checked in Applying too, not just the shared
+  // hard cap.
   void on_apply(const cal::ApplyCmd& a, uint64_t now_ms);
 
   // Cancels the run identified by `a.nonce` immediately -- the same
@@ -182,17 +203,20 @@ class CalSweep {
 
   // Arms a Verify sweep directly -- not over the wire -- for the owner to
   // call once it has applied an ApplyCmd it drained from
-  // take_pending_apply(). Walks exactly one cell per MCS, at the parked
-  // relative index `park_rel[mcs]` (kWallLeave skips that MCS: nothing
-  // was measured, or the GS left the file's existing wall alone), at
-  // `bw`. Unlike on_cmd's Power/Capacity sweeps, there is no per-sweep
-  // plan from the wire to copy pacing from, so the cells run at the same
+  // take_pending_apply(). A no-op when there is no open run, or when a
+  // Power/Capacity sweep is actively Sweeping (verify only ever follows a
+  // drained apply, never interrupts a sweep in progress). Walks exactly
+  // one cell per MCS, at the parked relative index `park_rel[mcs]`
+  // (kWallLeave skips that MCS: nothing was measured, or the GS left the
+  // file's existing wall alone), at `bw`. There is no per-sweep plan from
+  // the wire to copy pacing from, so the cells run at the same
   // frames-per-cell/settle/gap the protocol's own SweepCmd defaults use
   // (20 frames, 5 ms settle, 1 ms gap) -- see cal_sweep.cpp. Never zeroes
   // the diff table and never touches PowerCtl itself (the per-cell index
   // override, like every Power/Verify cell, is programmed inside pump()).
-  // A Verify sweep emits no SweepDone -- the GS times its own verify
-  // window -- so take_done() never arms for it.
+  // Like on_cmd's sweeps, the first cell does not open until 200 ms after
+  // this call. A Verify sweep emits no SweepDone -- the GS times its own
+  // verify window -- so take_done() never arms for it.
   void arm_verify(const std::array<int, 8>& park_rel, uint8_t bw, uint64_t now_ms);
 
   // Drains the ack on_cmd() armed: Accepted for a new or repeated sweep,
@@ -255,6 +279,9 @@ class CalSweep {
   void pump_capacity(uint64_t now_ms, CapacityCtl& cap);
   void finish_sweep(uint64_t now_ms);
   void close_session(PowerCtl& pwr);
+  // Milliseconds left until sweep_start_ms_, clamped to 0 once it has
+  // passed -- what a SweepAck's start_in_ms reports.
+  uint16_t remaining_start_ms(uint64_t now_ms) const;
 
   CalSweepCfg cfg_;
 
@@ -269,6 +296,12 @@ class CalSweep {
   uint64_t hard_cap_deadline_ms_ = 0;  // whole-run ceiling
   uint64_t await_deadline_ms_ = 0;     // between-event wait
 
+  // The last nonce this engine closed (hard cap, abort or await timeout),
+  // so a straggler or a GS resend of that exact nonce arriving afterward
+  // is ignored instead of reopening a fresh run -- see on_cmd().
+  bool last_nonce_valid_ = false;
+  uint32_t last_closed_nonce_ = 0;
+
   int anchor_idx_ = 0;
   bool power_restored_ = false;
 
@@ -280,6 +313,22 @@ class CalSweep {
   // zero_rate_diffs() has already flattened the table, drained by
   // take_refused().
   bool pending_refusal_ = false;
+
+  // When the run's current sweep's first cell is allowed to open --
+  // now_ms + 200 at the moment on_cmd()/arm_verify() accepted the sweep.
+  // Both pump_power_verify() and pump_capacity() wait for this before
+  // touching a cell, so the ack (or, for Verify, the applied config) has
+  // time to reach the GS before any frame the GS is not listening for
+  // yet airs.
+  uint64_t sweep_start_ms_ = 0;
+
+  // The (nonce, bw) of the last ApplyCmd handed out by
+  // take_pending_apply(), so a GS resend of that same apply (it keeps
+  // resending until it hears APPLIED) is ignored by on_apply() rather
+  // than re-queued over a verify sweep already running from it.
+  bool handed_out_apply_ = false;
+  uint32_t handed_out_nonce_ = 0;
+  uint8_t handed_out_bw_ = 0;
 
   // Current sweep's plan.
   cal::Kind current_kind_ = cal::Kind::Power;
