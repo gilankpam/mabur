@@ -26,6 +26,7 @@ add_library(mabur_gs_core STATIC
   src/cal_plan.cpp
   src/cal_session.cpp
   src/cal_log.cpp
+  src/cal_wiring.cpp
   src/debug_session.cpp
   src/log_writer.cpp
   src/probe_log.cpp

@@ -110,6 +110,21 @@ class TopBarTest(unittest.TestCase):
         compact = " ".join(render_rows_compact(_fresh(d), 100.2, 200))
         self.assertIn("mav 4/7", compact)
 
+    def test_cal_cell(self):
+        # link.cal: present only while a calibration run owns the air.
+        text, _ = panel_topbar(_fresh(), 100.2)[0]
+        self.assertNotIn("CAL", text)
+        d = dict(DGRAM, link=dict(DGRAM["link"],
+                                  cal={"state": "sweep", "sweep": "2/4",
+                                       "kind": "capacity", "bw": 20,
+                                       "cell": "3/8"}))
+        text, spans = panel_topbar(_fresh(d), 100.2)[0]
+        self.assertIn("CAL capacity20 3/8", text)
+        start = text.index("CAL")
+        self.assertIn((start, len("CAL capacity20 3/8"), "warn"), spans)
+        compact = " ".join(render_rows_compact(_fresh(d), 100.2, 200))
+        self.assertIn("CAL capacity20 3/8", compact)
+
     def test_key_mismatch_state_bad_span(self):
         d = dict(DGRAM, link=dict(DGRAM["link"], state="key_mismatch"))
         text, spans = panel_topbar(_fresh(d), 100.2)[0]

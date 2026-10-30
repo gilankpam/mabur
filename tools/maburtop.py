@@ -193,6 +193,15 @@ def _mav_cell(link):
     return f"mav {_s(mav.get('tx'))}/{_s(mav.get('rx'))}"
 
 
+def _cal_cell(link):
+    """Calibration run cell (link.cal): `CAL <kind><bw> <cell i/n>`, or ''
+    while no run owns the air (the key is absent then)."""
+    cal = link.get("cal")
+    if not isinstance(cal, dict):
+        return ""
+    return f"CAL {_s(cal.get('kind'))}{_s(cal.get('bw'))} {_s(cal.get('cell'))}"
+
+
 def _s(v, prec=None):
     """Loose, non-fixed-width scalar formatter for prose (top bar/compact
     fallback) cells: None -> '--'."""
@@ -299,9 +308,11 @@ def render_rows_compact(model, wall, width):
         cmd_ov_base = op.get("overhead_base")
         cmd_ov_enh = op.get("overhead_enh")
         state_s = state.upper() if isinstance(state, str) else "--"
+        cal_s = _cal_cell(link)
         header = (
             f"maburgs   {state_s}   "
             f"key {_s(link.get('key_fp'))}   {_mav_cell(link)}   "
+            f"{cal_s + '   ' if cal_s else ''}"
             f"ch {_s(chan)} scan {scan.get('state', '--')}:{_s(scan.get('rounds'))} "
             f"hop {hop.get('state', '--')}/{hop.get('verdict', '--')}   "
             f"tx c{_s(tx_card)}   "
@@ -563,9 +574,10 @@ def panel_topbar(model, wall):
         hz = 0.0
 
     dot = "●"
+    cal_s = _cal_cell(link)
     text = (
         f" maburgs  {dot} {state_s}   key {_s(link.get('key_fp'))}   "
-        f"{_mav_cell(link)}   ch {_s(chan)}   "
+        f"{_mav_cell(link)}   {cal_s + '   ' if cal_s else ''}ch {_s(chan)}   "
         f"cmd MCS {_s(mcs)}/{_s(bw)}  "
         f"{_ov_cmd_cell(cmd_ov_base, cmd_ov_enh)}   "
         f"air ~{_s(air, 0)}%      session {session_s}   "
@@ -579,6 +591,9 @@ def panel_topbar(model, wall):
         spans.append((dot_start, len(dot), "good"))
     elif state == "key_mismatch":
         spans.append((dot_start, len(dot), "bad"))
+    if cal_s:
+        # A run owns the air: the link's own numbers are not the flight's.
+        spans.append((text.index(cal_s), len(cal_s), "warn"))
 
     stale = model.last_rx_wall is not None and (wall - model.last_rx_wall) > STALE_S
     if stale:

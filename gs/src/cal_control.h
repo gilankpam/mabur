@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "cal_session.h"
+#include "cal_wiring.h"
 #include "ladder_controller.h"
 
 namespace maburgs {
@@ -212,12 +213,9 @@ class CalControl {
   // own Power/Capacity kind, since that is the only place in the run the
   // drone is doing something other than what `cur` names.
   static std::string render_status(const CalSnapshot& snap) {
-    const bool verifying = snap.state == CalSession::State::Verify;
-    const char* kind =
-        verifying ? "verify"
-                  : (snap.cur.kind == mabur::cal::Kind::Capacity ? "capacity" : "power");
+    const char* kind = cal_kind_name(snap);
     const size_t sweep_k = snap.sweep_n ? snap.sweep_i + 1 : 0;
-    std::string out = std::string("state=") + state_name(snap.state) +
+    std::string out = std::string("state=") + cal_state_name(snap.state) +
                       " sweep=" + std::to_string(sweep_k) + "/" +
                       std::to_string(snap.sweep_n) + " kind=" + kind +
                       " bw=" + std::to_string(snap.cur.bw) +
@@ -240,11 +238,6 @@ class CalControl {
     return false;
   }
 
-  static std::string sweep_token(const mabur::cal::SweepSpec& spec) {
-    const char* k = spec.kind == mabur::cal::Kind::Capacity ? "cap" : "power";
-    return std::string(k) + std::to_string(spec.bw);
-  }
-
   // Comma-separated, in the order the session will actually run them --
   // the reply to `start` names the run that was really composed, not the
   // tokens the operator happened to type.
@@ -252,25 +245,9 @@ class CalControl {
     std::string out;
     for (size_t i = 0; i < sweeps.size(); ++i) {
       if (i) out += ",";
-      out += sweep_token(sweeps[i]);
+      out += cal_sweep_token(sweeps[i]);
     }
     return out;
-  }
-
-  static const char* state_name(CalSession::State st) {
-    switch (st) {
-      case CalSession::State::Idle: return "idle";
-      case CalSession::State::Picking: return "picking";
-      case CalSession::State::AwaitAck: return "await_ack";
-      case CalSession::State::Sweep: return "sweep";
-      case CalSession::State::AwaitDone: return "await_done";
-      case CalSession::State::Analyze: return "analyze";
-      case CalSession::State::Apply: return "apply";
-      case CalSession::State::Verify: return "verify";
-      case CalSession::State::Done: return "done";
-      case CalSession::State::Failed: return "failed";
-    }
-    return "?";
   }
 
   static uint64_t now_ms() {

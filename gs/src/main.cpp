@@ -19,6 +19,7 @@
 #include <random>
 #include <string>
 #include <thread>
+#include <variant>
 #include <vector>
 
 #include "aggregator.h"
@@ -29,7 +30,9 @@
 #include "cal_control.h"
 #include "rec_control.h"
 #include "cal_log.h"
+#include "cal_picker.h"
 #include "cal_session.h"
+#include "cal_wiring.h"
 #include "card_scan.h"
 #include "channel_core.h"
 #include "config.h"
@@ -40,6 +43,7 @@
 #include "frame_stream.h"
 #include "gap_timeout_policy.h"
 #include "hop_burst_gate.h"   // cal_cmd_clear
+#include "mabur/cal_mav.h"
 #include "ladder_residual.h"
 #include "link_health.h"
 #include "lat_window.h"
@@ -357,8 +361,9 @@ static int run_radio(const maburgs::Config& cfg) {
   // a bench-only scaffold -- so there is no MABUR_LOSS_SIM-style guard
   // (cal_control.h). Port 8400 is fixed, not 830x: that
   // block belongs to the stats sideport, its UDP sinks and the OSD feed.
-  // CalSession itself is constructed further down, once cal_log exists --
-  // it needs a CalLog* to write into.
+  // CalSession itself is constructed further down, once cal_log and the
+  // channel core exist -- it writes into the one and picks its channel
+  // through the other.
   maburgs::CalControl cal_ctl;
   if (!cal_ctl.open(8400))
     std::fprintf(stderr,
@@ -391,16 +396,6 @@ static int run_radio(const maburgs::Config& cfg) {
   // timestamp it sees is a mono_ms() read, so its heal arithmetic never runs
   // on a clock older than the arming stamp.
   maburgs::RefreshRequester refresh;
-  // Telem (the drone's only calibration ack signal, flags bit6 cal_active)
-  // carries no nonce of its own, so this is what the T_TELEM handler below
-  // hands back to CalSession::on_ack() -- stashed from the CalCmd the last
-  // due_cmd() call actually sent.
-  uint32_t cal_pending_nonce = 0;
-  // cal.log's R line is written once per SESSION (cal_log.h), but the ack
-  // above fires once per PHASE within a session (coarse, then fine) --
-  // this dedups by nonce, which is constant across a session and freshly
-  // randomized per `maburcal start` (cal_control.h).
-  std::optional<uint32_t> cal_log_run_nonce;
   // Debug-log session: one directory for
   // ctl.log/probe.log/au.log/flight.jsonl, one writer thread feeding all of
   // them. Declared here (ahead of the stats block and the FrameStream
@@ -467,12 +462,6 @@ static int run_radio(const maburgs::Config& cfg) {
                  "trace will be lost\n",
                  cal_log_dir.c_str());
   }
-  // The session brain. cal_log always exists by now (emplace() above is
-  // unconditional); CalLog::ok() being false just makes every record
-  // method a silent no-op (cal_log.h's own contract), so handing over
-  // &*cal_log unconditionally is safe even when the directory resolution
-  // above failed.
-  maburgs::CalSession cal_session(maburgs::CalSessionCfg{}, &*cal_log);
   // Stats sideport and flight.jsonl share one
   // StatsExporter snapshot, so the snapshot builder runs whenever either
   // wants it: `cfg.stats.enable` gates the UDP sinks ONLY (:8302 feeds
@@ -631,6 +620,23 @@ static int run_radio(const maburgs::Config& cfg) {
       [](uint8_t ch) { return mabur::write_channel_file(mabur::kGsChannelFile, ch); },
       [] { return mono_ms(); }, [] { return mono_us(); },
       [](int ms) { if (ms > 0) std::this_thread::sleep_for(std::chrono::milliseconds(ms)); });
+
+  // The calibration session brain, picking its channel through the core
+  // above. cal_log always exists by now (emplace() is unconditional);
+  // CalLog::ok() being false just makes every record method a silent no-op
+  // (cal_log.h's own contract), so handing over &*cal_log unconditionally
+  // is safe even when the directory resolution failed. The sweep list a
+  // bare `maburcal start` runs is fixed by the config, so it is composed
+  // once.
+  maburgs::ChannelCorePicker cal_picker(chan);
+  maburgs::CalSession cal_session(maburgs::CalSessionCfg{}, &*cal_log, &cal_picker);
+  const std::vector<mabur::cal::SweepSpec> cal_defaults =
+      maburgs::default_sweeps(cfg.radio.width, cfg.link.ladder_cfg);
+  maburgs::CalNarrator cal_narrator(cal_log_dir + "/cal.log");
+  // The drone's radio.width, from the DiscAck that opened the session
+  // (0 = none yet): a GS flying 40 still cannot calibrate 40 against a
+  // drone that only flies 20.
+  uint8_t peer_agreed_width = 0;
 
   // The one place a control frame leaves the GS (direct or via the RCF
   // slotter): card + RTT stamp travel with the frame (SlotFrame). The
@@ -945,12 +951,16 @@ static int run_radio(const maburgs::Config& cfg) {
                  old_dir.c_str(), debug.dir().c_str());
   };
   // MAVLink tunnel (mav_tunnel.h): always built, the rc sink feeds it the
-  // drone's T_MAV frames whether or not the endpoint is open. Its frames
-  // leave like an RCF: offered to the slotter, never during a calibration
-  // sweep. flush() runs once per tick after mav_tick_ms / mav_tick_card are
-  // set to that tick's clock and TX card.
+  // drone's T_MAV frames whether or not the endpoint is open. Its live
+  // frames leave like an RCF: offered to the slotter, never during a
+  // calibration sweep. Its cal-lane frames (the calibration session's
+  // SweepCmd/ApplyCmd/Abort) go straight out: the session offers one only
+  // when the air is the GS's, and a sweep has no video for the slotter to
+  // hide a send behind. flush() runs once per tick after mav_tick_ms /
+  // mav_tick_card are set to that tick's clock and TX card.
   uint64_t mav_tick_ms = 0;
   int mav_tick_card = 0;
+  uint64_t mav_rx_ms = 0;      // the clock of the T_MAV frame being delivered
   uint32_t mav_vtx_seen = 0;   // the session the CAP_MAVLINK check last ran for
   maburgs::MavTunnel mav_tunnel(
       cfg.link.key,
@@ -960,9 +970,21 @@ static int run_radio(const maburgs::Config& cfg) {
             !cal_session.radio_silent(mav_tick_ms))
           send_control_frame(sf);
       },
-      [&](const uint8_t* b, size_t n) { mav_ep.send_to_peer(b, n); });
+      // Every packet from the drone reaches the ground app; the
+      // calibration replies among them also reach the session, whatever
+      // its state (it ignores what does not fit).
+      [&](const uint8_t* b, size_t n) {
+        mav_ep.send_to_peer(b, n);
+        maburgs::feed_cal_packet(cal_session, b, n, mav_rx_ms);
+      },
+      [&](std::vector<uint8_t> frame) {
+        maburgs::SlotFrame sf{std::move(frame), 0, mav_tick_card, false};
+        sf.offered_ms = mav_tick_ms;
+        send_control_frame(sf);
+      });
   agg.set_rc_sink([&](uint8_t, const std::vector<uint8_t>& f, uint64_t us) {
     if (mabur::rc::frame_type(f.data(), f.size()) == mabur::rc::T_MAV) {
+      mav_rx_ms = us / 1000;
       mav_tunnel.on_rc_frame(f.data(), f.size());
       return;
     }
@@ -987,21 +1009,6 @@ static int run_radio(const maburgs::Config& cfg) {
         rtt_est.on_telem(t->rcf_seq_echo, (t->flags & 0x08) != 0,
                          t->rcf_age_ms, t->pts_at_build, us);
         uplink.on_telem(t->tlm_seq, t->rcf_rx, t->state, us / 1000);
-        // Calibration ack (Telem flags bit6 cal_active) -- the only
-        // acknowledgment signal the wire carries for a T_CAL_CMD. Telem has
-        // no nonce field, so cal_pending_nonce (stashed from the CalCmd the
-        // last due_cmd() call sent) is what on_ack() checks against; a
-        // stale/mismatched nonce or an ack outside AwaitAck is a no-op
-        // inside CalSession (cal_session.h).
-        if ((t->flags & 0x40) != 0) {
-          cal_session.on_ack(cal_pending_nonce, us / 1000);
-          // cal.log's R line is once per SESSION; the ack fires once per
-          // PHASE -- dedup by nonce (cal_log.h).
-          if (cal_log && cal_log_run_nonce != cal_pending_nonce) {
-            cal_log->run(cal_pending_nonce, cal_session.margin_db());
-            cal_log_run_nonce = cal_pending_nonce;
-          }
-        }
       }
       return;
     }
@@ -1015,8 +1022,10 @@ static int run_radio(const maburgs::Config& cfg) {
     // the channel). ChannelCore::on_session_opened() does the rest.
     if (!was_session && vrx.link_state() == maburgs::VrxState::SESSION &&
         mabur::rc::frame_type(f.data(), f.size()) == mabur::rc::T_DISC_ACK) {
-      if (const auto ack = mabur::rc::parse_disc_ack(f.data(), f.size()))
+      if (const auto ack = mabur::rc::parse_disc_ack(f.data(), f.size())) {
         chan.on_session_opened(*ack, static_cast<double>(us) / 1000.0);
+        peer_agreed_width = ack->agreed_width;
+      }
     }
   });
 
@@ -1141,8 +1150,10 @@ static int run_radio(const maburgs::Config& cfg) {
       if (mabur::cal::parse_cal_payload(m.body.data(), m.body.size(), &cal_info)) {
         const int rssi_dbm =
             static_cast<int>(std::max(m.rssi[0], m.rssi[1])) - 110;
+        // Size on the air: the 24-byte dot11 header and the 4-byte FCS
+        // around the body -- a capacity sweep sums it into delivered bits.
         cal_session.on_cal_frame(m.card_id, cal_info, rssi_dbm, m.crc_ok,
-                                 m.mono_us / 1000);
+                                 24 + m.body.size() + 4, m.mono_us / 1000);
         continue;
       }
       chan.on_rc_body(m.rx_channel);   // read by the rc sink inside on_rx_body()
@@ -1298,12 +1309,44 @@ static int run_radio(const maburgs::Config& cfg) {
         }
       }
     }
+    // Calibration first, so a run's message goes out in this tick's flush.
+    // set_peer before anything reads it: start() (via CalControl, below the
+    // operator's `maburcal start`) refuses on a down link or a peer
+    // without CAP_CALIBRATE, and the session freezes the pair's tag
+    // context when it first commands the drone. The width a `start
+    // power40`/`cap40` may ask for is the narrower of the GS's and the
+    // linked drone's. Compiled into every prod build, unlike loss_ctl
+    // above (cal_control.h).
+    const bool mav_linked = vrx.link_state() == maburgs::VrxState::SESSION;
+    cal_session.set_peer(
+        mav_linked, mav_linked && (vrx.peer_caps() & mabur::rc::CAP_CALIBRATE),
+        vrx.session_ctx());
+    const uint8_t cal_width = mav_linked && peer_agreed_width != 0
+                                  ? std::min(cfg.radio.width, peer_agreed_width)
+                                  : cfg.radio.width;
+    cal_ctl.poll(cal_session, cal_defaults, cal_width);
+    // Whatever the session offers goes out as is, never gated on
+    // radio_silent(): the session offers only when the air is the GS's.
+    // The one hold is a SweepCmd while a scout dwell begun just before the
+    // start still has a card off-channel (cal_cmd_clear's comment); the
+    // session repeats an unacked SweepCmd every 200 ms, so a held one is
+    // only late. An ApplyCmd or the closing Abort is never held.
+    if (auto m = cal_session.due_mav(drained_ms)) {
+      const bool held = std::holds_alternative<mabur::cal::SweepCmd>(*m) &&
+                        !maburgs::cal_cmd_clear(cal_session.radio_silent(drained_ms),
+                                                chan.dwell_busy());
+      if (!held)
+        mav_tunnel.push_cal(mabur::cal::encode(*m, 255, 190, mabur::mav::kChanGsLocal),
+                            cal_session.tag_ctx());
+    }
+    for (const std::string& line :
+         cal_narrator.observe(cal_session.snapshot(), cal_session.sweeps()))
+      std::fprintf(stderr, "maburgs: %s\n", line.c_str());
     // MAVLink: tag under the live session only (session_ctx() keeps the
     // held nonce while BEACONING; the drone takes T_MAV only when LINKED),
     // then endpoint datagrams -> tunnel -> T_MAV frames. CAP_MAVLINK is
     // display-only: one line per session, nothing is gated on it.
     {
-      const bool mav_linked = vrx.link_state() == maburgs::VrxState::SESSION;
       const mabur::rc::TagCtx mav_ctx = mav_linked ? vrx.session_ctx() : mabur::rc::TagCtx{};
       if (mav_ctx.vtx_nonce != 0 && mav_ctx.vtx_nonce != mav_vtx_seen) {
         mav_vtx_seen = mav_ctx.vtx_nonce;
@@ -1316,9 +1359,6 @@ static int run_radio(const maburgs::Config& cfg) {
       mav_tick_card = sel.selected();
       mav_tunnel.flush();
     }
-    // Compiled into every prod build, unlike loss_ctl above (cal_control.h).
-    const auto cal_state_before_poll = cal_session.state();
-    cal_ctl.poll(cal_session);
     rec_ctl.poll(drained_ms);
     vrx.set_rec_wish(rec_ctl.wire());
     vrx.set_snr_off(rec_ctl.snr_off(drained_ms));
@@ -1330,16 +1370,6 @@ static int run_radio(const maburgs::Config& cfg) {
       }
       std::fprintf(stderr, "maburgs: refresh request from the player: %s\n", r.c_str());
       refresh.request(*reason, drained_ms);
-    }
-    // Loud, exactly once per accepted `maburcal start` (Idle/Done/Failed ->
-    // AwaitAck): the operator's own terminal is streaming CalControl's
-    // "CAL start -> ok started" reply already, but this is the one place
-    // that knows where cal_log_dir actually resolved to -- see the cal_log
-    // construction comment for why that is not always debug.dir().
-    if (cal_state_before_poll != maburgs::CalSession::State::AwaitAck &&
-        cal_session.state() == maburgs::CalSession::State::AwaitAck) {
-      std::fprintf(stderr, "maburgs: calibration started -> %s/cal.log\n",
-                   cal_log_dir.c_str());
     }
 
     // Session capability gate: the peer must be in an active SESSION (not
@@ -1370,13 +1400,6 @@ static int run_radio(const maburgs::Config& cfg) {
     cin.agg = &agg;
     chan.tick(cin);
     const bool fw = in_session && (vrx.peer_caps() & mabur::rc::CAP_FRAME_WIRE);
-    // Told every tick (CalSession::set_peer): whether the link is up and
-    // whether the peer's last DiscAck carried CAP_CALIBRATE. start() (via
-    // CalControl, below the operator's `maburcal start`) is the only place
-    // that reads these back.
-    cal_session.set_peer(
-        in_session, in_session && (vrx.peer_caps() & mabur::rc::CAP_CALIBRATE),
-        vrx.session_ctx());
     if (fw != frame_wire) {
       frame_wire = fw;
       agg.decoder().reset_continuity();
@@ -1522,41 +1545,6 @@ static int run_radio(const maburgs::Config& cfg) {
     // still queued from before the sweep started must not go out either.
     for (const auto& f : rcf_slot.take_due(drained_ms))
       if (!cal_session.radio_silent(drained_ms)) send_control_frame(f);
-    // Calibration uplink (T_CAL_CMD / T_CAL_RESULT): straight through
-    // send_control_frame, bypassing rcf_slot entirely -- there is no video
-    // for the slotter to hide a send behind during a sweep, and
-    // radio_silent() already knows the drone's listen windows precisely
-    // from the plan the GS itself sent, a tighter answer than the
-    // slotter's AU-cadence guess. Gated the same way as every other
-    // transmit above: nothing goes out while a sweep phase is running --
-    // and not while a scout dwell begun just before `start` still has a
-    // card off-channel (cal_cmd_clear's comment). due_result() below still
-    // runs step() every tick, so holding the command here stalls nothing
-    // else in the session.
-    if (maburgs::cal_cmd_clear(cal_session.radio_silent(drained_ms), chan.dwell_busy())) {
-      if (auto cmd = cal_session.due_cmd(drained_ms)) {
-        cal_pending_nonce = cmd->nonce;
-        maburgs::SlotFrame cf{mabur::rc::pack_cal_cmd(*cmd, cfg.link.key, cal_session.tag_ctx()),
-                              0, sel.selected(), false};
-        cf.offered_ms = drained_ms;
-        send_control_frame(cf);
-      }
-    }
-    // T_CAL_RESULT is the one transmit NOT gated on radio_silent(), and
-    // deliberately so: it must be repeated into the verify window until
-    // the drone's first verify frame acks it (cal_session.h's due_result()
-    // comment), and radio_silent() is true for that whole window. The
-    // invariant still holds -- CalSession stops vending repeats the
-    // instant a verify-phase frame arrives, and before that arrives the
-    // drone has not applied and is not sweeping anything. Losing this one
-    // frame to the 30-50%-lossy uplink otherwise ends the run with the
-    // config untouched and the report claiming it was written.
-    if (auto res = cal_session.due_result(drained_ms)) {
-      maburgs::SlotFrame rf{mabur::rc::pack_cal_result(*res, cfg.link.key, cal_session.tag_ctx()),
-                            0, sel.selected(), false};
-      rf.offered_ms = drained_ms;
-      send_control_frame(rf);
-    }
     // ctl: rung transition line — load-bearing for post-mortems (the
     // sideport has its own link.ctl block; this stderr line is independent of
     // it and persists in /tmp/maburgs.log even when no sideport consumer is
@@ -1825,6 +1813,7 @@ static int run_radio(const maburgs::Config& cfg) {
         sin.mav.t = mav_tunnel.stats();
         sin.mav.peer = mav_ep.has_peer();
       }
+      sin.cal = maburgs::cal_sideport(cal_session);
       // link.nack: take_window() is destructive; safe here because the
       // block runs only on a poll that will emit.
       if (cfg.link.nack.enable) {
