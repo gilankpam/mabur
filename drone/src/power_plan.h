@@ -30,9 +30,14 @@ namespace mabur {
 // (drone/src/main.cpp, RealActuator::retune_now_). A stale value here can
 // only mis-size a guard that does not bind; it cannot mis-place a wall.
 //
-// This plan is the WHOLE of mabur's power policy: programmed once at
-// bring-up (and re-programmed live by a calibration apply), global offset
-// zeroed beside it, nothing moves power afterwards.
+// One plan per width (power_tables.h) is the WHOLE of mabur's power
+// policy: bring-up programs the start width's plan with the global offset
+// zeroed beside it, and the live table swaps to the other width's plan
+// when a rung crosses to that width (main.cpp, LivePowerTable). A
+// RADIO_WALL_MARGN set rebuilds both plans and writes the live one. A
+// calibration apply only records the new plans: the run's capacity sweep
+// programs its width's plan, and the run's end programs the rung's. Nothing
+// else moves power.
 struct PowerPlan {
   int8_t cck;
   int8_t legacy;

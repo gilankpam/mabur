@@ -403,6 +403,35 @@ struct LivePowerTable {
     return write_locked(bw, w);
   }
 
+  // RADIO_WALL_MARGN's reprogram: replace(), refused under mu_ while
+  // calibration owns the table (*refused_cal set), so a run starting
+  // between the caller's own cal_active check and here is never written
+  // over. False on that refusal or when SetTxPowerRateDiffs refused.
+  bool replace_unless_cal(WidthPlans p, uint8_t bw, bool* refused_cal) {
+    std::lock_guard<std::mutex> l(mu_);
+    *refused_cal = cal_active->load(std::memory_order_relaxed);
+    if (*refused_cal) return false;
+    plans_ = std::move(p);
+    return write_locked(bw, Write{});
+  }
+
+  // The A-MPDU mode shares this lock: the agent's production write runs
+  // only while calibration does not own the radio, checked under mu_
+  // (unless_cal), and calibration's own writes run under it (with_lock),
+  // so a stale production write can never land after begin_cal() and the
+  // sweep's aggregation-off write that follows it.
+  template <class F>
+  void unless_cal(F&& f) {
+    std::lock_guard<std::mutex> l(mu_);
+    if (cal_active->load(std::memory_order_relaxed)) return;
+    f();
+  }
+  template <class F>
+  void with_lock(F&& f) {
+    std::lock_guard<std::mutex> l(mu_);
+    f();
+  }
+
   // Calibration's apply: the plans a following capacity sweep and the run's
   // restore program, not programmed now -- the verify sweep that follows a
   // power apply flies the zeroed diffs under the parked override.
@@ -451,8 +480,11 @@ struct LivePowerTable {
       if (w.clear_override) dev->SetTxPowerIndexOverride(-1);
     }
     if (p) {
-      std::fprintf(stderr, "maburd radio: power table %d MHz live (mcs5 diff %d)%s%s\n", bw,
-                   p->mcs[5], w.for_cal ? " for calibration" : "",
+      // plan_for falls back to the other width's table when bw has none.
+      const bool own = (bw == 40 ? plans_.p40 : plans_.p20).has_value();
+      std::fprintf(stderr, "maburd radio: power table %d MHz live (mcs5 diff %d)%s%s%s\n", bw,
+                   p->mcs[5], own ? "" : (bw == 40 ? " (20 MHz table)" : " (40 MHz table)"),
+                   w.for_cal ? " for calibration" : "",
                    ok ? "" : " -- SetTxPowerRateDiffs FAILED, chip keeps its previous table");
     } else if (dirty_ || w.for_cal) {
       std::fprintf(stderr, "maburd radio: power table: chip default (no walls)%s\n",
@@ -593,8 +625,12 @@ struct RealActuator : mabur::Actuator {
       tx->set_ladder(op.ladder, op.probe_profile != rc::kNoProbeProfile
                                     ? std::optional<rc::LayerTxSpec>(op.probe)
                                     : std::nullopt);
-      apply_ampdu_for(op);
-      if (power_table) power_table->follow(op.ladder[1].bw);
+      if (power_table) {
+        power_table->unless_cal([&] { apply_ampdu_for(op); });
+        power_table->follow(op.ladder[1].bw);
+      } else {
+        apply_ampdu_for(op);
+      }
     }
     // Applying an op is a ladder + FEC + shed + aggregation-mode change plus,
     // across a width change, that width's power table -- see the struct
@@ -2063,10 +2099,10 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
     // written now (under tx_gate, inside the table's lock), the other's when
     // the rung next crosses to it.
     const auto op = shared_op.load();
-    if (!power_table.replace(plans_for(c.radio, c.radio.wall_margin_db),
-                             op ? op->ladder[1].bw : c.radio.width,
-                             /*zero_offset=*/false, /*clear_override=*/false)) {
-      *err = "SetTxPowerRateDiffs failed";
+    bool refused_cal = false;
+    if (!power_table.replace_unless_cal(plans_for(c.radio, c.radio.wall_margin_db),
+                                        op ? op->ladder[1].bw : c.radio.width, &refused_cal)) {
+      *err = refused_cal ? "calibration in progress" : "SetTxPowerRateDiffs failed";
       return false;
     }
     live_wall_margin.store(c.radio.wall_margin_db);
@@ -2886,14 +2922,16 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
     };
     // Power and verify frames fly alone, one per PPDU, so each stamped
     // frame's delivery is its own (AmpduMode{} is aggregation off). Under
-    // tx_gate like every device call on this thread; the agent puts the
-    // rung's mode back on the cal_active falling edge
-    // (RealActuator::on_cal_end).
+    // the power table's lock (see LivePowerTable::unless_cal) and tx_gate
+    // like every device call on this thread; the agent puts the rung's mode
+    // back on the cal_active falling edge (RealActuator::on_cal_end).
     auto cal_no_agg = [&]() {
-      await_retune_gate(&retune_waiting);
-      std::shared_lock<std::shared_mutex> sg(tx_gate);
-      if (!rtl_device->SetAmpduMode(devourer::AmpduMode{}))
-        std::fprintf(stderr, "maburd cal: SetAmpduMode(off) failed\n");
+      power_table.with_lock([&] {
+        await_retune_gate(&retune_waiting);
+        std::shared_lock<std::shared_mutex> sg(tx_gate);
+        if (!rtl_device->SetAmpduMode(devourer::AmpduMode{}))
+          std::fprintf(stderr, "maburd cal: SetAmpduMode(off) failed\n");
+      });
     };
     // Re-reads the config from disk -- not the bring-up `cfg` -- so one path
     // covers "the run applied new walls" (the file holds them) and "the run
@@ -2969,6 +3007,7 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
       }
     };
     bool cal_was_active = false;  // edge-detect: session start -> drain txq once
+    CalRestoreOwed restore_owed;  // see cal_link.h
     // dq_queue gauge (dq-spike follow-up): TRUE push→pop queue
     // wait from the pre-push pushed_us stamp, per body and for the AU-first
     // body alone (the one whose q_ms the GS latches as dq). Thread-owned,
@@ -3005,33 +3044,38 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
             ++cal_latch_drops;
             continue;
           }
-          if (cal_sweep.starts_sweep(*c)) {
+          const bool starting = cal_sweep.starts_sweep(*c);
+          if (starting) {
             // cal_active up first, under the power table's lock (see
-            // LivePowerTable), then what the sweep needs from the device:
-            // a capacity sweep this width's production power table, every
-            // other kind aggregation off.
+            // LivePowerTable), and the restore owed from here on; then
+            // aggregation off for every kind but capacity, whose points
+            // program the production mode themselves.
             power_table.begin_cal();
-            if (c->kind == cal::Kind::Capacity)
-              power_table.program_for_cal(c->bw);
-            else
-              cal_no_agg();
+            restore_owed.note_device_touched();
+            if (c->kind != cal::Kind::Capacity) cal_no_agg();
           }
           cal_sweep.on_cmd(*c, cal_now, pwr);
+          const auto ack = cal_sweep.take_ack();
+          // An accepted capacity sweep flies this width's production power
+          // table: programmed only after on_cmd() accepted it, since a new
+          // run zeroes the diffs for its anchor read first. Never for a
+          // refused command or a repeat of the running sweep.
+          if (starting && c->kind == cal::Kind::Capacity && ack &&
+              ack->result == cal::AckResult::Accepted)
+            power_table.program_for_cal(c->bw);
           // The ack goes out HERE -- before this thread pumps the sweep the
           // command touched, whose first cell waits 200 ms for it -- on every
           // accepted command, an exact repeat included: the GS resends its
           // SWEEP every 200 ms into a lossy uplink, and one lost ack must not
           // cost the sweep.
-          if (auto ack = cal_sweep.take_ack()) send_cal(*ack);
+          if (ack) send_cal(*ack);
           // A command refused because the chip could not report its anchor
-          // was refused after on_cmd() had already zeroed the diffs, and no
-          // run opened, so no falling edge will restore them: do it now.
-          if (cal_sweep.take_refused()) {
+          // was refused after on_cmd() had already zeroed the diffs and no
+          // run opened: restore_owed puts them back below.
+          if (cal_sweep.take_refused())
             std::fprintf(stderr,
                          "maburd cal: sweep refused (TXAGC anchor unreadable); restoring "
                          "operating power\n");
-            restore_operating_power();
-          }
         } else if (const auto* ap = std::get_if<cal::ApplyCmd>(&in.msg)) {
           // The GS resends APPLY every 200 ms until it hears APPLIED: a
           // (nonce, bw) already applied is answered again, never re-applied.
@@ -3073,16 +3117,20 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
         std::this_thread::sleep_for(std::chrono::microseconds(200));
         continue;  // never fall through to the video drain below
       }
+      // The run is over (or never opened: refused, or opened and closed in
+      // this same drain): restore TX power for real before anything below
+      // can transmit again. Owed from the sweep's first device write, not
+      // keyed on cal_was_active, which a run living within one drain never
+      // sets.
+      if (restore_owed.take_due(cal_sweep.active())) restore_operating_power();
       if (cal_was_active) {
-        // Falling edge: restore TX power for real before anything below can
-        // transmit again. Drain TxQueue a SECOND time here too -- the hot
+        // Falling edge: drain TxQueue a SECOND time here too -- the hot
         // thread's own cal_active guard (its loop, above) can race this exact
         // transition and push one more AU's bodies into txq between this
         // thread clearing cal_active and noticing it here; left alone those
         // bodies would sit queued for the length of the NEXT session (or
         // forever, if there isn't one) and go out stale with a session-length
         // q_ms stamp whenever they finally flush.
-        restore_operating_power();
         txq.drain();
       }
       cal_was_active = false;
