@@ -282,9 +282,11 @@ uint64_t finish_one_cell(CalSweep& s, RadioTx& tx, FakePowerCtl& pwr, FakeCapaci
   return t - 1;
 }
 
-TEST(done_repeats_every_200_ms_until_the_next_command) {
+TEST(done_repeats_from_100_ms_then_every_200_ms_until_the_next_command) {
   // SweepDone rides a lossy downlink, and a capacity sweep without it writes
-  // nothing: it is re-armed every 200 ms until the GS shows it moved on.
+  // nothing: it is re-armed 100 ms after the sweep ends -- half a period
+  // off the GS's 200 ms resend grid -- then every 200 ms until the GS shows
+  // it moved on.
   CaptureSink sink;
   RadioTx tx(sink);
   FakePowerCtl pwr;
@@ -293,26 +295,30 @@ TEST(done_repeats_every_200_ms_until_the_next_command) {
   const uint64_t end = finish_one_cell(s, tx, pwr, cap, 7, 0);
   const auto first = s.take_done();
   REQUIRE(first.has_value());
-  for (uint64_t t = end + 1; t < end + 200; ++t) {
+  for (uint64_t t = end + 1; t < end + 100; ++t) {
     s.pump(t, tx, pwr, cap);
     CHECK(!s.take_done().has_value());
   }
-  s.pump(end + 200, tx, pwr, cap);
+  s.pump(end + 100, tx, pwr, cap);
   const auto again = s.take_done();
   REQUIRE(again.has_value());
   CHECK(again->nonce == 7 && again->seq == 0 && again->offered == first->offered);
-  s.pump(end + 399, tx, pwr, cap);
+  s.pump(end + 299, tx, pwr, cap);
   CHECK(!s.take_done().has_value());
-  s.pump(end + 400, tx, pwr, cap);
+  s.pump(end + 300, tx, pwr, cap);
+  CHECK(s.take_done().has_value());
+  s.pump(end + 499, tx, pwr, cap);
+  CHECK(!s.take_done().has_value());
+  s.pump(end + 500, tx, pwr, cap);
   CHECK(s.take_done().has_value());
 
   // The next command of the run -- here the APPLY -- stops it.
   cal::ApplyCmd a;
   a.nonce = 7;
   a.seq = 0;
-  s.on_apply(a, end + 450);
+  s.on_apply(a, end + 550);
   REQUIRE(s.take_pending_apply().has_value());
-  for (uint64_t t = end + 450; t < end + 2000; t += 10) {
+  for (uint64_t t = end + 550; t < end + 2000; t += 10) {
     s.pump(t, tx, pwr, cap);
     CHECK(!s.take_done().has_value());
   }
@@ -363,7 +369,7 @@ TEST(done_repeats_stop_at_a_sweep_an_abort_or_the_close) {
       if (s.take_done()) ++repeats;
     }
     CHECK(!s.active());
-    CHECK(repeats == 4);  // +200 .. +800; the run closed at +1000
+    CHECK(repeats == 5);  // +100, +300 .. +900; the run closed at +1000
   }
 }
 

@@ -53,8 +53,9 @@ bool CalSweep::starts_sweep(const cal::SweepCmd& c) const {
 
 void CalSweep::on_cmd(const cal::SweepCmd& c, uint64_t now_ms, PowerCtl& pwr) {
   const bool new_session = !has_session_ || c.nonce != nonce_;
-  // Any SWEEP of the open run shows the GS has moved past the last
-  // SweepDone (take_done()), whatever on_cmd does with it below.
+  // Any SWEEP of the open run is taken as the GS having moved past the
+  // last SweepDone (take_done()) -- not proof that it heard it -- whatever
+  // on_cmd does with it below.
   if (!new_session) repeat_done_.reset();
   // A closed run (hard cap, abort, or await timeout) never reopens: a
   // straggler or a GS resend of that exact nonce arriving after the
@@ -379,7 +380,7 @@ void CalSweep::finish_sweep(uint64_t now_ms) {
     pending_done_ = cal::SweepDone{nonce_, static_cast<uint8_t>(last_started_seq_), offered_,
                                    blocked_pct_};
     repeat_done_ = pending_done_;
-    next_done_ms_ = now_ms + kDoneRepeatMs;
+    next_done_ms_ = now_ms + kDoneFirstRepeatMs;
   }
   // The run stays open -- Capacity can follow Power, and a result's
   // verify can follow an apply -- so this is Idle-but-active, not a full

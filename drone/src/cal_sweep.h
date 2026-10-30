@@ -240,15 +240,18 @@ class CalSweep {
 
   // Drains the finished sweep's per-cell results, for a Power or Capacity
   // sweep (never for Verify -- see arm_verify). Armed the instant the last
-  // cell's work is done, inside pump(), and re-armed by pump() every
-  // kDoneRepeatMs after that while the run waits: SweepDone rides a lossy
-  // downlink, and a capacity sweep whose SweepDone never reaches the GS
-  // writes nothing. The repeats stop at the next command of the run --
-  // any SweepCmd, ApplyCmd or Abort naming its nonce, which shows the GS
-  // has moved on -- or when the run closes. The owner sends whatever this
-  // yields.
+  // cell's work is done, inside pump(), and re-armed by pump()
+  // kDoneFirstRepeatMs later and every kDoneRepeatMs after that while the
+  // run waits: SweepDone rides a lossy downlink, and a capacity sweep
+  // whose SweepDone never reaches the GS writes nothing. The half-period
+  // offset keeps the repeats off the GS's own 200 ms resend grid, so a
+  // repeat and the GS's next command never land on the same tick. The
+  // repeats stop at the next command of the run -- any SweepCmd, ApplyCmd
+  // or Abort naming its nonce, taken as the GS having moved on -- or when
+  // the run closes. The owner sends whatever this yields.
   std::optional<cal::SweepDone> take_done();
 
+  static constexpr uint32_t kDoneFirstRepeatMs = 100;
   static constexpr uint32_t kDoneRepeatMs = 200;
 
   // Drains the ApplyCmd queued by on_apply(), if any. Once drained, the
