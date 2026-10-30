@@ -680,7 +680,7 @@ TEST(calibration_and_parameter_sets_on_two_threads_lose_nothing) {
   CHECK(set_bad == 0);
   const Config cfg = load_config(b.path());
   CHECK(cfg.record.bitrate_kbps == 30000);
-  CHECK(cfg.radio.rate_walls_rel == walls_last);
+  CHECK(cfg.radio.rate_walls_rel_20 == walls_last);
   CHECK(cfg.radio.legacy_wall_rel == 58);
   CHECK(cfg.radio.power_mode == "offset");
   std::remove((b.path() + ".pre-cal").c_str());

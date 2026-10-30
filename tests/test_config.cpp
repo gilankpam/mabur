@@ -748,60 +748,135 @@ TEST(msp_rejects_bad_values) {
   }
 }
 
-TEST(radio_wall_equalization_keys_parse) {
+// rate_walls_rel is gone: a single shared table either overclaims 40 or
+// leaves 20 on the table (bw40-sweep findings), so the loader only knows
+// rate_walls_rel_20/_40 now. The old key is dropped from the known-key
+// list entirely rather than kept as a dead alias (CLAUDE.md: config keys
+// are free to change).
+TEST(rate_walls_rel_is_an_unknown_key_now) {
+  auto path = write_temp_toml(
+      "[radio]\nrate_walls_rel = [63, 63, 63, 42, 20, 1, -2, -4]\n");
+  std::string msg = what_of([&] { (void)load_config(path.string()); });
+  CHECK(msg.find("radio.rate_walls_rel") != std::string::npos);
+  CHECK(msg.find("unknown key") != std::string::npos);
+  std::filesystem::remove(path);
+}
+
+TEST(radio_per_width_walls_parse_and_validate) {
   auto path = write_temp_toml(
       "[radio]\n"
       "power_mode = \"offset\"\n"
-      "rate_walls_rel = [63, 63, 63, 42, 20, 1, -2, -4]\n"
+      "rate_walls_rel_20 = [63, 63, 63, 42, 20, 1, -2, -4]\n"
+      "rate_walls_rel_40 = [63, 63, 63, 45, 28, 28, 23, 10]\n"
       "legacy_wall_rel = 63\n"
       "wall_margin_db = 2.0\n");
   Config cfg = load_config(path.string());
-  CHECK((cfg.radio.rate_walls_rel ==
+  CHECK((cfg.radio.rate_walls_rel_20 ==
          std::array<int, 8>{63, 63, 63, 42, 20, 1, -2, -4}));
+  CHECK((cfg.radio.rate_walls_rel_40 ==
+         std::array<int, 8>{63, 63, 63, 45, 28, 28, 23, 10}));
   CHECK(cfg.radio.legacy_wall_rel == 63);
   CHECK(cfg.radio.wall_margin_db == 2.0);
   std::filesystem::remove(path);
-}
 
-TEST(radio_rate_walls_rel_wrong_length_rejected) {
-  auto path = write_temp_toml("[radio]\nrate_walls_rel = [63, 63, 63]\n");
-  std::string msg = what_of([&] { (void)load_config(path.string()); });
-  CHECK(msg.find("radio.rate_walls_rel") != std::string::npos);
-  std::filesystem::remove(path);
-}
+  for (const char* key : {"rate_walls_rel_20", "rate_walls_rel_40"}) {
+    auto bad = write_temp_toml(std::string("[radio]\n") + key + " = [63, 63, 63]\n");
+    std::string msg = what_of([&] { (void)load_config(bad.string()); });
+    CHECK(msg.find(std::string("radio.") + key) != std::string::npos);
+    std::filesystem::remove(bad);
+  }
 
-TEST(radio_power_mode_offset_requires_rate_walls_rel) {
-  auto path = write_temp_toml("[radio]\npower_mode = \"offset\"\n");
-  std::string msg = what_of([&] { (void)load_config(path.string()); });
-  CHECK(msg.find("radio.rate_walls_rel") != std::string::npos);
-  std::filesystem::remove(path);
-}
+  for (const char* key : {"rate_walls_rel_20", "rate_walls_rel_40"}) {
+    auto bad = write_temp_toml(std::string("[radio]\n") + key +
+                                " = [64, 63, 63, 63, 63, 63, 63, 63]\n");
+    std::string msg = what_of([&] { (void)load_config(bad.string()); });
+    CHECK(msg.find(std::string("radio.") + key) != std::string::npos);
+    CHECK(msg.find("[-64,63]") != std::string::npos);
+    std::filesystem::remove(bad);
+  }
 
-TEST(radio_rel_wall_outside_diff_field_rejected) {
-  auto path = write_temp_toml(
-      "[radio]\n"
-      "rate_walls_rel = [64, 63, 63, 63, 63, 63, 63, 63]\n");
-  std::string msg = what_of([&] { (void)load_config(path.string()); });
-  CHECK(msg.find("radio.rate_walls_rel") != std::string::npos);
-  CHECK(msg.find("[-64,63]") != std::string::npos);
-  std::filesystem::remove(path);
+  // rel - m must stay >= -64 or the diff clamps silently; -62 - 4 = -66.
+  for (const char* key : {"rate_walls_rel_20", "rate_walls_rel_40"}) {
+    auto bad = write_temp_toml(
+        std::string("[radio]\npower_mode = \"offset\"\n") + key +
+        " = [63, 63, 63, 63, 63, 63, 63, -62]\n"
+        "legacy_wall_rel = 63\nwall_margin_db = 1.0\n");
+    std::string msg = what_of([&] { (void)load_config(bad.string()); });
+    CHECK(msg.find(std::string("radio.") + key) != std::string::npos);
+    std::filesystem::remove(bad);
+  }
+
   auto path2 = write_temp_toml("[radio]\nlegacy_wall_rel = -65\n");
-  msg = what_of([&] { (void)load_config(path2.string()); });
+  std::string msg = what_of([&] { (void)load_config(path2.string()); });
   CHECK(msg.find("radio.legacy_wall_rel") != std::string::npos);
   std::filesystem::remove(path2);
 }
 
-TEST(radio_offset_rel_minus_margin_below_field_rejected) {
-  // rel - m must stay >= -64 or the diff clamps silently; -62 - 4 = -66.
-  auto path = write_temp_toml(
-      "[radio]\n"
-      "power_mode = \"offset\"\n"
-      "rate_walls_rel = [63, 63, 63, 63, 63, 63, 63, -62]\n"
-      "legacy_wall_rel = 63\n"
-      "wall_margin_db = 1.0\n");
+TEST(offset_needs_one_width_table) {
+  auto path = write_temp_toml("[radio]\npower_mode = \"offset\"\n");
   std::string msg = what_of([&] { (void)load_config(path.string()); });
-  CHECK(msg.find("radio.rate_walls_rel") != std::string::npos);
+  CHECK(msg.find("radio.rate_walls_rel_20") != std::string::npos);
+  CHECK(msg.find("one per-width wall table is required") != std::string::npos);
   std::filesystem::remove(path);
+
+  // Either width alone is enough.
+  auto only20 = write_temp_toml(
+      "[radio]\npower_mode = \"offset\"\n"
+      "rate_walls_rel_20 = [63, 63, 63, 63, 63, 63, 63, 63]\n");
+  Config c20 = load_config(only20.string());
+  CHECK(c20.radio.has_walls(20));
+  std::filesystem::remove(only20);
+
+  auto only40 = write_temp_toml(
+      "[radio]\npower_mode = \"offset\"\n"
+      "rate_walls_rel_40 = [63, 63, 63, 63, 63, 63, 63, 63]\n");
+  Config c40 = load_config(only40.string());
+  CHECK(c40.radio.has_walls(40));
+  std::filesystem::remove(only40);
+}
+
+// walls_for()/has_walls() are plain RadioCfg accessors -- exercised directly
+// rather than through the loader, since the fallback they implement has
+// nothing to do with TOML parsing.
+TEST(walls_for_falls_back_to_the_other_width) {
+  RadioCfg r;
+  r.rate_walls_rel_20 = std::array<int, 8>{1, 2, 3, 4, 5, 6, 7, 8};
+  CHECK(r.has_walls(20));
+  CHECK(!r.has_walls(40));
+  const std::array<int, 8>* w40 = r.walls_for(40);
+  REQUIRE(w40 != nullptr);
+  CHECK((*w40 == std::array<int, 8>{1, 2, 3, 4, 5, 6, 7, 8}));
+  const std::array<int, 8>* w20 = r.walls_for(20);
+  REQUIRE(w20 != nullptr);
+  CHECK(w20 == &*r.rate_walls_rel_20);
+
+  RadioCfg empty;
+  CHECK(empty.walls_for(20) == nullptr);
+  CHECK(empty.walls_for(40) == nullptr);
+}
+
+TEST(cal_flags_must_be_a_known_string) {
+  for (const char* key : {"cal_flags_20", "cal_flags_40"}) {
+    auto bad = write_temp_toml(std::string("[radio]\n") + key + " = \"bogus\"\n");
+    std::string msg = what_of([&] { (void)load_config(bad.string()); });
+    CHECK(msg.find(std::string("radio.") + key) != std::string::npos);
+    std::filesystem::remove(bad);
+  }
+  for (const char* v : {"ldpc+stbc", "stbc", "ldpc", "none"}) {
+    auto path = write_temp_toml(
+        std::string("[radio]\ncal_flags_20 = \"") + v + "\"\n" +
+        "cal_flags_40 = \"" + v + "\"\n");
+    Config cfg = load_config(path.string());
+    CHECK(cfg.radio.cal_flags_20 == v);
+    CHECK(cfg.radio.cal_flags_40 == v);
+    std::filesystem::remove(path);
+  }
+
+  auto defaulted = write_temp_toml("[radio]\nwidth = 20\n");
+  Config cfg = load_config(defaulted.string());
+  CHECK(cfg.radio.cal_flags_20 == "ldpc+stbc");
+  CHECK(cfg.radio.cal_flags_40 == "ldpc+stbc");
+  std::filesystem::remove(defaulted);
 }
 
 TEST(deleted_absolute_wall_keys_fail_boot) {

@@ -1,6 +1,7 @@
 #pragma once
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -29,11 +30,32 @@ struct RadioCfg {
   std::string power_mode = "none";
   // Wall-equalization inputs: measured per-rate clean-air ceilings as
   // signed indices RELATIVE to the chip's per-channel anchor, [-64,63].
-  // rate_walls_rel is REQUIRED when power_mode == "offset". See
-  // power_plan.h for diff[r] = rel[r] - m. One table covers every channel.
-  std::array<int, 8> rate_walls_rel = {0, 0, 0, 0, 0, 0, 0, 0};
+  // One table per width (the 8812E/8822x walls at 40 run a few dB below the
+  // 20 MHz walls on every unit measured, so a single shared table either
+  // overclaims 40 or leaves 20 on the table). At least one table is
+  // REQUIRED when power_mode == "offset"; walls_for() falls back to the
+  // other width's table when the requested one is absent, so a unit
+  // calibrated on only one width still powers both. See power_plan.h for
+  // diff[r] = rel[r] - m. legacy_wall_rel/wall_margin_db are shared by both
+  // widths (legacy/CCK rides the one legacy wall regardless of width).
+  std::optional<std::array<int, 8>> rate_walls_rel_20, rate_walls_rel_40;
   int legacy_wall_rel = 63;
   double wall_margin_db = 1.0;
+  // Which of LDPC/STBC the walls above were measured with, recorded by
+  // maburcal so a later re-measure (or a human reading the bundle) knows
+  // what the numbers assume. Purely informational: it does not gate
+  // anything at load, and changing radio.ldpc does not invalidate it on
+  // its own. One of "ldpc+stbc", "stbc", "ldpc", "none".
+  std::string cal_flags_20 = "ldpc+stbc", cal_flags_40 = "ldpc+stbc";
+
+  // The table for `bw`, falling back to the other width's (walls at 40 are
+  // never above walls at 20 on any unit measured, so the fallback is
+  // always a safe, if suboptimal, substitute). nullptr when neither width
+  // has a table.
+  const std::array<int, 8>* walls_for(uint8_t bw) const;
+  // True when `bw`'s own table is present (ignores the other width's
+  // fallback walls_for() would use).
+  bool has_walls(uint8_t bw) const;
   // Parallel USB sender threads (URBs in flight). The 8822E flow-controls
   // sync bulk-OUT URBs (~0.4 ms acceptance handshake + FIFO drain), so a
   // single blocking sender caps air throughput at ~26 Mbps regardless of
