@@ -907,6 +907,41 @@ TEST(set_acks_in_progress_then_accepted_on_completion) {
   CHECK(c.stats().sets_in_progress == 1 && c.stats().sets_ok == 1);
 }
 
+// An accepted apply's notices follow its ACCEPTED ack as WARNING
+// STATUSTEXTs; one longer than a STATUSTEXT's 50 chars goes out as chunks
+// sharing one nonzero id, chunk_seq counting up, that join back into it.
+TEST(set_accepted_with_notices_sends_warning_statustext_chunks) {
+  ScratchBundle b;
+  auto c = make(b.path());
+  REQUIRE(do_set(c, set_bool("RADIO_LDPC", false)).ack.param_result == PARAM_ACK_IN_PROGRESS);
+  fake.complete(true, "");
+  const std::string longer =
+      "radio: 20 MHz walls were measured with ldpc on; radio.ldpc is off \xe2\x80\x94 re-run "
+      "maburcal";
+  REQUIRE(longer.size() > 50 && longer.size() <= 100);
+  fake.result.notices = {"short notice", longer};
+  c.poll_results();
+  auto msgs = drain(c);
+  REQUIRE(msgs.size() == 4);
+  CHECK(ack_of(msgs[0]).param_result == PARAM_ACK_ACCEPTED);
+  mavlink_statustext_t s{};
+  mavlink_msg_statustext_decode(&msgs[1], &s);
+  CHECK(s.severity == MAV_SEVERITY_WARNING && s.id == 0 && s.chunk_seq == 0);
+  CHECK(std::string(s.text, strnlen(s.text, sizeof s.text)) == "short notice");
+  std::string joined;
+  uint16_t id = 0;
+  for (size_t i = 2; i < 4; ++i) {
+    REQUIRE(msgs[i].msgid == MAVLINK_MSG_ID_STATUSTEXT);
+    mavlink_msg_statustext_decode(&msgs[i], &s);
+    CHECK(s.severity == MAV_SEVERITY_WARNING);
+    CHECK(s.id != 0 && s.chunk_seq == i - 2);
+    if (i == 2) id = s.id;
+    CHECK(s.id == id);
+    joined += std::string(s.text, strnlen(s.text, sizeof s.text));
+  }
+  CHECK(joined == longer);
+}
+
 TEST(set_acks_failed_with_statustext_on_failed_completion) {
   ScratchBundle b;
   auto c = make(b.path());

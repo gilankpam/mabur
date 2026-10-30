@@ -10,6 +10,7 @@
 #include <system_error>
 #include <utility>
 
+#include "cal_link.h"
 #include "config_write.h"
 #include "mabur/config_params.h"
 
@@ -161,6 +162,13 @@ ConfigApplyResult ConfigApplier::apply(const Job& job) {
   log("apply " + std::string(row.id) + " " + path_name(r.path) + " " +
       (r.ok ? std::string("ok") : "failed: " + r.reason) +
       (followed.empty() ? "" : " +" + followed) + " " + std::to_string(r.ms) + " ms");
+  // The ldpc flag the link now flies may no longer be the one a flown wall
+  // table was measured under: accepted all the same (the operator may be
+  // about to re-calibrate), with the boot warning's text sent back.
+  if (r.ok && is(row, "radio", "ldpc")) {
+    r.notices = ldpc_mismatch_warnings(live_.radio);
+    for (const auto& n : r.notices) log(n);
+  }
   return r;
 }
 

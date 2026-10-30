@@ -389,6 +389,36 @@ TEST(ldpc_calls_ldpc_hook_with_candidate) {
   CHECK(g.f.order == std::vector<std::string>{"ldpc"});
 }
 
+// An accepted RADIO_LDPC set that leaves a flown wall table measured under
+// the other ldpc flag carries the boot warning's text as a notice, one per
+// width; a set that leaves them agreeing, or one under power_mode "none",
+// carries none.
+TEST(ldpc_set_against_the_walls_flags_carries_a_notice_per_width) {
+  {
+    Rig g;
+    std::string t = slurp(g.path());
+    const std::string none = "power_mode = \"none\"";
+    const size_t at = t.find(none);
+    REQUIRE(at != npos);
+    t.replace(at, none.size(), "power_mode = \"offset\"");
+    spit(g.path(), t);
+    ConfigApplyResult r = apply(g.a, 1, Value{Type::Bool, false});
+    REQUIRE(r.ok);
+    REQUIRE(r.notices.size() == 2);
+    CHECK(r.notices[0] ==
+          "radio: 20 MHz walls were measured with ldpc on; radio.ldpc is off \xe2\x80\x94 "
+          "re-run maburcal");
+    CHECK(r.notices[1].rfind("radio: 40 MHz walls were measured with ldpc on", 0) == 0);
+    r = apply(g.a, 1, Value{Type::Bool, true});
+    CHECK(r.ok && r.notices.empty());
+  }
+  {
+    Rig g;  // the bundle flies no walls (power_mode "none")
+    const ConfigApplyResult r = apply(g.a, 1, Value{Type::Bool, false});
+    CHECK(r.ok && r.notices.empty());
+  }
+}
+
 TEST(msp_enable_calls_msp_hook_with_candidate) {
   Rig g;
   REQUIRE(!load_config(g.path()).low_power.enable);

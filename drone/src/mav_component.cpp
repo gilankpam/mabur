@@ -212,6 +212,33 @@ void MavComponent::queue_status(const std::string& text) {
   queue(m);
 }
 
+void MavComponent::queue_warning(const std::string& text) {
+  // One packet (id 0) when it fits; otherwise MAVLink 2's long-STATUSTEXT
+  // form: 50-byte chunks sharing one nonzero id, chunk_seq from 0, the
+  // last one NUL-terminated -- a text that fills its last chunk exactly
+  // gets one more, empty, chunk to carry the NUL.
+  if (text.size() <= kStatusTextLen) {
+    char buf[kStatusTextLen] = {};
+    std::memcpy(buf, text.data(), text.size());
+    Msg m;
+    mavlink_msg_statustext_pack_chan(kSysId, kCompId, kChanDroneRx, &m.m, MAV_SEVERITY_WARNING,
+                                     buf, 0, 0);
+    queue(m);
+    return;
+  }
+  if (++status_id_ == 0) status_id_ = 1;
+  for (size_t off = 0, seq = 0; off <= text.size(); off += kStatusTextLen, ++seq) {
+    char buf[kStatusTextLen] = {};
+    const size_t n = std::min(text.size() - off, kStatusTextLen);
+    std::memcpy(buf, text.data() + off, n);
+    Msg m;
+    mavlink_msg_statustext_pack_chan(kSysId, kCompId, kChanDroneRx, &m.m, MAV_SEVERITY_WARNING,
+                                     buf, status_id_, static_cast<uint8_t>(seq));
+    queue(m);
+    if (n < kStatusTextLen) break;  // this chunk carried the terminating NUL
+  }
+}
+
 void MavComponent::handle_list() {
   if (list_queued_ > 0) {
     ++stats_.list_coalesced;
@@ -422,6 +449,7 @@ void MavComponent::poll_results() {
     std::string err;
     (void)current_value(cfg_path_, p.idx, &now, &err);
     queue_ack(p.id16, &now, p.row_type, PARAM_ACK_ACCEPTED);
+    for (const auto& n : r.notices) queue_warning(n);
     ++stats_.sets_ok;
     log("set " + shown + " = " + p.rendered + " (" + p.field + ") applied " +
         apply_path_name(r.path) + " " + std::to_string(r.ms) + " ms");

@@ -113,7 +113,8 @@ class MavComponent {
   int take_outbound(std::vector<uint8_t>* out);
   size_t outbound_packets() const { return queue_.size(); }
   // Drains the applier's result for the one set in flight, if any, and
-  // queues its final PARAM_EXT_ACK (plus a STATUSTEXT on failure). The MAV
+  // queues its final PARAM_EXT_ACK (plus a STATUSTEXT on failure, or one
+  // warning STATUSTEXT per notice of an accepted apply). The MAV
   // loop calls this every pass; a no-op when nothing is pending.
   void poll_results();
   const MavComponentStats& stats() const { return stats_; }
@@ -136,6 +137,9 @@ class MavComponent {
   // completion ack.
   void queue_ack(const char id16[16], const mavparam::Value* v, uint8_t mav_type, uint8_t result);
   void queue_status(const std::string& text);
+  // A MAV_SEVERITY_WARNING STATUSTEXT, chunked when longer than one packet
+  // holds (an accepted apply's notices).
+  void queue_warning(const std::string& text);
   void log(const std::string& line) const;
 
   std::string cfg_path_;
@@ -147,6 +151,7 @@ class MavComponent {
   };
   std::deque<Out> queue_;
   size_t list_queued_ = 0;   // list values in queue_
+  uint16_t status_id_ = 0;   // last long-STATUSTEXT id used (0 is never one)
   MavComponentStats stats_;
 
   // The one set submitted to the applier and not yet resolved: ConfigApplier
