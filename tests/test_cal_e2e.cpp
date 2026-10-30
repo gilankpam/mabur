@@ -17,7 +17,7 @@
 //       cal::encode(.., 255, 190, kChanGsLocal) -> the tunnel's cal lane,
 //       never gated on radio_silent(); inbound packets -> feed_cal_packet();
 //       stamped frames -> on_cal_frame(card, info, rssi, crc_ok,
-//       24 + body + 4, now).
+//       cal_air_bytes(body), now).
 //   Drone (drone/src/main.cpp): the MAV thread's check_mav verdict (kOk /
 //       kOkLatched under the open run / rejected) -> decode_all -> the cal
 //       queue; the TX writer thread drains the queue (latched SWEEPs only
@@ -270,7 +270,8 @@ struct Kit {
 
   // Instrumentation.
   int applies_ok = 0, applies_failed = 0;
-  int latched_sweeps = 0, latched_applies = 0, latched_aborts = 0;
+  int latched_sweeps = 0, latched_applies = 0, latched_aborts = 0, aborts_received = 0;
+  int dones_sent = 0;
   int latch_drops = 0, rejected = 0, non_cal_frames = 0;
   int gs_msgs_sent = 0;
   int dropped_gs_to_drone = 0, dropped_drone_to_gs = 0;
@@ -427,6 +428,7 @@ struct Kit {
         else
           sweep.on_apply(*ap, t);
       } else if (const auto* ab = std::get_if<cal::Abort>(&in.msg)) {
+        ++aborts_received;
         if (in.latched) ++latched_aborts;
         sweep.on_abort(*ab, t, pwr);
       }
@@ -448,7 +450,10 @@ struct Kit {
     if (sweep.active()) {
       sweep.pump(t, tx, pwr, cap);
       put_sweep_frames_on_air();
-      if (auto d = sweep.take_done()) send_cal(*d);
+      if (auto d = sweep.take_done()) {
+        ++dones_sent;
+        send_cal(*d);
+      }
       return;
     }
     if (restore_owed.take_due(sweep.active())) restore_operating_power();
@@ -466,7 +471,7 @@ struct Kit {
     for (const auto& f : sink.frames) {
       REQUIRE(f.size() >= 4);
       const size_t rt_len = static_cast<size_t>(f[2]) | (static_cast<size_t>(f[3]) << 8);
-      const size_t hdr = rt_len + 26;  // radiotap | QoS-data dot11 (24 + QoS control)
+      const size_t hdr = rt_len + maburgs::kCalDot11HeaderLen;  // radiotap | dot11
       REQUIRE(f.size() > hdr);
       const uint8_t* body = f.data() + hdr;
       const size_t body_len = f.size() - hdr;
@@ -486,8 +491,8 @@ struct Kit {
       // A plausible RSSI: the TXAGC ramp (~0.3 dB/idx) well clear of the
       // saturation threshold; card 1 hears a little less.
       const int rssi = -80 + std::clamp(pwr.on_air_idx() - 28, 0, 63) * 3 / 10;
-      gs.on_cal_frame(0, info, rssi, !compressed, 24 + body_len + 4, t);
-      gs.on_cal_frame(1, info, rssi - 3, !compressed, 24 + body_len + 4, t);
+      gs.on_cal_frame(0, info, rssi, !compressed, maburgs::cal_air_bytes(body_len), t);
+      gs.on_cal_frame(1, info, rssi - 3, !compressed, maburgs::cal_air_bytes(body_len), t);
     }
     sink.frames.clear();
   }
@@ -541,7 +546,7 @@ mabur::BlastResult FakeCapacityCtl::blast(const uint8_t* frame, size_t len, uint
   cal::CalFrameInfo info;
   REQUIRE(cal::parse_cal_payload(frame, len, &info));
   REQUIRE(info.kind == cal::Kind::Capacity);
-  const size_t air_bytes = 24 + len + 4;
+  const size_t air_bytes = maburgs::cal_air_bytes(len);
   const double nominal_bps =
       mabur::rc::phy_rate_mbps({mabur::rc::PhyMode::HT, info.rate, info.bw}) * 1e6;
   // Frames the air carries in the dwell at this point's true efficiency.
@@ -649,6 +654,15 @@ TEST(four_sweeps_write_both_width_tables) {
   CHECK(k.pwr.override_idx == -1);
   CHECK(!k.pwr.diffs_zeroed);
   CHECK(k.reload_failures == 0);
+  // Every SweepDone was heard at once on a clean link, so the next command
+  // stopped its repeats: one per power/capacity sweep, a handful at most.
+  CHECK(k.dones_sent >= 4);
+  CHECK(k.dones_sent <= 8);
+  // The closing Abort goes out three times; the drone ignores the copies
+  // after the first closed the run.
+  for (int i = 0; i < 1000; ++i) k.step();
+  CHECK(k.aborts_received == 3);
+  CHECK(k.restores == 1);
 }
 
 TEST(walls_only_20_leaves_the_40_table_alone) {
@@ -731,7 +745,7 @@ TEST(session_lapse_mid_run_does_not_stop_the_apply) {
   check_eff(c.air_clock.efficiency_40, 40);
 
   k.drain();
-  CHECK(k.latched_aborts == 1);
+  CHECK(k.latched_aborts >= 1);
   CHECK(!k.sweep.active());
   CHECK(k.restores == 1);
 }
@@ -751,6 +765,7 @@ TEST(abort_mid_sweep_restores_power_and_writes_nothing) {
   CHECK(k.gs.state() == State::Idle);
   for (int i = 0; i < 50; ++i) k.step();
   CHECK(!k.sweep.active());
+  CHECK(k.aborts_received == 1);
   CHECK(k.restores == 1);
   CHECK(k.pwr.override_idx == -1);
   CHECK(!k.pwr.diffs_zeroed);
@@ -763,6 +778,8 @@ TEST(abort_mid_sweep_restores_power_and_writes_nothing) {
   CHECK(k.applies_failed == 0);
   CHECK(k.read() == std::string(kFixture));
   CHECK(!file_exists(k.file.path + ".pre-cal"));
+  CHECK(k.aborts_received == 3);
+  CHECK(k.restores == 1);
   CHECK(k.gs.snapshot().fail_reason == "operator abort");
 }
 
@@ -822,14 +839,12 @@ TEST(a_lossy_link_still_completes) {
   // are clean: they ARE the measurement, and this is a test of the control
   // plane. A run carries only a dozen or so control messages each way, so
   // one seed loses one or two of them at most; thirty seeds between them
-  // lose acks, SWEEP and APPLY repeats, APPLIEDs, SweepDones and closing
-  // Aborts.
+  // lose acks, SWEEP and APPLY repeats, APPLIEDs, SweepDones and Aborts.
   //
-  // One loss the protocol accepts by design: SweepDone goes out once, and
-  // without it a capacity sweep cannot tell a tx_bound point from a real
-  // one, so it writes nothing at that width (WidthResult::eff_unknown).
-  // Such a width must leave the old efficiency entries alone; every other
-  // byte matches the clean run.
+  // Every seed must write exactly the clean run's file. A lost SweepDone
+  // is repeated every 200 ms until the GS's next command, and the GS keeps
+  // listening phase_slack_ms (1 s) past the planned end, so losing a
+  // capacity sweep's efficiency write takes five consecutive losses.
   int lost_down = 0, lost_up = 0, exact = 0, eff_unknown = 0, slowest_ms = 0;
   for (uint32_t seed = 1; seed <= 30; ++seed) {
     Kit k("lossy");
@@ -849,21 +864,13 @@ TEST(a_lossy_link_still_completes) {
     check_walls(*c.radio.rate_walls_rel_20, 20);
     check_walls(*c.radio.rate_walls_rel_40, 40);
     CHECK(c.radio.power_mode == "offset");
-    const bool unknown20 = snap.width[0].eff_unknown, unknown40 = snap.width[1].eff_unknown;
-    if (!unknown20 && !unknown40) {
-      CHECK(k.read() == clean_text);
-      ++exact;
-    } else {
-      ++eff_unknown;
-    }
-    if (unknown20)
-      for (int r = 0; r < 8; ++r) CHECK(c.air_clock.efficiency_20[r] == kFixtureEff20[r]);
-    else
-      check_eff(c.air_clock.efficiency_20, 20);
-    if (unknown40)
-      for (int r = 0; r < 8; ++r) CHECK(c.air_clock.efficiency_40[r] == kFixtureEff40[r]);
-    else
-      check_eff(c.air_clock.efficiency_40, 40);
+    const bool unknown = snap.width[0].eff_unknown || snap.width[1].eff_unknown;
+    CHECK(!unknown);
+    if (unknown) ++eff_unknown;
+    CHECK(k.read() == clean_text);
+    if (k.read() == clean_text) ++exact;
+    check_eff(c.air_clock.efficiency_20, 20);
+    check_eff(c.air_clock.efficiency_40, 40);
     // However the closing Abort fared, the drone gets home: the Abort, or
     // its own await timer if the Abort was lost.
     k.drain();
@@ -873,12 +880,12 @@ TEST(a_lossy_link_still_completes) {
     CHECK(!k.pwr.diffs_zeroed);
   }
   std::printf("  30 seeds: lost %d GS->drone, %d drone->GS; %d byte-identical, %d with a "
-              "capacity SweepDone lost; slowest Done %.1f s\n",
+              "width's efficiency unwritten; slowest Done %.1f s\n",
               lost_down, lost_up, exact, eff_unknown, slowest_ms / 1000.0);
   CHECK(lost_down >= 10);
   CHECK(lost_up >= 10);
-  // The byte-identical branch carries the test, not the eff_unknown one.
-  CHECK(exact >= 15);
+  CHECK(exact == 30);
+  CHECK(eff_unknown == 0);
   CHECK(slowest_ms < 100000);
 }
 
