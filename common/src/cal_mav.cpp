@@ -156,4 +156,19 @@ bool all_packets_are_cal(const uint8_t* bytes, size_t n) {
   return true;
 }
 
+std::vector<CalMsg> decode_all(const uint8_t* bytes, size_t n) {
+  std::vector<CalMsg> out;
+  if (bytes == nullptr) return out;
+  // Same fresh, local parse state as all_packets_are_cal: no channel index.
+  mavlink_message_t rx{};
+  mavlink_status_t st{};
+  for (size_t i = 0; i < n; ++i) {
+    mavlink_message_t msg{};
+    if (mavlink_frame_char_buffer(&rx, &st, bytes[i], &msg, nullptr) != MAVLINK_FRAMING_OK)
+      continue;
+    if (auto m = decode(msg)) out.push_back(std::move(*m));
+  }
+  return out;
+}
+
 }  // namespace mabur::cal

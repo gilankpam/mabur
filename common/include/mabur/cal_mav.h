@@ -26,4 +26,9 @@ bool is_cal_msgid(uint32_t msgid);
 // with no trailing garbage or partial packet left over.
 bool all_packets_are_cal(const uint8_t* bytes, size_t n);
 
+// Splits `bytes` (whole packets, back to back) with the same fresh,
+// stateless parse and returns every cal packet in it, decoded, in order.
+// Anything else -- a non-cal id, a bad CRC, a partial tail -- is skipped.
+std::vector<CalMsg> decode_all(const uint8_t* bytes, size_t n);
+
 }  // namespace mabur::cal

@@ -204,4 +204,34 @@ TEST(all_packets_are_cal_rejects_a_mixed_frame) {
   CHECK(!all_packets_are_cal(nullptr, 0));
 }
 
+TEST(decode_all_returns_the_cal_packets_in_order) {
+  SweepCmd c;
+  c.nonce = 9;
+  c.seq = 2;
+  Abort a;
+  a.nonce = 9;
+  const auto cb = encode(CalMsg{c}, kSysId, kCompId, kChanGsLocal);
+  const auto ab = encode(CalMsg{a}, kSysId, kCompId, kChanGsLocal);
+
+  mavlink_message_t hb;
+  mavlink_msg_heartbeat_pack(kSysId, kCompId, &hb, MAV_TYPE_ONBOARD_CONTROLLER,
+                             MAV_AUTOPILOT_INVALID, 0, 0, MAV_STATE_ACTIVE);
+  uint8_t hb_buf[MAVLINK_MAX_PACKET_LEN];
+  const uint16_t hb_n = mavlink_msg_to_send_buffer(hb_buf, &hb);
+
+  // sweep, heartbeat (skipped), abort, then a truncated sweep (skipped).
+  std::vector<uint8_t> bytes = cb;
+  bytes.insert(bytes.end(), hb_buf, hb_buf + hb_n);
+  bytes.insert(bytes.end(), ab.begin(), ab.end());
+  bytes.insert(bytes.end(), cb.begin(), cb.begin() + 5);
+  const auto msgs = decode_all(bytes.data(), bytes.size());
+  REQUIRE(msgs.size() == 2);
+  REQUIRE(std::holds_alternative<SweepCmd>(msgs[0]));
+  CHECK(std::get<SweepCmd>(msgs[0]).nonce == 9 && std::get<SweepCmd>(msgs[0]).seq == 2);
+  REQUIRE(std::holds_alternative<Abort>(msgs[1]));
+  CHECK(std::get<Abort>(msgs[1]).nonce == 9);
+
+  CHECK(decode_all(nullptr, 0).empty());
+}
+
 MTEST_MAIN
