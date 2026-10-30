@@ -107,6 +107,7 @@ class _Run:
         # C/W/P/V row lands in is decided by the most recent S row, not by
         # anything on the row itself (see _feed_line_v4).
         self.cur_bw = None
+        self.bws_swept = set()  # every bw an S row has named, even an empty one
         self.walls_by_bw = {20: {}, 40: {}}     # bw -> rate -> (wall, floor_idx, best_card, flags)
         self.verify_by_bw = {20: {}, 40: {}}    # bw -> rate -> pct
         self.caps_by_bw = {20: {}, 40: {}}      # bw -> rate -> (offered, recv_best, air_bits_best, eff_x1000, blocked_pct, flags)
@@ -149,6 +150,7 @@ class _Run:
         malformed line into a no-op rather than a crash."""
         if tag == "S" and len(tok) == 5:
             self.cur_bw = int(tok[3])
+            self.bws_swept.add(self.cur_bw)
             return
         if tag == "A" and len(tok) >= 3:
             bw = int(tok[1])
@@ -336,31 +338,33 @@ def _render_run_v4(run):
     ldpc = 1 if run.ldpc else 0
     lines = [f"run nonce={run.nonce} margin={run.margin_db:.2f}dB "
              f"ch={run.channel} pick={pick} ldpc={ldpc}"]
+    # A GS that never swept 40 (no S row ever named it, whether for a
+    # power/verify or a capacity sweep) gets a single-width table -- the
+    # two-width layout is for a run that actually measured both, not a
+    # second block of dashes for a width nothing on this hardware flies.
+    widths = [20, 40] if 40 in run.bws_swept else [20]
     col = f"{'wall':>6}{'park':>6}{'verify':>7}{'eff':>7}"
-    lines.append(f"{'':6}{'20 MHz':^26}{'40 MHz':^26}")
-    lines.append(f"{'rate':<6}{col}   {col}   flags")
+    lines.append(f"{'':6}" + "".join(f"{str(bw) + ' MHz':^26}" for bw in widths))
+    lines.append(f"{'rate':<6}" + "   ".join([col] * len(widths)) + "   flags")
 
     park_step = _margin_steps(run.margin_db)
     for rate in range(8):
         have_any = any(rate in d[bw]
                        for d in (run.walls_by_bw, run.caps_by_bw, run.verify_by_bw)
-                       for bw in (20, 40))
+                       for bw in widths)
         if not have_any:
             continue
-        wall20, park20, verify20, eff20, f20 = _cell_v4(run, 20, rate, park_step)
-        wall40, park40, verify40, eff40, f40 = _cell_v4(run, 40, rate, park_step)
+        cells = [_cell_v4(run, bw, rate, park_step) for bw in widths]
+        row = f"{'mcs' + str(rate):<6}"
         flag_parts = []
-        if f20:
-            flag_parts.append(f"20:{_flag_string(f20)}")
-        if f40:
-            flag_parts.append(f"40:{_flag_string(f40)}")
-        row = (f"{'mcs' + str(rate):<6}"
-               f"{wall20:>6}{park20:>6}{verify20:>7}{eff20:>7}   "
-               f"{wall40:>6}{park40:>6}{verify40:>7}{eff40:>7}   "
-               f"{' '.join(flag_parts)}")
+        for bw, (wall_s, park_s, verify_s, eff_s, flags) in zip(widths, cells):
+            row += f"{wall_s:>6}{park_s:>6}{verify_s:>7}{eff_s:>7}   "
+            if flags:
+                flag_parts.append(f"{bw}:{_flag_string(flags)}")
+        row += " ".join(flag_parts)
         lines.append(row.rstrip())
 
-    for bw in (20, 40):
+    for bw in widths:
         if run.caps_by_bw[bw] and not run.walls_by_bw[bw]:
             lines.append(f"{bw} MHz eff measured at the existing walls")
 

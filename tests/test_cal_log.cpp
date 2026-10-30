@@ -225,6 +225,19 @@ TEST(applied_record_keeps_the_reason_text) {
   CHECK(ls[3] == "A 40 0 out of range table");
 }
 
+TEST(applied_record_replaces_control_characters_with_spaces) {
+  // A newline (or any other control byte) embedded in `reason` would
+  // otherwise split this one A record across two lines in the file --
+  // LogWriter appends exactly one '\n' of its own and writes everything
+  // handed to it verbatim.
+  const auto d = fresh_dir("callog_applied_ctrl");
+  { CalLog l(d); l.header(); l.run(1, 1.0, 149, "auto", true);
+    l.applied(20, false, std::string("line one\nline two\ttab")); }
+  const auto ls = lines_of(d);
+  REQUIRE(ls.size() == 3);
+  CHECK(ls[2] == "A 20 0 line one line two tab");
+}
+
 TEST(reopening_appends_without_a_second_header) {
   // A wrapper respawn rejoins the same session directory; two headers would
   // make maburcal read the second run's start as a corrupt record.

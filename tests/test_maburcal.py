@@ -75,6 +75,21 @@ A 20 1 ok
 A 40 1 ok
 """
 
+# A GS that only flies 20 MHz: no S row ever names 40, so there is nothing
+# to render a second block from.
+GOOD4_20ONLY = """callog 4
+R 42 1.00 149 auto 1
+S 0 power 20 20
+W 0 63 -40 0 1
+W 3 42 -40 0 0
+S 1 power 20 100
+V 0 59 100
+V 3 38 99
+S 2 capacity 20 2000
+P 3 4000 3950 58000000 730 72 0
+A 20 1 ok
+"""
+
 
 def render(text):
     with tempfile.NamedTemporaryFile("w", suffix=".log", delete=False) as f:
@@ -325,6 +340,24 @@ class TestReportV4(unittest.TestCase):
         self.assertIn("ch=149", out)
         self.assertIn("pick=auto", out)
         self.assertIn("ldpc=1", out)
+
+    def test_20_only_run_has_no_40_mhz_block(self):
+        # No S row in this run ever names 40 MHz -- a 20-only GS -- so the
+        # report must not print a 40 MHz header, column group or flags
+        # prefix at all, not merely dashes under one.
+        out = render(GOOD4_20ONLY)
+        self.assertNotIn("40 MHz", out)
+        self.assertNotIn("40:", out)
+        row0 = [l for l in out.splitlines() if l.startswith("mcs0")][0]
+        self.assertEqual(row0.split(), ["mcs0", "63", "59", "100%", "-", "20:no_dip"])
+
+    def test_not_written_when_no_apply_attempted(self):
+        # No A row at all (phase 2's command was lost, or the session never
+        # got that far) -- distinct from an A row that exists and failed.
+        text = ("callog 4\nR 1 1.00 149 auto 1\n"
+                "S 0 power 20 20\nW 0 63 -40 0 1\n")
+        out = render(text)
+        self.assertIn("not written: this run produced no apply attempt", out)
 
 
 class TestRenderWhenReady(unittest.TestCase):

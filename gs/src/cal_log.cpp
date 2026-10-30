@@ -128,8 +128,17 @@ void CalLog::verify(uint8_t rate, int idx, int pct) {
 
 void CalLog::applied(uint8_t bw, bool ok, const std::string& reason) {
   if (s_ == LogWriter::kBadStream) return;
+  // LogWriter::line() writes `reason`'s bytes verbatim and appends exactly
+  // one trailing '\n' of its own (gs/src/log_writer.cpp's drain_()) -- an
+  // embedded newline or other control byte in a drone-supplied reason
+  // string would split this single A record across two lines (or worse)
+  // in the file, so every control character is flattened to a space
+  // before the line is built.
+  std::string clean = reason;
+  for (char& c : clean)
+    if (static_cast<unsigned char>(c) < 0x20) c = ' ';
   std::string line = "A " + std::to_string(bw) + " " + (ok ? "1" : "0") +
-                      " " + reason;
+                      " " + clean;
   w_.line(s_, line.c_str(), line.size());
 }
 
