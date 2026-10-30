@@ -51,10 +51,10 @@ TEST(the_grid_ends_on_the_rail) {
   CHECK(c.idx_hi == mabur::rc::kRailRel);
 }
 
-// Controller ruling: the drone parks a verify cell at clamp(wall - margin,
-// kRelMin, kRelMax), skipping kWallLeave (drone/src/cal_link.cpp
-// verify_parks, via mabur::park_rel_for in mabur/cal_park.h). The GS must
-// predict exactly the same cell from the same walls/margin.
+// The drone parks a verify cell at clamp(wall - margin, kRelMin, kRelMax),
+// skipping kWallLeave (drone/src/cal_link.cpp verify_parks, via
+// mabur::park_rel_for in mabur/cal_park.h). The GS must predict exactly the
+// same cell from the same walls/margin.
 TEST(verify_cells_includes_a_clamped_park) {
   std::array<int8_t, 8> walls{};
   walls.fill(mabur::cal::kWallLeave);
