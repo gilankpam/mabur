@@ -399,10 +399,13 @@ void CalSession::finish_phase(uint64_t now_ms) {
   // log call would silently lose every fine-phase cell. running_phase_
   // still names the phase that just ended (finish_phase() runs before any
   // transition touches it).
+  // cal.log scopes C rows by the preceding sweep() call rather than a
+  // phase argument on cell() itself; this session does not yet call
+  // sweep(), so running_phase_ stays unused here.
   if (log_)
     for (int r = 0; r < 8; ++r)
       for (const auto& c : snapshot[static_cast<size_t>(r)])
-        log_->cell(running_phase_, static_cast<uint8_t>(r), c.idx, c);
+        log_->cell(static_cast<uint8_t>(r), c.idx, c);
 
   if (running_phase_ == 1) {  // coarse
     for (int r = 0; r < 8; ++r)

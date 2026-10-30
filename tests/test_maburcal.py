@@ -46,6 +46,35 @@ V 3 38 99
 V 5 -5 97
 """
 
+# Two widths: 20 MHz sweeps all four rows plus a capacity point on mcs3;
+# 40 MHz only re-sweeps mcs0/mcs3 (mcs5/mcs7 keep whatever the drone already
+# has for that width -- callog 4 carries no record of that), and its mcs3
+# capacity point is tx_bound. Both widths' applies succeed.
+GOOD4 = """callog 4
+R 42 1.00 149 auto 1
+S 0 power 20 20
+W 0 63 -40 0 1
+W 3 42 -40 0 0
+W 5 -1 -40 0 0
+W 7 -128 -128 -1 2
+S 1 power 20 100
+V 0 59 100
+V 3 38 99
+V 5 -5 97
+S 2 capacity 20 2000
+P 3 4000 3950 58000000 730 72 0
+S 3 power 40 20
+W 0 60 -42 0 1
+W 3 40 -42 0 0
+S 4 power 40 100
+V 0 56 98
+V 3 36 95
+S 5 capacity 40 2000
+P 3 4000 2000 30000000 500 20 64
+A 20 1 ok
+A 40 1 ok
+"""
+
 
 def render(text):
     with tempfile.NamedTemporaryFile("w", suffix=".log", delete=False) as f:
@@ -231,6 +260,71 @@ class TestReportV3(unittest.TestCase):
 
     def test_v3_written_claim_keys_on_verify(self):
         self.assertIn("written:", render(GOOD3))
+
+
+class TestReportV4(unittest.TestCase):
+    def test_two_width_table(self):
+        out = render(GOOD4)
+        self.assertIn("20 MHz", out)
+        self.assertIn("40 MHz", out)
+        row0 = [l for l in out.splitlines() if l.startswith("mcs0")][0]
+        self.assertIn("63", row0)   # 20 MHz wall
+        self.assertIn("60", row0)   # 40 MHz wall
+        self.assertIn("59", row0)   # 20 MHz park = 63 - 4
+        self.assertIn("56", row0)   # 40 MHz park = 60 - 4
+        self.assertIn("100%", row0)
+        self.assertIn("98%", row0)
+        row3 = [l for l in out.splitlines() if l.startswith("mcs3")][0]
+        self.assertIn(".73", row3)  # 20 MHz eff, eff_x1000=730
+        self.assertIn(".50", row3)  # 40 MHz eff, eff_x1000=500
+        self.assertIn("legacy 63 (from 20 MHz mcs0)", out)
+        self.assertIn("written: /etc/mabur.toml", out)
+
+    def test_single_width_prints_dashes(self):
+        # mcs5 was only ever swept at 20 MHz in this run -- callog 4 carries
+        # no record of a 40 MHz wall/verify/eff for it, so every 40 MHz
+        # column must read "-", not a stale or invented number.
+        out = render(GOOD4)
+        row5 = [l for l in out.splitlines() if l.startswith("mcs5")][0]
+        self.assertEqual(row5.split()[-4:], ["-", "-", "-", "-"])
+        self.assertIn("-1", row5)   # the 20 MHz wall is a real, measured one
+
+    def test_not_written_when_no_applied_ok(self):
+        # Neither width's A row is ok -- unlike v1-3, callog 4 has a direct
+        # apply-outcome record and must not fall back to inferring one from
+        # verify delivery.
+        text = GOOD4.replace("A 20 1 ok\nA 40 1 ok\n",
+                             "A 20 0 out of range table\n"
+                             "A 40 0 out of range table\n")
+        out = render(text)
+        self.assertNotIn("written: /etc/mabur.toml", out)
+        self.assertIn("not written", out)
+        self.assertIn("out of range table", out)
+
+    def test_tx_bound_flag_is_prefixed(self):
+        # The 40 MHz capacity point on mcs3 is tx_bound; the 20 MHz one on
+        # the same rate is not -- the flags column must say which width.
+        out = render(GOOD4)
+        row3 = [l for l in out.splitlines() if l.startswith("mcs3")][0]
+        self.assertIn("40:tx_bound", row3)
+        self.assertNotIn("20:tx_bound", row3)
+
+    def test_eff_only_width_reports_existing_walls_note(self):
+        # A width with capacity (P) rows but no wall (W) rows in this run
+        # measured efficiency against whatever the drone already has
+        # configured -- cal.log carries no record of that wall, so the
+        # report must say so rather than printing "-" with no explanation.
+        text = ("callog 4\nR 1 1.00 149 auto 1\n"
+                "S 0 capacity 40 2000\nP 3 4000 3950 58000000 900 80 0\n"
+                "A 40 1 ok\n")
+        out = render(text)
+        self.assertIn("40 MHz eff measured at the existing walls", out)
+
+    def test_run_header_carries_channel_pick_and_ldpc(self):
+        out = render(GOOD4)
+        self.assertIn("ch=149", out)
+        self.assertIn("pick=auto", out)
+        self.assertIn("ldpc=1", out)
 
 
 class TestRenderWhenReady(unittest.TestCase):
