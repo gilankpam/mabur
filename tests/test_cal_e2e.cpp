@@ -52,6 +52,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstdio>
 #include <deque>
 #include <fstream>
@@ -125,6 +126,10 @@ std::string read_file(const std::string& p) {
   std::ifstream f(p);
   return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 }
+
+// Progress lines (simulated run times, loss tallies) print only when
+// CAL_E2E_VERBOSE is set, so ctest output stays clean.
+bool verbose() { return std::getenv("CAL_E2E_VERBOSE") != nullptr; }
 
 bool file_exists(const std::string& p) {
   struct stat st;
@@ -233,6 +238,17 @@ struct Kit {
   // The drone's published session lapses 3 s into each sweep (the GS is
   // radio-silent for the whole sweep, longer than the link failsafe).
   bool lapse_session = false;
+  // The measured comb: one rate's delivery comes back clean on an island
+  // above its true wall (clean, a dip, clean again). Frames at a relative
+  // index in [lo, hi] of (bw, rate) arrive clean despite the compression.
+  struct Island {
+    uint8_t bw, rate;
+    int lo, hi;
+  };
+  std::vector<Island> islands;
+  // Random sweep-frame loss per GS card, percent: the frame never arrives.
+  std::array<int, 2> card_loss_pct{0, 0};
+  std::mt19937 air_rng{777};
 
   // Simulated clock, ms. Both loops tick once per ms; a capacity dwell
   // advances it from inside blast().
@@ -487,12 +503,19 @@ struct Kit {
           it->second = -1000;
       }
       const int rel = pwr.on_air_idx() - kAnchor;
-      const bool compressed = rel > true_wall(info.bw, info.rate);
+      bool compressed = rel > true_wall(info.bw, info.rate);
+      for (const Island& is : islands)
+        if (is.bw == info.bw && is.rate == info.rate && rel >= is.lo && rel <= is.hi)
+          compressed = false;
       // A plausible RSSI: the TXAGC ramp (~0.3 dB/idx) well clear of the
       // saturation threshold; card 1 hears a little less.
       const int rssi = -80 + std::clamp(pwr.on_air_idx() - 28, 0, 63) * 3 / 10;
-      gs.on_cal_frame(0, info, rssi, !compressed, maburgs::cal_air_bytes(body_len), t);
-      gs.on_cal_frame(1, info, rssi - 3, !compressed, maburgs::cal_air_bytes(body_len), t);
+      for (int card = 0; card < 2; ++card) {
+        const int pct = card_loss_pct[static_cast<size_t>(card)];
+        if (pct > 0 && static_cast<int>(air_rng() % 100) < pct) continue;
+        gs.on_cal_frame(card, info, rssi - 3 * card, !compressed,
+                        maburgs::cal_air_bytes(body_len), t);
+      }
     }
     sink.frames.clear();
   }
@@ -789,7 +812,7 @@ TEST(the_run_fits_the_budget) {
     REQUIRE(k.start(kFourSweeps));
     k.run();
     REQUIRE(k.gs.state() == State::Done);
-    std::printf("  four sweeps: Done at %.1f s\n", k.t / 1000.0);
+    if (verbose()) std::printf("  four sweeps: Done at %.1f s\n", k.t / 1000.0);
     CHECK(k.t < 100000);
   }
   {
@@ -797,7 +820,7 @@ TEST(the_run_fits_the_budget) {
     REQUIRE(k.start({{cal::Kind::Power, 20}}));
     k.run();
     REQUIRE(k.gs.state() == State::Done);
-    std::printf("  power20: Done at %.1f s\n", k.t / 1000.0);
+    if (verbose()) std::printf("  power20: Done at %.1f s\n", k.t / 1000.0);
     CHECK(k.t < 30000);
   }
 }
@@ -825,6 +848,73 @@ TEST(verify_column_reads_for_every_parked_rate) {
   }
 }
 
+TEST(walls_err_low_across_a_comb_and_lossy_cards) {
+  // Walls err low, never high. The PA's measured delivery is not a clean
+  // step: past the wall it dips and then comes back clean on an island a
+  // few steps higher (the comb), and the cards lose frames at random. The
+  // analysis takes the end of the FIRST contiguous clean run, so the comb
+  // and random loss can only cut a run short -- move a wall down, the
+  // under-power direction -- never carry it across the dip onto the
+  // island, which would overdrive the PA at every rate parked from it.
+  //
+  // One rate per width has an island 3-5 steps above its true wall.
+  const std::vector<Kit::Island> comb = {{20, 5, 26, 28}, {40, 6, 21, 23}};
+  struct Case {
+    int loss0, loss1;
+    uint32_t seed;
+  };
+  // The comb alone; then 3-5 % loss on card 1 only (card 0 stays the best
+  // card, so the walls stay exact); then the same loss on both cards,
+  // where a 20-frame cell at a 90 % threshold fails often enough to cut
+  // runs short.
+  const std::vector<Case> cases = {{0, 0, 1}, {0, 3, 1}, {0, 4, 2}, {0, 5, 3}, {0, 4, 4},
+                                   {3, 3, 5}, {4, 4, 6}, {5, 5, 7}, {4, 4, 8}};
+  int below_truth = 0;
+  for (const Case& cs : cases) {
+    Kit k("comb");
+    k.islands = comb;
+    k.card_loss_pct = {cs.loss0, cs.loss1};
+    k.air_rng.seed(cs.seed);
+    REQUIRE(k.start({{cal::Kind::Power, 20}, {cal::Kind::Power, 40}}, 2000 + cs.seed));
+    k.run();
+    REQUIRE(k.gs.state() == State::Done);
+    const auto snap = k.gs.snapshot();
+    const mabur::Config c = k.loaded();
+    REQUIRE(c.radio.rate_walls_rel_20.has_value());
+    REQUIRE(c.radio.rate_walls_rel_40.has_value());
+    for (int wi = 0; wi < 2; ++wi) {
+      const uint8_t bw = wi ? 40 : 20;
+      const auto& file_walls = wi ? *c.radio.rate_walls_rel_40 : *c.radio.rate_walls_rel_20;
+      for (int r = 0; r < 8; ++r) {
+        const int truth = expected_wall(bw, r);
+        const int got = snap.width[wi].walls[r].wall;
+        // Never above the truth, in the analysis or in the file it wrote.
+        if (got != maburgs::kNoWall) CHECK(got <= truth);
+        CHECK(file_walls[r] <= truth);
+        if (got != maburgs::kNoWall && got < truth) ++below_truth;
+        // ...and never across the dip onto the island.
+        for (const auto& is : comb)
+          if (is.bw == bw && is.rate == r) {
+            CHECK(got < is.lo);
+            CHECK(file_walls[r] < is.lo);
+          }
+        // Without loss on the best card the comb alone moves nothing.
+        if (cs.loss0 == 0) CHECK(got == truth);
+      }
+    }
+    if (verbose())
+      std::printf("  comb loss %d/%d seed %u: walls20", cs.loss0, cs.loss1, cs.seed);
+    for (int wi = 0; wi < 2 && verbose(); ++wi) {
+      if (wi) std::printf(" walls40");
+      for (int r = 0; r < 8; ++r) std::printf(" %d", snap.width[wi].walls[r].wall);
+    }
+    if (verbose()) std::printf("\n");
+  }
+  // The lossy-on-both-cards cases really did cut walls short: the "err
+  // low" branch is exercised, not just the exact one.
+  CHECK(below_truth > 0);
+}
+
 TEST(a_lossy_link_still_completes) {
   // The clean run's file is the reference.
   std::string clean_text;
@@ -842,7 +932,8 @@ TEST(a_lossy_link_still_completes) {
   // lose acks, SWEEP and APPLY repeats, APPLIEDs, SweepDones and Aborts.
   //
   // Every seed must write exactly the clean run's file. A lost SweepDone
-  // is repeated every 200 ms until the GS's next command, and the GS keeps
+  // is repeated 100 ms later and then every 200 ms until the GS's next
+  // command, and the GS keeps
   // listening phase_slack_ms (1 s) past the planned end, so losing a
   // capacity sweep's efficiency write takes five consecutive losses.
   int lost_down = 0, lost_up = 0, exact = 0, eff_unknown = 0, slowest_ms = 0;
@@ -879,7 +970,8 @@ TEST(a_lossy_link_still_completes) {
     CHECK(k.pwr.override_idx == -1);
     CHECK(!k.pwr.diffs_zeroed);
   }
-  std::printf("  30 seeds: lost %d GS->drone, %d drone->GS; %d byte-identical, %d with a "
+  if (verbose())
+    std::printf("  30 seeds: lost %d GS->drone, %d drone->GS; %d byte-identical, %d with a "
               "width's efficiency unwritten; slowest Done %.1f s\n",
               lost_down, lost_up, exact, eff_unknown, slowest_ms / 1000.0);
   CHECK(lost_down >= 10);
