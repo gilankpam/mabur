@@ -69,6 +69,10 @@ void MavTunnel::push_outbound(const uint8_t* bytes, size_t n) {
 }
 
 void MavTunnel::push_cal(const std::vector<uint8_t>& packet, const mabur::rc::TagCtx& run_ctx) {
+  if (packet.size() > mabur::rc::kMavMaxPayload) {
+    ++stats_.drop_cal_oversize;
+    return;
+  }
   cal_queue_.emplace_back(packet, run_ctx);
 }
 
@@ -87,6 +91,15 @@ int MavTunnel::flush() {
       const auto& pkt = cal_queue_.front().first;
       m.payload.insert(m.payload.end(), pkt.begin(), pkt.end());
       cal_queue_.pop_front();
+    }
+    // push_cal already rejects an oversized packet, but never spin on one
+    // here either: a front packet that still doesn't fit an empty frame
+    // is dropped and counted instead of sent (and counted) as an empty
+    // frame forever.
+    if (m.payload.empty()) {
+      ++stats_.drop_cal_oversize;
+      cal_queue_.pop_front();
+      continue;
     }
     m.counter = ++cal_counter_;
     mabur::rc::TagCtx tag = run_ctx;

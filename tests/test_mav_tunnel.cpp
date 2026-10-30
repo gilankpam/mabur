@@ -423,4 +423,21 @@ TEST(cal_frame_carries_only_its_packet) {
   CHECK(r.t.stats().tx_packets == 1);   // the live lane's own packet count, cal excluded
 }
 
+TEST(cal_lane_drops_an_oversized_packet) {
+  Rig r;
+  Bytes oversized(kMavMaxPayload + 1, 0xAB);
+  r.t.push_cal(oversized, TagCtx{11, 22, 0});
+  CHECK(r.t.flush() == 0);
+  CHECK(r.sent.empty());
+  CHECK(r.t.stats().drop_cal_oversize == 1);
+  CHECK(r.t.stats().tx_cal_frames == 0);
+  CHECK(r.t.cal_counter() == 0);
+  // A later, properly sized cal packet still gets counter 1: the dropped
+  // packet never consumed one.
+  auto cal_pkt = hb_bytes(1, 191);
+  r.t.push_cal(cal_pkt, TagCtx{11, 22, 0});
+  CHECK(r.t.flush() == 1);
+  CHECK(r.t.cal_counter() == 1);
+}
+
 MTEST_MAIN

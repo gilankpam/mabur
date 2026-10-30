@@ -49,9 +49,10 @@
 // counter, restarting at 1 only when a frame's run_ctx.vtx_nonce differs
 // from the last cal frame actually sent: a second run on the same pair
 // keeps counting, because the drone checks the cal counter against its own
-// per-pair high-water mark and would read a restart as a replay. flush()
-// drains the cal queue first, so a sweep's control traffic is never stuck
-// behind a backlog of live MAVLink.
+// per-pair high-water mark and would read a restart as a replay. Tracking
+// only the last run's pair is enough because only one calibration run is
+// ever live at a time. flush() drains the cal queue first, so a sweep's
+// control traffic is never stuck behind a backlog of live MAVLink.
 //
 // Single-threaded: every call comes from the owner's core loop.
 #include <cstddef>
@@ -73,7 +74,8 @@ struct MavTunnelStats {
            drop_oversize = 0,     // an outbound packet larger than kMavMaxPayload
            rx_dup = 0,            // a drone frame repeating the last counter (the other card's copy)
            rx_uplink_heard = 0,   // the GS's own tagged T_MAV, heard by its other card
-           tx_cal_frames = 0;     // cal-lane frames sent (never counted in tx_frames/tx_packets)
+           tx_cal_frames = 0,     // cal-lane frames sent (never counted in tx_frames/tx_packets)
+           drop_cal_oversize = 0; // a cal packet larger than kMavMaxPayload, never queued
 };
 
 class MavTunnel {
@@ -93,6 +95,8 @@ class MavTunnel {
   void push_outbound(const uint8_t* bytes, size_t n);
   // Queues one calibration packet's wire bytes, tagged under run_ctx (frozen
   // by the caller for the run). Never merged with a live packet at flush.
+  // A packet larger than kMavMaxPayload is dropped and counted, the same
+  // as push_outbound's oversize guard.
   void push_cal(const std::vector<uint8_t>& packet, const mabur::rc::TagCtx& run_ctx);
   // Packs queued cal packets (per run_ctx), then queued live packets, into
   // as few T_MAV frames as fit kMavMaxPayload each, and calls send for
