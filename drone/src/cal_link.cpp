@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdio>
 
+#include "mabur/cal_park.h"
 #include "mabur/cal_wire.h"
 #include "mabur/rc_proto.h"
 #include "power_plan.h"
@@ -37,12 +38,7 @@ std::array<int, 8> verify_parks(const cal::ApplyCmd& a, double margin_db) {
   std::array<int, 8> park;
   park.fill(cal::kWallLeave);
   if (!a.has_walls) return park;
-  const int m = margin_steps(margin_db);
-  for (size_t r = 0; r < 8; ++r) {
-    if (a.walls[r] == cal::kWallLeave) continue;
-    park[r] = std::clamp(a.walls[r] - m, rc::kRelMin, rc::kRelMax);
-  }
-  return park;
+  return park_rel_for(a.walls, margin_db);
 }
 
 std::optional<cal::Applied> CalApplyLedger::cached(uint32_t nonce, uint8_t bw) const {

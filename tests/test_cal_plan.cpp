@@ -1,116 +1,71 @@
 #include "mtest.h"
 #include "cal_plan.h"
-#include "mabur/cal_wire.h"
+#include "mabur/cal_park.h"
+#include "mabur/cal_proto.h"
 
 using namespace maburgs;
 
-TEST(coarse_plan_covers_all_eight_rates) {
-  const auto c = make_coarse_plan(99);
-  CHECK(c.nonce == 99);
-  CHECK(c.phase == mabur::cal::kPhaseCoarse);
-  CHECK(c.windows.size() == 8);
-  for (uint8_t r = 0; r < 8; ++r) {
-    CHECK(c.windows[r].rate == r);
-    CHECK(c.windows[r].idx_lo == kCoarseLo);
-    CHECK(c.windows[r].idx_hi == kCoarseHi);
-    CHECK(c.windows[r].idx_step == 4);
-  }
-  CHECK(c.frames_per_cell == 20);
+TEST(power_sweep_is_full_resolution_twenty_frames) {
+  const auto c = make_power_sweep(42, 3, 20);
+  CHECK(c.nonce == 42);
+  CHECK(c.seq == 3);
+  CHECK(c.kind == mabur::cal::Kind::Power);
+  CHECK(c.bw == 20);
+  CHECK(c.frames_per_cell == kPowerFrames);
+  CHECK(c.settle_ms == kPowerSettleMs);
+  CHECK(c.gap_us == kGapUs);
+  CHECK(c.idx_lo == kSweepLo);
+  CHECK(c.idx_hi == kSweepHi);
+  // 8 rates * 105 indices (-41..63 inclusive) = 840 cells, each
+  // 5 ms settle + 20 frames * 1 ms gap = 25 ms -> 21000 ms.
+  CHECK(sweep_duration_ms(c) == 21000);
 }
 
-TEST(coarse_plan_is_216_cells) {
-  // 8 rates x 27 indices (-41,-37,...,63). kCoarseLo is -41 rather than the
-  // rounder -40 precisely so the last cell lands ON kRailRel (63): a no-dip
-  // row parks at the rail, and the rail has to be an index this very sweep
-  // measured at >=90% delivery, not one index past the top of the sweep.
-  // This count also drives the duration estimate the GS uses to know when
-  // the drone stops transmitting.
-  const auto c = make_coarse_plan(1);
-  int cells = 0;
-  for (const auto& w : c.windows)
-    for (int i = w.idx_lo; i <= w.idx_hi; i += w.idx_step) ++cells;
-  CHECK(cells == 216);
+TEST(capacity_sweep_is_eight_two_second_points) {
+  const auto c = make_capacity_sweep(5, 1, 40);
+  CHECK(c.nonce == 5);
+  CHECK(c.seq == 1);
+  CHECK(c.kind == mabur::cal::Kind::Capacity);
+  CHECK(c.bw == 40);
+  CHECK(c.settle_ms == kCapSettleMs);
+  CHECK(c.dwell_ms == kCapDwellMs);
+  CHECK(c.mcs_mask == 0xFF);
+  // 8 points * (300 ms settle + 2000 ms dwell) = 18400 ms.
+  CHECK(sweep_duration_ms(c) == 18400);
 }
 
-TEST(fine_plan_only_covers_rows_that_dipped) {
-  std::array<RateWall, 8> coarse{};
-  for (int r = 0; r < 3; ++r) {           // mcs0-2: no dip, knee-derived
-    coarse[static_cast<size_t>(r)].wall = 91;
-    coarse[static_cast<size_t>(r)].flags = kCalNoDip;
-  }
-  for (int r = 3; r < 7; ++r) {           // mcs3-6: real dips
-    coarse[static_cast<size_t>(r)].wall = 60 - r;
-    coarse[static_cast<size_t>(r)].flags = 0;
-  }
-  coarse[7].wall = kNoWall;               // mcs7: undetermined
-  coarse[7].flags = kCalUndetermined;
-
-  const auto f = make_fine_plan(3, coarse);
-  CHECK(f.phase == mabur::cal::kPhaseFine);
-  CHECK(f.windows.size() == 4);           // only mcs3-6
-  for (const auto& w : f.windows) {
-    CHECK(w.rate >= 3 && w.rate <= 6);
-    CHECK(w.idx_step == 1);
-  }
-  CHECK(f.frames_per_cell == 100);
+TEST(verify_cells_skip_undetermined) {
+  std::array<int, 8> park = {59, mabur::cal::kWallLeave, 59, 38, 16, -3, -6, -8};
+  const auto cells = verify_cells(park);
+  CHECK(cells.size() == 7);
+  for (const auto& rp : cells) CHECK(rp.first != 1);
+  CHECK(cells[0].first == 0 && cells[0].second == 59);
+  CHECK(cells.back().first == 7 && cells.back().second == -8);
+  // 7 cells * (5 ms settle + 20 frames * 1 ms gap) = 175 ms.
+  CHECK(verify_duration_ms(cells.size()) == 175);
 }
 
-TEST(fine_window_brackets_the_coarse_wall) {
-  std::array<RateWall, 8> coarse{};
-  coarse[5].wall = 56;
-  coarse[5].flags = 0;
-  const auto f = make_fine_plan(1, coarse);
-  REQUIRE(f.windows.size() == 1);
-  CHECK(f.windows[0].idx_lo == 56 - kFineHalfWidth);
-  // 56 + kFineHalfWidth (64) is one past kRelMax (63): still clamps here,
-  // same as fine_window_clamps_to_the_relative_range below.
-  CHECK(f.windows[0].idx_hi == mabur::rc::kRelMax);
+TEST(the_grid_ends_on_the_rail) {
+  CHECK(kSweepHi == mabur::rc::kRailRel);
+  const auto c = make_power_sweep(1, 0, 20);
+  CHECK(c.idx_hi == mabur::rc::kRailRel);
 }
 
-TEST(fine_window_clamps_to_the_relative_range) {
-  std::array<RateWall, 8> coarse{};
-  coarse[0].wall = -61;   // near the bottom
-  coarse[1].wall = 60;    // near the top
-  const auto f = make_fine_plan(1, coarse);
-  REQUIRE(f.windows.size() == 2);
-  CHECK(f.windows[0].idx_lo == -64);
-  CHECK(f.windows[1].idx_hi == 63);
-}
+// Controller ruling: the drone parks a verify cell at clamp(wall - margin,
+// kRelMin, kRelMax), skipping kWallLeave (drone/src/cal_link.cpp
+// verify_parks, via mabur::park_rel_for in mabur/cal_park.h). The GS must
+// predict exactly the same cell from the same walls/margin.
+TEST(verify_cells_includes_a_clamped_park) {
+  std::array<int8_t, 8> walls{};
+  walls.fill(mabur::cal::kWallLeave);
+  walls[2] = -64;  // wall - margin_steps(1.0) = -68, clamped to kRelMin -64
+  const auto park = mabur::park_rel_for(walls, 1.0);
+  CHECK(park[2] == -64);  // clamped, not -68
 
-TEST(fine_plan_with_no_dips_is_empty) {
-  std::array<RateWall, 8> coarse{};
-  for (auto& w : coarse) w.flags = kCalNoDip;
-  const auto f = make_fine_plan(1, coarse);
-  CHECK(f.windows.empty());
-}
-
-TEST(verify_plan_is_one_cell_per_parked_rate) {
-  std::array<int, 8> park = {59, 59, 59, 38, 16, -3, -6, -8};
-  const auto v = make_verify_plan(1, park);
-  CHECK(v.phase == mabur::cal::kPhaseVerify);
-  CHECK(v.windows.size() == 8);
-  CHECK(v.windows[4].idx_lo == 16);
-  CHECK(v.windows[4].idx_hi == 16);
-  CHECK(v.windows[4].idx_step == 1);
-  CHECK(v.windows[7].idx_lo == -8);
-}
-
-TEST(verify_plan_skips_undetermined_and_out_of_range_parks) {
-  // An undetermined rate has no parked index to verify; one past the
-  // relative range is a caller bug, not a value to send to the chip.
-  std::array<int, 8> park = {59, kNoWall, 59, 38, 16, -3, -6, -70};
-  const auto v = make_verify_plan(1, park);
-  CHECK(v.windows.size() == 6);
-}
-
-TEST(duration_counts_settle_and_airtime) {
-  mabur::rc::CalCmd c;
-  c.frames_per_cell = 20;
-  c.settle_ms = 100;
-  c.gap_us = 2000;
-  c.windows = {{0, 0, 12, 4}};   // 4 cells: 0,4,8,12
-  // 4 * (100 ms settle + 20 frames * 2 ms) = 4 * 140 = 560 ms
-  CHECK(plan_duration_ms(c) == 560);
+  const auto cells = verify_cells(park);
+  REQUIRE(cells.size() == 1);
+  CHECK(cells[0].first == 2);
+  CHECK(cells[0].second == -64);
 }
 
 MTEST_MAIN

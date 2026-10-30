@@ -1,9 +1,9 @@
 #pragma once
 #include <algorithm>
 #include <array>
-#include <cmath>
 #include <cstdint>
 
+#include "mabur/cal_park.h"
 #include "mabur/rc_proto.h"
 
 namespace mabur {
@@ -44,11 +44,8 @@ struct PowerPlan {
   int8_t mcs[8];
 };
 
-// The wall margin in the chip's 0.25 dB index steps: what every parked
-// index (wall - m) subtracts from its wall.
-inline int margin_steps(double margin_db) {
-  return static_cast<int>(std::lround(margin_db * 4.0));
-}
+// margin_steps (the dB->index-step conversion) moved to mabur/cal_park.h so
+// the GS's verify-cell prediction (gs/src/cal_plan.cpp) can share it.
 
 inline PowerPlan make_power_plan(const std::array<int, 8>& walls_rel,
                                   int legacy_wall_rel, double margin_db,
