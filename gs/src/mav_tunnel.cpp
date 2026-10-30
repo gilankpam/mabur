@@ -38,8 +38,9 @@ void split(uint8_t chan, std::vector<uint8_t>& acc, const uint8_t* p, size_t n,
 
 }  // namespace
 
-MavTunnel::MavTunnel(mabur::LinkKey key, SendFn send, DeliverFn deliver)
-    : key_(key), send_(std::move(send)), deliver_(std::move(deliver)) {
+MavTunnel::MavTunnel(mabur::LinkKey key, SendFn send, DeliverFn deliver, SendFn cal_send)
+    : key_(key), send_(std::move(send)), deliver_(std::move(deliver)),
+      cal_send_(std::move(cal_send)) {
   mavlink_reset_channel_status(mabur::mav::kChanGsLocal);
   mavlink_reset_channel_status(mabur::mav::kChanGsRx);
 }
@@ -104,7 +105,7 @@ int MavTunnel::flush() {
     m.counter = ++cal_counter_;
     mabur::rc::TagCtx tag = run_ctx;
     tag.seq32 = cal_counter_;
-    send_(mabur::rc::pack_mav(m, true, key_, tag));
+    (cal_send_ ? cal_send_ : send_)(mabur::rc::pack_mav(m, true, key_, tag));
     ++stats_.tx_cal_frames;
     ++frames;
   }

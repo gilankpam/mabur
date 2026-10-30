@@ -440,4 +440,28 @@ TEST(cal_lane_drops_an_oversized_packet) {
   CHECK(r.t.cal_counter() == 1);
 }
 
+// A tunnel built with a cal sender hands cal frames to it and live frames
+// to the live sender: the GS sends the two through different gates (a
+// calibration message never waits on the RCF slotter or the radio-silence
+// gate, a live one always does).
+TEST(cal_frames_go_to_the_cal_sender_when_one_is_given) {
+  std::vector<Bytes> live, calf;
+  MavTunnel t(test_key(), [&](Bytes f) { live.push_back(std::move(f)); },
+              [](const uint8_t*, size_t) {},
+              [&](Bytes f) { calf.push_back(std::move(f)); });
+  t.set_session(TagCtx{11, 22, 0});
+  auto hb = hb_bytes(255, 190);
+  t.push_outbound(hb.data(), hb.size());
+  auto cal_pkt = hb_bytes(1, 191);
+  t.push_cal(cal_pkt, TagCtx{11, 22, 0});
+  CHECK(t.flush() == 2);
+  REQUIRE(calf.size() == 1);
+  REQUIRE(live.size() == 1);
+  auto fc = parse_mav(calf[0].data(), calf[0].size(), true);
+  auto fl = parse_mav(live[0].data(), live[0].size(), true);
+  REQUIRE(fc.has_value() && fl.has_value());
+  CHECK(fc->payload == cal_pkt);
+  CHECK(fl->payload == hb);
+}
+
 MTEST_MAIN

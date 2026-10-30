@@ -83,7 +83,11 @@ class MavTunnel {
   using SendFn = std::function<void(std::vector<uint8_t> frame)>;   // a packed, tagged T_MAV body
   using DeliverFn = std::function<void(const uint8_t* mav_bytes, size_t n)>;  // one whole packet
 
-  MavTunnel(mabur::LinkKey key, SendFn send, DeliverFn deliver);
+  // `cal_send`, when given, takes the cal lane's frames and `send` only the
+  // live lane's: the owner sends the two through different gates (a live
+  // frame waits on the RCF slotter like an RCF; a calibration message goes
+  // out at once). Without it both lanes go through `send`.
+  MavTunnel(mabur::LinkKey key, SendFn send, DeliverFn deliver, SendFn cal_send = nullptr);
 
   // The session the next frames are tagged under; ctx.seq32 is ignored
   // (the tunnel's counter fills it). vtx_nonce 0 = not linked: outbound is
@@ -114,6 +118,7 @@ class MavTunnel {
   mabur::LinkKey key_;
   SendFn send_;
   DeliverFn deliver_;
+  SendFn cal_send_;
   mabur::rc::TagCtx ctx_{};
   uint32_t vtx_seen_ = 0;
   uint32_t counter_ = 0;
