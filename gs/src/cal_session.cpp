@@ -101,7 +101,8 @@ void CalSession::on_cal_frame(int card, const mabur::cal::CalFrameInfo& f,
   // this exact phase and is on the air with it. There is no anchor to
   // track any more -- f.idx already arrives relative to the drone's own
   // chip, so this session has nothing further to learn from a Telem.
-  if (state_ == State::AwaitAck && f.phase == pending_cmd_.phase) {
+  if (state_ == State::AwaitAck &&
+      static_cast<uint8_t>(f.kind) == pending_cmd_.phase) {
     phase_start_ms_ = now_ms;
     phase_end_ms_ = now_ms + plan_duration_ms(pending_cmd_);
     state_ = State::Sweep;
@@ -111,7 +112,7 @@ void CalSession::on_cal_frame(int card, const mabur::cal::CalFrameInfo& f,
   // entirely -- a drone still finishing kPhaseVerify's self-check, or a
   // late straggler from a phase this session already left, must never be
   // attributed to the phase running now.
-  if (f.phase != running_phase_) return;
+  if (static_cast<uint8_t>(f.kind) != running_phase_) return;
   // The implicit ack for T_CAL_RESULT: the drone self-initiates the verify
   // sweep only after a successful apply, so ANY verify-phase frame -- any
   // rate, CRC-bad included (attribution survives corruption by design,
@@ -355,7 +356,7 @@ void CalSession::begin_await(const mabur::rc::CalCmd& cmd, uint64_t now_ms) {
 }
 
 void CalSession::begin_verify(uint64_t now_ms) {
-  running_phase_ = mabur::cal::kPhaseVerify;
+  running_phase_ = 3;  // verify
   clear_cells();
   const auto verify_cmd = make_verify_plan(nonce_, pending_park_);
   seed_cells(verify_cmd);
@@ -403,7 +404,7 @@ void CalSession::finish_phase(uint64_t now_ms) {
       for (const auto& c : snapshot[static_cast<size_t>(r)])
         log_->cell(running_phase_, static_cast<uint8_t>(r), c.idx, c);
 
-  if (running_phase_ == mabur::cal::kPhaseCoarse) {
+  if (running_phase_ == 1) {  // coarse
     for (int r = 0; r < 8; ++r)
       coarse_walls_[static_cast<size_t>(r)] =
           analyze_rate(snapshot[static_cast<size_t>(r)], cfg_.th);

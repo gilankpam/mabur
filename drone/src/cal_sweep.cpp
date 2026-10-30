@@ -264,8 +264,9 @@ void CalSweep::pump_sweeping(uint64_t now_ms, RadioTx& tx, PowerCtl& pwr) {
 
   if (now_ms < settle_deadline_ms_ || now_ms < next_send_ms_) return;
 
-  const auto payload = cal::build_cal_payload(active_rate_, active_idx_,
-                                              current_phase_, cell_seq_);
+  const auto payload = cal::build_cal_payload(
+      static_cast<cal::Kind>(current_phase_), active_rate_, active_idx_,
+      /*bw=*/20, /*flags=*/0, cell_seq_);
   tx.send_body(0, payload.data(), payload.size());
   ++cell_seq_;
   // DEADLINE-based, not now_ms-based: the next frame is due gap_ms_ after

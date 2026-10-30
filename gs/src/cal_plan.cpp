@@ -7,7 +7,7 @@ namespace maburgs {
 mabur::rc::CalCmd make_coarse_plan(uint32_t nonce) {
   mabur::rc::CalCmd c;
   c.nonce = nonce;
-  c.phase = mabur::cal::kPhaseCoarse;
+  c.phase = 1;  // coarse
   c.frames_per_cell = kCoarseFrames;
   c.settle_ms = kSettleMs;
   c.gap_us = kGapUs;
@@ -21,7 +21,7 @@ mabur::rc::CalCmd make_fine_plan(uint32_t nonce,
                                  const std::array<RateWall, 8>& coarse) {
   mabur::rc::CalCmd c;
   c.nonce = nonce;
-  c.phase = mabur::cal::kPhaseFine;
+  c.phase = 2;  // fine
   c.frames_per_cell = kFineFrames;
   c.settle_ms = kSettleMs;
   c.gap_us = kGapUs;
@@ -41,7 +41,7 @@ mabur::rc::CalCmd make_verify_plan(uint32_t nonce,
                                    const std::array<int, 8>& park_idx) {
   mabur::rc::CalCmd c;
   c.nonce = nonce;
-  c.phase = mabur::cal::kPhaseVerify;
+  c.phase = 3;  // verify
   c.frames_per_cell = kVerifyFrames;
   c.settle_ms = kSettleMs;
   c.gap_us = kGapUs;

@@ -569,7 +569,7 @@ TEST(foreign_rc_version_predicate) {
 TEST(cal_cmd_round_trip) {
   mabur::rc::CalCmd c;
   c.nonce = 0x12345678;
-  c.phase = mabur::cal::kPhaseCoarse;
+  c.phase = 1;  // coarse
   c.frames_per_cell = 20;
   c.settle_ms = 100;
   c.gap_us = 2000;
@@ -579,7 +579,7 @@ TEST(cal_cmd_round_trip) {
   auto got = mabur::rc::parse_cal_cmd(b.data(), b.size());
   REQUIRE(got.has_value());
   CHECK(got->nonce == 0x12345678);
-  CHECK(got->phase == mabur::cal::kPhaseCoarse);
+  CHECK(got->phase == 1);  // coarse
   CHECK(got->frames_per_cell == 20);
   CHECK(got->settle_ms == 100);
   CHECK(got->gap_us == 2000);

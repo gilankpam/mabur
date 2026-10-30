@@ -300,7 +300,7 @@ constexpr size_t kMaxCalWindows = 8;  // one per HT MCS
 // phase it already started -- the uplink loses 30-50% of frames.
 struct CalCmd {
   uint32_t nonce = 0;
-  uint8_t phase = 0;              // cal::kPhaseCoarse / Fine / Verify
+  uint8_t phase = 0;              // 1=coarse, 2=fine, 3=verify
   uint16_t frames_per_cell = 20;
   uint16_t settle_ms = 100;
   uint16_t gap_us = 2000;

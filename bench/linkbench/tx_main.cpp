@@ -439,8 +439,9 @@ int main(int argc, char** argv) {
         uint64_t due = mono_us();
         for (int k = 0; k < a.wall_frames; ++k) {
           const auto body = mabur::cal::build_cal_payload(
-              static_cast<uint8_t>(m), static_cast<int8_t>(rel),
-              mabur::cal::kPhaseFine, static_cast<uint16_t>(k));
+              mabur::cal::Kind::Power, static_cast<uint8_t>(m),
+              static_cast<int8_t>(rel), /*bw=*/static_cast<uint8_t>(a.bw),
+              /*flags=*/0, static_cast<uint32_t>(k));
           std::vector<uint8_t> f;
           f.reserve(rt.size() + kDot11HeaderLen + body.size());
           f.insert(f.end(), rt.begin(), rt.end());
