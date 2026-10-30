@@ -635,10 +635,13 @@ TEST(calibration_and_parameter_sets_on_two_threads_lose_nothing) {
   std::thread cal([&] {
     for (int i = 0; i < 20; ++i) {
       CalWrite w;
+      w.bw = 20;
+      w.has_walls = true;
       w.walls = i == 19 ? walls_last : walls_a;
       w.legacy_wall = i == 19 ? 58 : 60;
       std::string err;
-      if (apply_calibration(b.path(), w, 1.0, &err) != ApplyResult::Ok) ++cal_bad;
+      if (apply_calibration(b.path(), w, 1.0, /*backup=*/true, &err) != ApplyResult::Ok)
+        ++cal_bad;
     }
   });
   std::thread set([&] {
