@@ -238,10 +238,18 @@ class CalSweep {
   // nothing at all -- a stale repeat of an EARLIER seq.
   std::optional<cal::SweepAck> take_ack();
 
-  // Drains the finished sweep's per-cell results, once per Power or
-  // Capacity sweep (never for Verify -- see arm_verify). Armed the
-  // instant the last cell's work is done, inside pump().
+  // Drains the finished sweep's per-cell results, for a Power or Capacity
+  // sweep (never for Verify -- see arm_verify). Armed the instant the last
+  // cell's work is done, inside pump(), and re-armed by pump() every
+  // kDoneRepeatMs after that while the run waits: SweepDone rides a lossy
+  // downlink, and a capacity sweep whose SweepDone never reaches the GS
+  // writes nothing. The repeats stop at the next command of the run --
+  // any SweepCmd, ApplyCmd or Abort naming its nonce, which shows the GS
+  // has moved on -- or when the run closes. The owner sends whatever this
+  // yields.
   std::optional<cal::SweepDone> take_done();
+
+  static constexpr uint32_t kDoneRepeatMs = 200;
 
   // Drains the ApplyCmd queued by on_apply(), if any. Once drained, the
   // caller owns it and moves the run from Applying back to Idle -- state
@@ -372,6 +380,10 @@ class CalSweep {
   std::array<uint8_t, 8> blocked_pct_{};
 
   std::optional<cal::SweepDone> pending_done_;
+  // The finished sweep's SweepDone while it is still being repeated (see
+  // take_done()), and when pump() re-arms it next.
+  std::optional<cal::SweepDone> repeat_done_;
+  uint64_t next_done_ms_ = 0;
   std::optional<cal::ApplyCmd> pending_apply_;
 };
 

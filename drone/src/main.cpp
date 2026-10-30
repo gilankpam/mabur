@@ -2901,7 +2901,8 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
     // and dot11 sequence, the mutex-guarded dev_sink.send(). Sent whatever
     // the session state -- every sweep outlasts the link failsafe and the GS
     // is listening for exactly these -- and outside the MAV thread's pacing
-    // and its sweep suppression: one per command, sweep or apply.
+    // and its sweep suppression: an ack or APPLIED per command, and each
+    // SweepDone take_done() yields (it repeats until the GS moves on).
     ControlRadiotap cal_radiotap = make_control_radiotap();
     auto send_cal = [&](const cal::CalMsg& msg) {
       rc::Mav m;

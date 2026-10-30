@@ -270,6 +270,103 @@ TEST(done_is_armed_once_after_the_last_cell) {
   CHECK(!s.take_done().has_value());  // drained once
 }
 
+// Pumps a one-cell power sweep from acceptance at t = 0 until it leaves
+// Sweeping; returns the ms the sweep finished at (its SweepDone armed).
+uint64_t finish_one_cell(CalSweep& s, RadioTx& tx, FakePowerCtl& pwr, FakeCapacityCtl& cap,
+                         uint32_t nonce, uint8_t seq) {
+  s.on_cmd(power_cmd(nonce, seq, 0x01, 0, 0, 20, 3), 0, pwr);
+  REQUIRE(s.take_ack().has_value());
+  uint64_t t = 0;
+  while (s.state() == CalSweep::State::Sweeping && t < 10000) s.pump(t++, tx, pwr, cap);
+  REQUIRE(s.state() == CalSweep::State::Idle);
+  return t - 1;
+}
+
+TEST(done_repeats_every_200_ms_until_the_next_command) {
+  // SweepDone rides a lossy downlink, and a capacity sweep without it writes
+  // nothing: it is re-armed every 200 ms until the GS shows it moved on.
+  CaptureSink sink;
+  RadioTx tx(sink);
+  FakePowerCtl pwr;
+  FakeCapacityCtl cap;
+  CalSweep s(CalSweepCfg{});
+  const uint64_t end = finish_one_cell(s, tx, pwr, cap, 7, 0);
+  const auto first = s.take_done();
+  REQUIRE(first.has_value());
+  for (uint64_t t = end + 1; t < end + 200; ++t) {
+    s.pump(t, tx, pwr, cap);
+    CHECK(!s.take_done().has_value());
+  }
+  s.pump(end + 200, tx, pwr, cap);
+  const auto again = s.take_done();
+  REQUIRE(again.has_value());
+  CHECK(again->nonce == 7 && again->seq == 0 && again->offered == first->offered);
+  s.pump(end + 399, tx, pwr, cap);
+  CHECK(!s.take_done().has_value());
+  s.pump(end + 400, tx, pwr, cap);
+  CHECK(s.take_done().has_value());
+
+  // The next command of the run -- here the APPLY -- stops it.
+  cal::ApplyCmd a;
+  a.nonce = 7;
+  a.seq = 0;
+  s.on_apply(a, end + 450);
+  REQUIRE(s.take_pending_apply().has_value());
+  for (uint64_t t = end + 450; t < end + 2000; t += 10) {
+    s.pump(t, tx, pwr, cap);
+    CHECK(!s.take_done().has_value());
+  }
+}
+
+TEST(done_repeats_stop_at_a_sweep_an_abort_or_the_close) {
+  CaptureSink sink;
+  RadioTx tx(sink);
+  FakePowerCtl pwr;
+  FakeCapacityCtl cap;
+  auto silent_after = [&](CalSweep& s, uint64_t from) {
+    bool quiet = true;
+    for (uint64_t t = from; t < from + 1000; t += 10) {
+      s.pump(t, tx, pwr, cap);
+      if (s.take_done()) quiet = false;
+    }
+    return quiet;
+  };
+  {
+    // Any SWEEP of the run, even a repeat of the finished one.
+    CalSweep s(CalSweepCfg{});
+    const uint64_t end = finish_one_cell(s, tx, pwr, cap, 8, 0);
+    REQUIRE(s.take_done().has_value());
+    s.on_cmd(power_cmd(8, 0, 0x01, 0, 0, 20, 3), end + 10, pwr);
+    (void)s.take_ack();
+    CHECK(silent_after(s, end + 10));
+  }
+  {
+    // An ABORT of the run.
+    CalSweep s(CalSweepCfg{});
+    const uint64_t end = finish_one_cell(s, tx, pwr, cap, 9, 0);
+    REQUIRE(s.take_done().has_value());
+    cal::Abort ab;
+    ab.nonce = 9;
+    s.on_abort(ab, end + 10, pwr);
+    CHECK(silent_after(s, end + 10));
+  }
+  {
+    // The await timer closing the run.
+    CalSweepCfg cfg;
+    cfg.await_next_ms = 1000;
+    CalSweep s(cfg);
+    const uint64_t end = finish_one_cell(s, tx, pwr, cap, 10, 0);
+    REQUIRE(s.take_done().has_value());
+    int repeats = 0;
+    for (uint64_t t = end + 1; t < end + 3000; ++t) {
+      s.pump(t, tx, pwr, cap);
+      if (s.take_done()) ++repeats;
+    }
+    CHECK(!s.active());
+    CHECK(repeats == 4);  // +200 .. +800; the run closed at +1000
+  }
+}
+
 TEST(abort_restores_power_immediately) {
   CaptureSink sink;
   RadioTx tx(sink);

@@ -53,6 +53,9 @@ bool CalSweep::starts_sweep(const cal::SweepCmd& c) const {
 
 void CalSweep::on_cmd(const cal::SweepCmd& c, uint64_t now_ms, PowerCtl& pwr) {
   const bool new_session = !has_session_ || c.nonce != nonce_;
+  // Any SWEEP of the open run shows the GS has moved past the last
+  // SweepDone (take_done()), whatever on_cmd does with it below.
+  if (!new_session) repeat_done_.reset();
   // A closed run (hard cap, abort, or await timeout) never reopens: a
   // straggler or a GS resend of that exact nonce arriving after the
   // close is ignored outright, with no ack and no PowerCtl touched, so
@@ -87,6 +90,7 @@ void CalSweep::on_cmd(const cal::SweepCmd& c, uint64_t now_ms, PowerCtl& pwr) {
       cell_entered_ = false;
       cells_.clear();
       pending_done_.reset();
+      repeat_done_.reset();
       pending_apply_.reset();
       pending_ack_ = cal::SweepAck{c.nonce, c.seq, cal::AckResult::AnchorUnreadable, 200,
                                    stamp_flags()};
@@ -139,6 +143,7 @@ void CalSweep::on_cmd(const cal::SweepCmd& c, uint64_t now_ms, PowerCtl& pwr) {
   cell_entered_ = false;
   state_ = State::Sweeping;
   pending_done_.reset();
+  repeat_done_.reset();
   // This sweep supersedes any ApplyCmd still queued from an earlier
   // sweep of this run -- take_pending_apply() must not hand out a result
   // for a sweep that just got superseded.
@@ -159,6 +164,8 @@ void CalSweep::on_cmd(const cal::SweepCmd& c, uint64_t now_ms, PowerCtl& pwr) {
 
 void CalSweep::on_apply(const cal::ApplyCmd& a, uint64_t now_ms) {
   if (!has_session_ || a.nonce != nonce_) return;
+  // The GS analysed the sweep: its SweepDone need not repeat.
+  repeat_done_.reset();
   // A sweep actively running owns the radio right now; accepting an
   // apply here would silently abandon its progress. Verify only ever
   // follows a drained apply, never races one.
@@ -236,6 +243,7 @@ void CalSweep::arm_verify(const std::array<int, 8>& park_rel, uint8_t bw, uint64
   cursor_ = 0;
   cell_entered_ = false;
   pending_done_.reset();
+  repeat_done_.reset();
   // Same 200 ms start delay as an on_cmd sweep -- see that method.
   sweep_start_ms_ = now_ms + 200;
   state_ = State::Sweeping;
@@ -252,7 +260,17 @@ void CalSweep::pump(uint64_t now_ms, RadioTx& tx, PowerCtl& pwr, CapacityCtl& ca
 
   switch (state_) {
     case State::Idle:
-      if (has_session_ && now_ms >= await_deadline_ms_) close_session(pwr);
+      if (has_session_ && now_ms >= await_deadline_ms_) {
+        close_session(pwr);
+        return;
+      }
+      if (repeat_done_ && now_ms >= next_done_ms_) {
+        pending_done_ = repeat_done_;
+        // Deadline-based like the frame pacing, but a late pump re-arms
+        // once rather than in a burst.
+        next_done_ms_ += kDoneRepeatMs;
+        if (next_done_ms_ <= now_ms) next_done_ms_ = now_ms + kDoneRepeatMs;
+      }
       return;
     case State::Applying:
       // Waiting on the caller to drain take_pending_apply() and either
@@ -360,6 +378,8 @@ void CalSweep::finish_sweep(uint64_t now_ms) {
   if (current_kind_ != cal::Kind::Verify) {
     pending_done_ = cal::SweepDone{nonce_, static_cast<uint8_t>(last_started_seq_), offered_,
                                    blocked_pct_};
+    repeat_done_ = pending_done_;
+    next_done_ms_ = now_ms + kDoneRepeatMs;
   }
   // The run stays open -- Capacity can follow Power, and a result's
   // verify can follow an apply -- so this is Idle-but-active, not a full
@@ -389,6 +409,7 @@ void CalSweep::close_session(PowerCtl& pwr) {
   cursor_ = 0;
   cell_entered_ = false;
   pending_done_.reset();
+  repeat_done_.reset();
   pending_apply_.reset();
   handed_out_apply_ = false;
 }
