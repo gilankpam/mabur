@@ -328,4 +328,99 @@ TEST(first_drone_frame_after_a_new_vtx_nonce_delivers_even_with_the_old_counter)
   CHECK(r.t.stats().rx_dup == 0);
 }
 
+// Cal lane: frames of only cal packets, tagged under the run's frozen ctx,
+// counted apart from the live lane and sent whether or not the GS has a
+// live session at all.
+
+TEST(cal_lane_sends_while_unlinked) {
+  Rig r;   // no set_session: the live lane is unlinked throughout
+  auto cal_pkt = hb_bytes(1, 191);   // stand-in packet bytes; the lane never parses them
+  r.t.push_cal(cal_pkt, TagCtx{11, 22, 0});
+  CHECK(r.t.flush() == 1);
+  REQUIRE(r.sent.size() == 1);
+  auto p = parse_mav(r.sent[0].data(), r.sent[0].size(), true);
+  REQUIRE(p.has_value());
+  CHECK(p->counter == 1 && p->payload == cal_pkt);
+  CHECK(verify_control(r.sent[0].data(), r.sent[0].size(), test_key(), TagCtx{11, 22, 1}));
+  CHECK(r.t.cal_counter() == 1);
+  CHECK(r.t.stats().tx_cal_frames == 1);
+}
+
+TEST(cal_lane_counter_restarts_per_run_ctx) {
+  Rig r;
+  auto cal_pkt = hb_bytes(1, 191);
+  r.t.push_cal(cal_pkt, TagCtx{11, 22, 0});
+  CHECK(r.t.flush() == 1);
+  CHECK(r.t.cal_counter() == 1);
+  r.t.push_cal(cal_pkt, TagCtx{11, 22, 0});
+  CHECK(r.t.flush() == 1);
+  CHECK(r.t.cal_counter() == 2);
+  // A new run's pair (vtx_nonce changes) restarts the counter at 1.
+  r.t.push_cal(cal_pkt, TagCtx{11, 33, 0});
+  CHECK(r.t.flush() == 1);
+  CHECK(r.t.cal_counter() == 1);
+  auto p = parse_mav(r.sent.back().data(), r.sent.back().size(), true);
+  REQUIRE(p.has_value());
+  CHECK(verify_control(r.sent.back().data(), r.sent.back().size(), test_key(),
+                       TagCtx{11, 33, 1}));
+}
+
+TEST(cal_lane_counter_continues_for_a_second_run_on_the_same_pair) {
+  Rig r;
+  auto cal_pkt = hb_bytes(1, 191);
+  r.t.push_cal(cal_pkt, TagCtx{11, 22, 0});
+  CHECK(r.t.flush() == 1);
+  CHECK(r.t.cal_counter() == 1);
+  r.t.push_cal(cal_pkt, TagCtx{11, 22, 0});
+  CHECK(r.t.flush() == 1);
+  CHECK(r.t.cal_counter() == 2);
+  // A second run on the same pair (vtx_nonce unchanged) does not restart --
+  // the drone would refuse a restart as a replay.
+  r.t.push_cal(cal_pkt, TagCtx{11, 22, 0});
+  CHECK(r.t.flush() == 1);
+  CHECK(r.t.cal_counter() == 3);
+  auto p = parse_mav(r.sent.back().data(), r.sent.back().size(), true);
+  REQUIRE(p.has_value());
+  CHECK(p->counter == 3);
+  CHECK(verify_control(r.sent.back().data(), r.sent.back().size(), test_key(),
+                       TagCtx{11, 22, 3}));
+}
+
+TEST(cal_frames_go_out_before_live_frames) {
+  Rig r;
+  r.t.set_session(TagCtx{11, 22, 0});
+  auto hb = hb_bytes(255, 190);
+  r.t.push_outbound(hb.data(), hb.size());   // live
+  auto cal_pkt = hb_bytes(1, 191);
+  r.t.push_cal(cal_pkt, TagCtx{44, 55, 0});   // cal, a different pair entirely
+  CHECK(r.t.flush() == 2);
+  REQUIRE(r.sent.size() == 2);
+  auto f0 = parse_mav(r.sent[0].data(), r.sent[0].size(), true);
+  auto f1 = parse_mav(r.sent[1].data(), r.sent[1].size(), true);
+  REQUIRE(f0.has_value() && f1.has_value());
+  CHECK(f0->payload == cal_pkt);
+  CHECK(f1->payload == hb);
+  CHECK(verify_control(r.sent[0].data(), r.sent[0].size(), test_key(), TagCtx{44, 55, 1}));
+  CHECK(verify_control(r.sent[1].data(), r.sent[1].size(), test_key(), TagCtx{11, 22, 1}));
+}
+
+TEST(cal_frame_carries_only_its_packet) {
+  Rig r;
+  r.t.set_session(TagCtx{11, 22, 0});
+  auto hb = hb_bytes(255, 190);
+  r.t.push_outbound(hb.data(), hb.size());   // live
+  auto cal_pkt = hb_bytes(1, 191);
+  r.t.push_cal(cal_pkt, TagCtx{11, 22, 0});   // same pair as the live session
+  CHECK(r.t.flush() == 2);
+  REQUIRE(r.sent.size() == 2);
+  auto f0 = parse_mav(r.sent[0].data(), r.sent[0].size(), true);
+  auto f1 = parse_mav(r.sent[1].data(), r.sent[1].size(), true);
+  REQUIRE(f0.has_value() && f1.has_value());
+  CHECK(f0->payload == cal_pkt);
+  CHECK(f1->payload == hb);
+  CHECK(r.t.stats().tx_cal_frames == 1);
+  CHECK(r.t.stats().tx_frames == 1);
+  CHECK(r.t.stats().tx_packets == 1);   // the live lane's own packet count, cal excluded
+}
+
 MTEST_MAIN
