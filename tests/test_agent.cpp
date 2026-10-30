@@ -1845,6 +1845,20 @@ std::vector<uint8_t> cal_packet(uint32_t nonce) {
   return mabur::cal::encode(mabur::cal::CalMsg{c}, kGcsSys, kGcsComp, mav::kChanGsLocal);
 }
 
+std::vector<uint8_t> apply_packet(uint32_t nonce) {
+  mabur::cal::ApplyCmd a;
+  a.nonce = nonce;
+  a.has_walls = true;
+  a.walls[0] = 10;
+  return mabur::cal::encode(mabur::cal::CalMsg{a}, kGcsSys, kGcsComp, mav::kChanGsLocal);
+}
+
+std::vector<uint8_t> abort_packet(uint32_t nonce) {
+  mabur::cal::Abort a;
+  a.nonce = nonce;
+  return mabur::cal::encode(mabur::cal::CalMsg{a}, kGcsSys, kGcsComp, mav::kChanGsLocal);
+}
+
 std::vector<uint8_t> param_set_packet() {
   char id[16] = "RADIO_POWER";
   char value[128] = {};
@@ -1995,8 +2009,9 @@ TEST(a_parameter_set_in_a_latched_frame_drops_the_frame) {
   CHECK(!agent.take_auth_reject());
 }
 
-// The GS's calibration lane restarts its counter at 1 per run while the
-// live lane keeps the session's counter: the two are separate domains,
+// The GS's calibration lane restarts its counter at 1 whenever the run's
+// pair changes (a second run on the same pair continues counting) while the
+// live lane keeps the session's own counter: the two are separate domains,
 // chosen by content (cal-only or not).
 TEST(cal_and_live_counters_are_independent) {
   Config cfg = make_cfg();
@@ -2032,6 +2047,46 @@ TEST(first_sweep_before_the_run_opens_sets_the_latch) {
   drive_failsafe(agent, cfg, 110);
   CHECK(mav_check(agent, mav_wire(cal_packet(7), 2, vtx), true) ==
         RcAgent::MavCheck::kOkLatched);
+  CHECK(!agent.take_auth_reject());
+}
+
+// The run's MABUR_CAL_APPLY lands while the drone is in FAILSAFE (the
+// session cleared mid-run): an apply-only frame under the run pair with the
+// run open is accepted on the latch.
+TEST(an_apply_only_frame_under_the_run_pair_in_failsafe_is_latched) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  const uint32_t vtx = link_agent(agent, act, cfg);
+  CHECK(mav_check(agent, mav_wire(cal_packet(7), 1, vtx), false) == RcAgent::MavCheck::kOk);
+  drive_failsafe(agent, cfg, 110);
+  const auto apply = apply_packet(7);
+  Mav out;
+  CHECK(mav_check(agent, mav_wire(apply, 2, vtx), true, &out) ==
+        RcAgent::MavCheck::kOkLatched);
+  CHECK(out.payload == apply);
+  CHECK(!agent.take_auth_reject());
+}
+
+// An operator abort can arrive after the drone has fallen all the way back
+// to RENDEZVOUS (no published session at all): an abort-only frame under
+// the run pair with the run open is still accepted on the latch.
+TEST(an_abort_only_frame_in_rendezvous_is_latched) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  const uint32_t vtx = link_agent(agent, act, cfg);
+  CHECK(mav_check(agent, mav_wire(cal_packet(7), 1, vtx), false) == RcAgent::MavCheck::kOk);
+  const uint64_t failsafe_at = 110 + cfg.link.failsafe_ms + 1;
+  drive_failsafe(agent, cfg, 110);
+  agent.tick(failsafe_at + cfg.link.rendezvous_ms, RadioHealth{});
+  REQUIRE(agent.state() == RcAgent::State::RENDEZVOUS);
+  REQUIRE(!agent.has_published_session());
+  const auto abort = abort_packet(7);
+  Mav out;
+  CHECK(mav_check(agent, mav_wire(abort, 2, vtx), true, &out) ==
+        RcAgent::MavCheck::kOkLatched);
+  CHECK(out.payload == abort);
   CHECK(!agent.take_auth_reject());
 }
 

@@ -289,11 +289,15 @@ class RcAgent {
   // Two counter domains per pair, chosen by content: a frame whose payload
   // is all calibration packets (cal::all_packets_are_cal) checks and
   // advances cal_last_, anything else mav_last_ -- the GS's calibration lane
-  // restarts its counter at 1 per run while its live lane keeps the
-  // session's, so one shared counter would refuse the cal lane as replays.
+  // restarts its counter at 1 whenever the run's pair (vtx nonce) changes,
+  // and a second run on the same pair continues counting, while its live
+  // lane keeps the session's own counter, so one shared counter would
+  // refuse the cal lane as replays.
   //
   // kOk: the tag verified under the published session and the counter is
-  // fresh in the frame's domain.
+  // fresh in the frame's domain. A cal-only frame's counter is checked
+  // against the pair its tag verified under, not a second read of the
+  // published session.
   //
   // kOkLatched: the published session's tag check failed, but a run is open
   // (`cal_run_open`, CalSweep::active()) and the frame verified under the

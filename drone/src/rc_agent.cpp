@@ -195,14 +195,18 @@ RcAgent::MavCheck RcAgent::check_mav(const uint8_t* body, size_t len, rc::Mav* o
   auto m = rc::parse_mav(body, len, /*tagged=*/true);
   if (!m) return MavCheck::kMalformed;
   const bool cal_only = cal::all_packets_are_cal(m->payload.data(), m->payload.size());
-  std::atomic<uint64_t>& domain = cal_only ? cal_last_ : mav_last_;
   MavCheck verdict = MavCheck::kRejected;
   uint64_t session = 0;
   if (verify_session_tagged(body, len, m->counter, &session)) {
     // Published path: a verified tag settles which pair the frame belongs
     // to, so a stale counter is a rejection, never a fall-through to the
-    // run pair.
-    if (accept_session_counter_(domain, m->counter, session)) verdict = MavCheck::kOk;
+    // run pair. A cal-only frame advances cal_last_ under that same pair
+    // with no second published-session read: a publish landing between the
+    // tag and the counter would otherwise drop a cal frame the latch exists
+    // to keep (a superseded run pair is still a valid cal pair).
+    const bool fresh = cal_only ? advance_counter_(cal_last_, m->counter, session)
+                                : accept_mav_counter(m->counter, session);
+    if (fresh) verdict = MavCheck::kOk;
   } else {
     // Latched path: cal-only frames of an open run, under the run pair
     // when it is not the published one (that pair just failed above).
