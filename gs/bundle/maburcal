@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """maburcal -- the TX-power wall calibration kit's entire operator UI.
 
-    maburcal start                 begin a run (streams progress, then the
-                                    final table)
+    maburcal start [tok...]         begin a run (streams progress, then the
+                                    final table); with no tokens the GS
+                                    runs its defaults, otherwise each token
+                                    is power20|power40|cap20|cap40, any
+                                    order
     maburcal status                one-line progress of a running session
     maburcal abort                 abandon the running session
     maburcal report <cal.log>      re-render a saved run, no daemon involved
@@ -555,14 +558,18 @@ def _render_when_ready(path):
         time.sleep(RENDER_RETRY_SLEEP_S)
 
 
-def cmd_start(_args):
-    # No arguments. `--margin` was removed: it fed only the GS's own park
-    # bookkeeping (the verify plan and this report's `park` column), while
-    # the drone applies its own radio.wall_margin_db, which cal_apply does
-    # not patch -- so it changed nothing on hardware and only made the
-    # report disagree with what the drone flew. To change the margin, edit
+def cmd_start(args):
+    # `--margin` was removed: it fed only the GS's own park bookkeeping
+    # (the verify plan and this report's `park` column), while the drone
+    # applies its own radio.wall_margin_db, which cal_apply does not patch
+    # -- so it changed nothing on hardware and only made the report
+    # disagree with what the drone flew. To change the margin, edit
     # wall_margin_db in /etc/mabur.toml on the drone and re-run.
-    reply = _require_reply("start")
+    #
+    # With no tokens the GS runs its own default composition (every kind
+    # it actually flies, gs/src/cal_control.h); tokens forward verbatim --
+    # CalControl parses and validates them, this script does not.
+    reply = _require_reply(" ".join(["start"] + args.tokens))
     print(reply)
     if reply.startswith("err"):
         sys.exit(1)
@@ -620,6 +627,10 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="command", required=True)
 
     p_start = sub.add_parser("start", help="begin a calibration run")
+    p_start.add_argument(
+        "tokens", nargs="*",
+        help="power20|power40|cap20|cap40, any order; defaults to the "
+             "GS's own composition when omitted")
     p_start.set_defaults(func=cmd_start)
 
     p_status = sub.add_parser("status", help="progress of a running session")

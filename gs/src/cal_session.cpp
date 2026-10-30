@@ -19,8 +19,7 @@ namespace {
 
 // How often an unanswered SweepCmd or ApplyCmd is offered again. The uplink
 // loses a large share of frames, so one send is not enough; both are
-// idempotent on the drone (SweepCmd by (nonce, seq), ApplyCmd by
-// (nonce, bw)), so a repeat costs nothing there.
+// idempotent on the drone by (nonce, seq), so a repeat costs nothing there.
 constexpr uint32_t kResendMs = 200;
 
 int median(std::vector<int> v) {

@@ -5,6 +5,7 @@ The reader is the in-repo consumer the compatibility policy requires: the
 cal.log schema may change freely, but this must change with it in the same
 commit.
 """
+import argparse
 import importlib.machinery
 import importlib.util
 import pathlib
@@ -209,7 +210,7 @@ class TestReport(unittest.TestCase):
         # A rate with a real, determined wall that was included in the
         # verify plan and heard nothing at its parked power (mcs1, "0%")
         # must render differently from a rate whose wall never came back
-        # determined in the first place (mcs7, "-" -- make_verify_plan
+        # determined in the first place (mcs7, "-" -- verify_cells()
         # never seeds a cell for it, so cal.log carries no V row at all).
         # Both used to print "-" in the verify column, hiding the single
         # most important signal a verify pass exists to produce: a rate
@@ -413,6 +414,48 @@ class TestCallogVersions(unittest.TestCase):
     def test_an_unknown_version_is_still_refused(self):
         with self.assertRaises(maburcal.UnsupportedLog):
             render(GOOD.replace("callog 1", "callog 99", 1))
+
+
+class TestStartArgs(unittest.TestCase):
+    """`maburcal start`'s CLI tokens, forwarded verbatim to CalControl --
+    this script neither validates nor composes them, so the only thing
+    worth testing here is that it sends exactly what the operator typed."""
+
+    def test_tokens_are_forwarded(self):
+        sent = []
+
+        def fake_send_cmd(message, timeout=1.0):
+            sent.append(message)
+            if message.startswith("start"):
+                return "ok started power40,cap20"
+            return "ok state=done sweep=1/1 kind=power bw=40 cell=0/0"
+
+        orig = maburcal._send_cmd
+        maburcal._send_cmd = fake_send_cmd
+        try:
+            maburcal.cmd_start(argparse.Namespace(tokens=["power40", "cap20"]))
+        finally:
+            maburcal._send_cmd = orig
+
+        self.assertEqual(sent[0], "start power40 cap20")
+
+    def test_no_tokens_sends_bare_start(self):
+        sent = []
+
+        def fake_send_cmd(message, timeout=1.0):
+            sent.append(message)
+            if message.startswith("start"):
+                return "ok started power20,cap20"
+            return "ok state=done sweep=1/1 kind=power bw=20 cell=0/0"
+
+        orig = maburcal._send_cmd
+        maburcal._send_cmd = fake_send_cmd
+        try:
+            maburcal.cmd_start(argparse.Namespace(tokens=[]))
+        finally:
+            maburcal._send_cmd = orig
+
+        self.assertEqual(sent[0], "start")
 
 
 if __name__ == "__main__":
