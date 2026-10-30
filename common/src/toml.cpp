@@ -363,7 +363,7 @@ const Value& Value::at(const std::string& key) const {
 const Value& Value::at(std::size_t i) const {
   if (kind_ != Kind::Array || i >= array_.size())
     throw Error("array index " + std::to_string(i) + " out of range");
-  return array_[i];
+  return *std::next(array_.begin(), static_cast<std::ptrdiff_t>(i));
 }
 
 std::size_t Value::size() const {
@@ -394,19 +394,16 @@ void Value::type_error(const char* want) const {
 }
 
 const std::string& Value::const_iterator::key() const {
-  if (tab_ == nullptr) throw Error("key() on an array iterator");
-  return (*tab_)[i_].first;
+  if (!on_table_) throw Error("key() on an array iterator");
+  return t_->first;
 }
 
 Value::const_iterator Value::begin() const {
-  return kind_ == Kind::Array ? const_iterator(nullptr, &array_, 0)
-                              : const_iterator(&table_, nullptr, 0);
+  return kind_ == Kind::Array ? const_iterator(array_.begin()) : const_iterator(table_.begin());
 }
 
 Value::const_iterator Value::end() const {
-  return kind_ == Kind::Array
-             ? const_iterator(nullptr, &array_, array_.size())
-             : const_iterator(&table_, nullptr, table_.size());
+  return kind_ == Kind::Array ? const_iterator(array_.end()) : const_iterator(table_.end());
 }
 
 Value::ItemsRange Value::items() const {
