@@ -39,10 +39,16 @@ struct PowerPlan {
   int8_t mcs[8];
 };
 
+// The wall margin in the chip's 0.25 dB index steps: what every parked
+// index (wall - m) subtracts from its wall.
+inline int margin_steps(double margin_db) {
+  return static_cast<int>(std::lround(margin_db * 4.0));
+}
+
 inline PowerPlan make_power_plan(const std::array<int, 8>& walls_rel,
                                   int legacy_wall_rel, double margin_db,
                                   int anchor_idx) {
-  const int m = static_cast<int>(std::lround(margin_db * 4.0));
+  const int m = margin_steps(margin_db);
   const int hi =
       anchor_idx > 0 ? std::min(rc::kRelMax, 127 - anchor_idx) : rc::kRelMax;
   auto clamp = [&](int v) {

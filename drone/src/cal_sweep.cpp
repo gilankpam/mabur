@@ -44,6 +44,13 @@ uint16_t CalSweep::remaining_start_ms(uint64_t now_ms) const {
   return static_cast<uint16_t>(remaining > 65535 ? 65535 : remaining);
 }
 
+bool CalSweep::starts_sweep(const cal::SweepCmd& c) const {
+  // The same three branches on_cmd() takes, without the side effects.
+  if (!has_session_ || c.nonce != nonce_)
+    return !(last_nonce_valid_ && c.nonce == last_closed_nonce_);
+  return static_cast<int>(c.seq) > last_started_seq_;
+}
+
 void CalSweep::on_cmd(const cal::SweepCmd& c, uint64_t now_ms, PowerCtl& pwr) {
   const bool new_session = !has_session_ || c.nonce != nonce_;
   // A closed run (hard cap, abort, or await timeout) never reopens: a

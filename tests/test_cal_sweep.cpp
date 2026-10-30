@@ -597,4 +597,24 @@ TEST(power_restored_flag_resets_when_a_new_run_opens) {
   CHECK(!s.power_restored_for_test());  // reset for the new run
 }
 
+// starts_sweep() predicts on_cmd(): a new nonce (unless it is the one just
+// closed) or a seq ahead of the running one starts a sweep; a repeat or a
+// late duplicate does not. run_nonce() names the open run.
+TEST(starts_sweep_predicts_on_cmd_and_run_nonce_names_the_run) {
+  FakePowerCtl pwr;
+  CalSweep s(CalSweepCfg{});
+  CHECK(s.starts_sweep(power_cmd(5, 0)));
+  s.on_cmd(power_cmd(5, 1), 1000, pwr);
+  REQUIRE(s.active());
+  CHECK(s.run_nonce() == 5);
+  CHECK(!s.starts_sweep(power_cmd(5, 1)));  // repeat
+  CHECK(!s.starts_sweep(power_cmd(5, 0)));  // late duplicate
+  CHECK(s.starts_sweep(capacity_cmd(5, 2)));
+  CHECK(s.starts_sweep(power_cmd(6, 0)));   // another run
+  s.on_abort(cal::Abort{5}, 1100, pwr);
+  REQUIRE(!s.active());
+  CHECK(!s.starts_sweep(power_cmd(5, 3)));  // the closed nonce never reopens
+  CHECK(s.starts_sweep(power_cmd(6, 0)));
+}
+
 MTEST_MAIN

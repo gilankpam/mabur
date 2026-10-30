@@ -193,6 +193,17 @@ class CalSweep {
   // flight at all.
   bool active() const { return has_session_; }
 
+  // The open run's nonce; meaningful only while active().
+  uint32_t run_nonce() const { return nonce_; }
+
+  // True iff on_cmd(c) would start a sweep (a new run or a later seq of
+  // the open one) rather than re-ack or ignore it -- before the anchor
+  // read, which can still refuse it. The owner programs what a starting
+  // sweep needs from the device (aggregation off, a capacity width's
+  // power table) only for a command this accepts, so a GS resend landing
+  // mid-sweep never touches the device under the sweep running.
+  bool starts_sweep(const cal::SweepCmd& c) const;
+
   // Advances the sweep by one unit of work: entering a cell, sending one
   // frame (Power/Verify) or running one Capacity point, or ending a
   // sweep/run. Checks the run-wide deadline first (constraint 2) so a

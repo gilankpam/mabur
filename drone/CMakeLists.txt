@@ -12,6 +12,7 @@ add_library(mabur_drone_core STATIC
   src/config_write.cpp
   src/config_apply.cpp
   src/cal_sweep.cpp
+  src/cal_link.cpp
   src/mav_params.cpp
   src/mav_component.cpp
   vendor/venc_frame_ring.c
