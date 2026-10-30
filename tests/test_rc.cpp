@@ -81,20 +81,6 @@ TEST(disc_tag_uses_key_alone) {
   CHECK(verify_control(def.data(), def.size(), kDefaultLinkKey, TagCtx{}));
 }
 
-TEST(cal_frames_are_tagged_without_seq) {
-  CalCmd c; c.nonce = 5; c.windows.push_back(CalWindow{3, -4, 4, 1});
-  const TagCtx ctx{1, 2, 0};
-  auto w = pack_cal_cmd(c, test_key(), ctx);
-  REQUIRE(parse_cal_cmd(w.data(), w.size()).has_value());
-  CHECK(verify_control(w.data(), w.size(), test_key(), ctx));
-  CHECK(!verify_control(w.data(), w.size(), test_key(), TagCtx{1, 2, 1}));
-  CalResult r; r.nonce = 5;
-  auto rw = pack_cal_result(r, test_key(), ctx);
-  CHECK(rw.size() == 27 + kTagLen + 2);
-  REQUIRE(parse_cal_result(rw.data(), rw.size()).has_value());
-  CHECK(verify_control(rw.data(), rw.size(), test_key(), ctx));
-}
-
 // Hardware RX hands the drone the frame body WITH devourer's trailing 4-byte
 // 802.11 FCS still attached (Packet.Data, fcs_present). verify_control must
 // find the tag at the frame's structural offset, not at len - 10, and parse_*
@@ -117,21 +103,6 @@ TEST(verify_control_ignores_trailing_fcs_bytes_on_every_tagged_type) {
   CHECK(verify_control(disc.data(), disc.size(), test_key(), TagCtx{}));
   CHECK(!verify_control(disc.data(), disc.size(), kDefaultLinkKey, TagCtx{}));
   CHECK(parse_disc(disc.data(), disc.size()).has_value());
-
-  const TagCtx cctx{1, 2, 0};
-  CalCmd c; c.nonce = 5;
-  c.windows.push_back(CalWindow{3, -4, 4, 1});
-  c.windows.push_back(CalWindow{5, -8, 8, 2});
-  auto cmd = with_fcs(pack_cal_cmd(c, test_key(), cctx));
-  CHECK(verify_control(cmd.data(), cmd.size(), test_key(), cctx));
-  CHECK(!verify_control(cmd.data(), cmd.size(), test_key(), TagCtx{1, 3, 0}));
-  CHECK(parse_cal_cmd(cmd.data(), cmd.size()).has_value());
-
-  CalResult cr; cr.nonce = 5;
-  auto res = with_fcs(pack_cal_result(cr, test_key(), cctx));
-  CHECK(verify_control(res.data(), res.size(), test_key(), cctx));
-  CHECK(!verify_control(res.data(), res.size(), test_key(), TagCtx{1, 3, 0}));
-  CHECK(parse_cal_result(res.data(), res.size()).has_value());
 }
 
 TEST(verify_control_rejects_a_frame_shorter_than_structural_plus_tag_and_crc) {
@@ -142,15 +113,6 @@ TEST(verify_control_rejects_a_frame_shorter_than_structural_plus_tag_and_crc) {
   Disc d; d.vrx_nonce = 1;
   auto disc = pack_disc(d, test_key());
   CHECK(!verify_control(disc.data(), 17 + kTagLen + 1, test_key(), TagCtx{}));
-  CalCmd c; c.nonce = 5; c.windows.push_back(CalWindow{3, -4, 4, 1});
-  auto cmd = pack_cal_cmd(c, test_key(), ctx);
-  CHECK(!verify_control(cmd.data(), 17 + 4 + kTagLen + 1, test_key(), ctx));
-  // n_windows out of range (0 or > kMaxCalWindows) never verifies.
-  auto bad_n = with_fcs(cmd); bad_n[16] = 0;
-  CHECK(!verify_control(bad_n.data(), bad_n.size(), test_key(), ctx));
-  CalResult cr;
-  auto res = pack_cal_result(cr, test_key(), ctx);
-  CHECK(!verify_control(res.data(), 27 + kTagLen + 1, test_key(), ctx));
   // An untagged type (DISC_ACK) never verifies, however long.
   DiscAck a; auto ack = with_fcs(with_fcs(pack_disc_ack(a)));
   CHECK(!verify_control(ack.data(), ack.size(), test_key(), TagCtx{}));
@@ -174,14 +136,15 @@ TEST(rcf_matches_golden_wire) {
   //   std::fprintf(stderr, "%s\n", mtest::hex(wire).c_str());
   // Reverting any pack_rcf() layout change without updating these fails
   // here, which is the point -- the format cannot drift silently.
-  // Re-pinned for the RC_VERSION 16 -> 17 bump (T_MAV): version byte 2
-  // moved, re-deriving the tag + CRC over the changed body.
+  // Re-pinned for the RC_VERSION 17 -> 18 bump (T_CAL_CMD/T_CAL_RESULT
+  // deleted): version byte 2 moved, re-deriving the tag + CRC over the
+  // changed body.
   const std::vector<std::string> GOLDEN = {
-      "43521101000700243232ff000000000000792237e541e59506a1b5",
-      "4352110100ffff006464ff00000300c8004ced8cff4f2030a72bdc",
+      "43521201000700243232ff000000000000d8922d902b70677e29a3",
+      "4352120100ffff006464ff00000300c800e0390d6a99b162aa7e89",
       // Asym pair (base 1.0 / enh 0.5): ENH actually rides a different
       // literal overhead than BASE here, not a duplicated equal-pair scalar.
-      "43521101002a00086432060000025adbffa122eb3e6aeb773b9676",
+      "43521201002a00086432060000025adbff124b63f32743e99651e5",
   };
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
   REQUIRE(j["rcf"].size() == GOLDEN.size());
@@ -212,9 +175,9 @@ TEST(disc_matches_golden_wire) {
   //   std::fprintf(stderr, "%s\n", mtest::hex(wire).c_str());
   // Reverting any pack_disc() layout change without updating this fails
   // here, which is the point -- the format cannot drift silently.
-  // Re-pinned for the RC_VERSION 16 -> 17 bump (T_MAV).
+  // Re-pinned for the RC_VERSION 17 -> 18 bump (version byte only).
   const std::vector<std::string> GOLDEN = {
-      "43521102040100feca9514010000000200ec415c1db52a6b971401",
+      "43521202040100feca95140100000002005c1f5bb3bda794272ab8",
   };
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
   REQUIRE(j["disc"].size() == GOLDEN.size());
@@ -245,9 +208,9 @@ TEST(disc_ack_matches_golden_wire) {
   //   std::fprintf(stderr, "%s\n", mtest::hex(wire).c_str());
   // Reverting any pack_disc_ack() layout change without updating this
   // fails here, which is the point -- the format cannot drift silently.
-  // Re-pinned for the RC_VERSION 16 -> 17 bump (T_MAV).
+  // Re-pinned for the RC_VERSION 17 -> 18 bump (version byte only).
   const std::vector<std::string> GOLDEN = {
-      "43521103040100feca0200efbe03009514000100ca0a",
+      "43521203040100feca0200efbe03009514000100b80a",
   };
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
   REQUIRE(j["disc_ack"].size() == GOLDEN.size());
@@ -408,12 +371,12 @@ TEST(telem_round_trip_and_golden) {
   CHECK(back->rec_status == 0x16);
   CHECK(back->nack_rx == 0 && back->retx_syms == 0 && back->retx_refused == 0);
   // Golden pin: byte-exact wire so the format can never drift silently.
-  // Re-pinned for the RC_VERSION 16 -> 17 bump (version byte only; Telem's
+  // Re-pinned for the RC_VERSION 17 -> 18 bump (version byte only; Telem's
   // own layout is unchanged, so only the version byte and the CRC it feeds
   // moved).
   const std::string GOLDEN =
-      "43521104090201022d0034127766554433221100a0860100282307000000d2040200"
-      "333415163d48000d000e000f0016000000000000c388";
+      "43521204090201022d0034127766554433221100a0860100282307000000d2040200"
+      "333415163d48000d000e000f00160000000000000305";
   CHECK(mtest::hex(wire) == GOLDEN);
   // Corrupt/truncate rejection, mirroring the disc_ack tests:
   auto trunc = wire; trunc.pop_back();
@@ -482,13 +445,13 @@ TEST(version_mismatch_rejected_both_directions) {
   CHECK(mabur::rc::parse_rcf(body.data(), body.size()).has_value());
 
   // Byte 2 is the version. Any other version must be refused outright —
-  // including 16, the version before the bump to 17.
+  // including 17, the version before the bump to 18.
   auto v_old = body;
-  v_old[2] = 16;
+  v_old[2] = 17;
   CHECK(!mabur::rc::parse_rcf(v_old.data(), v_old.size()).has_value());
 
   auto v_future = body;
-  v_future[2] = 18;
+  v_future[2] = 19;
   CHECK(!mabur::rc::parse_rcf(v_future.data(), v_future.size()).has_value());
 
   // The same guard must hold for telemetry, which travels the opposite
@@ -566,99 +529,10 @@ TEST(foreign_rc_version_predicate) {
   CHECK(!mabur::rc::is_foreign_rc_version(nullptr, 0));
 }
 
-TEST(cal_cmd_round_trip) {
-  mabur::rc::CalCmd c;
-  c.nonce = 0x12345678;
-  c.phase = 1;  // coarse
-  c.frames_per_cell = 20;
-  c.settle_ms = 100;
-  c.gap_us = 2000;
-  c.windows = {{0, -40, 60, 4}, {7, -8, 8, 1}};
-  auto b = mabur::rc::pack_cal_cmd(c);
-  CHECK(mabur::rc::frame_type(b.data(), b.size()) == mabur::rc::T_CAL_CMD);
-  auto got = mabur::rc::parse_cal_cmd(b.data(), b.size());
-  REQUIRE(got.has_value());
-  CHECK(got->nonce == 0x12345678);
-  CHECK(got->phase == 1);  // coarse
-  CHECK(got->frames_per_cell == 20);
-  CHECK(got->settle_ms == 100);
-  CHECK(got->gap_us == 2000);
-  REQUIRE(got->windows.size() == 2);
-  CHECK(got->windows[0].rate == 0);
-  CHECK(got->windows[0].idx_lo == -40);
-  CHECK(got->windows[0].idx_hi == 60);
-  CHECK(got->windows[0].idx_step == 4);
-  CHECK(got->windows[1].rate == 7);
-  CHECK(got->windows[1].idx_lo == -8);
-}
-
-TEST(cal_cmd_rejects_corrupt_crc) {
-  mabur::rc::CalCmd c;
-  c.windows = {{0, 0, 124, 4}};
-  auto b = mabur::rc::pack_cal_cmd(c);
-  b[b.size() - 1] ^= 0xFF;
-  CHECK(!mabur::rc::parse_cal_cmd(b.data(), b.size()).has_value());
-}
-
-TEST(cal_cmd_rejects_bad_window_count) {
-  mabur::rc::CalCmd c;
-  c.windows = {{0, 0, 124, 4}};
-  auto b = mabur::rc::pack_cal_cmd(c);
-  // n_windows sits after hdr(5) + nonce(4) + phase(1) + three
-  // u16s(6) = offset 16. Claim 9 windows; the max is 8.
-  const size_t n_off = 5 + 4 + 1 + 2 + 2 + 2;  // 16
-  b[n_off] = 9;
-  CHECK(!mabur::rc::parse_cal_cmd(b.data(), b.size()).has_value());
-}
-
-TEST(cal_cmd_rejects_window_outside_relative_range) {
-  mabur::rc::CalCmd c;
-  c.windows = {{0, -40, 60, 4}};
-  auto b = mabur::rc::pack_cal_cmd(c);
-  // Window bytes start at kCalCmdFixedLen (17): rate, idx_lo, idx_hi, step.
-  b[18] = static_cast<uint8_t>(-70);  // idx_lo below -64
-  // A bad CRC also rejects, so re-sign the body: mabur::crc16_ccitt from
-  // common/include/mabur/crc16.h, little-endian, exactly as put_crc() in
-  // rc_proto.cpp writes it (check put_crc's byte order and match it).
-  const size_t plen = b.size() - 2;
-  const uint16_t crc = mabur::crc16_ccitt(b.data(), plen);
-  b[plen] = static_cast<uint8_t>(crc & 0xFF);
-  b[plen + 1] = static_cast<uint8_t>(crc >> 8);
-  CHECK(!mabur::rc::parse_cal_cmd(b.data(), b.size()).has_value());
-}
-
-TEST(cal_result_round_trip) {
-  mabur::rc::CalResult r;
-  r.nonce = 99;
-  r.walls = {91, 91, 91, 95, 73, 54, 51, 49};
-  r.legacy_wall = 91;
-  auto b = mabur::rc::pack_cal_result(r);
-  CHECK(mabur::rc::frame_type(b.data(), b.size()) == mabur::rc::T_CAL_RESULT);
-  auto got = mabur::rc::parse_cal_result(b.data(), b.size());
-  REQUIRE(got.has_value());
-  CHECK(got->walls[3] == 95);
-  CHECK(got->walls[7] == 49);
-  CHECK(got->legacy_wall == 91);
-}
-
-TEST(cal_result_sentinel_is_minus_128_and_minus_1_is_a_real_wall) {
-  // Relative walls make -1 a legal value (one index below the anchor), so
-  // "no wall could be derived" is kWallUndetermined (-128), never -1.
-  mabur::rc::CalResult r;
-  r.walls = {63, 63, 63, mabur::rc::kWallUndetermined, 20, 1, -2, -1};
-  r.legacy_wall = 63;
-  auto b = mabur::rc::pack_cal_result(r);
-  auto got = mabur::rc::parse_cal_result(b.data(), b.size());
-  REQUIRE(got.has_value());
-  CHECK(got->walls[3] == mabur::rc::kWallUndetermined);
-  CHECK(got->walls[6] == -2);
-  CHECK(got->walls[7] == -1);
-}
-
 TEST(telem_ack_is_the_cal_active_bit_alone) {
-  // The anchor never leaves the drone: the calibration ack is flags bit6 and
-  // nothing else (dropping the anchor shrank TELEM_LEN by one byte).
-  // TELEM_LEN is 54 at RC_VERSION 17.
+  // The anchor never leaves the drone: the radio-ownership gate is flags
+  // bit6 and nothing else (dropping the anchor shrank TELEM_LEN by one
+  // byte). TELEM_LEN is 54 at RC_VERSION 18.
   mabur::rc::Telem t;
   t.flags = 0x40;
   auto b = mabur::rc::pack_telem(t);
@@ -668,7 +542,23 @@ TEST(telem_ack_is_the_cal_active_bit_alone) {
   CHECK((got->flags & 0x40) != 0);
 }
 
-TEST(rc_version_is_seventeen) { CHECK(mabur::rc::RC_VERSION == 17); }
+TEST(rc_version_is_18) { CHECK(mabur::rc::RC_VERSION == 18); }
+
+// Types 5 and 6 were T_CAL_CMD / T_CAL_RESULT; deleted, not reused. A frame
+// doctored to either type must parse as nothing (every type-specific
+// parse_* checks its own type constant) and fail verify_control (whose
+// switch has no case left for them and falls to its default: false).
+TEST(frame_types_5_and_6_are_unassigned) {
+  mabur::rc::Rcf r; r.seq = 1;
+  const mabur::rc::TagCtx ctx{0xCAFEF00D, 0x12345678, 1};
+  auto wire = mabur::rc::pack_rcf(r, test_key(), ctx);
+  for (uint8_t bad_type : {uint8_t{5}, uint8_t{6}}) {
+    auto doctored = wire;
+    doctored[3] = bad_type;
+    CHECK(!mabur::rc::parse_rcf(doctored.data(), doctored.size()).has_value());
+    CHECK(!mabur::rc::verify_control(doctored.data(), doctored.size(), test_key(), ctx));
+  }
+}
 
 TEST(nack_final_layout_round_trip_and_tag) {
   using namespace mabur::rc;

@@ -1025,9 +1025,9 @@ rc::DiscAck RcAgent::make_disc_ack(uint32_t vrx_nonce, uint32_t vtx_nonce, uint8
   // wire (one legal value) so a GS can still refuse a peer that lacks it.
   // CAP_TELEMETRY: this drone also sends T_TELEM frames on its uplink —
   // display-grade only, not a gate.
-  // CAP_CALIBRATE: this build understands T_CAL_CMD/T_CAL_RESULT (main.cpp
-  // wires them up) -- a real gate, unlike CAP_TELEMETRY:
-  // gs/src/cal_session.cpp's start() refuses a session outright without it.
+  // CAP_CALIBRATE: this build runs the mabur-dialect calibration -- a real
+  // gate, unlike CAP_TELEMETRY: gs/src/cal_session.cpp's start() refuses a
+  // session outright without it.
   // CAP_MAVLINK: this build answers T_MAV (main.cpp's MAV thread).
   // Display-only, like CAP_TELEMETRY: the GS logs a peer without it once
   // per session and gates nothing on it.
