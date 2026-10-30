@@ -626,16 +626,17 @@ static int run_radio(const maburgs::Config& cfg) {
   // CalLog::ok() being false just makes every record method a silent no-op
   // (cal_log.h's own contract), so handing over &*cal_log unconditionally
   // is safe even when the directory resolution failed. The sweep list a
-  // bare `maburcal start` runs is fixed by the config, so it is composed
-  // once.
+  // bare `maburcal start` runs follows the effective width (the narrower of
+  // the GS's and the linked drone's, cal_effective_width), so it is
+  // recomposed whenever that width changes, not once from the GS config.
   maburgs::ChannelCorePicker cal_picker(chan);
   maburgs::CalSession cal_session(maburgs::CalSessionCfg{}, &*cal_log, &cal_picker);
-  const std::vector<mabur::cal::SweepSpec> cal_defaults =
-      maburgs::default_sweeps(cfg.radio.width, cfg.link.ladder_cfg);
+  uint8_t cal_defaults_width = cfg.radio.width;
+  std::vector<mabur::cal::SweepSpec> cal_defaults =
+      maburgs::default_sweeps(cal_defaults_width, cfg.link.ladder_cfg);
   maburgs::CalNarrator cal_narrator(cal_log_dir + "/cal.log");
   // The drone's radio.width, from the DiscAck that opened the session
-  // (0 = none yet): a GS flying 40 still cannot calibrate 40 against a
-  // drone that only flies 20.
+  // (0 = none yet); cal_effective_width's input.
   uint8_t peer_agreed_width = 0;
 
   // The one place a control frame leaves the GS (direct or via the RCF
@@ -954,9 +955,13 @@ static int run_radio(const maburgs::Config& cfg) {
   // drone's T_MAV frames whether or not the endpoint is open. Its live
   // frames leave like an RCF: offered to the slotter, never during a
   // calibration sweep. Its cal-lane frames (the calibration session's
-  // SweepCmd/ApplyCmd/Abort) go straight out: the session offers one only
-  // when the air is the GS's, and a sweep has no video for the slotter to
-  // hide a send behind. flush() runs once per tick after mav_tick_ms /
+  // SweepCmd/ApplyCmd/Abort) go straight out, skipping the slotter: they
+  // only ever leave outside a sweep's silent window -- in AwaitAck (the
+  // first SweepCmd while video may still be flying) and in Apply -- and
+  // once the drone has paused video for the run the slotter passes
+  // everything through anyway, while a SweepCmd or ApplyCmd lost to an
+  // uplink collision is repeated every 200 ms until answered. flush() runs
+  // once per tick after mav_tick_ms /
   // mav_tick_card are set to that tick's clock and TX card.
   uint64_t mav_tick_ms = 0;
   int mav_tick_card = 0;
@@ -1313,17 +1318,20 @@ static int run_radio(const maburgs::Config& cfg) {
     // set_peer before anything reads it: start() (via CalControl, below the
     // operator's `maburcal start`) refuses on a down link or a peer
     // without CAP_CALIBRATE, and the session freezes the pair's tag
-    // context when it first commands the drone. The width a `start
-    // power40`/`cap40` may ask for is the narrower of the GS's and the
-    // linked drone's. Compiled into every prod build, unlike loss_ctl
-    // above (cal_control.h).
+    // context when it first commands the drone. The narrower of the GS's
+    // and the linked drone's width bounds both what a `start power40`/
+    // `cap40` may ask for and what a bare `start` composes. Compiled into
+    // every prod build, unlike loss_ctl above (cal_control.h).
     const bool mav_linked = vrx.link_state() == maburgs::VrxState::SESSION;
     cal_session.set_peer(
         mav_linked, mav_linked && (vrx.peer_caps() & mabur::rc::CAP_CALIBRATE),
         vrx.session_ctx());
-    const uint8_t cal_width = mav_linked && peer_agreed_width != 0
-                                  ? std::min(cfg.radio.width, peer_agreed_width)
-                                  : cfg.radio.width;
+    const uint8_t cal_width =
+        maburgs::cal_effective_width(cfg.radio.width, mav_linked, peer_agreed_width);
+    if (cal_width != cal_defaults_width) {
+      cal_defaults_width = cal_width;
+      cal_defaults = maburgs::default_sweeps(cal_width, cfg.link.ladder_cfg);
+    }
     cal_ctl.poll(cal_session, cal_defaults, cal_width);
     // Whatever the session offers goes out as is, never gated on
     // radio_silent(): the session offers only when the air is the GS's.

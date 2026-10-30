@@ -1,5 +1,6 @@
 #include "cal_wiring.h"
 
+#include <algorithm>
 #include <utility>
 
 #include "mabur/cal_mav.h"
@@ -8,22 +9,6 @@ namespace maburgs {
 namespace cal = mabur::cal;
 
 namespace {
-
-// AwaitAck through Verify -- CalSession::running()'s set, read off a
-// snapshot.
-bool running_state(CalSession::State st) {
-  switch (st) {
-    case CalSession::State::AwaitAck:
-    case CalSession::State::Sweep:
-    case CalSession::State::AwaitDone:
-    case CalSession::State::Analyze:
-    case CalSession::State::Apply:
-    case CalSession::State::Verify:
-      return true;
-    default:
-      return false;
-  }
-}
 
 std::string k_of_n(size_t i, size_t n) {
   return std::to_string(i + 1) + "/" + std::to_string(n);
@@ -61,6 +46,11 @@ void feed_cal_packet(CalSession& s, const uint8_t* bytes, size_t n, uint64_t now
   for (const cal::CalMsg& m : cal::decode_all(bytes, n)) s.on_mav(m, now_ms);
 }
 
+uint8_t cal_effective_width(uint8_t gs_width, bool linked, uint8_t peer_width) {
+  if (!linked || peer_width == 0) return gs_width;
+  return std::min(gs_width, peer_width);
+}
+
 StatsCalIn cal_sideport(const CalSession& s) {
   StatsCalIn out;
   if (!s.running()) return out;
@@ -81,10 +71,10 @@ std::vector<std::string> CalNarrator::observe(const CalSnapshot& snap,
   std::vector<std::string> out;
   const CalSnapshot prev = std::move(prev_);
   prev_ = snap;
-  const bool was_running = running_state(prev.state);
-  const bool is_running = running_state(snap.state);
+  const bool was_running = CalSession::is_running(prev.state);
+  const bool now_running = CalSession::is_running(snap.state);
 
-  if (!was_running && is_running) {
+  if (!was_running && now_running) {
     std::string list;
     for (size_t i = 0; i < sweeps.size(); ++i) {
       if (i) list += ",";

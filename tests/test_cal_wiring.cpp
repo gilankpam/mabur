@@ -2,6 +2,8 @@
 // session, the sideport's link.cal input, and the run's stderr narration.
 #include "mtest.h"
 #include "cal_wiring.h"
+#include "cal_control.h"
+#include "ladder_controller.h"
 #include "cal_session.h"
 #include "mabur/cal_mav.h"
 #include "mabur/mav.h"
@@ -160,6 +162,45 @@ TEST(narrator_reports_an_abort) {
   l = m.observe(snap(State::AwaitAck, 1, {cal::Kind::Capacity, 20}), kRun);
   REQUIRE(l.size() == 1);
   CHECK(l[0] == "calibration sweep 1/2 power20 done");
+}
+
+// --- effective width -----------------------------------------------------
+
+TEST(effective_width_is_the_narrower_of_the_gs_and_the_linked_drone) {
+  CHECK(cal_effective_width(40, /*linked=*/true, /*peer_width=*/20) == 20);
+  CHECK(cal_effective_width(40, true, 40) == 40);
+  CHECK(cal_effective_width(20, true, 40) == 20);
+  // No DiscAck width yet, or no link: the GS's own width.
+  CHECK(cal_effective_width(40, true, 0) == 40);
+  CHECK(cal_effective_width(40, false, 20) == 40);
+}
+
+TEST(a_bare_start_on_a_40_gs_linked_to_a_20_drone_runs_two_sweeps) {
+  LadderCfg ladder;
+  ladder.ladder.push_back({4, 0.5, 0.5, 40});
+  const uint8_t w = cal_effective_width(40, true, 20);
+  CalSession s(CalSessionCfg{});
+  s.set_peer(true, true);
+  std::string reply;
+  REQUIRE(CalControl::apply("start", s, &reply, default_sweeps(w, ladder), w));
+  REQUIRE(s.sweeps().size() == 2);
+  CHECK(s.sweeps()[0].bw == 20 && s.sweeps()[1].bw == 20);
+  // And a 40 token is refused against that drone.
+  s.abort("x");
+  CHECK(!CalControl::apply("start power40", s, &reply, default_sweeps(w, ladder), w));
+  CHECK(reply == "err refused: GS radio.width is 20");
+}
+
+// --- CalSession::is_running ----------------------------------------------
+
+TEST(is_running_is_await_ack_through_verify) {
+  CHECK(!CalSession::is_running(State::Idle));
+  CHECK(!CalSession::is_running(State::Picking));
+  CHECK(CalSession::is_running(State::AwaitAck));
+  CHECK(CalSession::is_running(State::Analyze));
+  CHECK(CalSession::is_running(State::Verify));
+  CHECK(!CalSession::is_running(State::Done));
+  CHECK(!CalSession::is_running(State::Failed));
 }
 
 MTEST_MAIN

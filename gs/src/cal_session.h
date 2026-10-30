@@ -127,6 +127,8 @@ class CalSession {
   // AwaitAck through Verify: a run owns the air. Picking is not included
   // -- the channel machinery must keep running while the pick measures.
   bool running() const;
+  // running()'s set of states, for a caller holding only a snapshot.
+  static bool is_running(State st);
 
   // Abandons the run from any state: one Abort goes out through due_mav()
   // (if the run already reached the drone), a pick in progress is

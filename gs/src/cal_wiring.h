@@ -32,6 +32,13 @@ std::string cal_sweep_token(const mabur::cal::SweepSpec& spec);
 // session's state; the session itself ignores what does not fit.
 void feed_cal_packet(CalSession& s, const uint8_t* bytes, size_t n, uint64_t now_ms);
 
+// The widest sweep a run may ask for: the narrower of the GS's own
+// radio.width and the linked drone's (its DiscAck agreed_width, 0 = not
+// heard yet). A GS flying 40 still cannot calibrate 40 against a drone that
+// flies only 20; unlinked or before a DiscAck, the GS's width stands (a
+// start refuses on a down link anyway).
+uint8_t cal_effective_width(uint8_t gs_width, bool linked, uint8_t peer_width);
+
 // The sideport's link.cal input: present only while the run owns the air.
 StatsCalIn cal_sideport(const CalSession& s);
 

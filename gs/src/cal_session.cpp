@@ -197,8 +197,10 @@ bool CalSession::radio_silent(uint64_t now_ms) const {
   return false;
 }
 
-bool CalSession::running() const {
-  switch (state_) {
+bool CalSession::running() const { return is_running(state_); }
+
+bool CalSession::is_running(State st) {
+  switch (st) {
     case State::AwaitAck:
     case State::Sweep:
     case State::AwaitDone:
