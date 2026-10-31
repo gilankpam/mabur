@@ -149,4 +149,69 @@ TEST(pam_refuses_an_empty_surface) {
   CHECK(err == "no osd surface");
 }
 
+// handle_menu_debug_verb: "key"/"view" must never act as if a script's
+// command landed somewhere when the menu is off -- no queued event behind
+// a lying "ok", no MenuView dump nothing will ever move.
+TEST(key_verb_is_refused_when_the_menu_is_off) {
+  std::optional<KeyEvent> key;
+  const std::optional<std::string> r =
+      handle_menu_debug_verb("key", "right hold", /*menu_on=*/false, MenuView{}, &key);
+  REQUIRE(r.has_value());
+  CHECK(*r == "err menu off");
+  CHECK(!key.has_value());
+}
+
+// The menu-off refusal wins even over a malformed key line: the caller
+// must not learn anything about the syntax of a command nothing can act
+// on anyway.
+TEST(key_verb_off_refusal_beats_a_bad_key_line) {
+  std::optional<KeyEvent> key;
+  const std::optional<std::string> r =
+      handle_menu_debug_verb("key", "not a real key", /*menu_on=*/false, MenuView{}, &key);
+  REQUIRE(r.has_value());
+  CHECK(*r == "err menu off");
+  CHECK(!key.has_value());
+}
+
+TEST(view_verb_is_refused_when_the_menu_is_off) {
+  MenuView v;
+  v.crumb = "Video";  // must not leak into the reply
+  const std::optional<std::string> r =
+      handle_menu_debug_verb("view", "", /*menu_on=*/false, v, nullptr);
+  REQUIRE(r.has_value());
+  CHECK(*r == "err menu off");
+}
+
+TEST(key_verb_queues_its_event_only_when_the_menu_is_on) {
+  std::optional<KeyEvent> key;
+  const std::optional<std::string> r =
+      handle_menu_debug_verb("key", "right hold", /*menu_on=*/true, MenuView{}, &key);
+  REQUIRE(r.has_value());
+  CHECK(*r == "ok");
+  REQUIRE(key.has_value());
+  CHECK(key->button == Button::kRight);
+  CHECK(key->kind == KeyKind::kHold);
+}
+
+TEST(view_verb_dumps_the_given_view_when_the_menu_is_on) {
+  MenuView v;
+  v.open = true;
+  v.crumb = "Video";
+  const std::optional<std::string> r =
+      handle_menu_debug_verb("view", "", /*menu_on=*/true, v, nullptr);
+  REQUIRE(r.has_value());
+  CHECK(r->rfind("ok\n", 0) == 0);
+  CHECK(r->find("open 1\n") != std::string::npos);
+  CHECK(r->find("crumb Video\n") != std::string::npos);
+  CHECK(*r == "ok\n" + menu_view_text(v));
+}
+
+// Any other verb -- "snap", an unknown one -- is none of this function's
+// business, on or off: the caller's own dispatch must still run.
+TEST(unrelated_verbs_fall_through_regardless_of_menu_state) {
+  CHECK(!handle_menu_debug_verb("snap", "", true, MenuView{}, nullptr).has_value());
+  CHECK(!handle_menu_debug_verb("snap", "", false, MenuView{}, nullptr).has_value());
+  CHECK(!handle_menu_debug_verb("ping", "", true, MenuView{}, nullptr).has_value());
+}
+
 MTEST_MAIN

@@ -594,4 +594,64 @@ set +e; wait "$DEBUG_PID"; RC_DEBUG=$?; set -e
 cat "$TMP/debug.err"
 [ "$RC_DEBUG" = 0 ] || { echo "FAIL: debug run exit $RC_DEBUG after SIGTERM (want 0)" >&2; exit 1; }
 
+# --- PART G: MABUR_MENU_DEBUG with the menu off (fix round 1) ---------
+# The exact scenario a review caught: MABUR_MENU_DEBUG=1 set, but the menu
+# itself off because its font failed to load (live.toml's trick font,
+# reused here). "key"/"view" must answer "err menu off", not queue a key
+# behind a lying "ok" or dump a view nothing drives.
+echo "== PART G: MABUR_MENU_DEBUG with the menu off =="
+cat > "$TMP/debug2.toml" <<EOF
+ring_path = "$TMP/au-ring"
+socket = "$TMP/debug2.sock"
+backend = "null"
+
+[osd.gs]
+enable = false
+font = "$TMP/no-such.gfont"
+
+[dvr]
+autostart = false
+dir = "$TMP"
+EOF
+MABUR_MENU_DEBUG=1 "$MABURPLAY" -c "$TMP/debug2.toml" > "$TMP/debug2.out" 2> "$TMP/debug2.err" &
+DEBUG2_PID=$!
+trap 'kill -9 "$DEBUG2_PID" 2>/dev/null || true; rm -rf "$TMP"' EXIT
+READY=0
+for _ in $(seq 1 100); do   # up to 5 s
+  if grep -q '^maburplay: feed thread on' "$TMP/debug2.err" 2>/dev/null; then READY=1; break; fi
+  kill -0 "$DEBUG2_PID" 2>/dev/null || break
+  sleep 0.05
+done
+if [ "$READY" != 1 ]; then
+  echo "FAIL: debug2 run: no 'maburplay: feed thread on' line within 5 s" >&2
+  kill -9 "$DEBUG2_PID" 2>/dev/null; cat "$TMP/debug2.err" >&2; exit 1
+fi
+grep -q '^maburplay: menu: debug verbs on (MABUR_MENU_DEBUG)$' "$TMP/debug2.err" || {
+  echo "FAIL: no 'menu: debug verbs on' line (debug2)" >&2; cat "$TMP/debug2.err" >&2
+  kill -9 "$DEBUG2_PID"; exit 1; }
+grep -q '^maburplay: menu: off -- ' "$TMP/debug2.err" || {
+  echo "FAIL: menu did not stay off on a bad font (debug2)" >&2; cat "$TMP/debug2.err" >&2
+  kill -9 "$DEBUG2_PID"; exit 1; }
+
+fail_debug2() {  # <message>
+  echo "FAIL: $1" >&2
+  kill -9 "$DEBUG2_PID" 2>/dev/null
+  cat "$TMP/debug2.err" >&2
+  exit 1
+}
+GOT=$(debug_cmd 'key right hold') || fail_debug2 "no reply to 'key right hold' (menu off)"
+[ "$GOT" = "err menu off" ] || fail_debug2 "'key right hold' -> '$GOT' (want 'err menu off')"
+GOT=$(debug_cmd 'view') || fail_debug2 "no reply to 'view' (menu off)"
+[ "$GOT" = "err menu off" ] || fail_debug2 "'view' -> '$GOT' (want 'err menu off')"
+
+kill -TERM "$DEBUG2_PID"
+for _ in $(seq 1 50); do kill -0 "$DEBUG2_PID" 2>/dev/null || break; sleep 0.1; done
+if kill -0 "$DEBUG2_PID" 2>/dev/null; then
+  echo "FAIL: debug2 maburplay still running 5 s after SIGTERM" >&2
+  kill -9 "$DEBUG2_PID"; cat "$TMP/debug2.err" >&2; exit 1
+fi
+set +e; wait "$DEBUG2_PID"; RC_DEBUG2=$?; set -e
+cat "$TMP/debug2.err"
+[ "$RC_DEBUG2" = 0 ] || { echo "FAIL: debug2 run exit $RC_DEBUG2 after SIGTERM (want 0)" >&2; exit 1; }
+
 echo "== player_e2e passed =="

@@ -116,6 +116,24 @@ std::string menu_view_text(const MenuView& v) {
   return out;
 }
 
+std::optional<std::string> handle_menu_debug_verb(const std::string& verb, const std::string& rest,
+                                                   bool menu_on, const MenuView& view,
+                                                   std::optional<KeyEvent>* out_key) {
+  if (verb == "key") {
+    if (!menu_on) return std::string("err menu off");
+    std::string err;
+    const std::optional<KeyEvent> e = parse_key_verb(rest, &err);
+    if (!e) return std::string("err ") + err;
+    if (out_key) *out_key = e;
+    return std::string("ok");
+  }
+  if (verb == "view") {
+    if (!menu_on) return std::string("err menu off");
+    return "ok\n" + menu_view_text(view);
+  }
+  return std::nullopt;
+}
+
 bool write_surface_pam(const Surface& s, const std::string& path, std::string* err) {
   if (!s.pixels || s.width <= 0 || s.height <= 0) {
     if (err) *err = "no osd surface";

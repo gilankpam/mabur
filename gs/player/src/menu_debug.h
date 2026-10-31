@@ -35,6 +35,26 @@ std::string menu_view_text(const MenuView& v);
 // with no pixels.
 bool write_surface_pam(const Surface& s, const std::string& path, std::string* err);
 
+// `key` and `view` need an actual running menu to mean anything: with
+// `menu_on` false (no buttons wired, or the GS font failed to load) the
+// menu is never driven, so a queued `key` would sit forever behind a
+// lying "ok" (nothing ever drains it), and `view` would dump a MenuView
+// nothing ever moves. Both answer "err menu off" instead, and `key`
+// leaves `*out_key` untouched (menu_debug's caller must not queue it).
+//
+// With `menu_on` true: `key` parses `rest` via parse_key_verb -- "err
+// <usage>" on failure, "ok" with `*out_key` set on success; `view` dumps
+// `menu_view_text(view)` in an "ok\n..." reply. `view` must be the
+// caller's own fresh, unpaced `model.view(now)` -- a script sees the
+// state right after its key, not whatever the composer's paced feed last
+// drew.
+//
+// nullopt for any other verb ("snap", an unknown one), so the caller's
+// own dispatch still runs and falls through to the usage error.
+std::optional<std::string> handle_menu_debug_verb(const std::string& verb, const std::string& rest,
+                                                   bool menu_on, const MenuView& view,
+                                                   std::optional<KeyEvent>* out_key);
+
 }  // namespace maburplay
 
 #endif  // MABUR_PLAYER_MENU_DEBUG_H_

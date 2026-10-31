@@ -2279,20 +2279,21 @@ int main(int argc, char** argv) {
   // MABUR_MENU_DEBUG's "key" verb queues here; drained into the exact same
   // per-tick loop that consumes bank.poll() below, so an injected event
   // goes through MenuModel::handle -> MenuApplier::start identically to a
-  // real button.
+  // real button. handle_menu_debug_verb (menu_debug.h) owns "key"/"view"'s
+  // menu-off refusal -- with menu_on false this queue must never grow
+  // behind a lying "ok".
   std::vector<maburplay::KeyEvent> menu_injected_keys;
   if (menu_debug) {
     cfg_ctl.extra_verb = [&](const std::string& verb,
                              const std::string& rest) -> std::optional<std::string> {
-      if (verb == "key") {
-        std::string err;
-        const std::optional<maburplay::KeyEvent> e = maburplay::parse_key_verb(rest, &err);
-        if (!e) return std::string("err ") + err;
-        menu_injected_keys.push_back(*e);
-        return std::string("ok");
-      }
-      if (verb == "view") {
-        return "ok\n" + maburplay::menu_view_text(menu_model.view(mono_ms()));
+      // Computed only when the menu is actually on: with it off there is
+      // nothing to dump, and nothing here needs the cost of asking.
+      const maburplay::MenuView view = menu_on ? menu_model.view(mono_ms()) : maburplay::MenuView{};
+      std::optional<maburplay::KeyEvent> key;
+      if (std::optional<std::string> reply =
+              maburplay::handle_menu_debug_verb(verb, rest, menu_on, view, &key)) {
+        if (key) menu_injected_keys.push_back(*key);
+        return reply;
       }
       if (verb == "snap") {
         std::string werr;
