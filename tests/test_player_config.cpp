@@ -297,12 +297,65 @@ TEST(input_rec_rejects_a_missing_pin_bad_bias_and_unknown_keys) {
   threw = false;
   try { maburplay::load_config(write_tmp_play("[input.menu]\npin = 11\n")); }
   catch (const std::exception&) { threw = true; }
-  CHECK(threw);  // one button, one job
+  CHECK(threw);  // "menu" is not one of the known input tables
 
   threw = false;
   try { maburplay::load_config(write_tmp_play("[input.rec]\npin = 0\n")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw);  // pin range floor
+}
+
+TEST(menu_button_tables_parse_like_rec) {
+  auto c = maburplay::load_config(write_tmp_play(
+      "backend = \"null\"\n\n"
+      "[input.up]\npin = 11\n"
+      "[input.down]\npin = 13\nactive_low = false\nbias = \"none\"\n"
+      "[input.left]\npin = 15\n"
+      "[input.right]\npin = 16\n"));
+  CHECK(c.input.up.configured && c.input.up.pin == 11 && c.input.up.active_low);
+  CHECK(c.input.down.configured && !c.input.down.active_low && c.input.down.bias == "none");
+  CHECK(!c.input.sel.configured);
+  CHECK(maburplay::menu_buttons_wired(c.input));
+}
+
+TEST(a_menu_button_table_without_pin_is_refused) {
+  std::string msg;
+  try { maburplay::load_config(write_tmp_play("[input.left]\nactive_low = true\n")); }
+  catch (const std::exception& e) { msg = e.what(); }
+  CHECK(msg.find("input.left.pin: required") != std::string::npos);
+}
+
+TEST(a_partial_menu_wiring_is_not_wired) {
+  auto c = maburplay::load_config(write_tmp_play(
+      "backend = \"null\"\n\n"
+      "[input.up]\npin = 11\n"
+      "[input.down]\npin = 13\n"
+      "[input.left]\npin = 15\n"));
+  CHECK(!maburplay::menu_buttons_wired(c.input));  // right absent
+
+  c = maburplay::load_config(write_tmp_play(
+      "backend = \"null\"\n\n[input.sel]\npin = 18\n"));
+  CHECK(!maburplay::menu_buttons_wired(c.input));  // sel alone is not the menu wiring
+}
+
+TEST(an_unknown_input_table_is_refused) {
+  bool threw = false;
+  try { maburplay::load_config(write_tmp_play("[input.menu]\npin = 11\n")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw);
+}
+
+TEST(absent_menu_button_tables_are_not_reported_as_defaults) {
+  std::vector<std::string> defaulted;
+  maburplay::load_config(
+      write_tmp_play("backend = \"null\"\n\n[input.rec]\npin = 32\n"), &defaulted);
+  for (const std::string& d : defaulted) {
+    CHECK(d.find("input.up") == std::string::npos);
+    CHECK(d.find("input.down") == std::string::npos);
+    CHECK(d.find("input.left") == std::string::npos);
+    CHECK(d.find("input.right") == std::string::npos);
+    CHECK(d.find("input.sel") == std::string::npos);
+  }
 }
 
 TEST(display_vsync_defaults) {

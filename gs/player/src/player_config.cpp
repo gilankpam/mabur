@@ -84,7 +84,34 @@ bool get_bool(const Value& o, const char* key, bool dflt,
   if (!o[key].is_boolean()) fail(where + "." + key, "not a boolean");
   return o[key].get<bool>();
 }
+
+// Parses one [input.<name>] button table into *out. Leaves *out untouched
+// (still the all-defaults ButtonCfg{}) when the table is absent -- the
+// caller decides whether that absence is worth a note_default line.
+void parse_button(const Value& in, const char* name, ButtonCfg* out) {
+  if (!in.contains(name)) return;
+  const Value& b = in[name];
+  const std::string where = std::string("input.") + name;
+  check_keys(b, where, {"pin", "active_low", "bias"});
+  // Required, not defaulted: a button block with no pin is a typo, and
+  // defaulting it would silently claim some unrelated line.
+  if (!b.contains("pin")) fail(where + ".pin", "required");
+  // Upper bound is generous on purpose: header pins run to 40 on this
+  // board, but a GPIO<n>-naming kernel can go far higher.
+  out->pin = static_cast<int>(get_int(b, "pin", 0, 1, 512, where));
+  out->active_low = get_bool(b, "active_low", out->active_low, where);
+  out->bias = get_str(b, "bias", "pull-up", where);
+  if (out->bias != "pull-up" && out->bias != "pull-down" && out->bias != "none") {
+    fail(where + ".bias", "must be \"pull-up\", \"pull-down\" or \"none\"");
+  }
+  out->configured = true;
+}
 }  // namespace
+
+bool menu_buttons_wired(const InputCfg& in) {
+  return in.up.configured && in.down.configured && in.left.configured &&
+         in.right.configured;
+}
 
 Config load_config(const std::string& path, std::vector<std::string>* defaulted) {
   Value j;
@@ -193,29 +220,21 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
 
   if (j.contains("input")) {
     const Value& in = j["input"];
-    check_keys(in, "input", {"rec"});
-    if (in.contains("rec")) {
-      const Value& rc = in["rec"];
-      check_keys(rc, "input.rec", {"pin", "active_low", "bias"});
-      // Required, not defaulted: a rec block with no pin is a typo, and
-      // defaulting it would silently claim some unrelated line.
-      if (!rc.contains("pin")) fail("input.rec.pin", "required");
-      // Upper bound is generous on purpose: header pins run to 40 on this
-      // board, but a GPIO<n>-naming kernel can go far higher.
-      c.input.rec.pin = static_cast<int>(get_int(rc, "pin", 0, 1, 512, "input.rec"));
-      c.input.rec.active_low = get_bool(rc, "active_low", c.input.rec.active_low, "input.rec");
-      c.input.rec.bias = get_str(rc, "bias", "pull-up", "input.rec");
-      if (c.input.rec.bias != "pull-up" && c.input.rec.bias != "pull-down" &&
-          c.input.rec.bias != "none") {
-        fail("input.rec.bias", "must be \"pull-up\", \"pull-down\" or \"none\"");
-      }
-      c.input.rec.configured = true;
-    } else {
+    check_keys(in, "input", {"rec", "up", "down", "left", "right", "sel"});
+    parse_button(in, "rec", &c.input.rec);
+    if (!c.input.rec.configured) {
       // Whole sub-table absent: one line, same style as a missing top-level
       // section, rather than three separate per-key lines the operator would
       // have to mentally group back together.
       note_default("input", "rec", "(section absent)");
     }
+    // up/down/left/right/sel get no such line when absent: an unwired menu
+    // button is unwired hardware, not a key that fell back to a default.
+    parse_button(in, "up", &c.input.up);
+    parse_button(in, "down", &c.input.down);
+    parse_button(in, "left", &c.input.left);
+    parse_button(in, "right", &c.input.right);
+    parse_button(in, "sel", &c.input.sel);
   }
 
   if (j.contains("display")) {
