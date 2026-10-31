@@ -8,10 +8,10 @@ test('precacheList: bundle + public + emscripten outputs, never stale dist files
   // hashed bundles (emptyOutDir false), which are not passed in at all.
   const files = precacheList(
     ['index.html', 'assets/index-AAA.js', 'assets/index-BBB.css', 'assets/relay_worker-CCC.js', 'assets/index-AAA.js.map'],
-    ['font_btfl.png', 'sw.js', '.gitkeep'],
+    ['fonts/btfl.png', 'sw.js', '.gitkeep'],
     ['webgs.js', 'webgs.wasm']);
   assert.deepEqual(files, ['assets/index-AAA.js', 'assets/index-BBB.css', 'assets/relay_worker-CCC.js',
-    'font_btfl.png', 'index.html', 'webgs.js', 'webgs.wasm']);
+    'fonts/btfl.png', 'index.html', 'webgs.js', 'webgs.wasm']);
 });
 
 test('buildId changes with names and with content', () => {
@@ -80,7 +80,7 @@ test('listPublic: recurses into subfolders, files only, posix paths', async () =
   assert.deepEqual(listPublic(path.join(d, 'missing')), []);
 });
 
-test('precacheList: selectable OSD font atlases are lazy, their manifest is not', () => {
-  const files = precacheList(['index.html'], ['font_btfl.png', 'fonts/index.json', 'fonts/a.png', 'fonts/b_2.png'], []);
-  assert.deepEqual(files, ['font_btfl.png', 'fonts/index.json', 'index.html']);
+test('precacheList: selectable OSD font atlases are lazy, their list and the default atlas are not', () => {
+  const files = precacheList(['index.html'], ['fonts/btfl.png', 'fonts/index.json', 'fonts/a.png', 'fonts/b_2.png', 'fonts/btfl.png.bak.png'], []);
+  assert.deepEqual(files, ['fonts/btfl.png', 'fonts/index.json', 'index.html']);
 });
