@@ -1,13 +1,12 @@
 <script>
   import Icon from './Icon.svelte';
-  import { ui } from '../lib/ui.svelte.js';
   import { chipChannels, MAX_RUNGS, applyEdit, applyRungEdit, rungWarnings, checkChannelSet, toggleChannel, describeEdit, describeRungEdit } from '../lib/config.js';
   let { cfg, onChange, locked = false, spotter = false, onDisconnect = null, variant = 'rule', applied = '', recordings = null,
-    keyFp = 'default', onLoadKey = null, onClearKey = null } = $props();
+    keyFp = 'default', onLoadKey = null, onClearKey = null, fonts = [] } = $props();
   const uid = $props.id();   // unique per mounted instance -- two panels (sidebar + immersive side panel) never share a radio group.
 
   const groupClass = $derived(variant === 'card' ? 'card cardg' : 'group');
-  const set = (key, val) => onChange(applyEdit(cfg, key, val), describeEdit(key, val, ui.osdFonts));
+  const set = (key, val) => onChange(applyEdit(cfg, key, val), describeEdit(key, val, fonts));
   const setRung = (i, key, val) => {
     const next = applyRungEdit(cfg, i, key, val);
     onChange(next, describeRungEdit(next, i, key, val));
@@ -204,7 +203,7 @@
       <label for="{uid}osdfont">OSD font</label>
       <select id="{uid}osdfont" class="input" style="min-height:34px;padding:5px 8px"
         onchange={(e) => set('osdFont', e.currentTarget.value)}>
-        {#each ui.osdFonts as f}<option value={f.id} selected={f.id === cfg.osdFont}>{f.name}</option>{/each}
+        {#each fonts as f}<option value={f.id} selected={f.id === cfg.osdFont}>{f.name}</option>{/each}
       </select>
       <div class="hint">Glyph set for the flight-controller OSD overlay. Applies on the next frame, live or not.</div>
     </div>
