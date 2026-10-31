@@ -112,12 +112,14 @@ class RecButton {
 
   // The ioctl + io_errors_ bookkeeping shared by poll() and read_level():
   // one GPIO_V2_LINE_GET_VALUES_IOCTL, the kMaxIoErrors-consecutive-
-  // failures close-and-log-once shell. `context` names the line in the
-  // close log line (poll's rec button vs read_level's chip/offset) --
-  // the two callers differ only in what they do with the result (an
+  // failures close-and-log-once shell. `label` names the line in the
+  // close log line -- poll's "rec button" literal, or null for
+  // read_level's chip/offset, built from chip_path_/offset_ only if this
+  // call is the one that hits kMaxIoErrors, not on every sample. The two
+  // callers differ only in what they do with the result (an
   // edge-triggered press vs a continuous level), not in how the line is
   // sampled or when it gives up.
-  SampleResult sample_raw(bool* bit, const std::string& context);
+  SampleResult sample_raw(bool* bit, const char* label);
 
   // Test-only seam (defined in tests/test_rec_button.cpp, the only
   // translation unit that calls it -- kept out of rec_button.cpp so it

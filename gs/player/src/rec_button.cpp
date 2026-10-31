@@ -143,12 +143,17 @@ bool RecButton::open(const RecButtonCfg& cfg, std::string* err, const char* cons
   return true;
 }
 
-RecButton::SampleResult RecButton::sample_raw(bool* bit, const std::string& context) {
+RecButton::SampleResult RecButton::sample_raw(bool* bit, const char* label) {
   if (line_fd_ < 0) return SampleResult::kClosed;
   struct gpio_v2_line_values v {};
   v.mask = 1;
   if (::ioctl(line_fd_, GPIO_V2_LINE_GET_VALUES_IOCTL, &v) != 0) {
     if (++io_errors_ >= kMaxIoErrors) {
+      // Built only here, on the kMaxIoErrors path, not on every sample:
+      // read_level() is called every 2 ms and has no other use for it.
+      const std::string context =
+          label ? std::string(label)
+                : "button line " + chip_path_ + "/" + std::to_string(offset_);
       std::fprintf(stderr,
                    "maburplay: %s: %d consecutive read failures (%s) -- "
                    "disabled for the rest of this run\n",
@@ -172,8 +177,7 @@ bool RecButton::poll(uint64_t now_ms) {
 
 std::optional<bool> RecButton::read_level(uint64_t now_ms) {
   bool bit = false;
-  const SampleResult r =
-      sample_raw(&bit, "button line " + chip_path_ + "/" + std::to_string(offset_));
+  const SampleResult r = sample_raw(&bit, nullptr);
   if (r == SampleResult::kClosed) return std::nullopt;
   if (r == SampleResult::kOk) deb_.feed(bit, now_ms);
   return deb_.level();  // kOk: the just-fed level; kIoError: the last accepted one
