@@ -236,6 +236,9 @@ class OsdComposer {
   // still shows a dropped layer, or a fresh buffer shows nothing yet.
   std::vector<DirtyRect> erase_[2], burn_erase_;
   bool screen_owed_ = false;
+  // Whether buffer i has been composed into since it came up blank (at
+  // construction, or forget_screen()): a blank buffer has nothing to erase.
+  bool drawn_[2] = {false, false};
 
   // The burn feed's cached mirror of the picture -- see the file comment.
   // Sized to burn_w_/burn_h_ when set, else lazily to the screen surface

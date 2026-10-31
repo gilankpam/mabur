@@ -1366,4 +1366,17 @@ TEST(a_gs_layer_replaced_in_place_is_drawn_whole_on_both_buffers) {
   CHECK(diff_px(r.buf[r.front].px, ref) == 0);
 }
 
+// A rebuild that also drops the last overlay (osd.gs.enable = false with
+// no MSP overlay) leaves no OSD plane: nothing will ever compose again, so
+// the composer must not owe the screen an erase on buffers that came up
+// blank -- an owed composition that never runs keeps wants() true forever.
+TEST(dropping_the_last_layer_after_a_rebuild_owes_nothing) {
+  const GsSnapshot sn = snap_cards(3);
+  Rig r(false, true);
+  for (int i = 0; i < 2; ++i) r.tick(make_in(nullptr, false, false, &sn, player(60.0), true));
+  r.comp.forget_screen();
+  r.comp.drop_gs_layers();
+  CHECK(!r.comp.wants(OsdComposeIn{}));
+}
+
 MTEST_MAIN

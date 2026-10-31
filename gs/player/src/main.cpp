@@ -1992,6 +1992,9 @@ int main(int argc, char** argv) {
       return false;
     }
 #endif
+    // What burn_palette() is keyed on, before any overlay opens.
+    const bool had_raster = osd_raster != nullptr;
+    const bool had_gs = composer.gs_present();
     if (msp_on) {
       if (!open_msp_osd(err)) return refuse("msp osd");
       osd_silence_warned = false;
@@ -2036,6 +2039,25 @@ int main(int argc, char** argv) {
       msp_stale = false;
     }
     if (gs_off) close_gs_osd();
+#ifdef MABUR_PLAYER_HW
+    // A burned recording's palette and OSD region are built at its start
+    // from the overlays live then (burn_palette), and the recorder takes no
+    // OSD at all without one. An overlay switched on in place changes that
+    // set, so a running recording restarts -- a new file, no video park --
+    // as a presenter rebuild restarts it. A switch-off needs nothing: the
+    // composer's erase reaches the recorder's map.
+    if (burn && !rebuild &&
+        (had_raster != (osd_raster != nullptr) || had_gs != composer.gs_present())) {
+      std::fprintf(stderr,
+                   "maburplay: rec: burned recorder restarting -- an overlay was switched on and "
+                   "its palette is built at start\n");
+      stop_burn();
+      start_burn_if_needed();
+    }
+#else
+    (void)had_raster;
+    (void)had_gs;
+#endif
     return true;
   };
 

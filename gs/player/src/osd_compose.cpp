@@ -64,7 +64,7 @@ void OsdComposer::drop_raster() {
   for (int i = 0; i < 2; ++i) {
     // Empty once a stale-blank cleared it: then there is no grid to erase.
     const DirtyRect grid = grid_of(shadow_[i].layout);
-    if (non_empty(grid)) erase_[i].push_back(grid);
+    if (drawn_[i] && non_empty(grid)) erase_[i].push_back(grid);
     forget_buffer(i);
     shadow_[i] = ShadowGrid{};
     blanked_[i] = true;
@@ -87,7 +87,7 @@ void OsdComposer::drop_gs_layers() {
   if (gs_laid_out_) {
     for (int i = 0; i < 2; ++i) {
       const DirtyRect b = gs_[i]->bounds();
-      if (non_empty(b)) erase_[i].push_back(b);
+      if (drawn_[i] && non_empty(b)) erase_[i].push_back(b);
     }
     const DirtyRect b = gs_[2]->bounds();
     if (non_empty(b)) burn_erase_.push_back(b);
@@ -108,6 +108,7 @@ void OsdComposer::forget_screen() {
     shadow_[i] = ShadowGrid{};
     blanked_[i] = true;
     erase_[i].clear();
+    drawn_[i] = false;
   }
   screen_owed_ = raster_ != nullptr || gs_[0] != nullptr;
 }
@@ -242,6 +243,7 @@ OsdComposeOut OsdComposer::compose_screen(int idx, const Surface& s, const OsdCo
   for (const DirtyRect& r : erase_[idx]) erase_rect(s, r);
   erase_[idx].clear();
   screen_owed_ = false;
+  drawn_[idx] = true;
 
   const bool gs_on = gs_live() && in.snap != nullptr;
   const bool msp_on = raster_ != nullptr && in.screen != nullptr;
