@@ -404,7 +404,7 @@ efficiency_40 = [0.77, 0.75, 0.75, 0.75, 0.74, 0.77, 0.76, 0.75]
   table (no width axis), so `maburd` keeps one plan per width
   (`make_width_plans`, `drone/src/power_tables.h`) and programs the one
   for the applied rung's width on every rung change, under the TX gate
-  (`LivePowerTable`, `drone/src/main.cpp`). Each switch logs `maburd
+  (`LivePowerTable`, `drone/src/live_power_table.h`). Each switch logs `maburd
   radio: power table 40 MHz live (mcs5 diff N)`, with ` (20 MHz table)`
   appended when that width flies the other's table; with no walls at all
   (`"none"`) it is `power table: chip default (no walls)` after

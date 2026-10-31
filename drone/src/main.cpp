@@ -56,6 +56,7 @@
 #include "debug_http.h"
 #include "frame_pipeline.h"
 #include "frame_source.h"
+#include "live_power_table.h"
 #include "mav_component.h"
 #include "mabur/channel_file.h"
 #include "mabur/cal_mav.h"
@@ -341,170 +342,24 @@ struct ControlRadiotap {
   uint32_t built_gen_ = 0;
 };
 
-// The chip's per-width TX-power table: which width's wall-equalized
-// rate-diff plan (power_tables.h) is live. Shared by every thread that
-// programs it -- bring-up, the agent thread on a rung width change
-// (RealActuator::apply_op), the config-apply thread on a RADIO_WALL_MARGN
-// set and the TX writer thread for calibration. `mu_` serialises the choice
-// of plan with its device write, so two writers can never leave the chip on
-// one width's diffs while bw_ names the other. Every device call takes
-// tx_gate shared (it must not overlap a retune's FastRetune), always inside
-// mu_, never the other way round.
-//
-// Calibration owns the table while cal_active: follow() is a no-op then,
-// checked under mu_, and begin_cal() raises cal_active under the same lock
-// before the TX writer's first device write of a sweep. So a follow() that
-// read cal_active clear has finished its write before the sweep zeroes the
-// diffs, and none starts after.
-//
-// No plans (power_mode "none") means the chip's own efuse table: never
-// written, except to put it back after calibration zeroed it.
-struct LivePowerTable {
+// LivePowerTable's device (live_power_table.h): the radio, every call made
+// inside the retune gate -- await_retune_gate, then tx_gate shared.
+struct RadioPowerTableDevice : PowerTableDevice {
   IRtlRadio* dev = nullptr;
   std::shared_mutex* gate = nullptr;
   std::atomic<bool>* gate_waiting = nullptr;
-  std::atomic<bool>* ready = nullptr;       // device_ready: no write before InitWrite is done
-  std::atomic<bool>* cal_active = nullptr;
-  // Bumped by every begin_cal(), after cal_active: the agent thread treats a
-  // new epoch seen with cal_active clear as a calibration falling edge, even
-  // one too brief for it to have seen cal_active up.
-  std::atomic<uint32_t>* cal_epoch = nullptr;
 
-  // TX writer, before a sweep's first device write: see the struct comment.
-  // The chip's diffs stop being the live plan's until a follow()/replace().
-  void begin_cal() {
-    std::lock_guard<std::mutex> l(mu_);
-    cal_active->store(true, std::memory_order_release);
-    cal_epoch->fetch_add(1, std::memory_order_release);
-    dirty_ = true;
-  }
-
-  // Agent thread: makes `bw`'s plan the live one unless it already is.
-  void follow(uint8_t bw) {
-    std::lock_guard<std::mutex> l(mu_);
-    if (cal_active->load(std::memory_order_relaxed)) return;
-    if (!ready->load(std::memory_order_acquire)) return;
-    if (!dirty_ && bw_ == bw) return;
-    (void)write_locked(bw, Write{});
-  }
-
-  // New plans, `bw`'s programmed at once (callers pass the rung's width as
-  // they last saw it; a width change racing this is put right by the
-  // agent's next follow(), which sees bw_ disagree). zero_offset also zeroes
-  // the global offset beside a plan; clear_override then clears the flat
-  // TXAGC override, in the same gate hold. False when SetTxPowerRateDiffs
-  // refused the plan.
-  bool replace(WidthPlans p, uint8_t bw, bool zero_offset, bool clear_override) {
-    std::lock_guard<std::mutex> l(mu_);
-    plans_ = std::move(p);
-    Write w;
-    w.zero_offset = zero_offset;
-    w.clear_override = clear_override;
-    return write_locked(bw, w);
-  }
-
-  // RADIO_WALL_MARGN's reprogram: replace(), refused under mu_ while
-  // calibration owns the table (*refused_cal set), so a run starting
-  // between the caller's own cal_active check and here is never written
-  // over. False on that refusal or when SetTxPowerRateDiffs refused.
-  bool replace_unless_cal(WidthPlans p, uint8_t bw, bool* refused_cal) {
-    std::lock_guard<std::mutex> l(mu_);
-    *refused_cal = cal_active->load(std::memory_order_relaxed);
-    if (*refused_cal) return false;
-    plans_ = std::move(p);
-    return write_locked(bw, Write{});
-  }
-
-  // The A-MPDU mode shares this lock: the agent's production write runs
-  // only while calibration does not own the radio, checked under mu_
-  // (unless_cal), and calibration's own writes run under it (with_lock),
-  // so a stale production write can never land after begin_cal() and the
-  // sweep's aggregation-off write that follows it.
-  template <class F>
-  void unless_cal(F&& f) {
-    std::lock_guard<std::mutex> l(mu_);
-    if (cal_active->load(std::memory_order_relaxed)) return;
+  void gated(const std::function<void()>& f) override {
+    await_retune_gate(gate_waiting);
+    std::shared_lock<std::shared_mutex> sg;
+    if (gate) sg = std::shared_lock<std::shared_mutex>(*gate);
     f();
   }
-  template <class F>
-  void with_lock(F&& f) {
-    std::lock_guard<std::mutex> l(mu_);
-    f();
+  bool set_rate_diffs(const std::optional<devourer::TxRateDiffsQdb>& diffs) override {
+    return dev->SetTxPowerRateDiffs(diffs);
   }
-
-  // Calibration's apply: the plans a following capacity sweep and the run's
-  // restore program, not programmed now -- the verify sweep that follows a
-  // power apply flies the zeroed diffs under the parked override.
-  void set_plans(WidthPlans p) {
-    std::lock_guard<std::mutex> l(mu_);
-    plans_ = std::move(p);
-  }
-
-  // Capacity sweep (TX writer, cal_active): `bw`'s plan, or the chip's own
-  // table with no plan -- what production flies at that width.
-  bool program_for_cal(uint8_t bw) {
-    std::lock_guard<std::mutex> l(mu_);
-    Write w;
-    w.for_cal = true;
-    return write_locked(bw, w);
-  }
-
- private:
-  struct Write {
-    bool zero_offset = false;
-    bool clear_override = false;
-    bool for_cal = false;  // calibration keeps owning the table afterwards
-  };
-
-  bool write_locked(uint8_t bw, const Write& w) {
-    const PowerPlan* p = plan_for(plans_, bw);
-    bool ok = true;
-    {
-      await_retune_gate(gate_waiting);
-      std::shared_lock<std::shared_mutex> sg;
-      if (gate) sg = std::shared_lock<std::shared_mutex>(*gate);
-      if (p) {
-        devourer::TxRateDiffsQdb diffs;
-        diffs.cck = p->cck;
-        diffs.legacy = p->legacy;
-        for (int i = 0; i < 8; ++i) diffs.mcs[i] = p->mcs[i];
-        ok = dev->SetTxPowerRateDiffs(diffs);
-        // devourer documents the offset as sticky across retunes: zeroed
-        // explicitly rather than trusting whatever a prior process or
-        // bench tool left in the chip.
-        if (w.zero_offset) dev->SetTxPowerOffsetQdb(0);
-      } else if (dirty_ || w.for_cal) {
-        // No plan: back to the untrimmed efuse table calibration zeroed.
-        ok = dev->SetTxPowerRateDiffs(std::nullopt);
-      }
-      if (w.clear_override) dev->SetTxPowerIndexOverride(-1);
-    }
-    if (p) {
-      // plan_for falls back to the other width's table when bw has none.
-      const bool own = (bw == 40 ? plans_.p40 : plans_.p20).has_value();
-      std::fprintf(stderr, "maburd radio: power table %d MHz live (mcs5 diff %d)%s%s%s\n", bw,
-                   p->mcs[5], own ? "" : (bw == 40 ? " (20 MHz table)" : " (40 MHz table)"),
-                   w.for_cal ? " for calibration" : "",
-                   ok ? "" : " -- SetTxPowerRateDiffs FAILED, chip keeps its previous table");
-    } else if (dirty_ || w.for_cal) {
-      std::fprintf(stderr, "maburd radio: power table: chip default (no walls)%s\n",
-                   ok ? "" : " -- SetTxPowerRateDiffs FAILED");
-    }
-    // A refused write is not retried: a chip without a rate-diff table
-    // refuses every time, and the log line above says so once. A
-    // calibration write leaves the table dirty and bw_ on the rung's width,
-    // for the run's restore and the agent's follow() to put back.
-    if (!w.for_cal) {
-      bw_ = bw;
-      dirty_ = false;
-    }
-    return ok;
-  }
-
-  std::mutex mu_;
-  WidthPlans plans_;  // empty when power_mode != "offset"
-  uint8_t bw_ = 0;    // the rung width whose plan was last programmed, 0 = none yet
-  bool dirty_ = false;  // the chip's diffs are not plan_for(plans_, bw_)
+  void set_offset_qdb(int qdb) override { dev->SetTxPowerOffsetQdb(qdb); }
+  void set_index_override(int idx) override { dev->SetTxPowerIndexOverride(idx); }
 };
 
 // RealActuator bridges RcAgent's Actuator interface to the radio (RadioTx +
@@ -1864,13 +1719,15 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
   // would return the trimmed value, not the anchor.
   int boot_anchor_idx = 0;
 
-  // The per-width TX-power table (LivePowerTable above): bring-up programs
+  // The per-width TX-power table (live_power_table.h): bring-up programs
   // the start width's plan, the agent thread follows the rung's width,
   // RADIO_WALL_MARGN's reprogram and calibration replace the plans.
+  RadioPowerTableDevice power_dev;
+  power_dev.dev = rtl_device.get();
+  power_dev.gate = &tx_gate;
+  power_dev.gate_waiting = &retune_waiting;
   LivePowerTable power_table;
-  power_table.dev = rtl_device.get();
-  power_table.gate = &tx_gate;
-  power_table.gate_waiting = &retune_waiting;
+  power_table.dev = &power_dev;
   power_table.ready = &device_ready;
   power_table.cal_active = &cal_active;
   power_table.cal_epoch = &cal_epoch;
@@ -3244,8 +3101,7 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
     // it at until this re-applies the last-known-correct op -- once, right on
     // the falling edge, on THIS thread (apply_op's documented contract), not
     // from the TX writer thread that noticed cal_active clear.
-    bool cal_was_active_for_ladder = false;
-    uint32_t cal_epoch_seen = 0;
+    CalEndEdge cal_end_edge;
     // TxStats::failed as of the last housekeeping tick, for send_telem.
     uint64_t telem_usb_fail = 0;
     // One T_TELEM frame: the 1 Hz periodic one, and the link-pairing
@@ -3322,17 +3178,10 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
       enc_peak.sample(now, enc_bytes_total.load(std::memory_order_relaxed),
                       enc_frames_total.load(std::memory_order_relaxed));
 
-      // A sweep start raises cal_epoch after cal_active (LivePowerTable::
-      // begin_cal), so reading the epoch first means a new epoch is seen
-      // with cal_active already up -- unless calibration has since let go,
-      // which is the edge this handles. The epoch catches the up-and-down
-      // too short for two polls to straddle (a sweep refused, or a command
-      // the engine ignored): the device writes made for it still need
-      // undoing.
+      // The epoch is read before cal_active: see CalEndEdge.
       const uint32_t cal_epoch_now = cal_epoch.load(std::memory_order_acquire);
       const bool cal_now_active = cal_active.load(std::memory_order_acquire);
-      if (!cal_now_active &&
-          (cal_was_active_for_ladder || cal_epoch_now != cal_epoch_seen)) {
+      if (cal_end_edge.poll(cal_epoch_now, cal_now_active)) {
         // Video resumes on this same cal_active transition (hot thread's
         // own guard), so this cannot wait for the next RCF -- re-apply the
         // agent's own last-known-good op immediately -- ladder, A-MPDU mode
@@ -3345,8 +3194,6 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
         // thread, next to the ladder re-apply.
         actuator.apply_deferred_retune();
       }
-      cal_was_active_for_ladder = cal_now_active;
-      if (!cal_now_active) cal_epoch_seen = cal_epoch_now;
 
       // Every wake (rc_drain_ms): drain and apply queued RCFs. This is the
       // whole point of the split — op actuation does not wait for the
