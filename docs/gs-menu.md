@@ -182,6 +182,23 @@ Video's `Display` row's "≠ camera" warning uses the same distinction: it
 says nothing when the mode list is simply empty, and warns only when the
 display has modes but none of them sit at the camera's measured rate.
 
+**The same mismatch drives the menu's banner,** not only the `Display`
+row's warning. Each one-second window that finds a mismatch (and does
+not itself trigger a rebuild) sets the banner to:
+
+```
+⚠ Camera <src> fps — this display has no <src> Hz mode. Showing at <shown> Hz (judder).
+```
+
+(`<src>` the camera's measured rate, `<shown>` the rate the running mode
+actually shows at; `main.cpp`, the display-follow window). The banner is
+cleared at the start of every window and only re-set when that window
+still finds a mismatch, so it tracks the condition window to window; it
+is unrelated to the three-window agreement a rebuild itself needs. The
+banner box (`menu_layer.h`/`.cpp`) is drawn centred, 12 % down the screen,
+with the menu closed; while the menu is open it moves below the panel
+and picker instead, so it never covers either.
+
 ## Config
 
 `[input.<button>]` — one table per GPIO line: `input.rec` (the DVR
@@ -207,27 +224,36 @@ the 8403 listener with no hands on real buttons and no eyes on the
 goggles. Three verbs are offered to 8403's `extra_verb` hook alongside
 the ordinary `set`/`get` (`menu_debug.h`):
 
-- `key <up|down|left|right|sel> <tap|hold|repeat>` — queues one key event
-  for the main loop's next iteration, the same queue a real button press
-  would land in, and answers `ok` at once (the event itself runs on the
-  next tick, not synchronously with the reply). An unparseable verb
-  answers the usage line, `key <up|down|left|right|sel>
-  <tap|hold|repeat>`.
-- `view` — answers `ok` followed by a stable, line-oriented dump of the
-  menu's current view (`menu_view_text()`): `open`, `crumb`, `linked`,
-  one `row` line per visible row (marked `> ` when selected, with its
-  id/label/value/warn/status and a comma-joined flag list —
-  `dim`/`busy`/`vtx`/`adv`/`ok`/`err`), `help` (plus `help_error 1` for an
-  error help line), `keys`, `picker` (`none`/`choices`/`number`/`confirm`)
-  and, for a choices picker, one `choice` line per entry (`>` marks the
-  picker's cursor, `*` the current value), `number`, `confirm`, `toast`
-  and `banner`. Every field always prints, even empty, so a line's
-  absence always means the view itself lacks it.
-- `snap` — writes the OSD plane's last published buffer to
-  `/tmp/maburplay-osd.pam` (PAM P7, `TUPLTYPE RGB_ALPHA`, straight alpha
-  un-premultiplied from the plane's own premultiplied pixels), written to
-  a `.tmp` path and renamed on, so a reader never opens it mid-write;
-  answers `ok`, or `err no osd surface` before the first real frame.
+`key` and `view` both answer `err menu off` outright when
+`MABUR_MENU_DEBUG` is set but the menu itself did not come up (e.g. the
+GS font it borrows failed to load) — checked before anything else, so
+neither verb ever lies with an `ok` the menu cannot act on
+(`handle_menu_debug_verb`, `menu_debug.cpp`).
+
+- `key <up|down|left|right|sel> <tap|hold|repeat>` — with the menu on,
+  queues one key event for the main loop's next iteration, the same
+  queue a real button press would land in, and answers `ok` at once (the
+  event itself runs on the next tick, not synchronously with the reply).
+  An unparseable verb answers the usage line with the `err ` prefix:
+  `err key <up|down|left|right|sel> <tap|hold|repeat>`.
+- `view` — with the menu on, answers `ok` followed by a stable,
+  line-oriented dump of the menu's current view (`menu_view_text()`):
+  `open`, `crumb`, `linked`, one `row` line per visible row (marked `> `
+  when selected, with its id/label/value/warn/status and a comma-joined
+  flag list — `dim`/`busy`/`vtx`/`adv`/`ok`/`err`), `help` (plus
+  `help_error 1` for an error help line), `keys`, `picker`
+  (`none`/`choices`/`number`/`confirm`) and, for a choices picker, one
+  `choice` line per entry (`>` marks the picker's cursor, `*` the current
+  value), `number`, `confirm`, `toast` and `banner`. Every field always
+  prints, even empty, so a line's absence always means the view itself
+  lacks it.
+- `snap` — independent of whether the menu is on at all (it reads the
+  OSD plane, not the menu): writes the OSD plane's last published buffer
+  to `/tmp/maburplay-osd.pam` (PAM P7, `TUPLTYPE RGB_ALPHA`, straight
+  alpha un-premultiplied from the plane's own premultiplied pixels),
+  written to a `.tmp` path and renamed on, so a reader never opens it
+  mid-write; answers `ok /tmp/maburplay-osd.pam`, or `err no osd
+  surface` before the first real frame.
 
 ## Where the code lives
 

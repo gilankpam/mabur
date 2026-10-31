@@ -1079,15 +1079,21 @@ refresh").
 
 `maburplay`'s five-way-pad settings menu (`docs/gs-menu.md`) logs
 `maburplay: menu: open` and `maburplay: menu: close` as it opens and
-closes (`MenuSession::log`, `gs/player/src/menu_session.cpp`) — the only
-two lines it logs while running. Startup logs one of `maburplay: menu:
-off -- <reason>` (no button bank, e.g. missing `[input.*]` pins or
-`--decode-only`) or `maburplay: menu: up <pin> down <pin> left <pin>
-right <pin> sel <pin>` once it is wired, plus `maburplay: menu: debug
-verbs on (MABUR_MENU_DEBUG)` when that variable is set. A failed layout
-or a missing link-state source logs once more, non-fatally:
-`maburplay: menu: not drawn -- <reason>` / `maburplay: menu: no link
-state -- <reason>`.
+closes (`MenuSession::log`, `gs/player/src/menu_session.cpp`). Startup
+logs one of `maburplay: menu: off -- <reason>` (no button bank, e.g.
+missing `[input.*]` pins or `--decode-only`) or `maburplay: menu: up
+<pin> down <pin> left <pin> right <pin> sel <pin>` once it is wired, plus
+`maburplay: menu: debug verbs on (MABUR_MENU_DEBUG)` when that variable
+is set. While the menu is on, a failed open of maburgs' 8402 live-config
+client logs once, non-fatally — nothing else about the player is
+affected, but every GS-owned row stays refused with "Reading GS
+settings…" forever, since there is no client left to read maburgs' live
+keys with: `maburplay: menu: maburgs live config: <reason> -- GS rows
+will not apply`. A failed layout or a missing link-state source logs once
+more, also non-fatally: `maburplay: menu: not drawn -- <reason>` /
+`maburplay: menu: no link state -- <reason>`. This is not an exhaustive
+list of every `maburplay: menu: …` line — see `docs/gs-menu.md` for the
+debug-verb replies, which are not logged at all.
 
 ## Tools: which one when
 

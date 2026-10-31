@@ -382,6 +382,13 @@ prints it, only the fingerprint).
   menu's five commented out at `pin = 0`. Copy the real pin numbers by
   hand into `/config/maburplay.toml` on each unit (never ship them in the
   repo bundle as if they were universal), then `sync`.
+- **`gs_osd.gfont` must ship together with `maburplay`.** The settings
+  menu draws with that same GS font (`osd.gs.font`, `docs/observability.md`
+  "GS link-status OSD"), and it carries the menu's symbols
+  (`docs/gs-menu.md`): an older copy of the font on the GS renders the
+  menu's glyphs as blanks rather than failing the font load outright, so
+  a mismatch is easy to miss. Deploy the binary, `gs_osd.gfont`
+  (`/usr/local/share/mabur/`) and the bundle TOML together.
 - **Bench: running `tools/bench/mavparam.py` from the host** needs
   `maburgs`'s `[mavlink] bind` set to the GS's LAN address, not its
   loopback default (`docs/mavlink.md`). `maburgs`'s config is
