@@ -334,6 +334,21 @@ class TestReportV4(unittest.TestCase):
         self.assertEqual(row3.split()[:9],
                          ["mcs3", "42", "38", "99%", ".73", "40", "36", "95%", "-"])
 
+    def test_lost_eff_is_not_printed_as_written(self):
+        # Under half of the offered frames arrived on the 20 MHz mcs3 point:
+        # lost (and lossy), never written, so it prints "-" and the flags
+        # column says why -- unlike a merely lossy point, which is written.
+        text = GOOD4.replace("P 3 4000 3950 58000000 730 72 0\n",
+                             "P 3 4000 1500 22000000 270 72 384\n")
+        out = render(text)
+        row3 = [l for l in out.splitlines() if l.startswith("mcs3")][0]
+        self.assertEqual(row3.split()[:5], ["mcs3", "42", "38", "99%", "-"])
+        self.assertIn("20:lossy,lost", row3)
+        lossy = render(GOOD4.replace("P 3 4000 3950 58000000 730 72 0\n",
+                                     "P 3 4000 3000 44000000 550 72 128\n"))
+        row3 = [l for l in lossy.splitlines() if l.startswith("mcs3")][0]
+        self.assertEqual(row3.split()[:5], ["mcs3", "42", "38", "99%", ".55"])
+
     def test_an_ok_apply_with_a_note_is_reported(self):
         # The drone kept a 20 MHz wall for an undetermined row of a first
         # 40 MHz table: the A row is ok and its reason says what was kept.

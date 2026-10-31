@@ -235,11 +235,38 @@ TEST(zero_frames_floors_efficiency_and_flags_lossy) {
   const auto r = analyze_capacity(c, 4, 20, 2000, CalThresholds{});
   CHECK(r.eff == 0.05);
   CHECK((r.flags & kCalLossy) != 0);
+  CHECK((r.flags & kCalLost) != 0);
+}
+
+TEST(lost_when_under_half_arrive_and_lossy_alone_from_half_up) {
+  // Under half of what was offered measured the loss, not the air: the
+  // point is lost (and lossy). From half up to nine tenths it is lossy and
+  // still a measurement.
+  CapCell c;
+  c.offered = 1000;
+  c.blocked_pct = 80;
+  c.rssi_dbm = {-70, 0};
+  c.have_rssi = {true, false};
+  c.frames = {499, 0};
+  c.air_bits = {499ull * 1435 * 8, 0};
+  auto r = analyze_capacity(c, 4, 20, 2000, CalThresholds{});
+  CHECK((r.flags & kCalLossy) != 0);
+  CHECK((r.flags & kCalLost) != 0);
+  c.frames = {500, 0};
+  c.air_bits = {500ull * 1435 * 8, 0};
+  r = analyze_capacity(c, 4, 20, 2000, CalThresholds{});
+  CHECK((r.flags & kCalLossy) != 0);
+  CHECK((r.flags & kCalLost) == 0);
+  c.frames = {950, 0};
+  c.air_bits = {950ull * 1435 * 8, 0};
+  r = analyze_capacity(c, 4, 20, 2000, CalThresholds{});
+  CHECK((r.flags & (kCalLossy | kCalLost)) == 0);
 }
 
 TEST(drift_flag_bit_is_not_reused) {
   CHECK(kCalTxBound == 64);
   CHECK(kCalLossy == 128);
+  CHECK(kCalLost == 256);
 }
 
 MTEST_MAIN

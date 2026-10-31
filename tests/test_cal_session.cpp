@@ -496,6 +496,59 @@ TEST(capacity_sweep_yields_eff_and_zero_for_tx_bound) {
   CHECK(!s.radio_silent(300));
 }
 
+TEST(a_capacity_point_that_lost_over_half_its_frames_is_not_written) {
+  // Under half of what was offered arrived: the dwell measured the loss,
+  // not the air, and is kept out of the config like a tx_bound point. From
+  // half up it is lossy and still written.
+  CalSession s(CalSessionCfg{});
+  s.set_peer(true, true);
+  std::string err;
+  REQUIRE(s.start(19, {{Kind::Capacity, 20}}, 0, &err));
+  REQUIRE(as<cal::SweepCmd>(s.due_mav(0)).has_value());
+  ack(s, 19, 0, 10, cal::kFlagStbc);
+  constexpr size_t kAir = 1500;
+  const int got[3] = {10, 499, 600};  // of 1000 offered each
+  for (uint8_t r = 0; r < 3; ++r)
+    for (int k = 0; k < got[r]; ++k)
+      s.on_cal_frame(0, stamp(Kind::Capacity, r, 0, 20, cal::kFlagStbc, k), -60, true, kAir,
+                     100);
+  cal::SweepDone d;
+  d.nonce = 19;
+  d.seq = 0;
+  d.offered = {1000, 1000, 1000, 0, 0, 0, 0, 0};
+  d.blocked_pct = {80, 80, 80, 0, 0, 0, 0, 0};
+  s.on_mav(d, 200);
+  const auto a = as<cal::ApplyCmd>(s.due_mav(210));
+  REQUIRE(a.has_value());
+  CHECK(a->has_eff);
+  CHECK(a->eff_x1000[0] == 0);
+  CHECK(a->eff_x1000[1] == 0);
+  CHECK(a->eff_x1000[2] > 0);
+  const auto w = s.snapshot().width[0];
+  CHECK(w.eff_x1000[0] == 0 && w.eff_x1000[1] == 0 && w.eff_x1000[2] > 0);
+  CHECK((w.cap[0].flags & kCalLost) && (w.cap[0].flags & kCalLossy));
+  CHECK((w.cap[1].flags & kCalLost) && (w.cap[1].flags & kCalLossy));
+  CHECK(!(w.cap[2].flags & kCalLost) && (w.cap[2].flags & kCalLossy));
+}
+
+TEST(a_capacity_sweep_that_lost_every_point_writes_nothing) {
+  CalSession s(CalSessionCfg{});
+  s.set_peer(true, true);
+  std::string err;
+  REQUIRE(s.start(20, {{Kind::Capacity, 20}}, 0, &err));
+  REQUIRE(as<cal::SweepCmd>(s.due_mav(0)).has_value());
+  ack(s, 20, 0, 10, cal::kFlagStbc);
+  for (int k = 0; k < 5; ++k)
+    s.on_cal_frame(0, stamp(Kind::Capacity, 0, 0, 20, cal::kFlagStbc, k), -60, true, 1500, 100);
+  cal::SweepDone d;
+  d.nonce = 20;
+  d.seq = 0;
+  d.offered = {1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000};
+  d.blocked_pct = {80, 80, 80, 80, 80, 80, 80, 80};
+  s.on_mav(d, 200);
+  for (size_t r = 0; r < 8; ++r) CHECK(s.snapshot().width[0].eff_x1000[r] == 0);
+}
+
 TEST(done_sends_three_aborts_so_the_drone_resumes_at_once) {
   // The drone otherwise sits in its await window (power parked, video
   // off) until it times out; its close keeps the written config. Three

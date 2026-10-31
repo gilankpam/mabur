@@ -232,7 +232,9 @@ USB, not the air: it is flagged `tx_bound` and **not written** (the
 config keeps its value, as an undetermined wall does). A point that
 delivered under 90 % of what was offered is flagged `lossy` and is
 written — delivered is delivered — but the parked power or the geometry
-is suspect. A capacity sweep whose SweepDone never arrives writes nothing:
+is suspect. Under 50 % it is flagged `lost` as well and is **not
+written**: a dwell that lost over half its frames measured the loss, not
+the air. A capacity sweep whose SweepDone never arrives writes nothing:
 without `offered` and `blocked_pct` a `tx_bound` point cannot be told
 apart.
 
@@ -424,7 +426,7 @@ Per apply, line-surgical in `/etc/mabur.toml` (`drone/src/cal_apply.h`):
 | capacity at `<bw>` | `air_clock.efficiency_<bw>` |
 
 An undetermined wall (`-128` on the wire) and a capacity point sent as 0
-(`tx_bound`) leave that entry as it is. A key the file lacks — a first
+(`tx_bound` or `lost`) leave that entry as it is. A key the file lacks — a first
 40 MHz calibration on a file with only `rate_walls_rel_20` — is
 **inserted** next to the other width's line (or after `power_mode`;
 `efficiency_<bw>` after the other width's or after `shed_ms`), the one
@@ -542,7 +544,8 @@ written: this run produced no apply attempt`.
 | `saturated` | The best card's peak median RSSI is above −45 dBm: the GS front end may be compressing. | Walls read **low** under it (the safe direction). Move the drone out and re-run for a tighter number. |
 | `card_disagree` | The two cards' walls differ by more than 2 indices. | An antenna or card problem, not a PA one: check the disagreeing card. |
 | `tx_bound` | Capacity: the sender was blocked < 50 % of the dwell — the drone's CPU/USB, not the air, was the limit. | Not written; the config keeps its value. Expected at the top MCS if the drone cannot saturate the air there. |
-| `lossy` | Capacity: the best card got < 90 % of the frames offered. | Written. Interference, or the parked power is too low for this geometry; re-run on a quieter channel if it fires on low MCS. |
+| `lossy` | Capacity: the best card got < 90 % of the frames offered. | Written (unless also `lost`). Interference, or the parked power is too low for this geometry; re-run on a quieter channel if it fires on low MCS. |
+| `lost` | Capacity: the best card got < 50 % of the frames offered (always with `lossy`). | Not written; the config keeps its value and `maburcal report` prints `-`. Re-run on a quieter channel or closer. |
 
 Thresholds are `CalThresholds` in `gs/src/cal_analysis.h`. The bit values
 are in "`cal.log`" below; `drift` (the old coarse/fine disagreement) is
@@ -691,11 +694,11 @@ any ack has none; `ldpc` is the drone's announced stamp flag (the GS has
 no LDPC setting of its own). Every index is signed and relative to the
 drone's anchor; a card with no RSSI in a cell writes `-999`; an
 undetermined rate writes `-128` for wall and floor. `P`'s `eff_x1000` is
-the measured value even for a `tx_bound` point. An ok `A` row's reason is
+the measured value even for a `tx_bound` or `lost` point. An ok `A` row's reason is
 empty or the drone's note. Flags bitmask: 1
 `no_dip`, 2 `undetermined`, 4 `narrow`, 8 `saturated`, 16
-`card_disagree`, 64 `tx_bound`, 128 `lossy` (32 was `drift`, retired and
-never reused). A `V` row means "this rate was parked", never "verified
+`card_disagree`, 64 `tx_bound`, 128 `lossy`, 256 `lost` (32 was `drift`,
+retired and never reused). A `V` row means "this rate was parked", never "verified
 clean": `pct` 0 is a real measurement.
 
 One file holds several runs (a retry after moving the drone lands in the

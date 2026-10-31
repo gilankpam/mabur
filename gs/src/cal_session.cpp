@@ -538,9 +538,9 @@ bool CalSession::analyze_capacity_sweep() {
     const CapResult res =
         analyze_capacity(c, static_cast<uint8_t>(r), cmd_.bw, cmd_.dwell_ms, cfg_.th);
     w.cap[r] = res;
-    // A tx_bound point measured the drone's CPU/USB, not the air: 0 leaves
-    // the config's value alone.
-    const uint16_t e = (res.flags & kCalTxBound)
+    // A tx_bound point measured the drone's CPU/USB, and a lost one the
+    // loss, not the air: 0 leaves the config's value alone.
+    const uint16_t e = (res.flags & (kCalTxBound | kCalLost))
                            ? 0
                            : static_cast<uint16_t>(std::lround(res.eff * 1000.0));
     apply_.eff_x1000[r] = e;

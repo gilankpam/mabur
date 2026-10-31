@@ -149,6 +149,10 @@ CapResult analyze_capacity(const CapCell& c, uint8_t mcs, uint8_t bw,
   if (static_cast<double>(c.frames[bi]) <
       th.lossy_ratio * static_cast<double>(c.offered))
     out.flags |= kCalLossy;
+  // Under half arrived: whatever the bits say, they measured the loss.
+  if (static_cast<double>(c.frames[bi]) <
+      th.lost_ratio * static_cast<double>(c.offered))
+    out.flags |= kCalLost | kCalLossy;
 
   const double nominal_bps =
       mabur::rc::phy_rate_mbps({mabur::rc::PhyMode::HT, mcs, bw}) * 1e6;

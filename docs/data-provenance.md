@@ -1304,7 +1304,8 @@ reused), and the drone config loses a key.
 - **`callog 4`.** The `R` line gains `<ch> <pick> <ldpc>`; new `S` (sweep:
   seq, kind, width, param — scopes the rows after it to its width), `P`
   (capacity point) and `A` (apply outcome) records; `C` loses its leading
-  phase field. Flag bits gain 64 `tx_bound` and 128 `lossy`; 32 `drift`
+  phase field. Flag bits gain 64 `tx_bound`, 128 `lossy` and 256 `lost`
+  (a capacity point under half delivered, not written); 32 `drift`
   is retired (no fine phase) and never reused, so a `callog 1`-`3` file
   may still carry it. A `callog 3` file found in the log directory is
   renamed `cal.log.callog3` by the new `maburgs`. `maburcal report` reads

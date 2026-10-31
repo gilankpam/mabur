@@ -39,6 +39,7 @@ enum CalFlag : uint32_t {
   // 1u << 5 (32, drift) retired -- never reused.
   kCalTxBound = 1u << 6,        // sender rarely blocked: measures CPU/USB, not air
   kCalLossy = 1u << 7,          // too few frames arrived to trust the count
+  kCalLost = 1u << 8,           // under half arrived: measured the loss, not written
 };
 
 struct CalThresholds {
@@ -48,6 +49,7 @@ struct CalThresholds {
   int card_disagree = 2;        // per-card wall gap beyond this => flag
   int tx_bound_blocked_pct = 50;  // blocked_pct below this => kCalTxBound
   double lossy_ratio = 0.9;       // best-card frames below this * offered => kCalLossy
+  double lost_ratio = 0.5;        // ...and below this * offered => kCalLost too
 };
 
 struct RateWall {
@@ -87,12 +89,14 @@ struct CapResult {
 
 // Delivered air efficiency for one capacity dwell at (mcs, bw): the best
 // card's air bits over the dwell's nominal PHY capacity at that rate,
-// rounded to 0.01 and clamped to [0.05, 1.0] -- never zero, so a lost dwell
-// still orders against other lost dwells instead of collapsing to a tie.
-// Flags a dwell that measured the drone's CPU/USB rather than the air
-// (kCalTxBound: the sender was rarely blocked, so more air was available
-// than the drone could feed it) or whose frame count arrived too thin to
-// trust (kCalLossy).
+// rounded to 0.01 and clamped to [0.05, 1.0] -- never zero, which on the
+// wire means "leave the config's entry". Flags a dwell that measured the
+// drone's CPU/USB rather than the air (kCalTxBound: the sender was rarely
+// blocked, so more air was available than the drone could feed it), one
+// whose frame count arrived too thin to trust (kCalLossy), and one where
+// under half of what was offered arrived (kCalLost, with kCalLossy): that
+// dwell measured the loss, not the air, and like a tx_bound point is not
+// written.
 CapResult analyze_capacity(const CapCell& c, uint8_t mcs, uint8_t bw,
                            uint32_t dwell_ms, const CalThresholds& th);
 
