@@ -46,6 +46,7 @@
 #include "menu_model.h"
 #include "menu_session.h"     // bank events -> model -> applier, and the GS view refresh
 #include "menu_tree.h"
+#include "menu_view_feed.h"   // paces view() and keeps a change owed until composed
 #include "osd_wanted.h"       // osd_plane_wanted: the menu claims the OSD plane too
 #include "rec_button.h"
 #include "rec_control.h"  // maburgs::kRecControlPort
@@ -2258,10 +2259,8 @@ int main(int argc, char** argv) {
   maburplay::UdpGsViewSource gs_view_source(gs_client);
   maburplay::MenuSession menu(menu_model, menu_applier, gs_view_source, gs_view);
   menu.log = [](const std::string& line) { std::fprintf(stderr, "%s\n", line.c_str()); };
-  // The view last handed to the composer, and whether a composition still
-  // owes it to the screen (a change can land while the buffers are busy).
-  [[maybe_unused]] maburplay::MenuView menu_view;
-  [[maybe_unused]] bool menu_view_owed = false;
+  // The menu's view for the composer (menu_view_feed.h).
+  [[maybe_unused]] maburplay::MenuViewFeed menu_feed;
 
   // The ring reader fell behind and skipped AUs that held references.
   uint64_t resyncs_seen = ring.resyncs();
@@ -2758,19 +2757,15 @@ int main(int argc, char** argv) {
         in.gs_ps = gs_ps;
         in.gs_dirty = gs_needs_render;
       }
-      // The menu's view, once per iteration; the composer is handed it only
-      // when it changed, and keeps it until it changes again.
+      // The menu's view: handed to the composer only when it changed, which
+      // keeps it until it changes again.
       if (composer.menu_present()) {
         const uint64_t now_ms = mono_ms();
         menu_model.set_banner(g_display_banner);
-        maburplay::MenuView v = menu_model.view(now_ms);
-        if (!(v == menu_view)) {
-          menu_view = std::move(v);
-          menu_view_owed = true;
-        }
         composer.menu_tick(now_ms);
-        in.menu = menu_view_owed ? &menu_view : nullptr;
-        in.menu_dirty = menu_view_owed;
+        in.menu = menu_feed.next(now_ms, menu.generation(),
+                                 [&](uint64_t t) { return menu_model.view(t); });
+        in.menu_dirty = in.menu != nullptr;
       }
       const bool want = composer.wants(in);
       // The recording's overlay, at the record size, on its own trigger: the
@@ -2786,7 +2781,7 @@ int main(int argc, char** argv) {
         const maburplay::OsdComposeOut out = composer.compose_screen(idx, surf, in);
         gs_needs_render = false;
         msp_ready = false;
-        menu_view_owed = false;
+        menu_feed.composed();
         // Unconditional whenever a composition ran, even if it drew
         // nothing: "nothing differs from this buffer" does not mean the
         // screen is right -- the screen is the OTHER buffer. With a value

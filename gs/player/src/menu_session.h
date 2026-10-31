@@ -10,8 +10,13 @@
 // row would make the next step's send fail "busy". So a refresh is only
 // ever marked pending, and sent once no row is running and the client is
 // idle; a row with a GS step that arrives while a refresh is in flight is
-// held (one slot) and started when the reply lands. A player-only row
-// never touches that client and starts at once.
+// held (one slot), shown applying, and started when the reply lands -- or
+// ended at "no answer" with it, when maburgs did not answer the get. A
+// player-only row never touches that client and starts at once.
+//
+// Until the first `get` lands the view holds placeholders: GS rows refuse
+// ▶ (MenuModel::set_gs_known), and while the menu is open the `get` is
+// asked again every kRetryMs.
 #include <cstdint>
 #include <functional>
 #include <optional>
@@ -52,6 +57,8 @@ class UdpGsViewSource final : public GsViewSource {
 
 class MenuSession {
  public:
+  static constexpr uint64_t kRetryMs = 2000;
+
   // Takes over applier.on_ok.
   MenuSession(MenuModel& model, MenuApplier& applier, GsViewSource& gs, GsLiveView& view);
 
@@ -68,6 +75,10 @@ class MenuSession {
   bool refresh_pending() const { return refresh_pending_; }
   bool refresh_in_flight() const { return refresh_in_flight_; }
   bool holding() const { return held_.has_value(); }
+  // Moves whenever what the menu shows may have changed through this
+  // session: a key, a refresh landing, a row's step answering or the row
+  // settling.
+  uint64_t generation() const { return generation_; }
 
   // "maburplay: menu: open" / "close" as the menu opens and closes.
   std::function<void(const std::string&)> log;
@@ -77,7 +88,8 @@ class MenuSession {
     std::string row_id;
     std::vector<SetStep> steps;
   };
-  void start(const std::string& row_id, std::vector<SetStep> steps, uint64_t now_ms);
+  // `shown`: the model already has the row applying (it was held).
+  void start(const std::string& row_id, std::vector<SetStep> steps, bool shown, uint64_t now_ms);
 
   MenuModel& model_;
   MenuApplier& applier_;
@@ -86,6 +98,8 @@ class MenuSession {
   bool refresh_pending_ = false;
   bool refresh_in_flight_ = false;
   std::optional<Held> held_;
+  uint64_t generation_ = 0;
+  uint64_t last_get_ms_ = 0;
 };
 
 }  // namespace maburplay

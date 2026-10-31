@@ -106,6 +106,9 @@ class MenuModel {
 
   void set_linked(bool linked);         // header pill; drone rows dim when false
   void set_has_sel(bool has_sel);
+  // False until maburgs' live settings have been read: a GS row's ▶ is then
+  // refused with a toast, since its values are placeholders.
+  void set_gs_known(bool known);
   void set_show_advanced(bool on);
   void set_banner(std::string text);
   void toast(std::string text, uint64_t now_ms);
@@ -190,6 +193,7 @@ class MenuModel {
   bool open_ = false;
   bool linked_ = false;
   bool has_sel_ = false;
+  bool gs_known_ = true;
   bool show_advanced_ = false;
   std::string banner_;
   std::string toast_;

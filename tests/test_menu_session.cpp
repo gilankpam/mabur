@@ -150,6 +150,10 @@ struct Fx {
   }
   std::optional<bool> key(KeyEvent e) { return s.key(e, ++t); }
   void tick() { s.tick(++t); }
+  void tick_at(uint64_t ms) {
+    t = ms;
+    s.tick(t);
+  }
   // Opens the menu and lands the refresh it sends.
   void open_and_read() {
     key(kOpen);
@@ -158,6 +162,15 @@ struct Fx {
     link.answer(true, kDump);
     tick();
     REQUIRE(view.have);
+  }
+  // Settings read once, then the menu reopened: its refresh is in flight.
+  void reopen_with_a_refresh_in_flight() {
+    open_and_read();
+    key(kClose);
+    key(kOpen);
+    tick();
+    REQUIRE((link.sent == std::vector<std::string>{"get", "get"}));
+    REQUIRE(s.refresh_in_flight());
   }
   ViewRow row(const std::string& id) {
     for (const ViewRow& r : model.view(t).rows)
@@ -233,20 +246,60 @@ TEST(the_refresh_waits_through_a_player_step_between_two_gs_steps) {
 
 TEST(a_gs_row_pressed_while_the_refresh_is_in_flight_waits_for_its_reply) {
   Fx f;
-  f.key(kOpen);
-  f.tick();   // the refresh is in flight
+  f.reopen_with_a_refresh_in_flight();
   f.key(kRight);
   CHECK(f.s.holding());
-  CHECK(f.link.sent == std::vector<std::string>{"get"});
-  CHECK(!f.link.busy_seen);
+  // Shown applying while it waits.
+  CHECK(f.row("row.g").busy);
+  CHECK(f.row("row.g").status == "applying");
+  CHECK((f.link.sent == std::vector<std::string>{"get", "get"}));
   f.tick();
-  CHECK(f.link.sent.size() == 1);
+  CHECK(f.link.sent.size() == 2);
   f.link.answer(true, kDump);
   f.tick();
   CHECK(!f.s.holding());
-  CHECK((f.link.sent == std::vector<std::string>{"get", "set a = 1"}));
+  CHECK((f.link.sent == std::vector<std::string>{"get", "get", "set a = 1"}));
   CHECK(f.row("row.g").busy);
   CHECK(!f.link.busy_seen);
+  f.link.answer(true, "ok");
+  f.tick();
+  f.link.answer(true, "ok");
+  f.tick();
+  CHECK(f.row("row.g").status_ok);
+  CHECK(!f.model.busy(Owner::kGs));
+}
+
+// maburgs silent: the refresh times out, and the row held behind it ends
+// there instead of waiting out a second timeout of its own.
+TEST(a_held_row_ends_at_no_answer_when_the_refresh_times_out) {
+  Fx f;
+  f.reopen_with_a_refresh_in_flight();
+  f.key(kRight);
+  REQUIRE(f.s.holding());
+  f.link.answer(false, "no answer");
+  f.tick();
+  CHECK(!f.s.holding());
+  CHECK(!f.applier.running());
+  CHECK(f.row("row.g").status_err);
+  CHECK(f.model.view(f.t).help == "No answer — it may not have applied");
+  CHECK((f.link.sent == std::vector<std::string>{"get", "get"}));
+  CHECK(!f.model.busy(Owner::kGs));
+}
+
+TEST(a_held_row_the_running_applier_refuses_ends_in_the_row) {
+  Fx f;
+  f.reopen_with_a_refresh_in_flight();
+  f.key(kDown);
+  f.key(kRight);   // row.p runs, no answer yet
+  f.key(kUp);
+  f.key(kRight);   // row.g, held
+  f.link.answer(true, kDump);
+  f.tick();
+  CHECK(!f.s.holding());
+  CHECK(f.row("row.g").status_err);
+  CHECK(f.toast() == "One GS change at a time");
+  CHECK(!f.model.busy(Owner::kGs));
+  CHECK(f.model.busy(Owner::kPlayer));
 }
 
 TEST(a_player_row_does_not_wait_behind_the_refresh) {
@@ -262,8 +315,7 @@ TEST(a_player_row_does_not_wait_behind_the_refresh) {
 
 TEST(a_second_gs_row_while_one_is_held_is_refused_with_a_toast) {
   Fx f;
-  f.key(kOpen);
-  f.tick();
+  f.reopen_with_a_refresh_in_flight();
   f.key(kRight);   // row.g, held
   f.key(kDown);
   f.key(kDown);
@@ -272,7 +324,7 @@ TEST(a_second_gs_row_while_one_is_held_is_refused_with_a_toast) {
   CHECK(f.toast() == "One GS change at a time");
   f.link.answer(true, kDump);
   f.tick();
-  CHECK((f.link.sent == std::vector<std::string>{"get", "set a = 1"}));
+  CHECK((f.link.sent == std::vector<std::string>{"get", "get", "set a = 1"}));
 }
 
 TEST(a_row_the_running_applier_refuses_toasts_one_gs_change_at_a_time) {
@@ -309,17 +361,72 @@ TEST(key_hands_back_the_repeat_setting_and_logs_the_close) {
   CHECK((f.logs == std::vector<std::string>{"maburplay: menu: open", "maburplay: menu: close"}));
 }
 
-TEST(a_refused_get_leaves_the_view_as_it_was_and_is_not_retried) {
+TEST(an_unread_view_is_asked_again_every_2_s_while_the_menu_is_open) {
+  Fx f;
+  f.key(kOpen);
+  f.tick_at(10);
+  CHECK(f.link.sent == std::vector<std::string>{"get"});
+  f.link.answer(false, "no answer");
+  f.tick_at(11);
+  CHECK(!f.view.have);
+  CHECK(!f.s.refresh_in_flight());
+  f.tick_at(2009);
+  CHECK(f.link.sent.size() == 1);
+  f.tick_at(2010);
+  CHECK((f.link.sent == std::vector<std::string>{"get", "get"}));
+  f.link.answer(true, kDump);
+  f.tick_at(2011);
+  CHECK(f.view.have);
+  f.tick_at(9000);   // read: no more asking
+  CHECK(f.link.sent.size() == 2);
+}
+
+TEST(a_closed_menu_does_not_ask_again) {
+  Fx f;
+  f.key(kOpen);
+  f.tick_at(10);
+  f.link.answer(false, "no answer");
+  f.tick_at(11);
+  f.s.key(kClose, 12);
+  f.tick_at(9000);
+  CHECK(f.link.sent.size() == 1);
+}
+
+TEST(gs_rows_are_refused_until_the_first_get_lands) {
   Fx f;
   f.key(kOpen);
   f.tick();
-  f.link.answer(false, "no answer");
+  f.key(kRight);   // row.g
+  CHECK(f.toast() == "Reading GS settings…");
+  CHECK(!f.s.holding());
+  CHECK(f.link.sent == std::vector<std::string>{"get"});
+  f.link.answer(true, kDump);
   f.tick();
-  CHECK(!f.view.have);
-  CHECK(!f.s.refresh_in_flight());
-  CHECK(!f.s.refresh_pending());
+  f.key(kRight);
+  CHECK(f.link.sent.back() == "set a = 1");
+}
+
+TEST(the_generation_moves_on_keys_replies_and_row_progress) {
+  Fx f;
+  uint64_t g = f.s.generation();
+  f.key(kOpen);
+  CHECK(f.s.generation() != g);
+  g = f.s.generation();
   f.tick();
-  CHECK(f.link.sent.size() == 1);
+  f.tick();
+  CHECK(f.s.generation() == g);   // nothing landed
+  f.link.answer(true, kDump);
+  f.tick();
+  CHECK(f.s.generation() != g);
+  f.key(kRight);   // row.g starts
+  g = f.s.generation();
+  f.link.answer(true, "ok");
+  f.tick();
+  CHECK(f.s.generation() != g);   // step 1 landed
+  g = f.s.generation();
+  f.link.answer(true, "ok");
+  f.tick();
+  CHECK(f.s.generation() != g);   // the row finished
 }
 
 TEST(reopening_the_menu_refreshes_again) {

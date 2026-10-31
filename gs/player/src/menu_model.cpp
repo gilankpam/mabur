@@ -12,6 +12,7 @@ namespace {
 
 constexpr const char* kTopCrumb = "Menu";
 constexpr const char* kNeedsDrone = "Needs the drone linked";
+constexpr const char* kReadingGs = "Reading GS settings…";
 constexpr int kScrollLead = 4;   // rows kept above the cursor once the list scrolls
 
 size_t idx(Owner o) { return static_cast<size_t>(o); }
@@ -86,6 +87,7 @@ MenuModel::MenuModel(Tree root) : root_(std::move(root)) {}
 
 void MenuModel::set_linked(bool linked) { linked_ = linked; }
 void MenuModel::set_has_sel(bool has_sel) { has_sel_ = has_sel; }
+void MenuModel::set_gs_known(bool known) { gs_known_ = known; }
 void MenuModel::set_show_advanced(bool on) { show_advanced_ = on; }
 void MenuModel::set_banner(std::string text) { banner_ = std::move(text); }
 
@@ -245,6 +247,10 @@ MenuModel::Effect MenuModel::press_right(const MenuNode& n, uint64_t now_ms) {
     }
     default:
       break;
+  }
+  if (n.owner == Owner::kGs && !gs_known_) {
+    toast(kReadingGs, now_ms);
+    return {};
   }
   if (busy(n.owner)) {
     refuse_busy(n.owner, now_ms);
@@ -417,9 +423,13 @@ MenuModel::Effect MenuModel::handle(const KeyEvent& e, uint64_t now_ms) {
 void MenuModel::apply_started(const std::string& row_id, int n_steps) {
   Status st;
   auto it = pending_.find(row_id);
+  auto shown = status_.find(row_id);
   if (it != pending_.end()) {
     st.pending = std::move(it->second);
     pending_.erase(it);
+  } else if (shown != status_.end() && shown->second.state == Status::State::kBusy) {
+    // Already shown applying (held, then started): keep the locks it learnt.
+    st.pending = std::move(shown->second.pending);
   } else if (auto n = find(row_id)) {
     st.pending.owner = n->owner;
     st.pending.saved_text = n->saved_text;

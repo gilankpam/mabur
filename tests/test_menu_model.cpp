@@ -600,6 +600,55 @@ TEST(a_row_whose_sets_reach_a_busy_owner_is_refused_at_apply) {
   CHECK(m2.view(40).picker == MenuView::Picker::kNone);
 }
 
+// A row shown applying before its applier starts (held behind a refresh)
+// gets a second apply_started from the applier: the locks its Effect
+// learnt -- both owners here -- stay, and the last apply_done frees both.
+TEST(a_second_apply_started_for_an_applying_row_keeps_its_locks) {
+  MenuNode both;
+  both.id = "o.both";
+  both.label = "Both halves";
+  both.kind = NodeKind::kChoice;
+  both.owner = Owner::kGs;
+  both.choices = [] { return std::vector<Choice>{{"on", "On", "", true}, {"off", "Off", "", true}}; };
+  both.current = [] { return std::string("off"); };
+  both.steps = [](const std::string& v) {
+    return std::vector<SetStep>{{Owner::kPlayer, "osd.enable", v}, {Owner::kGs, "msp.enable", v}};
+  };
+  MenuModel m([both] { return std::vector<MenuNode>{both}; });
+  m.open();
+  tap(m, Button::kRight);
+  tap(m, Button::kUp);
+  REQUIRE(tap(m, Button::kRight).steps.size() == 2);
+  m.apply_started("o.both", 2);
+  m.apply_started("o.both", 2);
+  CHECK(m.busy(Owner::kPlayer) && m.busy(Owner::kGs));
+  m.apply_done("o.both", true, "", 0);
+  CHECK(!m.busy(Owner::kPlayer) && !m.busy(Owner::kGs));
+}
+
+// Until maburgs' settings are read, a GS row's values are placeholders: its
+// ▶ is refused rather than build sets from them. Groups still open.
+TEST(gs_rows_are_refused_until_the_gs_settings_are_read) {
+  World w;
+  MenuModel m(tree(&w));
+  m.set_gs_known(false);
+  into_video(m);
+  cursor_to(m, "v.num");
+  auto e = tap(m, Button::kRight, 10);
+  CHECK(e.steps.empty());
+  CHECK(m.view(10).picker == MenuView::Picker::kNone);
+  CHECK(m.view(10).toast == "Reading GS settings…");
+  // A player row is unaffected.
+  cursor_to(m, "v.colour");
+  tap(m, Button::kRight, 20);
+  CHECK(m.view(20).picker == MenuView::Picker::kChoices);
+  tap(m, Button::kLeft, 20);
+  m.set_gs_known(true);
+  cursor_to(m, "v.num");
+  tap(m, Button::kRight, 30);
+  CHECK(m.view(30).picker == MenuView::Picker::kNumber);
+}
+
 TEST(status_text_follows_the_prototype_timings) {
   World w;
   MenuModel m(tree(&w));
