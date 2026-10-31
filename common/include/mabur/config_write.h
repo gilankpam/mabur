@@ -72,11 +72,11 @@ bool match_toml_key(const std::string& line, const std::string& key,
 // trailing comment (with the whitespace run before it). [section] is
 // matched against a header's trimmed bracket contents exactly, and ends at
 // the next line starting with '[' -- so [venc] ends where [venc.roi]
-// begins, and a key above every header belongs to no section. A commented
-// out key, or a longer key the requested one is a prefix of, does not
-// match. `rendered_value` is inserted verbatim (a string value carries its
-// own quotes). Returns false, leaving `*text` unchanged, when the key's
-// line is not found in that section.
+// begins. A key above every header sits in the root table, which section
+// "" names. A commented out key, or a longer key the requested one is a
+// prefix of, does not match. `rendered_value` is inserted verbatim (a
+// string value carries its own quotes). Returns false, leaving `*text`
+// unchanged, when the key's line is not found in that section.
 bool patch_toml_key(std::string* text, const std::string& section,
                     const std::string& key, const std::string& rendered_value);
 

@@ -190,8 +190,8 @@ bool write_file_fsync(const std::string& path, const std::string& content) {
 
 bool patch_toml_key(std::string* text, const std::string& section,
                     const std::string& key, const std::string& rendered_value) {
-  std::string current;  // "" until the first header: no section
-  bool in_any = false;
+  std::string current;  // unused until the first header
+  bool in_any = false;  // false: still in the root table, section ""
   size_t start = 0;
   while (start < text->size()) {
     size_t nl = text->find('\n', start);
@@ -201,7 +201,7 @@ bool patch_toml_key(std::string* text, const std::string& section,
     if (table_header(line, &name)) {
       current = name;
       in_any = true;
-    } else if (in_any && current == section) {
+    } else if (in_any ? current == section : section.empty()) {
       size_t key_begin, eq_pos;
       if (match_toml_key(line, key, &key_begin, &eq_pos)) {
         size_t v = eq_pos + 1;

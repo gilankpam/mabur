@@ -87,6 +87,15 @@ TEST(key_before_any_header_belongs_to_no_section) {
   CHECK(t == "fps = 1\n[record]\nfps = 3\n");
 }
 
+TEST(empty_section_names_the_keys_above_every_header) {
+  std::string t = "# lead\nfps = 1   # note\n[record]\nfps = 2\n";
+  REQUIRE(patch_toml_key(&t, "", "fps", "3"));
+  CHECK(t == "# lead\nfps = 3   # note\n[record]\nfps = 2\n");
+  std::string u = "[record]\nfps = 2\n";
+  CHECK(!patch_toml_key(&u, "", "fps", "3"));
+  CHECK(u == "[record]\nfps = 2\n");
+}
+
 TEST(missing_section_is_not_found) {
   std::string t = "[venc]\nfps = 60\n";
   CHECK(!patch_toml_key(&t, "record", "fps", "30"));

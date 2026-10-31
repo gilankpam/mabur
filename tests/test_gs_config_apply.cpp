@@ -298,6 +298,30 @@ TEST(applier_same_value_is_ok_without_file_work) {
   CHECK(f.order.empty());
 }
 
+TEST(applier_same_value_spelled_differently_writes_nothing) {
+  // The submit-time text match misses these; the loaded candidate's
+  // rendering equals the live one, so the set is ok with no apply and no
+  // file work.
+  ScratchBundle sb; Fake f;
+  const std::string before = slurp(sb.path());
+  GsConfigApplier a(sb.path(), bundle(), f.hooks(), nullptr);
+  const std::string live_ladder = render_live_value(bundle(), *gs_live_key("link.ladder"));
+  std::string respaced;
+  for (char c : live_ladder)
+    if (c != ' ') respaced += c;
+  REQUIRE(respaced != live_ladder);
+  for (const auto& kv : std::vector<std::pair<std::string, std::string>>{
+           {"link.static_overhead_base", "0.50"}, {"link.ladder", respaced}}) {
+    std::string why;
+    REQUIRE(a.submit(kv.first, kv.second, &why));
+    GsApplyResult r = drive(a);
+    CHECK(r.ok);
+  }
+  CHECK(f.order.empty());
+  CHECK(slurp(sb.path()) == before);
+  CHECK(!exists(sb.path() + ".pre-live"));
+}
+
 TEST(applier_busy_while_one_is_in_flight) {
   ScratchBundle sb; Fake f;
   GsConfigApplier a(sb.path(), bundle(), f.hooks(), nullptr);

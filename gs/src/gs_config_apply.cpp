@@ -1,10 +1,5 @@
 #include "gs_config_apply.h"
 
-#include <arpa/inet.h>
-#include <pthread.h>
-#include <sys/socket.h>
-#include <unistd.h>
-
 #include <array>
 #include <cctype>
 #include <cstdio>
@@ -12,7 +7,7 @@
 #include <cstring>
 #include <exception>
 #include <map>
-#include <system_error>
+#include <memory>
 #include <utility>
 
 #include "mabur/config_write.h"
@@ -39,18 +34,7 @@ constexpr std::array<const char*, 4> kRungKeys = {"mcs", "bw", "overhead_base", 
 
 bool is(const LiveKey& k, const char* dotted) { return std::strcmp(k.key, dotted) == 0; }
 
-std::string trim(const std::string& s) {
-  size_t b = 0, e = s.size();
-  while (b < e && std::isspace(static_cast<unsigned char>(s[b]))) ++b;
-  while (e > b && std::isspace(static_cast<unsigned char>(s[e - 1]))) --e;
-  return s.substr(b, e - b);
-}
-
-bool has_space(const std::string& s) {
-  for (char c : s)
-    if (std::isspace(static_cast<unsigned char>(c))) return true;
-  return false;
-}
+using mabur::live_apply_detail::trim;
 
 // The shortest text that reads back as `v`, always with a decimal point or
 // exponent so it stays a TOML float: 0.5, 0.25, 2.0.
@@ -206,28 +190,6 @@ std::string ladder_region_tail(const std::string& text) {
   return text.substr(tail, region_end - tail);
 }
 
-// publish_config's verifier: the loader maburgs boots with, so the file is
-// never replaced by one the daemon would refuse to start from.
-bool verify_with_load_config(const std::string& candidate_path, std::string* err) {
-  try {
-    (void)load_config(candidate_path);
-    return true;
-  } catch (const std::exception& e) {
-    if (err) *err = e.what();
-    return false;
-  }
-}
-
-// The config's real path: the candidate scratch goes beside the file a
-// symlinked config points at, where publish_config writes its own.
-std::string real_path_of(const std::string& path) {
-  char* r = ::realpath(path.c_str(), nullptr);
-  if (!r) return path;
-  std::string out = r;
-  std::free(r);
-  return out;
-}
-
 // Copies the one live field `k` names from `src` into `dst`.
 void copy_live_field(const LiveKey& k, const Config& src, Config* dst) {
   if (is(k, "radio.channel")) dst->radio.pin = src.radio.pin;
@@ -312,226 +274,51 @@ bool patch_live_key(std::string* text, const LiveKey& k, const std::string& valu
 
 // --- GsConfigApplier -------------------------------------------------------
 
-GsConfigApplier::GsConfigApplier(std::string cfg_path, Config live, GsApplyHooks hooks,
-                                 std::function<void(const std::string&)> log)
-    : cfg_path_(std::move(cfg_path)),
-      live_(std::move(live)),
-      hooks_(std::move(hooks)),
-      log_(std::move(log)) {}
+namespace {
 
-GsConfigApplier::~GsConfigApplier() {
-  {
-    std::lock_guard<std::mutex> l(mu_);
-    stop_ = true;
-  }
-  cv_.notify_all();
-  // A worker waiting for the owner's next step takes stop_ as "release":
-  // nothing more is published.
-  if (thread_.joinable()) thread_.join();
-}
-
-void GsConfigApplier::log(const std::string& line) const {
-  if (log_) log_(line);
-}
-
-bool GsConfigApplier::busy() const { return in_flight_; }
-
-const Config& GsConfigApplier::live() const { return live_; }
-
-std::string GsConfigApplier::get(const std::string& key, std::string* why) const {
-  const LiveKey* k = gs_live_key(key);
-  if (!k) {
-    if (why) *why = "not live: " + key;
-    return "";
-  }
-  return render_live_value(live_, *k);
-}
-
-std::string GsConfigApplier::get_all() const {
-  std::string out;
-  for (const LiveKey& k : kGsLiveKeys) out += std::string(k.key) + " = " + render_live_value(live_, k) + "\n";
-  return out;
-}
-
-bool GsConfigApplier::submit(const std::string& key, const std::string& value, std::string* why) {
-  auto refuse = [&](const std::string& text) {
-    if (why) *why = text;
-    return false;
-  };
-  const LiveKey* k = gs_live_key(key);
-  if (!k) return refuse("not live: " + key);
-  if (in_flight_) return refuse("busy");
-  const std::string v = trim(value);
-  if (v.empty()) return refuse("empty value");
-  if (v.find_first_of("\r\n") != std::string::npos) return refuse("value spans lines");
-
-  cur_key_ = k;
-  cur_value_ = v;
-  t0_ = std::chrono::steady_clock::now();
-  settled_.reset();
-  if (k->type == LiveType::Channel && hooks_.hop_or_cal_busy()) {
-    settled_ = GsApplyResult{false, "hop or calibration in flight", k->key, 0};
-  } else if (v == render_live_value(live_, *k)) {
-    settled_ = GsApplyResult{true, "", k->key, 0};
-  } else {
-    std::lock_guard<std::mutex> l(mu_);
-    if (stop_) return refuse("shutting down");
-    // The thread first, so a refusal for a thread that cannot start leaves
-    // no job behind; it waits on mu_, held here, until the job is in place.
-    if (!thread_.joinable()) {
-      try {
-        thread_ = std::thread([this] { run(); });
-      } catch (const std::system_error&) {
-        return refuse("apply thread failed to start");
-      }
+// The loader drops rungs above link.max_mcs without a word; a set that
+// names one is refused rather than flown short. The filter keeps order, so
+// the first rung that does not line up is the dropped one.
+std::string refuse_dropped_rung(const LiveKey& k, const std::string& value, const Config& cand) {
+  if (k.type != LiveType::Ladder) return "";
+  std::vector<RungText> rungs;
+  std::string ignored;
+  split_ladder(value, &rungs, &ignored);
+  const auto& eff = cand.link.ladder_cfg.ladder;
+  size_t j = 0;
+  for (size_t i = 0; i < rungs.size(); ++i) {
+    if (j < eff.size() && eff[j].mcs == std::atoi(rungs[i]["mcs"].c_str()) &&
+        eff[j].bw == std::atoi(rungs[i]["bw"].c_str())) {
+      ++j;
+      continue;
     }
-    job_ = Job{k, v, !backup_written_};
-    has_job_ = true;
-    phase_ = Phase::Reading;
-    cv_.notify_all();
+    return "rung " + std::to_string(i) + " exceeds link.max_mcs";
   }
-  in_flight_ = true;
-  return true;
+  return "";
 }
 
-void GsConfigApplier::tell(Step s, Phase next) {
-  {
-    std::lock_guard<std::mutex> l(mu_);
-    step_ = s;
-    phase_ = next;
-  }
-  cv_.notify_all();
-}
-
-bool GsConfigApplier::poll(GsApplyResult* out) {
-  if (!in_flight_) return false;
-  if (settled_) {
-    finish(settled_->ok, settled_->reason, out);
-    return true;
-  }
-  const LiveKey& k = *cur_key_;
-  const bool channel = k.type == LiveType::Channel;
-  Phase ph;
-  {
-    std::lock_guard<std::mutex> l(mu_);
-    ph = phase_;
-  }
-  switch (ph) {
-    case Phase::Refused: {
-      std::string reason;
-      {
-        // The worker sets nothing after Refused; Idle lets the next submit in.
-        std::lock_guard<std::mutex> l(mu_);
-        reason = std::move(refusal_);
-        phase_ = Phase::Idle;
-      }
-      finish(false, reason, out);
-      return true;
-    }
-    case Phase::Ready: {
-      // The process gets what it runs now plus this one key, as the loader
-      // read it from the candidate: anything else that differs in the file
-      // (an ssh edit not yet restarted into) is not applied by this set.
-      Config cand;
-      {
-        std::lock_guard<std::mutex> l(mu_);
-        cand = std::move(ready_cand_);
-      }
-      cand_ = live_;
-      copy_live_field(k, cand, &cand_);
-      std::string reason;
-      if (channel || apply_to_process(k, cand_, &reason)) {
-        tell(Step::Publish, Phase::Publishing);
-        return false;
-      }
-      tell(Step::Release, Phase::Idle);
-      finish(false, reason, out);
-      return true;
-    }
-    case Phase::Published: {
-      bool ok;
-      std::string err;
-      {
-        std::lock_guard<std::mutex> l(mu_);
-        ok = pub_ok_;
-        err = pub_err_;
-      }
-      if (!ok) {
-        // The file still holds the previous value: put the process back on it.
-        if (!channel) {
-          log("maburgs: cfg set " + std::string(k.key) + ": publish failed, reverting");
-          std::string rr;
-          if (!apply_to_process(k, live_, &rr))
-            log("maburgs: cfg set " + std::string(k.key) + ": revert failed: " + rr);
-        }
-        tell(Step::Release, Phase::Idle);
-        finish(false, "publish failed: " + err, out);
-        return true;
-      }
-      backup_written_ = true;
-      if (channel) {
-        std::optional<std::string> refused;
-        if (cand_.radio.pin) refused = hooks_.set_pin(*cand_.radio.pin);
-        else hooks_.set_auto();
-        if (refused) {
-          // The file now claims a pin the link did not take: the worker,
-          // still holding the write lock, publishes the previous text.
-          restore_reason_ = *refused;
-          tell(Step::Restore, Phase::Restoring);
-          return false;
-        }
-      }
-      live_ = cand_;
-      tell(Step::Release, Phase::Idle);
-      finish(true, "", out);
-      return true;
-    }
-    case Phase::Restored: {
-      bool ok;
-      std::string err;
-      {
-        // The worker sets nothing after Restored.
-        std::lock_guard<std::mutex> l(mu_);
-        ok = pub_ok_;
-        err = pub_err_;
-        phase_ = Phase::Idle;
-      }
-      if (!ok)
-        log("maburgs: cfg set " + std::string(k.key) + ": restoring the previous file failed: " + err);
-      finish(false, restore_reason_, out);
-      return true;
-    }
-    case Phase::Idle:
-    case Phase::Reading:
-    case Phase::Publishing:
-    case Phase::Restoring:
-      return false;
-  }
-  return false;
-}
-
-bool GsConfigApplier::apply_to_process(const LiveKey& k, const Config& c, std::string* reason) {
+bool apply_to_process(const GsApplyHooks& h, const LiveKey& k, const Config& c, std::string* reason) {
   switch (k.type) {
     case LiveType::Int:
     case LiveType::Real:
-      hooks_.set_static(c);  // link.static_*
+      h.set_static(c);  // link.static_*
       return true;
     case LiveType::Ladder:
-      hooks_.replace_ladder(c);
+      h.replace_ladder(c);
       return true;
     case LiveType::Bool:
       if (is(k, "link.nack.enable")) {
-        hooks_.nack(c.link.nack.enable);
+        h.nack(c.link.nack.enable);
         return true;
       }
       if (is(k, "debug_log.enable")) {
         std::string err;
-        if (hooks_.debug_log(c.debug_log.enable, &err)) return true;
+        if (h.debug_log(c.debug_log.enable, &err)) return true;
         *reason = err.empty() ? "debug log refused" : err;
         return false;
       }
       if (is(k, "msp.enable")) {
-        hooks_.msp(c.msp.enable, c);
+        h.msp(c.msp.enable, c);
         return true;
       }
       break;
@@ -543,213 +330,38 @@ bool GsConfigApplier::apply_to_process(const LiveKey& k, const Config& c, std::s
   return false;
 }
 
-void GsConfigApplier::finish(bool ok, const std::string& reason, GsApplyResult* out) {
-  const uint64_t ms = static_cast<uint64_t>(
-      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0_)
-          .count());
-  GsApplyResult r{ok, ok ? "" : reason, cur_key_->key, ms};
-  log("maburgs: cfg set " + r.key + " = " + cur_value_ + " -> " +
-      (ok ? std::string("ok") : "err " + r.reason) + " (" + std::to_string(ms) + " ms)");
-  settled_.reset();
-  in_flight_ = false;
-  *out = std::move(r);
-}
-
-void GsConfigApplier::run() {
-  pthread_setname_np(pthread_self(), "mbr-cfgset");
-  std::unique_lock<std::mutex> l(mu_);
-  for (;;) {
-    cv_.wait(l, [this] { return stop_ || has_job_; });
-    if (stop_) return;
-    const Job job = std::move(job_);
-    has_job_ = false;
-    l.unlock();
-    work(job);
-    l.lock();
-  }
-}
-
-GsConfigApplier::Step GsConfigApplier::await_step(std::unique_lock<std::mutex>& l) {
-  cv_.wait(l, [this] { return stop_ || step_ != Step::None; });
-  const Step s = step_ == Step::None ? Step::Release : step_;
-  step_ = Step::None;
+mabur::LiveApplySpec<Config, LiveKey> gs_spec(GsApplyHooks hooks) {
+  const auto h = std::make_shared<const GsApplyHooks>(std::move(hooks));
+  mabur::LiveApplySpec<Config, LiveKey> s;
+  s.daemon = "maburgs";
+  s.thread_name = "mbr-cfgset";
+  s.table = &kGsLiveKeys;
+  s.render = render_live_value;
+  s.patch = patch_live_key;
+  s.load = [](const std::string& path) { return load_config(path); };
+  s.refuse_set = refuse_dropped_rung;
+  s.copy_field = copy_live_field;
+  s.precheck = [h](const LiveKey& k) -> std::optional<std::string> {
+    if (k.type == LiveType::Channel && h->hop_or_cal_busy()) return "hop or calibration in flight";
+    return std::nullopt;
+  };
+  s.apply = [h](const LiveKey& k, const Config&, const Config& to, std::string* reason) {
+    return apply_to_process(*h, k, to, reason);
+  };
+  s.order_after_publish = [](const LiveKey& k) { return k.type == LiveType::Channel; };
+  s.order = [h](const LiveKey&, const Config& c) -> std::optional<std::string> {
+    if (c.radio.pin) return h->set_pin(*c.radio.pin);
+    h->set_auto();
+    return std::nullopt;
+  };
   return s;
 }
 
-void GsConfigApplier::work(const Job& job) {
-  const LiveKey& k = *job.key;
-  std::string original, patched, refusal;
-  Config cand;
-  bool ready = false;
-  // Held from the re-read through the publish (and a restore): a
-  // calibration publish between them would be overwritten by this one's
-  // stale text. Declared before `l` so mu_ is let go first.
-  auto write_lock = mabur::lock_config_writes();
-  try {
-    if (!mabur::read_text_file(cfg_path_, &original)) {
-      refusal = "config file unreadable";
-    } else {
-      patched = original;
-      if (patch_live_key(&patched, k, job.value, &refusal)) {
-        // The candidate is the patched text as the boot loader reads it:
-        // the process is never handed a config maburgs would refuse to
-        // start from.
-        const std::string tmp = real_path_of(cfg_path_) + ".new";
-        if (!mabur::write_file_fsync(tmp, patched)) {
-          refusal = "failed to write " + tmp;
-        } else {
-          try {
-            cand = load_config(tmp);
-            ready = true;
-          } catch (const std::exception& e) {
-            refusal = mabur::loader_reason(e.what());
-          }
-        }
-        // Gone before the apply: a refused set leaves no trace, and
-        // publish_config writes its own copy.
-        ::unlink(tmp.c_str());
-      }
-    }
-    if (ready && k.type == LiveType::Ladder) {
-      // The loader drops rungs above link.max_mcs without a word; a set
-      // that names one is refused rather than flown short. The filter keeps
-      // order, so the first rung that does not line up is the dropped one.
-      std::vector<RungText> rungs;
-      std::string ignored;
-      split_ladder(job.value, &rungs, &ignored);
-      const auto& eff = cand.link.ladder_cfg.ladder;
-      size_t j = 0;
-      for (size_t i = 0; i < rungs.size(); ++i) {
-        if (j < eff.size() && eff[j].mcs == std::atoi(rungs[i]["mcs"].c_str()) &&
-            eff[j].bw == std::atoi(rungs[i]["bw"].c_str())) {
-          ++j;
-          continue;
-        }
-        refusal = "rung " + std::to_string(i) + " exceeds link.max_mcs";
-        ready = false;
-        break;
-      }
-    }
-  } catch (const std::exception& e) {
-    ready = false;
-    refusal = std::string("apply threw: ") + e.what();
-  }
+}  // namespace
 
-  std::unique_lock<std::mutex> l(mu_);
-  if (!ready) {
-    refusal_ = refusal;
-    phase_ = Phase::Refused;
-    return;
-  }
-  ready_cand_ = std::move(cand);
-  phase_ = Phase::Ready;
-  if (await_step(l) != Step::Publish) return;
-
-  auto publish = [&](const std::string& content, bool write_backup) {
-    std::string err;
-    mabur::PublishResult pr;
-    try {
-      pr = mabur::publish_config(cfg_path_, content, "pre-live", &err, verify_with_load_config,
-                                 write_backup);
-    } catch (const std::exception& e) {
-      pr = mabur::PublishResult::WriteFailed;
-      err = e.what();
-    }
-    pub_ok_ = pr == mabur::PublishResult::Ok;
-    pub_err_ = pr == mabur::PublishResult::ReparseFailed ? mabur::loader_reason(err) : err;
-  };
-
-  l.unlock();
-  publish(patched, job.write_backup);
-  l.lock();
-  phase_ = Phase::Published;
-  if (await_step(l) != Step::Restore) return;
-
-  l.unlock();
-  publish(original, false);
-  l.lock();
-  phase_ = Phase::Restored;
-}
-
-// --- GsConfigControl -------------------------------------------------------
-
-GsConfigControl::~GsConfigControl() {
-  if (fd_ >= 0) ::close(fd_);
-}
-
-bool GsConfigControl::open(int port) {
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons(static_cast<uint16_t>(port));
-  if (inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr) != 1) return false;
-  const int fd = ::socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 0);
-  if (fd < 0) return false;
-  if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-    ::close(fd);
-    return false;
-  }
-  fd_ = fd;
-  return true;
-}
-
-void GsConfigControl::poll(GsConfigApplier& a) {
-  if (fd_ >= 0) {
-    // A full eight-rung ladder set is about 600 bytes.
-    char buf[2048];
-    for (;;) {
-      sockaddr_in from{};
-      socklen_t flen = sizeof(from);
-      const ssize_t n = ::recvfrom(fd_, buf, sizeof(buf), 0, reinterpret_cast<sockaddr*>(&from), &flen);
-      if (n < 0) break;  // drained; a 0-length datagram is still answered
-      bool pending = false;
-      const std::string reply = handle(std::string(buf, static_cast<size_t>(n)), a, &pending);
-      if (pending) {
-        has_pending_ = true;
-        pending_from_ = from;
-        pending_len_ = flen;
-        continue;
-      }
-      ::sendto(fd_, reply.data(), reply.size(), 0, reinterpret_cast<sockaddr*>(&from), flen);
-    }
-  }
-  GsApplyResult r;
-  if (!a.poll(&r)) return;
-  if (has_pending_ && fd_ >= 0) {
-    const std::string reply = r.ok ? "ok" : "err " + r.reason;
-    ::sendto(fd_, reply.data(), reply.size(), 0, reinterpret_cast<sockaddr*>(&pending_from_),
-             pending_len_);
-  }
-  has_pending_ = false;
-}
-
-std::string GsConfigControl::handle(const std::string& line, GsConfigApplier& a, bool* pending) {
-  static const std::string kUsage = "err usage: set <key> = <value> | get [<key>]";
-  *pending = false;
-  const std::string s = trim(line);
-  size_t sp = 0;
-  while (sp < s.size() && !std::isspace(static_cast<unsigned char>(s[sp]))) ++sp;
-  const std::string verb = s.substr(0, sp);
-  const std::string rest = trim(s.substr(sp));
-
-  if (verb == "get") {
-    if (rest.empty()) return "ok\n" + a.get_all();
-    if (has_space(rest)) return kUsage;
-    std::string why;
-    const std::string v = a.get(rest, &why);
-    return why.empty() ? "ok " + v : "err " + why;
-  }
-  if (verb == "set") {
-    const size_t eq = rest.find('=');
-    if (eq == std::string::npos) return kUsage;
-    const std::string key = trim(rest.substr(0, eq));
-    const std::string value = trim(rest.substr(eq + 1));
-    if (key.empty() || value.empty() || has_space(key)) return kUsage;
-    std::string why;
-    if (!a.submit(key, value, &why)) return "err " + why;
-    *pending = true;
-    return "";
-  }
-  return kUsage;
-}
+GsConfigApplier::GsConfigApplier(std::string cfg_path, Config live, GsApplyHooks hooks,
+                                 std::function<void(const std::string&)> log)
+    : LiveApplyEngine(std::move(cfg_path), std::move(live), gs_spec(std::move(hooks)),
+                      std::move(log)) {}
 
 }  // namespace maburgs

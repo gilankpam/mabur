@@ -14,8 +14,10 @@ namespace toml = mabur::toml;   // maburgs/maburplay are not inside mabur
 using mabur::toml::Value;
 
 // Set for the duration of load_config; collects keys that fell back to their
-// struct default. Not reentrant, which is fine: it is called once at boot.
-std::vector<std::string>* g_defaulted = nullptr;
+// struct default. Per thread: boot loads on the main thread, and a live
+// config set loads its candidate on the applier's worker while the player
+// runs. Not reentrant within one thread, which nothing needs.
+thread_local std::vector<std::string>* g_defaulted = nullptr;
 
 std::string to_text(bool v) { return v ? "true" : "false"; }
 std::string to_text(const std::string& v) { return v; }
@@ -29,13 +31,13 @@ void note_default(const std::string& prefix, const char* key,
                                          : prefix + "." + key) + "=" + value);
 }
 
-std::string g_file;      // set by load_config, "" outside it
+thread_local std::string g_file;  // set by load_config, "" outside it
 // Line of the LAST key read, not necessarily the key currently being
 // validated: a cross-key check runs after both keys have been read, so it
 // reports whichever key assign_if_present touched last, not necessarily the
 // one actually at fault. Known, accepted limitation (see
 // drone/src/config.cpp for the full rationale).
-int g_line = 0;
+thread_local int g_line = 0;
 
 [[noreturn]] void fail(const std::string& field, const std::string& why) {
   std::string where = "config: ";
