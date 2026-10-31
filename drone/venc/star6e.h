@@ -510,10 +510,9 @@ typedef struct {
 	};
 	void *pRcParam;
 } MI_VENC_RcParam_t;
-/* libmi_venc.so Get/SetRcParam copy 56 bytes. The word this header used to
- * miss is u32MotionSensitivity, the last field of both AVBR structs in the
- * SigmaStar header (mi_venc_datatype.h, infinity6e): it makes the union 40
- * bytes, so pRcParam sits at offset 52, as the library has it. */
+/* libmi_venc.so Get/SetRcParam copy 56 bytes. Both AVBR structs end in
+ * u32MotionSensitivity, as in the SigmaStar header (mi_venc_datatype.h,
+ * infinity6e), so the union is 40 bytes and pRcParam sits at offset 52. */
 #if defined(PLATFORM_STAR6E)
 _Static_assert(sizeof(void *) != 4 || sizeof(MI_VENC_RcParam_t) == 56,
 	"MI_VENC_RcParam_t: libmi_venc.so Get/SetRcParam copy 56");
