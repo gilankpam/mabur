@@ -1,5 +1,6 @@
 #include "vrx_controller.h"
 
+#include <algorithm>
 #include <cassert>
 
 #include "mabur/rc_proto.h"
@@ -158,15 +159,20 @@ void VrxController::replace_ladder(const LadderCfg& ladder, double now_ms) {
   const Rung old_op = ctrl_.op();  // copy: ctrl_ is about to be replaced
   cfg_.ladder = ladder;
   ctrl_ = LadderController(ladder);
-  int idx = 0;
-  for (std::size_t i = 0; i < ladder.ladder.size(); ++i) {
-    const Rung& r = ladder.ladder[i];
-    if (r.mcs == old_op.mcs && r.bw == old_op.bw) {
-      idx = static_cast<int>(i);
-      break;
-    }
-  }
-  if (idx != 0) ctrl_.restore(idx, now_ms);
+  const auto it = std::find_if(ladder.ladder.begin(), ladder.ladder.end(),
+                                [&](const Rung& r) {
+                                  return r.mcs == old_op.mcs && r.bw == old_op.bw;
+                                });
+  const int idx = it != ladder.ladder.end()
+                      ? static_cast<int>(it - ladder.ladder.begin())
+                      : 0;
+  // Unconditional, even when idx is 0 (a genuine match there, or the
+  // no-match fallback): restore()'s mark_transition() opens the s3-settle
+  // blank window and resets the probe streak, which an op-point change
+  // needs regardless of which index it lands on -- skipping it at idx 0
+  // left both the fallback case and an overhead-only change at rung 0
+  // with no re-key settle protection.
+  ctrl_.restore(idx, now_ms);
   sync_op_();
 }
 

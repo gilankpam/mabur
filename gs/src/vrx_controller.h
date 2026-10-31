@@ -118,8 +118,9 @@ class VrxController {
   int pin_mcs() const { return cfg_.pin_mcs; }
   // Rebuild the ladder controller inside the session (config.link.ladder,
   // live): the old op rung's {mcs, bw} is looked up in the new ladder and
-  // kept via LadderController::restore() when present, else the new
-  // controller starts at rung 0.
+  // restored to that index when present, else rung 0. restore() always
+  // runs (even landing on rung 0) so the re-key settle window opens for
+  // every op-point change this causes, not only the ones that move rung().
   void replace_ladder(const LadderCfg& ladder, double now_ms);
   const LadderCfg& ladder() const { return cfg_.ladder; }
   uint8_t hop_ch() const { return hop_ch_; }

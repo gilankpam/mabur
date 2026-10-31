@@ -878,3 +878,36 @@ TEST(replace_ladder_matches_width_not_only_mcs) {
   vrx.replace_ladder(nl, 100);
   CHECK(vrx.ctl().rung() == 0);
 }
+
+// Review finding (fix round 1): replace_ladder must call
+// LadderController::restore() unconditionally, even when the match (or the
+// no-match fallback) lands on rung 0 -- restore()'s mark_transition() is
+// what opens the s3 post-transition settle window, and a guard that skips
+// the call at idx 0 left the fallback case with no re-key settle
+// protection at all. Pins it directly: a usable s3 sample fed well inside
+// s3_settle_ms (default 300 ms) of the fallback swap must read as
+// unmeasurable (util3() == 0), which only holds if mark_transition() armed
+// the blank deadline on this swap. Revert = bring back an `if (idx != 0)`
+// guard around the restore() call and this fails (util3() reads the
+// sample's real loss instead of 0).
+TEST(replace_ladder_opens_the_s3_settle_window_even_at_rung_0) {
+  auto vrx = make();
+  link(vrx, 0);
+  vrx.restore_rung(2, 0);                 // mcs4
+  LadderCfg nl = default_ladder();
+  nl.ladder = {{0, 1.0, 1.0}, {2, 0.5, 0.5}};   // mcs4 gone -> fallback to rung 0
+  vrx.replace_ladder(nl, 100);
+  REQUIRE(vrx.ctl().rung() == 0);
+
+  LinkHealth h{true, 0.0, 0.0, false};
+  h.s3_valid = true;
+  h.s3_pre_fec_loss = 0.5;
+  h.s3_expected_syms = 1000;
+  bool saw_feedback = false;
+  for (double t = 110; t < 350 && !saw_feedback; t += 10) {
+    vrx.on_video(t);
+    if (auto out = vrx.step(t, h); out && !out->is_disc) saw_feedback = true;
+  }
+  REQUIRE(saw_feedback);
+  CHECK(vrx.ctl().util3() == 0.0);
+}
