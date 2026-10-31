@@ -2,6 +2,8 @@
 // away under a live presenter has come back and the presenter is rebuilt,
 // and the uevent filter that wakes the check.
 #include <cstdint>
+#include <utility>
+#include <vector>
 #include <cstddef>
 
 #include "display_watch.h"
@@ -29,10 +31,13 @@ struct Sim {
   int reads = 0;
   int unplugged = 0;
   int rebuilds = 0;
+  int capped = 0;
   uint64_t last_rebuild_ms = 0;
-  // A sink that answers every modeset by pulsing HPD: down 100 ms after a
-  // rebuild, back 400 ms later.
+  std::vector<std::pair<uint64_t, bool>> read_log;  // (time, connected)
+  // A sink that answers every modeset by pulsing HPD: down `pulse_delay_ms`
+  // after a rebuild, back 400 ms later.
   bool pulses_on_modeset = false;
+  uint64_t pulse_delay_ms = 100;
   uint64_t pulse_down_ms = 0;
   uint64_t pulse_up_ms = 0;
 
@@ -41,15 +46,17 @@ struct Sim {
   void tick(bool uevent = false) {
     if (w.due(t, uevent)) {
       ++reads;
+      read_log.emplace_back(t, connected);
       switch (w.on_status(t, connected)) {
         case Action::kUnplugged: ++unplugged; break;
+        case Action::kCapped: ++capped; break;
         case Action::kRebuild:
           ++rebuilds;
           last_rebuild_ms = t;
           w.on_acquired(t);  // what the caller's rebuild does
           if (pulses_on_modeset) {
-            pulse_down_ms = t + 100;
-            pulse_up_ms = t + 500;
+            pulse_down_ms = t + pulse_delay_ms;
+            pulse_up_ms = t + pulse_delay_ms + 400;
           }
           break;
         case Action::kNone: break;
@@ -230,9 +237,18 @@ TEST(without_uevents_the_status_is_polled_once_a_second) {
   const uint64_t replug = s.t;
   s.run_for(30000);
   CHECK(s.rebuilds == 1);
-  // Seen at the next poll, settled one more poll later.
-  CHECK(s.last_rebuild_ms > replug + DisplayWatch::kSettleMs - 10);
-  CHECK(s.last_rebuild_ms <= replug + DisplayWatch::kPollMs + DisplayWatch::kSettleMs + 10);
+  // The first connected poll starts the settle (it is the reconnect: no
+  // uevent marks it); the rebuild runs kSettleMs after it, never at it.
+  uint64_t first_connected = 0;
+  for (const auto& r : s.read_log)
+    if (r.first > replug && r.second) {
+      first_connected = r.first;
+      break;
+    }
+  REQUIRE(first_connected != 0);
+  CHECK(first_connected <= replug + DisplayWatch::kPollMs);
+  CHECK(s.last_rebuild_ms >= first_connected + DisplayWatch::kSettleMs);
+  CHECK(s.last_rebuild_ms <= first_connected + DisplayWatch::kSettleMs + 10);
 }
 
 TEST(without_uevents_a_flapping_connector_waits_for_quiet) {
@@ -246,6 +262,82 @@ TEST(without_uevents_a_flapping_connector_waits_for_quiet) {
   s.run_for(30000);
   CHECK(s.unplugged == 1);
   CHECK(s.rebuilds == 1);
+}
+
+TEST(an_acquire_cancels_a_pending_timed_read) {
+  Sim s(true);
+  s.run_for(10000);
+  s.edge(false);
+  s.run_for(500);
+  s.edge(true);  // settling: a read is scheduled kSettleMs from now
+  s.run_for(200);
+  s.w.on_acquired(s.t);  // a live screen_mode set rebuilt the presenter
+  const int reads = s.reads;
+  s.run_for(60000);
+  CHECK(s.reads == reads);  // nothing happened since: nothing to read
+  CHECK(s.rebuilds == 0);
+}
+
+// A sink whose HPD pulse answers the modeset later than the guard covers:
+// each rebuild would cause the next, one every few seconds, for ever.
+TEST(rebuilds_are_capped_per_window) {
+  Sim s(true);
+  s.pulses_on_modeset = true;
+  s.pulse_delay_ms = DisplayWatch::kGuardMs + 500;
+  s.run_for(10000);
+  s.edge(false);
+  s.run_for(500);
+  s.edge(true);
+  s.run_for(600000);
+  CHECK(s.rebuilds == DisplayWatch::kMaxRebuilds);
+  CHECK(s.capped == 1);  // logged once
+}
+
+TEST(after_the_cap_window_a_fresh_replug_rebuilds_again) {
+  Sim s(true);
+  s.pulses_on_modeset = true;
+  s.pulse_delay_ms = DisplayWatch::kGuardMs + 500;
+  s.run_for(10000);
+  s.edge(false);
+  s.run_for(500);
+  s.edge(true);
+  s.run_for(30000);  // three rebuilds, then capped
+  REQUIRE(s.capped == 1);
+  REQUIRE(s.rebuilds == DisplayWatch::kMaxRebuilds);
+  s.pulses_on_modeset = false;
+  // A replug inside the window is ignored ...
+  s.edge(false);
+  s.run_for(500);
+  s.edge(true);
+  s.run_for(5000);
+  CHECK(s.rebuilds == DisplayWatch::kMaxRebuilds);
+  // ... one after it rebuilds.
+  s.run_for(DisplayWatch::kCapWindowMs);
+  s.edge(false);
+  s.run_for(500);
+  s.edge(true);
+  s.run_for(DisplayWatch::kSettleMs + 100);
+  CHECK(s.rebuilds == DisplayWatch::kMaxRebuilds + 1);
+}
+
+TEST(an_unplug_standing_at_the_cap_windows_end_is_seen) {
+  Sim s(true);
+  s.pulses_on_modeset = true;
+  s.pulse_delay_ms = DisplayWatch::kGuardMs + 500;
+  s.run_for(10000);
+  s.edge(false);
+  s.run_for(500);
+  s.edge(true);
+  s.run_for(30000);
+  REQUIRE(s.capped == 1);
+  s.pulses_on_modeset = false;
+  const int unplugged = s.unplugged;
+  s.edge(false);  // and it stays out past the window, with no further uevent
+  s.run_for(DisplayWatch::kCapWindowMs);
+  CHECK(s.unplugged == unplugged + 1);
+  s.edge(true);
+  s.run_for(DisplayWatch::kSettleMs + 100);
+  CHECK(s.rebuilds == DisplayWatch::kMaxRebuilds + 1);
 }
 
 MTEST_MAIN

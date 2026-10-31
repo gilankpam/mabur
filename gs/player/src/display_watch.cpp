@@ -66,13 +66,14 @@ bool DisplayWatch::due(uint64_t now_ms, bool uevent) {
 DisplayWatch::Action DisplayWatch::on_status(uint64_t now_ms, bool connected) {
   const bool was_connected = last_connected_;
   last_connected_ = connected;
-  const uint64_t guard_end = acquired_ms_ + kGuardMs;
-  if (now_ms < guard_end) {
+  // Blind while the guard or a cap window runs.
+  const uint64_t blind_end = std::max(acquired_ms_ + kGuardMs, capped_until_ms_);
+  if (now_ms < blind_end) {
     // Possibly the acquire's own modeset making the sink pulse HPD: not an
-    // unplug. Look again once the guard is over, in case it really was.
+    // unplug. Look again once the blind spell is over, in case it was.
     if (!connected) {
       check_pending_ = true;
-      check_at_ms_ = guard_end;
+      check_at_ms_ = blind_end;
     }
     return Action::kNone;
   }
@@ -85,14 +86,22 @@ DisplayWatch::Action DisplayWatch::on_status(uint64_t now_ms, bool connected) {
   if (!armed_) return Action::kNone;
   // The reconnect itself starts the settle; so does every uevent after it.
   if (!was_connected) last_activity_ms_ = std::max(last_activity_ms_, now_ms);
-  if (now_ms - last_activity_ms_ >= kSettleMs) {
-    armed_ = false;
-    check_pending_ = false;
-    return Action::kRebuild;
+  if (now_ms - last_activity_ms_ < kSettleMs) {
+    check_pending_ = true;
+    check_at_ms_ = last_activity_ms_ + kSettleMs;
+    return Action::kNone;
   }
-  check_pending_ = true;
-  check_at_ms_ = last_activity_ms_ + kSettleMs;
-  return Action::kNone;
+  armed_ = false;
+  check_pending_ = false;
+  const uint64_t oldest = rebuild_ms_[rebuild_next_];
+  if (rebuild_count_ == kMaxRebuilds && now_ms - oldest < kCapWindowMs) {
+    capped_until_ms_ = oldest + kCapWindowMs;
+    return Action::kCapped;
+  }
+  rebuild_ms_[rebuild_next_] = now_ms;
+  rebuild_next_ = (rebuild_next_ + 1) % kMaxRebuilds;
+  if (rebuild_count_ < kMaxRebuilds) ++rebuild_count_;
+  return Action::kRebuild;
 }
 
 HotplugSocket::~HotplugSocket() {
@@ -108,7 +117,9 @@ bool HotplugSocket::open() {
   a.nl_family = AF_NETLINK;
   a.nl_groups = 1;  // the kernel's own uevents, not udev's re-broadcast
   if (::bind(fd, reinterpret_cast<const sockaddr*>(&a), sizeof(a)) != 0) {
+    const int bind_errno = errno;  // the caller logs it; close() may clobber it
     ::close(fd);
+    errno = bind_errno;
     return false;
   }
   fd_ = fd;

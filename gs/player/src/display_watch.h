@@ -14,12 +14,10 @@ bool is_drm_hotplug_uevent(const char* buf, size_t len);
 // Notices that the display a live presenter drives was unplugged and came
 // back, and says when to rebuild the presenter for it.
 //
-// A replug after a successful acquire does not reliably re-light the sink
-// on its own: the kernel re-applies the retained mode, yet the sink can
-// stay dark while the player keeps flipping into it -- the replug path does
-// not redo everything a full modeset tells the sink (likely the HDMI 2.0
-// scrambling setup sent over DDC at high pixel clocks). A fresh presenter's
-// full modeset re-lights it.
+// After a replug the sink can stay dark although KMS re-applies the
+// retained mode and the player keeps flipping into it; a fresh presenter's
+// full modeset brings the picture back. So a replug under a live presenter
+// is answered with a rebuild.
 //
 // Pure logic, driven by the housekeeping thread: each iteration it asks
 // due() whether to read the connector's status (a cheap no-probe read) and
@@ -32,28 +30,41 @@ bool is_drm_hotplug_uevent(const char* buf, size_t len);
 // kSettleMs, before one rebuild runs. A uevent alone never rebuilds -- the
 // kernel also sends HOTPLUG=1 for changes that leave the sink lit (an EDID
 // re-read, a property change, another connector on the card), and every
-// rebuild blanks the screen for a moment. A fast unplug/replug is not
-// missed for want of that: the uevent wakes a read within one housekeeping
-// iteration (a few ms), while a hand replug and the kernel's own HPD
-// debounce both take far longer. The settle coalesces a burst -- HPD
-// bounces and DDC flaps on the connector -- into a single rebuild.
+// rebuild blanks the screen for a moment. Each uevent wakes a read within
+// one housekeeping iteration (a few ms), so an unplug/replug is missed only
+// if both edges land between two reads (with uevents, inside that one
+// iteration; polled, inside one kPollMs). The settle coalesces a burst --
+// HPD bounces and DDC flaps on the connector -- into a single rebuild.
 //
-// No loop: a rebuild's own modeset can make a sink pulse HPD. Everything
-// read during kGuardMs after an acquire (on_acquired) is therefore not an
-// unplug; a disconnected read there only schedules another read at the
-// guard's end, so a display that really did go away during the guard is
-// still noticed once it ends. The cost is that an unplug AND replug both
-// inside the guard go unseen.
+// A rebuild's own modeset can make a sink pulse HPD. Two limits keep that
+// from rebuilding over and over:
+//  - The guard: everything read during kGuardMs after an acquire
+//    (on_acquired) is not an unplug. It runs from the acquire, not from the
+//    modeset, which can come later (a rebuild with no splash modesets at
+//    the first present()), so it covers a pulse that follows the modeset
+//    promptly, not every pulse.
+//  - The cap: at most kMaxRebuilds rebuilds per kCapWindowMs. One more
+//    within the window is refused (kCapped, logged once) and the watch goes
+//    blind until the window ends; after that only a fresh disconnected then
+//    connected read rebuilds. A sink that pulses HPD late on every modeset
+//    therefore costs kMaxRebuilds rebuilds and then stays as it is.
+// A disconnected read while blind (guard or cap window) only schedules
+// another read at the blind spell's end, so a display that really went away
+// is still noticed once it ends; an unplug AND replug both inside one go
+// unseen.
 class DisplayWatch {
  public:
   enum class Action {
     kNone,
     kUnplugged,  // first disconnected read of an episode: log it
     kRebuild,    // reconnected and settled: rebuild the presenter now
+    kCapped,     // would rebuild, but the cap is reached: log it
   };
   static constexpr uint64_t kPollMs = 1000;
   static constexpr uint64_t kSettleMs = 1000;
   static constexpr uint64_t kGuardMs = 5000;
+  static constexpr int kMaxRebuilds = 3;
+  static constexpr uint64_t kCapWindowMs = 60000;
 
   // `uevents`: whether hotplug uevents arrive (a netlink socket is open).
   // Without them the status is polled every kPollMs.
@@ -81,6 +92,12 @@ class DisplayWatch {
   bool armed_ = false;           // read disconnected since the acquire
   bool last_connected_ = true;   // the previous read's answer
   uint64_t last_activity_ms_ = 0;  // newest uevent, disconnected read or reconnect
+  // The newest kMaxRebuilds rebuilds this watch asked for, oldest at
+  // rebuild_next_ once all are filled; and the end of a cap window.
+  uint64_t rebuild_ms_[kMaxRebuilds] = {};
+  int rebuild_count_ = 0;
+  int rebuild_next_ = 0;
+  uint64_t capped_until_ms_ = 0;
 };
 
 // A non-blocking NETLINK_KOBJECT_UEVENT socket on the kernel's uevent

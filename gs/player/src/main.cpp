@@ -1860,8 +1860,10 @@ int main(int argc, char** argv) {
   uint64_t display_retry_t0_ms = mono_ms();
   uint64_t display_retry_next_ms = 0;
   bool display_retry_announced = false;
-  // A display unplugged and plugged back in while a presenter drives it
-  // stays dark until the presenter is rebuilt (display_watch.h says why).
+  // A display unplugged and plugged back in while a presenter drives it can
+  // stay dark although KMS re-applies the retained mode; a fresh
+  // presenter's full modeset brings it back, so a replug rebuilds it
+  // (display_watch.h has the rule and its limits).
   // The kernel's DRM hotplug uevents wake a status read; without a netlink
   // socket the status is polled once a second instead.
   maburplay::HotplugSocket hotplug_sock;
@@ -2230,6 +2232,13 @@ int main(int argc, char** argv) {
             // A failure says so itself and leaves the 1 s retry below to
             // bring the display back.
             reacquire_display(cfg.screen_mode, /*log_failures=*/true);
+            break;
+          case maburplay::DisplayWatch::Action::kCapped:
+            std::fprintf(stderr,
+                         "maburplay: display reconnected but %d rebuilds in %d s already -- not "
+                         "rebuilding; the next unplug after the window rebuilds again\n",
+                         maburplay::DisplayWatch::kMaxRebuilds,
+                         static_cast<int>(maburplay::DisplayWatch::kCapWindowMs / 1000));
             break;
           case maburplay::DisplayWatch::Action::kNone:
             break;
