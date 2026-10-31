@@ -1199,9 +1199,7 @@ static int run_radio(const maburgs::Config& cfg, const std::string& cfg_path) {
     if (on) start_msp(c.msp);
     else stop_msp();
   };
-  hooks.hop_or_cal_busy = [&] {
-    return chan.hopping() || chan.sweep_pending() || cal_session.running();
-  };
+  hooks.pin_refusal = [&](uint8_t ch) { return chan.pin_refusal(ch); };
   maburgs::GsConfigApplier cfg_apply(cfg_path, cfg, std::move(hooks),
                                      [](const std::string& line) {
                                        std::fprintf(stderr, "%s\n", line.c_str());

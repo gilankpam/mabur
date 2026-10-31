@@ -50,13 +50,21 @@ value's own rendering answers `ok` and writes nothing — caught either at
 submit (the raw text matches) or, for a value spelled differently
 (`0.50` against a live `0.5`, a respaced ladder), once the candidate has
 loaded and its rendering is compared against the live one. Neither path
-touches the file or the `.pre-live` backup.
+touches the file or the `.pre-live` backup. A set whose text is the live
+value's rendering is not refused either: it skips the precondition checks
+(a pin double-sent while its relocate is in flight answers `ok`).
+
+So a set to the current value cannot retry something the process did not
+reach. When `debug_log.enable = true` failed to open its session at boot
+(the live value still reads `true`), or a pin's relocate did not land (the
+live value reads the pin, the link sits elsewhere), set the key away and
+back: `false` then `true`, or `"auto"` then the channel.
 
 ## maburgs — `kGsLiveKeys` (`gs/src/gs_config_apply.cpp`)
 
 | Key | Type | Applies to | Notes |
 |---|---|---|---|
-| `radio.channel` | int or `"auto"` | `ChannelCore::set_pin` / `set_auto` | An order placed only *after* the file holds the new value (`order_after_publish`), not an apply before it. Refused at submit while a hop or calibration run is in flight (`hop_or_cal_busy`); refused by `set_pin` itself for a channel that isn't a member, or while a hop is already in flight; a set to the currently-pinned channel (or to `"auto"` while already auto) settles as a same-value `ok` with no file write. An order refused once the file has already been published (a hop started in between) re-publishes the previous file text under the still-held write lock. |
+| `radio.channel` | int or `"auto"` | `ChannelCore::set_pin` / `set_auto` | An order placed only *after* the file holds the new value (`order_after_publish`), not an apply before it. A pin to a member is checked at submit, before any file work, by `ChannelCore::pin_refusal` — everything `set_pin` refuses, in its words: `relocate in flight`, `hop in flight` (a one-card hop still riding its RCFs included), `calibration running` (a run, its measure round or its relocate), and, for a linked move off the current channel, `sweep in flight` or `hop cap`. A channel that isn't a member, or a value that isn't a channel, is the loader's refusal, in its message. `"auto"` is never refused (`set_auto` withdraws a pin relocate not yet placed). A set to the live value (the pinned channel, or `"auto"` while auto) is a same-value `ok` with no check and no file write. `ok` on a linked pin means the order was accepted and the file holds it, not that the link has moved: the relocate runs afterwards, and one that does not land (the drone does not follow, the link drops) leaves the GS pinned with the link on the channel it was on, while `get` and the file read the requested one. An order still refused once the file is published (a hop started between the check and the order) re-publishes the previous file text under the still-held write lock; if that restore fails too, the reply is `err <reason>; restoring the file failed: <error>`. |
 | `link.static_mcs` | int | `VrxController::set_pin` | `mcs < 0` is adaptive (the ladder drives the operating point); `mcs >= 0` bypasses the ladder with a fixed rung. Applied together with `static_bw`/`static_overhead_base`/`static_overhead_enh` as one call. |
 | `link.static_bw` | int | `VrxController::set_pin` | |
 | `link.static_overhead_base` | real | `VrxController::set_pin` | |
@@ -173,7 +181,7 @@ A publish failure that forces a revert also logs
 the previous config to the process itself fails, `... revert failed:
 <reason>`; a restore of the previous *file* that fails after an order was
 refused post-publish logs `... restoring the previous file failed:
-<reason>`.
+<reason>`, and the reply carries it too (see `radio.channel`).
 
 ## The ladder header rule (`ctllog 13`)
 

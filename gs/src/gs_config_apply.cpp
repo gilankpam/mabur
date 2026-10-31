@@ -10,6 +10,7 @@
 #include <memory>
 #include <utility>
 
+#include "mabur/channel_set.h"
 #include "mabur/config_write.h"
 #include "mabur/toml.h"
 
@@ -297,6 +298,23 @@ std::string refuse_dropped_rung(const LiveKey& k, const std::string& value, cons
   return "";
 }
 
+// The member a radio.channel value pins, or nullopt for "auto" and for
+// anything the loader refuses (a non-member, a wrong type), which then
+// refuses it with its own message.
+std::optional<uint8_t> member_pin(const std::string& value, const Config& live) {
+  try {
+    const mabur::toml::Value doc = mabur::toml::parse_toml_string("channel = " + value, "radio.channel");
+    const mabur::toml::Value& v = doc["channel"];
+    if (!v.is_number_integer()) return std::nullopt;
+    const int64_t ch = v.get<int64_t>();
+    if (ch < 1 || ch > 255 || !mabur::channel_set_member(live.radio.channels, static_cast<uint8_t>(ch)))
+      return std::nullopt;
+    return static_cast<uint8_t>(ch);
+  } catch (const std::exception&) {
+    return std::nullopt;
+  }
+}
+
 bool apply_to_process(const GsApplyHooks& h, const LiveKey& k, const Config& c, std::string* reason) {
   switch (k.type) {
     case LiveType::Int:
@@ -341,9 +359,12 @@ mabur::LiveApplySpec<Config, LiveKey> gs_spec(GsApplyHooks hooks) {
   s.load = [](const std::string& path) { return load_config(path); };
   s.refuse_set = refuse_dropped_rung;
   s.copy_field = copy_live_field;
-  s.precheck = [h](const LiveKey& k) -> std::optional<std::string> {
-    if (k.type == LiveType::Channel && h->hop_or_cal_busy()) return "hop or calibration in flight";
-    return std::nullopt;
+  s.precheck = [h](const LiveKey& k, const std::string& value,
+                   const Config& live) -> std::optional<std::string> {
+    if (k.type != LiveType::Channel) return std::nullopt;
+    const std::optional<uint8_t> ch = member_pin(value, live);
+    if (!ch) return std::nullopt;  // "auto", or the loader's to refuse
+    return h->pin_refusal(*ch);
   };
   s.apply = [h](const LiveKey& k, const Config&, const Config& to, std::string* reason) {
     return apply_to_process(*h, k, to, reason);

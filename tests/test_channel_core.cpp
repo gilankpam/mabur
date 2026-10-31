@@ -1838,4 +1838,136 @@ TEST(set_auto_while_unlinked_one_card_reruns_the_prelude_and_commits) {
   CHECK(g.core->pick_open());                   // the one-card pick stays open after the prelude
 }
 
+// ---- pin_refusal: set_pin's answer, asked without placing anything ----
+
+// pin_refusal(ch) answers what set_pin(ch) would, and changes nothing; the
+// set_pin that follows must then agree. Called last in a test whose
+// expected answer is a refusal (a refused set_pin changes nothing either).
+static void pin_refusal_agrees(Rig& g, uint8_t ch, const std::optional<std::string>& want) {
+  const bool pinned0 = g.core->pinned();
+  const uint8_t op0 = g.core->op();
+  const size_t lines0 = g.sink.lines.size(), hops0 = g.sink.hops.size();
+  CHECK(g.core->pin_refusal(ch) == want);
+  CHECK(g.core->pinned() == pinned0);
+  CHECK(g.core->op() == op0);
+  CHECK(g.sink.lines.size() == lines0);
+  CHECK(g.sink.hops.size() == hops0);
+  CHECK(g.core->set_pin(ch) == want);
+}
+
+TEST(pin_refusal_agrees_with_set_pin_for_a_non_member_and_a_free_member) {
+  Rig g(2, 0);
+  pin_refusal_agrees(g, 100, std::string("not a member"));
+  pin_refusal_agrees(g, 112, std::nullopt);
+}
+
+// The double-tap: a second pin while the first pin's relocate is still
+// out. plan_.hopping() is not what refuses it.
+TEST(pin_refusal_agrees_with_set_pin_while_a_relocate_is_in_flight) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  REQUIRE(!g.core->set_pin(112).has_value());
+  for (int i = 0; i < 20 && !g.sink.has_line("relocate 40 -> 112 placed"); ++i) live_tick(g);
+  REQUIRE(g.sink.has_line("relocate 40 -> 112 placed (pin)"));
+  pin_refusal_agrees(g, 144, std::string("relocate in flight"));
+  pin_refusal_agrees(g, 112, std::string("relocate in flight"));
+}
+
+// One card: the pin's relocate is out on the RCFs while the plan does not
+// call it hopping yet (the sole radio stays on op until the repeats).
+TEST(pin_refusal_agrees_with_set_pin_while_a_one_card_relocate_is_in_flight) {
+  Rig g(1, 0);
+  freeze_auto(g);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  REQUIRE(!g.core->set_pin(112).has_value());
+  for (int i = 0; i < 50 && !g.sink.has_line("relocate 40 -> 112 placed"); ++i) live_tick(g);
+  REQUIRE(g.sink.has_line("relocate 40 -> 112 placed (pin)"));
+  REQUIRE(!g.core->hopping());
+  pin_refusal_agrees(g, 144, std::string("relocate in flight"));
+}
+
+TEST(pin_refusal_agrees_with_set_pin_while_a_two_card_hop_is_in_flight) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
+  interfere(g, 4);
+  REQUIRE(g.core->hopping());
+  pin_refusal_agrees(g, 112, std::string("hop in flight"));
+}
+
+// One card: the reactive hop's Order rides the RCFs before the radio
+// retunes, and the plan does not call it hopping until then.
+TEST(pin_refusal_agrees_with_set_pin_while_a_one_card_reactive_hop_is_ordered) {
+  Rig g(1, 0);
+  freeze_auto(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  g.cards[0]->cca_per_ms_on[40] = 50;
+  interfere(g, 4);
+  REQUIRE(g.sink.has_hop("order"));
+  REQUIRE(!g.sink.has_hop("one_card_retune"));
+  REQUIRE(!g.core->hopping());
+  REQUIRE(!g.core->sweep_pending());
+  pin_refusal_agrees(g, 112, std::string("hop in flight"));
+}
+
+TEST(pin_refusal_agrees_with_set_pin_at_the_hop_cap) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  ChannelCorePicker p(*g.core);
+  cal_move(g, p, 112);
+  cal_move(g, p, 144);
+  cal_move(g, p, 64);
+  cal_move(g, p, 40);
+  REQUIRE(!g.core->hopping());
+  pin_refusal_agrees(g, 112, std::string("hop cap"));
+  pin_refusal_agrees(g, 40, std::nullopt);      // pinning where the link is needs no hop
+}
+
+TEST(pin_refusal_agrees_with_set_pin_while_a_relay_sweeps) {
+  Rig g(1, 1);
+  g.cards[0]->retune_ok = false;
+  freeze_auto(g);
+  g.cards[0]->retune_ok = true;
+  link_up(g);
+  for (int i = 0; i < 5; ++i) g.tick(true, false, 0);
+  g.cards[0]->cca_per_ms_on[40] = 50;
+  interfere(g, 3);
+  REQUIRE(g.core->sweep_pending());
+  REQUIRE(!g.core->hopping());
+  pin_refusal_agrees(g, 112, std::string("sweep in flight"));
+}
+
+TEST(pin_refusal_agrees_with_set_pin_while_a_calibration_run_is_live) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  g.tick(true, /*cal=*/true);
+  pin_refusal_agrees(g, 112, std::string("calibration running"));
+}
+
+// A run's channel pick before the run itself reports running: its measure
+// round, then its relocate.
+TEST(pin_refusal_agrees_with_set_pin_while_a_calibration_picks_its_channel) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 10; ++i) live_tick(g);
+  ChannelCorePicker p(*g.core);
+  p.begin_measure(g.clk.ms);                    // the round waits for its tick
+  pin_refusal_agrees(g, 112, std::string("calibration running"));
+  start_round(g, p);                            // and now runs
+  pin_refusal_agrees(g, 112, std::string("calibration running"));
+  p.cancel();
+  for (int i = 0; i < 3; ++i) live_tick(g);
+  REQUIRE(p.order_relocate(112));               // the run's relocate, not yet placed
+  pin_refusal_agrees(g, 144, std::string("calibration running"));
+}
+
 MTEST_MAIN

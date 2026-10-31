@@ -87,8 +87,10 @@ struct Fake {
   std::vector<int> set_static_mcs;
   std::vector<size_t> ladder_sizes;
   std::vector<bool> nack_calls, debug_calls, msp_calls;
-  bool busy = false;                         // hop_or_cal_busy's answer
-  std::optional<std::string> pin_refusal;    // set_pin's answer
+  std::optional<std::string> pin_refusal_answer;  // pin_refusal's answer
+  std::vector<uint8_t> pin_refusal_calls;
+  std::optional<std::string> set_pin_answer;    // set_pin's answer
+  std::function<void()> on_set_pin;
   bool debug_ok = true;
   std::function<void()> on_nack;
 
@@ -97,7 +99,8 @@ struct Fake {
     h.set_pin = [this](uint8_t ch) {
       order.push_back("set_pin");
       set_pin_calls.push_back(ch);
-      return pin_refusal;
+      if (on_set_pin) on_set_pin();
+      return set_pin_answer;
     };
     h.set_auto = [this] {
       order.push_back("set_auto");
@@ -126,7 +129,10 @@ struct Fake {
       order.push_back("msp");
       msp_calls.push_back(on);
     };
-    h.hop_or_cal_busy = [this] { return busy; };
+    h.pin_refusal = [this](uint8_t ch) {
+      pin_refusal_calls.push_back(ch);
+      return pin_refusal_answer;
+    };
     return h;
   }
 };
@@ -374,16 +380,56 @@ TEST(applier_hook_refusal_publishes_nothing) {
 }
 
 TEST(applier_channel_pin_checks_preconditions_before_any_file_work) {
-  ScratchBundle sb; Fake f; f.busy = true;
+  ScratchBundle sb; Fake f; f.pin_refusal_answer = "relocate in flight";
   const std::string before = slurp(sb.path());
   GsConfigApplier a(sb.path(), bundle(), f.hooks(), nullptr);
   std::string why;
   REQUIRE(a.submit("radio.channel", "112", &why));
   GsApplyResult r = drive(a);
   CHECK(!r.ok);
-  CHECK(r.reason == "hop or calibration in flight");
+  CHECK(r.reason == "relocate in flight");   // the core's own text
+  CHECK(f.pin_refusal_calls == std::vector<uint8_t>{112});
   CHECK(slurp(sb.path()) == before);
+  CHECK(!exists(sb.path() + ".pre-live"));
   CHECK(f.set_pin_calls.empty());
+}
+
+// A value that is not a pin at all ("112" quoted) is the loader's to
+// refuse, with its own message; the core is not asked.
+TEST(applier_channel_wrong_type_is_left_to_the_loader) {
+  ScratchBundle sb; Fake f; f.pin_refusal_answer = "hop in flight";
+  const std::string before = slurp(sb.path());
+  GsConfigApplier a(sb.path(), bundle(), f.hooks(), nullptr);
+  std::string why;
+  REQUIRE(a.submit("radio.channel", "\"112\"", &why));
+  GsApplyResult r = drive(a);
+  CHECK(!r.ok);
+  CHECK(r.reason.find("radio.channel") != std::string::npos);
+  CHECK(f.pin_refusal_calls.empty());
+  CHECK(f.set_pin_calls.empty());
+  CHECK(slurp(sb.path()) == before);
+}
+
+// "auto" places no relocate and is never refused; a set to the live pin
+// changes nothing and is not refused either.
+TEST(applier_channel_auto_and_the_live_pin_skip_the_precheck) {
+  ScratchBundle sb; Fake f;
+  GsConfigApplier a(sb.path(), bundle(), f.hooks(), nullptr);
+  std::string why;
+  REQUIRE(a.submit("radio.channel", "112", &why));
+  REQUIRE(drive(a).ok);
+  f.pin_refusal_answer = "relocate in flight";
+  f.pin_refusal_calls.clear();
+  REQUIRE(a.submit("radio.channel", "112", &why));
+  GsApplyResult r = drive(a);
+  CHECK(r.ok);
+  CHECK(f.set_pin_calls == std::vector<uint8_t>{112});   // the first set only
+  REQUIRE(a.submit("radio.channel", "\"auto\"", &why));
+  r = drive(a);
+  CHECK(r.ok);
+  CHECK(f.set_auto_calls == 1);
+  CHECK(f.pin_refusal_calls.empty());
+  CHECK(slurp(sb.path()).find("channel  = \"auto\"") != std::string::npos);
 }
 
 TEST(applier_channel_pin_publishes_then_orders) {
@@ -405,7 +451,7 @@ TEST(applier_channel_pin_publishes_then_orders) {
 }
 
 TEST(applier_channel_pin_refused_after_publish_restores_the_file) {
-  ScratchBundle sb; Fake f; f.pin_refusal = "hop in flight";
+  ScratchBundle sb; Fake f; f.set_pin_answer = "hop in flight";
   const std::string before = slurp(sb.path());
   GsConfigApplier a(sb.path(), bundle(), f.hooks(), nullptr);
   std::string why;
@@ -418,15 +464,36 @@ TEST(applier_channel_pin_refused_after_publish_restores_the_file) {
   CHECK(!a.live().radio.pin.has_value());
 }
 
+// The restore itself fails: the reply says the file may still hold the
+// refused pin, not only why the pin was refused.
+TEST(applier_channel_failed_restore_is_in_the_reply) {
+  if (::geteuid() == 0) {
+    std::printf("skip applier_channel_failed_restore_is_in_the_reply: root ignores a 0555 directory\n");
+    return;
+  }
+  ScratchBundle sb; Fake f; f.set_pin_answer = "hop in flight";
+  f.on_set_pin = [&] { ::chmod(dirname_of(sb.path()).c_str(), 0555); };
+  GsConfigApplier a(sb.path(), bundle(), f.hooks(), nullptr);
+  std::string why;
+  REQUIRE(a.submit("radio.channel", "112", &why));
+  GsApplyResult r = drive(a);
+  ::chmod(dirname_of(sb.path()).c_str(), 0755);
+  CHECK(!r.ok);
+  CHECK(r.reason.rfind("hop in flight; restoring the file failed: ", 0) == 0);
+  CHECK(r.reason.size() > std::string("hop in flight; restoring the file failed: ").size());
+  CHECK(!a.live().radio.pin.has_value());
+}
+
 TEST(applier_channel_refuses_a_non_member) {
-  ScratchBundle sb; Fake f;
+  ScratchBundle sb; Fake f; f.pin_refusal_answer = "not a member";
   const std::string before = slurp(sb.path());
   GsConfigApplier a(sb.path(), bundle(), f.hooks(), nullptr);
   std::string why;
   REQUIRE(a.submit("radio.channel", "100", &why));
   GsApplyResult r = drive(a);
   CHECK(!r.ok);
-  CHECK(r.reason.find("radio.channel") != std::string::npos);
+  CHECK(r.reason.find("radio.channel") != std::string::npos);   // the loader's message
+  CHECK(f.pin_refusal_calls.empty());
   CHECK(f.set_pin_calls.empty());
   CHECK(slurp(sb.path()) == before);
 }

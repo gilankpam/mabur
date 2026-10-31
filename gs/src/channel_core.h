@@ -244,6 +244,10 @@ class ChannelCore {
   // relay-only GSs take a pin like any other: the relocate is the one their
   // boot pin uses.
   std::optional<std::string> set_pin(uint8_t ch);
+  // What set_pin(ch) would refuse with, asked without changing anything:
+  // the live-config listener checks it before it touches the config file,
+  // so a pin the core would refuse is never published first.
+  std::optional<std::string> pin_refusal(uint8_t ch) const;
   // Back to auto. Never refused: nothing moves on the spot.
   void set_auto();
 

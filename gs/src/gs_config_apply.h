@@ -11,9 +11,11 @@
 // loader would drop above link.max_mcs, and the apply, which runs on the
 // thread that owns ChannelCore and the VrxController (the core loop)
 // through GsApplyHooks. radio.channel is the exception to apply-first: the
-// pin is an order to the drone, placed only once the file holds it; an
-// order refused after the publish (a hop started in between) publishes the
-// previous text again.
+// pin is an order to the drone, placed only once the file holds it. So a
+// pin is checked against the core's refusals at submit, before any file
+// work; an order still refused after the publish (a hop started between
+// the check and the order) publishes the previous text again. "auto" is
+// never refused.
 #include <cstdint>
 #include <functional>
 #include <optional>
@@ -65,7 +67,9 @@ struct GsApplyHooks {
   std::function<void(bool on)> nack;                              // the software NACK on/off
   std::function<bool(bool on, std::string* err)> debug_log;       // open/close the session + logs
   std::function<void(bool on, const Config&)> msp;                // build/drop the MSP sink
-  std::function<bool()> hop_or_cal_busy;                          // precondition for radio.channel
+  // ChannelCore::pin_refusal: why a pin to this member would be refused
+  // now, asked at submit so a refused pin never reaches the file.
+  std::function<std::optional<std::string>(uint8_t ch)> pin_refusal;
 };
 
 using GsApplyResult = mabur::LiveApplyResult;

@@ -932,16 +932,21 @@ bool ChannelCore::order_cal_relocate(uint8_t ch) {
   return true;
 }
 
-std::optional<std::string> ChannelCore::set_pin(uint8_t ch) {
-  const double now_ms = now_ms_cur_;
+std::optional<std::string> ChannelCore::pin_refusal(uint8_t ch) const {
   if (auto r = move_refusal_(ch)) return r;
   // A run, or its pick still measuring: the run calibrates where it stands.
   if (cal_running_cur_ || cal_meas_.s == CalMeasure::Waiting || cal_meas_.s == CalMeasure::Running)
     return std::string("calibration running");
+  // A linked move is one more relocate order.
+  if (in_session_cur_ && ch != plan_.op()) return relocate_refusal_(ch);
+  return std::nullopt;
+}
+
+std::optional<std::string> ChannelCore::set_pin(uint8_t ch) {
+  const double now_ms = now_ms_cur_;
+  if (auto r = pin_refusal(ch)) return r;
   const bool linked = in_session_cur_;
   const uint8_t op = plan_.op();
-  if (linked && ch != op)
-    if (auto r = relocate_refusal_(ch)) return r;
   if (pinned_ && ch == op && plan_.want() == ch) return std::nullopt;
   if (linked) {
     // The boot pick's relocate, as a pinned boot relocates a drone found

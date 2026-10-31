@@ -30,7 +30,8 @@
 // putting the process back in line with the unchanged file. A key whose
 // apply is an order placed only once the file holds it (maburgs'
 // radio.channel) skips the apply before the publish; an order refused
-// after the publish publishes the previous text again.
+// after the publish publishes the previous text again, and the reply names
+// a failure of that restore after the refusal.
 //
 // A set equal to the live value answers ok and writes nothing: caught at
 // submit when the text matches the live rendering, and otherwise once the
@@ -127,8 +128,10 @@ struct LiveApplySpec {
   // Owning thread.
   // Copies the one field `k` names from `src` into `dst`.
   std::function<void(const Key&, const Config& src, Config* dst)> copy_field;
-  // Optional: a refusal decided at submit, before any file work.
-  std::function<std::optional<std::string>(const Key&)> precheck;
+  // Optional: a refusal decided at submit, before any file work, given the
+  // value's text and the live config. Not asked for a set to the live value.
+  std::function<std::optional<std::string>(const Key&, const std::string& value, const Config& live)>
+      precheck;
   // Puts `to` (the live config with `k` changed) into the process, `from`
   // being what it runs now. False with *reason when it refuses; the revert
   // after a failed publish runs it with the two swapped.
@@ -163,9 +166,9 @@ class LiveApplyEngine {
   // that is not live ("not live: <key>"), while a set is in flight
   // ("busy"), or for a value that is empty or spans lines. Two outcomes
   // are settled here with no file work, their result handed out by the
-  // next poll(): a spec precheck refusal, and a value whose text equals
-  // the live rendering (ok). A set is in flight from an accepted submit
-  // until poll() hands out its result.
+  // next poll(): a value whose text equals the live rendering (ok, never
+  // refused: it changes nothing), and a spec precheck refusal. A set is in
+  // flight from an accepted submit until poll() hands out its result.
   bool submit(const std::string& key, const std::string& value, std::string* why);
   // Owning thread, every tick: applies a candidate the worker has ready,
   // hands an applied candidate to the publish, re-applies the previous
@@ -346,11 +349,12 @@ bool LiveApplyEngine<Config, Key>::submit(const std::string& key, const std::str
   t0_ = std::chrono::steady_clock::now();
   settled_.reset();
   std::optional<std::string> pre;
-  if (spec_.precheck) pre = spec_.precheck(*k);
-  if (pre) {
-    settled_ = LiveApplyResult{false, *pre, k->key, 0};
-  } else if (v == spec_.render(live_, *k)) {
+  const bool same = v == spec_.render(live_, *k);
+  if (!same && spec_.precheck) pre = spec_.precheck(*k, v, live_);
+  if (same) {
     settled_ = LiveApplyResult{true, "", k->key, 0};
+  } else if (pre) {
+    settled_ = LiveApplyResult{false, *pre, k->key, 0};
   } else {
     std::lock_guard<std::mutex> l(mu_);
     if (stop_) return refuse("shutting down");
@@ -481,8 +485,13 @@ bool LiveApplyEngine<Config, Key>::poll(LiveApplyResult* out) {
         err = pub_err_;
         phase_ = Phase::Idle;
       }
-      if (!ok) log(prefix() + ": restoring the previous file failed: " + err);
-      finish(false, restore_reason_, out);
+      // The reply says so too: the file may still claim the refused value.
+      std::string reason = restore_reason_;
+      if (!ok) {
+        log(prefix() + ": restoring the previous file failed: " + err);
+        reason += "; restoring the file failed: " + err;
+      }
+      finish(false, reason, out);
       return true;
     }
     case Phase::Idle:
