@@ -2,6 +2,7 @@
 
 #include <cstring>
 #include <memory>
+#include <stdexcept>
 #include <utility>
 
 #include "mabur/config_write.h"
@@ -80,6 +81,10 @@ bool apply_to_player(const PlayerApplyHooks& h, const PlayerLiveKey& k, const Co
 }
 
 mabur::LiveApplySpec<Config, PlayerLiveKey> player_spec(BuildCaps caps, PlayerApplyHooks hooks) {
+  // An empty hook would throw bad_function_call on the owning thread at the
+  // first set that reaches it; refuse it here, where the wiring is.
+  if (!hooks.reacquire_display || !hooks.osd_layers || !hooks.next_start)
+    throw std::invalid_argument("PlayerConfigApplier: every PlayerApplyHooks hook must be set");
   const auto h = std::make_shared<const PlayerApplyHooks>(std::move(hooks));
   mabur::LiveApplySpec<Config, PlayerLiveKey> s;
   s.daemon = "maburplay";
@@ -129,6 +134,14 @@ PlayerApplyRule player_apply_rule(const PlayerLiveKey& k, const Config& before,
   }
   if (is(k, "screen_mode") || is(k, "colortrans.enable")) return PlayerApplyRule::Presenter;
   return PlayerApplyRule::NextStart;
+}
+
+RecPlan rec_plan(const DvrCfg& d) {
+  RecPlan p;
+  p.gs = d.target != "vtx";
+  p.vtx = d.target != "gs";
+  p.burned = d.mode == "burned";
+  return p;
 }
 
 PlayerConfigApplier::PlayerConfigApplier(std::string cfg_path, Config live, BuildCaps caps,

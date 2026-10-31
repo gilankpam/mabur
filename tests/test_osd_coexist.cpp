@@ -19,6 +19,7 @@
 #include "osd_palette.h"
 #include "scratch.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <map>
@@ -1246,6 +1247,123 @@ TEST(the_burn_half_tracks_its_own_blank_not_the_screens) {
   CHECK(calls == 2);  // the transition: the burn's own blank, sunk once
   r.comp.compose_burn(stale);
   CHECK(calls == 2);  // a repeat of the stale episode draws nothing more
+}
+
+// ======================================================================
+// Live changes: a rebuilt presenter, a layer switched off or replaced
+// ======================================================================
+
+// A rebuilt presenter brings up fresh, blank OSD buffers while the composer
+// still believes both hold the last composition: the MSP shadow says every
+// cell is painted, so a diffed draw writes nothing, and with no new input
+// nothing composes at all. forget_screen() owes the screen one whole
+// composition.
+TEST(a_rebuilt_presenter_gets_both_layers_back_without_new_input) {
+  const mabur::MspScreen scr = full_screen('X');
+  const GsSnapshot sn = snap_cards(3);
+  const GsPlayerState ps = player(60.0);
+  Rig r;
+  for (int i = 0; i < 2; ++i) r.tick(make_in(&scr, i == 0, false, &sn, ps, true));
+  for (Buf& b : r.buf) std::fill(b.px.begin(), b.px.end(), 0u);
+  r.comp.forget_screen();
+  const OsdComposeIn quiet = make_in(&scr, false, false, &sn, ps, false);
+  CHECK(r.tick(quiet));  // owed: composes with nothing new on either input
+  CHECK(diff_px(r.buf[r.front].px, reference(quiet, true, true)) == 0);
+  CHECK(!r.comp.wants(quiet));  // one composition settles it
+  // The other buffer is whole once the next composition reaches it.
+  const OsdComposeIn moved = make_in(&scr, false, false, &sn, ps, true);
+  CHECK(r.tick(moved));
+  CHECK(diff_px(r.buf[r.front].px, reference(moved, true, true)) == 0);
+}
+
+// osd.gs.enable switched off while the MSP overlay stays: the bar's pixels
+// must leave both DRM buffers and the burned recording's map, and the grid
+// it covered comes back, with no new input to trigger anything.
+TEST(a_gs_layer_switched_off_in_place_leaves_no_trace) {
+  const mabur::MspScreen scr = full_screen('X');
+  const GsSnapshot sn = snap_cards(3);
+  Rig r;
+  FakeBurn fb;
+  fb.pal = seeded_palette();
+  r.comp.set_burn_sink(
+      [&fb](const Surface& s, const DirtyRect* p, size_t n) { fb.feed(s, p, n); });
+  for (int i = 0; i < 3; ++i) r.tick(make_in(&scr, i == 0, false, &sn, player(60.0 - i), true));
+  const OsdComposeIn msp_only = make_in(&scr, false, false, nullptr, player(60.0), false);
+  const auto ref = reference(msp_only, true, false);
+  // Non-vacuity: both buffers really carry the bar.
+  CHECK(diff_px(r.buf[0].px, ref) > 0);
+  CHECK(diff_px(r.buf[1].px, ref) > 0);
+
+  r.comp.drop_gs_layers();
+  CHECK(!r.comp.gs_present());
+  CHECK(r.tick(msp_only));
+  CHECK(diff_px(r.buf[r.front].px, ref) == 0);
+  CHECK(fb.wrong_against(r.buf[r.front].s) == 0);
+  CHECK(!r.comp.wants(msp_only));
+  CHECK(r.tick(make_in(&scr, true, false, nullptr, player(60.0), false)));
+  CHECK(diff_px(r.buf[r.front].px, ref) == 0);
+  CHECK(fb.wrong_against(r.buf[r.front].s) == 0);
+}
+
+// osd.enable switched off while the GS bar stays: the grid leaves both
+// buffers and the recording; the bar is whole on each.
+TEST(an_msp_layer_switched_off_in_place_leaves_no_trace) {
+  const mabur::MspScreen scr = full_screen('X');
+  const GsSnapshot sn = snap_cards(3);
+  const GsPlayerState ps = player(60.0);
+  Rig r;
+  FakeBurn fb;
+  fb.pal = seeded_palette();
+  r.comp.set_burn_sink(
+      [&fb](const Surface& s, const DirtyRect* p, size_t n) { fb.feed(s, p, n); });
+  for (int i = 0; i < 3; ++i) r.tick(make_in(&scr, i == 0, false, &sn, ps, true));
+  CHECK(r.px(0, kProbeX, kProbeY) == glyph_px('X'));
+  CHECK(r.px(1, kProbeX, kProbeY) == glyph_px('X'));
+
+  r.comp.drop_raster();
+  const OsdComposeIn gs_only = make_in(nullptr, false, false, &sn, ps, false);
+  const auto ref = reference(gs_only, false, true);
+  CHECK(r.tick(gs_only));
+  CHECK(diff_px(r.buf[r.front].px, ref) == 0);
+  CHECK(fb.wrong_against(r.buf[r.front].s) == 0);
+  CHECK(!r.comp.wants(gs_only));
+  CHECK(r.tick(make_in(nullptr, false, false, &sn, ps, true)));
+  CHECK(diff_px(r.buf[r.front].px, ref) == 0);
+  CHECK(fb.wrong_against(r.buf[r.front].s) == 0);
+}
+
+// dvr.target re-sizes the bar's REC field: the old layers go, new ones are
+// laid out in their place, and each buffer ends up exactly as a composer
+// built with the new layers would draw it.
+TEST(a_gs_layer_replaced_in_place_is_drawn_whole_on_both_buffers) {
+  const mabur::MspScreen scr = full_screen('X');
+  const GsSnapshot sn = snap_cards(3);
+  const GsPlayerState ps = player(60.0);
+  Rig r;
+  for (int i = 0; i < 3; ++i) r.tick(make_in(&scr, i == 0, false, &sn, ps, true));
+
+  auto both_layers = [](OsdComposer& c) {
+    c.set_gs(make_gs_layer(gsfont(), RecTarget::kBoth), make_gs_layer(gsfont(), RecTarget::kBoth),
+             make_gs_layer(gsfont(), RecTarget::kBoth));
+    std::string err;
+    REQUIRE(c.gs_layout(W, H, &err));
+  };
+  const OsdComposeIn in = make_in(&scr, false, false, &sn, ps, false);
+  Rig ref_rig(true, false);
+  both_layers(ref_rig.comp);
+  OsdComposeIn ref_in = in;
+  ref_in.msp_fresh = true;
+  ref_in.gs_dirty = true;
+  ref_rig.comp.compose(0, ref_rig.buf[0].s, ref_in);
+  const auto& ref = ref_rig.buf[0].px;
+  CHECK(diff_px(r.buf[r.front].px, ref) > 0);  // non-vacuity: the REC box differs
+
+  r.comp.drop_gs_layers();
+  both_layers(r.comp);
+  CHECK(r.tick(in));
+  CHECK(diff_px(r.buf[r.front].px, ref) == 0);
+  CHECK(r.tick(make_in(&scr, false, false, &sn, ps, true)));
+  CHECK(diff_px(r.buf[r.front].px, ref) == 0);
 }
 
 MTEST_MAIN

@@ -14,6 +14,7 @@
 #include <fstream>
 #include <functional>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -274,6 +275,44 @@ TEST(player_applier_osd_switch_keeping_the_plane_opens_layers_in_place) {
   REQUIRE(f.reacquire_calls.size() == 1);
   CHECK(!f.reacquire_calls[0].osd.enable && !f.reacquire_calls[0].osd.gs.enable);
   CHECK(f.osd_calls.size() == 1);
+}
+
+TEST(player_applier_refuses_an_unset_hook) {
+  // An empty std::function throws bad_function_call on the housekeeping
+  // thread at the first set that reaches it; the constructor says so first.
+  ScratchPlayerBundle sb;
+  PFake f;
+  for (int missing = 0; missing < 3; ++missing) {
+    PlayerApplyHooks h = f.hooks();
+    if (missing == 0) h.reacquire_display = nullptr;
+    if (missing == 1) h.osd_layers = nullptr;
+    if (missing == 2) h.next_start = nullptr;
+    bool threw = false;
+    try {
+      PlayerConfigApplier a(sb.path(), bundle(), BuildCaps{true, false}, h, nullptr);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    CHECK(threw);
+  }
+}
+
+TEST(rec_plan_reads_target_and_mode) {
+  DvrCfg d;
+  d.target = "gs";
+  d.mode = "raw";
+  RecPlan p = rec_plan(d);
+  CHECK(p.gs && !p.vtx && !p.burned);
+  d.target = "vtx";
+  p = rec_plan(d);
+  CHECK(!p.gs && p.vtx);
+  d.target = "both";
+  d.mode = "burned";
+  p = rec_plan(d);
+  CHECK(p.gs && p.vtx && p.burned);
+  CHECK(rec_plan(d) == p);
+  d.target = "gs";
+  CHECK(!(rec_plan(d) == p));
 }
 
 TEST(player_applier_same_value_spelled_differently_writes_nothing) {

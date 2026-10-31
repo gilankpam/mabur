@@ -60,9 +60,24 @@ enum class PlayerApplyRule : uint8_t {
 PlayerApplyRule player_apply_rule(const PlayerLiveKey& k, const Config& before,
                                   const Config& after);
 
+// What a recording started under `d` records. Read from the live config at
+// each record start and held until that recording stops: a dvr.* set
+// during a recording takes effect at the next start, never on the running
+// one.
+struct RecPlan {
+  bool gs = true;       // this GS's DVR: dvr.target "gs" or "both"
+  bool vtx = false;     // the drone's SD card: "vtx" or "both"
+  bool burned = false;  // the GS DVR re-encodes with the OSD burnt in
+  bool operator==(const RecPlan& o) const {
+    return gs == o.gs && vtx == o.vtx && burned == o.burned;
+  }
+};
+RecPlan rec_plan(const DvrCfg& d);
+
 // What an apply does to the running player. Every hook runs on the owning
 // (housekeeping) thread and is handed the live config with only the set
-// key changed.
+// key changed. All three must be set (the applier's constructor throws
+// std::invalid_argument otherwise).
 struct PlayerApplyHooks {
   std::function<bool(const Config&, std::string* err)> reacquire_display;  // Presenter
   std::function<bool(const Config&, std::string* err)> osd_layers;         // OsdLayers

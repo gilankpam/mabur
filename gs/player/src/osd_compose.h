@@ -88,6 +88,23 @@ class OsdComposer {
 
   // Null raster => this run has no MSP overlay. Not owned.
   void set_raster(OsdRaster* r) { raster_ = r; }
+  // The MSP overlay switched off while the player runs: the raster is let
+  // go at once (the caller may destroy it on return), and the grid it left
+  // on each OSD buffer and on the burn canvas is erased by the next
+  // composition into that buffer. wants() is true until the screen has
+  // been composed once.
+  void drop_raster();
+  // The same for the GS overlay: all three layers go now (the all-or-none
+  // rule), and the bar's area is erased from each buffer and the burn
+  // canvas by its next composition. A set_gs() straight after replaces the
+  // layers in place (a REC field re-sized for another dvr.target).
+  void drop_gs_layers();
+  // Both OSD buffers were replaced by fresh, blank ones (a rebuilt
+  // presenter): forgets what each held, so the next composition into
+  // either redraws both layers whole, and owes the screen one composition
+  // (wants() true) even with no new input. The burn lineage is untouched:
+  // the recorder is not the presenter's.
+  void forget_screen();
   // All three or none: buffer 0, buffer 1, and the burn's lineage -- they
   // are three lineages of one overlay, not three overlays (see
   // make_gs_layer). Laid out at the SAME size unless a burn size is set
@@ -134,6 +151,9 @@ class OsdComposer {
   // unreachable whenever the back buffer was already blank and the front
   // still carried a grid. Says nothing about the burn half: compose_burn()
   // runs on its own trigger, not this one.
+  // Also true while the screen is owed a composition by drop_raster(),
+  // drop_gs_layers() or forget_screen(), and while a running recording's
+  // canvas still holds a dropped layer.
   bool wants(const OsdComposeIn& in) const;
 
   // The screen half of compose(): MSP draw-or-blank, GS collision reclaim,
@@ -155,6 +175,10 @@ class OsdComposer {
  private:
   // Drops all three GS lineages: the all-or-none rule of gs_layout().
   void drop_gs();
+  // Forgets which MSP cells buffer idx holds (keeping where its grid is,
+  // which a later stale-blank needs) and invalidates its GS layer, so the
+  // next composition into it redraws both layers whole.
+  void forget_buffer(int idx);
 
   OsdRaster* raster_ = nullptr;
   std::unique_ptr<GsLayer> gs_[3];
@@ -205,6 +229,13 @@ class OsdComposer {
   // The same reconciliation mark for the burn canvas, which sees EVERY
   // composition rather than every other one.
   int burn_gs_cards_ = -1;
+
+  // Areas a dropped layer left on each OSD buffer and on the burn canvas,
+  // zeroed by the next composition into that buffer (or the canvas), which
+  // then redraws what remains whole. screen_owed_: the published buffer
+  // still shows a dropped layer, or a fresh buffer shows nothing yet.
+  std::vector<DirtyRect> erase_[2], burn_erase_;
+  bool screen_owed_ = false;
 
   // The burn feed's cached mirror of the picture -- see the file comment.
   // Sized to burn_w_/burn_h_ when set, else lazily to the screen surface
