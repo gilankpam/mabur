@@ -531,7 +531,8 @@ void MenuLayer::draw_block_(const Surface& s, const Block& b) {
   }
 }
 
-int MenuLayer::paint(const Surface& s, std::vector<DirtyRect>* out) {
+int MenuLayer::paint(const Surface& s, std::vector<DirtyRect>* out,
+                     std::vector<DirtyRect>* erased) {
   if (!s.pixels || !laid_out_) return 0;
   int n = 0;
   auto emit = [&](const DirtyRect& r) {
@@ -551,6 +552,7 @@ int MenuLayer::paint(const Surface& s, std::vector<DirtyRect>* out) {
     if (moved[k] && !empty(r)) {
       clear_region(s, r);
       damage.push_back(r);
+      if (erased) erased->push_back(r);
       emit(r);
     }
   }

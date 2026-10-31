@@ -57,8 +57,12 @@ class MenuLayer {
   // rects written. Returns the rect count. A closed view erases the panel,
   // picker, toast and banner areas it last drew. A surface with no pixels
   // (the presenter gave the OSD plane up) draws nothing, returns 0 and
-  // leaves the change owed to the next real surface.
-  int paint(const Surface& s, std::vector<DirtyRect>* out);
+  // leaves the change owed to the next real surface. `erased`, when given,
+  // also receives the old box rects it zeroed (a box that moved, resized or
+  // went): whatever another layer had drawn there is gone and is the
+  // caller's to restore.
+  int paint(const Surface& s, std::vector<DirtyRect>* out,
+            std::vector<DirtyRect>* erased = nullptr);
   // Redraws every drawn block that intersects one of `rects`, whether or
   // not it changed: what makes the menu win a collision with the MSP grid.
   int repaint_intersecting(const DirtyRect* rects, size_t n, const Surface& s,

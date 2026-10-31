@@ -13,10 +13,14 @@
 #include "gs_compact.h"
 #include "gs_draw.h"
 #include "gs_font.h"
+#include "gs_layer.h"
 #include "mabur/msp_dp.h"
+#include "menu_layer.h"
+#include "menu_model.h"
 #include "osd_compose.h"
 #include "osd_font.h"
 #include "osd_palette.h"
+#include "osd_wanted.h"
 #include "scratch.h"
 
 #include <algorithm>
@@ -1377,6 +1381,290 @@ TEST(dropping_the_last_layer_after_a_rebuild_owes_nothing) {
   r.comp.forget_screen();
   r.comp.drop_gs_layers();
   CHECK(!r.comp.wants(OsdComposeIn{}));
+}
+
+// ======================================================================
+// The settings menu: drawn last, on the screen only
+// ======================================================================
+
+static MenuView menu_view() {
+  MenuView v;
+  v.open = true;
+  v.crumb = "Video";
+  v.linked = true;
+  ViewRow a;
+  a.id = "video.mode"; a.label = "Camera mode"; a.value = "60 fps"; a.vtx = true; a.selected = true;
+  ViewRow b;
+  b.id = "video.slices"; b.label = "Slices"; b.value = "On"; b.adv = true;
+  v.rows = {a, b};
+  v.help = "Pick the camera mode.";
+  v.keys = "change / back";
+  return v;
+}
+
+static void add_menu(OsdComposer& c) {
+  c.set_menu(std::make_unique<MenuLayer>(gsfont()), std::make_unique<MenuLayer>(gsfont()));
+  std::string err;
+  REQUIRE(c.menu_layout(W, H, &err));
+}
+
+// Where a lone layer puts `v`'s boxes: the panel, and the union of all.
+static DirtyRect menu_panel(const MenuView& v) {
+  MenuLayer m(gsfont());
+  std::string err;
+  REQUIRE(m.layout(W, H, &err));
+  m.set_view(v);
+  return m.debug_panel_box();
+}
+static DirtyRect menu_bounds(const MenuView& v) {
+  MenuLayer m(gsfont());
+  std::string err;
+  REQUIRE(m.layout(W, H, &err));
+  m.set_view(v);
+  return m.bounds();
+}
+
+static bool overlaps(const DirtyRect& a, const DirtyRect& b) {
+  return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+}
+
+// The picture with the menu, composed from nothing.
+static std::vector<uint32_t> reference_menu(const OsdComposeIn& in, bool with_msp, bool with_gs,
+                                            uint64_t tick_ms = 0) {
+  Rig r(with_msp, with_gs);
+  add_menu(r.comp);
+  r.comp.menu_tick(tick_ms);
+  OsdComposeIn ref = in;
+  ref.msp_fresh = !in.msp_stale;
+  ref.gs_dirty = true;
+  ref.menu_dirty = true;
+  r.comp.compose(0, r.buf[0].s, ref);
+  return r.buf[0].px;
+}
+
+static const uint32_t kPanelPx = premul(tok::kMenuPanel, 232);
+
+// The MSP grid covers the whole surface, so every flight-OSD cell under the
+// panel is a collision, and a cell that changes there (a timer ticking)
+// lands on the panel. The menu wins it in each buffer, and each committed
+// buffer is exactly the from-scratch picture.
+TEST(the_menu_wins_over_the_msp_grid_and_the_gs_bar_in_both_buffers) {
+  const MenuView v = menu_view();
+  const DirtyRect p = menu_panel(v);
+  // Cell (0, 1) sits under the panel's top-left corner: the sharp 50x18
+  // grid of 38x60 cells spans the full 1080 rows.
+  // Three values, so each buffer sees the cell change: with two, each
+  // buffer would hold one value for good and the grid would never write.
+  const mabur::MspScreen scr[3] = {full_screen_except('X', 0, 1, 'Y'),
+                                   full_screen_except('X', 0, 1, 'Z'),
+                                   full_screen_except('X', 0, 1, 'W')};
+  const GsSnapshot sn = snap_cards(3);
+  Rig r;
+  add_menu(r.comp);
+  for (int i = 0; i < 6; ++i) {
+    OsdComposeIn in = make_in(&scr[i % 3], true, false, &sn, player(60.0 - i), true);
+    in.menu = &v;
+    in.menu_dirty = i == 0;
+    CHECK(r.tick(in));
+    CHECK(r.px(r.front, p.x, p.y) == kPanelPx);
+    CHECK(r.px(r.front, p.x + p.w - 1, p.y + p.h - 1) == kPanelPx);
+    CHECK(diff_px(r.buf[r.front].px, reference_menu(in, true, true)) == 0);
+  }
+  // Both buffers carry it.
+  CHECK(r.px(0, p.x, p.y) == kPanelPx);
+  CHECK(r.px(1, p.x, p.y) == kPanelPx);
+  // Non-vacuity: the menu really sits on the grid and on drawn cells.
+  OsdComposeIn bare = make_in(&scr[0], true, false, &sn, player(60.0), true);
+  CHECK(diff_box(r.buf[r.front].px, reference(bare, true, true), p) > 0);
+
+  // With the GS bar alone under it, and a card count that moves the bar.
+  Rig g(false, true);
+  add_menu(g.comp);
+  for (int i = 0; i < 6; ++i) {
+    const GsSnapshot si = snap_cards(2 + i % 3);
+    OsdComposeIn in = make_in(nullptr, false, false, &si, player(60.0), true);
+    in.menu = &v;
+    in.menu_dirty = i == 0;
+    CHECK(g.tick(in));
+    CHECK(g.px(g.front, p.x, p.y) == kPanelPx);
+    CHECK(diff_px(g.buf[g.front].px, reference_menu(in, false, true)) == 0);
+  }
+}
+
+// The menu's normal close is a closed view, with the layers kept: its boxes
+// leave each buffer, and the grid and bar it covered come back whole -- a
+// box erase straight through to the MSP glyphs would otherwise leave a
+// transparent hole while the grid's shadow still says those cells are
+// painted.
+TEST(a_menu_closed_by_its_view_leaves_no_hole_in_the_grid_or_the_bar) {
+  const mabur::MspScreen scr = full_screen('X');
+  const GsSnapshot sn = snap_cards(3);
+  const GsPlayerState ps = player(60.0);
+  const MenuView open = menu_view();
+  const MenuView closed;
+  const DirtyRect p = menu_panel(open);
+  Rig r;
+  add_menu(r.comp);
+  for (int i = 0; i < 2; ++i) {
+    OsdComposeIn in = make_in(&scr, i == 0, false, &sn, ps, true);
+    in.menu = &open;
+    in.menu_dirty = i == 0;
+    r.tick(in);
+  }
+  CHECK(r.px(0, p.x, p.y) == kPanelPx);
+  CHECK(r.px(1, p.x, p.y) == kPanelPx);
+
+  const OsdComposeIn plain = make_in(&scr, false, false, &sn, ps, false);
+  const auto ref = reference(plain, true, true);
+  for (int i = 0; i < 2; ++i) {
+    OsdComposeIn in = plain;
+    in.menu = &closed;
+    in.menu_dirty = true;
+    CHECK(r.tick(in));
+    CHECK(diff_px(r.buf[r.front].px, ref) == 0);
+  }
+  CHECK(diff_px(r.buf[0].px, ref) == 0);
+  CHECK(diff_px(r.buf[1].px, ref) == 0);
+}
+
+// The feature switched off (drop_menu): each buffer's old menu area is
+// zeroed by its next composition and what was under it comes back whole.
+// The burn canvas never held the menu, so the recorder is handed nothing.
+TEST(closing_the_menu_erases_it_from_both_buffers_and_never_from_the_burn_canvas) {
+  const mabur::MspScreen scr = full_screen('X');
+  const GsSnapshot sn = snap_cards(3);
+  const GsPlayerState ps = player(60.0);
+  const MenuView v = menu_view();
+  const DirtyRect bounds = menu_bounds(v);
+  REQUIRE(bounds.w > 0 && bounds.h > 0);
+  Rig r;
+  add_menu(r.comp);
+  std::vector<DirtyRect> sunk;
+  r.comp.set_burn_sink([&sunk](const Surface&, const DirtyRect* p, size_t n) {
+    sunk.insert(sunk.end(), p, p + n);
+  });
+  for (int i = 0; i < 2; ++i) {
+    OsdComposeIn in = make_in(&scr, i == 0, false, &sn, ps, true);
+    in.menu = &v;
+    in.menu_dirty = i == 0;
+    r.tick(in);
+  }
+  CHECK(r.comp.menu_present());
+
+  sunk.clear();
+  r.comp.drop_menu();
+  CHECK(!r.comp.menu_present());
+  const OsdComposeIn quiet = make_in(&scr, false, false, &sn, ps, false);
+  const auto ref = reference(quiet, true, true);
+  CHECK(r.comp.wants(quiet));  // owed: no new input on either layer
+  CHECK(r.tick(quiet));
+  CHECK(diff_px(r.buf[r.front].px, ref) == 0);
+  CHECK(!r.comp.wants(quiet));
+  CHECK(r.tick(make_in(&scr, false, false, &sn, ps, true)));
+  CHECK(diff_px(r.buf[r.front].px, ref) == 0);
+  CHECK(diff_px(r.buf[0].px, ref) == 0);
+  CHECK(diff_px(r.buf[1].px, ref) == 0);
+  for (const DirtyRect& d : sunk) CHECK(!overlaps(d, bounds));
+}
+
+// The menu is a goggles control surface, not flight footage: the canvas the
+// recorder quantizes is the picture without it, whatever the screen shows.
+TEST(the_burn_canvas_never_shows_the_menu) {
+  const mabur::MspScreen scr = full_screen('X');
+  const GsSnapshot sn = snap_cards(3);
+  const MenuView v = menu_view();
+  Rig r;
+  add_menu(r.comp);
+  std::vector<uint32_t> canvas;
+  r.comp.set_burn_sink([&canvas](const Surface& s, const DirtyRect*, size_t) {
+    canvas.assign(s.pixels, s.pixels + (size_t)s.stride_px * s.height);
+  });
+  for (int i = 0; i < 4; ++i) {
+    OsdComposeIn in = make_in(&scr, i == 0, false, &sn, player(60.0 - i), true);
+    in.menu = &v;
+    in.menu_dirty = true;
+    r.tick(in);
+    REQUIRE(canvas.size() == (size_t)W * H);
+    const auto ref = reference(in, true, true);
+    CHECK(diff_px(canvas, ref) == 0);
+    CHECK(diff_px(r.buf[r.front].px, ref) > 0);  // non-vacuity: the screen has it
+  }
+}
+
+// A menu change is its own publisher: nothing else moved, and the screen
+// still has to change. A busy row's animation is one too, while it runs.
+TEST(a_menu_change_alone_wants_a_composition_and_publishes) {
+  const mabur::MspScreen scr = full_screen('X');
+  const GsSnapshot sn = snap_cards(3);
+  const GsPlayerState ps = player(60.0);
+  const MenuView v = menu_view();
+  const DirtyRect p = menu_panel(v);
+  Rig r;
+  add_menu(r.comp);
+  for (int i = 0; i < 2; ++i) r.tick(make_in(&scr, i == 0, false, &sn, ps, true));
+  OsdComposeIn in = make_in(&scr, false, false, &sn, ps, false);
+  CHECK(!r.comp.wants(in));
+
+  in.menu = &v;
+  in.menu_dirty = true;
+  CHECK(r.comp.wants(in));
+  const OsdComposeOut out = r.comp.compose_screen(r.back, r.buf[r.back].s, in);
+  CHECK(out.published);
+  r.dirty = out.published;
+  r.commit();
+  CHECK(r.px(r.front, p.x, p.y) == kPanelPx);
+  in.menu_dirty = false;
+  CHECK(!r.comp.wants(in));
+
+  // A busy row animates on the tick alone.
+  MenuView busy = v;
+  busy.rows[1].busy = true;
+  busy.rows[1].status = "applying";
+  r.comp.menu_tick(1000);
+  in.menu = &busy;
+  in.menu_dirty = true;
+  CHECK(r.tick(in));
+  in.menu_dirty = false;
+  CHECK(!r.comp.wants(in));
+  CHECK(diff_px(r.buf[r.front].px, reference_menu(in, true, true, 1000)) == 0);
+  r.comp.menu_tick(1400);
+  CHECK(r.comp.wants(in));
+  CHECK(r.tick(in));
+  CHECK(diff_px(r.buf[r.front].px, reference_menu(in, true, true, 1400)) == 0);
+  // Non-vacuity: the two steps really look different.
+  CHECK(diff_px(reference_menu(in, true, true, 1000), reference_menu(in, true, true, 1400)) > 0);
+  CHECK(!r.comp.wants(in));
+  r.comp.menu_tick(1401);  // same dot and sweep step: nothing to show
+  CHECK(!r.comp.wants(in));
+
+  // The menu alone, with neither overlay configured.
+  Rig m(false, false);
+  add_menu(m.comp);
+  OsdComposeIn only;
+  only.menu = &v;
+  CHECK(!m.comp.wants(only));
+  only.menu_dirty = true;
+  CHECK(m.tick(only));
+  CHECK(m.px(m.front, p.x, p.y) == kPanelPx);
+}
+
+// Both overlays off with the buttons wired: the plane must still come up,
+// or the menu has nowhere to draw. And with the plane given up (no pixels)
+// a composition is a no-op, not a crash.
+TEST(the_plane_is_wanted_for_the_menu_alone) {
+  CHECK(osd_plane_wanted(false, false, true));
+  CHECK(osd_plane_wanted(true, false, false));
+  CHECK(osd_plane_wanted(false, true, false));
+  CHECK(!osd_plane_wanted(false, false, false));
+
+  OsdComposer c;
+  add_menu(c);
+  const MenuView v = menu_view();
+  OsdComposeIn in;
+  in.menu = &v;
+  in.menu_dirty = true;
+  const OsdComposeOut out = c.compose_screen(0, Surface{}, in);
+  CHECK(!out.published);
 }
 
 MTEST_MAIN

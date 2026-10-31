@@ -56,6 +56,7 @@ bool non_empty(const DirtyRect& r) { return r.w > 0 && r.h > 0; }
 void OsdComposer::forget_buffer(int idx) {
   shadow_[idx].cells.clear();
   if (gs_[idx]) gs_[idx]->invalidate();
+  if (menu_[idx]) menu_[idx]->invalidate();
   gs_cards_[idx] = -1;
 }
 
@@ -111,6 +112,41 @@ void OsdComposer::forget_screen() {
     drawn_[i] = false;
   }
   screen_owed_ = raster_ != nullptr || gs_[0] != nullptr;
+}
+
+void OsdComposer::drop_menu() {
+  if (!menu_[0]) return;
+  for (int i = 0; i < 2; ++i) {
+    const DirtyRect b = menu_[i]->bounds();
+    if (drawn_[i] && non_empty(b)) erase_[i].push_back(b);
+  }
+  for (auto& m : menu_) m.reset();
+  // The erase takes a union of the menu's boxes, grid and bar with it: both
+  // come back whole on each buffer.
+  for (int i = 0; i < 2; ++i) forget_buffer(i);
+  if (!erase_[0].empty() || !erase_[1].empty()) screen_owed_ = true;
+}
+
+void OsdComposer::set_menu(std::unique_ptr<MenuLayer> b0, std::unique_ptr<MenuLayer> b1) {
+  menu_[0] = std::move(b0);
+  menu_[1] = std::move(b1);
+}
+
+bool OsdComposer::menu_layout(int w, int h, std::string* err) {
+  if (!menu_[0]) return false;
+  for (auto& m : menu_) {
+    if (!m->layout(w, h, err)) {
+      // Both or neither, like the GS lineages.
+      for (auto& d : menu_) d.reset();
+      return false;
+    }
+  }
+  return true;
+}
+
+void OsdComposer::menu_tick(uint64_t now_ms) {
+  for (auto& m : menu_)
+    if (m) m->set_tick(now_ms);
 }
 
 void OsdComposer::set_gs(std::unique_ptr<GsLayer> b0, std::unique_ptr<GsLayer> b1,
@@ -211,6 +247,10 @@ bool OsdComposer::wants(const OsdComposeIn& in) const {
   if (screen_owed_) return true;
   if (burn_ && !burn_erase_.empty()) return true;
   if (gs_live() && in.snap && in.gs_dirty) return true;
+  if (menu_[0]) {
+    if (in.menu && in.menu_dirty) return true;
+    if (menu_[last_idx_]->dirty()) return true;
+  }
   if (raster_ && in.screen) {
     if (in.msp_fresh) return true;
     // Until the blank has been PUBLISHED. Gating this on the back buffer's
@@ -244,9 +284,13 @@ OsdComposeOut OsdComposer::compose_screen(int idx, const Surface& s, const OsdCo
   erase_[idx].clear();
   screen_owed_ = false;
   drawn_[idx] = true;
+  last_idx_ = idx;
 
   const bool gs_on = gs_live() && in.snap != nullptr;
   const bool msp_on = raster_ != nullptr && in.screen != nullptr;
+  const bool menu_on = menu_[idx] != nullptr;
+  // Both the GS reclaim and the menu need to know what the MSP draw wrote.
+  const bool track_msp = gs_on || menu_on;
   if (msp_on && in.msp_fresh) have_screen_ = true;
   // What the grid looks like on the composition this call produces -- a
   // property of the picture, not of buffer idx, so it is what both the
@@ -279,7 +323,7 @@ OsdComposeOut OsdComposer::compose_screen(int idx, const Surface& s, const OsdCo
       // exactly the catch-up when it has. Without it a GS-only publish scans
       // out a buffer whose MSP grid is one screen old, i.e. the flight OSD
       // stepping backwards at the GS publish rate.
-      if (gs_on) pre_ = shadow_[idx];
+      if (track_msp) pre_ = shadow_[idx];
       raster_->draw(*in.screen, s, &shadow_[idx]);
       msp_drew = true;
       blanked_[idx] = false;
@@ -288,9 +332,11 @@ OsdComposeOut OsdComposer::compose_screen(int idx, const Surface& s, const OsdCo
       last_grid_ = grid_of(shadow_[idx].layout);
       // Exactly the cells draw() wrote: diff() shares draw()'s change
       // detection and full-repaint condition, against the same layout.
-      if (gs_on) raster_->diff(*in.screen, s, &pre_, &msp_write_);
+      if (track_msp) raster_->diff(*in.screen, s, &pre_, &msp_write_);
     }
   }
+  under_.clear();
+  if (menu_on) under_.insert(under_.end(), msp_write_.begin(), msp_write_.end());
 
   // ---------------- GS layer ----------------
   gs_rects_.clear();
@@ -325,10 +371,10 @@ OsdComposeOut OsdComposer::compose_screen(int idx, const Surface& s, const OsdCo
     // Diffed against THIS buffer, so afterwards buffer idx's GS region is
     // the current state for EVERY field, not only the ones just drawn. The
     // burn feed below relies on that: it quantizes rects this update may not
-    // have touched. The rect list is wanted only when the card block moved,
-    // for the repair below.
+    // have touched. The rect list is wanted when the card block moved, for
+    // the repair below, and when the menu has to be repainted over it.
     out.gs_drawn = gs_[idx]->update(*in.snap, in.gs_stale, in.gs_ps, s,
-                                    geom_changed ? &gs_rects_ : nullptr);
+                                    (geom_changed || menu_on) ? &gs_rects_ : nullptr);
 
     // A changed card count is the only thing that moves a GS box after
     // layout(), and the bar erases a box it is about to vacate. That erase
@@ -350,7 +396,43 @@ OsdComposeOut OsdComposer::compose_screen(int idx, const Surface& s, const OsdCo
       if (!msp_write_.empty())
         out.gs_reclaimed += gs_[idx]->repaint_intersecting(msp_write_.data(),
                                                            msp_write_.size(), s, &gs_reclaim_);
+      if (menu_on) under_.insert(under_.end(), msp_write_.begin(), msp_write_.end());
     }
+    if (menu_on) {
+      under_.insert(under_.end(), gs_reclaim_.begin(), gs_reclaim_.end());
+      under_.insert(under_.end(), gs_rects_.begin(), gs_rects_.end());
+    }
+  }
+
+  // ---------------- menu ----------------
+  // Last, so it wins every collision: what it changed it paints, and every
+  // block the MSP grid or the GS bar wrote over this composition it paints
+  // again. Never into the burn canvas.
+  if (menu_on) {
+    if (in.menu) menu_[idx]->set_view(*in.menu);
+    menu_erased_.clear();
+    menu_[idx]->paint(s, nullptr, &menu_erased_);
+    // A box that moved or went was zeroed straight through to the grid and
+    // the bar under it, while shadow_[idx] still says those cells are
+    // painted -- the hole a vacated GS card row leaves, and repaired the
+    // same way: forget those cells, redraw them, and let GS win back its
+    // boxes in the hole and wherever the redrawn cells spilled.
+    if (!menu_erased_.empty()) {
+      repair_.assign(menu_erased_.begin(), menu_erased_.end());
+      if (msp_drew) {
+        for (const DirtyRect& r : menu_erased_) forget_cells(shadow_[idx], *in.screen, r);
+        pre_ = shadow_[idx];
+        raster_->draw(*in.screen, s, &shadow_[idx]);
+        raster_->diff(*in.screen, s, &pre_, &msp_write_);
+        under_.insert(under_.end(), msp_write_.begin(), msp_write_.end());
+        repair_.insert(repair_.end(), msp_write_.begin(), msp_write_.end());
+      }
+      if (gs_on) {
+        out.gs_reclaimed += gs_[idx]->repaint_intersecting(repair_.data(), repair_.size(), s,
+                                                           &under_);
+      }
+    }
+    if (!under_.empty()) menu_[idx]->repaint_intersecting(under_.data(), under_.size(), s, nullptr);
   }
 
   // One announcement per episode, on the transition rather than on a latch:
