@@ -26,7 +26,7 @@
         <description>The drone will start the sweep.</description>
       </entry>
       <entry value="1" name="MABUR_CAL_ACK_RESULT_ANCHOR_UNREADABLE">
-        <description>The drone has no readable calibration anchor.</description>
+        <description>The drone has no readable calibration anchor: the chip did not report its TXAGC reference, or would not zero its rate diffs for a clean read.</description>
       </entry>
       <entry value="2" name="MABUR_CAL_ACK_RESULT_BUSY">
         <description>The drone is already running a sweep.</description>
@@ -73,7 +73,7 @@
       <field type="uint8_t" name="bw">Channel bandwidth (MHz) the table applies to.</field>
       <field type="uint8_t" name="has">Bitmask of which wall/efficiency slots are present.</field>
       <field type="int8_t[8]" name="walls">Rel power-index wall per rung.</field>
-      <field type="int8_t" name="legacy">Wall for legacy/control frames (radio.legacy_wall_rel), from the 20 MHz mcs0 wall; -128 = leave.</field>
+      <field type="int8_t" name="legacy">Wall for legacy/control frames (radio.legacy_wall_rel), from the 20 MHz mcs0 wall, or the 40 MHz one when the run has no 20 MHz power sweep; -128 = leave.</field>
       <field type="uint16_t[8]" name="eff">air_clock efficiency per rung.</field>
     </message>
     <message id="60004" name="MABUR_CAL_APPLIED">

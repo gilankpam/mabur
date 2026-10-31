@@ -349,6 +349,21 @@ class TestReportV4(unittest.TestCase):
         row3 = [l for l in lossy.splitlines() if l.startswith("mcs3")][0]
         self.assertEqual(row3.split()[:5], ["mcs3", "42", "38", "99%", ".55"])
 
+    def test_legacy_names_the_width_it_came_from(self):
+        # A run with no 20 MHz power sweep takes legacy from the 40 MHz
+        # mcs0 wall; the report says so rather than claiming 20 MHz.
+        text = ("callog 4\n"
+                "R 42 1.00 149 auto 1\n"
+                "S 0 power 40 20\n"
+                "W 0 60 -42 0 1\n"
+                "W 3 40 -42 0 0\n"
+                "S 1 power 40 100\n"
+                "V 0 56 98\n"
+                "A 40 1 ok\n")
+        out = render(text)
+        self.assertIn("legacy 60 (from 40 MHz mcs0)", out)
+        self.assertNotIn("from 20 MHz", out)
+
     def test_an_ok_apply_with_a_note_is_reported(self):
         # The drone kept a 20 MHz wall for an undetermined row of a first
         # 40 MHz table: the A row is ok and its reason says what was kept.

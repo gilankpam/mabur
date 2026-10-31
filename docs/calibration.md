@@ -529,8 +529,10 @@ run has no number there (that kind or width was not in the run, or the
 wall was undetermined). Flags carry a `20:`/`40:` prefix. A run that never
 swept 40 prints the 20 MHz block alone; a width with capacity points but
 no walls in this run adds `<bw> MHz eff measured at the existing walls`.
-A `tx_bound` point's `eff` prints `-`: it was measured (`cal.log` keeps
-it) but never written, and the flag says why. An adopted apply that kept
+A `tx_bound` or `lost` point's `eff` prints `-`: it was measured
+(`cal.log` keeps it) but never written, and the flag says why. The
+`legacy` line names the wall it came from: the 20 MHz mcs0 wall, or the
+40 MHz one when the run had no 20 MHz power sweep. An adopted apply that kept
 something adds a line such as `40 MHz apply: ok; mcs6 kept from the 20 MHz
 table`. The last line comes from the apply records: `written: …` when any
 apply succeeded, else `not written: <bw> MHz: <reason>; …` or `not

@@ -11,7 +11,7 @@ typedef struct __mavlink_mabur_cal_apply_t {
  uint8_t bw; /*<  Channel bandwidth (MHz) the table applies to.*/
  uint8_t has; /*<  Bitmask of which wall/efficiency slots are present.*/
  int8_t walls[8]; /*<  Rel power-index wall per rung.*/
- int8_t legacy; /*<  Wall for legacy/control frames (radio.legacy_wall_rel), from the 20 MHz mcs0 wall; -128 = leave.*/
+ int8_t legacy; /*<  Wall for legacy/control frames (radio.legacy_wall_rel), from the 20 MHz mcs0 wall, or the 40 MHz one when the run has no 20 MHz power sweep; -128 = leave.*/
 } mavlink_mabur_cal_apply_t;
 
 #define MAVLINK_MSG_ID_MABUR_CAL_APPLY_LEN 32
@@ -65,7 +65,7 @@ typedef struct __mavlink_mabur_cal_apply_t {
  * @param bw  Channel bandwidth (MHz) the table applies to.
  * @param has  Bitmask of which wall/efficiency slots are present.
  * @param walls  Rel power-index wall per rung.
- * @param legacy  Wall for legacy/control frames (radio.legacy_wall_rel), from the 20 MHz mcs0 wall; -128 = leave.
+ * @param legacy  Wall for legacy/control frames (radio.legacy_wall_rel), from the 20 MHz mcs0 wall, or the 40 MHz one when the run has no 20 MHz power sweep; -128 = leave.
  * @param eff  air_clock efficiency per rung.
  * @return length of the message in bytes (excluding serial stream start sign)
  */
@@ -110,7 +110,7 @@ static inline uint16_t mavlink_msg_mabur_cal_apply_pack(uint8_t system_id, uint8
  * @param bw  Channel bandwidth (MHz) the table applies to.
  * @param has  Bitmask of which wall/efficiency slots are present.
  * @param walls  Rel power-index wall per rung.
- * @param legacy  Wall for legacy/control frames (radio.legacy_wall_rel), from the 20 MHz mcs0 wall; -128 = leave.
+ * @param legacy  Wall for legacy/control frames (radio.legacy_wall_rel), from the 20 MHz mcs0 wall, or the 40 MHz one when the run has no 20 MHz power sweep; -128 = leave.
  * @param eff  air_clock efficiency per rung.
  * @return length of the message in bytes (excluding serial stream start sign)
  */
@@ -158,7 +158,7 @@ static inline uint16_t mavlink_msg_mabur_cal_apply_pack_status(uint8_t system_id
  * @param bw  Channel bandwidth (MHz) the table applies to.
  * @param has  Bitmask of which wall/efficiency slots are present.
  * @param walls  Rel power-index wall per rung.
- * @param legacy  Wall for legacy/control frames (radio.legacy_wall_rel), from the 20 MHz mcs0 wall; -128 = leave.
+ * @param legacy  Wall for legacy/control frames (radio.legacy_wall_rel), from the 20 MHz mcs0 wall, or the 40 MHz one when the run has no 20 MHz power sweep; -128 = leave.
  * @param eff  air_clock efficiency per rung.
  * @return length of the message in bytes (excluding serial stream start sign)
  */
@@ -242,7 +242,7 @@ static inline uint16_t mavlink_msg_mabur_cal_apply_encode_status(uint8_t system_
  * @param bw  Channel bandwidth (MHz) the table applies to.
  * @param has  Bitmask of which wall/efficiency slots are present.
  * @param walls  Rel power-index wall per rung.
- * @param legacy  Wall for legacy/control frames (radio.legacy_wall_rel), from the 20 MHz mcs0 wall; -128 = leave.
+ * @param legacy  Wall for legacy/control frames (radio.legacy_wall_rel), from the 20 MHz mcs0 wall, or the 40 MHz one when the run has no 20 MHz power sweep; -128 = leave.
  * @param eff  air_clock efficiency per rung.
  */
 #ifdef MAVLINK_USE_CONVENIENCE_FUNCTIONS
@@ -378,7 +378,7 @@ static inline uint16_t mavlink_msg_mabur_cal_apply_get_walls(const mavlink_messa
 /**
  * @brief Get field legacy from mabur_cal_apply message
  *
- * @return  Wall for legacy/control frames (radio.legacy_wall_rel), from the 20 MHz mcs0 wall; -128 = leave.
+ * @return  Wall for legacy/control frames (radio.legacy_wall_rel), from the 20 MHz mcs0 wall, or the 40 MHz one when the run has no 20 MHz power sweep; -128 = leave.
  */
 static inline int8_t mavlink_msg_mabur_cal_apply_get_legacy(const mavlink_message_t* msg)
 {

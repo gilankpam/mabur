@@ -51,7 +51,7 @@ typedef enum MABUR_CAL_KIND
 typedef enum MABUR_CAL_ACK_RESULT
 {
    MABUR_CAL_ACK_RESULT_ACCEPTED=0, /* The drone will start the sweep. | */
-   MABUR_CAL_ACK_RESULT_ANCHOR_UNREADABLE=1, /* The drone has no readable calibration anchor. | */
+   MABUR_CAL_ACK_RESULT_ANCHOR_UNREADABLE=1, /* The drone has no readable calibration anchor: the chip did not report its TXAGC reference, or would not zero its rate diffs for a clean read. | */
    MABUR_CAL_ACK_RESULT_BUSY=2, /* The drone is already running a sweep. | */
    MABUR_CAL_ACK_RESULT_UNSUPPORTED=3, /* The requested sweep is not supported by this drone build. | */
    MABUR_CAL_ACK_RESULT_ENUM_END=4, /*  | */

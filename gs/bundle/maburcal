@@ -382,11 +382,14 @@ def _render_run_v4(run):
         if run.caps_by_bw[bw] and not run.walls_by_bw[bw]:
             lines.append(f"{bw} MHz eff measured at the existing walls")
 
+    # The GS sends legacy from the 20 MHz mcs0 wall, or from the 40 MHz one
+    # when the run has no 20 MHz power sweep (CalSession).
     default_wall = -128
-    legacy_wall = run.walls_by_bw[20].get(0, (default_wall,))[0]
+    legacy_bw = 20 if run.walls_by_bw[20] or not run.walls_by_bw[40] else 40
+    legacy_wall = run.walls_by_bw[legacy_bw].get(0, (default_wall,))[0]
     legacy_s = ("undetermined" if run.undetermined(legacy_wall)
                 else str(legacy_wall))
-    lines.append(f"legacy {legacy_s} (from 20 MHz mcs0)")
+    lines.append(f"legacy {legacy_s} (from {legacy_bw} MHz mcs0)")
     # An adopted apply that kept something the run did not send (an
     # undetermined row of a first 40 MHz table takes its 20 MHz wall) says
     # so in its reason.
