@@ -67,6 +67,23 @@ bool DebugSession::rotate() {
   return false;
 }
 
+bool DebugSession::enable() {
+  if (ok_) return true;
+  return allocate_(root_, marker_);
+}
+
+void DebugSession::disable() {
+  // Deliberate: same marker removal as the enable=false constructor
+  // branch, which is what makes debug_log.enable one knob for maburplay
+  // too. Safe to call when already disabled -- remove() on a missing
+  // marker is a silent no-op.
+  std::remove(marker_);
+  dir_.clear();
+  index_ = 0;
+  ok_ = false;
+  rejoined_ = false;
+}
+
 bool DebugSession::adopt_marker_(const char* marker_path) {
   const std::string m = read_marker(marker_path);
   if (m.empty() || !is_dir(m)) return false;
