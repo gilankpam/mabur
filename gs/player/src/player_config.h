@@ -165,10 +165,9 @@ struct DecoderCfg {
   bool stream = true;
 };
 
-// [menu]. show_advanced reveals the menu shell's advanced rows (the ones
-// menu_model.h's MenuModel hides behind MenuNode::advanced) without a
-// rebuild; it mirrors MenuModel::set_show_advanced so the setting survives
-// a restart instead of resetting to hidden every boot.
+// [menu]. show_advanced decides whether the settings menu shows its
+// advanced rows (the ones menu_model.h's MenuModel hides behind
+// MenuNode::advanced) rather than resetting to hidden every boot.
 struct MenuCfg {
   bool show_advanced = false;
 };

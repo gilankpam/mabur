@@ -56,7 +56,8 @@ enum class PlayerApplyRule : uint8_t {
   OsdLayers,
   // dvr.*: read when the next recording starts; nothing to do now.
   NextStart,
-  // menu.show_advanced: push straight into the running MenuModel.
+  // menu.show_advanced: take the value onto the running config. No
+  // presenter rebuild, nothing latched for a later recording start.
   Menu,
 };
 PlayerApplyRule player_apply_rule(const PlayerLiveKey& k, const Config& before,
