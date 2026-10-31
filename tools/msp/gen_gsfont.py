@@ -41,7 +41,7 @@ in BAR_ICONS only (same 2.304 cell, each icon one cell wide), all 30 sizes:
        --sizes 13,14,15,16,17,19,21,22,23,24,25,26,28,29,32,34,35,37,38,42,\\
 44,45,48,51,52,56,68,75,76,112"
 
-Expect **14,937,678 bytes** and ~5 minutes of pure-Python box blur (this is
+Expect **16,788,226 bytes** and ~5 minutes of pure-Python box blur (this is
 a build-time tool; it is not on any hot path). A materially different byte
 count means something changed -- a different weight or family, a different
 size list, a different subset -- and should be explained before committing.
@@ -79,6 +79,35 @@ DEFAULT_SIZES = [19, 21, 22, 24, 26, 34, 38, 56]
 # which is precisely what the design's "never substitute zero" rule exists
 # to prevent. Any non-ASCII glyph the OSD draws must be added here too.
 #
+# MENU_GLYPHS are drawn by the settings menu (gs/player/src/menu_model.cpp,
+# menu_layer.cpp): row chevrons and picker arrows, the breadcrumb and
+# picker-choice separators, the number-range dash, the saved/failed marks
+# and the row warning triangle. test_gs_asset checks the shipped asset has
+# every one of these too.
+#
+# U+00D7, U+2026 and U+2260 are not drawn by any committed menu string yet
+# -- they are baked ahead of the later tasks that need them (the Display
+# row's "1920×1080 @ 100 Hz" and its resolution picker, the burned-recording
+# Size row's "1920×1080" choices, row truncation, and the Display row's
+# "≠ camera" warning) so those tasks needn't regenerate this ~15 MB asset
+# on their own.
+MENU_GLYPHS = [
+    0x00B7,  # ·  MIDDLE DOT, picker separator
+    0x00D7,  # ×  MULTIPLICATION SIGN, resolution "WxH" (reserved for a later task)
+    0x2013,  # –  EN DASH, number-range dash
+    0x203A,  # ›  SINGLE RIGHT-POINTING ANGLE QUOTATION MARK, breadcrumb separator
+    0x25B2,  # ▲  BLACK UP-POINTING TRIANGLE, picker up
+    0x25B6,  # ▶  BLACK RIGHT-POINTING TRIANGLE, forward/open/apply/confirm
+    0x25B8,  # ▸  BLACK RIGHT-POINTING SMALL TRIANGLE, unset group value
+    0x25BC,  # ▼  BLACK DOWN-POINTING TRIANGLE, picker down
+    0x25C0,  # ◀  BLACK LEFT-POINTING TRIANGLE, back/cancel/close
+    0x26A0,  # ⚠  WARNING SIGN, row warning
+    0x2713,  # ✓  CHECK MARK, saved/confirmed
+    0x2717,  # ✗  BALLOT X, failed
+    0x2026,  # …  HORIZONTAL ELLIPSIS, reserved for a later task
+    0x2260,  # ≠  NOT EQUAL TO, reserved for a later task
+]
+
 # BAR_ICONS are the compact bar's item icons (gs_compact.h, namespace
 # gs_icon): Material Design icons as the JetBrains Mono Nerd Font carries
 # them, in the supplementary private use area, each one cell wide in the
@@ -100,7 +129,7 @@ BAR_ICONS = [
     0xF005D,  # uplink   arrow-up
 ]
 SUBSET = ([c for c in range(0x20, 0x7F)] + [0x2014, 0x2212, 0x2192, 0x25CF, 0x25CB]
-          + sorted(BAR_ICONS))
+          + sorted(MENU_GLYPHS) + sorted(BAR_ICONS))
 
 
 def box_blur(buf, w, h, radius):
