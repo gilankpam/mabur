@@ -5,7 +5,7 @@ import { GLYPH_W, GLYPH_H, ATLAS_COLS, OSD_STALE_MS, atlasRect, cellRect, isBlan
   from '../ui/src/lib/osd.js';
 
 test('atlas PNG matches the page constants', () => {
-  const png = fs.readFileSync(new URL('../ui/public/font_btfl.png', import.meta.url));
+  const png = fs.readFileSync(new URL('../ui/public/fonts/btfl.png', import.meta.url));
   assert.equal(png.readUInt32BE(16), ATLAS_COLS * GLYPH_W);          // IHDR width
   assert.equal(png.readUInt32BE(20), (1024 / ATLAS_COLS) * GLYPH_H); // IHDR height
 });
@@ -239,4 +239,61 @@ test('painter.setFont: closes the old bitmap and one that lands after a switch',
   p.setFont('c'); raf.flush(); await settle();  // 'b' is still loading when 'c' is chosen
   res.b(bmp('B')); await settle();
   assert.deepEqual(closed, ['A', 'B']);         // the stale load is closed, never kept
+});
+
+test('painter: a failing non-default font falls back to the default atlas and remembers the request', async () => {
+  const layer = new OsdLayer();
+  const raf = fakeRaf();
+  const loads = [];
+  const errors = [];
+  const p = new OsdPainter({ layer, raf, fontId: 'paddy', log: { error: (...a) => errors.push(a[0]) },
+    loadAtlas: async (id) => { loads.push(id); if (id === 'paddy') throw new Error('404'); return { id }; } });
+  const cv = fakeCanvas();
+  p.attach(cv);
+  layer.onScreen(18, 50, grid(18, 50, { 0: 0x48 }), 1000);
+  p.schedule(); raf.flush(); await settle(); raf.flush(); await settle(); raf.flush();
+  assert.deepEqual(loads, ['paddy', 'btfl']);   // retried once, with the default
+  assert.equal(p.atlas.id, 'btfl');
+  assert.equal(cv.ctx.draws.at(-1)[0].id, 'btfl');
+  assert.equal(p.requestedId, 'paddy');          // the app's choice is kept
+  assert.equal(errors.length, 1);                // logged once
+  p.setFont('paddy'); raf.flush(); await settle();
+  assert.deepEqual(loads, ['paddy', 'btfl']);   // re-selecting the same font changes nothing
+});
+
+test('painter: resetAtlasFailure() (Connect) retries the requested font after a fallback', async () => {
+  const layer = new OsdLayer();
+  const raf = fakeRaf();
+  const loads = [];
+  let up = false;
+  const p = new OsdPainter({ layer, raf, fontId: 'paddy', log: { error: () => {} },
+    loadAtlas: async (id) => { loads.push(id); if (id === 'paddy' && !up) throw new Error('offline'); return { id }; } });
+  p.attach(fakeCanvas());
+  layer.onScreen(18, 50, grid(18, 50, { 0: 0x48 }), 1000);
+  p.schedule(); raf.flush(); await settle(); raf.flush(); await settle(); raf.flush();
+  assert.equal(p.atlas.id, 'btfl');
+  p.resetAtlasFailure(); raf.flush(); await settle(); raf.flush(); await settle(); raf.flush();   // still down: back to the default
+  assert.deepEqual(loads, ['paddy', 'btfl', 'paddy', 'btfl']);
+  assert.equal(p.atlas.id, 'btfl');
+  up = true;
+  p.resetAtlasFailure(); raf.flush(); await settle(); raf.flush();                                  // the file is back
+  assert.equal(p.atlas.id, 'paddy');
+  assert.equal(p.fontId, 'paddy');
+  const n = loads.length;
+  p.resetAtlasFailure(); raf.flush(); await settle();                                               // loaded: kept
+  assert.equal(loads.length, n);
+});
+
+test('painter: when the default atlas itself fails the OSD stays off, one attempt per Connect', async () => {
+  const layer = new OsdLayer();
+  const raf = fakeRaf();
+  const loads = [];
+  const p = new OsdPainter({ layer, raf, fontId: 'btfl', log: { error: () => {} },
+    loadAtlas: async (id) => { loads.push(id); throw new Error('404'); } });
+  p.attach(fakeCanvas());
+  layer.onScreen(18, 50, grid(18, 50, { 0: 0x48 }), 1000);
+  for (let i = 0; i < 5; i++) { p.schedule(); raf.flush(); await settle(); }
+  assert.deepEqual(loads, ['btfl']);             // no loop, no refetch per screen
+  p.resetAtlasFailure(); raf.flush(); await settle();
+  assert.deepEqual(loads, ['btfl', 'btfl']);
 });
