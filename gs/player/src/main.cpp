@@ -49,6 +49,7 @@
 #ifdef MABUR_PLAYER_HW
 #include "burn_recorder.h"  // dvr.mode "burned": re-encode with the OSD burnt in
 #include "decode_pump.h"    // the decode-output thread: drives backend->poll(), hands frames over
+#include "display_watch.h"  // rebuild the presenter when its display is replugged
 #include "drm_presenter.h"  // KMS atomic NV12 presenter, the default display path
 #include "frame_regulator.h"  // phase-aware pts+D display release
 #include "phase_lock.h"  // PhaseLock, the sensor-rate controller for the phase lock
@@ -1859,6 +1860,19 @@ int main(int argc, char** argv) {
   uint64_t display_retry_t0_ms = mono_ms();
   uint64_t display_retry_next_ms = 0;
   bool display_retry_announced = false;
+  // A display unplugged and plugged back in while a presenter drives it
+  // stays dark until the presenter is rebuilt (display_watch.h says why).
+  // The kernel's DRM hotplug uevents wake a status read; without a netlink
+  // socket the status is polled once a second instead.
+  maburplay::HotplugSocket hotplug_sock;
+  const bool hotplug_uevents = hotplug_sock.open();
+  if (!hotplug_uevents)
+    std::fprintf(stderr,
+                 "maburplay: no hotplug uevents (netlink: %s) -- polling the display's status "
+                 "every 1 s instead\n",
+                 std::strerror(errno));
+  maburplay::DisplayWatch display_watch(hotplug_uevents);
+  if (presenter) display_watch.on_acquired(mono_ms());
   // Phase margins taken from the release thread each iteration.
   std::vector<maburplay::ReleaseLoop::MarginSample> margins;
   margins.reserve(maburplay::ReleaseLoop::kMarginCap);
@@ -1943,6 +1957,9 @@ int main(int argc, char** argv) {
     // The recorder samples this display's vblank grid, so it could not
     // exist before this moment.
     start_burn_if_needed();
+    // Starts the watch's guard: this rebuild's own modeset may make the
+    // sink pulse HPD, and that must not read as another replug.
+    display_watch.on_acquired(mono_ms());
     return true;
   };
 #endif
@@ -2194,6 +2211,31 @@ int main(int argc, char** argv) {
       core_ctl.send_line("refresh resync");
     }
 #ifdef MABUR_PLAYER_HW
+    // Drained every iteration whatever the display state, so the socket
+    // never overflows; a uevent only matters while a presenter is live (the
+    // retry below covers having none).
+    const bool hotplug_uevent = hotplug_sock.drain();
+    if (presenter) {
+      const uint64_t now_ms = mono_ms();
+      if (display_watch.due(now_ms, hotplug_uevent)) {
+        switch (display_watch.on_status(now_ms, presenter->connector_connected())) {
+          case maburplay::DisplayWatch::Action::kUnplugged:
+            std::fprintf(stderr,
+                         "maburplay: display disconnected -- rebuilding the display when it "
+                         "reconnects\n");
+            break;
+          case maburplay::DisplayWatch::Action::kRebuild:
+            std::fprintf(stderr, "maburplay: display reconnected -- rebuilding on %s\n",
+                         cfg.screen_mode.c_str());
+            // A failure says so itself and leaves the 1 s retry below to
+            // bring the display back.
+            reacquire_display(cfg.screen_mode, /*log_failures=*/true);
+            break;
+          case maburplay::DisplayWatch::Action::kNone:
+            break;
+        }
+      }
+    }
     // Retry acquisition once a second while there is no display. A FRESH
     // presenter every time, never a re-init of the failed one: a display that
     // appears late supplies its own EDID and mode list, and every

@@ -740,8 +740,8 @@ against it, not against the housekeeping loop that prints the line.
 - `flushes=` — output parks, cumulative: every time housekeeping parks the
   decode-output and release threads and drops what the display holds — a
   ring flush, a decode-watchdog reset or recreate, a display hotplug
-  acquire, shutdown. `disconts=` counts only encoder pts discontinuities,
-  none of these.
+  acquire or replug rebuild, a live display rebuild, shutdown.
+  `disconts=` counts only encoder pts discontinuities, none of these.
 - `recstarts=` — recorder starts, cumulative: the burned recorder coming
   up, or a raw recording starting. `tools/bench/latchgate.py` excludes the
   misses and `pend` growth right after a rise in either counter (its
@@ -857,14 +857,32 @@ against it, not against the housekeeping loop that prints the line.
   regenerate with `tools/gen_splash.py`) so the sink locks a mode before
   video exists, and retries display acquisition once a second while none is
   connected — a display plugged in after the player started is picked up
-  without a restart. That holds only if a display was NEVER acquired: one
-  that disconnects after a successful acquire is deliberately not recovered
-  (KMS retains CRTC state and a replug normally re-lights it on its own).
-  Neither has a config key. The splash shows only until the first decoded
-  frame — it is an aerial photo that would read as a live feed mid-flight,
-  so a mid-flight replug comes up on video. Log lines:
-  `no display at startup -- retrying …`, `display acquired after N.N s`;
-  per-attempt DRM failures are silenced on purpose (/tmp is tmpfs).
+  without a restart. A display unplugged and plugged back in after a
+  successful acquire gets a fresh presenter: KMS keeps flipping the
+  retained mode and the kernel re-applies it on replug, yet the sink can
+  stay black until a full modeset (the replug path does not redo
+  everything a modeset tells the sink — likely the HDMI 2.0 scrambling
+  setup sent over DDC at high pixel clocks). The kernel's DRM hotplug
+  uevents (netlink; a 1 s status poll when the socket cannot open) wake a
+  no-probe read of the presenter's connector; once it has read
+  disconnected and then connected with 1 s of quiet, the presenter is
+  rebuilt on `screen_mode` — the same rebuild a live `screen_mode` set
+  runs, so it counts in `flushes=`. A
+  burst of HPD/DDC flaps coalesces into one rebuild; anything the
+  connector reports in the 5 s after an acquire is taken as that acquire's
+  own modeset and ignored (a disconnect still standing when the 5 s end is
+  acted on), so a sink that pulses HPD on every modeset cannot loop it. A
+  uevent without a disconnected read (an EDID re-read, another connector)
+  rebuilds nothing. A failed rebuild leaves the 1 s retry in charge.
+  None of this has a config key. The splash shows only until the first
+  decoded frame — it is an aerial photo that would read as a live feed
+  mid-flight, so a mid-flight replug comes up on video. Log lines:
+  `no display at startup -- retrying …`, `display acquired after N.N s`,
+  `display disconnected -- rebuilding the display when it reconnects`,
+  `display reconnected -- rebuilding on <mode>`, and
+  `no hotplug uevents (netlink: …) -- polling …` when the socket is
+  unavailable; per-attempt DRM failures of the 1 s retry are silenced on
+  purpose (/tmp is tmpfs).
 
 ### GS link-status OSD
 

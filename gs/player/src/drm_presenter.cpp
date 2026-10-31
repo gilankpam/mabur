@@ -1994,6 +1994,15 @@ bool DrmPresenter::offers_mode(const std::string& screen_mode) const {
   return matched;
 }
 
+bool DrmPresenter::connector_connected() const {
+  if (impl_->fd < 0 || impl_->connector_id == 0) return true;
+  drmModeConnectorPtr c = drmModeGetConnectorCurrent(impl_->fd, impl_->connector_id);
+  if (!c) return true;
+  const bool connected = c->connection != DRM_MODE_DISCONNECTED;
+  drmModeFreeConnector(c);
+  return connected;
+}
+
 bool DrmPresenter::osd_available() const {
   return impl_->osd_plane_id != 0 && impl_->osd.ok();
 }
