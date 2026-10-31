@@ -133,7 +133,7 @@ class CalControl {
   // `start` used to accept `margin=<db>`, which only moved the GS's own
   // park bookkeeping (the verify plan's expected indices and cal.log's R
   // line) -- the drone applies its OWN cfg.radio.wall_margin_db, and
-  // cal_apply patches four keys of which wall_margin_db is not one, so the
+  // cal_apply never patches wall_margin_db, so the
   // override changed nothing on hardware and merely made the report's
   // `park` column disagree with what the drone flew. Calibrating
   // wall_margin_db is an explicit non-goal: it is the operator's safety

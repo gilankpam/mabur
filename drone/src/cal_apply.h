@@ -6,7 +6,7 @@
 // docs/deploy.md both record that a daemon which sees a config it cannot
 // load exits, and its wrapper respawns it forever at 2 s. The drone has no
 // console -- a calibration run that leaves an unloadable config behind
-// turns a 75-second convenience into a device that needs a laptop and a
+// turns a two-minute convenience into a device that needs a laptop and a
 // serial cable to recover. Every step below exists to make that
 // unreachable:
 //

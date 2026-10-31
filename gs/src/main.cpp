@@ -408,7 +408,7 @@ static int run_radio(const maburgs::Config& cfg) {
     std::fprintf(stderr, "debug-log: session %s%s\n", debug.dir().c_str(),
                  debug.rejoined() ? " (rejoined)" : "");
   }
-  // cal.log (callog 3): TX-power calibration's raw per-cell record. Unlike
+  // cal.log: the calibration run's raw per-cell record. Unlike
   // ctl.log/probe.log/au.log below, this uses its own private LogWriter
   // (cal_log.h) rather
   // than the shared `log_writer` -- a calibration run is rare and
@@ -420,10 +420,10 @@ static int run_radio(const maburgs::Config& cfg) {
   // log above -- that flag governs CONTINUOUS per-second flight logging,
   // where the risk is disk volume and flash wear across every second of
   // every flight. A calibration run is a different risk profile: a
-  // bounded (~380-line) trace, once per unit, on a deliberate operator
-  // action, and the sole record of a measurement written straight into
-  // the drone's config. bench/txagcbench's Python analyzer is gone;
-  // cal.log + `maburcal report` is the ENTIRE replacement for
+  // bounded (under two thousand lines) trace, once per unit, on a
+  // deliberate operator action, and the sole record of a measurement
+  // written straight into the drone's config. bench/txagcbench's Python
+  // analyzer is gone; cal.log + `maburcal report` is the ENTIRE replacement for
   // examining a run's data after the fact -- shipping with debug_log off
   // (as gs/bundle/maburgs.default.toml does since 671c848) must not mean
   // every calibration runs silently and leaves no trace. When debug
@@ -1148,7 +1148,7 @@ static int run_radio(const maburgs::Config& cfg) {
       // even for CRC-bad frames: maburgs sets rx.keep_corrupted
       // unconditionally, so corrupt sweep frames arrive and are tallied as
       // `corrupt`, not silently dropped (design "CRC-bad frames now
-      // arrive"). A frame whose corruption flips rate/idx/phase/fill fails
+      // arrive"). A frame whose corruption flips kind/rate/idx/fill fails
       // parse_cal_payload's fill guard and falls through to the ordinary
       // path below instead of being misattributed to a cell.
       mabur::cal::CalFrameInfo cal_info;

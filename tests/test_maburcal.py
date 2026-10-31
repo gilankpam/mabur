@@ -194,11 +194,11 @@ class TestReport(unittest.TestCase):
         self.assertIn("not written", out)
 
     def test_all_zero_verify_rows_report_not_written(self):
-        # due_result() opens the GS's own verify window optimistically (no
-        # ack for T_CAL_RESULT), so a lost result frame or a refused apply
-        # still produces a full set of V rows -- every one of them 0%
-        # (gs/src/cal_session.cpp). A row's mere presence must never be
-        # read as evidence of an apply; only a nonzero delivery is.
+        # The kit that wrote callog 1-3 opened the GS's verify window
+        # optimistically, with no ack for its result frame, so a lost result
+        # or a refused apply still produced a full set of V rows -- every one
+        # of them 0%. In those files a row's mere presence must never be read
+        # as evidence of an apply; only a nonzero delivery is.
         text = ("callog 1\nR 46 53 1.00\n"
                 "W 0 91 28 0 1\nW 1 88 28 0 1\n"
                 "V 0 87 0\nV 1 84 0\n")

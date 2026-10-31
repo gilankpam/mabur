@@ -24,7 +24,7 @@
 // session's vtx_nonce changes. A tagged T_MAV is the GS's own uplink heard
 // by its other card (rx_uplink_heard), never a reject. The RC
 // CRC already vouches for the bytes; the MAVLink CRC is the second check
-// and is also what rejects a message id whose CRC_EXTRA the common dialect
+// and is also what rejects a message id whose CRC_EXTRA the mabur dialect
 // does not know. A partial packet at the end of a frame is dropped and the
 // parser reset, so it never bleeds into the next frame.
 //
@@ -36,10 +36,10 @@
 // process-wide, so one MavTunnel per process.
 //
 // Cal lane (push_cal/flush): the GS calibration kit's own MAVLink messages
-// (the common dialect's 60000-60005 ids), each sent in a frame of its own
+// (the mabur dialect's 60000-60005 ids), each sent in a frame of its own
 // kind -- never mixed with a live packet. The drone tells a cal-only frame
 // from a live one by content: a frame mixing the two kinds is handed whole
-// to the MAVLink component, which does not know the cal ids and silently
+// to the MAVLink component, which does not handle the cal ids and silently
 // drops them, so mixing would lose the calibration message rather than
 // merely miscount it. A run's pair is frozen at the caller (the
 // calibration session), passed as run_ctx on every push_cal, and used to

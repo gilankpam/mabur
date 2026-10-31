@@ -63,8 +63,8 @@ constexpr uint16_t RC_MAGIC = 0x5243;  // "RC"
 // steering offset, level-triggered in every RCF).
 // Bumped 16 -> 17: T_MAV (MAVLink tunnel, both directions) and CAP_MAVLINK.
 // Bumped 17 -> 18: T_CAL_CMD / T_CAL_RESULT deleted (calibration rides the
-// MAVLink tunnel's cal lane instead); Telem's cal_active bit now gates the
-// drone's own radio ownership rather than acking a dedicated command frame.
+// MAVLink tunnel's cal lane instead); Telem flags bit6 (cal_active), which
+// acked the dedicated command frame, is no longer set.
 constexpr uint8_t RC_VERSION = 18;
 
 // RCF probe_profile sentinel: the drone runs no probe stream.
@@ -221,15 +221,9 @@ struct Telem {
                       //      distinct from bit0 so a bench can count sheds
                       //      and flightreport can attribute an enh gap to
                       //      congestion rather than RF),
-                      // bit6 cal_active: the drone-side gate that calibration
-                      //      owns the radio -- set for as long as a sweep or
-                      //      verify pass is running and the drone's normal
-                      //      link-adaptation policy must leave TX power/rate
-                      //      alone. The GS learns of the calibration run's
-                      //      own command/result acks from the mabur dialect
-                      //      riding the MAVLink tunnel, not from this bit;
-                      //      Telem is suppressed only WHILE the gate is held,
-                      //      so the two never conflict.
+                      // bit6 unused: no frame sets it (it was cal_active,
+                      //      the ack of a dedicated calibration command frame;
+                      //      calibration acks now ride the MAVLink tunnel),
                       // bit7 low_power (RcAgent::low_power(): pre-arm 1 Mb/s / 15 fps operating point)
                       // bit1 auth_reject: >= 1 GS->drone control frame failed tag/seq
                       //      verification this telemetry period. One period around a

@@ -102,7 +102,7 @@ class CalMoveEdgeHold {
 };
 
 // Pure: whether a due calibration SweepCmd may go out this tick. `radio_silent` is
-// CalSession::radio_silent() (a sweep phase is airing). `dwell_busy` is the
+// CalSession::radio_silent() (a sweep is airing). `dwell_busy` is the
 // in-flight scout's flag: the scout idles while CalSession::running(), but
 // it only checks that once per dwell_period_ms, so a dwell begun just
 // before `maburcal start` is still off-channel for up to dwell_ms (250 ms)

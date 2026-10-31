@@ -90,8 +90,8 @@ RateWall analyze_rate(const std::vector<CalCell>& cells,
     // relative range every unit's diff field can express, regardless of
     // where this unit's own anchor happens to sit.
     //
-    // The rail IS the top cell of the coarse sweep -- kCoarseLo is -41
-    // precisely so the grid lands on kRailRel exactly (gs/src/cal_plan.h)
+    // The rail IS the top cell of the sweep -- kSweepLo is -41 precisely
+    // so the grid lands on kRailRel exactly (gs/src/cal_plan.h)
     // -- so the parked index is an index this very run measured at >=90%
     // delivery, not one past the end of the sweep. That is a
     // stronger guarantee than the RSSI "saturation knee" this replaced,

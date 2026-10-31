@@ -58,13 +58,13 @@ TEST(mcs7_first_dip_not_last_good) {
 // 1 dB tolerance band already spans ~5 indices before 1 dB of RSSI
 // quantization moves it further. Parking at the rail is instead exact,
 // identical every run, and PROVABLY INSIDE MEASURED-GOOD TERRITORY -- the
-// rail IS the top cell of the coarse sweep (kCoarseLo = -41 is chosen so
-// the grid lands on kRailRel exactly, gs/src/cal_plan.h), so a no-dip row
+// rail IS the top cell of the sweep (kSweepLo = -41 is chosen so the grid
+// lands on kRailRel exactly, gs/src/cal_plan.h), so a no-dip row
 // just delivered >=90% AT the very index it parks on. The old knee was
 // never validated by delivery at any index.
 //
-// The fixture therefore sweeps the real coarse grid, -41..63 step 4: if
-// kCoarseLo/kCoarseHi ever drift so the rail stops being a measured cell,
+// The fixture sweeps -41..63 step 4, a grid that ends on the rail: if
+// kSweepLo/kSweepHi ever drift so the rail stops being a measured cell,
 // this test is where that shows up.
 TEST(mcs0_no_dip_parks_at_the_diff_field_rail) {
   std::vector<CalCell> cells;

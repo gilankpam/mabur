@@ -2192,7 +2192,7 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
   // at most one frame per kMavUplinkMinMs so the tunnel never crowds Telem
   // or the OSD stream. Uplink and the 1 Hz HEARTBEAT need a published
   // session (nobody is listening without one), and both follow Telem's
-  // suppression while a calibration phase sweeps: replies wait queued. RcQueue has no
+  // suppression while a calibration sweep airs: replies wait queued. RcQueue has no
   // condvar, so this polls at 5 ms, like cal_queue's consumer.
   std::thread mav_thread([&]() {
     name_thread("mbr-mav");
@@ -3483,9 +3483,9 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
         // phase is characterizing buy nothing -- drone TX does not itself
         // blank the GS receivers, so this is an airtime courtesy, not a
         // correctness requirement. Gated on cal_sweeping specifically
-        // (State::Sweeping), not cal_active (the whole session): the ack
-        // Telem (TX writer thread) is sent in the between-phase gap this
-        // narrower flag leaves open, and skipping last_telem_ms's update
+        // (State::Sweeping), not cal_active (the whole session): telemetry
+        // goes out in the between-sweep gaps this narrower flag leaves
+        // open, and skipping last_telem_ms's update
         // while suppressed means telemetry resumes on the very next tick once
         // a phase ends, not up to 1 s later.
         if (!cal_sweeping.load(std::memory_order_relaxed) &&

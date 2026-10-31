@@ -40,10 +40,8 @@ struct CapResult;
 //   C <rate> <idx> <expected> <recv0> <recv1> <corrupt> <rssi0> <rssi1>
 //                                                # one row per measured cell
 //                                                # (power or verify sweep)
-//   W <rate> <wall> <floor> <best_card> <flags>  # one row per rate, at each
-//                                                 # phase-end (coarse then
-//                                                 # fine); reader takes
-//                                                 # last-write-wins
+//   W <rate> <wall> <floor> <best_card> <flags>  # one row per rate, per
+//                                                 # power sweep
 //   P <rate> <offered> <recv_best> <air_bits_best> <eff_x1000> <blocked_pct> <flags>
 //                                                # one row per rate, one capacity
 //                                                # sweep's result
