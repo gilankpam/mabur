@@ -104,6 +104,21 @@ class RecButton {
  private:
   static constexpr int kMaxIoErrors = 10;
 
+  // Outcome of one ioctl sample: kOk hands back a fresh raw bit, a
+  // transient kIoError leaves the line open (poll()/read_level() each
+  // decide what to report meanwhile), and kClosed means this call just
+  // hit kMaxIoErrors and closed the line (or found it already closed).
+  enum class SampleResult { kOk, kIoError, kClosed };
+
+  // The ioctl + io_errors_ bookkeeping shared by poll() and read_level():
+  // one GPIO_V2_LINE_GET_VALUES_IOCTL, the kMaxIoErrors-consecutive-
+  // failures close-and-log-once shell. `context` names the line in the
+  // close log line (poll's rec button vs read_level's chip/offset) --
+  // the two callers differ only in what they do with the result (an
+  // edge-triggered press vs a continuous level), not in how the line is
+  // sampled or when it gives up.
+  SampleResult sample_raw(bool* bit, const std::string& context);
+
   // Test-only seam (defined in tests/test_rec_button.cpp, the only
   // translation unit that calls it -- kept out of rec_button.cpp so it
   // never links into the shipped maburplay binary): lets a host test seed
@@ -116,6 +131,11 @@ class RecButton {
   int line_fd_ = -1;
   std::string chip_path_;
   unsigned offset_ = 0;
+  // io_errors_ and deb_ assume exactly one caller style per instance --
+  // poll() (the rec button's edge) or read_level() (the menu bank's
+  // level), never both on the same RecButton -- mixing them would split
+  // one line's error count and debounce state across two unrelated
+  // gesture semantics.
   int io_errors_ = 0;
   ButtonDebounce deb_;
 };

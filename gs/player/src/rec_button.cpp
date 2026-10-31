@@ -143,44 +143,40 @@ bool RecButton::open(const RecButtonCfg& cfg, std::string* err, const char* cons
   return true;
 }
 
-bool RecButton::poll(uint64_t now_ms) {
-  if (line_fd_ < 0) return false;
+RecButton::SampleResult RecButton::sample_raw(bool* bit, const std::string& context) {
+  if (line_fd_ < 0) return SampleResult::kClosed;
   struct gpio_v2_line_values v {};
   v.mask = 1;
   if (::ioctl(line_fd_, GPIO_V2_LINE_GET_VALUES_IOCTL, &v) != 0) {
     if (++io_errors_ >= kMaxIoErrors) {
       std::fprintf(stderr,
-                   "maburplay: rec button: %d consecutive read failures (%s) -- "
-                   "button disabled for the rest of this run\n",
-                   io_errors_, std::strerror(errno));
+                   "maburplay: %s: %d consecutive read failures (%s) -- "
+                   "disabled for the rest of this run\n",
+                   context.c_str(), io_errors_, std::strerror(errno));
       ::close(line_fd_);
       line_fd_ = -1;
+      return SampleResult::kClosed;
     }
-    return false;
+    return SampleResult::kIoError;
   }
   io_errors_ = 0;
-  return deb_.feed((v.bits & 1u) != 0, now_ms);
+  *bit = (v.bits & 1u) != 0;
+  return SampleResult::kOk;
+}
+
+bool RecButton::poll(uint64_t now_ms) {
+  bool bit = false;
+  if (sample_raw(&bit, "rec button") != SampleResult::kOk) return false;
+  return deb_.feed(bit, now_ms);
 }
 
 std::optional<bool> RecButton::read_level(uint64_t now_ms) {
-  if (line_fd_ < 0) return std::nullopt;
-  struct gpio_v2_line_values v {};
-  v.mask = 1;
-  if (::ioctl(line_fd_, GPIO_V2_LINE_GET_VALUES_IOCTL, &v) != 0) {
-    if (++io_errors_ >= kMaxIoErrors) {
-      std::fprintf(stderr,
-                   "maburplay: button line %s/%u: %d consecutive read failures (%s) -- "
-                   "disabled for the rest of this run\n",
-                   chip_path_.c_str(), offset_, io_errors_, std::strerror(errno));
-      ::close(line_fd_);
-      line_fd_ = -1;
-      return std::nullopt;
-    }
-    return deb_.level();  // transient: report the last accepted level
-  }
-  io_errors_ = 0;
-  deb_.feed((v.bits & 1u) != 0, now_ms);
-  return deb_.level();
+  bool bit = false;
+  const SampleResult r =
+      sample_raw(&bit, "button line " + chip_path_ + "/" + std::to_string(offset_));
+  if (r == SampleResult::kClosed) return std::nullopt;
+  if (r == SampleResult::kOk) deb_.feed(bit, now_ms);
+  return deb_.level();  // kOk: the just-fed level; kIoError: the last accepted one
 }
 
 // RecButtonSetLineFdForTest is declared in rec_button.h (required for the
