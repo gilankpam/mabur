@@ -292,9 +292,23 @@ class LiveConfigControl {
   //   get [<key>]
   static std::string handle(const std::string& line, Applier& a, bool* pending);
 
+  // Owning thread's own set, bypassing the socket: the same a.submit()
+  // path a UDP `set` takes, so a value equal to the live rendering still
+  // settles at once and a spec precheck refusal still comes back with no
+  // file work. Refused with *why = "busy" while a UDP sender is already
+  // waiting on its own set, or the applier itself is busy -- the same
+  // wording a UDP `set` gets in that case. A UDP `get` keeps answering
+  // from the live config while a local set is in flight.
+  bool submit_local(Applier& a, const std::string& key, const std::string& value, std::string* why);
+  // The local submit's result, once -- read on the poll() call after the
+  // one that settled it. nullopt before that, and again once taken.
+  std::optional<LiveApplyResult> take_local_result();
+
  private:
   int fd_ = -1;
   bool has_pending_ = false;
+  bool local_pending_ = false;
+  std::optional<LiveApplyResult> local_result_;
   sockaddr_in pending_from_{};
   socklen_t pending_len_ = 0;
 };
@@ -688,12 +702,37 @@ void LiveConfigControl<Applier>::poll(Applier& a) {
   }
   LiveApplyResult r;
   if (!a.poll(&r)) return;
+  if (local_pending_) {
+    local_result_ = r;
+    local_pending_ = false;
+    return;
+  }
   if (has_pending_ && fd_ >= 0) {
     const std::string reply = r.ok ? "ok" : "err " + r.reason;
     ::sendto(fd_, reply.data(), reply.size(), 0, reinterpret_cast<sockaddr*>(&pending_from_),
              pending_len_);
   }
   has_pending_ = false;
+}
+
+template <class Applier>
+bool LiveConfigControl<Applier>::submit_local(Applier& a, const std::string& key,
+                                              const std::string& value, std::string* why) {
+  if (has_pending_ || a.busy()) {
+    if (why) *why = "busy";
+    return false;
+  }
+  if (!a.submit(key, value, why)) return false;
+  local_pending_ = true;
+  return true;
+}
+
+template <class Applier>
+std::optional<LiveApplyResult> LiveConfigControl<Applier>::take_local_result() {
+  if (!local_result_) return std::nullopt;
+  std::optional<LiveApplyResult> out = std::move(local_result_);
+  local_result_.reset();
+  return out;
 }
 
 template <class Applier>

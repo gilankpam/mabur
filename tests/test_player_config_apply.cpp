@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <fstream>
 #include <functional>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -369,6 +370,62 @@ TEST(player_control_handle) {
   CHECK(!pending);
   drive(a);
   CHECK(PlayerConfigControl::handle("get dvr.burned.every", a, &pending) == "ok 2");
+}
+
+TEST(a_local_submit_is_answered_through_take_local_result_not_udp) {
+  constexpr int kPort = 18416;  // not 8403/18413: other tests own those
+  ScratchPlayerBundle sb;
+  PFake f;
+  PlayerConfigApplier a(sb.path(), bundle(), BuildCaps{true, false}, f.hooks(), nullptr);
+  PlayerConfigControl ctl;
+  REQUIRE(ctl.open(kPort));
+  std::string why;
+  REQUIRE(ctl.submit_local(a, "osd.gs.enable", "false", &why));
+
+  const int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
+  REQUIRE(fd >= 0);
+  sockaddr_in to{};
+  to.sin_family = AF_INET;
+  to.sin_port = htons(kPort);
+  REQUIRE(inet_pton(AF_INET, "127.0.0.1", &to.sin_addr) == 1);
+  auto ask = [&](const std::string& line) {
+    REQUIRE(::sendto(fd, line.data(), line.size(), 0, reinterpret_cast<sockaddr*>(&to), sizeof(to)) ==
+            static_cast<ssize_t>(line.size()));
+    std::string reply;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (reply.empty()) {
+      REQUIRE(std::chrono::steady_clock::now() < deadline);
+      ctl.poll(a);
+      pollfd p{fd, POLLIN, 0};
+      if (::poll(&p, 1, 1) == 1) {
+        char buf[256];
+        const ssize_t n = ::recv(fd, buf, sizeof(buf), 0);
+        REQUIRE(n > 0);
+        reply.assign(buf, static_cast<size_t>(n));
+      }
+    }
+    return reply;
+  };
+  // A UDP `get` still answers from the live config while the local set
+  // is in flight.
+  CHECK(ask("get osd.gs.enable") == "ok true");
+  // A UDP `set` during the same flight gets the applier's busy refusal,
+  // same as a second UDP set would.
+  CHECK(ask("set osd.enable = false") == "err busy");
+
+  std::optional<PlayerApplyResult> r;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!r) {
+    REQUIRE(std::chrono::steady_clock::now() < deadline);
+    ctl.poll(a);
+    r = ctl.take_local_result();
+    if (!r) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  CHECK(r->ok);
+  CHECK(r->key == "osd.gs.enable");
+  CHECK(a.live().osd.gs.enable == false);
+  CHECK(!ctl.take_local_result());  // once only
+  ::close(fd);
 }
 
 TEST(player_control_answers_an_oversized_datagram_with_an_error) {
