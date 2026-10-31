@@ -45,6 +45,7 @@ int kind_order(cal::Kind k) { return k == cal::Kind::Power ? 0 : 1; }
 
 bool CalSession::start(uint32_t nonce, std::vector<cal::SweepSpec> sweeps, uint64_t now_ms,
                        std::string* err) {
+  now_ms = advance(now_ms);
   // Picking is a run too: a second start would fight the first one's pick.
   if (running() || state_ == State::Picking) {
     if (err) *err = "a calibration session is already running";
@@ -112,6 +113,7 @@ bool CalSession::start(uint32_t nonce, std::vector<cal::SweepSpec> sweeps, uint6
 }
 
 void CalSession::on_mav(const cal::CalMsg& m, uint64_t now_ms) {
+  now_ms = advance(now_ms);
   step(now_ms);
   if (const auto* a = std::get_if<cal::SweepAck>(&m)) {
     if (state_ != State::AwaitAck || a->nonce != nonce_ || a->seq != cmd_.seq) return;
@@ -137,6 +139,7 @@ void CalSession::on_mav(const cal::CalMsg& m, uint64_t now_ms) {
 }
 
 std::optional<cal::CalMsg> CalSession::due_mav(uint64_t now_ms) {
+  now_ms = advance(now_ms);
   step(now_ms);
   if (pending_abort_ && now_ms >= next_abort_ms_) {
     const cal::Abort a = *pending_abort_;
@@ -157,6 +160,7 @@ std::optional<cal::CalMsg> CalSession::due_mav(uint64_t now_ms) {
 
 void CalSession::on_cal_frame(int card, const cal::CalFrameInfo& f, int rssi_dbm, bool crc_ok,
                               size_t air_bytes, uint64_t now_ms) {
+  now_ms = advance(now_ms);
   step(now_ms);
   if (card < 0 || card > 1 || f.rate > 7) return;
   if (state_ == State::AwaitAck) {
@@ -193,6 +197,7 @@ void CalSession::on_cal_frame(int card, const cal::CalFrameInfo& f, int rssi_dbm
 }
 
 bool CalSession::radio_silent(uint64_t now_ms) const {
+  now_ms = std::max(now_ms, now_);
   if (state_ == State::Sweep || state_ == State::AwaitDone || state_ == State::Verify)
     return now_ms < window_end_ms_;
   return false;

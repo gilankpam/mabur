@@ -549,6 +549,30 @@ TEST(a_capacity_sweep_that_lost_every_point_writes_nothing) {
   for (size_t r = 0; r < 8; ++r) CHECK(s.snapshot().width[0].eff_x1000[r] == 0);
 }
 
+TEST(a_receive_stamp_older_than_the_last_tick_fires_no_timeout) {
+  // on_mav and on_cal_frame run with receive-thread stamps, which can be
+  // older than the core loop's tick the session has already seen. Time in
+  // the session never runs backwards, so neither the ack nor the apply
+  // timeout reads an old stamp as a huge elapsed time.
+  CalSession s(CalSessionCfg{});
+  s.set_peer(true, true);
+  std::string err;
+  REQUIRE(s.start(21, {{Kind::Power, 20}}, 1000, &err));
+  REQUIRE(as<cal::SweepCmd>(s.due_mav(1005)).has_value());
+  s.on_mav(cal::SweepDone{}, 999);  // not this state's; only the stamp matters
+  CHECK(s.state() == State::AwaitAck);
+  s.on_cal_frame(0, stamp(Kind::Verify, 0, 0, 20, kFlags), -60, true, kPowerAir, 998);
+  CHECK(s.state() == State::AwaitAck);
+
+  ack(s, 21, 0, 2000);
+  feed_power(s, 20, kWalls, 2010);
+  s.on_mav(power_done(21, 0), 2020);
+  REQUIRE(as<cal::ApplyCmd>(s.due_mav(2030)).has_value());
+  REQUIRE(s.state() == State::Apply);
+  s.on_mav(cal::SweepAck{}, 2001);  // older than the apply began
+  CHECK(s.state() == State::Apply);
+}
+
 TEST(done_sends_three_aborts_so_the_drone_resumes_at_once) {
   // The drone otherwise sits in its await window (power parked, video
   // off) until it times out; its close keeps the written config. Three

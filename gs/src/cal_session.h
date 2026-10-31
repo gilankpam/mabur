@@ -164,6 +164,14 @@ class CalSession {
   uint16_t cell_received(uint8_t rate, int idx, int card) const;
 
  private:
+  // The session's clock: the latest stamp any entry point has seen. The
+  // receive path stamps frames and replies on its own thread, so a stamp
+  // can be older than a tick already seen; every entry point advances this
+  // first and works from it, so elapsed-time checks never underflow.
+  uint64_t advance(uint64_t now_ms) {
+    if (now_ms > now_) now_ = now_ms;
+    return now_;
+  }
   void step(uint64_t now_ms);
   void step_picking(uint64_t now_ms);
   void finish_pick(const char* pick, uint64_t now_ms);
@@ -204,6 +212,7 @@ class CalSession {
   mabur::cal::SweepCmd cmd_{};  // the running sweep's command
 
   // Picking.
+  uint64_t now_ = 0;  // see advance()
   uint64_t pick_start_ms_ = 0;
   bool reloc_ordered_ = false;
   uint8_t reloc_to_ = 0;
