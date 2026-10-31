@@ -204,6 +204,12 @@ writes them to the drone's `/etc/mabur.toml` (backing the old file up to
 `.pre-cal`) and flips `power_mode` to `"offset"` itself — the walls fly
 when the run ends, the efficiency tables from the next `maburd` start; no
 laptop-side step.
+
+`/etc/maburgs.toml` and `/etc/maburplay.toml` are, likewise, no longer
+only edited by hand: both daemons write their own config file back when
+an operator changes a live key over their loopback `set`/`get` listener
+(`127.0.0.1:8402`, `127.0.0.1:8403` — `docs/gs-live-config.md`), backing
+the previous file up to `.pre-live` the same way, once per daemon run.
 ⚠ `"none"` also skips the `SetTxPowerOffsetQdb(0)` beside the plan, so a
 global offset left in the chip by a bench tool survives a `maburd` restart;
 power-cycle if you need a known baseline.

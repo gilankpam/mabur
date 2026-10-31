@@ -26,6 +26,11 @@ The H618's 3×4 is derived from `kColorTrans3` at startup, so a retune needs
 no extra edit there; a retune to `gamma != 1` is not affine and leaves the
 H618 flat (logged).
 
+`colortrans.enable` is also one of maburplay's live keys
+(`127.0.0.1:8403` — `docs/gs-live-config.md`): since the LUT/CTM setters
+above are call-once per presenter, a live toggle recreates the presenter
+rather than flipping a flag on the running one.
+
 The ct thread also SCALES: the burned DVR's picture is the recording's own
 size (`dvr.burned.size`, default the decoded size when the recording
 starts), and every frame of another size is scaled to it — the encoder

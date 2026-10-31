@@ -357,6 +357,15 @@ reach it.
   interfered pin is reported (`hop.verdict`, the OSD) and stays. The
   controller is never handed a reactive trigger in any arm of the core's
   dispatch (cleared once, before the arms; the relocation arm re-arms it).
+- **Live pin/auto** (`ChannelCore::set_pin`/`set_auto`, driven by a live
+  `set radio.channel` over `127.0.0.1:8402` — `docs/gs-live-config.md`):
+  linked, a live pin moves the link exactly like a boot-time pin — the
+  boot pick's own relocate order, reason `pin`, landed by the confirm with
+  no verify window; a relocate that fails leaves the GS pinned and still
+  on the channel the link is on. Unlinked, op commits to the pin at once
+  (M commit). `set_auto` withdraws a pin relocate not yet handed to the
+  controller, and reopens the pick only when unlinked — its
+  `radio.scan.max_ms` clock counts from the reopen, not from GS start.
 - A confirmed hop of either kind moves `want` with `op`: a reactive hop's
   destination is where the link should live from then on, so a later
   link-up does not relocate back onto the channel it fled.
@@ -493,6 +502,11 @@ onto `want` (above), and — in auto mode only — the reactive hop
 (`docs/inflight-channel-hop.md`), off an `interfered` verdict. The reactive
 hop's candidate list is `radio.channels` and its exhaustion path holds
 rather than falling back anywhere — see that page's §1, §3, §5 and §7.
+
+A live `set radio.channel` (above) reopens or closes this door at once:
+pinning turns the reactive hop off for as long as the pin holds, and
+`set_auto` turns it back on with no reopened pick needed while linked —
+the in-flight thread picks the reactive hop back up on its next tick.
 
 ## Observability
 

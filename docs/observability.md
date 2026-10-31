@@ -342,6 +342,25 @@ fields once per `drone.tlm_seq` (`flightreport.py` does).
 - `sys.{soc_temp_c, cpu_pct}` (`cpu_pct` null on the first tick after a
   maburd start).
 
+## Live config control (8402/8403)
+
+Next to `CalControl` (`127.0.0.1:8400`) and `RecControl` (`127.0.0.1:8401`),
+both GS daemons carry a loopback `set`/`get` listener for a small table of
+config keys: `maburgs` on `127.0.0.1:8402`, `maburplay` on
+`127.0.0.1:8403`. A `set` applies to the running process and, once
+accepted, writes through to the daemon's own TOML file (`.pre-live`
+backup, once per run); `get` always answers from the live copy. Each
+accepted or refused `set` logs one line:
+
+```
+<daemon>: cfg set <key> = <value> -> ok (<ms> ms)
+<daemon>: cfg set <key> = <value> -> err <reason> (<ms> ms)
+```
+
+`debug_log.enable` is one of the live keys, so a session can be opened or
+closed without a restart. Full reference, the two key tables, and the
+bench driver (`tools/bench/gsparam.py`): `docs/gs-live-config.md`.
+
 ## Debug-log session directory
 
 maburgs writes a per-session directory when `debug_log.enable` is set
