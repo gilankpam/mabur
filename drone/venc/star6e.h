@@ -3,6 +3,7 @@
 #define STAR6E_PLATFORM_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 
@@ -452,6 +453,7 @@ typedef struct {
 	MI_U32 u32MaxPSize;
 	MI_U32 u32MinStillPercent;
 	MI_U32 u32MaxStillQp;
+	MI_U32 u32MotionSensitivity;
 } MI_VENC_ParamH264Avbr_t;
 
 typedef struct {
@@ -485,6 +487,7 @@ typedef struct {
 	MI_U32 u32MaxPSize;
 	MI_U32 u32MinStillPercent;
 	MI_U32 u32MaxStillQp;
+	MI_U32 u32MotionSensitivity;
 } MI_VENC_ParamH265Avbr_t;
 
 typedef struct {
@@ -506,16 +509,16 @@ typedef struct {
 		MI_VENC_ParamH265Avbr_t stParamH265Avbr;
 	};
 	void *pRcParam;
-	/* libmi_venc.so Get/SetRcParam copy 56 bytes, one word more than the
-	 * fields above: without it GetRcParam writes past the caller's struct
-	 * and SetRcParam reads past it. Where the SDK puts that word is not
-	 * known; callers only Get, edit the H.265 CBR fields and Set, so it
-	 * round-trips unchanged. */
-	MI_U32 u32SdkTail;
 } MI_VENC_RcParam_t;
+/* libmi_venc.so Get/SetRcParam copy 56 bytes. The word this header used to
+ * miss is u32MotionSensitivity, the last field of both AVBR structs in the
+ * SigmaStar header (mi_venc_datatype.h, infinity6e): it makes the union 40
+ * bytes, so pRcParam sits at offset 52, as the library has it. */
 #if defined(PLATFORM_STAR6E)
 _Static_assert(sizeof(void *) != 4 || sizeof(MI_VENC_RcParam_t) == 56,
 	"MI_VENC_RcParam_t: libmi_venc.so Get/SetRcParam copy 56");
+_Static_assert(sizeof(void *) != 4 || offsetof(MI_VENC_RcParam_t, pRcParam) == 52,
+	"MI_VENC_RcParam_t: pRcParam at the SDK offset");
 #endif
 
 /* Rate control priority — determines whether the encoder RC engine prioritises
