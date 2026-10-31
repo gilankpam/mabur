@@ -9,7 +9,7 @@ typedef struct __mavlink_mabur_cal_applied_t {
  uint8_t seq; /*<  Echoes the apply's sweep seq.*/
  uint8_t bw; /*<  Echoes the bandwidth the apply targeted.*/
  uint8_t ok; /*<  1 if the table was adopted, 0 otherwise.*/
- char reason[50]; /*<  Human-readable refusal reason, empty on success.*/
+ char reason[50]; /*<  Why the drone refused; on success empty, or a note of what it kept that the apply did not carry.*/
 } mavlink_mabur_cal_applied_t;
 
 #define MAVLINK_MSG_ID_MABUR_CAL_APPLIED_LEN 57
@@ -57,7 +57,7 @@ typedef struct __mavlink_mabur_cal_applied_t {
  * @param seq  Echoes the apply's sweep seq.
  * @param bw  Echoes the bandwidth the apply targeted.
  * @param ok  1 if the table was adopted, 0 otherwise.
- * @param reason  Human-readable refusal reason, empty on success.
+ * @param reason  Why the drone refused; on success empty, or a note of what it kept that the apply did not carry.
  * @return length of the message in bytes (excluding serial stream start sign)
  */
 static inline uint16_t mavlink_msg_mabur_cal_applied_pack(uint8_t system_id, uint8_t component_id, mavlink_message_t* msg,
@@ -96,7 +96,7 @@ static inline uint16_t mavlink_msg_mabur_cal_applied_pack(uint8_t system_id, uin
  * @param seq  Echoes the apply's sweep seq.
  * @param bw  Echoes the bandwidth the apply targeted.
  * @param ok  1 if the table was adopted, 0 otherwise.
- * @param reason  Human-readable refusal reason, empty on success.
+ * @param reason  Why the drone refused; on success empty, or a note of what it kept that the apply did not carry.
  * @return length of the message in bytes (excluding serial stream start sign)
  */
 static inline uint16_t mavlink_msg_mabur_cal_applied_pack_status(uint8_t system_id, uint8_t component_id, mavlink_status_t *_status, mavlink_message_t* msg,
@@ -138,7 +138,7 @@ static inline uint16_t mavlink_msg_mabur_cal_applied_pack_status(uint8_t system_
  * @param seq  Echoes the apply's sweep seq.
  * @param bw  Echoes the bandwidth the apply targeted.
  * @param ok  1 if the table was adopted, 0 otherwise.
- * @param reason  Human-readable refusal reason, empty on success.
+ * @param reason  Why the drone refused; on success empty, or a note of what it kept that the apply did not carry.
  * @return length of the message in bytes (excluding serial stream start sign)
  */
 static inline uint16_t mavlink_msg_mabur_cal_applied_pack_chan(uint8_t system_id, uint8_t component_id, uint8_t chan,
@@ -216,7 +216,7 @@ static inline uint16_t mavlink_msg_mabur_cal_applied_encode_status(uint8_t syste
  * @param seq  Echoes the apply's sweep seq.
  * @param bw  Echoes the bandwidth the apply targeted.
  * @param ok  1 if the table was adopted, 0 otherwise.
- * @param reason  Human-readable refusal reason, empty on success.
+ * @param reason  Why the drone refused; on success empty, or a note of what it kept that the apply did not carry.
  */
 #ifdef MAVLINK_USE_CONVENIENCE_FUNCTIONS
 
@@ -333,7 +333,7 @@ static inline uint8_t mavlink_msg_mabur_cal_applied_get_ok(const mavlink_message
 /**
  * @brief Get field reason from mabur_cal_applied message
  *
- * @return  Human-readable refusal reason, empty on success.
+ * @return  Why the drone refused; on success empty, or a note of what it kept that the apply did not carry.
  */
 static inline uint16_t mavlink_msg_mabur_cal_applied_get_reason(const mavlink_message_t* msg, char *reason)
 {

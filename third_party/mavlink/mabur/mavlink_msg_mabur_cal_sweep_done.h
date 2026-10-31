@@ -8,7 +8,7 @@ typedef struct __mavlink_mabur_cal_sweep_done_t {
  uint32_t nonce; /*<  Echoes the sweep's nonce.*/
  uint32_t offered[8]; /*<  Frames offered per cell.*/
  uint8_t seq; /*<  Echoes the sweep's seq.*/
- uint8_t blocked_pct[8]; /*<  Blocked-frame percentage per cell.*/
+ uint8_t blocked_pct[8]; /*<  Per rate, the share of the capacity dwell (percent) the drone's sender spent blocked on the device; 0 for a power sweep.*/
 } mavlink_mabur_cal_sweep_done_t;
 
 #define MAVLINK_MSG_ID_MABUR_CAL_SWEEP_DONE_LEN 45
@@ -54,7 +54,7 @@ typedef struct __mavlink_mabur_cal_sweep_done_t {
  * @param nonce  Echoes the sweep's nonce.
  * @param seq  Echoes the sweep's seq.
  * @param offered  Frames offered per cell.
- * @param blocked_pct  Blocked-frame percentage per cell.
+ * @param blocked_pct  Per rate, the share of the capacity dwell (percent) the drone's sender spent blocked on the device; 0 for a power sweep.
  * @return length of the message in bytes (excluding serial stream start sign)
  */
 static inline uint16_t mavlink_msg_mabur_cal_sweep_done_pack(uint8_t system_id, uint8_t component_id, mavlink_message_t* msg,
@@ -90,7 +90,7 @@ static inline uint16_t mavlink_msg_mabur_cal_sweep_done_pack(uint8_t system_id, 
  * @param nonce  Echoes the sweep's nonce.
  * @param seq  Echoes the sweep's seq.
  * @param offered  Frames offered per cell.
- * @param blocked_pct  Blocked-frame percentage per cell.
+ * @param blocked_pct  Per rate, the share of the capacity dwell (percent) the drone's sender spent blocked on the device; 0 for a power sweep.
  * @return length of the message in bytes (excluding serial stream start sign)
  */
 static inline uint16_t mavlink_msg_mabur_cal_sweep_done_pack_status(uint8_t system_id, uint8_t component_id, mavlink_status_t *_status, mavlink_message_t* msg,
@@ -129,7 +129,7 @@ static inline uint16_t mavlink_msg_mabur_cal_sweep_done_pack_status(uint8_t syst
  * @param nonce  Echoes the sweep's nonce.
  * @param seq  Echoes the sweep's seq.
  * @param offered  Frames offered per cell.
- * @param blocked_pct  Blocked-frame percentage per cell.
+ * @param blocked_pct  Per rate, the share of the capacity dwell (percent) the drone's sender spent blocked on the device; 0 for a power sweep.
  * @return length of the message in bytes (excluding serial stream start sign)
  */
 static inline uint16_t mavlink_msg_mabur_cal_sweep_done_pack_chan(uint8_t system_id, uint8_t component_id, uint8_t chan,
@@ -204,7 +204,7 @@ static inline uint16_t mavlink_msg_mabur_cal_sweep_done_encode_status(uint8_t sy
  * @param nonce  Echoes the sweep's nonce.
  * @param seq  Echoes the sweep's seq.
  * @param offered  Frames offered per cell.
- * @param blocked_pct  Blocked-frame percentage per cell.
+ * @param blocked_pct  Per rate, the share of the capacity dwell (percent) the drone's sender spent blocked on the device; 0 for a power sweep.
  */
 #ifdef MAVLINK_USE_CONVENIENCE_FUNCTIONS
 
@@ -307,7 +307,7 @@ static inline uint16_t mavlink_msg_mabur_cal_sweep_done_get_offered(const mavlin
 /**
  * @brief Get field blocked_pct from mabur_cal_sweep_done message
  *
- * @return  Blocked-frame percentage per cell.
+ * @return  Per rate, the share of the capacity dwell (percent) the drone's sender spent blocked on the device; 0 for a power sweep.
  */
 static inline uint16_t mavlink_msg_mabur_cal_sweep_done_get_blocked_pct(const mavlink_message_t* msg, uint8_t *blocked_pct)
 {

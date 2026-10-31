@@ -10,7 +10,7 @@ typedef struct __mavlink_mabur_cal_sweep_t {
  uint16_t settle_ms; /*<  Settle time before sampling a cell, in milliseconds.*/
  uint16_t gap_us; /*<  Gap between frames within a cell, in microseconds.*/
  uint16_t dwell_ms; /*<  Dwell time per capacity point, in milliseconds.*/
- uint8_t seq; /*<  Frame sequence within the sweep, for duplicate/reorder detection.*/
+ uint8_t seq; /*<  The sweep's position in the run; the drone is idempotent by (nonce, seq).*/
  uint8_t kind; /*<  Which sweep to run.*/
  uint8_t bw; /*<  Channel bandwidth (MHz) the sweep flies at.*/
  int8_t idx_lo; /*<  Low end of the rel power index range swept.*/
@@ -72,7 +72,7 @@ typedef struct __mavlink_mabur_cal_sweep_t {
  * @param msg The MAVLink message to compress the data into
  *
  * @param nonce  Session nonce; the drone echoes it on every reply for this sweep.
- * @param seq  Frame sequence within the sweep, for duplicate/reorder detection.
+ * @param seq  The sweep's position in the run; the drone is idempotent by (nonce, seq).
  * @param kind  Which sweep to run.
  * @param bw  Channel bandwidth (MHz) the sweep flies at.
  * @param frames_per_cell  Frames transmitted per power/verify cell.
@@ -131,7 +131,7 @@ static inline uint16_t mavlink_msg_mabur_cal_sweep_pack(uint8_t system_id, uint8
  * @param msg The MAVLink message to compress the data into
  *
  * @param nonce  Session nonce; the drone echoes it on every reply for this sweep.
- * @param seq  Frame sequence within the sweep, for duplicate/reorder detection.
+ * @param seq  The sweep's position in the run; the drone is idempotent by (nonce, seq).
  * @param kind  Which sweep to run.
  * @param bw  Channel bandwidth (MHz) the sweep flies at.
  * @param frames_per_cell  Frames transmitted per power/verify cell.
@@ -193,7 +193,7 @@ static inline uint16_t mavlink_msg_mabur_cal_sweep_pack_status(uint8_t system_id
  * @param chan The MAVLink channel this message will be sent over
  * @param msg The MAVLink message to compress the data into
  * @param nonce  Session nonce; the drone echoes it on every reply for this sweep.
- * @param seq  Frame sequence within the sweep, for duplicate/reorder detection.
+ * @param seq  The sweep's position in the run; the drone is idempotent by (nonce, seq).
  * @param kind  Which sweep to run.
  * @param bw  Channel bandwidth (MHz) the sweep flies at.
  * @param frames_per_cell  Frames transmitted per power/verify cell.
@@ -291,7 +291,7 @@ static inline uint16_t mavlink_msg_mabur_cal_sweep_encode_status(uint8_t system_
  * @param chan MAVLink channel to send the message
  *
  * @param nonce  Session nonce; the drone echoes it on every reply for this sweep.
- * @param seq  Frame sequence within the sweep, for duplicate/reorder detection.
+ * @param seq  The sweep's position in the run; the drone is idempotent by (nonce, seq).
  * @param kind  Which sweep to run.
  * @param bw  Channel bandwidth (MHz) the sweep flies at.
  * @param frames_per_cell  Frames transmitted per power/verify cell.
@@ -415,7 +415,7 @@ static inline uint32_t mavlink_msg_mabur_cal_sweep_get_nonce(const mavlink_messa
 /**
  * @brief Get field seq from mabur_cal_sweep message
  *
- * @return  Frame sequence within the sweep, for duplicate/reorder detection.
+ * @return  The sweep's position in the run; the drone is idempotent by (nonce, seq).
  */
 static inline uint8_t mavlink_msg_mabur_cal_sweep_get_seq(const mavlink_message_t* msg)
 {
