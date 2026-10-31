@@ -4,7 +4,9 @@
 is `docs/gs-live-config.md`. Both GS boards passed, the Orange Pi Zero 2W
 first and then the Radxa ZERO 3, on the same day. The Radxa run used the
 two fixes made after the Orange Pi run (the `gsparam.py` ladder count and
-the submit-time pin check).
+the submit-time pin check). An operator check on the Radxa followed: an
+HDMI replug left the screen dark, the player now rebuilds the presenter on
+a replug, and the screen checks of colortrans and the GS overlay passed.
 
 The gate is the same on both boards: every live key away and back on both
 daemons, the `flushes=` count per presenter rebuild, a recording across
@@ -202,13 +204,51 @@ something stale. That was not chased further here.
   daemon run wrote one at its first publish, and after the power cycle
   they held the bench's pinned state, so both were deleted.
 
+## Operator checks on the Radxa
+
+Run after the gate, with the operator watching the screen, the drone
+linked and the player at 2560x1440@99.95.
+
+- **HDMI replug.** With the gate's build, unplugging and replugging HDMI
+  left the screen dark for good. The player kept flipping (`present=60`,
+  vsync locked, `flushes=` unchanged), the connector read `connected`
+  again, and the kernel logged `dwhdmi-rockchip … ddc read failed` /
+  `ddc write failed` and re-applied the mode clock. A live
+  `colortrans.enable` false → true (two presenter rebuilds) brought the
+  picture back at once. So the sink is not re-lit by the retained KMS
+  state after a replug, and a fresh presenter's full modeset is enough.
+  Before this the player never reacted to a replug after its first
+  acquire. The branch now rebuilds the presenter when the connector reads
+  disconnected and then connected (`display_watch`, documented in
+  `docs/observability.md`). With that build, two replug cycles each
+  logged `display disconnected -- rebuilding the display when it
+  reconnects` then `display reconnected -- rebuilding on
+  2560x1440@99.95`, one rebuild each (`flushes=2`), video came back each
+  time, same pid.
+- **Screen checks**, one set at a time, the operator answering after each:
+  - `colortrans.enable = false` (389 ms, one rebuild): video back after
+    the blink, colours visibly uncorrected, OSD text and icons in normal
+    colours (not inverted).
+  - `colortrans.enable = true` (532 ms): colours back as at the start,
+    OSD not double-inverted.
+  - `osd.enable = false` (26 ms, in place, `flushes=` unchanged): not
+    judged by eye, since the bench drone has no flight controller and so
+    the MSP overlay has nothing to draw.
+  - `osd.gs.enable = false` (498 ms, `flushes=` 4 → 5, no OSD plane left):
+    video back after one blink, the GS bar fully gone with no residue,
+    colours still corrected.
+  - `osd.gs.enable = true` (475 ms, `flushes=` 5 → 6): video back, the bar
+    in its place, fully drawn and updating, its colours right.
+  - `osd.enable = true` restored; `/config/maburplay.toml` ended identical
+    to its pre-bench copy.
+
 ## Not covered
 
-- Anything that needs eyes on the screen: whether colortrans keeps the
-  picture flat/corrected across the toggle, the console-mode flash during
-  a recreate, whether the OSD planes visibly come back, and what the
-  burned recordings show (OSD drawn in, colour) beyond decoding clean.
-- HDMI unplug/replug.
+- On the Orange Pi, anything that needs eyes on the screen (plane CTM
+  colours, the primary-plane OSD coming back) and an HDMI replug.
+- The MSP flight OSD on screen (no flight controller on the bench drone),
+  the console-mode flash during a rebuild, and what the burned recordings
+  show (OSD drawn in, colour) beyond decoding clean.
 - The pre-check's other refusals on hardware: `hop in flight` (needs an
   interference hop, so the jammer) and `calibration running` (a maburcal
   run writes the drone's config). Only `relocate in flight` was hit.
@@ -222,11 +262,13 @@ something stale. That was not chased further here.
     `/config/*.pre-livebench`. The applier's `.pre-live` files are
     alongside.
   - The bench link key is installed.
-- GS (Radxa): runs the branch binaries built at `ff1df984` (stage 6).
+- GS (Radxa): runs the branch maburgs built at `ff1df984` and the maburplay
+  with the replug rebuild (`3aa5ab7f`), both stage 6.
   - Rollbacks: `/usr/local/bin/maburgs.pre-livebench` and
     `maburplay.pre-livebench` (the builds it ran before).
   - Configs: byte-identical to their pre-bench copies, kept as
     `/etc/maburgs.toml.pre-livebench` and
-    `/config/maburplay.toml.pre-livebench`. No `.pre-live` files.
+    `/config/maburplay.toml.pre-livebench`. The operator checks' sets wrote
+    the player's `.pre-live` (the pre-check content).
   - The bench link key is installed, as it was before the run.
 - Drone: powered off.
