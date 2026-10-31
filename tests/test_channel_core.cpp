@@ -1389,6 +1389,20 @@ TEST(cal_pick_scores_a_pair_by_its_worse_half_and_needs_every_half) {
   for (const auto& r : out.rows) CHECK(r.visits == 1);
 }
 
+TEST(cal_pick_a_candidate_without_a_busy_reading_never_outranks_one_with) {
+  // 112's lower half has no NHM busy reading: scored on foreign alone it
+  // would read 0 and beat 144's pair (5 frames + 10 %) on a term the others
+  // pay and it does not. While any candidate has a busy reading, one
+  // without is not eligible.
+  const std::vector<CalReading> h = {
+      {60, 10, true, 20.0}, {64, 10, true, 20.0}, {108, 0, false, 0.0},
+      {112, 0, true, 0.0},  {140, 5, true, 10.0}, {144, 5, true, 10.0}};
+  CHECK(cal_round_pick(h, CalReading{40, 100, true, 30.0}, 40, kSet, 40, 20, 50.0).best == 144);
+  // With no busy reading anywhere, foreign alone still ranks them.
+  const auto f = halves_with({{60, 50}, {64, 50}, {108, 0}, {112, 0}, {140, 5}, {144, 5}});
+  CHECK(cal_round_pick(f, CalReading{40, 100}, 40, kSet, 40, 20, 50.0).best == 112);
+}
+
 TEST(cal_pick_width_20_compares_members) {
   const std::vector<uint8_t> set{36, 40, 44};
   const auto h = halves_with({{40, 90}, {44, 0}});

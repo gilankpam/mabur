@@ -460,7 +460,10 @@ card (two or more cards, not relay-only); pinned and one-card GSs run on
   measure alike: decoded foreign frames plus NHM foreign busy %, the busy
   term only when both sides have a reading (the `cca − own` term is
   dropped: under A-MPDU video it clamps to 0 on `op`). A pair scores as
-  its worse half and needs a reading on both. Leaving `op` takes beating
+  its worse half and needs a reading on both. A candidate with no busy
+  reading is not ranked while any candidate has one (scored on foreign
+  frames alone it would beat the candidates that pay the busy term).
+  Leaving `op` takes beating
   it by `pick_margin` in every tier; a blocked candidate never replaces an
   unblocked `op`. Logged as a `K` record with the round's scores and
   `maburgs channel: calibration measure picks <best> (op <op>[ unread:

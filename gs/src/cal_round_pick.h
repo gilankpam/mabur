@@ -16,10 +16,11 @@
 //
 // score = foreign + busy % (one unit per frame, one per percentage point;
 // the busy term only when both sides being compared have a reading). A
-// candidate pair scores as its worse half. Leaving op takes beating it by
-// `margin` in every tier: a blocked candidate never replaces an unblocked
-// op, and a candidate that is unblocked while op is blocked still has to be
-// `margin` better. Op unread, or no candidate read on every half: stay.
+// candidate pair scores as its worse half, and a candidate with no busy
+// reading is not ranked while any candidate has one. Leaving op takes
+// beating it by `margin` in every tier: a blocked candidate never replaces
+// an unblocked op, and a candidate that is unblocked while op is blocked
+// still has to be `margin` better. Op unread, or no candidate read on every half: stay.
 // Both rules lean toward staying where the link already works.
 #include <algorithm>
 #include <cmath>
@@ -119,6 +120,16 @@ inline CalPickOut cal_round_pick(const std::vector<CalReading>& halves,
   if (!op_read) return out;
   Side o{true, op_read->foreign, op_read->busy_valid, op_read->busy_valid ? op_read->busy_pct : 0.0};
 
+  // A candidate with no busy reading would score on foreign alone, a term
+  // short of what the others pay: it is not eligible while any candidate
+  // has a busy reading.
+  bool any_busy = false;
+  for (uint8_t c : set) {
+    if (c == op) continue;
+    const Side s = member_side(halves, c, width_mhz);
+    if (s.ok && s.busy_valid) any_busy = true;
+  }
+
   // Best candidate: unblocked first, then score, then config order.
   std::optional<uint8_t> best;
   Side bs;
@@ -126,6 +137,7 @@ inline CalPickOut cal_round_pick(const std::vector<CalReading>& halves,
     if (c == op) continue;
     const Side s = member_side(halves, c, width_mhz);
     if (!s.ok) continue;
+    if (any_busy && !s.busy_valid) continue;
     if (!best) {
       best = c;
       bs = s;

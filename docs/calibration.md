@@ -108,7 +108,8 @@ Before the first sweep the GS puts the pair on the quietest member of
   verdict's live window instead. Both sides are scored on the terms that
   mean the same thing on either instrument: decoded foreign frames per
   `radio.scan.dwell_ms` plus NHM foreign busy %. A pair scores as its
-  worse half; leaving op takes beating it by `radio.scan.pick_margin` in
+  worse half, and a candidate without a busy reading is not ranked while
+  any has one; leaving op takes beating it by `radio.scan.pick_margin` in
   every tier, and a blocked candidate never replaces an unblocked op; op
   unread means stay. When the best member is not op, the GS orders the
   boot pick's relocate (scan.log `H relocate … cal`, no verify window —
