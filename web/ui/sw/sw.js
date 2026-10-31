@@ -15,7 +15,7 @@ function shouldRegister({ isolated, controllerUrl, ownUrl }) {
 // hashed build assets are cache-first (a gh-pages deploy prunes old hashed
 // files, so racing a fast 404 against the cache must never win); navigations
 // get the 3 s network-first timeout; everything else (webgs.js/.wasm,
-// font_btfl.png, ...) is network-first with no timeout.
+// fonts/*.png, ...) is network-first with no timeout.
 function fetchStrategy({ url, mode, scope }) {
   if (mode === 'navigate') return 'network-timeout';
   if (url.startsWith(scope + 'assets/')) return 'cache-first';
@@ -46,7 +46,7 @@ if (typeof window === 'undefined') {
     // complete cache stay in control, and the browser retries this install
     // on a later navigation.
     // cache: 'reload' bypasses the HTTP cache -- fixed-name files (index.html,
-    // webgs.js/.wasm, font_btfl.png) are served by GitHub Pages with
+    // webgs.js/.wasm, fonts/btfl.png) are served by GitHub Pages with
     // max-age=600, and a worker installing within that window could otherwise
     // precache a stale index.html against this build's asset hashes, or a
     // mismatched webgs.js/webgs.wasm pair.
@@ -59,20 +59,21 @@ if (typeof window === 'undefined') {
     })());
   });
 
-    self.addEventListener('activate', (event) => event.waitUntil((async () => {
+  self.addEventListener('activate', (event) => event.waitUntil((async () => {
     const cache = await caches.open(CACHE);
     const fontsPrefix = SCOPE + 'fonts/';
-    // OSD fonts other than the default are cached lazily (only when a user picks one),
-    // so a new build's cache starts without them. Carry them over from the old caches
-    // (newest first, so the newest copy wins) before those are deleted, otherwise a
-    // user who had a font loses it on every deploy and has none on their first offline
-    // session. A file the new build already precached is left alone.
+    // OSD font atlases other than Betaflight's are cached lazily (only when a user picks
+    // one), so a new build's cache starts without them. Carry them over from the old
+    // caches (newest first, so the newest copy wins) before those are deleted, otherwise
+    // a user who had a font loses it on every deploy and has none on their first offline
+    // session. fonts/index.json and fonts/btfl.png are precached by every build, so they
+    // need no carrying, and a file the new build already precached is left alone.
     for (const k of (await caches.keys()).reverse()) {
       if (!k.startsWith(PREFIX) || k === CACHE) continue;
       try {
         const old = await caches.open(k);
         for (const req of await old.keys()) {
-          if (!req.url.startsWith(fontsPrefix) || !(req.url.endsWith('.png') || req.url === fontsPrefix + 'index.json')) continue;
+          if (!req.url.startsWith(fontsPrefix) || !req.url.endsWith('.png')) continue;
           if (await cache.match(req)) continue;
           const res = await old.match(req);
           if (res) await cache.put(req, res);
@@ -135,7 +136,7 @@ if (typeof window === 'undefined') {
     }
   }
 
-  // Everything else (webgs.js/.wasm, font_btfl.png, ...): network first, no
+  // Everything else (webgs.js/.wasm, fonts/*.png, ...): network first, no
   // timeout; fall back to the cache on a network error OR a non-ok response
   // (e.g. a mismatched webgs.wasm 404ing against a fresher webgs.js) when a
   // cached copy exists; otherwise the network result stands.
