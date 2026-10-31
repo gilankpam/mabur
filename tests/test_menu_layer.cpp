@@ -1,5 +1,6 @@
 #include "mtest.h"
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -63,6 +64,10 @@ MenuView sample() {
   v.help = "Pick the camera mode.";
   v.keys = "▶ change · ◀ back";
   return v;
+}
+
+bool intersects(const DirtyRect& a, const DirtyRect& b) {
+  return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 }
 
 bool inside(const DirtyRect& in, const DirtyRect& out) {
@@ -341,6 +346,61 @@ TEST(banner_and_toast_draw_with_the_menu_closed) {
   CHECK(m.paint(c.s, &out) == 1);
   CHECK(!c.any_in(toast));
   CHECK(c.any_in(banner));
+}
+
+TEST(an_open_menu_moves_the_banner_off_the_panel_and_picker) {
+  Canvas c(1920, 1080);
+  MenuLayer m(font());
+  std::string err;
+  REQUIRE(m.layout(1920, 1080, &err));
+  const std::string banner =
+      "⚠ Camera 90 fps — this display has no 90 Hz mode. Showing at 60 Hz (judder).";
+  auto banner_box = [](const std::vector<DirtyRect>& out) { return out.back(); };
+
+  // Closed: at 12 % down.
+  MenuView closed;
+  closed.banner = banner;
+  m.set_view(closed);
+  std::vector<DirtyRect> out;
+  REQUIRE(m.paint(c.s, &out) == 1);
+  const DirtyRect at_top = banner_box(out);
+  CHECK(at_top.y == (int)std::lround(0.12 * 1080));
+
+  // Open with a picker up: below both, clear of each.
+  MenuView open = sample();
+  open.banner = banner;
+  open.picker = MenuView::Picker::kChoices;
+  open.choices = {{"60", "60 fps", "", true}, {"90", "90 fps", "judder", true}};
+  open.picker_cursor = 0;
+  open.picker_current = 1;
+  m.set_view(open);
+  out.clear();
+  m.paint(c.s, &out);
+  const DirtyRect p = m.debug_panel_box(), k = m.debug_picker_box();
+  const DirtyRect b = banner_box(out);
+  CHECK(b.w > 0 && b.h > 0);
+  CHECK(!intersects(b, p));
+  CHECK(!intersects(b, k));
+  CHECK(std::abs((b.x + b.w / 2) - 960) <= 1);
+  CHECK(b.y + b.h <= 1080 - 90);
+  // The old banner box was erased where nothing else now draws: its top
+  // rows sit inside neither the panel, the picker nor the new banner.
+  bool erased = false;
+  for (const DirtyRect& r : out) erased |= r.x == at_top.x && r.y == at_top.y &&
+                                           r.w == at_top.w && r.h == at_top.h;
+  CHECK(erased);
+  const int probe_x = std::max(k.x + k.w, at_top.x) + 1;
+  if (probe_x < at_top.x + at_top.w) CHECK(c.at(probe_x, at_top.y) == 0u);
+
+  // Closed again: back at 12 %, the open-menu position erased.
+  m.set_view(closed);
+  out.clear();
+  m.paint(c.s, &out);
+  CHECK(banner_box(out).y == at_top.y);
+  CHECK(!intersects(b, at_top));
+  CHECK(!c.any_in(b));
+  const int below = at_top.y + at_top.h;
+  CHECK(!c.any_in(DirtyRect{p.x, below, p.w, p.y + p.h - below}));
 }
 
 TEST(clean_air_bars_follow_the_bands) {

@@ -27,6 +27,7 @@ constexpr double kNoteGap = 16;       // a choice to its note
 constexpr double kBoxPadY = 4;        // picker top/bottom margin
 constexpr double kToastBottom = 90;   // above the GS bar's two rows
 constexpr double kBannerTop = 0.12;   // of the screen height
+constexpr double kBannerGap = 12;     // an open menu's boxes to the banner below them
 constexpr size_t kMaxRows = 10;
 constexpr int kHelpLines = 2;
 constexpr int kConfirmLines = 4;
@@ -229,6 +230,8 @@ void MenuLayer::rebuild_() {
       build_picker_(p.x + p.w + sc_(kPickerGap), p.y, &target_[kPicker]);
     }
   }
+  // The banner last: while the menu is open it places itself below the
+  // panel and picker built above.
   if (!view_.toast.empty()) build_note_(view_.toast, false, &target_[kToast]);
   if (!view_.banner.empty()) build_note_(view_.banner, true, &target_[kBanner]);
 }
@@ -463,7 +466,18 @@ void MenuLayer::build_note_(const std::string& text, bool banner, Box* box) cons
   const int line_h = row_->glyph_h + sc_(kRowPadY);
   const int h = line_h * (int)lines.size();
   const int x = (screen_w_ - w) / 2;
-  int y = banner ? (int)std::lround(kBannerTop * screen_h_) : screen_h_ - sc_(kToastBottom) - h;
+  // The toast area: one line, its bottom kToastBottom above the screen's.
+  const int toast_top = screen_h_ - sc_(kToastBottom) - line_h;
+  int y = banner ? (int)std::lround(kBannerTop * screen_h_) : toast_top;
+  if (banner && view_.open) {
+    // An open menu owns the top-left: the banner (a display mismatch, say)
+    // is what the operator opened it to fix, so it moves below the panel
+    // and picker rather than covering their values -- and above the toast
+    // area when the panel reaches that far down.
+    const DirtyRect menu = union_of(target_[kPanel].rect(), target_[kPicker].rect());
+    y = menu.y + menu.h + sc_(kBannerGap);
+    if (y + h > toast_top) y = toast_top - sc_(kBannerGap) - h;
+  }
   const uint32_t rgb = banner ? tok::kStatusCaution : tok::kTextPrimary;
   for (const std::string& l : lines) {
     Block b{x, y, w, line_h, tok::kMenuPanel, {}, {}};

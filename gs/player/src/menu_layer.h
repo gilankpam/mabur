@@ -23,7 +23,9 @@ struct MaskAtlas;
 //           choices, a number spinner or a go-ahead prompt; no title
 //           line, the row it sits beside names it
 //   toast   one line, centred above the GS bar
-//   banner  centred near the top; shown with the menu closed too
+//   banner  centred near the top; shown with the menu closed too. While
+//           the menu is open it sits below the panel and picker (above
+//           the toast area if they reach that far) so it never covers them
 //
 // Every box is cut into horizontal blocks that tile it (the header, each
 // row, the strip under each row the busy sweep runs in, the help, the
