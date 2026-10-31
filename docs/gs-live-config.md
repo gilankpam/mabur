@@ -72,7 +72,7 @@ back: `false` then `true`, or `"auto"` then the channel.
 | `link.ladder` | array of inline tables | `VrxController::replace_ladder` | Rebuilds the ladder controller inside the session. The old rung's `{mcs, bw}` is looked up in the new ladder: present → restored to that index; absent → rung 0. A rung the loader would silently drop for being above `link.max_mcs` instead refuses the whole set (`rung <i> exceeds link.max_mcs`), rather than flying a ladder shorter than what was asked for. Also re-headers `ctl.log` — see below. |
 | `link.nack.enable` | bool | `NackTracker::set_enable` | Turning it off also clears the tracker's pending retransmit requests; its request counter is kept (not reset) so a later re-enable stays monotonic. |
 | `debug_log.enable` | bool | `DebugSession::enable`/`disable` + opening/closing the six per-session log files | A failing `enable` (the log root is unwritable, e.g. `/media/dvr` missing) reports `debug_log.dir <dir> unusable` and closes nothing, opens nothing — the running session, if any, is untouched. |
-| `msp.enable` | bool | build or drop the MAVLink tunnel's MSP sink | |
+| `msp.enable` | bool | build or drop the MSP OSD sink (the MSP stream's UDP feed to `maburplay`, `[msp.out]`) | |
 
 The ladder value is one line: an inline array of inline tables with
 exactly the four keys `mcs`, `bw`, `overhead_base`, `overhead_enh` in any
@@ -147,11 +147,12 @@ reading it as a missed latch.
 
 ## Threading
 
-Each daemon runs the apply on a dedicated worker thread (`mbr-cfgset` on
-`maburgs`, `mbr-plcfgset` on `maburplay`): it re-reads the file, patches
-and loads the candidate, and — once told to — publishes it, holding
-`lock_config_writes()` the whole time, from the re-read through the
-publish (and through any restore of the previous text).
+Each daemon does the file work on a dedicated worker thread (`mbr-cfgset`
+on `maburgs`, `mbr-plcfgset` on `maburplay`): it re-reads the file,
+patches and loads the candidate, and — once told to — publishes it,
+holding `lock_config_writes()` the whole time, from the re-read through
+the publish (and through any restore of the previous text). The apply
+itself runs on the owning thread, below.
 
 The **owning thread** — `maburgs`' core loop, `maburplay`'s housekeeping
 loop — is the one that actually changes the running process: it polls the

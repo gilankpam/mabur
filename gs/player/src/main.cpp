@@ -973,7 +973,8 @@ int main(int argc, char** argv) {
   };
   latch_rec();
   // The regulator line's flushes=/recstarts=: output parks (a ring flush, a
-  // decode-watchdog reset or recreate, a display hotplug, shutdown) and
+  // decode-watchdog reset or recreate, a display hotplug, a display
+  // rebuild for a live config set, shutdown) and
   // recorder starts, cumulative. Both disturb presentation for a few
   // frames, so a gate that counts missed latches (tools/bench/latchgate.py)
   // keys its exclusions on them. Housekeeping thread only.
