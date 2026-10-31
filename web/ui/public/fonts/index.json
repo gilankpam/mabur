@@ -1,5 +1,10 @@
 [
   {
+    "id": "btfl",
+    "name": "Betaflight",
+    "file": "fonts/btfl.png"
+  },
+  {
     "id": "paddy_green",
     "name": "PADDY green",
     "file": "fonts/paddy_green.png"
