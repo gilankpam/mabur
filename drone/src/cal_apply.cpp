@@ -5,6 +5,7 @@
 #include <cmath>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "config.h"
@@ -547,6 +548,7 @@ ApplyResult apply_calibration_impl(const std::string& path, const CalWrite& w,
   // loudly. Skipped for content_override: that seam bypasses patch_toml on
   // purpose to inject raw garbage.
   std::string content;
+  std::string kept;  // the note, handed out only once the write is published
   if (content_override) {
     content = *content_override;
   } else {
@@ -557,8 +559,8 @@ ApplyResult apply_calibration_impl(const std::string& path, const CalWrite& w,
         *err = "undetermined " + rate_list(status.unfilled_walls) + "; no table to keep";
       return ApplyResult::NoTableToKeep;
     }
-    if (status.borrowed_walls && note)
-      *note = "ok; " + rate_list(status.borrowed_walls) + " kept from the 20 MHz table";
+    if (status.borrowed_walls)
+      kept = "ok; " + rate_list(status.borrowed_walls) + " kept from the 20 MHz table";
     const bool legacy_required =
         w.has_walls && w.legacy_wall != mabur::rc::kWallUndetermined &&
         (w.bw == 20 || !has_key_line(original, "rate_walls_rel_20"));
@@ -580,6 +582,7 @@ ApplyResult apply_calibration_impl(const std::string& path, const CalWrite& w,
       publish_config(path, content, "pre-cal", &pub_err, /*write_backup=*/backup);
   switch (pr) {
     case PublishResult::Ok:
+      if (note) *note = std::move(kept);
       return ApplyResult::Ok;
     case PublishResult::BackupFailed:
       if (err) *err = pub_err;

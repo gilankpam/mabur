@@ -5,6 +5,8 @@
 #include "mabur/rc_proto.h"
 
 #include <fstream>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <sstream>
 #include <string>
 
@@ -474,6 +476,22 @@ TEST(apply_of_a_borrowed_row_says_so_in_its_note) {
   // A write that kept nothing clears the note.
   CHECK(apply_calibration(path, walls_write(40), 1.0, false, &err, &note) == ApplyResult::Ok);
   CHECK(note.empty());
+}
+
+TEST(a_failed_apply_leaves_no_note) {
+  // The patch kept rows from the 20 MHz table, but the publish failed (the
+  // backup path is a directory): nothing was kept, so nothing is noted.
+  const std::string path = std::string(MABUR_TEST_SCRATCH_DIR) + "/cal_borrow_fail.toml";
+  { std::ofstream f(path); f << kSampleOnly20; }
+  ::mkdir((path + ".pre-cal").c_str(), 0755);
+  CalWrite w = walls_write(40);
+  w.walls[5] = mabur::rc::kWallUndetermined;
+  std::string err, note = "stale";
+  CHECK(apply_calibration(path, w, 1.0, /*backup=*/true, &err, &note) ==
+        ApplyResult::BackupFailed);
+  CHECK(note.empty());
+  CHECK(slurp(path) == kSampleOnly20);
+  ::rmdir((path + ".pre-cal").c_str());
 }
 
 // Revert (insert anyway with the rail): ApplyResult::Ok and a 63 on file.
