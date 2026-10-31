@@ -178,7 +178,7 @@ struct LinkHealth {
 
 enum class CtlReason {
   None, Residual, Util, Probation, Starved, Timeout, Promote,
-  S3Residual, S3Util, Fade, PromoteProbed, HopRestore
+  S3Residual, S3Util, Fade, PromoteProbed, HopRestore, LadderSwap
 };
 const char* to_string(CtlReason r);
 
@@ -265,6 +265,10 @@ class LadderController {
   // hop, and a stale or out-of-range index must not index out of bounds.
   // Logs a HopRestore ctl event.
   void restore(int rung, double now_ms);
+  // A live ladder swap's re-entry into `rung` of the new ladder: the same
+  // direct re-entry as restore(), logged as LadderSwap so a reader pairing
+  // hop_restore events with hops never takes a swap for a hop's restore.
+  void swap_restore(int rung, double now_ms);
 
   // Stop feeding the per-rung EWMA store (observe_s1/observe_evm/observe_s3/
   // observe_probe) until `until_ms`: an interferer's demoted operating point
@@ -348,6 +352,8 @@ class LadderController {
   void check_probation_survival(double now_ms);
   void penalize_rung(int rung, double now_ms);
   bool is_penalized(int rung, double now_ms) const;
+  // restore() / swap_restore(): the direct re-entry, logged as `why`.
+  void reenter_(int rung, double now_ms, CtlReason why);
   void set_event(double now_ms, int from, int to, CtlReason reason, double u,
                  double snr);
 

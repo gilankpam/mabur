@@ -45,9 +45,11 @@ link.ladder` rebuilds `LadderController` inside the session
 (`VrxController::replace_ladder`) and keeps the current rung: the old
 rung's `{mcs, bw}` is looked up in the new ladder and restored to that
 index when present, else the link falls back to rung 0 rather than index
-past the end of a shorter ladder. The swap also writes a fresh `ctllog
-13` header into `ctl.log` so every later row is read against the new
-ladder (`docs/observability.md`).
+past the end of a shorter ladder. The re-entry is the hop restore's
+(direct, no probation, the s3 settle window opened) but its ctl event
+reason is `ladder_swap`, not `hop_restore`. The swap also writes a fresh
+`ctllog 13` header into `ctl.log` so every later row is read against the
+new ladder (`docs/observability.md`).
 
 `run_bitrate_policy` is a pure function of the operating point: a held rung
 commands a held bitrate. That includes a rung held *under probe*: the probe

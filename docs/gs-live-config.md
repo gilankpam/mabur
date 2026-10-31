@@ -191,13 +191,19 @@ A `set link.ladder` rebuilds the ladder controller inside the session
 apply — so every row logged after the swap is read against the new
 ladder's header, not the boot one. `CtlLog::header()`
 (`gs/src/ctl_log.{h,cpp}`) is the same marker form the file's first line
-uses (not a `#`-prefixed comment), so in-repo consumers (`flightreport.py`,
-`tools/bench/switchloss.py`) need only the rule "the latest `ctllog` line
-wins" — which also covers a rejoined file. The swap also re-arms the
-probe/penalty change-detect from the new controller's zeroed counters, so
-it writes no phantom row, and resets `scan.rounds`. A log rotation (a
-drone restart mid-flight) after a swap restates the swapped ladder's
-header in the new session file, not the boot one.
+uses (not a `#`-prefixed comment), so a reader reads each row against the
+most recent `ctllog` line above it — which also covers a rejoined file.
+`flightreport.py` stamps every row with that header's ladder (its DWELL
+table and BW40 time read a pre-swap row on the old ladder);
+`tools/bench/switchloss.py` replaces its ladder on every `ctllog` line.
+The swap's rung re-entry follows the header as an `E <t_ms> 0 <idx> ladder_swap …`
+line (from the new controller's rung 0 to the restored index), so hop
+analysis, which pairs `hop_restore` lines with hop orders, never takes a
+swap for a hop's restore. The swap also re-arms the probe/penalty
+change-detect from the new controller's zeroed counters, so it writes no
+phantom row. A log rotation (a drone restart mid-flight) after a swap
+restates the swapped ladder's header in the new session file, not the
+boot one.
 
 ## `tools/bench/gsparam.py`
 

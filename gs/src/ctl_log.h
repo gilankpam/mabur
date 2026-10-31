@@ -50,7 +50,10 @@ namespace maburgs {
 // the running GS writes a fresh `ctllog 13 <header_info>` line into the
 // same file (a swap is not a new flight) and the rows after it index the
 // new ladder; a reader keys every row to the most recent header line above
-// it. A rejoined session's restated marker has the same form.
+// it. A rejoined session's restated marker has the same form. The swap's
+// rung re-entry follows the header as an E line with reason `ladder_swap`
+// (from 0, the new controller's start, to the restored index); the E
+// reason `hop_restore` is only ever an in-flight hop's.
 //
 // ctllog 12 (40 MHz rungs): no column change. The header's
 // ladder= token is bw:mcs/ovb:ove per rung (was mcs/ovb:ove); with 20/3 and

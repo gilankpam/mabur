@@ -23,6 +23,7 @@ const char* to_string(CtlReason r) {
     case CtlReason::Fade: return "fade";
     case CtlReason::PromoteProbed: return "promote_probed";
     case CtlReason::HopRestore: return "hop_restore";
+    case CtlReason::LadderSwap: return "ladder_swap";
   }
   return "unknown";
 }
@@ -630,6 +631,14 @@ bool LadderController::on_tick(double now_ms) {
 }
 
 void LadderController::restore(int rung, double now_ms) {
+  reenter_(rung, now_ms, CtlReason::HopRestore);
+}
+
+void LadderController::swap_restore(int rung, double now_ms) {
+  reenter_(rung, now_ms, CtlReason::LadderSwap);
+}
+
+void LadderController::reenter_(int rung, double now_ms, CtlReason why) {
   rung = std::clamp(rung, 0, static_cast<int>(cfg_.ladder.size()) - 1);
   const int from = idx_;
   idx_ = rung;
@@ -639,7 +648,7 @@ void LadderController::restore(int rung, double now_ms) {
   probation_rung_ = -1;
   reset_windows();
   mark_transition(now_ms);
-  set_event(now_ms, from, rung, CtlReason::HopRestore, u_, snr_now_);
+  set_event(now_ms, from, rung, why, u_, snr_now_);
 }
 
 void LadderController::blank_store(double until_ms) {

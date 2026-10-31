@@ -129,8 +129,8 @@ Chronological; each line names the section below that carries the detail.
   `link.cal` (`docs/calibration.md`).
 - 2026-10-31 — GS live config (`set`/`get` on 8402): `ctllog 13` — a
   `ctl.log` can carry a second `ctllog 13 <header_info>` line mid-file at a
-  live ladder swap, and its rows index the most recent header; sideport
-  `scan.pinned` (the live pin).
+  live ladder swap, and its rows index the most recent header; `E` reason
+  `ladder_swap`; sideport `scan.pinned` (the live pin).
 
 ## 2026-09-23 — `link.pre_fec_loss` scale break, twice
 
@@ -1353,12 +1353,23 @@ pin, NACK, MSP and debug-log switches can change without a restart.
   ladder controller and writes a fresh `ctllog 13 <header_info>` line into
   the same `ctl.log` (a swap is not a new flight); the rows after it index
   the new ladder, and a drone-restart rotation opens the next session's
-  file on it. The swap's rung restore is an `E … hop_restore` line right
-  after the header. Read every row against the most recent header line
-  above it — a `ctllog 12` file has exactly one ladder (a rejoined
-  session's restated marker aside). `tools/flightreport.py` keeps the last
-  header; `tools/bench/switchloss.py` already replaced its ladder on every
-  `ctllog` line.
+  file on it. Read every row against the most recent header line above
+  it — a `ctllog 12` file has exactly one ladder (a rejoined session's
+  restated marker aside). `tools/flightreport.py` stamps each row with the
+  ladder of the header above it (its DWELL rung labels and BW40 time read
+  a pre-swap row on the old ladder); `tools/bench/switchloss.py` already
+  replaced its ladder on every `ctllog` line.
+- **`E` reason `ladder_swap`.** The swap's rung re-entry is an
+  `E <t_ms> 0 <idx> ladder_swap` line after the new header: from the new
+  controller's rung 0 to the index the old rung landed on. `hop_restore`
+  stays the in-flight hop's alone, so flightreport's hop rows (which pair
+  `hop_restore` lines with hop orders within 5 s) never take a swap's
+  re-entry for a hop's. No marker bump: the column layout is unchanged,
+  and `ctllog 13`, the first marker under which a swap can happen, arrives
+  with the reason on this date (as the `boot_order` → `relocate` rename
+  kept `scanlog 5`). Pre-merge bench builds of this date wrote the
+  re-entry as `hop_restore` from rung 0; flightreport reads the first such
+  `E` after a mid-file header as `ladder_swap`.
 - **Sideport `scan.pinned`** (bool): the live channel pin, which a `set
   radio.channel` moves. Absent before this build; the boot config's
   `radio.channel` is not the pin of a recording made after a live set.

@@ -869,6 +869,23 @@ TEST(replace_ladder_falls_back_to_rung_0_when_op_rung_is_gone) {
   CHECK(vrx.ctl().rung() == 0);
   CHECK(vrx.cur_op().mcs == 0);
 }
+// The swap's rung re-entry is logged as its own reason, not a hop's
+// restore: a reader pairing hop_restore rows with hop orders must not take
+// a swap near a hop for that hop's restore.
+TEST(replace_ladder_logs_its_rung_reentry_as_ladder_swap) {
+  auto vrx = make();
+  link(vrx, 0);
+  vrx.restore_rung(2, 0);                 // mcs4
+  REQUIRE(vrx.ctl().last_event().reason == CtlReason::HopRestore);
+  LadderCfg nl = default_ladder();
+  nl.ladder = {{0, 1.0, 1.0}, {4, 0.5, 0.5}};
+  vrx.replace_ladder(nl, 100);
+  CHECK(vrx.ctl().rung() == 1);
+  CHECK(vrx.ctl().last_event().reason == CtlReason::LadderSwap);
+  CHECK(vrx.ctl().last_event().from == 0);   // the new controller starts at its rung 0
+  CHECK(vrx.ctl().last_event().to == 1);
+  CHECK(std::string(to_string(CtlReason::LadderSwap)) == "ladder_swap");
+}
 TEST(replace_ladder_matches_width_not_only_mcs) {
   auto vrx = make();
   link(vrx, 0);
@@ -879,9 +896,8 @@ TEST(replace_ladder_matches_width_not_only_mcs) {
   CHECK(vrx.ctl().rung() == 0);
 }
 
-// Review finding (fix round 1): replace_ladder must call
-// LadderController::restore() unconditionally, even when the match (or the
-// no-match fallback) lands on rung 0 -- restore()'s mark_transition() is
+// replace_ladder re-enters a rung unconditionally, even when the match (or
+// the no-match fallback) lands on rung 0 -- the re-entry's mark_transition() is
 // what opens the s3 post-transition settle window, and a guard that skips
 // the call at idx 0 left the fallback case with no re-key settle
 // protection at all. Pins it directly: a usable s3 sample fed well inside

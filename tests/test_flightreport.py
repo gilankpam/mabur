@@ -865,7 +865,7 @@ def test_ctllog_later_header_replaces_the_ladder():
         "ctllog 13 ladder=20:0/50:25,20:4/50:25 down_util=0.35 up_util=0.15 probe_offset=1\n"
         "S 1000 1 0.0500 31.5 0.0000 0.1000 0.0000 -24.5 0.0000 9.5 4.2 -63.4 -1 0.0000 0\n"
         "ctllog 13 ladder=20:0/50:25,40:3/50:25 down_util=0.35 up_util=0.15 probe_offset=1\n"
-        "E 2000 1 1 hop_restore 0.0000 31.0 -24.0\n"
+        "E 2000 0 1 ladder_swap 0.0000 31.0 -24.0\n"
         "S 3000 1 0.0500 31.5 0.0000 0.1000 0.0000 -24.5 0.0000 9.5 4.2 -63.4 -1 0.0000 0\n"
     )
     with tempfile.TemporaryDirectory() as tmp_dir:
@@ -879,6 +879,66 @@ def test_ctllog_later_header_replaces_the_ladder():
     ]
     assert [r["t_ms"] for r in log["S"]] == [1000.0, 3000.0]
     assert len(log["E"]) == 1
+
+
+CTL13_SWAP = (
+    "ctllog 13 ladder=20:0/50:25,20:4/50:25 down_util=0.35 up_util=0.15 probe_offset=1\n"
+    "S 1000 1 0.0500 31.5 0.0000 0.1000 0.0000 -24.5 0.0000 9.5 4.2 -63.4 -1 0.0000 0\n"
+    "E 1500 1 0 residual 0.4000 29.0 -23.0\n"
+    "E 1700 0 1 promote_probed 0.0100 31.0 -24.0\n"
+    "ctllog 13 ladder=20:0/50:25,40:3/50:25 down_util=0.35 up_util=0.15 probe_offset=1\n"
+    "E 2000 0 1 ladder_swap 0.0000 31.0 -24.0\n"
+    "S 3000 1 0.0500 31.5 0.0000 0.1000 0.0000 -24.5 0.0000 9.5 4.2 -63.4 -1 0.0000 0\n"
+)
+
+
+def test_ctllog_rows_read_against_the_header_above_them():
+    """A row logged before a live ladder swap reads against the ladder in
+    force when it was written: rung 1 is mcs4/20 before the swap and
+    mcs3/40 after it, in the DWELL table and in the BW40 time."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        p = Path(tmp_dir) / "ctl.log"
+        p.write_text(CTL13_SWAP)
+        log = flightreport.load_ctllog(str(p))
+        assert log["S"][0]["ladder"][1] == {"mcs": 4, "bw": 20, "ov_base": 0.5, "ov_enh": 0.25}
+        assert log["E"][0]["ladder"][1]["bw"] == 20
+        assert log["E"][2]["ladder"][1] == {"mcs": 3, "bw": 40, "ov_base": 0.5, "ov_enh": 0.25}
+        assert log["S"][1]["ladder"][1]["bw"] == 40
+        b = flightreport.bw40_summary(log)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            flightreport.main(str(p))
+        out = buf.getvalue()
+    # Only 2000-3000 sat on a 40 MHz rung; the swap is not a promote.
+    assert abs(b["held_s"] - 1.0) < 1e-6
+    assert abs(b["total_s"] - 2.0) < 1e-6
+    assert b["promotes"] == 0
+    dwell = out[out.find("DWELL (S records)"):out.find("EVENTS")]
+    assert "rung 1 (mcs4/20): n=1" in dwell, dwell
+    assert "rung 1 (mcs3/40): n=1" in dwell, dwell
+
+
+def test_ctllog_swap_restore_from_older_builds_reads_as_ladder_swap():
+    """Builds before the ladder_swap reason logged a swap's rung re-entry as
+    hop_restore from rung 0 right after the mid-file header; read as the
+    swap it was, so hop pairing never takes it for a hop's restore."""
+    text = CTL13_SWAP.replace("E 2000 0 1 ladder_swap", "E 2000 0 1 hop_restore")
+    text += "E 4000 0 1 hop_restore 0.0000 31.0 -24.0\n"
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        p = Path(tmp_dir) / "ctl.log"
+        p.write_text(text)
+        log = flightreport.load_ctllog(str(p))
+    assert [e["reason"] for e in log["E"]] == [
+        "residual", "promote_probed", "ladder_swap", "hop_restore"]
+
+
+def test_ctllog_v12_rows_all_carry_the_one_header_ladder():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        p = Path(tmp_dir) / "ctl-0001_x.log"
+        p.write_text(CTL12)
+        log = flightreport.load_ctllog(str(p))
+    rows = log["S"] + log["E"]
+    assert rows and all(r["ladder"] == log["header"]["_ladder"] for r in rows)
 
 
 def test_bw40_summary_counts_time_held_and_promotes():
@@ -2297,6 +2357,9 @@ if __name__ == "__main__":
     test_ctllog_v12_ladder_token_carries_bw()
     test_ctllog_pre_v12_ladder_token_defaults_bw_20()
     test_ctllog_later_header_replaces_the_ladder()
+    test_ctllog_rows_read_against_the_header_above_them()
+    test_ctllog_swap_restore_from_older_builds_reads_as_ladder_swap()
+    test_ctllog_v12_rows_all_carry_the_one_header_ladder()
     test_bw40_summary_counts_time_held_and_promotes()
     test_bw40_section_absent_without_40_rungs()
     test_bw40_climb_within_40_counts_as_held()

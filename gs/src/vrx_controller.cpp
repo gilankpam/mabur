@@ -167,12 +167,12 @@ void VrxController::replace_ladder(const LadderCfg& ladder, double now_ms) {
                       ? static_cast<int>(it - ladder.ladder.begin())
                       : 0;
   // Unconditional, even when idx is 0 (a genuine match there, or the
-  // no-match fallback): restore()'s mark_transition() opens the s3-settle
+  // no-match fallback): the re-entry's mark_transition() opens the s3-settle
   // blank window and resets the probe streak, which an op-point change
   // needs regardless of which index it lands on -- skipping it at idx 0
-  // left both the fallback case and an overhead-only change at rung 0
-  // with no re-key settle protection.
-  ctrl_.restore(idx, now_ms);
+  // would leave both the fallback case and an overhead-only change at
+  // rung 0 with no re-key settle protection.
+  ctrl_.swap_restore(idx, now_ms);
   sync_op_();
 }
 
