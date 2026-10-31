@@ -232,7 +232,28 @@ void ParamClient::on_packet(const uint8_t* p, size_t n, uint64_t now_ms) {
       mavlink_msg_statustext_decode(&out, &s);
       size_t len = 0;
       while (len < sizeof(s.text) && s.text[len] != '\0') ++len;
-      const std::string text(s.text, len);
+      std::string text(s.text, len);
+      if (s.id != 0) {
+        // MAVLink 2's long form: chunks under one id, chunk_seq from 0,
+        // the last one NUL-terminated. A row gets the whole text or none
+        // of it: a gap drops what was gathered.
+        if (s.chunk_seq == 0) {
+          text_id_ = s.id;
+          text_next_seq_ = 0;
+          text_buf_.clear();
+        }
+        if (s.id != text_id_ || s.chunk_seq != text_next_seq_) {
+          text_id_ = 0;
+          text_buf_.clear();
+          break;
+        }
+        text_buf_ += text;
+        ++text_next_seq_;
+        if (len == sizeof(s.text)) break;  // no NUL yet: more chunks to come
+        text = std::move(text_buf_);
+        text_buf_.clear();
+        text_id_ = 0;
+      }
       if (state_.pending_row != -1) {
         // The set's own ack may have been lost; the row that is waiting
         // on one is the only sensible destination.
@@ -243,7 +264,11 @@ void ParamClient::on_packet(const uint8_t* p, size_t n, uint64_t now_ms) {
         uint64_t best_ms = 0;
         for (size_t i = 0; i < kCount; ++i) {
           const ParamRow& row = state_.rows[i];
-          if (row.st != ParamRowState::Failed && row.st != ParamRowState::Unsupported) continue;
+          // A refusal's reason follows its FAILED ack; a warning (the
+          // RADIO_LDPC overdrive note) follows its ACCEPTED one.
+          if (row.st != ParamRowState::Failed && row.st != ParamRowState::Unsupported &&
+              row.st != ParamRowState::Accepted)
+            continue;
           if (now_ms < row.result_ms || now_ms - row.result_ms > kParamStatusMs) continue;
           if (best < 0 || row.result_ms > best_ms) {
             best = static_cast<int>(i);

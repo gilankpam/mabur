@@ -160,7 +160,7 @@
             {/key}
 
             {#if hint}<div class="hint">{hint}</div>{/if}
-            {#if st?.reason}<div class="reason">{st.reason}</div>{/if}
+            {#if st?.reason}<div class="reason" class:warn={st.kind === 'warn'}>{st.reason}</div>{/if}
           </div>
         {/each}
       </div>
@@ -182,6 +182,7 @@
   .st-busy { color: var(--color-accent); opacity: .85; }
   .st-ok { color: var(--color-accent); animation: st-in .18s ease-out, st-out .4s ease-in 1.5s forwards; }
   .st-err { color: var(--color-status-critical); }
+  .st-warn { color: var(--color-status-caution); }
   @keyframes st-in { from { opacity: 0; transform: translateY(2px); } }
   @keyframes st-out { to { opacity: 0; } }
 
@@ -207,6 +208,7 @@
   .ctl.shake { animation: shake .36s ease-in-out; }
   @keyframes shake { 20% { transform: translateX(-4px); } 40% { transform: translateX(4px); } 60% { transform: translateX(-2px); } 80% { transform: translateX(2px); } }
   .reason { font-size: 11px; color: var(--color-status-critical); margin-top: 4px; animation: st-in .18s ease-out; }
+  .reason.warn { color: var(--color-status-caution); }
 
   /* Other rows while one is in flight: readable, just not clickable. */
   .ctl.locked { opacity: .7; cursor: not-allowed; }

@@ -49,6 +49,25 @@ static Bytes status_pkt(const std::string& text) {
   return pkt(msg);
 }
 
+// A WARNING the way the drone's MavComponent::queue_warning sends it: one
+// packet (id 0) when it fits, else MAVLink 2's long-STATUSTEXT form --
+// 50-byte chunks under one nonzero id, chunk_seq from 0, the last one
+// NUL-terminated (an extra empty chunk when the text fills its last one).
+static std::vector<Bytes> warning_pkts(const std::string& text, uint16_t id) {
+  std::vector<Bytes> out;
+  for (size_t off = 0, seq = 0; off <= text.size(); off += 50, ++seq) {
+    char buf[50] = {};
+    const size_t n = std::min(text.size() - off, static_cast<size_t>(50));
+    std::memcpy(buf, text.data() + off, n);
+    mavlink_message_t msg;
+    mavlink_msg_statustext_pack(1, 191, &msg, MAV_SEVERITY_WARNING, buf,
+                                text.size() <= 50 ? 0 : id, static_cast<uint8_t>(seq));
+    out.push_back(pkt(msg));
+    if (n < 50 || text.size() <= 50) break;
+  }
+  return out;
+}
+
 static std::vector<mavlink_message_t> parse(const Bytes& b) {
   mavlink_reset_channel_status(MAVLINK_COMM_1);
   std::vector<mavlink_message_t> out;
@@ -440,6 +459,73 @@ TEST(status_before_final_ack_lands_on_pending_row) {
   CHECK(r.c.state().rows[8].st == ParamRowState::Failed);
   CHECK(r.c.state().rows[8].status == "record.fps: must be in [1, venc.fps]");
   CHECK(r.c.state().pending_row == -1);
+}
+
+// The drone's RADIO_LDPC set that leaves a width's walls measured under
+// the other LDPC setting: ACCEPTED, then the long warning in chunks.
+static const std::string kLdpcWarning =
+    "radio: 20 MHz walls were measured with ldpc on; radio.ldpc is off \xe2\x80\x94 re-run maburcal";
+
+static Bytes ldpc_ack(uint8_t result) {
+  mabur::paramval::Value v{mabur::cfgparam::Type::Bool};
+  v.b = false;
+  char wire[128];
+  mabur::paramval::encode_wire(v, wire);
+  return ack_pkt("RADIO_LDPC", mabur::cfgparam::mav_type(mabur::cfgparam::Type::Bool), wire,
+                 result);
+}
+
+TEST(a_warning_after_an_accepted_ack_lands_on_that_row_whole) {
+  Rig r;
+  link_and_complete_list(r, 1000);
+  const int row = mabur::cfgparam::find("RADIO_LDPC");
+  REQUIRE(row >= 0);
+  std::string why;
+  REQUIRE(r.c.set(static_cast<size_t>(row), "false", 2000, &why));
+  const Bytes a = ldpc_ack(PARAM_ACK_ACCEPTED);
+  r.c.on_packet(a.data(), a.size(), 2050);
+  REQUIRE(r.c.state().rows[row].st == ParamRowState::Accepted);
+  const auto chunks = warning_pkts(kLdpcWarning, 3);
+  REQUIRE(chunks.size() == 2);
+  for (const auto& c : chunks) r.c.on_packet(c.data(), c.size(), 2060);
+  CHECK(r.c.state().rows[row].status == kLdpcWarning);
+  CHECK(r.c.state().rows[row].st == ParamRowState::Accepted);
+
+  // Outside the window after the ack: dropped, the row keeps its warning.
+  for (const auto& c : warning_pkts("unrelated, much later", 4))
+    r.c.on_packet(c.data(), c.size(), 2050 + kParamStatusMs + 1);
+  CHECK(r.c.state().rows[row].status == kLdpcWarning);
+}
+
+TEST(a_chunked_warning_is_reassembled_and_a_gap_drops_it) {
+  Rig r;
+  link_and_complete_list(r, 1000);
+  const int row = mabur::cfgparam::find("RADIO_LDPC");
+  REQUIRE(row >= 0);
+  std::string why;
+  REQUIRE(r.c.set(static_cast<size_t>(row), "false", 2000, &why));
+  // Chunks reach the pending row (the ack lost) whole, not chunk by chunk.
+  auto chunks = warning_pkts(kLdpcWarning, 5);
+  REQUIRE(chunks.size() == 2);
+  r.c.on_packet(chunks[0].data(), chunks[0].size(), 2010);
+  CHECK(r.c.state().rows[row].status.empty());
+  r.c.on_packet(chunks[1].data(), chunks[1].size(), 2011);
+  CHECK(r.c.state().rows[row].status == kLdpcWarning);
+
+  // A text that fills its last chunk exactly ends in an empty chunk.
+  const std::string hundred(100, 'x');
+  chunks = warning_pkts(hundred, 6);
+  REQUIRE(chunks.size() == 3);
+  for (const auto& c : chunks) r.c.on_packet(c.data(), c.size(), 2020);
+  CHECK(r.c.state().rows[row].status == hundred);
+
+  // A lost middle chunk: the text is never delivered half.
+  const std::string three(120, 'y');
+  chunks = warning_pkts(three, 7);
+  REQUIRE(chunks.size() == 3);
+  r.c.on_packet(chunks[0].data(), chunks[0].size(), 2030);
+  r.c.on_packet(chunks[2].data(), chunks[2].size(), 2031);
+  CHECK(r.c.state().rows[row].status == hundred);
 }
 
 TEST(resend_stops_at_first_ack) {

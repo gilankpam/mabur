@@ -41,9 +41,14 @@
 // ack for any other row only updates that row's value. A STATUSTEXT from
 // 1/191 lands on the pending row if one is set (so a reply that beats, or
 // replaces, a lost ack still reaches the right row); otherwise it lands on
-// whichever row's terminal Failed/Unsupported result_ms is within
-// kParamStatusMs of now (the latest one), or is dropped. set_linked(false)
-// while a set is pending still ends in the full unlinked-defaults clear.
+// whichever row's terminal Accepted/Failed/Unsupported result_ms is within
+// kParamStatusMs of now (the latest one), or is dropped -- a refusal's
+// reason follows its FAILED ack, and a warning (RADIO_LDPC against walls
+// measured under the other setting) follows its ACCEPTED one. A long text
+// in MAVLink 2's chunked form (nonzero id, chunk_seq from 0, the last
+// chunk NUL-terminated) is reassembled first and lands whole; a missing
+// chunk drops the text. set_linked(false) while a set is pending still
+// ends in the full unlinked-defaults clear.
 //
 // Heartbeat. A HEARTBEAT from 1/191 stamps alive_ms; alive() is true while
 // now - alive_ms is within kParamAliveMs. A heartbeat that arrives while
@@ -169,6 +174,11 @@ class ParamClient {
   int set_resends_ = 0;                 // resends already sent for the pending set
   bool set_in_progress_ = false;        // the pending row has seen its first IN_PROGRESS
   uint64_t set_deadline_ms_ = 0;        // first IN_PROGRESS + kParamFinalMs; valid iff set_in_progress_
+
+  // A long STATUSTEXT being reassembled from its chunks (text_id_ 0: none).
+  uint16_t text_id_ = 0;
+  uint8_t text_next_seq_ = 0;
+  std::string text_buf_;
 };
 
 }  // namespace maburgs

@@ -292,7 +292,12 @@ export function rowView(row, idx, pending, typed, sincePushMs = 0) {
   let resultKind = '';
   switch (row.state) {
     case 'accepted':
-      if ((row.age_ms ?? 0) + sincePushMs < 3000) {
+      // A warning the drone sent with its ACCEPTED (RADIO_LDPC against walls
+      // measured under the other setting) stays until the next set clears it.
+      if (row.status) {
+        result = `accepted: ${row.status}`;
+        resultKind = 'warn';
+      } else if ((row.age_ms ?? 0) + sincePushMs < 3000) {
         result = 'accepted';
         resultKind = 'ok';
       }
@@ -326,13 +331,14 @@ export function rowView(row, idx, pending, typed, sincePushMs = 0) {
 }
 
 // The status at the right end of a row's label line, from its rowView `v`:
-// { kind: 'busy' | 'ok' | 'err', text, reason? }, or null when there is
-// nothing to say. `reason` is the line shown under the hint, only on an
-// error. `localErr` (an edit the page could not send) wins over the state.
+// { kind: 'busy' | 'ok' | 'warn' | 'err', text, reason? }, or null when
+// there is nothing to say. `reason` is the line shown under the hint: an
+// error's, or the drone's warning on an accepted set. `localErr` (an edit the page could not send) wins over the state.
 export function rowStatus(row, v, localErr = null) {
   if (localErr) return { kind: 'err', text: 'Invalid', reason: localErr };
   if (v.resultKind === 'busy') return { kind: 'busy', text: row.state === 'sending' ? 'Sending…' : 'Applying…' };
   if (v.resultKind === 'ok') return { kind: 'ok', text: '✓ Saved' };
+  if (v.resultKind === 'warn') return { kind: 'warn', text: '✓ Saved', reason: row.status };
   if (v.resultKind !== 'err') return null;
   if (row.state === 'timeout') {
     return { kind: 'err', text: 'No answer', reason: 'The drone did not answer; it may not have applied the change.' };

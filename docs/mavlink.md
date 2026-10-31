@@ -224,8 +224,9 @@ column below:
   off — re-run maburcal`. It is longer than 50 bytes, so it goes out in
   MAVLink 2's chunked form (one nonzero id, `chunk_seq` from 0).
   `mavparam.py` prints the chunks as they come; the web GS's
-  `ParamClient` attaches a `STATUSTEXT` only to a set still pending or
-  just failed, so it does not show this one.
+  `ParamClient` reassembles them and attaches the whole text to the
+  `RADIO_LDPC` row, which the VTX tab shows under it as a warning
+  (`docs/web-gs.md`).
 - **Rebuild** (`VENC_MODE`, `VENC_SLICES`, `REC_ENABLE`,
   `REC_BITRATE`, `REC_FPS`, `REC_SIZE`): the encoder pipeline is rebuilt
   in-process (`docs/link-adaptation.md` "Rebuilding the encoder pipeline
@@ -424,8 +425,12 @@ bridges the tunnel to the UDP endpoint.
   `STATUSTEXT` from 1/191 lands on the row currently being set, if there
   is one -- so a reason that reaches the GS before, or instead of, its
   ack still lands on the right row -- otherwise on whichever row's
-  terminal `Failed`/`Unsupported` landed within the last 1.5 s (the latest
-  one), or is dropped.
+  terminal `Accepted`/`Failed`/`Unsupported` landed within the last 1.5 s
+  (the latest one), or is dropped: a refusal's reason follows its
+  `FAILED`, a warning follows its `ACCEPTED`. A text in MAVLink 2's
+  chunked form (nonzero `id`, `chunk_seq` from 0, the last chunk
+  NUL-terminated) is reassembled before it lands, so a row gets the whole
+  text; a missing chunk drops it.
 - **State.** `state()` exposes `linked`, `alive_ms`, `table_mismatch`,
   `list`, `pending_row` (the row a `set()` is in flight for, or -1), and
   one row per table parameter holding `have_value`/`value`/`st`/`status`/

@@ -128,6 +128,18 @@ test('rowStatus: saved while the accepted result is fresh, nothing once idle', (
   assert.equal(statusOf({ state: 'idle', value: '1' }), null);
 });
 
+test('rowStatus: an accepted set with a drone warning says Saved and keeps the warning', () => {
+  // The drone accepts RADIO_LDPC against walls measured under the other
+  // setting and follows the ack with a WARNING; it stays on the row (no
+  // fade) until the next set clears it.
+  const warn = 'radio: 20 MHz walls were measured with ldpc on; radio.ldpc is off — re-run maburcal';
+  for (const age_ms of [0, 60000]) {
+    assert.deepEqual(statusOf({ state: 'accepted', value: 'false', age_ms, status: warn }),
+      { kind: 'warn', text: '✓ Saved', reason: warn });
+  }
+  assert.equal(rowView({ state: 'accepted', value: 'false', age_ms: 0, status: warn }, 0, -1, null).resultKind, 'warn');
+});
+
 test('rowStatus: a refusal says Failed and carries the reason without its prefix', () => {
   assert.deepEqual(statusOf({ state: 'failed', value: '1', status: 'rec fps above camera fps' }),
     { kind: 'err', text: 'Failed', reason: 'rec fps above camera fps' });
