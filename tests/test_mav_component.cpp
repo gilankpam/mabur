@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <exception>
 #include <fstream>
 #include <future>
 #include <sstream>
@@ -15,7 +16,7 @@
 #include "cal_apply.h"
 #include "config.h"
 #include "config_apply.h"
-#include "config_write.h"
+#include "mabur/config_write.h"
 #include "mabur/config_params.h"
 #include "mabur/mav.h"
 #include "mabur/rc_proto.h"
@@ -46,6 +47,18 @@ void spit(const std::string& path, const std::string& content) {
 }
 
 bool exists(const std::string& path) { return std::ifstream(path).good(); }
+
+// The real verifier -- same as the one config_apply.cpp wires into
+// production -- for FakeApply's own direct publish_config call.
+bool verify_with_load_config(const std::string& candidate_path, std::string* err) {
+  try {
+    (void)load_config(candidate_path);
+    return true;
+  } catch (const std::exception& e) {
+    if (err) *err = e.what();
+    return false;
+  }
+}
 
 // A scratch copy of bundle/mabur.default.toml; removes the publisher's
 // siblings (backup, scratch candidate) with it.
@@ -254,7 +267,8 @@ struct FakeApply {
       std::string followed, err;
       REQUIRE(mavparam::patch_row(&text, s.row, s.value, current, &followed, &err));
       std::string publish_err;
-      REQUIRE(publish_config(path, text, "pre-param", &publish_err) == PublishResult::Ok);
+      REQUIRE(publish_config(path, text, "pre-param", &publish_err, verify_with_load_config) ==
+              PublishResult::Ok);
     }
     result = ConfigApplyResult{ok, reason, apply_path_for(s.row), 5};
     has_result = true;

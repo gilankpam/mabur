@@ -11,7 +11,7 @@
 #include <utility>
 
 #include "cal_link.h"
-#include "config_write.h"
+#include "mabur/config_write.h"
 #include "mabur/config_params.h"
 
 namespace mabur {
@@ -41,6 +41,19 @@ const char* path_name(ConfigApplyPath p) {
 
 bool is(const cfgparam::Row& row, const char* section, const char* key) {
   return std::strcmp(row.section, section) == 0 && std::strcmp(row.key, key) == 0;
+}
+
+// publish_config's verifier: the SAME function maburd boots with, not a
+// bare TOML syntax check (see mabur/config_write.h for why anything weaker
+// defeats the point of publishing through it at all).
+bool verify_with_load_config(const std::string& candidate_path, std::string* err) {
+  try {
+    (void)load_config(candidate_path);
+    return true;
+  } catch (const std::exception& e) {
+    if (err) *err = e.what();
+    return false;
+  }
 }
 
 }  // namespace
@@ -226,7 +239,8 @@ bool ConfigApplier::apply_locked(const Job& job, const std::string& field, std::
   if (!dispatch(job.row, field, cand, reason)) return false;
 
   std::string err;
-  const PublishResult pr = publish_config(cfg_path_, patched, "pre-param", &err);
+  const PublishResult pr = publish_config(cfg_path_, patched, "pre-param", &err,
+                                          verify_with_load_config);
   if (pr != PublishResult::Ok) {
     // The file still holds the previous value: put the process back on it.
     log("apply " + std::string(row.id) + ": publish failed, reverting");

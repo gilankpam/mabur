@@ -8,7 +8,7 @@
 #include "mtest.h"
 #include "mav_params.h"
 #include "config.h"
-#include "config_write.h"
+#include "mabur/config_write.h"
 #include "scratch.h"
 
 using namespace mabur;

@@ -9,7 +9,7 @@
 
 #include "config.h"
 #include "config_apply.h"
-#include "config_write.h"
+#include "mabur/config_write.h"
 #include "mabur/config_params.h"
 #include "mabur/mav.h"
 #include "mabur/param_value.h"

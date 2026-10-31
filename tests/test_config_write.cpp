@@ -1,9 +1,13 @@
 #include "mtest.h"
-#include "config_write.h"
-#include "config.h"
+#include "mabur/config_write.h"
+#include "mabur/toml.h"
 #include "scratch.h"
 
+#include <sys/stat.h>
+#include <unistd.h>
+
 #include <cstdio>
+#include <exception>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -33,12 +37,19 @@ void spit(const std::string& path, const std::string& content) {
   f << content;
 }
 
-bool loads(const std::string& path) {
+// A real (if generic) stand-in for a caller's boot loader: proves
+// publish_config's own plumbing -- scratch write, verify-before-publish,
+// backup, rename, locking -- independently of what any one caller's
+// verifier actually checks. The drone's own verifier (mabur::load_config,
+// wired into drone/src/config_apply.cpp and cal_apply.cpp) is exercised by
+// test_config_apply.cpp and test_cal_apply.cpp instead; this file has no
+// drone dependency (LIBS mabur_common, not mabur_drone_core).
+bool parses(const std::string& path, std::string* err) {
   try {
-    (void)load_config(path, nullptr);
+    (void)toml::parse_toml_file(path);
     return true;
   } catch (const std::exception& e) {
-    std::printf("load_config(%s): %s\n", path.c_str(), e.what());
+    if (err) *err = e.what();
     return false;
   }
 }
@@ -113,31 +124,34 @@ TEST(publish_verifies_then_backs_up_then_renames) {
   std::string t = original;
   REQUIRE(patch_toml_key(&t, "record", "fps", "30"));
   std::string err;
-  CHECK(publish_config(p, t, "pre-param", &err) == PublishResult::Ok);
+  CHECK(publish_config(p, t, "pre-param", &err, parses) == PublishResult::Ok);
   CHECK(slurp(p) == t);
   CHECK(slurp(p).find("fps          = 30") != std::string::npos);
   CHECK(slurp(p + ".pre-param") == original);
   CHECK(!exists(p + ".new"));
   CHECK(!exists(p + ".pre-param.tmp"));
-  CHECK(loads(p));
+  CHECK(parses(p, &err));
   CHECK(write_count_for_test() == 1);
   std::string back;
   CHECK(read_text_file(p, &back) && back == t);
   remove_siblings(p, "pre-param");
 }
 
-TEST(publish_refuses_a_candidate_the_loader_rejects_and_leaves_the_file_untouched) {
+TEST(publish_refuses_a_candidate_the_verifier_rejects_and_leaves_the_file_untouched) {
   ScratchFile f("config_write", ".toml");
   const std::string p = f.path;
   const std::string original = bundle_text();
   spit(p, original);
   std::string t = original;
-  // Malformed, so the loader names venc.size itself. ("1x1" is also
-  // refused, but by the venc.slices check that runs first.)
-  REQUIRE(patch_toml_key(&t, "venc", "size", "\"1x\""));
+  // An unterminated string -- genuinely invalid TOML, not merely a value a
+  // stricter loader happens to dislike. (That boundary is the drone's
+  // load_config, verified against a real wrong-type value by
+  // test_config_apply.cpp's loader_refusal_applies_nothing and
+  // test_cal_apply.cpp's apply_never_publishes_a_file_that_will_not_parse.)
+  REQUIRE(patch_toml_key(&t, "venc", "size", "\"1920x1080"));
   std::string err;
-  CHECK(publish_config(p, t, "pre-param", &err) == PublishResult::ReparseFailed);
-  CHECK(err.find("venc.size") != std::string::npos);
+  CHECK(publish_config(p, t, "pre-param", &err, parses) == PublishResult::ReparseFailed);
+  CHECK(!err.empty());
   CHECK(slurp(p) == original);
   CHECK(!exists(p + ".new"));
   CHECK(!exists(p + ".pre-param"));
@@ -147,7 +161,8 @@ TEST(publish_refuses_a_candidate_the_loader_rejects_and_leaves_the_file_untouche
 TEST(publish_of_a_missing_file_fails_without_creating_it) {
   ScratchFile f("config_write", ".toml");
   std::string err;
-  CHECK(publish_config(f.path, bundle_text(), "pre-param", &err) ==
+  const auto ok_verify = [](const std::string&, std::string*) { return true; };
+  CHECK(publish_config(f.path, bundle_text(), "pre-param", &err, ok_verify) ==
         PublishResult::BackupFailed);
   CHECK(!err.empty());
   CHECK(!exists(f.path));
@@ -171,7 +186,7 @@ TEST(publish_is_serialised_across_threads) {
   auto worker = [&](int idx, const std::string* content) {
     for (int i = 0; i < 20; ++i) {
       std::string err;
-      if (publish_config(p, *content, "pre-param", &err) != PublishResult::Ok) ++bad[idx];
+      if (publish_config(p, *content, "pre-param", &err, parses) != PublishResult::Ok) ++bad[idx];
     }
   };
   std::thread a(worker, 0, &fps30);
@@ -180,7 +195,8 @@ TEST(publish_is_serialised_across_threads) {
   b.join();
   CHECK(bad[0] == 0);
   CHECK(bad[1] == 0);
-  CHECK(loads(p));
+  std::string err;
+  CHECK(parses(p, &err));
   const std::string now = slurp(p);
   CHECK(now == fps30 || now == br20k);
   CHECK(!exists(p + ".new"));
@@ -201,7 +217,7 @@ TEST(read_patch_publish_under_the_write_lock_loses_no_update) {
       const auto lock = lock_config_writes();
       std::string t, err;
       if (!read_text_file(p, &t) || !patch_toml_key(&t, "record", key, value) ||
-          publish_config(p, t, "pre-param", &err) != PublishResult::Ok)
+          publish_config(p, t, "pre-param", &err, parses) != PublishResult::Ok)
         ++bad[idx];
     }
   };
@@ -211,12 +227,52 @@ TEST(read_patch_publish_under_the_write_lock_loses_no_update) {
   b.join();
   CHECK(bad[0] == 0);
   CHECK(bad[1] == 0);
-  CHECK(loads(p));
+  std::string err;
+  CHECK(parses(p, &err));
   const std::string now = slurp(p);
   CHECK(now.find("fps          = 30") != std::string::npos);
   CHECK(now.find("bitrate_kbps = 20000") != std::string::npos);
   CHECK(!exists(p + ".new"));
   remove_siblings(p, "pre-param");
+}
+
+TEST(replace_toml_array_tables_replaces_the_whole_run_of_blocks) {
+  std::string t = "[link]\nstatic_mcs = -1\n\n[[link.ladder]]\nmcs = 0\nbw = 40\n\n"
+                  "[[link.ladder]]\nmcs = 2\nbw = 40\n\n[link.nack]\nenable = true\n";
+  REQUIRE(replace_toml_array_tables(&t, "link.ladder", "[[link.ladder]]\nmcs = 5\nbw = 20\n\n"));
+  CHECK(t == "[link]\nstatic_mcs = -1\n\n[[link.ladder]]\nmcs = 5\nbw = 20\n\n[link.nack]\nenable = true\n");
+}
+TEST(replace_toml_array_tables_false_without_a_header) {
+  std::string t = "[link]\nstatic_mcs = -1\n";
+  const std::string before = t;
+  CHECK(!replace_toml_array_tables(&t, "link.ladder", "[[link.ladder]]\nmcs = 5\n"));
+  CHECK(t == before);
+}
+TEST(publish_config_writes_through_a_symlink) {
+  // target/live.toml + link -> target: after publish the link is still a
+  // symlink, the target holds the content, the backup sits beside the target.
+  ScratchFile target("test_config_write", ".toml");
+  spit(target.path, "a = 1\n");
+  const std::string link = target.path + ".link";
+  REQUIRE(::symlink(target.path.c_str(), link.c_str()) == 0);
+  std::string err;
+  const auto ok_verify = [](const std::string&, std::string*) { return true; };
+  CHECK(publish_config(link, "a = 2\n", "pre-live", &err, ok_verify) == PublishResult::Ok);
+  struct stat st{};
+  REQUIRE(::lstat(link.c_str(), &st) == 0);
+  CHECK(S_ISLNK(st.st_mode));
+  CHECK(slurp(target.path) == "a = 2\n");
+  CHECK(slurp(target.path + ".pre-live") == "a = 1\n");
+  ::unlink(link.c_str()); std::remove((target.path + ".pre-live").c_str());
+}
+TEST(publish_config_reparse_failed_carries_the_verifier_message) {
+  ScratchFile f("test_config_write", ".toml");
+  spit(f.path, "a = 1\n");
+  std::string err;
+  const auto bad = [](const std::string&, std::string* e) { *e = "config: x:1: a: nope"; return false; };
+  CHECK(publish_config(f.path, "a = 2\n", "pre-live", &err, bad) == PublishResult::ReparseFailed);
+  CHECK(err == "config: x:1: a: nope");
+  CHECK(slurp(f.path) == "a = 1\n");
 }
 
 MTEST_MAIN
