@@ -222,14 +222,39 @@ the time inside the synchronous send).
 The GS sums each CRC-clean frame's air size — the 26-byte QoS-Data
 header, the payload and the 4-byte FCS, counted once whether or not the
 received body still carries it (`route_cal_body` sizes from the payload
-length `parse_cal_payload` matched) — on the best card, and computes
+length `parse_cal_payload` matched) — per card, with the receive time of
+each card's first and last clean frame of the point (the RX thread's
+stamp, `m.mono_us`, not the core loop's tick). On the best card (most
+bits) it computes
 
 ```
-eff = delivered bits / (dwell_s × nominal(mcs, bw))
+eff = (delivered bits − first frame's bits) / (span_s × nominal(mcs, bw))
+span_s = last frame's receive time − first frame's receive time
 ```
 
 with `nominal` the HT long-GI PHY rate (`rc::phy_rate_mbps`), rounded to
-0.01 and clamped to [0.05, 1.0] (`analyze_capacity`). A point whose
+0.01 and clamped to [0.05, 1.0] (`analyze_capacity`). The point is timed
+by the GS's receive clock, not the commanded dwell, because the drone's
+blast only *enqueues* for the dwell: its TX path (the `UsbTxPool` and the
+device's own queue) keeps airing after the blast returns, so the air is
+busy for longer than 2 s and delivered bits over the dwell read high
+(past 1.0 at mcs0). Over the receive span the air was
+saturated throughout. n frames span n − 1 inter-arrival gaps, so the
+first frame's bits — on the air before its stamp — are left out; A-MPDU
+bursts and USB receive batching blur either end by a few ms, under 0.5 %
+of a 2 s span. A best card that heard fewer than 20 clean frames, or over
+less than 500 ms, cannot be timed: its eff falls back to bits over the
+commanded dwell and the point is flagged `short_span` (written as usual;
+such a point is nearly always `lost` too).
+
+The drone's SweepDone goes out on the control path the moment its last
+blast returns, ahead of the frames still queued behind it, so the GS
+does not close a capacity sweep at the SweepDone: it keeps tallying until
+the sweep's frames have been quiet for 50 ms (`tail_quiet_ms`), within the
+usual listen window. Closing at the SweepDone would drop the last point's
+tail — reading as loss on that point — and count whatever arrived after
+the next sweep began as `mismatch=`. A power sweep's frames are paced and
+leave no tail; it still closes at its SweepDone. A point whose
 sender was blocked less than 50 % of the dwell measured the drone's CPU or
 USB, not the air: it is flagged `tx_bound` and **not written** (the
 config keeps its value, as an undetermined wall does). A point that
@@ -237,9 +262,11 @@ delivered under 90 % of what was offered is flagged `lossy` and is
 written — delivered is delivered — but the parked power or the geometry
 is suspect. Under 50 % it is flagged `lost` as well and is **not
 written**: a dwell that lost over half its frames measured the loss, not
-the air. A capacity sweep whose SweepDone never arrives writes nothing:
-without `offered` and `blocked_pct` a `tx_bound` point cannot be told
-apart.
+the air. `lossy` and `lost` compare the best card's whole count with `offered`;
+with the tail listened through, every frame the drone handed its TX path
+had its chance to arrive. A capacity sweep whose SweepDone never arrives
+writes nothing: without `offered` and `blocked_pct` a `tx_bound` point
+cannot be told apart.
 
 Why delivered bits and not a fit: the air clock and the bitrate formula
 price delivered capacity, and the bench numbers the bundle carried were
@@ -551,6 +578,7 @@ written: this run produced no apply attempt`.
 | `tx_bound` | Capacity: the sender was blocked < 50 % of the dwell — the drone's CPU/USB, not the air, was the limit. | Not written; the config keeps its value. Expected at the top MCS if the drone cannot saturate the air there. |
 | `lossy` | Capacity: the best card got < 90 % of the frames offered. | Written (unless also `lost`). Interference, or the parked power is too low for this geometry; re-run on a quieter channel if it fires on low MCS. |
 | `lost` | Capacity: the best card got < 50 % of the frames offered (always with `lossy`). | Not written; the config keeps its value and `maburcal report` prints `-`. Re-run on a quieter channel or closer. |
+| `short_span` | Capacity: the best card heard < 20 clean frames, or over < 500 ms, too few to time the point by its receive span; `eff` is bits over the commanded dwell, which reads high by the drone's TX-queue drain. | Written. Nearly always comes with `lost` (then not written); alone, re-run closer or on a quieter channel. |
 
 Thresholds are `CalThresholds` in `gs/src/cal_analysis.h`. The bit values
 are in "`cal.log`" below; `drift` (the old coarse/fine disagreement) is
@@ -680,16 +708,16 @@ debug logging on it goes in the session directory
 `<debug_log.dir>/cal/cal.log`, i.e. `/media/dvr/log/cal/cal.log`. The
 start line names the resolved path, and `maburcal start` finds it there.
 
-Format `callog 4` (`gs/src/cal_log.h`; `gs/bundle/maburcal` is the
+Format `callog 5` (`gs/src/cal_log.h`; `gs/bundle/maburcal` is the
 in-repo reader and changes with it):
 
 ```
-callog 4                                              # once per file
+callog 5                                              # once per file
 R <nonce> <margin_db> <ch> <auto|pinned|onecard|stayed> <ldpc 0|1>   # once per run
 S <seq> <power|capacity> <bw> <frames_per_cell|dwell_ms>             # once per sweep
 C <rate> <idx> <expected> <recv0> <recv1> <corrupt> <rssi0> <rssi1>  # power cells
 W <rate> <wall> <floor> <best_card> <flags>                          # per rate, power
-P <rate> <offered> <recv_best> <air_bits_best> <eff_x1000> <blocked_pct> <flags>  # per rate, capacity
+P <rate> <offered> <recv_best> <air_bits_best> <eff_x1000> <blocked_pct> <flags> <span_ms>  # per rate, capacity
 A <bw> <0|1> <reason to end of line>                                 # per apply
 V <rate> <idx> <pct>                                                 # per verify cell
 ```
@@ -701,19 +729,24 @@ any ack has none; `ldpc` is the drone's announced stamp flag (the GS has
 no LDPC setting of its own). Every index is signed and relative to the
 drone's anchor; a card with no RSSI in a cell writes `-999`; an
 undetermined rate writes `-128` for wall and floor. `P`'s `eff_x1000` is
-the measured value even for a `tx_bound` or `lost` point. An ok `A` row's reason is
+the measured value even for a `tx_bound` or `lost` point; `span_ms` is
+the best card's first-to-last receive span it was timed over (written
+even when `short_span` sent eff to the dwell instead). An ok `A` row's reason is
 empty or the drone's note. Flags bitmask: 1
 `no_dip`, 2 `undetermined`, 4 `narrow`, 8 `saturated`, 16
-`card_disagree`, 64 `tx_bound`, 128 `lossy`, 256 `lost` (32 was `drift`,
+`card_disagree`, 64 `tx_bound`, 128 `lossy`, 256 `lost`, 512
+`short_span` (32 was `drift`,
 retired and never reused). A `V` row means "this rate was parked", never "verified
 clean": `pct` 0 is a real measurement.
 
 One file holds several runs (a retry after moving the drone lands in the
 same file), each delimited by its own `R`. A file in an older format is
 renamed `cal.log.callog<N>` when `maburgs` starts, so one file never
-mixes formats. `maburcal report` reads `callog 1`-`4`: 1 and 2
+mixes formats. `maburcal report` reads `callog 1`-`5`: 1 and 2
 carry absolute indices and a `base_ref` on `R` (`-1` = undetermined), 3 is
-the single-width relative format (`docs/data-provenance.md`).
+the single-width relative format, 4 is 5 without `P`'s `span_ms`, its
+`eff` divided by the commanded dwell and so reading high
+(`docs/data-provenance.md`).
 
 ## Offline analysis: `maburcal report`
 

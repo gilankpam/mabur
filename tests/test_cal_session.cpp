@@ -496,6 +496,117 @@ TEST(capacity_sweep_yields_eff_and_zero_for_tx_bound) {
   CHECK(!s.radio_silent(300));
 }
 
+// mcs0/HT20 is 6.5 Mbps nominal. 1212 frames of 1435 air bytes heard over
+// 2300 ms (the drone's 2 s blast plus its TX queue's drain) is
+// 1211 * 11480 / (2.3 s * 6.5e6) = 0.93; over the commanded 2 s dwell the
+// same frames read 1.07, clamped to 1.00.
+constexpr size_t kCapAir = 1435;
+constexpr int kCapFrames = 1212;
+constexpr uint64_t kCapSpanMs = 2300;
+
+// The receive stamp of frame k of kCapFrames, spread evenly over the span
+// from `t0`.
+uint64_t cap_rx_ms(uint64_t t0, int k) {
+  return t0 + kCapSpanMs * static_cast<uint64_t>(k) / static_cast<uint64_t>(kCapFrames - 1);
+}
+
+cal::SweepDone cap_done(uint32_t nonce, uint8_t seq, uint32_t offered) {
+  cal::SweepDone d;
+  d.nonce = nonce;
+  d.seq = seq;
+  d.offered = {offered, 0, 0, 0, 0, 0, 0, 0};
+  d.blocked_pct = {90, 0, 0, 0, 0, 0, 0, 0};
+  return d;
+}
+
+TEST(capacity_eff_is_timed_by_the_frames_receive_stamps) {
+  // The core loop drains the receive queue in bursts, so the session's
+  // clock (its latest tick) can run ahead of the frames it is handed. The
+  // span is the frames' own receive stamps: here the loop stalls 300 ms
+  // before the last ten frames, and timing them by the tick would read
+  // 2600 ms, an eff of 0.82.
+  const std::string dir = fresh_dir("cal_session_rx_stamp");
+  CalLog log(dir);
+  log.header();
+  CalSession s(CalSessionCfg{}, &log);
+  s.set_peer(true, true);
+  std::string err;
+  REQUIRE(s.start(40, {{Kind::Capacity, 20}}, 0, &err));
+  REQUIRE(as<cal::SweepCmd>(s.due_mav(0)).has_value());
+  ack(s, 40, 0, 10, cal::kFlagStbc);
+  for (int k = 0; k < kCapFrames; ++k) {
+    const uint64_t rx = cap_rx_ms(100, k);
+    s.due_mav(k == kCapFrames - 10 ? rx + 300 : rx + 2);  // the core loop's tick
+    s.on_cal_frame(0, stamp(Kind::Capacity, 0, 0, 20, cal::kFlagStbc, k), -60, true, kCapAir,
+                   rx);
+  }
+  s.on_mav(cap_done(40, 0, kCapFrames), 2800);
+  const auto a = as<cal::ApplyCmd>(s.due_mav(2810));
+  REQUIRE(a.has_value());
+  CHECK(a->eff_x1000[0] == 930);
+  log.flush();
+  std::string p_row;
+  for (const auto& l : cal_log_lines(dir))
+    if (l.rfind("P 0 ", 0) == 0) p_row = l;
+  CHECK(p_row == "P 0 1212 1212 13913760 930 90 0 2300");
+}
+
+TEST(a_capacity_sweep_listens_through_the_drones_tx_queue_drain) {
+  // The drone's SweepDone goes out when its last blast returns, ahead of
+  // the frames its TX queue still holds: the GS keeps tallying until the
+  // stream has been quiet for tail_quiet_ms. Leaving at the SweepDone would
+  // drop the tail from the point's count (reading it as loss) and count
+  // what arrived after the GS moved on as stamp mismatches.
+  const std::string dir = fresh_dir("cal_session_drain");
+  CalLog log(dir);
+  log.header();
+  CalSessionCfg cfg;
+  CalSession s(cfg, &log);
+  s.set_peer(true, true);
+  std::string err;
+  REQUIRE(s.start(41, {{Kind::Capacity, 20}, {Kind::Power, 40}}, 0, &err));
+  REQUIRE(as<cal::SweepCmd>(s.due_mav(0)).has_value());
+  ack(s, 41, 0, 10, cal::kFlagStbc);
+  bool done_sent = false;
+  for (int k = 0; k < kCapFrames; ++k) {
+    const uint64_t rx = cap_rx_ms(100, k);
+    if (!done_sent && rx >= 2100) {  // the blast returned at 2100; 300 ms still queued
+      s.on_mav(cap_done(41, 0, kCapFrames), rx);
+      done_sent = true;
+    }
+    CHECK(!as<cal::ApplyCmd>(s.due_mav(rx)).has_value());
+    CHECK(s.radio_silent(rx));
+    s.on_cal_frame(0, stamp(Kind::Capacity, 0, 0, 20, cal::kFlagStbc, k), -60, true, kCapAir,
+                   rx);
+  }
+  REQUIRE(done_sent);
+  const uint64_t last = cap_rx_ms(100, kCapFrames - 1);
+  CHECK(!as<cal::ApplyCmd>(s.due_mav(last + cfg.tail_quiet_ms - 1)).has_value());
+  const auto a = as<cal::ApplyCmd>(s.due_mav(last + cfg.tail_quiet_ms));
+  REQUIRE(a.has_value());
+  CHECK(a->eff_x1000[0] == 930);
+  log.flush();
+  std::string p_row;
+  for (const auto& l : cal_log_lines(dir))
+    if (l.rfind("P 0 ", 0) == 0) p_row = l;
+  CHECK(p_row == "P 0 1212 1212 13913760 930 90 0 2300");
+  CHECK(s.snapshot().stamp_mismatch == 0);
+}
+
+TEST(a_power_sweep_still_closes_at_its_done) {
+  // Power frames are paced, not blasted: nothing queues behind the
+  // SweepDone, and the sweep closes the moment it arrives.
+  CalSession s(CalSessionCfg{});
+  s.set_peer(true, true);
+  std::string err;
+  REQUIRE(s.start(42, {{Kind::Power, 20}}, 0, &err));
+  REQUIRE(s.due_mav(0).has_value());
+  ack(s, 42, 0, 10);
+  feed_power(s, 20, kWalls, 1000);
+  s.on_mav(power_done(42, 0), 1000);
+  CHECK(s.state() == State::Apply);
+}
+
 TEST(a_capacity_point_that_lost_over_half_its_frames_is_not_written) {
   // Under half of what was offered arrived: the dwell measured the loss,
   // not the air, and is kept out of the config like a tx_bound point. From
@@ -654,16 +765,16 @@ TEST(a_stale_applied_for_the_power_seq_does_not_satisfy_the_capacity_apply) {
   d.seq = 1;
   d.offered.fill(100);
   d.blocked_pct.fill(90);
-  s.on_mav(d, t + 30);
-  const auto a = as<cal::ApplyCmd>(s.due_mav(t + 40));
+  s.on_mav(d, t + 100);  // the frames' tail has gone quiet
+  const auto a = as<cal::ApplyCmd>(s.due_mav(t + 110));
   REQUIRE(a.has_value());
   CHECK(a->seq == 1 && a->bw == 20 && a->has_eff);
   // The drone's cached answer to the power apply (same nonce, same width)
   // arriving again must not count as the capacity apply's.
-  s.on_mav(cal::Applied{36, 0, 20, true, ""}, t + 50);
+  s.on_mav(cal::Applied{36, 0, 20, true, ""}, t + 120);
   CHECK(s.state() == State::Apply);
-  CHECK(as<cal::ApplyCmd>(s.due_mav(t + 240)).has_value());
-  s.on_mav(cal::Applied{36, 1, 20, true, ""}, t + 250);
+  CHECK(as<cal::ApplyCmd>(s.due_mav(t + 310)).has_value());
+  s.on_mav(cal::Applied{36, 1, 20, true, ""}, t + 320);
   CHECK(s.state() == State::Done);
 }
 
@@ -977,9 +1088,9 @@ TEST(cal_log_gets_sweep_cell_wall_cap_verify_and_applied_rows) {
   d.seq = 1;
   d.offered.fill(100);
   d.blocked_pct.fill(90);
-  s.on_mav(d, t + 30);
-  REQUIRE(as<cal::ApplyCmd>(s.due_mav(t + 40)).has_value());
-  s.on_mav(cal::Applied{77, 1, 20, true, ""}, t + 50);
+  s.on_mav(d, t + 100);  // the frames' tail has gone quiet
+  REQUIRE(as<cal::ApplyCmd>(s.due_mav(t + 110)).has_value());
+  s.on_mav(cal::Applied{77, 1, 20, true, ""}, t + 120);
   REQUIRE(s.state() == State::Done);
 
   // On disk the moment the run reaches Done, without closing the log.

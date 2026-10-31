@@ -314,7 +314,9 @@ the cost is zero.
   (`docs/calibration.md`) saturates the air at each (MCS, width) for 2 s
   with production-sized frames, the production power and the production
   aggregation mode, and writes `efficiency_<bw>[mcs]` = delivered air bits
-  / (dwell × nominal). A point the drone's own TX path limited (its sender
+  / (receive span × nominal): timed from the GS's first to last frame of
+  the point, since the drone's TX queue keeps the air busy past the
+  commanded dwell. A point the drone's own TX path limited (its sender
   rarely blocked on the device) is flagged `tx_bound` and keeps the
   existing value. A new table takes effect at the next `maburd` start.
   The bundle's tables are the reference unit's bench numbers:

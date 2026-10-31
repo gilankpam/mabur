@@ -126,7 +126,9 @@ void CalSession::on_mav(const cal::CalMsg& m, uint64_t now_ms) {
     if (state_ != State::Sweep && state_ != State::AwaitDone) return;
     if (d->nonce != nonce_ || d->seq != cmd_.seq) return;
     done_ = *d;
-    finish_sweep(now_ms);
+    // A capacity sweep's tail may still be airing; step() closes it once
+    // the tail has gone quiet.
+    if (tail_quiet(now_ms)) finish_sweep(now_ms);
   } else if (const auto* ap = std::get_if<cal::Applied>(&m)) {
     // Matched on the sweep's seq as well as the width: a run applies twice
     // at one width (power, then capacity), and the drone keeps answering
@@ -160,6 +162,10 @@ std::optional<cal::CalMsg> CalSession::due_mav(uint64_t now_ms) {
 
 void CalSession::on_cal_frame(int card, const cal::CalFrameInfo& f, int rssi_dbm, bool crc_ok,
                               size_t air_bytes, uint64_t now_ms) {
+  // The frame's own receive stamp, before advance() folds it into the
+  // session clock: a capacity point is timed by when its frames arrived,
+  // not by when the core loop got round to them.
+  const uint64_t rx_ms = now_ms;
   now_ms = advance(now_ms);
   step(now_ms);
   if (card < 0 || card > 1 || f.rate > 7) return;
@@ -186,7 +192,7 @@ void CalSession::on_cal_frame(int card, const cal::CalFrameInfo& f, int rssi_dbm
     if (cmd_.kind == cal::Kind::Power)
       tally_power(card, f, rssi_dbm, crc_ok);
     else
-      tally_capacity(card, f, rssi_dbm, crc_ok, air_bytes);
+      tally_capacity(card, f, rssi_dbm, crc_ok, air_bytes, rx_ms);
   } else if (state_ == State::Verify) {
     if (f.kind != cal::Kind::Verify || f.bw != cmd_.bw || f.flags != ack_flags_) {
       ++stamp_mismatch_;
@@ -283,12 +289,17 @@ void CalSession::step(uint64_t now_ms) {
       if (now_ms - phase_start_ms_ >= cfg_.ack_timeout_ms) fail("calibration ack timeout");
       break;
     case State::Sweep:
-      if (now_ms < sweep_end_ms_) break;
-      state_ = State::AwaitDone;
-      [[fallthrough]];
     case State::AwaitDone:
-      // The drone's SweepDone normally ends this early; its loss costs at
-      // most phase_slack_ms.
+      // The drone's SweepDone normally ends this early (once a capacity
+      // sweep's tail has gone quiet); its loss costs at most phase_slack_ms.
+      if (done_ && tail_quiet(now_ms)) {
+        finish_sweep(now_ms);
+        break;
+      }
+      if (state_ == State::Sweep) {
+        if (now_ms < sweep_end_ms_) break;
+        state_ = State::AwaitDone;
+      }
       if (now_ms >= window_end_ms_) finish_sweep(now_ms);
       break;
     case State::Apply:
@@ -375,6 +386,7 @@ void CalSession::begin_sweep(size_t i, uint64_t now_ms) {
   }
   cap_ = {};
   cap_rssi_ = {};
+  last_cap_rx_ms_ = 0;
   done_.reset();
   cell_i_ = 0;
   phase_start_ms_ = now_ms;
@@ -415,17 +427,32 @@ void CalSession::tally_power(int card, const cal::CalFrameInfo& f, int rssi_dbm,
 }
 
 void CalSession::tally_capacity(int card, const cal::CalFrameInfo& f, int rssi_dbm, bool crc_ok,
-                                size_t air_bytes) {
+                                size_t air_bytes, uint64_t rx_ms) {
   if (!(cmd_.mcs_mask & (1u << f.rate))) return;
   cell_i_ = static_cast<uint32_t>(
                 std::bitset<8>(cmd_.mcs_mask & ((1u << f.rate) - 1u)).count()) +
             1;
+  // Any frame of the sweep, clean or not, says the air is still busy.
+  last_cap_rx_ms_ = std::max(last_cap_rx_ms_, rx_ms);
   if (!crc_ok) return;  // delivered air bits count clean frames only
   CapCell& c = cap_[f.rate];
   const size_t k = static_cast<size_t>(card);
+  const uint64_t bits = static_cast<uint64_t>(air_bytes) * 8u;
+  // One card's stamps are monotonic (one receive thread stamps them in
+  // arrival order); min/max keeps the span right if a caller interleaves.
+  if (c.frames[k] == 0 || rx_ms < c.first_ms[k]) {
+    c.first_ms[k] = rx_ms;
+    c.first_bits[k] = bits;
+  }
+  if (c.frames[k] == 0 || rx_ms > c.last_ms[k]) c.last_ms[k] = rx_ms;
   ++c.frames[k];
-  c.air_bits[k] += static_cast<uint64_t>(air_bytes) * 8u;
+  c.air_bits[k] += bits;
   cap_rssi_[f.rate][k].push_back(rssi_dbm);
+}
+
+bool CalSession::tail_quiet(uint64_t now_ms) const {
+  if (cmd_.kind != cal::Kind::Capacity) return true;
+  return now_ms >= last_cap_rx_ms_ + cfg_.tail_quiet_ms;
 }
 
 void CalSession::tally_verify(int card, const cal::CalFrameInfo& f, bool crc_ok) {

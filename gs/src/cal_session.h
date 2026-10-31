@@ -40,6 +40,12 @@ struct CalSessionCfg {
   // silent) for late frames and the drone's SweepDone; also pads the
   // verify window.
   uint32_t phase_slack_ms = 1000;
+  // After a capacity sweep's SweepDone, how long its frames must have been
+  // quiet before the sweep closes. The drone sends SweepDone when its last
+  // blast returns, ahead of the frames its TX queue is still airing; a
+  // saturated stream never gaps this long, the end of the drain does.
+  // Bounded by the listen window like everything else in AwaitDone.
+  uint32_t tail_quiet_ms = 50;
   // How long an ApplyCmd is repeated without an Applied before the run
   // fails.
   uint32_t apply_timeout_ms = 5000;
@@ -100,7 +106,9 @@ class CalSession {
              std::string* err);
 
   // The drone's SweepAck, SweepDone and Applied. Anything naming another
-  // nonce, another sweep or arriving in the wrong state is ignored.
+  // nonce, another sweep or arriving in the wrong state is ignored. A
+  // SweepDone closes a power sweep at once and a capacity sweep once its
+  // frames have been quiet for tail_quiet_ms.
   void on_mav(const mabur::cal::CalMsg& m, uint64_t now_ms);
 
   // The message to send right now, or nullopt: a SweepCmd (repeated every
@@ -120,7 +128,9 @@ class CalSession {
   // its flags are the ones the drone's ack announced; anything else is
   // counted in the snapshot's stamp_mismatch and never tallied. Before the
   // ack, the first CRC-clean frame of the commanded kind and width stands
-  // in for it and its flags become the run's.
+  // in for it and its flags become the run's. `now_ms` is the frame's own
+  // receive stamp (the RX thread's, not the core loop's tick): a capacity
+  // point is timed by when its frames arrived.
   void on_cal_frame(int card, const mabur::cal::CalFrameInfo& f, int rssi_dbm, bool crc_ok,
                     size_t air_bytes, uint64_t now_ms);
 
@@ -189,7 +199,10 @@ class CalSession {
   void queue_abort();
   void tally_power(int card, const mabur::cal::CalFrameInfo& f, int rssi_dbm, bool crc_ok);
   void tally_capacity(int card, const mabur::cal::CalFrameInfo& f, int rssi_dbm, bool crc_ok,
-                      size_t air_bytes);
+                      size_t air_bytes, uint64_t rx_ms);
+  // True once nothing of a capacity sweep has arrived for tail_quiet_ms (a
+  // power sweep has no tail: always true).
+  bool tail_quiet(uint64_t now_ms) const;
   void tally_verify(int card, const mabur::cal::CalFrameInfo& f, bool crc_ok);
   int cells_per_row() const;
   WidthResult& width_result();
@@ -246,6 +259,7 @@ class CalSession {
   // Capacity tally per rate.
   std::array<CapCell, 8> cap_;
   std::array<std::array<std::vector<int>, 2>, 8> cap_rssi_;
+  uint64_t last_cap_rx_ms_ = 0;  // receive stamp of the sweep's latest frame
   // Verify tally per rate (best card read at the close) and the index the
   // first frame of each rate arrived at.
   std::vector<std::pair<uint8_t, int>> verify_cells_;

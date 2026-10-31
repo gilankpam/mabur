@@ -92,6 +92,16 @@ A 20 1 ok
 """
 
 
+# callog 5: GOOD4's run with each P row's trailing receive span; the 20 MHz
+# point was timed over 2287 ms, the 40 MHz one too short to time
+# (short_span, eff over the commanded dwell).
+GOOD5 = (GOOD4.replace("callog 4", "callog 5", 1)
+         .replace("P 3 4000 3950 58000000 730 72 0\n",
+                  "P 3 4000 3950 58000000 730 72 0 2287\n")
+         .replace("P 3 4000 2000 30000000 500 20 64\n",
+                  "P 3 4000 2000 30000000 500 20 576 140\n"))
+
+
 def render(text):
     with tempfile.NamedTemporaryFile("w", suffix=".log", delete=False) as f:
         f.write(text)
@@ -444,6 +454,41 @@ class TestRenderWhenReady(unittest.TestCase):
         text, problem = maburcal._render_when_ready(None)
         self.assertIsNone(text)
         self.assertIsNone(problem)
+
+
+class TestReportV5(unittest.TestCase):
+    """callog 5 is callog 4 plus P's trailing span_ms: the best card's
+    first-to-last receive span the point's eff was timed over."""
+
+    def _parse(self, text):
+        with tempfile.NamedTemporaryFile("w", suffix=".log", delete=False) as f:
+            f.write(text)
+            path = f.name
+        return maburcal._parse_cal_log(path)
+
+    def test_renders_like_v4(self):
+        out = render(GOOD5)
+        row3 = [l for l in out.splitlines() if l.startswith("mcs3")][0]
+        self.assertEqual(row3.split()[:9],
+                         ["mcs3", "42", "38", "99%", ".73", "40", "36", "95%", "-"])
+        self.assertIn("written: /etc/mabur.toml", out)
+
+    def test_span_is_kept_and_v4_has_none(self):
+        run5 = self._parse(GOOD5)[0]
+        self.assertEqual(run5.caps_by_bw[20][3], (4000, 3950, 58000000, 730, 72, 0, 2287))
+        self.assertEqual(run5.caps_by_bw[40][3][6], 140)
+        run4 = self._parse(GOOD4)[0]
+        self.assertEqual(run4.caps_by_bw[20][3], (4000, 3950, 58000000, 730, 72, 0, None))
+
+    def test_short_span_flag_is_named(self):
+        out = render(GOOD5)
+        row3 = [l for l in out.splitlines() if l.startswith("mcs3")][0]
+        self.assertIn("40:tx_bound,short_span", row3)
+
+    def test_a_v4_shaped_p_row_in_a_v5_file_is_skipped(self):
+        text = GOOD5.replace("P 3 4000 3950 58000000 730 72 0 2287\n",
+                             "P 3 4000 3950 58000000 730 72 0\n")
+        self.assertNotIn(3, self._parse(text)[0].caps_by_bw[20])
 
 
 class TestCallogVersions(unittest.TestCase):

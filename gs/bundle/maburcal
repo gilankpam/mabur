@@ -54,10 +54,12 @@ MABURGS_LOG = "/tmp/maburgs.log"
 SESSION_MARKER = "/tmp/mabur-session"
 DEFAULT_DEBUG_LOG_DIR = "/media/dvr/log"
 
-# The marker versions the FILE. 4 is what maburgs writes now: a run sweeps
+# The marker versions the FILE. 5 is what maburgs writes now: a run sweeps
 # both 20 and 40 MHz, scoping every C/W/P/V row to the width named by the
-# most recent S row, and the R line carries the run's channel, channel-pick
-# outcome and LDPC state alongside nonce/margin. 3 carries none of that --
+# most recent S row, the R line carries the run's channel, channel-pick
+# outcome and LDPC state alongside nonce/margin, and each P row ends in the
+# receive span its eff was timed over. 4 is the same without that span: its
+# eff divided by the commanded dwell. 3 carries none of that --
 # one width only, no S/P/A rows -- but keeps 4's relative-index convention
 # (wall/floor/idx SIGNED and RELATIVE to the drone chip's own anchor, no
 # base_ref on the R line). 1 and 2 are absolute-index formats still sitting
@@ -66,14 +68,15 @@ DEFAULT_DEBUG_LOG_DIR = "/media/dvr/log"
 # wall; 2 existed only briefly (two per-card EVM columns on the C row,
 # reverted when the sweep frames turned out to carry no EVM reading -- see
 # docs/calibration.md). Since this reader has never stored C rows, a v2 file
-# renders identically to a v1 one. All four stay readable because
+# renders identically to a v1 one. Every version stays readable because
 # recordings outlive the code that wrote them (CLAUDE.md).
-KNOWN_CALLOG_VERSIONS = (1, 2, 3, 4)
+KNOWN_CALLOG_VERSIONS = (1, 2, 3, 4, 5)
 
 # flags: 1=no_dip 2=undetermined 4=narrow 8=saturated 16=card_disagree
 # 32=drift (retired from callog 4 on, but still nameable on an older file)
-# 64=tx_bound 128=lossy 256=lost (callog 4 capacity sweeps only; lost
-# always comes with lossy)
+# 64=tx_bound 128=lossy 256=lost (callog 4+ capacity sweeps only; lost
+# always comes with lossy) 512=short_span (callog 5 capacity only: too few
+# frames or too short a receive span to time, eff over the commanded dwell)
 TX_BOUND = 64
 LOST = 256
 
@@ -87,6 +90,7 @@ FLAG_NAMES = (
     (64, "tx_bound"),
     (128, "lossy"),
     (256, "lost"),
+    (512, "short_span"),
 )
 
 
@@ -118,7 +122,9 @@ class _Run:
         self.bws_swept = set()  # every bw an S row has named, even an empty one
         self.walls_by_bw = {20: {}, 40: {}}     # bw -> rate -> (wall, floor_idx, best_card, flags)
         self.verify_by_bw = {20: {}, 40: {}}    # bw -> rate -> pct
-        self.caps_by_bw = {20: {}, 40: {}}      # bw -> rate -> (offered, recv_best, air_bits_best, eff_x1000, blocked_pct, flags)
+        # bw -> rate -> (offered, recv_best, air_bits_best, eff_x1000,
+        # blocked_pct, flags, span_ms); span_ms is None before callog 5
+        self.caps_by_bw = {20: {}, 40: {}}
         self.applies = []  # [(bw, ok, reason), ...], one per A row
 
     def undetermined(self, wall):
@@ -151,7 +157,7 @@ class _Run:
             return  # non-numeric field: skip the line, not the file
 
     def _feed_line_v4(self, tag, tok):
-        """callog 4's shape: S scopes the width every C/W/P/V row below it
+        """callog 4 and 5's shape: S scopes the width every C/W/P/V row below it
         belongs to, until the next S; A carries its own bw and is never
         scoped by S. Raises ValueError on a bad numeric field, caught by
         feed_line's own try/except -- the single place that turns a
@@ -177,11 +183,15 @@ class _Run:
         elif tag == "V" and len(tok) == 4:
             rate, _idx, pct = (int(x) for x in tok[1:])
             self.verify_by_bw[self.cur_bw][rate] = pct
-        elif tag == "P" and len(tok) == 8:
+        elif tag == "P" and len(tok) == (9 if self.version >= 5 else 8):
+            # callog 5 appends span_ms, the receive span eff was timed over;
+            # a callog 4 eff divided by the commanded dwell, which reads high
+            # by the drone's TX-queue drain (docs/data-provenance.md).
             rate, offered, recv_best, air_bits_best, eff_x1000, blocked_pct, flags = (
-                int(x) for x in tok[1:])
+                int(x) for x in tok[1:8])
+            span_ms = int(tok[8]) if self.version >= 5 else None
             self.caps_by_bw[self.cur_bw][rate] = (
-                offered, recv_best, air_bits_best, eff_x1000, blocked_pct, flags)
+                offered, recv_best, air_bits_best, eff_x1000, blocked_pct, flags, span_ms)
 
 
 def _parse_cal_log(path):

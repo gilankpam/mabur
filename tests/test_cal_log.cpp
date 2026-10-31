@@ -39,7 +39,7 @@ std::string fresh_dir(const char* name) {
 
 }  // namespace
 
-TEST(header_is_callog_4) {
+TEST(header_is_callog_5) {
   // The marker is what versions this FILE, independent of any run's data --
   // the schema itself is free to change provided maburcal changes in the
   // same commit.
@@ -47,7 +47,7 @@ TEST(header_is_callog_4) {
   { CalLog l(d); l.header(); }
   const auto ls = lines_of(d);
   REQUIRE(!ls.empty());
-  CHECK(ls[0] == "callog 4");
+  CHECK(ls[0] == "callog 5");
 }
 
 TEST(run_record_carries_channel_pick_and_ldpc) {
@@ -85,7 +85,7 @@ TEST(two_runs_in_one_session_append_two_run_records) {
   int header_count = 0;
   std::vector<std::string> run_lines;
   for (const auto& line : ls) {
-    if (line == "callog 4") ++header_count;
+    if (line == "callog 5") ++header_count;
     if (line.rfind("R ", 0) == 0) run_lines.push_back(line);
   }
   CHECK(header_count == 1);
@@ -177,13 +177,14 @@ TEST(cap_record_round_trips_every_field) {
   CapResult r;
   r.eff = 0.73;
   r.best_card = 0;
+  r.span_ms = 2287;
   r.flags = kCalTxBound;
   { CalLog l(d); l.header(); l.run(1, 1.0, 149, "auto", true);
     l.sweep(0, mabur::cal::Kind::Capacity, 40, 2000);
     l.cap(5, c, r); }
   const auto ls = lines_of(d);
   REQUIRE(ls.size() == 4);
-  CHECK(ls[3] == "P 5 4000 3950 58000000 730 72 64");
+  CHECK(ls[3] == "P 5 4000 3950 58000000 730 72 64 2287");
 }
 
 TEST(cap_record_uses_the_other_card_when_it_is_best) {
@@ -196,13 +197,14 @@ TEST(cap_record_uses_the_other_card_when_it_is_best) {
   CapResult r;
   r.eff = 0.5;
   r.best_card = 1;
-  r.flags = 0;
+  r.span_ms = 140;
+  r.flags = kCalShortSpan;
   { CalLog l(d); l.header(); l.run(1, 1.0, 149, "auto", true);
     l.sweep(0, mabur::cal::Kind::Capacity, 20, 2000);
     l.cap(2, c, r); }
   const auto ls = lines_of(d);
   REQUIRE(ls.size() == 4);
-  CHECK(ls[3] == "P 2 500 480 9000 500 10 0");
+  CHECK(ls[3] == "P 2 500 480 9000 500 10 512 140");
 }
 
 TEST(verify_record) {
@@ -246,7 +248,7 @@ TEST(reopening_appends_without_a_second_header) {
   { CalLog l(d); l.verify(1, 87, 99); }
   const auto ls = lines_of(d);
   REQUIRE(ls.size() == 3);
-  CHECK(ls[0] == "callog 4");
+  CHECK(ls[0] == "callog 5");
   CHECK(ls[1].rfind("V ", 0) == 0);
   CHECK(ls[2].rfind("V ", 0) == 0);
 }
@@ -303,10 +305,20 @@ TEST(a_current_format_cal_log_is_left_alone) {
   CHECK(!cal_log_prepare(d));
   const auto ls = lines_of(d);
   REQUIRE(ls.size() == 2);
-  CHECK(ls[0] == "callog 4");
+  CHECK(ls[0] == "callog 5");
 }
 
 TEST(prepare_on_a_directory_with_no_cal_log_reports_the_header_is_due) {
   const auto d = fresh_dir("callog_absent");
   CHECK(cal_log_prepare(d));
+}
+
+TEST(a_callog_4_file_is_retired_too) {
+  // callog 4's P rows time eff over the commanded dwell; a v5 row under a
+  // v4 marker would misreport what its eff means.
+  const auto d = fresh_dir("callog_stale4");
+  { std::ofstream f(d + "/cal.log"); f << "callog 4\nR 1 1.00 36 auto 1\n"; }
+  CHECK(cal_log_prepare(d));
+  std::ifstream retired(d + "/cal.log.callog4");
+  REQUIRE(retired.good());
 }

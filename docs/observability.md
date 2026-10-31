@@ -624,7 +624,7 @@ phase-lock fields
 `lock= lerr= loff= lctr=` (docs/phase-lock.md); reglog 1 rows end at
 `lslot=` before `present=`.
 
-### `cal.log` (`callog 4`)
+### `cal.log` (`callog 5`)
 
 The calibration record (`gs/src/cal_log.h`): per run an `R` line, then per
 sweep an `S` line scoping the power cells (`C`), walls (`W`), capacity

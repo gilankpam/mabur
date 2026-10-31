@@ -123,7 +123,8 @@ Chronological; each line names the section below that carries the detail.
   grid periods), no longer the link: before this build they were the
   drone's pts of decoded frames, capped by `fps_cap`.
 - 2026-10-31 — calibration over MAVLink: RC_VERSION 18 (`T_CAL_CMD`/
-  `T_CAL_RESULT` deleted), `callog 4` (per-width walls and capacity),
+  `T_CAL_RESULT` deleted), `callog 4`/`5` (per-width walls and capacity;
+  5 times capacity over the receive span),
   `scanlog 7` (`H` reason), `radio.rate_walls_rel` → `_20`/`_40`, sideport
   `link.cal` (`docs/calibration.md`).
 
@@ -225,9 +226,9 @@ debug-log session directory, or `<debug_log.dir>/cal/` when debug logging
 is off): `callog 1`/`2` (absolute walls, anchor on
 the R line) through 2026-09-13, `callog 3` (relative walls, `-128` =
 undetermined, one width, flags off) until 2026-10-31, `callog 4`
-(per-width walls and capacity, below) after; `maburcal report` reads all
-four — where a txagcbench run left a CSV the deleted Python analyzer
-read.
+(per-width walls and capacity, below) and then `callog 5` (capacity
+timed over the receive span) after; `maburcal report` reads every one —
+where a txagcbench run left a CSV the deleted Python analyzer read.
 
 ## 2026-08-26 — DVR filenames carry no date
 
@@ -1309,7 +1310,21 @@ reused), and the drone config loses a key.
   is retired (no fine phase) and never reused, so a `callog 1`-`3` file
   may still carry it. A `callog 3` file found in the log directory is
   renamed `cal.log.callog3` by the new `maburgs`. `maburcal report` reads
-  1-4; nothing else reads `cal.log`.
+  1-5; nothing else reads `cal.log`.
+- **`callog 5`: capacity efficiency timed over the receive span.** A
+  `callog 4` `P` row's `eff` is delivered bits over the commanded 2 s
+  dwell, which reads high: the drone's TX queue keeps airing after its
+  blast returns, so the air was busy longer than the dwell (a bench run
+  read 1.00, clamped from 1.07, at 20 MHz mcs0 where the reference is
+  0.93, and every point high). `callog 5` times each point over the best
+  card's first-to-last receive span (`P` gains a trailing `span_ms`; flag
+  512 `short_span` marks a point too short to time, which falls back to
+  the dwell). The GS also listens through the last point's queued tail
+  before closing a capacity sweep, so a `callog 4` file's last `P` row
+  undercounts `recv_best` by that tail and its run's `mismatch=` counted
+  the rest. Do not compare a `callog 4` `eff` with a `callog 5` one, nor
+  trust an `efficiency_<bw>` table a `callog 4` run wrote; re-run the
+  capacity sweep. A `callog 4` file is renamed `cal.log.callog4`.
 - **`scanlog 7`.** `H` gains a trailing `<reason|->` (`cal` on the
   relocate a calibration run orders); `K` also closes a calibration
   measure round, with that round's scores. `tools/flightreport.py` reads

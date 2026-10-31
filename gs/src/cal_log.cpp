@@ -13,7 +13,7 @@
 
 namespace maburgs {
 namespace {
-constexpr char kCalLogMarker[] = "callog 4";
+constexpr char kCalLogMarker[] = "callog 5";
 }  // namespace
 
 bool cal_log_header_due(const std::string& dir) {
@@ -111,9 +111,9 @@ void CalLog::cap(uint8_t rate, const CapCell& c, const CapResult& r) {
   const int eff_x1000 = static_cast<int>(std::lround(r.eff * 1000.0));
   char b[160];
   const int n = std::snprintf(
-      b, sizeof(b), "P %d %u %u %llu %d %u %u", rate, c.offered,
+      b, sizeof(b), "P %d %u %u %llu %d %u %u %u", rate, c.offered,
       c.frames[bi], static_cast<unsigned long long>(c.air_bits[bi]),
-      eff_x1000, c.blocked_pct, r.flags);
+      eff_x1000, c.blocked_pct, r.flags, r.span_ms);
   if (n > 0)
     w_.line(s_, b, std::min(static_cast<size_t>(n), sizeof(b) - 1));
 }

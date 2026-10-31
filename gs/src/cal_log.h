@@ -31,7 +31,7 @@ struct CapResult;
 // Record format is LOCKED (gs/bundle/maburcal's reader and
 // tests/test_cal_log.cpp depend on the exact byte layout):
 //
-//   callog 4                                                     # once, first line
+//   callog 5                                                     # once, first line
 //   R <nonce> <margin_db> <ch> <pick> <ldpc 0|1>       # once per calibration run
 //   S <seq> <power|capacity> <bw> <frames|dwell_ms>    # once per sweep; scopes
 //                                                       # every C/W/P/V row below
@@ -42,9 +42,14 @@ struct CapResult;
 //                                                # (power or verify sweep)
 //   W <rate> <wall> <floor> <best_card> <flags>  # one row per rate, per
 //                                                 # power sweep
-//   P <rate> <offered> <recv_best> <air_bits_best> <eff_x1000> <blocked_pct> <flags>
+//   P <rate> <offered> <recv_best> <air_bits_best> <eff_x1000> <blocked_pct> <flags> <span_ms>
 //                                                # one row per rate, one capacity
-//                                                # sweep's result
+//                                                # sweep's result; span_ms is the
+//                                                # best card's first-to-last
+//                                                # receive span eff was timed
+//                                                # over (flag 512, short_span:
+//                                                # too short to trust, eff over
+//                                                # the commanded dwell instead)
 //   V <rate> <idx> <pct>                         # one row per verify cell
 //   A <bw> <0|1> <reason to end of line>          # one row per apply attempt
 //
@@ -148,7 +153,7 @@ class CalLog {
 
   bool ok() const { return s_ != LogWriter::kBadStream; }
 
-  // The format-marker line, `callog 4`. Call at most once per FILE (i.e.
+  // The format-marker line, `callog 5`. Call at most once per FILE (i.e.
   // never on a rejoin of an already-headed session directory) -- it
   // carries no per-run data, so unlike ctl.log's single combined header
   // there is no reason for a second calibration run in the same session to
@@ -175,7 +180,7 @@ class CalLog {
   void cell(uint8_t rate, int idx, const CalCell& c);
   void wall(uint8_t rate, const RateWall& w);
   // One capacity dwell's result: `P <rate> <offered> <recv_best>
-  // <air_bits_best> <eff_x1000> <blocked_pct> <flags>`. recv_best and
+  // <air_bits_best> <eff_x1000> <blocked_pct> <flags> <span_ms>`. recv_best and
   // air_bits_best are the best card's own columns from `cell` (CapResult's
   // best_card), not a union across cards -- same "best single card, never
   // the union" convention the wall pass uses.

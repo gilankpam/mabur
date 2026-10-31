@@ -171,21 +171,88 @@ TEST(empty_input_is_undetermined) {
   CHECK((w.flags & kCalUndetermined) != 0);
 }
 
-// mcs4/HT20, long GI: phy_rate_mbps gives 39 Mbps. A 2 s dwell that
-// delivered 56.8e6 air bits on the best card is 56.8e6 / (2 * 39e6) =
-// 0.7282..., which rounds to 0.73.
-TEST(efficiency_is_delivered_over_nominal) {
+// mcs4/HT20, long GI: phy_rate_mbps gives 39 Mbps. The drone's TX queue
+// keeps airing after its 2 s blast returns, so the GS heard this point for
+// 2.3 s: 5705 frames of 1435 air bytes, the first at 1000 ms and the last
+// at 3300 ms. The air was saturated for that whole span, and the 5704
+// frames after the first one are what it carried in it:
+// 5704 * 11480 / (2.3 * 39e6) = 0.7300... -- not the 0.84 the commanded
+// dwell would read.
+TEST(efficiency_is_delivered_over_the_receive_span) {
+  constexpr uint64_t kBits = 1435 * 8;
   CapCell c;
-  c.offered = 1000;
+  c.offered = 5705;
   c.blocked_pct = 80;  // well clear of tx_bound
-  c.frames = {980, 0};
-  c.air_bits = {56800000, 0};
+  c.frames = {5705, 0};
+  c.air_bits = {5705 * kBits, 0};
+  c.first_bits = {kBits, 0};
+  c.first_ms = {1000, 0};
+  c.last_ms = {3300, 0};
   c.rssi_dbm = {-70, 0};
   c.have_rssi = {true, false};
   const auto r = analyze_capacity(c, /*mcs=*/4, /*bw=*/20, /*dwell_ms=*/2000,
                                    CalThresholds{});
   CHECK(r.eff == 0.73);
+  CHECK(r.span_ms == 2300);
+  CHECK((r.flags & kCalShortSpan) == 0);
   CHECK(r.best_card == 0);
+}
+
+// The span is the best card's own: card 1 heard more bits, so its first
+// and last frame time the point even though card 0's span is longer.
+TEST(the_span_is_the_best_cards) {
+  constexpr uint64_t kBits = 1435 * 8;
+  CapCell c;
+  c.offered = 5705;
+  c.blocked_pct = 80;
+  c.frames = {3000, 5705};
+  c.air_bits = {3000 * kBits, 5705 * kBits};
+  c.first_bits = {kBits, kBits};
+  c.first_ms = {500, 1000};
+  c.last_ms = {4000, 3300};
+  const auto r = analyze_capacity(c, 4, 20, 2000, CalThresholds{});
+  CHECK(r.best_card == 1);
+  CHECK(r.span_ms == 2300);
+  CHECK(r.eff == 0.73);
+}
+
+// Too few frames, or too short a span, to time the delivery: eff falls back
+// to the commanded dwell and the point says so. mcs4/20 at 39 Mbps:
+// 5000 frames * 11480 bits / (2 s * 39e6) = 0.7358 -> 0.74.
+TEST(a_short_span_falls_back_to_the_commanded_dwell_and_says_so) {
+  constexpr uint64_t kBits = 1435 * 8;
+  CapCell c;
+  c.offered = 5000;
+  c.blocked_pct = 80;
+  c.frames = {5000, 0};
+  c.air_bits = {5000 * kBits, 0};
+  c.first_bits = {kBits, 0};
+  c.first_ms = {1000, 0};
+  c.last_ms = {1499, 0};  // 499 ms: under the 500 ms floor
+  auto r = analyze_capacity(c, 4, 20, 2000, CalThresholds{});
+  CHECK((r.flags & kCalShortSpan) != 0);
+  CHECK(r.eff == 0.74);
+  CHECK(r.span_ms == 499);
+
+  c.last_ms = {1500, 0};  // 500 ms: long enough to time
+  r = analyze_capacity(c, 4, 20, 2000, CalThresholds{});
+  CHECK((r.flags & kCalShortSpan) == 0);
+  CHECK(r.eff == 1.0);  // 4999 * 11480 / (0.5 s * 39e6) clamps at 1.0
+
+  // 19 frames over a long span: too few to time. 19 * 11480 / (2 * 39e6)
+  // floors at 0.05.
+  c.frames = {19, 0};
+  c.air_bits = {19 * kBits, 0};
+  c.last_ms = {3000, 0};
+  r = analyze_capacity(c, 4, 20, 2000, CalThresholds{});
+  CHECK((r.flags & kCalShortSpan) != 0);
+  CHECK(r.eff == 0.05);
+  // 20 is enough: 19 * 11480 / (2 s * 39e6) = 0.0028 -> the 0.05 floor,
+  // timed over the span this time.
+  c.frames = {20, 0};
+  c.air_bits = {20 * kBits, 0};
+  r = analyze_capacity(c, 4, 20, 2000, CalThresholds{});
+  CHECK((r.flags & kCalShortSpan) == 0);
 }
 
 TEST(best_card_is_the_one_with_more_bits) {
@@ -267,6 +334,7 @@ TEST(drift_flag_bit_is_not_reused) {
   CHECK(kCalTxBound == 64);
   CHECK(kCalLossy == 128);
   CHECK(kCalLost == 256);
+  CHECK(kCalShortSpan == 512);
 }
 
 MTEST_MAIN

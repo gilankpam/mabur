@@ -209,13 +209,25 @@ struct Kit;
 // simulated clock moves during a dwell -- the TX writer is blocked inside
 // it for the whole dwell, while the GS's core loop keeps running and the
 // drone's cal queue keeps filling.
+//
+// Like the real TX path, a saturated blast leaves frames queued when it
+// returns: the air carries the point's frames over the dwell plus
+// `drain_ms`, at the point's true rate throughout, and the queued tail airs
+// after the drone has moved on (to the next point's settle, or to its
+// SweepDone after the last). The capacity this models is what the air
+// delivers while busy, which a GS dividing by the commanded dwell reads
+// high.
 struct FakeCapacityCtl : mabur::CalSweep::CapacityCtl {
   Kit* kit = nullptr;
   bool set_point(uint8_t mcs, uint8_t bw) override;
   mabur::BlastResult blast(const uint8_t* frame, size_t len, uint32_t dwell_ms) override;
   // (mcs, bw) points where the drone cannot feed the air: blocked_pct low,
-  // fewer frames offered than the air would carry.
+  // fewer frames offered than the air would carry, and nothing queued.
   std::vector<std::pair<uint8_t, uint8_t>> tx_bound;
+  // How long a saturated point's queued tail keeps airing after its blast
+  // returns -- under the 300 ms settle, so one point's tail is done before
+  // the next point's blast.
+  uint32_t drain_ms = 280;
   int points = 0;
 };
 
@@ -264,6 +276,12 @@ struct Kit {
   // Simulated clock, ms. Both loops tick once per ms; a capacity dwell
   // advances it from inside blast().
   uint64_t t = 0;
+  // The capacity point's tail still queued on the drone when its blast
+  // returned: `drain_total` frames airing evenly from `drain_t0` over
+  // `drain_ms`, heard by both cards.
+  std::vector<uint8_t> drain_rx;
+  uint32_t drain_total = 0, drain_sent = 0, drain_ms = 0;
+  uint64_t drain_t0 = 0;
   std::mt19937 rng{12345};
 
   // --- GS ---
@@ -537,7 +555,22 @@ struct Kit {
 
   // --- driving ------------------------------------------------------------
 
+  // The queued capacity tail, a millisecond at a time: the air drains it on
+  // its own, whatever the drone's TX writer is doing.
+  void air_tick() {
+    if (drain_sent >= drain_total) return;
+    const uint64_t due = std::min<uint64_t>(
+        drain_total, uint64_t{drain_total} * (t - drain_t0 + 1) / drain_ms);
+    for (; drain_sent < due; ++drain_sent) {
+      REQUIRE(maburgs::route_cal_body(gs, 0, drain_rx.data(), drain_rx.size(), -58, true, t) ==
+              drain_rx.size() + 26);
+      REQUIRE(maburgs::route_cal_body(gs, 1, drain_rx.data(), drain_rx.size(), -61, true, t) ==
+              drain_rx.size() + 26);
+    }
+  }
+
   void step() {
+    air_tick();
     gs_tick();
     drone_tick();
     ++t;
@@ -589,16 +622,23 @@ mabur::BlastResult FakeCapacityCtl::blast(const uint8_t* frame, size_t len, uint
   const std::vector<uint8_t> rx = with_fcs(frame, len);
   const double nominal_bps =
       mabur::rc::phy_rate_mbps({mabur::rc::PhyMode::HT, info.rate, info.bw}) * 1e6;
-  // Frames the air carries in the dwell at this point's true efficiency.
-  const uint32_t air_frames = static_cast<uint32_t>(std::lround(
-      true_eff(info.bw, info.rate) * (dwell_ms / 1000.0) * nominal_bps / (air_bytes * 8.0)));
+  // The previous point's tail has aired (drain_ms is under the settle).
+  REQUIRE(kit->drain_sent == kit->drain_total);
   const bool bound =
       std::find(tx_bound.begin(), tx_bound.end(), std::make_pair(info.rate, info.bw)) !=
       tx_bound.end();
+  // Frames the air carries at this point's true efficiency over the dwell
+  // and, for a saturated point, its queued tail.
+  const uint32_t busy_ms = dwell_ms + (bound ? 0 : drain_ms);
+  const uint32_t air_frames = static_cast<uint32_t>(std::lround(
+      true_eff(info.bw, info.rate) * (busy_ms / 1000.0) * nominal_bps / (air_bytes * 8.0)));
   // A tx_bound point: the drone's CPU/USB, not the air, is the limit.
-  const uint32_t delivered = bound ? air_frames * 6 / 10 : air_frames;
+  const uint32_t offered = bound ? air_frames * 6 / 10 : air_frames;
+  // What airs inside the dwell; the rest is still queued when blast returns.
+  const uint32_t delivered =
+      static_cast<uint32_t>(uint64_t{offered} * dwell_ms / busy_ms);
   mabur::BlastResult r;
-  r.offered = delivered;
+  r.offered = offered;
   r.blocked_pct = bound ? 20 : 85;
   // The dwell, a millisecond at a time: frames land on both cards as they
   // are sent and the GS's core loop runs alongside.
@@ -614,6 +654,11 @@ mabur::BlastResult FakeCapacityCtl::blast(const uint8_t* frame, size_t len, uint
     kit->gs_tick();
     ++kit->t;
   }
+  kit->drain_rx = rx;
+  kit->drain_total = offered - delivered;
+  kit->drain_sent = 0;
+  kit->drain_t0 = kit->t;
+  kit->drain_ms = busy_ms - dwell_ms;
   return r;
 }
 
@@ -676,6 +721,9 @@ TEST(four_sweeps_write_both_width_tables) {
   CHECK(c.radio.legacy_wall_rel == 63);
   check_eff(c.air_clock.efficiency_20, 20);
   check_eff(c.air_clock.efficiency_40, 40);
+  // The last point's queued tail was heard as the sweep's, not dropped into
+  // the next sweep's window as a stamp mismatch.
+  CHECK(snap.stamp_mismatch == 0);
   // The 40 MHz keys were inserted (the loader's default for cal_flags_40 is
   // the same string, so the text is what proves the line exists), and the
   // rest of the file -- comments included -- survived.

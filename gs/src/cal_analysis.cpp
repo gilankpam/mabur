@@ -156,10 +156,28 @@ CapResult analyze_capacity(const CapCell& c, uint8_t mcs, uint8_t bw,
 
   const double nominal_bps =
       mabur::rc::phy_rate_mbps({mabur::rc::PhyMode::HT, mcs, bw}) * 1e6;
+  // Timed by the GS's own receive clock: the drone's TX queue keeps airing
+  // after its blast returns, so the air was busy longer than the commanded
+  // dwell. The bits after the first frame over first-to-last is the rate the
+  // saturated air delivered; the first frame's bits were on the air before
+  // its stamp, so they fall outside the span.
+  const uint64_t span_ms =
+      c.last_ms[bi] > c.first_ms[bi] ? c.last_ms[bi] - c.first_ms[bi] : 0;
+  out.span_ms = static_cast<uint32_t>(std::min<uint64_t>(span_ms, UINT32_MAX));
   double eff = 0.0;
-  if (dwell_ms > 0 && nominal_bps > 0.0) {
-    const double dwell_s = static_cast<double>(dwell_ms) / 1000.0;
-    eff = static_cast<double>(c.air_bits[bi]) / (dwell_s * nominal_bps);
+  if (nominal_bps > 0.0) {
+    if (c.frames[bi] >= th.span_min_frames && span_ms >= th.span_min_ms) {
+      const double bits = static_cast<double>(c.air_bits[bi] - c.first_bits[bi]);
+      eff = bits / (static_cast<double>(span_ms) / 1000.0 * nominal_bps);
+    } else {
+      // Too few frames, or too short a span, to time: the commanded dwell
+      // is the only clock left, and it reads high by the queue's drain.
+      out.flags |= kCalShortSpan;
+      if (dwell_ms > 0) {
+        const double dwell_s = static_cast<double>(dwell_ms) / 1000.0;
+        eff = static_cast<double>(c.air_bits[bi]) / (dwell_s * nominal_bps);
+      }
+    }
   }
   eff = std::round(eff * 100.0) / 100.0;
   out.eff = std::clamp(eff, 0.05, 1.0);
