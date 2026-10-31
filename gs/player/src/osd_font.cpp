@@ -193,6 +193,15 @@ void OsdFont::set_inverse(const ColorTrans& t) {
   entries_[1] = Entry{};
 }
 
+void OsdFont::clear_inverse() {
+  if (native_.pixels == original_.pixels) return;
+  native_ = original_;
+  inverted_.clear();
+  inverted_.shrink_to_fit();
+  entries_[0] = Entry{};
+  entries_[1] = Entry{};
+}
+
 const GlyphAtlas* OsdFont::atlas_at(int w, int h, ScaleMode mode) {
   if (!native_.pixels || w <= 0 || h <= 0 || w > (int)kMaxGlyphDim || h > (int)kMaxGlyphDim)
     return nullptr;

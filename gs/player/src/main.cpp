@@ -700,9 +700,13 @@ int main(int argc, char** argv) {
   // Installs the display stage: the CUBIC_LUT (always a table on a LUT
   // CRTC, identity when off) or the video-plane CTM, and pre-inverts both
   // overlays only for the LUT. Runs once per presenter acquire, BEFORE
-  // splash_show() and before any OSD composition. Idempotent for the OSD
-  // half (set_inverse and set_colour_inverse both replace).
+  // splash_show() and before any OSD composition. The OSD half starts from
+  // un-inverted on every call, so a presenter rebuilt mid-run whose install
+  // ends flat (colortrans off, or no LUT on the new CRTC) does not keep the
+  // previous presenter's pre-inversion.
   auto install_colortrans = [&](maburplay::DrmPresenter* p) {
+    osd_font.clear_inverse();
+    maburplay::set_colour_inverse(nullptr);
     const bool lut_avail = p->color_lut_available();
     const bool ctm_avail = p->plane_ctm_available();
     float m[12] = {};
@@ -1785,6 +1789,81 @@ int main(int argc, char** argv) {
   // Phase margins taken from the release thread each iteration.
   std::vector<maburplay::ReleaseLoop::MarginSample> margins;
   margins.reserve(maburplay::ReleaseLoop::kMarginCap);
+  // Builds a FRESH presenter on `mode` and makes it the live display,
+  // never a re-init of an existing one: every connector/mode/plane/zpos
+  // decision is re-derived from what the display offers now. Two callers:
+  // the hotplug retry (no presenter) and a live change of the display mode
+  // or the overlay setup (a presenter is running). Housekeeping only.
+  //  - No presenter: the new one is built first and output parks only once
+  //    it succeeded, so a retry that finds no display costs nothing.
+  //  - A live presenter: it is torn down first -- the burned recorder (it
+  //    samples the old display's vblank grid) is stopped, both output
+  //    threads park so nothing is held on the old presenter, the release
+  //    thread drops its sink, and only then is the presenter destroyed. If
+  //    the new one then fails, output resumes with no display and the
+  //    hotplug retry takes over on cfg.screen_mode.
+  // Returns whether a presenter is live on `mode` afterwards.
+  auto reacquire_display = [&](const std::string& mode, bool log_failures) -> bool {
+    const bool tear_down = presenter != nullptr;
+    if (tear_down) {
+      if (burn) stop_burn();
+      park_output("display rebuild");
+      release.set_sink(nullptr);
+      presenter.reset();
+    }
+    auto p = std::make_unique<maburplay::DrmPresenter>();
+    if (!p->init(mode, want_osd, [&releases](const maburplay::DmaFrame& f) { releases.push(f); },
+                 log_failures)) {
+      if (tear_down) {
+        resume_output();
+        std::fprintf(stderr,
+                     "maburplay: display rebuild on %s failed -- no display; the 1 s retry takes "
+                     "over\n",
+                     mode.c_str());
+      }
+      return false;
+    }
+    // Both output threads park across the swap: the pump's prime hook
+    // reads `presenter`, and the release thread takes the new sink only
+    // while parked. Sink-less until now, the release thread's park returns
+    // just the frames the regulator holds.
+    if (!tear_down) park_output("display acquired");
+    presenter = std::move(p);
+    install_colortrans(presenter.get());
+    // Same pre-first-flip reseed as the startup path: the new panel may run
+    // a different mode/refresh than the one configured.
+    regulator.set_panel_period(presenter->mode_period_us());
+    // Unlike the startup path, the lock may already be locked or acquiring
+    // against the OLD panel's grid here: restart it so the new mode gets a
+    // fresh window instead of up to 2 s of capture placement judged against
+    // a stale vblank period. Margins taken against the old grid go with it.
+    if (phase_lock) phase_lock->on_discontinuity(mono_us());
+    margins.clear();
+    release.take_margins(&margins);
+    margins.clear();
+    presenter->set_flip_sink(
+        [&lat, &regulator, &tap](const maburplay::DmaFrame& f, uint64_t t, bool ex) {
+          lat.on_flip(f.pts_us, t, ex);
+          regulator.on_flip(t, ex);
+          tap.on_flip(f, t);
+        });
+    // The GS bar re-lays out on the new surface, whose size may differ.
+    gs_laid_out = false;
+    // Startup-only, and this is where that invariant is enforced for a late
+    // or rebuilt display: if this process has ever decoded a frame, the
+    // aircraft is flying and a still photo on the goggles would read as a
+    // live feed. The screen still lights (needs_modeset defaults true and
+    // was never cleared since splash_show() was skipped, so the first
+    // present() performs the full modeset); it simply comes up on video, or
+    // on nothing until video returns.
+    if (!pump.have_frame()) show_splash(presenter.get());
+    release.set_sink(presenter.get());
+    resume_output();
+    // The recorder samples this display's vblank grid, so it could not
+    // exist before this moment.
+    start_burn_if_needed();
+    return true;
+  };
 #endif
   // The ring reader fell behind and skipped AUs that held references.
   uint64_t resyncs_seen = ring.resyncs();
@@ -1907,52 +1986,11 @@ int main(int argc, char** argv) {
       }
       if (now_ms >= display_retry_next_ms) {
         display_retry_next_ms = now_ms + 1000;
-        auto p = std::make_unique<maburplay::DrmPresenter>();
         // log_failures=false: this runs 86,400 times a day on a GS with no
         // screen, and /tmp is tmpfs.
-        if (p->init(cfg.screen_mode, want_osd,
-                    [&releases](const maburplay::DmaFrame& f) { releases.push(f); },
-                    /*log_failures=*/false)) {
-          // Both output threads park across the swap: the pump's prime hook
-          // reads `presenter`, and the release thread takes the new sink
-          // only while parked. Sink-less until now, the release thread's
-          // park returns just the frames the regulator holds.
-          park_output("display acquired");
-          presenter = std::move(p);
-          install_colortrans(presenter.get());
-          // Same pre-first-flip reseed as the startup path: a hotplugged
-          // panel may run a different mode/refresh than the one configured.
-          regulator.set_panel_period(presenter->mode_period_us());
-          // Unlike the startup path, the lock may already be locked or
-          // acquiring against the OLD panel's grid here: restart it so the
-          // new mode gets a fresh window instead of up to 2 s of capture
-          // placement judged against a stale vblank period. Margins taken
-          // against the old grid go with it.
-          if (phase_lock) phase_lock->on_discontinuity(mono_us());
-          margins.clear();
-          release.take_margins(&margins);
-          margins.clear();
-          presenter->set_flip_sink(
-              [&lat, &regulator, &tap](const maburplay::DmaFrame& f, uint64_t t, bool ex) {
-                lat.on_flip(f.pts_us, t, ex);
-                regulator.on_flip(t, ex);
-                tap.on_flip(f, t);
-              });
-          // Startup-only, and this is where that invariant is enforced for the
-          // hotplug path: if this process has ever decoded a frame, the aircraft is
-          // flying and a still photo on the goggles would read as a live feed. The
-          // screen still lights (needs_modeset defaults true and was never cleared
-          // since splash_show() was skipped, so the first present() performs the
-          // full modeset that used to run before splash existed); it simply comes
-          // up on video, or on nothing until video returns.
-          if (!pump.have_frame()) show_splash(presenter.get());
-          release.set_sink(presenter.get());
-          resume_output();
+        if (reacquire_display(cfg.screen_mode, /*log_failures=*/false)) {
           std::fprintf(stderr, "maburplay: display acquired after %.1f s\n",
                        (now_ms - display_retry_t0_ms) / 1000.0);
-          // The recorder samples this display's vblank grid, so it could not
-          // exist before this moment.
-          start_burn_if_needed();
           // rec_on, not burned_mode alone: a player deliberately stopped (or
           // never started -- autostart:false) has nothing to report here, and
           // saying otherwise would be a false alarm on every late display. A
