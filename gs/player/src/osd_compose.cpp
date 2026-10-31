@@ -270,6 +270,16 @@ bool OsdComposer::wants(const OsdComposeIn& in) const {
   return false;
 }
 
+bool OsdComposer::wants_burn(const OsdComposeIn& in) const {
+  if (burn_ && !burn_erase_.empty()) return true;
+  if (gs_live() && in.snap && in.gs_dirty) return true;
+  if (raster_ && in.screen) {
+    if (in.msp_fresh) return true;
+    if (have_screen_ && in.msp_stale && !screen_blank_) return true;
+  }
+  return false;
+}
+
 OsdComposeOut OsdComposer::compose_screen(int idx, const Surface& s, const OsdComposeIn& in) {
   idx &= 1;
   OsdComposeOut out;

@@ -193,6 +193,15 @@ class OsdComposer {
   // being behind is not a trigger, for the same reason as the MSP grid's.
   bool wants(const OsdComposeIn& in) const;
 
+  // The burn half's own trigger: the same MSP/GS reasons as wants(), minus
+  // screen_owed_ and the menu block -- a menu change (cursor move, the busy
+  // sweep) is never a reason to run compose_burn(), because the recording
+  // can never show it. screen_owed_ is excluded too: whatever part of it a
+  // dropped raster or GS layer owes the burn canvas is already carried by
+  // burn_erase_ (checked here), and the rest -- a menu drop, a rebuilt
+  // presenter -- is screen-only.
+  bool wants_burn(const OsdComposeIn& in) const;
+
   // The screen half of compose(): MSP draw-or-blank, GS collision reclaim,
   // GS update, then the menu over everything the other two wrote, into
   // buffer idx. Leaves buffer `idx` current in every layer.

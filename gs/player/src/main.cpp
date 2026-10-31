@@ -2822,8 +2822,10 @@ int main(int argc, char** argv) {
       // never the recording. It runs BEFORE the screen half clears
       // msp_ready/gs_needs_render, and does not clear them itself: a screen
       // held back by a pending publish still consumes them on its next
-      // composition. A repeat of the same sample draws nothing.
-      if (burn && want) composer.compose_burn(in);
+      // composition. A repeat of the same sample draws nothing. Gated on
+      // wants_burn(), not want: a menu-only change is never a reason to run
+      // this half, since the recording never shows the menu.
+      if (burn && composer.wants_burn(in)) composer.compose_burn(in);
       if (surf.pixels && want) {
         const int idx = presenter->osd_back_index();
         const maburplay::OsdComposeOut out = composer.compose_screen(idx, surf, in);

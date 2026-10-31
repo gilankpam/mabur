@@ -1696,6 +1696,53 @@ TEST(a_menu_change_alone_wants_a_composition_and_publishes) {
   CHECK(m.px(m.front, p.x, p.y) == kPanelPx);
 }
 
+// A menu-only change wants a screen composition but must never trigger a
+// burn one: the recording can never show the menu, so composing it on a
+// cursor move or the busy sweep would be work with nothing to show for it.
+// A real GS/MSP change alongside the menu change still has to run the burn
+// half for its own reason.
+TEST(a_menu_change_alone_does_not_want_a_burn_composition) {
+  const mabur::MspScreen scr = full_screen('X');
+  const GsSnapshot sn = snap_cards(3);
+  const GsPlayerState ps = player(60.0);
+  const MenuView v = menu_view();
+  Rig r;
+  add_menu(r.comp);
+  r.comp.set_burn_sink([](const Surface&, const DirtyRect*, size_t) {});
+  for (int i = 0; i < 2; ++i) r.tick(make_in(&scr, i == 0, false, &sn, ps, true));
+
+  OsdComposeIn in = make_in(&scr, false, false, &sn, ps, false);
+  CHECK(!r.comp.wants(in));
+  CHECK(!r.comp.wants_burn(in));
+
+  in.menu = &v;
+  in.menu_dirty = true;
+  CHECK(r.comp.wants(in));
+  CHECK(!r.comp.wants_burn(in));
+  CHECK(r.comp.compose_screen(r.back, r.buf[r.back].s, in).published);
+
+  // A busy row's animation step is the same kind of menu-only trigger.
+  MenuView busy = v;
+  busy.rows[1].busy = true;
+  busy.rows[1].status = "applying";
+  r.comp.menu_tick(1000);
+  in.menu = &busy;
+  in.menu_dirty = true;
+  CHECK(r.tick(in));
+  in.menu_dirty = false;
+  CHECK(!r.comp.wants(in));
+  r.comp.menu_tick(1400);
+  CHECK(r.comp.wants(in));
+  CHECK(!r.comp.wants_burn(in));
+
+  // A real GS change alongside the menu change still wants the burn half.
+  OsdComposeIn both = make_in(&scr, false, false, &sn, player(59.0), true);
+  both.menu = &v;
+  both.menu_dirty = true;
+  CHECK(both.gs_dirty);
+  CHECK(r.comp.wants_burn(both));
+}
+
 // Both overlays off with the buttons wired: the plane must still come up,
 // or the menu has nowhere to draw. And with the plane given up (no pixels)
 // a composition is a no-op, not a crash.
