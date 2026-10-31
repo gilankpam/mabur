@@ -207,7 +207,10 @@ class CalControl {
   }
 
   // "state=sweep sweep=2/4 kind=power bw=40 cell=312/840", plus
-  // fail_reason=<why> appended when the state is failed. sweep=k/n is
+  // mismatch=<n> when frames were dropped for a kind/width/flags mismatch
+  // (CalSnapshot::stamp_mismatch, omitted at 0), and fail_reason=<why>
+  // appended last (free text to the end of the line) when the state is
+  // failed. sweep=k/n is
   // 1-based (k = the running sweep's position, n = the run's total); kind
   // reads "verify" during the verify phase instead of the running sweep's
   // own Power/Capacity kind, since that is the only place in the run the
@@ -221,6 +224,7 @@ class CalControl {
                       " bw=" + std::to_string(snap.cur.bw) +
                       " cell=" + std::to_string(snap.cell_i) + "/" +
                       std::to_string(snap.cell_n);
+    if (snap.stamp_mismatch) out += " mismatch=" + std::to_string(snap.stamp_mismatch);
     if (snap.state == CalSession::State::Failed && !snap.fail_reason.empty()) {
       out += " fail_reason=" + snap.fail_reason;
     }

@@ -292,7 +292,9 @@ class TestReportV4(unittest.TestCase):
         self.assertIn("98%", row0)
         row3 = [l for l in out.splitlines() if l.startswith("mcs3")][0]
         self.assertIn(".73", row3)  # 20 MHz eff, eff_x1000=730
-        self.assertIn(".50", row3)  # 40 MHz eff, eff_x1000=500
+        # The 40 MHz point (eff_x1000=500) is tx_bound: measured, never
+        # written, so it prints as "-" and the flag says why.
+        self.assertNotIn(".50", row3)
         self.assertIn("legacy 63 (from 20 MHz mcs0)", out)
         self.assertIn("written: /etc/mabur.toml", out)
 
@@ -324,6 +326,23 @@ class TestReportV4(unittest.TestCase):
         row3 = [l for l in out.splitlines() if l.startswith("mcs3")][0]
         self.assertIn("40:tx_bound", row3)
         self.assertNotIn("20:tx_bound", row3)
+
+    def test_tx_bound_eff_is_not_printed_as_written(self):
+        out = render(GOOD4)
+        row3 = [l for l in out.splitlines() if l.startswith("mcs3")][0]
+        # mcs3, 20 MHz wall park verify eff, then 40 MHz wall park verify eff
+        self.assertEqual(row3.split()[:9],
+                         ["mcs3", "42", "38", "99%", ".73", "40", "36", "95%", "-"])
+
+    def test_an_ok_apply_with_a_note_is_reported(self):
+        # The drone kept a 20 MHz wall for an undetermined row of a first
+        # 40 MHz table: the A row is ok and its reason says what was kept.
+        text = GOOD4.replace("A 40 1 ok\n",
+                             "A 40 1 ok; mcs6 kept from the 20 MHz table\n")
+        out = render(text)
+        self.assertIn("40 MHz apply: ok; mcs6 kept from the 20 MHz table", out)
+        self.assertIn("written: /etc/mabur.toml", out)
+        self.assertNotIn("20 MHz apply:", out)  # a plain ok says nothing
 
     def test_eff_only_width_reports_existing_walls_note(self):
         # A width with capacity (P) rows but no wall (W) rows in this run

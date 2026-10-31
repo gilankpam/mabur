@@ -73,6 +73,8 @@ KNOWN_CALLOG_VERSIONS = (1, 2, 3, 4)
 # flags: 1=no_dip 2=undetermined 4=narrow 8=saturated 16=card_disagree
 # 32=drift (retired from callog 4 on, but still nameable on an older file)
 # 64=tx_bound 128=lossy (callog 4 capacity sweeps only)
+TX_BOUND = 64
+
 FLAG_NAMES = (
     (1, "no_dip"),
     (2, "undetermined"),
@@ -330,7 +332,14 @@ def _cell_v4(run, bw, rate, park_step):
         wall_s = str(w[0])
         park_s = str(max(-64, min(63, w[0] - park_step)))
     verify_s = f"{v}%" if v is not None else "-"
-    eff_s = _eff_string(p[3]) if p is not None else "-"
+    # A tx_bound point's eff was measured (the P row keeps it) but never
+    # sent to the drone: it measured the drone's CPU/USB, not the air, and
+    # the config kept its old value. Printing the number would read as
+    # written; the flag in the flags column says why there is none.
+    if p is None or p[5] & TX_BOUND:
+        eff_s = "-"
+    else:
+        eff_s = _eff_string(p[3])
     return wall_s, park_s, verify_s, eff_s, flags
 
 
@@ -374,6 +383,12 @@ def _render_run_v4(run):
     legacy_s = ("undetermined" if run.undetermined(legacy_wall)
                 else str(legacy_wall))
     lines.append(f"legacy {legacy_s} (from 20 MHz mcs0)")
+    # An adopted apply that kept something the run did not send (an
+    # undetermined row of a first 40 MHz table takes its 20 MHz wall) says
+    # so in its reason.
+    for bw, ok, reason in run.applies:
+        if ok and reason and reason != "ok":
+            lines.append(f"{bw} MHz apply: {reason}")
     lines.append(_apply_status_line_v4(run))
     return "\n".join(lines)
 

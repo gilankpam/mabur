@@ -2978,13 +2978,14 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
     auto apply_and_arm_verify = [&](const cal::ApplyCmd& a) {
       const double margin_db = live_wall_margin.load();
       const CalWrite w = cal_write_for(a, cal_sweep.stamp_flags());
-      std::string err;
+      std::string err, note;
       ApplyResult ar;
       {
         // Held across the write and the applier's notice, so its next apply
         // re-reads the calibrated file rather than racing this write.
         auto lk = lock_config_writes();
-        ar = apply_calibration(cfg_path, w, margin_db, apply_ledger.want_backup(a.nonce), &err);
+        ar = apply_calibration(cfg_path, w, margin_db, apply_ledger.want_backup(a.nonce), &err,
+                               &note);
         if (ar == ApplyResult::Ok) applier.note_file_rewritten_externally();
       }
       cal::Applied out;
@@ -2993,9 +2994,12 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
       out.bw = a.bw;
       out.ok = ar == ApplyResult::Ok;
       if (out.ok) {
+        // An ok apply that kept something the GS did not send says so.
+        out.reason = note.substr(0, 49);
         power_table.set_plans(plans_for(reload_config().radio, margin_db));
-        std::fprintf(stderr, "maburd cal: applied %u MHz%s%s\n", static_cast<unsigned>(a.bw),
-                     a.has_walls ? " walls" : "", a.has_eff ? " efficiency" : "");
+        std::fprintf(stderr, "maburd cal: applied %u MHz%s%s%s%s\n", static_cast<unsigned>(a.bw),
+                     a.has_walls ? " walls" : "", a.has_eff ? " efficiency" : "",
+                     note.empty() ? "" : " -- ", note.c_str());
       } else {
         out.reason = loader_reason(err).substr(0, 49);
         std::fprintf(stderr, "maburd cal: apply %u MHz refused: %s\n", static_cast<unsigned>(a.bw),

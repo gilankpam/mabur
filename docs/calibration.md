@@ -76,7 +76,9 @@ ok state=sweep sweep=2/4 kind=capacity bw=20 cell=3/8
 verify done failed`; `sweep=k/n` the running sweep, 1-based; `kind` is
 `verify` during a verify pass; `cell=i/n` the cell of the latest frame the
 GS tallied (840 power cells per sweep, 8 capacity points, up to 8 verify
-cells). A `failed` line ends with `fail_reason=<why>` (free text to the
+cells). `mismatch=<n>` appears once frames have been dropped for a kind,
+width or flags that do not match the running sweep (see "The sweep
+frame"). A `failed` line ends with `fail_reason=<why>` (free text to the
 end of the line). Then `start` finds the run's `cal.log` and prints the
 final table (below). `maburcal abort` cancels a run in any state.
 
@@ -156,7 +158,9 @@ store follows a calibration relocate like any hop.
 6. **Apply.** `MABUR_CAL_APPLY{nonce, seq, bw, has, walls[8], legacy,
    eff[8]}` every 200 ms until `MABUR_CAL_APPLIED{nonce, seq, bw, ok,
    reason}`; 5 s without an answer fails the run (`calibration apply
-   timeout`), a refusal fails it with the drone's reason. `seq` names the
+   timeout`), a refusal fails it with the drone's reason. An adopted
+   apply's `reason` is empty, or a note of what the drone kept that the
+   apply did not carry (below, "What gets written"). `seq` names the
    sweep the apply belongs to: a run applies twice at one width (power,
    then capacity), and the drone answers a repeat of an apply it already
    made from its cache instead of applying again. A sweep with nothing to
@@ -325,7 +329,8 @@ width other than 20/40, unknown flag bits, or a fill that does not match
 (with or without a trailing FCS): `maburgs` keeps CRC-bad frames, and the
 fill check is what stops a corrupted frame being attributed to the wrong
 cell. A frame whose kind, width or flags do not match the running sweep
-is counted (`stamp_mismatch`) and never tallied.
+is counted (`stamp_mismatch`, the status line's `mismatch=`) and never
+tallied.
 
 ## One calibration covers every channel
 
@@ -419,9 +424,23 @@ An undetermined wall (`-128` on the wire) and a capacity point sent as 0
 40 MHz calibration on a file with only `rate_walls_rel_20` — is
 **inserted** next to the other width's line (or after `power_mode`;
 `efficiency_<bw>` after the other width's or after `shed_ms`), the one
-place the patcher adds a line. An inserted line has nothing to inherit:
-a left entry takes the rail, `+63`, in a walls line and `1.0` in an
-efficiency line. Every comment and every other key survive byte for byte.
+place the patcher adds a line. Every comment and every other key survive
+byte for byte.
+
+An inserted line has no entry of its own for a left rate to keep:
+
+- **Walls, never the rail.** An undetermined rate in a new
+  `rate_walls_rel_40` takes that rate's `rate_walls_rel_20` wall — 40 MHz
+  walls measure at or above the 20 MHz ones, so it errs low — and the
+  APPLIED reason says so: `ok; mcs6 kept from the 20 MHz table`. With no
+  20 MHz table to take it from (a first 20 MHz table, whatever the file
+  holds at 40, or a first 40 MHz table with no 20 MHz one) the apply is
+  refused and nothing is written: `undetermined mcs5,6; no table to keep`.
+  A rate kept this way is not verified (nothing was parked for it).
+- **Efficiency.** A left rate in a new `efficiency_<bw>` takes what the
+  loader flies for that width with the key absent (`AirClockCfg`'s
+  default, nominal 1.0 today), so the insert changes nothing the drone
+  flew for that rate.
 
 Before anything is written the candidate is validated with the loader's
 own rules (every wall in [−64, 63], `wall − round(wall_margin_db · 4) ≥
@@ -491,7 +510,7 @@ mcs3      63    59   100%    .80       63    59   100%    .75   20:no_dip 40:no_
 mcs4      45    41   100%    .76       45    41   100%    .74
 mcs5      23    19   100%    .76       28    24   100%    .77
 mcs6      22    18    95%    .78       28    24    99%    .76
-mcs7      21    17   100%    .76       23    19    98%    .75   20:tx_bound
+mcs7      21    17   100%      -       23    19    98%    .75   20:tx_bound
 legacy 63 (from 20 MHz mcs0)
 written: /etc/mabur.toml (backup /etc/mabur.toml.pre-cal)
 ```
@@ -502,18 +521,19 @@ run has no number there (that kind or width was not in the run, or the
 wall was undetermined). Flags carry a `20:`/`40:` prefix. A run that never
 swept 40 prints the 20 MHz block alone; a width with capacity points but
 no walls in this run adds `<bw> MHz eff measured at the existing walls`.
-The `eff` column prints a `tx_bound` point's measured value, but that
-value was **not** written (the flag says so). The last line comes from
-the apply records: `written: …` when any apply succeeded, else `not
-written: <bw> MHz: <reason>; …` or `not written: this run produced no
-apply attempt`.
+A `tx_bound` point's `eff` prints `-`: it was measured (`cal.log` keeps
+it) but never written, and the flag says why. An adopted apply that kept
+something adds a line such as `40 MHz apply: ok; mcs6 kept from the 20 MHz
+table`. The last line comes from the apply records: `written: …` when any
+apply succeeded, else `not written: <bw> MHz: <reason>; …` or `not
+written: this run produced no apply attempt`.
 
 ### Health flags
 
 | Flag | Meaning | What to do |
 |---|---|---|
 | `no_dip` | The row never dropped below 90 % anywhere: no wall to find, so it parks at the **rail**, `+63`, the top of the 7-bit diff field — a constant, not a measurement. | Normal for MCS 0-3 under LDPC+STBC. If it is *missing* on those rows, see "Random loss reads walls low". |
-| `undetermined` | No cell reached 90 % anywhere: no first run exists. `-128` in `cal.log`. | The wall is left as it was — except in a freshly inserted table, where it takes the rail (above). Check geometry and re-run. |
+| `undetermined` | No cell reached 90 % anywhere: no first run exists. `-128` in `cal.log`. | The wall is left as it was; in a first 40 MHz table it takes the 20 MHz wall, and a first table with nothing to take from is refused (above). Never the rail. Check geometry and re-run. |
 | `narrow` | The floor edge (first ≥90 % cell) is within 4 indices of the wall. | Move closer and re-run; a wall that close to its own floor is not trustworthy. |
 | `saturated` | The best card's peak median RSSI is above −45 dBm: the GS front end may be compressing. | Walls read **low** under it (the safe direction). Move the drone out and re-run for a tighter number. |
 | `card_disagree` | The two cards' walls differ by more than 2 indices. | An antenna or card problem, not a PA one: check the disagreeing card. |
@@ -559,8 +579,10 @@ says which:
 - `calibration apply timeout` — no APPLIED within 5 s of APPLYs.
 - `apply refused by the drone: <reason>` — the drone validated and
   refused: an out-of-range table, a key it could not find or insert, a
-  backup or write failure, or a candidate that would not load. The file is
-  unchanged; `/tmp/mabur.log` on the drone has the full reason.
+  first table with undetermined rates and no table to keep them from
+  (`undetermined mcs5,6; no table to keep`), a backup or write failure, or
+  a candidate that would not load. The file is unchanged; `/tmp/mabur.log`
+  on the drone has the full reason.
 
 A failure after an earlier apply succeeded keeps that apply: the walls of
 a finished `power20` stay written when a later `cap40` fails. The report
@@ -615,13 +637,15 @@ maburgs: calibration sweep 1/4 power20 done
 maburgs: calibration done
 ```
 
-plus `calibration failed: <why>` / `calibration aborted: <why>`, and the
+An adopted apply with a note prints it in place of `ok` (`calibration
+apply 3/4 power40: ok; mcs6 kept from the 20 MHz table`). Then
+`calibration failed: <why>` / `calibration aborted: <why>`, and the
 channel pick's own `maburgs channel: calibration …` lines
 (`docs/channel-select.md`). The start line is printed when the run first
 commands the drone, after the pick.
 
-**`maburd` log** (`/tmp/mabur.log`): `maburd cal: applied …` /
-`apply … refused: …`, `maburd radio: power table <bw> MHz live (mcs5 diff
+**`maburd` log** (`/tmp/mabur.log`): `maburd cal: applied …` (with
+` -- <note>` when it kept something) / `apply … refused: …`, `maburd radio: power table <bw> MHz live (mcs5 diff
 N)[ (… table)][ for calibration]` on every table switch (a capacity sweep
 programs its width's table "for calibration"), the boot wall and ldpc
 lines above, and `cal_latch_drop=` on `maburd tx_send:`.
@@ -663,7 +687,8 @@ any ack has none; `ldpc` is the drone's announced stamp flag (the GS has
 no LDPC setting of its own). Every index is signed and relative to the
 drone's anchor; a card with no RSSI in a cell writes `-999`; an
 undetermined rate writes `-128` for wall and floor. `P`'s `eff_x1000` is
-the measured value even for a `tx_bound` point. Flags bitmask: 1
+the measured value even for a `tx_bound` point. An ok `A` row's reason is
+empty or the drone's note. Flags bitmask: 1
 `no_dip`, 2 `undetermined`, 4 `narrow`, 8 `saturated`, 16
 `card_disagree`, 64 `tx_bound`, 128 `lossy` (32 was `drift`, retired and
 never reused). A `V` row means "this rate was parked", never "verified

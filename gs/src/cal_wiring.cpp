@@ -99,10 +99,14 @@ std::vector<std::string> CalNarrator::observe(const CalSnapshot& snap,
       (snap.state != CalSession::State::Apply || !same_sweep)) {
     const std::string what = "calibration apply " + k_of_n(prev.sweep_i, prev.sweep_n) + " " +
                              cal_sweep_token(prev.cur) + ": ";
-    if (snap.state == CalSession::State::Failed || snap.state == CalSession::State::Idle)
+    if (snap.state == CalSession::State::Failed || snap.state == CalSession::State::Idle) {
       out.push_back(what + snap.fail_reason);
-    else
-      out.push_back(what + "ok");
+    } else {
+      // An adopted apply that kept something the GS did not send carries
+      // the drone's note ("ok; mcs6 kept from the 20 MHz table").
+      const std::string& note = snap.width[prev.cur.bw == 40 ? 1 : 0].apply_reason;
+      out.push_back(what + (note.empty() ? std::string("ok") : note));
+    }
   }
   if (snap.state != CalSession::State::Failed && snap.state != CalSession::State::Idle) {
     const size_t end = snap.state == CalSession::State::Done ? snap.sweep_i + 1 : snap.sweep_i;

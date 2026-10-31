@@ -144,6 +144,19 @@ TEST(narrator_reports_each_apply_each_sweep_and_the_end) {
   CHECK(n.observe(snap(State::Done, 1, {cal::Kind::Capacity, 20}), kRun).empty());
 }
 
+// Revert (always "ok"): the drone's note never reaches /tmp/maburgs.log.
+TEST(narrator_carries_the_drones_note_on_an_adopted_apply) {
+  CalNarrator n("/x/cal.log");
+  n.observe(snap(State::AwaitAck, 0, {cal::Kind::Power, 40}), kRun);
+  n.observe(snap(State::Apply, 0, {cal::Kind::Power, 40}), kRun);
+  CalSnapshot v = snap(State::Verify, 0, {cal::Kind::Power, 40});
+  v.width[1].applied = true;
+  v.width[1].apply_reason = "ok; mcs6 kept from the 20 MHz table";
+  auto l = n.observe(v, kRun);
+  REQUIRE(l.size() == 1);
+  CHECK(l[0] == "calibration apply 1/2 power40: ok; mcs6 kept from the 20 MHz table");
+}
+
 TEST(narrator_reports_a_refused_apply_with_its_reason) {
   CalNarrator n("/x/cal.log");
   n.observe(snap(State::AwaitAck, 0), kRun);

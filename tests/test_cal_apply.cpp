@@ -1,5 +1,6 @@
 #include "mtest.h"
 #include "cal_apply.h"
+#include "config.h"
 #include "scratch.h"
 #include "mabur/rc_proto.h"
 
@@ -185,7 +186,7 @@ TEST(patch_inserts_a_missing_efficiency_table_after_efficiency_other) {
   const auto out = patch_toml(kSampleOnly20, eff_write(40), &status);
   CHECK(status.eff);
   const size_t eff20 = out.find("efficiency_20 = [0.93, 0.88, 0.84, 0.8, 0.76, 0.76, 0.78, 0.76]");
-  const size_t eff40 = out.find("efficiency_40 = [0.9, 1, 0.85, 1, 1, 1, 1, 1]");
+  const size_t eff40 = out.find("efficiency_40 = [0.9, 1.0, 0.85, 1.0, 1.0, 1.0, 1.0, 1.0]");
   REQUIRE(eff20 != std::string::npos);
   REQUIRE(eff40 != std::string::npos);
   CHECK(eff20 < eff40);
@@ -201,7 +202,7 @@ TEST(patch_inserts_efficiency_after_shed_ms_when_no_other_width_eff) {
   const auto out = patch_toml(kSampleNoEff, eff_write(20), &status);
   CHECK(status.eff);
   const size_t shed = out.find("shed_ms = 25");
-  const size_t eff20 = out.find("efficiency_20 = [0.9, 1, 0.85, 1, 1, 1, 1, 1]");
+  const size_t eff20 = out.find("efficiency_20 = [0.9, 1.0, 0.85, 1.0, 1.0, 1.0, 1.0, 1.0]");
   REQUIRE(shed != std::string::npos);
   REQUIRE(eff20 != std::string::npos);
   CHECK(shed < eff20);
@@ -416,6 +417,138 @@ TEST(apply_writes_once) {
   std::string err;
   CHECK(apply_calibration(path, walls_write(20), 1.0, true, &err) == ApplyResult::Ok);
   CHECK(write_count_for_test() == 1);
+}
+
+namespace {
+
+// A [radio] section with no wall table of either width: nothing for an
+// undetermined row of a first table to be taken from.
+const char* kSampleNoWalls = R"([radio]
+usb_vid    = 3034
+power_mode = "none"
+legacy_wall_rel   = 63
+wall_margin_db    = 1.0
+)";
+
+std::string slurp(const std::string& p) {
+  std::ifstream f(p);
+  std::stringstream s;
+  s << f.rdbuf();
+  return s.str();
+}
+
+bool exists(const std::string& p) { return std::ifstream(p).good(); }
+
+}  // namespace
+
+// Revert (the rail fill: vals[s] = kRailRel for an undetermined slot): the
+// inserted line carries 63 at mcs5/mcs6 and borrowed_walls stays 0.
+TEST(an_inserted_40_table_takes_undetermined_rows_from_the_20_table) {
+  CalWrite w = walls_write(40);
+  w.walls[5] = mabur::rc::kWallUndetermined;
+  w.walls[6] = mabur::rc::kWallUndetermined;
+  PatchStatus status;
+  const auto out = patch_toml(kSampleOnly20, w, &status);
+  CHECK(status.inserted_walls);
+  CHECK(status.borrowed_walls == ((1u << 5) | (1u << 6)));
+  CHECK(status.unfilled_walls == 0);
+  // kSampleOnly20's 20 MHz mcs5/mcs6 are 23 and 22.
+  CHECK(out.find("rate_walls_rel_40 = [60, 60, 60, 45, 22, 23, 22, 5]") != std::string::npos);
+}
+
+TEST(apply_of_a_borrowed_row_says_so_in_its_note) {
+  const std::string path = std::string(MABUR_TEST_SCRATCH_DIR) + "/cal_borrow.toml";
+  { std::ofstream f(path); f << kSampleOnly20; }
+  CalWrite w = walls_write(40);
+  w.walls[5] = mabur::rc::kWallUndetermined;
+  w.walls[6] = mabur::rc::kWallUndetermined;
+  std::string err, note = "stale";
+  CHECK(apply_calibration(path, w, 1.0, /*backup=*/false, &err, &note) == ApplyResult::Ok);
+  CHECK(note == "ok; mcs5,6 kept from the 20 MHz table");
+  CHECK(note.size() <= 49);
+  const Config c = load_config(path, nullptr);
+  REQUIRE(c.radio.rate_walls_rel_40.has_value());
+  CHECK((*c.radio.rate_walls_rel_40)[5] == 23);
+  CHECK((*c.radio.rate_walls_rel_40)[6] == 22);
+
+  // A write that kept nothing clears the note.
+  CHECK(apply_calibration(path, walls_write(40), 1.0, false, &err, &note) == ApplyResult::Ok);
+  CHECK(note.empty());
+}
+
+// Revert (insert anyway with the rail): ApplyResult::Ok and a 63 on file.
+TEST(an_inserted_table_with_nothing_to_take_from_is_refused) {
+  CalWrite w40 = walls_write(40);
+  w40.walls[5] = mabur::rc::kWallUndetermined;
+  w40.walls[6] = mabur::rc::kWallUndetermined;
+  PatchStatus status;
+  const auto out = patch_toml(kSampleNoWalls, w40, &status);
+  CHECK(status.unfilled_walls == ((1u << 5) | (1u << 6)));
+  CHECK(!status.walls);
+  CHECK(out.find("rate_walls_rel_40") == std::string::npos);
+
+  const std::string path = std::string(MABUR_TEST_SCRATCH_DIR) + "/cal_nokeep.toml";
+  std::remove((path + ".pre-cal").c_str());
+  { std::ofstream f(path); f << kSampleNoWalls; }
+  std::string err, note;
+  CHECK(apply_calibration(path, w40, 1.0, /*backup=*/true, &err, &note) ==
+        ApplyResult::NoTableToKeep);
+  CHECK(err == "undetermined mcs5,6; no table to keep");
+  CHECK(err.size() <= 49);
+  CHECK(slurp(path) == kSampleNoWalls);
+  CHECK(!exists(path + ".pre-cal"));
+
+  // A first 20 MHz table never takes a 40 MHz wall: 40 MHz walls sit at or
+  // above the 20 MHz ones, the overdriving direction at 20.
+  CalWrite w20 = walls_write(20);
+  w20.walls[7] = mabur::rc::kWallUndetermined;
+  const std::string path2 = std::string(MABUR_TEST_SCRATCH_DIR) + "/cal_nokeep20.toml";
+  { std::ofstream f(path2); f << kSampleOnly40; }
+  CHECK(apply_calibration(path2, w20, 1.0, true, &err, &note) == ApplyResult::NoTableToKeep);
+  CHECK(err == "undetermined mcs7; no table to keep");
+  CHECK(slurp(path2) == kSampleOnly40);
+
+  // Seven undetermined rows (the most an apply carries) still fit the wire.
+  CalWrite many = walls_write(40);
+  for (int r = 1; r < 8; ++r) many.walls[static_cast<size_t>(r)] = mabur::rc::kWallUndetermined;
+  CHECK(apply_calibration(path, many, 1.0, false, &err, &note) == ApplyResult::NoTableToKeep);
+  CHECK(err.size() <= 49);
+}
+
+// Revert (fill with a literal instead of AirClockCfg's default): breaks as
+// soon as the loader's absent-key default is anything else. Revert
+// fmt_double's ".0": the filled 1 renders as a TOML integer, the array is
+// mixed-type and the apply is refused (ReparseFailed).
+TEST(an_inserted_efficiency_line_fills_left_entries_with_the_absent_key_default) {
+  const std::string path = std::string(MABUR_TEST_SCRATCH_DIR) + "/cal_eff_ins.toml";
+  { std::ofstream f(path); f << kSampleOnly20; }
+  // The value the loader flies at 40 MHz with no efficiency_40 line.
+  const Config before = load_config(path, nullptr);
+  std::string err;
+  CHECK(apply_calibration(path, eff_write(40), 1.0, false, &err) == ApplyResult::Ok);
+  const Config after = load_config(path, nullptr);
+  const AirClockCfg absent{};
+  CHECK(after.air_clock.efficiency_40[0] == 0.9);
+  CHECK(after.air_clock.efficiency_40[2] == 0.85);
+  for (int r : {1, 3, 4, 5, 6, 7}) {
+    CHECK(after.air_clock.efficiency_40[static_cast<size_t>(r)] ==
+          before.air_clock.efficiency_40[static_cast<size_t>(r)]);
+    CHECK(after.air_clock.efficiency_40[static_cast<size_t>(r)] ==
+          absent.efficiency_40[static_cast<size_t>(r)]);
+  }
+}
+
+// Revert fmt_double's ".0": "1" lands in a float array and the loader
+// refuses the mixed-type candidate (ReparseFailed).
+TEST(an_efficiency_of_exactly_one_still_loads) {
+  const std::string path = std::string(MABUR_TEST_SCRATCH_DIR) + "/cal_eff_one.toml";
+  { std::ofstream f(path); f << kSample; }
+  CalWrite w = eff_write(20);
+  w.eff[0] = 1.0;
+  std::string err;
+  CHECK(apply_calibration(path, w, 1.0, false, &err) == ApplyResult::Ok);
+  CHECK(slurp(path).find("efficiency_20 = [1.0, 0.88, 0.85,") != std::string::npos);
+  CHECK(load_config(path, nullptr).air_clock.efficiency_20[0] == 1.0);
 }
 
 MTEST_MAIN

@@ -76,8 +76,10 @@ struct ApplyCmd {
 };
 
 // Drone -> ground: whether it adopted an ApplyCmd; nonce, seq and bw echo
-// it. reason is empty on success; at most 49 chars (the wire field is
-// char[50], NUL-terminated).
+// it. reason says why on a refusal; on success it is empty, or a note of
+// what the drone kept that the apply did not carry ("ok; mcs6 kept from the
+// 20 MHz table"). At most 49 chars (the wire field is char[50],
+// NUL-terminated).
 struct Applied {
   uint32_t nonce = 0;
   uint8_t seq = 0;

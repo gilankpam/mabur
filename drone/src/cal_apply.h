@@ -92,11 +92,15 @@ struct CalWrite {
 // inserted_walls/inserted_cal_flags additionally say which of those two
 // took the insert path rather than rewriting an existing line; there is no
 // equivalent inserted_eff -- nothing downstream needs to tell an inserted
-// efficiency_<bw> line apart from a rewritten one.
+// efficiency_<bw> line apart from a rewritten one. borrowed_walls and
+// unfilled_walls (bit r = MCS r) describe an inserted wall table's
+// undetermined rates: taken from the 20 MHz table, or left with nothing to
+// take (the line is then not inserted at all).
 struct PatchStatus {
   bool walls = false, cal_flags = false, legacy_wall_rel = false,
        power_mode = false, eff = false, inserted_walls = false,
        inserted_cal_flags = false;
+  uint8_t borrowed_walls = 0, unfilled_walls = 0;
 };
 
 enum class ApplyResult {
@@ -109,6 +113,8 @@ enum class ApplyResult {
   WriteFailed,    // couldn't write/fsync "<path>.new", or the final publish
                   // rename failed after verification already succeeded
   ReparseFailed,  // candidate failed mabur::load_config -- never published
+  NoTableToKeep,  // a first table of this width has undetermined rates and
+                  // no 20 MHz table to take them from; nothing touched
 };
 
 // Rewrites (or inserts) only the keys `w` touches in `text`, preserving
@@ -117,9 +123,14 @@ enum class ApplyResult {
 // "leave" sentinel (kWallUndetermined for walls[], 0 for eff[]) keeps
 // whatever value the original text had for it there -- unless the whole
 // line is being inserted (first calibration of this width), in which case
-// there is no original to inherit and a left-at-sentinel entry takes a
-// fixed fallback instead (kRailRel for walls, 1.0/nominal for eff -- see
-// the .cpp). cal_flags_<bw> is rewritten to w.cal_flags whenever has_walls
+// there is no original to inherit: an undetermined wall in a new
+// rate_walls_rel_40 takes that rate's rate_walls_rel_20 wall (the low
+// side, since 40 MHz walls sit at or above 20 MHz ones), and with no 20 MHz
+// table to take it from the line is not inserted (PatchStatus::
+// unfilled_walls; apply_calibration refuses) -- never the rail, which would
+// overdrive a rate whose wall was not found. A left eff entry in a new
+// efficiency_<bw> line takes what the loader flies for that width with the
+// key absent (AirClockCfg's default). cal_flags_<bw> is rewritten to w.cal_flags whenever has_walls
 // is set, unconditionally (it records what the walls above were measured
 // with, not a per-rate value with its own sentinel). legacy_wall_rel is
 // shared by both widths: it is only ever repatched from a 20 MHz write, or
@@ -154,7 +165,10 @@ bool walls_in_range(const CalWrite& w, double margin_db, std::string* why);
 // before publishing rather than after. On anything but Ok, `path` is left
 // exactly as it was found: it is never replaced by anything that has not
 // already been proven loadable by the same function maburd boots with.
-// `err`, if non-null, is always set on a non-Ok result.
+// `err`, if non-null, is always set on a non-Ok result. `note`, if
+// non-null, is set on Ok when the write kept something the GS did not send
+// ("ok; mcs6 kept from the 20 MHz table", at most 49 characters so it fits
+// MABUR_CAL_APPLIED.reason) and cleared otherwise.
 //
 // `backup` is the caller's call on whether THIS apply should write
 // "<path>.pre-cal": a calibration session applying several widths/kinds
@@ -164,7 +178,8 @@ bool walls_in_range(const CalWrite& w, double margin_db, std::string* why);
 // existing backup from an earlier call in the same session; it only
 // suppresses writing a NEW one.
 ApplyResult apply_calibration(const std::string& path, const CalWrite& w,
-                               double margin_db, bool backup, std::string* err);
+                               double margin_db, bool backup, std::string* err,
+                               std::string* note = nullptr);
 
 // Test-only seam: same as apply_calibration (with backup requested), but
 // writes deliberate garbage to "<path>.new" instead of the patched config

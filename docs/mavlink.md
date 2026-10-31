@@ -522,7 +522,7 @@ new ids at its parser (unknown CRC_EXTRA), which is what we want.
 | `MABUR_CAL_ACK` | 60001 | drone → GS | `nonce u32, seq u8, result u8 (0 accepted, 1 anchor unreadable, 2 busy, 3 unsupported), start_in_ms u16, flags u8 (the stamp's ldpc/stbc mask)` |
 | `MABUR_CAL_SWEEP_DONE` | 60002 | drone → GS | `nonce u32, seq u8, offered u32[8], blocked_pct u8[8]` |
 | `MABUR_CAL_APPLY` | 60003 | GS → drone | `nonce u32, seq u8, bw u8, has u8 (bit0 walls, bit1 eff), walls i8[8] (−128 = leave), legacy i8, eff u16[8] (×1000, 0 = leave)` |
-| `MABUR_CAL_APPLIED` | 60004 | drone → GS | `nonce u32, seq u8, bw u8, ok u8, reason char[50]` |
+| `MABUR_CAL_APPLIED` | 60004 | drone → GS | `nonce u32, seq u8, bw u8, ok u8, reason char[50]` (why it refused; on success empty, or a note of what it kept) |
 | `MABUR_CAL_ABORT` | 60005 | GS → drone | `nonce u32` |
 
 `seq` is the sweep's position in the run, on SWEEP and on the APPLY that

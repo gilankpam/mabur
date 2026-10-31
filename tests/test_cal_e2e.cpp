@@ -246,6 +246,9 @@ struct Kit {
     int lo, hi;
   };
   std::vector<Island> islands;
+  // (bw, rate) rows that never deliver a clean frame at any index: the
+  // analysis finds no wall for them (undetermined).
+  std::vector<std::pair<uint8_t, uint8_t>> dead;
   // Random sweep-frame loss per GS card, percent: the frame never arrives.
   std::array<int, 2> card_loss_pct{0, 0};
   std::mt19937 air_rng{777};
@@ -387,15 +390,16 @@ struct Kit {
   void apply_and_arm_verify(const cal::ApplyCmd& a) {
     const double margin_db = live_margin_db;
     const mabur::CalWrite w = mabur::cal_write_for(a, sweep.stamp_flags());
-    std::string err;
-    const mabur::ApplyResult ar =
-        mabur::apply_calibration(file.path, w, margin_db, ledger.want_backup(a.nonce), &err);
+    std::string err, note;
+    const mabur::ApplyResult ar = mabur::apply_calibration(
+        file.path, w, margin_db, ledger.want_backup(a.nonce), &err, &note);
     cal::Applied out;
     out.nonce = a.nonce;
     out.seq = a.seq;
     out.bw = a.bw;
     out.ok = ar == mabur::ApplyResult::Ok;
     if (out.ok) {
+      out.reason = note.substr(0, 49);
       (void)reload_config();
       ++set_plans_calls;
       ++applies_ok;
@@ -507,6 +511,8 @@ struct Kit {
       for (const Island& is : islands)
         if (is.bw == info.bw && is.rate == info.rate && rel >= is.lo && rel <= is.hi)
           compressed = false;
+      for (const auto& d : dead)
+        if (d.first == info.bw && d.second == info.rate) compressed = true;
       // A plausible RSSI: the TXAGC ramp (~0.3 dB/idx) well clear of the
       // saturation threshold; card 1 hears a little less.
       const int rssi = -80 + std::clamp(pwr.on_air_idx() - 28, 0, 63) * 3 / 10;
@@ -711,6 +717,33 @@ TEST(walls_only_20_leaves_the_40_table_alone) {
     CHECK(c.air_clock.efficiency_20[r] == kFixtureEff20[r]);
     CHECK(c.air_clock.efficiency_40[r] == kFixtureEff40[r]);
   }
+  k.drain();
+  CHECK(k.restores == 1);
+}
+
+TEST(an_undetermined_row_in_a_first_40_table_keeps_the_20_mhz_wall) {
+  // The fixture has no rate_walls_rel_40, so a 40 MHz apply inserts it. A
+  // 40 MHz row whose wall the run cannot find must not land at the rail
+  // (+63, the overdriving direction): it takes that row's 20 MHz wall,
+  // and the drone's APPLIED says so.
+  Kit k("undet40");
+  k.dead = {{40, 6}};
+  REQUIRE(k.start({{cal::Kind::Power, 40}}));
+  k.run();
+  REQUIRE(k.gs.state() == State::Done);
+  const auto snap = k.gs.snapshot();
+  CHECK(snap.width[1].walls[6].wall == maburgs::kNoWall);
+  CHECK(snap.width[1].applied);
+  CHECK(snap.width[1].apply_reason == "ok; mcs6 kept from the 20 MHz table");
+  const mabur::Config c = k.loaded();
+  REQUIRE(c.radio.rate_walls_rel_40.has_value());
+  REQUIRE(c.radio.rate_walls_rel_20.has_value());
+  CHECK((*c.radio.rate_walls_rel_40)[6] == (*c.radio.rate_walls_rel_20)[6]);
+  CHECK((*c.radio.rate_walls_rel_40)[6] != maburgs::kRailRel);
+  for (int r = 0; r < 8; ++r)
+    if (r != 6) CHECK((*c.radio.rate_walls_rel_40)[r] == expected_wall(40, r));
+  // Nothing was parked for the undetermined row, so nothing verified it.
+  CHECK(snap.width[1].verify_pct[6] == -1);
   k.drain();
   CHECK(k.restores == 1);
 }

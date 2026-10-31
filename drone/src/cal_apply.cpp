@@ -63,10 +63,16 @@ std::array<double, 8> parse_double_array(const std::string& inner) {
   return vals;
 }
 
+// Always a TOML float: "1.0", never "1". A bare integer in an otherwise
+// float array is a mixed-type array the loader refuses, so an efficiency of
+// exactly 1 (a clamped measurement, the absent-key default, or an original
+// "1.0" read back) would otherwise make the whole candidate unloadable.
 std::string fmt_double(double v) {
   std::ostringstream ss;
   ss << v;
-  return ss.str();
+  std::string out = ss.str();
+  if (out.find_first_of(".eEn") == std::string::npos) out += ".0";
+  return out;
 }
 
 std::string render_int_array(const std::array<int, 8>& v) {
@@ -198,6 +204,33 @@ bool rewrite_int(std::vector<std::string>& lines, int idx, const std::string& ke
   return true;
 }
 
+// The bracketed 8-int array on lines[idx] (matched as `key`). False if the
+// line isn't that shape.
+bool read_int_array(const std::vector<std::string>& lines, int idx, const std::string& key,
+                    std::array<int, 8>* out) {
+  const std::string& line = lines[static_cast<size_t>(idx)];
+  size_t key_begin, eq_pos;
+  if (!match_toml_key(line, key, &key_begin, &eq_pos)) return false;
+  size_t v = eq_pos + 1;
+  while (v < line.size() && (line[v] == ' ' || line[v] == '\t')) ++v;
+  if (v >= line.size() || line[v] != '[') return false;
+  const size_t close = line.find(']', v);
+  if (close == std::string::npos) return false;
+  *out = parse_int_array(line.substr(v + 1, close - v - 1));
+  return true;
+}
+
+// "mcs5,6,7" for a per-rate bit mask (bit r = MCS r).
+std::string rate_list(uint8_t mask) {
+  std::string s;
+  for (int r = 0; r < 8; ++r) {
+    if (!(mask & (1u << r))) continue;
+    s += s.empty() ? "mcs" : ",";
+    s += std::to_string(r);
+  }
+  return s;
+}
+
 // Inserts `new_line` right after lines[after_idx], shifting every later
 // line down by one. Callers that queue several insertions in one
 // patch_toml() call sort them by anchor and apply low-to-high, adding the
@@ -253,17 +286,35 @@ std::string patch_toml(const std::string& text, const CalWrite& w, PatchStatus* 
       if (rewrite_int_array(lines, idx_rate_bw, rate_key, w.walls))
         if (status) status->walls = true;
     } else {
-      // First calibration of this width: there is no original line to
-      // inherit an undetermined slot from, so it rails (kRailRel) -- the
-      // documented meaning of a no-dip row's wall -- rather than
-      // inheriting nothing.
+      // First calibration of this width: there is no original line for an
+      // undetermined slot to keep. Never the rail -- that is the top of the
+      // diff field, the overdriving direction, for a rate whose wall this
+      // run could not find. A 40 MHz table takes that rate's 20 MHz wall
+      // instead (walls at 40 MHz measure at or above the 20 MHz ones, so
+      // the 20 MHz wall errs low at 40); with nothing to take it from the
+      // line is not inserted and apply_calibration refuses the write.
+      std::array<int, 8> other{};
+      const bool have_20 = w.bw == 40 && idx_rate_other >= 0 &&
+                           read_int_array(lines, idx_rate_other, rate_other_key, &other);
       std::array<int, 8> vals{};
+      uint8_t borrowed = 0, unfilled = 0;
       for (int i = 0; i < 8; ++i) {
         const size_t s = static_cast<size_t>(i);
-        vals[s] = (w.walls[s] == mabur::rc::kWallUndetermined) ? rc::kRailRel : w.walls[s];
+        if (w.walls[s] != mabur::rc::kWallUndetermined) {
+          vals[s] = w.walls[s];
+        } else if (have_20) {
+          vals[s] = other[s];
+          borrowed |= static_cast<uint8_t>(1u << i);
+        } else {
+          unfilled |= static_cast<uint8_t>(1u << i);
+        }
+      }
+      if (status) {
+        status->borrowed_walls = borrowed;
+        status->unfilled_walls = unfilled;
       }
       const int anchor = (idx_rate_other >= 0) ? idx_rate_other : idx_power_mode;
-      if (anchor >= 0) {
+      if (anchor >= 0 && unfilled == 0) {
         pending.push_back({anchor, rate_key + " = " + render_int_array(vals)});
         if (status) {
           status->walls = true;
@@ -323,14 +374,17 @@ std::string patch_toml(const std::string& text, const CalWrite& w, PatchStatus* 
       // either.
       const int anchor = (idx_eff_other >= 0) ? idx_eff_other : idx_shed_ms;
       if (anchor >= 0) {
-        // Same reasoning as the walls insertion above: a left-at-0
-        // ("leave") entry has nothing to inherit when the line doesn't
-        // exist yet, so it takes AirClockCfg::efficiency_20/_40's own
-        // struct default (1.0, nominal) instead.
+        // A left-at-0 ("leave") entry has nothing to inherit when the line
+        // doesn't exist yet, so it takes what the loader flies for that
+        // width with the key absent (AirClockCfg's own default): the
+        // inserted line changes nothing the drone flew for that rate.
+        const AirClockCfg absent{};
+        const std::array<double, 8>& dflt =
+            (w.bw == 40) ? absent.efficiency_40 : absent.efficiency_20;
         std::array<double, 8> vals{};
         for (int i = 0; i < 8; ++i) {
           const size_t s = static_cast<size_t>(i);
-          vals[s] = (w.eff[s] == 0.0) ? 1.0 : w.eff[s];
+          vals[s] = (w.eff[s] == 0.0) ? dflt[s] : w.eff[s];
         }
         pending.push_back({anchor, eff_key + " = " + render_double_array(vals)});
         if (status) status->eff = true;
@@ -460,7 +514,8 @@ bool patch_covered_required_keys(const PatchStatus& s, const CalWrite& w,
 // leave `path` untouched; see config_write.h.
 ApplyResult apply_calibration_impl(const std::string& path, const CalWrite& w,
                                    double margin_db, bool backup, std::string* err,
-                                   const std::string* content_override) {
+                                   std::string* note, const std::string* content_override) {
+  if (note) note->clear();
   // Step 1: validate the derived diffs/efficiencies. Nothing on disk is
   // touched if this fails -- see walls_in_range()'s comment for why this
   // pre-check stays even though load_config() below re-derives the same
@@ -497,6 +552,13 @@ ApplyResult apply_calibration_impl(const std::string& path, const CalWrite& w,
   } else {
     PatchStatus status;
     content = patch_toml(original, w, &status);
+    if (status.unfilled_walls) {
+      if (err)
+        *err = "undetermined " + rate_list(status.unfilled_walls) + "; no table to keep";
+      return ApplyResult::NoTableToKeep;
+    }
+    if (status.borrowed_walls && note)
+      *note = "ok; " + rate_list(status.borrowed_walls) + " kept from the 20 MHz table";
     const bool legacy_required =
         w.has_walls && w.legacy_wall != mabur::rc::kWallUndetermined &&
         (w.bw == 20 || !has_key_line(original, "rate_walls_rel_20"));
@@ -536,14 +598,15 @@ ApplyResult apply_calibration_impl(const std::string& path, const CalWrite& w,
 }  // namespace
 
 ApplyResult apply_calibration(const std::string& path, const CalWrite& w,
-                              double margin_db, bool backup, std::string* err) {
-  return apply_calibration_impl(path, w, margin_db, backup, err, nullptr);
+                              double margin_db, bool backup, std::string* err,
+                              std::string* note) {
+  return apply_calibration_impl(path, w, margin_db, backup, err, note, nullptr);
 }
 
 ApplyResult apply_calibration_for_test_with_corrupt_writer(
     const std::string& path, const CalWrite& w, double margin_db, std::string* err) {
   static const std::string kGarbage = "this is not valid toml [[[ ===\n";
-  return apply_calibration_impl(path, w, margin_db, /*backup=*/true, err, &kGarbage);
+  return apply_calibration_impl(path, w, margin_db, /*backup=*/true, err, nullptr, &kGarbage);
 }
 
 }  // namespace mabur

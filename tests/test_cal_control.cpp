@@ -168,6 +168,27 @@ TEST(render_status_carries_the_failure_reason_when_failed) {
   CHECK(out.find("fail_reason=calibration ack timeout") != std::string::npos);
 }
 
+// Revert (no mismatch field): a run silently dropping every frame of a
+// sweep for a flags mismatch looks like loss on the status line.
+TEST(render_status_shows_stamp_mismatches_only_when_there_are_some) {
+  CalSnapshot snap;
+  snap.state = CalSession::State::Sweep;
+  snap.sweep_i = 0;
+  snap.sweep_n = 1;
+  snap.cur = {cal::Kind::Power, 20};
+  snap.cell_i = 3;
+  snap.cell_n = 840;
+  CHECK(CalControl::render_status(snap).find("mismatch") == std::string::npos);
+  snap.stamp_mismatch = 12;
+  CHECK(CalControl::render_status(snap) ==
+        "state=sweep sweep=1/1 kind=power bw=20 cell=3/840 mismatch=12");
+  snap.state = CalSession::State::Failed;
+  snap.fail_reason = "calibration ack timeout";
+  CHECK(CalControl::render_status(snap) ==
+        "state=failed sweep=1/1 kind=power bw=20 cell=3/840 mismatch=12 "
+        "fail_reason=calibration ack timeout");
+}
+
 // --- abort / loopback (unchanged behaviour) ------------------------------
 
 TEST(abort_stops_a_running_session) {
