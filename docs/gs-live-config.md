@@ -109,6 +109,12 @@ for the same reason (its palette would otherwise be keyed on the overlays
 present when it started); switching one *off* in place needs no restart,
 since the composer's erase reaches the recorder's map directly.
 
+A presenter rebuild itself also counts as an **output park**
+(`park_output("display rebuild")`, `gs/player/src/main.cpp`): it bumps the
+regulator line's `flushes=` counter the same way a display hotplug does,
+so a latch gate (`tools/bench/latchgate.py`) excludes it rather than
+reading it as a missed latch.
+
 ## File rules
 
 - **`.pre-live` backup, written once per daemon run**, before the first
