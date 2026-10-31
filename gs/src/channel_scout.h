@@ -14,7 +14,7 @@ namespace maburgs {
 
 struct ScoutCfg {
   std::vector<uint8_t> channels;   // the set, config order (members are primaries at width 40)
-  bool measure = true;             // auto: observe + rank; false (pinned): search only
+  bool measure = true;             // auto: observe + rank; false (pinned): search only. Boot value: set_measure() switches it live
   int dwell_ms = 250;
   int settle_ms = 30;
   int min_rounds = 3;
@@ -87,6 +87,15 @@ class ChannelScout {
   void set_search(bool on) { search_.store(on, std::memory_order_release); }
   void set_tx_frames(uint64_t cumulative) { tx_frames_.store(cumulative, std::memory_order_release); }
   void freeze() { frozen_.store(true, std::memory_order_release); }  // pick closed: measuring stops
+  // The pick open again (the GS went back to auto with no link): a fresh
+  // ranker, so ranks taken before the freeze -- possibly long ago -- never
+  // decide the new pick.
+  void unfreeze();
+  // Measuring on or off (auto / pinned). The dwell set follows it at width
+  // 40 (both halves of every pair vs the members alone), so the ranker is
+  // rebuilt here and the scheduler by the run thread on its next step (it
+  // is the scheduler's only user). Unchanged: a no-op.
+  void set_measure(bool on);
   void stop() { stop_.store(true, std::memory_order_release); }
   // One card + measure: the core has committed the prelude pick (op = the
   // committed channel); the first op window may run. Until then, with the
@@ -152,7 +161,7 @@ class ChannelScout {
   bool dwell(uint8_t ch, uint64_t round, bool burst, bool observe);
   void publish_();
 
-  ScoutCfg cfg_;
+  ScoutCfg cfg_;                   // cfg_.measure is the boot value only: measure_ is live
   ScoutRadio& radio_;
   NowFn now_;
   SleepFn sleep_;
@@ -165,6 +174,8 @@ class ChannelScout {
   std::atomic<uint8_t> op_;
   std::atomic<uint64_t> tx_frames_{0};
   std::atomic<bool> search_{false}, frozen_{false}, stop_{false};
+  std::atomic<bool> measure_{true};
+  std::atomic<bool> resched_{false};   // set_measure() changed the dwell set: rebuild sched_
   std::atomic<bool> working_{false}, beaconing_{false}, quiet_{false}, prelude_done_{true},
       prelude_ack_{true}, done_{false};
   std::atomic<uint64_t> rounds_{0};
