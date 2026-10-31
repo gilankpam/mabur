@@ -77,8 +77,11 @@ void CalSweep::on_cmd(const cal::SweepCmd& c, uint64_t now_ms, PowerCtl& pwr) {
     // Power/Verify cell of this run is placed relative to what this read
     // returns. A capacity-first run's owner programs its width's plan back
     // after accepting the command.
-    pwr.zero_rate_diffs();
-    const int anchor = pwr.read_anchor_idx();
+    // A table that would not zero reads reference + diff, not the
+    // reference: no read is taken off it, and the command is refused as
+    // an unreadable anchor is.
+    const bool zeroed = pwr.zero_rate_diffs();
+    const int anchor = zeroed ? pwr.read_anchor_idx() : -1;
     if (anchor < 0) {
       // Cannot place a relative cell without the reference: refuse this
       // command, answering with an explicit ack rather than staying
@@ -126,8 +129,17 @@ void CalSweep::on_cmd(const cal::SweepCmd& c, uint64_t now_ms, PowerCtl& pwr) {
       return;
     }
     // Seq strictly ahead: a new sweep within the same run, reusing the
-    // anchor already captured above.
-    if (c.kind == cal::Kind::Power) pwr.zero_rate_diffs();
+    // anchor already captured above. A power sweep needs the diffs zeroed
+    // again (a capacity sweep put its width's plan up); a table that would
+    // not zero puts every cell at reference + diff and shifts every wall,
+    // so the sweep is refused and the run closed, and the owner restores.
+    if (c.kind == cal::Kind::Power && !pwr.zero_rate_diffs()) {
+      close_session(pwr);
+      pending_ack_ = cal::SweepAck{c.nonce, c.seq, cal::AckResult::AnchorUnreadable, 200,
+                                   stamp_flags()};
+      pending_refusal_ = true;
+      return;
+    }
   }
 
   last_started_seq_ = c.seq;

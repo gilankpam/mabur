@@ -2932,13 +2932,14 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
           // SWEEP every 200 ms into a lossy uplink, and one lost ack must not
           // cost the sweep.
           if (ack) send_cal(*ack);
-          // A command refused because the chip could not report its anchor
-          // was refused after on_cmd() had already zeroed the diffs and no
-          // run opened: restore_owed puts them back below.
+          // A command refused because the chip could not report its anchor,
+          // or would not zero its rate diffs for a clean read, was refused
+          // after on_cmd() had already touched the table and no run is
+          // open: restore_owed puts it back below.
           if (cal_sweep.take_refused())
             std::fprintf(stderr,
-                         "maburd cal: sweep refused (TXAGC anchor unreadable); restoring "
-                         "operating power\n");
+                         "maburd cal: sweep refused (TXAGC anchor unreadable or rate diffs "
+                         "not zeroed); restoring operating power\n");
         } else if (const auto* ap = std::get_if<cal::ApplyCmd>(&in.msg)) {
           // The GS resends APPLY every 200 ms until it hears APPLIED: a
           // (nonce, seq) already applied is answered again, never re-applied.

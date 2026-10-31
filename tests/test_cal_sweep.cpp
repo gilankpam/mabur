@@ -31,7 +31,8 @@ struct FakePowerCtl : CalSweep::PowerCtl {
     index_writes.push_back(idx);
     return true;
   }
-  bool zero_rate_diffs() override { ++zero_diff_calls; return true; }
+  bool zero_ok = true;
+  bool zero_rate_diffs() override { ++zero_diff_calls; return zero_ok; }
   int read_anchor_idx() override { ++read_anchor_calls; return anchor; }
 };
 
@@ -215,6 +216,46 @@ TEST(unreadable_anchor_on_a_capacity_command_also_flags_the_refusal) {
   CHECK(ack->result == cal::AckResult::AnchorUnreadable);
   CHECK(pwr.zero_diff_calls == 1);
   CHECK(s.take_refused());
+}
+
+// A table that would not zero leaves reference + diff where the anchor
+// read expects the reference: every wall of the run would shift by its
+// rate's diff. Refused like an unreadable anchor, and the owner restores.
+TEST(a_table_that_would_not_zero_refuses_a_new_run) {
+  FakePowerCtl pwr;
+  pwr.zero_ok = false;
+  CalSweep s(CalSweepCfg{});
+  s.on_cmd(power_cmd(1, 0), 0, pwr);
+  CHECK(!s.active());
+  auto ack = s.take_ack();
+  REQUIRE(ack.has_value());
+  CHECK(ack->result == cal::AckResult::AnchorUnreadable);
+  CHECK(pwr.read_anchor_calls == 0);  // a read off a live table is never taken
+  CHECK(s.take_refused());
+  CHECK(pwr.index_writes.empty());
+}
+
+TEST(a_table_that_would_not_zero_refuses_a_later_power_sweep_and_closes_the_run) {
+  FakePowerCtl pwr;
+  CalSweep s(CalSweepCfg{});
+  s.on_cmd(capacity_cmd(1, 0), 0, pwr);
+  REQUIRE(s.take_ack()->result == cal::AckResult::Accepted);
+  REQUIRE(s.active());
+  pwr.zero_ok = false;
+  s.on_cmd(power_cmd(1, 1, 0xFF, -41, 63, 40), 100, pwr);
+  auto ack = s.take_ack();
+  REQUIRE(ack.has_value());
+  CHECK(ack->result == cal::AckResult::AnchorUnreadable);
+  CHECK(ack->seq == 1);
+  CHECK(!s.active());
+  CHECK(s.state() == CalSweep::State::Idle);
+  CHECK(s.take_refused());
+  // The run is closed: the GS's resend of the refused command does not
+  // reopen it.
+  pwr.zero_ok = true;
+  s.on_cmd(power_cmd(1, 1, 0xFF, -41, 63, 40), 300, pwr);
+  CHECK(!s.take_ack().has_value());
+  CHECK(!s.active());
 }
 
 TEST(seq_behind_is_ignored_equal_rearms_ack_ahead_starts) {

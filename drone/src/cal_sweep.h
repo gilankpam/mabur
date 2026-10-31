@@ -137,7 +137,9 @@ class CalSweep {
   // now (read_anchor_idx() < 0) cannot place a single relative cell: the
   // command is refused with AckResult::AnchorUnreadable rather than
   // silently dropped, so the GS does not have to infer the refusal from a
-  // timeout. A seq strictly BEHIND the one already accepted for this
+  // timeout. A table that would not zero (zero_rate_diffs() false) is
+  // refused the same way, before any read -- for a later power sweep of
+  // the run too, which then closes the run. A seq strictly BEHIND the one already accepted for this
   // nonce -- a late duplicate of an earlier sweep -- is ignored outright
   // with no ack. An EXACT repeat of the seq already running re-arms the
   // same Accepted ack every time (the GS resends its SweepCmd into a
@@ -334,9 +336,8 @@ class CalSweep {
   // sweep, drained by take_ack().
   std::optional<cal::SweepAck> pending_ack_;
 
-  // Set by on_cmd() when it refuses a new run's command AFTER
-  // zero_rate_diffs() has already flattened the table, drained by
-  // take_refused().
+  // Set by on_cmd() when it refuses a command after zero_rate_diffs() has
+  // already touched the table, drained by take_refused().
   bool pending_refusal_ = false;
 
   // When the run's current sweep's first cell is allowed to open --

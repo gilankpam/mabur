@@ -142,8 +142,10 @@ store follows a calibration relocate like any hop.
    first; `flags` is the stamp mask the sweep flies (`ldpc`, `stbc`), and
    the GS tallies only frames carrying it. A CRC-clean frame of the
    commanded kind and width stands in for a lost ack. A refusal
-   (`anchor_unreadable`: the chip cannot report its TXAGC reference) fails
-   the run.
+   (`anchor_unreadable`: the chip cannot report its TXAGC reference, or
+   would not zero its rate diffs so the reference can be read clean —
+   checked again before every later power sweep of the run, which a
+   failure closes) fails the run.
 3. **Silence.** From the ack the GS sends nothing — no RCF, no DISC
    keepalive, no live MAVLink — for the sweep's planned duration plus
    `phase_slack_ms` (1 s) (`CalSession::radio_silent()`).
@@ -580,9 +582,11 @@ says which:
   (`docs/findings/2026-08-14-rcf-uplink-loss.md`); improve geometry and
   retry before suspecting anything else.
 - `sweep refused by the drone: anchor_unreadable` — the chip did not
-  report its TXAGC reference. The drone restores its power table at once
-  (`maburd cal: sweep refused (TXAGC anchor unreadable); restoring
-  operating power`).
+  report its TXAGC reference, or refused to zero its rate diffs (a read
+  off a live diff table is reference + diff, and every wall would shift).
+  The drone restores its power table at once (`maburd cal: sweep refused
+  (TXAGC anchor unreadable or rate diffs not zeroed); restoring operating
+  power`).
 - `calibration apply timeout` — no APPLIED within 5 s of APPLYs.
 - `apply refused by the drone: <reason>` — the drone validated and
   refused: an out-of-range table, a key it could not find or insert, a
