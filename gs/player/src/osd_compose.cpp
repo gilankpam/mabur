@@ -121,6 +121,7 @@ void OsdComposer::drop_menu() {
     if (drawn_[i] && non_empty(b)) erase_[i].push_back(b);
   }
   for (auto& m : menu_) m.reset();
+  menu_view_ = MenuView{};
   // The erase takes a union of the menu's boxes, grid and bar with it: both
   // come back whole on each buffer.
   for (int i = 0; i < 2; ++i) forget_buffer(i);
@@ -409,7 +410,8 @@ OsdComposeOut OsdComposer::compose_screen(int idx, const Surface& s, const OsdCo
   // block the MSP grid or the GS bar wrote over this composition it paints
   // again. Never into the burn canvas.
   if (menu_on) {
-    if (in.menu) menu_[idx]->set_view(*in.menu);
+    if (in.menu && !(*in.menu == menu_view_)) menu_view_ = *in.menu;
+    menu_[idx]->set_view(menu_view_);  // a no-op when this lineage has it
     menu_erased_.clear();
     menu_[idx]->paint(s, nullptr, &menu_erased_);
     // A box that moved or went was zeroed straight through to the grid and

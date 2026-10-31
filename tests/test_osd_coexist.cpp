@@ -1527,6 +1527,54 @@ TEST(a_menu_closed_by_its_view_leaves_no_hole_in_the_grid_or_the_bar) {
   CHECK(diff_px(r.buf[1].px, ref) == 0);
 }
 
+// The caller hands the view over on the composition where it changed and
+// passes null afterwards. The composer owns the current view, so the OTHER
+// buffer -- composed later, for an unrelated reason -- catches up rather
+// than re-asserting the view its lineage painted last: a closed menu left
+// standing in one buffer strobes at the publish rate.
+TEST(a_view_handed_over_once_reaches_the_other_buffer_too) {
+  const mabur::MspScreen s1 = full_screen('X'), s2 = full_screen('Y');
+  const GsSnapshot sn = snap_cards(3);
+  const GsPlayerState ps = player(60.0);
+  const MenuView open = menu_view();
+  MenuView changed = open;
+  changed.rows[1].value = "Off";
+  const MenuView closed;
+  Rig r;
+  add_menu(r.comp);
+  for (int i = 0; i < 2; ++i) {
+    OsdComposeIn in = make_in(&s1, i == 0, false, &sn, ps, true);
+    in.menu = &open;
+    in.menu_dirty = true;
+    r.tick(in);
+  }
+
+  // A row value changes: handed over once, then an MSP-triggered composition.
+  OsdComposeIn in = make_in(&s1, false, false, &sn, ps, false);
+  in.menu = &changed;
+  in.menu_dirty = true;
+  CHECK(r.tick(in));
+  CHECK(diff_px(r.buf[r.front].px, reference_menu(in, true, true)) == 0);
+  OsdComposeIn later = make_in(&s2, true, false, &sn, ps, false);
+  CHECK(r.tick(later));
+  OsdComposeIn want = later;
+  want.menu = &changed;
+  CHECK(diff_px(r.buf[r.front].px, reference_menu(want, true, true)) == 0);
+
+  // Closed: handed over once, then the other buffer from a fresh screen.
+  in = make_in(&s2, false, false, &sn, ps, false);
+  in.menu = &closed;
+  in.menu_dirty = true;
+  CHECK(r.tick(in));
+  const auto ref_closed = reference(in, true, true);
+  CHECK(diff_px(r.buf[r.front].px, ref_closed) == 0);
+  later = make_in(&s1, true, false, &sn, ps, false);
+  CHECK(r.tick(later));
+  // Each buffer is the no-menu picture of the MSP screen it was composed with.
+  CHECK(diff_px(r.buf[r.front].px, reference(later, true, true)) == 0);
+  CHECK(diff_px(r.buf[r.front ^ 1].px, ref_closed) == 0);
+}
+
 // The feature switched off (drop_menu): each buffer's old menu area is
 // zeroed by its next composition and what was under it comes back whole.
 // The burn canvas never held the menu, so the recorder is handed nothing.

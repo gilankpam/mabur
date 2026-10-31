@@ -28,7 +28,10 @@ struct OsdComposeIn {
   GsPlayerState gs_ps;
   bool gs_dirty = false;  // a GS input moved since the last composition
 
-  // Settings menu. `menu` null keeps whatever view the layers last had.
+  // Settings menu. A non-null `menu` replaces the composer's current view,
+  // which every composition paints into its buffer; null keeps it. So the
+  // view need only be handed over on the composition where it changed: the
+  // other buffer catches up whenever it is next composed.
   const MenuView* menu = nullptr;
   bool menu_dirty = false;  // the view changed since the last composition
 };
@@ -222,6 +225,10 @@ class OsdComposer {
   // The buffer compose_screen() last drew into: the one a publish puts on
   // screen, so the menu lineage wants() asks about.
   int last_idx_ = 0;
+  // The current menu view. Owned here rather than left in each lineage,
+  // whose view is only what it painted last: a buffer composed after the
+  // view was handed over would otherwise repaint the old one.
+  MenuView menu_view_;
   BurnSink burn_;
 
   ShadowGrid shadow_[2], pre_, burn_shadow_;
