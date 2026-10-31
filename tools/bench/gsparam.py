@@ -24,11 +24,14 @@ the GS): sends one datagram, waits up to 5 s for the one-datagram reply.
 default and back, checking along the way: the `set` reply is `ok`, a
 follow-up `get` reads the value back, and the daemon's TOML on the GS
 (/etc/maburgs.toml; /etc/maburplay.toml, a symlink onto vfat /config --
-grep follows it) shows the written value. `link.ladder`'s file shape is a
-run of `[[link.ladder]]` blocks rather than one line, so it is checked by
-block count instead. `screen_mode` has no single alternate value -- which
-modes a connector offers depends on the display -- so `--all player` needs
-`--alt-mode MODE` naming the one to swap to and back from. `--opi` marks
+`cat` follows it) shows the written value, under the key's own section
+(several leaf names, `enable` most of all, are shared across sections, so
+the check is scoped rather than a file-wide search). `link.ladder`'s file
+shape is a run of `[[link.ladder]]` blocks rather than one line, so it is
+checked by block count instead. `screen_mode` has no single alternate
+value -- which modes a connector offers depends on the display -- so
+`--all player` needs `--alt-mode MODE` naming the one to swap to and
+back from. `--opi` marks
 the Orange Pi build, which has no MPP encoder: `dvr.mode`'s restore to
 "burned" is expected to come back `err` (unsupported_on_build) rather than
 `ok`, and is not checked against the file.
@@ -168,15 +171,15 @@ def send_recv(gs, port, line, timeout=10.0):
 
 
 def remote_shell(gs, cmd, timeout=10.0):
-    """An arbitrary read-only shell command on the GS over ssh; returns its
-    stdout, or None if ssh itself failed (a command that legitimately found
-    nothing, like `grep` with no match, still returns its, empty, stdout)."""
+    """A read-only shell command on the GS over ssh (file_matches' `cat` of
+    the daemon's TOML); returns its stdout, or None on a timeout, a dropped
+    connection, or a nonzero exit (e.g. the file is missing)."""
     try:
         r = subprocess.run(["ssh", "-o", "ConnectTimeout=5", "root@%s" % gs, cmd],
                             capture_output=True, timeout=timeout, text=True)
     except subprocess.TimeoutExpired:
         return None
-    if r.returncode not in (0, 1):  # grep: 0 = match, 1 = no match, 2+ = real error
+    if r.returncode != 0:
         return None
     return r.stdout
 
@@ -206,34 +209,70 @@ def cmd_set(gs, role, key, value):
     return 0 if status == "ok" else 1
 
 
+def section_of(key):
+    """A dotted live key's TOML section: everything before the last dot,
+    "" (top level) for a key with none, like screen_mode."""
+    return key.rsplit(".", 1)[0] if "." in key else ""
+
+
+def leaf_of(key):
+    """A dotted live key's own field name within its section, e.g.
+    "enable" for both "link.nack.enable" and "msp.enable"."""
+    return key.rsplit(".", 1)[-1]
+
+
+def parse_toml_sections(text):
+    """A section -> [its lines] map good enough for mabur's bundle TOMLs
+    (flat keys, no indentation, no inline tables beyond what the live-
+    config writer itself renders): walks `text` tracking the current
+    `[section]` (or `[[array.of.tables]]`) header, filing every other
+    line under it. "" is the top-level section, before any header."""
+    sections = {"": []}
+    cur = ""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if (stripped.startswith("[[") and stripped.endswith("]]")) or \
+           (stripped.startswith("[") and stripped.endswith("]") and not stripped.startswith("[[")):
+            cur = stripped.strip("[]").strip()
+            sections.setdefault(cur, [])
+        else:
+            sections[cur].append(line)
+    return sections
+
+
+def value_in_section(text, key, value):
+    """Whether `key` holds `value` INSIDE ITS OWN SECTION of the TOML text
+    `text` -- not merely somewhere in the file. Several leaf names are
+    shared across sections (`enable` alone turns up under seven GS
+    sections and three player ones), so a file-wide search for
+    "<leaf> = <value>" would pass vacuously off some other section sitting
+    at its own default; scoping to `section_of(key)` is what makes the
+    check mean anything."""
+    leaf = leaf_of(key)
+    lines = parse_toml_sections(text).get(section_of(key), [])
+    pattern = re.compile(r"^%s\s*=\s*%s\s*(#.*)?$" % (re.escape(leaf), re.escape(value)))
+    return any(pattern.match(line.strip()) for line in lines)
+
+
 def file_matches(gs, role, key, value):
-    """Whether `path` on the GS (grepped over ssh) shows `key` holding
-    `value`. link.ladder has no single line to grep -- it is a run of
-    `[[link.ladder]]` blocks -- so it is checked by block count (one
-    "{" in `value` per rung) instead."""
+    """Whether `path` on the GS (fetched whole, over ssh, once) shows `key`
+    holding `value`. link.ladder has no single line to check -- it is a
+    run of `[[link.ladder]]` blocks -- so it is checked by block count
+    (one "{" in `value` per rung) instead of `value_in_section`."""
     path = ROLE_FILE[role]
-    if key == "link.ladder":
-        want = value.count("{")
-        out = remote_shell(gs, "grep -cF '[[link.ladder]]' %s" % path)
-        if out is None:
-            return False
-        try:
-            return int(out.strip()) == want
-        except ValueError:
-            return False
-    leaf = key.rsplit(".", 1)[-1]
-    out = remote_shell(gs, "grep -n '^%s' %s" % (leaf, path))
-    if out is None:
+    text = remote_shell(gs, "cat %s" % path)
+    if text is None:
         return False
-    pattern = re.compile(r"^\d+:%s\s*=\s*%s\s*(#.*)?$" % (re.escape(leaf), re.escape(value)))
-    return any(pattern.match(line) for line in out.splitlines())
+    if key == "link.ladder":
+        return text.count("[[link.ladder]]") == value.count("{")
+    return value_in_section(text, key, value)
 
 
 def step(gs, role, key, value, expect_status):
     """One `set` of `--all`'s away/back cycle: send it, check the reply
     status, and -- only when that status is "ok" -- read the value back
-    with `get` and grep it off the file. Returns whether every check that
-    applied held."""
+    with `get` and check it against the daemon's TOML. Returns whether
+    every check that applied held."""
     port = ROLE_PORT[role]
     line = build_line("set", key, value)
     reply = send_recv(gs, port, line)
