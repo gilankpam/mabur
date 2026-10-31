@@ -177,7 +177,7 @@ struct Config {
   std::string ring_path = "/dev/shm/mabur-au";
   std::string socket = "/run/mabur-au.sock";
   std::string backend = "mpp";            // "mpp" | "v4l2req" | "null"
-  std::string screen_mode = "1920x1080@60";
+  std::string screen_mode = "auto";
   DvrCfg dvr;
   OsdCfg osd;
   InputCfg input;

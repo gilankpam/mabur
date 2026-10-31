@@ -442,7 +442,7 @@ TEST(player_load_config_reports_defaulted_keys) {
   maburplay::load_config(path, &defaulted);
   bool saw_key = false, saw_section = false;
   for (const std::string& d : defaulted) {
-    if (d == "screen_mode=1920x1080@60") saw_key = true;   // top-level
+    if (d == "screen_mode=auto") saw_key = true;   // top-level
     if (d == "display=(section absent)") saw_section = true;
   }
   CHECK(saw_key);
