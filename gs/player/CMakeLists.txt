@@ -2,6 +2,8 @@ add_library(mabur_player_core STATIC
   src/player_config.cpp
   src/player_config_apply.cpp
   src/rec_button.cpp
+  src/key_timer.cpp
+  src/button_bank.cpp
   src/display_watch.cpp
   src/ring_client.cpp
   src/stream_feeder.cpp

@@ -2,6 +2,7 @@
 #define MABUR_PLAYER_REC_BUTTON_H_
 
 #include <cstdint>
+#include <optional>
 #include <string>
 
 namespace maburplay {
@@ -37,6 +38,9 @@ class ButtonDebounce {
   // DVR at startup.
   bool feed(bool level, uint64_t now_ms);
 
+  // The accepted level -- continuous, unlike feed()'s press-edge return.
+  bool level() const { return level_; }
+
  private:
   bool level_ = false;      // the accepted level
   bool cand_ = false;       // the level the line has read since cand_ms_
@@ -71,8 +75,13 @@ class RecButton {
                           std::string* err);
 
   // resolve_pin, then request the line once with the bias/active-low
-  // flags. A busy line names its current holder in *err.
-  bool open(const RecButtonCfg& cfg, std::string* err);
+  // flags. A busy line names its current holder in *err. `consumer` is
+  // the name the kernel reports back to anything that inspects the line
+  // (lsgpio, the busy-line error above) -- the rec button and the menu
+  // bank's five lines want different names so a busy-line error tells you
+  // which one is holding it.
+  bool open(const RecButtonCfg& cfg, std::string* err,
+            const char* consumer = "maburplay_rec");
 
   bool is_open() const { return line_fd_ >= 0; }
 
@@ -81,6 +90,13 @@ class RecButton {
   // is closed and one line is logged, then silence -- /tmp is tmpfs, the
   // same reason the per-attempt DRM retry failures are silenced.
   bool poll(uint64_t now_ms);
+
+  // The menu bank's path: one GPIO_V2_LINE_GET_VALUES_IOCTL fed to the
+  // debouncer, returning the accepted LEVEL (not an edge) -- the menu
+  // needs to know a line is still held, not just that it was pressed.
+  // std::nullopt once the line has closed itself after kMaxIoErrors, same
+  // as poll() above but reported rather than silently false forever.
+  std::optional<bool> read_level(uint64_t now_ms);
 
   const std::string& chip_path() const { return chip_path_; }
   unsigned offset() const { return offset_; }
