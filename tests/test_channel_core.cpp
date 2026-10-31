@@ -374,6 +374,47 @@ static void freeze_auto(Rig& g) {
   REQUIRE(g.core->op() == 40);
 }
 
+// The hop's restore rung is frozen at the onset as an index into the
+// ladder of that moment. A live ladder swap inside the frozen episode
+// translates it by {mcs, bw}, so the hop restores the pre-onset operating
+// point and not whatever the new ladder holds at the old index. Revert =
+// replace_ladder without the remap: the order restores index 2 of the new
+// ladder, MCS 4.
+static void onset_then_swap(Rig& g, std::vector<Rung> new_rungs) {
+  link_up(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  g.vrx->restore_rung(2, static_cast<double>(g.clk.ms));   // mcs 0..4 @40: index 2 = MCS 2
+  REQUIRE(g.vrx->cur_op().mcs == 2);
+  g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
+  g.cards[0]->fr.foreign = 0; g.cards[1]->fr.foreign = 0;
+  interfere(g, 1);                                          // onset: ref_rung = 2
+  REQUIRE(*g.core->snapshot(0).hop.ref_rung == 2);
+  REQUIRE(!g.sink.has_hop("order"));
+  LadderCfg nl = g.vrx->ladder();
+  nl.ladder = std::move(new_rungs);
+  g.core->replace_ladder(nl, static_cast<double>(g.clk.ms));
+}
+TEST(hop_restore_survives_ladder_swap) {
+  Rig g(2, 0); freeze_auto(g);
+  onset_then_swap(g, {{2, 0.5, 0.25, 40}, {3, 0.5, 0.25, 40}, {4, 0.5, 0.25, 40}});
+  REQUIRE(g.vrx->cur_op().mcs == 2);                        // the swap itself keeps MCS 2
+  CHECK(*g.core->snapshot(0).hop.ref_rung == 0);
+  interfere(g, 4);                                          // interference goes on: hop ordered
+  REQUIRE(g.sink.has_hop("order"));
+  CHECK(g.vrx->cur_op().mcs == 2);                          // the pre-onset MCS
+}
+// A pre-onset rung the new ladder lacks restores rung 0, as the swap
+// itself falls back -- never a clamp onto the top rung of a shorter ladder.
+TEST(hop_restore_after_swap_dropping_the_ref_rung_lands_on_rung_0) {
+  Rig g(2, 0); freeze_auto(g);
+  onset_then_swap(g, {{0, 0.5, 0.25, 40}, {4, 0.5, 0.25, 40}});
+  REQUIRE(g.vrx->cur_op().mcs == 0);
+  CHECK(*g.core->snapshot(0).hop.ref_rung == 0);
+  interfere(g, 4);
+  REQUIRE(g.sink.has_hop("order"));
+  CHECK(g.vrx->cur_op().mcs == 0);
+}
+
 // Pinned = static. An interfered op produces a verdict (the OSD/sideport
 // still say the pin is dirty) but no order, no escape, no exhausted hold:
 // the controller is never fed a reactive trigger.

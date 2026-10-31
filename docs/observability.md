@@ -414,7 +414,9 @@ The adaptive-link record, written also in static-pin mode. Header
 compact lines — formats locked in `gs/src/ctl_log.h`. A live ladder swap
 (`set link.ladder` on 8402) writes another `ctllog 13 <header_info>` line
 in the same file; the rows after it index the new ladder, and the next
-`E` line is the swap's rung re-entry, reason `ladder_swap`:
+`E` line is the swap's rung re-entry, reason `ladder_swap`. Back to
+adaptive from a live static pin is a re-entry too, reason `unpin` (its
+`from` is the rung the ladder held before the pin):
 
 - `S` — dwell sample every `debug_log.ctl_period_ms`: rung, util `u`/`u3`
   (arrival-booked pre-FEC loss), residuals, RF labels, fade deltas, and three

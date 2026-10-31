@@ -68,8 +68,13 @@ struct RecPlan {
   bool gs = true;       // this GS's DVR: dvr.target "gs" or "both"
   bool vtx = false;     // the drone's SD card: "vtx" or "both"
   bool burned = false;  // the GS DVR re-encodes with the OSD burnt in
+  // dvr.burned.*: the size, cadence and bitrate the burned recorder starts
+  // with -- also on a restart inside the recording (a presenter rebuild).
+  DvrCfg::BurnedCfg burn;
   bool operator==(const RecPlan& o) const {
-    return gs == o.gs && vtx == o.vtx && burned == o.burned;
+    return gs == o.gs && vtx == o.vtx && burned == o.burned &&
+           burn.bitrate_kbps == o.burn.bitrate_kbps && burn.every == o.burn.every &&
+           burn.size_w == o.burn.size_w && burn.size_h == o.burn.size_h;
   }
 };
 RecPlan rec_plan(const DvrCfg& d);

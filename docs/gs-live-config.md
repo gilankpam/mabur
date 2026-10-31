@@ -40,7 +40,8 @@ get [<key>]
   datagram is refused outright rather than acted on as its truncated
   prefix).
 - Both listeners bind `127.0.0.1` only: a `set` requires being logged into
-  the GS itself.
+  the GS itself. There is no other authentication: any process on the GS
+  can set any live key.
 - One set in flight per daemon at a time: the applier's own `busy` refusal
   keeps a second `set` from queueing, and `LiveConfigControl` keeps only
   one pending sender address.
@@ -64,12 +65,12 @@ back: `false` then `true`, or `"auto"` then the channel.
 
 | Key | Type | Applies to | Notes |
 |---|---|---|---|
-| `radio.channel` | int or `"auto"` | `ChannelCore::set_pin` / `set_auto` | An order placed only *after* the file holds the new value (`order_after_publish`), not an apply before it. A pin to a member is checked at submit, before any file work, by `ChannelCore::pin_refusal` — everything `set_pin` refuses, in its words: `relocate in flight`, `hop in flight` (a one-card hop still riding its RCFs included), `calibration running` (a run, its measure round or its relocate), and, for a linked move off the current channel, `sweep in flight` or `hop cap`. A channel that isn't a member, or a value that isn't a channel, is the loader's refusal, in its message. `"auto"` is never refused (`set_auto` withdraws a pin relocate not yet placed). A set to the live value (the pinned channel, or `"auto"` while auto) is a same-value `ok` with no check and no file write. `ok` on a linked pin means the order was accepted and the file holds it, not that the link has moved: the relocate runs afterwards, and one that does not land (the drone does not follow, the link drops) leaves the GS pinned with the link on the channel it was on, while `get` and the file read the requested one. An order still refused once the file is published (a hop started between the check and the order) re-publishes the previous file text under the still-held write lock; if that restore fails too, the reply is `err <reason>; restoring the file failed: <error>`. |
-| `link.static_mcs` | int | `VrxController::set_pin` | `mcs < 0` is adaptive (the ladder drives the operating point); `mcs >= 0` bypasses the ladder with a fixed rung. Applied together with `static_bw`/`static_overhead_base`/`static_overhead_enh` as one call. |
+| `radio.channel` | int or `"auto"` | `ChannelCore::set_pin` / `set_auto` | An order placed only *after* the file holds the new value (`order_after_publish`), not an apply before it. A pin to a member is checked at submit, before any file work, by `ChannelCore::pin_refusal` — everything `set_pin` refuses, in its words: `relocate in flight`, `hop in flight` (a one-card hop still riding its RCFs included), `calibration running` (a run, its measure round or its relocate), and, for a linked move off the current channel, `sweep in flight` or `hop cap`. A channel that isn't a member, or a value that isn't a channel, is the loader's refusal, in its message. `"auto"` is never refused (`set_auto` withdraws a pin relocate not yet placed). A set to the live value (the pinned channel, or `"auto"` while auto) is a same-value `ok` with no check and no file write. `ok` on a linked pin means the order was accepted and the file holds it, not that the link has moved: the relocate runs afterwards, and one that does not land (the drone does not follow, the link drops) leaves the GS pinned with the link on the channel it was on, while `get` and the file read the requested one. The sideport shows it as `scan.pick` (the pin) ≠ `link.channel` (the link), and stderr logs `relocation to <want> did not land; staying on <op>`. An order still refused once the file is published (a hop started between the check and the order) re-publishes the previous file text under the still-held write lock; if that restore fails too, the reply is `err <reason>; restoring the file failed: <error>`. |
+| `link.static_mcs` | int | `VrxController::set_pin` | `mcs < 0` is adaptive (the ladder drives the operating point); `mcs >= 0` bypasses the ladder with a fixed rung. Applied together with `static_bw`/`static_overhead_base`/`static_overhead_enh` as one call. Back to adaptive from a pin re-enters the ladder on the rung with the pinned `{mcs, bw}`, else rung 0 — an `E … unpin` ctl line — with the feedback timeout counted from that moment: the ladder gets no feedback while pinned, and that is not a feedback loss. |
 | `link.static_bw` | int | `VrxController::set_pin` | |
 | `link.static_overhead_base` | real | `VrxController::set_pin` | |
 | `link.static_overhead_enh` | real | `VrxController::set_pin` | |
-| `link.ladder` | array of inline tables | `VrxController::replace_ladder` | Rebuilds the ladder controller inside the session. The old rung's `{mcs, bw}` is looked up in the new ladder: present → restored to that index; absent → rung 0. A rung the loader would silently drop for being above `link.max_mcs` instead refuses the whole set (`rung <i> exceeds link.max_mcs`), rather than flying a ladder shorter than what was asked for. Also re-headers `ctl.log` — see below. |
+| `link.ladder` | array of inline tables | `ChannelCore::replace_ladder` | Rebuilds the ladder controller inside the session (`VrxController::replace_ladder`). The old rung's `{mcs, bw}` is looked up in the new ladder: present → restored to that index; absent → rung 0. The new controller keeps the old one's last feedback time, so the feedback timeout does not fire on the swap. A hop's restore rung, frozen as a ladder index at the impairment onset, is translated the same way (by `{mcs, bw}`, else rung 0), so a hop after the swap restores the pre-onset operating point. A rung the loader would silently drop for being above `link.max_mcs` instead refuses the whole set (`rung <i> exceeds link.max_mcs`), rather than flying a ladder shorter than what was asked for. The rewrite replaces the first run of `[[link.ladder]]` blocks in the file; a second run further down (which the loader would append) refuses the set with `the config file holds more [[link.ladder]] rungs than the set`. Also re-headers `ctl.log` — see below. |
 | `link.nack.enable` | bool | `NackTracker::set_enable` | Turning it off also clears the tracker's pending retransmit requests; its request counter is kept (not reset) so a later re-enable stays monotonic. |
 | `debug_log.enable` | bool | `DebugSession::enable`/`disable` + opening/closing the six per-session log files | A failing `enable` (the log root is unwritable, e.g. `/media/dvr` missing) reports `debug_log.dir <dir> unusable` and closes nothing, opens nothing — the running session, if any, is untouched. |
 | `msp.enable` | bool | build or drop the MSP OSD sink (the MSP stream's UDP feed to `maburplay`, `[msp.out]`) | |
@@ -106,9 +107,11 @@ it belongs to whatever follows, not to the ladder.
 | `dvr.burned.every` | int | read at the next recording's start | |
 | `dvr.burned.size` | string (`"WxH"` or `""` for the decoded size) | read at the next recording's start | |
 
-A running recording keeps the plan (`RecPlan`: `gs`/`vtx`/`burned`) it was
-started with; a `dvr.*` set never changes a recording already in
-progress. A presenter rebuild (`screen_mode`, `colortrans.enable`, or an
+A running recording keeps the plan (`RecPlan`: `gs`/`vtx`/`burned` and
+the `dvr.burned.*` size, cadence and bitrate) it was started with; a
+`dvr.*` set never changes a recording already in progress, including a
+burned recorder restarted inside it (below), which starts with the
+latched settings. A presenter rebuild (`screen_mode`, `colortrans.enable`, or an
 OSD switch that changes the plane) restarts a *burned* recording in
 progress — new file, no video park — since the recorder's palette is
 fixed at its start from the overlays live then. Switching an overlay *on*
@@ -187,7 +190,7 @@ refused post-publish logs `... restoring the previous file failed:
 ## The ladder header rule (`ctllog 13`)
 
 A `set link.ladder` rebuilds the ladder controller inside the session
-(`VrxController::replace_ladder`) and writes a fresh `ctllog 13
+(`ChannelCore::replace_ladder`) and writes a fresh `ctllog 13
 <header_info>` line into `ctl.log` as the very next line, right after the
 apply — so every row logged after the swap is read against the new
 ladder's header, not the boot one. `CtlLog::header()`

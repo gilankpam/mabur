@@ -8,6 +8,7 @@
 #include <exception>
 #include <map>
 #include <memory>
+#include <stdexcept>
 #include <utility>
 
 #include "mabur/channel_set.h"
@@ -279,7 +280,10 @@ namespace {
 
 // The loader drops rungs above link.max_mcs without a word; a set that
 // names one is refused rather than flown short. The filter keeps order, so
-// the first rung that does not line up is the dropped one.
+// the first rung that does not line up is the dropped one. The rewrite
+// replaces only the first run of [[link.ladder]] blocks, so rungs left
+// over past the set came from another run further down the file, which
+// the loader appends: refused too, rather than flown long.
 std::string refuse_dropped_rung(const LiveKey& k, const std::string& value, const Config& cand) {
   if (k.type != LiveType::Ladder) return "";
   std::vector<RungText> rungs;
@@ -295,6 +299,7 @@ std::string refuse_dropped_rung(const LiveKey& k, const std::string& value, cons
     }
     return "rung " + std::to_string(i) + " exceeds link.max_mcs";
   }
+  if (j != eff.size()) return "the config file holds more [[link.ladder]] rungs than the set";
   return "";
 }
 
@@ -349,6 +354,11 @@ bool apply_to_process(const GsApplyHooks& h, const LiveKey& k, const Config& c, 
 }
 
 mabur::LiveApplySpec<Config, LiveKey> gs_spec(GsApplyHooks hooks) {
+  // An empty hook would throw bad_function_call on the core thread at the
+  // first set that reaches it; refuse it here, where the wiring is.
+  if (!hooks.set_pin || !hooks.set_auto || !hooks.set_static || !hooks.replace_ladder ||
+      !hooks.nack || !hooks.debug_log || !hooks.msp || !hooks.pin_refusal)
+    throw std::invalid_argument("GsConfigApplier: every GsApplyHooks hook must be set");
   const auto h = std::make_shared<const GsApplyHooks>(std::move(hooks));
   mabur::LiveApplySpec<Config, LiveKey> s;
   s.daemon = "maburgs";

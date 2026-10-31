@@ -983,6 +983,19 @@ std::optional<std::string> ChannelCore::set_pin(uint8_t ch) {
   return std::nullopt;
 }
 
+void ChannelCore::replace_ladder(const LadderCfg& ladder, double now_ms) {
+  const LadderCfg old = vrx_.ladder();
+  vrx_.replace_ladder(ladder, now_ms);
+  const auto remap = [&](int i) {
+    if (i < 0) return i;
+    if (i >= static_cast<int>(old.ladder.size())) return 0;
+    const Rung& r = old.ladder[static_cast<size_t>(i)];
+    return rung_index(ladder, r.mcs, r.bw);
+  };
+  verdict_.remap_ref_rung(remap(verdict_.ref_rung()));
+  last_verdict_out_.ref_rung = remap(last_verdict_out_.ref_rung);
+}
+
 void ChannelCore::set_auto() {
   if (!pinned_) return;
   pinned_ = false;

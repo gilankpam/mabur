@@ -108,6 +108,10 @@ class HopVerdict {
   // histories are untouched; reset() is still the per-hop thaw.
   void new_session();
   int ref_rung() const;               // -1 while healthy
+  // A live ladder swap inside a frozen episode: the frozen rung index is
+  // re-pointed at the same operating point in the new ladder (the caller
+  // translates it). No-op while healthy.
+  void remap_ref_rung(int rung) { if (ref_rung_ >= 0) ref_rung_ = rung; }
 
  private:
   HopCfg cfg_;

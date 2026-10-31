@@ -50,6 +50,10 @@ struct VrxCfg {
 std::vector<uint8_t> disc_for_channel(const std::vector<uint8_t>& disc, uint8_t ch,
                                       const mabur::LinkKey& key);
 
+// The index of the rung with this {mcs, bw} in `ladder`, else 0: where a
+// re-entry lands when the operating point it keeps is not on the ladder.
+int rung_index(const LadderCfg& ladder, int mcs, int bw);
+
 class VrxController {
  public:
   explicit VrxController(VrxCfg cfg);
@@ -105,22 +109,20 @@ class VrxController {
   void blank_store(double until_ms) { ctrl_.blank_store(until_ms); }
   // Static-link pin, live (config.link.static_*): mcs < 0 is adaptive
   // (the ladder drives cur_op()), mcs >= 0 bypasses it with a fixed op.
-  // Takes effect on the next step(), exactly as the boot-time cfg does; on
-  // a change back to adaptive, sync_op_() so cur_op() reads the ladder's
-  // op before that next tick rather than the stale pinned value.
-  void set_pin(int mcs, int bw, double overhead_base, double overhead_enh) {
-    cfg_.pin_mcs = mcs;
-    cfg_.pin_bw = bw;
-    cfg_.pin_overhead_base = overhead_base;
-    cfg_.pin_overhead_enh = overhead_enh;
-    if (mcs < 0) sync_op_();
-  }
+  // Takes effect on the next step(), exactly as the boot-time cfg does. A
+  // change from pinned back to adaptive re-enters the ladder on the rung
+  // matching the pinned {mcs, bw}, else rung 0 (an Unpin ctl event, the
+  // feedback stamp restarted), and cur_op() reads the ladder's op at once
+  // rather than the stale pinned value.
+  void set_pin(int mcs, int bw, double overhead_base, double overhead_enh, double now_ms);
   int pin_mcs() const { return cfg_.pin_mcs; }
   // Rebuild the ladder controller inside the session (config.link.ladder,
   // live): the old op rung's {mcs, bw} is looked up in the new ladder and
   // restored to that index when present, else rung 0. restore() always
   // runs (even landing on rung 0) so the re-key settle window opens for
   // every op-point change this causes, not only the ones that move rung().
+  // The new controller keeps the old one's last feedback time: a swap is
+  // no feedback gap for the blind-side timeout to act on.
   void replace_ladder(const LadderCfg& ladder, double now_ms);
   const LadderCfg& ladder() const { return cfg_.ladder; }
   uint8_t hop_ch() const { return hop_ch_; }

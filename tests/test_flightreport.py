@@ -932,6 +932,22 @@ def test_ctllog_swap_restore_from_older_builds_reads_as_ladder_swap():
         "residual", "promote_probed", "ladder_swap", "hop_restore"]
 
 
+def test_bw40_summary_unpin_is_not_a_promote():
+    """Back to adaptive from a static pin restarts the controller: its E
+    line's `from` is the rung the ladder held before the pin, so an unpin
+    onto a 40 MHz rung is a re-entry, not a promote."""
+    text = (
+        "ctllog 13 ladder=20:0/50:25,40:3/50:25 down_util=0.35 up_util=0.15 probe_offset=1\n"
+        "E 1000 0 1 unpin 0.0000 31.0 -24.0\n"
+        "S 3000 1 0.0500 31.5 0.0000 0.1000 0.0000 -24.5 0.0000 9.5 4.2 -63.4 -1 0.0000 0\n"
+    )
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        p = Path(tmp_dir) / "ctl.log"
+        p.write_text(text)
+        b = flightreport.bw40_summary(flightreport.load_ctllog(str(p)))
+    assert b["promotes"] == 0
+
+
 def test_ctllog_v12_rows_all_carry_the_one_header_ladder():
     with tempfile.TemporaryDirectory() as tmp_dir:
         p = Path(tmp_dir) / "ctl-0001_x.log"
@@ -2359,6 +2375,7 @@ if __name__ == "__main__":
     test_ctllog_later_header_replaces_the_ladder()
     test_ctllog_rows_read_against_the_header_above_them()
     test_ctllog_swap_restore_from_older_builds_reads_as_ladder_swap()
+    test_bw40_summary_unpin_is_not_a_promote()
     test_ctllog_v12_rows_all_carry_the_one_header_ladder()
     test_bw40_summary_counts_time_held_and_promotes()
     test_bw40_section_absent_without_40_rungs()

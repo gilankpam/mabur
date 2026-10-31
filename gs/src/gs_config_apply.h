@@ -58,12 +58,13 @@ bool patch_live_key(std::string* text, const LiveKey& k, const std::string& valu
                     std::string* why);
 
 // What an apply does to the running process. Every hook runs on the
-// owning thread.
+// owning thread. All must be set (the applier's constructor throws
+// std::invalid_argument otherwise).
 struct GsApplyHooks {
   std::function<std::optional<std::string>(uint8_t ch)> set_pin;  // ChannelCore::set_pin
   std::function<void()> set_auto;                                 // ChannelCore::set_auto
   std::function<void(const Config&)> set_static;                  // VrxController::set_pin from link.static_*
-  std::function<void(const Config&)> replace_ladder;              // VrxController::replace_ladder + log re-header
+  std::function<void(const Config&)> replace_ladder;              // ChannelCore::replace_ladder + log re-header
   std::function<void(bool on)> nack;                              // the software NACK on/off
   std::function<bool(bool on, std::string* err)> debug_log;       // open/close the session + logs
   std::function<void(bool on, const Config&)> msp;                // build/drop the MSP sink

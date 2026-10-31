@@ -10,6 +10,7 @@
 #include <fstream>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -524,6 +525,50 @@ TEST(applier_ladder_refuses_a_rung_above_max_mcs) {
   CHECK(r.reason == "rung 1 exceeds link.max_mcs");
   CHECK(f.order.empty());
   CHECK(slurp(sb.path()) == before);
+}
+
+// The rewrite replaces the first run of [[link.ladder]] blocks; a second
+// run further down the file (valid TOML, easy to get from a hand edit)
+// would survive it and append its rungs to the set. Refused, file untouched.
+TEST(applier_ladder_refuses_a_second_ladder_block_in_the_file) {
+  ScratchBundle sb; Fake f;
+  spit(sb.path(), bundle_text() +
+                      "\n[[link.ladder]]\nmcs = 5\nbw = 40\noverhead_base = 0.5\n"
+                      "overhead_enh = 0.25\n");
+  const std::string before = slurp(sb.path());
+  GsConfigApplier a(sb.path(), load_config(sb.path()), f.hooks(), nullptr);
+  std::string why;
+  REQUIRE(a.submit("link.ladder", "[{mcs = 0, bw = 40, overhead_base = 0.5, overhead_enh = 0.25}, {mcs = 2, bw = 40, overhead_base = 0.5, overhead_enh = 0.25}]", &why));
+  GsApplyResult r = drive(a);
+  CHECK(!r.ok);
+  CHECK(r.reason == "the config file holds more [[link.ladder]] rungs than the set");
+  CHECK(f.order.empty());
+  CHECK(slurp(sb.path()) == before);
+}
+
+TEST(applier_refuses_an_unset_hook) {
+  ScratchBundle sb;
+  for (int missing = 0; missing < 8; ++missing) {
+    Fake f;
+    GsApplyHooks h = f.hooks();
+    switch (missing) {
+      case 0: h.set_pin = nullptr; break;
+      case 1: h.set_auto = nullptr; break;
+      case 2: h.set_static = nullptr; break;
+      case 3: h.replace_ladder = nullptr; break;
+      case 4: h.nack = nullptr; break;
+      case 5: h.debug_log = nullptr; break;
+      case 6: h.msp = nullptr; break;
+      case 7: h.pin_refusal = nullptr; break;
+    }
+    bool threw = false;
+    try {
+      GsConfigApplier a(sb.path(), bundle(), h, nullptr);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    CHECK(threw);
+  }
 }
 
 TEST(control_handle_get_set_and_errors) {

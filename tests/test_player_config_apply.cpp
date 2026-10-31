@@ -315,6 +315,23 @@ TEST(rec_plan_reads_target_and_mode) {
   CHECK(!(rec_plan(d) == p));
 }
 
+// The burned recorder's settings are latched with the plan: a restart
+// inside a recording starts from these, not from a dvr.burned.* set since.
+TEST(rec_plan_latches_the_burned_settings) {
+  DvrCfg d;
+  d.mode = "burned";
+  d.burned.bitrate_kbps = 8000;
+  d.burned.every = 2;
+  d.burned.size_w = 1280;
+  d.burned.size_h = 720;
+  const RecPlan p = rec_plan(d);
+  CHECK(p.burn.bitrate_kbps == 8000);
+  CHECK(p.burn.every == 2);
+  CHECK(p.burn.size_w == 1280 && p.burn.size_h == 720);
+  d.burned.bitrate_kbps = 9000;
+  CHECK(!(rec_plan(d) == p));
+}
+
 TEST(player_applier_same_value_spelled_differently_writes_nothing) {
   ScratchPlayerBundle sb;
   PFake f;

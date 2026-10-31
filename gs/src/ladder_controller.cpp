@@ -24,6 +24,7 @@ const char* to_string(CtlReason r) {
     case CtlReason::PromoteProbed: return "promote_probed";
     case CtlReason::HopRestore: return "hop_restore";
     case CtlReason::LadderSwap: return "ladder_swap";
+    case CtlReason::Unpin: return "unpin";
   }
   return "unknown";
 }
@@ -634,8 +635,14 @@ void LadderController::restore(int rung, double now_ms) {
   reenter_(rung, now_ms, CtlReason::HopRestore);
 }
 
-void LadderController::swap_restore(int rung, double now_ms) {
+void LadderController::swap_restore(int rung, double now_ms, double last_feedback_ms) {
+  last_feedback_ms_ = last_feedback_ms;
   reenter_(rung, now_ms, CtlReason::LadderSwap);
+}
+
+void LadderController::unpin_restore(int rung, double now_ms) {
+  last_feedback_ms_ = now_ms;
+  reenter_(rung, now_ms, CtlReason::Unpin);
 }
 
 void LadderController::reenter_(int rung, double now_ms, CtlReason why) {

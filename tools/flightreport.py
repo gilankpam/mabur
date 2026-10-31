@@ -282,6 +282,12 @@ def print_rung_store_report(R):
                       f" n {hi['n']}/{lo['n']})")
 
 
+# E reasons that restart the ladder controller on a rung rather than move
+# the link up or down it: a live ladder swap, and back to adaptive from a
+# static pin.
+_REENTRY_REASONS = ("ladder_swap", "unpin")
+
+
 def bw40_summary(ctllog, probation_ms=3000.0):
     """Time held on 40 MHz rungs and promotes onto them, from the ctllog 12
     header's per-rung bw and the E lines. None when no rung is 40 MHz (every
@@ -290,7 +296,7 @@ def bw40_summary(ctllog, probation_ms=3000.0):
     a climb 40/3 -> 40/4 stays on 40 and still holds. probation_ms is the
     bundle's link.probation_ms, 3 s; the log does not carry it. Each row's
     rung is read against its own ladder (a live swap changes it mid-file),
-    and a swap's rung re-entry (`ladder_swap`) is not a promote."""
+    and a controller re-entry (`ladder_swap`, `unpin`) is not a promote."""
     hdr_ladder = ctllog["header"].get("_ladder") or []
     S, E = ctllog.get("S", []), ctllog.get("E", [])
 
@@ -309,10 +315,12 @@ def bw40_summary(ctllog, probation_ms=3000.0):
         return lad[idx]["bw"] if 0 <= idx < len(lad) else 20
 
     # Initial rung: the first E line's `from`; with no E lines, the first S
-    # line's rung (S carries the live rung); else rung 0. A swap's `from` is
-    # the new controller's start, not where the link was: S says that.
+    # line's rung (S carries the live rung); else rung 0. A re-entry's
+    # `from` is not where the link was (a swap's is the new controller's
+    # start, an unpin's the rung the ladder held before the static pin):
+    # S says that.
     s0 = min(S, key=lambda s: s["t_ms"]) if S else None
-    if E and E[0]["reason"] != "ladder_swap":
+    if E and E[0]["reason"] not in _REENTRY_REASONS:
         cur, cur_lad = E[0]["from"], ladder_of(E[0])
     elif s0 is not None:
         cur, cur_lad = s0["rung"], ladder_of(s0)
@@ -323,7 +331,7 @@ def bw40_summary(ctllog, probation_ms=3000.0):
         lad = ladder_of(e)
         if bw_of(cur, cur_lad) == 40:
             held += e["t_ms"] - t_prev
-        if (e["reason"] != "ladder_swap" and bw_of(e["from"], lad) != 40
+        if (e["reason"] not in _REENTRY_REASONS and bw_of(e["from"], lad) != 40
                 and bw_of(e["to"], lad) == 40):
             promotes += 1
             # First time the link reaches a 20 MHz rung after this promote;

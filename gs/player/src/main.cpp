@@ -963,13 +963,18 @@ int main(int argc, char** argv) {
   // quietly leave a raw file behind that the user would mistake for a
   // burned one.
   bool burned_mode = false;
-  // Reads the live dvr.* into the three flags; true when the target moved.
+  // rec_burn -- dvr.burned.*: what a burned recorder of this recording
+  // starts with, including a restart inside it (a presenter rebuild, an
+  // overlay switched on), which must not pick up a set made since.
+  maburplay::DvrCfg::BurnedCfg rec_burn;
+  // Reads the live dvr.* into the latched plan; true when the target moved.
   auto latch_rec = [&]() -> bool {
     const maburplay::RecPlan p = maburplay::rec_plan(cfg.dvr);
     const bool target_moved = p.gs != rec_gs || p.vtx != rec_vtx;
     rec_gs = p.gs;
     rec_vtx = p.vtx;
     burned_mode = p.burned;
+    rec_burn = p.burn;
     return target_moved;
   };
   latch_rec();
@@ -1188,8 +1193,8 @@ int main(int argc, char** argv) {
     // size now. A later change of the decoded size (a rung change) does not
     // restart the recorder: its stage scales every frame of another size to
     // this one (burn_recorder.h BurnCfg).
-    int rw = cfg.dvr.burned.size_w;
-    int rh = cfg.dvr.burned.size_h;
+    int rw = rec_burn.size_w;
+    int rh = rec_burn.size_h;
     if (rw <= 0 || rh <= 0) {
       rw = pump.video_w();
       rh = pump.video_h();
@@ -1227,8 +1232,8 @@ int main(int argc, char** argv) {
     // while none exists, and the recorder needs one, so this period holds
     // for the recorder's whole life.
     bc.period_us = presenter->mode_period_us();
-    bc.every = cfg.dvr.burned.every;
-    bc.bitrate_kbps = cfg.dvr.burned.bitrate_kbps;
+    bc.every = rec_burn.every;
+    bc.bitrate_kbps = rec_burn.bitrate_kbps;
     bc.fragment_ms = cfg.dvr.fragment_ms;
     bc.colortrans = cfg.colortrans.enable ? &ct : nullptr;
     // backend.get() is CHECKED, not retained (see burn_recorder.h): the

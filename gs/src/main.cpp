@@ -1152,10 +1152,10 @@ static int run_radio(const maburgs::Config& cfg, const std::string& cfg_path) {
   hooks.set_auto = [&] { chan.set_auto(); };
   hooks.set_static = [&](const maburgs::Config& c) {
     vrx.set_pin(c.link.static_mcs, c.link.static_bw, c.link.static_overhead_base,
-                c.link.static_overhead_enh);
+                c.link.static_overhead_enh, static_cast<double>(mono_ms()));
   };
   hooks.replace_ladder = [&](const maburgs::Config& c) {
-    vrx.replace_ladder(c.link.ladder_cfg, static_cast<double>(mono_ms()));
+    chan.replace_ladder(c.link.ladder_cfg, static_cast<double>(mono_ms()));
     if (ctl_log) ctl_log->header(ctl_header(vrx.ladder()));
     // The new controller starts with no probe edge and no penalty: re-arm
     // their change-detect so the swap writes no phantom P/N line. Its rung

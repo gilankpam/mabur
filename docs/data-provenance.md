@@ -129,8 +129,8 @@ Chronological; each line names the section below that carries the detail.
   `link.cal` (`docs/calibration.md`).
 - 2026-10-31 — GS live config (`set`/`get` on 8402): `ctllog 13` — a
   `ctl.log` can carry a second `ctllog 13 <header_info>` line mid-file at a
-  live ladder swap, and its rows index the most recent header; `E` reason
-  `ladder_swap`; sideport `scan.pinned` (the live pin).
+  live ladder swap, and its rows index the most recent header; `E` reasons
+  `ladder_swap` and `unpin`; sideport `scan.pinned` (the live pin).
 
 ## 2026-09-23 — `link.pre_fec_loss` scale break, twice
 
@@ -1370,6 +1370,14 @@ pin, NACK, MSP and debug-log switches can change without a restart.
   kept `scanlog 5`). Pre-merge bench builds of this date wrote the
   re-entry as `hop_restore` from rung 0; flightreport reads the first such
   `E` after a mid-file header as `ladder_swap`.
+- **`E` reason `unpin`.** A live `set link.static_mcs` back to adaptive
+  re-enters the ladder: `E <t_ms> <from> <idx> unpin`, where `from` is the
+  rung the ladder held before the pin (the link flew the pin, not that
+  rung) and `idx` the rung with the pinned `{mcs, bw}`, else 0.
+  flightreport's BW40 summary counts neither it nor `ladder_swap` as a
+  promote. Pre-merge bench builds of this date had no unpin re-entry: the
+  first tick after an unpin from a ladder rung above 0 logged a `timeout`
+  demotion to rung 0 that no feedback loss caused.
 - **Sideport `scan.pinned`** (bool): the live channel pin, which a `set
   radio.channel` moves. Absent before this build; the boot config's
   `radio.channel` is not the pin of a recording made after a live set.

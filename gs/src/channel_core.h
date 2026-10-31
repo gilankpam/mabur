@@ -250,6 +250,12 @@ class ChannelCore {
   std::optional<std::string> pin_refusal(uint8_t ch) const;
   // Back to auto. Never refused: nothing moves on the spot.
   void set_auto();
+  // ---- live ladder swap (core thread) ----
+  // VrxController::replace_ladder, plus the hop verdict's frozen restore
+  // rung translated by {mcs, bw} into the new ladder (rung 0 when it has no
+  // such rung, as the swap itself falls back): the rung is an index, and
+  // the same index in another ladder is another operating point.
+  void replace_ladder(const LadderCfg& ladder, double now_ms);
 
   // ---- test seam (threaded = false) ----
   void run_scout_step();      // one ChannelScout::run_once()

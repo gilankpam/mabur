@@ -141,6 +141,7 @@ RecPlan rec_plan(const DvrCfg& d) {
   p.gs = d.target != "vtx";
   p.vtx = d.target != "gs";
   p.burned = d.mode == "burned";
+  p.burn = d.burned;
   return p;
 }
 

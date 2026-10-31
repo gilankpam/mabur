@@ -178,7 +178,7 @@ struct LinkHealth {
 
 enum class CtlReason {
   None, Residual, Util, Probation, Starved, Timeout, Promote,
-  S3Residual, S3Util, Fade, PromoteProbed, HopRestore, LadderSwap
+  S3Residual, S3Util, Fade, PromoteProbed, HopRestore, LadderSwap, Unpin
 };
 const char* to_string(CtlReason r);
 
@@ -268,7 +268,15 @@ class LadderController {
   // A live ladder swap's re-entry into `rung` of the new ladder: the same
   // direct re-entry as restore(), logged as LadderSwap so a reader pairing
   // hop_restore events with hops never takes a swap for a hop's restore.
-  void swap_restore(int rung, double now_ms);
+  // `last_feedback_ms` is the replaced controller's feedback stamp: a swap
+  // is no feedback gap, so the blind-side timeout keeps counting from the
+  // last real sample instead of firing on the next tick.
+  void swap_restore(int rung, double now_ms, double last_feedback_ms);
+  // Back to adaptive from a static pin: the same direct re-entry, logged
+  // as Unpin. The ladder got no update() while pinned, so the feedback
+  // stamp restarts at now_ms -- the pinned stretch is not a feedback gap.
+  void unpin_restore(int rung, double now_ms);
+  double last_feedback_ms() const { return last_feedback_ms_; }
 
   // Stop feeding the per-rung EWMA store (observe_s1/observe_evm/observe_s3/
   // observe_probe) until `until_ms`: an interferer's demoted operating point
