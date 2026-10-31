@@ -103,6 +103,19 @@ class VrxController {
   }
   void restore_rung(int rung, double now_ms);
   void blank_store(double until_ms) { ctrl_.blank_store(until_ms); }
+  // Static-link pin, live (config.link.static_*): mcs < 0 is adaptive
+  // (the ladder drives cur_op()), mcs >= 0 bypasses it with a fixed op.
+  // Takes effect on the next step(), exactly as the boot-time cfg does; on
+  // a change back to adaptive, sync_op_() so cur_op() reads the ladder's
+  // op before that next tick rather than the stale pinned value.
+  void set_pin(int mcs, int bw, double overhead_base, double overhead_enh) {
+    cfg_.pin_mcs = mcs;
+    cfg_.pin_bw = bw;
+    cfg_.pin_overhead_base = overhead_base;
+    cfg_.pin_overhead_enh = overhead_enh;
+    if (mcs < 0) sync_op_();
+  }
+  int pin_mcs() const { return cfg_.pin_mcs; }
   uint8_t hop_ch() const { return hop_ch_; }
   uint8_t hop_epoch() const { return hop_epoch_; }
 

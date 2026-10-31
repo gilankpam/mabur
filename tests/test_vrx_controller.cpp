@@ -825,3 +825,23 @@ TEST(rcf_carries_the_idr_epoch) {
   vrx.set_idr_epoch(0x2B);
   CHECK(first_rcf(vrx, healthy(), t).idr_epoch == 0x2B);
 }
+
+TEST(set_pin_takes_effect_on_the_next_rcf) {
+  auto vrx = make();                      // adaptive, ladder rung 0 = mcs0
+  link(vrx, 0);
+  vrx.set_pin(3, 20, 0.5, 0.25);
+  std::optional<VrxController::Out> out;
+  for (double t = 10; t < 2000 && !(out && !out->is_disc); t += 10) {
+    vrx.on_video(t);
+    out = vrx.step(t, healthy());
+  }
+  REQUIRE(out && !out->is_disc);
+  CHECK(vrx.cur_op().mcs == 3);
+  CHECK(vrx.cur_op().overhead_base == 0.5);
+  CHECK(vrx.cur_op().overhead_enh == 0.25);
+  CHECK(vrx.pin_mcs() == 3);
+  vrx.set_pin(-1, 20, 0.5, 0.5);          // back to adaptive: the ladder's rung 0
+  for (double t = 2000; t < 4000; t += 10) { vrx.on_video(t); vrx.step(t, healthy()); }
+  CHECK(vrx.pin_mcs() == -1);
+  CHECK(vrx.cur_op().mcs == vrx.ctl().op().mcs);
+}
