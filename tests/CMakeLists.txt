@@ -234,6 +234,10 @@ if(MABUR_BUILD_GS)
   target_compile_definitions(test_menu_layer PRIVATE
     GSFONT_SCALED="${GSFONT_SCALED}")
   add_mtest(test_gs_live_view test_gs_live_view.cpp LIBS mabur_player_core)
+  add_mtest(test_menu_tree test_menu_tree.cpp LIBS mabur_player_core pthread)
+  target_compile_definitions(test_menu_tree PRIVATE
+    MABUR_PLAY_BUNDLE_DIR="${CMAKE_SOURCE_DIR}/gs/player/bundle"
+    MABUR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
   add_mtest(test_live_udp_client test_live_udp_client.cpp LIBS mabur_player_core pthread)
   target_compile_definitions(test_live_udp_client PRIVATE
     MABUR_PLAY_BUNDLE_DIR="${CMAKE_SOURCE_DIR}/gs/player/bundle")
