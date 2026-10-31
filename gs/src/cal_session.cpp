@@ -142,6 +142,17 @@ void CalSession::on_mav(const cal::CalMsg& m, uint64_t now_ms) {
 
 std::optional<cal::CalMsg> CalSession::due_mav(uint64_t now_ms) {
   now_ms = advance(now_ms);
+  // Capacity frames handled since the last tick: the sweep was not quiet up
+  // to this tick. The tally's own clock is not enough -- it is built from
+  // the frames' receive stamps, and a core-loop pass that runs long puts
+  // its tick far past them while the rest of the drain still waits in the
+  // receive queue. due_mav is the caller's once-per-pass tick, after the
+  // pass has handled what it drained; on_mav and on_cal_frame carry
+  // receive stamps and never mark the sweep quiet.
+  if (cap_fresh_) {
+    last_cap_seen_ms_ = std::max(last_cap_seen_ms_, now_ms);
+    cap_fresh_ = false;
+  }
   step(now_ms);
   if (pending_abort_ && now_ms >= next_abort_ms_) {
     const cal::Abort a = *pending_abort_;
@@ -386,7 +397,8 @@ void CalSession::begin_sweep(size_t i, uint64_t now_ms) {
   }
   cap_ = {};
   cap_rssi_ = {};
-  last_cap_rx_ms_ = 0;
+  last_cap_seen_ms_ = 0;
+  cap_fresh_ = false;
   done_.reset();
   cell_i_ = 0;
   phase_start_ms_ = now_ms;
@@ -432,8 +444,10 @@ void CalSession::tally_capacity(int card, const cal::CalFrameInfo& f, int rssi_d
   cell_i_ = static_cast<uint32_t>(
                 std::bitset<8>(cmd_.mcs_mask & ((1u << f.rate) - 1u)).count()) +
             1;
-  // Any frame of the sweep, clean or not, says the air is still busy.
-  last_cap_rx_ms_ = std::max(last_cap_rx_ms_, rx_ms);
+  // Any frame of the sweep, clean or not, says the air is still busy: the
+  // sweep is not quiet until the next due_mav tick, and quiet from there.
+  last_cap_seen_ms_ = std::max(last_cap_seen_ms_, now_);
+  cap_fresh_ = true;
   if (!crc_ok) return;  // delivered air bits count clean frames only
   CapCell& c = cap_[f.rate];
   const size_t k = static_cast<size_t>(card);
@@ -452,7 +466,7 @@ void CalSession::tally_capacity(int card, const cal::CalFrameInfo& f, int rssi_d
 
 bool CalSession::tail_quiet(uint64_t now_ms) const {
   if (cmd_.kind != cal::Kind::Capacity) return true;
-  return now_ms >= last_cap_rx_ms_ + cfg_.tail_quiet_ms;
+  return !cap_fresh_ && now_ms >= last_cap_seen_ms_ + cfg_.tail_quiet_ms;
 }
 
 void CalSession::tally_verify(int card, const cal::CalFrameInfo& f, bool crc_ok) {

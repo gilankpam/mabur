@@ -160,7 +160,10 @@ CapResult analyze_capacity(const CapCell& c, uint8_t mcs, uint8_t bw,
   // after its blast returns, so the air was busy longer than the commanded
   // dwell. The bits after the first frame over first-to-last is the rate the
   // saturated air delivered; the first frame's bits were on the air before
-  // its stamp, so they fall outside the span.
+  // its stamp, so they fall outside the span. Only the first MPDU is left
+  // out, though the rest of the first A-MPDU (agg6: up to five more) aired
+  // before the stamp too -- an over-read of about 0.1-0.2 % of a 2 s point,
+  // well under the 0.01 rounding.
   const uint64_t span_ms =
       c.last_ms[bi] > c.first_ms[bi] ? c.last_ms[bi] - c.first_ms[bi] : 0;
   out.span_ms = static_cast<uint32_t>(std::min<uint64_t>(span_ms, UINT32_MAX));

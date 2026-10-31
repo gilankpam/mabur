@@ -463,6 +463,7 @@ TEST(capacity_sweep_yields_eff_and_zero_for_tx_bound) {
     for (int k = 0; k < 900; ++k)
       s.on_cal_frame(0, stamp(Kind::Capacity, r, 0, 20, cal::kFlagStbc, k), -60, true, kAir,
                      100);
+  s.due_mav(100);  // the core loop's tick after the pass that handled them
   cal::SweepDone d;
   d.nonce = 18;
   d.seq = 0;
@@ -540,6 +541,7 @@ TEST(capacity_eff_is_timed_by_the_frames_receive_stamps) {
     s.on_cal_frame(0, stamp(Kind::Capacity, 0, 0, 20, cal::kFlagStbc, k), -60, true, kCapAir,
                    rx);
   }
+  s.due_mav(2400);  // the core loop's tick after the pass that handled them
   s.on_mav(cap_done(40, 0, kCapFrames), 2800);
   const auto a = as<cal::ApplyCmd>(s.due_mav(2810));
   REQUIRE(a.has_value());
@@ -580,9 +582,60 @@ TEST(a_capacity_sweep_listens_through_the_drones_tx_queue_drain) {
                    rx);
   }
   REQUIRE(done_sent);
-  const uint64_t last = cap_rx_ms(100, kCapFrames - 1);
-  CHECK(!as<cal::ApplyCmd>(s.due_mav(last + cfg.tail_quiet_ms - 1)).has_value());
-  const auto a = as<cal::ApplyCmd>(s.due_mav(last + cfg.tail_quiet_ms));
+  // The tick after the pass that handled the last frame starts the quiet.
+  const uint64_t tick = cap_rx_ms(100, kCapFrames - 1) + 1;
+  CHECK(!as<cal::ApplyCmd>(s.due_mav(tick)).has_value());
+  CHECK(!as<cal::ApplyCmd>(s.due_mav(tick + cfg.tail_quiet_ms - 1)).has_value());
+  const auto a = as<cal::ApplyCmd>(s.due_mav(tick + cfg.tail_quiet_ms));
+  REQUIRE(a.has_value());
+  CHECK(a->eff_x1000[0] == 930);
+  log.flush();
+  std::string p_row;
+  for (const auto& l : cal_log_lines(dir))
+    if (l.rfind("P 0 ", 0) == 0) p_row = l;
+  CHECK(p_row == "P 0 1212 1212 13913760 930 90 0 2300");
+  CHECK(s.snapshot().stamp_mismatch == 0);
+}
+
+TEST(a_stalled_core_loop_cannot_fake_a_quiet_tail) {
+  // Quiet is measured in session time on the processing side: one core-loop
+  // pass running long puts the clock 80 ms past the last frame it handled
+  // while the drain's last frames still wait in the receive queue (with
+  // older stamps). That is no sweep frame having reached the session for
+  // 0 ms, not 80: the sweep stays open until 50 ms of session time pass
+  // with nothing tallied.
+  const std::string dir = fresh_dir("cal_session_stall");
+  CalLog log(dir);
+  log.header();
+  CalSessionCfg cfg;
+  CalSession s(cfg, &log);
+  s.set_peer(true, true);
+  std::string err;
+  REQUIRE(s.start(43, {{Kind::Capacity, 20}}, 0, &err));
+  REQUIRE(as<cal::SweepCmd>(s.due_mav(0)).has_value());
+  ack(s, 43, 0, 10, cal::kFlagStbc);
+  constexpr int kSplit = 1180;
+  for (int k = 0; k < kSplit; ++k) {
+    const uint64_t rx = cap_rx_ms(100, k);
+    s.due_mav(rx);
+    s.on_cal_frame(0, stamp(Kind::Capacity, 0, 0, 20, cal::kFlagStbc, k), -60, true, kCapAir,
+                   rx);
+  }
+  const uint64_t seen = cap_rx_ms(100, kSplit - 1);
+  s.on_mav(cap_done(43, 0, kCapFrames), seen);
+  // The long pass ends: its tick is 80 ms past the last frame it handled.
+  CHECK(!as<cal::ApplyCmd>(s.due_mav(seen + 80)).has_value());
+  // The next pass handles the queued tail, all stamped before that tick.
+  for (int k = kSplit; k < kCapFrames; ++k) {
+    const uint64_t rx = cap_rx_ms(100, k);
+    REQUIRE(rx < seen + 80);
+    s.on_cal_frame(0, stamp(Kind::Capacity, 0, 0, 20, cal::kFlagStbc, k), -60, true, kCapAir,
+                   rx);
+  }
+  const uint64_t tick = seen + 85;
+  CHECK(!as<cal::ApplyCmd>(s.due_mav(tick)).has_value());
+  CHECK(!as<cal::ApplyCmd>(s.due_mav(tick + cfg.tail_quiet_ms - 1)).has_value());
+  const auto a = as<cal::ApplyCmd>(s.due_mav(tick + cfg.tail_quiet_ms));
   REQUIRE(a.has_value());
   CHECK(a->eff_x1000[0] == 930);
   log.flush();
@@ -623,6 +676,7 @@ TEST(a_capacity_point_that_lost_over_half_its_frames_is_not_written) {
     for (int k = 0; k < got[r]; ++k)
       s.on_cal_frame(0, stamp(Kind::Capacity, r, 0, 20, cal::kFlagStbc, k), -60, true, kAir,
                      100);
+  s.due_mav(100);  // the core loop's tick after the pass that handled them
   cal::SweepDone d;
   d.nonce = 19;
   d.seq = 0;
@@ -651,6 +705,7 @@ TEST(a_capacity_sweep_that_lost_every_point_writes_nothing) {
   ack(s, 20, 0, 10, cal::kFlagStbc);
   for (int k = 0; k < 5; ++k)
     s.on_cal_frame(0, stamp(Kind::Capacity, 0, 0, 20, cal::kFlagStbc, k), -60, true, 1500, 100);
+  s.due_mav(100);  // the core loop's tick after the pass that handled them
   cal::SweepDone d;
   d.nonce = 20;
   d.seq = 0;
@@ -760,6 +815,7 @@ TEST(a_stale_applied_for_the_power_seq_does_not_satisfy_the_capacity_apply) {
   ack(s, 36, 1, t + 10);
   for (int k = 0; k < 100; ++k)
     s.on_cal_frame(0, stamp(Kind::Capacity, 0, 0, 20, kFlags, k), -60, true, 1500, t + 20);
+  s.due_mav(t + 20);  // the core loop's tick after the pass that handled them
   cal::SweepDone d;
   d.nonce = 36;
   d.seq = 1;
@@ -805,6 +861,7 @@ TEST(capacity_without_done_writes_no_eff) {
   ack(s, 19, 0, 10, cal::kFlagStbc);
   for (int k = 0; k < 900; ++k)
     s.on_cal_frame(0, stamp(Kind::Capacity, 0, 0, 20, cal::kFlagStbc, k), -60, true, 1500, 100);
+  s.due_mav(100);  // the core loop's tick after the pass that handled them
   const uint64_t close =
       10 + sweep_duration_ms(make_capacity_sweep(19, 0, 20)) + cfg.phase_slack_ms;
   for (uint64_t t = 200; t <= close + 2000; t += 100)
@@ -1083,6 +1140,7 @@ TEST(cal_log_gets_sweep_cell_wall_cap_verify_and_applied_rows) {
   ack(s, 77, 1, t + 10);
   for (int k = 0; k < 100; ++k)
     s.on_cal_frame(0, stamp(Kind::Capacity, 0, 0, 20, kFlags, k), -60, true, 1500, t + 20);
+  s.due_mav(t + 20);  // the core loop's tick after the pass that handled them
   cal::SweepDone d;
   d.nonce = 77;
   d.seq = 1;

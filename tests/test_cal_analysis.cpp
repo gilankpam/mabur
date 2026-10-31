@@ -239,20 +239,21 @@ TEST(a_short_span_falls_back_to_the_commanded_dwell_and_says_so) {
   CHECK((r.flags & kCalShortSpan) == 0);
   CHECK(r.eff == 1.0);  // 4999 * 11480 / (0.5 s * 39e6) clamps at 1.0
 
-  // 19 frames over a long span: too few to time. 19 * 11480 / (2 * 39e6)
-  // floors at 0.05.
+  // mcs0/HT20 (6.5 Mbps), a 500 ms span. 19 frames are too few to time:
+  // 19 * 11480 / (2 s * 6.5e6) = 0.017, floored at 0.05.
   c.frames = {19, 0};
   c.air_bits = {19 * kBits, 0};
-  c.last_ms = {3000, 0};
-  r = analyze_capacity(c, 4, 20, 2000, CalThresholds{});
+  r = analyze_capacity(c, 0, 20, 2000, CalThresholds{});
   CHECK((r.flags & kCalShortSpan) != 0);
   CHECK(r.eff == 0.05);
-  // 20 is enough: 19 * 11480 / (2 s * 39e6) = 0.0028 -> the 0.05 floor,
-  // timed over the span this time.
+  // 20 are enough, and the span is what times them: 19 * 11480 /
+  // (0.5 s * 6.5e6) = 0.067 -> 0.07, where the dwell would read 0.05.
   c.frames = {20, 0};
   c.air_bits = {20 * kBits, 0};
-  r = analyze_capacity(c, 4, 20, 2000, CalThresholds{});
+  r = analyze_capacity(c, 0, 20, 2000, CalThresholds{});
   CHECK((r.flags & kCalShortSpan) == 0);
+  CHECK(r.span_ms == 500);
+  CHECK(r.eff == 0.07);
 }
 
 TEST(best_card_is_the_one_with_more_bits) {

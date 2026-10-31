@@ -242,7 +242,8 @@ busy for longer than 2 s and delivered bits over the dwell read high
 saturated throughout. n frames span n − 1 inter-arrival gaps, so the
 first frame's bits — on the air before its stamp — are left out; A-MPDU
 bursts and USB receive batching blur either end by a few ms, under 0.5 %
-of a 2 s span. A best card that heard fewer than 20 clean frames, or over
+of a 2 s span (only the first MPDU of the first A-MPDU is left out, about
+0.1-0.2 % high). A best card that heard fewer than 20 clean frames, or over
 less than 500 ms, cannot be timed: its eff falls back to bits over the
 commanded dwell and the point is flagged `short_span` (written as usual;
 such a point is nearly always `lost` too).
@@ -250,8 +251,11 @@ such a point is nearly always `lost` too).
 The drone's SweepDone goes out on the control path the moment its last
 blast returns, ahead of the frames still queued behind it, so the GS
 does not close a capacity sweep at the SweepDone: it keeps tallying until
-the sweep's frames have been quiet for 50 ms (`tail_quiet_ms`), within the
-usual listen window. Closing at the SweepDone would drop the last point's
+no frame of the sweep has reached it for 50 ms (`tail_quiet_ms`) of its
+own processing time — measured from the core loop's tick after the pass
+that handled the last one, not from that frame's receive stamp, so a slow
+loop pass with the drain still queued behind it does not read as quiet —
+within the usual listen window. Closing at the SweepDone would drop the last point's
 tail — reading as loss on that point — and count whatever arrived after
 the next sweep began as `mismatch=`. A power sweep's frames are paced and
 leave no tail; it still closes at its SweepDone. A point whose
