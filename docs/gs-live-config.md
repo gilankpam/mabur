@@ -99,14 +99,14 @@ it belongs to whatever follows, not to the ladder.
 |---|---|---|---|
 | `screen_mode` | string (`"auto"`, `"WxH"` or `"WxH@R"`) | Presenter rebuild | Refused as `mode not offered: <mode>` before anything is torn down: a `WxH@R` the connector's current mode list does not carry, or a `WxH` it has no mode of at the camera's measured rate (at any rate while that is not measured yet). `"auto"` is never refused. `get` reads the configured value; the display following the camera (`docs/phase-lock.md` "Configuration") rebuilds in process and writes nothing. |
 | `colortrans.enable` | bool | Presenter rebuild | The LUT/CTM setters are call-once per presenter, so a toggle has to recreate it (`docs/colortrans.md`). |
-| `osd.enable` | bool | Presenter rebuild if it changes whether *any* OSD plane is wanted, else an in-place layer open/close | Switching an overlay on loads its font first; a missing font refuses the set before anything else changes. |
+| `osd.enable` | bool | Presenter rebuild if it changes whether *any* OSD plane is wanted, else an in-place layer open/close | Switching an overlay on loads its font first; a missing font refuses the set before anything else changes. With the settings menu's buttons wired the menu always wants the plane, so an overlay switch never rebuilds the presenter. |
 | `osd.gs.enable` | bool | same rule as `osd.enable` | |
 | `dvr.target` | string (`"gs"`/`"vtx"`/`"both"`) | read at the next recording's start | A target set while a recording is running is latched for the *next* recording; the GS bar's REC field, sized for the recording it shows, is re-laid out once the running one stops. |
 | `dvr.mode` | string (`"raw"`/`"burned"`) | read at the next recording's start | `"burned"` is refused on a build with no MPP hardware encoder (`unsupported_on_build`) — the Orange Pi image always refuses it, live exactly as at boot. |
 | `dvr.burned.bitrate_kbps` | int | read at the next recording's start | |
 | `dvr.burned.every` | int | read at the next recording's start | |
 | `dvr.burned.size` | string (`"WxH"` or `""` for the decoded size) | read at the next recording's start | |
-| `menu.show_advanced` | bool | taken onto the live config; no presenter rebuild, no recording touched | Decides whether the settings menu shows its advanced rows. |
+| `menu.show_advanced` | bool | taken onto the live config; the running settings menu shows or hides its advanced rows on its next tick; no presenter rebuild, no recording touched | Decides whether the settings menu shows its advanced rows. |
 
 A running recording keeps the plan (`RecPlan`: `gs`/`vtx`/`burned` and
 the `dvr.burned.*` size, cadence and bitrate) it was started with; a

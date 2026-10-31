@@ -163,10 +163,9 @@ MenuNode colour_row(const Deps& d) {
 
 // --- Link --------------------------------------------------------------
 
-// The rung Fixed pins: R3, or the top rung of a shorter ladder; with no
-// ladder read yet, the fixed pair as it stands.
+// The rung Fixed pins: R3, or the top rung of a shorter ladder. The
+// ladder must not be empty.
 Rung current_rung(const GsLiveView& gs) {
-  if (gs.ladder.empty()) return Rung{0, gs.static_bw, gs.static_base, gs.static_enh};
   return gs.ladder[std::min<size_t>(3, gs.ladder.size() - 1)];
 }
 
@@ -227,10 +226,13 @@ MenuNode rate_row(const Deps& d) {
     return std::vector<Choice>{{"adaptive", "Adaptive", "", true}, {"fixed", "Fixed MCS", "", true}};
   };
   n.current = [d] { return std::string(fixed(d) ? "fixed" : "adaptive"); };
+  n.value_text = [d] { return std::string(fixed(d) ? "Fixed MCS" : "Adaptive"); };
   // Fixed: the pair and width first -- they change nothing while
   // static_mcs is still -1 -- then static_mcs, so the link moves once.
+  // With no ladder read there is no rung to pin: nothing is sent.
   n.steps = [d](const std::string& v) {
     if (v != "fixed") return Steps{{Owner::kGs, "link.static_mcs", "-1"}};
+    if (d->gs->ladder.empty()) return Steps{};
     const Rung r = current_rung(*d->gs);
     return Steps{{Owner::kGs, "link.static_bw", std::to_string(r.bw)},
                  {Owner::kGs, "link.static_overhead_base", real_text(r.base)},
@@ -303,9 +305,12 @@ Rung rung_at(const Deps& d, size_t i) { return i < d->gs->ladder.size() ? d->gs-
 // The live key takes the whole ladder: every rung edit sends all of it.
 Steps ladder_set(std::vector<Rung> l) { return Steps{{Owner::kGs, "link.ladder", render_ladder_value(l)}}; }
 
+// Nothing when rung `i` is no longer there: the row was built for a
+// longer ladder than the one now read.
 Steps ladder_with(const Deps& d, size_t i, const std::function<void(Rung*)>& change) {
   std::vector<Rung> l = d->gs->ladder;
-  if (i < l.size()) change(&l[i]);
+  if (i >= l.size()) return Steps{};
+  change(&l[i]);
   return ladder_set(std::move(l));
 }
 
@@ -574,11 +579,49 @@ std::vector<MenuNode> sys_rows(const Deps& d) {
   return {adv, debug};
 }
 
+// --- Unread GS values ----------------------------------------------------
+
+// A GS row reads "—" until maburgs' first `get` lands: until then the view
+// holds GsLiveView's defaults, which are not maburgs' values. A row without
+// a value_text of its own gets the text the model would show for it.
+void dash_until_read(const Deps& d, MenuNode* n) {
+  if (n->kind == NodeKind::kGroup) {
+    n->group_value = [d, gv = n->group_value] {
+      return d->gs->have ? (gv ? gv() : std::string()) : std::string("—");
+    };
+    return;
+  }
+  std::function<std::string()> shown = n->value_text;
+  if (!shown && n->kind == NodeKind::kChoice && n->choices && n->current) {
+    shown = [choices = n->choices, current = n->current] {
+      const std::string cur = current();
+      for (const Choice& c : choices())
+        if (c.value == cur) return c.label;
+      return cur;
+    };
+  }
+  if (!shown && n->kind == NodeKind::kNumber && n->number.get && n->number.fmt)
+    shown = [s = n->number] { return s.fmt(s.get()); };
+  if (!shown) return;
+  n->value_text = [d, shown] { return d->gs->have ? shown() : std::string("—"); };
+}
+
+// Applies dash_until_read to every GS value row under `rows`, at any depth.
+std::vector<MenuNode> guarded(const Deps& d, std::vector<MenuNode> rows) {
+  for (MenuNode& n : rows) {
+    if (n.kind == NodeKind::kGroup && n.children)
+      n.children = [d, kids = n.children] { return guarded(d, kids()); };
+    if (n.owner == Owner::kGs && n.kind != NodeKind::kAction && n.kind != NodeKind::kInfo)
+      dash_until_read(d, &n);
+  }
+  return rows;
+}
+
 }  // namespace
 
 std::vector<MenuNode> build_menu_tree(const MenuTreeDeps& deps) {
   const Deps d = std::make_shared<const MenuTreeDeps>(deps);
-  return {
+  return guarded(d, {
       group("video", "Video", "Camera, display and picture.",
             [d] { return std::vector<MenuNode>{display_row(d), colour_row(d)}; }),
       group("link", "Link", "How the video crosses the air.",
@@ -592,7 +635,7 @@ std::vector<MenuNode> build_menu_tree(const MenuTreeDeps& deps) {
       group("rec", "Recording", "What REC records, and where.", [d] { return rec_rows(d); }),
       group("osd", "OSD", "What is drawn over the video.", [d] { return osd_rows(d); }),
       group("sys", "System", "GS housekeeping.", [d] { return sys_rows(d); }),
-  };
+  });
 }
 
 }  // namespace maburplay

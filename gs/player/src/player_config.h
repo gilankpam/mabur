@@ -167,7 +167,8 @@ struct DecoderCfg {
 
 // [menu]. show_advanced decides whether the settings menu shows its
 // advanced rows (the ones menu_model.h's MenuModel hides behind
-// MenuNode::advanced) rather than resetting to hidden every boot.
+// MenuNode::advanced) rather than resetting to hidden every boot. A live
+// set reaches the running menu on its next tick.
 struct MenuCfg {
   bool show_advanced = false;
 };

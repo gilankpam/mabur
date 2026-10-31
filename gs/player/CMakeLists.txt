@@ -6,6 +6,7 @@ add_library(mabur_player_core STATIC
   src/button_bank.cpp
   src/menu_model.cpp
   src/menu_apply.cpp
+  src/menu_session.cpp
   src/menu_layer.cpp
   src/menu_tree.cpp
   src/gs_live_view.cpp

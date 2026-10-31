@@ -6,6 +6,8 @@
 // MenuModel rebuilds it on every call anyway. A row's sets are the TOML
 // text its live key takes (docs/gs-live-config.md): Owner::kPlayer steps go
 // to maburplay's own setter, Owner::kGs steps to maburgs' (8402).
+// maburgs' rows read "—" until GsLiveView::have: the view's defaults are not
+// maburgs' values.
 #include <functional>
 #include <string>
 #include <vector>

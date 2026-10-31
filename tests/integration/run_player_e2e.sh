@@ -400,6 +400,9 @@ enable = false
 [osd.gs]
 enable = false
 font = "$TMP/no-such.gfont"
+
+[menu]
+show_advanced = false
 EOF
 "$MABURPLAY" -c "$TMP/live.toml" > "$TMP/live.out" 2> "$TMP/live.err" &
 LIVE=$!
@@ -469,6 +472,8 @@ else
   [ "$(sha256sum "$TMP/live.toml" | cut -d' ' -f1)" = "$BEFORE_SHA" ] ||
     fail_live "a refused set changed the file"
   expect_reply 'get osd.gs.enable' 'ok false'
+  expect_reply 'set menu.show_advanced = true' 'ok'
+  expect_reply 'get menu.show_advanced' 'ok true'
   grep -q '^maburplay: cfg set dvr.target = "both" -> ok (' "$TMP/live.err" ||
     fail_live "no cfg set log line"
 fi
@@ -486,5 +491,8 @@ grep -q '^maburplay: shutdown: stream idle' "$TMP/live.err" || {
 grep -q '^maburplay: feed thread on' "$TMP/live.err" || { echo "FAIL: no feed thread" >&2; exit 1; }
 grep -q '^maburplay: feed: delivered=13 ' "$TMP/live.err" || {
   echo "FAIL: the feed thread did not read the 13 retained AUs" >&2; exit 1; }
+# No [input.<button>] tables on the host: the menu is off, said once.
+[ "$(grep -c '^maburplay: menu: off -- ' "$TMP/live.err")" = 1 ] || {
+  echo "FAIL: want exactly one 'maburplay: menu: off --' line" >&2; exit 1; }
 
 echo "== player_e2e passed =="

@@ -3,6 +3,8 @@
 // values a row sends are pinned through the daemons' own setters too, so a
 // row cannot send text the live key would refuse.
 #include <chrono>
+#include <cmath>
+#include <cstdio>
 #include <fstream>
 #include <optional>
 #include <sstream>
@@ -480,6 +482,122 @@ TEST(the_string_values_pass_maburplays_setter) {
   CHECK(c.dvr.target == "both");
   CHECK(set(f.node("rec.burn.size").steps("").at(0)));
   CHECK(maburplay::load_config(d.file).dvr.burned.size_w == 0);
+}
+
+// Until maburgs' first `get` lands the view holds GsLiveView's defaults,
+// not maburgs' values: every GS row reads "—" rather than present them.
+TEST(gs_rows_read_a_dash_until_the_first_get_lands) {
+  Fx f;
+  f.gs = GsLiveView{};
+  REQUIRE(!f.gs.have);
+  for (const char* id : {"link.width", "link.rate", "link.nack", "osd.fc", "sys.debug"})
+    CHECK(f.node(id).value_text() == "—");
+  CHECK(f.node("link.ladder").group_value() == "—");
+  // The player's own rows read the player's config regardless.
+  CHECK(f.node("video.colour").value_text == nullptr ||
+        f.node("video.colour").value_text() != "—");
+  CHECK(f.node("sys.adv").value_text == nullptr);
+  f.gs = bundle_gs();
+  CHECK(f.node("link.width").value_text() == "40 MHz");
+  CHECK(f.node("link.rate").value_text() == "Adaptive");
+  CHECK(f.node("link.nack").value_text() == (f.gs.nack ? "On" : "Off"));
+  CHECK(f.node("sys.debug").value_text() == (f.gs.debug_log ? "On" : "Off"));
+  CHECK(f.node("link.ladder").group_value() == "5 rungs");
+  f.gs.static_mcs = 3;
+  CHECK(f.node("link.mcs").value_text() == "MCS3");
+  CHECK(f.node("link.fec_base").value_text() == "0.50");
+  f.gs.have = false;
+  CHECK(f.node("link.mcs").value_text() == "—");
+  CHECK(f.node("link.fec_enh").value_text() == "—");
+}
+
+// No ladder to read a rung from, or a row built for a rung the ladder has
+// since lost: nothing is sent rather than a guess.
+TEST(rate_fixed_and_rung_edits_send_nothing_without_their_rung) {
+  Fx f;
+  const MenuNode mcs = f.node("link.ladder.r4.mcs");
+  const MenuNode bw = f.node("link.ladder.r4.bw");
+  const MenuNode base = f.node("link.ladder.r4.base");
+  const MenuNode enh = f.node("link.ladder.r4.enh");
+  f.gs.ladder.resize(3);   // shrunk under rows built for five rungs
+  CHECK(mcs.steps("2").empty());
+  CHECK(bw.steps("20").empty());
+  CHECK(base.steps("1").empty());
+  CHECK(enh.steps("0.3").empty());
+  CHECK(!f.node("link.rate").steps("fixed").empty());
+  f.gs.ladder.clear();
+  CHECK(f.node("link.rate").steps("fixed").empty());
+  CHECK((f.node("link.rate").steps("adaptive") ==
+         std::vector<SetStep>{{Owner::kGs, "link.static_mcs", "-1"}}));
+}
+
+namespace {
+
+// Every node under `nodes`, hidden or not, with each group's children
+// read under the current deps.
+void walk(const std::vector<MenuNode>& nodes, std::vector<MenuNode>* out) {
+  for (const MenuNode& n : nodes) {
+    out->push_back(n);
+    if (n.kind == NodeKind::kGroup && n.children) walk(n.children(), out);
+  }
+}
+
+// The values a row can send: each choice, and for a number its min, max and
+// a mid-range point on its step grid.
+std::vector<std::string> sample_values(const MenuNode& n) {
+  std::vector<std::string> v;
+  if (n.kind == NodeKind::kChoice && n.choices)
+    for (const Choice& c : n.choices()) v.push_back(c.value);
+  if (n.kind == NodeKind::kNumber) {
+    const double steps = std::floor((n.number.max - n.number.min) / n.number.step / 2);
+    for (double x : {n.number.min, n.number.max, n.number.min + steps * n.number.step}) {
+      char buf[32];
+      std::snprintf(buf, sizeof buf, "%g", x);
+      v.push_back(buf);
+    }
+  }
+  return v;
+}
+
+}  // namespace
+
+// Every key any row can send is a live key of the daemon its step names: a
+// typo in a row is a test failure here, not a refused set on the goggles.
+TEST(every_step_key_is_a_live_key_of_its_owner) {
+  Fx f;
+  f.cfg.menu.show_advanced = true;
+  f.cfg.dvr.target = "both";
+  f.cfg.dvr.mode = "burned";
+  f.modes = kAvatar;
+  f.cam = 100;
+  f.running = "1920x1080@100.000";
+  int checked = 0;
+  auto check_steps = [&](const std::vector<SetStep>& steps) {
+    for (const SetStep& s : steps) {
+      ++checked;
+      if (s.owner == Owner::kGs) {
+        if (!maburgs::gs_live_key(s.key)) std::printf("not a maburgs live key: %s\n", s.key.c_str());
+        CHECK(maburgs::gs_live_key(s.key) != nullptr);
+      } else {
+        CHECK(s.owner == Owner::kPlayer);
+        if (!maburplay::player_live_key(s.key))
+          std::printf("not a maburplay live key: %s\n", s.key.c_str());
+        CHECK(maburplay::player_live_key(s.key) != nullptr);
+      }
+    }
+  };
+  // Adaptive (the ladder and its rungs) and Fixed (the fixed sub-rows).
+  for (int static_mcs : {-1, 3}) {
+    f.gs.static_mcs = static_mcs;
+    std::vector<MenuNode> all;
+    walk(f.tree(), &all);
+    for (const MenuNode& n : all) {
+      if (n.steps)
+        for (const std::string& v : sample_values(n)) check_steps(n.steps(v));
+      if (n.action) check_steps(n.action());
+    }
+  }
+  CHECK(checked > 40);
 }
 
 MTEST_MAIN

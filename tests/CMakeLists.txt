@@ -229,6 +229,7 @@ if(MABUR_BUILD_GS)
   add_mtest(test_key_timer test_key_timer.cpp LIBS mabur_player_core)
   add_mtest(test_menu_model test_menu_model.cpp LIBS mabur_player_core)
   add_mtest(test_menu_apply test_menu_apply.cpp LIBS mabur_player_core)
+  add_mtest(test_menu_session test_menu_session.cpp LIBS mabur_player_core)
   add_mtest(test_menu_layer test_menu_layer.cpp LIBS mabur_player_core)
   add_dependencies(test_menu_layer gsfont_fixtures)
   target_compile_definitions(test_menu_layer PRIVATE
