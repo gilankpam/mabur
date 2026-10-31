@@ -85,15 +85,14 @@ DEFAULT_SIZES = [19, 21, 22, 24, 26, 34, 38, 56]
 # and the row warning triangle. test_gs_asset checks the shipped asset has
 # every one of these too.
 #
-# U+00D7, U+2026 and U+2260 are not drawn by any committed menu string yet
-# -- they are baked ahead of the later tasks that need them (the Display
-# row's "1920×1080 @ 100 Hz" and its resolution picker, the burned-recording
-# Size row's "1920×1080" choices, row truncation, and the Display row's
-# "≠ camera" warning) so those tasks needn't regenerate this ~15 MB asset
-# on their own.
+# U+00D7 and U+2260 are drawn by the settings menu: × by size_label()
+# ("1920×1080 @ 100 Hz" on the Display row's resolution picker, and the
+# burned-recording Size row's own "1920×1080" choices), ≠ by the Display
+# row's "≠ camera" warning. U+2026 has no committed menu string yet; it
+# stays reserved for row truncation.
 MENU_GLYPHS = [
     0x00B7,  # ·  MIDDLE DOT, picker separator
-    0x00D7,  # ×  MULTIPLICATION SIGN, resolution "WxH" (reserved for a later task)
+    0x00D7,  # ×  MULTIPLICATION SIGN, resolution "WxH" (size_label(): Display, rec.burn.size)
     0x2013,  # –  EN DASH, number-range dash
     0x203A,  # ›  SINGLE RIGHT-POINTING ANGLE QUOTATION MARK, breadcrumb separator
     0x25B2,  # ▲  BLACK UP-POINTING TRIANGLE, picker up
@@ -104,8 +103,8 @@ MENU_GLYPHS = [
     0x26A0,  # ⚠  WARNING SIGN, row warning
     0x2713,  # ✓  CHECK MARK, saved/confirmed
     0x2717,  # ✗  BALLOT X, failed
-    0x2026,  # …  HORIZONTAL ELLIPSIS, reserved for a later task
-    0x2260,  # ≠  NOT EQUAL TO, reserved for a later task
+    0x2026,  # …  HORIZONTAL ELLIPSIS, reserved for row truncation
+    0x2260,  # ≠  NOT EQUAL TO, Display row's "≠ camera" warning
 ]
 
 # BAR_ICONS are the compact bar's item icons (gs_compact.h, namespace

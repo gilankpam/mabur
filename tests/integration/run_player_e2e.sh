@@ -594,11 +594,11 @@ set +e; wait "$DEBUG_PID"; RC_DEBUG=$?; set -e
 cat "$TMP/debug.err"
 [ "$RC_DEBUG" = 0 ] || { echo "FAIL: debug run exit $RC_DEBUG after SIGTERM (want 0)" >&2; exit 1; }
 
-# --- PART G: MABUR_MENU_DEBUG with the menu off (fix round 1) ---------
-# The exact scenario a review caught: MABUR_MENU_DEBUG=1 set, but the menu
-# itself off because its font failed to load (live.toml's trick font,
-# reused here). "key"/"view" must answer "err menu off", not queue a key
-# behind a lying "ok" or dump a view nothing drives.
+# --- PART G: MABUR_MENU_DEBUG with the menu off -----------------------
+# MABUR_MENU_DEBUG=1 set, but the menu itself off because its font failed
+# to load (live.toml's trick font, reused here). "key"/"view" must answer
+# "err menu off", not queue a key behind a lying "ok" or dump a view
+# nothing drives.
 echo "== PART G: MABUR_MENU_DEBUG with the menu off =="
 cat > "$TMP/debug2.toml" <<EOF
 ring_path = "$TMP/au-ring"

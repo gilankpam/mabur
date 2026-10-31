@@ -63,7 +63,7 @@ enum class LadderWidth { k20, k40, kMixed };
 // (including an empty ladder, which has no bandwidth to agree on).
 LadderWidth ladder_width(const std::vector<Rung>& l);
 
-// The bundle's two width ladders (Global Constraints): 40 -> MCS 0,1,2,3,4
+// The two default width ladders the Width row loads: 40 -> MCS 0,1,2,3,4
 // at 0.50/0.25, all bw 40; anything else -> MCS 0,2,4,5 at 0.50/0.25, all
 // bw 20.
 const std::vector<Rung>& default_ladder(int bw);

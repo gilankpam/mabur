@@ -198,7 +198,7 @@ TEST(asset_carries_every_menu_glyph_at_every_size) {
   REQUIRE(f.ok());
   const uint32_t cps[] = {
       0x00B7,  // ·  picker separator
-      0x00D7,  // ×  (reserved for a later task's "WxH" resolution strings)
+      0x00D7,  // ×  "WxH" resolution strings (size_label(): Display, rec.burn.size)
       0x2013,  // –  number-range dash
       0x203A,  // ›  breadcrumb separator
       0x25B2,  // ▲  picker up
@@ -209,8 +209,8 @@ TEST(asset_carries_every_menu_glyph_at_every_size) {
       0x26A0,  // ⚠  row warning
       0x2713,  // ✓  saved/confirmed
       0x2717,  // ✗  failed
-      0x2026,  // …  (reserved for a later task's truncation)
-      0x2260,  // ≠  (reserved for a later task's "≠ camera" warning)
+      0x2026,  // …  reserved for row truncation (no menu string draws it yet)
+      0x2260,  // ≠  Display row's "≠ camera" warning
   };
   for (int px : scaled_sizes()) {
     const MaskAtlas* a = f.atlas(px);
