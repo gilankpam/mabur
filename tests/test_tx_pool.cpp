@@ -103,4 +103,31 @@ TEST(pool_submit_after_stop_returns_false) {
   CHECK(!pool.submit(frame, sizeof frame));
 }
 
+// space_wait_us() counts only the time a submitter spent waiting for queue
+// space: zero while the senders keep up, real time once they don't.
+TEST(space_wait_counts_only_backpressure) {
+  {
+    UsbTxPool pool([](const std::vector<std::vector<uint8_t>>& b) { return b.size(); }, 2, 64);
+    uint8_t frame[16] = {0};
+    for (int i = 0; i < 10; ++i) CHECK(pool.submit(frame, sizeof frame));
+    CHECK(pool.space_wait_us() == 0);
+    pool.stop();
+  }
+  {
+    UsbTxPool pool(
+        [](const std::vector<std::vector<uint8_t>>& b) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(2));
+          return b.size();
+        },
+        1, 3);
+    uint8_t frame[16] = {0};
+    UsbTxPool::Frame g[3] = {{frame, 16}, {frame, 16}, {frame, 16}};
+    // 30 frames through one 2 ms-per-batch sender behind a 3-frame queue:
+    // ~9 batches of waiting, so well over 10 ms blocked.
+    for (int i = 0; i < 10; ++i) CHECK(pool.submit_many(g, 3) == 3);
+    CHECK(pool.space_wait_us() >= 10000);
+    pool.stop();
+  }
+}
+
 MTEST_MAIN

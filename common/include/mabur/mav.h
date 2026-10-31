@@ -2,9 +2,10 @@
 
 // The one include every mabur translation unit uses for MAVLink. The
 // vendored tree under third_party/mavlink/ (see its VERSION file for the
-// upstream commit) is c_library_v2: generated headers whose pack/parse
-// helpers are `static inline` with per-channel state held in function-local
-// statics, keyed by channel index. That state is per translation unit, not
+// pymavlink version and the regenerate command) is mavgen's C output:
+// generated headers whose pack/parse helpers are `static inline` with
+// per-channel state held in function-local statics, keyed by channel
+// index. That state is per translation unit, not
 // per process, so a process that calls these helpers from more than one TU
 // gets a separate copy of the channel state in each TU and parsing breaks
 // across the split. Every process that speaks MAVLink therefore keeps ALL
@@ -24,6 +25,14 @@
 // channel state to carry a parse across calls. Neither shares the other's
 // channel state.
 //
+// common/src/cal_mav.cpp is a further such TU: it is the only place that
+// calls the calibration dialect's mavlink_msg_mabur_cal_*_pack_chan
+// helpers, so the per-channel tx sequence counter those keep lives here
+// and nowhere else. It never parses on a channel index -- all_packets_are_cal
+// and decode_all split a byte buffer with mavlink_frame_char_buffer over
+// fresh local state, the same stateless pattern param_client.cpp uses -- so it carries
+// no per-channel parse state for a caller elsewhere to collide with.
+//
 // The vendored headers are MIT-licensed generated output (see
 // third_party/mavlink/LICENSE).
 
@@ -37,7 +46,9 @@
 #pragma GCC diagnostic ignored "-Waddress-of-packed-member"
 #endif
 
-#include <mavlink/common/mavlink.h>
+// The mabur dialect is a superset of common: every common message still
+// packs and decodes, plus the calibration messages (60000-60005).
+#include <mavlink/mabur/mavlink.h>
 
 #if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic pop

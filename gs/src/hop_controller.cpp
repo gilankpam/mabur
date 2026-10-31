@@ -324,6 +324,13 @@ bool HopController::is_backed_off(uint8_t ch, double now) const {
   return it != backoff_.end() && it->second.until_ms > now;
 }
 
+bool HopController::hop_cap_reached(double now_ms) const {
+  int n = 0;
+  for (double t : hop_times_)
+    if (now_ms - t <= 60000.0) ++n;
+  return n >= cfg_.max_hops_per_min;
+}
+
 void HopController::prune_hop_times(double now) {
   while (!hop_times_.empty() && now - hop_times_.front() > 60000.0) hop_times_.pop_front();
 }

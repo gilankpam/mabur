@@ -101,13 +101,13 @@ class CalMoveEdgeHold {
   bool held_ = false;
 };
 
-// Pure: whether a due T_CAL_CMD may go out this tick. `radio_silent` is
-// CalSession::radio_silent() (a sweep phase is airing). `dwell_busy` is the
+// Pure: whether a due calibration SweepCmd may go out this tick. `radio_silent` is
+// CalSession::radio_silent() (a sweep is airing). `dwell_busy` is the
 // in-flight scout's flag: the scout idles while CalSession::running(), but
 // it only checks that once per dwell_period_ms, so a dwell begun just
 // before `maburcal start` is still off-channel for up to dwell_ms (250 ms)
-// after it -- against a settle of 30 ms and 20-frame coarse cells, that
-// card misses the first row's opening cells. Holding the command until the
+// after it -- against a sweep's few-millisecond settle and 20-frame cells,
+// that card misses the first row's opening cells. Holding the command until the
 // card is back costs at most one dwell out of the 3 s ack timeout. Once the
 // run is going no new dwell starts, so the hold only ever bites at start.
 inline bool cal_cmd_clear(bool radio_silent, bool dwell_busy) {

@@ -1,8 +1,6 @@
 #pragma once
 // MESSAGE CAMERA_THERMAL_RANGE PACKING
 
-#include <stdint.h>
-
 #define MAVLINK_MSG_ID_CAMERA_THERMAL_RANGE 277
 
 
@@ -78,7 +76,7 @@ typedef struct __mavlink_camera_thermal_range_t {
  * @param min_point_y  Temperature min point y value (normalized 0..1, 0 is top, 1 is bottom), NAN if unknown.
  * @return length of the message in bytes (excluding serial stream start sign)
  */
-static inline uint16_t mavlink_msg_camera_thermal_range_pack(uint32_t system_id, uint8_t component_id, mavlink_message_t* msg,
+static inline uint16_t mavlink_msg_camera_thermal_range_pack(uint8_t system_id, uint8_t component_id, mavlink_message_t* msg,
                                uint32_t time_boot_ms, uint8_t stream_id, uint8_t camera_device_id, float max, float max_point_x, float max_point_y, float min, float min_point_x, float min_point_y)
 {
 #if MAVLINK_NEED_BYTE_SWAP || !MAVLINK_ALIGNED_FIELDS
@@ -131,7 +129,7 @@ static inline uint16_t mavlink_msg_camera_thermal_range_pack(uint32_t system_id,
  * @param min_point_y  Temperature min point y value (normalized 0..1, 0 is top, 1 is bottom), NAN if unknown.
  * @return length of the message in bytes (excluding serial stream start sign)
  */
-static inline uint16_t mavlink_msg_camera_thermal_range_pack_status(uint32_t system_id, uint8_t component_id, mavlink_status_t *_status, mavlink_message_t* msg,
+static inline uint16_t mavlink_msg_camera_thermal_range_pack_status(uint8_t system_id, uint8_t component_id, mavlink_status_t *_status, mavlink_message_t* msg,
                                uint32_t time_boot_ms, uint8_t stream_id, uint8_t camera_device_id, float max, float max_point_x, float max_point_y, float min, float min_point_x, float min_point_y)
 {
 #if MAVLINK_NEED_BYTE_SWAP || !MAVLINK_ALIGNED_FIELDS
@@ -166,7 +164,7 @@ static inline uint16_t mavlink_msg_camera_thermal_range_pack_status(uint32_t sys
 #if MAVLINK_CRC_EXTRA
     return mavlink_finalize_message_buffer(msg, system_id, component_id, _status, MAVLINK_MSG_ID_CAMERA_THERMAL_RANGE_MIN_LEN, MAVLINK_MSG_ID_CAMERA_THERMAL_RANGE_LEN, MAVLINK_MSG_ID_CAMERA_THERMAL_RANGE_CRC);
 #else
-    return mavlink_finalize_message_buffer(msg, system_id, component_id, _status, MAVLINK_MSG_ID_CAMERA_THERMAL_RANGE_MIN_LEN, MAVLINK_MSG_ID_CAMERA_THERMAL_RANGE_LEN, 0);
+    return mavlink_finalize_message_buffer(msg, system_id, component_id, _status, MAVLINK_MSG_ID_CAMERA_THERMAL_RANGE_MIN_LEN, MAVLINK_MSG_ID_CAMERA_THERMAL_RANGE_LEN);
 #endif
 }
 
@@ -187,7 +185,7 @@ static inline uint16_t mavlink_msg_camera_thermal_range_pack_status(uint32_t sys
  * @param min_point_y  Temperature min point y value (normalized 0..1, 0 is top, 1 is bottom), NAN if unknown.
  * @return length of the message in bytes (excluding serial stream start sign)
  */
-static inline uint16_t mavlink_msg_camera_thermal_range_pack_chan(uint32_t system_id, uint8_t component_id, uint8_t chan,
+static inline uint16_t mavlink_msg_camera_thermal_range_pack_chan(uint8_t system_id, uint8_t component_id, uint8_t chan,
                                mavlink_message_t* msg,
                                    uint32_t time_boot_ms,uint8_t stream_id,uint8_t camera_device_id,float max,float max_point_x,float max_point_y,float min,float min_point_x,float min_point_y)
 {
@@ -231,7 +229,7 @@ static inline uint16_t mavlink_msg_camera_thermal_range_pack_chan(uint32_t syste
  * @param msg The MAVLink message to compress the data into
  * @param camera_thermal_range C-struct to read the message contents from
  */
-static inline uint16_t mavlink_msg_camera_thermal_range_encode(uint32_t system_id, uint8_t component_id, mavlink_message_t* msg, const mavlink_camera_thermal_range_t* camera_thermal_range)
+static inline uint16_t mavlink_msg_camera_thermal_range_encode(uint8_t system_id, uint8_t component_id, mavlink_message_t* msg, const mavlink_camera_thermal_range_t* camera_thermal_range)
 {
     return mavlink_msg_camera_thermal_range_pack(system_id, component_id, msg, camera_thermal_range->time_boot_ms, camera_thermal_range->stream_id, camera_thermal_range->camera_device_id, camera_thermal_range->max, camera_thermal_range->max_point_x, camera_thermal_range->max_point_y, camera_thermal_range->min, camera_thermal_range->min_point_x, camera_thermal_range->min_point_y);
 }
@@ -245,7 +243,7 @@ static inline uint16_t mavlink_msg_camera_thermal_range_encode(uint32_t system_i
  * @param msg The MAVLink message to compress the data into
  * @param camera_thermal_range C-struct to read the message contents from
  */
-static inline uint16_t mavlink_msg_camera_thermal_range_encode_chan(uint32_t system_id, uint8_t component_id, uint8_t chan, mavlink_message_t* msg, const mavlink_camera_thermal_range_t* camera_thermal_range)
+static inline uint16_t mavlink_msg_camera_thermal_range_encode_chan(uint8_t system_id, uint8_t component_id, uint8_t chan, mavlink_message_t* msg, const mavlink_camera_thermal_range_t* camera_thermal_range)
 {
     return mavlink_msg_camera_thermal_range_pack_chan(system_id, component_id, chan, msg, camera_thermal_range->time_boot_ms, camera_thermal_range->stream_id, camera_thermal_range->camera_device_id, camera_thermal_range->max, camera_thermal_range->max_point_x, camera_thermal_range->max_point_y, camera_thermal_range->min, camera_thermal_range->min_point_x, camera_thermal_range->min_point_y);
 }
@@ -259,7 +257,7 @@ static inline uint16_t mavlink_msg_camera_thermal_range_encode_chan(uint32_t sys
  * @param msg The MAVLink message to compress the data into
  * @param camera_thermal_range C-struct to read the message contents from
  */
-static inline uint16_t mavlink_msg_camera_thermal_range_encode_status(uint32_t system_id, uint8_t component_id, mavlink_status_t* _status, mavlink_message_t* msg, const mavlink_camera_thermal_range_t* camera_thermal_range)
+static inline uint16_t mavlink_msg_camera_thermal_range_encode_status(uint8_t system_id, uint8_t component_id, mavlink_status_t* _status, mavlink_message_t* msg, const mavlink_camera_thermal_range_t* camera_thermal_range)
 {
     return mavlink_msg_camera_thermal_range_pack_status(system_id, component_id, _status, msg,  camera_thermal_range->time_boot_ms, camera_thermal_range->stream_id, camera_thermal_range->camera_device_id, camera_thermal_range->max, camera_thermal_range->max_point_x, camera_thermal_range->max_point_y, camera_thermal_range->min, camera_thermal_range->min_point_x, camera_thermal_range->min_point_y);
 }
@@ -483,5 +481,4 @@ static inline void mavlink_msg_camera_thermal_range_decode(const mavlink_message
         memset(camera_thermal_range, 0, MAVLINK_MSG_ID_CAMERA_THERMAL_RANGE_LEN);
     memcpy(camera_thermal_range, _MAV_PAYLOAD(msg), len);
 #endif
-
 }

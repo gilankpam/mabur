@@ -5,6 +5,7 @@ The reader is the in-repo consumer the compatibility policy requires: the
 cal.log schema may change freely, but this must change with it in the same
 commit.
 """
+import argparse
 import importlib.machinery
 import importlib.util
 import pathlib
@@ -45,6 +46,60 @@ V 0 59 100
 V 3 38 99
 V 5 -5 97
 """
+
+# Two widths: 20 MHz sweeps all four rows plus a capacity point on mcs3;
+# 40 MHz only re-sweeps mcs0/mcs3 (mcs5/mcs7 keep whatever the drone already
+# has for that width -- callog 4 carries no record of that), and its mcs3
+# capacity point is tx_bound. Both widths' applies succeed.
+GOOD4 = """callog 4
+R 42 1.00 149 auto 1
+S 0 power 20 20
+W 0 63 -40 0 1
+W 3 42 -40 0 0
+W 5 -1 -40 0 0
+W 7 -128 -128 -1 2
+S 1 power 20 100
+V 0 59 100
+V 3 38 99
+V 5 -5 97
+S 2 capacity 20 2000
+P 3 4000 3950 58000000 730 72 0
+S 3 power 40 20
+W 0 60 -42 0 1
+W 3 40 -42 0 0
+S 4 power 40 100
+V 0 56 98
+V 3 36 95
+S 5 capacity 40 2000
+P 3 4000 2000 30000000 500 20 64
+A 20 1 ok
+A 40 1 ok
+"""
+
+# A GS that only flies 20 MHz: no S row ever names 40, so there is nothing
+# to render a second block from.
+GOOD4_20ONLY = """callog 4
+R 42 1.00 149 auto 1
+S 0 power 20 20
+W 0 63 -40 0 1
+W 3 42 -40 0 0
+S 1 power 20 100
+V 0 59 100
+V 3 38 99
+S 2 capacity 20 2000
+P 3 4000 3950 58000000 730 72 0
+A 20 1 ok
+"""
+
+
+# callog 5: GOOD4's run with each P row's trailing receive span; the 20 MHz
+# point was timed over 2287 ms, the 40 MHz one too short to time
+# (short_span, eff over the commanded dwell).
+GOOD5 = (GOOD4.replace("callog 4", "callog 5", 1)
+         .replace("P 3 4000 3950 58000000 730 72 0\n",
+                  "P 3 4000 3950 58000000 730 72 0 2287\n")
+         .replace("P 3 4000 2000 30000000 500 20 64\n",
+                  "P 3 4000 2000 30000000 500 20 576 140\n"))
 
 
 def render(text):
@@ -149,11 +204,11 @@ class TestReport(unittest.TestCase):
         self.assertIn("not written", out)
 
     def test_all_zero_verify_rows_report_not_written(self):
-        # due_result() opens the GS's own verify window optimistically (no
-        # ack for T_CAL_RESULT), so a lost result frame or a refused apply
-        # still produces a full set of V rows -- every one of them 0%
-        # (gs/src/cal_session.cpp). A row's mere presence must never be
-        # read as evidence of an apply; only a nonzero delivery is.
+        # The kit that wrote callog 1-3 opened the GS's verify window
+        # optimistically, with no ack for its result frame, so a lost result
+        # or a refused apply still produced a full set of V rows -- every one
+        # of them 0%. In those files a row's mere presence must never be read
+        # as evidence of an apply; only a nonzero delivery is.
         text = ("callog 1\nR 46 53 1.00\n"
                 "W 0 91 28 0 1\nW 1 88 28 0 1\n"
                 "V 0 87 0\nV 1 84 0\n")
@@ -165,7 +220,7 @@ class TestReport(unittest.TestCase):
         # A rate with a real, determined wall that was included in the
         # verify plan and heard nothing at its parked power (mcs1, "0%")
         # must render differently from a rate whose wall never came back
-        # determined in the first place (mcs7, "-" -- make_verify_plan
+        # determined in the first place (mcs7, "-" -- verify_cells()
         # never seeds a cell for it, so cal.log carries no V row at all).
         # Both used to print "-" in the verify column, hiding the single
         # most important signal a verify pass exists to produce: a rate
@@ -233,6 +288,138 @@ class TestReportV3(unittest.TestCase):
         self.assertIn("written:", render(GOOD3))
 
 
+class TestReportV4(unittest.TestCase):
+    def test_two_width_table(self):
+        out = render(GOOD4)
+        self.assertIn("20 MHz", out)
+        self.assertIn("40 MHz", out)
+        row0 = [l for l in out.splitlines() if l.startswith("mcs0")][0]
+        self.assertIn("63", row0)   # 20 MHz wall
+        self.assertIn("60", row0)   # 40 MHz wall
+        self.assertIn("59", row0)   # 20 MHz park = 63 - 4
+        self.assertIn("56", row0)   # 40 MHz park = 60 - 4
+        self.assertIn("100%", row0)
+        self.assertIn("98%", row0)
+        row3 = [l for l in out.splitlines() if l.startswith("mcs3")][0]
+        self.assertIn(".73", row3)  # 20 MHz eff, eff_x1000=730
+        # The 40 MHz point (eff_x1000=500) is tx_bound: measured, never
+        # written, so it prints as "-" and the flag says why.
+        self.assertNotIn(".50", row3)
+        self.assertIn("legacy 63 (from 20 MHz mcs0)", out)
+        self.assertIn("written: /etc/mabur.toml", out)
+
+    def test_single_width_prints_dashes(self):
+        # mcs5 was only ever swept at 20 MHz in this run -- callog 4 carries
+        # no record of a 40 MHz wall/verify/eff for it, so every 40 MHz
+        # column must read "-", not a stale or invented number.
+        out = render(GOOD4)
+        row5 = [l for l in out.splitlines() if l.startswith("mcs5")][0]
+        self.assertEqual(row5.split()[-4:], ["-", "-", "-", "-"])
+        self.assertIn("-1", row5)   # the 20 MHz wall is a real, measured one
+
+    def test_not_written_when_no_applied_ok(self):
+        # Neither width's A row is ok -- unlike v1-3, callog 4 has a direct
+        # apply-outcome record and must not fall back to inferring one from
+        # verify delivery.
+        text = GOOD4.replace("A 20 1 ok\nA 40 1 ok\n",
+                             "A 20 0 out of range table\n"
+                             "A 40 0 out of range table\n")
+        out = render(text)
+        self.assertNotIn("written: /etc/mabur.toml", out)
+        self.assertIn("not written", out)
+        self.assertIn("out of range table", out)
+
+    def test_tx_bound_flag_is_prefixed(self):
+        # The 40 MHz capacity point on mcs3 is tx_bound; the 20 MHz one on
+        # the same rate is not -- the flags column must say which width.
+        out = render(GOOD4)
+        row3 = [l for l in out.splitlines() if l.startswith("mcs3")][0]
+        self.assertIn("40:tx_bound", row3)
+        self.assertNotIn("20:tx_bound", row3)
+
+    def test_tx_bound_eff_is_not_printed_as_written(self):
+        out = render(GOOD4)
+        row3 = [l for l in out.splitlines() if l.startswith("mcs3")][0]
+        # mcs3, 20 MHz wall park verify eff, then 40 MHz wall park verify eff
+        self.assertEqual(row3.split()[:9],
+                         ["mcs3", "42", "38", "99%", ".73", "40", "36", "95%", "-"])
+
+    def test_lost_eff_is_not_printed_as_written(self):
+        # Under half of the offered frames arrived on the 20 MHz mcs3 point:
+        # lost (and lossy), never written, so it prints "-" and the flags
+        # column says why -- unlike a merely lossy point, which is written.
+        text = GOOD4.replace("P 3 4000 3950 58000000 730 72 0\n",
+                             "P 3 4000 1500 22000000 270 72 384\n")
+        out = render(text)
+        row3 = [l for l in out.splitlines() if l.startswith("mcs3")][0]
+        self.assertEqual(row3.split()[:5], ["mcs3", "42", "38", "99%", "-"])
+        self.assertIn("20:lossy,lost", row3)
+        lossy = render(GOOD4.replace("P 3 4000 3950 58000000 730 72 0\n",
+                                     "P 3 4000 3000 44000000 550 72 128\n"))
+        row3 = [l for l in lossy.splitlines() if l.startswith("mcs3")][0]
+        self.assertEqual(row3.split()[:5], ["mcs3", "42", "38", "99%", ".55"])
+
+    def test_legacy_names_the_width_it_came_from(self):
+        # A run with no 20 MHz power sweep takes legacy from the 40 MHz
+        # mcs0 wall; the report says so rather than claiming 20 MHz.
+        text = ("callog 4\n"
+                "R 42 1.00 149 auto 1\n"
+                "S 0 power 40 20\n"
+                "W 0 60 -42 0 1\n"
+                "W 3 40 -42 0 0\n"
+                "S 1 power 40 100\n"
+                "V 0 56 98\n"
+                "A 40 1 ok\n")
+        out = render(text)
+        self.assertIn("legacy 60 (from 40 MHz mcs0)", out)
+        self.assertNotIn("from 20 MHz", out)
+
+    def test_an_ok_apply_with_a_note_is_reported(self):
+        # The drone kept a 20 MHz wall for an undetermined row of a first
+        # 40 MHz table: the A row is ok and its reason says what was kept.
+        text = GOOD4.replace("A 40 1 ok\n",
+                             "A 40 1 ok; mcs6 kept from the 20 MHz table\n")
+        out = render(text)
+        self.assertIn("40 MHz apply: ok; mcs6 kept from the 20 MHz table", out)
+        self.assertIn("written: /etc/mabur.toml", out)
+        self.assertNotIn("20 MHz apply:", out)  # a plain ok says nothing
+
+    def test_eff_only_width_reports_existing_walls_note(self):
+        # A width with capacity (P) rows but no wall (W) rows in this run
+        # measured efficiency against whatever the drone already has
+        # configured -- cal.log carries no record of that wall, so the
+        # report must say so rather than printing "-" with no explanation.
+        text = ("callog 4\nR 1 1.00 149 auto 1\n"
+                "S 0 capacity 40 2000\nP 3 4000 3950 58000000 900 80 0\n"
+                "A 40 1 ok\n")
+        out = render(text)
+        self.assertIn("40 MHz eff measured at the existing walls", out)
+
+    def test_run_header_carries_channel_pick_and_ldpc(self):
+        out = render(GOOD4)
+        self.assertIn("ch=149", out)
+        self.assertIn("pick=auto", out)
+        self.assertIn("ldpc=1", out)
+
+    def test_20_only_run_has_no_40_mhz_block(self):
+        # No S row in this run ever names 40 MHz -- a 20-only GS -- so the
+        # report must not print a 40 MHz header, column group or flags
+        # prefix at all, not merely dashes under one.
+        out = render(GOOD4_20ONLY)
+        self.assertNotIn("40 MHz", out)
+        self.assertNotIn("40:", out)
+        row0 = [l for l in out.splitlines() if l.startswith("mcs0")][0]
+        self.assertEqual(row0.split(), ["mcs0", "63", "59", "100%", "-", "20:no_dip"])
+
+    def test_not_written_when_no_apply_attempted(self):
+        # No A row at all (phase 2's command was lost, or the session never
+        # got that far) -- distinct from an A row that exists and failed.
+        text = ("callog 4\nR 1 1.00 149 auto 1\n"
+                "S 0 power 20 20\nW 0 63 -40 0 1\n")
+        out = render(text)
+        self.assertIn("not written: this run produced no apply attempt", out)
+
+
 class TestRenderWhenReady(unittest.TestCase):
     """`maburcal start`'s end-of-run render, which polls a file the daemon
     is still writing."""
@@ -269,6 +456,41 @@ class TestRenderWhenReady(unittest.TestCase):
         self.assertIsNone(problem)
 
 
+class TestReportV5(unittest.TestCase):
+    """callog 5 is callog 4 plus P's trailing span_ms: the best card's
+    first-to-last receive span the point's eff was timed over."""
+
+    def _parse(self, text):
+        with tempfile.NamedTemporaryFile("w", suffix=".log", delete=False) as f:
+            f.write(text)
+            path = f.name
+        return maburcal._parse_cal_log(path)
+
+    def test_renders_like_v4(self):
+        out = render(GOOD5)
+        row3 = [l for l in out.splitlines() if l.startswith("mcs3")][0]
+        self.assertEqual(row3.split()[:9],
+                         ["mcs3", "42", "38", "99%", ".73", "40", "36", "95%", "-"])
+        self.assertIn("written: /etc/mabur.toml", out)
+
+    def test_span_is_kept_and_v4_has_none(self):
+        run5 = self._parse(GOOD5)[0]
+        self.assertEqual(run5.caps_by_bw[20][3], (4000, 3950, 58000000, 730, 72, 0, 2287))
+        self.assertEqual(run5.caps_by_bw[40][3][6], 140)
+        run4 = self._parse(GOOD4)[0]
+        self.assertEqual(run4.caps_by_bw[20][3], (4000, 3950, 58000000, 730, 72, 0, None))
+
+    def test_short_span_flag_is_named(self):
+        out = render(GOOD5)
+        row3 = [l for l in out.splitlines() if l.startswith("mcs3")][0]
+        self.assertIn("40:tx_bound,short_span", row3)
+
+    def test_a_v4_shaped_p_row_in_a_v5_file_is_skipped(self):
+        text = GOOD5.replace("P 3 4000 3950 58000000 730 72 0 2287\n",
+                             "P 3 4000 3950 58000000 730 72 0\n")
+        self.assertNotIn(3, self._parse(text)[0].caps_by_bw[20])
+
+
 class TestCallogVersions(unittest.TestCase):
     """The marker versions the FILE. maburgs writes 1; 2 is accepted because
     bench runs in that shape (the reverted EVM columns, docs/calibration.md)
@@ -286,6 +508,48 @@ class TestCallogVersions(unittest.TestCase):
     def test_an_unknown_version_is_still_refused(self):
         with self.assertRaises(maburcal.UnsupportedLog):
             render(GOOD.replace("callog 1", "callog 99", 1))
+
+
+class TestStartArgs(unittest.TestCase):
+    """`maburcal start`'s CLI tokens, forwarded verbatim to CalControl --
+    this script neither validates nor composes them, so the only thing
+    worth testing here is that it sends exactly what the operator typed."""
+
+    def test_tokens_are_forwarded(self):
+        sent = []
+
+        def fake_send_cmd(message, timeout=1.0):
+            sent.append(message)
+            if message.startswith("start"):
+                return "ok started power40,cap20"
+            return "ok state=done sweep=1/1 kind=power bw=40 cell=0/0"
+
+        orig = maburcal._send_cmd
+        maburcal._send_cmd = fake_send_cmd
+        try:
+            maburcal.cmd_start(argparse.Namespace(tokens=["power40", "cap20"]))
+        finally:
+            maburcal._send_cmd = orig
+
+        self.assertEqual(sent[0], "start power40 cap20")
+
+    def test_no_tokens_sends_bare_start(self):
+        sent = []
+
+        def fake_send_cmd(message, timeout=1.0):
+            sent.append(message)
+            if message.startswith("start"):
+                return "ok started power20,cap20"
+            return "ok state=done sweep=1/1 kind=power bw=20 cell=0/0"
+
+        orig = maburcal._send_cmd
+        maburcal._send_cmd = fake_send_cmd
+        try:
+            maburcal.cmd_start(argparse.Namespace(tokens=[]))
+        finally:
+            maburcal._send_cmd = orig
+
+        self.assertEqual(sent[0], "start")
 
 
 if __name__ == "__main__":

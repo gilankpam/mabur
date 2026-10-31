@@ -5,11 +5,14 @@
 #include <string>
 
 #include "log_writer.h"
+#include "mabur/cal_wire.h"
 
 namespace maburgs {
 
 struct CalCell;
 struct RateWall;
+struct CapCell;
+struct CapResult;
 
 // Raw per-cell record of a TX-power calibration run. Writes `cal.log` inside
 // the session directory (DebugSession::dir()) via a private LogWriter --
@@ -28,39 +31,55 @@ struct RateWall;
 // Record format is LOCKED (gs/bundle/maburcal's reader and
 // tests/test_cal_log.cpp depend on the exact byte layout):
 //
-//   callog 3                                               # once, first line
-//   R <nonce> <margin_db>                        # once per calibration run
-//   C <phase> <rate> <idx> <expected> <recv0> <recv1> <corrupt> <rssi0> <rssi1>
+//   callog 5                                                     # once, first line
+//   R <nonce> <margin_db> <ch> <pick> <ldpc 0|1>       # once per calibration run
+//   S <seq> <power|capacity> <bw> <frames|dwell_ms>    # once per sweep; scopes
+//                                                       # every C/W/P/V row below
+//                                                       # it to that sweep's width,
+//                                                       # until the next S row
+//   C <rate> <idx> <expected> <recv0> <recv1> <corrupt> <rssi0> <rssi1>
 //                                                # one row per measured cell
-//   W <rate> <wall> <floor> <best_card> <flags>  # one row per rate, at each
-//                                                 # phase-end (coarse then
-//                                                 # fine); reader takes
-//                                                 # last-write-wins
+//                                                # (power or verify sweep)
+//   W <rate> <wall> <floor> <best_card> <flags>  # one row per rate, per
+//                                                 # power sweep
+//   P <rate> <offered> <recv_best> <air_bits_best> <eff_x1000> <blocked_pct> <flags> <span_ms>
+//                                                # one row per rate, one capacity
+//                                                # sweep's result; span_ms is the
+//                                                # best card's first-to-last
+//                                                # receive span eff was timed
+//                                                # over (flag 512, short_span:
+//                                                # too short to trust, eff over
+//                                                # the commanded dwell instead)
 //   V <rate> <idx> <pct>                         # one row per verify cell
+//   A <bw> <0|1> <reason to end of line>          # one row per apply attempt
+//
+// `pick` is one of auto|pinned|onecard|stayed -- the channel selection
+// outcome this run's R line was raised under; the string is opaque to this
+// class, which writes whatever the caller hands it verbatim.
 //
 // Every index this run writes (C's idx, W's wall/floor, V's idx) is SIGNED
 // and RELATIVE to the drone chip's own anchor, never an absolute TXAGC
 // step -- there is no anchor left anywhere in this file (it was carried on
 // the wire and on the R line through callog 2; both are gone as of callog
 // 3). A reader that wants an absolute step has nowhere to get one from a
-// v3 file; it was never this file's job to supply one.
+// v3+ file; it was never this file's job to supply one.
 //
 // A V row means "this rate was in the verify plan", never "this rate
 // verified clean" -- pct 0 is a real (bad) measurement, written exactly
 // like any other, for a rate that was parked and heard nothing. A rate
-// with no row at all (make_verify_plan skips undetermined ones) was never
-// planned in the first place. maburcal's reader is what turns "was there
-// at least one nonzero pct anywhere in the run" into the written: claim;
-// it must never key that claim on a V row's mere presence, since an
-// optimistically-opened verify window that heard nothing on any rate
-// (a lost T_CAL_RESULT, or a refused apply) still gets a full set of
-// all-zero V rows under this rule.
+// with no row at all (verify_cells skips rates whose wall was left
+// undetermined) was never planned in the first place. maburcal's reader is
+// what turns "was there at least one nonzero pct anywhere in the run" into
+// the written: claim; it must never key that claim on a V row's mere
+// presence, since a verify window that heard nothing on any rate (every
+// verify frame lost) still gets a full set of all-zero V rows under this
+// rule.
 //
 // The marker and the per-run parameters are deliberately split: `callog N`
 // versions the FILE (mirrors ctllog N elsewhere in this codebase) and is
 // written at most once no matter how many runs share the session
-// directory, while `R` carries one run's own (nonce, margin_db) and is
-// written once at the start of EVERY run. The normal retry path --
+// directory, while `R` carries one run's own parameters and is written
+// once at the start of EVERY run. The normal retry path --
 // `maburcal start`, see a narrow/saturated flag, move the drone, start
 // again -- puts a second run's records in the same session directory
 // (nothing about a run rotates the session), so a single shared header
@@ -77,6 +96,11 @@ struct RateWall;
 // RateWall's own in-memory sentinel (cal_analysis.h's kNoWall) -- not -1,
 // which callog 1/2 used and which is now a real (relative) wall value a
 // rate can legitimately have.
+//
+// A capacity sweep's P row never carries a tx_bound point as a wall
+// candidate -- the flags field is the only place that distinction shows up
+// in this file; writing (or not writing) the row at all is the caller's
+// decision, not this class's.
 //
 // Per the project's compatibility policy the `callog N` marker is what
 // versions this file -- the schema itself is free to change, provided both
@@ -129,23 +153,43 @@ class CalLog {
 
   bool ok() const { return s_ != LogWriter::kBadStream; }
 
-  // The format-marker line, `callog 3`. Call at most once per FILE (i.e.
+  // The format-marker line, `callog 5`. Call at most once per FILE (i.e.
   // never on a rejoin of an already-headed session directory) -- it
   // carries no per-run data, so unlike ctl.log's single combined header
   // there is no reason for a second calibration run in the same session to
   // repeat it.
   void header();
-  // One run's own parameters: `R <nonce> <margin_db>`. Call once at the
-  // start of EVERY calibration run, including the second and later ones
-  // sharing a session directory -- this is what a reader keys a run's
-  // C/W/V lines by and what delimits one run's lines from the next. No
-  // anchor: every index this run writes (C/W's idx/wall/floor) is already
-  // relative to the drone chip's own anchor, not an absolute TXAGC step, so
-  // there is nothing left for the R line to carry it.
-  void run(uint32_t nonce, double margin_db);
-  void cell(uint8_t phase, uint8_t rate, int idx, const CalCell& c);
+  // One run's own parameters: `R <nonce> <margin_db> <ch> <pick> <ldpc>`.
+  // Call once at the start of EVERY calibration run, including the second
+  // and later ones sharing a session directory -- this is what a reader
+  // keys a run's C/W/P/V lines by and what delimits one run's lines from
+  // the next. No anchor: every index this run writes (C/W's idx/wall/floor)
+  // is already relative to the drone chip's own anchor, not an absolute
+  // TXAGC step, so there is nothing left for the R line to carry it.
+  // `pick` is one of auto|pinned|onecard|stayed, written verbatim.
+  void run(uint32_t nonce, double margin_db, uint8_t ch, const char* pick,
+           bool ldpc);
+  // One sweep's own parameters: `S <seq> <power|capacity> <bw> <param>`.
+  // Scopes every C/W/P/V row that follows, up to the next sweep() call, to
+  // this sweep's width -- a verify pass (cal::Kind::Verify) shares the
+  // `power` word with an ordinary power sweep, since both are frame-count
+  // measurements the reader treats identically for width scoping; only
+  // Capacity gets its own word (and `param` means dwell_ms rather than a
+  // frame count).
+  void sweep(uint8_t seq, mabur::cal::Kind kind, uint8_t bw, uint32_t param);
+  void cell(uint8_t rate, int idx, const CalCell& c);
   void wall(uint8_t rate, const RateWall& w);
+  // One capacity dwell's result: `P <rate> <offered> <recv_best>
+  // <air_bits_best> <eff_x1000> <blocked_pct> <flags> <span_ms>`. recv_best and
+  // air_bits_best are the best card's own columns from `cell` (CapResult's
+  // best_card), not a union across cards -- same "best single card, never
+  // the union" convention the wall pass uses.
+  void cap(uint8_t rate, const CapCell& c, const CapResult& r);
   void verify(uint8_t rate, int idx, int pct);
+  // One apply attempt's outcome: `A <bw> <0|1> <reason to end of line>`.
+  // `reason` keeps its spaces -- this is the last field on the line, so
+  // nothing after it needs delimiting.
+  void applied(uint8_t bw, bool ok, const std::string& reason);
 
   // Blocks until every record handed over so far is on disk. Call at the
   // end of a run (Done or Failed), and only there: LogWriter's own thread

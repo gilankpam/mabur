@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """maburcal -- the TX-power wall calibration kit's entire operator UI.
 
-    maburcal start                 begin a run (streams progress, then the
-                                    final table)
+    maburcal start [tok...]         begin a run (streams progress, then the
+                                    final table); with no tokens the GS
+                                    runs its defaults, otherwise each token
+                                    is power20|power40|cap20|cap40, any
+                                    order
     maburcal status                one-line progress of a running session
     maburcal abort                 abandon the running session
     maburcal report <cal.log>      re-render a saved run, no daemon involved
@@ -16,8 +19,8 @@ test hermetic.
 
 This is also the in-repo cal.log consumer the project's compatibility
 policy requires (CLAUDE.md): the schema is free to change under `callog N`,
-but this file has to change with it in the same commit. A later task deletes
-bench/txagcbench/ and its Python analyzer; `maburcal report` is the entire
+but this file has to change with it in the same commit. bench/txagcbench/
+and its Python analyzer are gone; `maburcal report` is the entire
 replacement for examining a run's underlying data afterwards, so a wrong
 parse here silently costs that capability rather than merely failing loud.
 
@@ -51,19 +54,32 @@ MABURGS_LOG = "/tmp/maburgs.log"
 SESSION_MARKER = "/tmp/mabur-session"
 DEFAULT_DEBUG_LOG_DIR = "/media/dvr/log"
 
-# The marker versions the FILE. 3 is what maburgs writes now: every index
-# (wall/floor/idx) is SIGNED and RELATIVE to the drone chip's own anchor,
-# and the R line carries no base_ref at all (relative walls). 1 and 2 are
-# absolute-index formats still sitting on the DVR -- both carry base_ref (on
-# the R line) and both key "undetermined" off wall < 0, since -1 was their
-# sentinel and never a real wall; 2 existed only briefly (two per-card EVM
-# columns on the C row, reverted when the sweep frames turned out to carry no
-# EVM reading -- see docs/calibration.md). Since this reader has never stored C
-# rows, a v2 file renders identically to a v1 one. All three stay readable
-# because recordings outlive the code that wrote them (CLAUDE.md).
-KNOWN_CALLOG_VERSIONS = (1, 2, 3)
+# The marker versions the FILE. 5 is what maburgs writes now: a run sweeps
+# both 20 and 40 MHz, scoping every C/W/P/V row to the width named by the
+# most recent S row, the R line carries the run's channel, channel-pick
+# outcome and LDPC state alongside nonce/margin, and each P row ends in the
+# receive span its eff was timed over. 4 is the same without that span: its
+# eff divided by the commanded dwell. 3 carries none of that --
+# one width only, no S/P/A rows -- but keeps 4's relative-index convention
+# (wall/floor/idx SIGNED and RELATIVE to the drone chip's own anchor, no
+# base_ref on the R line). 1 and 2 are absolute-index formats still sitting
+# on the DVR -- both carry base_ref (on the R line) and both key
+# "undetermined" off wall < 0, since -1 was their sentinel and never a real
+# wall; 2 existed only briefly (two per-card EVM columns on the C row,
+# reverted when the sweep frames turned out to carry no EVM reading -- see
+# docs/calibration.md). Since this reader has never stored C rows, a v2 file
+# renders identically to a v1 one. Every version stays readable because
+# recordings outlive the code that wrote them (CLAUDE.md).
+KNOWN_CALLOG_VERSIONS = (1, 2, 3, 4, 5)
 
-# flags: 1=no_dip 2=undetermined 4=narrow 8=saturated 16=card_disagree 32=drift
+# flags: 1=no_dip 2=undetermined 4=narrow 8=saturated 16=card_disagree
+# 32=drift (retired from callog 4 on, but still nameable on an older file)
+# 64=tx_bound 128=lossy 256=lost (callog 4+ capacity sweeps only; lost
+# always comes with lossy) 512=short_span (callog 5 capacity only: too few
+# frames or too short a receive span to time, eff over the commanded dwell)
+TX_BOUND = 64
+LOST = 256
+
 FLAG_NAMES = (
     (1, "no_dip"),
     (2, "undetermined"),
@@ -71,6 +87,10 @@ FLAG_NAMES = (
     (8, "saturated"),
     (16, "card_disagree"),
     (32, "drift"),
+    (64, "tx_bound"),
+    (128, "lossy"),
+    (256, "lost"),
+    (512, "short_span"),
 )
 
 
@@ -87,10 +107,25 @@ class _Run:
     def __init__(self, version, nonce, margin_db, base_ref_idx=None):
         self.version = version
         self.nonce = nonce
-        self.base_ref_idx = base_ref_idx  # None for v3: no anchor on the wire
+        self.base_ref_idx = base_ref_idx  # None from v3 on: no anchor on the wire
         self.margin_db = margin_db
         self.walls = {}    # rate -> (wall, floor_idx, best_card, flags)
         self.verify = {}   # rate -> pct
+        # callog 4+ only. R's extra fields:
+        self.channel = None
+        self.pick = None
+        self.ldpc = None
+        # Per-width records, keyed by bandwidth (20 or 40) -- which bucket a
+        # C/W/P/V row lands in is decided by the most recent S row, not by
+        # anything on the row itself (see _feed_line_v4).
+        self.cur_bw = None
+        self.bws_swept = set()  # every bw an S row has named, even an empty one
+        self.walls_by_bw = {20: {}, 40: {}}     # bw -> rate -> (wall, floor_idx, best_card, flags)
+        self.verify_by_bw = {20: {}, 40: {}}    # bw -> rate -> pct
+        # bw -> rate -> (offered, recv_best, air_bits_best, eff_x1000,
+        # blocked_pct, flags, span_ms); span_ms is None before callog 5
+        self.caps_by_bw = {20: {}, 40: {}}
+        self.applies = []  # [(bw, ok, reason), ...], one per A row
 
     def undetermined(self, wall):
         """True when `wall` is the "no wall could be derived" sentinel for
@@ -106,6 +141,9 @@ class _Run:
         line that doesn't fit the shape this run expects is ignored -- a
         malformed line must never be fatal to the rest of the file."""
         try:
+            if self.version >= 4:
+                self._feed_line_v4(tag, tok)
+                return
             if tag == "W" and len(tok) == 6:
                 rate, wall, floor_idx, best_card, flags = (int(x) for x in tok[1:])
                 self.walls[rate] = (wall, floor_idx, best_card, flags)
@@ -117,6 +155,43 @@ class _Run:
             # densest line in the file -- deliberately not stored.
         except ValueError:
             return  # non-numeric field: skip the line, not the file
+
+    def _feed_line_v4(self, tag, tok):
+        """callog 4 and 5's shape: S scopes the width every C/W/P/V row below it
+        belongs to, until the next S; A carries its own bw and is never
+        scoped by S. Raises ValueError on a bad numeric field, caught by
+        feed_line's own try/except -- the single place that turns a
+        malformed line into a no-op rather than a crash."""
+        if tag == "S" and len(tok) == 5:
+            self.cur_bw = int(tok[3])
+            self.bws_swept.add(self.cur_bw)
+            return
+        if tag == "A" and len(tok) >= 3:
+            bw = int(tok[1])
+            ok = tok[2] == "1"
+            reason = " ".join(tok[3:])
+            self.applies.append((bw, ok, reason))
+            return
+        if self.cur_bw not in self.walls_by_bw:
+            # A C row (not stored, as in every version), or a row that
+            # arrived before any S set a scope -- nothing to attribute it
+            # to.
+            return
+        if tag == "W" and len(tok) == 6:
+            rate, wall, floor_idx, best_card, flags = (int(x) for x in tok[1:])
+            self.walls_by_bw[self.cur_bw][rate] = (wall, floor_idx, best_card, flags)
+        elif tag == "V" and len(tok) == 4:
+            rate, _idx, pct = (int(x) for x in tok[1:])
+            self.verify_by_bw[self.cur_bw][rate] = pct
+        elif tag == "P" and len(tok) == (9 if self.version >= 5 else 8):
+            # callog 5 appends span_ms, the receive span eff was timed over;
+            # a callog 4 eff divided by the commanded dwell, which reads high
+            # by the drone's TX-queue drain (docs/data-provenance.md).
+            rate, offered, recv_best, air_bits_best, eff_x1000, blocked_pct, flags = (
+                int(x) for x in tok[1:8])
+            span_ms = int(tok[8]) if self.version >= 5 else None
+            self.caps_by_bw[self.cur_bw][rate] = (
+                offered, recv_best, air_bits_best, eff_x1000, blocked_pct, flags, span_ms)
 
 
 def _parse_cal_log(path):
@@ -152,10 +227,16 @@ def _parse_cal_log(path):
 
             tok = line.split()
             tag = tok[0]
-            if tag == "R" and ((version >= 3 and len(tok) == 3) or
+            if tag == "R" and ((version >= 4 and len(tok) == 6) or
+                               (version == 3 and len(tok) == 3) or
                                (version < 3 and len(tok) == 4)):
                 try:
-                    if version >= 3:
+                    if version >= 4:
+                        cur = _Run(version, int(tok[1]), float(tok[2]))
+                        cur.channel = int(tok[3])
+                        cur.pick = tok[4]
+                        cur.ldpc = (tok[5] == "1")
+                    elif version == 3:
                         cur = _Run(version, int(tok[1]), float(tok[2]))
                     else:
                         cur = _Run(version, int(tok[1]), float(tok[3]),
@@ -188,23 +269,21 @@ def _margin_steps(margin_db):
 
 
 def _apply_status_line(run):
-    """What the log can actually attest to about whether this run's
-    measurements ever reached the drone's config.
+    """What a callog 1-3 file can actually attest to about whether its
+    run's measurements ever reached the drone's config.
 
-    cal.log has no record for the apply outcome itself -- cal_apply's
-    OutOfRange/BackupFailed/WriteFailed/ReparseFailed results, and a
-    session that never gets a phase-2 command at all (test_cal_sweep's
-    await_next_timeout_returns_to_idle_without_applying), all end a run
-    with nothing written and nothing on the wire for the GS to log. `V`
-    records are the usable signal instead: CalSession emits one for every
-    rate that was in the verify plan, whether or not anything actually
-    arrived there (pct 0 included) -- a planned-but-silent rate is exactly
-    the thing this report needs to be able to say plainly, so the row must
-    exist either way (see cal_log.h). The drone sweeps verify only after a
-    successful apply, but due_result() opens the GS's
-    own verify window optimistically, with no ack to wait on -- so a run
-    whose T_CAL_RESULT was lost on the uplink, or whose apply was refused,
-    still gets a full set of V rows, every one of them 0%. A row's mere
+    Those formats have no record for the apply outcome itself (callog 4's
+    A rows) -- an apply the drone refused, or a run that timed out before
+    applying, ended with nothing written and nothing on the wire for the
+    GS to log. `V` records are the usable signal instead: the kit that
+    wrote them emitted one for every rate in the verify plan, whether or
+    not anything actually arrived there (pct 0 included) -- a
+    planned-but-silent rate is exactly the thing this report needs to be
+    able to say plainly, so the row exists either way. That kit's drone
+    swept verify only after a successful apply, but its GS opened the
+    verify window optimistically, with no ack to wait on -- so a run whose
+    result frame was lost on the uplink, or whose apply was refused, still
+    got a full set of V rows, every one of them 0%. A row's mere
     presence is therefore NOT evidence of a successful apply; a NONZERO
     pct on at least one row is, because the drone had to actually be on
     the air sweeping verify to produce it. So a run with any nonzero
@@ -233,7 +312,121 @@ def _apply_status_line(run):
     return "not written: this run produced no measurements"
 
 
+def _eff_string(eff_x1000):
+    # eff is rounded to 0.01 before *1000 (cal_analysis.h's analyze_capacity),
+    # so eff_x1000 is always a multiple of 10 in [50, 1000]. Printed without
+    # the leading 0 (".73"), matching the wall/park columns' own bare-number
+    # style; 1.00 is the one value that does not fit that shape.
+    if eff_x1000 >= 1000:
+        return "1.00"
+    return f".{eff_x1000 // 10:02d}"
+
+
+def _cell_v4(run, bw, rate, park_step):
+    """One (width, rate) cell's four printed columns plus its combined
+    flags (wall-pass flags | capacity-pass flags -- the two measurements
+    share one rate/width's worth of flag bits in this report, even though
+    they come from different sweeps)."""
+    w = run.walls_by_bw[bw].get(rate)
+    p = run.caps_by_bw[bw].get(rate)
+    v = run.verify_by_bw[bw].get(rate)
+    flags = 0
+    if w is not None:
+        flags |= w[3]
+    if p is not None:
+        flags |= p[5]
+    if w is None or run.undetermined(w[0]):
+        # No wall swept this run for this width (reusing whatever is
+        # already in the drone's config, which cal.log carries no record
+        # of), or swept but undetermined -- either way nothing downstream
+        # (park) has a number either.
+        wall_s = park_s = "-"
+    else:
+        wall_s = str(w[0])
+        park_s = str(max(-64, min(63, w[0] - park_step)))
+    verify_s = f"{v}%" if v is not None else "-"
+    # A tx_bound or lost point's eff was measured (the P row keeps it) but
+    # never sent to the drone: it measured the drone's CPU/USB, or the loss
+    # of over half its frames, not the air, and the config kept its old
+    # value. Printing the number would read as written; the flag in the
+    # flags column says why there is none.
+    if p is None or p[5] & (TX_BOUND | LOST):
+        eff_s = "-"
+    else:
+        eff_s = _eff_string(p[3])
+    return wall_s, park_s, verify_s, eff_s, flags
+
+
+def _render_run_v4(run):
+    pick = run.pick if run.pick is not None else "-"
+    ldpc = 1 if run.ldpc else 0
+    lines = [f"run nonce={run.nonce} margin={run.margin_db:.2f}dB "
+             f"ch={run.channel} pick={pick} ldpc={ldpc}"]
+    # A GS that never swept 40 (no S row ever named it, whether for a
+    # power/verify or a capacity sweep) gets a single-width table -- the
+    # two-width layout is for a run that actually measured both, not a
+    # second block of dashes for a width nothing on this hardware flies.
+    widths = [20, 40] if 40 in run.bws_swept else [20]
+    col = f"{'wall':>6}{'park':>6}{'verify':>7}{'eff':>7}"
+    lines.append(f"{'':6}" + "".join(f"{str(bw) + ' MHz':^26}" for bw in widths))
+    lines.append(f"{'rate':<6}" + "   ".join([col] * len(widths)) + "   flags")
+
+    park_step = _margin_steps(run.margin_db)
+    for rate in range(8):
+        have_any = any(rate in d[bw]
+                       for d in (run.walls_by_bw, run.caps_by_bw, run.verify_by_bw)
+                       for bw in widths)
+        if not have_any:
+            continue
+        cells = [_cell_v4(run, bw, rate, park_step) for bw in widths]
+        row = f"{'mcs' + str(rate):<6}"
+        flag_parts = []
+        for bw, (wall_s, park_s, verify_s, eff_s, flags) in zip(widths, cells):
+            row += f"{wall_s:>6}{park_s:>6}{verify_s:>7}{eff_s:>7}   "
+            if flags:
+                flag_parts.append(f"{bw}:{_flag_string(flags)}")
+        row += " ".join(flag_parts)
+        lines.append(row.rstrip())
+
+    for bw in widths:
+        if run.caps_by_bw[bw] and not run.walls_by_bw[bw]:
+            lines.append(f"{bw} MHz eff measured at the existing walls")
+
+    # The GS sends legacy from the 20 MHz mcs0 wall, or from the 40 MHz one
+    # when the run has no 20 MHz power sweep (CalSession).
+    default_wall = -128
+    legacy_bw = 20 if run.walls_by_bw[20] or not run.walls_by_bw[40] else 40
+    legacy_wall = run.walls_by_bw[legacy_bw].get(0, (default_wall,))[0]
+    legacy_s = ("undetermined" if run.undetermined(legacy_wall)
+                else str(legacy_wall))
+    lines.append(f"legacy {legacy_s} (from {legacy_bw} MHz mcs0)")
+    # An adopted apply that kept something the run did not send (an
+    # undetermined row of a first 40 MHz table takes its 20 MHz wall) says
+    # so in its reason.
+    for bw, ok, reason in run.applies:
+        if ok and reason and reason != "ok":
+            lines.append(f"{bw} MHz apply: {reason}")
+    lines.append(_apply_status_line_v4(run))
+    return "\n".join(lines)
+
+
+def _apply_status_line_v4(run):
+    """callog 4 carries the apply outcome directly (the A rows), unlike
+    v1-3's verify-presence inference (_apply_status_line) -- there was
+    nothing else to key on there. One A row per (bw, attempt); any ok=1
+    row means the config landed."""
+    oks = [a for a in run.applies if a[1]]
+    if oks:
+        return f"written: {CONFIG_PATH} (backup {CONFIG_BACKUP})"
+    if run.applies:
+        reasons = "; ".join(f"{bw} MHz: {reason}" for bw, _ok, reason in run.applies)
+        return f"not written: {reasons}"
+    return "not written: this run produced no apply attempt"
+
+
 def _render_run(run):
+    if run.version >= 4:
+        return _render_run_v4(run)
     # v1/v2 files carry an absolute anchor (base_ref_idx); v3 carries none
     # -- every index is already relative to the drone chip's own anchor, so
     # there is nothing left to print, neither on this header line nor as
@@ -395,14 +588,18 @@ def _render_when_ready(path):
         time.sleep(RENDER_RETRY_SLEEP_S)
 
 
-def cmd_start(_args):
-    # No arguments. `--margin` was removed: it fed only the GS's own park
-    # bookkeeping (the verify plan and this report's `park` column), while
-    # the drone applies its own radio.wall_margin_db, which cal_apply does
-    # not patch -- so it changed nothing on hardware and only made the
-    # report disagree with what the drone flew. To change the margin, edit
+def cmd_start(args):
+    # `--margin` was removed: it fed only the GS's own park bookkeeping
+    # (the verify plan and this report's `park` column), while the drone
+    # applies its own radio.wall_margin_db, which cal_apply does not patch
+    # -- so it changed nothing on hardware and only made the report
+    # disagree with what the drone flew. To change the margin, edit
     # wall_margin_db in /etc/mabur.toml on the drone and re-run.
-    reply = _require_reply("start")
+    #
+    # With no tokens the GS runs its own default composition (every kind
+    # it actually flies, gs/src/cal_control.h); tokens forward verbatim --
+    # CalControl parses and validates them, this script does not.
+    reply = _require_reply(" ".join(["start"] + args.tokens))
     print(reply)
     if reply.startswith("err"):
         sys.exit(1)
@@ -460,6 +657,10 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="command", required=True)
 
     p_start = sub.add_parser("start", help="begin a calibration run")
+    p_start.add_argument(
+        "tokens", nargs="*",
+        help="power20|power40|cap20|cap40, any order; defaults to the "
+             "GS's own composition when omitted")
     p_start.set_defaults(func=cmd_start)
 
     p_status = sub.add_parser("status", help="progress of a running session")

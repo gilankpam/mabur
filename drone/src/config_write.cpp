@@ -216,14 +216,19 @@ std::string loader_reason(std::string s) {
 }
 
 PublishResult publish_config(const std::string& path, const std::string& content,
-                             const std::string& backup_suffix, std::string* err) {
+                             const std::string& backup_suffix, std::string* err,
+                             bool write_backup) {
   // Every caller shares "<path>.new" and the backup's temp name, so two
   // concurrent publishes would truncate each other's candidate mid-verify
   // or rename it out from under each other.
   std::lock_guard<std::recursive_mutex> lock(g_publish_mu);
 
-  // Read the original first: it is the backup's content, and a path that
-  // cannot be read has nothing to back up -- refuse before writing anything.
+  // Read the original first: when write_backup, it is the backup's
+  // content, and a path that cannot be read has nothing to back up --
+  // refuse before writing anything. Read unconditionally even when
+  // !write_backup: a path this call can't read is just as wrong a thing
+  // to publish over, and callers (apply_calibration) already rely on this
+  // failing the same way regardless of the backup flag.
   std::string original;
   if (!read_text_file(path, &original)) {
     if (err) *err = "failed to read " + path;
@@ -270,12 +275,17 @@ PublishResult publish_config(const std::string& path, const std::string& content
   // Step 3: back up the original. Now that the candidate is proven
   // loadable, this is purely the operator's rollback artifact, not a
   // crash-recovery mechanism -- nothing downstream of this point can
-  // produce a `path` that fails to load.
-  const std::string backup_path = path + "." + backup_suffix;
-  if (!write_file_atomic(backup_path, original)) {
-    remove_scratch(tmp);
-    if (err) *err = "failed to write backup " + backup_path;
-    return PublishResult::BackupFailed;
+  // produce a `path` that fails to load. Skipped entirely when the caller
+  // doesn't want this call to own the backup (see the write_backup
+  // comment in config_write.h) -- "<path>.<backup_suffix>" is left
+  // completely untouched, not written and then reverted.
+  if (write_backup) {
+    const std::string backup_path = path + "." + backup_suffix;
+    if (!write_file_atomic(backup_path, original)) {
+      remove_scratch(tmp);
+      if (err) *err = "failed to write backup " + backup_path;
+      return PublishResult::BackupFailed;
+    }
   }
 
   // Step 4: publish. `tmp` has already been proven loadable by the same

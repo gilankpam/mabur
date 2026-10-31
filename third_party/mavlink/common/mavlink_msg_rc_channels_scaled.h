@@ -1,8 +1,6 @@
 #pragma once
 // MESSAGE RC_CHANNELS_SCALED PACKING
 
-#include <stdint.h>
-
 #define MAVLINK_MSG_ID_RC_CHANNELS_SCALED 34
 
 
@@ -17,7 +15,7 @@ typedef struct __mavlink_rc_channels_scaled_t {
  int16_t chan7_scaled; /*<  RC channel 7 value scaled.*/
  int16_t chan8_scaled; /*<  RC channel 8 value scaled.*/
  uint8_t port; /*<  Servo output port (set of 8 outputs = 1 port). Flight stacks running on Pixhawk should use: 0 = MAIN, 1 = AUX.*/
- uint8_t rssi; /*<  Receive signal strength indicator in device-dependent units/scale. Values: [0-254], UINT8_MAX: invalid/unknown.*/
+ uint8_t rssi; /*<  Receive signal strength indicator in device-dependent units/scale. Values: [0-254], 255: invalid/unknown.*/
 } mavlink_rc_channels_scaled_t;
 
 #define MAVLINK_MSG_ID_RC_CHANNELS_SCALED_LEN 22
@@ -83,10 +81,10 @@ typedef struct __mavlink_rc_channels_scaled_t {
  * @param chan6_scaled  RC channel 6 value scaled.
  * @param chan7_scaled  RC channel 7 value scaled.
  * @param chan8_scaled  RC channel 8 value scaled.
- * @param rssi  Receive signal strength indicator in device-dependent units/scale. Values: [0-254], UINT8_MAX: invalid/unknown.
+ * @param rssi  Receive signal strength indicator in device-dependent units/scale. Values: [0-254], 255: invalid/unknown.
  * @return length of the message in bytes (excluding serial stream start sign)
  */
-static inline uint16_t mavlink_msg_rc_channels_scaled_pack(uint32_t system_id, uint8_t component_id, mavlink_message_t* msg,
+static inline uint16_t mavlink_msg_rc_channels_scaled_pack(uint8_t system_id, uint8_t component_id, mavlink_message_t* msg,
                                uint32_t time_boot_ms, uint8_t port, int16_t chan1_scaled, int16_t chan2_scaled, int16_t chan3_scaled, int16_t chan4_scaled, int16_t chan5_scaled, int16_t chan6_scaled, int16_t chan7_scaled, int16_t chan8_scaled, uint8_t rssi)
 {
 #if MAVLINK_NEED_BYTE_SWAP || !MAVLINK_ALIGNED_FIELDS
@@ -142,10 +140,10 @@ static inline uint16_t mavlink_msg_rc_channels_scaled_pack(uint32_t system_id, u
  * @param chan6_scaled  RC channel 6 value scaled.
  * @param chan7_scaled  RC channel 7 value scaled.
  * @param chan8_scaled  RC channel 8 value scaled.
- * @param rssi  Receive signal strength indicator in device-dependent units/scale. Values: [0-254], UINT8_MAX: invalid/unknown.
+ * @param rssi  Receive signal strength indicator in device-dependent units/scale. Values: [0-254], 255: invalid/unknown.
  * @return length of the message in bytes (excluding serial stream start sign)
  */
-static inline uint16_t mavlink_msg_rc_channels_scaled_pack_status(uint32_t system_id, uint8_t component_id, mavlink_status_t *_status, mavlink_message_t* msg,
+static inline uint16_t mavlink_msg_rc_channels_scaled_pack_status(uint8_t system_id, uint8_t component_id, mavlink_status_t *_status, mavlink_message_t* msg,
                                uint32_t time_boot_ms, uint8_t port, int16_t chan1_scaled, int16_t chan2_scaled, int16_t chan3_scaled, int16_t chan4_scaled, int16_t chan5_scaled, int16_t chan6_scaled, int16_t chan7_scaled, int16_t chan8_scaled, uint8_t rssi)
 {
 #if MAVLINK_NEED_BYTE_SWAP || !MAVLINK_ALIGNED_FIELDS
@@ -184,7 +182,7 @@ static inline uint16_t mavlink_msg_rc_channels_scaled_pack_status(uint32_t syste
 #if MAVLINK_CRC_EXTRA
     return mavlink_finalize_message_buffer(msg, system_id, component_id, _status, MAVLINK_MSG_ID_RC_CHANNELS_SCALED_MIN_LEN, MAVLINK_MSG_ID_RC_CHANNELS_SCALED_LEN, MAVLINK_MSG_ID_RC_CHANNELS_SCALED_CRC);
 #else
-    return mavlink_finalize_message_buffer(msg, system_id, component_id, _status, MAVLINK_MSG_ID_RC_CHANNELS_SCALED_MIN_LEN, MAVLINK_MSG_ID_RC_CHANNELS_SCALED_LEN, 0);
+    return mavlink_finalize_message_buffer(msg, system_id, component_id, _status, MAVLINK_MSG_ID_RC_CHANNELS_SCALED_MIN_LEN, MAVLINK_MSG_ID_RC_CHANNELS_SCALED_LEN);
 #endif
 }
 
@@ -204,10 +202,10 @@ static inline uint16_t mavlink_msg_rc_channels_scaled_pack_status(uint32_t syste
  * @param chan6_scaled  RC channel 6 value scaled.
  * @param chan7_scaled  RC channel 7 value scaled.
  * @param chan8_scaled  RC channel 8 value scaled.
- * @param rssi  Receive signal strength indicator in device-dependent units/scale. Values: [0-254], UINT8_MAX: invalid/unknown.
+ * @param rssi  Receive signal strength indicator in device-dependent units/scale. Values: [0-254], 255: invalid/unknown.
  * @return length of the message in bytes (excluding serial stream start sign)
  */
-static inline uint16_t mavlink_msg_rc_channels_scaled_pack_chan(uint32_t system_id, uint8_t component_id, uint8_t chan,
+static inline uint16_t mavlink_msg_rc_channels_scaled_pack_chan(uint8_t system_id, uint8_t component_id, uint8_t chan,
                                mavlink_message_t* msg,
                                    uint32_t time_boot_ms,uint8_t port,int16_t chan1_scaled,int16_t chan2_scaled,int16_t chan3_scaled,int16_t chan4_scaled,int16_t chan5_scaled,int16_t chan6_scaled,int16_t chan7_scaled,int16_t chan8_scaled,uint8_t rssi)
 {
@@ -255,7 +253,7 @@ static inline uint16_t mavlink_msg_rc_channels_scaled_pack_chan(uint32_t system_
  * @param msg The MAVLink message to compress the data into
  * @param rc_channels_scaled C-struct to read the message contents from
  */
-static inline uint16_t mavlink_msg_rc_channels_scaled_encode(uint32_t system_id, uint8_t component_id, mavlink_message_t* msg, const mavlink_rc_channels_scaled_t* rc_channels_scaled)
+static inline uint16_t mavlink_msg_rc_channels_scaled_encode(uint8_t system_id, uint8_t component_id, mavlink_message_t* msg, const mavlink_rc_channels_scaled_t* rc_channels_scaled)
 {
     return mavlink_msg_rc_channels_scaled_pack(system_id, component_id, msg, rc_channels_scaled->time_boot_ms, rc_channels_scaled->port, rc_channels_scaled->chan1_scaled, rc_channels_scaled->chan2_scaled, rc_channels_scaled->chan3_scaled, rc_channels_scaled->chan4_scaled, rc_channels_scaled->chan5_scaled, rc_channels_scaled->chan6_scaled, rc_channels_scaled->chan7_scaled, rc_channels_scaled->chan8_scaled, rc_channels_scaled->rssi);
 }
@@ -269,7 +267,7 @@ static inline uint16_t mavlink_msg_rc_channels_scaled_encode(uint32_t system_id,
  * @param msg The MAVLink message to compress the data into
  * @param rc_channels_scaled C-struct to read the message contents from
  */
-static inline uint16_t mavlink_msg_rc_channels_scaled_encode_chan(uint32_t system_id, uint8_t component_id, uint8_t chan, mavlink_message_t* msg, const mavlink_rc_channels_scaled_t* rc_channels_scaled)
+static inline uint16_t mavlink_msg_rc_channels_scaled_encode_chan(uint8_t system_id, uint8_t component_id, uint8_t chan, mavlink_message_t* msg, const mavlink_rc_channels_scaled_t* rc_channels_scaled)
 {
     return mavlink_msg_rc_channels_scaled_pack_chan(system_id, component_id, chan, msg, rc_channels_scaled->time_boot_ms, rc_channels_scaled->port, rc_channels_scaled->chan1_scaled, rc_channels_scaled->chan2_scaled, rc_channels_scaled->chan3_scaled, rc_channels_scaled->chan4_scaled, rc_channels_scaled->chan5_scaled, rc_channels_scaled->chan6_scaled, rc_channels_scaled->chan7_scaled, rc_channels_scaled->chan8_scaled, rc_channels_scaled->rssi);
 }
@@ -283,7 +281,7 @@ static inline uint16_t mavlink_msg_rc_channels_scaled_encode_chan(uint32_t syste
  * @param msg The MAVLink message to compress the data into
  * @param rc_channels_scaled C-struct to read the message contents from
  */
-static inline uint16_t mavlink_msg_rc_channels_scaled_encode_status(uint32_t system_id, uint8_t component_id, mavlink_status_t* _status, mavlink_message_t* msg, const mavlink_rc_channels_scaled_t* rc_channels_scaled)
+static inline uint16_t mavlink_msg_rc_channels_scaled_encode_status(uint8_t system_id, uint8_t component_id, mavlink_status_t* _status, mavlink_message_t* msg, const mavlink_rc_channels_scaled_t* rc_channels_scaled)
 {
     return mavlink_msg_rc_channels_scaled_pack_status(system_id, component_id, _status, msg,  rc_channels_scaled->time_boot_ms, rc_channels_scaled->port, rc_channels_scaled->chan1_scaled, rc_channels_scaled->chan2_scaled, rc_channels_scaled->chan3_scaled, rc_channels_scaled->chan4_scaled, rc_channels_scaled->chan5_scaled, rc_channels_scaled->chan6_scaled, rc_channels_scaled->chan7_scaled, rc_channels_scaled->chan8_scaled, rc_channels_scaled->rssi);
 }
@@ -302,7 +300,7 @@ static inline uint16_t mavlink_msg_rc_channels_scaled_encode_status(uint32_t sys
  * @param chan6_scaled  RC channel 6 value scaled.
  * @param chan7_scaled  RC channel 7 value scaled.
  * @param chan8_scaled  RC channel 8 value scaled.
- * @param rssi  Receive signal strength indicator in device-dependent units/scale. Values: [0-254], UINT8_MAX: invalid/unknown.
+ * @param rssi  Receive signal strength indicator in device-dependent units/scale. Values: [0-254], 255: invalid/unknown.
  */
 #ifdef MAVLINK_USE_CONVENIENCE_FUNCTIONS
 
@@ -507,7 +505,7 @@ static inline int16_t mavlink_msg_rc_channels_scaled_get_chan8_scaled(const mavl
 /**
  * @brief Get field rssi from rc_channels_scaled message
  *
- * @return  Receive signal strength indicator in device-dependent units/scale. Values: [0-254], UINT8_MAX: invalid/unknown.
+ * @return  Receive signal strength indicator in device-dependent units/scale. Values: [0-254], 255: invalid/unknown.
  */
 static inline uint8_t mavlink_msg_rc_channels_scaled_get_rssi(const mavlink_message_t* msg)
 {
@@ -539,5 +537,4 @@ static inline void mavlink_msg_rc_channels_scaled_decode(const mavlink_message_t
         memset(rc_channels_scaled, 0, MAVLINK_MSG_ID_RC_CHANNELS_SCALED_LEN);
     memcpy(rc_channels_scaled, _MAV_PAYLOAD(msg), len);
 #endif
-
 }

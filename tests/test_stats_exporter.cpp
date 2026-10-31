@@ -1388,4 +1388,34 @@ TEST(link_mav_block) {
   CHECK(cap.last()["link"]["mav"]["peer"] == false);
 }
 
+// Calibration: link.cal carries the running run's progress -- state, the
+// sweep k/n, its kind and width, the cell i/n -- and is absent when no run
+// owns the air.
+TEST(link_cal_block_present_only_while_a_run_owns_the_air) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  ex.poll(1000, in);
+  CHECK(!cap.last()["link"].contains("cal"));
+  in.cal.present = true;
+  in.cal.state = "sweep";
+  in.cal.sweep_k = 2; in.cal.sweep_n = 4;
+  in.cal.kind = "capacity";
+  in.cal.bw = 20;
+  in.cal.cell_i = 3; in.cal.cell_n = 8;
+  ex.poll(1600, in);
+  json j = cap.last();
+  REQUIRE(j["link"].contains("cal"));
+  const json& c = j["link"]["cal"];
+  CHECK(c.size() == 5);
+  CHECK(c["state"] == "sweep");
+  CHECK(c["sweep"] == "2/4");
+  CHECK(c["kind"] == "capacity");
+  CHECK(c["bw"] == 20);
+  CHECK(c["cell"] == "3/8");
+  in.cal.present = false;
+  ex.poll(2200, in);
+  CHECK(!cap.last()["link"].contains("cal"));
+}
+
 MTEST_MAIN

@@ -1,9 +1,9 @@
 #pragma once
 #include <algorithm>
 #include <array>
-#include <cmath>
 #include <cstdint>
 
+#include "mabur/cal_park.h"
 #include "mabur/rc_proto.h"
 
 namespace mabur {
@@ -30,19 +30,27 @@ namespace mabur {
 // (drone/src/main.cpp, RealActuator::retune_now_). A stale value here can
 // only mis-size a guard that does not bind; it cannot mis-place a wall.
 //
-// This plan is the WHOLE of mabur's power policy: programmed once at
-// bring-up (and re-programmed live by a calibration apply), global offset
-// zeroed beside it, nothing moves power afterwards.
+// One plan per width (power_tables.h) is the WHOLE of mabur's power
+// policy: bring-up programs the start width's plan with the global offset
+// zeroed beside it, and the live table swaps to the other width's plan
+// when a rung crosses to that width (main.cpp, LivePowerTable). A
+// RADIO_WALL_MARGN set rebuilds both plans and writes the live one. A
+// calibration apply only records the new plans: the run's capacity sweep
+// programs its width's plan, and the run's end programs the rung's. Nothing
+// else moves power.
 struct PowerPlan {
   int8_t cck;
   int8_t legacy;
   int8_t mcs[8];
 };
 
+// margin_steps (the dB->index-step conversion) moved to mabur/cal_park.h so
+// the GS's verify-cell prediction (gs/src/cal_plan.cpp) can share it.
+
 inline PowerPlan make_power_plan(const std::array<int, 8>& walls_rel,
                                   int legacy_wall_rel, double margin_db,
                                   int anchor_idx) {
-  const int m = static_cast<int>(std::lround(margin_db * 4.0));
+  const int m = margin_steps(margin_db);
   const int hi =
       anchor_idx > 0 ? std::min(rc::kRelMax, 127 - anchor_idx) : rc::kRelMax;
   auto clamp = [&](int v) {

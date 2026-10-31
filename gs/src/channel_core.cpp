@@ -130,7 +130,8 @@ ChannelCore::ChannelCore(ChannelCoreCfg cfg, std::vector<LinkCard*> cards, VrxCo
 ChannelCore::~ChannelCore() { shutdown(); }
 
 bool ChannelCore::scout_owns_() const {
-  return scout_ && (scout_->working() || scout_search_req_ || (!pinned_ && scout_->pick_open()));
+  return scout_ && (scout_->working() || scout_search_req_ || (!pinned_ && scout_->pick_open()) ||
+                    scout_->round_open());
 }
 
 ChannelSnapshot ChannelCore::snapshot(int tx_card) const {
@@ -163,6 +164,8 @@ ChannelTickOut ChannelCore::tick(const ChannelTickIn& in) {
   now_ms_cur_ = in.now_ms;
   now_ms_u_cur_ = static_cast<uint64_t>(in.now_ms);
   tx_card_now_.store(in.tx_card, std::memory_order_relaxed);
+  in_session_cur_ = in.in_session;
+  cal_running_cur_ = in.cal_running;
   in_session_atomic_.store(in.in_session, std::memory_order_relaxed);
   cal_running_atomic_.store(in.cal_running, std::memory_order_relaxed);
   // The scout thread starts once its card is up (threaded), or one step
@@ -178,6 +181,7 @@ ChannelTickOut ChannelCore::tick(const ChannelTickIn& in) {
   step_store_();
   step_gates_();
   step_hop_edge_and_window_(in);
+  step_cal_(in);
   step_controller_(in);
   step_move_edge_(in);
   step_drains_();
@@ -349,6 +353,19 @@ void ChannelCore::apply_hop_action_(const HopAction& act, double now_ms) {
 void ChannelCore::dispatch_hop_action_(const HopAction& act, bool relocate_tick, double now_ms) {
   apply_hop_action_(act, now_ms);
   boot_pick_.note_hop_action(act.kind, relocate_tick);
+  const bool cal_order = relocate_tick && cal_reloc_tick_;
+  if (cal_order) {
+    if (act.kind == HopAction::Order) cal_reloc_.s = CalReloc::InFlight;
+    else settle_cal_reloc_(false, "refused (hop cap)");
+  } else if (cal_reloc_.s == CalReloc::InFlight) {
+    switch (act.kind) {
+      case HopAction::Confirm:    cal_reloc_.confirmed = true; break;
+      case HopAction::VerifyPass: settle_cal_reloc_(true, "landed"); break;
+      case HopAction::Withdraw:   settle_cal_reloc_(false, "withdrawn"); break;
+      case HopAction::Hold:       settle_cal_reloc_(false, "held"); break;
+      default: break;
+    }
+  }
   if (auto b = hop_verdict_loss_blank_until(act, now_ms)) s1_hop_loss_.blank_until(*b);
   switch (act.kind) {
     case HopAction::Order:
@@ -362,10 +379,12 @@ void ChannelCore::dispatch_hop_action_(const HopAction& act, bool relocate_tick,
     default:
       break;
   }
-  for (const auto& e : hopc_.take_events()) {
+  for (auto e : hopc_.take_events()) {
+    if (cal_order && e.kind == "relocate") e.reason = "cal";
     sink_.hop(e);
-    sink_.log(logf_("maburgs hop: %s epoch %u target %u score %u +%.0f ms", e.kind.c_str(),
-                    e.epoch, e.target, e.score, e.elapsed_ms));
+    sink_.log(logf_("maburgs hop: %s epoch %u target %u score %u +%.0f ms%s%s%s", e.kind.c_str(),
+                    e.epoch, e.target, e.score, e.elapsed_ms, e.reason.empty() ? "" : " (",
+                    e.reason.c_str(), e.reason.empty() ? "" : ")"));
     last_hop_event_ms_ = static_cast<uint64_t>(e.elapsed_ms >= 0 ? e.elapsed_ms : 0.0);
   }
 }
@@ -439,6 +458,7 @@ void ChannelCore::step_boot_pick_(const ChannelTickIn& in) {
       break;
     case BootPickOut::Relocate:
       pending_relocate_ = bo.ch;
+      cal_reloc_tick_ = cal_reloc_.s == CalReloc::Waiting && bo.ch == cal_reloc_.ch;
       break;
     case BootPickOut::Freeze:
       if (bo.accept_op) plan_.set_want(now_ms, plan_.op());
@@ -498,6 +518,7 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
   if (!rec) return;
   const uint64_t t_ms = rec->t_ms;   // the sample instant: every per-window span is measured to it
   std::vector<VerdictCardIn> vc(static_cast<size_t>(n_cards_));
+  std::optional<CalReading> op_read;   // the worst valid card's reading of op this window
   int starved_valid = 0;
   bool starved_all_zero = true;
   for (int i = 0; i < n_cards_; ++i) {
@@ -534,11 +555,31 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
       vc[si].own_air_pct = own_used;
       energy_last_[si] = StatsEnergyIn{cs.energy.cca_ofdm, cs.energy.fa_ofdm, cs.frames.own - window_prev_[si].own,
                                        cs.frames.foreign - window_prev_[si].foreign, std::nullopt, busy_pct, own_used};
+      // Op's reading for a calibration run's pick (the scout never dwells
+      // on op's halves while linked): decoded foreign frames scaled from
+      // this window's span to one dwell_ms observe, and the foreign share
+      // of the NHM busy airtime (our own video is not interference). The
+      // worst card on each term, as the scout keeps a half's worst visit.
+      if (win_us > 0) {
+        const double k = static_cast<double>(cfg_.radio.scan.dwell_ms) * 1000.0 / win_us;
+        const auto foreign = static_cast<uint32_t>(std::lround(
+            static_cast<double>(cs.frames.foreign - window_prev_[si].foreign) * k));
+        if (!op_read) op_read = CalReading{plan_.op(), 0, false, 0.0};
+        op_read->foreign = std::max(op_read->foreign, foreign);
+        if (busy_pct) {
+          op_read->busy_valid = true;
+          op_read->busy_pct = std::max(op_read->busy_pct, std::max(*busy_pct - own_used, 0.0));
+        }
+      }
     }
     window_prev_[si] = cs.frames;
     window_prev_crc_[si] = crc_fail;
     window_prev_ms_[si] = t_ms;
     window_prev_ok_[si] = true;
+  }
+  if (op_read) {
+    op_live_ = op_read;
+    op_live_ms_ = now_ms;
   }
   VerdictLinkIn vl;
   const auto s1 = s1_hop_loss_.sample(now_ms);
@@ -562,7 +603,11 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
 
 void ChannelCore::step_controller_(const ChannelTickIn& in) {
   const double now_ms = in.now_ms;
-  if (!hop_active(in.in_session, in.cal_running)) { pending_relocate_.reset(); return; }
+  if (!hop_active(in.in_session, in.cal_running)) {
+    pending_relocate_.reset();
+    cal_reloc_tick_ = false;
+    return;
+  }
   poll_sweep_(now_ms);
   auto fill_hop_targets = [&](HopTick& k) {
     k.best = ranker_.best(now_ms, plan_.op(), hopc_.backed_off(now_ms), /*require_unblocked=*/true);
@@ -665,7 +710,10 @@ void ChannelCore::step_controller_(const ChannelTickIn& in) {
   } else if (pending_relocate_) {
     ht.verdict.trigger = true;
     ht.relocate = true;
-    ht.no_verify = !reactive_;   // onto the pin: the confirm lands it, no verify
+    // Onto the pin, or where a calibration run is about to calibrate: the
+    // confirm lands it, no verify (the run's cal_running would cut the
+    // verify window short anyway).
+    ht.no_verify = !reactive_ || cal_reloc_tick_;
     ht.best = *pending_relocate_;
     ht.best_score = 0;
     ht.escape.reset();
@@ -680,10 +728,12 @@ void ChannelCore::step_controller_(const ChannelTickIn& in) {
   const HopAction act = hopc_.tick(ht);
   dispatch_hop_action_(act, ht.relocate, now_ms);
   if (ht.relocate)
-    sink_.log(logf_("maburgs channel: relocate %u -> %u %s", static_cast<unsigned>(plan_.op()),
+    sink_.log(logf_("maburgs channel: relocate %u -> %u %s%s", static_cast<unsigned>(plan_.op()),
                     static_cast<unsigned>(*pending_relocate_),
-                    act.kind == HopAction::Order ? "placed" : "refused (hop cap)"));
+                    act.kind == HopAction::Order ? "placed" : "refused (hop cap)",
+                    cal_reloc_tick_ ? " (cal)" : ""));
   pending_relocate_.reset();
+  cal_reloc_tick_ = false;
 }
 
 void ChannelCore::step_move_edge_(const ChannelTickIn& in) {
@@ -806,6 +856,149 @@ void ChannelCore::poll_sweep_(double now_ms) {
   }
 }
 
+bool ChannelCore::cal_can_measure() const {
+  return scout_ != nullptr && !pinned_ && !one_card_ && !relay_search_only_ && n_cards_ >= 2;
+}
+
+void ChannelCore::begin_cal_measure(double now_ms) {
+  if (cal_reloc_.s != CalReloc::Waiting && cal_reloc_.s != CalReloc::InFlight) cal_reloc_ = CalReloc{};
+  if (!cal_can_measure()) return;
+  if (cal_meas_.s == CalMeasure::Waiting || cal_meas_.s == CalMeasure::Running) return;
+  cal_meas_ = CalMeasure{CalMeasure::Waiting, now_ms, 0};
+}
+
+void ChannelCore::cancel_cal_measure() {
+  if (cal_meas_.s == CalMeasure::Running) {
+    scout_->cancel_round(/*force_idle=*/!scout_started_);
+    sink_.log("maburgs channel: calibration measure round cancelled");
+  }
+  cal_meas_ = CalMeasure{};
+  if (cal_reloc_.s == CalReloc::Waiting && !plan_.hopping()) plan_.set_want(now_ms_cur_, plan_.op());
+  cal_reloc_ = CalReloc{};
+  cal_reloc_tick_ = false;
+}
+
+std::optional<uint8_t> ChannelCore::cal_measure_best() {
+  if (!cal_can_measure()) return plan_.op();
+  if (cal_meas_.s == CalMeasure::Done) return cal_meas_.best;
+  return std::nullopt;
+}
+
+bool ChannelCore::order_cal_relocate(uint8_t ch) {
+  const double now_ms = now_ms_cur_;
+  if (cal_reloc_.s == CalReloc::Waiting || cal_reloc_.s == CalReloc::InFlight) return false;
+  if (!plan_.member(ch) || ch == plan_.op()) return false;
+  if (!hop_active(in_session_cur_, cal_running_cur_)) return false;
+  if (plan_.hopping() || hopc_.state() == HopState::Ordered || hopc_.state() == HopState::Verifying)
+    return false;
+  if (boot_pick_.open() || boot_pick_.relocating() || scout_owns_() || sweep_.on) return false;
+  if (hopc_.hop_cap_reached(now_ms)) {
+    sink_.log(logf_("maburgs channel: calibration relocate to %u refused: hop cap",
+                    static_cast<unsigned>(ch)));
+    return false;
+  }
+  plan_.set_want(now_ms, ch);
+  boot_pick_.rearm_relocation();
+  cal_reloc_ = CalReloc{CalReloc::Waiting, ch, now_ms, false, false};
+  sink_.log(logf_("maburgs channel: calibration wants %u, link on %u: relocating",
+                  static_cast<unsigned>(ch), static_cast<unsigned>(plan_.op())));
+  return true;
+}
+
+std::optional<bool> ChannelCore::cal_relocate_settled() {
+  if (cal_reloc_.s == CalReloc::Settled) return cal_reloc_.ok;
+  return std::nullopt;
+}
+
+void ChannelCore::settle_cal_reloc_(bool ok, const char* why) {
+  cal_reloc_.s = CalReloc::Settled;
+  cal_reloc_.ok = ok;
+  sink_.log(logf_("maburgs channel: calibration relocate to %u %s", static_cast<unsigned>(cal_reloc_.ch),
+                  why));
+}
+
+void ChannelCore::step_cal_(const ChannelTickIn& in) {
+  const double now_ms = in.now_ms;
+  const bool active = hop_active(in.in_session, in.cal_running);
+  if (cal_reloc_.s == CalReloc::Waiting &&
+      (!active || now_ms - cal_reloc_.t0 > static_cast<double>(cfg_.hop.confirm_ms))) {
+    // BootPick never handed the order out (the link went, or something
+    // took the controller first): nothing will move, so want follows op.
+    settle_cal_reloc_(false, "never placed");
+    if (!plan_.hopping()) plan_.set_want(now_ms, plan_.op());
+  } else if (cal_reloc_.s == CalReloc::InFlight && cal_reloc_.confirmed &&
+             hopc_.state() == HopState::Idle) {
+    // Confirmed, then the session's falling edge dropped the verify state
+    // before its VerifyPass: the link is on the target all the same.
+    settle_cal_reloc_(true, "landed");
+  }
+
+  // A round still pending when the run is already calibrating has missed
+  // its moment: it must never take the scout card later, outside any pick.
+  if (cal_meas_.s == CalMeasure::Waiting && in.cal_running) {
+    cal_meas_ = CalMeasure{};
+    sink_.log("maburgs channel: calibration measure round dropped: a run is calibrating");
+  }
+  // Only with the scout thread up and its card alive: a round on a scout
+  // that never steps would hold the card for good.
+  if (cal_meas_.s == CalMeasure::Waiting && active && scout_started_ && !scout_card_down_ &&
+      !scout_owns_() && !boot_pick_.open() && !boot_pick_.relocating() && !plan_.hopping() &&
+      !sweep_.on && !dwell_busy_.load() &&
+      (hopc_.state() == HopState::Idle || hopc_.state() == HopState::Hold)) {
+    {
+      // inflight_mu_ then the card's device-use lock, the order every
+      // holder of both follows: no in-flight dwell is on the scout card
+      // while it changes hands, and the sampler sees the card blocked
+      // before the scout thread's first retune can land under it.
+      std::lock_guard<std::mutex> ilk(inflight_mu_);
+      auto hold = sampler_->hold_card(static_cast<size_t>(scout_card_));
+      scout_->begin_round();
+      scout_working_atomic_.store(true, std::memory_order_relaxed);
+      step_gates_();
+    }
+    cal_meas_.s = CalMeasure::Running;
+    cal_meas_.t0 = now_ms;
+    // Twice a full round's dwell time (every dwell channel, op's included,
+    // at dwell_ms + settle_ms), never under a second.
+    const size_t n = cfg_.radio.width == 40 ? scan_half_set(cfg_.radio.channels).size()
+                                            : cfg_.radio.channels.size();
+    cal_meas_.bound_ms = std::max(
+        1000.0, 2.0 * static_cast<double>(n) *
+                    static_cast<double>(cfg_.radio.scan.dwell_ms + cfg_.radio.scan.settle_ms));
+    sink_.log(logf_("maburgs channel: calibration measure round on card %d (op %u)", scout_card_,
+                    static_cast<unsigned>(plan_.op())));
+  } else if (cal_meas_.s == CalMeasure::Running && !scout_->round_measuring()) {
+    finish_cal_measure_(now_ms);
+  } else if (cal_meas_.s == CalMeasure::Running && now_ms - cal_meas_.t0 >= cal_meas_.bound_ms) {
+    scout_->cancel_round(/*force_idle=*/!scout_started_);
+    cal_meas_.s = CalMeasure::Done;
+    cal_meas_.best = plan_.op();
+    sink_.log(logf_("maburgs channel: calibration measure round overran %.0f ms; staying on %u",
+                    cal_meas_.bound_ms, static_cast<unsigned>(plan_.op())));
+  }
+}
+
+void ChannelCore::finish_cal_measure_(double now_ms) {
+  const uint8_t op = plan_.op();
+  // Op's row is the verdict's live reading taken during the round; without
+  // one op is unmeasured and a working link is not moved on a one-sided
+  // comparison (the boot pick's "op unmeasured" rule).
+  const bool have_op = op_live_.has_value() && op_live_ms_ >= cal_meas_.t0;
+  std::vector<CalReading> halves;
+  for (const RankSample& s : scout_->round_samples())
+    halves.push_back(CalReading{s.ch, s.foreign, s.busy_valid, s.busy_pct});
+  const CalPickOut pick =
+      cal_round_pick(halves, have_op ? op_live_ : std::nullopt, op, cfg_.radio.channels,
+                     cfg_.radio.width, static_cast<uint32_t>(cfg_.radio.scan.pick_margin),
+                     cfg_.radio.scan.busy.blocked_pct);
+  const uint8_t best = pick.best;
+  sink_.pick(now_ms, best, scout_->rounds(), pick.rows, 1);
+  sink_.log(logf_("maburgs channel: calibration measure picks %u (op %u%s)", static_cast<unsigned>(best),
+                  static_cast<unsigned>(op), have_op ? "" : " unread: staying"));
+  cal_meas_.s = CalMeasure::Done;
+  cal_meas_.best = best;
+}
+
 void ChannelCore::inflight_body_() {
   // Unlike main.cpp's always-present `inflight`, `inflight_` here is a
   // unique_ptr built only alongside a scout-capable card (ctor, scout_card_
@@ -829,6 +1022,9 @@ void ChannelCore::inflight_body_() {
     for (int i = 0; i < 20 && au_seq_.load() == s0; ++i) sleep_(1);
   }
   std::lock_guard<std::mutex> ilk(inflight_mu_);
+  // A calibration measure round may have taken the scout card since the
+  // checks above (step_cal_ starts the round under inflight_mu_).
+  if (scout_working_atomic_.load()) return;
   ScoutDwell d;
   HopVisit v;
   bool ok = false;

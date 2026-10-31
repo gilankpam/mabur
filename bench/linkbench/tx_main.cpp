@@ -427,6 +427,8 @@ int main(int argc, char** argv) {
   auto wall_sweep = [&] {
     uint16_t mac_seq = 0;
     const uint64_t t0 = mono_us();
+    const uint8_t wall_flags = static_cast<uint8_t>(
+        (a.ldpc ? mabur::cal::kFlagLdpc : 0) | (a.stbc ? mabur::cal::kFlagStbc : 0));
     for (int m = 0; m < 8 && !g_devourer_should_stop; ++m) {
       if (!(a.wall_mcs_mask & (1 << m))) continue;
       devourer::TxMode wm = mode;
@@ -439,8 +441,9 @@ int main(int argc, char** argv) {
         uint64_t due = mono_us();
         for (int k = 0; k < a.wall_frames; ++k) {
           const auto body = mabur::cal::build_cal_payload(
-              static_cast<uint8_t>(m), static_cast<int8_t>(rel),
-              mabur::cal::kPhaseFine, static_cast<uint16_t>(k));
+              mabur::cal::Kind::Power, static_cast<uint8_t>(m),
+              static_cast<int8_t>(rel), /*bw=*/static_cast<uint8_t>(a.bw),
+              wall_flags, static_cast<uint32_t>(k));
           std::vector<uint8_t> f;
           f.reserve(rt.size() + kDot11HeaderLen + body.size());
           f.insert(f.end(), rt.begin(), rt.end());

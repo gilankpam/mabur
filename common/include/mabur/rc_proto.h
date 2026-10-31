@@ -1,5 +1,4 @@
 #pragma once
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -63,7 +62,10 @@ constexpr uint16_t RC_MAGIC = 0x5243;  // "RC"
 // Bumped 15 -> 16: RCF gains snr_off (phase lock: the GS's sensor-rate
 // steering offset, level-triggered in every RCF).
 // Bumped 16 -> 17: T_MAV (MAVLink tunnel, both directions) and CAP_MAVLINK.
-constexpr uint8_t RC_VERSION = 17;
+// Bumped 17 -> 18: T_CAL_CMD / T_CAL_RESULT deleted (calibration rides the
+// MAVLink tunnel's cal lane instead); Telem flags bit6 (cal_active), which
+// acked the dedicated command frame, is no longer set.
+constexpr uint8_t RC_VERSION = 18;
 
 // RCF probe_profile sentinel: the drone runs no probe stream.
 constexpr uint8_t kNoProbeProfile = 0xFF;
@@ -82,8 +84,8 @@ constexpr uint8_t T_RCF = 1;
 constexpr uint8_t T_DISC = 2;
 constexpr uint8_t T_DISC_ACK = 3;
 constexpr uint8_t T_TELEM = 4;
-constexpr uint8_t T_CAL_CMD = 5;
-constexpr uint8_t T_CAL_RESULT = 6;
+// 5 and 6 were T_CAL_CMD / T_CAL_RESULT, deleted when calibration moved onto
+// the MAVLink tunnel's cal lane; unassigned, not reused.
 // T_NACK (fec-nack): GS -> drone selective-repeat
 // request. Lists source symbols the sliding-window decoder could not
 // recover; the drone re-sends them from its retransmit ring at the head of
@@ -100,8 +102,8 @@ constexpr uint8_t T_MAV = 8;
 constexpr uint8_t F_DISCOVERY = 0x04;
 
 // SipHash-24 auth tag (link pairing): the 8 bytes
-// immediately before the CRC on every DISC/RCF/CAL_CMD/CAL_RESULT/NACK frame
-// and every GS -> drone MAV frame.
+// immediately before the CRC on every DISC/RCF/NACK frame and every
+// GS -> drone MAV frame.
 constexpr size_t kTagLen = 8;
 
 constexpr uint8_t kAckKeyMismatch = 0x01;   // DiscAck::flags bit0
@@ -109,7 +111,7 @@ constexpr uint8_t kTelemAuthReject = 0x02;  // Telem::flags bit1
 
 // Values hashed into a control frame's tag but never sent on the wire
 // (link pairing): the VRX/VTX nonces from the completed
-// rendezvous plus a 32-bit sequence (RCF's seq, widened; 0 for DISC/CAL
+// rendezvous plus a 32-bit sequence (RCF's seq, widened; 0 for DISC
 // frames, which carry no seq of their own).
 struct TagCtx {
   uint32_t vrx_nonce = 0;
@@ -127,8 +129,8 @@ constexpr uint16_t CAP_FRAME_WIRE = 0x0001;
 // sees a T_TELEM frame from an old drone.
 constexpr uint16_t CAP_TELEMETRY = 0x0002;
 
-// DiscAck.chip_caps bit: VTX understands T_CAL_CMD / T_CAL_RESULT and can run
-// a TX-power wall calibration. The GS refuses to start a session without it.
+// DiscAck.chip_caps bit: the peer runs the mabur-dialect calibration (the
+// MAVLink tunnel's cal lane). The GS refuses to start a session without it.
 constexpr uint16_t CAP_CALIBRATE = 0x0004;
 
 // DiscAck.chip_caps bit: VTX understands T_MAV and tunnels MAVLink both ways.
@@ -219,16 +221,9 @@ struct Telem {
                       //      distinct from bit0 so a bench can count sheds
                       //      and flightreport can attribute an enh gap to
                       //      congestion rather than RF),
-                      // bit6 cal_active (drone accepted a calibration command; set on the
-                      //      ack Telem for each accepted PHASE -- coarse, then fine -- sent
-                      //      BEFORE that phase's first sweep frame, and re-sent on every exact
-                      //      retransmission of the phase already running (the GS resends its
-                      //      CalCmd every 200 ms into a 30-50%-lossy uplink; CalSession::on_ack
-                      //      is a no-op once already out of AwaitAck, so answering a repeat is
-                      //      harmless). Telem is suppressed only WHILE a phase
-                      //      is actively sweeping, so the ack(s) and the suppression do not
-                      //      conflict. The verify pass has no command and therefore no ack: the
-                      //      drone self-initiates it after applying the result)
+                      // bit6 unused: no frame sets it (it was cal_active,
+                      //      the ack of a dedicated calibration command frame;
+                      //      calibration acks now ride the MAVLink tunnel),
                       // bit7 low_power (RcAgent::low_power(): pre-arm 1 Mb/s / 15 fps operating point)
                       // bit1 auth_reject: >= 1 GS->drone control frame failed tag/seq
                       //      verification this telemetry period. One period around a
@@ -284,55 +279,15 @@ struct Telem {
   uint16_t nack_rx = 0, retx_syms = 0, retx_refused = 0;
 };
 
-// One rate's index range for a calibration phase. idx_step 4 is the coarse
-// scan; 1 is the full-resolution fine window.
-struct CalWindow {
-  uint8_t rate = 0;      // HT MCS 0..7
-  int8_t idx_lo = 0;     // relative to the chip's anchor, [-64, 63]
-  int8_t idx_hi = 0;     // relative to the chip's anchor, [-64, 63]
-  uint8_t idx_step = 1;
-};
-
-constexpr size_t kMaxCalWindows = 8;  // one per HT MCS
-
-// VRX -> VTX: run this sweep. Idempotent by (nonce, phase) so the GS can
-// repeat it into the drone's listen window without the drone re-running a
-// phase it already started -- the uplink loses 30-50% of frames.
-struct CalCmd {
-  uint32_t nonce = 0;
-  uint8_t phase = 0;              // cal::kPhaseCoarse / Fine / Verify
-  uint16_t frames_per_cell = 20;
-  uint16_t settle_ms = 100;
-  uint16_t gap_us = 2000;
-  std::vector<CalWindow> windows;  // 1..kMaxCalWindows
-};
-
-// Calibration indices are relative to the chip's own per-channel TXAGC
-// anchor, so they live in the 7-bit signed diff-field range. -1 is a legal
-// wall; "undetermined" is this sentinel, outside the range.
+// Calibration indices: relative to the chip's own per-channel TXAGC anchor,
+// so they live in the 7-bit signed diff-field range. -1 is a legal wall;
+// "undetermined" is this sentinel, outside the range.
 constexpr int kRelMin = -64;
 constexpr int kRelMax = 63;
 constexpr int kRailRel = 63;  // a no-dip row's wall: rail to the top of the range
 constexpr int16_t kWallUndetermined = -128;
 
-// VRX -> VTX: the measured table. A wall of kWallUndetermined is
-// UNDETERMINED -- the GS could not derive one from the data, and the drone
-// must leave that config entry exactly as it found it rather than write a
-// fabricated number.
-struct CalResult {
-  uint32_t nonce = 0;
-  std::array<int16_t, 8> walls{kWallUndetermined, kWallUndetermined,
-                                kWallUndetermined, kWallUndetermined,
-                                kWallUndetermined, kWallUndetermined,
-                                kWallUndetermined, kWallUndetermined};
-  int16_t legacy_wall = kWallUndetermined;
-  // No flags field: the health flags (no_dip, narrow, saturated, drift,
-  // card_disagree) never leave the GS -- they reach cal.log from its own
-  // W rows, and the drone has no use for them. Nothing on this side of
-  // the wire ever read one.
-};
-
-// Tagged frames (DISC/RCF/CAL_CMD/CAL_RESULT) carry an 8-byte SipHash tag
+// Tagged frames (DISC/RCF) carry an 8-byte SipHash tag
 // (kTagLen) right before the CRC. pack_* always writes a tag -- keyed by
 // `key`, defaulting to kDefaultLinkKey, hashed over the frame's bytes plus
 // `ctx` (never sent; see TagCtx). parse_* stays structural and never checks
@@ -349,10 +304,6 @@ std::optional<DiscAck> parse_disc_ack(const uint8_t* buf, size_t len);
 
 std::vector<uint8_t> pack_telem(const Telem& t);
 std::optional<Telem> parse_telem(const uint8_t* buf, size_t len);
-
-std::vector<uint8_t> pack_cal_cmd(const CalCmd& c, const LinkKey& key = kDefaultLinkKey,
-                                  const TagCtx& ctx = {});
-std::optional<CalCmd> parse_cal_cmd(const uint8_t* buf, size_t len);
 
 // T_NACK: GS -> drone selective-repeat
 // request for base-layer source symbols. counter is the GS's per-session
@@ -395,20 +346,14 @@ std::vector<uint8_t> pack_mav(const Mav& m, bool tagged, const LinkKey& key = kD
 // not say); the wrong value fails the CRC check.
 std::optional<Mav> parse_mav(const uint8_t* buf, size_t len, bool tagged);
 
-std::vector<uint8_t> pack_cal_result(const CalResult& r, const LinkKey& key = kDefaultLinkKey,
-                                     const TagCtx& ctx = {});
-std::optional<CalResult> parse_cal_result(const uint8_t* buf, size_t len);
-
-// Recomputes the tag of any tagged frame (DISC/RCF/CAL_CMD/CAL_RESULT/
-// NACK/MAV): the 8 bytes at the frame's STRUCTURAL tag offset -- derived
-// from its type (DISC_LEN, RCF_HEAD_LEN, kCalResultLen,
-// kCalCmdFixedLen + n_windows*4, kNackFixedLen + n*kNackEntryLen, or
-// kMavFixedLen + len16) -- must equal SipHash(key, bytes-before-tag ||
-// ctx). Bytes past tag+CRC are ignored: on hardware the drone's body still
-// carries the 4-byte 802.11 FCS. Constant-time compare. False for any
-// other type, a CAL_CMD whose n_windows is 0 or > kMaxCalWindows, a NACK
-// whose n is 0 or > kMaxNackEntries, a MAV whose len16 > kMavMaxPayload, or
-// a buffer shorter than structural + tag + CRC.
+// Recomputes the tag of any tagged frame (DISC/RCF/NACK/MAV): the 8 bytes
+// at the frame's STRUCTURAL tag offset -- derived from its type (DISC_LEN,
+// RCF_HEAD_LEN, kNackFixedLen + n*kNackEntryLen, or kMavFixedLen + len16) --
+// must equal SipHash(key, bytes-before-tag || ctx). Bytes past tag+CRC are
+// ignored: on hardware the drone's body still carries the 4-byte 802.11 FCS.
+// Constant-time compare. False for any other type, a NACK whose n is 0 or
+// > kMaxNackEntries, a MAV whose len16 > kMavMaxPayload, or a buffer shorter
+// than structural + tag + CRC.
 bool verify_control(const uint8_t* buf, size_t len, const LinkKey& key, const TagCtx& ctx);
 
 // Peeks the RC frame type without a full parse (no CRC check). Returns -1 if

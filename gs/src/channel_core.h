@@ -10,6 +10,29 @@
 // the in-flight thread are owned (started, joined) here; threaded = false
 // runs without threads for tests. tx_frozen()/dwell_busy() are live reads
 // because the send path runs after tick() and a dwell may start in between.
+//
+// A calibration run's channel pick (CalPicker, cal_picker.h) rides the same
+// units, no parallel path. begin_cal_measure() arms one measure round of
+// the boot scout (ChannelScout::begin_round): once the boot pick has closed
+// and nothing else holds the scout card, a hop or the controller, the
+// scout measures every 20 MHz half of the set (every member at width 20)
+// once on a fresh ranker -- the same dwell_ms observes, settle and send
+// gating as the boot pick -- skipping op's own halves, which carry the
+// drone's video. Op is read from the verdict window instead
+// (the worst valid card on op: decoded foreign frames scaled to dwell_ms,
+// NHM busy minus our own airtime). The pick compares only those two terms
+// on both sides, with pick_margin against op in every tier
+// (cal_round_pick.h); it is logged as a K record. The round starts only
+// with the scout thread up and its card alive, is dropped when a run is
+// already calibrating, and ends at a wall-clock bound (twice a full
+// round's dwell time) with op as the answer; cancel_cal_measure() releases
+// it at any point. order_cal_relocate() moves want and re-arms BootPick's
+// relocation, so the move is the boot pick's own relocate order (H
+// relocate, reason "cal"), landed by the confirm (no verify window: the run
+// calibrates wherever it lands) and resolved through BootPick (a failure
+// accepts op). The store follows op as for any hop. Pinned or one-card:
+// nothing is measured and op is the answer. Both run before the session
+// sets cal_running, which freezes channel changes for the run.
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -22,6 +45,7 @@
 
 #include "aggregator.h"
 #include "boot_pick.h"
+#include "cal_round_pick.h"
 #include "channel_plan.h"
 #include "channel_scout.h"
 #include "config.h"
@@ -175,6 +199,29 @@ class ChannelCore {
     return sampler_->hold_card(static_cast<size_t>(card));
   }
 
+  // ---- calibration channel pick (CalPicker; core thread) ----
+  bool pinned() const { return pinned_; }
+  // Auto mode with a spare card that can measure (two or more USB cards).
+  bool cal_can_measure() const;
+  // Arms one measure round (restarts nothing while one is pending or
+  // running). Not measurable: a no-op, cal_measure_best() is op.
+  void begin_cal_measure(double now_ms);
+  // The run is done with the pick (timeout, abort, failure): drop a pending
+  // round, end a running one (the scout parks), and stop tracking a cal
+  // relocate -- one not yet placed is withdrawn by want following op; one
+  // already placed proceeds or withdraws like any relocate.
+  void cancel_cal_measure();
+  // The round's best member; nullopt while it waits or runs, op when the
+  // GS cannot measure.
+  std::optional<uint8_t> cal_measure_best();
+  // The boot pick's relocate toward ch, reason cal. false = refused: not a
+  // member, already op, link not live, a hop/relocation/sweep in flight or
+  // the pick still open, the scout on its card, the hop rate limit.
+  bool order_cal_relocate(uint8_t ch);
+  // true once the confirm landed it, false when withdrawn, held at the
+  // cap, lost with the session or never placed; nullopt pending / none.
+  std::optional<bool> cal_relocate_settled();
+
   // ---- test seam (threaded = false) ----
   void run_scout_step();      // one ChannelScout::run_once()
   void run_inflight_step();   // one body of the in-flight loop (no sleep)
@@ -293,6 +340,26 @@ class ChannelCore {
   bool inflight_started_ = false;
   std::thread scout_thread2_;
   bool shut_ = false;
+  // ---- calibration channel pick ----
+  struct CalMeasure {
+    enum S { Off, Waiting, Running, Done } s = Off;
+    double t0 = 0;       // round start (op's reading must be newer)
+    double bound_ms = 0; // Running: ends the round here, op the answer
+    uint8_t best = 0;
+  } cal_meas_;
+  struct CalReloc {
+    enum S { Off, Waiting, InFlight, Settled } s = Off;
+    uint8_t ch = 0;
+    double t0 = 0;
+    bool confirmed = false;
+    bool ok = false;
+  } cal_reloc_;
+  bool cal_reloc_tick_ = false;      // this tick's Relocate is the calibration's
+  // The latest verdict window's reading of op: the worst valid card on op,
+  // foreign frames scaled to radio.scan.dwell_ms.
+  std::optional<CalReading> op_live_;
+  double op_live_ms_ = -1;
+  bool in_session_cur_ = false, cal_running_cur_ = false;
   // the tick's current inputs, for helpers
   double now_ms_cur_ = 0;
   uint64_t now_ms_u_cur_ = 0;
@@ -312,6 +379,9 @@ class ChannelCore {
   void step_width_resync_();
   void step_mechanical_retune_();
   void poll_sweep_(double now_ms);
+  void step_cal_(const ChannelTickIn& in);
+  void finish_cal_measure_(double now_ms);
+  void settle_cal_reloc_(bool ok, const char* why);
   void inflight_body_();
   void scout_loop_();
   std::string logf_(const char* fmt, ...);

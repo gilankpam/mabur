@@ -1,15 +1,13 @@
 #pragma once
 // MESSAGE RELAY_STATUS PACKING
 
-#include <stdint.h>
-
 #define MAVLINK_MSG_ID_RELAY_STATUS 376
 
 
 typedef struct __mavlink_relay_status_t {
  uint32_t time_boot_ms; /*< [ms] Timestamp (time since system boot).*/
- uint16_t on; /*<  Relay states. Relay instance numbers are represented as individual bits in this mask by offset.*/
- uint16_t present; /*<  Relay present. Relay instance numbers are represented as individual bits in this mask by offset.  Bits will be true if a relay instance is configured.*/
+ uint16_t on; /*<  Relay states.  Relay instance numbers are represented as individual bits in this mask by offset.*/
+ uint16_t present; /*<  Relay present.  Relay instance numbers are represented as individual bits in this mask by offset.  Bits will be true if a relay instance is configured.*/
 } mavlink_relay_status_t;
 
 #define MAVLINK_MSG_ID_RELAY_STATUS_LEN 8
@@ -50,11 +48,11 @@ typedef struct __mavlink_relay_status_t {
  * @param msg The MAVLink message to compress the data into
  *
  * @param time_boot_ms [ms] Timestamp (time since system boot).
- * @param on  Relay states. Relay instance numbers are represented as individual bits in this mask by offset.
- * @param present  Relay present. Relay instance numbers are represented as individual bits in this mask by offset.  Bits will be true if a relay instance is configured.
+ * @param on  Relay states.  Relay instance numbers are represented as individual bits in this mask by offset.
+ * @param present  Relay present.  Relay instance numbers are represented as individual bits in this mask by offset.  Bits will be true if a relay instance is configured.
  * @return length of the message in bytes (excluding serial stream start sign)
  */
-static inline uint16_t mavlink_msg_relay_status_pack(uint32_t system_id, uint8_t component_id, mavlink_message_t* msg,
+static inline uint16_t mavlink_msg_relay_status_pack(uint8_t system_id, uint8_t component_id, mavlink_message_t* msg,
                                uint32_t time_boot_ms, uint16_t on, uint16_t present)
 {
 #if MAVLINK_NEED_BYTE_SWAP || !MAVLINK_ALIGNED_FIELDS
@@ -85,11 +83,11 @@ static inline uint16_t mavlink_msg_relay_status_pack(uint32_t system_id, uint8_t
  * @param msg The MAVLink message to compress the data into
  *
  * @param time_boot_ms [ms] Timestamp (time since system boot).
- * @param on  Relay states. Relay instance numbers are represented as individual bits in this mask by offset.
- * @param present  Relay present. Relay instance numbers are represented as individual bits in this mask by offset.  Bits will be true if a relay instance is configured.
+ * @param on  Relay states.  Relay instance numbers are represented as individual bits in this mask by offset.
+ * @param present  Relay present.  Relay instance numbers are represented as individual bits in this mask by offset.  Bits will be true if a relay instance is configured.
  * @return length of the message in bytes (excluding serial stream start sign)
  */
-static inline uint16_t mavlink_msg_relay_status_pack_status(uint32_t system_id, uint8_t component_id, mavlink_status_t *_status, mavlink_message_t* msg,
+static inline uint16_t mavlink_msg_relay_status_pack_status(uint8_t system_id, uint8_t component_id, mavlink_status_t *_status, mavlink_message_t* msg,
                                uint32_t time_boot_ms, uint16_t on, uint16_t present)
 {
 #if MAVLINK_NEED_BYTE_SWAP || !MAVLINK_ALIGNED_FIELDS
@@ -112,7 +110,7 @@ static inline uint16_t mavlink_msg_relay_status_pack_status(uint32_t system_id, 
 #if MAVLINK_CRC_EXTRA
     return mavlink_finalize_message_buffer(msg, system_id, component_id, _status, MAVLINK_MSG_ID_RELAY_STATUS_MIN_LEN, MAVLINK_MSG_ID_RELAY_STATUS_LEN, MAVLINK_MSG_ID_RELAY_STATUS_CRC);
 #else
-    return mavlink_finalize_message_buffer(msg, system_id, component_id, _status, MAVLINK_MSG_ID_RELAY_STATUS_MIN_LEN, MAVLINK_MSG_ID_RELAY_STATUS_LEN, 0);
+    return mavlink_finalize_message_buffer(msg, system_id, component_id, _status, MAVLINK_MSG_ID_RELAY_STATUS_MIN_LEN, MAVLINK_MSG_ID_RELAY_STATUS_LEN);
 #endif
 }
 
@@ -123,11 +121,11 @@ static inline uint16_t mavlink_msg_relay_status_pack_status(uint32_t system_id, 
  * @param chan The MAVLink channel this message will be sent over
  * @param msg The MAVLink message to compress the data into
  * @param time_boot_ms [ms] Timestamp (time since system boot).
- * @param on  Relay states. Relay instance numbers are represented as individual bits in this mask by offset.
- * @param present  Relay present. Relay instance numbers are represented as individual bits in this mask by offset.  Bits will be true if a relay instance is configured.
+ * @param on  Relay states.  Relay instance numbers are represented as individual bits in this mask by offset.
+ * @param present  Relay present.  Relay instance numbers are represented as individual bits in this mask by offset.  Bits will be true if a relay instance is configured.
  * @return length of the message in bytes (excluding serial stream start sign)
  */
-static inline uint16_t mavlink_msg_relay_status_pack_chan(uint32_t system_id, uint8_t component_id, uint8_t chan,
+static inline uint16_t mavlink_msg_relay_status_pack_chan(uint8_t system_id, uint8_t component_id, uint8_t chan,
                                mavlink_message_t* msg,
                                    uint32_t time_boot_ms,uint16_t on,uint16_t present)
 {
@@ -159,7 +157,7 @@ static inline uint16_t mavlink_msg_relay_status_pack_chan(uint32_t system_id, ui
  * @param msg The MAVLink message to compress the data into
  * @param relay_status C-struct to read the message contents from
  */
-static inline uint16_t mavlink_msg_relay_status_encode(uint32_t system_id, uint8_t component_id, mavlink_message_t* msg, const mavlink_relay_status_t* relay_status)
+static inline uint16_t mavlink_msg_relay_status_encode(uint8_t system_id, uint8_t component_id, mavlink_message_t* msg, const mavlink_relay_status_t* relay_status)
 {
     return mavlink_msg_relay_status_pack(system_id, component_id, msg, relay_status->time_boot_ms, relay_status->on, relay_status->present);
 }
@@ -173,7 +171,7 @@ static inline uint16_t mavlink_msg_relay_status_encode(uint32_t system_id, uint8
  * @param msg The MAVLink message to compress the data into
  * @param relay_status C-struct to read the message contents from
  */
-static inline uint16_t mavlink_msg_relay_status_encode_chan(uint32_t system_id, uint8_t component_id, uint8_t chan, mavlink_message_t* msg, const mavlink_relay_status_t* relay_status)
+static inline uint16_t mavlink_msg_relay_status_encode_chan(uint8_t system_id, uint8_t component_id, uint8_t chan, mavlink_message_t* msg, const mavlink_relay_status_t* relay_status)
 {
     return mavlink_msg_relay_status_pack_chan(system_id, component_id, chan, msg, relay_status->time_boot_ms, relay_status->on, relay_status->present);
 }
@@ -187,7 +185,7 @@ static inline uint16_t mavlink_msg_relay_status_encode_chan(uint32_t system_id, 
  * @param msg The MAVLink message to compress the data into
  * @param relay_status C-struct to read the message contents from
  */
-static inline uint16_t mavlink_msg_relay_status_encode_status(uint32_t system_id, uint8_t component_id, mavlink_status_t* _status, mavlink_message_t* msg, const mavlink_relay_status_t* relay_status)
+static inline uint16_t mavlink_msg_relay_status_encode_status(uint8_t system_id, uint8_t component_id, mavlink_status_t* _status, mavlink_message_t* msg, const mavlink_relay_status_t* relay_status)
 {
     return mavlink_msg_relay_status_pack_status(system_id, component_id, _status, msg,  relay_status->time_boot_ms, relay_status->on, relay_status->present);
 }
@@ -197,8 +195,8 @@ static inline uint16_t mavlink_msg_relay_status_encode_status(uint32_t system_id
  * @param chan MAVLink channel to send the message
  *
  * @param time_boot_ms [ms] Timestamp (time since system boot).
- * @param on  Relay states. Relay instance numbers are represented as individual bits in this mask by offset.
- * @param present  Relay present. Relay instance numbers are represented as individual bits in this mask by offset.  Bits will be true if a relay instance is configured.
+ * @param on  Relay states.  Relay instance numbers are represented as individual bits in this mask by offset.
+ * @param present  Relay present.  Relay instance numbers are represented as individual bits in this mask by offset.  Bits will be true if a relay instance is configured.
  */
 #ifdef MAVLINK_USE_CONVENIENCE_FUNCTIONS
 
@@ -281,7 +279,7 @@ static inline uint32_t mavlink_msg_relay_status_get_time_boot_ms(const mavlink_m
 /**
  * @brief Get field on from relay_status message
  *
- * @return  Relay states. Relay instance numbers are represented as individual bits in this mask by offset.
+ * @return  Relay states.  Relay instance numbers are represented as individual bits in this mask by offset.
  */
 static inline uint16_t mavlink_msg_relay_status_get_on(const mavlink_message_t* msg)
 {
@@ -291,7 +289,7 @@ static inline uint16_t mavlink_msg_relay_status_get_on(const mavlink_message_t* 
 /**
  * @brief Get field present from relay_status message
  *
- * @return  Relay present. Relay instance numbers are represented as individual bits in this mask by offset.  Bits will be true if a relay instance is configured.
+ * @return  Relay present.  Relay instance numbers are represented as individual bits in this mask by offset.  Bits will be true if a relay instance is configured.
  */
 static inline uint16_t mavlink_msg_relay_status_get_present(const mavlink_message_t* msg)
 {
@@ -315,5 +313,4 @@ static inline void mavlink_msg_relay_status_decode(const mavlink_message_t* msg,
         memset(relay_status, 0, MAVLINK_MSG_ID_RELAY_STATUS_LEN);
     memcpy(relay_status, _MAV_PAYLOAD(msg), len);
 #endif
-
 }

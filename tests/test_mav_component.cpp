@@ -635,10 +635,13 @@ TEST(calibration_and_parameter_sets_on_two_threads_lose_nothing) {
   std::thread cal([&] {
     for (int i = 0; i < 20; ++i) {
       CalWrite w;
+      w.bw = 20;
+      w.has_walls = true;
       w.walls = i == 19 ? walls_last : walls_a;
       w.legacy_wall = i == 19 ? 58 : 60;
       std::string err;
-      if (apply_calibration(b.path(), w, 1.0, &err) != ApplyResult::Ok) ++cal_bad;
+      if (apply_calibration(b.path(), w, 1.0, /*backup=*/true, &err) != ApplyResult::Ok)
+        ++cal_bad;
     }
   });
   std::thread set([&] {
@@ -680,7 +683,7 @@ TEST(calibration_and_parameter_sets_on_two_threads_lose_nothing) {
   CHECK(set_bad == 0);
   const Config cfg = load_config(b.path());
   CHECK(cfg.record.bitrate_kbps == 30000);
-  CHECK(cfg.radio.rate_walls_rel == walls_last);
+  CHECK(cfg.radio.rate_walls_rel_20 == walls_last);
   CHECK(cfg.radio.legacy_wall_rel == 58);
   CHECK(cfg.radio.power_mode == "offset");
   std::remove((b.path() + ".pre-cal").c_str());
@@ -902,6 +905,41 @@ TEST(set_acks_in_progress_then_accepted_on_completion) {
   const auto ack = ack_of(msgs[0]);
   CHECK(ack.param_result == PARAM_ACK_ACCEPTED && wire_i32(ack.param_value) == 30);
   CHECK(c.stats().sets_in_progress == 1 && c.stats().sets_ok == 1);
+}
+
+// An accepted apply's notices follow its ACCEPTED ack as WARNING
+// STATUSTEXTs; one longer than a STATUSTEXT's 50 chars goes out as chunks
+// sharing one nonzero id, chunk_seq counting up, that join back into it.
+TEST(set_accepted_with_notices_sends_warning_statustext_chunks) {
+  ScratchBundle b;
+  auto c = make(b.path());
+  REQUIRE(do_set(c, set_bool("RADIO_LDPC", false)).ack.param_result == PARAM_ACK_IN_PROGRESS);
+  fake.complete(true, "");
+  const std::string longer =
+      "radio: 20 MHz walls were measured with ldpc on; radio.ldpc is off \xe2\x80\x94 re-run "
+      "maburcal";
+  REQUIRE(longer.size() > 50 && longer.size() <= 100);
+  fake.result.notices = {"short notice", longer};
+  c.poll_results();
+  auto msgs = drain(c);
+  REQUIRE(msgs.size() == 4);
+  CHECK(ack_of(msgs[0]).param_result == PARAM_ACK_ACCEPTED);
+  mavlink_statustext_t s{};
+  mavlink_msg_statustext_decode(&msgs[1], &s);
+  CHECK(s.severity == MAV_SEVERITY_WARNING && s.id == 0 && s.chunk_seq == 0);
+  CHECK(std::string(s.text, strnlen(s.text, sizeof s.text)) == "short notice");
+  std::string joined;
+  uint16_t id = 0;
+  for (size_t i = 2; i < 4; ++i) {
+    REQUIRE(msgs[i].msgid == MAVLINK_MSG_ID_STATUSTEXT);
+    mavlink_msg_statustext_decode(&msgs[i], &s);
+    CHECK(s.severity == MAV_SEVERITY_WARNING);
+    CHECK(s.id != 0 && s.chunk_seq == i - 2);
+    if (i == 2) id = s.id;
+    CHECK(s.id == id);
+    joined += std::string(s.text, strnlen(s.text, sizeof s.text));
+  }
+  CHECK(joined == longer);
 }
 
 TEST(set_acks_failed_with_statustext_on_failed_completion) {

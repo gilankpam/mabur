@@ -84,9 +84,45 @@ void assign_if_present(const Value& j, const char* key, T& out,
   }
 }
 
+// Parses one of radio.rate_walls_rel_20/_40 into `out` (left nullopt if
+// absent) and range-checks it against the 7-bit diff field, same as the
+// single-table loader used to. `key` is e.g. "rate_walls_rel_20".
+void parse_wall_table(const Value& j, const char* key,
+                      std::optional<std::array<int, 8>>& out) {
+  if (!j.contains(key)) return;
+  auto& arr = j.at(key);
+  g_line = arr.line();
+  const std::string field = std::string("radio.") + key;
+  if (!arr.is_array() || arr.size() != 8)
+    fail(field, "must be an array of 8 ints");
+  std::array<int, 8> vals{};
+  try {
+    for (size_t i = 0; i < 8; ++i) vals[i] = arr.at(i).get<int>();
+  } catch (const toml::Error&) {
+    fail(field, "wrong type");
+  }
+  // Relative walls live in the 7-bit two's complement diff field [-64,63].
+  // Outside it the value would wrap on air.
+  for (size_t i = 0; i < vals.size(); ++i) {
+    const int v = vals[i];
+    if (v < rc::kRelMin || v > rc::kRelMax)
+      fail(field, "[" + std::to_string(i) + "] = " + std::to_string(v) +
+                      " is outside the 7-bit hardware field range [-64,63]");
+  }
+  out = vals;
+}
+
+void parse_cal_flags(const Value& j, const char* key, std::string& out) {
+  assign_if_present(j, key, out, "radio");
+  if (out != "ldpc+stbc" && out != "stbc" && out != "ldpc" && out != "none")
+    fail(std::string("radio.") + key,
+         "must be \"ldpc+stbc\", \"stbc\", \"ldpc\" or \"none\"");
+}
+
 void parse_radio(const Value& j, RadioCfg& r) {
   check_known_keys(j, {"usb_vid", "usb_pid", "channels", "width",
-                        "power_mode", "tx_threads", "rate_walls_rel",
+                        "power_mode", "tx_threads", "rate_walls_rel_20",
+                        "rate_walls_rel_40", "cal_flags_20", "cal_flags_40",
                         "legacy_wall_rel", "wall_margin_db", "ldpc"},
                    "radio");
   assign_if_present(j, "usb_vid", r.usb_vid, "radio");
@@ -113,20 +149,15 @@ void parse_radio(const Value& j, RadioCfg& r) {
   assign_if_present(j, "power_mode", r.power_mode, "radio");
   assign_if_present(j, "tx_threads", r.tx_threads, "radio");
 
-  bool rate_walls_rel_present = j.contains("rate_walls_rel");
-  if (rate_walls_rel_present) {
-    auto& arr = j.at("rate_walls_rel");
-    g_line = arr.line();
-    if (!arr.is_array() || arr.size() != 8)
-      fail("radio.rate_walls_rel", "must be an array of 8 ints");
-    try {
-      for (size_t i = 0; i < 8; ++i)
-        r.rate_walls_rel[i] = arr.at(i).get<int>();
-    } catch (const toml::Error&) {
-      fail("radio.rate_walls_rel", "wrong type");
-    }
-  }
-  if (!rate_walls_rel_present) note_default("radio", "rate_walls_rel", "(unit defaults)");
+  parse_wall_table(j, "rate_walls_rel_20", r.rate_walls_rel_20);
+  if (!j.contains("rate_walls_rel_20"))
+    note_default("radio", "rate_walls_rel_20", "(absent)");
+  parse_wall_table(j, "rate_walls_rel_40", r.rate_walls_rel_40);
+  if (!j.contains("rate_walls_rel_40"))
+    note_default("radio", "rate_walls_rel_40", "(absent)");
+  parse_cal_flags(j, "cal_flags_20", r.cal_flags_20);
+  parse_cal_flags(j, "cal_flags_40", r.cal_flags_40);
+
   assign_if_present(j, "legacy_wall_rel", r.legacy_wall_rel, "radio");
   assign_if_present(j, "wall_margin_db", r.wall_margin_db, "radio");
 
@@ -135,18 +166,10 @@ void parse_radio(const Value& j, RadioCfg& r) {
   if (r.power_mode != "offset" && r.power_mode != "none")
     fail("radio.power_mode", "must be \"offset\" or \"none\"");
 
-  if (r.power_mode == "offset" && !rate_walls_rel_present)
-    fail("radio.rate_walls_rel", "required when power_mode = \"offset\"");
+  if (r.power_mode == "offset" && !r.rate_walls_rel_20 && !r.rate_walls_rel_40)
+    fail("radio.rate_walls_rel_20",
+         "one per-width wall table is required when power_mode = \"offset\"");
 
-  // Relative walls live in the 7-bit two's complement diff field [-64,63].
-  // Outside it the value would wrap on air.
-  for (size_t i = 0; i < r.rate_walls_rel.size(); ++i) {
-    const int v = r.rate_walls_rel[i];
-    if (v < rc::kRelMin || v > rc::kRelMax)
-      fail("radio.rate_walls_rel",
-           "[" + std::to_string(i) + "] = " + std::to_string(v) +
-               " is outside the 7-bit hardware field range [-64,63]");
-  }
   if (r.legacy_wall_rel < rc::kRelMin || r.legacy_wall_rel > rc::kRelMax)
     fail("radio.legacy_wall_rel", "must be in [-64,63]");
   if (r.wall_margin_db < 0.0 || r.wall_margin_db > 6.0)
@@ -154,13 +177,19 @@ void parse_radio(const Value& j, RadioCfg& r) {
 
   if (r.power_mode == "offset") {
     const int m = static_cast<int>(std::lround(r.wall_margin_db * 4.0));
-    for (size_t i = 0; i < r.rate_walls_rel.size(); ++i) {
-      if (r.rate_walls_rel[i] - m < rc::kRelMin)
-        fail("radio.rate_walls_rel",
-             "[" + std::to_string(i) + "] - wall_margin_db*4 = " +
-                 std::to_string(r.rate_walls_rel[i] - m) +
-                 " is below the hardware field floor -64");
-    }
+    auto check_margin = [&](const char* key,
+                            const std::optional<std::array<int, 8>>& tbl) {
+      if (!tbl) return;
+      for (size_t i = 0; i < tbl->size(); ++i) {
+        if ((*tbl)[i] - m < rc::kRelMin)
+          fail(std::string("radio.") + key,
+               "[" + std::to_string(i) + "] - wall_margin_db*4 = " +
+                   std::to_string((*tbl)[i] - m) +
+                   " is below the hardware field floor -64");
+      }
+    };
+    check_margin("rate_walls_rel_20", r.rate_walls_rel_20);
+    check_margin("rate_walls_rel_40", r.rate_walls_rel_40);
     if (r.legacy_wall_rel - m < rc::kRelMin)
       fail("radio.legacy_wall_rel", "minus wall_margin_db*4 is below -64");
   }
@@ -657,6 +686,18 @@ void parse_air_clock(const Value& j, AirClockCfg& a) {
 }
 
 }  // namespace
+
+const std::array<int, 8>* RadioCfg::walls_for(uint8_t bw) const {
+  const auto& own = (bw == 40) ? rate_walls_rel_40 : rate_walls_rel_20;
+  const auto& other = (bw == 40) ? rate_walls_rel_20 : rate_walls_rel_40;
+  if (own) return &*own;
+  if (other) return &*other;
+  return nullptr;
+}
+
+bool RadioCfg::has_walls(uint8_t bw) const {
+  return (bw == 40 ? rate_walls_rel_40 : rate_walls_rel_20).has_value();
+}
 
 std::array<UepLayerCfg, 2> Config::uep_layers() const {
   std::array<UepLayerCfg, 2> layers;

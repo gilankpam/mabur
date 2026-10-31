@@ -241,31 +241,10 @@ class RcAgent {
     return v;
   }
   // True once if any control frame failed verification since the last read
-  // (Telem flags bit1). Atomic: set from the agent thread (DISC/RCF) and the
-  // TX writer thread (verify_cal_frame), read once per Telem period.
+  // (Telem flags bit1). Atomic: set from the agent thread (DISC/RCF), the RX
+  // thread (check_nack) and the MAV thread (check_mav), read once per Telem
+  // period.
   bool take_auth_reject() { return auth_reject_.exchange(false, std::memory_order_relaxed); }
-  // Cal frames are verified on the TX writer thread against the CURRENT
-  // session, read atomically (published_session_). No pending fallback: a
-  // sweep can only open under a linked session. Sets the auth_reject flag
-  // on failure.
-  //
-  // `sweep_running` (CalSweep::active()) extends that for the life of one
-  // run: the newest pair a cal frame verified under stays accepted until
-  // the sweep closes, even after failsafe clears current_ -- which happens
-  // in every run, because the GS is radio-silent while each phase airs.
-  // Without it the CAL_RESULT, sent into the silent verify window, never
-  // verifies and nothing is ever applied (bench repro). Passing
-  // false drops the latch, so it cannot outlive the sweep.
-  //
-  // Cal frames are tagged with seq32 = 0, so freshness is the cal nonce: a
-  // T_CAL_CMD whose nonce was already accepted in this link session -- other
-  // than the most recent one (a retransmission or the next phase of the
-  // running sweep) -- is refused like a failed tag. The seen-nonce ring
-  // (kCalNonceRing deep) belongs to the pair its nonces verified under and
-  // is forgotten when a cal frame first verifies under a different one.
-  // Owned by verify_cal_frame's caller thread (the TX writer); not
-  // thread-safe against concurrent verify_cal_frame calls.
-  bool verify_cal_frame(const uint8_t* body, size_t len, bool sweep_running = false);
   // fec-nack: verify a T_NACK's tag against the
   // published session with the frame's own counter as seq32 ctx. Any
   // thread. On success, *session (if given) is the published pair the tag
@@ -301,14 +280,60 @@ class RcAgent {
   // state (mav_last_), so the GS's MAV and NACK counters never refuse each
   // other. Any thread.
   bool accept_mav_counter(uint32_t counter, uint64_t session);
-  // The MAV thread's whole T_MAV gate: parse_mav (tagged layout),
-  // verify_session_tagged with the counter as seq32, accept_mav_counter.
-  // kMalformed = the parse failed (radio corruption): auth_reject stays
-  // down. kRejected = parsed but the tag or the counter failed: raises
-  // auth_reject. kOk fills *out. Any thread.
-  enum class MavCheck { kOk, kMalformed, kRejected };
-  MavCheck check_mav(const uint8_t* body, size_t len, rc::Mav* out);
-  static constexpr size_t kCalNonceRing = 8;
+  // The MAV thread's whole T_MAV gate: parse_mav (tagged layout), the tag
+  // with the counter as seq32, then the counter. kMalformed = the parse
+  // failed (radio corruption): auth_reject stays down. kRejected = parsed
+  // but the tag or the counter failed: raises auth_reject. kOk / kOkLatched
+  // fill *out.
+  //
+  // Two counter domains per pair, chosen by content: a frame whose payload
+  // is all calibration packets (cal::all_packets_are_cal) checks and
+  // advances cal_last_, anything else mav_last_ -- the GS's calibration lane
+  // restarts its counter at 1 whenever the run's pair (vtx nonce) changes,
+  // and a second run on the same pair continues counting, while its live
+  // lane keeps the session's own counter, so one shared counter would
+  // refuse the cal lane as replays.
+  //
+  // kOk: the tag verified under the published session and the counter is
+  // fresh in the frame's domain. A cal-only frame's counter is checked
+  // against the pair its tag verified under, not a second read of the
+  // published session.
+  //
+  // kOkLatched: the published session's tag check failed, but a run is open
+  // (`cal_run_open`, CalSweep::active()) and the frame verified under the
+  // run pair -- the pair of the last accepted cal-only frame -- is
+  // cal-only, and its counter is above that pair's cal counter. Every sweep
+  // outlasts the link failsafe (the GS is radio-silent while each phase
+  // airs), so the drone clears its session inside every run while the
+  // run's later cal frames stay tagged under the pair it went under. A
+  // frame carrying anything but cal packets (a parameter set) never takes
+  // this path: it is kRejected whole.
+  //
+  // The run pair is recorded on every accepted cal-only frame (kOk or
+  // kOkLatched), so the SWEEP that starts a run -- accepted before the run
+  // is open -- sets it, and a cal frame accepted under a newer published
+  // pair moves it (a mid-run re-pair). It is honoured only while
+  // `cal_run_open`; a closed run does not erase it, since it is only "the
+  // pair of the last accepted cal frame", and the next run can only open
+  // from a SWEEP accepted under the published session, which re-records it.
+  //
+  // kLateCal: the published session's tag check failed and no run is open,
+  // but the frame is cal-only and verifies under the run pair -- the GS's
+  // own run trailing off after the drone closed it (the repeats of its
+  // closing Abort, the first of which closed the run). Dropped, counted in
+  // cal_late(), and NOT an
+  // auth reject: it proves the GS holds the key, and counting it would
+  // read as a key mismatch at the end of every run. Its counter is neither
+  // checked nor consumed, since the frame is dropped either way. A frame
+  // carrying anything but cal packets, or verifying under no known pair,
+  // is still kRejected.
+  //
+  // MAV thread only: the run pair is plain state owned by check_mav's one
+  // caller; not safe against concurrent check_mav calls.
+  enum class MavCheck { kOk, kOkLatched, kLateCal, kMalformed, kRejected };
+  MavCheck check_mav(const uint8_t* body, size_t len, rc::Mav* out, bool cal_run_open);
+  // kLateCal frames since start. Any thread.
+  uint64_t cal_late() const { return cal_late_.load(std::memory_order_relaxed); }
   // Replay harness only (maburd --dry-run): install a known pair so a file
   // of RCFs tagged under (vrx, vtx) verifies without a DISC exchange.
   void install_session_for_replay(uint32_t vrx_nonce, uint32_t vtx_nonce);
@@ -417,24 +442,32 @@ class RcAgent {
 
   Session current_, pending_;
   // (vrx << 32 | vtx) of current_, 0 = none. Written on the agent thread,
-  // read by verify_cal_frame on the TX writer thread.
+  // read by check_nack (RX thread) and check_mav (MAV thread).
   std::atomic<uint64_t> published_session_{0};
-  // verify_cal_frame's seen-cal-nonce ring (TX writer thread only).
-  uint64_t cal_ring_session_ = 0;      // the pair the ring's nonces verified under
-  uint64_t cal_latch_session_ = 0;     // newest pair a cal frame verified under, 0 = none
-  std::array<uint32_t, kCalNonceRing> cal_seen_{};
-  size_t cal_seen_n_ = 0, cal_seen_next_ = 0;
-  bool have_cal_current_ = false;
-  uint32_t cal_current_ = 0;           // newest accepted cal nonce
+  // check_mav's run pair: (vrx << 32 | vtx) of the last accepted cal-only
+  // T_MAV, 0 = none. MAV thread only.
+  uint64_t cal_run_session_ = 0;
+  std::atomic<uint64_t> cal_late_{0};  // check_mav's kLateCal count
   std::atomic<bool> auth_reject_{false};
   // accept_nack_counter's state: (vtx_nonce << 32) | last accepted counter.
   // A vtx other than the current pair's means "nothing accepted yet".
   std::atomic<uint64_t> nack_last_{0};
   // accept_mav_counter's state, same encoding as nack_last_.
   std::atomic<uint64_t> mav_last_{0};
-  // accept_nack_counter / accept_mav_counter: the CAS on one state word.
+  // check_mav's cal-only counter domain, same encoding. Keyed like the
+  // others, so a pair other than the one it last advanced under reads as
+  // "nothing accepted yet".
+  std::atomic<uint64_t> cal_last_{0};
+  // accept_nack_counter / accept_mav_counter / check_mav: the published
+  // pair check, then advance_counter_.
   bool accept_session_counter_(std::atomic<uint64_t>& last_word, uint32_t counter,
                                uint64_t session);
+  // The CAS on one state word for `session`'s key, with no published-pair
+  // check (check_mav's latched path verifies against the run pair).
+  static bool advance_counter_(std::atomic<uint64_t>& last_word, uint32_t counter,
+                               uint64_t session);
+  // True iff the tagged frame verifies under `session` (nonzero) with seq32.
+  bool verifies_under_(const uint8_t* body, size_t len, uint64_t session, uint32_t seq32) const;
   bool session_promoted_ = false;
   uint8_t deferred_move_ch_ = 0;   // executed in tick() after main sent the promote Telem
   uint32_t fresh_vtx_nonce_();

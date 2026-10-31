@@ -177,7 +177,21 @@ the GS's own tagged T_MAV heard by its other card (`rx_uplink_heard`) are
 neither `rx` nor `reject` and are not exported. `peer` is true
 once a UDP client has sent the endpoint a datagram. maburtop draws a
 `mav <tx>/<rx>` cell (`mav off` without the key) on the top bar beside
-`key`. Design: `docs/mavlink.md`.
+`key`. Calibration's cal-lane frames are not in `tx`. Design:
+`docs/mavlink.md`.
+
+### `link.cal` — calibration run
+
+`link.cal{state, sweep, kind, bw, cell}`: a `maburcal` run's progress
+(`CalSession`, via `cal_sideport()` in `gs/src/cal_wiring.h`), present only
+while the run owns the air — `await_ack` through `verify`; absent while
+the channel pick runs and after `done`/`failed`. `state` is the name
+`maburcal status` prints; `sweep` is `"k/n"` (1-based, of the run's sweep
+list); `kind` is `power`, `capacity` or `verify`; `bw` 20 or 40; `cell` is
+`"i/n"`, the cell of the latest frame tallied in the running sweep or
+verify pass. maburtop draws `CAL <kind><bw> <i>/<n>` (e.g. `CAL power40
+312/840`, warn colour) on the top bar after the `mav` cell and in the
+compact header. Design: `docs/calibration.md`.
 
 ### `link.refresh` — demand refresh
 
@@ -503,7 +517,7 @@ heal_ms distribution, and how many requests fall within 2 s of a ladder
 demote / a FEC episode) prints from it — on a bare `fec.log` argument and
 in session mode alike.
 
-### `scan.log` (`scanlog 6`)
+### `scan.log` (`scanlog 7`)
 
 The channel-selection record (`gs/src/scan_log.h`, formats locked there).
 Six record letters, one line each:
@@ -514,7 +528,8 @@ Six record letters, one line each:
   in-session (trailing `sess` flag and step-timing columns), with the
   dwell's width, NHM busy %, and a relay sweep rx % (`-` for a USB dwell,
   `docs/cpe510-relay.md`).
-- `K` — the pick at freeze, with the full ranking.
+- `K` — the pick at freeze, with the full ranking; also the end of a
+  calibration run's measure round, with that round's scores.
 - `M` — a GS retune that changes where the link lives (`commit`,
   `ack_override`, `link_found`, and the hop reasons
   `hop_lead`/`hop_follow`/`hop_withdraw`/`hop_one_card`).
@@ -522,7 +537,8 @@ Six record letters, one line each:
   non-healthy window.
 - `H` — one hop-controller event (`order`, `lead_confirm`,
   `one_card_retune`, `verify_pass`, `verify_fail`, `withdraw`, `hold_cap`,
-  `hold_exhausted`, `relocate`, …).
+  `hold_exhausted`, `relocate`, …), ending with a reason: `cal` on the
+  relocate a calibration run ordered, `-` otherwise.
 
 Full formats, the config, and the `cca − own` ranking assumption for the
 boot-time records are in `docs/channel-select.md`; the in-flight hop's rule
@@ -608,14 +624,16 @@ phase-lock fields
 `lock= lerr= loff= lctr=` (docs/phase-lock.md); reglog 1 rows end at
 `lslot=` before `present=`.
 
-### `cal.log` (`callog 3`)
+### `cal.log` (`callog 5`)
 
-The TX-power calibration record (`gs/src/cal_log.h`). It writes regardless
-of `debug_log.enable` — a calibration run is a bounded trace on a deliberate
-operator action, not continuous flight logging — into the session directory,
-or `<debug_log.dir>/cal` with logging off. Location, record format and the
-`maburcal report` reader: `docs/calibration.md` "Offline analysis:
-`maburcal report`".
+The calibration record (`gs/src/cal_log.h`): per run an `R` line, then per
+sweep an `S` line scoping the power cells (`C`), walls (`W`), capacity
+points (`P`), apply outcomes (`A`) and verify cells (`V`) to its width. It
+writes regardless of `debug_log.enable` — a calibration run is a bounded
+trace on a deliberate operator action, not continuous flight logging —
+into the session directory, or `<debug_log.dir>/cal` with logging off.
+Location, record format, older formats and the `maburcal report` reader:
+`docs/calibration.md` "`cal.log`". Nothing else parses it.
 
 ### Analyzers
 
@@ -1093,9 +1111,10 @@ refresh").
 - **Bench harnesses** (`bench/linkbench`) drive special TX/RX modes for
   characterization; they are not monitoring tools. The drone radio RX can
   wedge after a linkbench run — restart maburd.
-- **TX-power wall calibration → `maburcal`** (`gs/bundle/maburcal`,
-  `docs/calibration.md`). `maburcal start` sweeps a unit's per-rate PA
-  compression walls and applies them; `maburcal report <cal.log>`
+- **TX-power walls and air capacity → `maburcal`** (`gs/bundle/maburcal`,
+  `docs/calibration.md`). `maburcal start` measures a unit's per-rate PA
+  compression walls and delivered air efficiency at each width the GS
+  flies and writes them to the drone; `maburcal report <cal.log>`
   re-renders a saved run offline.
 
 ## maburd debug endpoint
@@ -1177,17 +1196,24 @@ cumulative since start) and `mav_rebuild=<n>` (every pipeline-only
 restart the ladder made: one for a set that applies, two for one that
 fell back to the previous config; the cold restart rung is a separate
 hook and is not counted), and gains
-`mav rx=<frames>/<packets> tx=<frames>/<packets> drop=<n> reject=<n>`
+`mav rx=<frames>/<packets> tx=<frames>/<packets> drop=<n> reject=<n> cal_late=<n>`
 on the ticks where any of those moved since the last time they were
 printed; the values are cumulative since start. `rx` counts verified
 T_MAV frames and the MAVLink 2 packets parsed out of them, `tx` the
 uplink T_MAV frames and the packets they carried (replies and the 1 Hz
-HEARTBEAT, sent only while a session is published), `drop` the frames
+HEARTBEAT, sent only while a session is published, plus the calibration
+replies, sent whatever the session state), `drop` the frames
 that failed to parse plus the packets the component dropped (another
 target, an unhandled message, bad CRC, MAVLink 1, a partial, and a reply
 dropped because the 64-packet outbound queue was full), and
 `reject` the frames that parsed but failed the tag or the counter (these
-also raise Telem's `auth_reject`).
+also raise Telem's `auth_reject`, the key-mismatch signal), and
+`cal_late` the calibration-only frames that arrived after their run closed
+still tagged under its pair — the repeats of the GS's closing Abort, about
+two per run — dropped without `auth_reject` (`docs/mavlink.md`). Calibration logs `maburd cal: ...` lines,
+`maburd radio: power table <bw> MHz live ...` on every width-table switch,
+and `cal_latch_drop=` on the `maburd tx_send:` line (`docs/calibration.md`
+"Observability").
 
 ## Frame loss inside the drone ("wire clean" ≠ no frame loss)
 

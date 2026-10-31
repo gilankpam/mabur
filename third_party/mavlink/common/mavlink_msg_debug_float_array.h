@@ -1,8 +1,6 @@
 #pragma once
 // MESSAGE DEBUG_FLOAT_ARRAY PACKING
 
-#include <stdint.h>
-
 #define MAVLINK_MSG_ID_DEBUG_FLOAT_ARRAY 350
 
 
@@ -59,7 +57,7 @@ typedef struct __mavlink_debug_float_array_t {
  * @param data  data
  * @return length of the message in bytes (excluding serial stream start sign)
  */
-static inline uint16_t mavlink_msg_debug_float_array_pack(uint32_t system_id, uint8_t component_id, mavlink_message_t* msg,
+static inline uint16_t mavlink_msg_debug_float_array_pack(uint8_t system_id, uint8_t component_id, mavlink_message_t* msg,
                                uint64_t time_usec, const char *name, uint16_t array_id, const float *data)
 {
 #if MAVLINK_NEED_BYTE_SWAP || !MAVLINK_ALIGNED_FIELDS
@@ -73,8 +71,8 @@ static inline uint16_t mavlink_msg_debug_float_array_pack(uint32_t system_id, ui
     mavlink_debug_float_array_t packet;
     packet.time_usec = time_usec;
     packet.array_id = array_id;
-    mav_array_memcpy(packet.name, name, sizeof(char)*10);
-    mav_array_memcpy(packet.data, data, sizeof(float)*58);
+    mav_array_assign_char(packet.name, name, 10);
+    mav_array_assign_float(packet.data, data, 58);
         memcpy(_MAV_PAYLOAD_NON_CONST(msg), &packet, MAVLINK_MSG_ID_DEBUG_FLOAT_ARRAY_LEN);
 #endif
 
@@ -95,7 +93,7 @@ static inline uint16_t mavlink_msg_debug_float_array_pack(uint32_t system_id, ui
  * @param data  data
  * @return length of the message in bytes (excluding serial stream start sign)
  */
-static inline uint16_t mavlink_msg_debug_float_array_pack_status(uint32_t system_id, uint8_t component_id, mavlink_status_t *_status, mavlink_message_t* msg,
+static inline uint16_t mavlink_msg_debug_float_array_pack_status(uint8_t system_id, uint8_t component_id, mavlink_status_t *_status, mavlink_message_t* msg,
                                uint64_t time_usec, const char *name, uint16_t array_id, const float *data)
 {
 #if MAVLINK_NEED_BYTE_SWAP || !MAVLINK_ALIGNED_FIELDS
@@ -118,7 +116,7 @@ static inline uint16_t mavlink_msg_debug_float_array_pack_status(uint32_t system
 #if MAVLINK_CRC_EXTRA
     return mavlink_finalize_message_buffer(msg, system_id, component_id, _status, MAVLINK_MSG_ID_DEBUG_FLOAT_ARRAY_MIN_LEN, MAVLINK_MSG_ID_DEBUG_FLOAT_ARRAY_LEN, MAVLINK_MSG_ID_DEBUG_FLOAT_ARRAY_CRC);
 #else
-    return mavlink_finalize_message_buffer(msg, system_id, component_id, _status, MAVLINK_MSG_ID_DEBUG_FLOAT_ARRAY_MIN_LEN, MAVLINK_MSG_ID_DEBUG_FLOAT_ARRAY_LEN, 0);
+    return mavlink_finalize_message_buffer(msg, system_id, component_id, _status, MAVLINK_MSG_ID_DEBUG_FLOAT_ARRAY_MIN_LEN, MAVLINK_MSG_ID_DEBUG_FLOAT_ARRAY_LEN);
 #endif
 }
 
@@ -134,7 +132,7 @@ static inline uint16_t mavlink_msg_debug_float_array_pack_status(uint32_t system
  * @param data  data
  * @return length of the message in bytes (excluding serial stream start sign)
  */
-static inline uint16_t mavlink_msg_debug_float_array_pack_chan(uint32_t system_id, uint8_t component_id, uint8_t chan,
+static inline uint16_t mavlink_msg_debug_float_array_pack_chan(uint8_t system_id, uint8_t component_id, uint8_t chan,
                                mavlink_message_t* msg,
                                    uint64_t time_usec,const char *name,uint16_t array_id,const float *data)
 {
@@ -149,8 +147,8 @@ static inline uint16_t mavlink_msg_debug_float_array_pack_chan(uint32_t system_i
     mavlink_debug_float_array_t packet;
     packet.time_usec = time_usec;
     packet.array_id = array_id;
-    mav_array_memcpy(packet.name, name, sizeof(char)*10);
-    mav_array_memcpy(packet.data, data, sizeof(float)*58);
+    mav_array_assign_char(packet.name, name, 10);
+    mav_array_assign_float(packet.data, data, 58);
         memcpy(_MAV_PAYLOAD_NON_CONST(msg), &packet, MAVLINK_MSG_ID_DEBUG_FLOAT_ARRAY_LEN);
 #endif
 
@@ -166,7 +164,7 @@ static inline uint16_t mavlink_msg_debug_float_array_pack_chan(uint32_t system_i
  * @param msg The MAVLink message to compress the data into
  * @param debug_float_array C-struct to read the message contents from
  */
-static inline uint16_t mavlink_msg_debug_float_array_encode(uint32_t system_id, uint8_t component_id, mavlink_message_t* msg, const mavlink_debug_float_array_t* debug_float_array)
+static inline uint16_t mavlink_msg_debug_float_array_encode(uint8_t system_id, uint8_t component_id, mavlink_message_t* msg, const mavlink_debug_float_array_t* debug_float_array)
 {
     return mavlink_msg_debug_float_array_pack(system_id, component_id, msg, debug_float_array->time_usec, debug_float_array->name, debug_float_array->array_id, debug_float_array->data);
 }
@@ -180,7 +178,7 @@ static inline uint16_t mavlink_msg_debug_float_array_encode(uint32_t system_id, 
  * @param msg The MAVLink message to compress the data into
  * @param debug_float_array C-struct to read the message contents from
  */
-static inline uint16_t mavlink_msg_debug_float_array_encode_chan(uint32_t system_id, uint8_t component_id, uint8_t chan, mavlink_message_t* msg, const mavlink_debug_float_array_t* debug_float_array)
+static inline uint16_t mavlink_msg_debug_float_array_encode_chan(uint8_t system_id, uint8_t component_id, uint8_t chan, mavlink_message_t* msg, const mavlink_debug_float_array_t* debug_float_array)
 {
     return mavlink_msg_debug_float_array_pack_chan(system_id, component_id, chan, msg, debug_float_array->time_usec, debug_float_array->name, debug_float_array->array_id, debug_float_array->data);
 }
@@ -194,7 +192,7 @@ static inline uint16_t mavlink_msg_debug_float_array_encode_chan(uint32_t system
  * @param msg The MAVLink message to compress the data into
  * @param debug_float_array C-struct to read the message contents from
  */
-static inline uint16_t mavlink_msg_debug_float_array_encode_status(uint32_t system_id, uint8_t component_id, mavlink_status_t* _status, mavlink_message_t* msg, const mavlink_debug_float_array_t* debug_float_array)
+static inline uint16_t mavlink_msg_debug_float_array_encode_status(uint8_t system_id, uint8_t component_id, mavlink_status_t* _status, mavlink_message_t* msg, const mavlink_debug_float_array_t* debug_float_array)
 {
     return mavlink_msg_debug_float_array_pack_status(system_id, component_id, _status, msg,  debug_float_array->time_usec, debug_float_array->name, debug_float_array->array_id, debug_float_array->data);
 }
@@ -223,8 +221,8 @@ static inline void mavlink_msg_debug_float_array_send(mavlink_channel_t chan, ui
     mavlink_debug_float_array_t packet;
     packet.time_usec = time_usec;
     packet.array_id = array_id;
-    mav_array_memcpy(packet.name, name, sizeof(char)*10);
-    mav_array_memcpy(packet.data, data, sizeof(float)*58);
+    mav_array_assign_char(packet.name, name, 10);
+    mav_array_assign_float(packet.data, data, 58);
     _mav_finalize_message_chan_send(chan, MAVLINK_MSG_ID_DEBUG_FLOAT_ARRAY, (const char *)&packet, MAVLINK_MSG_ID_DEBUG_FLOAT_ARRAY_MIN_LEN, MAVLINK_MSG_ID_DEBUG_FLOAT_ARRAY_LEN, MAVLINK_MSG_ID_DEBUG_FLOAT_ARRAY_CRC);
 #endif
 }
@@ -264,8 +262,8 @@ static inline void mavlink_msg_debug_float_array_send_buf(mavlink_message_t *msg
     mavlink_debug_float_array_t *packet = (mavlink_debug_float_array_t *)msgbuf;
     packet->time_usec = time_usec;
     packet->array_id = array_id;
-    mav_array_memcpy(packet->name, name, sizeof(char)*10);
-    mav_array_memcpy(packet->data, data, sizeof(float)*58);
+    mav_array_assign_char(packet->name, name, 10);
+    mav_array_assign_float(packet->data, data, 58);
     _mav_finalize_message_chan_send(chan, MAVLINK_MSG_ID_DEBUG_FLOAT_ARRAY, (const char *)packet, MAVLINK_MSG_ID_DEBUG_FLOAT_ARRAY_MIN_LEN, MAVLINK_MSG_ID_DEBUG_FLOAT_ARRAY_LEN, MAVLINK_MSG_ID_DEBUG_FLOAT_ARRAY_CRC);
 #endif
 }
@@ -334,5 +332,4 @@ static inline void mavlink_msg_debug_float_array_decode(const mavlink_message_t*
         memset(debug_float_array, 0, MAVLINK_MSG_ID_DEBUG_FLOAT_ARRAY_LEN);
     memcpy(debug_float_array, _MAV_PAYLOAD(msg), len);
 #endif
-
 }

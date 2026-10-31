@@ -91,8 +91,18 @@ enum class PublishResult {
 // process-wide mutex: apply_calibration and the parameter component may
 // call this from different threads, and both use the same scratch and
 // backup names next to the same live config.
+//
+// `write_backup` (default true, so every existing caller keeps today's
+// behaviour) skips step 3 entirely when false: "<path>.<backup_suffix>" is
+// then never read, written or even looked at by this call. A caller that
+// wants exactly one backup across several publish_config() calls against
+// the same path -- a multi-apply calibration session owning its backup on
+// only the first call -- passes false on every call after the first,
+// rather than letting each one clobber the previous call's backup with
+// its own pre-state and trying to patch that up afterwards.
 PublishResult publish_config(const std::string& path, const std::string& content,
-                             const std::string& backup_suffix, std::string* err);
+                             const std::string& backup_suffix, std::string* err,
+                             bool write_backup = true);
 
 // Takes the lock publish_config serialises on. A writer that reads the
 // config, patches it and publishes the result holds this across all three:

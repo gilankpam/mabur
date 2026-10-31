@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <fstream>
 #include <string>
@@ -12,7 +13,7 @@
 
 namespace maburgs {
 namespace {
-constexpr char kCalLogMarker[] = "callog 3";
+constexpr char kCalLogMarker[] = "callog 5";
 }  // namespace
 
 bool cal_log_header_due(const std::string& dir) {
@@ -56,15 +57,31 @@ void CalLog::header() {
   w_.line(s_, kCalLogMarker, sizeof(kCalLogMarker) - 1);
 }
 
-void CalLog::run(uint32_t nonce, double margin_db) {
+void CalLog::run(uint32_t nonce, double margin_db, uint8_t ch,
+                  const char* pick, bool ldpc) {
   if (s_ == LogWriter::kBadStream) return;
-  char b[64];
-  const int n = std::snprintf(b, sizeof(b), "R %u %.2f", nonce, margin_db);
+  char b[96];
+  const int n = std::snprintf(b, sizeof(b), "R %u %.2f %d %s %d", nonce,
+                              margin_db, ch, pick, ldpc ? 1 : 0);
   if (n > 0)
     w_.line(s_, b, std::min(static_cast<size_t>(n), sizeof(b) - 1));
 }
 
-void CalLog::cell(uint8_t phase, uint8_t rate, int idx, const CalCell& c) {
+void CalLog::sweep(uint8_t seq, mabur::cal::Kind kind, uint8_t bw,
+                    uint32_t param) {
+  if (s_ == LogWriter::kBadStream) return;
+  // Verify shares the `power` word with an ordinary power sweep: both are
+  // frame-count measurements, and only Capacity's dwell_ms param means
+  // something different enough to need its own word.
+  const char* k =
+      kind == mabur::cal::Kind::Capacity ? "capacity" : "power";
+  char b[64];
+  const int n = std::snprintf(b, sizeof(b), "S %d %s %d %u", seq, k, bw, param);
+  if (n > 0)
+    w_.line(s_, b, std::min(static_cast<size_t>(n), sizeof(b) - 1));
+}
+
+void CalLog::cell(uint8_t rate, int idx, const CalCell& c) {
   if (s_ == LogWriter::kBadStream) return;
   // -999 (kRssiNone) whenever a card had no reading, never the raw
   // rssi_dbm slot -- a caller that forgets to gate on have_rssi must not
@@ -73,7 +90,7 @@ void CalLog::cell(uint8_t phase, uint8_t rate, int idx, const CalCell& c) {
   const int rssi1 = c.have_rssi[1] ? c.rssi_dbm[1] : kRssiNone;
   char b[160];
   const int n = std::snprintf(
-      b, sizeof(b), "C %d %d %d %d %d %d %d %d %d", phase, rate, idx,
+      b, sizeof(b), "C %d %d %d %d %d %d %d %d", rate, idx,
       c.expected, c.received[0], c.received[1], c.corrupt, rssi0, rssi1);
   if (n > 0)
     w_.line(s_, b, std::min(static_cast<size_t>(n), sizeof(b) - 1));
@@ -88,12 +105,41 @@ void CalLog::wall(uint8_t rate, const RateWall& w) {
     w_.line(s_, b, std::min(static_cast<size_t>(n), sizeof(b) - 1));
 }
 
+void CalLog::cap(uint8_t rate, const CapCell& c, const CapResult& r) {
+  if (s_ == LogWriter::kBadStream) return;
+  const size_t bi = r.best_card >= 0 ? static_cast<size_t>(r.best_card) : 0;
+  const int eff_x1000 = static_cast<int>(std::lround(r.eff * 1000.0));
+  char b[160];
+  const int n = std::snprintf(
+      b, sizeof(b), "P %d %u %u %llu %d %u %u %u", rate, c.offered,
+      c.frames[bi], static_cast<unsigned long long>(c.air_bits[bi]),
+      eff_x1000, c.blocked_pct, r.flags, r.span_ms);
+  if (n > 0)
+    w_.line(s_, b, std::min(static_cast<size_t>(n), sizeof(b) - 1));
+}
+
 void CalLog::verify(uint8_t rate, int idx, int pct) {
   if (s_ == LogWriter::kBadStream) return;
   char b[64];
   const int n = std::snprintf(b, sizeof(b), "V %d %d %d", rate, idx, pct);
   if (n > 0)
     w_.line(s_, b, std::min(static_cast<size_t>(n), sizeof(b) - 1));
+}
+
+void CalLog::applied(uint8_t bw, bool ok, const std::string& reason) {
+  if (s_ == LogWriter::kBadStream) return;
+  // LogWriter::line() writes `reason`'s bytes verbatim and appends exactly
+  // one trailing '\n' of its own (gs/src/log_writer.cpp's drain_()) -- an
+  // embedded newline or other control byte in a drone-supplied reason
+  // string would split this single A record across two lines (or worse)
+  // in the file, so every control character is flattened to a space
+  // before the line is built.
+  std::string clean = reason;
+  for (char& c : clean)
+    if (static_cast<unsigned char>(c) < 0x20) c = ' ';
+  std::string line = "A " + std::to_string(bw) + " " + (ok ? "1" : "0") +
+                      " " + clean;
+  w_.line(s_, line.c_str(), line.size());
 }
 
 void CalLog::flush() {

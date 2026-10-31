@@ -1,0 +1,82 @@
+#pragma once
+// The glue between maburgs' core loop and its CalSession that is worth a
+// test of its own: the drone's calibration replies out of the MAVLink
+// tunnel into the session, the sideport's link.cal block, and the stderr
+// lines that narrate a run in /tmp/maburgs.log. maburgs-only (the web GS
+// does not run calibration), but free of any socket or radio so the tests
+// drive it with plain snapshots.
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+#include "cal_session.h"
+#include "mabur/cal_proto.h"
+#include "stats_exporter.h"
+
+namespace maburgs {
+
+// The state name `maburcal status` prints ("await_ack", "sweep", ...).
+const char* cal_state_name(CalSession::State st);
+
+// "verify" during the verify pass, else the running sweep's own kind:
+// "power" or "capacity".
+const char* cal_kind_name(const CalSnapshot& snap);
+
+// The operator's token for one sweep: power20, power40, cap20, cap40.
+std::string cal_sweep_token(const mabur::cal::SweepSpec& spec);
+
+// The dot11 header every calibration frame flies under: the drone's
+// RadioTx sends QoS-Data, a 24-byte header plus 2 bytes of QoS control.
+// The RX path strips it before the body reaches the session, so the
+// session is told the frame's size on the air separately.
+constexpr size_t kCalDot11HeaderLen = 26;
+constexpr size_t kCalFcsLen = 4;
+
+// A received calibration frame's size on the air from its body: header,
+// body, FCS. A capacity sweep sums it into the delivered air bits.
+constexpr size_t cal_air_bytes(size_t body_len) {
+  return kCalDot11HeaderLen + body_len + kCalFcsLen;
+}
+
+// A received body off the RX path: when it parses as a calibration frame it
+// goes to the session and the return is the frame's size on the air as
+// charged to the session; 0 means it is not a calibration frame and the
+// caller routes it on as ordinary traffic.
+size_t route_cal_body(CalSession& s, int card, const uint8_t* body, size_t len, int rssi_dbm,
+                      bool crc_ok, uint64_t now_ms);
+
+// One whole MAVLink packet the tunnel delivered from the drone: every
+// calibration message in it goes to the session (anything else is not the
+// session's and is skipped). The drone sends its replies whatever the
+// session's state; the session itself ignores what does not fit.
+void feed_cal_packet(CalSession& s, const uint8_t* bytes, size_t n, uint64_t now_ms);
+
+// The widest sweep a run may ask for: the narrower of the GS's own
+// radio.width and the linked drone's (its DiscAck agreed_width, 0 = not
+// heard yet). A GS flying 40 still cannot calibrate 40 against a drone that
+// flies only 20; unlinked or before a DiscAck, the GS's width stands (a
+// start refuses on a down link anyway).
+uint8_t cal_effective_width(uint8_t gs_width, bool linked, uint8_t peer_width);
+
+// The sideport's link.cal input: present only while the run owns the air.
+StatsCalIn cal_sideport(const CalSession& s);
+
+// Turns successive snapshots (one per core tick) into the run's milestone
+// lines: the start (at the moment the run first commands the drone, after
+// any channel pick), each apply's outcome, each finished sweep and the
+// terminal state. Lines come back without a prefix.
+class CalNarrator {
+ public:
+  // `log_path` is where cal.log resolved to, named on the start line.
+  explicit CalNarrator(std::string log_path) : log_path_(std::move(log_path)) {}
+
+  std::vector<std::string> observe(const CalSnapshot& snap,
+                                   const std::vector<mabur::cal::SweepSpec>& sweeps);
+
+ private:
+  std::string log_path_;
+  CalSnapshot prev_{};
+};
+
+}  // namespace maburgs

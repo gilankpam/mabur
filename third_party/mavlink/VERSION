@@ -1,3 +1,13 @@
-https://github.com/mavlink/c_library_v2
-commit a2d0ecf011a4aaa7840480e43f4e38d8c9e79d29
-cloned 2026-10-30
+Generated with pymavlink 2.4.49 (mavgen.py, bundled C generator), from
+common/mavlink/mabur.xml (which includes common/mavlink/common.xml,
+minimal.xml and standard.xml -- copied from the same pymavlink package's
+message_definitions/v1.0/).
+
+Regenerate with:
+  nix-shell -p python3Packages.pymavlink --run "mavgen.py --lang C --wire-protocol 2.0 -o third_party/mavlink common/mavlink/mabur.xml"
+
+protocol.h is hand-patched after generation: mav_array_assign_char and
+_mav_put_char_array copy with mav_array_memcpy, not the generator's
+strncpy, because mabur's PARAM_EXT_SET/VALUE/ACK carry raw bytes in a
+char[] field, not a NUL-terminated string. Reapply that patch after
+regenerating.

@@ -54,10 +54,10 @@ void put_crc(std::vector<uint8_t>& body) {
   put16(body, crc);
 }
 
-// Writes the 8-byte SipHash tag for a tagged frame (DISC/RCF/CAL_CMD/
-// CAL_RESULT): keyed MAC over `body` so far (the frame's bytes up to but
-// not including the tag) concatenated with ctx's three u32s, which are
-// hashed in but never sent (TagCtx doc comment).
+// Writes the 8-byte SipHash tag for a tagged frame (DISC/RCF/NACK/MAV):
+// keyed MAC over `body` so far (the frame's bytes up to but not including
+// the tag) concatenated with ctx's three u32s, which are hashed in but
+// never sent (TagCtx doc comment).
 void put_tag(std::vector<uint8_t>& body, const LinkKey& key, const TagCtx& ctx) {
   std::vector<uint8_t> m(body);
   put32(m, ctx.vrx_nonce);
@@ -71,18 +71,6 @@ constexpr size_t DISC_LEN = 17;
 constexpr size_t DISC_ACK_LEN = 20;  // RC_VERSION 14: vtx_nonce(4) + flags(1) added (15)
 constexpr size_t TELEM_LEN = 54;  // RC_VERSION 15: +nack_rx/retx_syms/retx_refused (48)
 
-// magic(2) | ver | type | flags | nonce(4) | phase | fpc(2) |
-// settle(2) | gap(2) | n_windows(1) | n * 4 bytes
-//
-// Offsets: hdr 0..4, nonce 5..8, phase 9, fpc 10..11,
-// settle 12..13, gap 14..15, n_windows 16. The constant INCLUDES the
-// n_windows byte, so buf[kCalCmdFixedLen - 1] IS n_windows and the windows
-// array starts at kCalCmdFixedLen. tests/test_rc.cpp hard-codes 16 for the
-// same byte -- the two must agree.
-constexpr size_t kCalCmdFixedLen = 5 + 4 + 1 + 2 + 2 + 2 + 1;  // 17
-// magic(2) | ver | type | flags | nonce(4) | walls(8*2) |
-// legacy(2)
-constexpr size_t kCalResultLen = 5 + 4 + 16 + 2;
 // magic(2) | ver | type | flags | counter(4) | sid | n | n * (first_seq(4) bitmap(4))
 constexpr size_t kNackFixedLen = 5 + 4 + 1 + 1;  // 11, INCLUDES the n byte at [10]
 constexpr size_t kNackEntryLen = 8;
@@ -128,94 +116,6 @@ std::optional<Rcf> parse_rcf(const uint8_t* buf, size_t len) {
   r.rec = buf[13];
   r.idr_epoch = buf[14];
   r.snr_off = static_cast<int16_t>(get16(buf, 15));
-  return r;
-}
-
-std::vector<uint8_t> pack_cal_cmd(const CalCmd& c, const LinkKey& key, const TagCtx& ctx) {
-  std::vector<uint8_t> body;
-  const size_t n = c.windows.size() > kMaxCalWindows ? kMaxCalWindows
-                                                     : c.windows.size();
-  body.reserve(kCalCmdFixedLen + n * 4 + kTagLen + 2);
-  put16(body, RC_MAGIC);
-  body.push_back(RC_VERSION);
-  body.push_back(T_CAL_CMD);
-  body.push_back(0);  // flags: nothing
-  put32(body, c.nonce);
-  body.push_back(c.phase);
-  put16(body, c.frames_per_cell);
-  put16(body, c.settle_ms);
-  put16(body, c.gap_us);
-  body.push_back(static_cast<uint8_t>(n));
-  for (size_t i = 0; i < n; ++i) {
-    body.push_back(c.windows[i].rate);
-    body.push_back(static_cast<uint8_t>(c.windows[i].idx_lo));
-    body.push_back(static_cast<uint8_t>(c.windows[i].idx_hi));
-    body.push_back(c.windows[i].idx_step);
-  }
-  put_tag(body, key, ctx);
-  put_crc(body);
-  return body;
-}
-
-std::optional<CalCmd> parse_cal_cmd(const uint8_t* buf, size_t len) {
-  if (len < kCalCmdFixedLen + 2) return std::nullopt;
-  if (get16(buf, 0) != RC_MAGIC || buf[2] != RC_VERSION || buf[3] != T_CAL_CMD)
-    return std::nullopt;
-  const uint8_t n = buf[kCalCmdFixedLen - 1];
-  if (n == 0 || n > kMaxCalWindows) return std::nullopt;
-  const size_t plen = kCalCmdFixedLen + static_cast<size_t>(n) * 4 + kTagLen;
-  if (len < plen + 2) return std::nullopt;
-  if (get16(buf, plen) != crc16_ccitt(buf, plen)) return std::nullopt;
-  CalCmd c;
-  c.nonce = get32(buf, 5);
-  c.phase = buf[9];
-  c.frames_per_cell = get16(buf, 10);
-  c.settle_ms = get16(buf, 12);
-  c.gap_us = get16(buf, 14);
-  for (uint8_t i = 0; i < n; ++i) {
-    const size_t o = kCalCmdFixedLen + static_cast<size_t>(i) * 4;
-    CalWindow w;
-    w.rate = buf[o];
-    w.idx_lo = static_cast<int8_t>(buf[o + 1]);
-    w.idx_hi = static_cast<int8_t>(buf[o + 2]);
-    w.idx_step = buf[o + 3];
-    if (w.rate > 7 || w.idx_step == 0 || w.idx_hi < w.idx_lo ||
-        w.idx_lo < kRelMin || w.idx_hi > kRelMax)
-      return std::nullopt;
-    c.windows.push_back(w);
-  }
-  return c;
-}
-
-std::vector<uint8_t> pack_cal_result(const CalResult& r, const LinkKey& key, const TagCtx& ctx) {
-  std::vector<uint8_t> body;
-  body.reserve(kCalResultLen + kTagLen + 2);
-  put16(body, RC_MAGIC);
-  body.push_back(RC_VERSION);
-  body.push_back(T_CAL_RESULT);
-  body.push_back(0);
-  put32(body, r.nonce);
-  for (int i = 0; i < 8; ++i)
-    put16(body, static_cast<uint16_t>(r.walls[static_cast<size_t>(i)]));
-  put16(body, static_cast<uint16_t>(r.legacy_wall));
-  put_tag(body, key, ctx);
-  put_crc(body);
-  return body;
-}
-
-std::optional<CalResult> parse_cal_result(const uint8_t* buf, size_t len) {
-  if (len < kCalResultLen + kTagLen + 2) return std::nullopt;
-  if (get16(buf, 0) != RC_MAGIC || buf[2] != RC_VERSION ||
-      buf[3] != T_CAL_RESULT)
-    return std::nullopt;
-  if (get16(buf, kCalResultLen + kTagLen) != crc16_ccitt(buf, kCalResultLen + kTagLen))
-    return std::nullopt;
-  CalResult r;
-  r.nonce = get32(buf, 5);
-  for (int i = 0; i < 8; ++i)
-    r.walls[static_cast<size_t>(i)] =
-        static_cast<int16_t>(get16(buf, 9 + static_cast<size_t>(i) * 2));
-  r.legacy_wall = static_cast<int16_t>(get16(buf, 25));
   return r;
 }
 
@@ -469,19 +369,11 @@ bool verify_control(const uint8_t* buf, size_t len, const LinkKey& key, const Ta
   switch (frame_type(buf, len)) {
     case T_DISC: tag_at = DISC_LEN; break;
     case T_RCF: tag_at = RCF_HEAD_LEN; break;
-    case T_CAL_RESULT: tag_at = kCalResultLen; break;
     case T_NACK: {
       if (len < kNackFixedLen) return false;
       const uint8_t n = buf[kNackFixedLen - 1];
       if (n == 0 || n > kMaxNackEntries) return false;
       tag_at = kNackFixedLen + static_cast<size_t>(n) * kNackEntryLen;
-      break;
-    }
-    case T_CAL_CMD: {
-      if (len < kCalCmdFixedLen) return false;
-      const uint8_t n = buf[kCalCmdFixedLen - 1];
-      if (n == 0 || n > kMaxCalWindows) return false;   // as parse_cal_cmd
-      tag_at = kCalCmdFixedLen + static_cast<size_t>(n) * 4;
       break;
     }
     case T_MAV: {

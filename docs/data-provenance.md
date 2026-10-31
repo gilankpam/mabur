@@ -122,6 +122,11 @@ Chronological; each line names the section below that carries the detail.
   timestamps and durations therefore measure the display (holds are whole
   grid periods), no longer the link: before this build they were the
   drone's pts of decoded frames, capped by `fps_cap`.
+- 2026-10-31 — calibration over MAVLink: RC_VERSION 18 (`T_CAL_CMD`/
+  `T_CAL_RESULT` deleted), `callog 4`/`5` (per-width walls and capacity;
+  5 times capacity over the receive span),
+  `scanlog 7` (`H` reason), `radio.rate_walls_rel` → `_20`/`_40`, sideport
+  `link.cal` (`docs/calibration.md`).
 
 ## 2026-09-23 — `link.pre_fec_loss` scale break, twice
 
@@ -178,7 +183,8 @@ control anywhere in mabur: no GS-commanded offset, no thermal derate, no
 per-profile offset. Under `radio.power_mode = "offset"` `maburd` programs
 the wall-equalized per-rate diff table and zeroes the global offset at
 bring-up; each rate `r` sits at effective TXAGC index `anchor(channel) +
-rate_walls_rel[r] − round(wall_margin_db * 4)`. Note the
+rate_walls_rel_<bw>[r] − round(wall_margin_db * 4)`, `<bw>` the live
+rung's width (one table for every width before 2026-10-31). Note the
 `* 4`: the chip's index step is 0.25 dB, so `wall_margin_db` is a dB
 figure converted to index steps, and a 1 dB margin is 4 steps
 (`make_power_plan()` in `drone/src/power_plan.h`). The only later power
@@ -192,7 +198,8 @@ anchor) and `maburcal`'s sweep, index override and live apply
 `radio.power_mode: "override"` (it had become identical to `"none"`).
 Also REMOVED: `radio.rate_walls_idx`, `radio.legacy_wall_idx`,
 `radio.base_ref_idx` (2026-09-13, replaced by `rate_walls_rel`/
-`legacy_wall_rel`).
+`legacy_wall_rel`), and `radio.rate_walls_rel` itself (2026-10-31,
+replaced by the per-width `rate_walls_rel_20`/`_40`).
 Sideport keys `link.op.offset_qdb`, `drone.applied.offset_qdb` and
 `drone.applied.derate_qdb` are gone. The PA thermal reading left the
 sideport with the 2026-09-30 telem diet (`drone.sys.thermal_delta`); it
@@ -218,8 +225,10 @@ And a post-2026-09-10 run leaves its own raw record, `cal.log` (in the
 debug-log session directory, or `<debug_log.dir>/cal/` when debug logging
 is off): `callog 1`/`2` (absolute walls, anchor on
 the R line) through 2026-09-13, `callog 3` (relative walls, `-128` =
-undetermined) after; `maburcal report` reads all three — where a
-txagcbench run left a CSV the deleted Python analyzer read.
+undetermined, one width, flags off) until 2026-10-31, `callog 4`
+(per-width walls and capacity, below) and then `callog 5` (capacity
+timed over the receive span) after; `maburcal report` reads every one —
+where a txagcbench run left a CSV the deleted Python analyzer read.
 
 ## 2026-08-26 — DVR filenames carry no date
 
@@ -1265,3 +1274,67 @@ The GS bundle sets `[link.nack] enable = true`, so sideport `link.nack` and
 the `retx` accounting class are populated from boot on these recordings
 rather than only on a GS overlaid by hand. A recording that does open with a
 low-power segment came from a drone config with the mode turned back on.
+
+## 2026-10-31 — calibration over MAVLink: RC_VERSION 18, callog 4, scanlog 7
+
+`maburcal` measures per width (20 and 40 MHz) and adds a capacity sweep;
+its messages ride the MAVLink tunnel in the mabur dialect
+(`docs/calibration.md`, `docs/mavlink.md`). A **flag day**: RC_VERSION
+17 → 18 deletes the `T_CAL_CMD`/`T_CAL_RESULT` frame types (5 and 6, not
+reused), and the drone config loses a key.
+
+- **Walls before and after are different measurements.** Before
+  2026-10-31 a run swept HT20 only, with LDPC and STBC off, coarse then
+  fine, and one table flew at every width. From 2026-10-31 a run sweeps
+  each width once at full resolution (20 frames per cell) under
+  `radio.ldpc` and STBC on — which reads mcs5-7 far higher than the
+  flags-off table (`docs/findings/2026-10-31-calibration-shortening-spike.md`)
+  — and the drone swaps tables with the rung's width. A flight on a
+  calibrated drone across this date flies different TX power on mcs5-7;
+  date it before comparing range or loss.
+- **Efficiency tables become measured.** `air_clock.efficiency_20/_40`
+  were the reference unit's September bench numbers on every drone; a
+  drone calibrated after this date carries its own, which moves the
+  bitrate the formula commands at every rung. Compare bitrate and air
+  share only within one table (the drone's `/etc/mabur.toml` at the
+  time, or its `.pre-cal`).
+- **Config.** `radio.rate_walls_rel` is REMOVED and fails boot; the
+  per-width `rate_walls_rel_20`/`_40` are optional (`power_mode =
+  "offset"` needs one), with `cal_flags_20`/`_40` recording the coding
+  flags each was measured under.
+- **`callog 4`.** The `R` line gains `<ch> <pick> <ldpc>`; new `S` (sweep:
+  seq, kind, width, param — scopes the rows after it to its width), `P`
+  (capacity point) and `A` (apply outcome) records; `C` loses its leading
+  phase field. Flag bits gain 64 `tx_bound`, 128 `lossy` and 256 `lost`
+  (a capacity point under half delivered, not written); 32 `drift`
+  is retired (no fine phase) and never reused, so a `callog 1`-`3` file
+  may still carry it. A `callog 3` file found in the log directory is
+  renamed `cal.log.callog3` by the new `maburgs`. `maburcal report` reads
+  1-5; nothing else reads `cal.log`.
+- **`callog 5`: capacity efficiency timed over the receive span.** A
+  `callog 4` `P` row's `eff` is delivered bits over the commanded 2 s
+  dwell, which reads high: the drone's TX queue keeps airing after its
+  blast returns, so the air was busy longer than the dwell (a bench run
+  read 1.00, clamped from 1.07, at 20 MHz mcs0 where the reference is
+  0.93, and every point high). `callog 5` times each point over the best
+  card's first-to-last receive span (`P` gains a trailing `span_ms`; flag
+  512 `short_span` marks a point too short to time, which falls back to
+  the dwell). The GS also listens through the last point's queued tail
+  before closing a capacity sweep, so a `callog 4` file's last `P` row
+  undercounts `recv_best` by that tail and its run's `mismatch=` counted
+  the rest. Do not compare a `callog 4` `eff` with a `callog 5` one, nor
+  trust an `efficiency_<bw>` table a `callog 4` run wrote; re-run the
+  capacity sweep. A `callog 4` file is renamed `cal.log.callog4`.
+- **`scanlog 7`.** `H` gains a trailing `<reason|->` (`cal` on the
+  relocate a calibration run orders); `K` also closes a calibration
+  measure round, with that round's scores. `tools/flightreport.py` reads
+  the reason (as `None` on older lines).
+- **New sideport key:** `link.cal{state, sweep, kind, bw, cell}`, present
+  only while a calibration run owns the air (`docs/observability.md`).
+  Absent before this date.
+- **Drone stderr:** `cal_auth_rej=` on `maburd tx_send:` is gone; its
+  successor is `cal_latch_drop=`, and a calibration frame failing its tag
+  now counts in the `stats:` line's `mav … reject=`. The `mav` part also
+  gains `cal_late=`: the closed run's trailing frames under its pair (its
+  closing Abort's repeats), which on early builds of this date counted
+  ~2 per run in `reject=` and raised `auth_reject`.

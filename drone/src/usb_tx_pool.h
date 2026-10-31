@@ -69,7 +69,7 @@ class UsbTxPool {
   // Copies the frame in; blocks while full. False after stop().
   bool submit(const uint8_t* frame, size_t len) {
     std::unique_lock<std::mutex> l(m_);
-    space_.wait(l, [&] { return q_.size() < cap_ || stopped_; });
+    wait_space(l, [&] { return q_.size() < cap_ || stopped_; });
     if (stopped_) return false;
     q_.emplace_back(frame, frame + len);
     fill_.notify_one();
@@ -94,7 +94,7 @@ class UsbTxPool {
       size_t notifies;
       {
         std::unique_lock<std::mutex> l(m_);
-        space_.wait(l, [&] { return q_.size() + want <= cap_ || stopped_; });
+        wait_space(l, [&] { return q_.size() + want <= cap_ || stopped_; });
         if (stopped_) return done;
         for (size_t i = 0; i < want; ++i)
           q_.emplace_back(frames[done + i].data,
@@ -113,8 +113,23 @@ class UsbTxPool {
     std::lock_guard<std::mutex> l(m_);
     return q_.size();
   }
+  // Cumulative microseconds submit()/submit_many() spent blocked waiting
+  // for queue space, i.e. with every sender busy inside a device call and
+  // their queue full: the device-backpressure share of a submitter's time.
+  // Calibration's capacity sweep reads the delta across a dwell.
+  uint64_t space_wait_us() const { return space_wait_us_.load(std::memory_order_relaxed); }
 
  private:
+  // space_.wait(l, ready), timing the wait into space_wait_us_ when it
+  // actually has to block.
+  template <class Pred>
+  void wait_space(std::unique_lock<std::mutex>& l, Pred ready) {
+    if (ready()) return;
+    const uint64_t t0 = now_us();
+    space_.wait(l, ready);
+    space_wait_us_.fetch_add(now_us() - t0, std::memory_order_relaxed);
+  }
+
   static uint64_t now_us() {
     return static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::microseconds>(
@@ -236,6 +251,7 @@ class UsbTxPool {
   bool stopped_ = false;
   std::vector<std::thread> threads_;
   std::atomic<uint64_t> sent_ok_{0}, send_fail_{0};
+  std::atomic<uint64_t> space_wait_us_{0};
 
   // usb_urb gauge window state (shared across workers, reset each report).
   std::atomic<int> g_inflight_{0};

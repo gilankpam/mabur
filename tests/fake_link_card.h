@@ -28,6 +28,9 @@ struct FakeCard : maburgs::LinkCard {
   std::vector<std::string> calls;
   std::vector<std::vector<uint8_t>> sent;
   uint32_t cca_per_ms_on[256] = {};   // programmable busy rate per channel
+  // Decoded foreign frames per ms on a channel, booked into fr.foreign by
+  // read_energy() (the boot scout's observe reads frames() around it).
+  uint32_t foreign_per_ms_on[256] = {};
   maburgs::ScoutFrames fr;
   uint64_t rx = 0, foreign_n = 0, tx = 0, txf = 0;
   FakeClock* clk = nullptr;
@@ -72,6 +75,7 @@ struct FakeCard : maburgs::LinkCard {
     maburgs::ScoutEnergy e; e.fa_valid = !relay;
     const uint64_t now = clk ? clk->ms : 0;
     e.cca_ofdm = static_cast<uint32_t>((now - last_read) * cca_per_ms_on[ch]);
+    fr.foreign += (now - last_read) * foreign_per_ms_on[ch];
     last_read = now;
     if (with_nhm && !relay) { e.floor_valid = true; e.floor_dbm = -95; }
     return e;

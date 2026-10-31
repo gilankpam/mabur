@@ -15,14 +15,21 @@ power_mode = "none"      # "none" = card's default TX power; "offset" = use the 
 tx_threads = 4           # parallel USB senders; 4 is needed to reach full link speed
 ldpc       = true        # LDPC coding on every frame. false only for an RTL8821AU ground card (it can't decode LDPC); costs ~2-3 dB of range
 
-# TX-power calibration ("walls"). These numbers belong to ONE card: the
-# author's 8812EU. They do nothing while power_mode = "none". To calibrate
-# your own card, run `maburcal start` on the ground station: it measures the
-# walls, writes them here and switches power_mode to "offset" for you.
-# On an 8812CU, calibrate on the channel you fly most.
-rate_walls_rel  = [63, 63, 62, 45, 22, 6, 9, 5]   # per MCS 0..7
-legacy_wall_rel = 63
-wall_margin_db  = 1.0    # safety margin below the walls; raise it to lower TX power
+# TX-power calibration ("walls"). These numbers, and air_clock's
+# efficiency_20/_40 below, belong to ONE card: the reference unit, measured
+# with LDPC+STBC on (cal_flags_20/_40). They do nothing while
+# power_mode = "none". To calibrate your own card, run `maburcal start` on
+# the ground station: it re-measures them, writes them here, records what
+# it measured with in cal_flags_20/_40 and switches power_mode to "offset"
+# for you -- never hand-restore these four from git, they describe a card,
+# not a software default. On an 8812CU, calibrate on the channel you fly
+# most.
+rate_walls_rel_20 = [63, 63, 63, 63, 45, 23, 22, 21]   # per MCS 0..7 at 20 MHz
+rate_walls_rel_40 = [63, 63, 63, 63, 45, 28, 28, 23]   # per MCS 0..7 at 40 MHz
+cal_flags_20      = "ldpc+stbc"
+cal_flags_40      = "ldpc+stbc"
+legacy_wall_rel   = 63
+wall_margin_db    = 1.0    # safety margin below the walls; raise it to lower TX power
 
 [fec]
 # Forward error correction. symbol_size must match the ground station.
@@ -105,7 +112,10 @@ min_mcs_40 = 2             # ...and at 40 MHz
 
 [air_clock]
 # How much of the nominal link rate is really delivered, per MCS 0..7.
-# Measured on the bench; keeps the bitrate from outrunning the air.
+# Measured on the bench, same reference unit as radio's walls above; keeps
+# the bitrate from outrunning the air. Re-measured by maburcal (read at
+# maburd start, so a new table flies after a restart), never hand-restored
+# from git -- these describe a card, not a software default.
 shed_ms       = 25         # skip droppable enhance frames while the air backlog exceeds this
 efficiency_20 = [0.93, 0.88, 0.84, 0.80, 0.76, 0.76, 0.78, 0.76]  # at 20 MHz
 efficiency_40 = [0.77, 0.75, 0.75, 0.75, 0.74, 0.77, 0.76, 0.75]  # at 40 MHz

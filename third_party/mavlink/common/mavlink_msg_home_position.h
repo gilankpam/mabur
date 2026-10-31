@@ -1,8 +1,6 @@
 #pragma once
 // MESSAGE HOME_POSITION PACKING
 
-#include <stdint.h>
-
 #define MAVLINK_MSG_ID_HOME_POSITION 242
 
 MAVPACKED(
@@ -10,14 +8,10 @@ typedef struct __mavlink_home_position_t {
  int32_t latitude; /*< [degE7] Latitude (WGS84)*/
  int32_t longitude; /*< [degE7] Longitude (WGS84)*/
  int32_t altitude; /*< [mm] Altitude (MSL). Positive for up.*/
- float x; /*< [m] Local X position of this position in the local coordinate frame (NED)*/
- float y; /*< [m] Local Y position of this position in the local coordinate frame (NED)*/
- float z; /*< [m] Local Z position of this position in the local coordinate frame (NED: positive "down")*/
- float q[4]; /*<  
-        Quaternion indicating world-to-surface-normal and heading transformation of the takeoff position.
-        Used to indicate the heading and slope of the ground.
-        All fields should be set to NaN if an accurate quaternion for both heading and surface slope cannot be supplied.
-      */
+ float x; /*< [m] Local X position of this position in the local coordinate frame*/
+ float y; /*< [m] Local Y position of this position in the local coordinate frame*/
+ float z; /*< [m] Local Z position of this position in the local coordinate frame*/
+ float q[4]; /*<  World to surface normal and heading transformation of the takeoff position. Used to indicate the heading and slope of the ground*/
  float approach_x; /*< [m] Local X position of the end of the approach vector. Multicopters should set this position based on their takeoff path. Grass-landing fixed wing aircraft should set it the same way as multicopters. Runway-landing fixed wing aircraft should set it to the opposite direction of the takeoff, assuming the takeoff happened from the threshold / touchdown zone.*/
  float approach_y; /*< [m] Local Y position of the end of the approach vector. Multicopters should set this position based on their takeoff path. Grass-landing fixed wing aircraft should set it the same way as multicopters. Runway-landing fixed wing aircraft should set it to the opposite direction of the takeoff, assuming the takeoff happened from the threshold / touchdown zone.*/
  float approach_z; /*< [m] Local Z position of the end of the approach vector. Multicopters should set this position based on their takeoff path. Grass-landing fixed wing aircraft should set it the same way as multicopters. Runway-landing fixed wing aircraft should set it to the opposite direction of the takeoff, assuming the takeoff happened from the threshold / touchdown zone.*/
@@ -80,21 +74,17 @@ typedef struct __mavlink_home_position_t {
  * @param latitude [degE7] Latitude (WGS84)
  * @param longitude [degE7] Longitude (WGS84)
  * @param altitude [mm] Altitude (MSL). Positive for up.
- * @param x [m] Local X position of this position in the local coordinate frame (NED)
- * @param y [m] Local Y position of this position in the local coordinate frame (NED)
- * @param z [m] Local Z position of this position in the local coordinate frame (NED: positive "down")
- * @param q  
-        Quaternion indicating world-to-surface-normal and heading transformation of the takeoff position.
-        Used to indicate the heading and slope of the ground.
-        All fields should be set to NaN if an accurate quaternion for both heading and surface slope cannot be supplied.
-      
+ * @param x [m] Local X position of this position in the local coordinate frame
+ * @param y [m] Local Y position of this position in the local coordinate frame
+ * @param z [m] Local Z position of this position in the local coordinate frame
+ * @param q  World to surface normal and heading transformation of the takeoff position. Used to indicate the heading and slope of the ground
  * @param approach_x [m] Local X position of the end of the approach vector. Multicopters should set this position based on their takeoff path. Grass-landing fixed wing aircraft should set it the same way as multicopters. Runway-landing fixed wing aircraft should set it to the opposite direction of the takeoff, assuming the takeoff happened from the threshold / touchdown zone.
  * @param approach_y [m] Local Y position of the end of the approach vector. Multicopters should set this position based on their takeoff path. Grass-landing fixed wing aircraft should set it the same way as multicopters. Runway-landing fixed wing aircraft should set it to the opposite direction of the takeoff, assuming the takeoff happened from the threshold / touchdown zone.
  * @param approach_z [m] Local Z position of the end of the approach vector. Multicopters should set this position based on their takeoff path. Grass-landing fixed wing aircraft should set it the same way as multicopters. Runway-landing fixed wing aircraft should set it to the opposite direction of the takeoff, assuming the takeoff happened from the threshold / touchdown zone.
  * @param time_usec [us] Timestamp (UNIX Epoch time or time since system boot). The receiving end can infer timestamp format (since 1.1.1970 or since system boot) by checking for the magnitude of the number.
  * @return length of the message in bytes (excluding serial stream start sign)
  */
-static inline uint16_t mavlink_msg_home_position_pack(uint32_t system_id, uint8_t component_id, mavlink_message_t* msg,
+static inline uint16_t mavlink_msg_home_position_pack(uint8_t system_id, uint8_t component_id, mavlink_message_t* msg,
                                int32_t latitude, int32_t longitude, int32_t altitude, float x, float y, float z, const float *q, float approach_x, float approach_y, float approach_z, uint64_t time_usec)
 {
 #if MAVLINK_NEED_BYTE_SWAP || !MAVLINK_ALIGNED_FIELDS
@@ -123,7 +113,7 @@ static inline uint16_t mavlink_msg_home_position_pack(uint32_t system_id, uint8_
     packet.approach_y = approach_y;
     packet.approach_z = approach_z;
     packet.time_usec = time_usec;
-    mav_array_memcpy(packet.q, q, sizeof(float)*4);
+    mav_array_assign_float(packet.q, q, 4);
         memcpy(_MAV_PAYLOAD_NON_CONST(msg), &packet, MAVLINK_MSG_ID_HOME_POSITION_LEN);
 #endif
 
@@ -141,21 +131,17 @@ static inline uint16_t mavlink_msg_home_position_pack(uint32_t system_id, uint8_
  * @param latitude [degE7] Latitude (WGS84)
  * @param longitude [degE7] Longitude (WGS84)
  * @param altitude [mm] Altitude (MSL). Positive for up.
- * @param x [m] Local X position of this position in the local coordinate frame (NED)
- * @param y [m] Local Y position of this position in the local coordinate frame (NED)
- * @param z [m] Local Z position of this position in the local coordinate frame (NED: positive "down")
- * @param q  
-        Quaternion indicating world-to-surface-normal and heading transformation of the takeoff position.
-        Used to indicate the heading and slope of the ground.
-        All fields should be set to NaN if an accurate quaternion for both heading and surface slope cannot be supplied.
-      
+ * @param x [m] Local X position of this position in the local coordinate frame
+ * @param y [m] Local Y position of this position in the local coordinate frame
+ * @param z [m] Local Z position of this position in the local coordinate frame
+ * @param q  World to surface normal and heading transformation of the takeoff position. Used to indicate the heading and slope of the ground
  * @param approach_x [m] Local X position of the end of the approach vector. Multicopters should set this position based on their takeoff path. Grass-landing fixed wing aircraft should set it the same way as multicopters. Runway-landing fixed wing aircraft should set it to the opposite direction of the takeoff, assuming the takeoff happened from the threshold / touchdown zone.
  * @param approach_y [m] Local Y position of the end of the approach vector. Multicopters should set this position based on their takeoff path. Grass-landing fixed wing aircraft should set it the same way as multicopters. Runway-landing fixed wing aircraft should set it to the opposite direction of the takeoff, assuming the takeoff happened from the threshold / touchdown zone.
  * @param approach_z [m] Local Z position of the end of the approach vector. Multicopters should set this position based on their takeoff path. Grass-landing fixed wing aircraft should set it the same way as multicopters. Runway-landing fixed wing aircraft should set it to the opposite direction of the takeoff, assuming the takeoff happened from the threshold / touchdown zone.
  * @param time_usec [us] Timestamp (UNIX Epoch time or time since system boot). The receiving end can infer timestamp format (since 1.1.1970 or since system boot) by checking for the magnitude of the number.
  * @return length of the message in bytes (excluding serial stream start sign)
  */
-static inline uint16_t mavlink_msg_home_position_pack_status(uint32_t system_id, uint8_t component_id, mavlink_status_t *_status, mavlink_message_t* msg,
+static inline uint16_t mavlink_msg_home_position_pack_status(uint8_t system_id, uint8_t component_id, mavlink_status_t *_status, mavlink_message_t* msg,
                                int32_t latitude, int32_t longitude, int32_t altitude, float x, float y, float z, const float *q, float approach_x, float approach_y, float approach_z, uint64_t time_usec)
 {
 #if MAVLINK_NEED_BYTE_SWAP || !MAVLINK_ALIGNED_FIELDS
@@ -192,7 +178,7 @@ static inline uint16_t mavlink_msg_home_position_pack_status(uint32_t system_id,
 #if MAVLINK_CRC_EXTRA
     return mavlink_finalize_message_buffer(msg, system_id, component_id, _status, MAVLINK_MSG_ID_HOME_POSITION_MIN_LEN, MAVLINK_MSG_ID_HOME_POSITION_LEN, MAVLINK_MSG_ID_HOME_POSITION_CRC);
 #else
-    return mavlink_finalize_message_buffer(msg, system_id, component_id, _status, MAVLINK_MSG_ID_HOME_POSITION_MIN_LEN, MAVLINK_MSG_ID_HOME_POSITION_LEN, 0);
+    return mavlink_finalize_message_buffer(msg, system_id, component_id, _status, MAVLINK_MSG_ID_HOME_POSITION_MIN_LEN, MAVLINK_MSG_ID_HOME_POSITION_LEN);
 #endif
 }
 
@@ -205,21 +191,17 @@ static inline uint16_t mavlink_msg_home_position_pack_status(uint32_t system_id,
  * @param latitude [degE7] Latitude (WGS84)
  * @param longitude [degE7] Longitude (WGS84)
  * @param altitude [mm] Altitude (MSL). Positive for up.
- * @param x [m] Local X position of this position in the local coordinate frame (NED)
- * @param y [m] Local Y position of this position in the local coordinate frame (NED)
- * @param z [m] Local Z position of this position in the local coordinate frame (NED: positive "down")
- * @param q  
-        Quaternion indicating world-to-surface-normal and heading transformation of the takeoff position.
-        Used to indicate the heading and slope of the ground.
-        All fields should be set to NaN if an accurate quaternion for both heading and surface slope cannot be supplied.
-      
+ * @param x [m] Local X position of this position in the local coordinate frame
+ * @param y [m] Local Y position of this position in the local coordinate frame
+ * @param z [m] Local Z position of this position in the local coordinate frame
+ * @param q  World to surface normal and heading transformation of the takeoff position. Used to indicate the heading and slope of the ground
  * @param approach_x [m] Local X position of the end of the approach vector. Multicopters should set this position based on their takeoff path. Grass-landing fixed wing aircraft should set it the same way as multicopters. Runway-landing fixed wing aircraft should set it to the opposite direction of the takeoff, assuming the takeoff happened from the threshold / touchdown zone.
  * @param approach_y [m] Local Y position of the end of the approach vector. Multicopters should set this position based on their takeoff path. Grass-landing fixed wing aircraft should set it the same way as multicopters. Runway-landing fixed wing aircraft should set it to the opposite direction of the takeoff, assuming the takeoff happened from the threshold / touchdown zone.
  * @param approach_z [m] Local Z position of the end of the approach vector. Multicopters should set this position based on their takeoff path. Grass-landing fixed wing aircraft should set it the same way as multicopters. Runway-landing fixed wing aircraft should set it to the opposite direction of the takeoff, assuming the takeoff happened from the threshold / touchdown zone.
  * @param time_usec [us] Timestamp (UNIX Epoch time or time since system boot). The receiving end can infer timestamp format (since 1.1.1970 or since system boot) by checking for the magnitude of the number.
  * @return length of the message in bytes (excluding serial stream start sign)
  */
-static inline uint16_t mavlink_msg_home_position_pack_chan(uint32_t system_id, uint8_t component_id, uint8_t chan,
+static inline uint16_t mavlink_msg_home_position_pack_chan(uint8_t system_id, uint8_t component_id, uint8_t chan,
                                mavlink_message_t* msg,
                                    int32_t latitude,int32_t longitude,int32_t altitude,float x,float y,float z,const float *q,float approach_x,float approach_y,float approach_z,uint64_t time_usec)
 {
@@ -249,7 +231,7 @@ static inline uint16_t mavlink_msg_home_position_pack_chan(uint32_t system_id, u
     packet.approach_y = approach_y;
     packet.approach_z = approach_z;
     packet.time_usec = time_usec;
-    mav_array_memcpy(packet.q, q, sizeof(float)*4);
+    mav_array_assign_float(packet.q, q, 4);
         memcpy(_MAV_PAYLOAD_NON_CONST(msg), &packet, MAVLINK_MSG_ID_HOME_POSITION_LEN);
 #endif
 
@@ -265,7 +247,7 @@ static inline uint16_t mavlink_msg_home_position_pack_chan(uint32_t system_id, u
  * @param msg The MAVLink message to compress the data into
  * @param home_position C-struct to read the message contents from
  */
-static inline uint16_t mavlink_msg_home_position_encode(uint32_t system_id, uint8_t component_id, mavlink_message_t* msg, const mavlink_home_position_t* home_position)
+static inline uint16_t mavlink_msg_home_position_encode(uint8_t system_id, uint8_t component_id, mavlink_message_t* msg, const mavlink_home_position_t* home_position)
 {
     return mavlink_msg_home_position_pack(system_id, component_id, msg, home_position->latitude, home_position->longitude, home_position->altitude, home_position->x, home_position->y, home_position->z, home_position->q, home_position->approach_x, home_position->approach_y, home_position->approach_z, home_position->time_usec);
 }
@@ -279,7 +261,7 @@ static inline uint16_t mavlink_msg_home_position_encode(uint32_t system_id, uint
  * @param msg The MAVLink message to compress the data into
  * @param home_position C-struct to read the message contents from
  */
-static inline uint16_t mavlink_msg_home_position_encode_chan(uint32_t system_id, uint8_t component_id, uint8_t chan, mavlink_message_t* msg, const mavlink_home_position_t* home_position)
+static inline uint16_t mavlink_msg_home_position_encode_chan(uint8_t system_id, uint8_t component_id, uint8_t chan, mavlink_message_t* msg, const mavlink_home_position_t* home_position)
 {
     return mavlink_msg_home_position_pack_chan(system_id, component_id, chan, msg, home_position->latitude, home_position->longitude, home_position->altitude, home_position->x, home_position->y, home_position->z, home_position->q, home_position->approach_x, home_position->approach_y, home_position->approach_z, home_position->time_usec);
 }
@@ -293,7 +275,7 @@ static inline uint16_t mavlink_msg_home_position_encode_chan(uint32_t system_id,
  * @param msg The MAVLink message to compress the data into
  * @param home_position C-struct to read the message contents from
  */
-static inline uint16_t mavlink_msg_home_position_encode_status(uint32_t system_id, uint8_t component_id, mavlink_status_t* _status, mavlink_message_t* msg, const mavlink_home_position_t* home_position)
+static inline uint16_t mavlink_msg_home_position_encode_status(uint8_t system_id, uint8_t component_id, mavlink_status_t* _status, mavlink_message_t* msg, const mavlink_home_position_t* home_position)
 {
     return mavlink_msg_home_position_pack_status(system_id, component_id, _status, msg,  home_position->latitude, home_position->longitude, home_position->altitude, home_position->x, home_position->y, home_position->z, home_position->q, home_position->approach_x, home_position->approach_y, home_position->approach_z, home_position->time_usec);
 }
@@ -305,14 +287,10 @@ static inline uint16_t mavlink_msg_home_position_encode_status(uint32_t system_i
  * @param latitude [degE7] Latitude (WGS84)
  * @param longitude [degE7] Longitude (WGS84)
  * @param altitude [mm] Altitude (MSL). Positive for up.
- * @param x [m] Local X position of this position in the local coordinate frame (NED)
- * @param y [m] Local Y position of this position in the local coordinate frame (NED)
- * @param z [m] Local Z position of this position in the local coordinate frame (NED: positive "down")
- * @param q  
-        Quaternion indicating world-to-surface-normal and heading transformation of the takeoff position.
-        Used to indicate the heading and slope of the ground.
-        All fields should be set to NaN if an accurate quaternion for both heading and surface slope cannot be supplied.
-      
+ * @param x [m] Local X position of this position in the local coordinate frame
+ * @param y [m] Local Y position of this position in the local coordinate frame
+ * @param z [m] Local Z position of this position in the local coordinate frame
+ * @param q  World to surface normal and heading transformation of the takeoff position. Used to indicate the heading and slope of the ground
  * @param approach_x [m] Local X position of the end of the approach vector. Multicopters should set this position based on their takeoff path. Grass-landing fixed wing aircraft should set it the same way as multicopters. Runway-landing fixed wing aircraft should set it to the opposite direction of the takeoff, assuming the takeoff happened from the threshold / touchdown zone.
  * @param approach_y [m] Local Y position of the end of the approach vector. Multicopters should set this position based on their takeoff path. Grass-landing fixed wing aircraft should set it the same way as multicopters. Runway-landing fixed wing aircraft should set it to the opposite direction of the takeoff, assuming the takeoff happened from the threshold / touchdown zone.
  * @param approach_z [m] Local Z position of the end of the approach vector. Multicopters should set this position based on their takeoff path. Grass-landing fixed wing aircraft should set it the same way as multicopters. Runway-landing fixed wing aircraft should set it to the opposite direction of the takeoff, assuming the takeoff happened from the threshold / touchdown zone.
@@ -348,7 +326,7 @@ static inline void mavlink_msg_home_position_send(mavlink_channel_t chan, int32_
     packet.approach_y = approach_y;
     packet.approach_z = approach_z;
     packet.time_usec = time_usec;
-    mav_array_memcpy(packet.q, q, sizeof(float)*4);
+    mav_array_assign_float(packet.q, q, 4);
     _mav_finalize_message_chan_send(chan, MAVLINK_MSG_ID_HOME_POSITION, (const char *)&packet, MAVLINK_MSG_ID_HOME_POSITION_MIN_LEN, MAVLINK_MSG_ID_HOME_POSITION_LEN, MAVLINK_MSG_ID_HOME_POSITION_CRC);
 #endif
 }
@@ -403,7 +381,7 @@ static inline void mavlink_msg_home_position_send_buf(mavlink_message_t *msgbuf,
     packet->approach_y = approach_y;
     packet->approach_z = approach_z;
     packet->time_usec = time_usec;
-    mav_array_memcpy(packet->q, q, sizeof(float)*4);
+    mav_array_assign_float(packet->q, q, 4);
     _mav_finalize_message_chan_send(chan, MAVLINK_MSG_ID_HOME_POSITION, (const char *)packet, MAVLINK_MSG_ID_HOME_POSITION_MIN_LEN, MAVLINK_MSG_ID_HOME_POSITION_LEN, MAVLINK_MSG_ID_HOME_POSITION_CRC);
 #endif
 }
@@ -447,7 +425,7 @@ static inline int32_t mavlink_msg_home_position_get_altitude(const mavlink_messa
 /**
  * @brief Get field x from home_position message
  *
- * @return [m] Local X position of this position in the local coordinate frame (NED)
+ * @return [m] Local X position of this position in the local coordinate frame
  */
 static inline float mavlink_msg_home_position_get_x(const mavlink_message_t* msg)
 {
@@ -457,7 +435,7 @@ static inline float mavlink_msg_home_position_get_x(const mavlink_message_t* msg
 /**
  * @brief Get field y from home_position message
  *
- * @return [m] Local Y position of this position in the local coordinate frame (NED)
+ * @return [m] Local Y position of this position in the local coordinate frame
  */
 static inline float mavlink_msg_home_position_get_y(const mavlink_message_t* msg)
 {
@@ -467,7 +445,7 @@ static inline float mavlink_msg_home_position_get_y(const mavlink_message_t* msg
 /**
  * @brief Get field z from home_position message
  *
- * @return [m] Local Z position of this position in the local coordinate frame (NED: positive "down")
+ * @return [m] Local Z position of this position in the local coordinate frame
  */
 static inline float mavlink_msg_home_position_get_z(const mavlink_message_t* msg)
 {
@@ -477,11 +455,7 @@ static inline float mavlink_msg_home_position_get_z(const mavlink_message_t* msg
 /**
  * @brief Get field q from home_position message
  *
- * @return  
-        Quaternion indicating world-to-surface-normal and heading transformation of the takeoff position.
-        Used to indicate the heading and slope of the ground.
-        All fields should be set to NaN if an accurate quaternion for both heading and surface slope cannot be supplied.
-      
+ * @return  World to surface normal and heading transformation of the takeoff position. Used to indicate the heading and slope of the ground
  */
 static inline uint16_t mavlink_msg_home_position_get_q(const mavlink_message_t* msg, float *q)
 {
@@ -553,5 +527,4 @@ static inline void mavlink_msg_home_position_decode(const mavlink_message_t* msg
         memset(home_position, 0, MAVLINK_MSG_ID_HOME_POSITION_LEN);
     memcpy(home_position, _MAV_PAYLOAD(msg), len);
 #endif
-
 }

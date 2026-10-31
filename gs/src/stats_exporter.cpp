@@ -297,6 +297,15 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
                    {"reject", t.drop_unlinked + t.drop_bad_packet + t.drop_oversize},
                    {"peer", in.mav.peer}};
   }
+  // Calibration run progress (docs/calibration.md): only while a run owns
+  // the air; k/n and i/n as strings, the way an operator reads them.
+  if (in.cal.present) {
+    link["cal"] = {{"state", in.cal.state},
+                   {"sweep", std::to_string(in.cal.sweep_k) + "/" + std::to_string(in.cal.sweep_n)},
+                   {"kind", in.cal.kind},
+                   {"bw", in.cal.bw},
+                   {"cell", std::to_string(in.cal.cell_i) + "/" + std::to_string(in.cal.cell_n)}};
+  }
   // Demand refresh (docs/fec-nack.md "Demand refresh"): counters cumulative.
   if (in.refresh.present) {
     json& rf = link["refresh"];

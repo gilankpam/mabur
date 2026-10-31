@@ -14,11 +14,11 @@
 
 namespace maburgs {
 
-// scan.log (scanlog 6) -- the channel-selection record in the debug-log
+// scan.log (scanlog 7) -- the channel-selection record in the debug-log
 // session directory. Formats are
 // LOCKED by tests/test_scan_log.cpp:
 //
-//   scanlog 6 <header_info>
+//   scanlog 7 <header_info>
 //   C <t> <card> <chip> <gen> <tx>x<rx> <bw_mask_hex> <tune5g_lo>-<tune5g_hi>
 //     <fast_retune> <fa_ok> <igi_ok> <nhm_ok> <floor_ok>        # card caps
 //   D <t> <card> <ch> <round> <observe_ms> <cca> <fa> <own> <foreign> <igi|->
@@ -32,6 +32,8 @@ namespace maburgs {
 //     - for USB dwells)
 //   K <t> <picked|none> <rounds> <ch>:<worst_busy>:<floor|nan>:<busy|-> ...
 //     pair=<lo>+<hi>|-                                            # the pick
+//     (also closes a calibration run's measure round: its rows are that
+//     round's halves plus op's, read from the live verdict window)
 //     (scanlog 3: the picked channel's standard 40 MHz pair, - when none)
 //     (scanlog 4: K entries <ch>:<worst_busy>:<floor|nan>:<busy|->)
 //   M <t> <card|all> <from> <to> <reason>                        # a link move
@@ -43,8 +45,10 @@ namespace maburgs {
 //     (scanlog 4: + nhm_busy/own_air per card, % of the window; nhm_busy
 //     is - when the card's NHM window didn't cover this verdict window on
 //     this channel, own_air is always present)
-//   H <t> <kind> <epoch> <target> <score> <elapsed_ms>            # a hop event
+//   H <t> <kind> <epoch> <target> <score> <elapsed_ms> <reason|-> # a hop event
 //     (scanlog 5: <kind> gains "relocate"; M <reason> gains "link_found")
+//     (scanlog 7: H + trailing <reason|->: "cal" on the relocate a
+//     calibration run orders, - otherwise)
 class ScanLog {
  public:
   ScanLog(LogWriter& w, const std::string& dir, const std::string& header_info);

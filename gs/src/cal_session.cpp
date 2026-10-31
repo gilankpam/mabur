@@ -1,50 +1,53 @@
 #include "cal_session.h"
 
 #include <algorithm>
+#include <bitset>
 #include <cmath>
-#include <cstdio>
+#include <string>
+#include <tuple>
+#include <variant>
 
 #include "cal_log.h"
+#include "cal_picker.h"
+#include "cal_plan.h"
+#include "mabur/cal_park.h"
 
 namespace maburgs {
+namespace cal = mabur::cal;
+
 namespace {
 
-// How often an unacknowledged T_CAL_CMD is re-offered into the drone's
-// listen window. The uplink loses 30-50% of frames (rcf-uplink-loss), so a
-// single send is not enough; T_CAL_CMD is idempotent by (nonce, phase), so
-// repeating it costs nothing on the drone side.
-constexpr uint32_t kCmdResendIntervalMs = 200;
-
-// T_CAL_RESULT gets the same treatment, and for the same reason: it rides
-// the same 30-50%-lossy uplink, and it is the ONE frame in this protocol
-// that carries the whole run's measured table. A single send that lost the
-// coin flip used to end the run with the drone's config untouched and the
-// operator's report claiming `written: /etc/mabur.toml` (an all-zero
-// verify column was the only hint). There is no explicit ack for it -- the
-// drone's verify sweep IS the ack, since it only sweeps verify after a
-// successful apply -- so the repeats stop at the first verify-phase frame,
-// and the drone's own result_accepted_ nonce latch (drone/src/cal_sweep.cpp)
-// makes every repeat before that a no-op.
-//
-// Bounded at kMaxResultRepeats, mirroring T_CAL_CMD's own ~15 tries in
-// 3000 ms: past that the drone is not coming back this session, and
-// repeating into the whole verify window would only add noise.
-constexpr uint32_t kResultResendIntervalMs = 200;
-constexpr int kMaxResultRepeats = 15;
+// How often an unanswered SweepCmd or ApplyCmd is offered again. The uplink
+// loses a large share of frames, so one send is not enough; both are
+// idempotent on the drone by (nonce, seq), so a repeat costs nothing there.
+constexpr uint32_t kResendMs = 200;
 
 int median(std::vector<int> v) {
   std::sort(v.begin(), v.end());
   return v[v.size() / 2];
 }
 
+const char* ack_word(cal::AckResult r) {
+  switch (r) {
+    case cal::AckResult::Accepted: return "accepted";
+    case cal::AckResult::AnchorUnreadable: return "anchor_unreadable";
+    case cal::AckResult::Busy: return "busy";
+    case cal::AckResult::Unsupported: return "unsupported";
+  }
+  return "unknown";
+}
+
+// Power before capacity within a width, so a capacity sweep flies at the
+// power its own width's walls were just parked at.
+int kind_order(cal::Kind k) { return k == cal::Kind::Power ? 0 : 1; }
+
 }  // namespace
 
-bool CalSession::start(uint32_t nonce, uint64_t now_ms,
+bool CalSession::start(uint32_t nonce, std::vector<cal::SweepSpec> sweeps, uint64_t now_ms,
                        std::string* err) {
-  // A session already running -- AwaitAck through Verify -- blocks a new
-  // start(); Idle, Done and Failed do not, so a finished or failed run can
-  // be retried without a separate reset call.
-  if (running()) {
+  now_ms = advance(now_ms);
+  // Picking is a run too: a second start would fight the first one's pick.
+  if (running() || state_ == State::Picking) {
     if (err) *err = "a calibration session is already running";
     return false;
   }
@@ -56,160 +59,194 @@ bool CalSession::start(uint32_t nonce, uint64_t now_ms,
     if (err) *err = "refused: peer does not advertise CAP_CALIBRATE";
     return false;
   }
+  if (sweeps.empty()) {
+    if (err) *err = "refused: no sweeps";
+    return false;
+  }
+  for (const auto& s : sweeps) {
+    if (s.kind != cal::Kind::Power && s.kind != cal::Kind::Capacity) {
+      if (err) *err = "refused: a sweep is power or capacity";
+      return false;
+    }
+    if (s.bw != 20 && s.bw != 40) {
+      if (err) *err = "refused: a sweep's width is 20 or 40";
+      return false;
+    }
+  }
+  auto key = [](const cal::SweepSpec& s) { return std::make_tuple(s.bw, kind_order(s.kind)); };
+  std::sort(sweeps.begin(), sweeps.end(),
+            [&](const cal::SweepSpec& a, const cal::SweepSpec& b) { return key(a) < key(b); });
+  sweeps.erase(std::unique(sweeps.begin(), sweeps.end(),
+                           [&](const cal::SweepSpec& a, const cal::SweepSpec& b) {
+                             return key(a) == key(b);
+                           }),
+               sweeps.end());
 
   nonce_ = nonce;
-  tag_ctx_ = peer_ctx_;
-  fail_reason_ = "";
-  result_ready_ = false;
-  result_repeats_left_ = 0;
-  verify_frame_seen_ = false;
-  coarse_walls_ = {};
-  final_walls_ = {};
-  pending_park_ = {};
+  sweeps_ = std::move(sweeps);
+  sweep_i_ = 0;
+  fail_reason_.clear();
+  run_logged_ = false;
+  reached_drone_ = false;
+  stamp_mismatch_ = 0;
+  cell_i_ = 0;
+  ack_flags_ = 0;
+  done_.reset();
+  width_ = {};
+  reloc_ordered_ = false;
+  // pending_abort_ is deliberately kept: copies of the previous run's
+  // Abort that have not gone out yet still must.
 
-  begin_await(make_coarse_plan(nonce), now_ms);
+  channel_ = picker_ ? picker_->op() : 0;
+  if (picker_ == nullptr || picker_->mode() != CalPicker::Mode::Auto) {
+    pick_ = (picker_ && picker_->mode() == CalPicker::Mode::OneCard) ? "onecard" : "pinned";
+    pick_note_ = pick_;
+    begin_sweep(0, now_ms);
+    return true;
+  }
+  pick_ = "auto";
+  pick_note_ = "measuring";
+  pick_start_ms_ = now_ms;
+  state_ = State::Picking;
+  picker_->begin_measure(now_ms);
   return true;
 }
 
-void CalSession::on_ack(uint32_t nonce, uint64_t now_ms) {
-  // A stale ack (wrong nonce, or arriving after the session has moved past
-  // AwaitAck -- e.g. it already timed out) must not resurrect a dead
-  // session or restart a phase that is already sweeping.
-  if (state_ != State::AwaitAck || nonce != nonce_) return;
-  phase_start_ms_ = now_ms;
-  phase_end_ms_ = now_ms + plan_duration_ms(pending_cmd_);
-  state_ = State::Sweep;
-}
-
-void CalSession::on_cal_frame(int card, const mabur::cal::CalFrameInfo& f,
-                              int rssi_dbm, bool crc_ok, uint64_t now_ms) {
-  // A sweep frame for the phase currently being commanded is an IMPLICIT
-  // ACK, exactly as a verify frame is the implicit ack for T_CAL_RESULT.
-  // Found by tests/test_cal_e2e.cpp: the drone's ack rides a Telem, Telem
-  // is lost like anything else, and until one arrives the session sits in
-  // AwaitAck -- where it (a) keeps transmitting T_CAL_CMD repeats every
-  // 200 ms straight into the drone's live sweep, contaminating the very
-  // measurement the radio-silence rule exists to protect and blanking its
-  // own RX cards with each send (gs-uplink-self-blanking), and (b) DROPS
-  // every frame that arrives meanwhile, so those cells keep their seeded
-  // 0-received tally and read as total loss. The result is not a missing
-  // wall but a WRONG one: in the loopback with a lossy ack the low end of
-  // each rate's curve was scored as dead air and the analysis walked off
-  // to walls like 12 and 16 with no flag saying anything was amiss.
-  //
-  // The frame itself proves what the ack would have: the drone accepted
-  // this exact phase and is on the air with it. There is no anchor to
-  // track any more -- f.idx already arrives relative to the drone's own
-  // chip, so this session has nothing further to learn from a Telem.
-  if (state_ == State::AwaitAck && f.phase == pending_cmd_.phase) {
-    phase_start_ms_ = now_ms;
-    phase_end_ms_ = now_ms + plan_duration_ms(pending_cmd_);
-    state_ = State::Sweep;
-  }
-  if (state_ != State::Sweep && state_ != State::Verify) return;
-  // Frames whose phase is not the one currently running are ignored
-  // entirely -- a drone still finishing kPhaseVerify's self-check, or a
-  // late straggler from a phase this session already left, must never be
-  // attributed to the phase running now.
-  if (f.phase != running_phase_) return;
-  // The implicit ack for T_CAL_RESULT: the drone self-initiates the verify
-  // sweep only after a successful apply, so ANY verify-phase frame -- any
-  // rate, CRC-bad included (attribution survives corruption by design,
-  // cal_wire.h) -- proves the result landed and applied. Latched before
-  // the validity checks below precisely because it is not a measurement:
-  // it is the signal that stops the result repeats, and the moment from
-  // which the GS owes the drone total radio silence again.
-  if (state_ == State::Verify) verify_frame_seen_ = true;
-  if (f.rate > 7 || card < 0 || card > 1) return;
-
-  CalCell* cp = nullptr;
-  if (state_ == State::Verify) {
-    // Review fix (Important 4): tally by RATE alone, accepting whatever
-    // index actually arrives, rather than requiring an exact match against
-    // this session's OWN predicted park index. make_verify_plan seeds
-    // exactly one cell per rate, so the index carries no information the
-    // rate does not already -- but the drone parks its verify cells at
-    // wall - lround(drone_margin_db*4), independently of this session's
-    // own cfg_.margin_db (both default 1.0, nothing enforces they match).
-    // An exact-index match would read ZERO delivery on all eight rates the
-    // instant the two configs disagree -- a total, silent verify failure
-    // sitting right next to a correct table already written to disk.
-    auto& per_rate = cells_[f.rate];
-    if (per_rate.empty()) return;  // this rate had nothing to verify
-    cp = &per_rate.begin()->second;
-  } else {
-    auto it = cells_[f.rate].find(f.idx);
-    if (it == cells_[f.rate].end()) return;  // not a cell this plan named
-    cp = &it->second;
-  }
-  CalCell& c = *cp;
-
-  if (!crc_ok) {
-    // maburgs sets rx.keep_corrupted unconditionally, so CRC-bad frames do
-    // arrive. Not delivered: count it, never as received.
-    ++c.corrupt;
-    return;
-  }
-  ++c.received[static_cast<size_t>(card)];
-  rssi_raw_[f.rate][f.idx][static_cast<size_t>(card)].push_back(rssi_dbm);
-}
-
-std::optional<mabur::rc::CalCmd> CalSession::due_cmd(uint64_t now_ms) {
+void CalSession::on_mav(const cal::CalMsg& m, uint64_t now_ms) {
+  now_ms = advance(now_ms);
   step(now_ms);
-  if (state_ != State::AwaitAck) return std::nullopt;
-  if (sent_once_ && now_ms - last_sent_ms_ < kCmdResendIntervalMs)
-    return std::nullopt;
+  if (const auto* a = std::get_if<cal::SweepAck>(&m)) {
+    if (state_ != State::AwaitAck || a->nonce != nonce_ || a->seq != cmd_.seq) return;
+    if (a->result != cal::AckResult::Accepted) {
+      fail(std::string("sweep refused by the drone: ") + ack_word(a->result));
+      return;
+    }
+    on_accepted(a->flags, a->start_in_ms, now_ms);
+  } else if (const auto* d = std::get_if<cal::SweepDone>(&m)) {
+    if (state_ != State::Sweep && state_ != State::AwaitDone) return;
+    if (d->nonce != nonce_ || d->seq != cmd_.seq) return;
+    done_ = *d;
+    // A capacity sweep's tail may still be airing; step() closes it once
+    // the tail has gone quiet.
+    if (tail_quiet(now_ms)) finish_sweep(now_ms);
+  } else if (const auto* ap = std::get_if<cal::Applied>(&m)) {
+    // Matched on the sweep's seq as well as the width: a run applies twice
+    // at one width (power, then capacity), and the drone keeps answering
+    // repeats of the first from its cache.
+    if (state_ != State::Apply || ap->nonce != nonce_ || ap->seq != cmd_.seq ||
+        ap->bw != cmd_.bw)
+      return;
+    on_applied(*ap, now_ms);
+  }
+}
+
+std::optional<cal::CalMsg> CalSession::due_mav(uint64_t now_ms) {
+  now_ms = advance(now_ms);
+  // Capacity frames handled since the last tick: the sweep was not quiet up
+  // to this tick. The tally's own clock is not enough -- it is built from
+  // the frames' receive stamps, and a core-loop pass that runs long puts
+  // its tick far past them while the rest of the drain still waits in the
+  // receive queue. due_mav is the caller's once-per-pass tick, after the
+  // pass has handled what it drained; on_mav and on_cal_frame carry
+  // receive stamps and never mark the sweep quiet.
+  if (cap_fresh_) {
+    last_cap_seen_ms_ = std::max(last_cap_seen_ms_, now_ms);
+    cap_fresh_ = false;
+  }
+  step(now_ms);
+  if (pending_abort_ && now_ms >= next_abort_ms_) {
+    const cal::Abort a = *pending_abort_;
+    if (--aborts_left_ == 0) pending_abort_.reset();
+    next_abort_ms_ = now_ms + kResendMs;
+    return cal::CalMsg{a};
+  }
+  if (state_ != State::AwaitAck && state_ != State::Apply) return std::nullopt;
+  if (sent_once_ && now_ms - last_sent_ms_ < kResendMs) return std::nullopt;
   sent_once_ = true;
   last_sent_ms_ = now_ms;
-  return pending_cmd_;
+  if (state_ == State::AwaitAck) {
+    reached_drone_ = true;
+    return cal::CalMsg{cmd_};
+  }
+  return cal::CalMsg{apply_};
 }
 
-std::optional<mabur::rc::CalResult> CalSession::due_result(uint64_t now_ms) {
+void CalSession::on_cal_frame(int card, const cal::CalFrameInfo& f, int rssi_dbm, bool crc_ok,
+                              size_t air_bytes, uint64_t now_ms) {
+  // The frame's own receive stamp, before advance() folds it into the
+  // session clock: a capacity point is timed by when its frames arrived,
+  // not by when the core loop got round to them.
+  const uint64_t rx_ms = now_ms;
+  now_ms = advance(now_ms);
   step(now_ms);
-  if (state_ == State::Result && result_ready_) {
-    result_ready_ = false;
-    // Applying the result is what arms the drone's self-initiated verify
-    // sweep (the drone immediately sweeps the eight park indices with no
-    // further command). There is no ack for
-    // T_CAL_RESULT, so the GS assumes delivery happens now and opens the
-    // verify window immediately -- otherwise its own uplink blanks the
-    // very sweep this whole kit exists to read cleanly.
-    begin_verify(now_ms);
-    last_result_sent_ms_ = now_ms;
-    result_repeats_left_ = kMaxResultRepeats;
-    return pending_result_;
+  if (card < 0 || card > 1 || f.rate > 7) return;
+  if (state_ == State::AwaitAck) {
+    // The ack rides a lossy uplink; a frame of the commanded sweep proves
+    // what it would have -- the drone accepted this sweep and is airing it
+    // -- and its stamp carries the flags the ack would have announced.
+    // Without this the GS would keep sending SweepCmd repeats into the
+    // live sweep and drop every frame of it. Only a CRC-clean frame: a
+    // corrupted one still parses with a flipped LDPC/STBC bit, and the
+    // flags it would adopt filter every frame of the sweep.
+    if (f.kind != cmd_.kind || f.bw != cmd_.bw) {
+      ++stamp_mismatch_;
+      return;
+    }
+    if (!crc_ok) return;
+    on_accepted(f.flags, 0, now_ms);
   }
-  // Repeats, inside the verify window, until the drone's first verify
-  // frame acks it (see kResultResendIntervalMs). This does NOT violate
-  // "the GS transmits nothing during a sweep phase": until a verify frame
-  // arrives, the drone has not applied and therefore is not sweeping
-  // anything -- it is sitting in its own await_next_ms limbo with the
-  // radio idle. The instant it does sweep, verify_frame_seen_ latches and
-  // this path goes quiet for the rest of the run. The one narrow overlap
-  // left is the drone's settle_ms (100 ms) between applying and its first
-  // frame; a repeat landing in that gap can cost at most a couple of
-  // frames out of the 100 in one verify cell, against a lost result frame
-  // costing the entire run.
-  if (state_ != State::Verify || verify_frame_seen_) return std::nullopt;
-  if (result_repeats_left_ <= 0) return std::nullopt;
-  if (now_ms - last_result_sent_ms_ < kResultResendIntervalMs)
-    return std::nullopt;
-  --result_repeats_left_;
-  last_result_sent_ms_ = now_ms;
-  return pending_result_;
+  if (state_ == State::Sweep || state_ == State::AwaitDone) {
+    if (f.kind != cmd_.kind || f.bw != cmd_.bw || f.flags != ack_flags_) {
+      ++stamp_mismatch_;
+      return;
+    }
+    if (cmd_.kind == cal::Kind::Power)
+      tally_power(card, f, rssi_dbm, crc_ok);
+    else
+      tally_capacity(card, f, rssi_dbm, crc_ok, air_bytes, rx_ms);
+  } else if (state_ == State::Verify) {
+    if (f.kind != cal::Kind::Verify || f.bw != cmd_.bw || f.flags != ack_flags_) {
+      ++stamp_mismatch_;
+      return;
+    }
+    tally_verify(card, f, crc_ok);
+  }
 }
 
 bool CalSession::radio_silent(uint64_t now_ms) const {
-  if (state_ != State::Sweep && state_ != State::Verify) return false;
-  return now_ms < phase_end_ms_ + cfg_.phase_slack_ms;
+  now_ms = std::max(now_ms, now_);
+  if (state_ == State::Sweep || state_ == State::AwaitDone || state_ == State::Verify)
+    return now_ms < window_end_ms_;
+  return false;
+}
+
+bool CalSession::running() const { return is_running(state_); }
+
+bool CalSession::is_running(State st) {
+  switch (st) {
+    case State::AwaitAck:
+    case State::Sweep:
+    case State::AwaitDone:
+    case State::Analyze:
+    case State::Apply:
+    case State::Verify:
+      return true;
+    default:
+      return false;
+  }
 }
 
 void CalSession::abort(const char* why) {
-  fail_reason_ = why ? why : "aborted";
+  if (running() || state_ == State::Picking) {
+    if (picker_) picker_->cancel();
+    // Only a run that offered the drone a SweepCmd can have opened one
+    // there; the drone closes it (restoring its power table) at once
+    // rather than at its own await timeout.
+    if (reached_drone_) queue_abort();
+    fail_reason_ = why ? why : "aborted";
+    if (log_) log_->flush();
+  }
   state_ = State::Idle;
-  result_ready_ = false;
-  result_repeats_left_ = 0;
-  clear_cells();
 }
 
 void CalSession::set_peer(bool linked, bool cal_capable, mabur::rc::TagCtx ctx) {
@@ -218,297 +255,440 @@ void CalSession::set_peer(bool linked, bool cal_capable, mabur::rc::TagCtx ctx) 
   peer_ctx_ = ctx;
 }
 
-uint16_t CalSession::cell_received(uint8_t rate, int idx, int card) const {
-  if (rate > 7 || card < 0 || card > 1) return 0;
-  auto it = cells_[rate].find(idx);
-  if (it == cells_[rate].end()) return 0;
-  return it->second.received[static_cast<size_t>(card)];
-}
-
-uint16_t CalSession::cell_corrupt(uint8_t rate, int idx) const {
-  if (rate > 7) return 0;
-  auto it = cells_[rate].find(idx);
-  if (it == cells_[rate].end()) return 0;
-  return it->second.corrupt;
-}
-
-std::string CalSession::progress() const {
-  const char* st = "?";
-  switch (state_) {
-    case State::Idle: st = "idle"; break;
-    case State::AwaitAck: st = "await_ack"; break;
-    case State::Sweep: st = "sweep"; break;
-    case State::Analyze: st = "analyze"; break;
-    case State::Result: st = "result"; break;
-    case State::Verify: st = "verify"; break;
-    case State::Done: st = "done"; break;
-    case State::Failed: st = "failed"; break;
-  }
-  size_t filled = 0, planned = 0;
-  for (const auto& per_rate : cells_) {
-    for (const auto& [idx, c] : per_rate) {
-      ++planned;
-      if (c.received[0] > 0 || c.received[1] > 0 || c.corrupt > 0) ++filled;
+CalSnapshot CalSession::snapshot() const {
+  CalSnapshot s;
+  s.state = state_;
+  s.sweep_i = sweep_i_;
+  s.sweep_n = sweeps_.size();
+  if (!sweeps_.empty()) {
+    s.cur = sweeps_[sweep_i_];
+    if (state_ == State::Verify) {
+      s.cell_n = static_cast<uint32_t>(verify_cells_.size());
+    } else {
+      const uint32_t rates = static_cast<uint32_t>(std::bitset<8>(cmd_.mcs_mask).count());
+      s.cell_n = cmd_.kind == cal::Kind::Capacity
+                     ? rates
+                     : rates * static_cast<uint32_t>(cells_per_row());
     }
   }
-  char buf[160];
-  std::snprintf(buf, sizeof buf,
-               "state=%s phase=%d cells=%zu/%zu window=[%llu,%llu]", st,
-               running_phase_, filled, planned,
-               static_cast<unsigned long long>(phase_start_ms_),
-               static_cast<unsigned long long>(phase_end_ms_));
-  return buf;
+  s.cell_i = cell_i_;
+  s.channel = channel_;
+  s.pick_note = pick_note_;
+  s.flags = ack_flags_;
+  s.stamp_mismatch = stamp_mismatch_;
+  s.width = width_;
+  s.fail_reason = fail_reason_;
+  return s;
+}
+
+uint16_t CalSession::cell_received(uint8_t rate, int idx, int card) const {
+  if (rate > 7 || card < 0 || card > 1) return 0;
+  const auto& row = cells_[rate];
+  const int j = idx - cmd_.idx_lo;
+  if (j < 0 || static_cast<size_t>(j) >= row.size()) return 0;
+  return row[static_cast<size_t>(j)].received[static_cast<size_t>(card)];
 }
 
 // --- private ---------------------------------------------------------
 
 void CalSession::step(uint64_t now_ms) {
   switch (state_) {
+    case State::Picking:
+      step_picking(now_ms);
+      break;
     case State::AwaitAck:
-      if (now_ms - await_start_ms_ >= cfg_.ack_timeout_ms)
-        fail("calibration ack timeout");
+      if (now_ms - phase_start_ms_ >= cfg_.ack_timeout_ms) fail("calibration ack timeout");
       break;
     case State::Sweep:
-      if (now_ms >= phase_end_ms_ + cfg_.phase_slack_ms) finish_phase(now_ms);
+    case State::AwaitDone:
+      // The drone's SweepDone normally ends this early (once a capacity
+      // sweep's tail has gone quiet); its loss costs at most phase_slack_ms.
+      if (done_ && tail_quiet(now_ms)) {
+        finish_sweep(now_ms);
+        break;
+      }
+      if (state_ == State::Sweep) {
+        if (now_ms < sweep_end_ms_) break;
+        state_ = State::AwaitDone;
+      }
+      if (now_ms >= window_end_ms_) finish_sweep(now_ms);
+      break;
+    case State::Apply:
+      if (now_ms - phase_start_ms_ >= cfg_.apply_timeout_ms) fail("calibration apply timeout");
       break;
     case State::Verify:
-      if (now_ms >= phase_end_ms_ + cfg_.phase_slack_ms) {
-        // Verify completion: one V record per rate that actually had a
-        // park index to verify. make_verify_plan skips undetermined rates
-        // entirely, so cells_[r] is empty for those -- nothing to log, by
-        // design, not a gap. This is a "was it planned" test only: a rate
-        // that WAS planned still gets its V row even when the cell heard
-        // nothing at all (pct 0), because that silence -- one rate dead at
-        // its own parked power while its siblings verify clean -- is the
-        // single most important thing this pass exists to surface, and an
-        // absent row reads identically to "never planned" in maburcal's
-        // report. Best single card, matching analyze_rate's own convention
-        // (PA compression degrades both cards' waveform together; the
-        // union would only inflate the number and hide a compressed rate
-        // as "verified clean").
-        //
-        // A run whose T_CAL_RESULT was lost, or whose apply failed before
-        // arming verify, optimistically opens this same verify window
-        // (due_result() has no ack to wait for) and then hears NOTHING on
-        // ANY rate -- which, under this rule, still emits a full set of
-        // all-zero V rows. That used to be exactly the bug: any V row at
-        // all read as proof of a successful apply. The fix is not to
-        // suppress the row (that is what made a single dead rate
-        // indistinguishable from one that was never parked); it is that
-        // maburcal's `written:` claim must key on at least one row with
-        // nonzero delivery, never on a row merely existing. See
-        // gs/bundle/maburcal's _apply_status_line and
-        // tests/test_maburcal.py's written:-gating tests.
-        if (log_) {
-          for (int r = 0; r < 8; ++r) {
-            const auto it = cells_[static_cast<size_t>(r)].begin();
-            if (it == cells_[static_cast<size_t>(r)].end()) continue;
-            const CalCell& c = it->second;
-            const int best =
-                std::max(c.received[0], c.received[1]);
-            const int pct = c.expected > 0
-                ? static_cast<int>(std::lround(
-                      100.0 * static_cast<double>(best) / c.expected))
-                : 0;
-            log_->verify(static_cast<uint8_t>(r), c.idx, pct);
-          }
-        }
-        state_ = State::Done;
-        // The run is over: get every record on disk before `maburcal`
-        // (polling `status` at 500 ms) sees state=done and reads the file.
-        // LogWriter's own 1 Hz flush loses that race about half the time,
-        // and the records it strands are exactly the V rows the report
-        // needs to say whether the config was written. See CalLog::flush().
-        if (log_) log_->flush();
-      }
+      if (now_ms >= window_end_ms_) finish_verify(now_ms);
       break;
     default:
       break;
   }
 }
 
-void CalSession::seed_cells(const mabur::rc::CalCmd& cmd) {
-  for (const auto& w : cmd.windows) {
-    if (w.idx_step == 0) continue;
-    for (int i = w.idx_lo; i <= w.idx_hi; i += w.idx_step) {
-      CalCell c;
-      c.idx = i;
-      c.expected = cmd.frames_per_cell;
-      cells_[w.rate][i] = c;
+void CalSession::step_picking(uint64_t now_ms) {
+  const std::string op = std::to_string(picker_->op());
+  if (now_ms - pick_start_ms_ >= cfg_.pick_timeout_ms) {
+    picker_->cancel();
+    pick_note_ = "stayed on " + op +
+                 (reloc_ordered_ ? ", relocate unconfirmed" : ", measure timed out");
+    finish_pick("stayed", now_ms);
+    return;
+  }
+  if (!reloc_ordered_) {
+    const auto best = picker_->measured_best();
+    if (!best) return;
+    if (*best == picker_->op()) {
+      pick_note_ = "auto: " + op + " is the best member";
+      finish_pick("auto", now_ms);
+      return;
+    }
+    if (!picker_->order_relocate(*best)) {
+      picker_->cancel();
+      pick_note_ = "stayed on " + op + ", relocate refused";
+      finish_pick("stayed", now_ms);
+      return;
+    }
+    reloc_ordered_ = true;
+    reloc_to_ = *best;
+    pick_note_ = "relocating " + op + " -> " + std::to_string(*best);
+    return;
+  }
+  const auto settled = picker_->relocate_settled();
+  if (!settled) return;
+  if (*settled) {
+    pick_note_ = "auto: moved to " + std::to_string(reloc_to_);
+    finish_pick("auto", now_ms);
+    channel_ = reloc_to_;
+    return;
+  }
+  picker_->cancel();
+  pick_note_ = "stayed on " + op + ", relocate unconfirmed";
+  finish_pick("stayed", now_ms);
+}
+
+void CalSession::finish_pick(const char* pick, uint64_t now_ms) {
+  pick_ = pick;
+  channel_ = picker_->op();
+  begin_sweep(0, now_ms);
+}
+
+void CalSession::begin_sweep(size_t i, uint64_t now_ms) {
+  sweep_i_ = i;
+  const cal::SweepSpec& sp = sweeps_[i];
+  const uint8_t seq = static_cast<uint8_t>(i);
+  cmd_ = sp.kind == cal::Kind::Power ? make_power_sweep(nonce_, seq, sp.bw)
+                                     : make_capacity_sweep(nonce_, seq, sp.bw);
+  // Frozen when the run first commands the drone: the drone latches the
+  // pair its first SweepCmd arrived under and checks every later cal
+  // message of the run against it, while the GS keeps beaconing between
+  // sweeps and may adopt a fresh pair meanwhile.
+  if (i == 0) tag_ctx_ = peer_ctx_;
+
+  for (size_t r = 0; r < 8; ++r) {
+    cells_[r].clear();
+    rssi_[r].clear();
+  }
+  if (sp.kind == cal::Kind::Power) {
+    const int n = cells_per_row();
+    for (size_t r = 0; r < 8; ++r) {
+      cells_[r].resize(static_cast<size_t>(n));
+      rssi_[r].resize(static_cast<size_t>(n));
+      for (int j = 0; j < n; ++j) cells_[r][static_cast<size_t>(j)].idx = cmd_.idx_lo + j;
     }
   }
-}
-
-void CalSession::clear_cells() {
-  for (auto& m : cells_) m.clear();
-  for (auto& m : rssi_raw_) m.clear();
-}
-
-void CalSession::begin_await(const mabur::rc::CalCmd& cmd, uint64_t now_ms) {
-  pending_cmd_ = cmd;
-  running_phase_ = cmd.phase;
-  clear_cells();
-  seed_cells(cmd);
-  await_start_ms_ = now_ms;
+  cap_ = {};
+  cap_rssi_ = {};
+  last_cap_seen_ms_ = 0;
+  cap_fresh_ = false;
+  done_.reset();
+  cell_i_ = 0;
+  phase_start_ms_ = now_ms;
   sent_once_ = false;
   state_ = State::AwaitAck;
 }
 
-void CalSession::begin_verify(uint64_t now_ms) {
-  running_phase_ = mabur::cal::kPhaseVerify;
-  clear_cells();
-  const auto verify_cmd = make_verify_plan(nonce_, pending_park_);
-  seed_cells(verify_cmd);
+void CalSession::on_accepted(uint8_t flags, uint16_t start_in_ms, uint64_t now_ms) {
+  ack_flags_ = flags;
+  if (picker_) channel_ = picker_->op();
+  if (!run_logged_) {
+    // The GS has no LDPC setting of its own: the drone's stamp flags are
+    // the truth about what this run flies.
+    if (log_)
+      log_->run(nonce_, cfg_.margin_db, channel_, pick_, (flags & cal::kFlagLdpc) != 0);
+    run_logged_ = true;
+  }
+  if (log_)
+    log_->sweep(cmd_.seq, cmd_.kind, cmd_.bw,
+                cmd_.kind == cal::Kind::Capacity ? cmd_.dwell_ms : cmd_.frames_per_cell);
+  sweep_end_ms_ = now_ms + start_in_ms + sweep_duration_ms(cmd_);
+  window_end_ms_ = sweep_end_ms_ + cfg_.phase_slack_ms;
+  state_ = State::Sweep;
+}
+
+void CalSession::tally_power(int card, const cal::CalFrameInfo& f, int rssi_dbm, bool crc_ok) {
+  if (f.idx < cmd_.idx_lo || f.idx > cmd_.idx_hi) return;  // not a commanded cell
+  const size_t j = static_cast<size_t>(f.idx - cmd_.idx_lo);
+  CalCell& c = cells_[f.rate][j];
+  cell_i_ = static_cast<uint32_t>(f.rate * cells_per_row()) + static_cast<uint32_t>(j) + 1;
+  if (!crc_ok) {
+    // CRC-bad frames reach the GS (keep_corrupted): loss, never delivery.
+    ++c.corrupt;
+    return;
+  }
+  ++c.received[static_cast<size_t>(card)];
+  rssi_[f.rate][j][static_cast<size_t>(card)].push_back(rssi_dbm);
+}
+
+void CalSession::tally_capacity(int card, const cal::CalFrameInfo& f, int rssi_dbm, bool crc_ok,
+                                size_t air_bytes, uint64_t rx_ms) {
+  if (!(cmd_.mcs_mask & (1u << f.rate))) return;
+  cell_i_ = static_cast<uint32_t>(
+                std::bitset<8>(cmd_.mcs_mask & ((1u << f.rate) - 1u)).count()) +
+            1;
+  // Any frame of the sweep, clean or not, says the air is still busy: the
+  // sweep is not quiet until the next due_mav tick, and quiet from there.
+  last_cap_seen_ms_ = std::max(last_cap_seen_ms_, now_);
+  cap_fresh_ = true;
+  if (!crc_ok) return;  // delivered air bits count clean frames only
+  CapCell& c = cap_[f.rate];
+  const size_t k = static_cast<size_t>(card);
+  const uint64_t bits = static_cast<uint64_t>(air_bytes) * 8u;
+  // One card's stamps are monotonic (one receive thread stamps them in
+  // arrival order); min/max keeps the span right if a caller interleaves.
+  if (c.frames[k] == 0 || rx_ms < c.first_ms[k]) {
+    c.first_ms[k] = rx_ms;
+    c.first_bits[k] = bits;
+  }
+  if (c.frames[k] == 0 || rx_ms > c.last_ms[k]) c.last_ms[k] = rx_ms;
+  ++c.frames[k];
+  c.air_bits[k] += bits;
+  cap_rssi_[f.rate][k].push_back(rssi_dbm);
+}
+
+bool CalSession::tail_quiet(uint64_t now_ms) const {
+  if (cmd_.kind != cal::Kind::Capacity) return true;
+  return !cap_fresh_ && now_ms >= last_cap_seen_ms_ + cfg_.tail_quiet_ms;
+}
+
+void CalSession::tally_verify(int card, const cal::CalFrameInfo& f, bool crc_ok) {
+  // Tallied by rate, whatever index arrives: the drone parks at its own
+  // margin, and an exact-index match would read a margin disagreement as
+  // a total verify failure.
+  size_t pos = verify_cells_.size();
+  for (size_t i = 0; i < verify_cells_.size(); ++i)
+    if (verify_cells_[i].first == f.rate) pos = i;
+  if (pos == verify_cells_.size()) return;  // rate not parked
+  cell_i_ = static_cast<uint32_t>(pos) + 1;
+  if (!verify_seen_[f.rate]) {
+    verify_seen_[f.rate] = true;
+    verify_seen_idx_[f.rate] = f.idx;
+  }
+  if (!crc_ok) return;
+  ++verify_recv_[f.rate][static_cast<size_t>(card)];
+}
+
+void CalSession::finish_sweep(uint64_t now_ms) {
+  state_ = State::Analyze;
+  const bool apply =
+      cmd_.kind == cal::Kind::Power ? analyze_power() : analyze_capacity_sweep();
+  if (apply)
+    begin_apply(now_ms);
+  else
+    next_sweep(now_ms);
+}
+
+bool CalSession::analyze_power() {
+  WidthResult& w = width_result();
+  const int n = cells_per_row();
+  apply_ = cal::ApplyCmd{};
+  apply_.nonce = nonce_;
+  apply_.seq = cmd_.seq;
+  apply_.bw = cmd_.bw;
+
+  std::array<std::vector<CalCell>, 8> rows;
+  for (size_t r = 0; r < 8; ++r) {
+    // Expected frames per cell: what the drone says it offered on this
+    // row, spread over the row's equal cells; the commanded count when the
+    // SweepDone was lost. A drone that died mid-row reads as loss, not as
+    // a shrinking denominator, either way.
+    uint32_t expected = cmd_.frames_per_cell;
+    if (done_ && n > 0 && done_->offered[r] / static_cast<uint32_t>(n) > 0)
+      expected = std::min<uint32_t>(done_->offered[r] / static_cast<uint32_t>(n), 0xFFFF);
+    for (size_t j = 0; j < cells_[r].size(); ++j) {
+      CalCell c = cells_[r][j];
+      c.expected = static_cast<uint16_t>(expected);
+      for (size_t k = 0; k < 2; ++k) {
+        const auto& samples = rssi_[r][j][k];
+        if (!samples.empty()) {
+          c.rssi_dbm[k] = median(samples);
+          c.have_rssi[k] = true;
+        }
+      }
+      rows[r].push_back(c);
+    }
+  }
+  if (log_)
+    for (size_t r = 0; r < 8; ++r)
+      for (const auto& c : rows[r]) log_->cell(static_cast<uint8_t>(r), c.idx, c);
+
+  bool any = false;
+  for (size_t r = 0; r < 8; ++r) {
+    const RateWall rw = analyze_rate(rows[r], cfg_.th);
+    w.walls[r] = rw;
+    if (log_) log_->wall(static_cast<uint8_t>(r), rw);
+    // An undetermined wall is left alone in the drone's config: never
+    // write a fabricated number over a real measurement.
+    if (rw.wall != kNoWall) {
+      apply_.walls[r] = static_cast<int8_t>(rw.wall);
+      any = true;
+    }
+  }
+  w.have_walls = true;
+  apply_.has_walls = any;
+  // legacy_wall_rel is one number for every width; the 20 MHz table owns
+  // it whenever this run measures one.
+  apply_.legacy =
+      (cmd_.bw == 20 || !has_power20()) ? apply_.walls[0] : cal::kWallLeave;
+  apply_wrote_walls_ = any;
+  return any;
+}
+
+bool CalSession::analyze_capacity_sweep() {
+  WidthResult& w = width_result();
+  apply_ = cal::ApplyCmd{};
+  apply_.nonce = nonce_;
+  apply_.seq = cmd_.seq;
+  apply_.bw = cmd_.bw;
+  apply_wrote_walls_ = false;
+  if (!done_) {
+    // Without the SweepDone neither offered nor blocked_pct is known, so a
+    // tx_bound point cannot be told apart from a real one -- and a
+    // tx_bound point must never be written. Nothing is.
+    w.eff_unknown = true;
+    w.have_eff = false;
+    w.cap = {};
+    w.eff_x1000 = {};
+    return false;
+  }
+  bool any = false;
+  for (size_t r = 0; r < 8; ++r) {
+    if (!(cmd_.mcs_mask & (1u << r))) continue;
+    CapCell c = cap_[r];
+    c.offered = done_->offered[r];
+    c.blocked_pct = done_->blocked_pct[r];
+    for (size_t k = 0; k < 2; ++k) {
+      if (!cap_rssi_[r][k].empty()) {
+        c.rssi_dbm[k] = median(cap_rssi_[r][k]);
+        c.have_rssi[k] = true;
+      }
+    }
+    const CapResult res =
+        analyze_capacity(c, static_cast<uint8_t>(r), cmd_.bw, cmd_.dwell_ms, cfg_.th);
+    w.cap[r] = res;
+    // A tx_bound point measured the drone's CPU/USB, and a lost one the
+    // loss, not the air: 0 leaves the config's value alone.
+    const uint16_t e = (res.flags & (kCalTxBound | kCalLost))
+                           ? 0
+                           : static_cast<uint16_t>(std::lround(res.eff * 1000.0));
+    apply_.eff_x1000[r] = e;
+    if (e) any = true;
+    if (log_) log_->cap(static_cast<uint8_t>(r), c, res);
+  }
+  w.eff_x1000 = apply_.eff_x1000;
+  w.have_eff = true;
+  w.eff_unknown = false;
+  apply_.has_eff = any;
+  return any;
+}
+
+void CalSession::begin_apply(uint64_t now_ms) {
   phase_start_ms_ = now_ms;
-  phase_end_ms_ = now_ms + plan_duration_ms(verify_cmd);
+  sent_once_ = false;
+  state_ = State::Apply;
+}
+
+void CalSession::on_applied(const cal::Applied& a, uint64_t now_ms) {
+  WidthResult& w = width_result();
+  if (log_) log_->applied(a.bw, a.ok, a.reason);
+  w.applied = a.ok;
+  w.apply_reason = a.reason;
+  if (!a.ok) {
+    fail("apply refused by the drone: " + a.reason);
+    return;
+  }
+  if (cmd_.kind == cal::Kind::Power && apply_wrote_walls_)
+    begin_verify(now_ms);
+  else
+    next_sweep(now_ms);
+}
+
+void CalSession::begin_verify(uint64_t now_ms) {
+  WidthResult& w = width_result();
+  // The same rule the drone parks its verify cells by (mabur/cal_park.h),
+  // so the window below covers exactly the cells it flies.
+  w.park = mabur::park_rel_for(apply_.walls, cfg_.margin_db);
+  verify_cells_ = verify_cells(w.park);
+  verify_recv_ = {};
+  verify_seen_ = {};
+  verify_seen_idx_ = {};
+  cell_i_ = 0;
+  window_end_ms_ = now_ms + verify_duration_ms(verify_cells_.size()) + cfg_.phase_slack_ms;
   state_ = State::Verify;
 }
 
-std::vector<CalCell> CalSession::sorted_cells(int rate) const {
-  std::vector<CalCell> out;
-  out.reserve(cells_[static_cast<size_t>(rate)].size());
-  for (const auto& [idx, cell] : cells_[static_cast<size_t>(rate)]) {
-    CalCell c = cell;
-    auto rit = rssi_raw_[static_cast<size_t>(rate)].find(idx);
-    if (rit != rssi_raw_[static_cast<size_t>(rate)].end()) {
-      for (int card = 0; card < 2; ++card) {
-        const auto& samples = rit->second[static_cast<size_t>(card)];
-        if (!samples.empty()) {
-          c.rssi_dbm[static_cast<size_t>(card)] = median(samples);
-          c.have_rssi[static_cast<size_t>(card)] = true;
-        }
-      }
-    }
-    out.push_back(c);
+void CalSession::finish_verify(uint64_t now_ms) {
+  WidthResult& w = width_result();
+  // One V row per parked rate, heard or not: a rate dead at its own parked
+  // power is exactly what this pass exists to surface, and an absent row
+  // would read as "never parked". Best single card, as the wall pass.
+  for (const auto& [rate, idx] : verify_cells_) {
+    const int best = std::max(verify_recv_[rate][0], verify_recv_[rate][1]);
+    const int pct = std::min(
+        100, static_cast<int>(std::lround(100.0 * best / static_cast<double>(kVerifyFrames))));
+    w.verify_pct[rate] = pct;
+    if (log_) log_->verify(rate, verify_seen_[rate] ? verify_seen_idx_[rate] : idx, pct);
   }
-  // std::map<uint8_t, ...> iterates in ascending key order already, which is
-  // exactly the precondition analyze_rate documents.
-  return out;
+  next_sweep(now_ms);
 }
 
-void CalSession::finish_phase(uint64_t now_ms) {
-  state_ = State::Analyze;  // transient: always advanced past within this call
-
-  std::array<std::vector<CalCell>, 8> snapshot;
-  for (int r = 0; r < 8; ++r) snapshot[static_cast<size_t>(r)] = sorted_cells(r);
-
-  // Raw per-cell record, BOTH phases: this is the only moment the data
-  // exists to log -- begin_await()/begin_verify() clear_cells() the raw
-  // tally as soon as the next phase (or verify) starts, so a coarse-only
-  // log call would silently lose every fine-phase cell. running_phase_
-  // still names the phase that just ended (finish_phase() runs before any
-  // transition touches it).
-  if (log_)
-    for (int r = 0; r < 8; ++r)
-      for (const auto& c : snapshot[static_cast<size_t>(r)])
-        log_->cell(running_phase_, static_cast<uint8_t>(r), c.idx, c);
-
-  if (running_phase_ == mabur::cal::kPhaseCoarse) {
-    for (int r = 0; r < 8; ++r)
-      coarse_walls_[static_cast<size_t>(r)] =
-          analyze_rate(snapshot[static_cast<size_t>(r)], cfg_.th);
-
-    // Logged here too, not only from finalize_result(): a two-phase run
-    // refines only the rows coarse found a real dip in (see the fine-phase
-    // comment below), so coarse's own numbers are the only record that
-    // ever exists for the rest -- and even for a refined row, seeing what
-    // coarse alone concluded is exactly the kind of provenance cal.log
-    // exists to keep. maburcal's reader keys W lines by rate in a dict, so
-    // a later (fine-phase) W line for the same rate simply supersedes this
-    // one -- harmless, not a duplicate-data bug.
-    if (log_)
-      for (int r = 0; r < 8; ++r)
-        log_->wall(static_cast<uint8_t>(r), coarse_walls_[static_cast<size_t>(r)]);
-
-    const auto fine_cmd = make_fine_plan(nonce_, coarse_walls_);
-    if (fine_cmd.windows.empty()) {
-      // No row showed a real dip (or none was determinable): no fine window
-      // has anything to sharpen, so the coarse pass IS the final answer.
-      final_walls_ = coarse_walls_;
-      finalize_result();
-    } else {
-      begin_await(fine_cmd, now_ms);
-    }
+void CalSession::next_sweep(uint64_t now_ms) {
+  if (sweep_i_ + 1 < sweeps_.size()) {
+    begin_sweep(sweep_i_ + 1, now_ms);
     return;
   }
-
-  // running_phase_ == kPhaseFine.
-  //
-  // Ruling: analyze_rate's "never dipped" test (wall >= last cell) is only
-  // sound on a full-range sweep. The fine phase feeds a +/-kFineHalfWidth
-  // window, where a rate whose true wall sits at the window's edge would be
-  // misread as no-dip and park at the rail on the strength of a truncated
-  // curve -- a silently wrong parked power. So the fine pass never
-  // re-derives a row's classification: it only sharpens the wall index of a
-  // row coarse already showed a real dip in, and any kCalNoDip/
-  // kCalUndetermined verdict out of the truncated fine window is rejected
-  // in favor of the coarse-resolution wall rather than trusted.
-  final_walls_ = coarse_walls_;
-  for (int r = 0; r < 8; ++r) {
-    const auto& cw = coarse_walls_[static_cast<size_t>(r)];
-    if (cw.flags & (kCalNoDip | kCalUndetermined))
-      continue;  // make_fine_plan didn't sweep this row; coarse stands.
-    // Seeded (and therefore non-empty) exactly when this row was in
-    // fine_cmd's windows -- the same set the flag check above already
-    // narrowed to.
-    const RateWall fw = analyze_rate(snapshot[static_cast<size_t>(r)], cfg_.th);
-    if (fw.flags & (kCalNoDip | kCalUndetermined))
-      continue;  // truncated-window misread; keep the coarse wall.
-
-    RateWall merged = fw;
-    if (std::abs(fw.wall - cw.wall) > 1) merged.flags |= kCalDrift;
-    final_walls_[static_cast<size_t>(r)] = merged;
-  }
-  if (log_)
-    for (int r = 0; r < 8; ++r)
-      log_->wall(static_cast<uint8_t>(r), final_walls_[static_cast<size_t>(r)]);
-  finalize_result();
+  state_ = State::Done;
+  // Closes the drone's run now -- restoring its operating power and video
+  // -- instead of after its await window; the drone's close keeps the
+  // config the applies wrote.
+  queue_abort();
+  // maburcal reads cal.log the moment it sees a terminal state; the
+  // writer's own 1 Hz flush would race it.
+  if (log_) log_->flush();
 }
 
-void CalSession::finalize_result() {
-  // T_CAL_RESULT carries the RAW measured wall, not a park index: the
-  // drone's power_plan.h is what subtracts margin_db (diff[r] = walls[r] -
-  // m), and it is drone-config-owned -- nothing forces this session's
-  // cfg_.margin_db to equal it. Sending a pre-subtracted value here would
-  // mean the drone adds a margin back (whose value it has no way to verify
-  // against what the GS actually used) before power_plan.h subtracts one
-  // again: two independently configured margins in one derivation, silently
-  // wrong if they ever differ, in a kit whose whole purpose is getting this
-  // table right.
-  // pending_park_ below is a SEPARATE, purely local concern: the GS's own
-  // verify-phase tally needs a park index too, computed with this
-  // session's margin_db, but that computation never leaves this process.
-  const int m = static_cast<int>(std::lround(cfg_.margin_db * 4.0));
-
-  mabur::rc::CalResult res;
-  res.nonce = nonce_;
-  for (int r = 0; r < 8; ++r) {
-    const auto& w = final_walls_[static_cast<size_t>(r)];
-    if (w.wall == kNoWall) {
-      res.walls[static_cast<size_t>(r)] = mabur::rc::kWallUndetermined;
-      pending_park_[static_cast<size_t>(r)] = kNoWall;
-    } else {
-      res.walls[static_cast<size_t>(r)] = static_cast<int16_t>(w.wall);
-      pending_park_[static_cast<size_t>(r)] = w.wall - m;
-    }
-  }
-  res.legacy_wall = res.walls[0];
-  // The health flags stay here: they reach cal.log from this session's own
-  // W rows, and nothing on the drone ever read them off the wire.
-
-  pending_result_ = res;
-  result_ready_ = true;
-  state_ = State::Result;
-}
-
-void CalSession::fail(const char* why) {
+void CalSession::fail(const std::string& why) {
+  if (state_ == State::Picking && picker_) picker_->cancel();
+  // A run the drone may have opened is closed there at once, restoring
+  // its power table, rather than at its own await timeout.
+  if (reached_drone_) queue_abort();
   fail_reason_ = why;
   state_ = State::Failed;
-  // Same reason as the Done transition (see step()): the operator's
-  // `maburcal start` reads cal.log as soon as it sees a terminal state,
-  // and a failed run's partial record is exactly what tells them how far
-  // it got.
   if (log_) log_->flush();
+}
+
+void CalSession::queue_abort() {
+  pending_abort_ = cal::Abort{nonce_};
+  aborts_left_ = kAbortCopies;
+  next_abort_ms_ = 0;  // the first copy goes out at the next due_mav()
+}
+
+int CalSession::cells_per_row() const { return std::max(0, cmd_.idx_hi - cmd_.idx_lo + 1); }
+
+WidthResult& CalSession::width_result() { return width_[cmd_.bw == 40 ? 1 : 0]; }
+
+bool CalSession::has_power20() const {
+  for (const auto& s : sweeps_)
+    if (s.kind == cal::Kind::Power && s.bw == 20) return true;
+  return false;
 }
 
 }  // namespace maburgs

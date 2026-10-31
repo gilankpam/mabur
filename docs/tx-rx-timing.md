@@ -51,6 +51,7 @@ Drone → GS (the downlink, nearly all of the airtime):
 | MSP OSD (sid 4) | `msp.update_rate_hz` 3 | `msp.symbol_size` 1312 B units | not slotted |
 | T_TELEM | 1 Hz | 54 B payload (`TELEM_LEN`) | not slotted |
 | T_MAV (MAVLink tunnel, untagged) | ≤ 1 per 50 ms | ≤ 600 B payload (`kMavMaxPayload`) | not slotted |
+| T_MAV calibration replies (ack, sweep done, applied) | `maburcal` runs only: one per command, a sweep-done every 200 ms until the next command | one MAVLink packet each | not slotted, unpaced, from the TX writer thread |
 | DISC_ACK | rendezvous only | small | not slotted |
 
 GS → drone (the uplink: a low duty cycle, but every send is a blast):
@@ -61,10 +62,10 @@ GS → drone (the uplink: a low duty cycle, but every send is a blast):
 | DISC keepalive | `beacon_keepalive_ms` 1000 | slotted like any RCF |
 | T_NACK (base selective repeat) | at most one per poll, when `link.nack.enable` (bundle: on) | **not slotted**: `send_control_frame` directly, mid-burst (`docs/fec-nack.md` "Packing and send") |
 | T_MAV (MAVLink tunnel, tagged) | on demand | slotted like RCF |
-| T_CAL_CMD | `maburcal` sessions only | not slotted; gated by the calibration radio-silence plan |
+| T_MAV calibration lane (sweep, apply, abort) | `maburcal` runs only: every 200 ms until answered, three aborts at the end | **not slotted**, not behind the radio-silence gate: the session offers a message only between sweeps, when the air is the GS's (`docs/mavlink.md` "The cal lane") |
 
-Every uplink send is also gated by `ChannelCore::may_send` and by the
-calibration radio-silence gate.
+Every uplink send is gated by `ChannelCore::may_send`, and every one but
+the calibration lane by the calibration radio-silence gate.
 
 ## 3. What mabur does orchestrate
 

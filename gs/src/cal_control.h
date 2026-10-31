@@ -4,6 +4,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
@@ -14,8 +15,29 @@
 #include <vector>
 
 #include "cal_session.h"
+#include "cal_wiring.h"
+#include "ladder_controller.h"
 
 namespace maburgs {
+
+// Every kind for every width the GS flies: 20 always, plus 40 iff the GS
+// itself flies 40 MHz AND some rung on its ladder actually uses it -- a GS
+// that can fly 40 but whose ladder never picks it would be calibrating a
+// width nothing lands on.
+inline std::vector<mabur::cal::SweepSpec> default_sweeps(uint8_t radio_width,
+                                                          const LadderCfg& ladder) {
+  std::vector<mabur::cal::SweepSpec> out = {{mabur::cal::Kind::Power, 20},
+                                             {mabur::cal::Kind::Capacity, 20}};
+  const bool flies_40 =
+      radio_width == 40 &&
+      std::any_of(ladder.ladder.begin(), ladder.ladder.end(),
+                  [](const Rung& r) { return r.bw == 40; });
+  if (flies_40) {
+    out.push_back({mabur::cal::Kind::Power, 40});
+    out.push_back({mabur::cal::Kind::Capacity, 40});
+  }
+  return out;
+}
 
 // Loopback-only UDP command listener that lets an operator ssh'd into the
 // GS box start, inspect, or abort a TX-power calibration run.
@@ -61,7 +83,12 @@ class CalControl {
   }
 
   // Drains every pending datagram, applies it, and replies to the sender.
-  void poll(CalSession& s) {
+  // `defaults` is the sweep list a bare `start` runs (default_sweeps(),
+  // computed by the caller from the live config); `radio_width` is the
+  // GS's own cfg.radio.width, which bounds what a `start power40`/`cap40`
+  // token may ask for.
+  void poll(CalSession& s, const std::vector<mabur::cal::SweepSpec>& defaults,
+            uint8_t radio_width) {
     if (fd_ < 0) return;
     char buf[256];
     for (;;) {
@@ -76,7 +103,7 @@ class CalControl {
                             // until the next tick).
       buf[n] = '\0';
       std::string reply;
-      const bool changed = apply(buf, s, &reply);
+      const bool changed = apply(buf, s, &reply, defaults, radio_width);
       sendto(fd_, reply.data(), reply.size(), 0,
              reinterpret_cast<sockaddr*>(&from), flen);
       if (changed) {
@@ -94,27 +121,32 @@ class CalControl {
   // the command language is unit-testable without a socket.
   //
   // Command language:
-  //   start                 begin a session (refuses if not linked / no
-  //                         CAP_CALIBRATE / already running)
+  //   start [tok...]        begin a session (refuses if not linked / no
+  //                         CAP_CALIBRATE / already running). With no
+  //                         tokens, runs `defaults`; otherwise each token
+  //                         is power20|power40|cap20|cap40, any order,
+  //                         duplicates dropped (the session itself sorts
+  //                         and dedups).
   //   status                one-line progress, never mutates
   //   abort                 abandon the running session
   //
-  // `start` takes no arguments. It used to accept `margin=<db>`, which
-  // only moved the GS's own park bookkeeping (the verify plan's expected
-  // indices and cal.log's R line) -- the drone applies its OWN
-  // cfg.radio.wall_margin_db, and cal_apply patches four keys of which
-  // wall_margin_db is not one, so the override changed nothing on
-  // hardware and merely made the report's `park` column disagree with
-  // what the drone flew. Calibrating wall_margin_db is an explicit
-  // non-goal: it is the operator's safety choice, hand-set in
-  // /etc/mabur.toml.
-  static bool apply(const std::string& line, CalSession& s,
-                    std::string* reply) {
+  // `start` used to accept `margin=<db>`, which only moved the GS's own
+  // park bookkeeping (the verify plan's expected indices and cal.log's R
+  // line) -- the drone applies its OWN cfg.radio.wall_margin_db, and
+  // cal_apply never patches wall_margin_db, so the
+  // override changed nothing on hardware and merely made the report's
+  // `park` column disagree with what the drone flew. Calibrating
+  // wall_margin_db is an explicit non-goal: it is the operator's safety
+  // choice, hand-set in /etc/mabur.toml. A stray `margin=2.0` now reads as
+  // an unrecognized token and is refused the same way any other one is.
+  static bool apply(const std::string& line, CalSession& s, std::string* reply,
+                    const std::vector<mabur::cal::SweepSpec>& defaults,
+                    uint8_t radio_width) {
     const std::vector<std::string> tok = split(line);
     if (tok.empty()) { *reply = "err empty"; return false; }
 
     if (tok[0] == "status") {
-      *reply = "ok " + s.progress();
+      *reply = "ok " + render_status(s.snapshot());
       return false;
     }
 
@@ -136,9 +168,22 @@ class CalControl {
     }
 
     if (tok[0] == "start") {
-      if (tok.size() > 1) {
-        *reply = "err bad token: " + tok[1];
-        return false;
+      std::vector<mabur::cal::SweepSpec> sweeps;
+      if (tok.size() == 1) {
+        sweeps = defaults;
+      } else {
+        for (size_t i = 1; i < tok.size(); ++i) {
+          mabur::cal::SweepSpec spec;
+          if (!parse_token(tok[i], &spec)) {
+            *reply = "err bad token: " + tok[i];
+            return false;
+          }
+          if (spec.bw == 40 && radio_width != 40) {
+            *reply = "err refused: GS radio.width is " + std::to_string(radio_width);
+            return false;
+          }
+          sweeps.push_back(spec);
+        }
       }
 
       // A fresh nonce per start means a stale ack from a session the
@@ -149,11 +194,11 @@ class CalControl {
       static std::random_device rd;
       const uint32_t nonce = rd();
       std::string err;
-      if (!s.start(nonce, now_ms(), &err)) {
+      if (!s.start(nonce, sweeps, now_ms(), &err)) {
         *reply = "err " + err;
         return false;
       }
-      *reply = "ok started";
+      *reply = "ok started " + sweeps_token_list(s.sweeps());
       return true;
     }
 
@@ -161,7 +206,54 @@ class CalControl {
     return false;
   }
 
+  // "state=sweep sweep=2/4 kind=power bw=40 cell=312/840", plus
+  // mismatch=<n> when frames were dropped for a kind/width/flags mismatch
+  // (CalSnapshot::stamp_mismatch, omitted at 0), and fail_reason=<why>
+  // appended last (free text to the end of the line) when the state is
+  // failed. sweep=k/n is
+  // 1-based (k = the running sweep's position, n = the run's total); kind
+  // reads "verify" during the verify phase instead of the running sweep's
+  // own Power/Capacity kind, since that is the only place in the run the
+  // drone is doing something other than what `cur` names.
+  static std::string render_status(const CalSnapshot& snap) {
+    const char* kind = cal_kind_name(snap);
+    const size_t sweep_k = snap.sweep_n ? snap.sweep_i + 1 : 0;
+    std::string out = std::string("state=") + cal_state_name(snap.state) +
+                      " sweep=" + std::to_string(sweep_k) + "/" +
+                      std::to_string(snap.sweep_n) + " kind=" + kind +
+                      " bw=" + std::to_string(snap.cur.bw) +
+                      " cell=" + std::to_string(snap.cell_i) + "/" +
+                      std::to_string(snap.cell_n);
+    if (snap.stamp_mismatch) out += " mismatch=" + std::to_string(snap.stamp_mismatch);
+    if (snap.state == CalSession::State::Failed && !snap.fail_reason.empty()) {
+      out += " fail_reason=" + snap.fail_reason;
+    }
+    return out;
+  }
+
  private:
+  // power20 | power40 | cap20 | cap40 -> the sweep it names. False (spec
+  // untouched) for anything else.
+  static bool parse_token(const std::string& tok, mabur::cal::SweepSpec* spec) {
+    if (tok == "power20") { *spec = {mabur::cal::Kind::Power, 20}; return true; }
+    if (tok == "power40") { *spec = {mabur::cal::Kind::Power, 40}; return true; }
+    if (tok == "cap20") { *spec = {mabur::cal::Kind::Capacity, 20}; return true; }
+    if (tok == "cap40") { *spec = {mabur::cal::Kind::Capacity, 40}; return true; }
+    return false;
+  }
+
+  // Comma-separated, in the order the session will actually run them --
+  // the reply to `start` names the run that was really composed, not the
+  // tokens the operator happened to type.
+  static std::string sweeps_token_list(const std::vector<mabur::cal::SweepSpec>& sweeps) {
+    std::string out;
+    for (size_t i = 0; i < sweeps.size(); ++i) {
+      if (i) out += ",";
+      out += cal_sweep_token(sweeps[i]);
+    }
+    return out;
+  }
+
   static uint64_t now_ms() {
     timespec ts{};
     clock_gettime(CLOCK_MONOTONIC, &ts);

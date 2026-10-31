@@ -1388,6 +1388,26 @@ class HopReportTest(unittest.TestCase):
         self.assertEqual([x["rx"] for x in s["D"]], [None, 10.0, None])
         self.assertEqual(s["D"][1]["busy"], 70.0)
 
+    def test_v7_scanlog_h_carries_reason(self):
+        """scanlog 7: H gains a trailing reason ('cal' on a calibration run's
+        relocate, '-' otherwise). Older H lines have none: the fields are
+        anchored from the end, so a v6 line must not lose its target to the
+        reason column, nor a v7 line gain the reason as its elapsed_ms."""
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "scan.log")
+        with open(p, "w") as f:
+            f.write("scanlog 6 channels=40,64 mode=auto dwell_ms=250\n")
+            f.write("H 100.0 relocate 1 64 0 0.0\n")
+            f.write("scanlog 7 channels=40,64 mode=auto dwell_ms=250\n")
+            f.write("H 200.0 relocate 2 40 0 0.0 cal\n")
+            f.write("H 300.0 lead_confirm 2 40 0 100.0 -\n")
+        s = flightreport.load_scanlog(p)
+        self.assertEqual(s["version"], 7)
+        self.assertEqual([h["kind"] for h in s["H"]], ["relocate", "relocate", "lead_confirm"])
+        self.assertEqual([h["target"] for h in s["H"]], [64, 40, 40])
+        self.assertEqual([h["elapsed_ms"] for h in s["H"]], [0.0, 0.0, 100.0])
+        self.assertEqual([h["reason"] for h in s["H"]], [None, "cal", None])
+
     def test_v4_scanlog_carries_busy_and_own_air(self):
         """scanlog 4 (NHM airtime): the V card block grows two fields, nhm_busy
         (%, '-' when the window wasn't ours) and own_air (%). A rejoined

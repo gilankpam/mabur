@@ -1,8 +1,6 @@
 #pragma once
 // MESSAGE RESOURCE_REQUEST PACKING
 
-#include <stdint.h>
-
 #define MAVLINK_MSG_ID_RESOURCE_REQUEST 142
 
 
@@ -63,7 +61,7 @@ typedef struct __mavlink_resource_request_t {
  * @param storage  The storage path the autopilot wants the URI to be stored in. Will only be valid if the transfer_type has a storage associated (e.g. MAVLink FTP).
  * @return length of the message in bytes (excluding serial stream start sign)
  */
-static inline uint16_t mavlink_msg_resource_request_pack(uint32_t system_id, uint8_t component_id, mavlink_message_t* msg,
+static inline uint16_t mavlink_msg_resource_request_pack(uint8_t system_id, uint8_t component_id, mavlink_message_t* msg,
                                uint8_t request_id, uint8_t uri_type, const uint8_t *uri, uint8_t transfer_type, const uint8_t *storage)
 {
 #if MAVLINK_NEED_BYTE_SWAP || !MAVLINK_ALIGNED_FIELDS
@@ -79,8 +77,8 @@ static inline uint16_t mavlink_msg_resource_request_pack(uint32_t system_id, uin
     packet.request_id = request_id;
     packet.uri_type = uri_type;
     packet.transfer_type = transfer_type;
-    mav_array_memcpy(packet.uri, uri, sizeof(uint8_t)*120);
-    mav_array_memcpy(packet.storage, storage, sizeof(uint8_t)*120);
+    mav_array_assign_uint8_t(packet.uri, uri, 120);
+    mav_array_assign_uint8_t(packet.storage, storage, 120);
         memcpy(_MAV_PAYLOAD_NON_CONST(msg), &packet, MAVLINK_MSG_ID_RESOURCE_REQUEST_LEN);
 #endif
 
@@ -102,7 +100,7 @@ static inline uint16_t mavlink_msg_resource_request_pack(uint32_t system_id, uin
  * @param storage  The storage path the autopilot wants the URI to be stored in. Will only be valid if the transfer_type has a storage associated (e.g. MAVLink FTP).
  * @return length of the message in bytes (excluding serial stream start sign)
  */
-static inline uint16_t mavlink_msg_resource_request_pack_status(uint32_t system_id, uint8_t component_id, mavlink_status_t *_status, mavlink_message_t* msg,
+static inline uint16_t mavlink_msg_resource_request_pack_status(uint8_t system_id, uint8_t component_id, mavlink_status_t *_status, mavlink_message_t* msg,
                                uint8_t request_id, uint8_t uri_type, const uint8_t *uri, uint8_t transfer_type, const uint8_t *storage)
 {
 #if MAVLINK_NEED_BYTE_SWAP || !MAVLINK_ALIGNED_FIELDS
@@ -127,7 +125,7 @@ static inline uint16_t mavlink_msg_resource_request_pack_status(uint32_t system_
 #if MAVLINK_CRC_EXTRA
     return mavlink_finalize_message_buffer(msg, system_id, component_id, _status, MAVLINK_MSG_ID_RESOURCE_REQUEST_MIN_LEN, MAVLINK_MSG_ID_RESOURCE_REQUEST_LEN, MAVLINK_MSG_ID_RESOURCE_REQUEST_CRC);
 #else
-    return mavlink_finalize_message_buffer(msg, system_id, component_id, _status, MAVLINK_MSG_ID_RESOURCE_REQUEST_MIN_LEN, MAVLINK_MSG_ID_RESOURCE_REQUEST_LEN, 0);
+    return mavlink_finalize_message_buffer(msg, system_id, component_id, _status, MAVLINK_MSG_ID_RESOURCE_REQUEST_MIN_LEN, MAVLINK_MSG_ID_RESOURCE_REQUEST_LEN);
 #endif
 }
 
@@ -144,7 +142,7 @@ static inline uint16_t mavlink_msg_resource_request_pack_status(uint32_t system_
  * @param storage  The storage path the autopilot wants the URI to be stored in. Will only be valid if the transfer_type has a storage associated (e.g. MAVLink FTP).
  * @return length of the message in bytes (excluding serial stream start sign)
  */
-static inline uint16_t mavlink_msg_resource_request_pack_chan(uint32_t system_id, uint8_t component_id, uint8_t chan,
+static inline uint16_t mavlink_msg_resource_request_pack_chan(uint8_t system_id, uint8_t component_id, uint8_t chan,
                                mavlink_message_t* msg,
                                    uint8_t request_id,uint8_t uri_type,const uint8_t *uri,uint8_t transfer_type,const uint8_t *storage)
 {
@@ -161,8 +159,8 @@ static inline uint16_t mavlink_msg_resource_request_pack_chan(uint32_t system_id
     packet.request_id = request_id;
     packet.uri_type = uri_type;
     packet.transfer_type = transfer_type;
-    mav_array_memcpy(packet.uri, uri, sizeof(uint8_t)*120);
-    mav_array_memcpy(packet.storage, storage, sizeof(uint8_t)*120);
+    mav_array_assign_uint8_t(packet.uri, uri, 120);
+    mav_array_assign_uint8_t(packet.storage, storage, 120);
         memcpy(_MAV_PAYLOAD_NON_CONST(msg), &packet, MAVLINK_MSG_ID_RESOURCE_REQUEST_LEN);
 #endif
 
@@ -178,7 +176,7 @@ static inline uint16_t mavlink_msg_resource_request_pack_chan(uint32_t system_id
  * @param msg The MAVLink message to compress the data into
  * @param resource_request C-struct to read the message contents from
  */
-static inline uint16_t mavlink_msg_resource_request_encode(uint32_t system_id, uint8_t component_id, mavlink_message_t* msg, const mavlink_resource_request_t* resource_request)
+static inline uint16_t mavlink_msg_resource_request_encode(uint8_t system_id, uint8_t component_id, mavlink_message_t* msg, const mavlink_resource_request_t* resource_request)
 {
     return mavlink_msg_resource_request_pack(system_id, component_id, msg, resource_request->request_id, resource_request->uri_type, resource_request->uri, resource_request->transfer_type, resource_request->storage);
 }
@@ -192,7 +190,7 @@ static inline uint16_t mavlink_msg_resource_request_encode(uint32_t system_id, u
  * @param msg The MAVLink message to compress the data into
  * @param resource_request C-struct to read the message contents from
  */
-static inline uint16_t mavlink_msg_resource_request_encode_chan(uint32_t system_id, uint8_t component_id, uint8_t chan, mavlink_message_t* msg, const mavlink_resource_request_t* resource_request)
+static inline uint16_t mavlink_msg_resource_request_encode_chan(uint8_t system_id, uint8_t component_id, uint8_t chan, mavlink_message_t* msg, const mavlink_resource_request_t* resource_request)
 {
     return mavlink_msg_resource_request_pack_chan(system_id, component_id, chan, msg, resource_request->request_id, resource_request->uri_type, resource_request->uri, resource_request->transfer_type, resource_request->storage);
 }
@@ -206,7 +204,7 @@ static inline uint16_t mavlink_msg_resource_request_encode_chan(uint32_t system_
  * @param msg The MAVLink message to compress the data into
  * @param resource_request C-struct to read the message contents from
  */
-static inline uint16_t mavlink_msg_resource_request_encode_status(uint32_t system_id, uint8_t component_id, mavlink_status_t* _status, mavlink_message_t* msg, const mavlink_resource_request_t* resource_request)
+static inline uint16_t mavlink_msg_resource_request_encode_status(uint8_t system_id, uint8_t component_id, mavlink_status_t* _status, mavlink_message_t* msg, const mavlink_resource_request_t* resource_request)
 {
     return mavlink_msg_resource_request_pack_status(system_id, component_id, _status, msg,  resource_request->request_id, resource_request->uri_type, resource_request->uri, resource_request->transfer_type, resource_request->storage);
 }
@@ -238,8 +236,8 @@ static inline void mavlink_msg_resource_request_send(mavlink_channel_t chan, uin
     packet.request_id = request_id;
     packet.uri_type = uri_type;
     packet.transfer_type = transfer_type;
-    mav_array_memcpy(packet.uri, uri, sizeof(uint8_t)*120);
-    mav_array_memcpy(packet.storage, storage, sizeof(uint8_t)*120);
+    mav_array_assign_uint8_t(packet.uri, uri, 120);
+    mav_array_assign_uint8_t(packet.storage, storage, 120);
     _mav_finalize_message_chan_send(chan, MAVLINK_MSG_ID_RESOURCE_REQUEST, (const char *)&packet, MAVLINK_MSG_ID_RESOURCE_REQUEST_MIN_LEN, MAVLINK_MSG_ID_RESOURCE_REQUEST_LEN, MAVLINK_MSG_ID_RESOURCE_REQUEST_CRC);
 #endif
 }
@@ -281,8 +279,8 @@ static inline void mavlink_msg_resource_request_send_buf(mavlink_message_t *msgb
     packet->request_id = request_id;
     packet->uri_type = uri_type;
     packet->transfer_type = transfer_type;
-    mav_array_memcpy(packet->uri, uri, sizeof(uint8_t)*120);
-    mav_array_memcpy(packet->storage, storage, sizeof(uint8_t)*120);
+    mav_array_assign_uint8_t(packet->uri, uri, 120);
+    mav_array_assign_uint8_t(packet->storage, storage, 120);
     _mav_finalize_message_chan_send(chan, MAVLINK_MSG_ID_RESOURCE_REQUEST, (const char *)packet, MAVLINK_MSG_ID_RESOURCE_REQUEST_MIN_LEN, MAVLINK_MSG_ID_RESOURCE_REQUEST_LEN, MAVLINK_MSG_ID_RESOURCE_REQUEST_CRC);
 #endif
 }
@@ -362,5 +360,4 @@ static inline void mavlink_msg_resource_request_decode(const mavlink_message_t* 
         memset(resource_request, 0, MAVLINK_MSG_ID_RESOURCE_REQUEST_LEN);
     memcpy(resource_request, _MAV_PAYLOAD(msg), len);
 #endif
-
 }

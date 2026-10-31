@@ -1,241 +1,297 @@
 #pragma once
-// The calibration session brain: owns the sweep plan, tallies received
-// frames into measurement cells, drives the coarse -> fine -> result ->
-// verify phase transitions, and is the sole place that decides whether the
-// GS is allowed to transmit at all while a run is in progress.
+// The calibration session brain on the GS. A run is an ordered list of
+// sweeps the GS composed (power and/or capacity, at 20 and/or 40 MHz); per
+// sweep the session commands the drone, waits for the ack, keeps the GS
+// radio silent while the drone airs stamped frames, tallies those frames,
+// analyses them when the drone says it is done (or the window closes),
+// sends the result for the drone to apply, verifies a power apply at the
+// parked indices, and moves on to the next sweep.
+//
+// It talks to the drone only through plain structs (mabur::cal::CalMsg):
+// the caller encodes due_mav()'s output onto the MAVLink tunnel's cal lane
+// and decodes the drone's replies into on_mav(). It is also the sole place
+// that decides whether the GS may transmit while a run is in progress
+// (radio_silent()). No maburgs-only include, so the web GS can link it.
 #include <array>
+#include <cstddef>
 #include <cstdint>
-#include <map>
 #include <optional>
 #include <string>
 #include <vector>
 
+#include "mabur/cal_proto.h"
+#include "mabur/cal_wire.h"
 #include "mabur/rc_proto.h"
 
 #include "cal_analysis.h"
-#include "cal_plan.h"
 
 namespace maburgs {
 
-// Forward-declared rather than #included: CalSession only ever holds a
-// pointer to it (an optional sink, not an owned collaborator), and the
-// definition (cal_log.h -> log_writer.h) is only needed where the pointer
-// is actually dereferenced (cal_session.cpp).
+// Forward-declared: the session only holds pointers to these (optional
+// sinks/collaborators, not owned).
 class CalLog;
+class CalPicker;
 
 struct CalSessionCfg {
   CalThresholds th;
+  // How long a SweepCmd is repeated without an ack before the run fails.
   uint32_t ack_timeout_ms = 3000;
-  uint32_t phase_slack_ms = 4000;
+  // How long past a sweep's planned end the GS keeps listening (and stays
+  // silent) for late frames and the drone's SweepDone; also pads the
+  // verify window.
+  uint32_t phase_slack_ms = 1000;
+  // After a capacity sweep's SweepDone, how long (in session time, with no
+  // frame of the sweep handled at all) its frames must have been quiet
+  // before the sweep closes. The drone sends SweepDone when its last
+  // blast returns, ahead of the frames its TX queue is still airing; a
+  // saturated stream never gaps this long, the end of the drain does.
+  // Bounded by the listen window like everything else in AwaitDone.
+  uint32_t tail_quiet_ms = 50;
+  // How long an ApplyCmd is repeated without an Applied before the run
+  // fails.
+  uint32_t apply_timeout_ms = 5000;
+  // Bound on the channel pick (measure round + relocate confirm).
+  uint32_t pick_timeout_ms = 8000;
+  // The GS's copy of the wall margin, used only to predict the verify
+  // parks (mabur::park_rel_for, the rule the drone uses with its own
+  // radio.wall_margin_db) and for cal.log's R line.
   double margin_db = 1.0;
 };
 
+// What one width's sweeps produced so far in this run.
+struct WidthResult {
+  bool have_walls = false;  // a power sweep at this width was analysed
+  bool have_eff = false;    // a capacity sweep was analysed with its SweepDone
+  // A capacity sweep ran but its SweepDone never arrived: offered and
+  // blocked_pct are unknown, so no point can be told apart from tx_bound
+  // and nothing is written.
+  bool eff_unknown = false;
+  bool applied = false;      // the latest apply at this width was adopted
+  std::string apply_reason;  // the drone's reason on the latest apply
+  std::array<RateWall, 8> walls{};
+  std::array<CapResult, 8> cap{};
+  std::array<uint16_t, 8> eff_x1000{};  // what was sent; 0 = leave
+  // Verify parks (relative index) per rate; cal::kWallLeave = not parked.
+  std::array<int, 8> park{mabur::cal::kWallLeave, mabur::cal::kWallLeave,
+                          mabur::cal::kWallLeave, mabur::cal::kWallLeave,
+                          mabur::cal::kWallLeave, mabur::cal::kWallLeave,
+                          mabur::cal::kWallLeave, mabur::cal::kWallLeave};
+  // Best-card verify delivery per rate; -1 = the rate was not verified.
+  std::array<int, 8> verify_pct{-1, -1, -1, -1, -1, -1, -1, -1};
+};
+
+struct CalSnapshot;
+
 class CalSession {
  public:
-  enum class State {
-    Idle,
-    AwaitAck,
-    Sweep,
-    Analyze,
-    Result,
-    Verify,
-    Done,
-    Failed
-  };
+  // How many copies of each Abort due_mav() offers.
+  static constexpr int kAbortCopies = 3;
 
-  // `log` is an optional sink for the session's own raw data (per-cell
-  // tallies, analyzed walls, verify results) -- nullptr (the default) is
-  // exactly how every existing caller/test that predates cal.log logging
-  // keeps compiling and behaving unchanged. Not owned; must outlive the
-  // session.
-  explicit CalSession(CalSessionCfg cfg, CalLog* log = nullptr)
-      : cfg_(cfg), log_(log) {}
+  // Picking runs the channel pick before anything reaches the drone; it is
+  // outside running(). Analyze is transient (entered and left within one
+  // call) and only ever visible as a state name in passing.
+  enum class State { Idle, Picking, AwaitAck, Sweep, AwaitDone, Analyze, Apply, Verify, Done, Failed };
 
-  // Refuses (returning false and filling `*err`) unless the link is up, the
-  // peer advertised CAP_CALIBRATE, and no session is already running -- the
-  // three refusals both live here so `main.cpp` has one call to make.
-  bool start(uint32_t nonce, uint64_t now_ms,
-            std::string* err);
+  // `log` and `picker` are optional and not owned; both must outlive the
+  // session. A null picker runs without a channel pick.
+  explicit CalSession(CalSessionCfg cfg, CalLog* log = nullptr, CalPicker* picker = nullptr)
+      : cfg_(cfg), log_(log), picker_(picker) {}
 
-  // The drone accepted the outstanding T_CAL_CMD. Ignored if it names a
-  // different nonce or arrives outside AwaitAck -- a late repeat of an ack
-  // the session already consumed, or an ack for a session that has since
-  // failed/aborted, must not resurrect anything.
-  void on_ack(uint32_t nonce, uint64_t now_ms);
+  // Starts a run over `sweeps`. The list is sorted per width ascending,
+  // power before capacity (so a capacity sweep measures at the power its
+  // own width's walls just parked), and deduplicated. Refuses (false, with
+  // `*err`) an empty list, a Verify or non-20/40 entry, a run already in
+  // progress (Picking included), a link that is down, or a peer without
+  // CAP_CALIBRATE.
+  bool start(uint32_t nonce, std::vector<mabur::cal::SweepSpec> sweeps, uint64_t now_ms,
+             std::string* err);
 
-  // A sweep-frame arrival. Frames outside the phase currently running, or
-  // for an index this session never asked for, are dropped -- silently, by
-  // design: a stray frame must never be attributed to a cell it doesn't
-  // belong to.
-  //
-  // A frame naming the phase currently being COMMANDED is the exception:
-  // it is an implicit ack (the drone is demonstrably sweeping it), and it
-  // both ends AwaitAck and counts. Otherwise a lost ack Telem leaves the
-  // GS repeating T_CAL_CMD into a live sweep while discarding every frame
-  // of it.
-  void on_cal_frame(int card, const mabur::cal::CalFrameInfo& f, int rssi_dbm,
-                    bool crc_ok, uint64_t now_ms);
+  // The drone's SweepAck, SweepDone and Applied. Anything naming another
+  // nonce, another sweep or arriving in the wrong state is ignored. A
+  // SweepDone closes a power sweep at once and a capacity sweep once its
+  // frames have been quiet for tail_quiet_ms.
+  void on_mav(const mabur::cal::CalMsg& m, uint64_t now_ms);
 
-  // The command the GS should (re)send right now, or nullopt if nothing is
-  // due. Advances the state machine first (see step()), so this alone can
-  // discover an ack timeout.
-  std::optional<mabur::rc::CalCmd> due_cmd(uint64_t now_ms);
+  // The caller's once-per-pass tick, called after the pass has handled the
+  // frames it drained; the capacity tail's quiet is measured from it. The
+  // message to send right now, or nullopt: a SweepCmd (repeated every
+  // 200 ms until acked), an ApplyCmd (repeated every 200 ms until
+  // Applied), or the Abort that closes the drone's run after Done, a
+  // failure or abort() -- kAbortCopies copies 200 ms apart, since the
+  // uplink is lossy and the drone ignores a nonce it has already closed.
+  // The caller sends it as is, never gated on
+  // radio_silent(): the session only offers something when the air is the
+  // GS's to use. Advances time-driven transitions first.
+  std::optional<mabur::cal::CalMsg> due_mav(uint64_t now_ms);
 
-  // The result to send right now, or nullopt. Delivered once when the
-  // analysis completes, then REPEATED at ~200 ms (bounded) until the
-  // drone's first verify-phase frame acks it -- T_CAL_RESULT rides the
-  // same 30-50%-lossy uplink as everything else and carries the whole
-  // run's measured table, and the drone's own nonce latch makes repeats
-  // free. Unlike due_cmd(), main.cpp calls this OUTSIDE its
-  // radio_silent() gate: the repeats live inside the verify window by
-  // construction, and this method (not the caller) is what knows the
-  // drone has not started sweeping yet. Also advances the state machine.
-  std::optional<mabur::rc::CalResult> due_result(uint64_t now_ms);
+  // A received calibration frame. `air_bytes` is the frame's size on the
+  // air (dot11 header + body + FCS); capacity sweeps sum it into the
+  // delivered air bits. A frame counts only if its kind is the running
+  // sweep's (Verify during the verify pass), its width is the sweep's and
+  // its flags are the ones the drone's ack announced; anything else is
+  // counted in the snapshot's stamp_mismatch and never tallied. Before the
+  // ack, the first CRC-clean frame of the commanded kind and width stands
+  // in for it and its flags become the run's. `now_ms` is the frame's own
+  // receive stamp (the RX thread's, not the core loop's tick): a capacity
+  // point is timed by when its frames arrived.
+  void on_cal_frame(int card, const mabur::cal::CalFrameInfo& f, int rssi_dbm, bool crc_ok,
+                    size_t air_bytes, uint64_t now_ms);
 
   // True whenever a GS transmit would corrupt the measurement: from the
-  // moment the drone acknowledges a phase until its planned duration plus
-  // the configured slack has elapsed. Every GS transmit path (RCF, DISC
-  // keepalive, the calibration commands themselves) gates on this.
+  // ack (or the frame that stood in for it) until the sweep's listen
+  // window closes, and through the verify pass.
   bool radio_silent(uint64_t now_ms) const;
 
-  State state() const { return state_; }
-  // AwaitAck through Verify: a run owns the air (the same set start()
-  // refuses to interrupt).
-  bool running() const {
-    return state_ != State::Idle && state_ != State::Done && state_ != State::Failed;
-  }
+  // AwaitAck through Verify: a run owns the air. Picking is not included
+  // -- the channel machinery must keep running while the pick measures.
+  bool running() const;
+  // running()'s set of states, for a caller holding only a snapshot.
+  static bool is_running(State st);
 
-  // Per-rate analysis as it stands right now (coarse-only mid-run, merged
-  // once a fine phase has completed) -- for the `status` command and the
-  // eventual cal.log, not the wire.
-  const std::array<RateWall, 8>& walls() const { return final_walls_; }
-
-  std::string progress() const;
-
-  // Operator or watchdog abort: drops straight back to Idle and reopens the
-  // air immediately, from any state.
+  // Abandons the run from any state: the Aborts go out through due_mav()
+  // (if the run already reached the drone), a pick in progress is
+  // cancelled, the air reopens and the session goes Idle. The snapshot
+  // keeps `why` as its fail_reason.
   void abort(const char* why);
 
-  // Told by main.cpp every tick: whether the RC link is up, whether the
-  // peer's last DiscAck carried CAP_CALIBRATE, and the pair's tag context
-  // (VrxController::session_ctx()). start() is the only place that reads
-  // these.
+  // Told every tick: link state, whether the peer advertised
+  // CAP_CALIBRATE, and the pair's tag context.
   void set_peer(bool linked, bool cal_capable, mabur::rc::TagCtx ctx = {});
 
-  // The tag context every T_CAL_CMD/T_CAL_RESULT of the current run is
-  // packed under: set_peer()'s ctx as of start(), frozen for the run. The
-  // GS keeps beaconing between phases and may adopt a fresh pair there --
-  // one the drone has issued but not promoted, while it verifies the run's
-  // frames against the pair the run opened under (RcAgent's sweep latch).
+  // The tag context every cal message of the current run is packed under:
+  // set_peer()'s ctx as of the moment the run first commands the drone
+  // (start() without a pick, the end of the pick otherwise), frozen for
+  // the run -- the drone latches the pair its first SweepCmd arrived
+  // under and verifies the rest of the run against it.
   const mabur::rc::TagCtx& tag_ctx() const { return tag_ctx_; }
 
-  // The GS's own margin, for its own park bookkeeping only (the verify
-  // plan's expected indices, cal.log's R line). Read-only by design: the
-  // drone applies its own cfg.radio.wall_margin_db and margin is applied
-  // exactly once, there. `maburcal start --margin` used to set this and
-  // changed nothing on hardware -- see cal_control.h.
   double margin_db() const { return cfg_.margin_db; }
+  State state() const { return state_; }
+  CalSnapshot snapshot() const;
 
-  // Test accessors into the currently-live phase's cell tally. idx is
-  // signed and relative to the drone chip's anchor; the
-  // anchor itself never reaches this session.
+  // The run's sweep list after sorting and dedup.
+  const std::vector<mabur::cal::SweepSpec>& sweeps() const { return sweeps_; }
+
+  // Test accessor: CRC-clean frames tallied on `card` into the running
+  // power sweep's cell (rate, idx).
   uint16_t cell_received(uint8_t rate, int idx, int card) const;
-  uint16_t cell_corrupt(uint8_t rate, int idx) const;
 
  private:
-  // Advances time-driven transitions (ack timeout, phase-end analysis, the
-  // verify window closing). Both due_cmd() and due_result() call this
-  // before anything else, so neither one is the sole driver of a
-  // transition -- main.cpp calls both once per core-loop tick, and the
-  // tests exercise them independently.
+  // The session's clock: the latest stamp any entry point has seen. The
+  // receive path stamps frames and replies on its own thread, so a stamp
+  // can be older than a tick already seen; every entry point advances this
+  // first and works from it, so elapsed-time checks never underflow.
+  uint64_t advance(uint64_t now_ms) {
+    if (now_ms > now_) now_ = now_ms;
+    return now_;
+  }
   void step(uint64_t now_ms);
-
-  // Seeds every (rate, idx) cell a plan names with expected=frames_per_cell,
-  // received=0. This is what makes a drone that dies mid-phase read as loss
-  // rather than as a shrinking denominator -- the count comes from the plan
-  // the GS itself built, never from anything the drone reports.
-  void seed_cells(const mabur::rc::CalCmd& cmd);
-  void clear_cells();
-
-  // Moves to AwaitAck with `cmd` as the pending command, (re)seeding cells
-  // for it. Shared by the coarse and fine phase kick-offs.
-  void begin_await(const mabur::rc::CalCmd& cmd, uint64_t now_ms);
-
-  // Moves to Verify: builds the local (never transmitted -- the drone
-  // self-initiates this sweep once it applies the result) plan
-  // for the park indices, seeds cells for it, and computes how long the GS
-  // must stay silent to cover it.
+  void step_picking(uint64_t now_ms);
+  void finish_pick(const char* pick, uint64_t now_ms);
+  void begin_sweep(size_t i, uint64_t now_ms);
+  void on_accepted(uint8_t flags, uint16_t start_in_ms, uint64_t now_ms);
+  void finish_sweep(uint64_t now_ms);
+  bool analyze_power();            // true: an apply is due
+  bool analyze_capacity_sweep();   // true: an apply is due
+  void begin_apply(uint64_t now_ms);
+  void on_applied(const mabur::cal::Applied& a, uint64_t now_ms);
   void begin_verify(uint64_t now_ms);
-
-  // A sweep's listen window has opened: convert this phase's cells to the
-  // sorted vectors analyze_rate wants, run the analysis, and decide whether
-  // a fine phase follows or the result is ready.
-  void finish_phase(uint64_t now_ms);
-
-  // Builds the final CalResult from final_walls_ and moves to Result.
-  void finalize_result();
-
-  std::vector<CalCell> sorted_cells(int rate) const;
-
-  void fail(const char* why);
+  void finish_verify(uint64_t now_ms);
+  void next_sweep(uint64_t now_ms);
+  void fail(const std::string& why);
+  void queue_abort();
+  void tally_power(int card, const mabur::cal::CalFrameInfo& f, int rssi_dbm, bool crc_ok);
+  void tally_capacity(int card, const mabur::cal::CalFrameInfo& f, int rssi_dbm, bool crc_ok,
+                      size_t air_bytes, uint64_t rx_ms);
+  // True once no capacity frame has reached the session for tail_quiet_ms
+  // of session time (a power sweep has no tail: always true).
+  bool tail_quiet(uint64_t now_ms) const;
+  void tally_verify(int card, const mabur::cal::CalFrameInfo& f, bool crc_ok);
+  int cells_per_row() const;
+  WidthResult& width_result();
+  bool has_power20() const;
 
   CalSessionCfg cfg_;
-  State state_ = State::Idle;
+  CalLog* log_ = nullptr;
+  CalPicker* picker_ = nullptr;
 
+  State state_ = State::Idle;
   uint32_t nonce_ = 0;
   bool linked_ = false;
   bool cal_capable_ = false;
   mabur::rc::TagCtx peer_ctx_{};
   mabur::rc::TagCtx tag_ctx_{};
+  std::string fail_reason_;
 
-  const char* fail_reason_ = "";
+  std::vector<mabur::cal::SweepSpec> sweeps_;
+  size_t sweep_i_ = 0;
+  mabur::cal::SweepCmd cmd_{};  // the running sweep's command
 
-  // AwaitAck bookkeeping.
-  mabur::rc::CalCmd pending_cmd_;
-  uint64_t await_start_ms_ = 0;
+  // Picking.
+  uint64_t now_ = 0;  // see advance()
+  uint64_t pick_start_ms_ = 0;
+  bool reloc_ordered_ = false;
+  uint8_t reloc_to_ = 0;
+  uint8_t channel_ = 0;
+  std::string pick_note_;
+  const char* pick_ = "pinned";  // cal.log R's pick token
+  bool run_logged_ = false;      // R written (at the first accepted ack)
+
+  // AwaitAck / Apply repeats, Abort.
+  uint64_t phase_start_ms_ = 0;  // entered AwaitAck / Apply
   uint64_t last_sent_ms_ = 0;
   bool sent_once_ = false;
+  bool reached_drone_ = false;  // at least one SweepCmd was offered
+  // The Abort still owed to the drone, and how many more copies of it.
+  std::optional<mabur::cal::Abort> pending_abort_;
+  int aborts_left_ = 0;
+  uint64_t next_abort_ms_ = 0;
 
-  // Sweep/Verify bookkeeping. running_phase_ is what on_cal_frame() checks
-  // an arriving frame's phase byte against.
-  uint8_t running_phase_ = 0;
-  uint64_t phase_start_ms_ = 0;
-  uint64_t phase_end_ms_ = 0;
+  // Sweep / AwaitDone / Verify windows.
+  uint8_t ack_flags_ = 0;
+  uint64_t sweep_end_ms_ = 0;   // planned end: AwaitDone opens here
+  uint64_t window_end_ms_ = 0;  // AwaitDone (or Verify) closes here
+  std::optional<mabur::cal::SweepDone> done_;
+  uint32_t stamp_mismatch_ = 0;
+  uint32_t cell_i_ = 0;
 
-  // Sparse per-rate cell tally for whichever phase is currently running.
-  // Cleared and reseeded at each phase boundary -- once a phase's cells
-  // have been folded into coarse_walls_/final_walls_ the raw tally is no
-  // longer needed. Keyed by `int`: idx is signed and relative to the
-  // drone's anchor, not an absolute TXAGC index.
-  std::array<std::map<int, CalCell>, 8> cells_;
-  // Raw per-cell-per-card RSSI samples, median-reduced into CalCell::rssi_dbm
-  // at phase end (sorted_cells()).
-  std::array<std::map<int, std::array<std::vector<int>, 2>>, 8> rssi_raw_;
+  // Power tally, [rate][idx - idx_lo]; RSSI samples per card, median at
+  // analysis.
+  std::array<std::vector<CalCell>, 8> cells_;
+  std::array<std::vector<std::array<std::vector<int>, 2>>, 8> rssi_;
+  // Capacity tally per rate.
+  std::array<CapCell, 8> cap_;
+  std::array<std::array<std::vector<int>, 2>, 8> cap_rssi_;
+  // Session time a capacity frame was last handled (tail_quiet): the clock
+  // at its tally, raised to the next due_mav tick (cap_fresh_ until then).
+  uint64_t last_cap_seen_ms_ = 0;
+  bool cap_fresh_ = false;
+  // Verify tally per rate (best card read at the close) and the index the
+  // first frame of each rate arrived at.
+  std::vector<std::pair<uint8_t, int>> verify_cells_;
+  std::array<std::array<uint16_t, 2>, 8> verify_recv_{};
+  std::array<int, 8> verify_seen_idx_{};
+  std::array<bool, 8> verify_seen_{};
 
-  std::array<RateWall, 8> coarse_walls_{};
-  std::array<RateWall, 8> final_walls_{};
+  mabur::cal::ApplyCmd apply_{};
+  bool apply_wrote_walls_ = false;
 
-  mabur::rc::CalResult pending_result_;
-  bool result_ready_ = false;
-  // Result-repeat bookkeeping (see due_result()). verify_frame_seen_ is
-  // the implicit ack: the drone sweeps verify only after a successful
-  // apply, so the first frame of that sweep both proves delivery and
-  // means the GS must go silent again.
-  uint64_t last_result_sent_ms_ = 0;
-  int result_repeats_left_ = 0;
-  bool verify_frame_seen_ = false;
-  // Park index per rate (wall - margin_db*4), kNoWall where undetermined.
-  // Purely local since T_CAL_RESULT started carrying the raw wall: the
-  // drone derives its own park from its own wall_margin_db, and this
-  // exists only to build the GS's verify plan (which indices to expect
-  // frames at) and to fill cal.log's R-line margin.
-  std::array<int, 8> pending_park_{};
+  std::array<WidthResult, 2> width_{};
+};
 
-  // Optional cal.log sink; see the constructor comment. Every call site
-  // gates on this being non-null AND (inside CalLog itself) on ok(), so a
-  // null sink or an unopenable file changes nothing about the session's
-  // own behavior.
-  CalLog* log_ = nullptr;
+struct CalSnapshot {
+  CalSession::State state = CalSession::State::Idle;
+  size_t sweep_i = 0, sweep_n = 0;
+  mabur::cal::SweepSpec cur{mabur::cal::Kind::Power, 20};
+  // Progress through the running sweep's (or verify pass's) cells: the
+  // cell of the latest tallied frame, 1-based, out of the sweep's total.
+  uint32_t cell_i = 0, cell_n = 0;
+  uint8_t channel = 0;
+  std::string pick_note;
+  uint8_t flags = 0;  // the stamp flags the drone's ack announced
+  uint32_t stamp_mismatch = 0;  // frames dropped for a kind/width/flags mismatch
+  std::array<WidthResult, 2> width;  // [0] = 20 MHz, [1] = 40 MHz
+  std::string fail_reason;
 };
 
 }  // namespace maburgs
