@@ -17,6 +17,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                  '..', 'tools', 'bench'))
 import gsparam  # noqa: E402
 
+PLAYER_BUNDLE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             '..', 'gs', 'player', 'bundle', 'maburplay.default.toml')
+
 
 class TestBuildLine(unittest.TestCase):
     def test_set(self):
@@ -92,6 +95,13 @@ class TestExpectedPairs(unittest.TestCase):
         pairs = gsparam.expected_pairs("player", alt_mode="1280x720@120")
         away = dict((k, a) for k, a, _ in pairs)["screen_mode"]
         self.assertEqual(away, '"1280x720@120"')
+
+    def test_player_screen_mode_restores_the_bundles_auto(self):
+        pairs = gsparam.expected_pairs("player", alt_mode="1280x720@120")
+        back = dict((k, b) for k, _, b in pairs)["screen_mode"]
+        self.assertEqual(back, '"auto"')
+        with open(PLAYER_BUNDLE) as f:
+            self.assertTrue(gsparam.value_in_section(f.read(), "screen_mode", back))
 
 
 class TestRenderLadder(unittest.TestCase):

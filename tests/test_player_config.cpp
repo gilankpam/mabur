@@ -670,6 +670,26 @@ TEST(screen_mode_must_parse) {
   CHECK(load_throws("screen_mode = \"1080p\"\n"));
 }
 
+TEST(screen_mode_accepts_auto_and_size) {
+  CHECK(maburplay::load_config(write_tmp_play("screen_mode = \"auto\"\n")).screen_mode ==
+        "auto");
+  CHECK(maburplay::load_config(write_tmp_play("screen_mode = \"1280x720\"\n")).screen_mode ==
+        "1280x720");
+  const auto b = maburplay::load_config(
+      std::string(MABUR_PLAY_BUNDLE_DIR) + "/maburplay.default.toml");
+  CHECK(b.screen_mode == "auto");
+}
+
+TEST(screen_mode_rejects_junk) {
+  std::string msg;
+  try { maburplay::load_config(write_tmp_play("screen_mode = \"big\"\n")); }
+  catch (const std::exception& e) { msg = e.what(); }
+  CHECK(msg.find("screen_mode") != std::string::npos);
+  CHECK(msg.find("\"auto\", WIDTHxHEIGHT or WIDTHxHEIGHT@RATE") != std::string::npos);
+  CHECK(load_throws("screen_mode = \"AUTO\"\n"));
+  CHECK(load_throws("screen_mode = \"1280x\"\n"));
+}
+
 TEST(bundle_ships_the_phase_lock_on) {
   const auto b = maburplay::load_config(
       std::string(MABUR_PLAY_BUNDLE_DIR) + "/maburplay.default.toml");

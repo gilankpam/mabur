@@ -49,6 +49,7 @@
 #ifdef MABUR_PLAYER_HW
 #include "burn_recorder.h"  // dvr.mode "burned": re-encode with the OSD burnt in
 #include "decode_pump.h"    // the decode-output thread: drives backend->poll(), hands frames over
+#include "display_follow.h"  // the display follows the camera's rate (screen_mode auto / WxH)
 #include "display_watch.h"  // rebuild the presenter when its display is replugged
 #include "drm_presenter.h"  // KMS atomic NV12 presenter, the default display path
 #include "frame_regulator.h"  // phase-aware pts+D display release
@@ -351,17 +352,19 @@ maburplay::RecTarget rec_target_of(bool gs, bool vtx) {
   return vtx ? maburplay::RecTarget::kVtx : maburplay::RecTarget::kGs;
 }
 
-// Parses player_config's "WIDTHxHEIGHT@RATE" screen_mode (mode_pick.h);
-// the backend gets the rate rounded to whole fps. Falls back to
-// BackendCfg's default (1920x1080@60) if malformed.
+// Parses player_config's screen_mode (mode_pick.h) for the backend: the
+// size of a "WxH" or "WxH@RATE", and a pinned rate rounded to whole fps.
+// What screen_mode leaves open ("auto" has neither, "WxH" no rate) keeps
+// BackendCfg's default (1920x1080@60), as does a malformed one.
 maburplay::BackendCfg parse_screen_mode(const std::string& s) {
   maburplay::BackendCfg cfg;
   const maburplay::ScreenWant w = maburplay::parse_screen_want(s);
-  if (w.ok) {
+  if (w.ok && w.kind != maburplay::ScreenWant::Kind::kAuto) {
     cfg.width = w.w;
     cfg.height = w.h;
-    cfg.fps = static_cast<int>(std::lround(w.hz));
   }
+  if (w.ok && w.kind == maburplay::ScreenWant::Kind::kFull)
+    cfg.fps = static_cast<int>(std::lround(w.hz));
   return cfg;
 }
 
@@ -787,13 +790,29 @@ int main(int argc, char** argv) {
                    "the lead for this mode\n",
                    cfg.display.vsync_lead_ms, panel_us / 1000.0);
   };
+  // screen_mode as one "WxH@R" mode for DrmPresenter::init(): a pinned
+  // "WxH@R" as written; "auto" and "WxH" picked from the connector's modes
+  // at the camera's rate (pick_display_mode, docs/phase-lock.md
+  // "Configuration") -- 0 while it is not measured yet, which takes the
+  // display's preferred mode (or, for "WxH", that size at the preferred
+  // rate). With no modes to pick from it hands init() the key as written,
+  // whose pick then falls back to the preferred mode or fails as before.
+  auto resolve_screen_mode = [](const std::string& screen_mode, double camera_hz) {
+    const maburplay::ScreenWant want = maburplay::parse_screen_want(screen_mode);
+    if (want.kind == maburplay::ScreenWant::Kind::kFull) return screen_mode;
+    std::string err;
+    const std::vector<maburplay::ModeCand> modes = maburplay::DrmPresenter::probe_modes(&err);
+    bool matched = false;
+    const int i = maburplay::pick_display_mode(modes, want, camera_hz, &matched);
+    return i >= 0 ? maburplay::mode_string(modes[static_cast<size_t>(i)]) : screen_mode;
+  };
   std::unique_ptr<maburplay::DrmPresenter> presenter;
   if (!decode_only) {
     presenter = std::make_unique<maburplay::DrmPresenter>();
     // Frames the presenter is done with go to the release queue, never
     // straight into the decoder: the presenter runs on the release thread,
     // and only the decode-output side may call release_frame().
-    if (!presenter->init(cfg.screen_mode, want_osd,
+    if (!presenter->init(resolve_screen_mode(cfg.screen_mode, 0.0), want_osd,
                          [&releases](const maburplay::DmaFrame& f) { releases.push(f); })) {
       std::fprintf(stderr,
                    "maburplay: DrmPresenter init failed -- no display; frames will be "
@@ -1880,14 +1899,24 @@ int main(int argc, char** argv) {
                  std::strerror(errno));
   maburplay::DisplayWatch display_watch(hotplug_uevents);
   if (presenter) display_watch.on_acquired(mono_ms());
+  // A follow rebuild whose presenter came up on some other mode (init()
+  // fell back: the list changed under it) is not retried for that same
+  // target, so a display that will not take the mode cannot rebuild once a
+  // second; any other rebuild clears it.
+  std::string follow_stuck;
+  // The display-mismatch banner: the camera's rate has no display mode and
+  // the display shows it at the nearest one. Empty when there is none.
+  [[maybe_unused]] std::string g_display_banner;
   // Phase margins taken from the release thread each iteration.
   std::vector<maburplay::ReleaseLoop::MarginSample> margins;
   margins.reserve(maburplay::ReleaseLoop::kMarginCap);
-  // Builds a FRESH presenter on `mode` and makes it the live display,
-  // never a re-init of an existing one: every connector/mode/plane/zpos
-  // decision is re-derived from what the display offers now. Two callers:
-  // the hotplug retry (no presenter) and a live change of the display mode
-  // or the overlay setup (a presenter is running). Housekeeping only.
+  // Builds a FRESH presenter on `mode` (a screen_mode, resolved against
+  // the display's modes at the camera's current rate) and makes it the
+  // live display, never a re-init of an existing one: every connector/
+  // mode/plane/zpos decision is re-derived from what the display offers
+  // now. Callers: the hotplug retry (no presenter), and with a presenter
+  // running a replug, a live change of the display mode or the overlay
+  // setup, and the display following the camera. Housekeeping only.
   //  - No presenter: the new one is built first and output parks only once
   //    it succeeded, so a retry that finds no display costs nothing.
   //  - A live presenter: it is torn down first -- the burned recorder (it
@@ -1905,9 +1934,11 @@ int main(int argc, char** argv) {
       release.set_sink(nullptr);
       presenter.reset();
     }
+    // Any rebuild re-arms the follow rule's one try (follow_stuck).
+    follow_stuck.clear();
     auto p = std::make_unique<maburplay::DrmPresenter>();
-    if (!p->init(mode, want_osd, [&releases](const maburplay::DmaFrame& f) { releases.push(f); },
-                 log_failures)) {
+    if (!p->init(resolve_screen_mode(mode, pump.source_hz()), want_osd,
+                 [&releases](const maburplay::DmaFrame& f) { releases.push(f); }, log_failures)) {
       if (tear_down) {
         resume_output();
         std::fprintf(stderr,
@@ -2012,9 +2043,19 @@ int main(int argc, char** argv) {
     const bool rebuild = presenter && (c.screen_mode != cfg.screen_mode ||
                                        c.colortrans.enable != cfg.colortrans.enable ||
                                        want_after != want_osd);
-    if (rebuild && c.screen_mode != cfg.screen_mode && !presenter->offers_mode(c.screen_mode)) {
-      *err = "mode not offered: " + c.screen_mode;
-      return false;
+    // A pinned mode the display does not list, or a size it lacks at the
+    // camera's rate (at any rate while that is not measured yet), is
+    // refused before the old presenter is torn down; "auto" never is.
+    if (rebuild && c.screen_mode != cfg.screen_mode) {
+      const maburplay::ScreenWant want = maburplay::parse_screen_want(c.screen_mode);
+      const bool offered = want.kind == maburplay::ScreenWant::Kind::kFull
+                               ? presenter->offers_mode(c.screen_mode)
+                               : maburplay::want_offered(presenter->modes(), want,
+                                                         pump.source_hz());
+      if (!offered) {
+        *err = "mode not offered: " + c.screen_mode;
+        return false;
+      }
     }
 #endif
     // What burn_palette() is keyed on, before any overlay opens.
@@ -2185,6 +2226,40 @@ int main(int argc, char** argv) {
                          : "maburplay: rate mismatch cleared: source %.2f Hz, panel %.3f Hz%s\n",
                      src_hz, panel_hz,
                      rate_match.mismatch() && phase_lock ? " -- phase lock paused" : "");
+      // screen_mode "auto" / "WxH": a camera rate the panel cannot reach
+      // moves the display to the camera's rate (display_follow.h). The
+      // rebuild is synchronous, so the next check already sees the new
+      // presenter's mode as the running one and does not issue it again.
+      const maburplay::ScreenWant screen_want = maburplay::parse_screen_want(cfg.screen_mode);
+      g_display_banner.clear();
+      if (presenter && screen_want.kind != maburplay::ScreenWant::Kind::kFull &&
+          rate_match.mismatch() && lp != maburplay::RateMatch::LowPower::kYes) {
+        maburplay::FollowIn in;
+        in.want = screen_want;
+        in.camera_hz = src_hz;
+        in.modes = presenter->modes();
+        in.running = presenter->mode_index();
+        const maburplay::FollowOut out = maburplay::follow_display(in);
+        if (out.rebuild) {
+          const std::string target =
+              maburplay::mode_string(in.modes[static_cast<size_t>(out.mode)]);
+          if (target != follow_stuck) {
+            std::fprintf(stderr, "maburplay: display follows camera: %s\n", target.c_str());
+            reacquire_display(target, /*log_failures=*/true);
+            if (presenter && presenter->mode_index() >= 0 &&
+                maburplay::mode_string(presenter->modes()[static_cast<size_t>(
+                    presenter->mode_index())]) != target)
+              follow_stuck = target;
+          }
+        } else if (out.mismatch) {
+          char line[160];
+          std::snprintf(line, sizeof line,
+                        "⚠ Camera %.0f fps — this display has no %.0f Hz mode. Showing at "
+                        "%.0f Hz (judder).",
+                        src_hz, src_hz, out.shown_hz);
+          g_display_banner = line;
+        }
+      }
     }
     if (phase_lock) {
       const uint64_t now = mono_us();

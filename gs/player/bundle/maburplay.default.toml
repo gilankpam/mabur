@@ -6,7 +6,7 @@
 ring_path   = "/dev/shm/mabur-au"   # must match maburgs' au_ring.path
 socket      = "/run/mabur-au.sock"  # must match maburgs' au_ring.socket
 backend     = "mpp"                 # "mpp" = hardware decode to the screen; "v4l2req" = Cedrus hardware decode (Orange Pi); "null" = decode nothing (testing)
-screen_mode = "1920x1080@60"        # display resolution and refresh rate
+screen_mode = "auto"                # "auto" = the largest mode the display offers at the camera's fps; "WxH" = that size at the camera's fps; "WxH@RATE" = pinned
 
 # Video recorder (DVR).
 [dvr]

@@ -298,6 +298,31 @@ std::vector<ModeCand> mode_cands(const drmModeConnector* c) {
   return cands;
 }
 
+// The connector a presenter drives: a connected HDMI-A-* one, else the
+// first other connected connector. nullptr when none is connected; the
+// caller frees it.
+drmModeConnectorPtr pick_connector(int fd, const drmModeRes* res) {
+  drmModeConnectorPtr chosen = nullptr;
+  for (int i = 0; i < res->count_connectors; ++i) {
+    drmModeConnectorPtr c = drmModeGetConnector(fd, res->connectors[i]);
+    if (!c) continue;
+    if (c->connection != DRM_MODE_CONNECTED) {
+      drmModeFreeConnector(c);
+      continue;
+    }
+    if (c->connector_type == DRM_MODE_CONNECTOR_HDMIA) {
+      if (chosen) drmModeFreeConnector(chosen);
+      return c;
+    }
+    if (!chosen) {
+      chosen = c;  // keep as fallback candidate; keep scanning for HDMI-A
+    } else {
+      drmModeFreeConnector(c);
+    }
+  }
+  return chosen;
+}
+
 }  // namespace
 
 struct DrmPresenter::Impl {
@@ -308,6 +333,10 @@ struct DrmPresenter::Impl {
   uint32_t crtc_id = 0;
   int crtc_index = -1;
   drmModeModeInfo mode{};
+  // The connector's modes as init() picked from them, and the index of
+  // `mode` among them.
+  std::vector<ModeCand> mode_list;
+  int mode_index = -1;
   uint32_t mode_blob_id = 0;
 
   uint32_t plane_id = 0;   // the NV12 plane we actually present on
@@ -494,7 +523,7 @@ struct DrmPresenter::Impl {
 
   ~Impl();
 
-  bool init(const std::string& screen_mode, bool want_osd, ReleaseFn rel, bool log_failures);
+  bool init(const std::string& resolved_mode, bool want_osd, ReleaseFn rel, bool log_failures);
   bool present(const DmaFrame& frame);
   void prime(const DmaFrame& frame);
   void poll_events();
@@ -740,7 +769,7 @@ void DrmPresenter::Impl::commit_osd_only() {
   osd_dirty = false;   // a drawer that sees this sees the new back index
 }
 
-bool DrmPresenter::Impl::init(const std::string& screen_mode, bool want_osd, ReleaseFn rel,
+bool DrmPresenter::Impl::init(const std::string& resolved_mode, bool want_osd, ReleaseFn rel,
                               bool log_failures) {
   release = std::move(rel);
   log_init_failures = log_failures;
@@ -779,25 +808,7 @@ bool DrmPresenter::Impl::init(const std::string& screen_mode, bool want_osd, Rel
 
   // Connector select: prefer a connected HDMI-A-* connector; fall back to
   // any other connected connector with a warning.
-  drmModeConnectorPtr chosen = nullptr;
-  for (int i = 0; i < res->count_connectors; ++i) {
-    drmModeConnectorPtr c = drmModeGetConnector(fd, res->connectors[i]);
-    if (!c) continue;
-    if (c->connection != DRM_MODE_CONNECTED) {
-      drmModeFreeConnector(c);
-      continue;
-    }
-    if (c->connector_type == DRM_MODE_CONNECTOR_HDMIA) {
-      if (chosen) drmModeFreeConnector(chosen);
-      chosen = c;
-      break;
-    }
-    if (!chosen) {
-      chosen = c;  // keep as fallback candidate; keep scanning for HDMI-A
-    } else {
-      drmModeFreeConnector(c);
-    }
-  }
+  drmModeConnectorPtr chosen = pick_connector(fd, res);
   if (!chosen) {
     if (log_init_failures) std::fprintf(stderr, "DrmPresenter: no connected connector found\n");
     drmModeFreeResources(res);
@@ -813,22 +824,22 @@ bool DrmPresenter::Impl::init(const std::string& screen_mode, bool want_osd, Rel
   connector_id = chosen->connector_id;
 
   // Mode select (mode_pick.h): the closest exact rate among modes of the
-  // wanted size; the preferred mode (or the first) when none fits.
-  const std::vector<ModeCand> cands = mode_cands(chosen);
+  // resolved size; the preferred mode (or the first) when none fits.
+  mode_list = mode_cands(chosen);
   bool matched = false;
-  const int pick = pick_mode(cands, parse_screen_want(screen_mode), &matched);
+  const int pick = pick_mode(mode_list, parse_screen_want(resolved_mode), &matched);
   const drmModeModeInfo* selected = pick >= 0 ? &chosen->modes[pick] : nullptr;
   if (selected) {
     if (!matched) {
       std::fprintf(stderr,
-                   "DrmPresenter: warning: screen_mode \"%s\" not offered by connector %u; "
+                   "DrmPresenter: warning: mode \"%s\" not offered by connector %u; "
                    "falling back to %ux%u@%u\n",
-                   screen_mode.c_str(), connector_id, selected->hdisplay, selected->vdisplay,
+                   resolved_mode.c_str(), connector_id, selected->hdisplay, selected->vdisplay,
                    selected->vrefresh);
     }
     std::fprintf(stderr, "DrmPresenter: mode %ux%u @%.3f Hz (requested %s)\n",
-                 selected->hdisplay, selected->vdisplay, mode_hz(cands[static_cast<size_t>(pick)]),
-                 screen_mode.c_str());
+                 selected->hdisplay, selected->vdisplay,
+                 mode_hz(mode_list[static_cast<size_t>(pick)]), resolved_mode.c_str());
   }
   if (!selected) {
     if (log_init_failures)
@@ -838,6 +849,7 @@ bool DrmPresenter::Impl::init(const std::string& screen_mode, bool want_osd, Rel
     return false;
   }
   mode = *selected;
+  mode_index = pick;
 
   // CRTC select: first CRTC any of the connector's possible encoders can
   // drive.
@@ -1907,10 +1919,39 @@ DrmPresenter::Impl::~Impl() {
 DrmPresenter::DrmPresenter() : impl_(std::make_unique<Impl>()) {}
 DrmPresenter::~DrmPresenter() = default;
 
-bool DrmPresenter::init(const std::string& screen_mode, bool want_osd, ReleaseFn release,
+bool DrmPresenter::init(const std::string& resolved_mode, bool want_osd, ReleaseFn release,
                         bool log_failures) {
-  return impl_->init(screen_mode, want_osd, std::move(release), log_failures);
+  return impl_->init(resolved_mode, want_osd, std::move(release), log_failures);
 }
+
+std::vector<ModeCand> DrmPresenter::probe_modes(std::string* err) {
+  const int fd = open(kCardPath, O_RDWR | O_CLOEXEC);
+  if (fd < 0) {
+    *err = std::string("open ") + kCardPath + ": " + std::strerror(errno);
+    return {};
+  }
+  std::vector<ModeCand> cands;
+  drmModeResPtr res = drmModeGetResources(fd);
+  if (!res) {
+    *err = std::string("drmModeGetResources: ") + std::strerror(errno);
+  } else {
+    drmModeConnectorPtr c = pick_connector(fd, res);
+    if (!c) {
+      *err = "no connected connector found";
+    } else {
+      cands = mode_cands(c);
+      if (cands.empty()) *err = "connector has no modes";
+      drmModeFreeConnector(c);
+    }
+    drmModeFreeResources(res);
+  }
+  close(fd);
+  return cands;
+}
+
+const std::vector<ModeCand>& DrmPresenter::modes() const { return impl_->mode_list; }
+
+int DrmPresenter::mode_index() const { return impl_->mode_index; }
 
 Surface DrmPresenter::splash_surface() {
   Surface s;

@@ -4,8 +4,10 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "colortrans.h"  // CubicLut
+#include "mode_pick.h"   // ModeCand
 #include "osd_raster.h"  // Surface (host-buildable; pulls in no DRM headers)
 #include "present_sink.h"
 #include "video_backend.h"
@@ -59,8 +61,19 @@ class DrmPresenter : public PresentSink {
   DrmPresenter(const DrmPresenter&) = delete;
   DrmPresenter& operator=(const DrmPresenter&) = delete;
 
-  // Opens /dev/dri/card0, picks a connected connector + mode (parsed from
-  // screen_mode, "WIDTHxHEIGHT@FPS") + an NV12-capable plane, and does the
+  // The mode list of the connector init() would drive (the same pick: a
+  // connected HDMI-A-* one, else the first other connected one), read on a
+  // fresh open of /dev/dri/card0 so it works with no presenter running.
+  // Lets the caller resolve screen_mode's "auto" / "WxH" forms into one
+  // mode before init(). Empty, with *err saying why, when there is no
+  // card, no connected connector, or a connector listing no modes (a
+  // failed EDID read). Probes the connector (DDC traffic): not for a
+  // periodic check -- modes() is the running presenter's list.
+  static std::vector<ModeCand> probe_modes(std::string* err);
+
+  // Opens /dev/dri/card0, picks a connected connector + mode (resolved_mode,
+  // "WIDTHxHEIGHT@RATE", already resolved by the caller from screen_mode
+  // with pick_display_mode) + an NV12-capable plane, and does the
   // one-time atomic setup. `release` is called (possibly re-entrantly from
   // inside present()/poll_events()/drop_all()) whenever the presenter is
   // done with a frame it was handed.
@@ -79,7 +92,7 @@ class DrmPresenter : public PresentSink {
   // ~86,000 lines a day into /tmp/maburplay.log, which is tmpfs on the GS.
   // The caller reports the episode instead: one line when retrying starts,
   // one when a display is acquired.
-  bool init(const std::string& screen_mode, bool want_osd, ReleaseFn release,
+  bool init(const std::string& resolved_mode, bool want_osd, ReleaseFn release,
             bool log_failures = true);
 
   // Takes ownership of `frame` unconditionally (see class comment) and
@@ -252,6 +265,13 @@ class DrmPresenter : public PresentSink {
   // the display does not offer is refused without tearing the display
   // down. Reads the connector's current mode list (no re-probe).
   bool offers_mode(const std::string& screen_mode) const;
+
+  // The connector's mode list as init() picked from it, and the index of
+  // the committed mode in it: what the display-follow rule judges the
+  // running mode by, with no connector I/O. Valid after init() succeeds;
+  // a hotplug rebuilds the presenter and so re-reads the list.
+  const std::vector<ModeCand>& modes() const;
+  int mode_index() const;
 
   // Whether the connector this presenter drives still reads connected.
   // drmModeGetConnectorCurrent: the status the kernel's HPD handling last

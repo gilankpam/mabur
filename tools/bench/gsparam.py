@@ -143,7 +143,7 @@ def expected_pairs(role, alt_mode=None):
     if role == "player":
         away_mode = ('"%s"' % alt_mode) if alt_mode else None
         return [
-            ("screen_mode", away_mode, '"1920x1080@60"'),
+            ("screen_mode", away_mode, '"auto"'),
             ("colortrans.enable", "false", "true"),
             ("osd.enable", "false", "true"),
             ("osd.gs.enable", "false", "true"),

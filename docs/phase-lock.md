@@ -62,11 +62,13 @@ The player measures the drone's frame rate (median pts step over 1 s,
 `SourceRate`) and compares it with the panel's refresh (`RateMatch`,
 `gs/player/src/rate_match.h`). More than 0.55 Hz apart (the steer reaches
 ±0.5 fps) for 3 consecutive seconds is a mismatch: a drone `venc.fps` that
-does not match `screen_mode`, or a display that fell back to another mode
-because the sink does not offer the requested one. While it lasts the lock
-is held in wait and sends nothing (maburgs' RCF `snr_off` falls to 0 after
-its 3 s timeout, so the drone runs on its trim), capture-time placement is
-off, the OSD fps cell reads `src/panel` in caution, and the player logs
+does not match `screen_mode`, a camera rate change the display has not
+followed yet, or a display that fell back to another mode because the sink
+does not offer the requested one (or offers no mode at the camera's rate).
+While it lasts the lock is held in wait and sends nothing (maburgs' RCF
+`snr_off` falls to 0 after its 3 s timeout, so the drone runs on its
+trim), capture-time placement is off, the OSD fps cell reads
+`src/panel` in caution, and the player logs
 `maburplay: rate mismatch: source X Hz, panel Y Hz -- phase lock paused`
 (and `... cleared` once 3 matched seconds follow). A drone reporting
 low-power is never a mismatch: its rate is low on purpose. The check runs
@@ -132,13 +134,40 @@ runs it at ordinary priority. A refused request (the process lacks
 `phase_lock` needs `vsync_lock = true`, `sched_cap_ms > 0` and
 `regulate_ms > 0`, or the player refuses to start.
 
-`screen_mode` is `WIDTHxHEIGHT@RATE`, RATE an integer or a decimal. The
-presenter picks, among non-interlaced modes of that size within 0.5 Hz of
-RATE, the one with the closest exact rate (from the pixel clock and
-totals): a sink offering 60.000 and 59.94 under "@60" gets 60.000, `@59.94`
-forces 59.94, a 59.94-only sink still matches "@60" and the lock steers
-the camera there (~3 lines, centre near −50 mfps). It logs
-`DrmPresenter: mode 1920x1080 @60.000 Hz (requested 1920x1080@60)`.
+`screen_mode` takes three forms (`gs/player/src/mode_pick.h`); the
+bundle ships `"auto"`:
+
+- `"auto"`: the display follows the camera. Among the display's
+  non-interlaced modes within 0.5 Hz of the drone's measured frame rate,
+  the largest (`w*h`; a tie goes to the closest rate).
+- `WIDTHxHEIGHT`: the display follows the camera at this size: that size's
+  mode closest to the camera's rate, within 0.5 Hz.
+- `WIDTHxHEIGHT@RATE`, RATE an integer or a decimal: pinned, the camera's
+  rate aside. Among non-interlaced modes of that size within 0.5 Hz of
+  RATE, the one with the closest exact rate (from the pixel clock and
+  totals): a sink offering 60.000 and 59.94 under "@60" gets 60.000,
+  `@59.94` forces 59.94, a 59.94-only sink still matches "@60" and the lock
+  steers the camera there (~3 lines, centre near −50 mfps). No match falls
+  back to the sink's preferred mode.
+
+`"auto"` and `WxH` are resolved to one `WxH@R` mode each time a
+presenter is built (startup, a hotplug, a live set): before the first
+frame the camera's rate is not known, so `"auto"` takes the sink's
+preferred mode and `WxH` that size at the preferred mode's rate. Once the
+camera's rate is measured, a rate mismatch ("Rate mismatch") with the drone not in
+low power moves the display: the presenter is rebuilt on the picked mode
+(like any presenter rebuild it restarts a burned recording in progress)
+and the player logs `maburplay: display follows camera: 1920x1080@100.000`.
+The follow is an in-process rebuild, not a `set`: the file keeps
+`"auto"`. A camera rate the display has no mode for (an Avatar Goggles X
+has no 90 Hz) runs the modes at the nearest rate it has, by the same size
+rule, and the mismatch stays (the OSD fps cell reads `90/100`). A
+presenter already on the picked size within 0.5 Hz of the camera is
+kept, and a connector with no modes (a failed EDID read) never
+rebuilds. A follow rebuild that comes up on another mode (the sink's list
+changed) is not retried for the same mode until some other rebuild runs.
+The presenter logs `DrmPresenter: mode 1920x1080 @60.000 Hz (requested
+1920x1080@60.000)`.
 
 The drone has no phase-lock config.
 

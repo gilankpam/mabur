@@ -144,7 +144,9 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
 
   c.screen_mode = get_str(j, "screen_mode", "1920x1080@60", "");
   if (!parse_screen_want(c.screen_mode).ok)
-    fail("screen_mode", "must be WIDTHxHEIGHT@RATE, e.g. 1920x1080@60 or 1920x1080@59.94");
+    fail("screen_mode",
+         "must be \"auto\", WIDTHxHEIGHT or WIDTHxHEIGHT@RATE, e.g. \"auto\", 1920x1080 or "
+         "1920x1080@59.94");
 
   if (j.contains("dvr")) {
     const Value& r = j["dvr"];

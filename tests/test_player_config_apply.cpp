@@ -131,7 +131,7 @@ TEST(player_live_table_has_ten_keys) {
 
 TEST(render_player_live_value_renders_each_type) {
   Config c = bundle();
-  CHECK(render_player_live_value(c, *player_live_key("screen_mode")) == "\"1920x1080@60\"");
+  CHECK(render_player_live_value(c, *player_live_key("screen_mode")) == "\"auto\"");
   CHECK(render_player_live_value(c, *player_live_key("osd.gs.enable")) == "true");
   CHECK(render_player_live_value(c, *player_live_key("dvr.burned.bitrate_kbps")) == "8000");
   CHECK(render_player_live_value(c, *player_live_key("dvr.burned.size")) == "\"\"");
@@ -384,7 +384,7 @@ TEST(player_control_handle) {
   PlayerConfigApplier a(sb.path(), bundle(), BuildCaps{true, false}, f.hooks(), nullptr);
   const std::string usage = "err usage: set <key> = <value> | get [<key>]";
   bool pending = false;
-  CHECK(PlayerConfigControl::handle("get screen_mode", a, &pending) == "ok \"1920x1080@60\"");
+  CHECK(PlayerConfigControl::handle("get screen_mode", a, &pending) == "ok \"auto\"");
   CHECK(PlayerConfigControl::handle("get backend", a, &pending) == "err not live: backend");
   CHECK(PlayerConfigControl::handle("set backend = \"null\"", a, &pending) == "err not live: backend");
   CHECK(PlayerConfigControl::handle("bogus", a, &pending) == usage);
@@ -392,7 +392,7 @@ TEST(player_control_handle) {
   CHECK(PlayerConfigControl::handle("", a, &pending) == usage);
   CHECK(!pending);
   const std::string all = PlayerConfigControl::handle("get", a, &pending);
-  CHECK(all.rfind("ok\nscreen_mode = \"1920x1080@60\"\ncolortrans.enable = true\n", 0) == 0);
+  CHECK(all.rfind("ok\nscreen_mode = \"auto\"\ncolortrans.enable = true\n", 0) == 0);
   CHECK(all.find("\ndvr.burned.size = \"\"\n") != std::string::npos);
   CHECK(PlayerConfigControl::handle("set dvr.burned.every = 2\n", a, &pending).empty());
   CHECK(pending);
