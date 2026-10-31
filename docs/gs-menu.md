@@ -54,7 +54,9 @@ Four boxes (`menu_layer.h`), each a filled panel in `tok::kMenuPanel`:
   (`MenuModel::kToastMs`).
 - **Banner** — centred near the top, shown with the menu closed too; while
   the menu is open it moves below the panel and picker so it never covers
-  either.
+  either. It exists only when the menu itself is on (buttons wired, or
+  `MABUR_MENU_DEBUG`); a unit with no menu never draws it, and shows the
+  camera/panel mismatch only through the OSD's fps cell.
 
 The selected row or choice is `tok::kMenuSelect`; a drone-owned row's VTX
 tag (reserved for when one exists) is `tok::kMenuTag` — both defined next
@@ -143,7 +145,10 @@ applying and the client is idle.
 
 - A GS-owned row's ▶ is refused with a "Reading GS settings…" toast until
   the first `get` has landed; while the menu is open and still unread it
-  asks again every `MenuSession::kRetryMs` (2 s).
+  retries `MenuSession::kRetryMs` (2 s) after the previous attempt was
+  sent, never while one is still outstanding -- so with maburgs down,
+  each attempt first waits out the full `LiveUdpClient::kReplyTimeoutMs`
+  (8 s) reply timeout, and the next one goes out the moment that settles.
 - A GS-owned row pressed while a refresh is already in flight is **held**
   (one slot): the model shows it "applying" right away, and it actually
   starts once the refresh's reply lands — or, if that reply never came
@@ -183,8 +188,10 @@ says nothing when the mode list is simply empty, and warns only when the
 display has modes but none of them sit at the camera's measured rate.
 
 **The same mismatch drives the menu's banner,** not only the `Display`
-row's warning. Each one-second window that finds a mismatch (and does
-not itself trigger a rebuild) sets the banner to:
+row's warning -- but only when the menu itself is on (buttons wired, or
+`MABUR_MENU_DEBUG`); a unit with no menu never shows the banner, only the
+OSD fps cell's own mismatch mark. Each one-second window that finds a
+mismatch (and does not itself trigger a rebuild) sets the banner to:
 
 ```
 ⚠ Camera <src> fps — this display has no <src> Hz mode. Showing at <shown> Hz (judder).
