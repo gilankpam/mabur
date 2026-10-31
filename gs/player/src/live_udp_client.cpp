@@ -25,6 +25,11 @@ bool LiveUdpClient::open(int port, std::string* err) {
     fd_ = -1;
   }
   in_flight_ = false;
+  port_ = port;
+  return connect_fresh(err);
+}
+
+bool LiveUdpClient::connect_fresh(std::string* err) {
   const int fd = ::socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 0);
   if (fd < 0) {
     if (err) *err = std::string("socket: ") + std::strerror(errno);
@@ -32,13 +37,13 @@ bool LiveUdpClient::open(int port, std::string* err) {
   }
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
-  addr.sin_port = htons(static_cast<uint16_t>(port));
+  addr.sin_port = htons(static_cast<uint16_t>(port_));
   if (::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr) != 1) {
     ::close(fd);
     if (err) *err = "bad loopback address";
     return false;
   }
-  // connect() on a datagram socket just fixes the peer and picks the
+  // connect() on a datagram socket just fixes the peer and picks a fresh
   // ephemeral source port; it sends nothing and never fails for "no
   // listener there yet" the way a stream socket would.
   if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
@@ -96,6 +101,15 @@ std::optional<LiveReply> LiveUdpClient::poll(uint64_t now_ms) {
   }
   if (now_ms - sent_ms_ >= kReplyTimeoutMs) {
     in_flight_ = false;
+    // A reply that only shows up after this must never be read as the
+    // next exchange's: drop the socket it would arrive on and open a
+    // fresh one (a new ephemeral source port) before saying so.
+    if (fd_ >= 0) {
+      ::close(fd_);
+      fd_ = -1;
+    }
+    std::string ignored;
+    connect_fresh(&ignored);
     return LiveReply{false, "no answer"};
   }
   return std::nullopt;

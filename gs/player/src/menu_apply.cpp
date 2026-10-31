@@ -26,6 +26,7 @@ MenuApplier::MenuApplier(MenuModel& model, LiveSetter& player, LiveSetter& gs)
 LiveSetter& MenuApplier::setter_for(Owner o) { return o == Owner::kGs ? gs_ : player_; }
 
 bool MenuApplier::start(const std::string& row_id, std::vector<SetStep> steps, uint64_t now_ms) {
+  if (running_) return false;  // one row at a time; no per-owner runners
   for (const SetStep& s : steps)
     if (s.owner == Owner::kDrone) return false;
   row_id_ = row_id;

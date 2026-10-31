@@ -79,6 +79,7 @@ ViewRow row(const MenuModel& model, uint64_t now_ms, const std::string& id) {
 
 TEST(steps_run_in_order_and_stop_at_the_first_err) {
   MenuModel model(fixture_tree);
+  model.open();
   FakeSetter player, gs;
   MenuApplier app(model, player, gs);
   const std::vector<SetStep> steps = {
@@ -102,6 +103,11 @@ TEST(steps_run_in_order_and_stop_at_the_first_err) {
   CHECK(!app.running());
   // The 3rd and 4th steps were never sent.
   CHECK(player.submitted.size() == 2);
+
+  // The bare reason reaches the model untouched; it dresses it up.
+  const auto v = model.view(20);
+  CHECK(v.help_is_error);
+  CHECK(v.help == "err boom");
 }
 
 TEST(the_model_sees_started_each_step_and_done) {
@@ -150,7 +156,16 @@ TEST(a_player_step_and_a_gs_step_go_to_their_own_setter) {
 }
 
 TEST(a_timeout_reports_no_answer) {
-  MenuModel model(fixture_tree);
+  // A single row, selected by the default cursor, so its help text (only
+  // shown for the selected row) is the one checked below.
+  auto one_gs_row = [] {
+    MenuNode g;
+    g.id = "row.g";
+    g.kind = NodeKind::kAction;
+    g.owner = Owner::kGs;
+    return std::vector<MenuNode>{g};
+  };
+  MenuModel model(one_gs_row);
   model.open();
   FakeSetter player, gs;
   MenuApplier app(model, player, gs);
@@ -162,13 +177,40 @@ TEST(a_timeout_reports_no_answer) {
   CHECK(!model.busy(Owner::kGs));
 
   const auto v = model.view(10);
-  bool found = false;
-  for (const ViewRow& r : v.rows) {
-    if (r.id != "row.g") continue;
-    found = true;
-    CHECK(r.status_err);
-  }
-  CHECK(found);
+  REQUIRE(v.rows.size() == 1);
+  CHECK(v.rows[0].id == "row.g");
+  CHECK(v.rows[0].status_err);
+  CHECK(v.help_is_error);
+  CHECK(v.help == "No answer — it may not have applied");
+}
+
+TEST(a_second_row_cannot_start_while_one_is_running) {
+  MenuModel model(fixture_tree);
+  model.open();
+  FakeSetter player, gs;
+  MenuApplier app(model, player, gs);
+
+  REQUIRE(app.start("row.p", {{Owner::kPlayer, "k1", "v1"}}, 0));
+  CHECK(app.running());
+
+  // A second row is refused outright while the first is still in
+  // flight -- it never reaches the model or either setter.
+  CHECK(!app.start("row.g", {{Owner::kGs, "k2", "v2"}}, 0));
+  CHECK(gs.submitted.empty());
+  CHECK(!model.busy(Owner::kGs));
+  CHECK(row(model, 0, "row.g").status.empty());
+
+  // The first row still completes normally.
+  player.answer(true, "");
+  app.tick(10);
+  CHECK(!app.running());
+  CHECK(player.submitted.size() == 1);
+  CHECK(row(model, 10, "row.p").status_ok);
+
+  // Now that it's done, a new row can start.
+  REQUIRE(app.start("row.g", {{Owner::kGs, "k2", "v2"}}, 10));
+  CHECK(app.running());
+  REQUIRE(gs.submitted.size() == 1);
 }
 
 TEST(drone_steps_are_refused_in_this_build) {

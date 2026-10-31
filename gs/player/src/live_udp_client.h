@@ -32,9 +32,7 @@ class LiveUdpClient {
   LiveUdpClient(const LiveUdpClient&) = delete;
   LiveUdpClient& operator=(const LiveUdpClient&) = delete;
 
-  // A fresh socket per call, connected to 127.0.0.1:<port> -- a fresh
-  // ephemeral source port each time, so a stale reply arriving after a
-  // timeout can never be mistaken for a later exchange's.
+  // Connects to 127.0.0.1:<port>, picking a fresh ephemeral source port.
   bool open(int port, std::string* err);
 
   bool send_set(const std::string& key, const std::string& value, uint64_t now_ms, std::string* why);
@@ -42,14 +40,19 @@ class LiveUdpClient {
   bool in_flight() const { return in_flight_; }
 
   // nullopt while still waiting (and under the timeout); {false, "no
-  // answer"} once kReplyTimeoutMs has passed with nothing back -- frees
-  // in_flight() either way.
+  // answer"} once kReplyTimeoutMs has passed with nothing back. Either
+  // way this frees in_flight(); a timeout also closes the socket and
+  // reopens it on the same port (a fresh ephemeral source port), so a
+  // reply that only arrives after the timeout lands on a socket nothing
+  // reads any more instead of being mistaken for the next exchange's.
   std::optional<LiveReply> poll(uint64_t now_ms);
 
  private:
   bool send(const std::string& line, uint64_t now_ms, std::string* why);
+  bool connect_fresh(std::string* err);  // (re)connects to port_
 
   int fd_ = -1;
+  int port_ = -1;
   bool in_flight_ = false;
   uint64_t sent_ms_ = 0;
 };

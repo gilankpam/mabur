@@ -148,6 +148,54 @@ TEST(a_second_send_while_one_is_in_flight_is_refused_as_busy) {
   CHECK(reply->ok);
 }
 
+TEST(a_late_reply_after_timeout_never_answers_the_next_exchange) {
+  constexpr int kPort = 18419;
+  ScratchPlayerBundle sb;
+  PFake f;
+  PlayerConfigApplier a(sb.path(), bundle(), BuildCaps{true, false}, f.hooks(), nullptr);
+  PlayerConfigControl ctl;
+  REQUIRE(ctl.open(kPort));
+
+  LiveUdpClient client;
+  std::string err, why;
+  REQUIRE(client.open(kPort, &err));
+  REQUIRE(client.send_set("osd.gs.enable", "false", 0, &why));
+
+  // The client never polls before its simulated clock reaches the
+  // timeout, so -- on the client's side -- nothing has come back yet.
+  std::optional<LiveReply> timed_out = client.poll(LiveUdpClient::kReplyTimeoutMs);
+  REQUIRE(timed_out);
+  CHECK(!timed_out->ok);
+  CHECK(timed_out->text == "no answer");
+  CHECK(!client.in_flight());
+
+  // Only now does the real exchange actually land on the daemon side: a
+  // reply the client gave up on, arriving late. With the socket reopened
+  // on timeout this has nowhere to land; without that fix it would sit
+  // in the (still open) old socket for the next poll() to misread. The
+  // first ctl.poll() is the one that drains the still-queued request and
+  // starts the daemon's async apply, so this must poll at least once
+  // before reading busy().
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  do {
+    REQUIRE(std::chrono::steady_clock::now() < deadline);
+    ctl.poll(a);
+  } while (a.busy());
+  CHECK(a.live().osd.gs.enable == false);
+
+  // A fresh exchange, right after, must get its own reply -- not the
+  // stale "ok" from the set above.
+  REQUIRE(client.send_get("osd.gs.enable", LiveUdpClient::kReplyTimeoutMs + 1, &why));
+  std::optional<LiveReply> reply;
+  drive_until(ctl, a, [&] {
+    reply = client.poll(LiveUdpClient::kReplyTimeoutMs + 2);
+    return reply.has_value();
+  });
+  REQUIRE(reply);
+  CHECK(reply->ok);
+  CHECK(reply->text == "false");
+}
+
 TEST(a_set_with_no_reply_times_out_and_frees_the_lock) {
   constexpr int kPort = 18417;  // nothing bound here
   LiveUdpClient client;

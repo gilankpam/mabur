@@ -64,16 +64,18 @@ class GsLiveSetter final : public LiveSetter {
 };
 
 // Runs one row's steps, in order, one at a time: a later step is never
-// sent after an earlier one answers err or times out. The model hears
-// apply_started once, apply_step before each submit, and apply_done with
-// the stopping step's bare reason.
+// sent after an earlier one answers err or times out, and only one row
+// runs at a time (no per-owner runners). The model hears apply_started
+// once, apply_step before each submit, and apply_done with the stopping
+// step's bare reason.
 class MenuApplier {
  public:
   MenuApplier(MenuModel& model, LiveSetter& player, LiveSetter& gs);
 
-  // False, nothing started and the model untouched, for a row carrying a
-  // kDrone step -- no setter for it in this build. An empty step list (an
-  // action with nothing to send) settles ok at once.
+  // False, nothing started and the model untouched, while another row is
+  // still running() or for a row carrying a kDrone step -- no setter for
+  // it in this build. An empty step list (an action with nothing to send)
+  // settles ok at once.
   bool start(const std::string& row_id, std::vector<SetStep> steps, uint64_t now_ms);
   // Every tick while running(): polls the current step's setter and
   // either advances to the next step or settles the row.
@@ -81,7 +83,7 @@ class MenuApplier {
   bool running() const { return running_; }
 
   // Fires after each step that answers ok, with that step's owner -- main
-  // uses it to refresh the GS view once a GS set has landed (Task 5).
+  // uses it to refresh the GS view once a GS set has landed.
   std::function<void(Owner)> on_ok;
 
  private:
