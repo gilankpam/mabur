@@ -2009,6 +2009,9 @@ int main(int argc, char** argv) {
       gs_laid_out = false;
 #endif
     }
+    // Taken before any overlay closes: only a switch-on re-keys the palette.
+    [[maybe_unused]] const bool palette_rekeyed =
+        had_raster != (osd_raster != nullptr) || had_gs != composer.gs_present();
     const maburplay::Config before = cfg;
     const bool want_before = want_osd;
     // install_colortrans and the hotplug retry read these from cfg.
@@ -2046,17 +2049,13 @@ int main(int argc, char** argv) {
     // set, so a running recording restarts -- a new file, no video park --
     // as a presenter rebuild restarts it. A switch-off needs nothing: the
     // composer's erase reaches the recorder's map.
-    if (burn && !rebuild &&
-        (had_raster != (osd_raster != nullptr) || had_gs != composer.gs_present())) {
+    if (burn && !rebuild && palette_rekeyed) {
       std::fprintf(stderr,
                    "maburplay: rec: burned recorder restarting -- an overlay was switched on and "
                    "its palette is built at start\n");
       stop_burn();
       start_burn_if_needed();
     }
-#else
-    (void)had_raster;
-    (void)had_gs;
 #endif
     return true;
   };
