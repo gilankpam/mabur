@@ -375,7 +375,9 @@ efficiency_40 = [0.77, 0.75, 0.75, 0.75, 0.74, 0.77, 0.76, 0.75]
   and `maburd` says so at boot: `maburd radio: no 40 MHz walls, flying the
   20 MHz table at 40`. Walls at 40 MHz have measured ≥ the 20 MHz ones on
   every row so far, so the 20 MHz table at 40 is the conservative
-  direction; the reverse (40's table at 20) is not, and the line is the
+  direction; the reverse (40's table at 20) overdrives, and its line says
+  so: `maburd radio: no 20 MHz walls, flying the 40 MHz table at 20 — the
+  overdriving direction, re-run maburcal at 20 MHz`. Either line is the
   hint to calibrate that width.
 - **`cal_flags_20` / `_40`** record what the table was measured under:
   `ldpc+stbc`, `stbc`, `ldpc` or `none` (default `ldpc+stbc`). Walls

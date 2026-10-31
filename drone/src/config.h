@@ -30,9 +30,9 @@ struct RadioCfg {
   std::string power_mode = "none";
   // Wall-equalization inputs: measured per-rate clean-air ceilings as
   // signed indices RELATIVE to the chip's per-channel anchor, [-64,63].
-  // One table per width (the 8812E/8822x walls at 40 run a few dB below the
+  // One table per width (the 8812E/8822x walls at 40 sit at or above the
   // 20 MHz walls on every unit measured, so a single shared table either
-  // overclaims 40 or leaves 20 on the table). At least one table is
+  // overdrives 20 or leaves power unused at 40). At least one table is
   // REQUIRED when power_mode == "offset"; walls_for() falls back to the
   // other width's table when the requested one is absent, so a unit
   // calibrated on only one width still powers both. See power_plan.h for
@@ -48,10 +48,11 @@ struct RadioCfg {
   // its own. One of "ldpc+stbc", "stbc", "ldpc", "none".
   std::string cal_flags_20 = "ldpc+stbc", cal_flags_40 = "ldpc+stbc";
 
-  // The table for `bw`, falling back to the other width's (walls at 40 are
-  // never above walls at 20 on any unit measured, so the fallback is
-  // always a safe, if suboptimal, substitute). nullptr when neither width
-  // has a table.
+  // The table for `bw`, falling back to the other width's. Walls at 40 are
+  // never below walls at 20 on any unit measured, so 20's table at 40 is a
+  // safe, if suboptimal, substitute, while 40's table at 20 overdrives the
+  // rates whose 40 MHz wall is higher (maburd says so at boot). nullptr when
+  // neither width has a table.
   const std::array<int, 8>* walls_for(uint8_t bw) const;
   // True when `bw`'s own table is present (ignores the other width's
   // fallback walls_for() would use).

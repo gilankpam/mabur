@@ -151,7 +151,11 @@ TEST(missing_wall_notes_name_the_fallback_width) {
   r.rate_walls_rel_40 = std::array<int, 8>{63, 63, 63, 63, 45, 28, 28, 23};
   n = missing_wall_notes(r);
   REQUIRE(n.size() == 1);
-  CHECK(n[0] == "radio: no 20 MHz walls, flying the 40 MHz table at 20");
+  // 40 MHz walls sit at or above the 20 MHz ones, so this direction
+  // overdrives and the note says so.
+  CHECK(n[0] ==
+        "radio: no 20 MHz walls, flying the 40 MHz table at 20 "
+        "\xe2\x80\x94 the overdriving direction, re-run maburcal at 20 MHz");
 
   r.rate_walls_rel_20 = std::array<int, 8>{63, 63, 63, 63, 45, 23, 22, 21};
   CHECK(missing_wall_notes(r).empty());

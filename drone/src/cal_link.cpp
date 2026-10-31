@@ -96,9 +96,13 @@ std::vector<std::string> missing_wall_notes(const RadioCfg& r) {
     if (!width_flown(r, bw)) continue;
     if (r.has_walls(static_cast<uint8_t>(bw)) || !r.has_walls(static_cast<uint8_t>(other)))
       continue;
-    char line[96];
-    std::snprintf(line, sizeof line, "radio: no %d MHz walls, flying the %d MHz table at %d", bw,
-                  other, bw);
+    // Walls at 40 MHz sit at or above the 20 MHz walls, so 20's table at 40
+    // only gives power away; 40's table at 20 overdrives, and the note says so.
+    char line[160];
+    std::snprintf(line, sizeof line, "radio: no %d MHz walls, flying the %d MHz table at %d%s", bw,
+                  other, bw,
+                  bw == 20 ? " \xe2\x80\x94 the overdriving direction, re-run maburcal at 20 MHz"
+                           : "");
     out.emplace_back(line);
   }
   return out;

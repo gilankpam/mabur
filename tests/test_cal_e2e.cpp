@@ -77,9 +77,9 @@ using State = maburgs::CalSession::State;
 // delivery is clean at and below it and every frame above it arrives
 // corrupt. 127 = this rate never compresses inside the swept range (the
 // top cell is kRailRel), so it must come out no_dip at the rail. The 40 MHz
-// walls sit lower on mcs5-7, as on every unit measured.
+// walls sit higher on mcs5-7, as on every unit measured.
 constexpr int kTrueWallRel20[8] = {127, 127, 127, 127, 45, 23, 22, 21};
-constexpr int kTrueWallRel40[8] = {127, 127, 127, 127, 45, 19, 18, 16};
+constexpr int kTrueWallRel40[8] = {127, 127, 127, 127, 45, 28, 28, 23};
 int true_wall(uint8_t bw, int r) { return bw == 40 ? kTrueWallRel40[r] : kTrueWallRel20[r]; }
 // What the analysis must write for a true wall: the wall itself, or the
 // rail for a rate that never dips.
@@ -891,7 +891,7 @@ TEST(walls_err_low_across_a_comb_and_lossy_cards) {
   // island, which would overdrive the PA at every rate parked from it.
   //
   // One rate per width has an island 3-5 steps above its true wall.
-  const std::vector<Kit::Island> comb = {{20, 5, 26, 28}, {40, 6, 21, 23}};
+  const std::vector<Kit::Island> comb = {{20, 5, 26, 28}, {40, 6, 31, 33}};
   struct Case {
     int loss0, loss1;
     uint32_t seed;
