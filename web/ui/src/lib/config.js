@@ -37,7 +37,7 @@ export function defaultConfig() {
     // lib/phase.js). GS mode only; a spotter never steers.
     phaseLock: true,
     // Page-only: which OSD font atlas paints the MSP overlay (an id from
-    // public/fonts/index.json; 'btfl' is the shipped font_btfl.png).
+    // public/fonts/index.json; 'btfl' is the shipped Betaflight atlas).
     osdFont: 'btfl',
   };
 }
