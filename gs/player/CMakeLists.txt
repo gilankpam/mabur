@@ -4,6 +4,7 @@ add_library(mabur_player_core STATIC
   src/rec_button.cpp
   src/key_timer.cpp
   src/button_bank.cpp
+  src/menu_model.cpp
   src/display_watch.cpp
   src/ring_client.cpp
   src/stream_feeder.cpp
