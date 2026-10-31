@@ -88,8 +88,6 @@ its CRC; the drone-to-GS frames stay untagged:
 - **RCF** (GS to drone): tagged over the frame bytes
   plus `vrx_nonce ‖ vtx_nonce ‖ seq32` (`TagCtx`) — session-bound, not
   just key-bound.
-- **CAL_CMD / CAL_RESULT**: same tag, same `TagCtx` inputs (minus
-  `seq32`: cal freshness is the cal nonce, see "Session and the nonces").
 - **NACK** (GS to drone, `docs/fec-nack.md`): same session-bound tag, with
   the request's own `counter` as `seq32`. The drone accepts only a counter
   greater than the last one it accepted under the current pair
@@ -102,7 +100,10 @@ its CRC; the drone-to-GS frames stay untagged:
   counter state (`RcAgent::check_mav` → `verify_session_tagged` +
   `accept_mav_counter`, on the MAV thread); a tag or counter failure sets
   `auth_reject`, a parse failure does not. Drone to GS is untagged, like
-  Telem.
+  Telem. Calibration rides MAV too (`docs/calibration.md`): a frame made
+  entirely of calibration messages counts in a counter domain of its own
+  (`cal_last_`) and may verify under the calibration run's pair after the
+  session lapses ("Session and the nonces").
 - **Telem** (drone to GS): flags bit1 is `kTelemAuthReject`
   (`0x02`) — at least one control frame failed verification this
   telemetry period. (Bit1 was `radio_rx_ok` before the 2026-09-30 telem
@@ -110,11 +111,9 @@ its CRC; the drone-to-GS frames stay untagged:
   `docs/data-provenance.md`.)
 
 `rc::verify_control(buf, len, key, ctx)` is the one place a tag is
-checked — on the drone, for DISC/RCF on the agent thread, for
-CAL_CMD/CAL_RESULT on the TX writer thread (`RcAgent::verify_cal_frame`)
-for NACK on the RX thread and for MAV on the MAV thread. It finds the tag at the frame's
+checked — on the drone, for DISC/RCF on the agent thread, for NACK on
+the RX thread and for MAV on the MAV thread. It finds the tag at the frame's
 **structural** offset, derived from the type (`DISC_LEN`, `RCF_HEAD_LEN`,
-`kCalResultLen`, `kCalCmdFixedLen + n_windows * 4`,
 `kNackFixedLen + n * kNackEntryLen`, or `kMavFixedLen + len16`), never at
 `len - 10`: on hardware the drone's RC body still carries devourer's
 trailing 4-byte 802.11 FCS
@@ -153,15 +152,19 @@ an attacker resends before the next one lands.
   drone issues a fresh `vtx_nonce`; the GS adopts it (newest wins) and
   re-tags. Until then its RCFs set `auth_reject` — at most one
   `beacon_keepalive_ms` (1 s); the loopback test measured 190 ms.
-- **Cal nonces are single-use per session.** Cal frames carry
-  `seq32 = 0`, so freshness is the cal nonce: `RcAgent::verify_cal_frame`
-  refuses a CAL_CMD whose nonce it already accepted in this session,
-  other than the running sweep's own (a retransmission or its next phase,
-  which `CalSweep` dedupes). The ring is `RcAgent::kCalNonceRing` (8)
-  deep, belongs to the published session it was filled under, and is
-  forgotten when that session is cleared or promoted. A refusal sets
-  `auth_reject`. CAL_RESULT needs no ring — `CalSweep::on_result` takes
-  only the running nonce.
+- **A calibration run keeps its pair.** Every calibration sweep outlasts
+  `failsafe_ms`, so the drone clears its sessions inside every run. While
+  a run is open, `RcAgent::check_mav` re-verifies a MAV frame that fails
+  the published session under the **run pair** — the pair of the last
+  accepted calibration-only frame — with a counter above that pair's
+  calibration high-water mark. Only frames made entirely of calibration
+  messages take that path; any other frame (a parameter set) is rejected
+  whole and sets `auth_reject`, so the latch cannot change config outside
+  a run. A run opens only from a SWEEP verified under the published
+  session; a SWEEP that verifies only under the run pair and names another
+  run is dropped. The GS tags a run's frames under the pair frozen when
+  the run first commanded the drone. Detail: `docs/mavlink.md`
+  "Two counter domains and the run-pair latch".
 
 ## Rendezvous, as built
 

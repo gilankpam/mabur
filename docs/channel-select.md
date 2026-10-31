@@ -78,6 +78,7 @@ width    = 40
 | **relocate** — the link forms where the drone is, one order moves it to `want` (pin or pick) | each link-up with `op ≠ want`, both modes | `[hop] confirm_ms`, `confirm_extend_ms`, `verify_ms`, `max_hops_per_min`, `one_card_repeats` (shared with the reactive hop) |
 | **verdict** — is `op` bad right now | always (OSD / sideport `hop.verdict`) | `[hop] window_ms`, `persist`, `[hop.verdict] *` |
 | **reactive hop** — in-flight scout, freshness burst, order/verify/withdraw | `channel = "auto"` only, after the freeze | everything else in `[hop]` |
+| **calibration pick** — one measure round, then a relocate to the quietest member (`CalPicker`) | each `maburcal start`, auto mode with two or more cards | `radio.scan.dwell_ms`, `settle_ms`, `pick_margin`, `busy_dbm`, `blocked_pct`; the relocate's `[hop] confirm_ms`, `max_hops_per_min` |
 | **one-card mode** | exactly one USB card in the roster (one `[[radio.cards]]` entry, or auto-scan finding one card) | no in-flight scout; `one_card_ms`, `op_window_ms`, `one_card_repeats` apply |
 
 There is no other mode switch: auto and pinned are the only two modes.
@@ -194,7 +195,9 @@ Everything this page describes on the GS side is wired inside
 the card roster and calls it at six seams (lifecycle, the rc sink, the
 drain loop, `tick()`, the send path, the sideport). The decision units are
 `ChannelPlan`, `BootPick`, `ChannelScout`, `HopVerdict`, `HopRanker`,
-`HopController` and `InflightScout`. The browser GS drives the same
+`HopController` and `InflightScout`; a calibration run's pick reaches
+the core through `CalPicker` (`gs/src/cal_picker.h`, scored by
+`gs/src/cal_round_pick.h`). The browser GS drives the same
 `ChannelCore` (`web/src/web_gs.cpp`; `docs/web-gs.md`). Design:
 `docs/superpowers/specs/2026-10-04-web-gs-channel-core-design.md`
 (gitignored, local only; this page and `docs/inflight-channel-hop.md` are
@@ -404,7 +407,9 @@ exit covered by `tests/test_boot_pick.cpp`); `ChannelCore` only feeds it a
 - **Proposal == op**: freeze in place (`"in place"`).
 
 **Freeze** closes the pick for the GS process's lifetime: the scout stops
-measuring and rejoins the link at full width. Logged
+measuring and rejoins the link at full width. The one later round is a
+calibration run's own ("Calibration pick", below), which reuses the scout
+without reopening the pick. Logged
 `maburgs channel: pick frozen on <pick> (<why>) after <rounds> rounds`
 plus a `K` line (`K <t> <picked|none> <rounds>
 <ch>:<worst_busy>:<floor|nan>:<busy|-> ... pair=<lo>+<hi>|-`; `picked` is
@@ -426,6 +431,58 @@ Timing at the defaults, two cards, both powered together: link on the
 remembered member within ~1 s; three rounds of eight halves ≈ 10 s;
 relocation lands ≈ 0.5 s later.
 
+## Calibration pick
+
+Before its first sweep a `maburcal` run (`docs/calibration.md`) moves the
+pair onto the quietest member of the set. Only in auto mode with a scout
+card (two or more cards, not relay-only); pinned and one-card GSs run on
+`op` with no measurement.
+
+- **One measure round.** `ChannelCore::begin_cal_measure()` arms it; it
+  starts once the link is live, the boot pick is closed, nothing else
+  (a relocate, a hop, a relay sweep, an in-flight dwell, the scout) holds
+  the card, and the scout thread is running with its card up
+  (`maburgs channel: calibration measure round on card N (op X)`).
+  `ChannelScout::begin_round()` gives the scout a fresh ranker for one
+  pass: every 20 MHz half of the set once, `op`'s pair skipped as while
+  linked, the leak subtracted as usual; then it parks. The round is
+  bounded at twice a full round's dwell time, never under 1 s (4.5 s at
+  the defaults; `... round overran <n> ms; staying on <op>`). A round
+  still waiting when the run starts calibrating is dropped (`... round
+  dropped: a run is calibrating`), and the run's abort, failure or pick
+  timeout cancels it (`... round cancelled`), so it never holds the card
+  outside a pick.
+- **Op's reading** comes from the verdict window, not a dwell: the worst
+  valid card on `op`, decoded foreign frames scaled to `dwell_ms`, NHM
+  busy minus our own airtime. Without a reading newer than the round's
+  start, `op` is unread and the run stays.
+- **The score** (`cal_round_pick`) uses only terms both instruments
+  measure alike: decoded foreign frames plus NHM foreign busy %, the busy
+  term only when both sides have a reading (the `cca − own` term is
+  dropped: under A-MPDU video it clamps to 0 on `op`). A pair scores as
+  its worse half and needs a reading on both. Leaving `op` takes beating
+  it by `pick_margin` in every tier; a blocked candidate never replaces an
+  unblocked `op`. Logged as a `K` record with the round's scores and
+  `maburgs channel: calibration measure picks <best> (op <op>[ unread:
+  staying])`.
+- **The relocate** is the boot pick's own: `set_want(best)` and the boot
+  pick re-armed, so it hands out one relocate order next tick
+  (`maburgs channel: calibration wants <c>, link on <op>: relocating`).
+  `H relocate` carries reason `cal`, the order line ends `(cal)`, and the
+  confirm lands it with no verify window. Refused, with the run staying on
+  `op`: not a member or already there, the link not live, a hop or
+  relocate in flight, the boot pick open, the scout or a relay sweep
+  holding a card, or the hop cap (`max_hops_per_min`; `... calibration
+  relocate to <c> refused: hop cap`). It settles as `landed`, `withdrawn`,
+  `held`, `never placed` (not handed out within `confirm_ms`, or the link
+  went) or `refused (hop cap)` (`maburgs channel: calibration relocate to
+  <c> <outcome>`); every failure leaves `want` on `op`. The remembered
+  channel follows a landed relocate like any hop.
+
+From the run's first SWEEP to its end `cal_running` freezes every channel
+change (`hop_active()` false, the scout idle); the pick happens before
+that, which is why `CalSession`'s `picking` state is outside `running()`.
+
 ## In-flight hop after the freeze
 
 After the freeze two things can move the link: the per-link-up relocation
@@ -436,8 +493,8 @@ rather than falling back anywhere — see that page's §1, §3, §5 and §7.
 
 ## Observability
 
-- **`scan.log`** (`gs/src/scan_log.h`): marker `scanlog 6`. Header line:
-  `scanlog 6 channels=<c1,c2,...> mode=<auto|pinned> dwell_ms=<n>
+- **`scan.log`** (`gs/src/scan_log.h`): marker `scanlog 7`. Header line:
+  `scanlog 7 channels=<c1,c2,...> mode=<auto|pinned> dwell_ms=<n>
   min_rounds=<n> cards=<n>`. Record shapes are documented in
   `scan_log.h` (`docs/bw40.md`,
   `docs/findings/2026-09-25-nhm-airtime-spike.md` for the width and NHM
@@ -445,7 +502,9 @@ rather than falling back anywhere — see that page's §1, §3, §5 and §7.
   for USB dwells). `M` reasons: `commit`, `ack_override`, `link_found`,
   plus the in-flight hop's `hop_lead`/`hop_follow`/`hop_withdraw`/
   `hop_one_card`. `H` kinds include `relocate` alongside the in-flight
-  hop's `order`/`verify_fail`/`escape`. Files from before `scanlog 5` have
+  hop's `order`/`verify_fail`/`escape`; every `H` ends with a reason,
+  `cal` on a calibration run's relocate and `-` otherwise. A `K` line also
+  closes a calibration measure round. Files from before `scanlog 5` have
   `split_home`/`reunite` in `M` and no `relocate`; pre-merge 2026-10-03
   bench builds named `relocate` `boot_order` — read them as what they were
   (`docs/data-provenance.md`).
@@ -471,11 +530,14 @@ rather than falling back anywhere — see that page's §1, §3, §5 and §7.
   `maburgs channel: one-card prelude ranking picks <n> (op <n>)[, linked:
   not committed]`; `maburgs channel: drone acked <n>, not in our set;
   ignored`; `maburgs channel: <reason> card <n> <from> -> <to>` (every `M`
-  line, echoed to stderr); `maburgs channel: could not write
+  line, echoed to stderr); the calibration pick's `maburgs channel:
+  calibration …` lines (above) and a relocate line ending `(cal)`;
+  `maburgs channel: could not write
   /etc/maburgs.channel`; `maburd: retune <a> -> <b> (<reason>)`.
 - **`tools/maburtop.py`**: shows `scan.state` (including `moving`) and
   `scan.rounds` next to the channel.
-- **`tools/flightreport.py`**: reads `scanlog` up to 6; treats `relocate`
+- **`tools/flightreport.py`**: reads `scanlog` up to 7 (an `H` line's
+  reason as `reason`, `None` before 7); treats `relocate`
   (and the bench builds' `boot_order`) as a HOP-section order kind
   alongside `order`/`verify_fail`/`escape`; still parses `split_home` out
   of an older-marker file, since recordings made before 2026-10-03 carry it

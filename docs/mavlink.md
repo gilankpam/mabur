@@ -16,25 +16,33 @@ MAVLink system on the network. The web GS runs its own ground client on
 the tunnel, and its VTX tab is the operator screen onto the table
 (`docs/web-gs.md` "VTX tab").
 
+The second tenant is calibration (`docs/calibration.md`): `maburgs`'
+calibration session and the drone's sweep engine talk over the same
+tunnel in a mabur MAVLink dialect, on a lane of their own that survives
+the session lapse every sweep causes. See "Calibration over the tunnel"
+below.
+
 ## Where the code lives
 
 | Piece | File |
 |---|---|
 | `T_MAV` frame, `CAP_MAVLINK` | `common/include/mabur/rc_proto.h` |
 | the parameter table (ids, keys, types, help) | `common/include/mabur/config_params.h` |
-| the vendored MAVLink common dialect | `third_party/mavlink/` (upstream commit in its `VERSION`), included through `common/include/mabur/mav.h` |
+| the mabur dialect's XML (`mabur.xml`, including `common.xml`) | `common/mavlink/` |
+| the vendored generated headers (mabur, common, minimal, standard) | `third_party/mavlink/` (pymavlink version, regenerate command and the `protocol.h` patch in its `VERSION`), included through `common/include/mabur/mav.h` |
+| calibration messages: plain structs and their MAVLink codec | `common/include/mabur/cal_proto.h`, `common/include/mabur/cal_mav.h` |
 | drone: the component (list/read/set, heartbeat) | `drone/src/mav_component.h` |
 | value coding (wire and text), shared by drone and GS | `common/include/mabur/param_value.h` |
 | drone: per-row accessors, TOML rendering, the row patcher | `drone/src/mav_params.h` |
 | drone: line patcher and verified publish | `drone/src/config_write.h` |
 | drone: MAV thread, tag and counter check | `drone/src/main.cpp` (`mbr-mav`), `RcAgent::check_mav` |
-| GS: the tunnel (shared GS core) | `gs/src/mav_tunnel.h` |
+| GS: the tunnel and its cal lane (shared GS core) | `gs/src/mav_tunnel.h` |
 | GS: the UDP endpoint | `gs/src/mav_endpoint.h` |
 | GS: the ground client (list/read/set, link and heartbeat state) | `gs/src/param_client.h` |
 
 ## The wire: `T_MAV`
 
-`T_MAV = 8`, `RC_VERSION` 17. Same layout both directions; only the GS to
+`T_MAV = 8`, `RC_VERSION` 18. Same layout both directions; only the GS to
 drone direction carries the tag:
 
 ```
@@ -53,7 +61,7 @@ u16 crc16
   heartbeat plus three).
 - The RC layer treats the payload as opaque. Each end splits it with a
   MAVLink parser; a bad MAVLink CRC (which is also what refuses a message
-  id the common dialect does not know), a MAVLink 1 packet, or a packet
+  id the mabur dialect does not know), a MAVLink 1 packet, or a packet
   cut off at the end of a payload is dropped and counted. MAVLink 2 only.
 - **GS to drone** is tagged with `TagCtx{vrx_nonce, vtx_nonce, seq32 =
   counter}`, the NACK rule (`docs/link-pairing.md`). The drone accepts a
@@ -62,12 +70,16 @@ u16 crc16
   tag or the counter, or arrives with no published session, is dropped
   whole and raises `auth_reject` (Telem flags bit1); a frame that fails to
   parse is dropped and counted without it. The GS restarts its counter at
-  1 when the session's `vtx_nonce` changes.
+  1 when the session's `vtx_nonce` changes. The one exception is a frame
+  made entirely of calibration messages: its own counter domain, and a
+  latch onto the calibration run's pair (below).
 - **Drone to GS** is untagged, like `T_TELEM`, and goes out on the Telem
   path (control radiotap, the shared Telem 802.11 sequence) at most one
   frame every `kMavUplinkMinMs` (50 ms), which caps the tunnel near
-  12 kB/s on the drone's uplink. Nothing goes up while a calibration
-  phase sweeps (the periodic Telem's rule); replies wait queued. A two-card GS receives each frame once
+  12 kB/s on the drone's uplink. Nothing from the component goes up while
+  a calibration sweep airs (the periodic Telem's rule); replies wait
+  queued. The calibration replies are the exception (below). A two-card
+  GS receives each frame once
   per card: the tunnel drops a frame whose counter equals the last one it
   took, and forgets that counter when the session's `vtx_nonce` changes
   (a restarted drone counts from 0 again).
@@ -78,7 +90,8 @@ u16 crc16
 - **GS to drone** frames are offered to the RCF slotter like an RCF, so
   they land in the drone's inter-AU idle, and are never sent while a
   calibration sweep holds the GS radio-silent. A frame goes out only when
-  a ground app has sent something.
+  a ground app has sent something, or the calibration session has a
+  message due (its own lane, below).
 - `CAP_MAVLINK` (`0x0008`) in DISC_ACK `chip_caps` says the drone answers
   `T_MAV`. It is display-only: with `[mavlink] enable`, `maburgs` logs
   `maburgs: mavlink: drone lacks CAP_MAVLINK` once per session when the bit
@@ -90,8 +103,9 @@ u16 crc16
   (`MAV_COMP_ID_ONBOARD_COMPUTER`). A flight controller on the same drone
   would be component 1, the MAVLink convention.
 - Ground senders use their own ids (QGroundControl sends 255/190).
-  `maburgs` originates no packets of its own: it forwards bytes unchanged
-  in both directions.
+  `maburgs` forwards a ground app's bytes unchanged in both directions;
+  the only packets it originates are calibration's, which it sends as
+  255/190.
 
 ## The drone component
 
@@ -102,14 +116,18 @@ agent and TX threads.
 
 - **Heartbeat.** Once a second while a session is published:
   `MAV_TYPE_ONBOARD_CONTROLLER`, `MAV_AUTOPILOT_INVALID`,
-  `MAV_STATE_ACTIVE`. Suppressed while a calibration phase sweeps, the
+  `MAV_STATE_ACTIVE`. Suppressed while a calibration sweep airs, the
   same rule as the periodic Telem. This is what a ground app discovers
   the component by.
-- **Routing.** A message is for the component when its target system is 0
+- **Routing.** A frame made entirely of calibration messages (ids
+  60000-60005) never reaches the component: its messages go to the TX
+  writer thread's calibration queue. Any other frame goes whole to the
+  component. A message is for the component when its target system is 0
   or 1 and its target component is 0 or 191. Served:
   `HEARTBEAT` (ignored), `PARAM_EXT_REQUEST_LIST`,
-  `PARAM_EXT_REQUEST_READ`, `PARAM_EXT_SET`. Anything else, or anything
-  for another target, is dropped and counted.
+  `PARAM_EXT_REQUEST_READ`, `PARAM_EXT_SET`. Anything else (a calibration
+  id in a mixed frame included), or anything for another target, is
+  dropped and counted.
 - **List.** One `PARAM_EXT_VALUE` per table row, in table order,
   `param_count` 12 and `param_index` = the row. Values are read by loading
   the file with the boot loader (`mabur::load_config`) on every request,
@@ -193,11 +211,21 @@ column below:
   value is written to a live atomic `RcAgent` reads on its next tick.
   Nothing stops.
 - **Reprogram** (`RADIO_WALL_MARGN`, `RADIO_LDPC`, `MSP_ENABLE`): a radio
-  or peripheral setting changes in place. `RADIO_WALL_MARGN` reprograms
-  the TX-power plan under the retune gate; `RADIO_LDPC` rebuilds the
-  control radiotaps and `RcAgent` re-applies the current operating point
-  with the new flag on its next tick (every ladder it builds from then
-  on uses it too); `MSP_ENABLE` starts or stops the MSP thread.
+  or peripheral setting changes in place. `RADIO_WALL_MARGN` rebuilds
+  both widths' TX-power plans and writes the live rung's under the retune
+  gate (`docs/calibration.md` "Per-width tables on the drone");
+  `RADIO_LDPC` rebuilds the control radiotaps and `RcAgent` re-applies
+  the current operating point with the new flag on its next tick (every
+  ladder it builds from then on uses it too); `MSP_ENABLE` starts or
+  stops the MSP thread. A `RADIO_LDPC` set that leaves a flown wall table
+  measured under the other LDPC setting (`radio.cal_flags_<bw>`) is still
+  `ACCEPTED`, followed by a `STATUSTEXT` (`MAV_SEVERITY_WARNING`) per
+  width: `radio: 20 MHz walls were measured with ldpc on; radio.ldpc is
+  off — re-run maburcal`. It is longer than 50 bytes, so it goes out in
+  MAVLink 2's chunked form (one nonzero id, `chunk_seq` from 0).
+  `mavparam.py` prints the chunks as they come; the web GS's
+  `ParamClient` attaches a `STATUSTEXT` only to a set still pending or
+  just failed, so it does not show this one.
 - **Rebuild** (`VENC_MODE`, `VENC_SLICES`, `REC_ENABLE`,
   `REC_BITRATE`, `REC_FPS`, `REC_SIZE`): the encoder pipeline is rebuilt
   in-process (`docs/link-adaptation.md` "Rebuilding the encoder pipeline
@@ -478,6 +506,108 @@ The web GS's VTX tab (`docs/web-gs.md` "VTX tab") renders the parameter
 table and drives it live; a `maburplay` screen onto the same table is not
 built.
 
+## Calibration over the tunnel
+
+### The mabur dialect
+
+`common/mavlink/mabur.xml` includes `common.xml`, so every common message
+still packs and decodes under it, and adds six messages in the private id
+range. Both daemons and the web GS build against it (`mabur/mav.h`
+includes `mavlink/mabur/mavlink.h`); a `common`-only ground app drops the
+new ids at its parser (unknown CRC_EXTRA), which is what we want.
+
+| message | id | dir | fields |
+|---|---|---|---|
+| `MABUR_CAL_SWEEP` | 60000 | GS → drone | `nonce u32, seq u8, kind u8 (1 power, 2 verify, 3 capacity), bw u8, frames_per_cell u16, settle_ms u16, gap_us u16, dwell_ms u16, idx_lo i8, idx_hi i8, mcs_mask u8` |
+| `MABUR_CAL_ACK` | 60001 | drone → GS | `nonce u32, seq u8, result u8 (0 accepted, 1 anchor unreadable, 2 busy, 3 unsupported), start_in_ms u16, flags u8 (the stamp's ldpc/stbc mask)` |
+| `MABUR_CAL_SWEEP_DONE` | 60002 | drone → GS | `nonce u32, seq u8, offered u32[8], blocked_pct u8[8]` |
+| `MABUR_CAL_APPLY` | 60003 | GS → drone | `nonce u32, seq u8, bw u8, has u8 (bit0 walls, bit1 eff), walls i8[8] (−128 = leave), legacy i8, eff u16[8] (×1000, 0 = leave)` |
+| `MABUR_CAL_APPLIED` | 60004 | drone → GS | `nonce u32, seq u8, bw u8, ok u8, reason char[50]` |
+| `MABUR_CAL_ABORT` | 60005 | GS → drone | `nonce u32` |
+
+`seq` is the sweep's position in the run, on SWEEP and on the APPLY that
+sweep produced. The drone answers only `accepted` or `anchor unreadable`
+today. What each message does in a run: `docs/calibration.md`. The
+messages carry no RC version of their own; the dialect changes with the
+code. `common/include/mabur/cal_proto.h` holds them as plain structs and
+`common/src/cal_mav.cpp` is the one TU that packs and parses them
+(`mav.h`'s per-TU channel rule).
+
+The generated C headers are vendored under `third_party/mavlink/`
+(`mabur/`, `common/`, `minimal/`, `standard/`, all from one pymavlink
+version). Regenerate with the command in `third_party/mavlink/VERSION`:
+
+```
+nix-shell -p python3Packages.pymavlink --run "mavgen.py --lang C --wire-protocol 2.0 -o third_party/mavlink common/mavlink/mabur.xml"
+```
+
+then reapply the one hand patch: `protocol.h`'s `mav_array_assign_char`
+and `_mav_put_char_array` copy with `mav_array_memcpy`, not the
+generator's `strncpy`, because `PARAM_EXT_*` carry raw bytes in a
+`char[]` field.
+
+### The cal lane (GS)
+
+`maburgs` encodes the session's due message as system 255 / component
+190 and hands it to `MavTunnel::push_cal(packet, run_ctx)`. The cal lane
+differs from the live lane in four ways:
+
+- **Its own frames.** A calibration packet is never packed into a frame
+  with a ground app's packet: the drone tells the two apart by content.
+- **The frozen pair.** Frames are tagged under `run_ctx`, the pair the
+  session froze when it first commanded the drone, whatever the GS's own
+  session state — every sweep outlasts the drone's failsafe, and the GS
+  may adopt a fresh pair between sweeps.
+- **Its own counter**, restarting at 1 only when a frame's
+  `run_ctx.vtx_nonce` differs from the last cal frame's; a second run on
+  the same pair keeps counting (the drone would read a restart as a
+  replay).
+- **Its own path.** `flush()` sends cal frames first, through a sender of
+  their own that skips the RCF slotter and the radio-silence gate (still
+  behind `ChannelCore::may_send`): the session offers a message only when
+  the air is the GS's (waiting for an ack or an APPLIED, or the closing
+  Aborts), and repeats it every 200 ms until answered.
+
+Inbound, the tunnel's `deliver` hands every drone packet to the UDP peer,
+as before, and also to the calibration session (`feed_cal_packet`), which
+ignores what does not fit its state; delivery does not depend on the
+GS's session state. Counters: `tx_cal_frames` and `drop_cal_oversize` in
+`MavTunnelStats` (not in `link.mav`).
+
+### Two counter domains and the run-pair latch (drone)
+
+`RcAgent::check_mav` (MAV thread) verifies the tag, then classifies the
+frame by content (`cal::all_packets_are_cal`):
+
+- **Cal-only** (every packet a calibration id, no trailing bytes): its
+  counter is checked against `cal_last_`, a per-pair high-water mark of
+  its own, so the cal lane's counter and the live lane's never refuse
+  each other.
+- **Anything else**: `mav_last_`, under the published session only, as
+  above.
+
+`kOkLatched`: a cal-only frame that fails the published session is
+re-verified under the **run pair** — the pair of the last accepted cal-only
+frame — while a calibration run is open (`cal_active`), with a counter
+above that pair's `cal_last_`. The run pair is recorded on every accepted
+cal-only frame, so the SWEEP that opens a run (accepted under the
+published session) sets it, and a SWEEP accepted under a newer published
+pair moves it. It is honoured only while a run is open. A frame carrying
+anything but calibration messages never takes this path: a parameter set
+in a latched frame drops the whole frame and raises `auth_reject`, so the
+latch cannot change config outside a run. On the TX writer, a latched
+SWEEP that names a nonce other than the open run's is dropped and counted
+(`cal_latch_drop=` on `maburd tx_send:`): a run opens only from a SWEEP
+verified under the published session.
+
+The drone's replies (ACK, SWEEP_DONE, APPLIED) are packed by the TX
+writer thread as untagged `T_MAV` frames, one message each, on the
+control path with the shared Telem 802.11 sequence, whatever the session
+state and outside the MAV thread's 50 ms pacing and sweep suppression.
+The MAV thread and the TX writer share one atomic uplink counter, so the
+GS's duplicate filter sees one monotonic sequence. They count in the
+`stats:` line's `mav tx=`.
+
 ## Later tenants
 
 Designed for, not built. Each is more traffic through the same tunnel and
@@ -492,6 +622,3 @@ one more case in the drone's routing; none needs a wire change.
   the input low-power mode reads today.
 - **Firmware upload / MAVLink FTP.** FTP packets are tunnel payload; the
   tenant is a file-service component on the drone.
-- **Calibration over MAVLink.** Needs a mabur dialect (running `mavgen`);
-  calibration keeps its own `T_CAL_CMD`/`T_CAL_RESULT` frames until there
-  is another reason to.

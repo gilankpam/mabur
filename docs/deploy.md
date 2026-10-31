@@ -12,8 +12,17 @@ different versions reject each other's frames in BOTH directions, and
 because DISC_ACK is what carries `CAP_FRAME_WIRE`, the symptom is no
 control link and no video. Restarting either daemon does not fix a
 version mismatch; finish the deploy. The RC wire goldens live in
-`tests/test_rc.cpp`. `RC_VERSION` 17 (the T_MAV tunnel and `CAP_MAVLINK`)
-is a flag day like every other bump.
+`tests/test_rc.cpp`. `RC_VERSION` 18 (calibration moves onto the MAVLink
+tunnel; `T_CAL_CMD`/`T_CAL_RESULT` deleted) is a flag day like every other
+bump, and it also removes a drone config key: `radio.rate_walls_rel` fails
+boot, and the old binary refuses its replacements. On the drone: stop
+`maburd`, edit the config — rename the key to `rate_walls_rel_20` (it
+holds 20 MHz walls; with no `_40` the 40 MHz rungs fly the 20 MHz table,
+which `maburd` logs) and add `cal_flags_20 = "none"` (the old kit swept
+with LDPC and STBC off) — swap the binary, start. Then `maburgs` with
+`gs/bundle/maburcal` and `tools/maburtop.py` (`gs/bundle/install.sh`
+installs all three), and re-run `maburcal start` to measure both widths
+under the flags the link flies (`docs/calibration.md`).
 
 **A config error crash-loops the daemon.** A stale, removed or unknown key
 makes the daemon fail to start. A config-load error exits **1** in `maburd`
@@ -184,14 +193,17 @@ so **a new config key must be written into its bundle in the same commit**
 or the host suite fails.
 
 The one deliberate divergence from a calibrated drone is
-`radio.power_mode`, which ships `"none"`. `rate_walls_rel` is a per-UNIT
-calibration (`docs/calibration.md`) and the shipped file cannot know the
-wall of the board it lands on, so it carries the author's 8812EU numbers as
-a reference and leaves them inert — parsed and range-checked, never
-programmed. Measure your own vtx before setting `"offset"`: ssh to the GS
-and run `maburcal start`, which sweeps the walls, writes them to the
-drone's `/etc/mabur.toml` (backing the old file up to `.pre-cal`) and flips
-`power_mode` to `"offset"` itself — no restart, no laptop-side step.
+`radio.power_mode`, which ships `"none"`. `rate_walls_rel_20`/`_40` and
+`air_clock.efficiency_20`/`_40` are per-UNIT calibrations
+(`docs/calibration.md`) and the shipped file cannot know the board it
+lands on, so it carries the reference 8812EU unit's numbers. The walls are
+inert under `"none"` — parsed and range-checked, never programmed; the
+efficiency tables are not (they price every rung). Measure your own vtx:
+ssh to the GS and run `maburcal start`, which measures both per width,
+writes them to the drone's `/etc/mabur.toml` (backing the old file up to
+`.pre-cal`) and flips `power_mode` to `"offset"` itself — the walls fly
+when the run ends, the efficiency tables from the next `maburd` start; no
+laptop-side step.
 ⚠ `"none"` also skips the `SetTxPowerOffsetQdb(0)` beside the plan, so a
 global offset left in the chip by a bench tool survives a `maburd` restart;
 power-cycle if you need a known baseline.

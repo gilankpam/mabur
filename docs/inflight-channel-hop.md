@@ -617,7 +617,7 @@ Validation (`gs/src/config.cpp`) — unknown keys fail boot:
 
 ## 8. Observability
 
-**`scan.log`** (`gs/src/scan_log.{h,cpp}`, marker `scanlog 6`; formats
+**`scan.log`** (`gs/src/scan_log.{h,cpp}`, marker `scanlog 7`; formats
 locked by `tests/test_scan_log.cpp`; marker history in
 `docs/data-provenance.md`). The hop adds two record kinds and extends `D`:
 
@@ -625,7 +625,7 @@ locked by `tests/test_scan_log.cpp`; marker history in
 V <t> <verdict> <evidence_hex> <ref_rung|-> <link_loss_pct> <recovered>
   [<card> <foreign> <fa> <cca> <crc> <rssi> <snr> <drssi> <nhm_busy|->
    <own_air>]...                                             # a verdict window
-H <t> <kind> <epoch> <target> <score> <elapsed_ms>            # a hop event
+H <t> <kind> <epoch> <target> <score> <elapsed_ms> <reason|->  # a hop event
 ```
 
 - **V** — one per `HopVerdict::window()` call **that changed the verdict or
@@ -646,7 +646,10 @@ H <t> <kind> <epoch> <target> <score> <elapsed_ms>            # a hop event
   hold episode opened by `hold_cap`/`hold_exhausted`/`verify_fail`; its
   `elapsed_ms` is the episode's length (§5). Recordings from before
   2026-10-04 may carry `would_`-prefixed kinds (the deleted shadow mode);
-  `flightreport.py` prints those as SHADOW.
+  `flightreport.py` prints those as SHADOW. `reason` is `cal` on the
+  relocate a calibration run orders (`docs/channel-select.md` "Calibration
+  pick") and `-` on every other event; `scanlog 6` and older H lines end at
+  `elapsed_ms`.
 - **D** — the dwell line shared with the boot scan, with trailing
   `<sess> <to_us> <read_us> <back_us>` (in-session flag + the three step
   timings; `0 0 0 0` for boot dwells), `<busy|->` (NHM busy % over the

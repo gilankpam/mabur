@@ -113,8 +113,9 @@ min_mcs_40 = 2             # ...and at 40 MHz
 [air_clock]
 # How much of the nominal link rate is really delivered, per MCS 0..7.
 # Measured on the bench, same reference unit as radio's walls above; keeps
-# the bitrate from outrunning the air. Re-measured by maburcal, never
-# hand-restored from git -- these describe a card, not a software default.
+# the bitrate from outrunning the air. Re-measured by maburcal (read at
+# maburd start, so a new table flies after a restart), never hand-restored
+# from git -- these describe a card, not a software default.
 shed_ms       = 25         # skip droppable enhance frames while the air backlog exceeds this
 efficiency_20 = [0.93, 0.88, 0.84, 0.80, 0.76, 0.76, 0.78, 0.76]  # at 20 MHz
 efficiency_40 = [0.77, 0.75, 0.75, 0.75, 0.74, 0.77, 0.76, 0.75]  # at 40 MHz

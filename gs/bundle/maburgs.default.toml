@@ -16,9 +16,11 @@ channel  = "auto"               # "auto" = measure the set at start and move the
                                 # Either way the link first forms wherever the drone is found, then
                                 # a hop order moves it to the pick or the pin. A pinned member is static:
                                 # the in-flight hop below runs only in auto mode.
-width   = 40               # 20 or 40 MHz; 40 is needed for the 40 MHz link speeds in [[link.ladder]] below
+width   = 40               # 20 or 40 MHz; 40 is needed for the 40 MHz link speeds in [[link.ladder]] below.
+                           # `maburcal start` calibrates 20 MHz, plus 40 when this is 40 and a rung uses it
 tx_card = -1               # card that transmits to the drone; -1 = pick the one with the best signal
-relays  = []               # CPE510 mabur-relay units, "ipv4:port" each (UDP 8310, numeric -- no hostnames); each is a card after the USB cards
+relays  = []               # CPE510 mabur-relay units, "ipv4:port" each (UDP 8310, numeric -- no hostnames); each is a card after the USB cards.
+                           # Keep it empty while running maburcal (docs/calibration.md)
 
 # Channel search + measurement (docs/channel-select.md). While the link is
 # down the spare card sweeps the set, beaconing DISC on each member for
@@ -29,6 +31,8 @@ relays  = []               # CPE510 mabur-relay units, "ipv4:port" each (UDP 831
 # dwells, and a silent one_card_ms measurement before the first DISC.
 # Auto only: dwell_ms, settle_ms, min_rounds, pick_margin, one_card_ms, max_ms.
 # Both modes: search_ms, op_window_ms, search_after_ms, busy_dbm, blocked_pct.
+# A maburcal run (auto, two cards) measures the set once more with dwell_ms,
+# settle_ms and pick_margin and moves the link to the quietest member first.
 [radio.scan]
 dwell_ms        = 250
 settle_ms       = 30
@@ -201,12 +205,15 @@ slot_count = 16                     # frames buffered
 
 # MAVLink UDP endpoint: a ground app or tools/bench/mavparam.py talks to the
 # drone through it (docs/mavlink.md). Whoever reaches the socket is trusted.
+# maburcal does not need it: calibration rides the tunnel either way.
 [mavlink]
 enable = true
 bind   = "127.0.0.1"   # the GS's LAN address to let a ground app on the LAN connect
 port   = 14550         # MAVLink's conventional GCS port
 
-# Detailed per-session logs for troubleshooting; off by default.
+# Detailed per-session logs for troubleshooting; off by default. A maburcal
+# run writes its cal.log regardless: into the session directory when on,
+# into <dir>/cal when off.
 [debug_log]
 enable        = false
 dir           = "/media/dvr/log"

@@ -300,25 +300,30 @@ the cost is zero.
 
 ## 7. Per-MCS capacity and per-rung A-MPDU
 
-`docs/findings/2026-09-17-bandwidth-sweep.md` measured the real delivered
-air per MCS at saturation (linkbench, prod geometry, three channels, all
-within 0.5 %): **0.87 / 0.78 / 0.71 / 0.76 / 0.76 / 0.76 / 0.78 / 0.76 of
-nominal at mcs0-7 with agg6**, and 0.93 / 0.88 / 0.84 / 0.80 with singles
-at mcs0-3 (0.68 / 0.63 at mcs5 / 7), all at 20 MHz. Consequences:
-
 - **`run_bitrate_policy` and the air clock price off `delivered_mbps` =
   nominal × `air_clock.efficiency_<bw>[mcs]`** (`drone/src/air_rate.h`),
   never the nominal rate alone. The config is one 8-entry per-MCS table
-  per width (`docs/bw40.md`): 20 MHz bundle `[0.93, 0.88, 0.84, 0.80,
-  0.76, 0.76, 0.78, 0.76]` = the sweep with singles at mcs0-3 and agg6
-  above; 40 MHz bundle `[0.77, 0.75, 0.75, 0.75, 0.74, 0.77, 0.76, 0.75]`
-  with agg6; absent = all ones = nominal. `encoder.airtime_budget` is
-  therefore a fraction of measured capacity. Real time-occupancy ≈
-  budget × ~1.16 (SBI/fragment framing ~1.09-1.14 plus probe and MSP,
-  none of them in the formula), so the bundle's 0.65 ≈ 75 % of the air at
-  every rung. The ~4 % gap between the bench table (no GS uplink) and the
-  flight-fitted value is the RCF/telemetry slot share; it sits inside
-  that ~1.16, not in the table.
+  per width (`docs/bw40.md`); absent = all ones = nominal.
+  `encoder.airtime_budget` is therefore a fraction of measured capacity.
+  Real time-occupancy ≈ budget × ~1.16 (SBI/fragment framing ~1.09-1.14
+  plus probe and MSP, none of them in the formula), so the bundle's 0.65 ≈
+  75 % of the air at every rung. The gap between a bench table (no GS
+  uplink) and the flight-fitted value is the RCF/telemetry slot share; it
+  sits inside that ~1.16, not in the table.
+- **The tables are measured per unit.** `maburcal`'s capacity sweep
+  (`docs/calibration.md`) saturates the air at each (MCS, width) for 2 s
+  with production-sized frames, the production power and the production
+  aggregation mode, and writes `efficiency_<bw>[mcs]` = delivered air bits
+  / (dwell × nominal). A point the drone's own TX path limited (its sender
+  rarely blocked on the device) is flagged `tx_bound` and keeps the
+  existing value. A new table takes effect at the next `maburd` start.
+  The bundle's tables are the reference unit's bench numbers:
+  `docs/findings/2026-09-17-bandwidth-sweep.md` measured 0.87 / 0.78 /
+  0.71 / 0.76 / 0.76 / 0.76 / 0.78 / 0.76 of nominal at mcs0-7 with agg6
+  and 0.93 / 0.88 / 0.84 / 0.80 with singles at mcs0-3 at 20 MHz (linkbench,
+  prod geometry, three channels within 0.5 %), giving 20 MHz `[0.93, 0.88,
+  0.84, 0.80, 0.76, 0.76, 0.78, 0.76]` (singles below mcs4, agg6 above)
+  and 40 MHz `[0.77, 0.75, 0.75, 0.75, 0.74, 0.77, 0.76, 0.75]` with agg6.
 - **The aggregation mode is per rung and per width**: `ampdu.min_mcs_20`
   (bundle 4) / `ampdu.min_mcs_40` (bundle 2) — singles below the floor,
   the configured aggregate at and above (`drone/src/ampdu_policy.h`,
