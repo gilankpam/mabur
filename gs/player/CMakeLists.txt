@@ -6,6 +6,7 @@ add_library(mabur_player_core STATIC
   src/button_bank.cpp
   src/menu_model.cpp
   src/menu_apply.cpp
+  src/gs_live_view.cpp
   src/live_udp_client.cpp
   src/display_watch.cpp
   src/ring_client.cpp

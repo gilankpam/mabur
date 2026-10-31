@@ -228,6 +228,7 @@ if(MABUR_BUILD_GS)
   add_mtest(test_key_timer test_key_timer.cpp LIBS mabur_player_core)
   add_mtest(test_menu_model test_menu_model.cpp LIBS mabur_player_core)
   add_mtest(test_menu_apply test_menu_apply.cpp LIBS mabur_player_core)
+  add_mtest(test_gs_live_view test_gs_live_view.cpp LIBS mabur_player_core)
   add_mtest(test_live_udp_client test_live_udp_client.cpp LIBS mabur_player_core pthread)
   target_compile_definitions(test_live_udp_client PRIVATE
     MABUR_PLAY_BUNDLE_DIR="${CMAKE_SOURCE_DIR}/gs/player/bundle")
