@@ -43,6 +43,7 @@
 #include "gs_live_view.h"     // maburgs' live keys as the menu reads them
 #include "live_udp_client.h"
 #include "menu_apply.h"
+#include "menu_debug.h"       // MABUR_MENU_DEBUG verbs: key/view/snap on cfg_ctl
 #include "menu_model.h"
 #include "menu_session.h"     // bank events -> model -> applier, and the GS view refresh
 #include "menu_tree.h"
@@ -587,10 +588,19 @@ int main(int argc, char** argv) {
   // Settings menu buttons. Same accessory rule: a missing or busy pin runs
   // the player without the menu. Said once, below, once the menu's font
   // has had its say too.
+  //
+  // MABUR_MENU_DEBUG=1: the bench harness's gate for the 8403 debug verbs
+  // (key/view/snap, menu_debug.h) -- a script drives the menu over ssh
+  // with no hands on the buttons. The menu is wanted (and claims the OSD
+  // plane) even with no [input.<button>] tables; the button bank simply
+  // never opens.
   maburplay::ButtonBank bank;
+  const bool menu_debug = !decode_only && std::getenv("MABUR_MENU_DEBUG") != nullptr;
+  if (menu_debug) std::fprintf(stderr, "maburplay: menu: debug verbs on (MABUR_MENU_DEBUG)\n");
   bool menu_on = false;
   std::string menu_err = "--decode-only";
   if (!decode_only) menu_on = bank.open(cfg.input, &menu_err);
+  if (menu_debug && !menu_on) menu_on = true;
 
   std::unique_ptr<maburplay::VideoBackend> backend = maburplay::make_backend(cfg.backend);
   if (!backend) {
@@ -1928,6 +1938,14 @@ int main(int argc, char** argv) {
   [[maybe_unused]] bool msp_ready = false;
   [[maybe_unused]] bool msp_stale = false;
   [[maybe_unused]] bool gs_stale = false;
+  // The OSD buffer the composer last drew into and published: what the
+  // screen shows once that publish commits. Null while there is none (no
+  // presenter, the plane was given up, or this is a host build) -- which is
+  // exactly what the "snap" debug verb (menu_debug.h) answers "err no osd
+  // surface" to. Declared outside MABUR_PLAYER_HW so that verb compiles and
+  // answers sensibly on the host too; only the HW composition loop below
+  // ever assigns it.
+  maburplay::Surface osd_last_published{};
 #ifdef MABUR_PLAYER_HW
   // Layout is deferred to the first iteration that sees a real surface: its
   // size is the DRM buffer's, which DrmPresenter may have allocated at a
@@ -1936,10 +1954,6 @@ int main(int argc, char** argv) {
   bool gs_laid_out = false;
   // The settings menu's layout, deferred the same way.
   bool menu_laid_out = false;
-  // The OSD buffer the composer last drew into and published: what the
-  // screen shows once that publish commits. Null while there is none (no
-  // presenter, or the plane was given up).
-  [[maybe_unused]] maburplay::Surface osd_last_published{};
   // Display hotplug recovery state. init() only accepts an already-CONNECTED
   // connector, so before this a display plugged in or powered on after
   // startup stayed invisible for the life of the process -- the screen was
@@ -2262,6 +2276,34 @@ int main(int argc, char** argv) {
   // The menu's view for the composer (menu_view_feed.h).
   [[maybe_unused]] maburplay::MenuViewFeed menu_feed;
 
+  // MABUR_MENU_DEBUG's "key" verb queues here; drained into the exact same
+  // per-tick loop that consumes bank.poll() below, so an injected event
+  // goes through MenuModel::handle -> MenuApplier::start identically to a
+  // real button.
+  std::vector<maburplay::KeyEvent> menu_injected_keys;
+  if (menu_debug) {
+    cfg_ctl.extra_verb = [&](const std::string& verb,
+                             const std::string& rest) -> std::optional<std::string> {
+      if (verb == "key") {
+        std::string err;
+        const std::optional<maburplay::KeyEvent> e = maburplay::parse_key_verb(rest, &err);
+        if (!e) return std::string("err ") + err;
+        menu_injected_keys.push_back(*e);
+        return std::string("ok");
+      }
+      if (verb == "view") {
+        return "ok\n" + maburplay::menu_view_text(menu_model.view(mono_ms()));
+      }
+      if (verb == "snap") {
+        std::string werr;
+        if (!maburplay::write_surface_pam(osd_last_published, "/tmp/maburplay-osd.pam", &werr))
+          return std::string("err ") + werr;
+        return std::string("ok /tmp/maburplay-osd.pam");
+      }
+      return std::nullopt;
+    };
+  }
+
   // The ring reader fell behind and skipped AUs that held references.
   uint64_t resyncs_seen = ring.resyncs();
   while (!g_stop.load()) {
@@ -2292,7 +2334,12 @@ int main(int argc, char** argv) {
     // player step's result is read from.
     if (menu_on) {
       const uint64_t now_ms = mono_ms();
-      for (const maburplay::KeyEvent& e : bank.poll(now_ms))
+      std::vector<maburplay::KeyEvent> events = bank.poll(now_ms);
+      if (!menu_injected_keys.empty()) {
+        events.insert(events.end(), menu_injected_keys.begin(), menu_injected_keys.end());
+        menu_injected_keys.clear();
+      }
+      for (const maburplay::KeyEvent& e : events)
         if (const std::optional<bool> repeat = menu.key(e, now_ms)) bank.set_repeat(*repeat);
       menu.tick(now_ms);
       menu_model.set_linked(gs_src && !gs_src->stale(now_ms) && gs_src->snapshot().session);

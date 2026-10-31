@@ -267,6 +267,12 @@ class LiveConfigControl {
   // about 600 bytes.
   static constexpr size_t kMaxDatagram = 2048;
 
+  // A verb other than `get`/`set`, offered the rest of the line; the
+  // returned string is the reply verbatim (an error reply spells its own
+  // "err "), nullopt keeps the usage error. See `extra_verb` below.
+  using ExtraVerb = std::function<std::optional<std::string>(const std::string& verb,
+                                                              const std::string& rest)>;
+
   LiveConfigControl() = default;
   ~LiveConfigControl() {
     if (fd_ >= 0) ::close(fd_);
@@ -290,7 +296,16 @@ class LiveConfigControl {
   // so the command language is testable without a socket.
   //   set <key> = <value>
   //   get [<key>]
-  static std::string handle(const std::string& line, Applier& a, bool* pending);
+  // A verb that is neither is offered to `extra_verb` when one is passed;
+  // with none, or a nullopt back, the usage error.
+  static std::string handle(const std::string& line, Applier& a, bool* pending,
+                            const ExtraVerb& extra_verb = ExtraVerb());
+
+  // Offered every verb `handle` does not itself know, on the owning
+  // thread, inside `poll()`. unset (the default) leaves every such verb at
+  // the usage error -- maburgs never sets it; maburplay does under
+  // MABUR_MENU_DEBUG.
+  ExtraVerb extra_verb;
 
   // Owning thread's own set, bypassing the socket: the same a.submit()
   // path a UDP `set` takes, so a value equal to the live rendering still
@@ -690,7 +705,7 @@ void LiveConfigControl<Applier>::poll(Applier& a) {
       const std::string reply =
           static_cast<size_t>(n) > sizeof(buf)
               ? "err line too long (max " + std::to_string(sizeof(buf)) + " bytes)"
-              : handle(std::string(buf, static_cast<size_t>(n)), a, &pending);
+              : handle(std::string(buf, static_cast<size_t>(n)), a, &pending, extra_verb);
       if (pending) {
         has_pending_ = true;
         pending_from_ = from;
@@ -737,7 +752,7 @@ std::optional<LiveApplyResult> LiveConfigControl<Applier>::take_local_result() {
 
 template <class Applier>
 std::string LiveConfigControl<Applier>::handle(const std::string& line, Applier& a,
-                                               bool* pending) {
+                                               bool* pending, const ExtraVerb& extra_verb) {
   using live_apply_detail::has_space;
   using live_apply_detail::trim;
   static const std::string kUsage = "err usage: set <key> = <value> | get [<key>]";
@@ -765,6 +780,9 @@ std::string LiveConfigControl<Applier>::handle(const std::string& line, Applier&
     if (!a.submit(key, value, &why)) return "err " + why;
     *pending = true;
     return "";
+  }
+  if (extra_verb) {
+    if (std::optional<std::string> reply = extra_verb(verb, rest)) return *reply;
   }
   return kUsage;
 }

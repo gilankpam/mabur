@@ -495,4 +495,103 @@ grep -q '^maburplay: feed: delivered=13 ' "$TMP/live.err" || {
 [ "$(grep -c '^maburplay: menu: off -- ' "$TMP/live.err")" = 1 ] || {
   echo "FAIL: want exactly one 'maburplay: menu: off --' line" >&2; exit 1; }
 
+# --- PART F: MABUR_MENU_DEBUG verbs (menu_debug.h) ---------------------
+# A second, short run: live.toml above points osd.gs.font at a file that
+# does not exist (on purpose, for PART E's "err gs font: cannot open"
+# check), so it cannot double as the menu's font too. This run points at
+# the real bundle font instead and turns the debug gate on, proving the
+# menu is forced on with no [input.<button>] tables and that key/view/snap
+# answer over the same 127.0.0.1:8403 listener.
+echo "== PART F: MABUR_MENU_DEBUG verbs =="
+FIRST_GROUP_LABEL=$(sed -n 's/.*group("[a-z_]*", "\([^"]*\)".*/\1/p' gs/player/src/menu_tree.cpp | head -1)
+[ -n "$FIRST_GROUP_LABEL" ] || {
+  echo "FAIL: could not read the first menu group's label from menu_tree.cpp" >&2; exit 1; }
+
+cat > "$TMP/debug.toml" <<EOF
+ring_path = "$TMP/au-ring"
+socket = "$TMP/debug.sock"
+backend = "null"
+
+[osd.gs]
+enable = false
+font = "$PWD/gs/player/bundle/gs_osd.gfont"
+
+[dvr]
+autostart = false
+dir = "$TMP"
+EOF
+MABUR_MENU_DEBUG=1 "$MABURPLAY" -c "$TMP/debug.toml" > "$TMP/debug.out" 2> "$TMP/debug.err" &
+DEBUG_PID=$!
+trap 'kill -9 "$DEBUG_PID" 2>/dev/null || true; rm -rf "$TMP"' EXIT
+READY=0
+for _ in $(seq 1 100); do   # up to 5 s
+  if grep -q '^maburplay: feed thread on' "$TMP/debug.err" 2>/dev/null; then READY=1; break; fi
+  kill -0 "$DEBUG_PID" 2>/dev/null || break
+  sleep 0.05
+done
+if [ "$READY" != 1 ]; then
+  echo "FAIL: debug run: no 'maburplay: feed thread on' line within 5 s" >&2
+  kill -9 "$DEBUG_PID" 2>/dev/null; cat "$TMP/debug.err" >&2; exit 1
+fi
+grep -q '^maburplay: menu: debug verbs on (MABUR_MENU_DEBUG)$' "$TMP/debug.err" || {
+  echo "FAIL: no 'menu: debug verbs on' line" >&2; cat "$TMP/debug.err" >&2
+  kill -9 "$DEBUG_PID"; exit 1; }
+
+debug_cmd() {  # <command>
+  python3 - "$1" <<'PY'
+import socket, sys
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.settimeout(5)
+s.sendto(sys.argv[1].encode(), ("127.0.0.1", 8403))
+print(s.recv(8192).decode())
+PY
+}
+fail_debug() {  # <message>
+  echo "FAIL: $1" >&2
+  kill -9 "$DEBUG_PID" 2>/dev/null
+  cat "$TMP/debug.err" >&2
+  exit 1
+}
+
+# Closed -> open at the root (crumb "Menu"), then right/hold again
+# descends into the first group -- same two-step MenuModel::handle path a
+# real held button takes, just injected rather than timed.
+GOT=$(debug_cmd 'key right hold') || fail_debug "no reply to the first 'key right hold'"
+[ "$GOT" = "ok" ] || fail_debug "'key right hold' -> '$GOT' (want ok)"
+GOT=$(debug_cmd 'key right hold') || fail_debug "no reply to the second 'key right hold'"
+[ "$GOT" = "ok" ] || fail_debug "second 'key right hold' -> '$GOT' (want ok)"
+# Injected keys drain on the player's own loop, not inline with the UDP
+# reply above; give it a moment before reading the view back.
+sleep 0.2
+VIEW=$(debug_cmd 'view') || fail_debug "no reply to 'view'"
+case "$VIEW" in
+  ok*) ;;
+  *) fail_debug "'view' -> '$VIEW' (want ok...)" ;;
+esac
+echo "$VIEW" | grep -q '^open 1$' || fail_debug "view has no 'open 1' line: $VIEW"
+echo "$VIEW" | grep -q "^crumb $FIRST_GROUP_LABEL\$" ||
+  fail_debug "view has no 'crumb $FIRST_GROUP_LABEL' line: $VIEW"
+
+GOT=$(debug_cmd 'key left hold') || fail_debug "no reply to 'key left hold'"
+[ "$GOT" = "ok" ] || fail_debug "'key left hold' -> '$GOT' (want ok)"
+sleep 0.2
+VIEW=$(debug_cmd 'view') || fail_debug "no reply to the second 'view'"
+echo "$VIEW" | grep -q '^open 0$' || fail_debug "hold-left-close did not land: $VIEW"
+
+# No presenter on the host: the OSD buffer the composer last published
+# never exists.
+GOT=$(debug_cmd 'snap') || fail_debug "no reply to 'snap'"
+[ "$GOT" = "err no osd surface" ] ||
+  fail_debug "'snap' -> '$GOT' (want 'err no osd surface' on the host)"
+
+kill -TERM "$DEBUG_PID"
+for _ in $(seq 1 50); do kill -0 "$DEBUG_PID" 2>/dev/null || break; sleep 0.1; done
+if kill -0 "$DEBUG_PID" 2>/dev/null; then
+  echo "FAIL: debug maburplay still running 5 s after SIGTERM" >&2
+  kill -9 "$DEBUG_PID"; cat "$TMP/debug.err" >&2; exit 1
+fi
+set +e; wait "$DEBUG_PID"; RC_DEBUG=$?; set -e
+cat "$TMP/debug.err"
+[ "$RC_DEBUG" = 0 ] || { echo "FAIL: debug run exit $RC_DEBUG after SIGTERM (want 0)" >&2; exit 1; }
+
 echo "== player_e2e passed =="

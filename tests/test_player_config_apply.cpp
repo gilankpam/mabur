@@ -403,6 +403,34 @@ TEST(player_control_handle) {
   CHECK(PlayerConfigControl::handle("get dvr.burned.every", a, &pending) == "ok 2");
 }
 
+// LiveConfigControl::extra_verb (common/include/mabur/live_apply.h): the
+// hook maburplay registers under MABUR_MENU_DEBUG. maburgs never sets it,
+// so its own get/set behaviour must be exactly as above with no hook.
+TEST(an_extra_verb_answers_and_unknown_verbs_still_get_usage) {
+  ScratchPlayerBundle sb;
+  PFake f;
+  PlayerConfigApplier a(sb.path(), bundle(), BuildCaps{true, false}, f.hooks(), nullptr);
+  const std::string usage = "err usage: set <key> = <value> | get [<key>]";
+  const PlayerConfigControl::ExtraVerb hook =
+      [](const std::string& verb, const std::string&) -> std::optional<std::string> {
+    if (verb == "ping") return std::string("ok x");
+    return std::nullopt;
+  };
+  bool pending = false;
+  CHECK(PlayerConfigControl::handle("ping", a, &pending, hook) == "ok x");
+  CHECK(!pending);
+  CHECK(PlayerConfigControl::handle("bogus", a, &pending, hook) == usage);
+  // get/set are unaffected by the hook: they never reach it.
+  CHECK(PlayerConfigControl::handle("get screen_mode", a, &pending, hook) == "ok \"auto\"");
+  CHECK(PlayerConfigControl::handle("set dvr.burned.every = 4", a, &pending, hook).empty());
+  CHECK(pending);
+  drive(a);
+  CHECK(PlayerConfigControl::handle("get dvr.burned.every", a, &pending, hook) == "ok 4");
+  // No hook at all (the default): an unknown verb still gets the usage error.
+  bool pending2 = false;
+  CHECK(PlayerConfigControl::handle("ping", a, &pending2) == usage);
+}
+
 TEST(a_local_submit_is_answered_through_take_local_result_not_udp) {
   constexpr int kPort = 18416;  // not 8403/18413: other tests own those
   ScratchPlayerBundle sb;
