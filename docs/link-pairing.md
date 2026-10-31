@@ -163,8 +163,12 @@ an attacker resends before the next one lands.
   a run. A run opens only from a SWEEP verified under the published
   session; a SWEEP that verifies only under the run pair and names another
   run is dropped. The GS tags a run's frames under the pair frozen when
-  the run first commanded the drone. Detail: `docs/mavlink.md`
-  "Two counter domains and the run-pair latch".
+  the run first commanded the drone. After the run closes, a
+  calibration-only frame that still verifies under the run pair (the
+  repeats of the GS's closing Abort) is dropped as `cal_late`, not an
+  `auth_reject`: it proves the GS holds the key. Any other frame under the
+  old pair, or one under no known pair, still sets `auth_reject`. Detail:
+  `docs/mavlink.md` "Two counter domains and the run-pair latch".
 
 ## Rendezvous, as built
 

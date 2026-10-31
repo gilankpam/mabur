@@ -1941,6 +1941,11 @@ TEST(latched_counter_is_monotonic_per_run_pair) {
   CHECK(!agent.take_auth_reject());
 }
 
+// Once the run has closed the latch is not honoured, but a cal-only frame
+// that still verifies under the run pair is the GS's own run trailing off
+// -- the copies of its closing Abort, sent after the first one closed the
+// run -- not a key problem: dropped as late calibration (cal_late), never
+// an auth reject, and its counter is not checked or consumed.
 TEST(latch_drops_when_the_run_closes) {
   Config cfg = make_cfg();
   MockActuator act;
@@ -1948,12 +1953,73 @@ TEST(latch_drops_when_the_run_closes) {
   const uint32_t vtx = link_agent(agent, act, cfg);
   CHECK(mav_check(agent, mav_wire(cal_packet(7), 1, vtx), true) == RcAgent::MavCheck::kOk);
   drive_failsafe(agent, cfg, 110);
-  const auto late = mav_wire(cal_packet(7), 2, vtx);
-  CHECK(mav_check(agent, late, false) == RcAgent::MavCheck::kRejected);
-  CHECK(agent.take_auth_reject());
+  CHECK(mav_check(agent, mav_wire(cal_packet(7), 2, vtx), false) ==
+        RcAgent::MavCheck::kLateCal);
   CHECK(mav_check(agent, mav_wire(cal_packet(7), 3, vtx), false) ==
+        RcAgent::MavCheck::kLateCal);
+  CHECK(!agent.take_auth_reject());
+  CHECK(agent.cal_late() == 2);
+}
+
+// The bench case: the first of the GS's three closing Aborts closes the run,
+// the drone re-pairs, and the two repeats arrive under the run pair.
+TEST(closing_abort_repeats_after_close_are_late_cal_not_auth_rejects) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  const uint32_t vtx = link_agent(agent, act, cfg);
+  CHECK(mav_check(agent, mav_wire(cal_packet(7), 1, vtx), false) == RcAgent::MavCheck::kOk);
+  drive_failsafe(agent, cfg, 110);
+  CHECK(mav_check(agent, mav_wire(abort_packet(7), 2, vtx), true) ==
+        RcAgent::MavCheck::kOkLatched);                      // closes the run
+  const uint32_t vtx2 = ack_agent(agent, act, 136, kVrx, 4000);
+  auto first = make_rcf_wire(1, encode_profile(PhyMode::HT, 0, 20), 8, vtx2);
+  agent.on_rc_frame(first.data(), first.size(), 4010);
+  REQUIRE(agent.state() == RcAgent::State::LINKED);
+  REQUIRE(vtx2 != vtx);
+  CHECK(mav_check(agent, mav_wire(abort_packet(7), 3, vtx), false) ==
+        RcAgent::MavCheck::kLateCal);
+  CHECK(mav_check(agent, mav_wire(abort_packet(7), 4, vtx), false) ==
+        RcAgent::MavCheck::kLateCal);
+  // Even a replayed counter: dropped either way, so it needs no counter.
+  CHECK(mav_check(agent, mav_wire(abort_packet(7), 2, vtx), false) ==
+        RcAgent::MavCheck::kLateCal);
+  CHECK(!agent.take_auth_reject());
+  CHECK(agent.cal_late() == 3);
+  // The new pair's own cal lane is untouched by them.
+  CHECK(mav_check(agent, mav_wire(cal_packet(8), 1, vtx2), false) == RcAgent::MavCheck::kOk);
+  CHECK(!agent.take_auth_reject());
+}
+
+TEST(a_parameter_set_under_the_old_pair_after_close_is_still_an_auth_reject) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  const uint32_t vtx = link_agent(agent, act, cfg);
+  CHECK(mav_check(agent, mav_wire(cal_packet(7), 1, vtx), false) == RcAgent::MavCheck::kOk);
+  drive_failsafe(agent, cfg, 110);
+  CHECK(mav_check(agent, mav_wire(param_set_packet(), 5, vtx), false) ==
         RcAgent::MavCheck::kRejected);
   CHECK(agent.take_auth_reject());
+  auto mixed = abort_packet(7);
+  const auto set = param_set_packet();
+  mixed.insert(mixed.end(), set.begin(), set.end());
+  CHECK(mav_check(agent, mav_wire(mixed, 6, vtx), false) == RcAgent::MavCheck::kRejected);
+  CHECK(agent.take_auth_reject());
+  CHECK(agent.cal_late() == 0);
+}
+
+TEST(a_cal_frame_under_an_unknown_pair_after_close_is_still_an_auth_reject) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  const uint32_t vtx = link_agent(agent, act, cfg);
+  CHECK(mav_check(agent, mav_wire(cal_packet(7), 1, vtx), false) == RcAgent::MavCheck::kOk);
+  drive_failsafe(agent, cfg, 110);
+  CHECK(mav_check(agent, mav_wire(abort_packet(7), 2, vtx + 77), false) ==
+        RcAgent::MavCheck::kRejected);
+  CHECK(agent.take_auth_reject());
+  CHECK(agent.cal_late() == 0);
 }
 
 // The GS can re-pair between phases; the run then continues under -- and

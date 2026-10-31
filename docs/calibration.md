@@ -664,7 +664,10 @@ that names a nonce other than the open run's is dropped and counted:
 `cal_latch_drop=N` on the drone's `maburd tx_send:` line (cumulative,
 printed only while video flows). A frame that fails both the published
 session and the run pair is a `reject=` on the `stats:` line's `mav` part
-and raises Telem's `auth_reject`. Both stay at zero on a normal run.
+and raises Telem's `auth_reject`. Both stay at zero on a normal run. The
+run's own trailing frames under its pair after it closed (the repeats of
+the GS's closing Abort) are `cal_late=` there instead, about two per run,
+and raise nothing.
 
 ## Observability
 
@@ -780,7 +783,7 @@ findings page.
 | abort | `maburcal abort` mid-sweep | video back within 2 s; nothing written |
 | re-link | after every run | `SESSION` again within a couple of beacons, IDR at the join |
 | dirty op | start with a jammer or busy air on op | `H relocate … cal` in `scan.log`; the run on the quiet member |
-| tunnel lane | the drone's `stats:`/`tx_send:` lines and the sideport during a run | `mav … reject=` flat, `drone.auth_reject` false, `link.mav.reject` flat, `cal_latch_drop=0` |
+| tunnel lane | the drone's `stats:`/`tx_send:` lines and the sideport during a run | `mav … reject=` flat (`cal_late=` may rise by ~2 at the end of a run), `drone.auth_reject` false, `link.mav.reject` flat, `cal_latch_drop=0` |
 | parameter set during a run | `mavparam.py set ENC_BITRATE_MAX …` mid-run | `FAILED`, "calibration in progress" |
 
 `sat_rssi_dbm` (−45) is inherited from the old bench tool's precondition;

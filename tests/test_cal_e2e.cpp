@@ -19,7 +19,8 @@
 //       received bodies, FCS still on their tail as devourer delivers
 //       them -> route_cal_body(card, body, rssi, crc_ok, now).
 //   Drone (drone/src/main.cpp): the MAV thread's check_mav verdict (kOk /
-//       kOkLatched under the open run / rejected) -> decode_all -> the cal
+//       kOkLatched under the open run / kLateCal after it closed) ->
+//       decode_all -> the cal
 //       queue; the TX writer thread drains the queue (latched SWEEPs only
 //       for the open run's nonce; begin_cal + no_agg for a starting
 //       non-capacity sweep; on_cmd; take_ack; program_for_cal only for an
@@ -317,7 +318,7 @@ struct Kit {
   int applies_ok = 0, applies_failed = 0;
   int latched_sweeps = 0, latched_applies = 0, latched_aborts = 0, aborts_received = 0;
   int dones_sent = 0;
-  int latch_drops = 0, rejected = 0, non_cal_frames = 0;
+  int latch_drops = 0, late_cal = 0, non_cal_frames = 0;
   int gs_msgs_sent = 0;
   int dropped_gs_to_drone = 0, dropped_drone_to_gs = 0;
   // The relative index each verify frame was stamped with, per [bw][rate]
@@ -374,7 +375,10 @@ struct Kit {
     } else if (cal_active) {
       latched = true;   // kOkLatched: verified under the open run's pair
     } else {
-      ++rejected;       // kRejected: no session and no run to latch onto
+      // Every GS frame here is cal-only under the run's pair, so with no
+      // session and no open run it is the closed run's trailing frame:
+      // kLateCal, dropped without an auth reject.
+      ++late_cal;
       return;
     }
     for (auto& msg : cal::decode_all(payload.data(), payload.size()))
@@ -850,7 +854,7 @@ TEST(session_lapse_mid_run_does_not_stop_the_apply) {
   CHECK(k.latched_sweeps >= 3);
   CHECK(k.latched_applies >= 4);
   CHECK(k.latch_drops == 0);
-  CHECK(k.rejected == 0);
+  CHECK(k.late_cal == 0);
 
   const mabur::Config c = k.loaded();
   CHECK(c.radio.power_mode == "offset");

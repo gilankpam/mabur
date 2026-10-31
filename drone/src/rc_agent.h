@@ -317,10 +317,23 @@ class RcAgent {
   // pair of the last accepted cal frame", and the next run can only open
   // from a SWEEP accepted under the published session, which re-records it.
   //
+  // kLateCal: the published session's tag check failed and no run is open,
+  // but the frame is cal-only and verifies under the run pair -- the GS's
+  // own run trailing off after the drone closed it (the repeats of its
+  // closing Abort, the first of which closed the run). Dropped, counted in
+  // cal_late(), and NOT an
+  // auth reject: it proves the GS holds the key, and counting it would
+  // read as a key mismatch at the end of every run. Its counter is neither
+  // checked nor consumed, since the frame is dropped either way. A frame
+  // carrying anything but cal packets, or verifying under no known pair,
+  // is still kRejected.
+  //
   // MAV thread only: the run pair is plain state owned by check_mav's one
   // caller; not safe against concurrent check_mav calls.
-  enum class MavCheck { kOk, kOkLatched, kMalformed, kRejected };
+  enum class MavCheck { kOk, kOkLatched, kLateCal, kMalformed, kRejected };
   MavCheck check_mav(const uint8_t* body, size_t len, rc::Mav* out, bool cal_run_open);
+  // kLateCal frames since start. Any thread.
+  uint64_t cal_late() const { return cal_late_.load(std::memory_order_relaxed); }
   // Replay harness only (maburd --dry-run): install a known pair so a file
   // of RCFs tagged under (vrx, vtx) verifies without a DISC exchange.
   void install_session_for_replay(uint32_t vrx_nonce, uint32_t vtx_nonce);
@@ -434,6 +447,7 @@ class RcAgent {
   // check_mav's run pair: (vrx << 32 | vtx) of the last accepted cal-only
   // T_MAV, 0 = none. MAV thread only.
   uint64_t cal_run_session_ = 0;
+  std::atomic<uint64_t> cal_late_{0};  // check_mav's kLateCal count
   std::atomic<bool> auth_reject_{false};
   // accept_nack_counter's state: (vtx_nonce << 32) | last accepted counter.
   // A vtx other than the current pair's means "nothing accepted yet".

@@ -1334,4 +1334,7 @@ reused), and the drone config loses a key.
   Absent before this date.
 - **Drone stderr:** `cal_auth_rej=` on `maburd tx_send:` is gone; its
   successor is `cal_latch_drop=`, and a calibration frame failing its tag
-  now counts in the `stats:` line's `mav … reject=`.
+  now counts in the `stats:` line's `mav … reject=`. The `mav` part also
+  gains `cal_late=`: the closed run's trailing frames under its pair (its
+  closing Abort's repeats), which on early builds of this date counted
+  ~2 per run in `reject=` and raised `auth_reject`.

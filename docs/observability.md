@@ -1196,7 +1196,7 @@ cumulative since start) and `mav_rebuild=<n>` (every pipeline-only
 restart the ladder made: one for a set that applies, two for one that
 fell back to the previous config; the cold restart rung is a separate
 hook and is not counted), and gains
-`mav rx=<frames>/<packets> tx=<frames>/<packets> drop=<n> reject=<n>`
+`mav rx=<frames>/<packets> tx=<frames>/<packets> drop=<n> reject=<n> cal_late=<n>`
 on the ticks where any of those moved since the last time they were
 printed; the values are cumulative since start. `rx` counts verified
 T_MAV frames and the MAVLink 2 packets parsed out of them, `tx` the
@@ -1207,7 +1207,10 @@ that failed to parse plus the packets the component dropped (another
 target, an unhandled message, bad CRC, MAVLink 1, a partial, and a reply
 dropped because the 64-packet outbound queue was full), and
 `reject` the frames that parsed but failed the tag or the counter (these
-also raise Telem's `auth_reject`). Calibration logs `maburd cal: ...` lines,
+also raise Telem's `auth_reject`, the key-mismatch signal), and
+`cal_late` the calibration-only frames that arrived after their run closed
+still tagged under its pair — the repeats of the GS's closing Abort, about
+two per run — dropped without `auth_reject` (`docs/mavlink.md`). Calibration logs `maburd cal: ...` lines,
 `maburd radio: power table <bw> MHz live ...` on every width-table switch,
 and `cal_latch_drop=` on the `maburd tx_send:` line (`docs/calibration.md`
 "Observability").

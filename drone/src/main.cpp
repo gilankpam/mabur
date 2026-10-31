@@ -2103,6 +2103,9 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
             mav_rx_frames.fetch_add(1, std::memory_order_relaxed);
             push_cal(m, /*latched=*/true);
             break;
+          // The run's own trailing frames under its pair after it closed:
+          // dropped, counted by the agent (cal_late=), not a reject.
+          case RcAgent::MavCheck::kLateCal: break;
           case RcAgent::MavCheck::kMalformed: ++bad_parse; break;
           case RcAgent::MavCheck::kRejected: ++rejected; break;
         }
@@ -3078,7 +3081,7 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
     uint64_t last_hot_change_ms = start, last_rx_change_ms = start;
     uint64_t last_stats_ms = start;
     // The MAV counters as of the last stats line printed with them.
-    uint64_t mav_last[6] = {};
+    uint64_t mav_last[7] = {};
 
     // T_TELEM: sent at ~1 Hz on this same periodic path, on the mutex-guarded
     // dev_sink.send() the MSP thread also uses. The tlm_seq/dot11 seq
@@ -3289,24 +3292,26 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
           }
 #endif
           // MAV fields only when a counter moved since they were last shown.
-          char mav_part[128] = "";
-          const uint64_t mav_now[6] = {
+          char mav_part[160] = "";
+          const uint64_t mav_now[7] = {
               mav_rx_frames.load(std::memory_order_relaxed),
               mav_rx_packets.load(std::memory_order_relaxed),
               mav_tx_frames.load(std::memory_order_relaxed),
               mav_tx_packets.load(std::memory_order_relaxed),
               mav_drop.load(std::memory_order_relaxed),
-              mav_reject.load(std::memory_order_relaxed)};
+              mav_reject.load(std::memory_order_relaxed),
+              agent.cal_late()};
           if (!std::equal(std::begin(mav_now), std::end(mav_now), std::begin(mav_last))) {
             std::copy(std::begin(mav_now), std::end(mav_now), std::begin(mav_last));
             std::snprintf(mav_part, sizeof mav_part,
-                          " mav rx=%llu/%llu tx=%llu/%llu drop=%llu reject=%llu",
+                          " mav rx=%llu/%llu tx=%llu/%llu drop=%llu reject=%llu cal_late=%llu",
                           static_cast<unsigned long long>(mav_now[0]),
                           static_cast<unsigned long long>(mav_now[1]),
                           static_cast<unsigned long long>(mav_now[2]),
                           static_cast<unsigned long long>(mav_now[3]),
                           static_cast<unsigned long long>(mav_now[4]),
-                          static_cast<unsigned long long>(mav_now[5]));
+                          static_cast<unsigned long long>(mav_now[5]),
+                          static_cast<unsigned long long>(mav_now[6]));
           }
           const ConfigApplierStats apply_stats = applier.stats();
           std::fprintf(stderr,

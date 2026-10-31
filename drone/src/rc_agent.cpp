@@ -217,6 +217,15 @@ RcAgent::MavCheck RcAgent::check_mav(const uint8_t* body, size_t len, rc::Mav* o
         advance_counter_(cal_last_, m->counter, run)) {
       session = run;
       verdict = MavCheck::kOkLatched;
+    } else if (!cal_run_open && cal_only && run != 0 &&
+               run != published_session_.load(std::memory_order_acquire) &&
+               verifies_under_(body, len, run, m->counter)) {
+      // The closed run's own trailing frames (its closing Abort's
+      // repeats): the GS holds the key, so this is no auth failure. Dropped
+      // whatever the counter, which is therefore neither checked nor
+      // consumed.
+      cal_late_.fetch_add(1, std::memory_order_relaxed);
+      return MavCheck::kLateCal;
     }
   }
   if (verdict == MavCheck::kRejected) {

@@ -605,6 +605,15 @@ SWEEP that names a nonce other than the open run's is dropped and counted
 (`cal_latch_drop=` on `maburd tx_send:`): a run opens only from a SWEEP
 verified under the published session.
 
+`kLateCal`: a cal-only frame that fails the published session, arrives
+with **no** run open, and still verifies under the run pair is the closed
+run trailing off — the GS sends its closing Abort three times, the first
+closes the run, and the repeats land after (often under a re-paired
+session). It is dropped without `auth_reject` and counted (`cal_late=` in
+the `stats:` line's `mav` part); its counter is neither checked nor
+consumed. A non-cal frame under the old pair, or a frame that verifies
+under no known pair, is still a reject.
+
 The drone's replies (ACK, SWEEP_DONE, APPLIED) are packed by the TX
 writer thread as untagged `T_MAV` frames, one message each, on the
 control path with the shared Telem 802.11 sequence, whatever the session
