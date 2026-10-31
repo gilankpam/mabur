@@ -440,6 +440,8 @@ if(Python3_EXECUTABLE)
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/tools)
   add_test(NAME test_mavparam
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_mavparam.py)
+  add_test(NAME gsparam_py
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_gsparam.py)
   add_test(NAME test_gen_font
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_gen_font.py
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
