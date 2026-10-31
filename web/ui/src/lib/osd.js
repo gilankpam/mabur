@@ -1,8 +1,9 @@
 // MSP OSD overlay. The core publishes the FC's
 // DisplayPort grid as Module.onOsd(rows, cols, Uint16Array), cell =
 // char | page << 8; this file lays it out over the visible video box and
-// paints glyphs from the Betaflight atlas (web/ui/public/font_btfl.png, made
-// by tools/msp/gen_webfont.py from maburplay's font_btfl.mfont).
+// paints glyphs from the selected font's atlas (web/ui/public/fonts/*.png, listed
+// in fonts/index.json; Betaflight is fonts/btfl.png, made from maburplay's
+// font_btfl.mfont by tools/msp/gen_webfont.py).
 import { DEFAULT_FONT } from './osdfonts.js';
 
 export const GLYPH_W = 36;
@@ -54,15 +55,18 @@ export class OsdLayer {
 
 // Paints an OsdLayer onto the overlay canvas: one rAF repaint per burst of
 // schedule() calls, full clear + redraw (<= ~900 drawImage from one bitmap).
-// The atlas is fetched on the first paint that has a screen. If a non-default
-// font fails to load, that is logged once and the default atlas (always
-// precached) is loaded instead. If the default atlas itself fails, that is
-// logged once and the OSD stays off (never a refetch per screen) until
-// resetAtlasFailure() (called on Connect) or setFont() allows another try --
-// video is unaffected.
+// The atlas is fetched on the first paint that has a screen. Two ids are kept:
+// requestedId is the font the app asked for, fontId the one being drawn. They
+// differ after a fallback: a non-default font that fails to load is logged once
+// and the default atlas (always precached) is loaded instead, while requestedId
+// stays, so resetAtlasFailure() (called on Connect) tries the requested font
+// again. If the default atlas itself fails, that is logged once and the OSD
+// stays off (never a refetch per screen) until resetAtlasFailure() or setFont()
+// allows another try -- video is unaffected.
 export class OsdPainter {
   constructor({ layer, loadAtlas, fontId = null, raf = (f) => requestAnimationFrame(f), log = console }) {
     Object.assign(this, { layer, loadAtlas, fontId, raf, log });
+    this.requestedId = fontId;
     this.canvas = null;
     this.atlas = null;
     this.atlasP = null;
@@ -103,18 +107,18 @@ export class OsdPainter {
       ctx.drawImage(this.atlas, d.sx, d.sy, d.sw, d.sh, d.dx, d.dy, d.dw, d.dh);
   }
 
-    fetchAtlas() {
+  fetchAtlas() {
     if (this.atlasP || this.atlasFailed) return;
     const id = this.fontId;
     const p = Promise.resolve().then(() => this.loadAtlas(id)).then(
       (bmp) => { if (this.atlasP !== p) { bmp?.close?.(); return; } this.atlas = bmp; this.schedule(); },
       (e) => {
         if (this.atlasP !== p) return;   // a font switch superseded this load
-        if (id && id !== DEFAULT_FONT.id) {
-          // The chosen font failed (missing file, bad download). The default atlas is always
-          // precached, so retry with it instead of switching the OSD off.
+        if (id && id !== DEFAULT_FONT) {
+          // The requested font failed (missing file, bad download). The default atlas is always
+          // precached, so draw it instead of switching the OSD off; requestedId is kept.
           this.log.error(`[webgs] OSD font "${id}" failed to load; falling back to the default font`, e);
-          this.fontId = DEFAULT_FONT.id;
+          this.fontId = DEFAULT_FONT;
           this.atlasP = null;
           this.schedule();
           return;
@@ -129,7 +133,8 @@ export class OsdPainter {
   // and the next paint fetches the new one; a load still in flight for the
   // previous font is ignored when it lands.
   setFont(id) {
-    if (id === this.fontId) return;
+    if (id === this.requestedId) return;
+    this.requestedId = id;
     this.fontId = id;
     this.atlas?.close?.();   // free the old ~8 MB decoded bitmap
     this.atlas = null;
@@ -138,10 +143,15 @@ export class OsdPainter {
     this.schedule();
   }
 
-  // A loaded or in-flight atlas is kept; only a failed one is forgotten.
+  // Called on Connect. A loaded or in-flight atlas of the requested font is kept;
+  // after a failure or a fallback the requested font is tried again.
   resetAtlasFailure() {
-    if (!this.atlasFailed) return;
+    if (!this.atlasFailed && this.fontId === this.requestedId) return;
     this.atlasFailed = false;
+    this.fontId = this.requestedId;
+    this.atlas?.close?.();
+    this.atlas = null;
     this.atlasP = null;
+    this.schedule();
   }
 }
