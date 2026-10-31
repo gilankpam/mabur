@@ -2,6 +2,8 @@
 
 #include <array>
 #include <atomic>
+#include <condition_variable>
+#include <deque>
 #include <cstdint>
 #include <cstdio>
 #include <memory>
@@ -108,6 +110,33 @@ class LogWriter {
   std::mutex drain_mu_;
   std::thread th_;
   std::string empty_;
+};
+
+// Destroys retired LogWriters on its own thread. A writer's destructor
+// joins its thread, drains up to its whole ring and flushes and closes
+// every file -- disk work the core loop must not wait on when a live
+// debug-log off ends a session. retire() hands the writer over and returns;
+// the reaper's own destructor finishes every writer still queued, so a
+// session's last lines reach the disk even when the daemon exits right
+// after the off.
+class LogWriterReaper {
+ public:
+  LogWriterReaper() = default;
+  ~LogWriterReaper();
+  LogWriterReaper(const LogWriterReaper&) = delete;
+  LogWriterReaper& operator=(const LogWriterReaper&) = delete;
+
+  // Takes the writer (null is a no-op). Starts the thread on first use.
+  void retire(std::unique_ptr<LogWriter> w);
+
+ private:
+  void run_();
+
+  std::mutex mu_;
+  std::condition_variable cv_;
+  std::deque<std::unique_ptr<LogWriter>> q_;
+  bool stop_ = false;
+  std::thread th_;
 };
 
 }  // namespace maburgs

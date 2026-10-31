@@ -42,6 +42,29 @@ TEST(disabled_tracker_is_inert) {
   CHECK(o.stats().requests == 0);
 }
 
+TEST(set_enable_turns_a_booted_off_tracker_on_and_off_again) {
+  // The GS's live `link.nack.enable`: a tracker built disabled must request
+  // once enabled, and one turned off drops its pending requests but keeps
+  // its counter.
+  World w; w.lose({100});
+  NackTracker t(NackCfg{});
+  CHECK(!t.poll(1000, w.in()).has_value());
+  t.set_enable(true);
+  CHECK(!t.poll(1000, w.in()).has_value());           // settle seeded 12
+  auto n = t.poll(1012, w.in());
+  REQUIRE(n.has_value());
+  CHECK(n->counter == 1 && n->e[0].first_seq == 100);
+  t.set_enable(false);
+  CHECK(t.outstanding() == 0);
+  CHECK(!t.poll(1028, w.in()).has_value());
+  t.set_enable(true);
+  w.missing.clear(); w.st.clear(); w.lose({200});
+  CHECK(!t.poll(2000, w.in()).has_value());
+  auto m = t.poll(2012, w.in());
+  REQUIRE(m.has_value());
+  CHECK(m->counter == 2 && m->e[0].first_seq == 200);
+}
+
 TEST(gap_trigger_waits_settle_then_requests_runs_base_first) {
   World w; w.lose({100, 101, 140});
   NackTracker t(cfg_on());                 // settle seeded 12

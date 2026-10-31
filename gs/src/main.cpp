@@ -440,7 +440,11 @@ static int run_radio(const maburgs::Config& cfg, const std::string& cfg_path) {
   // below, at boot when the session is ok and again whenever a live
   // `debug_log.enable = true` opens one.
   maburgs::DebugSession debug(cfg.debug_log.dir, cfg.debug_log.enable);
-  std::optional<maburgs::LogWriter> log_writer;
+  // Finishes a session's writer off this thread after a live debug-log off.
+  // Declared ahead of the writer and every log, so at shutdown it joins --
+  // and every retired writer reaches the disk -- after they are gone.
+  maburgs::LogWriterReaper log_reaper;
+  std::unique_ptr<maburgs::LogWriter> log_writer;
   // cal.log: the calibration run's raw per-cell record. Unlike
   // ctl.log/probe.log/au.log below, this uses its own private LogWriter
   // (cal_log.h) rather
@@ -904,7 +908,7 @@ static int run_radio(const maburgs::Config& cfg, const std::string& cfg_path) {
   // is ok, and from the debug_log hook when a live enable opens one. The
   // ctl.log header and the scan.log mode read the live ladder and pin.
   auto open_debug_logs = [&] {
-    log_writer.emplace();
+    log_writer = std::make_unique<maburgs::LogWriter>();
     std::fprintf(stderr, "debug-log: session %s%s\n", debug.dir().c_str(),
                  debug.rejoined() ? " (rejoined)" : "");
     flight_jsonl = log_writer->open(debug.dir(), "flight.jsonl", "",
@@ -932,9 +936,11 @@ static int run_radio(const maburgs::Config& cfg, const std::string& cfg_path) {
     if (au_on) au_log.emplace(*log_writer, debug.dir());
   };
   // The reverse, for a live `debug_log.enable = false`: the logs first
-  // (each holds the writer), then the writer itself, whose destructor
-  // drains what is queued and closes every file. A fresh writer per
-  // session keeps its fixed stream slots from running out across toggles.
+  // (each holds the writer), then the writer goes to the reaper, whose
+  // thread drains what is queued and closes every file -- disk work this
+  // loop must not wait on. A fresh writer per session keeps its fixed
+  // stream slots from running out across toggles, and a re-enable opens a
+  // new session directory, so the old writer's drain never meets the new.
   auto close_debug_logs = [&] {
     ctl_log.reset();
     probe_log.reset();
@@ -942,7 +948,7 @@ static int run_radio(const maburgs::Config& cfg, const std::string& cfg_path) {
     au_log.reset();
     scan_log.reset();
     flight_jsonl = maburgs::LogWriter::kBadStream;
-    log_writer.reset();
+    log_reaper.retire(std::move(log_writer));
   };
   if (debug.ok()) open_debug_logs();
 
@@ -1159,10 +1165,10 @@ static int run_radio(const maburgs::Config& cfg, const std::string& cfg_path) {
     cal_defaults_width = 0;  // the next tick recomposes cal_defaults
   };
   hooks.nack = [&](bool on) {
+    // The tracker keeps its own enable (a tracker booted off never
+    // requests until it is turned on); off also drops its pending requests.
+    nack.set_enable(on);
     if (!on) {
-      // A tracker turned off drops its pending requests and its window;
-      // the counter is kept so a re-enable stays above the drone's last.
-      nack.clear();
       (void)nack.take_window();
       nack_interval_t0 = 0;
     } else if (!nack_tail_ok) {

@@ -84,6 +84,10 @@ class NackTracker {
   explicit NackTracker(NackCfg cfg);
   std::optional<rc::Nack> poll(uint64_t now_ms, const NackInputs& in);
   void clear();                      // frame_wire edge: entries only, counter kept
+  // A live `link.nack.enable` flip. Off drops the pending requests (as
+  // clear(): the counter is kept, so a re-enable stays above the drone's
+  // last); on lets the next poll() admit and request again.
+  void set_enable(bool on);
   void restart_counter() { counter_ = 0; }  // new vtx nonce: next NACK is counter 1
   const NackStats& stats() const;
   NackWindow take_window();

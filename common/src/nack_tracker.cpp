@@ -105,6 +105,11 @@ void NackTracker::admit(uint64_t now_ms, const NackInputs& in) {
   }
 }
 
+void NackTracker::set_enable(bool on) {
+  cfg_.enable = on;
+  if (!on) clear();
+}
+
 std::optional<rc::Nack> NackTracker::poll(uint64_t now_ms, const NackInputs& in) {
   if (!cfg_.enable) return std::nullopt;
   resolve(now_ms, in);
