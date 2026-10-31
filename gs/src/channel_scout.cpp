@@ -74,6 +74,17 @@ void ChannelScout::unfreeze() {
     ranker_ = ChannelRanker(dwell_channels(cfg_, measure_.load(std::memory_order_acquire)),
                             cfg_.min_rounds, cfg_.pick_margin, cfg_.blocked_pct);
   }
+  // A fresh schedule restarts rounds(): the one-card prelude's effective
+  // min_rounds (1 until min_rounds full passes) holds again, as at boot.
+  resched_.store(true, std::memory_order_release);
+  if (cfg_.one_card && measure_.load(std::memory_order_acquire)) {
+    // reprelude_ first: a run thread that sees prelude_done_ false also
+    // sees the request to restart t0_, so an old t0_ never ends the new
+    // prelude on its first step.
+    reprelude_.store(true, std::memory_order_release);
+    prelude_ack_.store(false, std::memory_order_release);
+    prelude_done_.store(false, std::memory_order_release);
+  }
   frozen_.store(false, std::memory_order_release);
   publish_();
 }
@@ -254,9 +265,10 @@ bool ChannelScout::run_once() {
   working_.store(true, std::memory_order_release);
   if (cfg_.one_card) {
     if (!prelude_done_.load(std::memory_order_acquire)) {
+      if (reprelude_.exchange(false, std::memory_order_acq_rel)) t0_ = now_();
       if (measuring_() && now_() - t0_ < cfg_.one_card_ms)
         return step_dwell_(/*burst_ok=*/false, /*observe=*/true);   // silent prelude
-      prelude_done_.store(true, std::memory_order_release);          // never re-arms
+      prelude_done_.store(true, std::memory_order_release);          // re-armed only by unfreeze()
       publish_();
       return true;   // the core reads the ranking, commits, then ack_prelude()s
     }

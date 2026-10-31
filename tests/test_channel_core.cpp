@@ -1819,4 +1819,23 @@ TEST(set_pin_one_card_linked_relocates) {
   CHECK(g.core->snapshot(0).pinned);
 }
 
+// One card (the web GS shape), booted pinned, back to auto with no link:
+// the reopened pick runs the silent prelude again and commits its ranking
+// off a busy op, as a one-card boot does.
+TEST(set_auto_while_unlinked_one_card_reruns_the_prelude_and_commits) {
+  Rig g(1, 0, true, 40);
+  for (int i = 0; i < 10; ++i) g.tick();
+  g.clk.ms += 60000;                            // long past max_ms and one_card_ms since start
+  g.tick();
+  g.cards[0]->cca_per_ms_on[40] = 5;            // 40 busy, the rest clean
+  g.core->set_auto();
+  CHECK(g.core->pick_open());
+  for (int i = 0; i < 800 && !g.sink.has_line("one-card prelude ranking picks"); ++i) g.tick();
+  REQUIRE(g.sink.has_line("one-card prelude ranking picks"));
+  CHECK(g.core->op() != 40);                    // committed off the busy channel
+  CHECK(g.sink.has_move(MoveReason::Commit));
+  CHECK(!g.stored.empty() && g.stored.back() == g.core->op());
+  CHECK(g.core->pick_open());                   // the one-card pick stays open after the prelude
+}
+
 MTEST_MAIN
