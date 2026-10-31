@@ -3,7 +3,8 @@
 (build_line), the single-line reply parser (parse_reply), the --all
 away/back table (expected_pairs), the ladder renderer (render_ladder), and
 the section-scoped TOML value check (value_in_section and its
-parse_toml_sections/section_of/leaf_of helpers) -- the parts that need no
+parse_toml_sections/section_of/leaf_of helpers), and the ladder's block
+count (ladder_block_count) -- the parts that need no
 network or ssh. The remote exchange (send_recv/remote_shell) and the --all
 driver that calls them are a later bench gate's job to run against a real
 GS, not this host test's.
@@ -118,12 +119,11 @@ class TestSectionOfAndLeafOf(unittest.TestCase):
         self.assertEqual(gsparam.leaf_of("screen_mode"), "screen_mode")
 
 
-# A fragment with the GS's three `enable` sections at different values --
-# the exact shape that made a file-wide "does <leaf> = <value> appear
-# anywhere" check pass vacuously (review finding, fix round 1): every
-# "enable" leaf but the target one sits at some other value, so a check
-# that isn't scoped to the target's own section would see the right text
-# off the wrong section.
+# A fragment with the GS's three `enable` sections at different values,
+# the shape that makes a file-wide "does <leaf> = <value> appear anywhere"
+# check pass vacuously: every "enable" leaf but the target one sits at some
+# other value, so a check that isn't scoped to the target's own section
+# would see the right text off the wrong section.
 THREE_ENABLE_SECTIONS = (
     "[msp]\n"
     "enable      = true\n"
@@ -177,6 +177,24 @@ class TestValueInSection(unittest.TestCase):
             text, "screen_mode", '"1920x1080@60"'))
         self.assertFalse(gsparam.value_in_section(
             text, "screen_mode", '"1280x720@120"'))
+
+
+BUNDLE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                      '..', 'gs', 'bundle', 'maburgs.default.toml')
+
+
+class TestLadderBlockCount(unittest.TestCase):
+    def test_counts_the_bundles_rung_headers_not_its_comments(self):
+        # The bundle names `[[link.ladder]]` in a comment too; only a line
+        # that is the header itself is a rung.
+        with open(BUNDLE) as f:
+            text = f.read()
+        self.assertGreater(text.count("[[link.ladder]]"), 5)
+        self.assertEqual(gsparam.ladder_block_count(text), 5)
+
+    def test_indented_header_counts(self):
+        self.assertEqual(gsparam.ladder_block_count(
+            "  [[link.ladder]]  \nmcs = 0\n# [[link.ladder]] in a comment\n"), 1)
 
 
 if __name__ == "__main__":

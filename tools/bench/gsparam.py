@@ -254,6 +254,13 @@ def value_in_section(text, key, value):
     return any(pattern.match(line.strip()) for line in lines)
 
 
+def ladder_block_count(text):
+    """The number of `[[link.ladder]]` blocks in a maburgs TOML: lines that
+    are the header itself (the rule maburgs' own patcher uses), so the
+    header named in a comment is not counted."""
+    return sum(1 for line in text.splitlines() if line.strip() == "[[link.ladder]]")
+
+
 def file_matches(gs, role, key, value):
     """Whether `path` on the GS (fetched whole, over ssh, once) shows `key`
     holding `value`. link.ladder has no single line to check -- it is a
@@ -264,7 +271,7 @@ def file_matches(gs, role, key, value):
     if text is None:
         return False
     if key == "link.ladder":
-        return text.count("[[link.ladder]]") == value.count("{")
+        return ladder_block_count(text) == value.count("{")
     return value_in_section(text, key, value)
 
 
