@@ -1,0 +1,17 @@
+[
+  {
+    "id": "paddy_green",
+    "name": "PADDY green",
+    "file": "fonts/paddy_green.png"
+  },
+  {
+    "id": "paddy_octa_l",
+    "name": "PADDY octa L",
+    "file": "fonts/paddy_octa_l.png"
+  },
+  {
+    "id": "paddy_octa_s",
+    "name": "PADDY octa S",
+    "file": "fonts/paddy_octa_s.png"
+  }
+]

@@ -59,8 +59,27 @@ if (typeof window === 'undefined') {
     })());
   });
 
-  self.addEventListener('activate', (event) => event.waitUntil((async () => {
-    for (const k of await caches.keys()) if (k.startsWith(PREFIX) && k !== CACHE) await caches.delete(k);
+    self.addEventListener('activate', (event) => event.waitUntil((async () => {
+    const cache = await caches.open(CACHE);
+    const fontsPrefix = SCOPE + 'fonts/';
+    // OSD fonts other than the default are cached lazily (only when a user picks one),
+    // so a new build's cache starts without them. Carry them over from the old caches
+    // (newest first, so the newest copy wins) before those are deleted, otherwise a
+    // user who had a font loses it on every deploy and has none on their first offline
+    // session. A file the new build already precached is left alone.
+    for (const k of (await caches.keys()).reverse()) {
+      if (!k.startsWith(PREFIX) || k === CACHE) continue;
+      try {
+        const old = await caches.open(k);
+        for (const req of await old.keys()) {
+          if (!req.url.startsWith(fontsPrefix) || !(req.url.endsWith('.png') || req.url === fontsPrefix + 'index.json')) continue;
+          if (await cache.match(req)) continue;
+          const res = await old.match(req);
+          if (res) await cache.put(req, res);
+        }
+      } catch (e) { console.warn('[sw] font carry-over', k, e); }
+      await caches.delete(k);
+    }
     await self.clients.claim();
   })()));
 

@@ -18,7 +18,7 @@ test('defaults match maburgs.default.toml', () => {
   const c = defaultConfig();
   assert.deepEqual(c, { channels: [40, 64, 112, 144], link: 'auto', width: 40, staticMcs: -1,
     ladder: [0, 1, 2, 3, 4].map((mcs) => ({ mcs, bw: 40, ob: 0.5, oe: 0.25 })), colortrans: true, dvr: 'web', nack: true,
-    phaseLock: true });
+    phaseLock: true, osdFont: 'btfl' });
   c.ladder[0].mcs = 7;
   assert.equal(defaultConfig().ladder[0].mcs, 0, 'fresh copy each call');
   assert.ok(CHANNELS.includes(136) && CHANNELS.includes(165) && CHANNELS.length === 25);

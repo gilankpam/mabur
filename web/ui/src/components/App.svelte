@@ -24,6 +24,7 @@
   import { effectiveTarget, targetCovers, recFileName, localView, combinedRec, headroomWarning,
     formatBytes, listRecordings, downloadRecording, deleteRecording, opfsRoot } from '../lib/localrec.js';
   import { OsdLayer, OsdPainter } from '../lib/osd.js';
+  import { loadFontList, fontFile } from '../lib/osdfonts.js';
   import { ScreenWake } from '../lib/wakelock.js';
 
   let canvas = $state(null);
@@ -75,15 +76,25 @@
   // MSP OSD: latest DisplayPort grid, painted on
   // a second canvas over the video. The atlas URL resolves against the page
   // (works under the Pages /mabur/ base as well as at a local root).
+
   const osdLayer = new OsdLayer();
+  // Font list from public/fonts/index.json. loadAtlas waits for it (bounded, so a
+  // stalled fetch cannot keep the OSD off); otherwise an OSD screen arriving first
+  // would resolve the chosen id against the default-only list and paint the default
+  // atlas under the chosen font's id. An id the list lacks falls back to the shipped atlas.
+  const fontListP = loadFontList(fetch, document.baseURI).then((l) => { ui.osdFonts = l; });
+  const fontListReady = () => Promise.race([fontListP, new Promise((r) => setTimeout(r, 3000))]);
   const osd = new OsdPainter({
     layer: osdLayer,
-    loadAtlas: async () => {
-      const r = await fetch(new URL('font_btfl.png', document.baseURI));
+    fontId: ui.cfg.osdFont,
+    loadAtlas: async (id) => {
+      await fontListReady();
+      const r = await fetch(new URL(fontFile(ui.osdFonts, id), document.baseURI));
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return createImageBitmap(await r.blob());
     },
   });
+  $effect(() => { osd.setFont(ui.cfg.osdFont); });
   function clearOsd() { if (osdLayer.screen) { osdLayer.clear(); osd.schedule(); } }
 
   // Declared before VideoPipeline: its accessors (getModule, onWantIdr, etc.)

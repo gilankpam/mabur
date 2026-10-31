@@ -124,9 +124,11 @@ headers WASM pthreads need, so
 MIT) is a service worker that adds them — the very first visit reloads the
 page once. The same worker makes the page **work offline**: on install it
 precaches every file of that build (list injected at build time by
-`web/ui/sw/plugin.mjs` from Vite's bundle + `public/` + `webgs.{js,wasm}`).
-If any single file fails to precache, the whole install fails (a per-file
-warning is still logged). The previous worker and its complete cache stay in
+`web/ui/sw/plugin.mjs` from Vite's bundle + `public/` + `webgs.{js,wasm}`),
+except the non-default OSD font atlases (`public/fonts/*.png`), which are
+cached lazily on first use (see "MSP OSD"). If any single file fails to
+precache, the whole install fails (a per-file warning is still logged). The
+previous worker and its complete cache stay in
 control, and the browser retries the install on a later navigation. This
 keeps an incomplete cache from going live and failing offline on the
 missing file.
@@ -140,7 +142,7 @@ gh-pages deploy that deletes old hashed files can never serve a stale
   present, else the network.
 - A **navigation** (loading the page itself) is network-first with a 3 s
   timeout, falling back to the cache on a slow or failed network.
-- Everything else (`webgs.js`, `webgs.wasm`, `font_btfl.png`, …) is
+- Everything else (`webgs.js`, `webgs.wasm`, `font_btfl.png`, `fonts/*.png`, …) is
   network-first with **no** timeout. It falls back to the cache, when a
   cached copy exists, on a network error or a non-ok response (e.g. a
   mismatched `webgs.wasm` 404ing against a fresher `webgs.js`).
@@ -148,7 +150,11 @@ gh-pages deploy that deletes old hashed files can never serve a stale
 So: open the hosted page once with internet; afterwards it loads with none
 (e.g. a laptop whose only network is the CPE). Online visits always get the
 latest deploy; reload while online to pick one up. Stable and edge keep
-separate caches (`mabur:<scope>:<build id>`). A page still controlled by the
+separate caches (`mabur:<scope>:<build id>`). When a new build's worker
+activates, it first copies the OSD font atlases (`fonts/*.png`) and
+`fonts/index.json` from the old caches into its own cache, then deletes the old
+ones, so a font already used keeps working offline across deploys (a file the
+new build precached itself is left alone). A page still controlled by the
 old vendored coi worker registers the new one on its next visit
 (`shouldRegister()`). The WebUSB grant is per origin, so each device picks
 the card once on this site. The page is the bundle-default ladder build,
@@ -804,7 +810,9 @@ In both modes:
 - The channel set, the link channel and the width (see "Channel set" under
   Use).
 - The DVR target (see Record).
-- The Display group's colour correction (see Colour correction).
+- The Display group's colour correction (see Colour correction) and OSD font
+  (see MSP OSD). Both are page-only (never sent to the core) and stay editable
+  while connected.
 
 In GS mode only:
 
@@ -1211,13 +1219,33 @@ at most once per animation frame. It blanks after 5 s without a screen
 (`maburplay`'s `stale_ms` default) and on Disconnect. There is no toggle;
 trim elements in the Betaflight OSD tab.
 
-Font: Betaflight only, `web/ui/public/font_btfl.png` (32 glyphs per row,
-36×54). It is generated from `maburplay`'s `gs/player/bundle/font_btfl.mfont`
-by `tools/msp/gen_webfont.py` (re-run it if the `.mfont` changes; it
-self-checks the round trip). The page fetches it on the first screen. A
-failed fetch logs once to the console and leaves the OSD off for the rest of
-that session (it is not refetched per screen); the next Connect tries once
-more. The 5 s blank counts from the last *published* screen, where
+Font: the "OSD font" picker in the Config form's Display group (page-only
+`osdFont` in the saved config, applied on the next frame; it stays editable
+while connected). The shipped font is Betaflight,
+`web/ui/public/font_btfl.png`; extra fonts are PNG atlases listed in
+`web/ui/public/fonts/index.json` (`[{id, name, file}]`), made from `.mfont`
+files with `tools/msp/gen_webfonts.py <dir-or-files>` (36×54, 1024 glyphs;
+colours that cannot be premultiplied are read as straight alpha). At least one
+input is required, and the tool merges into the existing `index.json`: fonts
+already listed but not passed are kept, and a font passed again is
+regenerated under the same id and keeps its listed name. Everything
+under `public/` is precached, subfolders included, except the font atlases
+(`fonts/*.png`): those are lazy. Only the selected font is fetched, on the first
+OSD screen, and the service worker caches it then and carries it over to later
+builds' caches (see Serve), so it works offline once it has been used online.
+`fonts/index.json` is precached. The page waits for the font list (up to 3 s)
+before resolving the chosen font, so an OSD screen that arrives before
+`index.json` has loaded cannot paint the Betaflight atlas under the chosen
+font's id. Switching fonts frees the old decoded bitmap. An unknown saved id
+falls back to Betaflight. Every atlas is 32 glyphs per row, 36×54. The
+Betaflight atlas is generated from `maburplay`'s
+`gs/player/bundle/font_btfl.mfont` by `tools/msp/gen_webfont.py` (re-run it if
+the `.mfont` changes; it self-checks the round trip). The page fetches the
+atlas on the first screen. If a non-default font fails to load, that is logged
+once to the console and the page loads the Betaflight atlas instead. If the
+Betaflight atlas itself fails, the OSD stays off (it is not refetched per
+screen) until the next Connect or font change, which tries once more. The 5 s
+blank counts from the last *published* screen, where
 `maburplay` counts from the last datagram. That is the same thing in
 practice, since Betaflight sends DRAW_SCREEN continuously.
 
@@ -1364,7 +1392,9 @@ constants are pinned by `web/tests/colortrans.test.mjs` (see
   Settings → Privacy & Security → Local Network) to reach any LAN address,
   the CPE's 10.83.11.1 included. This is on top of Chrome's own prompt.
 - **Offline needs one online visit per channel** (stable and edge cache
-  separately), and a new deploy is picked up on the next online reload.
+  separately), and a new deploy is picked up on the next online reload. A
+  non-default OSD font is cached the first time it is used, so it also needs
+  one online use before it works offline.
 - **RTL8812AU on a Linux host: unload `rtw88_8812au` first.** The kernel
   has an in-tree driver for the AU (the EU has none). The failure goes like
   this:

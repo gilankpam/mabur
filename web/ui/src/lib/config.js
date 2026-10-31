@@ -36,6 +36,9 @@ export function defaultConfig() {
     // the drone's sensor rate to this browser's refresh (PhaseController,
     // lib/phase.js). GS mode only; a spotter never steers.
     phaseLock: true,
+    // Page-only: which OSD font atlas paints the MSP overlay (an id from
+    // public/fonts/index.json; 'btfl' is the shipped font_btfl.png).
+    osdFont: 'btfl',
   };
 }
 
@@ -82,6 +85,7 @@ export function normalizeConfig(raw) {
     dvr: ['web', 'vtx', 'both'].includes(raw.dvr) ? raw.dvr : d.dvr,
     nack: typeof raw.nack === 'boolean' ? raw.nack : d.nack,
     phaseLock: typeof raw.phaseLock === 'boolean' ? raw.phaseLock : d.phaseLock,
+    osdFont: typeof raw.osdFont === 'string' && /^[a-z0-9_-]{1,32}$/.test(raw.osdFont) ? raw.osdFont : d.osdFont,
   };
 }
 
@@ -264,11 +268,12 @@ export function startChannel(cfg, remembered) {
 }
 
 const EDIT_LABEL = { channels: 'Channels', link: 'Link channel', width: 'Channel width', staticMcs: 'Fixed MCS' };
-export function describeEdit(key, val) {
+export function describeEdit(key, val, fonts) {
   if (key === 'dvr') return `Recording target set to ${{ web: 'mabur web', vtx: 'VTX', both: 'Both' }[val]}`;
   if (key === 'colortrans') return `Colour correction ${val ? 'on' : 'off'}`;
   if (key === 'nack') return `Retransmit (NACK) ${val ? 'on' : 'off'}`;
   if (key === 'phaseLock') return `Phase lock ${val ? 'on' : 'off'}`;
+  if (key === 'osdFont') return `OSD font ${fonts?.find((f) => f.id === val)?.name ?? val}`;
   const shown = key === 'channels' ? val.join(', ') : key === 'link' ? (val === 'auto' ? 'Auto' : val)
     : key === 'width' ? `${val} MHz` : key === 'staticMcs' && val < 0 ? 'Adaptive' : val;
   return `${EDIT_LABEL[key]} set to ${shown}`;
