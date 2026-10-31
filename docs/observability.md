@@ -361,6 +361,11 @@ accepted or refused `set` logs one line:
 closed without a restart. Full reference, the two key tables, and the
 bench driver (`tools/bench/gsparam.py`): `docs/gs-live-config.md`.
 
+With `MABUR_MENU_DEBUG=1` in maburplay's environment, its 8403 listener
+also answers three verbs for driving the goggles settings menu with no
+hands on the buttons — `key`, `view`, `snap` — detailed in
+`docs/gs-menu.md` "Debug verbs".
+
 ## Debug-log session directory
 
 maburgs writes a per-session directory when `debug_log.enable` is set
@@ -1069,6 +1074,20 @@ wish also carries one-shot `refresh <reason>` lines — `start`, `resync`,
 `decoder`, `dvr` — each one arming a demand-refresh IDR request
 (`docs/vtx-recorder.md` "Wire"; mechanism: `docs/fec-nack.md` "Demand
 refresh").
+
+### Settings menu (GPIO)
+
+`maburplay`'s five-way-pad settings menu (`docs/gs-menu.md`) logs
+`maburplay: menu: open` and `maburplay: menu: close` as it opens and
+closes (`MenuSession::log`, `gs/player/src/menu_session.cpp`) — the only
+two lines it logs while running. Startup logs one of `maburplay: menu:
+off -- <reason>` (no button bank, e.g. missing `[input.*]` pins or
+`--decode-only`) or `maburplay: menu: up <pin> down <pin> left <pin>
+right <pin> sel <pin>` once it is wired, plus `maburplay: menu: debug
+verbs on (MABUR_MENU_DEBUG)` when that variable is set. A failed layout
+or a missing link-state source logs once more, non-fatally:
+`maburplay: menu: not drawn -- <reason>` / `maburplay: menu: no link
+state -- <reason>`.
 
 ## Tools: which one when
 

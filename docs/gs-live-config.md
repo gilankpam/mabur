@@ -149,6 +149,22 @@ reading it as a missed latch.
   process, putting it back in line with the unchanged file.
 - **One set in flight per daemon** — see Protocol, above (`err busy`).
 
+## Local submits (the settings menu)
+
+A player-owned row in the goggles settings menu (`docs/gs-menu.md`)
+applies through `LiveConfigControl::submit_local`, the owning thread's own
+entry to the same `a.submit()` path a UDP `set` on 8403 takes — a value
+equal to the live rendering still settles at once with no file work, and
+a precondition refusal still comes back with none either. It never goes
+through the socket, so it shares the daemon's one-pending-set slot with
+an operator's own 8403 client rather than racing it: a local submit
+refuses `err busy` while a UDP sender is already waiting on its own `set`
+(or the applier itself is busy for any other reason), in the same words a
+UDP `set` would get; conversely a UDP `set` sent while the menu is
+mid-apply gets `err busy` from the same `a.busy()` check. A `get` on 8403
+keeps answering from the live config throughout — a local submit never
+blocks it.
+
 ## Threading
 
 Each daemon does the file work on a dedicated worker thread (`mbr-cfgset`
