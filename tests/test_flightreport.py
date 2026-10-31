@@ -858,6 +858,29 @@ def test_ctllog_pre_v12_ladder_token_defaults_bw_20():
     assert flightreport.bw40_summary(log) is None
 
 
+def test_ctllog_later_header_replaces_the_ladder():
+    """A live ladder swap (ctllog 13) restates the header in the same file:
+    the latest header line is the ladder the rows after it index."""
+    text = (
+        "ctllog 13 ladder=20:0/50:25,20:4/50:25 down_util=0.35 up_util=0.15 probe_offset=1\n"
+        "S 1000 1 0.0500 31.5 0.0000 0.1000 0.0000 -24.5 0.0000 9.5 4.2 -63.4 -1 0.0000 0\n"
+        "ctllog 13 ladder=20:0/50:25,40:3/50:25 down_util=0.35 up_util=0.15 probe_offset=1\n"
+        "E 2000 1 1 hop_restore 0.0000 31.0 -24.0\n"
+        "S 3000 1 0.0500 31.5 0.0000 0.1000 0.0000 -24.5 0.0000 9.5 4.2 -63.4 -1 0.0000 0\n"
+    )
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        p = Path(tmp_dir) / "ctl.log"
+        p.write_text(text)
+        log = flightreport.load_ctllog(str(p))
+    assert log["header"]["_version"] == 13
+    assert log["header"]["_ladder"] == [
+        {"mcs": 0, "bw": 20, "ov_base": 0.5, "ov_enh": 0.25},
+        {"mcs": 3, "bw": 40, "ov_base": 0.5, "ov_enh": 0.25},
+    ]
+    assert [r["t_ms"] for r in log["S"]] == [1000.0, 3000.0]
+    assert len(log["E"]) == 1
+
+
 def test_bw40_summary_counts_time_held_and_promotes():
     with tempfile.TemporaryDirectory() as tmp_dir:
         p = Path(tmp_dir) / "ctl-0001_x.log"
@@ -2273,6 +2296,7 @@ if __name__ == "__main__":
     test_ctllog_pre_v8_note()
     test_ctllog_v12_ladder_token_carries_bw()
     test_ctllog_pre_v12_ladder_token_defaults_bw_20()
+    test_ctllog_later_header_replaces_the_ladder()
     test_bw40_summary_counts_time_held_and_promotes()
     test_bw40_section_absent_without_40_rungs()
     test_bw40_climb_within_40_counts_as_held()

@@ -95,6 +95,12 @@ bool LogWriter::reopen(Stream s, const std::string& dir) {
   return true;
 }
 
+void LogWriter::set_header(Stream s, const std::string& header) {
+  if (s < 0 || static_cast<size_t>(s) >= n_outs_.load(std::memory_order_acquire))
+    return;
+  outs_[static_cast<size_t>(s)]->header = header;
+}
+
 void LogWriter::put_(uint64_t at, const char* src, size_t n) {
   const size_t off = static_cast<size_t>(at % kRingBytes);
   const size_t first = std::min(n, kRingBytes - off);

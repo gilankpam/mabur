@@ -127,6 +127,10 @@ Chronological; each line names the section below that carries the detail.
   5 times capacity over the receive span),
   `scanlog 7` (`H` reason), `radio.rate_walls_rel` → `_20`/`_40`, sideport
   `link.cal` (`docs/calibration.md`).
+- 2026-10-31 — GS live config (`set`/`get` on 8402): `ctllog 13` — a
+  `ctl.log` can carry a second `ctllog 13 <header_info>` line mid-file at a
+  live ladder swap, and its rows index the most recent header; sideport
+  `scan.pinned` (the live pin).
 
 ## 2026-09-23 — `link.pre_fec_loss` scale break, twice
 
@@ -1338,3 +1342,28 @@ reused), and the drone config loses a key.
   gains `cal_late=`: the closed run's trailing frames under its pair (its
   closing Abort's repeats), which on early builds of this date counted
   ~2 per run in `reject=` and raised `auth_reject`.
+
+## 2026-10-31 — GS live config: ctllog 13, sideport `scan.pinned`
+
+`maburgs` takes `set`/`get` on loopback UDP 8402 for a closed set of keys
+(`gs/src/gs_config_apply.h`), so the link's ladder, static pin, channel
+pin, NACK, MSP and debug-log switches can change without a restart.
+
+- **`ctllog 13`.** No column change. A `set link.ladder` rebuilds the
+  ladder controller and writes a fresh `ctllog 13 <header_info>` line into
+  the same `ctl.log` (a swap is not a new flight); the rows after it index
+  the new ladder, and a drone-restart rotation opens the next session's
+  file on it. The swap's rung restore is an `E … hop_restore` line right
+  after the header. Read every row against the most recent header line
+  above it — a `ctllog 12` file has exactly one ladder (a rejoined
+  session's restated marker aside). `tools/flightreport.py` keeps the last
+  header; `tools/bench/switchloss.py` already replaced its ladder on every
+  `ctllog` line.
+- **Sideport `scan.pinned`** (bool): the live channel pin, which a `set
+  radio.channel` moves. Absent before this build; the boot config's
+  `radio.channel` is not the pin of a recording made after a live set.
+- **The sideport follows the live config.** `link.ctl` (and its `ladder`
+  and per-rung rows) follows the live ladder and the live static pin;
+  `link.nack` the live `link.nack.enable`. A recording can switch between
+  static and adaptive, or change ladders, mid-session: the GS config a
+  session booted with is no longer proof of what every row flew.

@@ -568,6 +568,7 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
   scan["state"] = in.scan_state;
   scan["rounds"] = in.scan_rounds;
   if (in.scan_pick) scan["pick"] = *in.scan_pick; else scan["pick"] = nullptr;
+  scan["pinned"] = in.pinned;
 
   // In-flight channel hop snapshot,
   // top-level like `scan`: it describes the hop feature's own state

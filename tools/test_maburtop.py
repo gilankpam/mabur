@@ -99,6 +99,20 @@ class TopBarTest(unittest.TestCase):
         # fingerprint, so a config mismatch shows up without reading logs.
         self.assertIn("key a1b2", text)
 
+    def test_scan_pin_cell(self):
+        # scan.pinned: the live pin, next to the scan state in the compact
+        # header and next to the channel in the wide top bar (which has no
+        # scan cell).
+        text, _ = panel_topbar(_fresh(), 100.2)[0]
+        self.assertNotIn(" pin", text)
+        compact = " ".join(render_rows_compact(_fresh(), 100.2, 200))
+        self.assertNotIn(" pin", compact)
+        d = dict(DGRAM, scan={"state": "off", "rounds": 0, "pick": None, "pinned": True})
+        text, _ = panel_topbar(_fresh(d), 100.2)[0]
+        self.assertIn("ch 149 pin", text)
+        compact = " ".join(render_rows_compact(_fresh(d), 100.2, 200))
+        self.assertIn("scan off:0 pin", compact)
+
     def test_mav_cell(self):
         # link.mav: T_MAV frames tx/rx; absent while [mavlink] is off.
         text, _ = panel_topbar(_fresh(), 100.2)[0]

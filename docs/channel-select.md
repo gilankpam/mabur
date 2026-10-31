@@ -519,8 +519,9 @@ rather than falling back anywhere — see that page's §1, §3, §5 and §7.
   (`ChannelPlan::want()` at the freeze, after any accept-in-place), or the
   pin from the start in pinned mode — never the live `op`, which a
   reactive hop or a found-elsewhere link moves; null while the pick is
-  open. `link.channel`: the live channel of the TX card. There is no
-  `link.home`.
+  open. `scan.pinned`: the live pin (`ChannelCore::pinned()`), which a
+  live `set radio.channel` moves. `link.channel`: the live channel of the
+  TX card. There is no `link.home`.
 - **stderr**: `maburd: channel set [<c1,c2,...>], parking on <n>[
   (remembered)]` (drone boot); `maburgs channel: set [<c1,c2,...>] mode
   <auto|pinned> start <n>[ (remembered)]` (GS boot); `maburgs channel:
@@ -538,7 +539,7 @@ rather than falling back anywhere — see that page's §1, §3, §5 and §7.
   `maburgs channel: could not write
   /etc/maburgs.channel`; `maburd: retune <a> -> <b> (<reason>)`.
 - **`tools/maburtop.py`**: shows `scan.state` (including `moving`) and
-  `scan.rounds` next to the channel.
+  `scan.rounds` next to the channel, and `pin` while `scan.pinned`.
 - **`tools/flightreport.py`**: reads `scanlog` up to 7 (an `H` line's
   reason as `reason`, `None` before 7); treats `relocate`
   (and the bench builds' `boot_order`) as a HOP-section order kind

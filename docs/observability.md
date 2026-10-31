@@ -388,11 +388,13 @@ One sideport snapshot per `stats.interval_ms`, written straight from
 `StatsExporter` (no UDP round-trip). No format marker; the datagram's `v`
 and `seq` are the self-description.
 
-### `ctl.log` (`ctllog 12`)
+### `ctl.log` (`ctllog 13`)
 
 The adaptive-link record, written also in static-pin mode. Header
-`ctllog 12 <header_info>` (the ladder with per-rung width, thresholds), then
-compact lines — formats locked in `gs/src/ctl_log.h`:
+`ctllog 13 <header_info>` (the ladder with per-rung width, thresholds), then
+compact lines — formats locked in `gs/src/ctl_log.h`. A live ladder swap
+(`set link.ladder` on 8402) writes another `ctllog 13 <header_info>` line
+in the same file; the rows after it index the new ladder:
 
 - `S` — dwell sample every `debug_log.ctl_period_ms`: rung, util `u`/`u3`
   (arrival-booked pre-FEC loss), residuals, RF labels, fade deltas, and three

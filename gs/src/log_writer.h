@@ -63,6 +63,10 @@ class LogWriter {
   // with its format marker like any other. The slot (Stream id) is reused.
   // Producer-thread only, like open(). false (stream untouched) on failure.
   bool reopen(Stream s, const std::string& dir);
+  // Replaces the header a later reopen() re-queues (a file whose header
+  // changes mid-run, e.g. ctl.log's ladder). Queues nothing itself.
+  // Producer-thread only, like open().
+  void set_header(Stream s, const std::string& header);
 
   void line(Stream s, const char* text, size_t len);
   const std::string& path(Stream s) const;

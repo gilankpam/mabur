@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Post-flight analysis of a mabur sideport flight.jsonl (schema v1 + link.ctl)
-or a maburgs ctl-NNNN_<date>.log (see gs/src/ctl_log.h; parses ctllog v1-v12,
+or a maburgs ctl-NNNN_<date>.log (see gs/src/ctl_log.h; parses ctllog v1-v13,
 warns on pre-v4, pre-v7, pre-v8, pre-v9 and pre-v10; prints a u/u3
 definition label -- arrival-booked vs completion-booked -- at the v11
 boundary). Format is auto-detected from the first line.
@@ -79,6 +79,28 @@ def _parse_ladder_token(raw):
     return rungs
 
 
+def _parse_ctllog_header(line):
+    """One `ctllog N k=v ...` header line -> {"_version": N, k: v, ...,
+    "_ladder": [...]}."""
+    header = {}
+    toks0 = line.split()
+    header["_version"] = int(toks0[1]) if len(toks0) > 1 and toks0[1].isdigit() else 0
+    # ctllog 6 ladder=0/100,2/50,... down_util=0.35 up_util=0.15
+    # ctllog 8 ladder=0/100:100,2/50:50,... down_util=0.35 up_util=0.15
+    for tok in toks0[2:]:
+        if "=" not in tok: continue
+        k, v = tok.split("=", 1)
+        header[k] = v
+    # Structured ladder rungs (same-rate-fixed-pairs): v8 splits
+    # each rung's overhead into a base/enh pair (mcs/ovb:ove); v1-v7
+    # wrote a single value per rung (mcs/ov) -- treated as both, since a
+    # pre-split rung had no base/enh distinction to lose. Stored under
+    # a "_"-prefixed key like _version so the raw header-field print
+    # loop (which skips "_"-prefixed keys) doesn't also print this.
+    header["_ladder"] = _parse_ladder_token(header.get("ladder", ""))
+    return header
+
+
 def load_ctllog(path):
     """Parse a maburgs ctl log (gs/src/ctl_log.cpp formats).
 
@@ -86,26 +108,12 @@ def load_ctllog(path):
     S lines are NOT strictly 1 Hz (SIGUSR1 emits off-cadence extras) -- callers
     must key everything off t_ms, never assume uniform spacing. float() parses
     "nan" natively, which the pre-session rung-0 warm-up samples rely on.
+    `header` is the LAST header line in the file (a live ladder swap writes
+    one mid-file, ctllog 13).
     """
-    header = {}
     S, E, P, N, R = [], [], [], [], []
     with open(path) as f:
-        first = f.readline().strip()
-        toks0 = first.split()
-        header["_version"] = int(toks0[1]) if len(toks0) > 1 and toks0[1].isdigit() else 0
-        # ctllog 6 ladder=0/100,2/50,... down_util=0.35 up_util=0.15
-        # ctllog 8 ladder=0/100:100,2/50:50,... down_util=0.35 up_util=0.15
-        for tok in first.split()[2:]:
-            if "=" not in tok: continue
-            k, v = tok.split("=", 1)
-            header[k] = v
-        # Structured ladder rungs (same-rate-fixed-pairs): v8 splits
-        # each rung's overhead into a base/enh pair (mcs/ovb:ove); v1-v7
-        # wrote a single value per rung (mcs/ov) -- treated as both, since a
-        # pre-split rung had no base/enh distinction to lose. Stored under
-        # a "_"-prefixed key like _version so the raw header-field print
-        # loop (which skips "_"-prefixed keys) doesn't also print this.
-        header["_ladder"] = _parse_ladder_token(header.get("ladder", ""))
+        header = _parse_ctllog_header(f.readline().strip())
 
         for line in f:
             line = line.strip()
@@ -113,7 +121,12 @@ def load_ctllog(path):
             toks = line.split()
             tag = toks[0]
             try:
-                if tag == "S" and len(toks) >= 8:
+                if tag == "ctllog":
+                    # A later header line: a live ladder swap (ctllog 13) or
+                    # a rejoined session's restated marker. The rows after it
+                    # index this ladder, so the latest one wins.
+                    header = _parse_ctllog_header(line)
+                elif tag == "S" and len(toks) >= 8:
                     S.append({
                         "t_ms": float(toks[1]), "rung": int(toks[2]),
                         "u": float(toks[3]), "snr_db": float(toks[4]),

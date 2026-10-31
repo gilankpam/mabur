@@ -41,6 +41,7 @@
 #include "debug_session.h"
 #include "frame_file_source.h"
 #include "frame_stream.h"
+#include "gs_config_apply.h"
 #include "gap_timeout_policy.h"
 #include "hop_burst_gate.h"   // cal_cmd_clear
 #include "mabur/cal_mav.h"
@@ -175,10 +176,37 @@ struct AuFileOut {
   }
 };
 
+// The ctl.log header: the ladder (bw:mcs/ovb:ove per rung, overheads x100)
+// and the thresholds the rows are scored against. Written at boot and again
+// at every live ladder swap.
+std::string ctl_header(const maburgs::LadderCfg& l) {
+  std::string header = "ladder=";
+  for (size_t i = 0; i < l.ladder.size(); ++i) {
+    const maburgs::Rung& r = l.ladder[i];
+    if (i) header += ",";
+    header += std::to_string(r.bw) + ":" + std::to_string(r.mcs) + "/" +
+              std::to_string(static_cast<int>(std::lround(r.overhead_base * 100))) + ":" +
+              std::to_string(static_cast<int>(std::lround(r.overhead_enh * 100)));
+  }
+  char tail[96];
+  std::snprintf(tail, sizeof(tail), " down_util=%.2f up_util=%.2f probe_offset=%d",
+                l.down_util, l.up_util, l.probe.rung_offset);
+  return header + tail;
+}
+
+// `cfg` is the config the daemon booted with; everything built from it
+// below is built once. The keys an operator may change while this runs
+// (gs_config_apply.h) are owned by `cfg_apply` and reach the process
+// through its hooks, which change live objects -- vrx (static pin, ladder),
+// chan (channel pin), nack_on, the MSP sink, the debug logs. The loop reads
+// those objects for a live key, never `cfg`: they change at the apply and
+// move back on a revert, where the applier's own copy changes only once
+// the file holds the value.
 #ifdef MABUR_LOSS_SIM
-static int run_radio(const maburgs::Config& cfg, int loss_sim_port) {
+static int run_radio(const maburgs::Config& cfg, const std::string& cfg_path,
+                     int loss_sim_port) {
 #else
-static int run_radio(const maburgs::Config& cfg) {
+static int run_radio(const maburgs::Config& cfg, const std::string& cfg_path) {
 #endif
   // Computed once: cfg.link.key never changes over the life of this
   // process, and the sideport exports it every tick (sin.key_fp below).
@@ -369,6 +397,14 @@ static int run_radio(const maburgs::Config& cfg) {
     std::fprintf(stderr,
                  "warning: calibration control port 8400 unusable; "
                  "`maburcal start` will not reach this daemon\n");
+  // Live config `set`/`get` (gs_config_apply.h), loopback only. The applier
+  // it drives is built further down, once every object its hooks change
+  // exists.
+  maburgs::GsConfigControl cfg_ctl;
+  if (!cfg_ctl.open(maburgs::kGsConfigControlPort))
+    std::fprintf(stderr,
+                 "warning: live config port %d unusable; `set`/`get` will not "
+                 "reach this daemon\n", maburgs::kGsConfigControlPort);
   // MAVLink UDP endpoint ([mavlink], docs/mavlink.md): the socket a ground
   // app reaches the drone's parameter component through. A bind failure is
   // a warning, not fatal: the video link does not depend on it.
@@ -400,14 +436,11 @@ static int run_radio(const maburgs::Config& cfg) {
   // ctl.log/probe.log/au.log/flight.jsonl, one writer thread feeding all of
   // them. Declared here (ahead of the stats block and the FrameStream
   // construction below) so `log_writer` outlives every log object that binds
-  // to it.
+  // to it. The writer and the logs on it are opened by open_debug_logs()
+  // below, at boot when the session is ok and again whenever a live
+  // `debug_log.enable = true` opens one.
   maburgs::DebugSession debug(cfg.debug_log.dir, cfg.debug_log.enable);
   std::optional<maburgs::LogWriter> log_writer;
-  if (debug.ok()) {
-    log_writer.emplace();
-    std::fprintf(stderr, "debug-log: session %s%s\n", debug.dir().c_str(),
-                 debug.rejoined() ? " (rejoined)" : "");
-  }
   // cal.log: the calibration run's raw per-cell record. Unlike
   // ctl.log/probe.log/au.log below, this uses its own private LogWriter
   // (cal_log.h) rather
@@ -465,10 +498,13 @@ static int run_radio(const maburgs::Config& cfg) {
   // Stats sideport and flight.jsonl share one
   // StatsExporter snapshot, so the snapshot builder runs whenever either
   // wants it: `cfg.stats.enable` gates the UDP sinks ONLY (:8302 feeds
-  // maburplay's GS OSD, so debug logging must never blank it), `debug.ok()`
-  // gates the file. Declared here (ahead of the FrameStream construction
-  // below) so the FrameStream end_frame lambda can capture `stats` by
-  // reference; both must also outlive every lambda that captures them.
+  // maburplay's GS OSD, so debug logging must never blank it), an open
+  // flight.jsonl gates the file. The exporter is built either way, and its
+  // file sink reads the stream handle at send time, so a live debug-log
+  // enable can open flight.jsonl under it. Declared here (ahead of the
+  // FrameStream construction below) so the FrameStream end_frame lambda can
+  // capture `stats` by reference; both must also outlive every lambda that
+  // captures them.
   // session id: nonzero random u32 so consumers detect restarts.
   // UdpSink has a user-declared destructor and a deleted copy constructor
   // with no declared move constructor, so it has neither -- std::vector
@@ -478,10 +514,7 @@ static int run_radio(const maburgs::Config& cfg) {
   std::vector<std::unique_ptr<maburgs::UdpSink>> stats_udp;
   std::optional<maburgs::StatsExporter> stats;
   maburgs::LogWriter::Stream flight_jsonl = maburgs::LogWriter::kBadStream;
-  if (debug.ok())
-    flight_jsonl = log_writer->open(debug.dir(), "flight.jsonl", "",
-                                    /*mark_drops=*/false);
-  if (cfg.stats.enable || debug.ok()) {
+  {
     std::function<bool(const std::string&)> to_udp;
     if (cfg.stats.enable) {
       stats_udp.reserve(cfg.stats.out.size());
@@ -498,11 +531,11 @@ static int run_radio(const maburgs::Config& cfg) {
         return any;
       };
     }
-    std::function<void(const std::string&)> to_file;
-    if (flight_jsonl != maburgs::LogWriter::kBadStream)
-      to_file = [&log_writer, flight_jsonl](const std::string& s) {
-        log_writer->line(flight_jsonl, s.data(), s.size());
-      };
+    std::function<void(const std::string&)> to_file =
+        [&log_writer, &flight_jsonl](const std::string& s) {
+          if (log_writer && flight_jsonl != maburgs::LogWriter::kBadStream)
+            log_writer->line(flight_jsonl, s.data(), s.size());
+        };
     uint32_t session = 0;
     std::random_device rd;
     while (session == 0) session = rd();
@@ -513,9 +546,6 @@ static int run_radio(const maburgs::Config& cfg) {
       for (const auto& o : cfg.stats.out)
         std::fprintf(stderr, "maburgs: stats sideport -> udp %s:%d every %d ms\n",
                      o.host.c_str(), o.port, cfg.stats.interval_ms);
-    if (flight_jsonl != maburgs::LogWriter::kBadStream)
-      std::fprintf(stderr, "debug-log: flight jsonl -> %s every %d ms\n",
-                   log_writer->path(flight_jsonl).c_str(), cfg.stats.interval_ms);
   }
 
   // Drone telemetry (T_TELEM): display-only, not rendezvous traffic — held
@@ -542,6 +572,7 @@ static int run_radio(const maburgs::Config& cfg) {
   // owned, like the decoder it reads. nack_interval_t0 = previous sideport
   // export, for link.nack.fill_pps.
   mabur::NackTracker nack(cfg.link.nack);
+  bool nack_on = cfg.link.nack.enable;  // live: the link.nack.enable hook flips it
   // The vtx nonce the NACK counter belongs to. The drone accepts counter >
   // last under one vtx nonce and starts over only on a new one, so the GS
   // restarts its counter exactly there -- not on a frame_wire edge.
@@ -575,18 +606,9 @@ static int run_radio(const maburgs::Config& cfg) {
   // scan.log (scanlog 7): the channel-selection record -- card caps, scout
   // dwells (boot-time AND in-flight), the pick, every link move, and the
   // in-flight hop verdict/hop-event lines. Same session directory and
-  // writer as ctl.log, same debug_log.enable gate.
+  // writer as ctl.log, same debug_log.enable gate; opened by
+  // open_debug_logs() below.
   std::optional<maburgs::ScanLog> scan_log;
-  if (debug.ok()) {
-    const maburgs::ScanCfg& scfg = cfg.radio.scan;
-    std::string h;
-    for (size_t i = 0; i < cfg.radio.channels.size(); ++i)
-      h += (i ? "," : "") + std::to_string(cfg.radio.channels[i]);
-    h = "channels=" + h + " mode=" + (pinned ? "pinned" : "auto") +
-        " dwell_ms=" + std::to_string(scfg.dwell_ms) +
-        " min_rounds=" + std::to_string(scfg.min_rounds) + " cards=" + std::to_string(n_cards);
-    scan_log.emplace(*log_writer, debug.dir(), h);
-  }
 
   // The channel/hop unit (gs/src/channel_core.h): everything that used to
   // be the "auto channel set, per tick" + in-flight hop blocks here.
@@ -631,9 +653,10 @@ static int run_radio(const maburgs::Config& cfg) {
   // recomposed whenever that width changes, not once from the GS config.
   maburgs::ChannelCorePicker cal_picker(chan);
   maburgs::CalSession cal_session(maburgs::CalSessionCfg{}, &*cal_log, &cal_picker);
+  // Recomposed also after a live ladder swap (its hook zeroes the width).
   uint8_t cal_defaults_width = cfg.radio.width;
   std::vector<mabur::cal::SweepSpec> cal_defaults =
-      maburgs::default_sweeps(cal_defaults_width, cfg.link.ladder_cfg);
+      maburgs::default_sweeps(cal_defaults_width, vrx.ladder());
   maburgs::CalNarrator cal_narrator(cal_log_dir + "/cal.log");
   // The drone's radio.width, from the DiscAck that opened the session
   // (0 = none yet); cal_effective_width's input.
@@ -877,22 +900,29 @@ static int run_radio(const maburgs::Config& cfg) {
   // FrameStream callbacks can capture it by reference; only ctl_log is new
   // here.
   std::optional<maburgs::CtlLog> ctl_log;
-  if (debug.ok()) {
-    std::string header = "ladder=";
-    for (size_t i = 0; i < cfg.link.ladder_cfg.ladder.size(); ++i) {
-      const maburgs::Rung& r = cfg.link.ladder_cfg.ladder[i];
-      if (i) header += ",";
-      header += std::to_string(r.bw) + ":" + std::to_string(r.mcs) + "/" +
-                std::to_string(static_cast<int>(std::lround(r.overhead_base * 100))) +
-                ":" +
-                std::to_string(static_cast<int>(std::lround(r.overhead_enh * 100)));
+  // Every debug log of the session on one writer: at boot when the session
+  // is ok, and from the debug_log hook when a live enable opens one. The
+  // ctl.log header and the scan.log mode read the live ladder and pin.
+  auto open_debug_logs = [&] {
+    log_writer.emplace();
+    std::fprintf(stderr, "debug-log: session %s%s\n", debug.dir().c_str(),
+                 debug.rejoined() ? " (rejoined)" : "");
+    flight_jsonl = log_writer->open(debug.dir(), "flight.jsonl", "",
+                                    /*mark_drops=*/false);
+    if (flight_jsonl != maburgs::LogWriter::kBadStream)
+      std::fprintf(stderr, "debug-log: flight jsonl -> %s every %d ms\n",
+                   log_writer->path(flight_jsonl).c_str(), cfg.stats.interval_ms);
+    {
+      const maburgs::ScanCfg& scfg = cfg.radio.scan;
+      std::string h;
+      for (size_t i = 0; i < cfg.radio.channels.size(); ++i)
+        h += (i ? "," : "") + std::to_string(cfg.radio.channels[i]);
+      h = "channels=" + h + " mode=" + (chan.pinned() ? "pinned" : "auto") +
+          " dwell_ms=" + std::to_string(scfg.dwell_ms) +
+          " min_rounds=" + std::to_string(scfg.min_rounds) + " cards=" + std::to_string(n_cards);
+      scan_log.emplace(*log_writer, debug.dir(), h);
     }
-    char tail[96];
-    std::snprintf(tail, sizeof(tail), " down_util=%.2f up_util=%.2f probe_offset=%d",
-                  cfg.link.ladder_cfg.down_util, cfg.link.ladder_cfg.up_util,
-                  cfg.link.ladder_cfg.probe.rung_offset);
-    header += tail;
-    ctl_log.emplace(*log_writer, debug.dir(), header);
+    ctl_log.emplace(*log_writer, debug.dir(), ctl_header(vrx.ladder()));
     probe_log.emplace(*log_writer, debug.dir(), probe_bpb);
     fec_log.emplace(*log_writer, debug.dir());
     // Gated on au_on too (not just debug.ok()): with au_ring.enable=false
@@ -900,7 +930,21 @@ static int run_radio(const maburgs::Config& cfg) {
     // au.log containing only its "# aulog 5" header -- reads as "the
     // logger is broken" rather than "the ring is off".
     if (au_on) au_log.emplace(*log_writer, debug.dir());
-  }
+  };
+  // The reverse, for a live `debug_log.enable = false`: the logs first
+  // (each holds the writer), then the writer itself, whose destructor
+  // drains what is queued and closes every file. A fresh writer per
+  // session keeps its fixed stream slots from running out across toggles.
+  auto close_debug_logs = [&] {
+    ctl_log.reset();
+    probe_log.reset();
+    fec_log.reset();
+    au_log.reset();
+    scan_log.reset();
+    flight_jsonl = maburgs::LogWriter::kBadStream;
+    log_writer.reset();
+  };
+  if (debug.ok()) open_debug_logs();
 
   // Change-detect on ctl().last_event(): initialize to the pre-any-event
   // default (t_ms 0) so boot doesn't print a phantom transition line.
@@ -1034,21 +1078,30 @@ static int run_radio(const maburgs::Config& cfg) {
     }
   });
 
+  // MSP OSD sink: built at boot when msp.enable, and built/dropped by the
+  // live `msp.enable` hook. The aggregator's sink is cleared before the
+  // objects it calls are freed.
   std::unique_ptr<maburgs::UdpSink> msp_udp;
   std::unique_ptr<maburgs::MspSink> msp_sink;
-  if (cfg.msp.enable) {
-    const int bp = cfg.msp.symbol_size + static_cast<int>(mabur::sw::kSwHeaderLen);
-    msp_udp = std::make_unique<maburgs::UdpSink>(cfg.msp.out_host, cfg.msp.out_port);
+  auto start_msp = [&](const maburgs::MspCfg& m) {
+    const int bp = m.symbol_size + static_cast<int>(mabur::sw::kSwHeaderLen);
+    msp_udp = std::make_unique<maburgs::UdpSink>(m.out_host, m.out_port);
     maburgs::MspSink::EmitFn emit = [&](const uint8_t* d, size_t n) { msp_udp->send(d, n); };
     std::fprintf(stderr,
                  "maburgs: MSP OSD -> udp %s:%d symbol_size=%d window=%d block_payload=%d\n",
-                 cfg.msp.out_host.c_str(), cfg.msp.out_port, cfg.msp.symbol_size,
-                 cfg.msp.window, bp);
-    msp_sink = std::make_unique<maburgs::MspSink>(cfg.msp.symbol_size, cfg.msp.window, emit);
+                 m.out_host.c_str(), m.out_port, m.symbol_size, m.window, bp);
+    msp_sink = std::make_unique<maburgs::MspSink>(m.symbol_size, m.window, emit);
     agg.set_msp_sink([&](const uint8_t* b, size_t n, uint64_t us) {
       msp_sink->on_body(b, n, us / 1000);
     });
-  }
+  };
+  auto stop_msp = [&] {
+    agg.set_msp_sink({});
+    msp_sink.reset();
+    msp_udp.reset();
+    std::fprintf(stderr, "maburgs: MSP OSD off\n");
+  };
+  if (cfg.msp.enable) start_msp(cfg.msp);
 
   // Probe stream bodies (SBI stream 5). Same core-thread contract as the MSP
   // sink: the aggregator calls this from the drain loop below. Every body is
@@ -1084,6 +1137,69 @@ static int run_radio(const maburgs::Config& cfg) {
   maburgs::GapTimeoutPolicy gap_policy(cfg.video.frame_gap_timeout_ms,
                                        cfg.video.frame_gap_timeout_max_ms);
   uint64_t gap_update_ms = 0;
+
+  // The live config applier (gs_config_apply.h). Its hooks run on this
+  // thread, from cfg_ctl.poll() in the loop, and change the objects the
+  // loop reads; the file work runs on the applier's own worker.
+  maburgs::GsApplyHooks hooks;
+  hooks.set_pin = [&](uint8_t ch) { return chan.set_pin(ch); };
+  hooks.set_auto = [&] { chan.set_auto(); };
+  hooks.set_static = [&](const maburgs::Config& c) {
+    vrx.set_pin(c.link.static_mcs, c.link.static_bw, c.link.static_overhead_base,
+                c.link.static_overhead_enh);
+  };
+  hooks.replace_ladder = [&](const maburgs::Config& c) {
+    vrx.replace_ladder(c.link.ladder_cfg, static_cast<double>(mono_ms()));
+    if (ctl_log) ctl_log->header(ctl_header(vrx.ladder()));
+    // The new controller starts with no probe edge and no penalty: re-arm
+    // their change-detect so the swap writes no phantom P/N line. Its rung
+    // restore is a real event and is logged (after the new header).
+    last_probe_t_ms = vrx.ctl().last_probe_edge().t_ms;
+    last_penalty_t_ms = vrx.ctl().last_penalty().t_ms;
+    cal_defaults_width = 0;  // the next tick recomposes cal_defaults
+  };
+  hooks.nack = [&](bool on) {
+    if (!on) {
+      // A tracker turned off drops its pending requests and its window;
+      // the counter is kept so a re-enable stays above the drone's last.
+      nack.clear();
+      (void)nack.take_window();
+      nack_interval_t0 = 0;
+    } else if (!nack_tail_ok) {
+      std::fprintf(stderr,
+                   "warning: link.nack tail trigger disabled: fec.symbol_size[0]=%d "
+                   "does not carry exactly one fragment per source symbol "
+                   "(gap trigger only)\n",
+                   cfg.fec.symbol_size[0]);
+    }
+    nack_on = on;
+  };
+  hooks.debug_log = [&](bool on, std::string* err) {
+    if (!on) {
+      close_debug_logs();
+      debug.disable();
+      std::fprintf(stderr, "debug-log: off\n");
+      return true;
+    }
+    if (debug.ok()) return true;
+    if (!debug.enable()) {
+      *err = "debug_log.dir " + cfg.debug_log.dir + " unusable";
+      return false;
+    }
+    open_debug_logs();
+    return true;
+  };
+  hooks.msp = [&](bool on, const maburgs::Config& c) {
+    if (on) start_msp(c.msp);
+    else stop_msp();
+  };
+  hooks.hop_or_cal_busy = [&] {
+    return chan.hopping() || chan.sweep_pending() || cal_session.running();
+  };
+  maburgs::GsConfigApplier cfg_apply(cfg_path, cfg, std::move(hooks),
+                                     [](const std::string& line) {
+                                       std::fprintf(stderr, "%s\n", line.c_str());
+                                     });
 
   while (!g_stop.load()) {
     const uint64_t now_ms_u = mono_ms();
@@ -1269,7 +1385,7 @@ static int run_radio(const maburgs::Config& cfg) {
     // never the RcfSlotter (bench: slotted
     // fill p50 44 ms, past the gap timeout). By design the retransmit fixes
     // the video only; every ladder input still books the loss.
-    if (cfg.link.nack.enable) {
+    if (nack_on) {
       const auto sctx = vrx.session_ctx();
       // != 0: session_ctx() keeps reporting the held nonce in BEACONING.
       if (sctx.vtx_nonce != 0 && sctx.vtx_nonce != nack_vtx_seen) {
@@ -1296,7 +1412,7 @@ static int run_radio(const maburgs::Config& cfg) {
         // LadderController::u_ = base pre-FEC loss / budget_base(), compared
         // against cfg.down_util in its util-pressure block.
         ni.util = [&] { return vrx.ctl().util(); };
-        ni.down_util = cfg.link.ladder_cfg.down_util;
+        ni.down_util = vrx.ladder().down_util;
         ni.gap_timeout_ms = fstream.gap_ms(0);
         if (auto n = nack.poll(drained_ms, ni)) {
           mabur::rc::TagCtx ctx = sctx;
@@ -1324,7 +1440,7 @@ static int run_radio(const maburgs::Config& cfg) {
         maburgs::cal_effective_width(cfg.radio.width, mav_linked, peer_agreed_width);
     if (cal_width != cal_defaults_width) {
       cal_defaults_width = cal_width;
-      cal_defaults = maburgs::default_sweeps(cal_width, cfg.link.ladder_cfg);
+      cal_defaults = maburgs::default_sweeps(cal_width, vrx.ladder());
     }
     cal_ctl.poll(cal_session, cal_defaults, cal_width);
     // Whatever the session offers goes out as is, never gated on
@@ -1362,6 +1478,7 @@ static int run_radio(const maburgs::Config& cfg) {
       mav_tunnel.flush();
     }
     rec_ctl.poll(drained_ms);
+    cfg_ctl.poll(cfg_apply);
     vrx.set_rec_wish(rec_ctl.wire());
     vrx.set_snr_off(rec_ctl.snr_off(drained_ms));
     for (const std::string& r : rec_ctl.take_refresh()) {
@@ -1690,7 +1807,8 @@ static int run_radio(const maburgs::Config& cfg) {
     // loop wakes on every RX batch (~300/s at video rates) and the build is
     // ~200 us of reads on the core thread, which delays the next drain --
     // and so every packet still in the queue -- for a datagram sent at 5 Hz.
-    if (stats && stats->due(drained_ms)) {
+    if (stats && (cfg.stats.enable || flight_jsonl != maburgs::LogWriter::kBadStream) &&
+        stats->due(drained_ms)) {
       maburgs::StatsInput sin;
       // Live channel of the TX card, not the configured home: with a pick
       // committed they differ. Straight off the
@@ -1703,6 +1821,7 @@ static int run_radio(const maburgs::Config& cfg) {
       sin.scan_state = chs.scan_state;
       sin.scan_rounds = chs.scan_rounds;
       sin.scan_pick = chs.scan_pick;
+      sin.pinned = chs.pinned;
       sin.hop = chs.hop;
       sin.in_session = in_session;
       sin.key_mismatch = vrx.key_mismatch();
@@ -1818,7 +1937,7 @@ static int run_radio(const maburgs::Config& cfg) {
       sin.cal = maburgs::cal_sideport(cal_session);
       // link.nack: take_window() is destructive; safe here because the
       // block runs only on a poll that will emit.
-      if (cfg.link.nack.enable) {
+      if (nack_on) {
         sin.nack.enabled = true;
         sin.nack.cum = nack.stats();
         sin.nack.win = nack.take_window();
@@ -1851,7 +1970,8 @@ static int run_radio(const maburgs::Config& cfg) {
         sin.video_lat = lat_win.flush();
       // Ladder controller snapshot: absent in static-pin mode, where the
       // controller exists but is never ticked (see VrxController::ctl()).
-      if (cfg.link.static_mcs < 0) {
+      // The live pin and ladder, not the boot config's.
+      if (vrx.pin_mcs() < 0) {
         const auto& c = vrx.ctl();
         maburgs::StatsCtlIn ci;
         ci.rung_idx = c.rung();
@@ -1864,11 +1984,12 @@ static int run_radio(const maburgs::Config& cfg) {
         ci.budget = c.budget_base();
         ci.probation_ms_left = c.probation_ms_left(now_ms);
         for (const auto& p : c.penalized(now_ms)) ci.penalized.push_back(p);
-        for (const auto& r : cfg.link.ladder_cfg.ladder)
+        const maburgs::LadderCfg& lad = vrx.ladder();
+        for (const auto& r : lad.ladder)
           ci.ladder.push_back(maburgs::StatsLadderRung{
               r.mcs, r.overhead_base, r.overhead_enh, r.bw});
-        ci.down_util = cfg.link.ladder_cfg.down_util;
-        ci.up_util = cfg.link.ladder_cfg.up_util;
+        ci.down_util = lad.down_util;
+        ci.up_util = lad.up_util;
         const auto& cnt = c.counters();
         ci.demotes_residual = cnt.demotes_residual;
         ci.demotes_util = cnt.demotes_util;
@@ -1897,10 +2018,10 @@ static int run_radio(const maburgs::Config& cfg) {
         for (std::size_t ri = 0; ri < rstore.size(); ++ri) {
           const maburgs::RungStat& rs = rstore.stat(static_cast<int>(ri));
           maburgs::StatsRungIn rg;
-          rg.mcs = cfg.link.ladder_cfg.ladder[ri].mcs;
-          rg.bw = cfg.link.ladder_cfg.ladder[ri].bw;
-          rg.ov_base = cfg.link.ladder_cfg.ladder[ri].overhead_base;
-          rg.ov_enh = cfg.link.ladder_cfg.ladder[ri].overhead_enh;
+          rg.mcs = lad.ladder[ri].mcs;
+          rg.bw = lad.ladder[ri].bw;
+          rg.ov_base = lad.ladder[ri].overhead_base;
+          rg.ov_enh = lad.ladder[ri].overhead_enh;
           rg.u = rs.u.v;
           rg.resid = rs.resid.v;
           rg.u3 = rs.u3.v;
@@ -2021,9 +2142,9 @@ int main(int argc, char** argv) {
       std::fprintf(stderr, "maburgs: link: DEFAULT key in use -- any default-key drone will pair with "
                            "this ground station (and vice versa); see docs/deploy.md 'Pairing'\n");
 #ifdef MABUR_LOSS_SIM
-    return run_radio(cfg, loss_sim_port);
+    return run_radio(cfg, config_path, loss_sim_port);
 #else
-    return run_radio(cfg);
+    return run_radio(cfg, config_path);
 #endif
   }
 

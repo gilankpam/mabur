@@ -1141,6 +1141,19 @@ TEST(exports_scan_block_and_card_energy) {
   CHECK(j["scan"]["state"] == "moving");
 }
 
+TEST(scan_block_carries_pinned) {
+  // scan.pinned is the live pin (a `set radio.channel` moves it), not the
+  // boot config's.
+  StatsInput in = base_input();
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  CHECK(ex.poll(1000, in));
+  CHECK(cap.last()["scan"]["pinned"] == false);
+  in.pinned = true;
+  CHECK(ex.poll(2000, in));
+  CHECK(cap.last()["scan"]["pinned"] == true);
+}
+
 TEST(card_energy_igi_null_when_absent) {
   StatsInput in = base_input();
   REQUIRE(!in.cards.empty());

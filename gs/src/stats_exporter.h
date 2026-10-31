@@ -303,6 +303,9 @@ struct StatsInput {
   std::string scan_state = "off";
   uint64_t scan_rounds = 0;
   std::optional<int> scan_pick;
+  // The live channel pin (ChannelCore::pinned()): a `set radio.channel`
+  // moves it, so it is not the boot config's radio.channel.
+  bool pinned = false;
   StatsRcfSlotIn rcf_slot;
   StatsNackIn nack;
   StatsRefreshIn refresh;
