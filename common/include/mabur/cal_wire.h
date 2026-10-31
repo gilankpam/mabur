@@ -33,6 +33,7 @@ struct CalFrameInfo {
   uint8_t bw = 20;    // 20 or 40
   uint8_t flags = 0;  // kFlagLdpc | kFlagStbc
   uint32_t seq = 0;   // 24-bit per-cell frame counter, wraps
+  size_t len = 0;     // payload bytes the fill matched, any trailing FCS excluded
 };
 
 // Payload: magic | kind | rate | idx | bw | flags | seq_hi | seq lo16 LE |
@@ -73,7 +74,8 @@ inline std::vector<uint8_t> build_cal_payload(Kind kind, uint8_t rate,
 // dot11 header, so the body may carry a trailing 4-byte FCS or not. `len` is
 // not required to match a fixed size (Capacity frames are body-sized, not
 // kCalPayloadLen), so both the no-FCS and the FCS-tolerant reading of `len`
-// are tried against the fill, in that order.
+// are tried against the fill, in that order; `out->len` is the one that
+// matched, so a caller sizing the frame on the air counts the FCS once.
 inline bool parse_cal_payload(const uint8_t* p, size_t len, CalFrameInfo* out) {
   if (len < kCalHeaderLen) return false;
   if (std::memcmp(p, kCalMagic, 4) != 0) return false;
@@ -102,7 +104,6 @@ inline bool parse_cal_payload(const uint8_t* p, size_t len, CalFrameInfo* out) {
   } else {
     return false;
   }
-  (void)body_len;
 
   out->kind = static_cast<Kind>(kind_byte);
   out->rate = rate;
@@ -111,6 +112,7 @@ inline bool parse_cal_payload(const uint8_t* p, size_t len, CalFrameInfo* out) {
   out->flags = flags;
   out->seq = (static_cast<uint32_t>(p[9]) << 16) | static_cast<uint32_t>(p[10]) |
             (static_cast<uint32_t>(p[11]) << 8);
+  out->len = body_len;
   return true;
 }
 

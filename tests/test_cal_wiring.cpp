@@ -46,6 +46,25 @@ TEST(air_bytes_count_the_qos_data_header_and_the_fcs) {
   CHECK(cal_air_bytes(1405) == 1435);
 }
 
+TEST(a_received_body_charges_the_fcs_once) {
+  // The RX path hands the session the dot11 body with the 802.11 FCS still
+  // on its tail (devourer keeps it on every Realtek chip); a body that
+  // arrives without one (a MAC that strips it) is charged the same.
+  CalSession s(CalSessionCfg{});
+  const uint8_t fcs[4] = {0xDE, 0xAD, 0xBE, 0xEF};
+  for (const size_t payload : {mabur::cal::kCalPayloadLen, size_t{1405}}) {
+    const cal::Kind kind = payload == mabur::cal::kCalPayloadLen ? cal::Kind::Power
+                                                                 : cal::Kind::Capacity;
+    auto body = cal::build_cal_payload(kind, 3, 5, 20, cal::kFlagStbc, 9, payload);
+    CHECK(route_cal_body(s, 0, body.data(), body.size(), -60, true, 1000) == 26 + payload + 4);
+    body.insert(body.end(), fcs, fcs + 4);
+    CHECK(route_cal_body(s, 0, body.data(), body.size(), -60, true, 1000) == 26 + payload + 4);
+  }
+  // Not a calibration frame: nothing charged, the caller routes it on.
+  const std::vector<uint8_t> video(200, 0x11);
+  CHECK(route_cal_body(s, 0, video.data(), video.size(), -60, true, 1000) == 0);
+}
+
 TEST(a_sweep_ack_from_the_tunnel_moves_the_session_on) {
   CalSession s(CalSessionCfg{});
   s.set_peer(true, true);

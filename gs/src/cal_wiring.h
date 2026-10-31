@@ -39,6 +39,13 @@ constexpr size_t cal_air_bytes(size_t body_len) {
   return kCalDot11HeaderLen + body_len + kCalFcsLen;
 }
 
+// A received body off the RX path: when it parses as a calibration frame it
+// goes to the session and the return is the frame's size on the air as
+// charged to the session; 0 means it is not a calibration frame and the
+// caller routes it on as ordinary traffic.
+size_t route_cal_body(CalSession& s, int card, const uint8_t* body, size_t len, int rssi_dbm,
+                      bool crc_ok, uint64_t now_ms);
+
 // One whole MAVLink packet the tunnel delivered from the drone: every
 // calibration message in it goes to the session (anything else is not the
 // session's and is skipped). The drone sends its replies whatever the

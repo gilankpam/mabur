@@ -24,6 +24,7 @@ TEST(capacity_frame_is_body_sized) {
   CHECK(parse_cal_payload(p.data(), p.size(), &f));
   CHECK(f.seq == 7);
   CHECK(f.kind == Kind::Capacity);
+  CHECK(f.len == 1405);
 }
 
 TEST(fcs_tail_is_tolerated_on_both_sizes) {
@@ -35,11 +36,13 @@ TEST(fcs_tail_is_tolerated_on_both_sizes) {
   CalFrameInfo f;
   CHECK(parse_cal_payload(small.data(), small.size(), &f));
   CHECK(f.idx == 40);
+  CHECK(f.len == kCalPayloadLen);  // the payload, the FCS left out
 
   auto big = build_cal_payload(Kind::Capacity, 3, 0, 20, 2, 7, 1405);
   big.resize(big.size() + 4, 0xAA);
   CHECK(parse_cal_payload(big.data(), big.size(), &f));
   CHECK(f.seq == 7);
+  CHECK(f.len == 1405);
 }
 
 TEST(rejects_bad_kind_bw_flags) {

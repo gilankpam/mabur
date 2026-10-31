@@ -42,6 +42,18 @@ std::string cal_sweep_token(const cal::SweepSpec& spec) {
   return std::string(k) + std::to_string(spec.bw);
 }
 
+size_t route_cal_body(CalSession& s, int card, const uint8_t* body, size_t len, int rssi_dbm,
+                      bool crc_ok, uint64_t now_ms) {
+  cal::CalFrameInfo info;
+  if (!cal::parse_cal_payload(body, len, &info)) return 0;
+  // The body may still end in the 802.11 FCS (devourer keeps it on every
+  // Realtek chip) or not (a MAC that strips it); cal_air_bytes adds the FCS
+  // itself, so it takes the payload length the parse matched.
+  const size_t air = cal_air_bytes(info.len);
+  s.on_cal_frame(card, info, rssi_dbm, crc_ok, air, now_ms);
+  return air;
+}
+
 void feed_cal_packet(CalSession& s, const uint8_t* bytes, size_t n, uint64_t now_ms) {
   for (const cal::CalMsg& m : cal::decode_all(bytes, n)) s.on_mav(m, now_ms);
 }

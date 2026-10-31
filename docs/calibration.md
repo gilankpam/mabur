@@ -217,7 +217,9 @@ the device (the `UsbTxPool`'s space-wait counter; with `tx_threads = 1`
 the time inside the synchronous send).
 
 The GS sums each CRC-clean frame's air size — the 26-byte QoS-Data
-header, the body and the 4-byte FCS — on the best card, and computes
+header, the payload and the 4-byte FCS, counted once whether or not the
+received body still carries it (`route_cal_body` sizes from the payload
+length `parse_cal_payload` matched) — on the best card, and computes
 
 ```
 eff = delivered bits / (dwell_s × nominal(mcs, bw))

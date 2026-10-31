@@ -1151,14 +1151,10 @@ static int run_radio(const maburgs::Config& cfg) {
       // arrive"). A frame whose corruption flips kind/rate/idx/fill fails
       // parse_cal_payload's fill guard and falls through to the ordinary
       // path below instead of being misattributed to a cell.
-      mabur::cal::CalFrameInfo cal_info;
-      if (mabur::cal::parse_cal_payload(m.body.data(), m.body.size(), &cal_info)) {
-        const int rssi_dbm =
-            static_cast<int>(std::max(m.rssi[0], m.rssi[1])) - 110;
-        cal_session.on_cal_frame(m.card_id, cal_info, rssi_dbm, m.crc_ok,
-                                 maburgs::cal_air_bytes(m.body.size()), m.mono_us / 1000);
+      const int cal_rssi_dbm = static_cast<int>(std::max(m.rssi[0], m.rssi[1])) - 110;
+      if (maburgs::route_cal_body(cal_session, m.card_id, m.body.data(), m.body.size(),
+                                  cal_rssi_dbm, m.crc_ok, m.mono_us / 1000) != 0)
         continue;
-      }
       chan.on_rc_body(m.rx_channel);   // read by the rc sink inside on_rx_body()
       agg.on_rx_body(m);
       // A drone at a different RC_VERSION is invisible to every RC path here:

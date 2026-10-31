@@ -16,8 +16,8 @@
 //   GS  (gs/src/main.cpp core loop): set_peer every tick; due_mav() ->
 //       cal::encode(.., 255, 190, kChanGsLocal) -> the tunnel's cal lane,
 //       never gated on radio_silent(); inbound packets -> feed_cal_packet();
-//       stamped frames -> on_cal_frame(card, info, rssi, crc_ok,
-//       cal_air_bytes(body), now).
+//       received bodies, FCS still on their tail as devourer delivers
+//       them -> route_cal_body(card, body, rssi, crc_ok, now).
 //   Drone (drone/src/main.cpp): the MAV thread's check_mav verdict (kOk /
 //       kOkLatched under the open run / rejected) -> decode_all -> the cal
 //       queue; the TX writer thread drains the queue (latched SWEEPs only
@@ -90,6 +90,14 @@ int expected_wall(uint8_t bw, int r) { return std::min(true_wall(bw, r), maburgs
 constexpr double kTrueEff20[8] = {0.91, 0.86, 0.82, 0.79, 0.73, 0.71, 0.69, 0.66};
 constexpr double kTrueEff40[8] = {0.81, 0.79, 0.78, 0.72, 0.70, 0.68, 0.66, 0.62};
 double true_eff(uint8_t bw, int r) { return bw == 40 ? kTrueEff40[r] : kTrueEff20[r]; }
+
+// A body as the GS's RX path hands it up: devourer keeps the 802.11 FCS
+// on every Realtek chip, and the header strip leaves it on the tail.
+std::vector<uint8_t> with_fcs(const uint8_t* body, size_t len) {
+  std::vector<uint8_t> rx(body, body + len);
+  for (const uint8_t b : {0xDE, 0xAD, 0xBE, 0xEF}) rx.push_back(b);
+  return rx;
+}
 
 // The chip's own TXAGC anchor (mcs7_index with diffs zeroed).
 constexpr int kAnchor = 53;
@@ -516,11 +524,12 @@ struct Kit {
       // A plausible RSSI: the TXAGC ramp (~0.3 dB/idx) well clear of the
       // saturation threshold; card 1 hears a little less.
       const int rssi = -80 + std::clamp(pwr.on_air_idx() - 28, 0, 63) * 3 / 10;
+      const std::vector<uint8_t> rx = with_fcs(body, body_len);
       for (int card = 0; card < 2; ++card) {
         const int pct = card_loss_pct[static_cast<size_t>(card)];
         if (pct > 0 && static_cast<int>(air_rng() % 100) < pct) continue;
-        gs.on_cal_frame(card, info, rssi - 3 * card, !compressed,
-                        maburgs::cal_air_bytes(body_len), t);
+        REQUIRE(maburgs::route_cal_body(gs, card, rx.data(), rx.size(), rssi - 3 * card,
+                                        !compressed, t) == 26 + body_len + 4);
       }
     }
     sink.frames.clear();
@@ -575,7 +584,9 @@ mabur::BlastResult FakeCapacityCtl::blast(const uint8_t* frame, size_t len, uint
   cal::CalFrameInfo info;
   REQUIRE(cal::parse_cal_payload(frame, len, &info));
   REQUIRE(info.kind == cal::Kind::Capacity);
-  const size_t air_bytes = maburgs::cal_air_bytes(len);
+  // The frame's size on the air: QoS-Data header, payload, FCS.
+  const size_t air_bytes = 26 + len + 4;
+  const std::vector<uint8_t> rx = with_fcs(frame, len);
   const double nominal_bps =
       mabur::rc::phy_rate_mbps({mabur::rc::PhyMode::HT, info.rate, info.bw}) * 1e6;
   // Frames the air carries in the dwell at this point's true efficiency.
@@ -595,8 +606,10 @@ mabur::BlastResult FakeCapacityCtl::blast(const uint8_t* frame, size_t len, uint
   for (uint32_t ms = 0; ms < dwell_ms; ++ms) {
     const uint32_t due = static_cast<uint32_t>(uint64_t{delivered} * (ms + 1) / dwell_ms);
     for (; sent < due; ++sent) {
-      kit->gs.on_cal_frame(0, info, -58, true, air_bytes, kit->t);
-      kit->gs.on_cal_frame(1, info, -61, true, air_bytes, kit->t);
+      REQUIRE(maburgs::route_cal_body(kit->gs, 0, rx.data(), rx.size(), -58, true, kit->t) ==
+              air_bytes);
+      REQUIRE(maburgs::route_cal_body(kit->gs, 1, rx.data(), rx.size(), -61, true, kit->t) ==
+              air_bytes);
     }
     kit->gs_tick();
     ++kit->t;
