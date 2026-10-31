@@ -78,18 +78,19 @@
   // (works under the Pages /mabur/ base as well as at a local root).
 
   const osdLayer = new OsdLayer();
-  // Font list from public/fonts/index.json. loadAtlas waits for it (bounded, so a
-  // stalled fetch cannot keep the OSD off); otherwise an OSD screen arriving first
-  // would resolve the chosen id against the default-only list and paint the default
-  // atlas under the chosen font's id. An id the list lacks falls back to the shipped atlas.
-  const fontListP = loadFontList(fetch, document.baseURI).then((l) => { ui.osdFonts = l; });
-  const fontListReady = () => Promise.race([fontListP, new Promise((r) => setTimeout(r, 3000))]);
+  // The font list (public/fonts/index.json, shipped and precached with every build) is the
+  // only source of font files, Betaflight included. loadAtlas waits for it. If it fails to
+  // load, the OSD stays off (the painter logs it) and the next load tries the list again.
+  let fontListP = null;
+  const fontList = () => (fontListP ??= loadFontList(fetch, document.baseURI).then(
+    (l) => { ui.osdFonts = l; return l; },
+    (e) => { fontListP = null; throw e; }));
+  fontList().catch(() => {});   // start loading now; a failure surfaces through loadAtlas
   const osd = new OsdPainter({
     layer: osdLayer,
     fontId: ui.cfg.osdFont,
     loadAtlas: async (id) => {
-      await fontListReady();
-      const r = await fetch(new URL(fontFile(ui.osdFonts, id), document.baseURI));
+      const r = await fetch(new URL(fontFile(await fontList(), id), document.baseURI));
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return createImageBitmap(await r.blob());
     },
@@ -427,7 +428,7 @@
         {#snippet config()}
           <ConfigPanel cfg={ui.cfg} onChange={onCfgChange} locked={live || busy} spotter={ui.mode === 'spotter'}
             onDisconnect={live ? disconnect : null} variant="rule" applied={ui.applied} recordings={recList}
-            keyFp={keyFingerprint(ui.key)} {onLoadKey} {onClearKey} />
+            keyFp={keyFingerprint(ui.key)} {onLoadKey} {onClearKey} fonts={ui.osdFonts} />
         {/snippet}
         {#snippet vtx()}
           <VtxPanel params={ui.params} paramsAt={ui.paramsAt} {displayHz} spotter={shownMode === 'spotter'}
@@ -450,7 +451,7 @@
         {#snippet config()}
           <ConfigPanel cfg={ui.cfg} onChange={onCfgChange} locked={live || busy} spotter={ui.mode === 'spotter'}
             onDisconnect={live ? disconnect : null} variant="card" applied={ui.applied} recordings={recList}
-            keyFp={keyFingerprint(ui.key)} {onLoadKey} {onClearKey} />
+            keyFp={keyFingerprint(ui.key)} {onLoadKey} {onClearKey} fonts={ui.osdFonts} />
         {/snippet}
         {#snippet vtx()}
           <VtxPanel params={ui.params} paramsAt={ui.paramsAt} {displayHz} spotter={shownMode === 'spotter'} variant="card"
