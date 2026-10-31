@@ -24,6 +24,11 @@ const ModeCand k720p60{1280, 720, 74250, 1650, 750, false, false};
 const ModeCand k1080p100{1920, 1080, 297000, 2640, 1125, false, false};
 const ModeCand k720p100{1280, 720, 148500, 1980, 750, false, false};
 
+// CEA 1080p120, 720p120 and 1080p50.
+const ModeCand k1080p120{1920, 1080, 297000, 2200, 1125, false, false};
+const ModeCand k720p120{1280, 720, 148500, 1650, 750, false, false};
+const ModeCand k1080p50{1920, 1080, 148500, 2640, 1125, false, false};
+
 // A goggle with 60 and 100 Hz at two sizes and no 90 Hz mode at all; 1080p60
 // is the preferred one.
 const std::vector<ModeCand> kAvatar{k1080p60, k720p60, k1080p100, k720p100};
@@ -128,6 +133,23 @@ TEST(auto_with_an_unshowable_rate_picks_the_nearest_rate) {
   // A size with no mode at the camera's rate takes that size at the nearest.
   CHECK(pick_display_mode(kAvatar, parse_screen_want("1280x720"), 90.0, &matched) == 3);
   CHECK(!matched);
+}
+
+TEST(an_unshowable_rate_groups_by_the_nearest_display_rate) {
+  // 90 fps sits midway between 60 and 120 Hz: the group is the modes at the
+  // one nearest rate, never both sides of the camera.
+  const std::vector<ModeCand> modes{k1080p60, k1080p120, k720p60};
+  bool matched = true;
+  CHECK(pick_display_mode(modes, parse_screen_want("auto"), 90.0009, &matched) == 1);
+  CHECK(!matched);
+  CHECK(pick_display_mode(modes, parse_screen_want("auto"), 89.9928, &matched) == 0);
+  // A larger mode across the midpoint never beats the nearest rate's.
+  const std::vector<ModeCand> split{k1080p60, k720p120};
+  CHECK(pick_display_mode(split, parse_screen_want("auto"), 90.0009, &matched) == 1);
+  CHECK(pick_display_mode(split, parse_screen_want("auto"), 89.9928, &matched) == 0);
+  // An exact tie (75 between 50.000 and 100.000) goes to the higher rate.
+  const std::vector<ModeCand> tie{k1080p50, k1080p100};
+  CHECK(pick_display_mode(tie, parse_screen_want("auto"), 75.0, &matched) == 1);
 }
 
 TEST(size_absent_at_the_camera_rate_is_unmatched) {

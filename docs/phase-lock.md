@@ -151,22 +151,37 @@ bundle ships `"auto"`:
   back to the sink's preferred mode.
 
 `"auto"` and `WxH` are resolved to one `WxH@R` mode each time a
-presenter is built (startup, a hotplug, a live set): before the first
-frame the camera's rate is not known, so `"auto"` takes the sink's
-preferred mode and `WxH` that size at the preferred mode's rate. Once the
-camera's rate is measured, a rate mismatch ("Rate mismatch") with the drone not in
-low power moves the display: the presenter is rebuilt on the picked mode
-(like any presenter rebuild it restarts a burned recording in progress)
-and the player logs `maburplay: display follows camera: 1920x1080@100.000`.
-The follow is an in-process rebuild, not a `set`: the file keeps
-`"auto"`. A camera rate the display has no mode for (an Avatar Goggles X
-has no 90 Hz) runs the modes at the nearest rate it has, by the same size
-rule, and the mismatch stays (the OSD fps cell reads `90/100`). A
-presenter already on the picked size within 0.5 Hz of the camera is
-kept, and a connector with no modes (a failed EDID read) never
-rebuilds. A follow rebuild that comes up on another mode (the sink's list
-changed) is not retried for the same mode until some other rebuild runs.
-The presenter logs `DrmPresenter: mode 1920x1080 @60.000 Hz (requested
+presenter is built (startup, a hotplug, a live set) at the camera's
+current rate -- or, with the drone in low power or its report quiet, at
+the last rate seen out of low power, so a replug or a set while disarmed
+does not move the display to the low-power rate. Before the first frame
+the rate is not known, so `"auto"` takes the sink's preferred mode and
+`WxH` that size at the preferred mode's rate.
+
+Once a second (`DisplayFollower`, `gs/player/src/display_follow.h`), with
+the camera's rate measured and the drone reporting it is out of low power,
+the player re-picks the mode for the camera's rate and, when 3 consecutive
+windows pick the same mode other than the running one, rebuilds the
+presenter on it and logs `maburplay: display follows camera:
+1920x1080@100.000`. This runs whether or not there is a rate mismatch, so
+`"auto"` also moves up to a larger mode at a rate the panel already runs;
+one window's rate (a fade losing over half its frames, a camera change
+mid-window) never rebuilds alone. Like any presenter rebuild it restarts a
+burned recording in progress. The follow is an in-process rebuild, not a
+`set`: the file keeps `"auto"`.
+
+A camera rate the display has no mode for (an Avatar Goggles X has no
+90 Hz) takes the modes at the display's rate nearest the camera's (an
+exact tie: the higher rate), by the same size rule, and the rate mismatch
+stays (the OSD fps cell reads `90/100`). The running mode is kept over the
+pick when it fits, is at least as large, and is as near the camera's rate
+within 0.5 Hz (within 0.5 Hz of the camera when the display has its rate),
+so a 90 fps drone on a 60/120 Hz panel, whose measured rate crosses the
+midpoint window to window, does not rebuild back and forth. A connector
+with no modes (a failed EDID read) never rebuilds, and a follow rebuild
+whose presenter came up on another mode (the sink's list changed) is not
+issued again for that mode until the pick settles or moves elsewhere. The
+presenter logs `DrmPresenter: mode 1920x1080 @60.000 Hz (requested
 1920x1080@60.000)`.
 
 The drone has no phase-lock config.

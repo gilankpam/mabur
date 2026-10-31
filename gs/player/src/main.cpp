@@ -704,6 +704,9 @@ int main(int argc, char** argv) {
   // the OSD fps cell.
   maburplay::RateMatch rate_match;
   uint64_t rate_match_mark_us = 0;
+  // screen_mode "auto" / "WxH": the display follows the camera's rate
+  // (display_follow.h), judged on the same 1 Hz windows.
+  maburplay::DisplayFollower display_follower;
   maburplay::LatLog lat_log;
   // Per-frame rows of the same window as the lat: line (docs/observability.md
   // "frame.log"), written in the same idle-gated 1 Hz burst so a stalled
@@ -1899,11 +1902,6 @@ int main(int argc, char** argv) {
                  std::strerror(errno));
   maburplay::DisplayWatch display_watch(hotplug_uevents);
   if (presenter) display_watch.on_acquired(mono_ms());
-  // A follow rebuild whose presenter came up on some other mode (init()
-  // fell back: the list changed under it) is not retried for that same
-  // target, so a display that will not take the mode cannot rebuild once a
-  // second; any other rebuild clears it.
-  std::string follow_stuck;
   // The display-mismatch banner: the camera's rate has no display mode and
   // the display shows it at the nearest one. Empty when there is none.
   [[maybe_unused]] std::string g_display_banner;
@@ -1911,7 +1909,8 @@ int main(int argc, char** argv) {
   std::vector<maburplay::ReleaseLoop::MarginSample> margins;
   margins.reserve(maburplay::ReleaseLoop::kMarginCap);
   // Builds a FRESH presenter on `mode` (a screen_mode, resolved against
-  // the display's modes at the camera's current rate) and makes it the
+  // the display's modes at DisplayFollower::resolve_hz -- the camera's
+  // rate, held at its last value out of low power) and makes it the
   // live display, never a re-init of an existing one: every connector/
   // mode/plane/zpos decision is re-derived from what the display offers
   // now. Callers: the hotplug retry (no presenter), and with a presenter
@@ -1934,10 +1933,9 @@ int main(int argc, char** argv) {
       release.set_sink(nullptr);
       presenter.reset();
     }
-    // Any rebuild re-arms the follow rule's one try (follow_stuck).
-    follow_stuck.clear();
     auto p = std::make_unique<maburplay::DrmPresenter>();
-    if (!p->init(resolve_screen_mode(mode, pump.source_hz()), want_osd,
+    if (!p->init(resolve_screen_mode(mode, display_follower.resolve_hz(pump.source_hz())),
+                 want_osd,
                  [&releases](const maburplay::DmaFrame& f) { releases.push(f); }, log_failures)) {
       if (tear_down) {
         resume_output();
@@ -2050,8 +2048,9 @@ int main(int argc, char** argv) {
       const maburplay::ScreenWant want = maburplay::parse_screen_want(c.screen_mode);
       const bool offered = want.kind == maburplay::ScreenWant::Kind::kFull
                                ? presenter->offers_mode(c.screen_mode)
-                               : maburplay::want_offered(presenter->modes(), want,
-                                                         pump.source_hz());
+                               : maburplay::want_offered(
+                                     presenter->modes(), want,
+                                     display_follower.resolve_hz(pump.source_hz()));
       if (!offered) {
         *err = "mode not offered: " + c.screen_mode;
         return false;
@@ -2226,39 +2225,25 @@ int main(int argc, char** argv) {
                          : "maburplay: rate mismatch cleared: source %.2f Hz, panel %.3f Hz%s\n",
                      src_hz, panel_hz,
                      rate_match.mismatch() && phase_lock ? " -- phase lock paused" : "");
-      // screen_mode "auto" / "WxH": a camera rate the panel cannot reach
-      // moves the display to the camera's rate (display_follow.h). The
-      // rebuild is synchronous, so the next check already sees the new
-      // presenter's mode as the running one and does not issue it again.
-      const maburplay::ScreenWant screen_want = maburplay::parse_screen_want(cfg.screen_mode);
+      // The display following the camera: a rebuild runs synchronously, so
+      // the next window already sees the new presenter's mode as running.
+      static const std::vector<maburplay::ModeCand> kNoModes;
+      const maburplay::FollowOut follow = display_follower.on_window(
+          maburplay::parse_screen_want(cfg.screen_mode), src_hz, lp,
+          presenter ? presenter->modes() : kNoModes, presenter ? presenter->mode_index() : -1);
       g_display_banner.clear();
-      if (presenter && screen_want.kind != maburplay::ScreenWant::Kind::kFull &&
-          rate_match.mismatch() && lp != maburplay::RateMatch::LowPower::kYes) {
-        maburplay::FollowIn in;
-        in.want = screen_want;
-        in.camera_hz = src_hz;
-        in.modes = presenter->modes();
-        in.running = presenter->mode_index();
-        const maburplay::FollowOut out = maburplay::follow_display(in);
-        if (out.rebuild) {
-          const std::string target =
-              maburplay::mode_string(in.modes[static_cast<size_t>(out.mode)]);
-          if (target != follow_stuck) {
-            std::fprintf(stderr, "maburplay: display follows camera: %s\n", target.c_str());
-            reacquire_display(target, /*log_failures=*/true);
-            if (presenter && presenter->mode_index() >= 0 &&
-                maburplay::mode_string(presenter->modes()[static_cast<size_t>(
-                    presenter->mode_index())]) != target)
-              follow_stuck = target;
-          }
-        } else if (out.mismatch) {
-          char line[160];
-          std::snprintf(line, sizeof line,
-                        "⚠ Camera %.0f fps — this display has no %.0f Hz mode. Showing at "
-                        "%.0f Hz (judder).",
-                        src_hz, src_hz, out.shown_hz);
-          g_display_banner = line;
-        }
+      if (follow.rebuild) {
+        const std::string target =
+            maburplay::mode_string(presenter->modes()[static_cast<size_t>(follow.mode)]);
+        std::fprintf(stderr, "maburplay: display follows camera: %s\n", target.c_str());
+        reacquire_display(target, /*log_failures=*/true);
+      } else if (follow.mismatch) {
+        char line[160];
+        std::snprintf(line, sizeof line,
+                      "⚠ Camera %.0f fps — this display has no %.0f Hz mode. Showing at "
+                      "%.0f Hz (judder).",
+                      src_hz, src_hz, follow.shown_hz);
+        g_display_banner = line;
       }
     }
     if (phase_lock) {

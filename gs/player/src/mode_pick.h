@@ -104,16 +104,25 @@ inline int pick_mode(const std::vector<ModeCand>& modes, const ScreenWant& want,
   return preferred_mode(modes);
 }
 
+// Whether `m` can carry a following want: progressive, and of the wanted
+// size for kSize.
+inline bool fits_want(const ModeCand& m, const ScreenWant& want) {
+  return !m.interlaced &&
+         (want.kind != ScreenWant::Kind::kSize || (m.w == want.w && m.h == want.h));
+}
+
 // The display mode for `want` with the camera running at `camera_hz` (0 =
 // not measured yet). kFull is pick_mode's exact-rate rule. kAuto and kSize
-// follow the camera: the candidates are the non-interlaced modes (of the
-// wanted size for kSize) within kModeMatchHz of the camera's rate, and
-// *matched says whether there are any. kAuto takes the largest w*h among
-// them (a tie: the closest rate), kSize the closest rate. With none, the
-// display cannot show that rate: the same rule runs over the modes at the
-// nearest rate it has (that rate within kModeMatchHz, as a 99.98 and a
-// 100.000 Hz timing are one rate here), and a kSize the display has at no
-// rate at all takes the preferred mode. An unknown camera rate: kAuto
+// follow the camera: the candidates are the fitting modes (fits_want)
+// within kModeMatchHz of the camera's rate, and *matched says whether there
+// are any. kAuto takes the largest w*h among them (a tie: the closest
+// rate), kSize the closest rate. With none, the display cannot show that
+// rate: the same rule runs over the modes at the display's rate nearest
+// the camera's -- the fitting mode closest in rate (an exact tie, a camera
+// midway between two rates: the higher one) and every fitting mode within
+// kModeMatchHz of it, so a 99.98 and a 100.000 Hz timing are one rate and
+// a 60 and a 120 Hz mode never share a group. A kSize the display has at
+// no rate at all takes the preferred mode. An unknown camera rate: kAuto
 // takes the preferred mode; kSize that size at the rate closest to the
 // preferred mode's (*matched), else the preferred mode. -1 for an empty
 // list.
@@ -123,37 +132,42 @@ inline int pick_display_mode(const std::vector<ModeCand>& modes, const ScreenWan
   if (want.kind == ScreenWant::Kind::kFull) return pick_mode(modes, want, matched);
   if (modes.empty()) return -1;
   const int pref = preferred_mode(modes);
-  const bool sized = want.kind == ScreenWant::Kind::kSize;
-  auto fits = [&](const ModeCand& m) {
-    return !m.interlaced && (!sized || (m.w == want.w && m.h == want.h));
-  };
   // The rate everything is judged against: the camera's, or with that not
   // known yet the preferred mode's.
   const double target = camera_hz > 0.0 ? camera_hz : mode_hz(modes[static_cast<size_t>(pref)]);
-  if (camera_hz <= 0.0 && !sized) {
+  if (camera_hz <= 0.0 && want.kind == ScreenWant::Kind::kAuto) {
     *matched = true;
     return pref;
   }
-  // The nearest rate any fitting mode has to the target.
-  double nearest = -1.0;
-  for (const ModeCand& m : modes) {
-    if (!fits(m)) continue;
-    const double d = std::fabs(mode_hz(m) - target);
-    if (nearest < 0.0 || d < nearest) nearest = d;
+  // The fitting mode nearest the target in rate; an exact tie goes to the
+  // higher rate.
+  int nearest = -1;
+  double nearest_d = 0.0;
+  for (size_t i = 0; i < modes.size(); ++i) {
+    if (!fits_want(modes[i], want)) continue;
+    const double hz = mode_hz(modes[i]);
+    const double d = std::fabs(hz - target);
+    if (nearest < 0 || d < nearest_d ||
+        (d == nearest_d && hz > mode_hz(modes[static_cast<size_t>(nearest)]))) {
+      nearest = static_cast<int>(i);
+      nearest_d = d;
+    }
   }
-  if (nearest < 0.0) return pref;  // no mode of that size (or none progressive)
-  // Within kModeMatchHz of the target when the display has the rate, else
-  // the modes at the nearest rate it has.
-  const double reach = nearest <= kModeMatchHz ? kModeMatchHz : nearest + kModeMatchHz;
-  *matched = camera_hz <= 0.0 || nearest <= kModeMatchHz;
+  if (nearest < 0) return pref;  // no mode of that size (or none progressive)
+  *matched = camera_hz <= 0.0 || nearest_d <= kModeMatchHz;
+  // The group: within kModeMatchHz of the target when the display has its
+  // rate, else within kModeMatchHz of the nearest rate it has.
+  const double centre =
+      nearest_d <= kModeMatchHz ? target : mode_hz(modes[static_cast<size_t>(nearest)]);
   int best = -1;
   long best_area = 0;
   double best_d = 0.0;
   for (size_t i = 0; i < modes.size(); ++i) {
     const ModeCand& m = modes[i];
-    if (!fits(m)) continue;
-    const double d = std::fabs(mode_hz(m) - target);
-    if (d > reach) continue;
+    if (!fits_want(m, want)) continue;
+    const double hz = mode_hz(m);
+    if (std::fabs(hz - centre) > kModeMatchHz) continue;
+    const double d = std::fabs(hz - target);
     const long area = static_cast<long>(m.w) * m.h;
     if (best < 0 || area > best_area || (area == best_area && d < best_d)) {
       best = static_cast<int>(i);
