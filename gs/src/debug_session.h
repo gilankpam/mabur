@@ -41,6 +41,15 @@ class DebugSession {
   // false and dir() is unchanged; the caller keeps logging where it was.
   bool rotate();
 
+  // Opens a session in place when the caller was constructed with
+  // enable=false (a live `debug_log.enable` flip). No-op returning true
+  // when already ok(). On failure ok() reads false and nothing is
+  // published -- same non-fatal contract as the constructor.
+  bool enable();
+  // Closes the session in place: removes the marker and resets to the
+  // same state the enable=false constructor branch leaves. Idempotent.
+  void disable();
+
  private:
   bool adopt_marker_(const char* marker_path);
   bool allocate_(const std::string& root, const char* marker_path);

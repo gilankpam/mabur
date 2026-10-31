@@ -2,7 +2,7 @@
 
 #include <cmath>
 
-#include "config_write.h"
+#include "mabur/config_write.h"
 
 namespace mabur::mavparam {
 

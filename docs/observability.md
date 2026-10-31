@@ -342,6 +342,25 @@ fields once per `drone.tlm_seq` (`flightreport.py` does).
 - `sys.{soc_temp_c, cpu_pct}` (`cpu_pct` null on the first tick after a
   maburd start).
 
+## Live config control (8402/8403)
+
+Next to `CalControl` (`127.0.0.1:8400`) and `RecControl` (`127.0.0.1:8401`),
+both GS daemons carry a loopback `set`/`get` listener for a small table of
+config keys: `maburgs` on `127.0.0.1:8402`, `maburplay` on
+`127.0.0.1:8403`. A `set` applies to the running process and, once
+accepted, writes through to the daemon's own TOML file (`.pre-live`
+backup, once per run); `get` always answers from the live copy. Each
+accepted or refused `set` logs one line:
+
+```
+<daemon>: cfg set <key> = <value> -> ok (<ms> ms)
+<daemon>: cfg set <key> = <value> -> err <reason> (<ms> ms)
+```
+
+`debug_log.enable` is one of the live keys, so a session can be opened or
+closed without a restart. Full reference, the two key tables, and the
+bench driver (`tools/bench/gsparam.py`): `docs/gs-live-config.md`.
+
 ## Debug-log session directory
 
 maburgs writes a per-session directory when `debug_log.enable` is set
@@ -388,11 +407,16 @@ One sideport snapshot per `stats.interval_ms`, written straight from
 `StatsExporter` (no UDP round-trip). No format marker; the datagram's `v`
 and `seq` are the self-description.
 
-### `ctl.log` (`ctllog 12`)
+### `ctl.log` (`ctllog 13`)
 
 The adaptive-link record, written also in static-pin mode. Header
-`ctllog 12 <header_info>` (the ladder with per-rung width, thresholds), then
-compact lines — formats locked in `gs/src/ctl_log.h`:
+`ctllog 13 <header_info>` (the ladder with per-rung width, thresholds), then
+compact lines — formats locked in `gs/src/ctl_log.h`. A live ladder swap
+(`set link.ladder` on 8402) writes another `ctllog 13 <header_info>` line
+in the same file; the rows after it index the new ladder, and the next
+`E` line is the swap's rung re-entry, reason `ladder_swap`. Back to
+adaptive from a live static pin is a re-entry too, reason `unpin` (its
+`from` is the rung the ladder held before the pin):
 
 - `S` — dwell sample every `debug_log.ctl_period_ms`: rung, util `u`/`u3`
   (arrival-booked pre-FEC loss), residuals, RF labels, fade deltas, and three
@@ -718,8 +742,8 @@ against it, not against the housekeeping loop that prints the line.
 - `flushes=` — output parks, cumulative: every time housekeeping parks the
   decode-output and release threads and drops what the display holds — a
   ring flush, a decode-watchdog reset or recreate, a display hotplug
-  acquire, shutdown. `disconts=` counts only encoder pts discontinuities,
-  none of these.
+  acquire or replug rebuild, a live display rebuild, shutdown.
+  `disconts=` counts only encoder pts discontinuities, none of these.
 - `recstarts=` — recorder starts, cumulative: the burned recorder coming
   up, or a raw recording starting. `tools/bench/latchgate.py` excludes the
   misses and `pend` growth right after a rise in either counter (its
@@ -835,14 +859,36 @@ against it, not against the housekeeping loop that prints the line.
   regenerate with `tools/gen_splash.py`) so the sink locks a mode before
   video exists, and retries display acquisition once a second while none is
   connected — a display plugged in after the player started is picked up
-  without a restart. That holds only if a display was NEVER acquired: one
-  that disconnects after a successful acquire is deliberately not recovered
-  (KMS retains CRTC state and a replug normally re-lights it on its own).
-  Neither has a config key. The splash shows only until the first decoded
-  frame — it is an aerial photo that would read as a live feed mid-flight,
-  so a mid-flight replug comes up on video. Log lines:
-  `no display at startup -- retrying …`, `display acquired after N.N s`;
-  per-attempt DRM failures are silenced on purpose (/tmp is tmpfs).
+  without a restart. A display unplugged and plugged back in after a
+  successful acquire gets a fresh presenter: after a replug the sink can
+  stay black although KMS re-applies the retained mode, and a fresh
+  presenter's full modeset brings the picture back. The kernel's DRM
+  hotplug uevents (netlink; a 1 s status poll when the socket cannot open)
+  wake a no-probe read of the presenter's connector; once it has read
+  disconnected and then connected with 1 s of quiet, the presenter is
+  rebuilt on `screen_mode` — the same rebuild a live `screen_mode` set
+  runs, so it counts in `flushes=`. A burst of HPD/DDC flaps coalesces
+  into one rebuild. A uevent without a disconnected read (an EDID re-read,
+  another connector) rebuilds nothing. An unplug/replug is missed only if
+  both edges fall between two status reads. Two limits stop a sink that
+  pulses HPD on a modeset from rebuilding over and over: anything the
+  connector reports in the 5 s after an acquire is ignored (that window
+  starts at the acquire, not the modeset, so it only covers a prompt
+  pulse), and at most 3 replug rebuilds run per 60 s — a fourth is refused
+  and logged, and the watch ignores the connector until 60 s after the
+  oldest of those 3, after which only a fresh unplug and replug rebuilds. A disconnect
+  still standing when either window ends is acted on; an unplug and
+  replug both inside one go unseen. A failed rebuild leaves the 1 s retry
+  in charge. None of this has a config key. The splash shows only until the first
+  decoded frame — it is an aerial photo that would read as a live feed
+  mid-flight, so a mid-flight replug comes up on video. Log lines:
+  `no display at startup -- retrying …`, `display acquired after N.N s`,
+  `display disconnected -- rebuilding the display when it reconnects`,
+  `display reconnected -- rebuilding on <mode>`,
+  `display reconnected but 3 rebuilds in 60 s already -- not rebuilding …`,
+  and `no hotplug uevents (netlink: …) -- polling …` when the socket is
+  unavailable; per-attempt DRM failures of the 1 s retry are silenced on
+  purpose (/tmp is tmpfs).
 
 ### GS link-status OSD
 

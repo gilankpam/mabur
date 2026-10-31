@@ -279,6 +279,25 @@ FbCache::Geom fb_geom(const DmaFrame& frame) {
   return g;
 }
 
+// The connector's modes as pick_mode() takes them.
+std::vector<ModeCand> mode_cands(const drmModeConnector* c) {
+  std::vector<ModeCand> cands;
+  cands.reserve(static_cast<size_t>(c->count_modes));
+  for (int i = 0; i < c->count_modes; ++i) {
+    const drmModeModeInfo* m = &c->modes[i];
+    ModeCand mc;
+    mc.w = m->hdisplay;
+    mc.h = m->vdisplay;
+    mc.clock_khz = static_cast<int>(m->clock);
+    mc.htotal = m->htotal;
+    mc.vtotal = m->vtotal;
+    mc.interlaced = (m->flags & DRM_MODE_FLAG_INTERLACE) != 0;
+    mc.preferred = (m->type & DRM_MODE_TYPE_PREFERRED) != 0;
+    cands.push_back(mc);
+  }
+  return cands;
+}
+
 }  // namespace
 
 struct DrmPresenter::Impl {
@@ -795,20 +814,7 @@ bool DrmPresenter::Impl::init(const std::string& screen_mode, bool want_osd, Rel
 
   // Mode select (mode_pick.h): the closest exact rate among modes of the
   // wanted size; the preferred mode (or the first) when none fits.
-  std::vector<ModeCand> cands;
-  cands.reserve(static_cast<size_t>(chosen->count_modes));
-  for (int i = 0; i < chosen->count_modes; ++i) {
-    const drmModeModeInfo* m = &chosen->modes[i];
-    ModeCand c;
-    c.w = m->hdisplay;
-    c.h = m->vdisplay;
-    c.clock_khz = static_cast<int>(m->clock);
-    c.htotal = m->htotal;
-    c.vtotal = m->vtotal;
-    c.interlaced = (m->flags & DRM_MODE_FLAG_INTERLACE) != 0;
-    c.preferred = (m->type & DRM_MODE_TYPE_PREFERRED) != 0;
-    cands.push_back(c);
-  }
+  const std::vector<ModeCand> cands = mode_cands(chosen);
   bool matched = false;
   const int pick = pick_mode(cands, parse_screen_want(screen_mode), &matched);
   const drmModeModeInfo* selected = pick >= 0 ? &chosen->modes[pick] : nullptr;
@@ -1975,6 +1981,26 @@ bool DrmPresenter::vsync_ts_exact() const { return impl_->ts_exact; }
 double DrmPresenter::mode_period_us() const {
   return maburplay::mode_period_us(impl_->mode.clock, impl_->mode.htotal,
                                    impl_->mode.vtotal);
+}
+
+bool DrmPresenter::offers_mode(const std::string& screen_mode) const {
+  if (impl_->fd < 0 || impl_->connector_id == 0) return false;
+  drmModeConnectorPtr c = drmModeGetConnectorCurrent(impl_->fd, impl_->connector_id);
+  if (!c) return false;
+  const std::vector<ModeCand> cands = mode_cands(c);
+  drmModeFreeConnector(c);
+  bool matched = false;
+  pick_mode(cands, parse_screen_want(screen_mode), &matched);
+  return matched;
+}
+
+bool DrmPresenter::connector_connected() const {
+  if (impl_->fd < 0 || impl_->connector_id == 0) return true;
+  drmModeConnectorPtr c = drmModeGetConnectorCurrent(impl_->fd, impl_->connector_id);
+  if (!c) return true;
+  const bool connected = c->connection != DRM_MODE_DISCONNECTED;
+  drmModeFreeConnector(c);
+  return connected;
 }
 
 bool DrmPresenter::osd_available() const {

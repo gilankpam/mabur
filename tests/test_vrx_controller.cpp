@@ -825,3 +825,167 @@ TEST(rcf_carries_the_idr_epoch) {
   vrx.set_idr_epoch(0x2B);
   CHECK(first_rcf(vrx, healthy(), t).idr_epoch == 0x2B);
 }
+
+TEST(set_pin_takes_effect_on_the_next_rcf) {
+  auto vrx = make();                      // adaptive, ladder rung 0 = mcs0
+  link(vrx, 0);
+  vrx.set_pin(3, 20, 0.5, 0.25, 0);
+  std::optional<VrxController::Out> out;
+  for (double t = 10; t < 2000 && !(out && !out->is_disc); t += 10) {
+    vrx.on_video(t);
+    out = vrx.step(t, healthy());
+  }
+  REQUIRE(out && !out->is_disc);
+  CHECK(vrx.cur_op().mcs == 3);
+  CHECK(vrx.cur_op().overhead_base == 0.5);
+  CHECK(vrx.cur_op().overhead_enh == 0.25);
+  CHECK(vrx.pin_mcs() == 3);
+  vrx.set_pin(-1, 20, 0.5, 0.5, 2000);    // back to adaptive: the ladder's rung 0
+  for (double t = 2000; t < 4000; t += 10) { vrx.on_video(t); vrx.step(t, healthy()); }
+  CHECK(vrx.pin_mcs() == -1);
+  CHECK(vrx.cur_op().mcs == vrx.ctl().op().mcs);
+}
+
+TEST(replace_ladder_keeps_the_rung_by_mcs_and_width) {
+  auto vrx = make();                      // rungs mcs 0,2,4,5,6,7 at bw 20
+  link(vrx, 0);
+  vrx.restore_rung(2, 0);                 // op = mcs4
+  REQUIRE(vrx.cur_op().mcs == 4);
+  LadderCfg nl = default_ladder();
+  nl.ladder = {{0, 1.0, 1.0}, {4, 0.5, 0.25}, {5, 0.5, 0.25}};   // mcs4 now index 1
+  vrx.replace_ladder(nl, 100);
+  CHECK(vrx.ctl().rung() == 1);
+  CHECK(vrx.cur_op().mcs == 4);
+  CHECK(vrx.cur_op().overhead_enh == 0.25);
+  CHECK(vrx.ladder().ladder.size() == 3);
+}
+TEST(replace_ladder_falls_back_to_rung_0_when_op_rung_is_gone) {
+  auto vrx = make();
+  link(vrx, 0);
+  vrx.restore_rung(2, 0);                 // mcs4
+  LadderCfg nl = default_ladder();
+  nl.ladder = {{0, 1.0, 1.0}, {2, 0.5, 0.5}};
+  vrx.replace_ladder(nl, 100);
+  CHECK(vrx.ctl().rung() == 0);
+  CHECK(vrx.cur_op().mcs == 0);
+}
+// The swap's rung re-entry is logged as its own reason, not a hop's
+// restore: a reader pairing hop_restore rows with hop orders must not take
+// a swap near a hop for that hop's restore.
+TEST(replace_ladder_logs_its_rung_reentry_as_ladder_swap) {
+  auto vrx = make();
+  link(vrx, 0);
+  vrx.restore_rung(2, 0);                 // mcs4
+  REQUIRE(vrx.ctl().last_event().reason == CtlReason::HopRestore);
+  LadderCfg nl = default_ladder();
+  nl.ladder = {{0, 1.0, 1.0}, {4, 0.5, 0.5}};
+  vrx.replace_ladder(nl, 100);
+  CHECK(vrx.ctl().rung() == 1);
+  CHECK(vrx.ctl().last_event().reason == CtlReason::LadderSwap);
+  CHECK(vrx.ctl().last_event().from == 0);   // the new controller starts at its rung 0
+  CHECK(vrx.ctl().last_event().to == 1);
+  CHECK(std::string(to_string(CtlReason::LadderSwap)) == "ladder_swap");
+}
+// Feeds healthy samples until one reaches the ladder as feedback, so the
+// controller holds a fresh feedback stamp at the returned time.
+static double feed_until_feedback(VrxController& vrx, double t) {
+  for (;; t += 10) {
+    vrx.on_video(t);
+    if (auto out = vrx.step(t, healthy()); out && !out->is_disc) return t;
+  }
+}
+// A swap is not a feedback gap: the new controller inherits the old one's
+// feedback stamp, so a kept rung above 0 is not dropped by the blind-side
+// timeout on the next tick. Revert = construct the new controller with no
+// stamp and the next step() demotes to rung 0 with reason timeout.
+TEST(replace_ladder_keeps_the_feedback_stamp) {
+  auto vrx = make();
+  link(vrx, 0);
+  const double t0 = feed_until_feedback(vrx, 10);
+  vrx.restore_rung(2, t0);                // mcs4
+  const double t = feed_until_feedback(vrx, t0 + 10);
+  REQUIRE(vrx.ctl().rung() == 2);
+  LadderCfg nl = default_ladder();
+  nl.ladder = {{0, 1.0, 1.0}, {4, 0.5, 0.25}, {5, 0.5, 0.25}};
+  vrx.replace_ladder(nl, t);
+  vrx.on_video(t + 10);
+  vrx.step(t + 10, no_data());
+  CHECK(vrx.ctl().rung() == 1);
+  CHECK(vrx.ctl().counters().timeout_drops == 0);
+  CHECK(vrx.ctl().last_event().reason == CtlReason::LadderSwap);
+}
+// Back to adaptive from a static pin restarts the ladder on the pinned
+// {mcs, bw}: the ladder got no feedback while pinned, and reading that as
+// a feedback timeout would log a demotion that never happened.
+TEST(unpin_restarts_the_ladder_on_the_pinned_rung) {
+  auto vrx = make();
+  link(vrx, 0);
+  double t = feed_until_feedback(vrx, 10);
+  vrx.restore_rung(2, t);                 // mcs4
+  t = feed_until_feedback(vrx, t + 10);
+  vrx.set_pin(5, 20, 0.5, 0.25, t);       // mcs5 = ladder index 3
+  for (const double end = t + 3000; t < end; t += 10) { vrx.on_video(t); vrx.step(t, healthy()); }
+  vrx.set_pin(-1, 20, 0.5, 0.5, t);
+  CHECK(vrx.ctl().rung() == 3);
+  CHECK(vrx.cur_op().mcs == 5);
+  vrx.on_video(t);
+  vrx.step(t, no_data());
+  CHECK(vrx.ctl().rung() == 3);
+  CHECK(vrx.ctl().counters().timeout_drops == 0);
+  CHECK(vrx.ctl().last_event().reason == CtlReason::Unpin);
+  CHECK(std::string(to_string(CtlReason::Unpin)) == "unpin");
+}
+TEST(unpin_falls_back_to_rung_0_off_the_ladder) {
+  auto vrx = make();
+  link(vrx, 0);
+  double t = feed_until_feedback(vrx, 10);
+  vrx.restore_rung(2, t);                 // mcs4
+  t = feed_until_feedback(vrx, t + 10);
+  vrx.set_pin(3, 20, 0.5, 0.25, t);       // mcs3: no such rung
+  for (const double end = t + 3000; t < end; t += 10) { vrx.on_video(t); vrx.step(t, healthy()); }
+  vrx.set_pin(-1, 20, 0.5, 0.5, t);
+  CHECK(vrx.ctl().rung() == 0);
+  CHECK(vrx.ctl().counters().timeout_drops == 0);
+  CHECK(vrx.ctl().last_event().reason == CtlReason::Unpin);
+}
+TEST(replace_ladder_matches_width_not_only_mcs) {
+  auto vrx = make();
+  link(vrx, 0);
+  vrx.restore_rung(2, 0);                 // mcs4 @20
+  LadderCfg nl = default_ladder();
+  nl.ladder = {{0, 1.0, 1.0}, {4, 0.5, 0.5, 40}};   // mcs4 only at 40
+  vrx.replace_ladder(nl, 100);
+  CHECK(vrx.ctl().rung() == 0);
+}
+
+// replace_ladder re-enters a rung unconditionally, even when the match (or
+// the no-match fallback) lands on rung 0 -- the re-entry's mark_transition() is
+// what opens the s3 post-transition settle window, and a guard that skips
+// the call at idx 0 left the fallback case with no re-key settle
+// protection at all. Pins it directly: a usable s3 sample fed well inside
+// s3_settle_ms (default 300 ms) of the fallback swap must read as
+// unmeasurable (util3() == 0), which only holds if mark_transition() armed
+// the blank deadline on this swap. Revert = bring back an `if (idx != 0)`
+// guard around the restore() call and this fails (util3() reads the
+// sample's real loss instead of 0).
+TEST(replace_ladder_opens_the_s3_settle_window_even_at_rung_0) {
+  auto vrx = make();
+  link(vrx, 0);
+  vrx.restore_rung(2, 0);                 // mcs4
+  LadderCfg nl = default_ladder();
+  nl.ladder = {{0, 1.0, 1.0}, {2, 0.5, 0.5}};   // mcs4 gone -> fallback to rung 0
+  vrx.replace_ladder(nl, 100);
+  REQUIRE(vrx.ctl().rung() == 0);
+
+  LinkHealth h{true, 0.0, 0.0, false};
+  h.s3_valid = true;
+  h.s3_pre_fec_loss = 0.5;
+  h.s3_expected_syms = 1000;
+  bool saw_feedback = false;
+  for (double t = 110; t < 350 && !saw_feedback; t += 10) {
+    vrx.on_video(t);
+    if (auto out = vrx.step(t, h); out && !out->is_disc) saw_feedback = true;
+  }
+  REQUIRE(saw_feedback);
+  CHECK(vrx.ctl().util3() == 0.0);
+}

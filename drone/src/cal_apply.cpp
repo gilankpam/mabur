@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <exception>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -240,6 +241,19 @@ std::string rate_list(uint8_t mask) {
 void insert_toml_key_after(std::vector<std::string>& lines, int after_idx,
                            const std::string& new_line) {
   lines.insert(lines.begin() + after_idx + 1, new_line);
+}
+
+// publish_config's verifier: the SAME function maburd boots with, not a
+// bare TOML syntax check (see mabur/config_write.h for why anything weaker
+// defeats the point of publishing through it at all).
+bool verify_with_load_config(const std::string& candidate_path, std::string* err) {
+  try {
+    (void)load_config(candidate_path);
+    return true;
+  } catch (const std::exception& e) {
+    if (err) *err = e.what();
+    return false;
+  }
 }
 
 }  // namespace
@@ -578,8 +592,8 @@ ApplyResult apply_calibration_impl(const std::string& path, const CalWrite& w,
   // "<path>.pre-cal" at all -- it is not written and then reverted, so an
   // earlier call's real backup in the same session is never at risk.
   std::string pub_err;
-  const PublishResult pr =
-      publish_config(path, content, "pre-cal", &pub_err, /*write_backup=*/backup);
+  const PublishResult pr = publish_config(path, content, "pre-cal", &pub_err,
+                                          verify_with_load_config, /*write_backup=*/backup);
   switch (pr) {
     case PublishResult::Ok:
       if (note) *note = std::move(kept);

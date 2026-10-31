@@ -313,7 +313,8 @@ def render_rows_compact(model, wall, width):
             f"maburgs   {state_s}   "
             f"key {_s(link.get('key_fp'))}   {_mav_cell(link)}   "
             f"{cal_s + '   ' if cal_s else ''}"
-            f"ch {_s(chan)} scan {scan.get('state', '--')}:{_s(scan.get('rounds'))} "
+            f"ch {_s(chan)} scan {scan.get('state', '--')}:{_s(scan.get('rounds'))}"
+            f"{' pin' if scan.get('pinned') else ''} "
             f"hop {hop.get('state', '--')}/{hop.get('verdict', '--')}   "
             f"tx c{_s(tx_card)}   "
             f"MCS {_s(mcs)}/{_s(bw)}   "
@@ -559,6 +560,7 @@ def panel_topbar(model, wall):
     else:
         state_s = "--"
     chan = link.get("channel")
+    pin_s = " pin" if (d.get("scan") or {}).get("pinned") else ""
     mcs, bw = op.get("mcs"), op.get("bw")
     cmd_ov_base = op.get("overhead_base")
     cmd_ov_enh = op.get("overhead_enh")
@@ -577,7 +579,7 @@ def panel_topbar(model, wall):
     cal_s = _cal_cell(link)
     text = (
         f" maburgs  {dot} {state_s}   key {_s(link.get('key_fp'))}   "
-        f"{_mav_cell(link)}   {cal_s + '   ' if cal_s else ''}ch {_s(chan)}   "
+        f"{_mav_cell(link)}   {cal_s + '   ' if cal_s else ''}ch {_s(chan)}{pin_s}   "
         f"cmd MCS {_s(mcs)}/{_s(bw)}  "
         f"{_ov_cmd_cell(cmd_ov_base, cmd_ov_enh)}   "
         f"air ~{_s(air, 0)}%      session {session_s}   "

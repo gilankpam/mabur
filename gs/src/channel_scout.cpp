@@ -16,14 +16,14 @@ namespace {
 // ranker's row order: the K log line and ranking() expose it). Pinned
 // (search only): the members. Measuring at 40: both halves of every
 // member's pair. Measuring at 20: the members.
-std::vector<uint8_t> dwell_channels(const ScoutCfg& c) {
-  if (c.measure && c.link_width_mhz == 40) return scan_half_set(c.channels);
+std::vector<uint8_t> dwell_channels(const ScoutCfg& c, bool measure) {
+  if (measure && c.link_width_mhz == 40) return scan_half_set(c.channels);
   return c.channels;
 }
 
-devourer::chanmig::ScanPlanConfig plan_for(const ScoutCfg& c) {
+devourer::chanmig::ScanPlanConfig plan_for(const ScoutCfg& c, bool measure) {
   devourer::chanmig::ScanPlanConfig p;
-  for (uint8_t ch : dwell_channels(c)) {
+  for (uint8_t ch : dwell_channels(c, measure)) {
     bool dup = false;
     for (const auto& d : p.candidates) dup = dup || d.primary == ch;
     if (dup) continue;
@@ -49,10 +49,11 @@ ChannelScout::ChannelScout(ScoutCfg cfg, ScoutRadio& radio, NowFn now_ms, SleepF
       radio_(radio),
       now_(std::move(now_ms)),
       sleep_(std::move(sleep_ms)),
-      sched_(plan_for(cfg_)),
-      ranker_(dwell_channels(cfg_), cfg_.min_rounds, cfg_.pick_margin, cfg_.blocked_pct),
+      sched_(plan_for(cfg_, cfg_.measure)),
+      ranker_(dwell_channels(cfg_, cfg_.measure), cfg_.min_rounds, cfg_.pick_margin, cfg_.blocked_pct),
       proposal_(cfg_.channels.empty() ? 0 : cfg_.channels.front()),
       op_(cfg_.channels.empty() ? 0 : cfg_.channels.front()) {
+  measure_.store(cfg_.measure, std::memory_order_release);
   prelude_done_.store(!(cfg_.one_card && cfg_.measure), std::memory_order_release);
   prelude_ack_.store(!(cfg_.one_card && cfg_.measure), std::memory_order_release);
 }
@@ -67,19 +68,52 @@ void ChannelScout::set_op(uint8_t ch) {
   publish_();   // the margin is against op
 }
 
+void ChannelScout::unfreeze() {
+  {
+    std::lock_guard<std::mutex> lk(mu_);
+    ranker_ = ChannelRanker(dwell_channels(cfg_, measure_.load(std::memory_order_acquire)),
+                            cfg_.min_rounds, cfg_.pick_margin, cfg_.blocked_pct);
+  }
+  // A fresh schedule restarts rounds(): the one-card prelude's effective
+  // min_rounds (1 until min_rounds full passes) holds again, as at boot.
+  resched_.store(true, std::memory_order_release);
+  if (cfg_.one_card && measure_.load(std::memory_order_acquire)) {
+    // reprelude_ first: a run thread that sees prelude_done_ false also
+    // sees the request to restart t0_, so an old t0_ never ends the new
+    // prelude on its first step.
+    reprelude_.store(true, std::memory_order_release);
+    prelude_ack_.store(false, std::memory_order_release);
+    prelude_done_.store(false, std::memory_order_release);
+  }
+  frozen_.store(false, std::memory_order_release);
+  publish_();
+}
+
+void ChannelScout::set_measure(bool on) {
+  if (measure_.load(std::memory_order_acquire) == on) return;
+  {
+    std::lock_guard<std::mutex> lk(mu_);
+    measure_.store(on, std::memory_order_release);
+    ranker_ = ChannelRanker(dwell_channels(cfg_, on), cfg_.min_rounds, cfg_.pick_margin, cfg_.blocked_pct);
+  }
+  resched_.store(true, std::memory_order_release);
+}
+
 bool ChannelScout::has_work_() const {
   return search_.load(std::memory_order_acquire) || measuring_();
 }
 
 bool ChannelScout::measuring_() const {
-  return cfg_.measure && (!frozen_.load(std::memory_order_acquire) ||
-                          round_.load(std::memory_order_acquire) == kRoundMeasuring);
+  return measure_.load(std::memory_order_acquire) &&
+         (!frozen_.load(std::memory_order_acquire) ||
+          round_.load(std::memory_order_acquire) == kRoundMeasuring);
 }
 
 void ChannelScout::begin_round() {
   {
     std::lock_guard<std::mutex> lk(mu_);
-    ranker_ = ChannelRanker(dwell_channels(cfg_), cfg_.min_rounds, cfg_.pick_margin, cfg_.blocked_pct);
+    ranker_ = ChannelRanker(dwell_channels(cfg_, measure_.load(std::memory_order_acquire)),
+                            cfg_.min_rounds, cfg_.pick_margin, cfg_.blocked_pct);
     round_dwells_ = 0;
     round_samples_.clear();
   }
@@ -109,7 +143,7 @@ void ChannelScout::end_round_measuring_() {
 // failing must not hold the run's channel pick forever).
 void ChannelScout::note_round_dwell_() {
   if (!round_measuring()) return;
-  const int cap = 2 * static_cast<int>(dwell_channels(cfg_).size());
+  const int cap = 2 * static_cast<int>(dwell_channels(cfg_, measure_.load(std::memory_order_acquire)).size());
   bool all = true;
   int taken = 0;
   {
@@ -178,7 +212,8 @@ void ChannelScout::run() {
 bool ChannelScout::is_op_half_(uint8_t ch) const {
   const uint8_t op = op_.load(std::memory_order_acquire);
   if (ch == op) return true;
-  return cfg_.measure && cfg_.link_width_mhz == 40 && ch == mabur::ht40_pair_other(op);
+  return measure_.load(std::memory_order_acquire) && cfg_.link_width_mhz == 40 &&
+         ch == mabur::ht40_pair_other(op);
 }
 
 bool ChannelScout::skip_op_half_(uint8_t ch) const {
@@ -191,7 +226,7 @@ bool ChannelScout::skip_op_half_(uint8_t ch) const {
 // and rounds() advance) and the next bin is taken; false when every bin is
 // one of op's.
 bool ChannelScout::step_dwell_(bool burst_ok, bool observe) {
-  const size_t bins = dwell_channels(cfg_).size();
+  const size_t bins = dwell_channels(cfg_, measure_.load(std::memory_order_acquire)).size();
   for (size_t i = 0; i <= bins; ++i) {
     auto p = sched_.next(now_());
     if (!p.valid) return true;
@@ -217,6 +252,10 @@ bool ChannelScout::step_dwell_(bool burst_ok, bool observe) {
 
 bool ChannelScout::run_once() {
   if (t0_ < 0) t0_ = now_();
+  if (resched_.exchange(false, std::memory_order_acq_rel)) {
+    sched_ = devourer::chanmig::ScanScheduler(plan_for(cfg_, measure_.load(std::memory_order_acquire)));
+    rounds_.store(sched_.rounds_complete(), std::memory_order_release);
+  }
   if (!has_work_()) {
     if (working_.load(std::memory_order_acquire)) park_();
     int m = kRoundMeasured;   // a round that just ended is over once parked
@@ -226,9 +265,10 @@ bool ChannelScout::run_once() {
   working_.store(true, std::memory_order_release);
   if (cfg_.one_card) {
     if (!prelude_done_.load(std::memory_order_acquire)) {
+      if (reprelude_.exchange(false, std::memory_order_acq_rel)) t0_ = now_();
       if (measuring_() && now_() - t0_ < cfg_.one_card_ms)
         return step_dwell_(/*burst_ok=*/false, /*observe=*/true);   // silent prelude
-      prelude_done_.store(true, std::memory_order_release);          // never re-arms
+      prelude_done_.store(true, std::memory_order_release);          // re-armed only by unfreeze()
       publish_();
       return true;   // the core reads the ranking, commits, then ack_prelude()s
     }

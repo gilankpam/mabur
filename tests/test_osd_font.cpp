@@ -263,4 +263,33 @@ TEST(set_inverse_invalidates_a_scaled_atlas_built_before_it) {
   CHECK(font.builds() == 2);
 }
 
+TEST(clear_inverse_restores_native_pixels) {
+  const ScratchFile p("osd_font", ".mfont");
+  write_font_pixels(p, 2, 1, {0xFFFFFFFFu, 0x00000000u});
+  OsdFont font;
+  std::string err;
+  REQUIRE(font.load(p.path, &err));
+  ColorTrans t;
+  font.set_inverse(t);
+  CHECK(font.native().pixels[0] == 0xFF8F8F8Fu);
+  const GlyphAtlas* inv = font.atlas_at(4, 2, ScaleMode::kSharp);
+  REQUIRE(inv != nullptr);
+  CHECK(inv->pixels[0] == 0xFF8F8F8Fu);
+  CHECK(font.builds() == 1);
+  font.clear_inverse();
+  CHECK(font.native().pixels == font.native_original().pixels);
+  CHECK(font.native().pixels[0] == 0xFFFFFFFFu);
+  // The scaled atlas held inverted pixels: clear_inverse drops it and
+  // atlas_at() rebuilds from the original.
+  const GlyphAtlas* plain = font.atlas_at(4, 2, ScaleMode::kSharp);
+  REQUIRE(plain != nullptr);
+  CHECK(plain->pixels[0] == 0xFFFFFFFFu);
+  CHECK(font.builds() == 2);
+  // Clearing with no inverse set is a no-op that keeps the cache.
+  font.clear_inverse();
+  CHECK(font.native().pixels[0] == 0xFFFFFFFFu);
+  font.atlas_at(4, 2, ScaleMode::kSharp);
+  CHECK(font.builds() == 2);
+}
+
 MTEST_MAIN

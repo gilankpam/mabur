@@ -4,6 +4,7 @@
 #include <sys/stat.h>
 #include <cstdlib>
 #include <fstream>
+#include <memory>
 #include <sstream>
 #include <string>
 
@@ -155,6 +156,26 @@ TEST(reopen_moves_a_stream_to_a_new_dir_and_repeats_its_header) {
   CHECK(slurp(d2 + "/ctl.log") == "ctllog 11 ladder=x\nS 2000 3\n");
   auto b = w.open(d2, "au.log", "# aulog 4");
   CHECK(b == a + 1);  // no slot was consumed by the reopen
+}
+
+TEST(reaper_finishes_a_retired_writer_off_the_caller) {
+  // A live debug-log off hands the session's writer to the reaper: what was
+  // queued still reaches the file, by the reaper's shutdown at the latest.
+  const std::string dir = make_dir("reap");
+  {
+    maburgs::LogWriterReaper reaper;
+    reaper.retire(nullptr);  // no writer: a no-op
+    for (int k = 0; k < 2; ++k) {
+      auto w = std::make_unique<maburgs::LogWriter>();
+      auto s = w->open(dir, k ? "b.log" : "a.log", "hdr");
+      REQUIRE(s != maburgs::LogWriter::kBadStream);
+      put(*w, s, "row " + std::to_string(k));
+      reaper.retire(std::move(w));
+      CHECK(w == nullptr);
+    }
+  }
+  CHECK(slurp(dir + "/a.log") == "hdr\nrow 0\n");
+  CHECK(slurp(dir + "/b.log") == "hdr\nrow 1\n");
 }
 
 MTEST_MAIN

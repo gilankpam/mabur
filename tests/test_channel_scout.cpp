@@ -375,4 +375,73 @@ TEST(run_exits_on_stop_and_parks) {
   CHECK(g.s.done() && !g.s.working());
   CHECK(g.r.calls.back() == "retune_width 136/40");
 }
+// set_measure: a search-only (pinned) scout at width 40 dwells on the
+// members; measuring, it dwells on both halves of every pair and observes;
+// off again, members only and no reads.
+TEST(set_measure_switches_the_dwell_set_and_the_observe) {
+  Rig g(two(false)); g.s.set_op(136); g.s.set_search(true);
+  for (int i = 0; i < 4; ++i) g.s.run_once();
+  for (auto& c : g.r.calls) CHECK(c.rfind("read", 0) != 0);
+  g.s.set_measure(true);
+  g.s.set_measure(true);                   // unchanged: a no-op
+  g.r.calls.clear();
+  for (int i = 0; i < 8; ++i) g.s.run_once();
+  bool half = false, read = false;
+  for (auto& c : g.r.calls) {
+    if (c == "retune 132" || c == "retune 140") half = true;
+    if (c.rfind("read", 0) == 0) read = true;
+  }
+  CHECK(half && read);
+  CHECK(g.s.mature());                     // the halves rank on the rebuilt ranker
+  g.s.set_measure(false);
+  CHECK(!g.s.mature());                    // members-only rows, nothing ranked yet
+  g.r.calls.clear();
+  for (int i = 0; i < 4; ++i) g.s.run_once();
+  for (auto& c : g.r.calls) {
+    CHECK(c != "retune 132" && c != "retune 140");
+    CHECK(c.rfind("read", 0) != 0);
+  }
+}
+
+// unfreeze: the pick opens again over a fresh ranker, and measuring resumes.
+TEST(unfreeze_reopens_the_pick_on_a_fresh_ranking) {
+  Rig g(two()); g.s.set_op(136); g.s.set_search(true);
+  for (int i = 0; i < 8; ++i) g.s.run_once();
+  REQUIRE(g.s.mature());
+  g.s.freeze();
+  CHECK(!g.s.pick_open());
+  g.s.unfreeze();
+  CHECK(g.s.pick_open());
+  CHECK(!g.s.mature());                    // ranks from before the freeze are gone
+  for (auto& e : g.s.ranking()) CHECK(e.visits == 0);
+  for (int i = 0; i < 8; ++i) g.s.run_once();
+  CHECK(g.s.mature());
+}
+
+// A one-card scout that booted search-only (pinned), measuring again and
+// reopened: the silent prelude runs once more for a full one_card_ms from
+// the reopen (not from the scout's first step), then waits for the ack.
+TEST(one_card_unfreeze_reruns_the_prelude_from_the_reopen) {
+  ScoutCfg c = two(false); c.one_card = true; c.one_card_ms = 1000; Rig g(c);
+  g.s.set_op(136); g.s.set_search(true);
+  for (int i = 0; i < 10; ++i) g.s.run_once();   // op windows: well past one_card_ms
+  REQUIRE(g.r.now > 2000);
+  g.s.freeze();
+  g.s.set_measure(true);
+  g.s.unfreeze();
+  CHECK(!g.s.prelude_done());
+  const int64_t t_reopen = g.r.now;
+  g.phases.clear();
+  for (int i = 0; i < 200 && g.r.now < t_reopen + 1000; ++i) g.s.run_once();   // bounded: a stalled scout stops the clock
+  REQUIRE(!g.phases.empty());
+  for (auto& p : g.phases) CHECK(p.first.find('B') == std::string::npos);   // silent
+  CHECK(!g.s.prelude_done());
+  g.s.run_once();
+  CHECK(g.s.prelude_done());
+  CHECK(g.s.mature());                      // the fresh ranking, 1 visit per half
+  g.phases.clear();
+  CHECK(!g.s.run_once());                   // no op window before the core's ack
+  for (auto& p : g.phases) CHECK(p.first.find('B') == std::string::npos);
+}
+
 MTEST_MAIN

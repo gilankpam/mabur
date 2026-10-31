@@ -33,7 +33,7 @@ TEST(ctl_log_writes_header_and_records) {
   log.penalty(2000, 3, 1, 12000);
   w.flush_now();
   std::string text = read_all(log.path());
-  CHECK(text.rfind("ctllog 12 ladder=20:0/100:100,20:2/50:50 down_util=0.35 up_util=0.15\n", 0) == 0);
+  CHECK(text.rfind("ctllog 13 ladder=20:0/100:100,20:2/50:50 down_util=0.35 up_util=0.15\n", 0) == 0);
   CHECK(text.find("\nS 1000 2 0.0500 31.5 0.0000 0.1000 0.0000 -24.5 0.0000 9.5 4.2 -63.4 3 0.1200 60\n") != std::string::npos);
   CHECK(text.find("\nE 1500 2 1 s3_util 0.4000 30.0 -23.0\n") != std::string::npos);
   CHECK(text.find("\nP 2000 3 lossy 24.0 0.9000 600 -22.5\n") != std::string::npos);
@@ -79,7 +79,7 @@ TEST(ctl_log_v2_sample_carries_resid_cur) {
              4.2, -63.4, -1, std::numeric_limits<double>::quiet_NaN(), 0);
   w.flush_now();
   std::string text = read_all(log.path());
-  CHECK(text.rfind("ctllog 12 ladder=20:5/25:25 down_util=0.60 up_util=0.15\n", 0) == 0);
+  CHECK(text.rfind("ctllog 13 ladder=20:5/25:25 down_util=0.60 up_util=0.15\n", 0) == 0);
   CHECK(text.find("\nS 1234 3 0.0123 31.5 0.0456 0.0000 0.0000 -21.0 0.0011 9.5 4.2 -63.4 -1 nan 0\n") != std::string::npos);
 }
 
@@ -93,7 +93,7 @@ TEST(ctl_log_v3_sample_carries_fade_deltas) {
              4.2, -63.4, -1, std::numeric_limits<double>::quiet_NaN(), 0);
   w.flush_now();
   std::string text = read_all(log.path());
-  CHECK(text.rfind("ctllog 12 ladder=20:5/25:25 down_util=0.60 up_util=0.15\n", 0) == 0);
+  CHECK(text.rfind("ctllog 13 ladder=20:5/25:25 down_util=0.60 up_util=0.15\n", 0) == 0);
   CHECK(text.find("\nS 1234 3 0.0123 31.5 0.0456 0.0000 0.0000 -21.0 0.0011 9.5 4.2 -63.4 -1 nan 0\n") != std::string::npos);
 }
 
@@ -111,6 +111,47 @@ TEST(ctl_log_rung_record_layout) {
   std::string text = read_all(log.path());
   CHECK(text.find("\nR 5000 3 0.0625 0.2500 0.1250 0.0000 -24.5 0.75 1234 12.5 0.2500 7\n") != std::string::npos);
   CHECK(text.find("\nR 6000 4 1000.0000 0.0000 1000.0000 0.0000 nan nan 0 -1.0 1000.0000 2\n") != std::string::npos);
+}
+
+TEST(ctl_log_second_header_is_a_header_line) {
+  // A live ladder swap restates the header in the same file, in the same
+  // form as the first line, so every reader keys the rows after it to the
+  // new ladder.
+  std::string dir = "build_ctl_log_test_reheader";
+  reset_dir(dir);
+  maburgs::LogWriter w;
+  maburgs::CtlLog log(w, dir, "ladder=20:0/50:25 down_util=0.35 up_util=0.15");
+  REQUIRE(log.ok());
+  log.sample(1000, 0, 0.0, 30.0, 0.0, 0.0, 0.0, -24.0, 0.0, 0.0, 0.0, -60.0, -1,
+             std::numeric_limits<double>::quiet_NaN(), 0);
+  log.header("ladder=20:4/50:25");
+  log.event(1500, 0, 0, "hop_restore", 0.0, 30.0, -24.0);
+  w.flush_now();
+  const std::string text = read_all(log.path());
+  const size_t s = text.find("\nS 1000 ");
+  const size_t h = text.find("\nctllog 13 ladder=20:4/50:25\n");
+  const size_t e = text.find("\nE 1500 ");
+  CHECK(s != std::string::npos);
+  CHECK(h != std::string::npos);
+  CHECK(e != std::string::npos);
+  CHECK(s < h && h < e);
+}
+
+TEST(ctl_log_rotate_restates_the_latest_header) {
+  // A drone restart after a ladder swap opens the next session's file on
+  // the ladder the link runs now, not the one it booted with.
+  std::string dir = "build_ctl_log_test_rehdr_a";
+  std::string dir2 = "build_ctl_log_test_rehdr_b";
+  reset_dir(dir);
+  reset_dir(dir2);
+  maburgs::LogWriter w;
+  maburgs::CtlLog log(w, dir, "ladder=20:0/50:25 down_util=0.35 up_util=0.15");
+  REQUIRE(log.ok());
+  log.header("ladder=20:4/50:25 down_util=0.35 up_util=0.15");
+  log.rotate(dir2);
+  w.flush_now();
+  CHECK(read_all(dir2 + "/ctl.log")
+            .rfind("ctllog 13 ladder=20:4/50:25 down_util=0.35 up_util=0.15\n", 0) == 0);
 }
 
 MTEST_MAIN

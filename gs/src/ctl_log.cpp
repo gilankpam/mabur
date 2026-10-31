@@ -14,7 +14,16 @@ double clamp_util(double u) { return std::min(u, 1e3); }
 
 CtlLog::CtlLog(LogWriter& w, const std::string& dir,
                const std::string& header_info)
-    : w_(w), s_(w.open(dir, "ctl.log", "ctllog 12 " + header_info)) {}
+    : w_(w), s_(w.open(dir, "ctl.log", std::string(kMarker) + header_info)) {}
+
+void CtlLog::header(const std::string& header_info) {
+  if (s_ == LogWriter::kBadStream) return;
+  const std::string h = std::string(kMarker) + header_info;
+  w_.line(s_, h.data(), h.size());
+  // A later rotate() opens the next session's file on this header, not the
+  // one the stream was opened with.
+  w_.set_header(s_, h);
+}
 
 void CtlLog::sample(double t_ms, int rung, double u, double snr_db,
                      double resid, double u3, double resid3, double evm_db,

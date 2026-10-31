@@ -7,6 +7,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <exception>
 #include <fstream>
 #include <functional>
 #include <mutex>
@@ -18,7 +19,7 @@
 
 #include "config.h"
 #include "config_apply.h"
-#include "config_write.h"
+#include "mabur/config_write.h"
 #include "mabur/config_params.h"
 #include "mav_params.h"
 #include "mtest.h"
@@ -48,6 +49,19 @@ std::string bundle_text() {
   const std::string t = slurp(std::string(MABUR_BUNDLE_DIR) + "/mabur.default.toml");
   REQUIRE(!t.empty());
   return t;
+}
+
+// The real verifier -- same as the one config_apply.cpp wires into
+// production -- for the test harness's own direct publish_config calls
+// (simulating an external rewrite, e.g. calibration).
+bool verify_with_load_config(const std::string& candidate_path, std::string* err) {
+  try {
+    (void)load_config(candidate_path);
+    return true;
+  } catch (const std::exception& e) {
+    if (err) *err = e.what();
+    return false;
+  }
 }
 
 // A scratch copy of bundle/mabur.default.toml; removes the publisher's
@@ -453,7 +467,7 @@ TEST(external_rewrite_refreshes_live_before_next_apply) {
   std::string text = g.original;
   REQUIRE(patch_toml_key(&text, "radio", "wall_margin_db", "3.0"));
   std::string err;
-  REQUIRE(publish_config(g.path(), text, "pre-cal", &err) == PublishResult::Ok);
+  REQUIRE(publish_config(g.path(), text, "pre-cal", &err, verify_with_load_config) == PublishResult::Ok);
   std::remove((g.path() + ".pre-cal").c_str());
   g.a.note_file_rewritten_externally();
   // A failed set that reverts must revert to the calibrated value.

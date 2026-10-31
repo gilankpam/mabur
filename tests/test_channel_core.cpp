@@ -374,6 +374,47 @@ static void freeze_auto(Rig& g) {
   REQUIRE(g.core->op() == 40);
 }
 
+// The hop's restore rung is frozen at the onset as an index into the
+// ladder of that moment. A live ladder swap inside the frozen episode
+// translates it by {mcs, bw}, so the hop restores the pre-onset operating
+// point and not whatever the new ladder holds at the old index. Revert =
+// replace_ladder without the remap: the order restores index 2 of the new
+// ladder, MCS 4.
+static void onset_then_swap(Rig& g, std::vector<Rung> new_rungs) {
+  link_up(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  g.vrx->restore_rung(2, static_cast<double>(g.clk.ms));   // mcs 0..4 @40: index 2 = MCS 2
+  REQUIRE(g.vrx->cur_op().mcs == 2);
+  g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
+  g.cards[0]->fr.foreign = 0; g.cards[1]->fr.foreign = 0;
+  interfere(g, 1);                                          // onset: ref_rung = 2
+  REQUIRE(*g.core->snapshot(0).hop.ref_rung == 2);
+  REQUIRE(!g.sink.has_hop("order"));
+  LadderCfg nl = g.vrx->ladder();
+  nl.ladder = std::move(new_rungs);
+  g.core->replace_ladder(nl, static_cast<double>(g.clk.ms));
+}
+TEST(hop_restore_survives_ladder_swap) {
+  Rig g(2, 0); freeze_auto(g);
+  onset_then_swap(g, {{2, 0.5, 0.25, 40}, {3, 0.5, 0.25, 40}, {4, 0.5, 0.25, 40}});
+  REQUIRE(g.vrx->cur_op().mcs == 2);                        // the swap itself keeps MCS 2
+  CHECK(*g.core->snapshot(0).hop.ref_rung == 0);
+  interfere(g, 4);                                          // interference goes on: hop ordered
+  REQUIRE(g.sink.has_hop("order"));
+  CHECK(g.vrx->cur_op().mcs == 2);                          // the pre-onset MCS
+}
+// A pre-onset rung the new ladder lacks restores rung 0, as the swap
+// itself falls back -- never a clamp onto the top rung of a shorter ladder.
+TEST(hop_restore_after_swap_dropping_the_ref_rung_lands_on_rung_0) {
+  Rig g(2, 0); freeze_auto(g);
+  onset_then_swap(g, {{0, 0.5, 0.25, 40}, {4, 0.5, 0.25, 40}});
+  REQUIRE(g.vrx->cur_op().mcs == 0);
+  CHECK(*g.core->snapshot(0).hop.ref_rung == 0);
+  interfere(g, 4);
+  REQUIRE(g.sink.has_hop("order"));
+  CHECK(g.vrx->cur_op().mcs == 0);
+}
+
 // Pinned = static. An interfered op produces a verdict (the OSD/sideport
 // still say the pin is dirty) but no order, no escape, no exhausted hold:
 // the controller is never fed a reactive trigger.
@@ -1557,6 +1598,417 @@ TEST(cal_relocate_session_lost_in_flight_settles_false) {
   CHECK(!*p.relocate_settled());
   CHECK(g.sink.has_hop("session_lost"));
   CHECK(g.core->op() == 40);
+}
+
+// ---- live pin / auto (set_pin, set_auto) ----
+
+// Linked, auto, pick closed: the pin is a relocate tagged pin, landed by the
+// confirm (no verify window), and from then on the GS is static -- an
+// interfered pin is reported, never fled.
+TEST(set_pin_while_linked_relocates_and_freezes_the_reactive_layer) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  CHECK(!g.core->pinned());
+  CHECK(!g.core->snapshot(0).pinned);
+  CHECK(!g.core->set_pin(112).has_value());
+  CHECK(g.core->pinned());
+  CHECK(g.core->snapshot(0).pinned);
+  CHECK(g.sink.has_line("maburgs channel: pinned to 112, link on 40: relocating"));
+  for (int i = 0; i < 20 && !g.sink.has_line("relocate 40 -> 112 placed"); ++i) live_tick(g);
+  REQUIRE(g.sink.has_line("maburgs channel: relocate 40 -> 112 placed (pin)"));
+  const HopEvent* h = find_hop(g.sink, "relocate");
+  REQUIRE(h != nullptr);
+  CHECK(h->target == 112);
+  CHECK(h->reason == "pin");
+  CHECK(g.core->hop_target() == 112 || g.core->op() == 112 || g.core->snapshot(0).hop.state != std::string("idle"));
+  CHECK(g.core->set_pin(144) == std::optional<std::string>("relocate in flight"));
+  const auto r = pump_rcf(g);
+  REQUIRE(r.has_value() && r->hop_ch == 112);
+  g.core->note_video(112);
+  g.tick(true);
+  REQUIRE(g.sink.has_hop("lead_confirm"));
+  for (int i = 0; i < 3 && !g.sink.has_hop("verify_pass"); ++i) g.tick(true);
+  CHECK(g.sink.has_hop("verify_pass"));         // the confirm landed it: no verify window
+  CHECK(!g.sink.has_line("did not land"));
+  CHECK(g.core->op() == 112);
+  CHECK(std::string(g.core->snapshot(0).scan_state) == "off");
+  REQUIRE(g.core->snapshot(0).scan_pick.has_value());
+  CHECK(*g.core->snapshot(0).scan_pick == 112);
+  CHECK(!g.stored.empty() && g.stored.back() == 112);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  CHECK(g.cards[0]->ch == 112 && g.cards[1]->ch == 112);
+  // an interfered pin: the verdict reads it, the controller never moves
+  const size_t hops0 = g.sink.hops.size();
+  g.cards[0]->cca_per_ms_on[112] = 50; g.cards[1]->cca_per_ms_on[112] = 50;
+  g.cards[0]->fr.foreign = 0; g.cards[1]->fr.foreign = 0;
+  interfere(g, 6);
+  CHECK(std::string(g.core->snapshot(0).hop.verdict) == "interfered");
+  CHECK(g.sink.hops.size() == hops0);          // no order/escape/hold of any kind
+  CHECK(!g.core->hopping());
+  CHECK(g.core->op() == 112);
+  const size_t dwells = g.sink.dwells.size();
+  g.core->run_inflight_step();                 // the in-flight scout is off too
+  g.tick(true);
+  CHECK(g.sink.dwells.size() == dwells);
+}
+
+// Linked with the boot pick still open (the scout measuring beside the
+// link): the pin closes the pick, the scout parks, then the relocate goes.
+TEST(set_pin_while_linked_with_the_pick_open_closes_it) {
+  Rig g(2, 0);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  REQUIRE(g.core->pick_open());
+  CHECK(!g.core->set_pin(112).has_value());
+  CHECK(!g.core->pick_open());
+  CHECK(std::string(g.core->snapshot(0).scan_state) == "off");
+  for (int i = 0; i < 50 && !g.sink.has_line("relocate 40 -> 112 placed"); ++i) g.tick(true);
+  REQUIRE(g.sink.has_line("relocate 40 -> 112 placed (pin)"));
+  CHECK(!g.core->scout_owns_card(1));
+  CHECK(g.sink.picks.empty());                  // no boot pick was ever taken
+}
+
+TEST(set_pin_while_unlinked_moves_op_and_waits_there) {
+  Rig g(2, 0);
+  g.cards[1]->cca_per_ms_on[112] = 5; g.cards[1]->cca_per_ms_on[108] = 5;   // auto would never pick 112
+  g.tick();
+  CHECK(!g.core->set_pin(112).has_value());
+  CHECK(g.core->op() == 112);
+  CHECK(g.core->pinned());
+  CHECK(!g.core->pick_open());
+  CHECK(std::string(g.core->snapshot(0).scan_state) == "off");
+  g.tick();                                     // the core's per-card retune runs in tick()
+  CHECK(g.cards[0]->ch == 112);   // cards follow op
+  CHECK(g.sink.has_move(MoveReason::Commit));
+  CHECK(!g.stored.empty() && g.stored.back() == 112);
+  CHECK(g.vrx->proposal() == 112);
+  // the scout keeps searching the set but never measures or picks
+  const size_t dwells0 = g.sink.dwells.size();
+  for (int i = 0; i < 3000; ++i) g.tick();
+  CHECK(g.core->op() == 112);
+  CHECK(g.sink.picks.empty());
+  CHECK(!g.sink.has_line("pick frozen on"));
+  REQUIRE(g.sink.dwells.size() > dwells0 + 4);  // a full search round at least
+  for (size_t i = dwells0 + 1; i < g.sink.dwells.size(); ++i) {   // past one dwell already under way
+    const uint8_t c = g.sink.dwells[i].second.survey.def.primary;
+    CHECK(c == 40 || c == 64 || c == 112 || c == 144);   // members only, as a pinned boot searches
+    CHECK(g.sink.dwells[i].second.survey.observe_ms == 0);   // no observe
+  }
+}
+
+TEST(set_pin_refused_for_non_member) {
+  Rig g(2, 0);
+  CHECK(g.core->set_pin(100) == std::optional<std::string>("not a member"));
+  CHECK(!g.core->pinned());
+  CHECK(g.core->pick_open());
+  CHECK(g.core->op() == 40);
+}
+
+TEST(set_pin_refused_while_hopping) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
+  interfere(g, 4);
+  REQUIRE(g.sink.has_hop("order"));
+  REQUIRE(g.core->hopping());
+  const size_t lines0 = g.sink.lines.size();
+  CHECK(g.core->set_pin(112) == std::optional<std::string>("hop in flight"));
+  CHECK(!g.core->pinned());
+  CHECK(!g.core->snapshot(0).pinned);
+  CHECK(g.sink.lines.size() == lines0);        // nothing logged, nothing ordered
+}
+
+TEST(set_pin_refused_while_calibrating) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  g.tick(true, /*cal=*/true);
+  CHECK(g.core->set_pin(112) == std::optional<std::string>("calibration running"));
+  CHECK(!g.core->pinned());
+}
+
+TEST(set_pin_refused_at_the_hop_cap) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  ChannelCorePicker p(*g.core);
+  REQUIRE(g.cfg.hop.max_hops_per_min == 4);
+  cal_move(g, p, 112);
+  cal_move(g, p, 144);
+  cal_move(g, p, 64);
+  cal_move(g, p, 40);
+  CHECK(g.core->set_pin(112) == std::optional<std::string>("hop cap"));
+  CHECK(!g.core->pinned());
+  CHECK(!g.core->set_pin(40).has_value());     // pinning where the link is needs no hop
+  CHECK(g.core->pinned());
+}
+
+TEST(set_pin_to_op_is_a_noop) {
+  Rig g(2, 0, true, 40);
+  const size_t lines0 = g.sink.lines.size();
+  CHECK(!g.core->set_pin(40).has_value());
+  CHECK(g.core->op() == 40);
+  CHECK(g.core->pinned());
+  CHECK(g.sink.lines.size() == lines0);
+  g.tick();
+  CHECK(g.sink.moves.empty());
+  CHECK(g.stored.empty());
+}
+
+TEST(set_auto_from_pinned_rearms_the_hop_from_op_without_a_relocate) {
+  Rig g(2, 0, true, 40);
+  link_up(g);
+  for (int i = 0; i < 10; ++i) g.tick(true);
+  const size_t sweep = g.sink.dwells.size();
+  g.core->run_inflight_step();
+  g.tick(true);
+  REQUIRE(g.sink.dwells.size() == sweep);       // pinned: the in-flight step skips
+  g.core->set_auto();
+  CHECK(!g.core->pinned());
+  CHECK(!g.core->snapshot(0).pinned);
+  CHECK(g.core->op() == 40);
+  CHECK(!g.core->hopping());
+  g.tick(true);
+  // the in-flight scout is now armed: run_inflight_step does work instead of skipping
+  CHECK(!g.core->pick_open());                  // linked: no pick reopens
+  CHECK(std::string(g.core->snapshot(0).scan_state) == "frozen");
+  g.core->run_inflight_step();
+  g.tick(true);
+  CHECK(g.sink.dwells.size() == sweep + 1);
+  REQUIRE(g.core->snapshot(0).dwell[1].has_value());
+  CHECK(g.core->snapshot(0).dwell[1]->visits == 1);
+  CHECK(g.cards[1]->ch == 40);                  // back on op after the dwell
+  CHECK(!g.sink.has_hop("relocate"));
+  // and an interfered op is fled again
+  g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
+  interfere(g, 4);
+  CHECK(g.sink.has_hop("order"));
+}
+
+TEST(set_auto_while_unlinked_reopens_the_boot_pick) {
+  Rig g(2, 0, true, 40);
+  g.tick();
+  g.clk.ms += 60000;                            // long past radio.scan.max_ms since start
+  g.tick();
+  g.core->set_auto();
+  CHECK(g.core->pick_open());
+  CHECK(std::string(g.core->snapshot(0).scan_state) == "scouting");
+  CHECK(!g.core->snapshot(0).scan_pick.has_value());
+  g.tick();
+  CHECK(g.core->pick_open());                   // max_ms counts from the reopen
+  // the scout measures again (both halves of every pair at width 40) and
+  // the pick commits off the busy op pair
+  g.cards[1]->cca_per_ms_on[40] = 5; g.cards[1]->cca_per_ms_on[36] = 5;
+  for (int i = 0; i < 3000 && !g.sink.has_line("pick frozen on"); ++i) g.tick();
+  REQUIRE(g.sink.has_line("pick frozen on"));
+  CHECK(g.sink.has_line("(commit)"));
+  CHECK(g.core->op() != 40);
+  bool observed_36 = false;
+  for (const auto& d : g.sink.dwells)
+    if (d.second.survey.def.primary == 36) observed_36 = true;
+  CHECK(observed_36);
+}
+
+// A pin's relocate cut by link loss is a relocate like any other: the GS
+// accepts the channel the link is on and stays pinned there.
+TEST(set_pin_relocate_lost_with_the_session_stays_on_op) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  REQUIRE(!g.core->set_pin(112).has_value());
+  for (int i = 0; i < 20 && !g.sink.has_line("relocate 40 -> 112 placed"); ++i) live_tick(g);
+  REQUIRE(g.sink.has_line("relocate 40 -> 112 placed (pin)"));
+  g.tick(false);                                // session lost before the confirm
+  CHECK(g.sink.has_hop("session_lost"));
+  for (int i = 0; i < 5; ++i) g.tick(false);
+  CHECK(g.core->op() == 40);
+  CHECK(g.core->pinned());
+  CHECK(g.sink.has_line("relocation to 112 did not land; staying on 40"));
+}
+
+// Back to auto before the pin's relocate left: it is withdrawn, the link
+// stays where it is (auto places no relocate of its own).
+TEST(set_auto_withdraws_a_pin_relocate_not_yet_placed) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  REQUIRE(!g.core->set_pin(112).has_value());
+  g.core->set_auto();
+  CHECK(!g.core->pinned());
+  for (int i = 0; i < 50; ++i) live_tick(g);
+  CHECK(!g.sink.has_hop("relocate"));
+  CHECK(g.core->op() == 40);
+}
+
+// One card (the web GS shape) takes a live pin the same way: the boot
+// pick's relocate, tagged pin, on the one-card order path.
+TEST(set_pin_one_card_linked_relocates) {
+  Rig g(1, 0);
+  freeze_auto(g);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  CHECK(!g.core->set_pin(112).has_value());
+  for (int i = 0; i < 50 && !g.sink.has_line("relocate 40 -> 112 placed"); ++i) live_tick(g);
+  CHECK(g.sink.has_line("relocate 40 -> 112 placed (pin)"));
+  CHECK(g.core->snapshot(0).pinned);
+}
+
+// One card (the web GS shape), booted pinned, back to auto with no link:
+// the reopened pick runs the silent prelude again and commits its ranking
+// off a busy op, as a one-card boot does.
+TEST(set_auto_while_unlinked_one_card_reruns_the_prelude_and_commits) {
+  Rig g(1, 0, true, 40);
+  for (int i = 0; i < 10; ++i) g.tick();
+  g.clk.ms += 60000;                            // long past max_ms and one_card_ms since start
+  g.tick();
+  g.cards[0]->cca_per_ms_on[40] = 5;            // 40 busy, the rest clean
+  g.core->set_auto();
+  CHECK(g.core->pick_open());
+  for (int i = 0; i < 800 && !g.sink.has_line("one-card prelude ranking picks"); ++i) g.tick();
+  REQUIRE(g.sink.has_line("one-card prelude ranking picks"));
+  CHECK(g.core->op() != 40);                    // committed off the busy channel
+  CHECK(g.sink.has_move(MoveReason::Commit));
+  CHECK(!g.stored.empty() && g.stored.back() == g.core->op());
+  CHECK(g.core->pick_open());                   // the one-card pick stays open after the prelude
+}
+
+// ---- pin_refusal: set_pin's answer, asked without placing anything ----
+
+// pin_refusal(ch) answers what set_pin(ch) would, and changes nothing; the
+// set_pin that follows must then agree. Called last in a test whose
+// expected answer is a refusal (a refused set_pin changes nothing either).
+static void pin_refusal_agrees(Rig& g, uint8_t ch, const std::optional<std::string>& want) {
+  const bool pinned0 = g.core->pinned();
+  const uint8_t op0 = g.core->op();
+  const size_t lines0 = g.sink.lines.size(), hops0 = g.sink.hops.size();
+  CHECK(g.core->pin_refusal(ch) == want);
+  CHECK(g.core->pinned() == pinned0);
+  CHECK(g.core->op() == op0);
+  CHECK(g.sink.lines.size() == lines0);
+  CHECK(g.sink.hops.size() == hops0);
+  CHECK(g.core->set_pin(ch) == want);
+}
+
+TEST(pin_refusal_agrees_with_set_pin_for_a_non_member_and_a_free_member) {
+  Rig g(2, 0);
+  pin_refusal_agrees(g, 100, std::string("not a member"));
+  pin_refusal_agrees(g, 112, std::nullopt);
+}
+
+// The double-tap: a second pin while the first pin's relocate is still
+// out. plan_.hopping() is not what refuses it.
+TEST(pin_refusal_agrees_with_set_pin_while_a_relocate_is_in_flight) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  REQUIRE(!g.core->set_pin(112).has_value());
+  for (int i = 0; i < 20 && !g.sink.has_line("relocate 40 -> 112 placed"); ++i) live_tick(g);
+  REQUIRE(g.sink.has_line("relocate 40 -> 112 placed (pin)"));
+  pin_refusal_agrees(g, 144, std::string("relocate in flight"));
+  pin_refusal_agrees(g, 112, std::string("relocate in flight"));
+}
+
+// One card: the pin's relocate is out on the RCFs while the plan does not
+// call it hopping yet (the sole radio stays on op until the repeats).
+TEST(pin_refusal_agrees_with_set_pin_while_a_one_card_relocate_is_in_flight) {
+  Rig g(1, 0);
+  freeze_auto(g);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  REQUIRE(!g.core->set_pin(112).has_value());
+  for (int i = 0; i < 50 && !g.sink.has_line("relocate 40 -> 112 placed"); ++i) live_tick(g);
+  REQUIRE(g.sink.has_line("relocate 40 -> 112 placed (pin)"));
+  REQUIRE(!g.core->hopping());
+  pin_refusal_agrees(g, 144, std::string("relocate in flight"));
+}
+
+TEST(pin_refusal_agrees_with_set_pin_while_a_two_card_hop_is_in_flight) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
+  interfere(g, 4);
+  REQUIRE(g.core->hopping());
+  pin_refusal_agrees(g, 112, std::string("hop in flight"));
+}
+
+// One card: the reactive hop's Order rides the RCFs before the radio
+// retunes, and the plan does not call it hopping until then.
+TEST(pin_refusal_agrees_with_set_pin_while_a_one_card_reactive_hop_is_ordered) {
+  Rig g(1, 0);
+  freeze_auto(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  g.cards[0]->cca_per_ms_on[40] = 50;
+  interfere(g, 4);
+  REQUIRE(g.sink.has_hop("order"));
+  REQUIRE(!g.sink.has_hop("one_card_retune"));
+  REQUIRE(!g.core->hopping());
+  REQUIRE(!g.core->sweep_pending());
+  pin_refusal_agrees(g, 112, std::string("hop in flight"));
+}
+
+TEST(pin_refusal_agrees_with_set_pin_at_the_hop_cap) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  ChannelCorePicker p(*g.core);
+  cal_move(g, p, 112);
+  cal_move(g, p, 144);
+  cal_move(g, p, 64);
+  cal_move(g, p, 40);
+  REQUIRE(!g.core->hopping());
+  pin_refusal_agrees(g, 112, std::string("hop cap"));
+  pin_refusal_agrees(g, 40, std::nullopt);      // pinning where the link is needs no hop
+}
+
+TEST(pin_refusal_agrees_with_set_pin_while_a_relay_sweeps) {
+  Rig g(1, 1);
+  g.cards[0]->retune_ok = false;
+  freeze_auto(g);
+  g.cards[0]->retune_ok = true;
+  link_up(g);
+  for (int i = 0; i < 5; ++i) g.tick(true, false, 0);
+  g.cards[0]->cca_per_ms_on[40] = 50;
+  interfere(g, 3);
+  REQUIRE(g.core->sweep_pending());
+  REQUIRE(!g.core->hopping());
+  pin_refusal_agrees(g, 112, std::string("sweep in flight"));
+}
+
+TEST(pin_refusal_agrees_with_set_pin_while_a_calibration_run_is_live) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  g.tick(true, /*cal=*/true);
+  pin_refusal_agrees(g, 112, std::string("calibration running"));
+}
+
+// A run's channel pick before the run itself reports running: its measure
+// round, then its relocate.
+TEST(pin_refusal_agrees_with_set_pin_while_a_calibration_picks_its_channel) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 10; ++i) live_tick(g);
+  ChannelCorePicker p(*g.core);
+  p.begin_measure(g.clk.ms);                    // the round waits for its tick
+  pin_refusal_agrees(g, 112, std::string("calibration running"));
+  start_round(g, p);                            // and now runs
+  pin_refusal_agrees(g, 112, std::string("calibration running"));
+  p.cancel();
+  for (int i = 0; i < 3; ++i) live_tick(g);
+  REQUIRE(p.order_relocate(112));               // the run's relocate, not yet placed
+  pin_refusal_agrees(g, 144, std::string("calibration running"));
 }
 
 MTEST_MAIN

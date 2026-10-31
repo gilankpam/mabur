@@ -34,7 +34,7 @@ below.
 | drone: the component (list/read/set, heartbeat) | `drone/src/mav_component.h` |
 | value coding (wire and text), shared by drone and GS | `common/include/mabur/param_value.h` |
 | drone: per-row accessors, TOML rendering, the row patcher | `drone/src/mav_params.h` |
-| drone: line patcher and verified publish | `drone/src/config_write.h` |
+| line patcher and verified publish | `common/include/mabur/config_write.h` |
 | drone: MAV thread, tag and counter check | `drone/src/main.cpp` (`mbr-mav`), `RcAgent::check_mav` |
 | GS: the tunnel and its cal lane (shared GS core) | `gs/src/mav_tunnel.h` |
 | GS: the UDP endpoint | `gs/src/mav_endpoint.h` |

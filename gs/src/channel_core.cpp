@@ -49,7 +49,7 @@ ChannelCore::ChannelCore(ChannelCoreCfg cfg, std::vector<LinkCard*> cards, VrxCo
       dwell_gen_(static_cast<size_t>(n_cards_)),
       tune_gen_(static_cast<size_t>(n_cards_)),
       card_blocked_(static_cast<size_t>(n_cards_)) {
-  gs_start_ms_ = now_ms_();
+  pick_start_ms_ = now_ms_();
   can_scout_.assign(static_cast<size_t>(n_cards_), false);
   can_sweep_.assign(static_cast<size_t>(n_cards_), false);
   for (int i = 0; i < n_cards_; ++i)
@@ -157,6 +157,7 @@ ChannelSnapshot ChannelCore::snapshot(int tx_card) const {
   s.energy = energy_last_;
   s.dwell = dwell_stats_;
   s.scout_gated_sends = scout_gated_sends_;
+  s.pinned = pinned_;
   return s;
 }
 
@@ -354,6 +355,9 @@ void ChannelCore::dispatch_hop_action_(const HopAction& act, bool relocate_tick,
   apply_hop_action_(act, now_ms);
   boot_pick_.note_hop_action(act.kind, relocate_tick);
   const bool cal_order = relocate_tick && cal_reloc_tick_;
+  const bool pin_order = relocate_tick && pin_reloc_tick_;
+  // Taken or refused at the cap: either way BootPick owns the outcome now.
+  if (pin_order) pin_reloc_.reset();
   if (cal_order) {
     if (act.kind == HopAction::Order) cal_reloc_.s = CalReloc::InFlight;
     else settle_cal_reloc_(false, "refused (hop cap)");
@@ -381,6 +385,7 @@ void ChannelCore::dispatch_hop_action_(const HopAction& act, bool relocate_tick,
   }
   for (auto e : hopc_.take_events()) {
     if (cal_order && e.kind == "relocate") e.reason = "cal";
+    else if (pin_order && e.kind == "relocate") e.reason = "pin";
     sink_.hop(e);
     sink_.log(logf_("maburgs hop: %s epoch %u target %u score %u +%.0f ms%s%s%s", e.kind.c_str(),
                     e.epoch, e.target, e.score, e.elapsed_ms, e.reason.empty() ? "" : " (",
@@ -410,7 +415,7 @@ void ChannelCore::step_boot_pick_(const ChannelTickIn& in) {
   const bool linked = in.in_session || in.cal_running;
   BootPickIn bi;
   bi.now_ms = now_ms;
-  bi.since_start_ms = now_ms_u_cur_ - gs_start_ms_;
+  bi.since_start_ms = now_ms_u_cur_ - pick_start_ms_;
   bi.max_ms = cfg_.radio.scan.max_ms;
   bi.in_session = in.in_session;
   bi.cal_running = in.cal_running;
@@ -459,6 +464,7 @@ void ChannelCore::step_boot_pick_(const ChannelTickIn& in) {
     case BootPickOut::Relocate:
       pending_relocate_ = bo.ch;
       cal_reloc_tick_ = cal_reloc_.s == CalReloc::Waiting && bo.ch == cal_reloc_.ch;
+      pin_reloc_tick_ = pin_reloc_ && bo.ch == *pin_reloc_;
       break;
     case BootPickOut::Freeze:
       if (bo.accept_op) plan_.set_want(now_ms, plan_.op());
@@ -606,6 +612,7 @@ void ChannelCore::step_controller_(const ChannelTickIn& in) {
   if (!hop_active(in.in_session, in.cal_running)) {
     pending_relocate_.reset();
     cal_reloc_tick_ = false;
+    pin_reloc_tick_ = false;
     return;
   }
   poll_sweep_(now_ms);
@@ -731,9 +738,10 @@ void ChannelCore::step_controller_(const ChannelTickIn& in) {
     sink_.log(logf_("maburgs channel: relocate %u -> %u %s%s", static_cast<unsigned>(plan_.op()),
                     static_cast<unsigned>(*pending_relocate_),
                     act.kind == HopAction::Order ? "placed" : "refused (hop cap)",
-                    cal_reloc_tick_ ? " (cal)" : ""));
+                    cal_reloc_tick_ ? " (cal)" : pin_reloc_tick_ ? " (pin)" : ""));
   pending_relocate_.reset();
   cal_reloc_tick_ = false;
+  pin_reloc_tick_ = false;
 }
 
 void ChannelCore::step_move_edge_(const ChannelTickIn& in) {
@@ -884,17 +892,36 @@ std::optional<uint8_t> ChannelCore::cal_measure_best() {
   return std::nullopt;
 }
 
+// Something already owns where the link goes: a calibration's relocate, a
+// relocation or a hop in flight.
+std::optional<std::string> ChannelCore::move_refusal_(uint8_t ch) const {
+  if (!plan_.member(ch)) return std::string("not a member");
+  if (cal_reloc_.s == CalReloc::Waiting || cal_reloc_.s == CalReloc::InFlight)
+    return std::string("calibration running");
+  if (boot_pick_.relocating()) return std::string("relocate in flight");
+  if (plan_.hopping() || hopc_.state() == HopState::Ordered || hopc_.state() == HopState::Verifying)
+    return std::string("hop in flight");
+  return std::nullopt;
+}
+
+// The above, plus what placing one more relocate order needs: no relay
+// sweep holding a card off op, and room under the hop cap.
+std::optional<std::string> ChannelCore::relocate_refusal_(uint8_t ch) const {
+  if (auto r = move_refusal_(ch)) return r;
+  if (sweep_.on) return std::string("sweep in flight");
+  if (hopc_.hop_cap_reached(now_ms_cur_)) return std::string("hop cap");
+  return std::nullopt;
+}
+
 bool ChannelCore::order_cal_relocate(uint8_t ch) {
   const double now_ms = now_ms_cur_;
-  if (cal_reloc_.s == CalReloc::Waiting || cal_reloc_.s == CalReloc::InFlight) return false;
-  if (!plan_.member(ch) || ch == plan_.op()) return false;
+  if (ch == plan_.op()) return false;
   if (!hop_active(in_session_cur_, cal_running_cur_)) return false;
-  if (plan_.hopping() || hopc_.state() == HopState::Ordered || hopc_.state() == HopState::Verifying)
-    return false;
-  if (boot_pick_.open() || boot_pick_.relocating() || scout_owns_() || sweep_.on) return false;
-  if (hopc_.hop_cap_reached(now_ms)) {
-    sink_.log(logf_("maburgs channel: calibration relocate to %u refused: hop cap",
-                    static_cast<unsigned>(ch)));
+  if (boot_pick_.open() || scout_owns_()) return false;
+  if (const auto r = relocate_refusal_(ch)) {
+    if (*r == "hop cap")
+      sink_.log(logf_("maburgs channel: calibration relocate to %u refused: hop cap",
+                      static_cast<unsigned>(ch)));
     return false;
   }
   plan_.set_want(now_ms, ch);
@@ -903,6 +930,104 @@ bool ChannelCore::order_cal_relocate(uint8_t ch) {
   sink_.log(logf_("maburgs channel: calibration wants %u, link on %u: relocating",
                   static_cast<unsigned>(ch), static_cast<unsigned>(plan_.op())));
   return true;
+}
+
+std::optional<std::string> ChannelCore::pin_refusal(uint8_t ch) const {
+  if (auto r = move_refusal_(ch)) return r;
+  // A run, or its pick still measuring: the run calibrates where it stands.
+  if (cal_running_cur_ || cal_meas_.s == CalMeasure::Waiting || cal_meas_.s == CalMeasure::Running)
+    return std::string("calibration running");
+  // A linked move is one more relocate order.
+  if (in_session_cur_ && ch != plan_.op()) return relocate_refusal_(ch);
+  return std::nullopt;
+}
+
+std::optional<std::string> ChannelCore::set_pin(uint8_t ch) {
+  const double now_ms = now_ms_cur_;
+  if (auto r = pin_refusal(ch)) return r;
+  const bool linked = in_session_cur_;
+  const uint8_t op = plan_.op();
+  if (pinned_ && ch == op && plan_.want() == ch) return std::nullopt;
+  if (linked) {
+    // The boot pick's relocate, as a pinned boot relocates a drone found
+    // off the pin: want moves, BootPick places the order once the scout
+    // has parked, and !reactive_ makes the confirm land it. A pin onto op
+    // drops any relocation still due elsewhere.
+    plan_.set_want(now_ms, ch);
+    if (ch != op) {
+      boot_pick_.rearm_relocation();
+      pin_reloc_ = ch;
+    } else {
+      pin_reloc_.reset();
+    }
+  } else {
+    // No link to carry: op moves now, the cards follow on the next tick
+    // and the search runs from there.
+    plan_.commit(now_ms, ch);
+    pin_reloc_.reset();
+    if (scout_) scout_->set_op(ch);
+  }
+  pinned_ = true;
+  reactive_ = false;
+  frozen_pick_ = ch;
+  if (scout_) {
+    scout_->freeze();
+    scout_->set_measure(false);   // a pinned scout searches the members only, as at boot
+  }
+  if (boot_pick_.open()) boot_pick_ = BootPick(false);
+  if (linked && ch != op)
+    sink_.log(logf_("maburgs channel: pinned to %u, link on %u: relocating", static_cast<unsigned>(ch),
+                    static_cast<unsigned>(op)));
+  else
+    sink_.log(logf_("maburgs channel: pinned to %u", static_cast<unsigned>(ch)));
+  return std::nullopt;
+}
+
+void ChannelCore::replace_ladder(const LadderCfg& ladder, double now_ms) {
+  const LadderCfg old = vrx_.ladder();
+  vrx_.replace_ladder(ladder, now_ms);
+  const auto remap = [&](int i) {
+    if (i < 0) return i;
+    if (i >= static_cast<int>(old.ladder.size())) return 0;
+    const Rung& r = old.ladder[static_cast<size_t>(i)];
+    return rung_index(ladder, r.mcs, r.bw);
+  };
+  verdict_.remap_ref_rung(remap(verdict_.ref_rung()));
+  last_verdict_out_.ref_rung = remap(last_verdict_out_.ref_rung);
+}
+
+void ChannelCore::set_auto() {
+  if (!pinned_) return;
+  pinned_ = false;
+  reactive_ = true;
+  // A pin relocate not yet handed to the controller is withdrawn (auto
+  // places no relocate); one already placed lands or fails as it would have.
+  if (pin_reloc_ && !plan_.hopping()) plan_.set_want(now_ms_cur_, plan_.op());
+  pin_reloc_.reset();
+  const bool linked = in_session_cur_ || cal_running_cur_;
+  const bool can_pick = scout_ != nullptr && !relay_search_only_;
+  if (linked) {
+    // The in-flight scout starts on the next tick (step_drains_'s gate)
+    // and the verdict feeds the controller again. The pick stays closed: a
+    // working link is moved only by the reactive hop. A GS that booted
+    // pinned never froze its scout (measure was off): freeze it before
+    // measuring goes on, or the scout would take the card to measure.
+    if (scout_) scout_->freeze();
+    if (can_pick) scout_->set_measure(true);   // a calibration run's measure round needs it
+    sink_.log(logf_("maburgs channel: auto, link on %u", static_cast<unsigned>(plan_.op())));
+    return;
+  }
+  // Unlinked: the boot pick over the set from op, as if the GS had just
+  // started there.
+  boot_pick_ = BootPick(can_pick);
+  if (can_pick) {
+    scout_->set_measure(true);
+    scout_->unfreeze();
+    frozen_pick_.reset();
+    pick_start_ms_ = now_ms_u_cur_;
+  }
+  sink_.log(logf_("maburgs channel: auto from %u%s", static_cast<unsigned>(plan_.op()),
+                  can_pick ? ": scouting" : ""));
 }
 
 std::optional<bool> ChannelCore::cal_relocate_settled() {
@@ -1003,7 +1128,7 @@ void ChannelCore::inflight_body_() {
   // Unlike main.cpp's always-present `inflight`, `inflight_` here is a
   // unique_ptr built only alongside a scout-capable card (ctor, scout_card_
   // >= 0): null on an all-relay roster, so this guard has no equivalent there.
-  if (!inflight_ || !reactive_) return;
+  if (!inflight_ || !reactive_.load()) return;
   if (!in_session_atomic_.load() || cal_running_atomic_.load() || hopping_atomic_.load() ||
       scout_working_atomic_.load() || n_cards_ < 2)
     return;

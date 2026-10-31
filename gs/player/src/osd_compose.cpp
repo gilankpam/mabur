@@ -33,7 +33,85 @@ void forget_cells(ShadowGrid& sh, const mabur::MspScreen& scr, const DirtyRect& 
       sh.cells[(size_t)row * l.cols + col] = (uint16_t)~scr.cell(row, col);
 }
 
+// Clips `r` to the surface; an empty rect when nothing is left.
+DirtyRect clip_to(const Surface& s, const DirtyRect& r) {
+  const int x0 = std::max(0, r.x), y0 = std::max(0, r.y);
+  const int x1 = std::min(s.width, r.x + r.w), y1 = std::min(s.height, r.y + r.h);
+  if (x1 <= x0 || y1 <= y0) return DirtyRect{0, 0, 0, 0};
+  return DirtyRect{x0, y0, x1 - x0, y1 - y0};
+}
+
+// Zeroes `r` (clipped) on the surface; returns the clipped rect.
+DirtyRect erase_rect(const Surface& s, const DirtyRect& r) {
+  const DirtyRect c = clip_to(s, r);
+  for (int y = c.y; y < c.y + c.h; ++y)
+    std::fill_n(s.pixels + (size_t)y * s.stride_px + c.x, c.w, 0u);
+  return c;
+}
+
+bool non_empty(const DirtyRect& r) { return r.w > 0 && r.h > 0; }
+
 }  // namespace
+
+void OsdComposer::forget_buffer(int idx) {
+  shadow_[idx].cells.clear();
+  if (gs_[idx]) gs_[idx]->invalidate();
+  gs_cards_[idx] = -1;
+}
+
+void OsdComposer::drop_raster() {
+  if (!raster_) return;
+  for (int i = 0; i < 2; ++i) {
+    // Empty once a stale-blank cleared it: then there is no grid to erase.
+    const DirtyRect grid = grid_of(shadow_[i].layout);
+    if (drawn_[i] && non_empty(grid)) erase_[i].push_back(grid);
+    forget_buffer(i);
+    shadow_[i] = ShadowGrid{};
+    blanked_[i] = true;
+  }
+  const DirtyRect burn_grid = grid_of(burn_shadow_.layout);
+  if (non_empty(burn_grid)) burn_erase_.push_back(burn_grid);
+  burn_shadow_ = ShadowGrid{};
+  if (gs_[2]) gs_[2]->invalidate();
+  burn_gs_cards_ = -1;
+  burn_blank_ = false;
+  raster_ = nullptr;
+  have_screen_ = false;
+  screen_blank_ = false;
+  last_grid_ = DirtyRect{0, 0, 0, 0};
+  screen_owed_ = !erase_[0].empty() || !erase_[1].empty() || gs_[0] != nullptr;
+}
+
+void OsdComposer::drop_gs_layers() {
+  if (!gs_[0]) return;
+  if (gs_laid_out_) {
+    for (int i = 0; i < 2; ++i) {
+      const DirtyRect b = gs_[i]->bounds();
+      if (drawn_[i] && non_empty(b)) erase_[i].push_back(b);
+    }
+    const DirtyRect b = gs_[2]->bounds();
+    if (non_empty(b)) burn_erase_.push_back(b);
+  }
+  drop_gs();
+  // The MSP grid under the bar comes back whole on each buffer and on the
+  // canvas.
+  for (int i = 0; i < 2; ++i) forget_buffer(i);
+  burn_shadow_.cells.clear();
+  burn_gs_cards_ = -1;
+  screen_owed_ = !erase_[0].empty() || !erase_[1].empty() || raster_ != nullptr;
+}
+
+void OsdComposer::forget_screen() {
+  for (int i = 0; i < 2; ++i) {
+    forget_buffer(i);
+    // A fresh buffer holds nothing: no grid, nothing to erase.
+    shadow_[i] = ShadowGrid{};
+    blanked_[i] = true;
+    erase_[i].clear();
+    drawn_[i] = false;
+  }
+  screen_owed_ = raster_ != nullptr || gs_[0] != nullptr;
+}
 
 void OsdComposer::set_gs(std::unique_ptr<GsLayer> b0, std::unique_ptr<GsLayer> b1,
                          std::unique_ptr<GsLayer> burn) {
@@ -55,6 +133,7 @@ void OsdComposer::realloc_burn_canvas(int w, int h) {
   if (gs_[2]) gs_[2]->invalidate();
   burn_gs_cards_ = -1;
   burn_blank_ = false;
+  burn_erase_.clear();  // the whole canvas is blank now
 }
 
 void OsdComposer::set_burn_sink(BurnSink s) {
@@ -129,6 +208,8 @@ bool OsdComposer::gs_layout(int screen_w, int screen_h, std::string* err) {
 }
 
 bool OsdComposer::wants(const OsdComposeIn& in) const {
+  if (screen_owed_) return true;
+  if (burn_ && !burn_erase_.empty()) return true;
   if (gs_live() && in.snap && in.gs_dirty) return true;
   if (raster_ && in.screen) {
     if (in.msp_fresh) return true;
@@ -156,6 +237,13 @@ OsdComposeOut OsdComposer::compose_screen(int idx, const Surface& s, const OsdCo
   // size is set -- see compose_burn().
   screen_w_ = s.width;
   screen_h_ = s.height;
+
+  // What a dropped layer left on this buffer goes first; its shadows were
+  // forgotten at the drop, so the layers that remain redraw whole below.
+  for (const DirtyRect& r : erase_[idx]) erase_rect(s, r);
+  erase_[idx].clear();
+  screen_owed_ = false;
+  drawn_[idx] = true;
 
   const bool gs_on = gs_live() && in.snap != nullptr;
   const bool msp_on = raster_ != nullptr && in.screen != nullptr;
@@ -313,6 +401,13 @@ void OsdComposer::compose_burn(const OsdComposeIn& in) {
 
   burn_rects_.clear();
   burn_msp_write_.clear();
+  // A dropped layer's area: zeroed in the canvas and handed to the
+  // recorder, whose map would otherwise keep it for the whole recording.
+  for (const DirtyRect& r : burn_erase_) {
+    const DirtyRect c = erase_rect(burn_canvas_, r);
+    if (non_empty(c)) burn_rects_.push_back(c);
+  }
+  burn_erase_.clear();
   bool burn_msp_drew = false;
   if (msp_on && have_screen_) {
     if (grid_blank) {

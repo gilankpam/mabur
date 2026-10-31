@@ -9,7 +9,6 @@ add_library(mabur_drone_core STATIC
   src/telemetry.cpp
   src/vtx_recorder.cpp
   src/cal_apply.cpp
-  src/config_write.cpp
   src/config_apply.cpp
   src/cal_sweep.cpp
   src/cal_link.cpp

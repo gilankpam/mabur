@@ -46,7 +46,7 @@
 #include <cstdint>
 #include <string>
 
-#include "config_write.h"
+#include "mabur/config_write.h"
 #include "mabur/rc_proto.h"
 #include "mabur/toml.h"
 

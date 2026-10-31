@@ -1,5 +1,6 @@
 #include "vrx_controller.h"
 
+#include <algorithm>
 #include <cassert>
 
 #include "mabur/rc_proto.h"
@@ -151,6 +152,39 @@ mabur::rc::Rcf VrxController::build_rcf() {
 
 void VrxController::restore_rung(int rung, double now_ms) {
   ctrl_.restore(rung, now_ms);
+  sync_op_();
+}
+
+int rung_index(const LadderCfg& ladder, int mcs, int bw) {
+  const auto it = std::find_if(ladder.ladder.begin(), ladder.ladder.end(),
+                               [&](const Rung& r) { return r.mcs == mcs && r.bw == bw; });
+  return it != ladder.ladder.end() ? static_cast<int>(it - ladder.ladder.begin()) : 0;
+}
+
+void VrxController::set_pin(int mcs, int bw, double overhead_base, double overhead_enh,
+                            double now_ms) {
+  const bool unpin = mcs < 0 && cfg_.pin_mcs >= 0;
+  if (unpin) ctrl_.unpin_restore(rung_index(cfg_.ladder, cfg_.pin_mcs, cfg_.pin_bw), now_ms);
+  cfg_.pin_mcs = mcs;
+  cfg_.pin_bw = bw;
+  cfg_.pin_overhead_base = overhead_base;
+  cfg_.pin_overhead_enh = overhead_enh;
+  if (mcs < 0) sync_op_();
+}
+
+void VrxController::replace_ladder(const LadderCfg& ladder, double now_ms) {
+  const Rung old_op = ctrl_.op();  // copy: ctrl_ is about to be replaced
+  const double last_feedback_ms = ctrl_.last_feedback_ms();
+  cfg_.ladder = ladder;
+  ctrl_ = LadderController(ladder);
+  const int idx = rung_index(ladder, old_op.mcs, old_op.bw);
+  // Unconditional, even when idx is 0 (a genuine match there, or the
+  // no-match fallback): the re-entry's mark_transition() opens the s3-settle
+  // blank window and resets the probe streak, which an op-point change
+  // needs regardless of which index it lands on -- skipping it at idx 0
+  // would leave both the fallback case and an overhead-only change at
+  // rung 0 with no re-key settle protection.
+  ctrl_.swap_restore(idx, now_ms, last_feedback_ms);
   sync_op_();
 }
 

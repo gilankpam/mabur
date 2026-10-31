@@ -74,6 +74,7 @@ Two kinds of doc, two rules:
 | the shared channel/hop wiring (`ChannelCore`), its seams into maburgs (maburgs and the web GS both drive it), the test fakes | `gs/src/channel_core.h` (header comment) + `docs/channel-select.md` "Where the code lives" |
 | comparing recordings, metric scales, removed sideport keys, "why do these two flights disagree" | `docs/data-provenance.md` |
 | shipping a binary or config to a device | `docs/deploy.md` |
+| live GS settings (set/get on 8402/8403), writing the GS TOMLs from a running daemon, gsparam.py | `docs/gs-live-config.md` |
 | calibrating a VTX's TX-power walls and capacity / efficiency tables (per width), maburcal, cal.log, the mabur MAVLink dialect and its cal lane | `docs/calibration.md`; the dialect and the run-pair latch → `docs/mavlink.md` |
 | a specific past investigation, or why something is the way it is | `docs/findings/README.md` (dated index) |
 | camera modes and field of view per `venc.fps` (1920x1080@90 full view, 1728x972@100, 1728x816@120), allowed `venc.size`, binning, the waybeam IMX415 driver the image ships, matching the GS `screen_mode` / the fps mismatch warning / letterboxing, SD-recorder risks above 90 fps, the GS burned recorder at 100 fps | `docs/camera-modes.md` |

@@ -245,6 +245,22 @@ class DrmPresenter : public PresentSink {
   // with it so the servo can lock non-60 Hz panels.
   double mode_period_us() const;
 
+  // Whether the connector this presenter drives lists a mode matching
+  // `screen_mode` by pick_mode()'s rule (the wanted size, the exact rate
+  // within kModeMatchHz). init() on an unlisted mode falls back to the
+  // preferred one; a live display-mode change asks this first, so a mode
+  // the display does not offer is refused without tearing the display
+  // down. Reads the connector's current mode list (no re-probe).
+  bool offers_mode(const std::string& screen_mode) const;
+
+  // Whether the connector this presenter drives still reads connected.
+  // drmModeGetConnectorCurrent: the status the kernel's HPD handling last
+  // recorded, never a fresh probe (no DDC traffic), so it is cheap enough
+  // to read whenever a hotplug uevent arrives. Only a definite
+  // DRM_MODE_DISCONNECTED reads false; a failed read or an unknown status
+  // is no evidence of an unplug.
+  bool connector_connected() const;
+
   // --- colortrans: CRTC 3D LUT (docs/colortrans.md) -------------------
   // True when init() found the CRTC's CUBIC_LUT property with
   // CUBIC_LUT_SIZE == 729 (VOP2 on RK3566: 9x9x9, 12-bit entries).

@@ -1,22 +1,17 @@
-#include "config_write.h"
+#include "mabur/config_write.h"
 
 #include <fcntl.h>
 #include <unistd.h>
 
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <exception>
 #include <fstream>
 #include <map>
 #include <mutex>
 #include <sstream>
 #include <string>
-
-// The real loader, not just the TOML syntax check: see the file header of
-// config_write.h for why config.cpp's load_config -- unknown-key
-// rejection, every per-section range/type check -- is the thing that must
-// run here, not toml::parse_toml_file alone.
-#include "config.h"
 
 namespace mabur {
 
@@ -58,6 +53,17 @@ bool table_header(const std::string& line, std::string* name) {
   while (b > a && is_blank(line[b - 1])) --b;
   *name = line.substr(a, b - a);
   return true;
+}
+
+// Leading/trailing whitespace stripped. Used to compare a header line's
+// full text against "[[<name>]]" exactly -- table_header() only hands back
+// the content between the first '[' and the first ']', which for a
+// "[[name]]" line is "[name" (one stray leading bracket), not "name".
+std::string trim_line(const std::string& line) {
+  size_t a = 0, b = line.size();
+  while (a < b && is_blank(line[a])) ++a;
+  while (b > a && is_blank(line[b - 1])) --b;
+  return line.substr(a, b - a);
 }
 
 // Where the value that starts at `v` ends: the start of the whitespace run
@@ -102,6 +108,22 @@ std::recursive_mutex g_publish_mu;
 // at all.
 std::map<std::string, int> g_write_counts;
 std::string g_last_write_path;
+
+// Resolves symlinks and relative components out of `path`. publish_config
+// uses this so a `path` that is itself a symlink -- /etc/maburplay.toml
+// onto a vfat /config, say -- has its scratch write, backup and rename
+// happen beside the TARGET the symlink points at, never by replacing the
+// symlink itself. realpath(3) requires the file to already exist; a path
+// that doesn't (yet) resolve -- a first-time create, or simply a missing
+// file -- falls back to `path` unchanged rather than crashing on the null
+// it would otherwise return.
+std::string resolve_path(const std::string& path) {
+  char* real = ::realpath(path.c_str(), nullptr);
+  if (!real) return path;
+  std::string resolved(real);
+  ::free(real);
+  return resolved;
+}
 
 // fsync's the directory holding `path`. A rename's durability depends on
 // its parent directory entry being flushed, not just the file's own data
@@ -168,8 +190,8 @@ bool write_file_fsync(const std::string& path, const std::string& content) {
 
 bool patch_toml_key(std::string* text, const std::string& section,
                     const std::string& key, const std::string& rendered_value) {
-  std::string current;  // "" until the first header: no section
-  bool in_any = false;
+  std::string current;  // unused until the first header
+  bool in_any = false;  // false: still in the root table, section ""
   size_t start = 0;
   while (start < text->size()) {
     size_t nl = text->find('\n', start);
@@ -179,7 +201,7 @@ bool patch_toml_key(std::string* text, const std::string& section,
     if (table_header(line, &name)) {
       current = name;
       in_any = true;
-    } else if (in_any && current == section) {
+    } else if (in_any ? current == section : section.empty()) {
       size_t key_begin, eq_pos;
       if (match_toml_key(line, key, &key_begin, &eq_pos)) {
         size_t v = eq_pos + 1;
@@ -192,6 +214,32 @@ bool patch_toml_key(std::string* text, const std::string& section,
     start = nl + 1;
   }
   return false;
+}
+
+bool replace_toml_array_tables(std::string* text, const std::string& name,
+                               const std::string& rendered_blocks) {
+  const std::string ours = "[[" + name + "]]";
+  size_t region_begin = std::string::npos;
+  size_t region_end = text->size();  // default: through end of file
+  bool region_closed = false;
+  size_t start = 0;
+  while (start < text->size()) {
+    size_t nl = text->find('\n', start);
+    if (nl == std::string::npos) nl = text->size();
+    const std::string line = text->substr(start, nl - start);
+    std::string discard;
+    const bool is_header = table_header(line, &discard);
+    if (region_begin == std::string::npos) {
+      if (is_header && trim_line(line) == ours) region_begin = start;
+    } else if (!region_closed && is_header && trim_line(line) != ours) {
+      region_end = start;
+      region_closed = true;
+    }
+    start = nl + 1;
+  }
+  if (region_begin == std::string::npos) return false;
+  text->replace(region_begin, region_end - region_begin, rendered_blocks);
+  return true;
 }
 
 bool read_text_file(const std::string& path, std::string* out) {
@@ -217,11 +265,17 @@ std::string loader_reason(std::string s) {
 
 PublishResult publish_config(const std::string& path, const std::string& content,
                              const std::string& backup_suffix, std::string* err,
-                             bool write_backup) {
+                             const VerifyFn& verify, bool write_backup) {
   // Every caller shares "<path>.new" and the backup's temp name, so two
   // concurrent publishes would truncate each other's candidate mid-verify
   // or rename it out from under each other.
   std::lock_guard<std::recursive_mutex> lock(g_publish_mu);
+
+  // Resolve once, up front: every step below -- the read, the scratch
+  // write, the backup, the rename -- operates on the real path, so a
+  // symlinked `path` keeps pointing at whatever it pointed at before and
+  // after, and is never itself unlinked or replaced.
+  const std::string real_path = resolve_path(path);
 
   // Read the original first: when write_backup, it is the backup's
   // content, and a path that cannot be read has nothing to back up --
@@ -230,57 +284,42 @@ PublishResult publish_config(const std::string& path, const std::string& content
   // to publish over, and callers (apply_calibration) already rely on this
   // failing the same way regardless of the backup flag.
   std::string original;
-  if (!read_text_file(path, &original)) {
-    if (err) *err = "failed to read " + path;
+  if (!read_text_file(real_path, &original)) {
+    if (err) *err = "failed to read " + real_path;
     return PublishResult::BackupFailed;
   }
 
-  // Step 1: write the candidate to a scratch file. Nothing at `path` has
-  // moved yet -- this is not a publish, it's a place to point the real
-  // loader at.
-  const std::string tmp = path + ".new";
+  // Step 1: write the candidate to a scratch file. Nothing at `real_path`
+  // has moved yet -- this is not a publish, it's a place to point the
+  // caller's loader at.
+  const std::string tmp = real_path + ".new";
   if (!write_file_fsync(tmp, content)) {
     remove_scratch(tmp);
     if (err) *err = "failed to write/fsync " + tmp;
     return PublishResult::WriteFailed;
   }
 
-  // Step 2: verify with the SAME function maburd boots with --
-  // mabur::load_config, not toml::parse_toml_file. parse_toml_file only
-  // proves the bytes are syntactically valid TOML; everything that
-  // actually fails a boot -- check_known_keys' unknown-key rejection, and
-  // every per-section range/type check config.cpp applies -- lives inside
-  // load_config(), past the parse. A verification step that cannot detect
-  // the failure it exists to guard against is worse than none: it would
-  // make maburd's later refusal look impossible right up until it happens
-  // on the device.
-  //
-  // load_config() is a pure parse-and-validate with no hardware side
-  // effects (it builds and returns a Config value; it does not open any
-  // device or touch global state beyond a scoped defaulted-keys collector
-  // that is cleared on every return path), which is what makes it safe to
-  // call speculatively on a file that is not the live config. That is an
-  // assumption about a function this file does not own -- if a future
-  // load_config() gained a side effect, this call would need revisiting.
-  try {
-    (void)load_config(tmp, nullptr);
-  } catch (const std::exception& e) {
-    // Never published: `path` was never touched, so there is nothing to
-    // restore, only something to discard.
+  // Step 2: verify with the caller's own loader, not a bare TOML syntax
+  // check -- see the file header for why anything weaker defeats the
+  // point of this whole file. `verify` is handed the scratch path and
+  // fills `*err` itself on a refusal, verbatim: this function does not
+  // reshape the message.
+  if (!verify(tmp, err)) {
+    // Never published: `real_path` was never touched, so there is nothing
+    // to restore, only something to discard.
     remove_scratch(tmp);
-    if (err) *err = e.what();
     return PublishResult::ReparseFailed;
   }
 
   // Step 3: back up the original. Now that the candidate is proven
   // loadable, this is purely the operator's rollback artifact, not a
   // crash-recovery mechanism -- nothing downstream of this point can
-  // produce a `path` that fails to load. Skipped entirely when the caller
-  // doesn't want this call to own the backup (see the write_backup
-  // comment in config_write.h) -- "<path>.<backup_suffix>" is left
+  // produce a `real_path` that fails to load. Skipped entirely when the
+  // caller doesn't want this call to own the backup (see the write_backup
+  // comment in config_write.h) -- "<real_path>.<backup_suffix>" is left
   // completely untouched, not written and then reverted.
   if (write_backup) {
-    const std::string backup_path = path + "." + backup_suffix;
+    const std::string backup_path = real_path + "." + backup_suffix;
     if (!write_file_atomic(backup_path, original)) {
       remove_scratch(tmp);
       if (err) *err = "failed to write backup " + backup_path;
@@ -288,23 +327,23 @@ PublishResult publish_config(const std::string& path, const std::string& content
     }
   }
 
-  // Step 4: publish. `tmp` has already been proven loadable by the same
-  // function maburd boots with, so this rename can only ever replace
-  // `path` with something good.
-  ++g_write_counts[path];  // flash-wear guard: counts publish attempts to this path
-  g_last_write_path = path;
-  if (::rename(tmp.c_str(), path.c_str()) != 0) {
-    // The live config was never touched -- `path` still holds exactly
+  // Step 4: publish. `tmp` has already been proven loadable by the
+  // caller's own loader, so this rename can only ever replace `real_path`
+  // with something good.
+  ++g_write_counts[real_path];  // flash-wear guard: counts publish attempts to this path
+  g_last_write_path = real_path;
+  if (::rename(tmp.c_str(), real_path.c_str()) != 0) {
+    // The live config was never touched -- `real_path` still holds exactly
     // what it did before this call, which is a safe outcome. But it is a
     // failure, not a success: report it as one, and don't leave the
     // proven-good scratch file sitting next to the (unchanged) live
     // config for someone to find later.
     if (err)
-      *err = "verified candidate but failed to rename " + tmp + " onto " + path;
+      *err = "verified candidate but failed to rename " + tmp + " onto " + real_path;
     remove_scratch(tmp);
     return PublishResult::WriteFailed;
   }
-  fsync_parent_dir(path);
+  fsync_parent_dir(real_path);
   return PublishResult::Ok;
 }
 

@@ -57,6 +57,11 @@ class OsdFont {
   // pixels. Callable more than once; the last call wins.
   void set_inverse(const ColorTrans& t);
 
+  // Undoes set_inverse(): native() is the mmapped atlas again and the owned
+  // inverted copy is freed. Scaled atlases built from inverted pixels are
+  // discarded; with no inverse set this is a no-op and the cache stays.
+  void clear_inverse();
+
   // Atlas with glyphs exactly w x h. Cached: two non-native sizes at a
   // time -- the screen's and the burned recording's. Returns nullptr if
   // not loaded, w/h <= 0, or w/h exceeds the sanity bound (kMaxGlyphDim in

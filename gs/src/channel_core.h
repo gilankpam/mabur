@@ -33,6 +33,18 @@
 // accepts op). The store follows op as for any hop. Pinned or one-card:
 // nothing is measured and op is the answer. Both run before the session
 // sets cal_running, which freezes channel changes for the run.
+//
+// The pin changes live (set_pin / set_auto; the caller has already written
+// radio.channel). Pinning: linked, the move is the boot pick's own relocate
+// order (H relocate, reason "pin"), landed by the confirm with no verify
+// window, exactly as a boot-time pin relocates a drone found elsewhere; a
+// relocate that fails or is cut by link loss leaves the link where it is,
+// still pinned (the boot pin's rule). Unlinked, op moves at once (M commit)
+// and the cards follow on the next tick. Either way the pick closes, the
+// scout goes back to search-only and the reactive hop stops. Back to auto:
+// linked, only the reactive hop re-arms from op (no pick, no relocate);
+// unlinked, the boot pick reopens over a fresh ranking from op, its max_ms
+// counted from the reopen.
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -131,6 +143,7 @@ struct ChannelSnapshot {
   std::vector<std::optional<StatsEnergyIn>> energy;   // per card
   std::vector<std::optional<StatsDwellIn>> dwell;     // per card
   uint64_t scout_gated_sends = 0;
+  bool pinned = false;                    // ChannelCore::pinned(): the live pin, not the boot one
 };
 
 class ChannelCore {
@@ -222,6 +235,28 @@ class ChannelCore {
   // cap, lost with the session or never placed; nullopt pending / none.
   std::optional<bool> cal_relocate_settled();
 
+  // ---- live pin (core thread) ----
+  // Pin the link to ch. nullopt = done (pinning where a pinned link already
+  // is changes nothing); otherwise why not, and nothing changed: "not a
+  // member", "calibration running" (a run, its measure round or its
+  // relocate), "relocate in flight", "hop in flight", and when a linked
+  // move has to be ordered "sweep in flight" / "hop cap". One-card and
+  // relay-only GSs take a pin like any other: the relocate is the one their
+  // boot pin uses.
+  std::optional<std::string> set_pin(uint8_t ch);
+  // What set_pin(ch) would refuse with, asked without changing anything:
+  // the live-config listener checks it before it touches the config file,
+  // so a pin the core would refuse is never published first.
+  std::optional<std::string> pin_refusal(uint8_t ch) const;
+  // Back to auto. Never refused: nothing moves on the spot.
+  void set_auto();
+  // ---- live ladder swap (core thread) ----
+  // VrxController::replace_ladder, plus the hop verdict's frozen restore
+  // rung translated by {mcs, bw} into the new ladder (rung 0 when it has no
+  // such rung, as the swap itself falls back): the rung is an index, and
+  // the same index in another ladder is another operating point.
+  void replace_ladder(const LadderCfg& ladder, double now_ms);
+
   // ---- test seam (threaded = false) ----
   void run_scout_step();      // one ChannelScout::run_once()
   void run_inflight_step();   // one body of the in-flight loop (no sleep)
@@ -239,7 +274,10 @@ class ChannelCore {
   SleepFn sleep_;
   int n_cards_ = 0;
   bool pinned_ = false;
-  bool reactive_ = true;       // !pinned_: the in-flight hop + its scout and burst run only in auto mode
+  // !pinned_: the in-flight hop + its scout and burst run only in auto mode.
+  // Atomic: set_pin/set_auto flip it on the core thread while the in-flight
+  // thread reads it.
+  std::atomic<bool> reactive_{true};
   std::vector<bool> can_scout_;
   std::vector<bool> can_sweep_;   // LinkCard::can_sweep(): a relay that takes a v4 SCAN
   std::vector<bool> snr_ok_;
@@ -247,7 +285,7 @@ class ChannelCore {
   bool one_card_ = false;      // n_usb == 1 (scout mode); the hop's one-card path is lead<0
   bool relay_search_only_ = false;   // no card can measure: the last relay searches
   uint8_t saved_op_ = 0;       // last value handed to store_
-  uint64_t gs_start_ms_ = 0;
+  uint64_t pick_start_ms_ = 0;  // GS start, or set_auto's reopen of the pick: radio.scan.max_ms counts from here
 
   // ---- units ----
   ChannelPlan plan_;
@@ -355,6 +393,11 @@ class ChannelCore {
     bool ok = false;
   } cal_reloc_;
   bool cal_reloc_tick_ = false;      // this tick's Relocate is the calibration's
+  // A live pin's relocate, until the controller takes or refuses it: only
+  // the order's H record and log line carry the reason; after that it is
+  // the boot pick's relocation like any other.
+  std::optional<uint8_t> pin_reloc_;
+  bool pin_reloc_tick_ = false;      // this tick's Relocate is the pin's
   // The latest verdict window's reading of op: the worst valid card on op,
   // foreign frames scaled to radio.scan.dwell_ms.
   std::optional<CalReading> op_live_;
@@ -382,6 +425,8 @@ class ChannelCore {
   void step_cal_(const ChannelTickIn& in);
   void finish_cal_measure_(double now_ms);
   void settle_cal_reloc_(bool ok, const char* why);
+  std::optional<std::string> move_refusal_(uint8_t ch) const;
+  std::optional<std::string> relocate_refusal_(uint8_t ch) const;
   void inflight_body_();
   void scout_loop_();
   std::string logf_(const char* fmt, ...);

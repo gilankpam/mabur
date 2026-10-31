@@ -12,6 +12,7 @@ add_library(mabur_gs_core STATIC
   src/cal_picker.cpp
   src/window_sampler.cpp
   src/config.cpp
+  src/gs_config_apply.cpp
   src/card_scan.cpp
   src/aggregator.cpp
   src/udp_sink.cpp

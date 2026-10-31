@@ -4,6 +4,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <system_error>
 
 namespace maburgs {
 
@@ -93,6 +94,12 @@ bool LogWriter::reopen(Stream s, const std::string& dir) {
   }
   if (!o.header.empty()) line(s, o.header.data(), o.header.size());
   return true;
+}
+
+void LogWriter::set_header(Stream s, const std::string& header) {
+  if (s < 0 || static_cast<size_t>(s) >= n_outs_.load(std::memory_order_acquire))
+    return;
+  outs_[static_cast<size_t>(s)]->header = header;
 }
 
 void LogWriter::put_(uint64_t at, const char* src, size_t n) {
@@ -221,6 +228,48 @@ void LogWriter::flush_now() {
   std::this_thread::sleep_for(kIdleSleep * 3);
   drain_();
   report_and_flush_();
+}
+
+LogWriterReaper::~LogWriterReaper() {
+  {
+    std::lock_guard<std::mutex> lk(mu_);
+    stop_ = true;
+  }
+  cv_.notify_all();
+  if (th_.joinable()) th_.join();
+  q_.clear();  // no thread ever started: finish them here
+}
+
+void LogWriterReaper::retire(std::unique_ptr<LogWriter> w) {
+  if (!w) return;
+  std::unique_lock<std::mutex> lk(mu_);
+  if (!th_.joinable()) {
+    try {
+      th_ = std::thread([this] { run_(); });
+    } catch (const std::system_error&) {
+      // No thread: finish the writer here, on the caller, rather than lose
+      // what it holds.
+      lk.unlock();
+      w.reset();
+      return;
+    }
+  }
+  q_.push_back(std::move(w));
+  lk.unlock();
+  cv_.notify_all();
+}
+
+void LogWriterReaper::run_() {
+  std::unique_lock<std::mutex> lk(mu_);
+  for (;;) {
+    cv_.wait(lk, [this] { return stop_ || !q_.empty(); });
+    if (q_.empty()) return;  // stop_ with nothing left
+    std::unique_ptr<LogWriter> w = std::move(q_.front());
+    q_.pop_front();
+    lk.unlock();
+    w.reset();  // the drain, flush and close
+    lk.lock();
+  }
 }
 
 }  // namespace maburgs

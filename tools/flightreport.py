@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Post-flight analysis of a mabur sideport flight.jsonl (schema v1 + link.ctl)
-or a maburgs ctl-NNNN_<date>.log (see gs/src/ctl_log.h; parses ctllog v1-v12,
+or a maburgs ctl-NNNN_<date>.log (see gs/src/ctl_log.h; parses ctllog v1-v13,
 warns on pre-v4, pre-v7, pre-v8, pre-v9 and pre-v10; prints a u/u3
 definition label -- arrival-booked vs completion-booked -- at the v11
 boundary). Format is auto-detected from the first line.
@@ -79,6 +79,28 @@ def _parse_ladder_token(raw):
     return rungs
 
 
+def _parse_ctllog_header(line):
+    """One `ctllog N k=v ...` header line -> {"_version": N, k: v, ...,
+    "_ladder": [...]}."""
+    header = {}
+    toks0 = line.split()
+    header["_version"] = int(toks0[1]) if len(toks0) > 1 and toks0[1].isdigit() else 0
+    # ctllog 6 ladder=0/100,2/50,... down_util=0.35 up_util=0.15
+    # ctllog 8 ladder=0/100:100,2/50:50,... down_util=0.35 up_util=0.15
+    for tok in toks0[2:]:
+        if "=" not in tok: continue
+        k, v = tok.split("=", 1)
+        header[k] = v
+    # Structured ladder rungs (same-rate-fixed-pairs): v8 splits
+    # each rung's overhead into a base/enh pair (mcs/ovb:ove); v1-v7
+    # wrote a single value per rung (mcs/ov) -- treated as both, since a
+    # pre-split rung had no base/enh distinction to lose. Stored under
+    # a "_"-prefixed key like _version so the raw header-field print
+    # loop (which skips "_"-prefixed keys) doesn't also print this.
+    header["_ladder"] = _parse_ladder_token(header.get("ladder", ""))
+    return header
+
+
 def load_ctllog(path):
     """Parse a maburgs ctl log (gs/src/ctl_log.cpp formats).
 
@@ -86,35 +108,33 @@ def load_ctllog(path):
     S lines are NOT strictly 1 Hz (SIGUSR1 emits off-cadence extras) -- callers
     must key everything off t_ms, never assume uniform spacing. float() parses
     "nan" natively, which the pre-session rung-0 warm-up samples rely on.
+    `header` is the LAST header line in the file (a live ladder swap writes
+    one mid-file, ctllog 13). Every S/E/P/N/R row carries "ladder": the
+    ladder of the header line above it, which is what its rung indexes.
     """
-    header = {}
     S, E, P, N, R = [], [], [], [], []
     with open(path) as f:
-        first = f.readline().strip()
-        toks0 = first.split()
-        header["_version"] = int(toks0[1]) if len(toks0) > 1 and toks0[1].isdigit() else 0
-        # ctllog 6 ladder=0/100,2/50,... down_util=0.35 up_util=0.15
-        # ctllog 8 ladder=0/100:100,2/50:50,... down_util=0.35 up_util=0.15
-        for tok in first.split()[2:]:
-            if "=" not in tok: continue
-            k, v = tok.split("=", 1)
-            header[k] = v
-        # Structured ladder rungs (same-rate-fixed-pairs): v8 splits
-        # each rung's overhead into a base/enh pair (mcs/ovb:ove); v1-v7
-        # wrote a single value per rung (mcs/ov) -- treated as both, since a
-        # pre-split rung had no base/enh distinction to lose. Stored under
-        # a "_"-prefixed key like _version so the raw header-field print
-        # loop (which skips "_"-prefixed keys) doesn't also print this.
-        header["_ladder"] = _parse_ladder_token(header.get("ladder", ""))
+        header = _parse_ctllog_header(f.readline().strip())
+        # Builds before the ladder_swap reason logged a swap's rung re-entry
+        # as hop_restore from rung 0, the first E after the mid-file header.
+        swap_e_due = False
 
         for line in f:
             line = line.strip()
             if not line: continue
             toks = line.split()
             tag = toks[0]
+            lad = header["_ladder"]
             try:
-                if tag == "S" and len(toks) >= 8:
+                if tag == "ctllog":
+                    # A later header line: a live ladder swap (ctllog 13) or
+                    # a rejoined session's restated marker. The rows after it
+                    # index this ladder.
+                    header = _parse_ctllog_header(line)
+                    swap_e_due = True
+                elif tag == "S" and len(toks) >= 8:
                     S.append({
+                        "ladder": lad,
                         "t_ms": float(toks[1]), "rung": int(toks[2]),
                         "u": float(toks[3]), "snr_db": float(toks[4]),
                         "resid": float(toks[5]), "u3": float(toks[6]),
@@ -134,15 +154,21 @@ def load_ctllog(path):
                         "probe_n": int(toks[15]) if len(toks) >= 16 else 0,
                     })
                 elif tag == "E" and len(toks) >= 7:
+                    reason = toks[4]
+                    if swap_e_due and reason == "hop_restore" and toks[2] == "0":
+                        reason = "ladder_swap"
+                    swap_e_due = False
                     E.append({
+                        "ladder": lad,
                         "t_ms": float(toks[1]), "from": int(toks[2]),
-                        "to": int(toks[3]), "reason": toks[4],
+                        "to": int(toks[3]), "reason": reason,
                         "u": float(toks[5]), "snr_db": float(toks[6]),
                         # EVM label; absent on older logs.
                         "evm_db": float(toks[7]) if len(toks) >= 8 else float("nan"),
                     })
                 elif tag == "P" and len(toks) >= 7:
                     P.append({
+                        "ladder": lad,
                         "t_ms": float(toks[1]), "rung": int(toks[2]),
                         "outcome": toks[3], "snr_db": float(toks[4]),
                         "u_pred": float(toks[5]), "dur_ms": float(toks[6]),
@@ -151,11 +177,13 @@ def load_ctllog(path):
                     })
                 elif tag == "N" and len(toks) >= 5:
                     N.append({
+                        "ladder": lad,
                         "t_ms": float(toks[1]), "rung": int(toks[2]),
                         "k": int(toks[3]), "until_ms": float(toks[4]),
                     })
                 elif tag == "R" and len(toks) >= 13:
                     R.append({
+                        "ladder": lad,
                         "t_ms": float(toks[1]), "rung": int(toks[2]),
                         "u": float(toks[3]), "resid": float(toks[4]),
                         "u3": float(toks[5]), "resid3": float(toks[6]),
@@ -254,46 +282,66 @@ def print_rung_store_report(R):
                       f" n {hi['n']}/{lo['n']})")
 
 
+# E reasons that restart the ladder controller on a rung rather than move
+# the link up or down it: a live ladder swap, and back to adaptive from a
+# static pin.
+_REENTRY_REASONS = ("ladder_swap", "unpin")
+
+
 def bw40_summary(ctllog, probation_ms=3000.0):
     """Time held on 40 MHz rungs and promotes onto them, from the ctllog 12
     header's per-rung bw and the E lines. None when no rung is 40 MHz (every
     pre-v12 recording). A promote onto 40 MHz counts as held unless the link
     LEAVES the 40 MHz region (reaches a 20 MHz rung) within probation_ms --
     a climb 40/3 -> 40/4 stays on 40 and still holds. probation_ms is the
-    bundle's link.probation_ms, 3 s; the log does not carry it."""
-    rungs = ctllog["header"].get("_ladder") or []
-    if not any(r.get("bw") == 40 for r in rungs):
-        return None
+    bundle's link.probation_ms, 3 s; the log does not carry it. Each row's
+    rung is read against its own ladder (a live swap changes it mid-file),
+    and a controller re-entry (`ladder_swap`, `unpin`) is not a promote."""
+    hdr_ladder = ctllog["header"].get("_ladder") or []
     S, E = ctllog.get("S", []), ctllog.get("E", [])
+
+    def ladder_of(row):
+        return row.get("ladder", hdr_ladder) or []
+
+    ladders = [hdr_ladder] + [ladder_of(r) for r in S + E]
+    if not any(r.get("bw") == 40 for lad in ladders for r in lad):
+        return None
     ts = [s["t_ms"] for s in S] + [e["t_ms"] for e in E]
     if not ts:
         return {"held_s": 0.0, "total_s": 0.0, "promotes": 0, "held_past_probation": 0}
     t0, t1 = min(ts), max(ts)
 
-    def bw_of(idx):
-        return rungs[idx]["bw"] if 0 <= idx < len(rungs) else 20
+    def bw_of(idx, lad):
+        return lad[idx]["bw"] if 0 <= idx < len(lad) else 20
 
     # Initial rung: the first E line's `from`; with no E lines, the first S
-    # line's rung (S carries the live rung); else rung 0.
-    if E:
-        cur = E[0]["from"]
-    elif S:
-        cur = min(S, key=lambda s: s["t_ms"])["rung"]
+    # line's rung (S carries the live rung); else rung 0. A re-entry's
+    # `from` is not where the link was (a swap's is the new controller's
+    # start, an unpin's the rung the ladder held before the static pin):
+    # S says that.
+    s0 = min(S, key=lambda s: s["t_ms"]) if S else None
+    if E and E[0]["reason"] not in _REENTRY_REASONS:
+        cur, cur_lad = E[0]["from"], ladder_of(E[0])
+    elif s0 is not None:
+        cur, cur_lad = s0["rung"], ladder_of(s0)
     else:
-        cur = 0
+        cur, cur_lad = 0, hdr_ladder
     t_prev, held, promotes, held_past = t0, 0.0, 0, 0
     for i, e in enumerate(E):
-        if bw_of(cur) == 40:
+        lad = ladder_of(e)
+        if bw_of(cur, cur_lad) == 40:
             held += e["t_ms"] - t_prev
-        if bw_of(e["from"]) != 40 and bw_of(e["to"]) == 40:
+        if (e["reason"] not in _REENTRY_REASONS and bw_of(e["from"], lad) != 40
+                and bw_of(e["to"], lad) == 40):
             promotes += 1
             # First time the link reaches a 20 MHz rung after this promote;
             # the end of the recording when it never does.
-            left = next((x["t_ms"] for x in E[i + 1:] if bw_of(x["to"]) != 40), t1)
+            left = next((x["t_ms"] for x in E[i + 1:]
+                         if bw_of(x["to"], ladder_of(x)) != 40), t1)
             if left - e["t_ms"] >= probation_ms:
                 held_past += 1
-        cur, t_prev = e["to"], e["t_ms"]
-    if bw_of(cur) == 40:
+        cur, cur_lad, t_prev = e["to"], lad, e["t_ms"]
+    if bw_of(cur, cur_lad) == 40:
         held += t1 - t_prev
     return {"held_s": held / 1000.0, "total_s": (t1 - t0) / 1000.0,
             "promotes": promotes, "held_past_probation": held_past}
@@ -364,13 +412,19 @@ def print_wall_report(ctllog):
         print("  u/u3: completion-booked pre-FEC loss (lags the air; transition-inflated) -- pre-ctllog-11")
 
     print("DWELL (S records)")
-    # The rung's mcs/bw from the ctllog header's ladder (ctllog 6+); a bare
-    # index when the header carries none or the index is outside it.
-    ladder = header.get("_ladder") or []
+    # The rung's mcs/bw from the ladder of the header above each sample
+    # (ctllog 6+; a live swap re-indexes the ladder mid-file, ctllog 13), so
+    # one index before and after a swap is two rows; a bare index when the
+    # header carries none or the index is outside it.
+    hdr_ladder = header.get("_ladder") or []
     by_rung = {}
-    for s in S: by_rung.setdefault(s["rung"], []).append(s)
-    for rung in sorted(by_rung):
-        samples = by_rung[rung]
+    for s in S:
+        lad = s.get("ladder", hdr_ladder) or []
+        label = (f" (mcs{lad[s['rung']]['mcs']}/{lad[s['rung']]['bw']})"
+                 if 0 <= s["rung"] < len(lad) else "")
+        by_rung.setdefault((s["rung"], label), []).append(s)
+    for rung, label in sorted(by_rung):
+        samples = by_rung[(rung, label)]
         snrs = [s["snr_db"] for s in samples if not math.isnan(s["snr_db"])]
         nan_n = len(samples) - len(snrs)
         sentinel_n = sum(1 for s in samples if is_sentinel(s["u3"]))
@@ -380,8 +434,6 @@ def print_wall_report(ctllog):
         extra = ""
         if nan_n: extra += f" nan_snr={nan_n}"
         if sentinel_n: extra += f" u3_sentinel={sentinel_n}"
-        label = (f" (mcs{ladder[rung]['mcs']}/{ladder[rung]['bw']})"
-                 if 0 <= rung < len(ladder) else "")
         print(f"  rung {rung}{label}: n={len(samples)} snr={snr_str}{evm_str}{extra}")
 
     print("EVENTS")

@@ -20,7 +20,7 @@ namespace maburgs {
 // Record formats are LOCKED (a Python parser -- flightreport.py -- and
 // tests/test_ctl_log.cpp depend on the exact byte layout):
 //
-//   ctllog 12 <header_info>                                 # once, first line
+//   ctllog 13 <header_info>          # first line; again at a live ladder swap
 //   S <t_ms> <rung> <u> <snr_db> <resid> <u3> <resid3> <evm_db> <resid_cur>
 //     <drssi> <dsnr> <rssi_dbm> <probe_rung> <probe_u> <probe_n>
 //                                              # dwell sample, debug_log.ctl_period_ms
@@ -45,6 +45,15 @@ namespace maburgs {
 // LadderController::fade_drssi()/fade_dsnr()), added in ctllog 3.
 // Each reads nan until its underlying signal has ever been sampled -- nan is
 // a normal steady-state value on a GS whose RF labels are stale, not a bug.
+//
+// ctllog 13 (live ladder swap): no column change. A `set link.ladder` on
+// the running GS writes a fresh `ctllog 13 <header_info>` line into the
+// same file (a swap is not a new flight) and the rows after it index the
+// new ladder; a reader keys every row to the most recent header line above
+// it. A rejoined session's restated marker has the same form. The swap's
+// rung re-entry follows the header as an E line with reason `ladder_swap`
+// (from 0, the new controller's start, to the restored index); the E
+// reason `hop_restore` is only ever an in-flight hop's.
 //
 // ctllog 12 (40 MHz rungs): no column change. The header's
 // ladder= token is bw:mcs/ovb:ove per rung (was mcs/ovb:ove); with 20/3 and
@@ -200,8 +209,12 @@ class CtlLog {
   CtlLog& operator=(const CtlLog&) = delete;
 
   bool ok() const { return s_ != LogWriter::kBadStream; }
-  // Session rotation: same file name under a new session directory.
+  // Session rotation: same file name under a new session directory, which
+  // opens on the most recent header.
   void rotate(const std::string& dir) { w_.reopen(s_, dir); }
+  // A live ladder swap: writes `ctllog 13 <header_info>` as the next line
+  // and makes it the header a later rotate() opens the new file with.
+  void header(const std::string& header_info);
   const std::string& path() const { return w_.path(s_); }
 
   void sample(double t_ms, int rung, double u, double snr_db, double resid,
@@ -221,6 +234,7 @@ class CtlLog {
             double age_s, double probe_u, uint64_t probe_n);
 
  private:
+  static constexpr const char* kMarker = "ctllog 13 ";
   LogWriter& w_;
   LogWriter::Stream s_;
 };

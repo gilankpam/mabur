@@ -37,6 +37,7 @@
 #include "osd_raster.h"
 #include "osd_source.h"
 #include "player_config.h"
+#include "player_config_apply.h"  // the live set/get control on 127.0.0.1:8403
 #include "rec_button.h"
 #include "rec_control.h"  // maburgs::kRecControlPort
 #include "ring_client.h"
@@ -48,6 +49,7 @@
 #ifdef MABUR_PLAYER_HW
 #include "burn_recorder.h"  // dvr.mode "burned": re-encode with the OSD burnt in
 #include "decode_pump.h"    // the decode-output thread: drives backend->poll(), hands frames over
+#include "display_watch.h"  // rebuild the presenter when its display is replugged
 #include "drm_presenter.h"  // KMS atomic NV12 presenter, the default display path
 #include "frame_regulator.h"  // phase-aware pts+D display release
 #include "phase_lock.h"  // PhaseLock, the sensor-rate controller for the phase lock
@@ -343,6 +345,12 @@ std::string dvr_filename(const std::string& dir) {
   return namer.next(dir);
 }
 
+// The REC field's sizing for a recording to the GS DVR and/or the VTX SD.
+maburplay::RecTarget rec_target_of(bool gs, bool vtx) {
+  if (gs && vtx) return maburplay::RecTarget::kBoth;
+  return vtx ? maburplay::RecTarget::kVtx : maburplay::RecTarget::kGs;
+}
+
 // Parses player_config's "WIDTHxHEIGHT@RATE" screen_mode (mode_pick.h);
 // the backend gets the rate rounded to whole fps. Falls back to
 // BackendCfg's default (1920x1080@60) if malformed.
@@ -507,14 +515,16 @@ int main(int argc, char** argv) {
   }
   if (!backend_override.empty()) cfg.backend = backend_override;
 
-  {
-    maburplay::BuildCaps caps;
+  // The decoders this binary carries: checked against the config at boot
+  // and against every live set's candidate.
+  maburplay::BuildCaps caps;
 #ifdef MABUR_PLAYER_MPP
-    caps.mpp = true;
+  caps.mpp = true;
 #endif
 #ifdef MABUR_PLAYER_V4L2REQ
-    caps.v4l2req = true;
+  caps.v4l2req = true;
 #endif
+  {
     const std::string why = maburplay::unsupported_on_build(cfg, caps);
     if (!why.empty()) {
       std::fprintf(stderr, "maburplay: %s\n", why.c_str());
@@ -594,10 +604,22 @@ int main(int argc, char** argv) {
   maburplay::OsdFont osd_font;
   std::unique_ptr<maburplay::OsdSource> osd_src;
   std::unique_ptr<maburplay::OsdRaster> osd_raster;
+  // Each font loads the first time its overlay is wanted -- here, or at a
+  // live osd.enable / osd.gs.enable set -- and stays loaded.
+  auto load_msp_font = [&](std::string* err) -> bool {
+    if (osd_font.ok()) return true;
+    if (!osd_font.load(cfg.osd.font, err)) return false;
+#ifdef MABUR_PLAYER_HW
+    // Loaded after the display stage went in: take the OSD pre-inversion
+    // install_colortrans gave the rest of the overlay.
+    if (const maburplay::ColorTrans* inv = maburplay::colour_inverse()) osd_font.set_inverse(*inv);
+#endif
+    return true;
+  };
   bool want_msp_osd = false;
   if (cfg.osd.enable && !decode_only) {
     std::string err;
-    if (!osd_font.load(cfg.osd.font, &err)) {
+    if (!load_msp_font(&err)) {
       std::fprintf(stderr, "maburplay: msp osd disabled -- %s\n", err.c_str());
     } else {
       want_msp_osd = true;
@@ -613,10 +635,13 @@ int main(int argc, char** argv) {
   // tested directly (tests/test_osd_coexist.cpp). Everything below is
   // wiring: sources, fonts, and the decision to invoke it.
   maburplay::OsdComposer composer;
+  auto load_gs_font = [&](std::string* err) {
+    return gs_font.ok() || gs_font.load(cfg.osd.gs.font, err);
+  };
   bool want_gs_osd = false;
   if (cfg.osd.gs.enable && !decode_only) {
     std::string err;
-    if (!gs_font.load(cfg.osd.gs.font, &err)) {
+    if (!load_gs_font(&err)) {
       std::fprintf(stderr, "maburplay: gs osd disabled -- %s\n", err.c_str());
     } else {
       want_gs_osd = true;
@@ -629,8 +654,9 @@ int main(int argc, char** argv) {
   // straight to the pre-OSD topology (video + black backdrop on the
   // primary), which is the escape hatch back to the old plane layout.
   // maybe_unused: its only consumer is DrmPresenter::init(), which exists
-  // only in the cross build.
-  [[maybe_unused]] const bool want_osd = want_msp_osd || want_gs_osd;
+  // only in the cross build. Not const: a live osd switch that changes it
+  // rebuilds the presenter with the new value.
+  [[maybe_unused]] bool want_osd = want_msp_osd || want_gs_osd;
 
   // Display path: the DrmPresenter becomes the frame owner for the normal
   // (non-decode-only) run -- release_frame() is no longer called inline
@@ -700,9 +726,13 @@ int main(int argc, char** argv) {
   // Installs the display stage: the CUBIC_LUT (always a table on a LUT
   // CRTC, identity when off) or the video-plane CTM, and pre-inverts both
   // overlays only for the LUT. Runs once per presenter acquire, BEFORE
-  // splash_show() and before any OSD composition. Idempotent for the OSD
-  // half (set_inverse and set_colour_inverse both replace).
+  // splash_show() and before any OSD composition. The OSD half starts from
+  // un-inverted on every call, so a presenter rebuilt mid-run whose install
+  // ends flat (colortrans off, or no LUT on the new CRTC) does not keep the
+  // previous presenter's pre-inversion.
   auto install_colortrans = [&](maburplay::DrmPresenter* p) {
+    osd_font.clear_inverse();
+    maburplay::set_colour_inverse(nullptr);
     const bool lut_avail = p->color_lut_available();
     const bool ctm_avail = p->plane_ctm_available();
     float m[12] = {};
@@ -744,6 +774,19 @@ int main(int argc, char** argv) {
       std::fprintf(stderr, "maburplay: colortrans: video-plane CTM on, OSD untouched\n");
     }
   };
+  // The servo releases display.vsync_lead_ms ahead of each vblank; a lead
+  // of a whole panel period or more costs a period of glass latency on
+  // every release. Said for every panel a presenter comes up on: the mode
+  // can change at a hotplug or a live screen_mode set.
+  auto warn_vsync_lead = [&](double panel_us) {
+    if (cfg.display.vsync_lock && cfg.display.vsync_lead_ms * 1000.0 >= panel_us)
+      std::fprintf(stderr,
+                   "maburplay: display.vsync_lead_ms %d >= the "
+                   "%.1f ms panel period -- every servo release rolls past one extra "
+                   "vblank (a full period of added glass latency); lower "
+                   "the lead for this mode\n",
+                   cfg.display.vsync_lead_ms, panel_us / 1000.0);
+  };
   std::unique_ptr<maburplay::DrmPresenter> presenter;
   if (!decode_only) {
     presenter = std::make_unique<maburplay::DrmPresenter>();
@@ -764,13 +807,7 @@ int main(int argc, char** argv) {
       // to k=0 and are all dropped, so the servo would never engage.
       const double panel_us = presenter->mode_period_us();
       regulator.set_panel_period(panel_us);
-      if (cfg.display.vsync_lock && cfg.display.vsync_lead_ms * 1000.0 >= panel_us)
-        std::fprintf(stderr,
-                     "maburplay: display.vsync_lead_ms %d >= the "
-                     "%.1f ms panel period -- every servo release rolls past one extra "
-                     "vblank (a full period of added glass latency); lower "
-                     "the lead for this mode\n",
-                     cfg.display.vsync_lead_ms, panel_us / 1000.0);
+      warn_vsync_lead(panel_us);
       presenter->set_flip_sink(
           [&lat, &regulator, &tap](const maburplay::DmaFrame& f, uint64_t t, bool ex) {
             lat.on_flip(f.pts_us, t, ex);
@@ -802,59 +839,81 @@ int main(int argc, char** argv) {
   uint64_t lat_mark_ms = 0;
 #endif
 
-  // MSP DisplayPort OSD: network intake + raster, gated on want_msp_osd (the
-  // font already loaded above). presenter->osd_available() is re-checked
-  // per frame further down -- this can be true here and the OSD still
-  // end up unavailable (no qualifying plane, or the 3-strike runtime
-  // disable), which is fine: osd_src/osd_raster just have nothing to feed.
+  // MSP DisplayPort OSD: network intake + raster, opened here when
+  // want_msp_osd (the font already loaded above) and by a live osd.enable
+  // set. presenter->osd_available() is re-checked per frame further down --
+  // this can succeed and the OSD still end up unavailable (no qualifying
+  // plane, or the 3-strike runtime disable), which is fine: osd_src/
+  // osd_raster just have nothing to feed. False with *err, nothing opened,
+  // when the port cannot be bound.
+  auto open_msp_osd = [&](std::string* err) -> bool {
+    auto src = std::make_unique<maburplay::OsdSource>();
+    if (!src->open(cfg.osd.port, err)) return false;
+    src->set_stale_ms(cfg.osd.stale_ms);
+    osd_src = std::move(src);
+    osd_raster = std::make_unique<maburplay::OsdRaster>(osd_font, scale_mode(cfg.osd.scale));
+    composer.set_raster(osd_raster.get());
+    std::fprintf(stderr,
+                 "maburplay: osd on udp 127.0.0.1:%d font=%s (%dx%d glyphs) scale=%s "
+                 "stale_ms=%d\n",
+                 osd_src->port(), cfg.osd.font.c_str(), osd_font.native().glyph_w,
+                 osd_font.native().glyph_h, cfg.osd.scale.c_str(), cfg.osd.stale_ms);
+    return true;
+  };
+  // A live osd.enable = false: the composer lets go of the raster (and
+  // erases its grid from the screen and the recording) before it is freed.
+  auto close_msp_osd = [&]() {
+    if (!osd_src) return;
+    composer.drop_raster();
+    osd_raster.reset();
+    osd_src.reset();
+    std::fprintf(stderr, "maburplay: msp osd off\n");
+  };
   if (want_msp_osd) {
     std::string err;
-    osd_src = std::make_unique<maburplay::OsdSource>();
-    if (!osd_src->open(cfg.osd.port, &err)) {
-      std::fprintf(stderr, "maburplay: msp osd disabled -- %s\n", err.c_str());
-      osd_src.reset();
-    } else {
-      osd_src->set_stale_ms(cfg.osd.stale_ms);
-      osd_raster =
-          std::make_unique<maburplay::OsdRaster>(osd_font, scale_mode(cfg.osd.scale));
-      composer.set_raster(osd_raster.get());
-      std::fprintf(stderr,
-                   "maburplay: osd on udp 127.0.0.1:%d font=%s (%dx%d glyphs) scale=%s "
-                   "stale_ms=%d\n",
-                   osd_src->port(), cfg.osd.font.c_str(), osd_font.native().glyph_w,
-                   osd_font.native().glyph_h, cfg.osd.scale.c_str(), cfg.osd.stale_ms);
-    }
+    if (!open_msp_osd(&err)) std::fprintf(stderr, "maburplay: msp osd disabled -- %s\n", err.c_str());
   }
 
-  // GS link-status overlay: network intake + overlay object, gated on
-  // want_gs_osd. Same shape as the MSP intake above, and the same caveat:
-  // presenter->osd_available() is re-checked per iteration, so getting here
-  // does not guarantee anything is ever drawn.
+  // GS link-status overlay: network intake + overlay object, opened here
+  // when want_gs_osd and by a live osd.gs.enable set. Same shape as the MSP
+  // intake above, and the same caveat: presenter->osd_available() is
+  // re-checked per iteration, so getting here does not guarantee anything
+  // is ever drawn. gs_src is the live gate from here on.
+  //
+  // Three layers, not one: two DRM buffers plus the burned DVR's index map,
+  // all three needing their own record of what they already show. See
+  // osd_compose.h for why a shared shadow strobes. The REC field is sized
+  // for the recording target `t` (gs_layer.h rec_worst): "gs" keeps the
+  // pre-VTX-recorder box.
+  auto set_gs_layers = [&](maburplay::RecTarget t) {
+    composer.set_gs(maburplay::make_gs_layer(gs_font, t), maburplay::make_gs_layer(gs_font, t),
+                    maburplay::make_gs_layer(gs_font, t));
+  };
+  auto open_gs_osd = [&](maburplay::RecTarget t, std::string* err) -> bool {
+    auto src = std::make_unique<maburplay::GsSource>();
+    if (!src->open(cfg.osd.gs.port, err)) return false;
+    src->set_stale_ms(cfg.osd.gs.stale_ms);
+    gs_src = std::move(src);
+    set_gs_layers(t);
+    std::fprintf(stderr, "maburplay: gs osd on udp 127.0.0.1:%d font=%s stale_ms=%d\n",
+                 gs_src->port(), cfg.osd.gs.font.c_str(), cfg.osd.gs.stale_ms);
+    return true;
+  };
+  // A live osd.gs.enable = false: the bar's area is erased from the screen
+  // and the recording by the composer's next compositions.
+  auto close_gs_osd = [&]() {
+    if (!gs_src && !composer.gs_present()) return;
+    composer.drop_gs_layers();
+    gs_src.reset();
+    std::fprintf(stderr, "maburplay: gs osd off\n");
+  };
   if (want_gs_osd) {
+    // player_config already rejected anything parse_rec_target would.
+    maburplay::RecTarget rec_target = maburplay::RecTarget::kGs;
+    maburplay::parse_rec_target(cfg.dvr.target, &rec_target);
     std::string err;
-    gs_src = std::make_unique<maburplay::GsSource>();
-    if (!gs_src->open(cfg.osd.gs.port, &err)) {
-      // gs_src is the live gate from here on -- want_gs_osd has already
-      // been folded into want_osd and is never read again.
+    if (!open_gs_osd(rec_target, &err))
       std::fprintf(stderr, "maburplay: gs osd disabled -- %s\n", err.c_str());
-      gs_src.reset();
-    } else {
-      gs_src->set_stale_ms(cfg.osd.gs.stale_ms);
-      // Three, not one: two DRM buffers plus the burned DVR's index map, all
-      // three needing their own record of what they already show. See
-      // osd_compose.h for why a shared shadow strobes.
-      // dvr.target sizes the REC field (gs_layer.h rec_worst): "gs" keeps
-      // the pre-VTX-recorder box. player_config already rejected anything
-      // parse_rec_target would.
-      maburplay::RecTarget rec_target = maburplay::RecTarget::kGs;
-      maburplay::parse_rec_target(cfg.dvr.target, &rec_target);
-      composer.set_gs(maburplay::make_gs_layer(gs_font, rec_target),
-                      maburplay::make_gs_layer(gs_font, rec_target),
-                      maburplay::make_gs_layer(gs_font, rec_target));
-      std::fprintf(stderr,
-                   "maburplay: gs osd on udp 127.0.0.1:%d font=%s stale_ms=%d\n",
-                   gs_src->port(), cfg.osd.gs.font.c_str(), cfg.osd.gs.stale_ms);
-    }
   }
 
   // Player-measured half of the GS overlay's inputs, recomputed once a
@@ -882,24 +941,46 @@ int main(int argc, char** argv) {
   // the record button flips it. Declared here because start_burn_if_needed
   // below reads it.
   bool rec_on = cfg.dvr.autostart;
-  // dvr.target: which recorders the button drives.
-  const bool rec_gs = cfg.dvr.target != "vtx";
-  const bool rec_vtx = cfg.dvr.target != "gs";
+  // What the running recording records (player_config_apply.h RecPlan),
+  // read from the live config at each record start and held until it
+  // stops: a dvr.* set during a recording waits for the next one. While
+  // no recording runs they follow the live config (follow_live_rec in the
+  // run loop), which is what the OSD's REC field and the next press read.
+  // rec_gs / rec_vtx -- dvr.target: which recorders the button drives.
+  bool rec_gs = true;
+  bool rec_vtx = false;
   maburplay::CoreControlClient core_ctl;
   if (!core_ctl.open(maburgs::kRecControlPort))
     std::fprintf(stderr,
                  "maburplay: rec: core control socket failed -- the drone recorder will not "
                  "follow the button and refresh reports will not reach maburgs\n");
-  // dvr.mode "burned": the recording is produced by re-encoding the frames
-  // the display flips to, with the OSD composited in by the hardware
-  // encoder, so the BurnRecorder owns the file and the raw remux in the ring
-  // sink below is SKIPPED. This flag -- not "the recorder actually started"
-  // -- is what gates that skip: a burned run whose encoder refused to come
-  // up must record nothing and say so, never quietly leave a raw file
-  // behind that the user would mistake for a burned one.
-  const bool burned_mode = cfg.dvr.mode == "burned";
+  // burned_mode -- dvr.mode "burned": the recording is produced by
+  // re-encoding the frames the display flips to, with the OSD composited in
+  // by the hardware encoder, so the BurnRecorder owns the file and the raw
+  // remux in the ring sink below is SKIPPED. This flag -- not "the recorder
+  // actually started" -- is what gates that skip: a burned run whose
+  // encoder refused to come up must record nothing and say so, never
+  // quietly leave a raw file behind that the user would mistake for a
+  // burned one.
+  bool burned_mode = false;
+  // rec_burn -- dvr.burned.*: what a burned recorder of this recording
+  // starts with, including a restart inside it (a presenter rebuild, an
+  // overlay switched on), which must not pick up a set made since.
+  maburplay::DvrCfg::BurnedCfg rec_burn;
+  // Reads the live dvr.* into the latched plan; true when the target moved.
+  auto latch_rec = [&]() -> bool {
+    const maburplay::RecPlan p = maburplay::rec_plan(cfg.dvr);
+    const bool target_moved = p.gs != rec_gs || p.vtx != rec_vtx;
+    rec_gs = p.gs;
+    rec_vtx = p.vtx;
+    burned_mode = p.burned;
+    rec_burn = p.burn;
+    return target_moved;
+  };
+  latch_rec();
   // The regulator line's flushes=/recstarts=: output parks (a ring flush, a
-  // decode-watchdog reset or recreate, a display hotplug, shutdown) and
+  // decode-watchdog reset or recreate, a display hotplug, a display
+  // rebuild for a live config set, shutdown) and
   // recorder starts, cumulative. Both disturb presentation for a few
   // frames, so a gate that counts missed latches (tools/bench/latchgate.py)
   // keys its exclusions on them. Housekeeping thread only.
@@ -1112,8 +1193,8 @@ int main(int argc, char** argv) {
     // size now. A later change of the decoded size (a rung change) does not
     // restart the recorder: its stage scales every frame of another size to
     // this one (burn_recorder.h BurnCfg).
-    int rw = cfg.dvr.burned.size_w;
-    int rh = cfg.dvr.burned.size_h;
+    int rw = rec_burn.size_w;
+    int rh = rec_burn.size_h;
     if (rw <= 0 || rh <= 0) {
       rw = pump.video_w();
       rh = pump.video_h();
@@ -1151,8 +1232,8 @@ int main(int argc, char** argv) {
     // while none exists, and the recorder needs one, so this period holds
     // for the recorder's whole life.
     bc.period_us = presenter->mode_period_us();
-    bc.every = cfg.dvr.burned.every;
-    bc.bitrate_kbps = cfg.dvr.burned.bitrate_kbps;
+    bc.every = rec_burn.every;
+    bc.bitrate_kbps = rec_burn.bitrate_kbps;
     bc.fragment_ms = cfg.dvr.fragment_ms;
     bc.colortrans = cfg.colortrans.enable ? &ct : nullptr;
     // backend.get() is CHECKED, not retained (see burn_recorder.h): the
@@ -1308,6 +1389,7 @@ int main(int argc, char** argv) {
   // burned path tears the recorder down and builds a fresh one.
   auto rec_start = [&]() {
     if (rec_on) return;
+    latch_rec();  // this recording's plan: the live dvr.* now
     rec_on = true;
     gs_rec.reset();  // the OSD clock counts THIS file
     vtx_trk.reset();
@@ -1750,10 +1832,10 @@ int main(int argc, char** argv) {
   // deploy-time pairing across two config files that neither daemon can
   // validate. Production runs maburplay WITHOUT --fps-log (S97maburplay), so
   // the osd_dgrams counter that would expose a mismatch is invisible -- warn
-  // once, on stderr, if nothing has ever arrived.
-  const uint64_t osd_start_ms = (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
-                                    std::chrono::steady_clock::now().time_since_epoch())
-                                    .count();
+  // once, on stderr, if nothing has ever arrived. Each source's clock starts
+  // when it opens: at startup, or at a live osd switch that opens it.
+  uint64_t msp_open_ms = mono_ms();
+  uint64_t gs_open_ms = msp_open_ms;
   bool osd_silence_warned = false;
   bool gs_silence_warned = false;
   // Render gate. The overlay's inputs are exactly three -- the snapshot, the
@@ -1778,14 +1860,258 @@ int main(int argc, char** argv) {
   // Display hotplug recovery state. init() only accepts an already-CONNECTED
   // connector, so before this a display plugged in or powered on after
   // startup stayed invisible for the life of the process -- the screen was
-  // black until someone restarted maburplay by hand.
-  const uint64_t display_retry_t0_ms = mono_ms();
+  // black until someone restarted maburplay by hand. The same retry takes
+  // over when a live rebuild fails; t0 is when the display went missing.
+  uint64_t display_retry_t0_ms = mono_ms();
   uint64_t display_retry_next_ms = 0;
   bool display_retry_announced = false;
+  // A display unplugged and plugged back in while a presenter drives it can
+  // stay dark although KMS re-applies the retained mode; a fresh
+  // presenter's full modeset brings it back, so a replug rebuilds it
+  // (display_watch.h has the rule and its limits).
+  // The kernel's DRM hotplug uevents wake a status read; without a netlink
+  // socket the status is polled once a second instead.
+  maburplay::HotplugSocket hotplug_sock;
+  const bool hotplug_uevents = hotplug_sock.open();
+  if (!hotplug_uevents)
+    std::fprintf(stderr,
+                 "maburplay: no hotplug uevents (netlink: %s) -- polling the display's status "
+                 "every 1 s instead\n",
+                 std::strerror(errno));
+  maburplay::DisplayWatch display_watch(hotplug_uevents);
+  if (presenter) display_watch.on_acquired(mono_ms());
   // Phase margins taken from the release thread each iteration.
   std::vector<maburplay::ReleaseLoop::MarginSample> margins;
   margins.reserve(maburplay::ReleaseLoop::kMarginCap);
+  // Builds a FRESH presenter on `mode` and makes it the live display,
+  // never a re-init of an existing one: every connector/mode/plane/zpos
+  // decision is re-derived from what the display offers now. Two callers:
+  // the hotplug retry (no presenter) and a live change of the display mode
+  // or the overlay setup (a presenter is running). Housekeeping only.
+  //  - No presenter: the new one is built first and output parks only once
+  //    it succeeded, so a retry that finds no display costs nothing.
+  //  - A live presenter: it is torn down first -- the burned recorder (it
+  //    samples the old display's vblank grid) is stopped, both output
+  //    threads park so nothing is held on the old presenter, the release
+  //    thread drops its sink, and only then is the presenter destroyed. If
+  //    the new one then fails, output resumes with no display and the
+  //    hotplug retry takes over on cfg.screen_mode.
+  // Returns whether a presenter is live on `mode` afterwards.
+  auto reacquire_display = [&](const std::string& mode, bool log_failures) -> bool {
+    const bool tear_down = presenter != nullptr;
+    if (tear_down) {
+      if (burn) stop_burn();
+      park_output("display rebuild");
+      release.set_sink(nullptr);
+      presenter.reset();
+    }
+    auto p = std::make_unique<maburplay::DrmPresenter>();
+    if (!p->init(mode, want_osd, [&releases](const maburplay::DmaFrame& f) { releases.push(f); },
+                 log_failures)) {
+      if (tear_down) {
+        resume_output();
+        std::fprintf(stderr,
+                     "maburplay: display rebuild on %s failed -- no display; the 1 s retry takes "
+                     "over\n",
+                     mode.c_str());
+        // The line above is this episode's announcement; the retry starts
+        // on the next iteration and counts from now.
+        display_retry_announced = true;
+        display_retry_t0_ms = mono_ms();
+        display_retry_next_ms = display_retry_t0_ms;
+      }
+      return false;
+    }
+    // Both output threads park across the swap: the pump's prime hook
+    // reads `presenter`, and the release thread takes the new sink only
+    // while parked. Sink-less until now, the release thread's park returns
+    // just the frames the regulator holds.
+    if (!tear_down) park_output("display acquired");
+    presenter = std::move(p);
+    install_colortrans(presenter.get());
+    // Same pre-first-flip reseed as the startup path: the new panel may run
+    // a different mode/refresh than the one configured.
+    regulator.set_panel_period(presenter->mode_period_us());
+    warn_vsync_lead(presenter->mode_period_us());
+    // Unlike the startup path, the lock may already be locked or acquiring
+    // against the OLD panel's grid here: restart it so the new mode gets a
+    // fresh window instead of up to 2 s of capture placement judged against
+    // a stale vblank period. Margins taken against the old grid go with it.
+    if (phase_lock) phase_lock->on_discontinuity(mono_us());
+    margins.clear();
+    release.take_margins(&margins);
+    margins.clear();
+    presenter->set_flip_sink(
+        [&lat, &regulator, &tap](const maburplay::DmaFrame& f, uint64_t t, bool ex) {
+          lat.on_flip(f.pts_us, t, ex);
+          regulator.on_flip(t, ex);
+          tap.on_flip(f, t);
+        });
+    // The GS bar re-lays out on the new surface, whose size may differ, and
+    // both layers redraw whole on the fresh, blank OSD buffers.
+    gs_laid_out = false;
+    composer.forget_screen();
+    // Startup-only, and this is where that invariant is enforced for a late
+    // or rebuilt display: if this process has ever decoded a frame, the
+    // aircraft is flying and a still photo on the goggles would read as a
+    // live feed. The screen still lights (needs_modeset defaults true and
+    // was never cleared since splash_show() was skipped, so the first
+    // present() performs the full modeset); it simply comes up on video, or
+    // on nothing until video returns.
+    if (!pump.have_frame()) show_splash(presenter.get());
+    release.set_sink(presenter.get());
+    resume_output();
+    // The recorder samples this display's vblank grid, so it could not
+    // exist before this moment.
+    start_burn_if_needed();
+    // Starts the watch's guard: this rebuild's own modeset may make the
+    // sink pulse HPD, and that must not read as another replug.
+    display_watch.on_acquired(mono_ms());
+    return true;
+  };
 #endif
+
+  // While no recording runs the recorder flags follow the live dvr.*
+  // (latch_rec), and a target that moved re-sizes the GS bar's REC field.
+  // The field is sized for the recording it shows, so a set during one is
+  // laid out when that recording stops.
+  auto follow_live_rec = [&]() {
+    if (rec_on || !latch_rec() || !composer.gs_present()) return;
+    composer.drop_gs_layers();
+    set_gs_layers(rec_target_of(rec_gs, rec_vtx));
+#ifdef MABUR_PLAYER_HW
+    gs_laid_out = false;
+#endif
+  };
+
+  // The live display and overlay keys (screen_mode, colortrans.enable,
+  // osd.enable, osd.gs.enable); `c` is the live config with one of them
+  // changed. An overlay switched on loads its font and opens its intake
+  // first, so a missing font or a taken port refuses the set before
+  // anything changes. The presenter is rebuilt only when the display mode,
+  // colortrans, or whether any OSD plane is wanted changed -- a mode the
+  // display does not list is refused before the old one is torn down --
+  // and an overlay switched off closes once that rebuild succeeded, or in
+  // place when there is none. A failed rebuild puts cfg back and leaves the
+  // hotplug retry rebuilding on it. Also runs as the revert, with the two
+  // configs swapped, when the file publish fails.
+  auto apply_display = [&](const maburplay::Config& c, std::string* err) -> bool {
+    const bool msp_on = c.osd.enable && !cfg.osd.enable;
+    const bool msp_off = !c.osd.enable && cfg.osd.enable;
+    const bool gs_on = c.osd.gs.enable && !cfg.osd.gs.enable;
+    const bool gs_off = !c.osd.gs.enable && cfg.osd.gs.enable;
+    auto refuse = [&](const char* what) {
+      *err = std::string(what) + ": " + *err;
+      return false;
+    };
+    if (msp_on && !load_msp_font(err)) return refuse("msp osd");
+    if (gs_on && !load_gs_font(err)) return false;  // GsFont's reason names it ("gs font: ...")
+    const bool want_after =
+        (c.osd.enable && osd_font.ok()) || (c.osd.gs.enable && gs_font.ok());
+#ifdef MABUR_PLAYER_HW
+    const bool rebuild = presenter && (c.screen_mode != cfg.screen_mode ||
+                                       c.colortrans.enable != cfg.colortrans.enable ||
+                                       want_after != want_osd);
+    if (rebuild && c.screen_mode != cfg.screen_mode && !presenter->offers_mode(c.screen_mode)) {
+      *err = "mode not offered: " + c.screen_mode;
+      return false;
+    }
+#endif
+    // What burn_palette() is keyed on, before any overlay opens.
+    const bool had_raster = osd_raster != nullptr;
+    const bool had_gs = composer.gs_present();
+    if (msp_on) {
+      if (!open_msp_osd(err)) return refuse("msp osd");
+      osd_silence_warned = false;
+      msp_open_ms = mono_ms();
+    }
+    if (gs_on) {
+      if (!open_gs_osd(rec_target_of(rec_gs, rec_vtx), err)) return refuse("gs osd");
+      gs_silence_warned = false;
+      gs_open_ms = mono_ms();
+      gs_needs_render = true;
+#ifdef MABUR_PLAYER_HW
+      gs_laid_out = false;
+#endif
+    }
+    // Taken before any overlay closes: only a switch-on re-keys the palette.
+    [[maybe_unused]] const bool palette_rekeyed =
+        had_raster != (osd_raster != nullptr) || had_gs != composer.gs_present();
+    const maburplay::Config before = cfg;
+    const bool want_before = want_osd;
+    // install_colortrans and the hotplug retry read these from cfg.
+    cfg.screen_mode = c.screen_mode;
+    cfg.colortrans.enable = c.colortrans.enable;
+    cfg.osd.enable = c.osd.enable;
+    cfg.osd.gs.enable = c.osd.gs.enable;
+    want_osd = want_after;
+#ifdef MABUR_PLAYER_HW
+    if (rebuild && !reacquire_display(cfg.screen_mode, /*log_failures=*/true)) {
+      cfg.screen_mode = before.screen_mode;
+      cfg.colortrans.enable = before.colortrans.enable;
+      cfg.osd.enable = before.osd.enable;
+      cfg.osd.gs.enable = before.osd.gs.enable;
+      want_osd = want_before;
+      if (msp_on) close_msp_osd();
+      if (gs_on) close_gs_osd();
+      *err = "display rebuild on " + c.screen_mode + " failed";
+      return false;
+    }
+#else
+    (void)before;
+    (void)want_before;
+#endif
+    if (msp_off) {
+      close_msp_osd();
+      msp_ready = false;
+      msp_stale = false;
+    }
+    if (gs_off) close_gs_osd();
+#ifdef MABUR_PLAYER_HW
+    // A burned recording's palette and OSD region are built at its start
+    // from the overlays live then (burn_palette), and the recorder takes no
+    // OSD at all without one. An overlay switched on in place changes that
+    // set, so a running recording restarts -- a new file, no video park --
+    // as a presenter rebuild restarts it. A switch-off needs nothing: the
+    // composer's erase reaches the recorder's map.
+    if (burn && !rebuild && palette_rekeyed) {
+      std::fprintf(stderr,
+                   "maburplay: rec: burned recorder restarting -- an overlay was switched on and "
+                   "its palette is built at start\n");
+      stop_burn();
+      start_burn_if_needed();
+    }
+#endif
+    return true;
+  };
+
+  // The live dvr.* keys: read at the next record start, never applied to a
+  // running recording.
+  auto apply_dvr = [&](const maburplay::Config& c) {
+    cfg.dvr.target = c.dvr.target;
+    cfg.dvr.mode = c.dvr.mode;
+    cfg.dvr.burned = c.dvr.burned;
+    follow_live_rec();
+  };
+
+  // Live config: `set` / `get` on 127.0.0.1:8403 (player_config_apply.h).
+  // The file work runs on the applier's own thread; every apply runs on
+  // this one, from cfg_ctl.poll() in the run loop, and writes through to
+  // cfg. This thread never takes the config write lock itself.
+  maburplay::PlayerApplyHooks live_hooks;
+  live_hooks.reacquire_display = apply_display;
+  live_hooks.osd_layers = apply_display;
+  live_hooks.next_start = apply_dvr;
+  maburplay::PlayerConfigApplier cfg_apply(
+      config_path, cfg, caps, std::move(live_hooks),
+      [](const std::string& line) { std::fprintf(stderr, "%s\n", line.c_str()); });
+  maburplay::PlayerConfigControl cfg_ctl;
+  if (!cfg_ctl.open(maburplay::kPlayerConfigControlPort))
+    std::fprintf(stderr,
+                 "maburplay: cfg: cannot bind udp 127.0.0.1:%d -- live set/get is off for this "
+                 "run\n",
+                 maburplay::kPlayerConfigControlPort);
+
   // The ring reader fell behind and skipped AUs that held references.
   uint64_t resyncs_seen = ring.resyncs();
   while (!g_stop.load()) {
@@ -1804,10 +2130,13 @@ int main(int argc, char** argv) {
     if ((rec_button.is_open() && rec_button.poll(mono_ms())) || g_rec_toggle.exchange(false)) {
       if (rec_on) {
         rec_stop();
+        follow_live_rec();  // a dvr.* set during the recording takes over now
       } else {
         rec_start();
       }
     }
+    // A live set: its apply runs here, between two iterations' work.
+    cfg_ctl.poll(cfg_apply);
     // Every iteration: sends on change, re-sends each second (CoreControlClient).
     core_ctl.tick(rec_on && rec_vtx, mono_ms());
 #ifdef MABUR_PLAYER_HW
@@ -1889,6 +2218,38 @@ int main(int argc, char** argv) {
       core_ctl.send_line("refresh resync");
     }
 #ifdef MABUR_PLAYER_HW
+    // Drained every iteration whatever the display state, so the socket
+    // never overflows; a uevent only matters while a presenter is live (the
+    // retry below covers having none).
+    const bool hotplug_uevent = hotplug_sock.drain();
+    if (presenter) {
+      const uint64_t now_ms = mono_ms();
+      if (display_watch.due(now_ms, hotplug_uevent)) {
+        switch (display_watch.on_status(now_ms, presenter->connector_connected())) {
+          case maburplay::DisplayWatch::Action::kUnplugged:
+            std::fprintf(stderr,
+                         "maburplay: display disconnected -- rebuilding the display when it "
+                         "reconnects\n");
+            break;
+          case maburplay::DisplayWatch::Action::kRebuild:
+            std::fprintf(stderr, "maburplay: display reconnected -- rebuilding on %s\n",
+                         cfg.screen_mode.c_str());
+            // A failure says so itself and leaves the 1 s retry below to
+            // bring the display back.
+            reacquire_display(cfg.screen_mode, /*log_failures=*/true);
+            break;
+          case maburplay::DisplayWatch::Action::kCapped:
+            std::fprintf(stderr,
+                         "maburplay: display reconnected but %d rebuilds in %d s already -- not "
+                         "rebuilding; the next unplug after the window rebuilds again\n",
+                         maburplay::DisplayWatch::kMaxRebuilds,
+                         static_cast<int>(maburplay::DisplayWatch::kCapWindowMs / 1000));
+            break;
+          case maburplay::DisplayWatch::Action::kNone:
+            break;
+        }
+      }
+    }
     // Retry acquisition once a second while there is no display. A FRESH
     // presenter every time, never a re-init of the failed one: a display that
     // appears late supplies its own EDID and mode list, and every
@@ -1907,52 +2268,11 @@ int main(int argc, char** argv) {
       }
       if (now_ms >= display_retry_next_ms) {
         display_retry_next_ms = now_ms + 1000;
-        auto p = std::make_unique<maburplay::DrmPresenter>();
         // log_failures=false: this runs 86,400 times a day on a GS with no
         // screen, and /tmp is tmpfs.
-        if (p->init(cfg.screen_mode, want_osd,
-                    [&releases](const maburplay::DmaFrame& f) { releases.push(f); },
-                    /*log_failures=*/false)) {
-          // Both output threads park across the swap: the pump's prime hook
-          // reads `presenter`, and the release thread takes the new sink
-          // only while parked. Sink-less until now, the release thread's
-          // park returns just the frames the regulator holds.
-          park_output("display acquired");
-          presenter = std::move(p);
-          install_colortrans(presenter.get());
-          // Same pre-first-flip reseed as the startup path: a hotplugged
-          // panel may run a different mode/refresh than the one configured.
-          regulator.set_panel_period(presenter->mode_period_us());
-          // Unlike the startup path, the lock may already be locked or
-          // acquiring against the OLD panel's grid here: restart it so the
-          // new mode gets a fresh window instead of up to 2 s of capture
-          // placement judged against a stale vblank period. Margins taken
-          // against the old grid go with it.
-          if (phase_lock) phase_lock->on_discontinuity(mono_us());
-          margins.clear();
-          release.take_margins(&margins);
-          margins.clear();
-          presenter->set_flip_sink(
-              [&lat, &regulator, &tap](const maburplay::DmaFrame& f, uint64_t t, bool ex) {
-                lat.on_flip(f.pts_us, t, ex);
-                regulator.on_flip(t, ex);
-                tap.on_flip(f, t);
-              });
-          // Startup-only, and this is where that invariant is enforced for the
-          // hotplug path: if this process has ever decoded a frame, the aircraft is
-          // flying and a still photo on the goggles would read as a live feed. The
-          // screen still lights (needs_modeset defaults true and was never cleared
-          // since splash_show() was skipped, so the first present() performs the
-          // full modeset that used to run before splash existed); it simply comes
-          // up on video, or on nothing until video returns.
-          if (!pump.have_frame()) show_splash(presenter.get());
-          release.set_sink(presenter.get());
-          resume_output();
+        if (reacquire_display(cfg.screen_mode, /*log_failures=*/false)) {
           std::fprintf(stderr, "maburplay: display acquired after %.1f s\n",
                        (now_ms - display_retry_t0_ms) / 1000.0);
-          // The recorder samples this display's vblank grid, so it could not
-          // exist before this moment.
-          start_burn_if_needed();
           // rec_on, not burned_mode alone: a player deliberately stopped (or
           // never started -- autostart:false) has nothing to report here, and
           // saying otherwise would be a false alarm on every late display. A
@@ -1982,7 +2302,7 @@ int main(int argc, char** argv) {
       if (!osd_silence_warned) {
         if (osd_src->datagrams() > 0) {
           osd_silence_warned = true;
-        } else if (now_ms - osd_start_ms >= 10000) {
+        } else if (now_ms - msp_open_ms >= 10000) {
           std::fprintf(stderr,
                        "maburplay: warning: no MSP snapshot on udp 127.0.0.1:%d after 10 s -- "
                        "maburgs must have msp.enable true and its msp.out.port MUST equal this "
@@ -2011,7 +2331,7 @@ int main(int argc, char** argv) {
       if (!gs_silence_warned) {
         if (gs_src->datagrams() > 0) {
           gs_silence_warned = true;
-        } else if (now_ms - osd_start_ms >= 10000) {
+        } else if (now_ms - gs_open_ms >= 10000) {
           std::fprintf(stderr,
                        "maburplay: warning: no stats snapshot on udp 127.0.0.1:%d after 10 s -- "
                        "maburgs must have stats.enable true and one of its stats.out ports MUST "

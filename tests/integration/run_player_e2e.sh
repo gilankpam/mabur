@@ -387,19 +387,24 @@ cat > "$TMP/live.toml" <<EOF
 ring_path = "$TMP/au-ring"
 socket = "$TMP/none.sock"
 backend = "null"
+screen_mode = "1920x1080@60"
 
 [dvr]
 autostart = false
 dir = "$TMP"
+target = "gs"
 
 [osd]
 enable = false
 
 [osd.gs]
 enable = false
+font = "$TMP/no-such.gfont"
 EOF
 "$MABURPLAY" -c "$TMP/live.toml" > "$TMP/live.out" 2> "$TMP/live.err" &
 LIVE=$!
+# Any exit from here on, a set -e one included, takes the player with it.
+trap 'kill -9 "$LIVE" 2>/dev/null || true; rm -rf "$TMP"' EXIT
 # SIGTERM only once the handler is in: main installs it (std::signal) well
 # before it starts the feed thread and prints "feed thread on", so that line
 # proves both. A fixed sleep could land before it under load, and SIGTERM's
@@ -419,6 +424,54 @@ fi
 # there is no line for that, so give it a moment. The handler race above does
 # not depend on this.
 sleep 0.2
+
+# Live config on 127.0.0.1:8403 (player_config_apply.h), against the real
+# run loop: a set reaches its hook and the file, a refused one leaves the
+# file byte-identical, get answers from the live copy. Skipped (not failed)
+# only when another process holds the port on this host.
+cfg_cmd() {
+  python3 - "$1" <<'PY'
+import socket, sys
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.settimeout(5)
+s.sendto(sys.argv[1].encode(), ("127.0.0.1", 8403))
+print(s.recv(4096).decode())
+PY
+}
+# A failure here must not leave the player running (and holding 8403).
+fail_live() {
+  echo "FAIL: $1" >&2
+  kill -9 "$LIVE" 2>/dev/null
+  cat "$TMP/live.err" >&2
+  exit 1
+}
+expect_reply() {  # <command> <wanted reply prefix>
+  local got
+  got=$(cfg_cmd "$1") || fail_live "no reply to '$1'"
+  case "$got" in
+    "$2"*) ;;
+    *) fail_live "'$1' -> '$got' (want '$2...')" ;;
+  esac
+}
+if grep -q '^maburplay: cfg: cannot bind' "$TMP/live.err"; then
+  echo "SKIP live config: 127.0.0.1:8403 is held by another process"
+else
+  echo "== PART E: live config set/get =="
+  expect_reply 'get dvr.target' 'ok "gs"'
+  expect_reply 'set dvr.target = "both"' 'ok'
+  grep -q '^target = "both"' "$TMP/live.toml" || fail_live "dvr.target not in the file"
+  expect_reply 'get dvr.target' 'ok "both"'
+  expect_reply 'set screen_mode = "1280x720@60"' 'ok'
+  grep -q '^screen_mode = "1280x720@60"' "$TMP/live.toml" || fail_live "screen_mode not in the file"
+  BEFORE_SHA=$(sha256sum "$TMP/live.toml" | cut -d' ' -f1)
+  expect_reply 'set osd.gs.enable = true' 'err gs font: cannot open'
+  expect_reply 'set backend = "mpp"' 'err not live: backend'
+  [ "$(sha256sum "$TMP/live.toml" | cut -d' ' -f1)" = "$BEFORE_SHA" ] ||
+    fail_live "a refused set changed the file"
+  expect_reply 'get osd.gs.enable' 'ok false'
+  grep -q '^maburplay: cfg set dvr.target = "both" -> ok (' "$TMP/live.err" ||
+    fail_live "no cfg set log line"
+fi
 kill -TERM "$LIVE"
 for _ in $(seq 1 50); do kill -0 "$LIVE" 2>/dev/null || break; sleep 0.1; done
 if kill -0 "$LIVE" 2>/dev/null; then

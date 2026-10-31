@@ -125,6 +125,32 @@ TEST(five_digit_directory_counted_in_next_allocation) {
   CHECK(is_dir(s.dir()));
 }
 
+TEST(debug_session_enable_allocates_and_disable_removes_the_marker) {
+  const std::string root = make_root("enable-disable");
+  const std::string mk = marker_for("enable-disable");
+  std::remove(mk.c_str());
+  maburgs::DebugSession s(root, /*enable=*/false, mk.c_str());
+  CHECK(!s.ok());
+  REQUIRE(s.enable());
+  CHECK(s.ok());
+  CHECK(s.index() == 0);
+  CHECK(slurp(mk) == s.dir());
+  s.disable();
+  CHECK(!s.ok());
+  { std::ifstream f(mk); CHECK(!f.good()); }  // marker gone
+  REQUIRE(s.enable());
+  CHECK(s.index() == 1);
+}
+
+TEST(debug_session_enable_fails_cleanly_on_unwritable_root) {
+  const std::string mk = marker_for("enable-unwritable");
+  std::remove(mk.c_str());
+  maburgs::DebugSession s("/proc/no-such-root", false, mk.c_str());
+  CHECK(!s.enable());
+  CHECK(!s.ok());
+  { std::ifstream f(mk); CHECK(!f.good()); }  // nothing published
+}
+
 TEST(rotate_allocates_next_index_and_moves_marker) {
   // A drone restart mid-run starts a new flight: rotate() behaves like a
   // fresh allocation (next NNNN, marker rewritten last) without a process

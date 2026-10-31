@@ -357,6 +357,15 @@ reach it.
   interfered pin is reported (`hop.verdict`, the OSD) and stays. The
   controller is never handed a reactive trigger in any arm of the core's
   dispatch (cleared once, before the arms; the relocation arm re-arms it).
+- **Live pin/auto** (`ChannelCore::set_pin`/`set_auto`, driven by a live
+  `set radio.channel` over `127.0.0.1:8402` — `docs/gs-live-config.md`):
+  linked, a live pin moves the link exactly like a boot-time pin — the
+  boot pick's own relocate order, reason `pin`, landed by the confirm with
+  no verify window; a relocate that fails leaves the GS pinned and still
+  on the channel the link is on. Unlinked, op commits to the pin at once
+  (M commit). `set_auto` withdraws a pin relocate not yet handed to the
+  controller, and reopens the pick only when unlinked — its
+  `radio.scan.max_ms` clock counts from the reopen, not from GS start.
 - A confirmed hop of either kind moves `want` with `op`: a reactive hop's
   destination is where the link should live from then on, so a later
   link-up does not relocate back onto the channel it fled.
@@ -494,6 +503,11 @@ onto `want` (above), and — in auto mode only — the reactive hop
 hop's candidate list is `radio.channels` and its exhaustion path holds
 rather than falling back anywhere — see that page's §1, §3, §5 and §7.
 
+A live `set radio.channel` (above) reopens or closes this door at once:
+pinning turns the reactive hop off for as long as the pin holds, and
+`set_auto` turns it back on with no reopened pick needed while linked —
+the in-flight thread picks the reactive hop back up on its next tick.
+
 ## Observability
 
 - **`scan.log`** (`gs/src/scan_log.h`): marker `scanlog 7`. Header line:
@@ -519,8 +533,9 @@ rather than falling back anywhere — see that page's §1, §3, §5 and §7.
   (`ChannelPlan::want()` at the freeze, after any accept-in-place), or the
   pin from the start in pinned mode — never the live `op`, which a
   reactive hop or a found-elsewhere link moves; null while the pick is
-  open. `link.channel`: the live channel of the TX card. There is no
-  `link.home`.
+  open. `scan.pinned`: the live pin (`ChannelCore::pinned()`), which a
+  live `set radio.channel` moves. `link.channel`: the live channel of the
+  TX card. There is no `link.home`.
 - **stderr**: `maburd: channel set [<c1,c2,...>], parking on <n>[
   (remembered)]` (drone boot); `maburgs channel: set [<c1,c2,...>] mode
   <auto|pinned> start <n>[ (remembered)]` (GS boot); `maburgs channel:
@@ -538,7 +553,7 @@ rather than falling back anywhere — see that page's §1, §3, §5 and §7.
   `maburgs channel: could not write
   /etc/maburgs.channel`; `maburd: retune <a> -> <b> (<reason>)`.
 - **`tools/maburtop.py`**: shows `scan.state` (including `moving`) and
-  `scan.rounds` next to the channel.
+  `scan.rounds` next to the channel, and `pin` while `scan.pinned`.
 - **`tools/flightreport.py`**: reads `scanlog` up to 7 (an `H` line's
   reason as `reason`, `None` before 7); treats `relocate`
   (and the bench builds' `boot_order`) as a HOP-section order kind

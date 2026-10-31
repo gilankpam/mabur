@@ -208,6 +208,12 @@ laptop-side step.
 global offset left in the chip by a bench tool survives a `maburd` restart;
 power-cycle if you need a known baseline.
 
+`/etc/maburgs.toml` and `/etc/maburplay.toml` are, likewise, no longer
+only edited by hand: both daemons write their own config file back when
+an operator changes a live key over their loopback `set`/`get` listener
+(`127.0.0.1:8402`, `127.0.0.1:8403` — `docs/gs-live-config.md`), backing
+the previous file up to `.pre-live` the same way, once per daemon run.
+
 The single permitted omission is `radio.cards` on the GS: its *absence* is
 the auto-scan setting (a `[[radio.cards]]` list pins exactly that set and
 skips the bus probe), so no value can express it; the block is commented
