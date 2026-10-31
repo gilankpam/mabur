@@ -84,6 +84,7 @@ struct ScratchPlayerBundle {
 struct PFake {
   std::vector<Config> reacquire_calls;
   std::vector<Config> osd_calls;
+  std::vector<Config> menu_calls;
   int next_start_calls = 0;
   bool reacquire_ok = true;
   std::string reacquire_err;
@@ -100,6 +101,7 @@ struct PFake {
       return true;
     };
     h.next_start = [this](const Config&) { ++next_start_calls; };
+    h.menu = [this](const Config& c) { menu_calls.push_back(c); };
     return h;
   }
 };
@@ -119,10 +121,11 @@ PlayerApplyResult drive(PlayerConfigApplier& a) {
 
 }  // namespace
 
-TEST(player_live_table_has_nine_keys) {
-  REQUIRE(kPlayerLiveKeys.size() == 9);
+TEST(player_live_table_has_ten_keys) {
+  REQUIRE(kPlayerLiveKeys.size() == 10);
   CHECK(std::string(kPlayerLiveKeys[0].key) == "screen_mode");
   CHECK(std::string(kPlayerLiveKeys[8].key) == "dvr.burned.size");
+  CHECK(std::string(kPlayerLiveKeys[9].key) == "menu.show_advanced");
   CHECK(player_live_key("backend") == nullptr);
 }
 
@@ -135,6 +138,9 @@ TEST(render_player_live_value_renders_each_type) {
   c.dvr.burned.size_w = 1280;
   c.dvr.burned.size_h = 720;
   CHECK(render_player_live_value(c, *player_live_key("dvr.burned.size")) == "\"1280x720\"");
+  CHECK(render_player_live_value(c, *player_live_key("menu.show_advanced")) == "false");
+  c.menu.show_advanced = true;
+  CHECK(render_player_live_value(c, *player_live_key("menu.show_advanced")) == "true");
 }
 
 TEST(player_apply_rule_presenter_only_when_the_osd_plane_want_changes) {
@@ -148,6 +154,13 @@ TEST(player_apply_rule_presenter_only_when_the_osd_plane_want_changes) {
   CHECK(player_apply_rule(*player_live_key("screen_mode"), b, a) == PlayerApplyRule::Presenter);
   CHECK(player_apply_rule(*player_live_key("colortrans.enable"), b, a) == PlayerApplyRule::Presenter);
   CHECK(player_apply_rule(*player_live_key("dvr.burned.every"), b, a) == PlayerApplyRule::NextStart);
+}
+
+TEST(player_apply_rule_menu_for_show_advanced) {
+  Config b = bundle();
+  Config a = b;
+  a.menu.show_advanced = !a.menu.show_advanced;
+  CHECK(player_apply_rule(*player_live_key("menu.show_advanced"), b, a) == PlayerApplyRule::Menu);
 }
 
 TEST(player_applier_screen_mode_reacquires_then_publishes) {
@@ -260,6 +273,23 @@ TEST(player_applier_next_start_keys_apply_without_a_park) {
   CHECK(load_config(sb.path()).dvr.target == "both");
 }
 
+TEST(a_menu_set_calls_the_menu_hook_and_publishes) {
+  ScratchPlayerBundle sb;
+  PFake f;
+  PlayerConfigApplier a(sb.path(), bundle(), BuildCaps{true, false}, f.hooks(), nullptr);
+  std::string why;
+  REQUIRE(a.submit("menu.show_advanced", "true", &why));
+  PlayerApplyResult r = drive(a);
+  CHECK(r.ok);
+  CHECK(f.reacquire_calls.empty());
+  CHECK(f.osd_calls.empty());
+  CHECK(f.next_start_calls == 0);
+  REQUIRE(f.menu_calls.size() == 1);
+  CHECK(f.menu_calls[0].menu.show_advanced);
+  CHECK(a.live().menu.show_advanced);
+  CHECK(slurp(sb.path()).find("show_advanced = true") != std::string::npos);
+}
+
 TEST(player_applier_osd_switch_keeping_the_plane_opens_layers_in_place) {
   ScratchPlayerBundle sb;
   PFake f;
@@ -283,11 +313,12 @@ TEST(player_applier_refuses_an_unset_hook) {
   // thread at the first set that reaches it; the constructor says so first.
   ScratchPlayerBundle sb;
   PFake f;
-  for (int missing = 0; missing < 3; ++missing) {
+  for (int missing = 0; missing < 4; ++missing) {
     PlayerApplyHooks h = f.hooks();
     if (missing == 0) h.reacquire_display = nullptr;
     if (missing == 1) h.osd_layers = nullptr;
     if (missing == 2) h.next_start = nullptr;
+    if (missing == 3) h.menu = nullptr;
     bool threw = false;
     try {
       PlayerConfigApplier a(sb.path(), bundle(), BuildCaps{true, false}, h, nullptr);

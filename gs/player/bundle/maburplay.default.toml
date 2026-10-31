@@ -94,3 +94,7 @@ enable = true
 # Video decoder.
 [decoder]
 stream = true              # start decoding a picture slice by slice as it arrives (needs a GS image whose decoder streams: the Radxa stream-mode image, or the Orange Pi image's patched libavcodec); false = decode whole pictures
+
+# Goggles menu shell.
+[menu]
+show_advanced = false      # show the menu's advanced rows as well as the everyday ones

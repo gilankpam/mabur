@@ -126,12 +126,12 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
     ~Clear() { g_defaulted = nullptr; g_file.clear(); g_line = 0; }
   } clear_on_exit;
 
-  for (const char* sec : {"dvr", "osd", "input", "display", "colortrans", "decoder"})
+  for (const char* sec : {"dvr", "osd", "input", "display", "colortrans", "decoder", "menu"})
     if (!j.contains(sec)) note_default("", sec, "(section absent)");
 
   check_keys(j, "",
              {"ring_path", "socket", "backend", "screen_mode", "dvr", "osd",
-              "input", "display", "colortrans", "decoder"});
+              "input", "display", "colortrans", "decoder", "menu"});
   Config c;
 
   c.ring_path = get_str(j, "ring_path", "/dev/shm/mabur-au", "");
@@ -273,6 +273,12 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
     const Value& dc = j["decoder"];
     check_keys(dc, "decoder", {"stream"});
     c.decoder.stream = get_bool(dc, "stream", c.decoder.stream, "decoder");
+  }
+
+  if (j.contains("menu")) {
+    const Value& m = j["menu"];
+    check_keys(m, "menu", {"show_advanced"});
+    c.menu.show_advanced = get_bool(m, "show_advanced", c.menu.show_advanced, "menu");
   }
 
   return c;

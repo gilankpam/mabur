@@ -2102,6 +2102,7 @@ int main(int argc, char** argv) {
   live_hooks.reacquire_display = apply_display;
   live_hooks.osd_layers = apply_display;
   live_hooks.next_start = apply_dvr;
+  live_hooks.menu = [&](const maburplay::Config& c) { cfg.menu = c.menu; };
   maburplay::PlayerConfigApplier cfg_apply(
       config_path, cfg, caps, std::move(live_hooks),
       [](const std::string& line) { std::fprintf(stderr, "%s\n", line.c_str()); });

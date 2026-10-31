@@ -69,6 +69,7 @@ struct PFake {
     h.reacquire_display = [](const Config&, std::string*) { return true; };
     h.osd_layers = [](const Config&, std::string*) { return true; };
     h.next_start = [](const Config&) {};
+    h.menu = [](const Config&) {};
     return h;
   }
 };

@@ -106,6 +106,7 @@ it belongs to whatever follows, not to the ladder.
 | `dvr.burned.bitrate_kbps` | int | read at the next recording's start | |
 | `dvr.burned.every` | int | read at the next recording's start | |
 | `dvr.burned.size` | string (`"WxH"` or `""` for the decoded size) | read at the next recording's start | |
+| `menu.show_advanced` | bool | pushed straight into the running `MenuModel` (`MenuModel::set_show_advanced`) | Reveals the menu shell's advanced rows; no presenter or recording touched. |
 
 A running recording keeps the plan (`RecPlan`: `gs`/`vtx`/`burned` and
 the `dvr.burned.*` size, cadence and bitrate) it was started with; a

@@ -36,7 +36,7 @@ struct PlayerLiveKey {
 
 // The closed live table, in `get` order: screen_mode, colortrans.enable,
 // osd.enable, osd.gs.enable, dvr.target, dvr.mode, dvr.burned.bitrate_kbps,
-// dvr.burned.every, dvr.burned.size.
+// dvr.burned.every, dvr.burned.size, menu.show_advanced.
 extern const std::vector<PlayerLiveKey> kPlayerLiveKeys;
 const PlayerLiveKey* player_live_key(const std::string& dotted);  // nullptr = not live
 
@@ -56,6 +56,8 @@ enum class PlayerApplyRule : uint8_t {
   OsdLayers,
   // dvr.*: read when the next recording starts; nothing to do now.
   NextStart,
+  // menu.show_advanced: push straight into the running MenuModel.
+  Menu,
 };
 PlayerApplyRule player_apply_rule(const PlayerLiveKey& k, const Config& before,
                                   const Config& after);
@@ -81,12 +83,13 @@ RecPlan rec_plan(const DvrCfg& d);
 
 // What an apply does to the running player. Every hook runs on the owning
 // (housekeeping) thread and is handed the live config with only the set
-// key changed. All three must be set (the applier's constructor throws
+// key changed. All four must be set (the applier's constructor throws
 // std::invalid_argument otherwise).
 struct PlayerApplyHooks {
   std::function<bool(const Config&, std::string* err)> reacquire_display;  // Presenter
   std::function<bool(const Config&, std::string* err)> osd_layers;         // OsdLayers
   std::function<void(const Config&)> next_start;                           // NextStart
+  std::function<void(const Config&)> menu;                                 // Menu
 };
 
 using PlayerApplyResult = mabur::LiveApplyResult;

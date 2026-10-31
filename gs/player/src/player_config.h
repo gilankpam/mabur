@@ -165,6 +165,14 @@ struct DecoderCfg {
   bool stream = true;
 };
 
+// [menu]. show_advanced reveals the menu shell's advanced rows (the ones
+// menu_model.h's MenuModel hides behind MenuNode::advanced) without a
+// rebuild; it mirrors MenuModel::set_show_advanced so the setting survives
+// a restart instead of resetting to hidden every boot.
+struct MenuCfg {
+  bool show_advanced = false;
+};
+
 struct Config {
   std::string ring_path = "/dev/shm/mabur-au";
   std::string socket = "/run/mabur-au.sock";
@@ -176,6 +184,7 @@ struct Config {
   DisplayCfg display;
   ColorTransCfg colortrans;
   DecoderCfg decoder;
+  MenuCfg menu;
 };
 
 Config load_config(const std::string& path,

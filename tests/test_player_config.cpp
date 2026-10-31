@@ -511,6 +511,19 @@ TEST(bundle_default_sets_every_known_key) {
   CHECK(defaulted.empty());
 }
 
+TEST(menu_show_advanced_parses_and_defaults_false) {
+  auto on = maburplay::load_config(write_tmp_play("[menu]\nshow_advanced = true\n"));
+  CHECK(on.menu.show_advanced);
+  // Absent block: off, so a pre-menu config boots unchanged.
+  std::vector<std::string> defaulted;
+  auto off = maburplay::load_config(write_tmp_play("backend = \"null\"\n"), &defaulted);
+  CHECK(!off.menu.show_advanced);
+}
+
+TEST(an_unknown_menu_key_is_refused) {
+  CHECK(load_throws("[menu]\nshow_advnaced = true\n"));
+}
+
 TEST(colortrans_enable_key) {
   auto on = maburplay::load_config(write_tmp_play("[colortrans]\nenable = true\n"));
   CHECK(on.colortrans.enable);

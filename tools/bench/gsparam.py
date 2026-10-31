@@ -152,6 +152,7 @@ def expected_pairs(role, alt_mode=None):
             ("dvr.burned.bitrate_kbps", "6000", "8000"),
             ("dvr.burned.every", "2", "1"),
             ("dvr.burned.size", '"1280x720"', '""'),
+            ("menu.show_advanced", "true", "false"),
         ]
     raise ValueError("unknown role: %r" % role)
 
