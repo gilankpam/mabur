@@ -30,6 +30,11 @@ constexpr uint32_t kStatusRec = 0xE5484Du;
 // because it means a fault, not a mode -- a caller must never pick one for
 // the other.
 constexpr uint32_t kStatusCritical = 0xE5484Du;
+// The settings menu's own surfaces (menu_layer.h). Never burned into a
+// recording, so gs_palette_seeds() leaves them out.
+constexpr uint32_t kMenuPanel = 0x0A0C10u;   // panel, picker, toast, banner fill
+constexpr uint32_t kMenuSelect = 0x1D4FA3u;  // the selected row / choice
+constexpr uint32_t kMenuTag = 0xE0B060u;     // the VTX tag on drone rows
 }  // namespace tok
 
 // Player-measured half of the OSD's inputs. maburgs cannot supply these:
