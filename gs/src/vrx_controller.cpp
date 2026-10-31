@@ -154,6 +154,22 @@ void VrxController::restore_rung(int rung, double now_ms) {
   sync_op_();
 }
 
+void VrxController::replace_ladder(const LadderCfg& ladder, double now_ms) {
+  const Rung old_op = ctrl_.op();  // copy: ctrl_ is about to be replaced
+  cfg_.ladder = ladder;
+  ctrl_ = LadderController(ladder);
+  int idx = 0;
+  for (std::size_t i = 0; i < ladder.ladder.size(); ++i) {
+    const Rung& r = ladder.ladder[i];
+    if (r.mcs == old_op.mcs && r.bw == old_op.bw) {
+      idx = static_cast<int>(i);
+      break;
+    }
+  }
+  if (idx != 0) ctrl_.restore(idx, now_ms);
+  sync_op_();
+}
+
 void VrxController::note_cmd(const mabur::rc::Rcf& r) {
   last_cmd_probe_profile_ = r.probe_profile;
 }

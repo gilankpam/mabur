@@ -116,6 +116,12 @@ class VrxController {
     if (mcs < 0) sync_op_();
   }
   int pin_mcs() const { return cfg_.pin_mcs; }
+  // Rebuild the ladder controller inside the session (config.link.ladder,
+  // live): the old op rung's {mcs, bw} is looked up in the new ladder and
+  // kept via LadderController::restore() when present, else the new
+  // controller starts at rung 0.
+  void replace_ladder(const LadderCfg& ladder, double now_ms);
+  const LadderCfg& ladder() const { return cfg_.ladder; }
   uint8_t hop_ch() const { return hop_ch_; }
   uint8_t hop_epoch() const { return hop_epoch_; }
 

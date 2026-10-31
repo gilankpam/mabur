@@ -845,3 +845,36 @@ TEST(set_pin_takes_effect_on_the_next_rcf) {
   CHECK(vrx.pin_mcs() == -1);
   CHECK(vrx.cur_op().mcs == vrx.ctl().op().mcs);
 }
+
+TEST(replace_ladder_keeps_the_rung_by_mcs_and_width) {
+  auto vrx = make();                      // rungs mcs 0,2,4,5,6,7 at bw 20
+  link(vrx, 0);
+  vrx.restore_rung(2, 0);                 // op = mcs4
+  REQUIRE(vrx.cur_op().mcs == 4);
+  LadderCfg nl = default_ladder();
+  nl.ladder = {{0, 1.0, 1.0}, {4, 0.5, 0.25}, {5, 0.5, 0.25}};   // mcs4 now index 1
+  vrx.replace_ladder(nl, 100);
+  CHECK(vrx.ctl().rung() == 1);
+  CHECK(vrx.cur_op().mcs == 4);
+  CHECK(vrx.cur_op().overhead_enh == 0.25);
+  CHECK(vrx.ladder().ladder.size() == 3);
+}
+TEST(replace_ladder_falls_back_to_rung_0_when_op_rung_is_gone) {
+  auto vrx = make();
+  link(vrx, 0);
+  vrx.restore_rung(2, 0);                 // mcs4
+  LadderCfg nl = default_ladder();
+  nl.ladder = {{0, 1.0, 1.0}, {2, 0.5, 0.5}};
+  vrx.replace_ladder(nl, 100);
+  CHECK(vrx.ctl().rung() == 0);
+  CHECK(vrx.cur_op().mcs == 0);
+}
+TEST(replace_ladder_matches_width_not_only_mcs) {
+  auto vrx = make();
+  link(vrx, 0);
+  vrx.restore_rung(2, 0);                 // mcs4 @20
+  LadderCfg nl = default_ladder();
+  nl.ladder = {{0, 1.0, 1.0}, {4, 0.5, 0.5, 40}};   // mcs4 only at 40
+  vrx.replace_ladder(nl, 100);
+  CHECK(vrx.ctl().rung() == 0);
+}
