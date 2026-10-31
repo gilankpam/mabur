@@ -208,6 +208,19 @@ TEST(all_packets_are_cal_rejects_a_mixed_frame) {
   CHECK(!all_packets_are_cal(nullptr, 0));
 }
 
+TEST(all_packets_are_cal_rejects_a_truncated_trailing_packet) {
+  // Two whole cal packets and a third cut short: the tail is not a cal
+  // packet, so the frame is not all cal.
+  Abort a;
+  a.nonce = 1;
+  const auto one = encode(CalMsg{a}, kSysId, kCompId, kChanGsLocal);
+  std::vector<uint8_t> frame = one;
+  frame.insert(frame.end(), one.begin(), one.end());
+  REQUIRE(all_packets_are_cal(frame.data(), frame.size()));
+  frame.insert(frame.end(), one.begin(), one.begin() + static_cast<long>(one.size() / 2));
+  CHECK(!all_packets_are_cal(frame.data(), frame.size()));
+}
+
 TEST(decode_all_returns_the_cal_packets_in_order) {
   SweepCmd c;
   c.nonce = 9;
