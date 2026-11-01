@@ -8,10 +8,10 @@ test('precacheList: bundle + public + emscripten outputs, never stale dist files
   // hashed bundles (emptyOutDir false), which are not passed in at all.
   const files = precacheList(
     ['index.html', 'assets/index-AAA.js', 'assets/index-BBB.css', 'assets/relay_worker-CCC.js', 'assets/index-AAA.js.map'],
-    ['font_btfl.png', 'sw.js', '.gitkeep'],
+    ['fonts/btfl.png', 'sw.js', '.gitkeep'],
     ['webgs.js', 'webgs.wasm']);
   assert.deepEqual(files, ['assets/index-AAA.js', 'assets/index-BBB.css', 'assets/relay_worker-CCC.js',
-    'font_btfl.png', 'index.html', 'webgs.js', 'webgs.wasm']);
+    'fonts/btfl.png', 'index.html', 'webgs.js', 'webgs.wasm']);
 });
 
 test('buildId changes with names and with content', () => {
@@ -65,4 +65,22 @@ test('sw.js install precache bypasses the HTTP cache (fixed-name files can be st
   const src = fs.readFileSync(new URL('../ui/sw/sw.js', import.meta.url), 'utf8');
   const install = src.slice(src.indexOf("addEventListener('install'"), src.indexOf("addEventListener('activate'"));
   assert.ok(install.includes("cache: 'reload'"), "install handler must fetch precache entries with cache: 'reload'");
+});
+
+test('listPublic: recurses into subfolders, files only, posix paths', async () => {
+  const { listPublic } = await import('../ui/sw/plugin.mjs');
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'pub-'));
+  fs.mkdirSync(path.join(d, 'fonts'));
+  fs.writeFileSync(path.join(d, 'a.png'), 'x');
+  fs.writeFileSync(path.join(d, 'fonts', 'b.png'), 'x');
+  assert.deepEqual(listPublic(d).sort(), ['a.png', 'fonts/b.png']);
+  assert.deepEqual(listPublic(path.join(d, 'missing')), []);
+});
+
+test('precacheList: selectable OSD font atlases are lazy, their list and the default atlas are not', () => {
+  const files = precacheList(['index.html'], ['fonts/btfl.png', 'fonts/index.json', 'fonts/a.png', 'fonts/b_2.png', 'fonts/btfl.png.bak.png'], []);
+  assert.deepEqual(files, ['fonts/btfl.png', 'fonts/index.json', 'index.html']);
 });

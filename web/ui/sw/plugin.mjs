@@ -8,8 +8,15 @@ import crypto from 'node:crypto';
 
 const TOKEN = '/*__MABUR_PRECACHE__*/ null';
 
+// The selectable OSD font atlases (public/fonts/*.png, ~0.5 MB each) are not
+// precached: only the font in use is fetched, on the first OSD screen, and
+// the network-first handler caches it then. fonts/index.json and the default
+// atlas fonts/btfl.png stay precached, so the list and the font a failed
+// choice falls back to are always available offline.
+const LAZY = /^fonts\/(?!btfl\.png$).+\.png$/;
+
 export function precacheList(bundleNames, publicNames, extraNames) {
-  const keep = (f) => f !== 'sw.js' && f !== '.gitkeep' && !f.endsWith('.map');
+  const keep = (f) => f !== 'sw.js' && f !== '.gitkeep' && !f.endsWith('.map') && !LAZY.test(f);
   return [...new Set([...bundleNames, ...publicNames, ...extraNames].filter(keep))].sort();
 }
 
@@ -34,7 +41,7 @@ export function shouldRegister({ isolated, controllerUrl, ownUrl }) {
 // hashed build assets are cache-first (a gh-pages deploy prunes old hashed
 // files, so racing a fast 404 against the cache must never win); navigations
 // get the 3 s network-first timeout; everything else (webgs.js/.wasm,
-// font_btfl.png, ...) is network-first with no timeout.
+// fonts/*.png, ...) is network-first with no timeout.
 export function fetchStrategy({ url, mode, scope }) {
   if (mode === 'navigate') return 'network-timeout';
   if (url.startsWith(scope + 'assets/')) return 'cache-first';
@@ -47,6 +54,21 @@ export function fetchStrategy({ url, mode, scope }) {
 // result (bad response or error) stands, same as before this fell back at all.
 export function pickResponse({ netOk, hasCache }) {
   return !netOk && hasCache;
+}
+
+// Every file under public/, as posix paths relative to it (public/fonts/*.png
+// precaches as fonts/<name>.png). A directory entry must never reach the
+// manifest: its fetch would 404 and refuse the whole worker install.
+export function listPublic(dir) {
+  const out = [];
+  const walk = (rel) => {
+    for (const e of fs.readdirSync(path.join(dir, rel), { withFileTypes: true })) {
+      const r = rel ? rel + '/' + e.name : e.name;
+      if (e.isDirectory()) walk(r); else out.push(r);
+    }
+  };
+  if (fs.existsSync(dir)) walk('');
+  return out;
 }
 
 export function maburSw({ srcFile, publicDir, distDir }) {
@@ -62,7 +84,7 @@ export function maburSw({ srcFile, publicDir, distDir }) {
     },
     generateBundle(_opts, bundle) {
       const extra = ['webgs.js', 'webgs.wasm'].filter((f) => fs.existsSync(path.join(distDir, f)));
-      const pub = fs.existsSync(publicDir) ? fs.readdirSync(publicDir) : [];
+      const pub = listPublic(publicDir);
       const files = precacheList(Object.keys(bundle), pub, extra);
       const id = buildId(files, extra.map((f) => fs.readFileSync(path.join(distDir, f))));
       this.emitFile({ type: 'asset', fileName: 'sw.js',

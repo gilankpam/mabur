@@ -24,6 +24,7 @@
   import { effectiveTarget, targetCovers, recFileName, localView, combinedRec, headroomWarning,
     formatBytes, listRecordings, downloadRecording, deleteRecording, opfsRoot } from '../lib/localrec.js';
   import { OsdLayer, OsdPainter } from '../lib/osd.js';
+  import { loadFontList, fontFile } from '../lib/osdfonts.js';
   import { ScreenWake } from '../lib/wakelock.js';
 
   let canvas = $state(null);
@@ -75,15 +76,26 @@
   // MSP OSD: latest DisplayPort grid, painted on
   // a second canvas over the video. The atlas URL resolves against the page
   // (works under the Pages /mabur/ base as well as at a local root).
+
   const osdLayer = new OsdLayer();
+  // The font list (public/fonts/index.json, shipped and precached with every build) is the
+  // only source of font files, Betaflight included. loadAtlas waits for it. If it fails to
+  // load, the OSD stays off (the painter logs it) and the next load tries the list again.
+  let fontListP = null;
+  const fontList = () => (fontListP ??= loadFontList(fetch, document.baseURI).then(
+    (l) => { ui.osdFonts = l; return l; },
+    (e) => { fontListP = null; throw e; }));
+  fontList().catch(() => {});   // start loading now; a failure surfaces through loadAtlas
   const osd = new OsdPainter({
     layer: osdLayer,
-    loadAtlas: async () => {
-      const r = await fetch(new URL('font_btfl.png', document.baseURI));
+    fontId: ui.cfg.osdFont,
+    loadAtlas: async (id) => {
+      const r = await fetch(new URL(fontFile(await fontList(), id), document.baseURI));
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return createImageBitmap(await r.blob());
     },
   });
+  $effect(() => { osd.setFont(ui.cfg.osdFont); });
   function clearOsd() { if (osdLayer.screen) { osdLayer.clear(); osd.schedule(); } }
 
   // Declared before VideoPipeline: its accessors (getModule, onWantIdr, etc.)
@@ -416,7 +428,7 @@
         {#snippet config()}
           <ConfigPanel cfg={ui.cfg} onChange={onCfgChange} locked={live || busy} spotter={ui.mode === 'spotter'}
             onDisconnect={live ? disconnect : null} variant="rule" applied={ui.applied} recordings={recList}
-            keyFp={keyFingerprint(ui.key)} {onLoadKey} {onClearKey} />
+            keyFp={keyFingerprint(ui.key)} {onLoadKey} {onClearKey} fonts={ui.osdFonts} />
         {/snippet}
         {#snippet vtx()}
           <VtxPanel params={ui.params} paramsAt={ui.paramsAt} {displayHz} spotter={shownMode === 'spotter'}
@@ -439,7 +451,7 @@
         {#snippet config()}
           <ConfigPanel cfg={ui.cfg} onChange={onCfgChange} locked={live || busy} spotter={ui.mode === 'spotter'}
             onDisconnect={live ? disconnect : null} variant="card" applied={ui.applied} recordings={recList}
-            keyFp={keyFingerprint(ui.key)} {onLoadKey} {onClearKey} />
+            keyFp={keyFingerprint(ui.key)} {onLoadKey} {onClearKey} fonts={ui.osdFonts} />
         {/snippet}
         {#snippet vtx()}
           <VtxPanel params={ui.params} paramsAt={ui.paramsAt} {displayHz} spotter={shownMode === 'spotter'} variant="card"

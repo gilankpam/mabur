@@ -51,6 +51,8 @@ export const ui = $state({
   relayAddr: loadRelayCustom(saved),   // typed override; '' = use RELAY_DEFAULT
   relayFieldOpen: false,               // a Connect this visit found no relay
   tick: 0,
+  // Selectable OSD fonts, filled at startup from public/fonts/index.json.
+  osdFonts: [],
   sideTab: 'config',                   // ConfigSide's own Config|VTX segment
   params: null,                        // the latest onParams push, null while disconnected
   paramsAt: null,                      // Date.now() when that push arrived (VtxPanel's "accepted" fade)
