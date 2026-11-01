@@ -233,7 +233,7 @@ export function rowLabel(row) {
 // Help text in place of the table's, where the table's spells the wire
 // format or a config key rather than what the tab shows.
 const HELP = {
-  VENC_MODE: 'Camera frame rate and encoder size. Above 90 fps the sensor crops its view.',
+  VENC_MODE: 'Camera frame rate, encoder size and sensor readout. Binned keeps the full view, cropped above 90 fps; native reads 1:1 pixels, zoomed in at every rate, up to 100 fps.',
   VENC_SLICES: 'Encodes each frame as 4 row slices, so the ground station can patch a frame that lost a slice instead of dropping it. Off sends whole frames.',
   REC_SIZE: 'Onboard recording resolution; the choices follow the camera mode.',
   LOWPWR_ENABLE: 'Lower bitrate and frame rate while disarmed to keep the VTX cool. Needs MSP on for the arm state.',
@@ -275,7 +275,7 @@ export function groupRows(rows) {
 
 // One sentence next to the rows this knob interacts with.
 export const HINTS = {
-  VENC_MODE: 'A change of aspect also sets the recording size to the new camera size',
+  VENC_MODE: 'A change of aspect, or a rate and readout whose recording would need the 4K mode, also sets the recording size to the new camera size',
   MSP_ENABLE: 'Turn low power off first',
 };
 

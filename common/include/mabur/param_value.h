@@ -77,9 +77,10 @@ inline bool decode_wire(size_t idx, uint8_t mav_type, const char wire[128], Valu
       }
       if (len == 128) return false;  // no NUL found
       *out = Value{Type::Str, false, 0, 0, std::string(wire, len)};
-      // VENC_MODE packs <fps>@<WxH> into one Str value: a value whose
-      // shape the loader could never make sense of is refused here,
-      // before it ever reaches the config file.
+      // VENC_MODE packs <fps>@<WxH> plus the binned/native readout suffix
+      // into one Str value: a value whose shape the loader could never
+      // make sense of is refused here, before it ever reaches the config
+      // file.
       if (idx == cfgparam::kVencModeRow) {
         int fps, w, h;
         bool binning;

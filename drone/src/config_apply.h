@@ -122,7 +122,8 @@ class ConfigApplier {
   void run();
   ConfigApplyResult apply(const Job& job);
   // `followed`, non-null, is left empty unless mavparam::patch_row set it
-  // ("record.size": VENC_MODE crossed an aspect change with the recorder
+  // ("record.size": VENC_MODE crossed an aspect change, or moved to a rate
+  // and readout whose recording would need the 4K mode, with the recorder
   // pinned to an explicit size) -- apply() appends it to the log line.
   bool apply_locked(const Job& job, const std::string& field, std::string* reason,
                     std::string* followed);

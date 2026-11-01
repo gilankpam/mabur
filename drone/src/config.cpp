@@ -786,8 +786,7 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
   const int binning = cfg.venc.core.binning ? 1 : 0;
   const CameraMode tier = camera_mode_for(binning, cfg.venc.core.fps, 0, 0);
   if (tier.w == 0)
-    fail("venc.fps",
-         "no non-binned sensor mode above 100 fps: set venc.binning = true or venc.fps <= 100");
+    fail("venc.fps", "above 100 needs venc.binning = true");
 
   if (cfg.record.enable && cfg.record.width > 0) {
     const int rw = cfg.record.width, rh = cfg.record.height;
@@ -803,8 +802,7 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
     // (camera_mode_for in drone/venc/camera_modes.c): a recording that
     // still fits the tier is scaled down from it on VPE port 1.
     if ((rw > 1920 || rh > 1080) && (rw > tier.w || rh > tier.h) && cfg.venc.core.fps > 30)
-      fail("record.size",
-           "larger than 1920x1080 and than the sensor mode needs the 30 fps 4K mode: set venc.fps <= 30");
+      fail("record.size", "needs the 4K mode: set venc.fps <= 30");
   }
 
   // venc.size must keep the selected mode's aspect ratio and fit inside it
