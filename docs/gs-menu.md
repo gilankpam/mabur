@@ -217,11 +217,17 @@ Opening the menu while the splash is still up takes its plane: on the
 common hardware, where the OSD and the splash share the primary plane,
 the menu replaces the splash outright and shows over black; where the
 OSD has a plane of its own above the splash, the menu simply draws on
-top of it and the splash stays lit underneath. Closing the menu again
-before any frame has arrived brings the splash straight back, repainted
-fresh (the `show_splash` lambda, `main.cpp`); closing it after a frame
-has arrived does nothing special, since the ordinary first-frame
-hand-off onto the video plane already ran.
+top of it and the splash stays lit underneath. On the shared-plane
+hardware that repoint is the display's only visible change — the
+splash is still considered "up" until a real video frame arrives, so
+the display's one-time hand-off onto the video plane (which also
+restates the video plane's stacking order and the colour-correction
+matrix, and only then frees the splash's buffer) still runs exactly
+once, whether the menu happens to be open or closed at that moment.
+Closing the menu again before any frame has arrived brings the splash
+straight back, repainted fresh (the `show_splash` lambda, `main.cpp`,
+reusing the same still-allocated buffer); closing it after a frame has
+arrived does nothing special, since that hand-off already ran.
 
 The decision is a small, host-tested rule, `SplashMenuGate`
 (`gs/player/src/splash_menu.h`), ticked every housekeeping iteration from

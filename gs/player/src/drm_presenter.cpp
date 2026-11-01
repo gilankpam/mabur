@@ -543,7 +543,7 @@ struct DrmPresenter::Impl {
   void on_flip(bool real_event = true);
 
   void add_osd_props(drmModeAtomicReqPtr req, int idx, bool one_time);
-  bool commit_osd_only();
+  void commit_osd_only();
   void osd_give_up();
 
   static void on_flip_static(int fd, unsigned int sequence, unsigned int tv_sec,
@@ -739,7 +739,7 @@ void DrmPresenter::Impl::osd_give_up() {
 // stall and only after video has already been silent -- it eliminates the
 // race instead of narrowing it. Also never PAGE_FLIP_EVENT (the video path
 // would mistake the event for its own flip) and never PAGE_FLIP_ASYNC.
-bool DrmPresenter::Impl::commit_osd_only() {
+void DrmPresenter::Impl::commit_osd_only() {
   drmModeAtomicReqPtr req = drmModeAtomicAlloc();
   int rc = -ENOMEM;
   if (req) {
@@ -766,13 +766,12 @@ bool DrmPresenter::Impl::commit_osd_only() {
                    std::strerror(err));
     }
     if (osd_fail_streak >= kOsdMaxFailStreak) osd_give_up();
-    return false;
+    return;
   }
   osd_on_plane = true;
   osd_fail_streak = 0;
   osd_back ^= 1;       // swap first:
   osd_dirty = false;   // a drawer that sees this sees the new back index
-  return true;
 }
 
 bool DrmPresenter::Impl::init(const std::string& resolved_mode, bool want_osd, ReleaseFn rel,
@@ -1868,31 +1867,34 @@ void DrmPresenter::Impl::commit_osd_if_pending() {
   //
   // `osd_over_splash` lifts that hold: the settings menu wants the screen
   // before any video exists, so set_osd_over_splash(true) (main.cpp,
-  // SplashMenuGate) lets this commit through anyway. When it does, and the
-  // OSD IS the splash plane (osd_on_primary), the commit just repointed the
-  // primary away from the splash FB -- splash_active must drop right here,
-  // not wait for present()'s own hand-off, which is the only other place
-  // that clears it and will not run while the menu has the screen (no
-  // video commit is coming to trigger it). Left `true`, a first video
-  // frame arriving later would read splash_handoff as still pending and
-  // re-run present()'s splash-specific bookkeeping (forcing the OSD to
-  // ride that commit, restating the video-plane CTM, and on OSD give-up
-  // in this topology, detach_splash_plane()'s plane-disable commit) for a
-  // repoint this earlier commit already made -- present()'s own comments
-  // document what each of those assumes about the splash still being on
-  // the primary, which is no longer true by then. The splash's buffer
-  // itself is NOT freed here: a close before any video frame (main.cpp)
-  // re-shows it from the same buffer via splash_show(). In the
-  // topologies where the OSD has a plane of its own above the splash,
-  // osd_on_primary is false and splash_active is left exactly as it was
-  // -- the splash stays lit beneath the menu, unaffected.
+  // SplashMenuGate) lets this commit through anyway. In the osd_on_primary
+  // topology that commit DOES repoint the primary's FB_ID away from the
+  // splash FB -- but `splash_active` itself is deliberately left exactly
+  // as it was, true, rather than cleared here. present()'s build_req()
+  // only states the video plane's zpos and the colortrans CTM, and only
+  // forces the OSD to ride along, on a commit where `do_modeset ||
+  // splash_handoff` -- and for the very first video frame, `do_modeset`
+  // is normally already false (splash_show() cleared needs_modeset at
+  // startup), so `splash_handoff` (== splash_active) is the ONLY thing
+  // that makes that first commit state them. Clearing `splash_active`
+  // early here would make that first real frame commit skip the zpos/CTM
+  // state entirely (the vop2 black-screen hazard setup_backdrop()'s zpos
+  // plan exists to prevent) and skip present()'s own free_splash() --
+  // this commit never touches present()'s splash bookkeeping at all,
+  // real video does. The forced OSD re-attach that `splash_handoff`
+  // triggers on that later commit re-states the exact buffer this commit
+  // already put on screen (`osd_idx` reduces to the current front buffer
+  // when nothing new was published), so it costs nothing, and it is what
+  // finally frees the splash's buffer. In the topologies where the OSD
+  // has a plane of its own above the splash, osd_on_primary is false and
+  // this commit never touched the splash's plane at all -- unaffected,
+  // same as always.
   const uint64_t now = mono_ms();
   const bool over_splash = osd_over_splash.load();
   if (osd_dirty && osd_plane_id && osd.ok() && !flip_pending && crtc_active &&
       (!splash_active || over_splash) && now - last_video_commit_ms >= 100 &&
       now - osd_last_commit_ms >= 100) {
-    const bool splash_takeover = splash_active && over_splash && osd_on_primary;
-    if (commit_osd_only() && splash_takeover) splash_active = false;
+    commit_osd_only();
   }
 }
 

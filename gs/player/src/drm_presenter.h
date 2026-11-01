@@ -180,17 +180,18 @@ class DrmPresenter : public PresentSink {
   bool osd_publish_pending() const override;
   // Lets the settings menu take the splash's plane before any video has
   // ever been shown (docs/gs-menu.md "Before the first video frame"),
-  // driven every tick from SplashMenuGate (splash_menu.h) in main.cpp: while
-  // true, commit_osd_if_pending() below ignores splash_active's hold on a
-  // standalone OSD commit. In the osd_on_primary topology that commit
-  // re-points the primary at the OSD's own buffer, so the presenter also
-  // clears splash_active there (without freeing the splash's buffer,
-  // which a later splash_show() may still reuse to bring it back) --
-  // otherwise a later present() would mistake a stale `splash_active` for
-  // a still-pending splash hand-off. In the topologies where the OSD has
-  // a plane of its own above the splash this changes nothing beyond the
-  // gate: that commit only ever touched its own plane, so the splash
-  // stays up underneath exactly as before. Housekeeping thread.
+  // driven every tick from SplashMenuGate (splash_menu.h) in main.cpp:
+  // while true, commit_osd_if_pending() below ignores splash_active's
+  // hold on a standalone OSD commit. In the osd_on_primary topology that
+  // commit does re-point the primary's FB_ID at the OSD's own buffer, but
+  // `splash_active` itself is deliberately left set -- present()'s own
+  // hand-off, on the first real video frame, is still what clears it,
+  // frees the splash's buffer, and (re)states the video plane's zpos and
+  // the colortrans CTM, none of which this commit touches. In the
+  // topologies where the OSD has a plane of its own above the splash this
+  // changes nothing beyond the gate: that commit only ever touched its
+  // own plane, so the splash stays up underneath exactly as before.
+  // Housekeeping thread.
   void set_osd_over_splash(bool allow);
 
   // The standalone OSD commit: the published back buffer shown on its own,
