@@ -17,66 +17,82 @@ test('modeSizes per sensor mode and at the boundaries', () => {
   assert.deepEqual(modeSizes(121), []);
   assert.deepEqual(modeSizes(60.5), []);
   assert.deepEqual(modeSizes('90'), []);
-  assert.equal(MODE_SIZES.length, 3);
+  assert.equal(MODE_SIZES.length, 5);
 });
 
-test('modeText and parseMode round trip', () => {
-  assert.equal(modeText(120, '1728x816'), '120@1728x816');
-  assert.deepEqual(parseMode('60@1920x1080'), { fps: 60, size: '1920x1080' });
-  assert.equal(parseMode('60@'), null);
-  assert.equal(parseMode('x'), null);
-  assert.equal(parseMode(''), null);
-  assert.equal(parseMode('60@1920x1080extra'), null);
-  // config_params.h's six-digit cap per number, mirrored.
-  assert.deepEqual(parseMode('999999@999999x999999'), { fps: 999999, size: '999999x999999' });
-  assert.equal(parseMode('1000000@1x1'), null);
-  assert.equal(parseMode('4294967356@1x1'), null);
+test('modeText and parseMode round trip, readout included', () => {
+  assert.equal(modeText(120, '1728x816', false), '120@1728x816/binned');
+  assert.equal(modeText(60, '2944x1656', true), '60@2944x1656/native');
+  assert.deepEqual(parseMode('60@1920x1080/binned'), { fps: 60, size: '1920x1080', native: false });
+  assert.deepEqual(parseMode('100@1280x720/native'), { fps: 100, size: '1280x720', native: true });
+  for (const bad of ['60@1920x1080', '60@1920x1080/', '60@1920x1080/Native', '60@1920x1080/full', '60@', 'x', '', '1000000@1x1/binned'])
+    assert.equal(parseMode(bad), null, bad);
 });
 
-test('modeChoices: every size of each MODE_FPS rate, crop modes labelled', () => {
-  const c = modeChoices('90@1920x1080');
+test('modeChoices: binned then native sizes of each rate, labelled', () => {
+  const c = modeChoices('90@1920x1080/binned');
   assert.deepEqual(MODE_FPS, [60, 90, 100, 120]);
   assert.deepEqual(c.map((x) => x.value), [
-    '60@1920x1080', '60@1280x720', '90@1920x1080', '90@1280x720',
-    '100@1728x972', '100@1280x720', '120@1728x816', '120@1152x544', '120@864x408',
+    '60@1920x1080/binned', '60@1280x720/binned',
+    '60@2944x1656/native', '60@2560x1440/native', '60@1920x1080/native', '60@1600x900/native', '60@1280x720/native',
+    '90@1920x1080/binned', '90@1280x720/binned',
+    '90@2304x1296/native', '90@1920x1080/native', '90@1600x900/native', '90@1280x720/native',
+    '100@1728x972/binned', '100@1280x720/binned',
+    '100@2304x1296/native', '100@1920x1080/native', '100@1600x900/native', '100@1280x720/native',
+    '120@1728x816/binned', '120@1152x544/binned', '120@864x408/binned',
   ]);
-  assert.equal(c[0].label, '60 fps · 1920×1080');
-  assert.equal(c[4].label, '100 fps · 1728×972 · cropped view');
+  assert.equal(c[0].label, '60 fps · 1920×1080 · binned');
+  assert.equal(c[2].label, '60 fps · 2944×1656 · native · zoomed');
+  assert.equal(c[13].label, '100 fps · 1728×972 · binned · cropped view');
 });
 
 test('modeChoices puts an off-list live value first, and only then', () => {
-  assert.deepEqual(modeChoices('30@1280x720')[0], { value: '30@1280x720', label: '30 fps · 1280×720' });
-  assert.equal(modeChoices('30@1280x720').length, 10);
-  assert.equal(modeChoices('120@1152x544').length, 9);
-  assert.equal(modeChoices(null).length, 9);
-  assert.equal(modeChoices('').length, 9);
+  assert.deepEqual(modeChoices('30@1280x720/binned')[0], { value: '30@1280x720/binned', label: '30 fps · 1280×720 · binned' });
+  assert.equal(modeChoices('30@1280x720/binned').length, 23);
+  assert.equal(modeChoices('120@1152x544/binned').length, 22);
+  assert.equal(modeChoices(null).length, 22);
+  assert.equal(modeChoices('').length, 22);
+  assert.deepEqual(modeChoices('60@2816x1584/native')[0],
+    { value: '60@2816x1584/native', label: '60 fps · 2816×1584 · native · zoomed' });
 });
 
 const values = (c) => c.map((x) => x.value);
 
 test('modeChoices keeps only the rates within DISPLAY_MATCH_HZ of the display', () => {
   assert.equal(DISPLAY_MATCH_HZ, 0.55);
-  assert.deepEqual(values(modeChoices('60@1920x1080', 60.0)), ['60@1920x1080', '60@1280x720']);
-  assert.deepEqual(values(modeChoices('60@1920x1080', 59.94)), ['60@1920x1080', '60@1280x720']);
-  assert.deepEqual(values(modeChoices('100@1728x972', 100.4)), ['100@1728x972', '100@1280x720']);
-  assert.deepEqual(values(modeChoices('120@1728x816', 119.88)), ['120@1728x816', '120@1152x544', '120@864x408']);
+  const rate60 = [
+    '60@1920x1080/binned', '60@1280x720/binned',
+    '60@2944x1656/native', '60@2560x1440/native', '60@1920x1080/native', '60@1600x900/native', '60@1280x720/native',
+  ];
+  assert.deepEqual(values(modeChoices('60@1920x1080/binned', 60.0)), rate60);
+  assert.deepEqual(values(modeChoices('60@1920x1080/binned', 59.94)), rate60);
+  assert.deepEqual(values(modeChoices('100@1728x972/binned', 100.4)), [
+    '100@1728x972/binned', '100@1280x720/binned',
+    '100@2304x1296/native', '100@1920x1080/native', '100@1600x900/native', '100@1280x720/native',
+  ]);
+  assert.deepEqual(values(modeChoices('120@1728x816/binned', 119.88)),
+    ['120@1728x816/binned', '120@1152x544/binned', '120@864x408/binned']);
   // a multiple is not a match: 60 fps on a 120 Hz panel trips the rate check
-  assert.ok(!values(modeChoices('120@1728x816', 120)).includes('60@1920x1080'));
-  assert.deepEqual(values(modeChoices('60@1920x1080', 60.6)), values(modeChoices('60@1920x1080')));
+  assert.ok(!values(modeChoices('120@1728x816/binned', 120)).includes('60@1920x1080/binned'));
+  assert.deepEqual(values(modeChoices('60@1920x1080/binned', 60.6)), values(modeChoices('60@1920x1080/binned')));
 });
 
 test('modeChoices keeps the drone value when it does not match the display', () => {
-  assert.deepEqual(values(modeChoices('90@1280x720', 60)), ['60@1920x1080', '60@1280x720', '90@1280x720']);
-  assert.deepEqual(values(modeChoices('30@1280x720', 60)), ['30@1280x720', '60@1920x1080', '60@1280x720']);
+  const rate60 = [
+    '60@1920x1080/binned', '60@1280x720/binned',
+    '60@2944x1656/native', '60@2560x1440/native', '60@1920x1080/native', '60@1600x900/native', '60@1280x720/native',
+  ];
+  assert.deepEqual(values(modeChoices('90@1280x720/binned', 60)), [...rate60, '90@1280x720/binned']);
+  assert.deepEqual(values(modeChoices('30@1280x720/binned', 60)), ['30@1280x720/binned', ...rate60]);
 });
 
 test('modeChoices lists everything with no display rate or no matching rate', () => {
-  const all = values(modeChoices('90@1920x1080'));
-  assert.equal(all.length, 9);
-  assert.deepEqual(values(modeChoices('90@1920x1080', null)), all);
-  assert.deepEqual(values(modeChoices('90@1920x1080', 0)), all);
-  assert.deepEqual(values(modeChoices('90@1920x1080', NaN)), all);
-  assert.deepEqual(values(modeChoices('90@1920x1080', 144)), all);
+  const all = values(modeChoices('90@1920x1080/binned'));
+  assert.equal(all.length, 22);
+  assert.deepEqual(values(modeChoices('90@1920x1080/binned', null)), all);
+  assert.deepEqual(values(modeChoices('90@1920x1080/binned', 0)), all);
+  assert.deepEqual(values(modeChoices('90@1920x1080/binned', NaN)), all);
+  assert.deepEqual(values(modeChoices('90@1920x1080/binned', 144)), all);
 });
 
 test('modeDisplayNote names the display rate and whether the list follows it', () => {
@@ -88,17 +104,21 @@ test('modeDisplayNote names the display rate and whether the list follows it', (
 
 test('recSizeChoices follow the camera mode the drone runs', () => {
   const v = (m, r) => recSizeChoices(m, r).map((x) => x.value);
-  assert.deepEqual(v('90@1280x720', '1920x1080'), ['1920x1080', '1280x720']);
-  assert.deepEqual(v('100@1728x972', '1728x972'), ['1728x972', '1280x720']);
-  assert.deepEqual(v('120@1728x816', '864x408'), ['1728x816', '1152x544', '864x408']);
-  assert.equal(recSizeChoices('60@1920x1080', '1280x720')[1].label, '1280×720');
+  assert.deepEqual(v('90@1280x720/binned', '1920x1080'), ['1920x1080', '1280x720']);
+  assert.deepEqual(v('100@1728x972/binned', '1728x972'), ['1728x972', '1280x720']);
+  assert.deepEqual(v('120@1728x816/binned', '864x408'), ['1728x816', '1152x544', '864x408']);
+  assert.equal(recSizeChoices('60@1920x1080/binned', '1280x720')[1].label, '1280×720');
+  // the live value's readout, not just its rate: the same rate's native sizes
+  assert.deepEqual(v('60@1920x1080/native', '1280x720'),
+    ['2944x1656', '2560x1440', '1920x1080', '1600x900', '1280x720']);
 });
 
 test('recSizeChoices keep the camera size and the drone value when off the list', () => {
   const v = (m, r) => recSizeChoices(m, r).map((x) => x.value);
-  assert.deepEqual(v('90@1600x900', '1600x900'), ['1920x1080', '1280x720', '1600x900']);
+  assert.deepEqual(v('90@1600x900/binned', '1600x900'), ['1920x1080', '1280x720', '1600x900']);
   // an upscale left on the drone stays selectable as what it runs
-  assert.deepEqual(v('100@1728x972', '1920x1080'), ['1728x972', '1280x720', '1920x1080']);
+  assert.deepEqual(v('100@1728x972/binned', '1920x1080'), ['1728x972', '1280x720', '1920x1080']);
+  assert.deepEqual(v('100@1280x720/binned', '1920x1080'), ['1728x972', '1280x720', '1920x1080']);
   assert.deepEqual(v(null, '1280x720'), ['1280x720']);
   assert.deepEqual(v(null, ''), []);
 });
