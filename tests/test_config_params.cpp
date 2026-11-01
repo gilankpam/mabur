@@ -25,19 +25,18 @@ TEST(fourteen_rows_in_spec_order) {
   CHECK(find("VENC_FPS") == -1);
 }
 TEST(parse_mode_text_shape) {
-  int f, w, h;
-  CHECK(parse_mode_text("120@1728x816", &f, &w, &h) && f == 120 && w == 1728 && h == 816);
-  CHECK(parse_mode_text("1000@1x1", &f, &w, &h));          // shape only; the loader refuses the range
-  CHECK(!parse_mode_text("100", &f, &w, &h));  CHECK(!parse_mode_text("100@", &f, &w, &h));
-  CHECK(!parse_mode_text("100@1728", &f, &w, &h));  CHECK(!parse_mode_text("abc@1x1", &f, &w, &h));
-  CHECK(!parse_mode_text("100@1728x972 ", &f, &w, &h));  CHECK(!parse_mode_text("@1x1", &f, &w, &h));
-  // Six digits per number at most: a longer run is a shape refusal, never
-  // a value wrapped back into range.
-  CHECK(parse_mode_text("999999@999999x999999", &f, &w, &h) && f == 999999 && h == 999999);
-  CHECK(!parse_mode_text("1000000@1x1", &f, &w, &h));
-  CHECK(!parse_mode_text("60@1x1000000", &f, &w, &h));
-  CHECK(!parse_mode_text("60@1000000x1", &f, &w, &h));
-  CHECK(!parse_mode_text("4294967356@1x1", &f, &w, &h));
+  int f, w, h; bool b;
+  CHECK(parse_mode_text("120@1728x816/binned", &f, &w, &h, &b) && f == 120 && w == 1728 && h == 816 && b);
+  CHECK(parse_mode_text("100@1280x720/native", &f, &w, &h, &b) && !b);
+  CHECK(parse_mode_text("1000@1x1/native", &f, &w, &h, &b));      // shape only
+  CHECK(!parse_mode_text("120@1728x816", &f, &w, &h, &b));         // no suffix
+  CHECK(!parse_mode_text("120@1728x816/", &f, &w, &h, &b));
+  CHECK(!parse_mode_text("120@1728x816/Native", &f, &w, &h, &b));  // case
+  CHECK(!parse_mode_text("120@1728x816/native ", &f, &w, &h, &b));
+  CHECK(!parse_mode_text("120@1728x816/full", &f, &w, &h, &b));
+  CHECK(!parse_mode_text("100@1728/binned", &f, &w, &h, &b));
+  CHECK(parse_mode_text("999999@999999x999999/binned", &f, &w, &h, &b) && f == 999999);
+  CHECK(!parse_mode_text("1000000@1x1/binned", &f, &w, &h, &b));
 }
 TEST(ids_unique_and_at_most_16_chars_with_help) {
   std::set<std::string> ids;

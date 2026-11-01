@@ -94,8 +94,8 @@ size. The SigmaStar encoder cannot scale, so the sizes decide the port:
   3840x2160@33 mode (full view, not binned), and the loader requires
   `venc.fps <= 30`. The link then also runs at 30 fps from a downscaled 4K
   capture. A `record.size` above 1920x1080 that still fits the selected
-  mode (2560x1440 under the native 60 fps tier) fits the selected mode, so
-  port 1 scales it down from the mode's window, at the link's own rate.
+  mode (2560x1440 under the native 60 fps tier) has port 1 scale it down
+  from the mode's window, at the link's own rate.
 
 4K is not usable next to the link: the SigmaStar H.265 engine runs one
 encode at a time, and a 4K encode (~30 ms) fills the 31 ms frame period, so
@@ -153,11 +153,14 @@ last `Rcf.rec` it sent) was "on", the next RCF after the rebuild
 re-issues it (`RcAgent::note_pipeline_rebuilt`) and recording resumes,
 into a new file.
 
-A `VENC_MODE` set that changes the sensor mode's aspect, while the
-recorder is on with an explicit `record.size`, rewrites `record.size` to
-the new venc size in the same candidate (`mavparam::patch_row`,
-`drone/src/mav_params.cpp`), so the aspect-ratio rule above is never
-broken by the fps/size set alone; `record.fps` never follows.
+A `VENC_MODE` set that changes the sensor mode's aspect, or that would
+otherwise leave the recorder needing the 4K mode under the new readout
+(above 1920x1080 and above the new fps + readout's sensor mode in either
+dimension), while the recorder is on with an explicit `record.size`,
+rewrites `record.size` to the new venc size in the same candidate
+(`mavparam::patch_row`, `drone/src/mav_params.cpp`), so neither rule above
+is ever broken by the fps/size/readout set alone; `record.fps` never
+follows.
 
 ## Power-loss contract
 

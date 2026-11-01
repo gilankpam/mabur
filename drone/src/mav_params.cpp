@@ -1,7 +1,9 @@
 #include "mav_params.h"
 
 #include <cmath>
+#include <cstdint>
 
+#include "camera_modes.h"
 #include "mabur/config_write.h"
 
 namespace mabur::mavparam {
@@ -19,7 +21,8 @@ Value acc_ldpc(const Config& c) { return Value{Type::Bool, c.radio.ldpc}; }
 Value acc_venc_mode(const Config& c) {
   return Value{Type::Str, false, 0, 0,
                std::to_string(c.venc.core.fps) + "@" +
-                   size_text(c.venc.core.width, c.venc.core.height)};
+                   size_text(c.venc.core.width, c.venc.core.height) +
+                   (c.venc.core.binning ? "/binned" : "/native")};
 }
 Value acc_venc_slices(const Config& c) {
   return Value{Type::Int32, false, static_cast<int32_t>(c.venc.core.slices)};
@@ -148,12 +151,14 @@ bool patch_row(std::string* text, size_t idx, const Value& v, const Config& curr
     return true;
   }
 
-  // VENC_MODE's Str value "<fps>@<WxH>" spells both venc.fps and venc.size.
-  // A malformed shape can't be rendered into either line, so it is "value
-  // unsupported", the same answer render_toml's own refusal gives above --
-  // never a report of a missing key.
+  // VENC_MODE's Str value "<fps>@<WxH>/binned|native" spells venc.fps,
+  // venc.size and venc.binning together. A malformed shape can't be
+  // rendered into any of the three lines, so it is "value unsupported",
+  // the same answer render_toml's own refusal gives above -- never a
+  // report of a missing key.
   int fps = 0, w = 0, h = 0;
-  if (v.type != Type::Str || !cfgparam::parse_mode_text(v.s, &fps, &w, &h)) {
+  bool binning = false;
+  if (v.type != Type::Str || !cfgparam::parse_mode_text(v.s, &fps, &w, &h, &binning)) {
     if (err) *err = "value unsupported";
     return false;
   }
@@ -167,19 +172,34 @@ bool patch_row(std::string* text, size_t idx, const Value& v, const Config& curr
     if (err) *err = "venc.size: key not found";
     return false;
   }
-  // The recorder follows this aspect change only when it is on and pinned
-  // to an explicit size (width > 0; 0x0 means "same as venc.size" and
-  // already tracks it with no line to patch). Cross-multiplied so this
-  // never depends on float rounding; record.fps never follows, so a
-  // VENC_MODE set alone can't feed it a frame rate the loader would refuse.
-  if (current.record.enable && current.record.width > 0 &&
-      static_cast<int64_t>(w) * current.record.height !=
-          static_cast<int64_t>(current.record.width) * h) {
-    if (!patch_toml_key(&candidate, "record", "size", size_text)) {
-      if (err) *err = "record.size: key not found";
-      return false;
+  if (!patch_toml_key(&candidate, "venc", "binning", binning ? "true" : "false")) {
+    if (err) *err = "venc.binning: key not found";
+    return false;
+  }
+  // The recorder follows this set only when it is on and pinned to an
+  // explicit size (width > 0; 0x0 means "same as venc.size" and already
+  // tracks it with no line to patch), and either the aspect ratio changed
+  // (cross-multiplied so this never depends on float rounding) or the
+  // pinned recording is larger than 1920x1080 and than the new readout's
+  // sensor mode in either dimension -- the loader's 4K rule
+  // (drone/venc/camera_modes.c) would otherwise refuse the candidate.
+  // camera_mode_for's own w == 0 ("no mode for this readout at this rate")
+  // counts as "no follow" here: a candidate with no mode is refused by the
+  // loader's venc.fps check regardless of what record.size holds.
+  if (current.record.enable && current.record.width > 0) {
+    const bool aspect_changed = static_cast<int64_t>(w) * current.record.height !=
+                                 static_cast<int64_t>(current.record.width) * h;
+    const CameraMode tier = camera_mode_for(binning ? 1 : 0, static_cast<uint32_t>(fps), 0, 0);
+    const bool needs_4k = tier.w != 0 &&
+                           (current.record.width > 1920 || current.record.height > 1080) &&
+                           (current.record.width > tier.w || current.record.height > tier.h);
+    if (aspect_changed || needs_4k) {
+      if (!patch_toml_key(&candidate, "record", "size", size_text)) {
+        if (err) *err = "record.size: key not found";
+        return false;
+      }
+      if (followed) *followed = "record.size";
     }
-    if (followed) *followed = "record.size";
   }
   *text = std::move(candidate);
   return true;

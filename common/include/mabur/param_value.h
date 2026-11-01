@@ -82,7 +82,8 @@ inline bool decode_wire(size_t idx, uint8_t mav_type, const char wire[128], Valu
       // before it ever reaches the config file.
       if (idx == cfgparam::kVencModeRow) {
         int fps, w, h;
-        if (!cfgparam::parse_mode_text(out->s, &fps, &w, &h)) return false;
+        bool binning;
+        if (!cfgparam::parse_mode_text(out->s, &fps, &w, &h, &binning)) return false;
       }
       return true;
     }

@@ -316,7 +316,7 @@ TEST(list_returns_every_row_in_table_order) {
     CHECK(v.param_type == cfgparam::mav_type(cfgparam::kTable[i].type));
     if (id_of(v.param_id) == "VENC_MODE") {
       CHECK(v.param_type == MAV_PARAM_EXT_TYPE_CUSTOM);
-      CHECK(std::string(v.param_value) == "60@1920x1080");
+      CHECK(std::string(v.param_value) == "60@1920x1080/binned");
     }
   }
   CHECK(c.stats().rx_packets == 1);
@@ -356,7 +356,7 @@ TEST(read_by_index_and_by_id) {
   CHECK(id_of(v.param_id) == "VENC_MODE");
   CHECK(v.param_index == 2);
   CHECK(v.param_type == MAV_PARAM_EXT_TYPE_CUSTOM);
-  CHECK(std::string(v.param_value) == "60@1920x1080");
+  CHECK(std::string(v.param_value) == "60@1920x1080/binned");
 
   feed(c, read_msg("NOPE", -1));
   CHECK(drain(c).empty());
@@ -413,7 +413,7 @@ TEST(set_type_mismatch_is_value_unsupported_with_current_value) {
   auto r = do_set(c, set_real("VENC_MODE", 30.0f));
   CHECK(r.ack.param_result == PARAM_ACK_VALUE_UNSUPPORTED);
   CHECK(r.ack.param_type == MAV_PARAM_EXT_TYPE_CUSTOM);
-  CHECK(std::string(r.ack.param_value) == "60@1920x1080");
+  CHECK(std::string(r.ack.param_value) == "60@1920x1080/binned");
   CHECK(slurp(b.path()) == before);
   // A bool byte other than 0/1 is malformed too.
   char w[128] = {};
@@ -430,10 +430,10 @@ TEST(set_refused_by_loader_sends_failed_ack_then_statustext) {
   const std::string before = slurp(b.path());
   const int writes = write_count_for_test();
   auto c = make(b.path());
-  auto r = do_set(c, set_str("VENC_MODE", "100@1920x1080"));
+  auto r = do_set(c, set_str("VENC_MODE", "100@1920x1080/binned"));
   CHECK(r.ack.param_result == PARAM_ACK_FAILED);
   CHECK(r.ack.param_type == MAV_PARAM_EXT_TYPE_CUSTOM);
-  CHECK(std::string(r.ack.param_value) == "60@1920x1080");
+  CHECK(std::string(r.ack.param_value) == "60@1920x1080/binned");
   REQUIRE(r.rest.size() == 1);
   uint8_t sev = 0;
   const std::string text = statustext(r.rest[0], &sev);
@@ -463,12 +463,12 @@ TEST(ordering_rules_are_enforced_by_the_loader) {
     return ack_of(msgs[0]).param_result;
   };
   // Bundle defaults: record.fps 60, so venc.fps can't drop below it first.
-  CHECK(result(set_str("VENC_MODE", "30@1920x1080")) == PARAM_ACK_FAILED);
+  CHECK(result(set_str("VENC_MODE", "30@1920x1080/binned")) == PARAM_ACK_FAILED);
   CHECK(result(set_int("REC_FPS", 30)) == PARAM_ACK_ACCEPTED);
-  CHECK(result(set_str("VENC_MODE", "30@1920x1080")) == PARAM_ACK_ACCEPTED);
+  CHECK(result(set_str("VENC_MODE", "30@1920x1080/binned")) == PARAM_ACK_ACCEPTED);
   // 100 fps is the 1728x972 mode: size exceeds it at 1920x1080.
-  CHECK(result(set_str("VENC_MODE", "100@1920x1080")) == PARAM_ACK_FAILED);
-  CHECK(result(set_str("VENC_MODE", "100@1728x972")) == PARAM_ACK_ACCEPTED);
+  CHECK(result(set_str("VENC_MODE", "100@1920x1080/binned")) == PARAM_ACK_FAILED);
+  CHECK(result(set_str("VENC_MODE", "100@1728x972/binned")) == PARAM_ACK_ACCEPTED);
   // low_power needs msp for the arm state.
   CHECK(result(set_bool("LOWPWR_ENABLE", true)) == PARAM_ACK_ACCEPTED);
   CHECK(result(set_bool("MSP_ENABLE", false)) == PARAM_ACK_FAILED);
@@ -568,7 +568,7 @@ TEST(every_row_sets_reads_back_and_restores) {
   const Case cases[] = {
       {"RADIO_WALL_MARGN", Value{Type::Real32, false, 0, 2.0f}},
       {"RADIO_LDPC", Value{Type::Bool, false}},
-      {"VENC_MODE", Value{Type::Str, false, 0, 0, "90@1280x720"}},
+      {"VENC_MODE", Value{Type::Str, false, 0, 0, "90@1280x720/binned"}},
       {"VENC_SLICES", Value{Type::Int32, false, 2}},
       {"ENC_BITRATE_MAX", Value{Type::Int32, false, 20000}},
       {"ENC_AIRTIME", Value{Type::Real32, false, 0, 0.5f}},
@@ -1080,26 +1080,26 @@ TEST(repeat_of_the_pending_set_is_acked_in_progress_again) {
   CHECK(ack_of(msgs[0]).param_result == PARAM_ACK_ACCEPTED);
 }
 
-// The bundle fixture is 60@1920x1080 with the recorder on at an explicit
-// 1920x1080 / 60 fps, so a VENC_MODE set that crosses the aspect ratio
+// The bundle fixture is 60@1920x1080/binned with the recorder on at an
+// explicit 1920x1080 / 60 fps, so a VENC_MODE set that crosses the aspect ratio
 // must carry record.size along in the same candidate (mavparam::patch_row,
 // drone/src/mav_params.cpp).
 
 TEST(venc_mode_set_crossing_aspect_patches_three_lines_in_one_set) {
   ScratchBundle b;
   auto c = make(b.path());
-  auto r = do_set(c, set_str("VENC_MODE", "120@1728x816"));
+  auto r = do_set(c, set_str("VENC_MODE", "120@1728x816/binned"));
   CHECK(r.ack.param_result == PARAM_ACK_IN_PROGRESS);   // the loader accepted the candidate
   REQUIRE(fake.submits.size() == 1);
   CHECK(fake.submits[0].row == cfgparam::kVencModeRow);
-  CHECK(fake.submits[0].value.s == "120@1728x816");
+  CHECK(fake.submits[0].value.s == "120@1728x816/binned");
   fake.complete(true, "");
   c.poll_results();
   auto msgs = drain(c);
   REQUIRE(msgs.size() == 1);
   const auto ack = ack_of(msgs[0]);
   CHECK(ack.param_result == PARAM_ACK_ACCEPTED);
-  CHECK(std::string(ack.param_value) == "120@1728x816");
+  CHECK(std::string(ack.param_value) == "120@1728x816/binned");
   const std::string text = slurp(b.path());
   CHECK(text.find("size         = \"1728x816\"") != std::string::npos);   // [record]'s own line
 }
@@ -1109,17 +1109,17 @@ TEST(venc_mode_fps_only_change_still_patches_both_lines) {
   auto c = make(b.path());
   // Same aspect as the fixture's 1920x1080 record.size: no follow, but
   // still a real two-line change, never the unchanged shortcut.
-  auto r = do_set(c, set_str("VENC_MODE", "90@1920x1080"));
+  auto r = do_set(c, set_str("VENC_MODE", "90@1920x1080/binned"));
   CHECK(r.ack.param_result == PARAM_ACK_IN_PROGRESS);
   REQUIRE(fake.submits.size() == 1);
-  CHECK(fake.submits[0].value.s == "90@1920x1080");
+  CHECK(fake.submits[0].value.s == "90@1920x1080/binned");
 }
 
 TEST(venc_mode_lower_fps_refused_by_record_fps_rule) {
   ScratchBundle b;
   const std::string before = slurp(b.path());
   auto c = make(b.path());
-  auto r = do_set(c, set_str("VENC_MODE", "30@1920x1080"));
+  auto r = do_set(c, set_str("VENC_MODE", "30@1920x1080/binned"));
   CHECK(r.ack.param_result == PARAM_ACK_FAILED);
   REQUIRE(r.rest.size() == 1);
   CHECK(statustext_of(r.rest[0]).rfind("record.fps", 0) == 0);
@@ -1131,7 +1131,7 @@ TEST(venc_mode_equal_value_is_unchanged_shortcut) {
   ScratchBundle b;
   const std::string before = slurp(b.path());
   auto c = make(b.path());
-  auto r = do_set(c, set_str("VENC_MODE", "60@1920x1080"));
+  auto r = do_set(c, set_str("VENC_MODE", "60@1920x1080/binned"));
   CHECK(r.ack.param_result == PARAM_ACK_ACCEPTED);
   CHECK(fake.submits.empty());
   CHECK(slurp(b.path()) == before);

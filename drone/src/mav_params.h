@@ -40,15 +40,17 @@ bool render_toml(const Value& v, std::string* out);
 // unchanged on failure. Every row but kVencModeRow owns one line:
 // render_toml(v) must succeed and that line must exist in [section], or
 // *err is "value unsupported" or "<section.key>: key not found".
-// kVencModeRow's Str value "<fps>@<WxH>" patches venc.fps and venc.size
-// together (a value that doesn't parse to that shape is "value
-// unsupported", never a report of a missing key); when
+// kVencModeRow's Str value "<fps>@<WxH>/binned|native" patches venc.fps,
+// venc.size and venc.binning together (a value that doesn't parse to that
+// shape is "value unsupported", never a report of a missing key); when
 // `current.record.enable`, `current.record.width > 0` (an explicit
-// record.size, not the "same as venc.size" default) and the new WxH's
-// aspect ratio differs from the current recording size's (compared by
-// cross-multiplication, no float division), record.size is patched to the
-// same WxH too and *followed is set to "record.size" -- cleared at the
-// start of every call otherwise. record.fps never follows.
+// record.size, not the "same as venc.size" default) and either the new
+// WxH's aspect ratio differs from the current recording size's (compared
+// by cross-multiplication, no float division) or the recording is larger
+// than 1920x1080 and than the new readout's sensor mode (camera_mode_for)
+// in either dimension, record.size is patched to the same WxH too and
+// *followed is set to "record.size" -- cleared at the start of every call
+// otherwise. record.fps never follows.
 bool patch_row(std::string* text, size_t idx, const Value& v, const Config& current,
                std::string* followed, std::string* err);
 
