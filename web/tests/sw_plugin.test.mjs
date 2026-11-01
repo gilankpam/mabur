@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { precacheList, buildId, injectManifest, shouldRegister, fetchStrategy, pickResponse } from '../ui/sw/plugin.mjs';
+import { precacheList, buildId, injectManifest, shouldRegister, fetchStrategy, pickResponse, carriedFonts } from '../ui/sw/plugin.mjs';
 
 test('precacheList: bundle + public + emscripten outputs, never stale dist files or the sw itself', () => {
   // Review Focus 5: only what THIS build emitted; web/dist also holds stale
@@ -43,6 +43,7 @@ test('sw.js carries the precache token and an identical shouldRegister/fetchStra
   assert.ok(src.includes(shouldRegister.toString()), 'sw.js inline shouldRegister drifted from plugin.mjs');
   assert.ok(src.includes(fetchStrategy.toString()), 'sw.js inline fetchStrategy drifted from plugin.mjs');
   assert.ok(src.includes(pickResponse.toString()), 'sw.js inline pickResponse drifted from plugin.mjs');
+  assert.ok(src.includes(carriedFonts.toString()), 'sw.js inline carriedFonts drifted from plugin.mjs');
 });
 
 test('fetchStrategy: hashed assets cache-first, navigations network-timeout, everything else network', () => {
@@ -83,4 +84,14 @@ test('listPublic: recurses into subfolders, files only, posix paths', async () =
 test('precacheList: selectable OSD font atlases are lazy, their list and the default atlas are not', () => {
   const files = precacheList(['index.html'], ['fonts/btfl.png', 'fonts/index.json', 'fonts/a.png', 'fonts/b_2.png', 'fonts/btfl.png.bak.png'], []);
   assert.deepEqual(files, ['fonts/btfl.png', 'fonts/index.json', 'index.html']);
+});
+
+test('carriedFonts: only atlases the new font list still names, none without a list', () => {
+  const scope = 'https://x.example/mabur/';
+  const list = [{ id: 'btfl', file: 'fonts/btfl.png' }, { id: 'p', file: 'fonts/p.png' },
+    { id: 'esc', file: 'fonts/../x.png' }, { id: 'root', file: 'p.png' }, null, { id: 'n' }];
+  assert.deepEqual([...carriedFonts({ list, scope })], [scope + 'fonts/btfl.png', scope + 'fonts/p.png']);
+  assert.equal(carriedFonts({ list: [{ id: 'p', file: 'fonts/p.png' }], scope }).has(scope + 'fonts/gone.png'), false);
+  assert.equal(carriedFonts({ list: null, scope }).size, 0);
+  assert.equal(carriedFonts({ list: { files: [] }, scope }).size, 0);
 });

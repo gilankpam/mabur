@@ -56,6 +56,19 @@ export function pickResponse({ netOk, hasCache }) {
   return !netOk && hasCache;
 }
 
+// Which lazily cached OSD font atlases an activating worker copies over from
+// the old caches: the PNGs its own fonts/index.json still lists, as absolute
+// URLs. A font dropped from the list is not carried, so it leaves with the old
+// cache; an unreadable list carries nothing (the page draws no font without it).
+export function carriedFonts({ list, scope }) {
+  const out = new Set();
+  if (!Array.isArray(list)) return out;
+  for (const f of list) {
+    if (f && typeof f.file === 'string' && /^fonts\/[A-Za-z0-9_.-]+\.png$/.test(f.file)) out.add(scope + f.file);
+  }
+  return out;
+}
+
 // Every file under public/, as posix paths relative to it (public/fonts/*.png
 // precaches as fonts/<name>.png). A directory entry must never reach the
 // manifest: its fetch would 404 and refuse the whole worker install.

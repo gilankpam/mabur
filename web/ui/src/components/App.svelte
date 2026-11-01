@@ -74,9 +74,8 @@
   }
 
   // MSP OSD: latest DisplayPort grid, painted on
-  // a second canvas over the video. The atlas URL resolves against the page
-  // (works under the Pages /mabur/ base as well as at a local root).
-
+  // a second canvas over the video. The font list and atlas URLs resolve
+  // against the page (works under the Pages /mabur/ base as well as at a local root).
   const osdLayer = new OsdLayer();
   // The font list (public/fonts/index.json, shipped and precached with every build) is the
   // only source of font files, Betaflight included. loadAtlas waits for it. If it fails to

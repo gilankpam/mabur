@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { GLYPH_W, GLYPH_H, ATLAS_COLS, OSD_STALE_MS, atlasRect, cellRect, isBlank, OsdLayer, OsdPainter }
   from '../ui/src/lib/osd.js';
+import { FontListError } from '../ui/src/lib/osdfonts.js';
 
 test('atlas PNG matches the page constants', () => {
   const png = fs.readFileSync(new URL('../ui/public/fonts/btfl.png', import.meta.url));
@@ -296,4 +297,25 @@ test('painter: when the default atlas itself fails the OSD stays off, one attemp
   assert.deepEqual(loads, ['btfl']);             // no loop, no refetch per screen
   p.resetAtlasFailure(); raf.flush(); await settle();
   assert.deepEqual(loads, ['btfl', 'btfl']);
+});
+
+test('painter: a failed font list turns the OSD off with one log, no default-font retry', async () => {
+  const layer = new OsdLayer();
+  const raf = fakeRaf();
+  const loads = [];
+  const errors = [];
+  let listUp = false;
+  const p = new OsdPainter({ layer, raf, fontId: 'paddy', log: { error: (...a) => errors.push(a[0]) },
+    loadAtlas: async (id) => { loads.push(id); if (!listUp) throw new FontListError('fonts/index.json: HTTP 404'); return { id }; } });
+  p.attach(fakeCanvas());
+  layer.onScreen(18, 50, grid(18, 50, { 0: 0x48 }), 1000);
+  for (let i = 0; i < 3; i++) { p.schedule(); raf.flush(); await settle(); }
+  assert.deepEqual(loads, ['paddy']);            // the default resolves through the same list: not tried
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /OSD off/);
+  assert.equal(p.atlas, null);
+  listUp = true;
+  p.resetAtlasFailure(); raf.flush(); await settle(); raf.flush();   // Connect: the requested font again
+  assert.deepEqual(loads, ['paddy', 'paddy']);
+  assert.equal(p.atlas.id, 'paddy');
 });

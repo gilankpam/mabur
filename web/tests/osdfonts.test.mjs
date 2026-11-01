@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_FONT, normalizeFontList, loadFontList, fontFile } from '../ui/src/lib/osdfonts.js';
+import { DEFAULT_FONT, FontListError, normalizeFontList, loadFontList, fontFile } from '../ui/src/lib/osdfonts.js';
 import { defaultConfig, normalizeConfig, describeEdit } from '../ui/src/lib/config.js';
 
 const BTFL = { id: 'btfl', name: 'Betaflight', file: 'fonts/btfl.png' };
@@ -26,6 +26,10 @@ test('loadFontList: a missing, broken or btfl-less list rejects instead of fakin
   await assert.rejects(loadFontList(async () => { throw new Error('net'); }, 'http://x/'), /net/);
   await assert.rejects(loadFontList(async () => ({ ok: true, json: async () => { throw new Error('bad json'); } }), 'http://x/'), /bad json/);
   await assert.rejects(loadFontList(async () => ({ ok: true, json: async () => [{ id: 'p', file: 'fonts/p.png' }] }), 'http://x/'), /no "btfl"/);
+  for (const f of [async () => ({ ok: false, status: 404 }), async () => { throw new Error('net'); },
+    async () => ({ ok: true, json: async () => [] })]) {
+    await assert.rejects(loadFontList(f, 'http://x/'), FontListError);   // the painter tells these from an atlas failure
+  }
   let url = '';
   const l = await loadFontList(async (u) => { url = String(u); return { ok: true, json: async () => [BTFL, { id: 'p', file: 'fonts/p.png' }] }; }, 'http://x/m/');
   assert.equal(url, 'http://x/m/fonts/index.json');
@@ -37,7 +41,7 @@ test('fontFile: unknown id uses the btfl entry; a list without one throws', () =
   assert.equal(DEFAULT_FONT, 'btfl');
   assert.equal(fontFile(l, 'p'), 'fonts/p.png');
   assert.equal(fontFile(l, 'gone'), 'fonts/btfl.png');
-  assert.throws(() => fontFile([], 'btfl'), /no "btfl"/);
+  assert.throws(() => fontFile([], 'btfl'), FontListError);
 });
 
 test('config: osdFont defaults to btfl, survives normalize, rejects junk', () => {

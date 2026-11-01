@@ -18,13 +18,25 @@ export function normalizeFontList(raw) {
   return out;
 }
 
-// Rejects when the list cannot be loaded or has no DEFAULT_FONT entry; the caller
-// reports it (the OSD stays off until a later attempt succeeds).
+// The font list itself is unusable (unreachable, not JSON, or no DEFAULT_FONT
+// entry). Distinct from a failed atlas: falling back to the default font cannot
+// help, since the default is resolved through the same list.
+export class FontListError extends Error {}
+
+// Rejects with a FontListError when the list cannot be loaded or has no
+// DEFAULT_FONT entry; the caller reports it (the OSD stays off until a later
+// attempt succeeds).
 export async function loadFontList(fetchFn, base) {
-  const r = await fetchFn(new URL('fonts/index.json', base));
-  if (!r.ok) throw new Error(`fonts/index.json: HTTP ${r.status}`);
-  const list = normalizeFontList(await r.json());
-  if (!list.some((f) => f.id === DEFAULT_FONT)) throw new Error(`fonts/index.json has no "${DEFAULT_FONT}" font`);
+  let raw;
+  try {
+    const r = await fetchFn(new URL('fonts/index.json', base));
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    raw = await r.json();
+  } catch (e) {
+    throw new FontListError(`fonts/index.json: ${e?.message ?? e}`, { cause: e });
+  }
+  const list = normalizeFontList(raw);
+  if (!list.some((f) => f.id === DEFAULT_FONT)) throw new FontListError(`fonts/index.json has no "${DEFAULT_FONT}" font`);
   return list;
 }
 
@@ -32,6 +44,6 @@ export async function loadFontList(fetchFn, base) {
 // falls back to the DEFAULT_FONT entry.
 export function fontFile(list, id) {
   const f = list.find((x) => x.id === id) || list.find((x) => x.id === DEFAULT_FONT);
-  if (!f) throw new Error(`no "${DEFAULT_FONT}" font in the list`);
+  if (!f) throw new FontListError(`no "${DEFAULT_FONT}" font in the list`);
   return f.file;
 }
