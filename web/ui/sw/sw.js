@@ -30,6 +30,19 @@ function pickResponse({ netOk, hasCache }) {
   return !netOk && hasCache;
 }
 
+// Which lazily cached OSD font atlases an activating worker copies over from
+// the old caches: the PNGs its own fonts/index.json still lists, as absolute
+// URLs. A font dropped from the list is not carried, so it leaves with the old
+// cache; an unreadable list carries nothing (the page draws no font without it).
+function carriedFonts({ list, scope }) {
+  const out = new Set();
+  if (!Array.isArray(list)) return out;
+  for (const f of list) {
+    if (f && typeof f.file === 'string' && /^fonts\/[A-Za-z0-9_.-]+\.png$/.test(f.file)) out.add(scope + f.file);
+  }
+  return out;
+}
+
 if (typeof window === 'undefined') {
   const SCOPE = self.registration.scope;
   const PREFIX = 'mabur:' + SCOPE + ':';
@@ -61,19 +74,25 @@ if (typeof window === 'undefined') {
 
   self.addEventListener('activate', (event) => event.waitUntil((async () => {
     const cache = await caches.open(CACHE);
-    const fontsPrefix = SCOPE + 'fonts/';
     // OSD font atlases other than Betaflight's are cached lazily (only when a user picks
     // one), so a new build's cache starts without them. Carry them over from the old
     // caches (newest first, so the newest copy wins) before those are deleted, otherwise
     // a user who had a font loses it on every deploy and has none on their first offline
-    // session. fonts/index.json and fonts/btfl.png are precached by every build, so they
-    // need no carrying, and a file the new build already precached is left alone.
+    // session. Only fonts this build's (precached) fonts/index.json still lists are
+    // carried, and a file the new build already precached, such as fonts/btfl.png, is
+    // left alone.
+    let list = null;
+    try {
+      const r = await cache.match(SCOPE + 'fonts/index.json');
+      if (r) list = await r.json();
+    } catch (e) { console.warn('[sw] font carry-over: fonts/index.json', e); }
+    const carry = carriedFonts({ list, scope: SCOPE });
     for (const k of (await caches.keys()).reverse()) {
       if (!k.startsWith(PREFIX) || k === CACHE) continue;
       try {
         const old = await caches.open(k);
         for (const req of await old.keys()) {
-          if (!req.url.startsWith(fontsPrefix) || !req.url.endsWith('.png')) continue;
+          if (!carry.has(req.url)) continue;
           if (await cache.match(req)) continue;
           const res = await old.match(req);
           if (res) await cache.put(req, res);

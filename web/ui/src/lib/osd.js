@@ -4,7 +4,7 @@
 // paints glyphs from the selected font's atlas (web/ui/public/fonts/*.png, listed
 // in fonts/index.json; Betaflight is fonts/btfl.png, made from maburplay's
 // font_btfl.mfont by tools/msp/gen_webfont.py).
-import { DEFAULT_FONT } from './osdfonts.js';
+import { DEFAULT_FONT, FontListError } from './osdfonts.js';
 
 export const GLYPH_W = 36;
 export const GLYPH_H = 54;
@@ -60,9 +60,10 @@ export class OsdLayer {
 // differ after a fallback: a non-default font that fails to load is logged once
 // and the default atlas (always precached) is loaded instead, while requestedId
 // stays, so resetAtlasFailure() (called on Connect) tries the requested font
-// again. If the default atlas itself fails, that is logged once and the OSD
-// stays off (never a refetch per screen) until resetAtlasFailure() or setFont()
-// allows another try -- video is unaffected.
+// again. If the default atlas itself fails, or the font list does (whatever
+// font was asked for), that is logged once and the OSD stays off (never a
+// refetch per screen) until resetAtlasFailure() or setFont() allows another
+// try -- video is unaffected.
 export class OsdPainter {
   constructor({ layer, loadAtlas, fontId = null, raf = (f) => requestAnimationFrame(f), log = console }) {
     Object.assign(this, { layer, loadAtlas, fontId, raf, log });
@@ -114,9 +115,10 @@ export class OsdPainter {
       (bmp) => { if (this.atlasP !== p) { bmp?.close?.(); return; } this.atlas = bmp; this.schedule(); },
       (e) => {
         if (this.atlasP !== p) return;   // a font switch superseded this load
-        if (id && id !== DEFAULT_FONT) {
+        if (id && id !== DEFAULT_FONT && !(e instanceof FontListError)) {
           // The requested font failed (missing file, bad download). The default atlas is always
-          // precached, so draw it instead of switching the OSD off; requestedId is kept.
+          // precached, so draw it instead of switching the OSD off; requestedId is kept. A failed
+          // font list is not retried with the default: that resolves through the same list.
           this.log.error(`[webgs] OSD font "${id}" failed to load; falling back to the default font`, e);
           this.fontId = DEFAULT_FONT;
           this.atlasP = null;

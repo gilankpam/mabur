@@ -124,16 +124,15 @@ headers WASM pthreads need, so
 MIT) is a service worker that adds them — the very first visit reloads the
 page once. The same worker makes the page **work offline**: on install it
 precaches every file of that build (list injected at build time by
-`web/ui/sw/plugin.mjs` from Vite's bundle + `public/` + `webgs.{js,wasm}`),
-except the OSD font atlases other than Betaflight's (`public/fonts/*.png`
-except `fonts/btfl.png`, which stays precached so a font that fails offline
-still falls back), which are cached lazily on first use (see "MSP OSD"). If
-any single file fails to
-precache, the whole install fails (a per-file warning is still logged). The
-previous worker and its complete cache stay in
-control, and the browser retries the install on a later navigation. This
-keeps an incomplete cache from going live and failing offline on the
-missing file.
+`web/ui/sw/plugin.mjs` from Vite's bundle + `public/` + `webgs.{js,wasm}`).
+The exception is the OSD font atlases other than Betaflight's
+(`public/fonts/*.png` except `fonts/btfl.png`): those are cached lazily on
+first use (see "MSP OSD"). `fonts/btfl.png` stays precached so a font that
+fails offline still falls back. If any single file fails to precache, the
+whole install fails (a per-file warning is still logged). The previous worker
+and its complete cache stay in control, and the browser retries the install
+on a later navigation. This keeps an incomplete cache from going live and
+failing offline on the missing file.
 
 Same-origin requests then get one of three fetch strategies
 (`fetchStrategy()`, `web/ui/sw/plugin.mjs`), picked per request so a
@@ -153,15 +152,16 @@ So: open the hosted page once with internet; afterwards it loads with none
 (e.g. a laptop whose only network is the CPE). Online visits always get the
 latest deploy; reload while online to pick one up. Stable and edge keep
 separate caches (`mabur:<scope>:<build id>`). When a new build's worker
-activates, it first copies the lazily cached OSD font atlases (`fonts/*.png`)
-from the old caches into its own cache, then deletes the old ones, so a font
-already used keeps working offline across deploys (a file the new build
-precached itself, such as `fonts/btfl.png` or `fonts/index.json`, is left
-alone). A page still controlled by the
-old vendored coi worker registers the new one on its next visit
-(`shouldRegister()`). The WebUSB grant is per origin, so each device picks
-the card once on this site. The page is the bundle-default ladder build,
-same as a local one.
+activates, it first copies the lazily cached OSD font atlases from the old
+caches into its own cache, then deletes the old ones, so a font already used
+keeps working offline across deploys. Only atlases that the new build's
+`fonts/index.json` still lists are copied (`carriedFonts()`), so a font
+removed from the list leaves the cache with the old build; a file the new
+build precached itself, such as `fonts/btfl.png`, is left alone. A page still
+controlled by the old vendored coi worker registers the new one on its next
+visit (`shouldRegister()`). The WebUSB grant is per origin, so each device
+picks the card once on this site. The page is the bundle-default ladder
+build, same as a local one.
 
 **Install as an app.** The page is an installable PWA: Chrome's menu
 (Android: "Add to Home screen" / "Install app"; desktop: the install icon
@@ -1262,14 +1262,15 @@ fetched, on the first OSD screen, and the service worker caches it then and
 carries it over to later builds' caches (see Serve), so it works offline once it
 has been used online. `loadAtlas` waits for the font list, then resolves the
 chosen id against it; an id the list lacks (a font removed since it was chosen)
-uses the `btfl` entry. If the list cannot be loaded (or has no `btfl` entry),
-the OSD stays off, which is logged once, and the next load tries again.
-Switching fonts frees the old decoded bitmap. The page fetches the atlas on the
-first screen. If a non-default font fails to load, that is logged once to the
-console and the page draws the Betaflight atlas instead. The picker still shows
-the chosen font, and the next Connect tries it again. If the Betaflight atlas
-itself fails, the OSD stays off (it is not refetched per screen) until the next
-Connect or font change, which tries once more. The 5 s blank counts from the
+uses the `btfl` entry. Switching fonts frees the old decoded bitmap. If a
+non-default font fails to load, that is logged once to the console and the page
+draws the Betaflight atlas instead. The picker still shows the chosen font, and
+the next Connect tries it again. If the Betaflight atlas itself fails, or the
+font list cannot be loaded or has no `btfl` entry, that is logged once and the
+OSD stays off (it is not refetched per screen) until the next Connect or font
+change, which tries once more, list included. A failed list never falls back
+to Betaflight, whichever font is chosen, since Betaflight resolves through the
+same list. The 5 s blank counts from the
 last *published* screen, where `maburplay` counts from the last datagram. That
 is the same thing in practice, since Betaflight sends DRAW_SCREEN continuously.
 
