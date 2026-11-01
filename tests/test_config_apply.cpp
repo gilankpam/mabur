@@ -194,16 +194,18 @@ ConfigApplyResult apply(ConfigApplier& a, size_t row, const Value& value) {
   return r;
 }
 
-constexpr size_t kWallMargin = 0, kVencMode = 2, kVencSlices = 3, kBitrateMax = 4, kMsp = 11;
+constexpr size_t kWallMargin = 0, kVencMode = 2, kVencSlices = 3, kBitrateMax = 4, kMsp = 11,
+                 kVencMirror = 12, kVencFlip = 13;
 
 }  // namespace
 
 TEST(every_row_has_the_path_from_the_table) {
   using P = ConfigApplyPath;
-  const ConfigApplyPath want[12] = {P::Reprogram, P::Reprogram, P::Rebuild, P::Rebuild,
+  const ConfigApplyPath want[14] = {P::Reprogram, P::Reprogram, P::Rebuild, P::Rebuild,
                               P::Knob,      P::Knob,      P::Rebuild, P::Rebuild,
-                              P::Rebuild,   P::Rebuild,   P::Knob,    P::Reprogram};
-  REQUIRE(cfgparam::kCount == 12);
+                              P::Rebuild,   P::Rebuild,   P::Knob,    P::Reprogram,
+                              P::Rebuild,   P::Rebuild};
+  REQUIRE(cfgparam::kCount == 14);
   for (size_t i = 0; i < cfgparam::kCount; ++i) CHECK(apply_path_for(i) == want[i]);
 }
 
@@ -236,6 +238,28 @@ TEST(rebuild_set_runs_stop_configure_restart_after_in_order) {
   CHECK(g.a.live().venc.core.slices == 2);
   CHECK(exists(g.path() + ".pre-param"));
   CHECK(g.a.stats().rebuilds == 1);
+}
+
+// Orientation reaches the sensor only as the pipeline starts, so a set is a
+// rebuild whose candidate carries the new value -- on, then back off.
+TEST(orientation_set_rebuilds_with_the_new_value) {
+  Rig g;
+  ConfigApplyResult r = apply(g.a, kVencFlip, Value{Type::Bool, true});
+  CHECK(r.ok && r.path == ConfigApplyPath::Rebuild);
+  REQUIRE(g.f.pipeline_restart.size() == 1);
+  CHECK(g.f.pipeline_restart[0].venc.core.flip && !g.f.pipeline_restart[0].venc.core.mirror);
+  CHECK(load_config(g.path()).venc.core.flip);
+
+  r = apply(g.a, kVencMirror, Value{Type::Bool, true});
+  CHECK(r.ok && r.path == ConfigApplyPath::Rebuild);
+  REQUIRE(g.f.pipeline_restart.size() == 2);
+  CHECK(g.f.pipeline_restart[1].venc.core.mirror && g.f.pipeline_restart[1].venc.core.flip);
+
+  r = apply(g.a, kVencFlip, Value{Type::Bool, false});
+  CHECK(r.ok);
+  REQUIRE(g.f.pipeline_restart.size() == 3);
+  CHECK(!g.f.pipeline_restart[2].venc.core.flip && g.f.pipeline_restart[2].venc.core.mirror);
+  CHECK(!load_config(g.path()).venc.core.flip && g.a.live().venc.core.mirror);
 }
 
 TEST(rebuild_failure_restores_previous_and_publishes_nothing) {

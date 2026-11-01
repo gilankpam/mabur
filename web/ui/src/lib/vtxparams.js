@@ -1,7 +1,7 @@
 // Pure view logic for the web GS "VTX" tab (no DOM). The core pushes the
 // drone's parameter state as JSON via Module.onParams (common/include/
 // mabur/config_params.h kTable, 12 rows); VtxPanel.svelte renders what these
-// helpers compute. docs/mavlink.md documents the push shape.
+// helpers compute. docs/web-gs.md documents the push shape.
 
 // docs/camera-modes.md: sensor field-of-view mode by fps, and the encoder
 // sizes that fit it.
@@ -202,6 +202,8 @@ export const LABELS = {
   RADIO_LDPC: 'LDPC coding',
   VENC_MODE: 'Camera mode',
   VENC_SLICES: 'Row slices',
+  VENC_MIRROR: 'Mirror',
+  VENC_FLIP: 'Flip',
   ENC_BITRATE_MAX: 'Max bitrate (kbps)',
   ENC_AIRTIME: 'Airtime budget',
   REC_ENABLE: 'Onboard recording',

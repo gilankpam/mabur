@@ -1024,7 +1024,7 @@ in whichever `dvr.mode` is configured:
   GS's local recording): a complete IRAP (`au_is_irap()`) once VPS+SPS+PPS
   are known. A coded-size change mid-recording (a drone `VENC_MODE`
   MAVLink set rebuilding the encoder pipeline in-process,
-  `docs/mavlink.md`, `docs/link-adaptation.md`, is the live case) rolls
+  `docs/vtx-config-mavlink.md`, `docs/link-adaptation.md`, is the live case) rolls
   to a new file at the next IRAP rather than mixing two sizes in one
   header: `maburplay` names the next file through the GS DVR's namer and
   logs `maburplay: rec: ROLL (<path>)`. The web GS's local recording
@@ -1175,7 +1175,7 @@ all.
   is stopped, before the SDK is touched, so a `VENC_*`/`REC_*` MAVLink set
   walks the ladder's restore rungs (`N=1`: "previous pipeline restored",
   `N=2`: "previous pipeline restored by a cold restart";
-  `docs/mavlink.md` "Applying a set"). Boot logs `venc:
+  `docs/vtx-config-mavlink.md` "Applying a set"). Boot logs `venc:
   MABUR_VENC_FAIL_RESTARTS=<N>: the next <N> pipeline restarts will fail`,
   each forced failure `venc: injected pipeline start failure
   (MABUR_VENC_FAIL_RESTARTS)`. Read once at the first encoder start and
@@ -1234,7 +1234,7 @@ maburd's own stderr (`/tmp/mabur.log`): the 1 Hz `stats:` line (incl.
 `enc_pk100=`, the peak 100 ms encoder byte rate in kbit/s inside that
 second — its frame-normalised window is sized from the boot config's
 `venc.fps` and is not rebuilt by a live `VENC_MODE` MAVLink set
-(`docs/mavlink.md`), so the window's own 100 ms no longer matches the
+(`docs/vtx-config-mavlink.md`), so the window's own 100 ms no longer matches the
 running fps after one — `lp=`/`armed=` for low-power mode, `snr_mhz=`, the trimmed
 sensor rate in milli-Hz (same value as `GET /venc`'s `sensor_mhz`), and
 `snr_off=`, the phase-lock offset on the sensor in milli-fps (0 = the
@@ -1253,7 +1253,7 @@ nothing was written, `set <id> refused: <why>` for an immediate refusal
 (unknown id, a type mismatch, a loader refusal, "apply in progress",
 "calibration in progress"), and `... config does not load: <why>` when
 the file on disk itself fails to load. A set that is a real change past
-the loader check is handed to `ConfigApplier` (`docs/mavlink.md`
+the loader check is handed to `ConfigApplier` (`docs/vtx-config-mavlink.md`
 "Applying a set") and logs two lines instead: `set <id> = <value>
 (<toml key>) in progress` at once, then — once the applier finishes —
 either `set <id> = <value> (<toml key>) applied <knob|reprogram|rebuild>

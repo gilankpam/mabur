@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Test for tools/bench/mavparam.py's PARAM_EXT_ACK wait: a set the drone
 applies answers IN_PROGRESS first (current value), then a final ACCEPTED or
-FAILED (docs/mavlink.md). Covers wait_final_ack()'s own two-phase receive
+FAILED (docs/vtx-config-mavlink.md). Covers wait_final_ack()'s own two-phase receive
 (IN_PROGRESS -> final, acks for another param_id ignored, a first-phase
 timeout) and cmd_set()'s resend policy (retries only while no ack has
 arrived at all; never resends once IN_PROGRESS is seen).

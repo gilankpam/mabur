@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """mavparam.py -- list/get/set the drone's config parameters over maburgs's
-MAVLink UDP endpoint (docs/mavlink.md).
+MAVLink UDP endpoint (docs/vtx-config-mavlink.md).
 
 Usage:
   GS=<gs-ip> PORT=14550 python3 tools/bench/mavparam.py list
@@ -63,7 +63,7 @@ RESULT_NAMES = {
 DRONE_SYSTEM = 1
 DRONE_COMPONENT = 191  # MAV_COMP_ID_ONBOARD_COMPUTER
 
-# The 12-row parameter table, id -> wire type ('b' Bool, 'i' Int32,
+# The 14-row parameter table, id -> wire type ('b' Bool, 'i' Int32,
 # 'f' Real32, 's' Str/CUSTOM). common/include/mabur/config_params.h is the
 # source of truth for ids and types; this copy is kept in sync by hand.
 TABLE = [
@@ -79,6 +79,8 @@ TABLE = [
     ("REC_SIZE", "s"),
     ("LOWPWR_ENABLE", "b"),
     ("MSP_ENABLE", "b"),
+    ("VENC_MIRROR", "b"),
+    ("VENC_FLIP", "b"),
 ]
 TYPE_BY_ID = dict(TABLE)
 

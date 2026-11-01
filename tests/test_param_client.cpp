@@ -145,7 +145,7 @@ TEST(link_up_requests_the_list_once) {
   CHECK(r.c.seq() == seq0 + 1);
 }
 
-TEST(twelve_values_complete_the_list) {
+TEST(a_value_per_row_completes_the_list) {
   Rig r;
   r.c.set_linked(true, 1000);
   for (size_t i = 0; i < mabur::cfgparam::kCount; ++i) feed_row(r.c, i, 1001);

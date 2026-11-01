@@ -45,7 +45,7 @@ void venc_core_stop(void);
  *     started, or stopped).
  * MABUR_VENC_FAIL_RESTARTS=N in maburd's environment at its first
  * venc_core_start fails the next N restarts after the old pipeline is
- * stopped (a bench knob for the ladder; docs/mavlink.md). */
+ * stopped (a bench knob for the ladder; docs/vtx-config-mavlink.md). */
 int venc_core_restart(const VencCfg *cfg);
 
 /* Optional, before venc_core_start: dlopen the SigmaStar MI libraries

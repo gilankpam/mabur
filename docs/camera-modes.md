@@ -58,7 +58,7 @@ The VPE only scales the mode down; it never crops or upscales it. So
 `venc.size` must have the selected mode's aspect ratio and fit inside it
 (even, at least 320x180), or the loader refuses the config. Over the air,
 fps and size move together as the single `VENC_MODE` parameter
-(`docs/mavlink.md`):
+(`docs/vtx-config-mavlink.md`):
 
 - 1–90 fps: any 16:9 size up to 1920x1080 (1280x720, 1920x1080).
 - 91–100 fps: any 16:9 size up to 1728x972 (1280x720, 1728x972). 1920x1080

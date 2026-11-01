@@ -360,7 +360,7 @@ TEST(read_by_index_and_by_id) {
 
   feed(c, read_msg("NOPE", -1));
   CHECK(drain(c).empty());
-  feed(c, read_msg("", 12));   // one past the table
+  feed(c, read_msg("", 14));   // one past the table
   CHECK(drain(c).empty());
   feed(c, read_msg("", 32767));
   CHECK(drain(c).empty());
@@ -578,6 +578,8 @@ TEST(every_row_sets_reads_back_and_restores) {
       {"REC_SIZE", Value{Type::Str, false, 0, 0, "1280x720"}},
       {"LOWPWR_ENABLE", Value{Type::Bool, true}},
       {"MSP_ENABLE", Value{Type::Bool, false}},
+      {"VENC_MIRROR", Value{Type::Bool, true}},
+      {"VENC_FLIP", Value{Type::Bool, true}},
   };
   static_assert(sizeof(cases) / sizeof(cases[0]) == cfgparam::kCount, "one case per row");
   ScratchBundle b;

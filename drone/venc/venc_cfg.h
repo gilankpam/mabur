@@ -88,8 +88,9 @@ typedef struct {
                                 * prediction. */
   /* Sensor orientation, applied with MI_SNR_SetOrien before MI_SNR_Enable
    * (sensor_select.c) and again on the VPE channel in
-   * star6e_pipeline_start_vpe. Boot-time only: the sensor is re-initialised
-   * to change them. waybeam carried the same pair as image.mirror /
+   * star6e_pipeline_start_vpe, on every pipeline start: a change takes a
+   * pipeline rebuild (the VENC_MIRROR / VENC_FLIP MAVLink parameters), never
+   * a mid-stream SetOrien. waybeam carried the same pair as image.mirror /
    * image.flip. No rotate: the VPE rotate path is untested. */
   bool mirror;                 /* venc.mirror: horizontal (left-right) */
   bool flip;                   /* venc.flip: vertical (up-down) */

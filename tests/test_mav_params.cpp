@@ -74,7 +74,7 @@ TEST(rec_size_falls_back_to_venc_mode_size_when_record_size_is_zero) {
 TEST(read_rejects_idx_out_of_range) {
   Config c = load_config(bundle_path());
   Value v;
-  CHECK(!read(c, 12, &v));                    // cfgparam::kCount == 12
+  CHECK(!read(c, 14, &v));                    // cfgparam::kCount == 14
   CHECK(!read(c, static_cast<size_t>(-1), &v));
 }
 

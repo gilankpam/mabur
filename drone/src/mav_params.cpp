@@ -50,6 +50,8 @@ Value acc_rec_size(const Config& c) {
 }
 Value acc_lowpwr_enable(const Config& c) { return Value{Type::Bool, c.low_power.enable}; }
 Value acc_msp_enable(const Config& c) { return Value{Type::Bool, c.msp.enable}; }
+Value acc_venc_mirror(const Config& c) { return Value{Type::Bool, c.venc.core.mirror}; }
+Value acc_venc_flip(const Config& c) { return Value{Type::Bool, c.venc.core.flip}; }
 
 using Accessor = Value (*)(const Config&);
 
@@ -69,6 +71,8 @@ constexpr Accessor kAccessors[] = {
     acc_rec_size,          // REC_SIZE
     acc_lowpwr_enable,     // LOWPWR_ENABLE
     acc_msp_enable,        // MSP_ENABLE
+    acc_venc_mirror,       // VENC_MIRROR
+    acc_venc_flip,         // VENC_FLIP
 };
 static_assert(sizeof(kAccessors) / sizeof(kAccessors[0]) == cfgparam::kCount,
               "mav_params accessor table must have one entry per cfgparam::kTable row");
