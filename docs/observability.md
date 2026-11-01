@@ -361,6 +361,11 @@ accepted or refused `set` logs one line:
 closed without a restart. Full reference, the two key tables, and the
 bench driver (`tools/bench/gsparam.py`): `docs/gs-live-config.md`.
 
+With `MABUR_MENU_DEBUG=1` in maburplay's environment, its 8403 listener
+also answers three verbs for driving the goggles settings menu with no
+hands on the buttons — `key`, `view`, `snap` — detailed in
+`docs/gs-menu.md` "Debug verbs".
+
 ## Debug-log session directory
 
 maburgs writes a per-session directory when `debug_log.enable` is set
@@ -1069,6 +1074,31 @@ wish also carries one-shot `refresh <reason>` lines — `start`, `resync`,
 `decoder`, `dvr` — each one arming a demand-refresh IDR request
 (`docs/vtx-recorder.md` "Wire"; mechanism: `docs/fec-nack.md` "Demand
 refresh").
+
+### Settings menu (GPIO)
+
+`maburplay`'s five-way-pad settings menu (`docs/gs-menu.md`) logs
+`maburplay: menu: open` and `maburplay: menu: close` as it opens and
+closes (`MenuSession::log`, `gs/player/src/menu_session.cpp`). Startup
+logs one of `maburplay: menu: off -- <reason>` (no button bank, e.g.
+missing `[input.*]` pins or `--decode-only`) or `maburplay: menu: up
+<pin> down <pin> left <pin> right <pin> sel <pin>` once it is wired, plus
+`maburplay: menu: debug verbs on (MABUR_MENU_DEBUG)` when that variable
+is set. While the menu is on, a failed open of maburgs' 8402 live-config
+client logs once, non-fatally — nothing else about the player is
+affected, but every GS-owned row stays refused with "Reading GS
+settings…" forever, since there is no client left to read maburgs' live
+keys with: `maburplay: menu: maburgs live config: <reason> -- GS rows
+will not apply`. A failed layout or a missing link-state source logs once
+more, also non-fatally: `maburplay: menu: not drawn -- <reason>` /
+`maburplay: menu: no link state -- <reason>`. Before the first video
+frame ever arrives, opening the menu takes the startup splash's plane
+and closing it again (still with no frame) brings the splash back
+(`docs/gs-menu.md` "Before the first video frame"), each logged once:
+`maburplay: menu: over splash` / `maburplay: menu: splash restored`.
+This is not an exhaustive list of every `maburplay: menu: …` line — see
+`docs/gs-menu.md` for the debug-verb replies, which are not logged at
+all.
 
 ## Tools: which one when
 

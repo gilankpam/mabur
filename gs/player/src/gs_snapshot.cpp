@@ -76,6 +76,8 @@ bool parse_gs_snapshot(const char* data, size_t n, GsSnapshot* out) {
     auto it = scan->find("state");
     out->scan_auto = it != scan->end() && it->is_string() && it->get<std::string>() != "off";
     scan_pick = integer(*scan, "pick");
+    auto pin = scan->find("pinned");
+    out->pinned = pin != scan->end() && pin->is_boolean() && pin->get<bool>();
   }
   if (const json* drone = obj(j, "drone")) {
     auto it = drone->find("low_power");
@@ -119,6 +121,7 @@ bool parse_gs_snapshot(const char* data, size_t n, GsSnapshot* out) {
       auto st = link->find("state");
       out->key_mismatch = st != link->end() && st->is_string() &&
                           st->get<std::string>() == "key_mismatch";
+      out->session = st != link->end() && st->is_string() && st->get<std::string>() == "session";
     }
     if (hop) {
       const std::optional<int> target = integer(*hop, "target");

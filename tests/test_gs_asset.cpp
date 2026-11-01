@@ -152,7 +152,7 @@ TEST(asset_metrics_are_sane_at_every_baked_size) {
     CHECK(a->advance_x > 0);
     CHECK(a->glyph_w > a->advance_x);       // the 4 px pad on each side
     CHECK(a->baseline > 0 && a->baseline < a->glyph_h);
-    CHECK(a->n_glyphs == 113);              // ASCII + gen_gsfont's 5 + 13 icons
+    CHECK(a->n_glyphs == 127);              // ASCII + gen_gsfont's 5 + 14 menu glyphs + 13 icons
     std::printf("  px=%3d adv=%3d cell=%3dx%-3d baseline=%3d glyphs=%d\n", a->px,
                 a->advance_x, a->glyph_w, a->glyph_h, a->baseline, a->n_glyphs);
   }
@@ -177,6 +177,41 @@ TEST(asset_carries_every_glyph_the_bar_draws_at_every_size) {
     const char* p = extra;
     while (*p) cps.push_back(utf8_next(&p));
   }
+  for (int px : scaled_sizes()) {
+    const MaskAtlas* a = f.atlas(px);
+    REQUIRE(a != nullptr);
+    for (uint32_t cp : cps) {
+      const int gi = a->index_of(cp);
+      if (gi < 0) std::printf("  px=%d missing U+%04X\n", px, cp);
+      CHECK(gi >= 0);
+    }
+  }
+}
+
+// Every glyph the settings menu draws (menu_model.cpp, menu_layer.cpp) must
+// also exist at EVERY size, for the same reason the bar's icons are pinned
+// above: index_of returns -1 for a missing codepoint and draw_text advances
+// the pen anyway, so a hole renders as correctly-sized empty space that no
+// string-level test would ever catch.
+TEST(asset_carries_every_menu_glyph_at_every_size) {
+  GsFont& f = asset();
+  REQUIRE(f.ok());
+  const uint32_t cps[] = {
+      0x00B7,  // ·  picker separator
+      0x00D7,  // ×  "WxH" resolution strings (size_label(): Display, rec.burn.size)
+      0x2013,  // –  number-range dash
+      0x203A,  // ›  breadcrumb separator
+      0x25B2,  // ▲  picker up
+      0x25B6,  // ▶  forward/open/apply/confirm
+      0x25B8,  // ▸  unset group value
+      0x25BC,  // ▼  picker down
+      0x25C0,  // ◀  back/cancel/close
+      0x26A0,  // ⚠  row warning
+      0x2713,  // ✓  saved/confirmed
+      0x2717,  // ✗  failed
+      0x2026,  // …  drawn by the "Reading GS settings…" toast
+      0x2260,  // ≠  Display row's "≠ camera" warning
+  };
   for (int px : scaled_sizes()) {
     const MaskAtlas* a = f.atlas(px);
     REQUIRE(a != nullptr);

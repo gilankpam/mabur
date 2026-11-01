@@ -97,15 +97,17 @@ it belongs to whatever follows, not to the ladder.
 
 | Key | Type | Apply rule | Notes |
 |---|---|---|---|
-| `screen_mode` | string | Presenter rebuild | Refused as `mode not offered: <mode>` before anything is torn down, when the connector's current mode list does not carry it. |
+| `screen_mode` | string (`"auto"`, `"WxH"` or `"WxH@R"`) | Presenter rebuild | Refused as `mode not offered: <mode>` before anything is torn down: a `WxH@R` the connector's current mode list does not carry, or a `WxH` it has no mode of at the camera's measured rate (at any rate while that is not measured yet). `"auto"` is never refused. `get` reads the configured value; the display following the camera (`docs/phase-lock.md` "Configuration") rebuilds in process and writes nothing. |
 | `colortrans.enable` | bool | Presenter rebuild | The LUT/CTM setters are call-once per presenter, so a toggle has to recreate it (`docs/colortrans.md`). |
-| `osd.enable` | bool | Presenter rebuild if it changes whether *any* OSD plane is wanted, else an in-place layer open/close | Switching an overlay on loads its font first; a missing font refuses the set before anything else changes. |
+| `osd.enable` | bool | Presenter rebuild if it changes whether *any* OSD plane is wanted, else an in-place layer open/close | Switching an overlay on loads its font first; a missing font refuses the set before anything else changes. With the settings menu's buttons wired the menu always wants the plane, so an overlay switch never rebuilds the presenter. |
 | `osd.gs.enable` | bool | same rule as `osd.enable` | |
 | `dvr.target` | string (`"gs"`/`"vtx"`/`"both"`) | read at the next recording's start | A target set while a recording is running is latched for the *next* recording; the GS bar's REC field, sized for the recording it shows, is re-laid out once the running one stops. |
 | `dvr.mode` | string (`"raw"`/`"burned"`) | read at the next recording's start | `"burned"` is refused on a build with no MPP hardware encoder (`unsupported_on_build`) — the Orange Pi image always refuses it, live exactly as at boot. |
 | `dvr.burned.bitrate_kbps` | int | read at the next recording's start | |
 | `dvr.burned.every` | int | read at the next recording's start | |
 | `dvr.burned.size` | string (`"WxH"` or `""` for the decoded size) | read at the next recording's start | |
+| `menu.show_advanced` | bool | taken onto the live config; the running settings menu shows or hides its advanced rows on its next tick; no presenter rebuild, no recording touched | Decides whether the settings menu shows its advanced rows. |
+| `menu.scale` | string (`"normal"`/`"large"`/`"larger"`) | taken onto the live config; the running settings menu re-lays out at the new size on its next tick; no presenter rebuild, no recording touched | The settings menu's size, ×1/×1.25/×1.5 (`docs/gs-menu.md` "Screen anatomy"). |
 
 A running recording keeps the plan (`RecPlan`: `gs`/`vtx`/`burned` and
 the `dvr.burned.*` size, cadence and bitrate) it was started with; a
@@ -128,6 +130,12 @@ reading it as a missed latch.
 
 ## File rules
 
+- **A set only rewrites a key the file already writes out.** The write is
+  line-surgical (`patch_toml_key`, `common/include/mabur/config_write.h`):
+  a key absent from the file — or only present commented out — is
+  refused as `<key>: not set in the config file`, with nothing changed.
+  A key added to a bundle therefore has to reach the device's TOML before
+  a live set of it can land.
 - **`.pre-live` backup, written once per daemon run**, before the first
   successful publish — the same `.pre-*` operator-rollback convention as
   `maburcal`'s `.pre-cal` (`docs/calibration.md`, `docs/deploy.md`).
@@ -137,9 +145,13 @@ reading it as a missed latch.
 - **The publish resolves symlinks.** `maburplay`'s `/etc/maburplay.toml`
   is typically a symlink onto a vfat `/config` mount; every step —
   reading the original, writing the scratch, the backup, the rename —
-  happens beside the symlink's *target*, and both the file and its parent
-  directory are fsynced. The symlink itself is never unlinked or
-  replaced.
+  happens beside the symlink's *target*. After each rename (the
+  backup's and the publish's) the renamed file is fsynced, then its
+  parent directory: on vfat the new directory entry is the file's own
+  metadata, which an fsync of the directory alone leaves in the page
+  cache while the replaced file's clusters are already freed, so a power
+  cut before writeback left the config pointing at a free cluster chain.
+  The symlink itself is never unlinked or replaced.
 - **`ok` means the file holds it.** A `set` only answers `ok` once the
   publish has actually landed (or settled with nothing to write, per
   "Same-value sets"). A refused or failed set leaves the file
@@ -147,6 +159,22 @@ reading it as a missed latch.
   successful process-side apply re-applies the previous config to the
   process, putting it back in line with the unchanged file.
 - **One set in flight per daemon** — see Protocol, above (`err busy`).
+
+## Local submits (the settings menu)
+
+A player-owned row in the goggles settings menu (`docs/gs-menu.md`)
+applies through `LiveConfigControl::submit_local`, the owning thread's own
+entry to the same `a.submit()` path a UDP `set` on 8403 takes — a value
+equal to the live rendering still settles at once with no file work, and
+a precondition refusal still comes back with none either. It never goes
+through the socket, so it shares the daemon's one-pending-set slot with
+an operator's own 8403 client rather than racing it: a local submit
+refuses `err busy` while a UDP sender is already waiting on its own `set`
+(or the applier itself is busy for any other reason), in the same words a
+UDP `set` would get; conversely a UDP `set` sent while the menu is
+mid-apply gets `err busy` from the same `a.busy()` check. A `get` on 8403
+keeps answering from the live config throughout — a local submit never
+blocks it.
 
 ## Threading
 

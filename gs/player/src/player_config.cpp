@@ -84,7 +84,34 @@ bool get_bool(const Value& o, const char* key, bool dflt,
   if (!o[key].is_boolean()) fail(where + "." + key, "not a boolean");
   return o[key].get<bool>();
 }
+
+// Parses one [input.<name>] button table into *out. Leaves *out untouched
+// (still the all-defaults ButtonCfg{}) when the table is absent -- the
+// caller decides whether that absence is worth a note_default line.
+void parse_button(const Value& in, const char* name, ButtonCfg* out) {
+  if (!in.contains(name)) return;
+  const Value& b = in[name];
+  const std::string where = std::string("input.") + name;
+  check_keys(b, where, {"pin", "active_low", "bias"});
+  // Required, not defaulted: a button block with no pin is a typo, and
+  // defaulting it would silently claim some unrelated line.
+  if (!b.contains("pin")) fail(where + ".pin", "required");
+  // Upper bound is generous on purpose: header pins run to 40 on this
+  // board, but a GPIO<n>-naming kernel can go far higher.
+  out->pin = static_cast<int>(get_int(b, "pin", 0, 1, 512, where));
+  out->active_low = get_bool(b, "active_low", out->active_low, where);
+  out->bias = get_str(b, "bias", "pull-up", where);
+  if (out->bias != "pull-up" && out->bias != "pull-down" && out->bias != "none") {
+    fail(where + ".bias", "must be \"pull-up\", \"pull-down\" or \"none\"");
+  }
+  out->configured = true;
+}
 }  // namespace
+
+bool menu_buttons_wired(const InputCfg& in) {
+  return in.up.configured && in.down.configured && in.left.configured &&
+         in.right.configured;
+}
 
 Config load_config(const std::string& path, std::vector<std::string>* defaulted) {
   Value j;
@@ -99,12 +126,12 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
     ~Clear() { g_defaulted = nullptr; g_file.clear(); g_line = 0; }
   } clear_on_exit;
 
-  for (const char* sec : {"dvr", "osd", "input", "display", "colortrans", "decoder"})
+  for (const char* sec : {"dvr", "osd", "input", "display", "colortrans", "decoder", "menu"})
     if (!j.contains(sec)) note_default("", sec, "(section absent)");
 
   check_keys(j, "",
              {"ring_path", "socket", "backend", "screen_mode", "dvr", "osd",
-              "input", "display", "colortrans", "decoder"});
+              "input", "display", "colortrans", "decoder", "menu"});
   Config c;
 
   c.ring_path = get_str(j, "ring_path", "/dev/shm/mabur-au", "");
@@ -115,9 +142,11 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
     fail("backend", "must be \"mpp\", \"v4l2req\" or \"null\"");
   }
 
-  c.screen_mode = get_str(j, "screen_mode", "1920x1080@60", "");
+  c.screen_mode = get_str(j, "screen_mode", "auto", "");
   if (!parse_screen_want(c.screen_mode).ok)
-    fail("screen_mode", "must be WIDTHxHEIGHT@RATE, e.g. 1920x1080@60 or 1920x1080@59.94");
+    fail("screen_mode",
+         "must be \"auto\", WIDTHxHEIGHT or WIDTHxHEIGHT@RATE, e.g. \"auto\", 1920x1080 or "
+         "1920x1080@59.94");
 
   if (j.contains("dvr")) {
     const Value& r = j["dvr"];
@@ -193,29 +222,21 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
 
   if (j.contains("input")) {
     const Value& in = j["input"];
-    check_keys(in, "input", {"rec"});
-    if (in.contains("rec")) {
-      const Value& rc = in["rec"];
-      check_keys(rc, "input.rec", {"pin", "active_low", "bias"});
-      // Required, not defaulted: a rec block with no pin is a typo, and
-      // defaulting it would silently claim some unrelated line.
-      if (!rc.contains("pin")) fail("input.rec.pin", "required");
-      // Upper bound is generous on purpose: header pins run to 40 on this
-      // board, but a GPIO<n>-naming kernel can go far higher.
-      c.input.rec.pin = static_cast<int>(get_int(rc, "pin", 0, 1, 512, "input.rec"));
-      c.input.rec.active_low = get_bool(rc, "active_low", c.input.rec.active_low, "input.rec");
-      c.input.rec.bias = get_str(rc, "bias", "pull-up", "input.rec");
-      if (c.input.rec.bias != "pull-up" && c.input.rec.bias != "pull-down" &&
-          c.input.rec.bias != "none") {
-        fail("input.rec.bias", "must be \"pull-up\", \"pull-down\" or \"none\"");
-      }
-      c.input.rec.configured = true;
-    } else {
+    check_keys(in, "input", {"rec", "up", "down", "left", "right", "sel"});
+    parse_button(in, "rec", &c.input.rec);
+    if (!c.input.rec.configured) {
       // Whole sub-table absent: one line, same style as a missing top-level
       // section, rather than three separate per-key lines the operator would
       // have to mentally group back together.
       note_default("input", "rec", "(section absent)");
     }
+    // up/down/left/right/sel get no such line when absent: an unwired menu
+    // button is unwired hardware, not a key that fell back to a default.
+    parse_button(in, "up", &c.input.up);
+    parse_button(in, "down", &c.input.down);
+    parse_button(in, "left", &c.input.left);
+    parse_button(in, "right", &c.input.right);
+    parse_button(in, "sel", &c.input.sel);
   }
 
   if (j.contains("display")) {
@@ -256,7 +277,22 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
     c.decoder.stream = get_bool(dc, "stream", c.decoder.stream, "decoder");
   }
 
+  if (j.contains("menu")) {
+    const Value& m = j["menu"];
+    check_keys(m, "menu", {"show_advanced", "scale"});
+    c.menu.show_advanced = get_bool(m, "show_advanced", c.menu.show_advanced, "menu");
+    c.menu.scale = get_str(m, "scale", c.menu.scale, "menu");
+    if (c.menu.scale != "normal" && c.menu.scale != "large" && c.menu.scale != "larger")
+      fail("menu.scale", "must be \"normal\", \"large\" or \"larger\"");
+  }
+
   return c;
+}
+
+double menu_scale_factor(const std::string& scale) {
+  if (scale == "large") return 1.25;
+  if (scale == "larger") return 1.5;
+  return 1.0;
 }
 
 namespace {

@@ -143,7 +143,7 @@ def expected_pairs(role, alt_mode=None):
     if role == "player":
         away_mode = ('"%s"' % alt_mode) if alt_mode else None
         return [
-            ("screen_mode", away_mode, '"1920x1080@60"'),
+            ("screen_mode", away_mode, '"auto"'),
             ("colortrans.enable", "false", "true"),
             ("osd.enable", "false", "true"),
             ("osd.gs.enable", "false", "true"),
@@ -152,6 +152,8 @@ def expected_pairs(role, alt_mode=None):
             ("dvr.burned.bitrate_kbps", "6000", "8000"),
             ("dvr.burned.every", "2", "1"),
             ("dvr.burned.size", '"1280x720"', '""'),
+            ("menu.show_advanced", "true", "false"),
+            ("menu.scale", '"larger"', '"normal"'),
         ]
     raise ValueError("unknown role: %r" % role)
 

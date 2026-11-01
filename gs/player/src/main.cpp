@@ -38,6 +38,17 @@
 #include "osd_source.h"
 #include "player_config.h"
 #include "player_config_apply.h"  // the live set/get control on 127.0.0.1:8403
+#include "button_bank.h"      // the settings menu's five-way pad
+#include "gs_config_apply.h"  // maburgs::kGsConfigControlPort, where the menu's GS sets go
+#include "gs_live_view.h"     // maburgs' live keys as the menu reads them
+#include "live_udp_client.h"
+#include "menu_apply.h"
+#include "menu_debug.h"       // MABUR_MENU_DEBUG verbs: key/view/snap on cfg_ctl
+#include "menu_model.h"
+#include "menu_session.h"     // bank events -> model -> applier, and the GS view refresh
+#include "menu_tree.h"
+#include "menu_view_feed.h"   // paces view() and keeps a change owed until composed
+#include "osd_wanted.h"       // osd_plane_wanted: the menu claims the OSD plane too
 #include "rec_button.h"
 #include "rec_control.h"  // maburgs::kRecControlPort
 #include "ring_client.h"
@@ -49,6 +60,7 @@
 #ifdef MABUR_PLAYER_HW
 #include "burn_recorder.h"  // dvr.mode "burned": re-encode with the OSD burnt in
 #include "decode_pump.h"    // the decode-output thread: drives backend->poll(), hands frames over
+#include "display_follow.h"  // the display follows the camera's rate (screen_mode auto / WxH)
 #include "display_watch.h"  // rebuild the presenter when its display is replugged
 #include "drm_presenter.h"  // KMS atomic NV12 presenter, the default display path
 #include "frame_regulator.h"  // phase-aware pts+D display release
@@ -56,6 +68,7 @@
 #include "rate_match.h"  // RateMatch: is the panel within the phase lock's reach
 #include "recorder_tap.h"  // the burned DVR's hook on the display's flip
 #include "release_loop.h"  // the release thread: regulator decisions and every present()
+#include "splash_menu.h"  // the settings menu over the splash before any video
 #include "wake_queue.h"    // the hand-over and release queues between the threads
 #include "gs_draw.h"         // set_colour_inverse() for the GS overlay pre-invert
 #include "lat_tracker.h"    // tail latency segments + 1 Hz lat line
@@ -351,17 +364,19 @@ maburplay::RecTarget rec_target_of(bool gs, bool vtx) {
   return vtx ? maburplay::RecTarget::kVtx : maburplay::RecTarget::kGs;
 }
 
-// Parses player_config's "WIDTHxHEIGHT@RATE" screen_mode (mode_pick.h);
-// the backend gets the rate rounded to whole fps. Falls back to
-// BackendCfg's default (1920x1080@60) if malformed.
+// Parses player_config's screen_mode (mode_pick.h) for the backend: the
+// size of a "WxH" or "WxH@RATE", and a pinned rate rounded to whole fps.
+// What screen_mode leaves open ("auto" has neither, "WxH" no rate) keeps
+// BackendCfg's default (1920x1080@60), as does a malformed one.
 maburplay::BackendCfg parse_screen_mode(const std::string& s) {
   maburplay::BackendCfg cfg;
   const maburplay::ScreenWant w = maburplay::parse_screen_want(s);
-  if (w.ok) {
+  if (w.ok && w.kind != maburplay::ScreenWant::Kind::kAuto) {
     cfg.width = w.w;
     cfg.height = w.h;
-    cfg.fps = static_cast<int>(std::lround(w.hz));
   }
+  if (w.ok && w.kind == maburplay::ScreenWant::Kind::kFull)
+    cfg.fps = static_cast<int>(std::lround(w.hz));
   return cfg;
 }
 
@@ -571,6 +586,22 @@ int main(int argc, char** argv) {
       std::fprintf(stderr, "maburplay: rec button: %s -- running without it\n", rberr.c_str());
     }
   }
+  // Settings menu buttons. Same accessory rule: a missing or busy pin runs
+  // the player without the menu. Said once, below, once the menu's font
+  // has had its say too.
+  //
+  // MABUR_MENU_DEBUG=1: the bench harness's gate for the 8403 debug verbs
+  // (key/view/snap, menu_debug.h) -- a script drives the menu over ssh
+  // with no hands on the buttons. The menu is wanted (and claims the OSD
+  // plane) even with no [input.<button>] tables; the button bank simply
+  // never opens.
+  maburplay::ButtonBank bank;
+  const bool menu_debug = !decode_only && std::getenv("MABUR_MENU_DEBUG") != nullptr;
+  if (menu_debug) std::fprintf(stderr, "maburplay: menu: debug verbs on (MABUR_MENU_DEBUG)\n");
+  bool menu_on = false;
+  std::string menu_err = "--decode-only";
+  if (!decode_only) menu_on = bank.open(cfg.input, &menu_err);
+  if (menu_debug && !menu_on) menu_on = true;
 
   std::unique_ptr<maburplay::VideoBackend> backend = maburplay::make_backend(cfg.backend);
   if (!backend) {
@@ -648,15 +679,32 @@ int main(int argc, char** argv) {
     }
   }
 
-  // EITHER overlay alone must bring the plane up: a GS-only configuration
+  // The settings menu draws with the GS font, so it needs it loaded even
+  // with the GS bar off.
+  if (menu_on && !load_gs_font(&menu_err)) menu_on = false;
+  if (menu_on) {
+    auto pin = [](const maburplay::ButtonCfg& b) {
+      return b.configured ? "PIN_" + std::to_string(b.pin) : std::string("absent");
+    };
+    std::fprintf(stderr, "maburplay: menu: up %s down %s left %s right %s sel %s\n",
+                 pin(cfg.input.up).c_str(), pin(cfg.input.down).c_str(),
+                 pin(cfg.input.left).c_str(), pin(cfg.input.right).c_str(),
+                 pin(cfg.input.sel).c_str());
+  } else {
+    std::fprintf(stderr, "maburplay: menu: off -- %s\n", menu_err.c_str());
+  }
+
+  // ANY overlay alone must bring the plane up: a GS-only configuration
   // (osd.enable false, osd.gs.enable true) is supported and is the natural
   // one for an aircraft with no MSP-capable FC. With both off, init() skips
   // straight to the pre-OSD topology (video + black backdrop on the
-  // primary), which is the escape hatch back to the old plane layout.
+  // primary), which is the escape hatch back to the old plane layout. The
+  // settings menu counts as an overlay: with both off and the buttons
+  // wired, it still needs the plane.
   // maybe_unused: its only consumer is DrmPresenter::init(), which exists
   // only in the cross build. Not const: a live osd switch that changes it
   // rebuilds the presenter with the new value.
-  [[maybe_unused]] bool want_osd = want_msp_osd || want_gs_osd;
+  [[maybe_unused]] bool want_osd = maburplay::osd_plane_wanted(want_msp_osd, want_gs_osd, menu_on);
 
   // Display path: the DrmPresenter becomes the frame owner for the normal
   // (non-decode-only) run -- release_frame() is no longer called inline
@@ -701,6 +749,9 @@ int main(int argc, char** argv) {
   // the OSD fps cell.
   maburplay::RateMatch rate_match;
   uint64_t rate_match_mark_us = 0;
+  // screen_mode "auto" / "WxH": the display follows the camera's rate
+  // (display_follow.h), judged on the same 1 Hz windows.
+  maburplay::DisplayFollower display_follower;
   maburplay::LatLog lat_log;
   // Per-frame rows of the same window as the lat: line (docs/observability.md
   // "frame.log"), written in the same idle-gated 1 Hz burst so a stalled
@@ -787,13 +838,29 @@ int main(int argc, char** argv) {
                    "the lead for this mode\n",
                    cfg.display.vsync_lead_ms, panel_us / 1000.0);
   };
+  // screen_mode as one "WxH@R" mode for DrmPresenter::init(): a pinned
+  // "WxH@R" as written; "auto" and "WxH" picked from the connector's modes
+  // at the camera's rate (pick_display_mode, docs/phase-lock.md
+  // "Configuration") -- 0 while it is not measured yet, which takes the
+  // display's preferred mode (or, for "WxH", that size at the preferred
+  // rate). With no modes to pick from it hands init() the key as written,
+  // whose pick then falls back to the preferred mode or fails as before.
+  auto resolve_screen_mode = [](const std::string& screen_mode, double camera_hz) {
+    const maburplay::ScreenWant want = maburplay::parse_screen_want(screen_mode);
+    if (want.kind == maburplay::ScreenWant::Kind::kFull) return screen_mode;
+    std::string err;
+    const std::vector<maburplay::ModeCand> modes = maburplay::DrmPresenter::probe_modes(&err);
+    bool matched = false;
+    const int i = maburplay::pick_display_mode(modes, want, camera_hz, &matched);
+    return i >= 0 ? maburplay::mode_string(modes[static_cast<size_t>(i)]) : screen_mode;
+  };
   std::unique_ptr<maburplay::DrmPresenter> presenter;
   if (!decode_only) {
     presenter = std::make_unique<maburplay::DrmPresenter>();
     // Frames the presenter is done with go to the release queue, never
     // straight into the decoder: the presenter runs on the release thread,
     // and only the decode-output side may call release_frame().
-    if (!presenter->init(cfg.screen_mode, want_osd,
+    if (!presenter->init(resolve_screen_mode(cfg.screen_mode, 0.0), want_osd,
                          [&releases](const maburplay::DmaFrame& f) { releases.push(f); })) {
       std::fprintf(stderr,
                    "maburplay: DrmPresenter init failed -- no display; frames will be "
@@ -878,7 +945,10 @@ int main(int argc, char** argv) {
   // when want_gs_osd and by a live osd.gs.enable set. Same shape as the MSP
   // intake above, and the same caveat: presenter->osd_available() is
   // re-checked per iteration, so getting here does not guarantee anything
-  // is ever drawn. gs_src is the live gate from here on.
+  // is ever drawn. The intake (gs_src) also feeds the settings menu's link
+  // state: with the menu on it opens at startup and stays open for the
+  // run, and the bar's switch only adds or drops its layers. Without the
+  // menu it opens and closes with the bar, as the bar's live gate.
   //
   // Three layers, not one: two DRM buffers plus the burned DVR's index map,
   // all three needing their own record of what they already show. See
@@ -889,11 +959,21 @@ int main(int argc, char** argv) {
     composer.set_gs(maburplay::make_gs_layer(gs_font, t), maburplay::make_gs_layer(gs_font, t),
                     maburplay::make_gs_layer(gs_font, t));
   };
-  auto open_gs_osd = [&](maburplay::RecTarget t, std::string* err) -> bool {
+  auto open_gs_source = [&](std::string* err) -> bool {
+    if (gs_src) return true;
     auto src = std::make_unique<maburplay::GsSource>();
     if (!src->open(cfg.osd.gs.port, err)) return false;
     src->set_stale_ms(cfg.osd.gs.stale_ms);
     gs_src = std::move(src);
+    return true;
+  };
+  // The bar's layers are gone (dropped, or a layout they do not fit): the
+  // intake goes with them unless the menu still reads it.
+  auto release_gs_source = [&]() {
+    if (!menu_on) gs_src.reset();
+  };
+  auto open_gs_osd = [&](maburplay::RecTarget t, std::string* err) -> bool {
+    if (!open_gs_source(err)) return false;
     set_gs_layers(t);
     std::fprintf(stderr, "maburplay: gs osd on udp 127.0.0.1:%d font=%s stale_ms=%d\n",
                  gs_src->port(), cfg.osd.gs.font.c_str(), cfg.osd.gs.stale_ms);
@@ -902,9 +982,9 @@ int main(int argc, char** argv) {
   // A live osd.gs.enable = false: the bar's area is erased from the screen
   // and the recording by the composer's next compositions.
   auto close_gs_osd = [&]() {
-    if (!gs_src && !composer.gs_present()) return;
+    if (!composer.gs_present() && (menu_on || !gs_src)) return;
     composer.drop_gs_layers();
-    gs_src.reset();
+    release_gs_source();
     std::fprintf(stderr, "maburplay: gs osd off\n");
   };
   if (want_gs_osd) {
@@ -914,6 +994,16 @@ int main(int argc, char** argv) {
     std::string err;
     if (!open_gs_osd(rec_target, &err))
       std::fprintf(stderr, "maburplay: gs osd disabled -- %s\n", err.c_str());
+  } else if (menu_on) {
+    std::string err;
+    if (!open_gs_source(&err))
+      std::fprintf(stderr, "maburplay: menu: no link state -- %s\n", err.c_str());
+  }
+  // The menu's two layers, laid out on the first real surface like the bar.
+  if (menu_on) {
+    composer.set_menu(std::make_unique<maburplay::MenuLayer>(gs_font),
+                      std::make_unique<maburplay::MenuLayer>(gs_font));
+    composer.menu_set_scale(maburplay::menu_scale_factor(cfg.menu.scale));
   }
 
   // Player-measured half of the GS overlay's inputs, recomputed once a
@@ -1174,7 +1264,7 @@ int main(int argc, char** argv) {
       // Re-laying the GS burn layer back at the screen size failed, so the
       // composer dropped all three GS layers: the screen's GS overlay is off.
       std::fprintf(stderr, "maburplay: gs osd disabled -- %s\n", err.c_str());
-      gs_src.reset();  // the live gate; the overlays are already dropped
+      release_gs_source();  // the overlays are already dropped
     }
     return n;
   };
@@ -1256,7 +1346,7 @@ int main(int argc, char** argv) {
                      rw, rh, err.c_str());
         // Only if putting the burn layer back at the screen size failed
         // too, which drops all three layers (the all-or-none rule).
-        if (!composer.gs_present()) gs_src.reset();
+        if (!composer.gs_present()) release_gs_source();
         stop_burn();
         return;
       }
@@ -1851,12 +1941,30 @@ int main(int argc, char** argv) {
   [[maybe_unused]] bool msp_ready = false;
   [[maybe_unused]] bool msp_stale = false;
   [[maybe_unused]] bool gs_stale = false;
+  // The OSD buffer the composer last drew into and published: what the
+  // screen shows once that publish commits. Null while there is none (no
+  // presenter, the plane was given up, or this is a host build) -- which is
+  // exactly what the "snap" debug verb (menu_debug.h) answers "err no osd
+  // surface" to. Declared outside MABUR_PLAYER_HW so that verb compiles and
+  // answers sensibly on the host too; only the HW composition loop below
+  // ever assigns it.
+  maburplay::Surface osd_last_published{};
 #ifdef MABUR_PLAYER_HW
   // Layout is deferred to the first iteration that sees a real surface: its
   // size is the DRM buffer's, which DrmPresenter may have allocated at a
   // mode the connector offered rather than the one cfg.screen_mode asked
   // for. Laying out against the config would misplace every field.
   bool gs_laid_out = false;
+  // The settings menu's layout, deferred the same way.
+  bool menu_laid_out = false;
+  // The menu over the splash before any video (splash_menu.h): allows a
+  // standalone OSD commit despite the splash, and restores the splash on
+  // a close that still precedes the first frame. `over_splash_logged`
+  // makes the "over splash" line one-shot per switch, the same way the
+  // decision itself is -- set_osd_over_splash() is driven every tick (a
+  // level), but the log line marks only the rising edge.
+  maburplay::SplashMenuGate splash_menu_gate;
+  bool over_splash_logged = false;
   // Display hotplug recovery state. init() only accepts an already-CONNECTED
   // connector, so before this a display plugged in or powered on after
   // startup stayed invisible for the life of the process -- the screen was
@@ -1880,34 +1988,45 @@ int main(int argc, char** argv) {
                  std::strerror(errno));
   maburplay::DisplayWatch display_watch(hotplug_uevents);
   if (presenter) display_watch.on_acquired(mono_ms());
+  // The display-mismatch banner: the camera's rate has no display mode and
+  // the display shows it at the nearest one. Empty when there is none.
+  [[maybe_unused]] std::string g_display_banner;
   // Phase margins taken from the release thread each iteration.
   std::vector<maburplay::ReleaseLoop::MarginSample> margins;
   margins.reserve(maburplay::ReleaseLoop::kMarginCap);
-  // Builds a FRESH presenter on `mode` and makes it the live display,
-  // never a re-init of an existing one: every connector/mode/plane/zpos
-  // decision is re-derived from what the display offers now. Two callers:
-  // the hotplug retry (no presenter) and a live change of the display mode
-  // or the overlay setup (a presenter is running). Housekeeping only.
+  // Builds a FRESH presenter on `mode` (a screen_mode, resolved against
+  // the display's modes at DisplayFollower::resolve_hz -- the camera's
+  // rate, held at its last value out of low power) and makes it the
+  // live display, never a re-init of an existing one: every connector/
+  // mode/plane/zpos decision is re-derived from what the display offers
+  // now. Callers: the hotplug retry (no presenter), and with a presenter
+  // running a replug, a live change of the display mode or the overlay
+  // setup, and the display following the camera. Housekeeping only.
   //  - No presenter: the new one is built first and output parks only once
   //    it succeeded, so a retry that finds no display costs nothing.
   //  - A live presenter: it is torn down first -- the burned recorder (it
   //    samples the old display's vblank grid) is stopped, both output
   //    threads park so nothing is held on the old presenter, the release
-  //    thread drops its sink, and only then is the presenter destroyed. If
-  //    the new one then fails, output resumes with no display and the
-  //    hotplug retry takes over on cfg.screen_mode.
+  //    thread drops its sink, and only then is the presenter retired. Its
+  //    DRM descriptor passes to the new one still open, so the sink sees
+  //    one mode change, not the fbdev console's mode in between
+  //    (DrmPresenter::retire). If the new one then fails, output resumes
+  //    with no display and the hotplug retry takes over on cfg.screen_mode.
   // Returns whether a presenter is live on `mode` afterwards.
   auto reacquire_display = [&](const std::string& mode, bool log_failures) -> bool {
     const bool tear_down = presenter != nullptr;
+    int device_fd = -1;
     if (tear_down) {
       if (burn) stop_burn();
       park_output("display rebuild");
       release.set_sink(nullptr);
-      presenter.reset();
+      device_fd = maburplay::DrmPresenter::retire(std::move(presenter));
     }
     auto p = std::make_unique<maburplay::DrmPresenter>();
-    if (!p->init(mode, want_osd, [&releases](const maburplay::DmaFrame& f) { releases.push(f); },
-                 log_failures)) {
+    if (!p->init(resolve_screen_mode(mode, display_follower.resolve_hz(pump.source_hz())),
+                 want_osd,
+                 [&releases](const maburplay::DmaFrame& f) { releases.push(f); }, log_failures,
+                 device_fd)) {
       if (tear_down) {
         resume_output();
         std::fprintf(stderr,
@@ -1947,9 +2066,11 @@ int main(int argc, char** argv) {
           regulator.on_flip(t, ex);
           tap.on_flip(f, t);
         });
-    // The GS bar re-lays out on the new surface, whose size may differ, and
-    // both layers redraw whole on the fresh, blank OSD buffers.
+    // The GS bar and the menu re-lay out on the new surface, whose size may
+    // differ, and every layer redraws whole on the fresh, blank OSD buffers.
     gs_laid_out = false;
+    menu_laid_out = false;
+    osd_last_published = maburplay::Surface{};
     composer.forget_screen();
     // Startup-only, and this is where that invariant is enforced for a late
     // or rebuilt display: if this process has ever decoded a frame, the
@@ -2006,15 +2127,26 @@ int main(int argc, char** argv) {
     };
     if (msp_on && !load_msp_font(err)) return refuse("msp osd");
     if (gs_on && !load_gs_font(err)) return false;  // GsFont's reason names it ("gs font: ...")
-    const bool want_after =
-        (c.osd.enable && osd_font.ok()) || (c.osd.gs.enable && gs_font.ok());
+    const bool want_after = maburplay::osd_plane_wanted(c.osd.enable && osd_font.ok(),
+                                                        c.osd.gs.enable && gs_font.ok(), menu_on);
 #ifdef MABUR_PLAYER_HW
     const bool rebuild = presenter && (c.screen_mode != cfg.screen_mode ||
                                        c.colortrans.enable != cfg.colortrans.enable ||
                                        want_after != want_osd);
-    if (rebuild && c.screen_mode != cfg.screen_mode && !presenter->offers_mode(c.screen_mode)) {
-      *err = "mode not offered: " + c.screen_mode;
-      return false;
+    // A pinned mode the display does not list, or a size it lacks at the
+    // camera's rate (at any rate while that is not measured yet), is
+    // refused before the old presenter is torn down; "auto" never is.
+    if (rebuild && c.screen_mode != cfg.screen_mode) {
+      const maburplay::ScreenWant want = maburplay::parse_screen_want(c.screen_mode);
+      const bool offered = want.kind == maburplay::ScreenWant::Kind::kFull
+                               ? presenter->offers_mode(c.screen_mode)
+                               : maburplay::want_offered(
+                                     presenter->modes(), want,
+                                     display_follower.resolve_hz(pump.source_hz()));
+      if (!offered) {
+        *err = "mode not offered: " + c.screen_mode;
+        return false;
+      }
     }
 #endif
     // What burn_palette() is keyed on, before any overlay opens.
@@ -2102,6 +2234,7 @@ int main(int argc, char** argv) {
   live_hooks.reacquire_display = apply_display;
   live_hooks.osd_layers = apply_display;
   live_hooks.next_start = apply_dvr;
+  live_hooks.menu = [&](const maburplay::Config& c) { cfg.menu = c.menu; };
   maburplay::PlayerConfigApplier cfg_apply(
       config_path, cfg, caps, std::move(live_hooks),
       [](const std::string& line) { std::fprintf(stderr, "%s\n", line.c_str()); });
@@ -2111,6 +2244,81 @@ int main(int argc, char** argv) {
                  "maburplay: cfg: cannot bind udp 127.0.0.1:%d -- live set/get is off for this "
                  "run\n",
                  maburplay::kPlayerConfigControlPort);
+
+  // Settings menu (menu_model.h): the tree reads the live config, maburgs'
+  // live keys (gs_view, refreshed over gs_client) and the display; the
+  // session (menu_session.h) feeds it the bank's events and runs its sets
+  // -- the player's own through cfg_ctl in-process, maburgs' over 8402.
+  // Built whether or not the buttons are wired, and driven only when
+  // menu_on.
+  maburplay::GsLiveView gs_view;
+  maburplay::LiveUdpClient gs_client;
+  if (menu_on) {
+    std::string err;
+    if (!gs_client.open(maburgs::kGsConfigControlPort, &err))
+      std::fprintf(stderr, "maburplay: menu: maburgs live config: %s -- GS rows will not apply\n",
+                   err.c_str());
+  }
+  maburplay::MenuTreeDeps menu_deps;
+  menu_deps.cfg = &cfg;
+  menu_deps.gs = &gs_view;
+  menu_deps.rec_running = [&] { return rec_on; };
+  menu_deps.burned_rec_running = [&] { return rec_on && rec_gs && burned_mode; };
+#ifdef MABUR_PLAYER_HW
+  menu_deps.modes = [&] {
+    return presenter ? presenter->modes() : std::vector<maburplay::ModeCand>{};
+  };
+  menu_deps.camera_hz = [&] { return display_follower.resolve_hz(pump.source_hz()); };
+  menu_deps.running_mode = [&] {
+    if (!presenter || presenter->mode_index() < 0) return std::string();
+    return maburplay::mode_string(presenter->modes()[static_cast<size_t>(presenter->mode_index())]);
+  };
+#endif
+  // The tree is rebuilt on every model call, so its snapshot pointer follows
+  // gs_src as it is now.
+  maburplay::MenuModel menu_model([&] {
+    menu_deps.snap = gs_src ? &gs_src->snapshot() : nullptr;
+    return maburplay::build_menu_tree(menu_deps);
+  });
+  menu_model.set_has_sel(bank.has_sel());
+  menu_model.set_show_advanced(cfg.menu.show_advanced);
+  maburplay::PlayerLiveSetter player_setter(cfg_ctl, cfg_apply);
+  maburplay::GsLiveSetter gs_setter(gs_client);
+  maburplay::MenuApplier menu_applier(menu_model, player_setter, gs_setter);
+  maburplay::UdpGsViewSource gs_view_source(gs_client);
+  maburplay::MenuSession menu(menu_model, menu_applier, gs_view_source, gs_view);
+  menu.log = [](const std::string& line) { std::fprintf(stderr, "%s\n", line.c_str()); };
+  // The menu's view for the composer (menu_view_feed.h).
+  [[maybe_unused]] maburplay::MenuViewFeed menu_feed;
+
+  // MABUR_MENU_DEBUG's "key" verb queues here; drained into the exact same
+  // per-tick loop that consumes bank.poll() below, so an injected event
+  // goes through MenuModel::handle -> MenuApplier::start identically to a
+  // real button. handle_menu_debug_verb (menu_debug.h) owns "key"/"view"'s
+  // menu-off refusal -- with menu_on false this queue must never grow
+  // behind a lying "ok".
+  std::vector<maburplay::KeyEvent> menu_injected_keys;
+  if (menu_debug) {
+    cfg_ctl.extra_verb = [&](const std::string& verb,
+                             const std::string& rest) -> std::optional<std::string> {
+      // Computed only when the menu is actually on: with it off there is
+      // nothing to dump, and nothing here needs the cost of asking.
+      const maburplay::MenuView view = menu_on ? menu_model.view(mono_ms()) : maburplay::MenuView{};
+      std::optional<maburplay::KeyEvent> key;
+      if (std::optional<std::string> reply =
+              maburplay::handle_menu_debug_verb(verb, rest, menu_on, view, &key)) {
+        if (key) menu_injected_keys.push_back(*key);
+        return reply;
+      }
+      if (verb == "snap") {
+        std::string werr;
+        if (!maburplay::write_surface_pam(osd_last_published, "/tmp/maburplay-osd.pam", &werr))
+          return std::string("err ") + werr;
+        return std::string("ok /tmp/maburplay-osd.pam");
+      }
+      return std::nullopt;
+    };
+  }
 
   // The ring reader fell behind and skipped AUs that held references.
   uint64_t resyncs_seen = ring.resyncs();
@@ -2137,9 +2345,50 @@ int main(int argc, char** argv) {
     }
     // A live set: its apply runs here, between two iterations' work.
     cfg_ctl.poll(cfg_apply);
+    // The settings menu: the bank's gestures, then the running row and the
+    // GS view's refresh. After cfg_ctl.poll(), which runs the apply a
+    // player step's result is read from.
+    if (menu_on) {
+      const uint64_t now_ms = mono_ms();
+      std::vector<maburplay::KeyEvent> events = bank.poll(now_ms);
+      if (!menu_injected_keys.empty()) {
+        events.insert(events.end(), menu_injected_keys.begin(), menu_injected_keys.end());
+        menu_injected_keys.clear();
+      }
+      for (const maburplay::KeyEvent& e : events)
+        if (const std::optional<bool> repeat = menu.key(e, now_ms)) bank.set_repeat(*repeat);
+      menu.tick(now_ms);
+      menu_model.set_linked(gs_src && !gs_src->stale(now_ms) && gs_src->snapshot().session);
+      menu_model.set_show_advanced(cfg.menu.show_advanced);
+      // The size the Menu size picker is on while it is open (and while
+      // the picked size is being saved), else the saved one. A no-op
+      // unless it moved; then the next composition redraws the menu.
+      const std::string size_preview = menu_model.preview(maburplay::kMenuSizeRow);
+      composer.menu_set_scale(
+          maburplay::menu_scale_factor(size_preview.empty() ? cfg.menu.scale : size_preview));
+    }
     // Every iteration: sends on change, re-sends each second (CoreControlClient).
     core_ctl.tick(rec_on && rec_vtx, mono_ms());
 #ifdef MABUR_PLAYER_HW
+    // The menu with no video yet (splash_menu.h): open before the first
+    // frame takes the splash's plane, close before it restores the
+    // splash. Nothing to do with no presenter at all (--decode-only, menu
+    // debug's own case). Ticked on every presenter the menu runs under --
+    // a rebuild in between (display-follow, a replug) always sees the
+    // current decision on its very next present()/commit_osd_if_pending().
+    if (menu_on && presenter) {
+      const maburplay::SplashMenuGate::Decision d =
+          splash_menu_gate.tick(menu_model.is_open(), pump.have_frame());
+      presenter->set_osd_over_splash(d.allow_over_splash);
+      if (d.allow_over_splash != over_splash_logged) {
+        over_splash_logged = d.allow_over_splash;
+        if (over_splash_logged) std::fprintf(stderr, "maburplay: menu: over splash\n");
+      }
+      if (d.restore_splash) {
+        std::fprintf(stderr, "maburplay: menu: splash restored\n");
+        show_splash(presenter.get());
+      }
+    }
     // A burned start deferred for want of a decoded frame to size the
     // recording from runs as soon as one exists.
     if (burn_deferred && pump.have_frame()) {
@@ -2184,6 +2433,26 @@ int main(int argc, char** argv) {
                          : "maburplay: rate mismatch cleared: source %.2f Hz, panel %.3f Hz%s\n",
                      src_hz, panel_hz,
                      rate_match.mismatch() && phase_lock ? " -- phase lock paused" : "");
+      // The display following the camera: a rebuild runs synchronously, so
+      // the next window already sees the new presenter's mode as running.
+      static const std::vector<maburplay::ModeCand> kNoModes;
+      const maburplay::FollowOut follow = display_follower.on_window(
+          maburplay::parse_screen_want(cfg.screen_mode), src_hz, lp,
+          presenter ? presenter->modes() : kNoModes, presenter ? presenter->mode_index() : -1);
+      g_display_banner.clear();
+      if (follow.rebuild) {
+        const std::string target =
+            maburplay::mode_string(presenter->modes()[static_cast<size_t>(follow.mode)]);
+        std::fprintf(stderr, "maburplay: display follows camera: %s\n", target.c_str());
+        reacquire_display(target, /*log_failures=*/true);
+      } else if (follow.mismatch) {
+        char line[160];
+        std::snprintf(line, sizeof line,
+                      "⚠ Camera %.0f fps — this display has no %.0f Hz mode. Showing at "
+                      "%.0f Hz (judder).",
+                      src_hz, src_hz, follow.shown_hz);
+        g_display_banner = line;
+      }
     }
     if (phase_lock) {
       const uint64_t now = mono_us();
@@ -2552,10 +2821,17 @@ int main(int argc, char** argv) {
         std::string err;
         if (!composer.gs_layout(surf.width, surf.height, &err)) {
           std::fprintf(stderr, "maburplay: gs osd disabled -- %s\n", err.c_str());
-          gs_src.reset();  // the live gate; the overlays are already dropped
+          release_gs_source();  // the overlays are already dropped
         } else {
           gs_laid_out = true;
         }
+      }
+      if (surf.pixels && composer.menu_present() && !menu_laid_out) {
+        std::string err;
+        if (composer.menu_layout(surf.width, surf.height, &err))
+          menu_laid_out = true;
+        else  // the composer dropped both menu layers
+          std::fprintf(stderr, "maburplay: menu: not drawn -- %s\n", err.c_str());
       }
       maburplay::OsdComposeIn in;
       if (osd_src && osd_raster) {
@@ -2569,6 +2845,16 @@ int main(int argc, char** argv) {
         in.gs_ps = gs_ps;
         in.gs_dirty = gs_needs_render;
       }
+      // The menu's view: handed to the composer only when it changed, which
+      // keeps it until it changes again.
+      if (composer.menu_present()) {
+        const uint64_t now_ms = mono_ms();
+        menu_model.set_banner(g_display_banner);
+        composer.menu_tick(now_ms);
+        in.menu = menu_feed.next(now_ms, menu.generation(),
+                                 [&](uint64_t t) { return menu_model.view(t); });
+        in.menu_dirty = in.menu != nullptr;
+      }
       const bool want = composer.wants(in);
       // The recording's overlay, at the record size, on its own trigger: the
       // same input the screen would compose, whether or not the screen can
@@ -2576,13 +2862,16 @@ int main(int argc, char** argv) {
       // never the recording. It runs BEFORE the screen half clears
       // msp_ready/gs_needs_render, and does not clear them itself: a screen
       // held back by a pending publish still consumes them on its next
-      // composition. A repeat of the same sample draws nothing.
-      if (burn && want) composer.compose_burn(in);
+      // composition. A repeat of the same sample draws nothing. Gated on
+      // wants_burn(), not want: a menu-only change is never a reason to run
+      // this half, since the recording never shows the menu.
+      if (burn && composer.wants_burn(in)) composer.compose_burn(in);
       if (surf.pixels && want) {
         const int idx = presenter->osd_back_index();
         const maburplay::OsdComposeOut out = composer.compose_screen(idx, surf, in);
         gs_needs_render = false;
         msp_ready = false;
+        menu_feed.composed();
         // Unconditional whenever a composition ran, even if it drew
         // nothing: "nothing differs from this buffer" does not mean the
         // screen is right -- the screen is the OTHER buffer. With a value
@@ -2590,7 +2879,10 @@ int main(int argc, char** argv) {
         // buffer keeps matching its own last composition, and a publish
         // gated on "something changed" strands the front buffer on the
         // wrong sample forever.
-        if (out.published) presenter->osd_publish();
+        if (out.published) {
+          presenter->osd_publish();
+          osd_last_published = surf;
+        }
         if (out.announce_blank)
           std::fprintf(stderr, "maburplay: osd blanked after %d ms without a snapshot\n",
                        cfg.osd.stale_ms);

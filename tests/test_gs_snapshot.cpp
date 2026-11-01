@@ -471,6 +471,25 @@ TEST(key_mismatch_parses_from_link_state) {
   CHECK(!s.key_mismatch);
 }
 
+// scan.pinned (the operator's pin, docs/channel-select.md) and
+// link.state == "session" (the drone is linked): both false when the block
+// or the key is absent or mistyped.
+TEST(parses_scan_pinned_and_link_session) {
+  GsSnapshot s;
+  REQUIRE(parse(R"({"link": {"channel": 136, "state": "session"}, "scan": {"state": "off", "pick": 136, "pinned": true}})", &s));
+  CHECK(s.pinned);
+  CHECK(s.session);
+  REQUIRE(parse(R"({"link": {"channel": 136, "state": "beaconing"}, "scan": {"state": "off", "pinned": false}})", &s));
+  CHECK(!s.pinned);
+  CHECK(!s.session);
+  REQUIRE(parse(R"({"link": {"channel": 136, "state": "key_mismatch"}, "scan": {"pinned": 1}})", &s));
+  CHECK(!s.pinned);   // wrong type: dropped
+  CHECK(!s.session);
+  REQUIRE(parse(R"({"link": {"channel": 136}})", &s));   // no state, no scan block
+  CHECK(!s.pinned);
+  CHECK(!s.session);
+}
+
 // In-flight channel hop (keyed on scan.pick): `hopped` means "the live channel
 // is the hop feature's own standing target, and that target isn't the GS's
 // frozen boot pick" -- not "a hop has ever happened this session" (hop.hops is

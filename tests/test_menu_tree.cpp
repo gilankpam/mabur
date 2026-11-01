@@ -1,0 +1,626 @@
+// build_menu_tree: the GS rows of the goggles settings menu -- what each row
+// reads, offers and sends -- over the bundle configs of both daemons. The
+// values a row sends are pinned through the daemons' own setters too, so a
+// row cannot send text the live key would refuse.
+#include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <fstream>
+#include <optional>
+#include <sstream>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include "config.h"            // maburgs::Config, maburgs::load_config
+#include "gs_config_apply.h"   // maburgs::patch_live_key, kGsLiveKeys
+#include "gs_live_view.h"
+#include "menu_model.h"
+#include "menu_tree.h"
+#include "mode_pick.h"
+#include "mtest.h"
+#include "player_config.h"
+#include "player_config_apply.h"
+#include "scratch.h"
+
+using maburplay::build_menu_tree;
+using maburplay::Choice;
+using maburplay::GsLiveView;
+using maburplay::MenuNode;
+using maburplay::MenuTreeDeps;
+using maburplay::ModeCand;
+using maburplay::NodeKind;
+using maburplay::Owner;
+using maburplay::Rung;
+using maburplay::SetStep;
+
+namespace {
+
+const std::string kPlayBundle = MABUR_PLAY_BUNDLE_DIR "/maburplay.default.toml";
+const std::string kGsBundle = MABUR_SOURCE_DIR "/gs/bundle/maburgs.default.toml";
+
+std::string slurp(const std::string& path) {
+  std::ifstream f(path, std::ios::binary);
+  std::ostringstream ss;
+  ss << f.rdbuf();
+  return ss.str();
+}
+
+void spit(const std::string& path, const std::string& content) {
+  std::ofstream f(path, std::ios::binary);
+  f << content;
+}
+
+// maburgs' live keys as its own `get` dump of the bundle reads them.
+GsLiveView bundle_gs() {
+  const maburgs::Config c = maburgs::load_config(kGsBundle);
+  std::string dump = "ok\n";
+  for (const maburgs::LiveKey& k : maburgs::kGsLiveKeys)
+    dump += std::string(k.key) + " = " + maburgs::render_live_value(c, k) + "\n";
+  GsLiveView v;
+  REQUIRE(maburplay::parse_get_all(dump, &v, 1));
+  return v;
+}
+
+// CEA 1080p60 (preferred), 720p60, 1080p100, 720p100: a goggle with 60 and
+// 100 Hz at two sizes.
+const ModeCand k1080p60{1920, 1080, 148500, 2200, 1125, false, true};
+const ModeCand k720p60{1280, 720, 74250, 1650, 750, false, false};
+const ModeCand k1080p100{1920, 1080, 297000, 2640, 1125, false, false};
+const ModeCand k720p100{1280, 720, 148500, 1980, 750, false, false};
+const std::vector<ModeCand> kAvatar{k1080p60, k720p60, k1080p100, k720p100};
+
+struct Fx {
+  maburplay::Config cfg = maburplay::load_config(kPlayBundle);
+  GsLiveView gs = bundle_gs();
+  bool rec = false, burned = false;
+  std::vector<ModeCand> modes;
+  double cam = 0;
+  std::string running;
+
+  MenuTreeDeps deps() {
+    MenuTreeDeps d;
+    d.cfg = &cfg;
+    d.gs = &gs;
+    d.snap = nullptr;
+    d.rec_running = [this] { return rec; };
+    d.burned_rec_running = [this] { return burned; };
+    d.modes = [this] { return modes; };
+    d.camera_hz = [this] { return cam; };
+    d.running_mode = [this] { return running; };
+    return d;
+  }
+  std::vector<MenuNode> tree() { return build_menu_tree(deps()); }
+
+  // The node with `id` anywhere in the tree, visible or not.
+  std::optional<MenuNode> find(const std::vector<MenuNode>& nodes, const std::string& id) {
+    for (const MenuNode& n : nodes) {
+      if (n.id == id) return n;
+      if (n.kind == NodeKind::kGroup && n.children)
+        if (auto f = find(n.children(), id)) return f;
+    }
+    return std::nullopt;
+  }
+  MenuNode node(const std::string& id) {
+    auto n = find(tree(), id);
+    if (!n) std::printf("no node %s\n", id.c_str());
+    REQUIRE(n.has_value());
+    return *n;
+  }
+};
+
+std::vector<std::string> values(const std::vector<Choice>& cs) {
+  std::vector<std::string> v;
+  for (const Choice& c : cs) v.push_back(c.value);
+  return v;
+}
+std::vector<std::string> labels(const std::vector<Choice>& cs) {
+  std::vector<std::string> v;
+  for (const Choice& c : cs) v.push_back(c.label);
+  return v;
+}
+bool vis(const MenuNode& n) { return !n.visible || n.visible(); }
+// What the model asks before sending `v`: a null confirm asks nothing.
+std::string confirm(const MenuNode& n, const std::string& v) { return n.confirm ? n.confirm(v) : ""; }
+
+const std::string kSplit = "Splits the recording (a new file starts).";
+
+}  // namespace
+
+TEST(the_top_level_groups_are_video_link_recording_osd_system) {
+  Fx f;
+  const auto t = f.tree();
+  std::vector<std::string> got;
+  for (const MenuNode& n : t) {
+    CHECK(n.kind == NodeKind::kGroup);
+    got.push_back(n.label);
+  }
+  REQUIRE((got == std::vector<std::string>{"Video", "Link", "Recording", "OSD", "System"}));
+  // No Channel row and no Calibration group yet.
+  for (const MenuNode& n : t[1].children()) {
+    CHECK(n.label != "Channel");
+    CHECK(n.label != "Calibration");
+  }
+}
+
+TEST(rate_fixed_sends_four_steps_with_static_mcs_last) {
+  Fx f;
+  REQUIRE(f.gs.static_mcs == -1);
+  REQUIRE(f.gs.ladder.size() == 5);
+  const MenuNode rate = f.node("link.rate");
+  CHECK(rate.current() == "adaptive");
+  // The current rung: R3 of the bundle ladder, MCS3 at 40 MHz, 0.5/0.25.
+  CHECK((rate.steps("fixed") == std::vector<SetStep>{
+             {Owner::kGs, "link.static_bw", "40"},
+             {Owner::kGs, "link.static_overhead_base", "0.5"},
+             {Owner::kGs, "link.static_overhead_enh", "0.25"},
+             {Owner::kGs, "link.static_mcs", "3"}}));
+  CHECK(confirm(rate, "fixed").empty());
+  // A ladder shorter than four rungs pins its last one.
+  f.gs.ladder = {{0, 20, 0.6, 0.3}, {2, 20, 1.0, 0.5}};
+  CHECK((f.node("link.rate").steps("fixed") == std::vector<SetStep>{
+             {Owner::kGs, "link.static_bw", "20"},
+             {Owner::kGs, "link.static_overhead_base", "1"},
+             {Owner::kGs, "link.static_overhead_enh", "0.5"},
+             {Owner::kGs, "link.static_mcs", "2"}}));
+  // The fixed sub-rows show only under Fixed.
+  CHECK(!vis(f.node("link.mcs")));
+  f.gs.static_mcs = 2;
+  CHECK(f.node("link.rate").current() == "fixed");
+  CHECK(vis(f.node("link.mcs")));
+  CHECK(vis(f.node("link.fec_base")));
+  CHECK(vis(f.node("link.fec_enh")));
+  CHECK(!vis(f.node("link.ladder")));
+}
+
+TEST(rate_adaptive_is_one_step) {
+  Fx f;
+  f.gs.static_mcs = 3;
+  const MenuNode rate = f.node("link.rate");
+  CHECK((rate.steps("adaptive") == std::vector<SetStep>{{Owner::kGs, "link.static_mcs", "-1"}}));
+  CHECK(confirm(rate, "adaptive").empty());
+}
+
+TEST(width_pick_sends_the_default_ladder_and_confirms_when_the_ladder_is_custom) {
+  Fx f;
+  const std::string l20 = maburplay::render_ladder_value(maburplay::default_ladder(20));
+  MenuNode w = f.node("link.width");
+  CHECK(w.value_text() == "40 MHz");
+  CHECK(w.current() == "40");
+  CHECK((w.steps("20") == std::vector<SetStep>{{Owner::kGs, "link.ladder", l20}}));
+  CHECK(confirm(w, "20").empty());   // the bundle ladder is the 40 MHz default
+  f.gs.ladder[0].base = 0.6;
+  w = f.node("link.width");
+  CHECK(confirm(w, "20") == "Replaces your ladder with the default 20 MHz ladder (4 rungs).");
+  CHECK(confirm(w, "40") == "Replaces your ladder with the default 40 MHz ladder (5 rungs).");
+  // Under Fixed the row is the fixed rate's width: one static_bw set.
+  f.gs.static_mcs = 3;
+  f.gs.static_bw = 40;
+  w = f.node("link.width");
+  CHECK(w.value_text() == "40 MHz");
+  CHECK((w.steps("20") == std::vector<SetStep>{{Owner::kGs, "link.static_bw", "20"}}));
+  CHECK(confirm(w, "20").empty());
+}
+
+TEST(width_reads_mixed_and_offers_only_20_and_40) {
+  Fx f;
+  f.gs.ladder[0].bw = 20;
+  const MenuNode w = f.node("link.width");
+  CHECK(w.value_text() == "Mixed");
+  CHECK((values(w.choices()) == std::vector<std::string>{"40", "20"}));
+  CHECK((labels(w.choices()) == std::vector<std::string>{"40 MHz", "20 MHz"}));
+  CHECK(w.current() != "40" && w.current() != "20");   // the picker opens unmarked
+  CHECK(w.help().find("mixes 20 and 40 MHz") != std::string::npos);
+}
+
+TEST(a_rung_edit_sends_the_whole_ladder_with_one_change) {
+  Fx f;
+  const MenuNode ladder = f.node("link.ladder");
+  CHECK(ladder.advanced);
+  CHECK(ladder.group_value() == "5 rungs");
+  const MenuNode r2 = f.node("link.ladder.r2");
+  CHECK(r2.label == "R2");
+  CHECK(r2.group_value() == "MCS2 · 40 MHz · 0.50/0.25");
+
+  auto with = [&](int i, Rung r) {
+    std::vector<Rung> l = f.gs.ladder;
+    l[static_cast<size_t>(i)] = r;
+    return std::vector<SetStep>{{Owner::kGs, "link.ladder", maburplay::render_ladder_value(l)}};
+  };
+  CHECK(f.node("link.ladder.r2.mcs").steps("4") == with(2, {4, 40, 0.5, 0.25}));
+  CHECK(f.node("link.ladder.r2.bw").steps("20") == with(2, {2, 20, 0.5, 0.25}));
+  CHECK(f.node("link.ladder.r2.enh").steps("0.4") == with(2, {2, 40, 0.5, 0.4}));
+  // Base below enh drags enh down with it: the loader refuses base < enh.
+  CHECK(f.node("link.ladder.r2.base").steps("0.2") == with(2, {2, 40, 0.2, 0.2}));
+  CHECK(f.node("link.ladder.r2.base").steps("1") == with(2, {2, 40, 1.0, 0.25}));
+
+  // Move up / down swap; delete asks first and is gone for a lone rung.
+  std::vector<Rung> up = f.gs.ladder;
+  std::swap(up[1], up[2]);
+  CHECK((f.node("link.ladder.r2.up").action() ==
+         std::vector<SetStep>{{Owner::kGs, "link.ladder", maburplay::render_ladder_value(up)}}));
+  CHECK(!vis(f.node("link.ladder.r0.up")));
+  CHECK(!vis(f.node("link.ladder.r4.down")));
+  const MenuNode del = f.node("link.ladder.r2.del");
+  CHECK(confirm(del, "") == "Delete this rung?");
+  std::vector<Rung> gone = f.gs.ladder;
+  gone.erase(gone.begin() + 2);
+  CHECK((del.action() ==
+         std::vector<SetStep>{{Owner::kGs, "link.ladder", maburplay::render_ladder_value(gone)}}));
+  // + Add rung copies the last with MCS + 1, capped at 5, up to 8 rungs.
+  std::vector<Rung> more = f.gs.ladder;
+  more.push_back({5, 40, 0.5, 0.25});
+  CHECK((f.node("link.ladder.add").action() ==
+         std::vector<SetStep>{{Owner::kGs, "link.ladder", maburplay::render_ladder_value(more)}}));
+  f.gs.ladder = more;
+  more.push_back({5, 40, 0.5, 0.25});
+  CHECK((f.node("link.ladder.add").action() ==
+         std::vector<SetStep>{{Owner::kGs, "link.ladder", maburplay::render_ladder_value(more)}}));
+  f.gs.ladder.resize(8, Rung{5, 40, 0.5, 0.25});
+  CHECK(!vis(f.node("link.ladder.add")));
+  f.gs.ladder = {{0, 40, 0.5, 0.25}};
+  CHECK(!vis(f.node("link.ladder.r0.del")));
+}
+
+TEST(fc_osd_on_is_player_then_gs_and_off_is_gs_then_player) {
+  Fx f;
+  const MenuNode fc = f.node("osd.fc");
+  CHECK((fc.steps("true") == std::vector<SetStep>{{Owner::kPlayer, "osd.enable", "true"},
+                                                   {Owner::kGs, "msp.enable", "true"}}));
+  CHECK((fc.steps("false") == std::vector<SetStep>{{Owner::kGs, "msp.enable", "false"},
+                                                    {Owner::kPlayer, "osd.enable", "false"}}));
+  // The row reads both halves.
+  f.cfg.osd.enable = true;
+  f.gs.msp = true;
+  CHECK(f.node("osd.fc").value_text() == "On");
+  f.cfg.osd.enable = false;
+  f.gs.msp = false;
+  CHECK(f.node("osd.fc").value_text() == "Off");
+  f.gs.msp = true;
+  CHECK(f.node("osd.fc").value_text() == "mixed");
+  CHECK(f.node("osd.fc").help().find("feed is on") != std::string::npos);
+  f.gs.msp = false;
+  f.cfg.osd.enable = true;
+  CHECK(f.node("osd.fc").help().find("render is on") != std::string::npos);
+}
+
+TEST(dvr_rows_say_at_next_recording_while_recording) {
+  Fx f;
+  f.cfg.dvr.target = "gs";
+  f.cfg.dvr.mode = "burned";
+  for (const char* id : {"rec.target", "rec.mode", "rec.burn.bitrate", "rec.burn.every", "rec.burn.size"}) {
+    f.rec = false;
+    MenuNode n = f.node(id);
+    REQUIRE(n.saved_text != nullptr);
+    CHECK(n.saved_text() == "✓ saved");
+    f.rec = true;
+    CHECK(f.node(id).saved_text() == "✓ at next recording");
+  }
+  // The values the dvr rows send, as maburplay's setter takes them.
+  CHECK((f.node("rec.target").steps("both") ==
+         std::vector<SetStep>{{Owner::kPlayer, "dvr.target", "\"both\""}}));
+  CHECK((f.node("rec.burn.size").steps("") ==
+         std::vector<SetStep>{{Owner::kPlayer, "dvr.burned.size", "\"\""}}));
+  CHECK((f.node("rec.burn.bitrate").steps("9000") ==
+         std::vector<SetStep>{{Owner::kPlayer, "dvr.burned.bitrate_kbps", "9000"}}));
+  CHECK(f.node("rec.burn.bitrate").number.fmt(8000) == "8 Mb/s");
+  // Frame rate labels follow the running mode's rate.
+  f.running = "1920x1080@100.000";
+  const auto every = f.node("rec.burn.every").choices();
+  REQUIRE(every.size() >= 2);
+  CHECK(every[0].value == "1" && every[0].label == "100 fps (every frame)");
+  CHECK(every[1].value == "2" && every[1].label == "50 fps (every 2nd)");
+  // GS recording hides when REC records to the drone only; the Burned rows
+  // hide under Raw.
+  f.cfg.dvr.target = "vtx";
+  CHECK(!vis(f.node("rec.mode")));
+  CHECK(!vis(f.node("rec.burn.size")));
+  f.cfg.dvr.target = "both";
+  f.cfg.dvr.mode = "raw";
+  CHECK(vis(f.node("rec.mode")));
+  CHECK(!vis(f.node("rec.burn.size")));
+}
+
+TEST(display_and_colour_confirm_the_split_only_during_a_burned_recording) {
+  Fx f;
+  f.modes = kAvatar;
+  f.cam = 100;
+  CHECK(confirm(f.node("video.display"), "1280x720").empty());
+  CHECK(confirm(f.node("video.colour"), "false").empty());
+  CHECK(confirm(f.node("osd.gs"), "true").empty());
+  CHECK(confirm(f.node("osd.fc"), "true").empty());
+  f.rec = true;   // a raw recording: no split
+  CHECK(confirm(f.node("video.display"), "1280x720").empty());
+  f.burned = true;
+  CHECK(confirm(f.node("video.display"), "1280x720") == kSplit);
+  CHECK(confirm(f.node("video.colour"), "false") == kSplit);
+  // The OSD switches split only when turning on.
+  CHECK(confirm(f.node("osd.gs"), "true") == kSplit);
+  CHECK(confirm(f.node("osd.gs"), "false").empty());
+  CHECK(confirm(f.node("osd.fc"), "true") == kSplit);
+  CHECK(confirm(f.node("osd.fc"), "false").empty());
+}
+
+TEST(display_choices_are_auto_plus_sizes_at_the_camera_rate) {
+  Fx f;
+  f.modes = kAvatar;
+  f.cam = 100;
+  f.running = "1920x1080@100.000";
+  MenuNode d = f.node("video.display");
+  CHECK((labels(d.choices()) == std::vector<std::string>{"Auto (largest)", "1920×1080", "1280×720"}));
+  CHECK((values(d.choices()) == std::vector<std::string>{"auto", "1920x1080", "1280x720"}));
+  CHECK(d.value_text() == "1920×1080 @ 100 Hz");
+  CHECK(d.warn().empty());
+  CHECK(d.current() == "auto");   // the bundle's screen_mode
+  CHECK((d.steps("auto") == std::vector<SetStep>{{Owner::kPlayer, "screen_mode", "\"auto\""}}));
+  CHECK((d.steps("1280x720") == std::vector<SetStep>{{Owner::kPlayer, "screen_mode", "\"1280x720\""}}));
+  // A sized or fully pinned screen_mode reads as its size.
+  f.cfg.screen_mode = "1280x720";
+  CHECK(f.node("video.display").current() == "1280x720");
+  f.cfg.screen_mode = "1920x1080@60";
+  CHECK(f.node("video.display").current() == "1920x1080");
+  // A camera rate the display has no mode for warns.
+  f.cam = 90;
+  d = f.node("video.display");
+  CHECK(d.warn() == "≠ camera");
+  CHECK((labels(d.choices()) == std::vector<std::string>{"Auto (largest)"}));
+  // An unknown camera rate offers every size.
+  f.cam = 0;
+  d = f.node("video.display");
+  CHECK(d.warn().empty());
+  CHECK((labels(d.choices()) == std::vector<std::string>{"Auto (largest)", "1920×1080", "1280×720"}));
+  // A rate that is not whole keeps its decimals.
+  f.running = "1920x1080@59.940";
+  CHECK(f.node("video.display").value_text() == "1920×1080 @ 59.94 Hz");
+}
+
+TEST(fec_enh_max_follows_base) {
+  Fx f;
+  f.gs.static_mcs = 3;
+  f.gs.static_base = 0.6;
+  f.gs.static_enh = 0.3;
+  MenuNode enh = f.node("link.fec_enh");
+  CHECK(enh.number.min == 0.1);
+  CHECK(enh.number.max == 0.6);
+  CHECK(enh.number.step == 0.05);
+  f.gs.static_base = 1.25;
+  CHECK(f.node("link.fec_enh").number.max == 1.25);
+  const MenuNode base = f.node("link.fec_base");
+  CHECK(base.number.min == 0.1 && base.number.max == 2.0 && base.number.step == 0.05);
+  CHECK((base.steps("0.55") ==
+         std::vector<SetStep>{{Owner::kGs, "link.static_overhead_base", "0.55"}}));
+  // Lowering base below enh clamps enh first, so base never reads below it.
+  CHECK((base.steps("0.2") == std::vector<SetStep>{{Owner::kGs, "link.static_overhead_enh", "0.2"},
+                                                    {Owner::kGs, "link.static_overhead_base", "0.2"}}));
+  // A rung's enh follows that rung's base.
+  f.gs.ladder[1].base = 0.75;
+  CHECK(f.node("link.ladder.r1.enh").number.max == 0.75);
+}
+
+TEST(mcs_rows_are_capped_at_five) {
+  Fx f;
+  f.gs.static_mcs = 3;
+  const MenuNode m = f.node("link.mcs");
+  CHECK(m.number.min == 0 && m.number.max == 5 && m.number.step == 1);
+  CHECK(m.number.fmt(3) == "MCS3");
+  CHECK((m.steps("4") == std::vector<SetStep>{{Owner::kGs, "link.static_mcs", "4"}}));
+  for (int i = 0; i < 5; ++i) {
+    const MenuNode r = f.node("link.ladder.r" + std::to_string(i) + ".mcs");
+    CHECK(r.number.min == 0 && r.number.max == 5);
+  }
+  // A last rung already at 5 adds another 5, never 6.
+  f.gs.ladder.back().mcs = 5;
+  std::vector<Rung> more = f.gs.ladder;
+  more.push_back(more.back());
+  CHECK((f.node("link.ladder.add").action() ==
+         std::vector<SetStep>{{Owner::kGs, "link.ladder", maburplay::render_ladder_value(more)}}));
+}
+
+// maburgs' setter takes a whole-number FEC value as the bare "1" the model
+// hands over: the patch lands and its loader reads it as a real, both for
+// the static pair and inside a rung.
+TEST(a_whole_number_fec_value_passes_maburgs_setter) {
+  Fx f;
+  f.gs.static_mcs = 3;
+  const SetStep base = f.node("link.fec_base").steps("1").back();
+  CHECK(base.value == "1");
+  const SetStep rung = f.node("link.ladder.r0.base").steps("1").at(0);
+  std::string text = slurp(kGsBundle);
+  std::string why;
+  REQUIRE(maburgs::patch_live_key(&text, *maburgs::gs_live_key(base.key), base.value, &why));
+  REQUIRE(maburgs::patch_live_key(&text, *maburgs::gs_live_key(rung.key), rung.value, &why));
+  ScratchFile file("test_menu_tree", ".toml");
+  spit(file.path, text);
+  const maburgs::Config c = maburgs::load_config(file.path);
+  CHECK(c.link.static_overhead_base == 1.0);
+  CHECK(c.link.ladder_cfg.ladder.at(0).overhead_base == 1.0);
+}
+
+// maburplay's setter takes the quoted strings the rows send.
+TEST(the_string_values_pass_maburplays_setter) {
+  struct Dir {
+    std::string dir, file;
+    Dir() {
+      ::mkdir(MABUR_TEST_SCRATCH_DIR, 0777);
+      dir = std::string(MABUR_TEST_SCRATCH_DIR) + "/test_menu_tree-" + std::to_string(::getpid());
+      REQUIRE(::mkdir(dir.c_str(), 0755) == 0);
+      file = dir + "/maburplay.toml";
+      spit(file, slurp(kPlayBundle));
+    }
+    ~Dir() {
+      for (const char* s : {"", ".new", ".pre-live", ".pre-live.tmp"}) std::remove((file + s).c_str());
+      ::rmdir(dir.c_str());
+    }
+  } d;
+  Fx f;
+  maburplay::PlayerApplyHooks h;
+  h.reacquire_display = [](const maburplay::Config&, std::string*) { return true; };
+  h.osd_layers = [](const maburplay::Config&, std::string*) { return true; };
+  h.next_start = [](const maburplay::Config&) {};
+  h.menu = [](const maburplay::Config&) {};
+  maburplay::PlayerConfigApplier a(d.file, f.cfg, maburplay::BuildCaps{true, false}, h, nullptr);
+  auto set = [&](const SetStep& s) {
+    std::string why;
+    REQUIRE(a.submit(s.key, s.value, &why));
+    maburplay::PlayerApplyResult r{};
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!a.poll(&r)) {
+      REQUIRE(std::chrono::steady_clock::now() < deadline);
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    if (!r.ok) std::printf("set %s = %s: %s\n", s.key.c_str(), s.value.c_str(), r.reason.c_str());
+    return r.ok;
+  };
+  f.modes = kAvatar;
+  f.cam = 100;
+  CHECK(set(f.node("video.display").steps("1280x720").at(0)));
+  CHECK(set(f.node("rec.burn.size").steps("1280x720").at(0)));
+  CHECK(set(f.node("rec.target").steps("both").at(0)));
+  CHECK(set(f.node("sys.size").steps("larger").at(0)));
+  const maburplay::Config c = maburplay::load_config(d.file);
+  CHECK(c.screen_mode == "1280x720");
+  CHECK(c.dvr.burned.size_w == 1280 && c.dvr.burned.size_h == 720);
+  CHECK(c.dvr.target == "both");
+  CHECK(c.menu.scale == "larger");
+  CHECK(set(f.node("rec.burn.size").steps("").at(0)));
+  CHECK(maburplay::load_config(d.file).dvr.burned.size_w == 0);
+}
+
+TEST(menu_size_offers_three_steps_and_reads_the_config) {
+  Fx f;
+  MenuNode n = f.node(maburplay::kMenuSizeRow);
+  CHECK(n.label == "Menu size");
+  CHECK(n.owner == Owner::kPlayer);
+  std::vector<std::string> values, labels;
+  for (const Choice& c : n.choices()) {
+    values.push_back(c.value);
+    labels.push_back(c.label);
+  }
+  CHECK((values == std::vector<std::string>{"normal", "large", "larger"}));
+  CHECK((labels == std::vector<std::string>{"Normal", "Large", "Larger"}));
+  CHECK(n.current() == "normal");
+  f.cfg.menu.scale = "large";
+  CHECK(f.node("sys.size").current() == "large");
+  const std::vector<SetStep> s = n.steps("larger");
+  REQUIRE(s.size() == 1);
+  CHECK(s[0].key == "menu.scale");
+  CHECK(s[0].value == "\"larger\"");
+}
+
+// Until maburgs' first `get` lands the view holds GsLiveView's defaults,
+// not maburgs' values: every GS row reads "—" rather than present them.
+TEST(gs_rows_read_a_dash_until_the_first_get_lands) {
+  Fx f;
+  f.gs = GsLiveView{};
+  REQUIRE(!f.gs.have);
+  for (const char* id : {"link.width", "link.rate", "link.nack", "osd.fc", "sys.debug"})
+    CHECK(f.node(id).value_text() == "—");
+  CHECK(f.node("link.ladder").group_value() == "—");
+  // The player's own rows read the player's config regardless.
+  CHECK(f.node("video.colour").value_text == nullptr ||
+        f.node("video.colour").value_text() != "—");
+  CHECK(f.node("sys.adv").value_text == nullptr);
+  f.gs = bundle_gs();
+  CHECK(f.node("link.width").value_text() == "40 MHz");
+  CHECK(f.node("link.rate").value_text() == "Adaptive");
+  CHECK(f.node("link.nack").value_text() == (f.gs.nack ? "On" : "Off"));
+  CHECK(f.node("sys.debug").value_text() == (f.gs.debug_log ? "On" : "Off"));
+  CHECK(f.node("link.ladder").group_value() == "5 rungs");
+  f.gs.static_mcs = 3;
+  CHECK(f.node("link.mcs").value_text() == "MCS3");
+  CHECK(f.node("link.fec_base").value_text() == "0.50");
+  f.gs.have = false;
+  CHECK(f.node("link.mcs").value_text() == "—");
+  CHECK(f.node("link.fec_enh").value_text() == "—");
+}
+
+// No ladder to read a rung from, or a row built for a rung the ladder has
+// since lost: nothing is sent rather than a guess.
+TEST(rate_fixed_and_rung_edits_send_nothing_without_their_rung) {
+  Fx f;
+  const MenuNode mcs = f.node("link.ladder.r4.mcs");
+  const MenuNode bw = f.node("link.ladder.r4.bw");
+  const MenuNode base = f.node("link.ladder.r4.base");
+  const MenuNode enh = f.node("link.ladder.r4.enh");
+  f.gs.ladder.resize(3);   // shrunk under rows built for five rungs
+  CHECK(mcs.steps("2").empty());
+  CHECK(bw.steps("20").empty());
+  CHECK(base.steps("1").empty());
+  CHECK(enh.steps("0.3").empty());
+  CHECK(!f.node("link.rate").steps("fixed").empty());
+  f.gs.ladder.clear();
+  CHECK(f.node("link.rate").steps("fixed").empty());
+  CHECK((f.node("link.rate").steps("adaptive") ==
+         std::vector<SetStep>{{Owner::kGs, "link.static_mcs", "-1"}}));
+}
+
+namespace {
+
+// Every node under `nodes`, hidden or not, with each group's children
+// read under the current deps.
+void walk(const std::vector<MenuNode>& nodes, std::vector<MenuNode>* out) {
+  for (const MenuNode& n : nodes) {
+    out->push_back(n);
+    if (n.kind == NodeKind::kGroup && n.children) walk(n.children(), out);
+  }
+}
+
+// The values a row can send: each choice, and for a number its min, max and
+// a mid-range point on its step grid.
+std::vector<std::string> sample_values(const MenuNode& n) {
+  std::vector<std::string> v;
+  if (n.kind == NodeKind::kChoice && n.choices)
+    for (const Choice& c : n.choices()) v.push_back(c.value);
+  if (n.kind == NodeKind::kNumber) {
+    const double steps = std::floor((n.number.max - n.number.min) / n.number.step / 2);
+    for (double x : {n.number.min, n.number.max, n.number.min + steps * n.number.step}) {
+      char buf[32];
+      std::snprintf(buf, sizeof buf, "%g", x);
+      v.push_back(buf);
+    }
+  }
+  return v;
+}
+
+}  // namespace
+
+// Every key any row can send is a live key of the daemon its step names: a
+// typo in a row is a test failure here, not a refused set on the goggles.
+TEST(every_step_key_is_a_live_key_of_its_owner) {
+  Fx f;
+  f.cfg.menu.show_advanced = true;
+  f.cfg.dvr.target = "both";
+  f.cfg.dvr.mode = "burned";
+  f.modes = kAvatar;
+  f.cam = 100;
+  f.running = "1920x1080@100.000";
+  int checked = 0;
+  auto check_steps = [&](const std::vector<SetStep>& steps) {
+    for (const SetStep& s : steps) {
+      ++checked;
+      if (s.owner == Owner::kGs) {
+        if (!maburgs::gs_live_key(s.key)) std::printf("not a maburgs live key: %s\n", s.key.c_str());
+        CHECK(maburgs::gs_live_key(s.key) != nullptr);
+      } else {
+        CHECK(s.owner == Owner::kPlayer);
+        if (!maburplay::player_live_key(s.key))
+          std::printf("not a maburplay live key: %s\n", s.key.c_str());
+        CHECK(maburplay::player_live_key(s.key) != nullptr);
+      }
+    }
+  };
+  // Adaptive (the ladder and its rungs) and Fixed (the fixed sub-rows).
+  for (int static_mcs : {-1, 3}) {
+    f.gs.static_mcs = static_mcs;
+    std::vector<MenuNode> all;
+    walk(f.tree(), &all);
+    for (const MenuNode& n : all) {
+      if (n.steps)
+        for (const std::string& v : sample_values(n)) check_steps(n.steps(v));
+      if (n.action) check_steps(n.action());
+    }
+  }
+  CHECK(checked > 40);
+}
+
+MTEST_MAIN

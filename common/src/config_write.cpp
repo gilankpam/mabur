@@ -139,6 +139,23 @@ void fsync_parent_dir(const std::string& path) {
   }
 }
 
+// Makes a rename onto `path` durable: fsyncs the renamed file itself, then
+// its directory. The directory alone is not enough on vfat -- the
+// GS's /config. There the destination's directory entry (start cluster,
+// size) is the moved FILE's inode metadata, dirtied by the rename and
+// written only by an fsync of that file, while the replaced file's
+// clusters are freed in the FAT. A power cut before writeback leaves the
+// entry pointing at the old, now-free chain: the config reads as an I/O
+// error and the kernel remounts the partition read-only.
+void fsync_renamed(const std::string& path) {
+  const int fd = ::open(path.c_str(), O_RDONLY);
+  if (fd >= 0) {
+    ::fsync(fd);
+    ::close(fd);
+  }
+  fsync_parent_dir(path);
+}
+
 // Best-effort cleanup of the scratch file: never let a failed run leave a
 // stale "<path>.new" sitting next to a live config (confusing at best, and
 // a later successful run's O_TRUNC would clobber it anyway -- this just
@@ -163,7 +180,7 @@ bool write_file_atomic(const std::string& path, const std::string& content) {
     remove_scratch(tmp);
     return false;
   }
-  fsync_parent_dir(path);
+  fsync_renamed(path);
   return true;
 }
 
@@ -343,7 +360,7 @@ PublishResult publish_config(const std::string& path, const std::string& content
     remove_scratch(tmp);
     return PublishResult::WriteFailed;
   }
-  fsync_parent_dir(real_path);
+  fsync_renamed(real_path);
   return PublishResult::Ok;
 }
 

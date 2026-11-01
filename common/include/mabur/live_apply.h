@@ -267,6 +267,12 @@ class LiveConfigControl {
   // about 600 bytes.
   static constexpr size_t kMaxDatagram = 2048;
 
+  // A verb other than `get`/`set`, offered the rest of the line; the
+  // returned string is the reply verbatim (an error reply spells its own
+  // "err "), nullopt keeps the usage error. See `extra_verb` below.
+  using ExtraVerb = std::function<std::optional<std::string>(const std::string& verb,
+                                                              const std::string& rest)>;
+
   LiveConfigControl() = default;
   ~LiveConfigControl() {
     if (fd_ >= 0) ::close(fd_);
@@ -290,11 +296,34 @@ class LiveConfigControl {
   // so the command language is testable without a socket.
   //   set <key> = <value>
   //   get [<key>]
-  static std::string handle(const std::string& line, Applier& a, bool* pending);
+  // A verb that is neither is offered to `extra_verb` when one is passed;
+  // with none, or a nullopt back, the usage error.
+  static std::string handle(const std::string& line, Applier& a, bool* pending,
+                            const ExtraVerb& extra_verb = ExtraVerb());
+
+  // Offered every verb `handle` does not itself know, on the owning
+  // thread, inside `poll()`. unset (the default) leaves every such verb at
+  // the usage error -- maburgs never sets it; maburplay does under
+  // MABUR_MENU_DEBUG.
+  ExtraVerb extra_verb;
+
+  // Owning thread's own set, bypassing the socket: the same a.submit()
+  // path a UDP `set` takes, so a value equal to the live rendering still
+  // settles at once and a spec precheck refusal still comes back with no
+  // file work. Refused with *why = "busy" while a UDP sender is already
+  // waiting on its own set, or the applier itself is busy -- the same
+  // wording a UDP `set` gets in that case. A UDP `get` keeps answering
+  // from the live config while a local set is in flight.
+  bool submit_local(Applier& a, const std::string& key, const std::string& value, std::string* why);
+  // The local submit's result, once -- read on the poll() call after the
+  // one that settled it. nullopt before that, and again once taken.
+  std::optional<LiveApplyResult> take_local_result();
 
  private:
   int fd_ = -1;
   bool has_pending_ = false;
+  bool local_pending_ = false;
+  std::optional<LiveApplyResult> local_result_;
   sockaddr_in pending_from_{};
   socklen_t pending_len_ = 0;
 };
@@ -676,7 +705,7 @@ void LiveConfigControl<Applier>::poll(Applier& a) {
       const std::string reply =
           static_cast<size_t>(n) > sizeof(buf)
               ? "err line too long (max " + std::to_string(sizeof(buf)) + " bytes)"
-              : handle(std::string(buf, static_cast<size_t>(n)), a, &pending);
+              : handle(std::string(buf, static_cast<size_t>(n)), a, &pending, extra_verb);
       if (pending) {
         has_pending_ = true;
         pending_from_ = from;
@@ -688,6 +717,11 @@ void LiveConfigControl<Applier>::poll(Applier& a) {
   }
   LiveApplyResult r;
   if (!a.poll(&r)) return;
+  if (local_pending_) {
+    local_result_ = r;
+    local_pending_ = false;
+    return;
+  }
   if (has_pending_ && fd_ >= 0) {
     const std::string reply = r.ok ? "ok" : "err " + r.reason;
     ::sendto(fd_, reply.data(), reply.size(), 0, reinterpret_cast<sockaddr*>(&pending_from_),
@@ -697,8 +731,28 @@ void LiveConfigControl<Applier>::poll(Applier& a) {
 }
 
 template <class Applier>
+bool LiveConfigControl<Applier>::submit_local(Applier& a, const std::string& key,
+                                              const std::string& value, std::string* why) {
+  if (has_pending_ || a.busy()) {
+    if (why) *why = "busy";
+    return false;
+  }
+  if (!a.submit(key, value, why)) return false;
+  local_pending_ = true;
+  return true;
+}
+
+template <class Applier>
+std::optional<LiveApplyResult> LiveConfigControl<Applier>::take_local_result() {
+  if (!local_result_) return std::nullopt;
+  std::optional<LiveApplyResult> out = std::move(local_result_);
+  local_result_.reset();
+  return out;
+}
+
+template <class Applier>
 std::string LiveConfigControl<Applier>::handle(const std::string& line, Applier& a,
-                                               bool* pending) {
+                                               bool* pending, const ExtraVerb& extra_verb) {
   using live_apply_detail::has_space;
   using live_apply_detail::trim;
   static const std::string kUsage = "err usage: set <key> = <value> | get [<key>]";
@@ -726,6 +780,9 @@ std::string LiveConfigControl<Applier>::handle(const std::string& line, Applier&
     if (!a.submit(key, value, &why)) return "err " + why;
     *pending = true;
     return "";
+  }
+  if (extra_verb) {
+    if (std::optional<std::string> reply = extra_verb(verb, rest)) return *reply;
   }
   return kUsage;
 }

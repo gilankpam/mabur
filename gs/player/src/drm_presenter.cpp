@@ -39,6 +39,12 @@ namespace maburplay {
 namespace {
 
 constexpr const char* kCardPath = "/dev/dri/card0";
+// How long a presenter that took over a running display holds the output
+// off before changing its mode (see Impl::init). An Avatar Goggles X stays
+// blank when a new mode follows the old one with the output off for only
+// 3-30 ms, and re-locks after 0.6 s off (0.3 s held plus the rest of the
+// rebuild); this keeps margin over that.
+constexpr useconds_t kModeChangeOffUs = 500 * 1000;
 
 // Resolves a KMS object property id by name (and optionally its current
 // value) via drmModeObjectGetProperties + drmModeGetProperty. Returns 0 if
@@ -298,6 +304,31 @@ std::vector<ModeCand> mode_cands(const drmModeConnector* c) {
   return cands;
 }
 
+// The connector a presenter drives: a connected HDMI-A-* one, else the
+// first other connected connector. nullptr when none is connected; the
+// caller frees it.
+drmModeConnectorPtr pick_connector(int fd, const drmModeRes* res) {
+  drmModeConnectorPtr chosen = nullptr;
+  for (int i = 0; i < res->count_connectors; ++i) {
+    drmModeConnectorPtr c = drmModeGetConnector(fd, res->connectors[i]);
+    if (!c) continue;
+    if (c->connection != DRM_MODE_CONNECTED) {
+      drmModeFreeConnector(c);
+      continue;
+    }
+    if (c->connector_type == DRM_MODE_CONNECTOR_HDMIA) {
+      if (chosen) drmModeFreeConnector(chosen);
+      return c;
+    }
+    if (!chosen) {
+      chosen = c;  // keep as fallback candidate; keep scanning for HDMI-A
+    } else {
+      drmModeFreeConnector(c);
+    }
+  }
+  return chosen;
+}
+
 }  // namespace
 
 struct DrmPresenter::Impl {
@@ -308,6 +339,10 @@ struct DrmPresenter::Impl {
   uint32_t crtc_id = 0;
   int crtc_index = -1;
   drmModeModeInfo mode{};
+  // The connector's modes as init() picked from them, and the index of
+  // `mode` among them.
+  std::vector<ModeCand> mode_list;
+  int mode_index = -1;
   uint32_t mode_blob_id = 0;
 
   uint32_t plane_id = 0;   // the NV12 plane we actually present on
@@ -344,6 +379,10 @@ struct DrmPresenter::Impl {
   uint32_t splash_zpos_prop = 0;
   uint64_t splash_zpos_val = 0;
   bool splash_active = false;   // a splash is on screen; present() must hand off
+  // The settings menu's override (set_osd_over_splash(), housekeeping
+  // thread): let a standalone OSD commit through despite splash_active.
+  // Read by commit_osd_if_pending() on the release thread.
+  std::atomic<bool> osd_over_splash{false};
   bool detach_warned = false;   // detach_splash_plane() has already logged once this episode
   // Consecutive commit failures observed while splash_active is true (Fix 3
   // in the splash-handoff review): if the driver keeps rejecting the
@@ -357,6 +396,9 @@ struct DrmPresenter::Impl {
   // does not outlive init().
   bool video_on_primary = false;
   bool log_init_failures = true;
+  // Set by retire(): the destructor releases everything but leaves `fd`
+  // open for the next presenter.
+  bool keep_fd = false;
 
   uint32_t prop_connector_crtc_id = 0;
   uint32_t prop_crtc_mode_id = 0;
@@ -494,12 +536,14 @@ struct DrmPresenter::Impl {
 
   ~Impl();
 
-  bool init(const std::string& screen_mode, bool want_osd, ReleaseFn rel, bool log_failures);
+  bool init(const std::string& resolved_mode, bool want_osd, ReleaseFn rel, bool log_failures,
+            int device_fd);
   bool present(const DmaFrame& frame);
   void prime(const DmaFrame& frame);
   void poll_events();
   void drop_all();
   void commit_osd_if_pending();
+  void set_osd_over_splash(bool allow) { osd_over_splash.store(allow); }
 
   bool splash_show();
   void free_splash();
@@ -740,12 +784,12 @@ void DrmPresenter::Impl::commit_osd_only() {
   osd_dirty = false;   // a drawer that sees this sees the new back index
 }
 
-bool DrmPresenter::Impl::init(const std::string& screen_mode, bool want_osd, ReleaseFn rel,
-                              bool log_failures) {
+bool DrmPresenter::Impl::init(const std::string& resolved_mode, bool want_osd, ReleaseFn rel,
+                              bool log_failures, int device_fd) {
   release = std::move(rel);
   log_init_failures = log_failures;
 
-  fd = open(kCardPath, O_RDWR | O_CLOEXEC);
+  fd = device_fd >= 0 ? device_fd : open(kCardPath, O_RDWR | O_CLOEXEC);
   if (fd < 0) {
     if (log_init_failures)
       std::fprintf(stderr, "DrmPresenter: open(%s) failed: %s\n", kCardPath, std::strerror(errno));
@@ -779,25 +823,7 @@ bool DrmPresenter::Impl::init(const std::string& screen_mode, bool want_osd, Rel
 
   // Connector select: prefer a connected HDMI-A-* connector; fall back to
   // any other connected connector with a warning.
-  drmModeConnectorPtr chosen = nullptr;
-  for (int i = 0; i < res->count_connectors; ++i) {
-    drmModeConnectorPtr c = drmModeGetConnector(fd, res->connectors[i]);
-    if (!c) continue;
-    if (c->connection != DRM_MODE_CONNECTED) {
-      drmModeFreeConnector(c);
-      continue;
-    }
-    if (c->connector_type == DRM_MODE_CONNECTOR_HDMIA) {
-      if (chosen) drmModeFreeConnector(chosen);
-      chosen = c;
-      break;
-    }
-    if (!chosen) {
-      chosen = c;  // keep as fallback candidate; keep scanning for HDMI-A
-    } else {
-      drmModeFreeConnector(c);
-    }
-  }
+  drmModeConnectorPtr chosen = pick_connector(fd, res);
   if (!chosen) {
     if (log_init_failures) std::fprintf(stderr, "DrmPresenter: no connected connector found\n");
     drmModeFreeResources(res);
@@ -813,22 +839,22 @@ bool DrmPresenter::Impl::init(const std::string& screen_mode, bool want_osd, Rel
   connector_id = chosen->connector_id;
 
   // Mode select (mode_pick.h): the closest exact rate among modes of the
-  // wanted size; the preferred mode (or the first) when none fits.
-  const std::vector<ModeCand> cands = mode_cands(chosen);
+  // resolved size; the preferred mode (or the first) when none fits.
+  mode_list = mode_cands(chosen);
   bool matched = false;
-  const int pick = pick_mode(cands, parse_screen_want(screen_mode), &matched);
+  const int pick = pick_mode(mode_list, parse_screen_want(resolved_mode), &matched);
   const drmModeModeInfo* selected = pick >= 0 ? &chosen->modes[pick] : nullptr;
   if (selected) {
     if (!matched) {
       std::fprintf(stderr,
-                   "DrmPresenter: warning: screen_mode \"%s\" not offered by connector %u; "
+                   "DrmPresenter: warning: mode \"%s\" not offered by connector %u; "
                    "falling back to %ux%u@%u\n",
-                   screen_mode.c_str(), connector_id, selected->hdisplay, selected->vdisplay,
+                   resolved_mode.c_str(), connector_id, selected->hdisplay, selected->vdisplay,
                    selected->vrefresh);
     }
     std::fprintf(stderr, "DrmPresenter: mode %ux%u @%.3f Hz (requested %s)\n",
-                 selected->hdisplay, selected->vdisplay, mode_hz(cands[static_cast<size_t>(pick)]),
-                 screen_mode.c_str());
+                 selected->hdisplay, selected->vdisplay,
+                 mode_hz(mode_list[static_cast<size_t>(pick)]), resolved_mode.c_str());
   }
   if (!selected) {
     if (log_init_failures)
@@ -838,6 +864,7 @@ bool DrmPresenter::Impl::init(const std::string& screen_mode, bool want_osd, Rel
     return false;
   }
   mode = *selected;
+  mode_index = pick;
 
   // CRTC select: first CRTC any of the connector's possible encoders can
   // drive.
@@ -868,6 +895,32 @@ bool DrmPresenter::Impl::init(const std::string& screen_mode, bool want_osd, Rel
     if (log_init_failures)
       std::fprintf(stderr, "DrmPresenter: missing connector/crtc CRTC_ID|MODE_ID|ACTIVE property\n");
     return false;
+  }
+
+  // On a descriptor handed over by retire() the CRTC still runs the old
+  // presenter's mode. When that is not the mode picked here, drive the
+  // output off and hold it there before this presenter's own modeset, so
+  // the sink sees the signal go away before the new mode arrives
+  // (kModeChangeOffUs). A rebuild on the same mode keeps the output up.
+  if (device_fd >= 0) {
+    drmModeCrtcPtr cur = drmModeGetCrtc(fd, crtc_id);
+    const bool other_mode =
+        cur && cur->mode_valid &&
+        (cur->mode.clock != mode.clock || cur->mode.hdisplay != mode.hdisplay ||
+         cur->mode.vdisplay != mode.vdisplay || cur->mode.htotal != mode.htotal ||
+         cur->mode.vtotal != mode.vtotal || cur->mode.flags != mode.flags);
+    if (cur) drmModeFreeCrtc(cur);
+    if (other_mode) {
+      drmModeAtomicReqPtr r = drmModeAtomicAlloc();
+      drmModeAtomicAddProperty(r, connector_id, prop_connector_crtc_id, 0);
+      drmModeAtomicAddProperty(r, crtc_id, prop_crtc_mode_id, 0);
+      drmModeAtomicAddProperty(r, crtc_id, prop_crtc_active, 0);
+      const int rc = r ? drmModeAtomicCommit(fd, r, DRM_MODE_ATOMIC_ALLOW_MODESET, nullptr) : -ENOMEM;
+      drmModeAtomicFree(r);
+      if (rc != 0)
+        std::fprintf(stderr, "DrmPresenter: output-off commit failed: %s\n", std::strerror(-rc));
+      usleep(kModeChangeOffUs);
+    }
   }
 
   prop_crtc_cubic_lut = find_property(fd, crtc_id, DRM_MODE_OBJECT_CRTC, "CUBIC_LUT");
@@ -1847,9 +1900,36 @@ void DrmPresenter::Impl::commit_osd_if_pending() {
   // feature on exactly the topology it targets. In topologies 1 and 3 the
   // OSD lives on a different plane above the splash, so this changes
   // nothing there; it only holds off the plane the splash actually owns.
+  //
+  // `osd_over_splash` lifts that hold: the settings menu wants the screen
+  // before any video exists, so set_osd_over_splash(true) (main.cpp,
+  // SplashMenuGate) lets this commit through anyway. In the osd_on_primary
+  // topology that commit DOES repoint the primary's FB_ID away from the
+  // splash FB -- but `splash_active` itself is deliberately left exactly
+  // as it was, true, rather than cleared here. present()'s build_req()
+  // only states the video plane's zpos and the colortrans CTM, and only
+  // forces the OSD to ride along, on a commit where `do_modeset ||
+  // splash_handoff` -- and for the very first video frame, `do_modeset`
+  // is normally already false (splash_show() cleared needs_modeset at
+  // startup), so `splash_handoff` (== splash_active) is the ONLY thing
+  // that makes that first commit state them. Clearing `splash_active`
+  // early here would make that first real frame commit skip the zpos/CTM
+  // state entirely (the vop2 black-screen hazard setup_backdrop()'s zpos
+  // plan exists to prevent) and skip present()'s own free_splash() --
+  // this commit never touches present()'s splash bookkeeping at all,
+  // real video does. The forced OSD re-attach that `splash_handoff`
+  // triggers on that later commit re-states the exact buffer this commit
+  // already put on screen (`osd_idx` reduces to the current front buffer
+  // when nothing new was published), so it costs nothing, and it is what
+  // finally frees the splash's buffer. In the topologies where the OSD
+  // has a plane of its own above the splash, osd_on_primary is false and
+  // this commit never touched the splash's plane at all -- unaffected,
+  // same as always.
   const uint64_t now = mono_ms();
-  if (osd_dirty && osd_plane_id && osd.ok() && !flip_pending && crtc_active && !splash_active &&
-      now - last_video_commit_ms >= 100 && now - osd_last_commit_ms >= 100) {
+  const bool over_splash = osd_over_splash.load();
+  if (osd_dirty && osd_plane_id && osd.ok() && !flip_pending && crtc_active &&
+      (!splash_active || over_splash) && now - last_video_commit_ms >= 100 &&
+      now - osd_last_commit_ms >= 100) {
     commit_osd_only();
   }
 }
@@ -1900,17 +1980,66 @@ DrmPresenter::Impl::~Impl() {
     if (cubic_lut_blob_id) drmModeDestroyPropertyBlob(fd, cubic_lut_blob_id);
     if (video_ctm_blob_id) drmModeDestroyPropertyBlob(fd, video_ctm_blob_id);
     if (mode_blob_id) drmModeDestroyPropertyBlob(fd, mode_blob_id);
-    close(fd);
+    if (!keep_fd) close(fd);
   }
 }
 
 DrmPresenter::DrmPresenter() : impl_(std::make_unique<Impl>()) {}
 DrmPresenter::~DrmPresenter() = default;
 
-bool DrmPresenter::init(const std::string& screen_mode, bool want_osd, ReleaseFn release,
-                        bool log_failures) {
-  return impl_->init(screen_mode, want_osd, std::move(release), log_failures);
+bool DrmPresenter::init(const std::string& resolved_mode, bool want_osd, ReleaseFn release,
+                        bool log_failures, int device_fd) {
+  return impl_->init(resolved_mode, want_osd, std::move(release), log_failures, device_fd);
 }
+
+int DrmPresenter::retire(std::unique_ptr<DrmPresenter> p) {
+  if (!p) return -1;
+  Impl& im = *p->impl_;
+  const int fd = im.fd;
+  if (fd >= 0) {
+    // A nonblocking commit completes within a frame; 50 ms with no event
+    // covers one issued just before the caller parked output at any rate
+    // the connector offers. A null handler reads the event and drops it.
+    drmEventContext evctx{};
+    evctx.version = 3;
+    struct pollfd pfd {
+      fd, POLLIN, 0
+    };
+    while (poll(&pfd, 1, 50) > 0 && (pfd.revents & POLLIN)) drmHandleEvent(fd, &evctx);
+    im.keep_fd = true;
+  }
+  p.reset();
+  return fd;
+}
+
+std::vector<ModeCand> DrmPresenter::probe_modes(std::string* err) {
+  const int fd = open(kCardPath, O_RDWR | O_CLOEXEC);
+  if (fd < 0) {
+    *err = std::string("open ") + kCardPath + ": " + std::strerror(errno);
+    return {};
+  }
+  std::vector<ModeCand> cands;
+  drmModeResPtr res = drmModeGetResources(fd);
+  if (!res) {
+    *err = std::string("drmModeGetResources: ") + std::strerror(errno);
+  } else {
+    drmModeConnectorPtr c = pick_connector(fd, res);
+    if (!c) {
+      *err = "no connected connector found";
+    } else {
+      cands = mode_cands(c);
+      if (cands.empty()) *err = "connector has no modes";
+      drmModeFreeConnector(c);
+    }
+    drmModeFreeResources(res);
+  }
+  close(fd);
+  return cands;
+}
+
+const std::vector<ModeCand>& DrmPresenter::modes() const { return impl_->mode_list; }
+
+int DrmPresenter::mode_index() const { return impl_->mode_index; }
 
 Surface DrmPresenter::splash_surface() {
   Surface s;
@@ -2025,6 +2154,8 @@ bool DrmPresenter::osd_publish_pending() const {
 }
 
 void DrmPresenter::commit_osd_if_pending() { impl_->commit_osd_if_pending(); }
+
+void DrmPresenter::set_osd_over_splash(bool allow) { impl_->set_osd_over_splash(allow); }
 
 uint64_t DrmPresenter::osd_commit_errors() const { return impl_->osd_commit_errors; }
 

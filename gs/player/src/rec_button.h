@@ -2,6 +2,7 @@
 #define MABUR_PLAYER_REC_BUTTON_H_
 
 #include <cstdint>
+#include <optional>
 #include <string>
 
 namespace maburplay {
@@ -37,6 +38,9 @@ class ButtonDebounce {
   // DVR at startup.
   bool feed(bool level, uint64_t now_ms);
 
+  // The accepted level -- continuous, unlike feed()'s press-edge return.
+  bool level() const { return level_; }
+
  private:
   bool level_ = false;      // the accepted level
   bool cand_ = false;       // the level the line has read since cand_ms_
@@ -71,8 +75,13 @@ class RecButton {
                           std::string* err);
 
   // resolve_pin, then request the line once with the bias/active-low
-  // flags. A busy line names its current holder in *err.
-  bool open(const RecButtonCfg& cfg, std::string* err);
+  // flags. A busy line names its current holder in *err. `consumer` is
+  // the name the kernel reports back to anything that inspects the line
+  // (lsgpio, the busy-line error above) -- the rec button and the menu
+  // bank's five lines want different names so a busy-line error tells you
+  // which one is holding it.
+  bool open(const RecButtonCfg& cfg, std::string* err,
+            const char* consumer = "maburplay_rec");
 
   bool is_open() const { return line_fd_ >= 0; }
 
@@ -82,11 +91,35 @@ class RecButton {
   // same reason the per-attempt DRM retry failures are silenced.
   bool poll(uint64_t now_ms);
 
+  // The menu bank's path: one GPIO_V2_LINE_GET_VALUES_IOCTL fed to the
+  // debouncer, returning the accepted LEVEL (not an edge) -- the menu
+  // needs to know a line is still held, not just that it was pressed.
+  // std::nullopt once the line has closed itself after kMaxIoErrors, same
+  // as poll() above but reported rather than silently false forever.
+  std::optional<bool> read_level(uint64_t now_ms);
+
   const std::string& chip_path() const { return chip_path_; }
   unsigned offset() const { return offset_; }
 
  private:
   static constexpr int kMaxIoErrors = 10;
+
+  // Outcome of one ioctl sample: kOk hands back a fresh raw bit, a
+  // transient kIoError leaves the line open (poll()/read_level() each
+  // decide what to report meanwhile), and kClosed means this call just
+  // hit kMaxIoErrors and closed the line (or found it already closed).
+  enum class SampleResult { kOk, kIoError, kClosed };
+
+  // The ioctl + io_errors_ bookkeeping shared by poll() and read_level():
+  // one GPIO_V2_LINE_GET_VALUES_IOCTL, the kMaxIoErrors-consecutive-
+  // failures close-and-log-once shell. `label` names the line in the
+  // close log line -- poll's "rec button" literal, or null for
+  // read_level's chip/offset, built from chip_path_/offset_ only if this
+  // call is the one that hits kMaxIoErrors, not on every sample. The two
+  // callers differ only in what they do with the result (an
+  // edge-triggered press vs a continuous level), not in how the line is
+  // sampled or when it gives up.
+  SampleResult sample_raw(bool* bit, const char* label);
 
   // Test-only seam (defined in tests/test_rec_button.cpp, the only
   // translation unit that calls it -- kept out of rec_button.cpp so it
@@ -100,6 +133,11 @@ class RecButton {
   int line_fd_ = -1;
   std::string chip_path_;
   unsigned offset_ = 0;
+  // io_errors_ and deb_ assume exactly one caller style per instance --
+  // poll() (the rec button's edge) or read_level() (the menu bank's
+  // level), never both on the same RecButton -- mixing them would split
+  // one line's error count and debounce state across two unrelated
+  // gesture semantics.
   int io_errors_ = 0;
   ButtonDebounce deb_;
 };

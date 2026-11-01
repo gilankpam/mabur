@@ -9,11 +9,12 @@
 
 #include "gs_layer.h"
 #include "mabur/msp_dp.h"
+#include "menu_layer.h"
 #include "osd_raster.h"
 
 namespace maburplay {
 
-// Both overlays' inputs for one composition.
+// Every layer's inputs for one composition.
 struct OsdComposeIn {
   // MSP half. `screen` is null when this run has no MSP overlay at all --
   // not merely when no screen has arrived yet.
@@ -26,6 +27,13 @@ struct OsdComposeIn {
   bool gs_stale = false;
   GsPlayerState gs_ps;
   bool gs_dirty = false;  // a GS input moved since the last composition
+
+  // Settings menu. A non-null `menu` replaces the composer's current view,
+  // which every composition paints into its buffer; null keeps it. So the
+  // view need only be handed over on the composition where it changed: the
+  // other buffer catches up whenever it is next composed.
+  const MenuView* menu = nullptr;
+  bool menu_dirty = false;  // the view changed since the last composition
 };
 
 struct OsdComposeOut {
@@ -35,7 +43,7 @@ struct OsdComposeOut {
   int gs_reclaimed = 0;
 };
 
-// Owns everything about "what is on OSD buffer i", for both layers, and
+// Owns everything about "what is on OSD buffer i", for every layer, and
 // composes one buffer at a time.
 //
 // THE INVARIANT THE WHOLE DESIGN RESTS ON: a buffer only ever reaches the
@@ -79,6 +87,12 @@ struct OsdComposeOut {
 // draws it independently of compose_screen() -- the burn's cadence is
 // whatever the live recorder's housekeeping loop calls it at, not the
 // screen's publish state.
+//
+// The settings menu is a third layer, composed last so it wins every
+// collision, and on the screen only: it has two lineages (menu_[0],
+// menu_[1], one per DRM buffer, because a MenuLayer erases its own old
+// boxes only in the buffer it painted them into) and no burn twin, so a
+// recording never shows it.
 class OsdComposer {
  public:
   // Rect-scoped index-map update for the burned DVR. Never called with a
@@ -132,6 +146,28 @@ class OsdComposer {
   // per-iteration path makes.
   bool set_burn_size(int w, int h, std::string* err);
 
+  // The menu's two lineages, one per buffer; there is no burn twin. Like
+  // set_gs(), a replacement over a drawn menu goes through drop_menu()
+  // first, or the old boxes stay on the buffers.
+  void set_menu(std::unique_ptr<MenuLayer> b0, std::unique_ptr<MenuLayer> b1);
+  // The menu switched off: both layers go now, and each buffer's last menu
+  // area is erased by its next composition, which redraws the MSP grid and
+  // the GS bar under it whole. When a buffer held it, wants() is true until
+  // the screen has been composed once. The burn canvas never held it, so
+  // nothing reaches the recorder.
+  void drop_menu();
+  // Lays out both menu layers at the screen size. On failure drops both
+  // (menu_present() goes false) and sets *err.
+  bool menu_layout(int w, int h, std::string* err);
+  bool menu_present() const { return menu_[0] != nullptr; }
+  // Forwards the clock to both menu layers, for a busy row's dots and sweep
+  // bar. Call before wants(): a step change on a busy row is a change the
+  // screen has to show.
+  void menu_tick(uint64_t now_ms);
+  // The operator's menu size, to both buffers' layers (MenuLayer::set_scale):
+  // the next composition redraws the menu at it with no new view.
+  void menu_set_scale(double scale);
+
   // Lays out gs_[0] and gs_[1] at screen_w x screen_h, and gs_[2] at the
   // same size UNLESS a burn size is set (set_burn_size), in which case
   // gs_[2] keeps that size instead -- the burn's own geometry outlives a
@@ -152,15 +188,30 @@ class OsdComposer {
   // still carried a grid. Says nothing about the burn half: compose_burn()
   // runs on its own trigger, not this one.
   // Also true while the screen is owed a composition by drop_raster(),
-  // drop_gs_layers() or forget_screen(), and while a running recording's
-  // canvas still holds a dropped layer.
+  // drop_gs_layers(), drop_menu() or forget_screen(), and while a running
+  // recording's canvas still holds a dropped layer. For the menu: true on
+  // in.menu_dirty, and while the lineage of the buffer composed last -- the
+  // one the screen shows -- has a change it has not painted (a busy row's
+  // animation step, a redraw owed by an invalidation). The other lineage
+  // being behind is not a trigger, for the same reason as the MSP grid's.
   bool wants(const OsdComposeIn& in) const;
 
+  // The burn half's own trigger: the same MSP/GS reasons as wants(), minus
+  // screen_owed_ and the menu block -- a menu change (cursor move, the busy
+  // sweep) is never a reason to run compose_burn(), because the recording
+  // can never show it. screen_owed_ is excluded too: whatever part of it a
+  // dropped raster or GS layer owes the burn canvas is already carried by
+  // burn_erase_ (checked here), and the rest -- a menu drop, a rebuilt
+  // presenter -- is screen-only.
+  bool wants_burn(const OsdComposeIn& in) const;
+
   // The screen half of compose(): MSP draw-or-blank, GS collision reclaim,
-  // GS update into buffer idx. Leaves buffer `idx` current in both layers.
+  // GS update, then the menu over everything the other two wrote, into
+  // buffer idx. Leaves buffer `idx` current in every layer.
   OsdComposeOut compose_screen(int idx, const Surface& s, const OsdComposeIn& in);
 
   // The burn half: the burn lineages into the canvas, then the burn sink.
+  // Never the menu.
   // Runs with or without compose_screen() this iteration -- the live
   // recorder's housekeeping calls this every iteration it is running,
   // independent of whether the screen's publish state wanted a
@@ -176,12 +227,20 @@ class OsdComposer {
   // Drops all three GS lineages: the all-or-none rule of gs_layout().
   void drop_gs();
   // Forgets which MSP cells buffer idx holds (keeping where its grid is,
-  // which a later stale-blank needs) and invalidates its GS layer, so the
-  // next composition into it redraws both layers whole.
+  // which a later stale-blank needs) and invalidates its GS and menu layers,
+  // so the next composition into it redraws every layer whole.
   void forget_buffer(int idx);
 
   OsdRaster* raster_ = nullptr;
   std::unique_ptr<GsLayer> gs_[3];
+  std::unique_ptr<MenuLayer> menu_[2];
+  // The buffer compose_screen() last drew into: the one a publish puts on
+  // screen, so the menu lineage wants() asks about.
+  int last_idx_ = 0;
+  // The current menu view. Owned here rather than left in each lineage,
+  // whose view is only what it painted last: a buffer composed after the
+  // view was handed over would otherwise repaint the old one.
+  MenuView menu_view_;
   BurnSink burn_;
 
   ShadowGrid shadow_[2], pre_, burn_shadow_;
@@ -259,6 +318,11 @@ class OsdComposer {
   // collisions with its own repaints.
   std::vector<DirtyRect> msp_write_, gs_rects_, burn_rects_, gs_reclaim_;
   std::vector<DirtyRect> burn_msp_write_, burn_gs_rects_;
+  // under_: every rect the MSP and GS layers wrote into the display buffer
+  // this composition, which the menu repaints over. menu_erased_: the old
+  // menu boxes its paint zeroed; repair_: what restoring the layers under
+  // them has to cover.
+  std::vector<DirtyRect> under_, menu_erased_, repair_;
 };
 
 }  // namespace maburplay

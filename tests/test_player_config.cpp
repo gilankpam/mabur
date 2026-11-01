@@ -297,12 +297,65 @@ TEST(input_rec_rejects_a_missing_pin_bad_bias_and_unknown_keys) {
   threw = false;
   try { maburplay::load_config(write_tmp_play("[input.menu]\npin = 11\n")); }
   catch (const std::exception&) { threw = true; }
-  CHECK(threw);  // one button, one job
+  CHECK(threw);  // "menu" is not one of the known input tables
 
   threw = false;
   try { maburplay::load_config(write_tmp_play("[input.rec]\npin = 0\n")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw);  // pin range floor
+}
+
+TEST(menu_button_tables_parse_like_rec) {
+  auto c = maburplay::load_config(write_tmp_play(
+      "backend = \"null\"\n\n"
+      "[input.up]\npin = 11\n"
+      "[input.down]\npin = 13\nactive_low = false\nbias = \"none\"\n"
+      "[input.left]\npin = 15\n"
+      "[input.right]\npin = 16\n"));
+  CHECK(c.input.up.configured && c.input.up.pin == 11 && c.input.up.active_low);
+  CHECK(c.input.down.configured && !c.input.down.active_low && c.input.down.bias == "none");
+  CHECK(!c.input.sel.configured);
+  CHECK(maburplay::menu_buttons_wired(c.input));
+}
+
+TEST(a_menu_button_table_without_pin_is_refused) {
+  std::string msg;
+  try { maburplay::load_config(write_tmp_play("[input.left]\nactive_low = true\n")); }
+  catch (const std::exception& e) { msg = e.what(); }
+  CHECK(msg.find("input.left.pin: required") != std::string::npos);
+}
+
+TEST(a_partial_menu_wiring_is_not_wired) {
+  auto c = maburplay::load_config(write_tmp_play(
+      "backend = \"null\"\n\n"
+      "[input.up]\npin = 11\n"
+      "[input.down]\npin = 13\n"
+      "[input.left]\npin = 15\n"));
+  CHECK(!maburplay::menu_buttons_wired(c.input));  // right absent
+
+  c = maburplay::load_config(write_tmp_play(
+      "backend = \"null\"\n\n[input.sel]\npin = 18\n"));
+  CHECK(!maburplay::menu_buttons_wired(c.input));  // sel alone is not the menu wiring
+}
+
+TEST(an_unknown_input_table_is_refused) {
+  bool threw = false;
+  try { maburplay::load_config(write_tmp_play("[input.menu]\npin = 11\n")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw);
+}
+
+TEST(absent_menu_button_tables_are_not_reported_as_defaults) {
+  std::vector<std::string> defaulted;
+  maburplay::load_config(
+      write_tmp_play("backend = \"null\"\n\n[input.rec]\npin = 32\n"), &defaulted);
+  for (const std::string& d : defaulted) {
+    CHECK(d.find("input.up") == std::string::npos);
+    CHECK(d.find("input.down") == std::string::npos);
+    CHECK(d.find("input.left") == std::string::npos);
+    CHECK(d.find("input.right") == std::string::npos);
+    CHECK(d.find("input.sel") == std::string::npos);
+  }
 }
 
 TEST(display_vsync_defaults) {
@@ -389,7 +442,7 @@ TEST(player_load_config_reports_defaulted_keys) {
   maburplay::load_config(path, &defaulted);
   bool saw_key = false, saw_section = false;
   for (const std::string& d : defaulted) {
-    if (d == "screen_mode=1920x1080@60") saw_key = true;   // top-level
+    if (d == "screen_mode=auto") saw_key = true;   // top-level
     if (d == "display=(section absent)") saw_section = true;
   }
   CHECK(saw_key);
@@ -456,6 +509,39 @@ TEST(bundle_default_sets_every_known_key) {
   for (const std::string& d : defaulted)
     std::fprintf(stderr, "  bundle leaves defaulted: %s\n", d.c_str());
   CHECK(defaulted.empty());
+}
+
+TEST(menu_show_advanced_parses_and_defaults_false) {
+  auto on = maburplay::load_config(write_tmp_play("[menu]\nshow_advanced = true\n"));
+  CHECK(on.menu.show_advanced);
+  // Absent block: off, so a pre-menu config boots unchanged.
+  std::vector<std::string> defaulted;
+  auto off = maburplay::load_config(write_tmp_play("backend = \"null\"\n"), &defaulted);
+  CHECK(!off.menu.show_advanced);
+}
+
+TEST(menu_scale_parses_and_defaults_normal) {
+  auto big = maburplay::load_config(write_tmp_play("[menu]\nscale = \"larger\"\n"));
+  CHECK(big.menu.scale == "larger");
+  std::vector<std::string> defaulted;
+  auto dflt = maburplay::load_config(write_tmp_play("backend = \"null\"\n"), &defaulted);
+  CHECK(dflt.menu.scale == "normal");
+}
+
+TEST(a_menu_scale_outside_the_three_steps_is_refused) {
+  CHECK(load_throws("[menu]\nscale = \"huge\"\n"));
+  CHECK(load_throws("[menu]\nscale = \"1.5\"\n"));
+  CHECK(load_throws("[menu]\nscale = 1.5\n"));
+}
+
+TEST(menu_scale_factor_per_step) {
+  CHECK(maburplay::menu_scale_factor("normal") == 1.0);
+  CHECK(maburplay::menu_scale_factor("large") == 1.25);
+  CHECK(maburplay::menu_scale_factor("larger") == 1.5);
+}
+
+TEST(an_unknown_menu_key_is_refused) {
+  CHECK(load_throws("[menu]\nshow_advnaced = true\n"));
 }
 
 TEST(colortrans_enable_key) {
@@ -602,6 +688,26 @@ TEST(screen_mode_must_parse) {
   CHECK(c.screen_mode == "1920x1080@59.94");
   CHECK(load_throws("screen_mode = \"1920x1080@60mhz\"\n"));
   CHECK(load_throws("screen_mode = \"1080p\"\n"));
+}
+
+TEST(screen_mode_accepts_auto_and_size) {
+  CHECK(maburplay::load_config(write_tmp_play("screen_mode = \"auto\"\n")).screen_mode ==
+        "auto");
+  CHECK(maburplay::load_config(write_tmp_play("screen_mode = \"1280x720\"\n")).screen_mode ==
+        "1280x720");
+  const auto b = maburplay::load_config(
+      std::string(MABUR_PLAY_BUNDLE_DIR) + "/maburplay.default.toml");
+  CHECK(b.screen_mode == "auto");
+}
+
+TEST(screen_mode_rejects_junk) {
+  std::string msg;
+  try { maburplay::load_config(write_tmp_play("screen_mode = \"big\"\n")); }
+  catch (const std::exception& e) { msg = e.what(); }
+  CHECK(msg.find("screen_mode") != std::string::npos);
+  CHECK(msg.find("\"auto\", WIDTHxHEIGHT or WIDTHxHEIGHT@RATE") != std::string::npos);
+  CHECK(load_throws("screen_mode = \"AUTO\"\n"));
+  CHECK(load_throws("screen_mode = \"1280x\"\n"));
 }
 
 TEST(bundle_ships_the_phase_lock_on) {

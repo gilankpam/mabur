@@ -74,14 +74,17 @@ Encoding the mode's own size keeps all its detail but costs encoder time:
 ## The ground station
 
 The GS output has to run at the drone's rate for the phase lock to hold
-(`docs/phase-lock.md`): set `screen_mode` to a mode the display offers at
-that rate. The player picks only modes the sink's EDID lists, within 0.5 Hz
-of the request, and otherwise falls back to the sink's preferred mode (a
-log line). Known sinks:
+(`docs/phase-lock.md` "Configuration"). With `screen_mode = "auto"` (the
+bundle) or a bare size (`"1920x1080"`) the display follows the camera: it
+moves to the largest mode (or that size) the sink's EDID lists within
+0.5 Hz of the drone's measured rate. A pinned `"WxH@RATE"` does not follow;
+it is matched within 0.5 Hz and otherwise falls back to the sink's
+preferred mode (a log line). Known sinks:
 
 - Avatar Goggles X: 1280x720@100.000 and 1920x1080@100.000 only above
-  60 Hz; range limits 50–76 Hz otherwise, so no 90 Hz. Use
-  `screen_mode = "1920x1080@100"` with a 91–100 fps drone.
+  60 Hz; range limits 50–76 Hz otherwise, so no 90 Hz. `"auto"` runs a
+  91–100 fps drone at 1920x1080@100; a 90 fps drone has no matching mode
+  and is shown at 100 Hz (judder) with the rate mismatch standing.
 
 When the drone's measured rate and the panel's refresh are too far apart
 for the phase lock (more than 0.55 Hz: a wrong `venc.fps`, or a sink that

@@ -91,7 +91,7 @@ bool RecButton::resolve_pin(int pin, std::string* chip_path, unsigned* offset,
   return found;
 }
 
-bool RecButton::open(const RecButtonCfg& cfg, std::string* err) {
+bool RecButton::open(const RecButtonCfg& cfg, std::string* err, const char* consumer) {
   // A repeat open() on an already-open object must not leak the previous
   // line fd: close it before re-resolving and re-requesting.
   if (line_fd_ >= 0) {
@@ -119,7 +119,7 @@ bool RecButton::open(const RecButtonCfg& cfg, std::string* err) {
   } else {
     req.config.flags |= GPIO_V2_LINE_FLAG_BIAS_DISABLED;
   }
-  std::snprintf(req.consumer, sizeof(req.consumer), "maburplay_rec");
+  std::snprintf(req.consumer, sizeof(req.consumer), "%s", consumer);
 
   if (::ioctl(chip_fd, GPIO_V2_GET_LINE_IOCTL, &req) != 0 || req.fd < 0) {
     const int e = errno;
@@ -143,23 +143,44 @@ bool RecButton::open(const RecButtonCfg& cfg, std::string* err) {
   return true;
 }
 
-bool RecButton::poll(uint64_t now_ms) {
-  if (line_fd_ < 0) return false;
+RecButton::SampleResult RecButton::sample_raw(bool* bit, const char* label) {
+  if (line_fd_ < 0) return SampleResult::kClosed;
   struct gpio_v2_line_values v {};
   v.mask = 1;
   if (::ioctl(line_fd_, GPIO_V2_LINE_GET_VALUES_IOCTL, &v) != 0) {
     if (++io_errors_ >= kMaxIoErrors) {
+      // Built only here, on the kMaxIoErrors path, not on every sample:
+      // read_level() is called every 2 ms and has no other use for it.
+      const std::string context =
+          label ? std::string(label)
+                : "button line " + chip_path_ + "/" + std::to_string(offset_);
       std::fprintf(stderr,
-                   "maburplay: rec button: %d consecutive read failures (%s) -- "
-                   "button disabled for the rest of this run\n",
-                   io_errors_, std::strerror(errno));
+                   "maburplay: %s: %d consecutive read failures (%s) -- "
+                   "disabled for the rest of this run\n",
+                   context.c_str(), io_errors_, std::strerror(errno));
       ::close(line_fd_);
       line_fd_ = -1;
+      return SampleResult::kClosed;
     }
-    return false;
+    return SampleResult::kIoError;
   }
   io_errors_ = 0;
-  return deb_.feed((v.bits & 1u) != 0, now_ms);
+  *bit = (v.bits & 1u) != 0;
+  return SampleResult::kOk;
+}
+
+bool RecButton::poll(uint64_t now_ms) {
+  bool bit = false;
+  if (sample_raw(&bit, "rec button") != SampleResult::kOk) return false;
+  return deb_.feed(bit, now_ms);
+}
+
+std::optional<bool> RecButton::read_level(uint64_t now_ms) {
+  bool bit = false;
+  const SampleResult r = sample_raw(&bit, nullptr);
+  if (r == SampleResult::kClosed) return std::nullopt;
+  if (r == SampleResult::kOk) deb_.feed(bit, now_ms);
+  return deb_.level();  // kOk: the just-fed level; kIoError: the last accepted one
 }
 
 // RecButtonSetLineFdForTest is declared in rec_button.h (required for the

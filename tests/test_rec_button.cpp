@@ -191,4 +191,31 @@ TEST(reopening_an_already_open_button_closes_the_old_line_fd) {
   ::close(fds[1]);
 }
 
+// read_level() is the menu buttons' path: one ioctl, fed to the debouncer,
+// the accepted level handed back (not an edge). A pipe fd fails every GPIO
+// ioctl with ENOTTY -- the same deterministic failure the EBADF test above
+// relies on -- so the line stays open and reports the debouncer's default
+// (unseeded, false) level until kMaxIoErrors consecutive failures close it,
+// after which every further call is std::nullopt.
+TEST(read_level_reports_the_accepted_level_through_the_seeded_fd) {
+  int fds[2];
+  CHECK(::pipe(fds) == 0);
+
+  maburplay::RecButton b;
+  maburplay::RecButtonSetLineFdForTest(b, fds[0]);
+  CHECK(b.is_open());
+
+  for (uint64_t i = 0; i < 9; ++i) {
+    auto lvl = b.read_level(i);
+    REQUIRE(lvl);
+    CHECK(*lvl == false);
+    CHECK(b.is_open());
+  }
+  CHECK(!b.read_level(9));   // the 10th consecutive failure closes the line
+  CHECK(!b.is_open());
+  CHECK(!b.read_level(10));  // closed: every further call is nullopt too
+
+  ::close(fds[1]);
+}
+
 MTEST_MAIN

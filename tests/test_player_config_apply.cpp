@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <fstream>
 #include <functional>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -83,6 +84,7 @@ struct ScratchPlayerBundle {
 struct PFake {
   std::vector<Config> reacquire_calls;
   std::vector<Config> osd_calls;
+  std::vector<Config> menu_calls;
   int next_start_calls = 0;
   bool reacquire_ok = true;
   std::string reacquire_err;
@@ -99,6 +101,7 @@ struct PFake {
       return true;
     };
     h.next_start = [this](const Config&) { ++next_start_calls; };
+    h.menu = [this](const Config& c) { menu_calls.push_back(c); };
     return h;
   }
 };
@@ -118,22 +121,28 @@ PlayerApplyResult drive(PlayerConfigApplier& a) {
 
 }  // namespace
 
-TEST(player_live_table_has_nine_keys) {
-  REQUIRE(kPlayerLiveKeys.size() == 9);
+TEST(player_live_table_has_eleven_keys) {
+  REQUIRE(kPlayerLiveKeys.size() == 11);
   CHECK(std::string(kPlayerLiveKeys[0].key) == "screen_mode");
   CHECK(std::string(kPlayerLiveKeys[8].key) == "dvr.burned.size");
+  CHECK(std::string(kPlayerLiveKeys[9].key) == "menu.show_advanced");
+  CHECK(std::string(kPlayerLiveKeys[10].key) == "menu.scale");
   CHECK(player_live_key("backend") == nullptr);
 }
 
 TEST(render_player_live_value_renders_each_type) {
   Config c = bundle();
-  CHECK(render_player_live_value(c, *player_live_key("screen_mode")) == "\"1920x1080@60\"");
+  CHECK(render_player_live_value(c, *player_live_key("screen_mode")) == "\"auto\"");
   CHECK(render_player_live_value(c, *player_live_key("osd.gs.enable")) == "true");
   CHECK(render_player_live_value(c, *player_live_key("dvr.burned.bitrate_kbps")) == "8000");
   CHECK(render_player_live_value(c, *player_live_key("dvr.burned.size")) == "\"\"");
   c.dvr.burned.size_w = 1280;
   c.dvr.burned.size_h = 720;
   CHECK(render_player_live_value(c, *player_live_key("dvr.burned.size")) == "\"1280x720\"");
+  CHECK(render_player_live_value(c, *player_live_key("menu.show_advanced")) == "false");
+  c.menu.show_advanced = true;
+  CHECK(render_player_live_value(c, *player_live_key("menu.show_advanced")) == "true");
+  CHECK(render_player_live_value(c, *player_live_key("menu.scale")) == "\"normal\"");
 }
 
 TEST(player_apply_rule_presenter_only_when_the_osd_plane_want_changes) {
@@ -147,6 +156,15 @@ TEST(player_apply_rule_presenter_only_when_the_osd_plane_want_changes) {
   CHECK(player_apply_rule(*player_live_key("screen_mode"), b, a) == PlayerApplyRule::Presenter);
   CHECK(player_apply_rule(*player_live_key("colortrans.enable"), b, a) == PlayerApplyRule::Presenter);
   CHECK(player_apply_rule(*player_live_key("dvr.burned.every"), b, a) == PlayerApplyRule::NextStart);
+}
+
+TEST(player_apply_rule_menu_for_show_advanced) {
+  Config b = bundle();
+  Config a = b;
+  a.menu.show_advanced = !a.menu.show_advanced;
+  CHECK(player_apply_rule(*player_live_key("menu.show_advanced"), b, a) == PlayerApplyRule::Menu);
+  a.menu.scale = "large";
+  CHECK(player_apply_rule(*player_live_key("menu.scale"), b, a) == PlayerApplyRule::Menu);
 }
 
 TEST(player_applier_screen_mode_reacquires_then_publishes) {
@@ -259,6 +277,39 @@ TEST(player_applier_next_start_keys_apply_without_a_park) {
   CHECK(load_config(sb.path()).dvr.target == "both");
 }
 
+TEST(a_menu_set_calls_the_menu_hook_and_publishes) {
+  ScratchPlayerBundle sb;
+  PFake f;
+  PlayerConfigApplier a(sb.path(), bundle(), BuildCaps{true, false}, f.hooks(), nullptr);
+  std::string why;
+  REQUIRE(a.submit("menu.show_advanced", "true", &why));
+  PlayerApplyResult r = drive(a);
+  CHECK(r.ok);
+  CHECK(f.reacquire_calls.empty());
+  CHECK(f.osd_calls.empty());
+  CHECK(f.next_start_calls == 0);
+  REQUIRE(f.menu_calls.size() == 1);
+  CHECK(f.menu_calls[0].menu.show_advanced);
+  CHECK(a.live().menu.show_advanced);
+  CHECK(slurp(sb.path()).find("show_advanced = true") != std::string::npos);
+}
+
+TEST(a_menu_scale_set_calls_the_menu_hook_and_publishes) {
+  ScratchPlayerBundle sb;
+  PFake f;
+  PlayerConfigApplier a(sb.path(), bundle(), BuildCaps{true, false}, f.hooks(), nullptr);
+  std::string why;
+  REQUIRE(a.submit("menu.scale", "\"larger\"", &why));
+  PlayerApplyResult r = drive(a);
+  CHECK(r.ok);
+  CHECK(f.reacquire_calls.empty());
+  CHECK(f.osd_calls.empty());
+  REQUIRE(f.menu_calls.size() == 1);
+  CHECK(f.menu_calls[0].menu.scale == "larger");
+  CHECK(a.live().menu.scale == "larger");
+  CHECK(slurp(sb.path()).find("scale = \"larger\"") != std::string::npos);
+}
+
 TEST(player_applier_osd_switch_keeping_the_plane_opens_layers_in_place) {
   ScratchPlayerBundle sb;
   PFake f;
@@ -282,11 +333,12 @@ TEST(player_applier_refuses_an_unset_hook) {
   // thread at the first set that reaches it; the constructor says so first.
   ScratchPlayerBundle sb;
   PFake f;
-  for (int missing = 0; missing < 3; ++missing) {
+  for (int missing = 0; missing < 4; ++missing) {
     PlayerApplyHooks h = f.hooks();
     if (missing == 0) h.reacquire_display = nullptr;
     if (missing == 1) h.osd_layers = nullptr;
     if (missing == 2) h.next_start = nullptr;
+    if (missing == 3) h.menu = nullptr;
     bool threw = false;
     try {
       PlayerConfigApplier a(sb.path(), bundle(), BuildCaps{true, false}, h, nullptr);
@@ -352,7 +404,7 @@ TEST(player_control_handle) {
   PlayerConfigApplier a(sb.path(), bundle(), BuildCaps{true, false}, f.hooks(), nullptr);
   const std::string usage = "err usage: set <key> = <value> | get [<key>]";
   bool pending = false;
-  CHECK(PlayerConfigControl::handle("get screen_mode", a, &pending) == "ok \"1920x1080@60\"");
+  CHECK(PlayerConfigControl::handle("get screen_mode", a, &pending) == "ok \"auto\"");
   CHECK(PlayerConfigControl::handle("get backend", a, &pending) == "err not live: backend");
   CHECK(PlayerConfigControl::handle("set backend = \"null\"", a, &pending) == "err not live: backend");
   CHECK(PlayerConfigControl::handle("bogus", a, &pending) == usage);
@@ -360,7 +412,7 @@ TEST(player_control_handle) {
   CHECK(PlayerConfigControl::handle("", a, &pending) == usage);
   CHECK(!pending);
   const std::string all = PlayerConfigControl::handle("get", a, &pending);
-  CHECK(all.rfind("ok\nscreen_mode = \"1920x1080@60\"\ncolortrans.enable = true\n", 0) == 0);
+  CHECK(all.rfind("ok\nscreen_mode = \"auto\"\ncolortrans.enable = true\n", 0) == 0);
   CHECK(all.find("\ndvr.burned.size = \"\"\n") != std::string::npos);
   CHECK(PlayerConfigControl::handle("set dvr.burned.every = 2\n", a, &pending).empty());
   CHECK(pending);
@@ -369,6 +421,90 @@ TEST(player_control_handle) {
   CHECK(!pending);
   drive(a);
   CHECK(PlayerConfigControl::handle("get dvr.burned.every", a, &pending) == "ok 2");
+}
+
+// LiveConfigControl::extra_verb (common/include/mabur/live_apply.h): the
+// hook maburplay registers under MABUR_MENU_DEBUG. maburgs never sets it,
+// so its own get/set behaviour must be exactly as above with no hook.
+TEST(an_extra_verb_answers_and_unknown_verbs_still_get_usage) {
+  ScratchPlayerBundle sb;
+  PFake f;
+  PlayerConfigApplier a(sb.path(), bundle(), BuildCaps{true, false}, f.hooks(), nullptr);
+  const std::string usage = "err usage: set <key> = <value> | get [<key>]";
+  const PlayerConfigControl::ExtraVerb hook =
+      [](const std::string& verb, const std::string&) -> std::optional<std::string> {
+    if (verb == "ping") return std::string("ok x");
+    return std::nullopt;
+  };
+  bool pending = false;
+  CHECK(PlayerConfigControl::handle("ping", a, &pending, hook) == "ok x");
+  CHECK(!pending);
+  CHECK(PlayerConfigControl::handle("bogus", a, &pending, hook) == usage);
+  // get/set are unaffected by the hook: they never reach it.
+  CHECK(PlayerConfigControl::handle("get screen_mode", a, &pending, hook) == "ok \"auto\"");
+  CHECK(PlayerConfigControl::handle("set dvr.burned.every = 4", a, &pending, hook).empty());
+  CHECK(pending);
+  drive(a);
+  CHECK(PlayerConfigControl::handle("get dvr.burned.every", a, &pending, hook) == "ok 4");
+  // No hook at all (the default): an unknown verb still gets the usage error.
+  bool pending2 = false;
+  CHECK(PlayerConfigControl::handle("ping", a, &pending2) == usage);
+}
+
+TEST(a_local_submit_is_answered_through_take_local_result_not_udp) {
+  constexpr int kPort = 18416;  // not 8403/18413: other tests own those
+  ScratchPlayerBundle sb;
+  PFake f;
+  PlayerConfigApplier a(sb.path(), bundle(), BuildCaps{true, false}, f.hooks(), nullptr);
+  PlayerConfigControl ctl;
+  REQUIRE(ctl.open(kPort));
+  std::string why;
+  REQUIRE(ctl.submit_local(a, "osd.gs.enable", "false", &why));
+
+  const int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
+  REQUIRE(fd >= 0);
+  sockaddr_in to{};
+  to.sin_family = AF_INET;
+  to.sin_port = htons(kPort);
+  REQUIRE(inet_pton(AF_INET, "127.0.0.1", &to.sin_addr) == 1);
+  auto ask = [&](const std::string& line) {
+    REQUIRE(::sendto(fd, line.data(), line.size(), 0, reinterpret_cast<sockaddr*>(&to), sizeof(to)) ==
+            static_cast<ssize_t>(line.size()));
+    std::string reply;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (reply.empty()) {
+      REQUIRE(std::chrono::steady_clock::now() < deadline);
+      ctl.poll(a);
+      pollfd p{fd, POLLIN, 0};
+      if (::poll(&p, 1, 1) == 1) {
+        char buf[256];
+        const ssize_t n = ::recv(fd, buf, sizeof(buf), 0);
+        REQUIRE(n > 0);
+        reply.assign(buf, static_cast<size_t>(n));
+      }
+    }
+    return reply;
+  };
+  // A UDP `get` still answers from the live config while the local set
+  // is in flight.
+  CHECK(ask("get osd.gs.enable") == "ok true");
+  // A UDP `set` during the same flight gets the applier's busy refusal,
+  // same as a second UDP set would.
+  CHECK(ask("set osd.enable = false") == "err busy");
+
+  std::optional<PlayerApplyResult> r;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!r) {
+    REQUIRE(std::chrono::steady_clock::now() < deadline);
+    ctl.poll(a);
+    r = ctl.take_local_result();
+    if (!r) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  CHECK(r->ok);
+  CHECK(r->key == "osd.gs.enable");
+  CHECK(a.live().osd.gs.enable == false);
+  CHECK(!ctl.take_local_result());  // once only
+  ::close(fd);
 }
 
 TEST(player_control_answers_an_oversized_datagram_with_an_error) {

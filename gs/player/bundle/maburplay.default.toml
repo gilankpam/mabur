@@ -6,7 +6,7 @@
 ring_path   = "/dev/shm/mabur-au"   # must match maburgs' au_ring.path
 socket      = "/run/mabur-au.sock"  # must match maburgs' au_ring.socket
 backend     = "mpp"                 # "mpp" = hardware decode to the screen; "v4l2req" = Cedrus hardware decode (Orange Pi); "null" = decode nothing (testing)
-screen_mode = "1920x1080@60"        # display resolution and refresh rate
+screen_mode = "auto"                # "auto" = the largest mode the display offers at the camera's fps; "WxH" = that size at the camera's fps; "WxH@RATE" = pinned
 
 # Video recorder (DVR).
 [dvr]
@@ -45,6 +45,34 @@ pin        = 32            # pin number on the 40-pin header
 active_low = true          # button connects the pin to GND
 bias       = "pull-up"     # "pull-up" | "pull-down" | "none"
 
+# GPIO menu buttons: navigate and open the goggles menu. All four of
+# up/down/left/right are needed before the menu is wired; sel is optional.
+# Uncomment and set real pins to wire the menu.
+# [input.up]
+# pin        = 0             # pin number on the 40-pin header
+# active_low = true          # button connects the pin to GND
+# bias       = "pull-up"     # "pull-up" | "pull-down" | "none"
+
+# [input.down]
+# pin        = 0             # pin number on the 40-pin header
+# active_low = true          # button connects the pin to GND
+# bias       = "pull-up"     # "pull-up" | "pull-down" | "none"
+
+# [input.left]
+# pin        = 0             # pin number on the 40-pin header
+# active_low = true          # button connects the pin to GND
+# bias       = "pull-up"     # "pull-up" | "pull-down" | "none"
+
+# [input.right]
+# pin        = 0             # pin number on the 40-pin header
+# active_low = true          # button connects the pin to GND
+# bias       = "pull-up"     # "pull-up" | "pull-down" | "none"
+
+# [input.sel]
+# pin        = 0             # pin number on the 40-pin header
+# active_low = true          # button connects the pin to GND
+# bias       = "pull-up"     # "pull-up" | "pull-down" | "none"
+
 # Frame timing: shows each frame in step with the screen's refresh for
 # steady, low-latency video.
 [display]
@@ -66,3 +94,8 @@ enable = true
 # Video decoder.
 [decoder]
 stream = true              # start decoding a picture slice by slice as it arrives (needs a GS image whose decoder streams: the Radxa stream-mode image, or the Orange Pi image's patched libavcodec); false = decode whole pictures
+
+# Goggles menu shell.
+[menu]
+show_advanced = false      # show the menu's advanced rows as well as the everyday ones
+scale = "normal"           # menu size: "normal", "large" (x1.25) or "larger" (x1.5); the OSDs keep their size

@@ -4,8 +4,10 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "colortrans.h"  // CubicLut
+#include "mode_pick.h"   // ModeCand
 #include "osd_raster.h"  // Surface (host-buildable; pulls in no DRM headers)
 #include "present_sink.h"
 #include "video_backend.h"
@@ -59,8 +61,19 @@ class DrmPresenter : public PresentSink {
   DrmPresenter(const DrmPresenter&) = delete;
   DrmPresenter& operator=(const DrmPresenter&) = delete;
 
-  // Opens /dev/dri/card0, picks a connected connector + mode (parsed from
-  // screen_mode, "WIDTHxHEIGHT@FPS") + an NV12-capable plane, and does the
+  // The mode list of the connector init() would drive (the same pick: a
+  // connected HDMI-A-* one, else the first other connected one), read on a
+  // fresh open of /dev/dri/card0 so it works with no presenter running.
+  // Lets the caller resolve screen_mode's "auto" / "WxH" forms into one
+  // mode before init(). Empty, with *err saying why, when there is no
+  // card, no connected connector, or a connector listing no modes (a
+  // failed EDID read). Probes the connector (DDC traffic): not for a
+  // periodic check -- modes() is the running presenter's list.
+  static std::vector<ModeCand> probe_modes(std::string* err);
+
+  // Opens /dev/dri/card0, picks a connected connector + mode (resolved_mode,
+  // "WIDTHxHEIGHT@RATE", already resolved by the caller from screen_mode
+  // with pick_display_mode) + an NV12-capable plane, and does the
   // one-time atomic setup. `release` is called (possibly re-entrantly from
   // inside present()/poll_events()/drop_all()) whenever the presenter is
   // done with a frame it was handed.
@@ -79,8 +92,26 @@ class DrmPresenter : public PresentSink {
   // ~86,000 lines a day into /tmp/maburplay.log, which is tmpfs on the GS.
   // The caller reports the episode instead: one line when retrying starts,
   // one when a display is acquired.
-  bool init(const std::string& screen_mode, bool want_osd, ReleaseFn release,
-            bool log_failures = true);
+  //
+  // `device_fd` >= 0 is an open /dev/dri/card0 to drive instead of a fresh
+  // open -- the one retire() handed back -- and the presenter owns it from
+  // here on, failure included.
+  bool init(const std::string& resolved_mode, bool want_osd, ReleaseFn release,
+            bool log_failures = true, int device_fd = -1);
+
+  // Destroys `p` -- every frame, buffer and blob released as by its
+  // destructor -- but hands back its /dev/dri/card0 descriptor still open
+  // instead of closing it (-1 when it had none), for the next presenter's
+  // init(). Closing the descriptor ends this process's hold on the display
+  // and the kernel's fbdev console takes it straight back at its own mode
+  // (1280x720@60), so a rebuild that closed and reopened would show the
+  // sink two mode changes ~200 ms apart. Kept open, the CRTC stays on the
+  // old mode with its planes off until the next presenter's init(), which
+  // turns the output off for a while first when it changes the mode (see
+  // kModeChangeOffUs). Page-flip events still in flight are drained and
+  // discarded first: they carry this presenter's pointer, which the next
+  // one's poll_events() would otherwise dereference.
+  static int retire(std::unique_ptr<DrmPresenter> p);
 
   // Takes ownership of `frame` unconditionally (see class comment) and
   // returns whether it was actually queued for scanout (false = dropped,
@@ -165,11 +196,28 @@ class DrmPresenter : public PresentSink {
   // A published back buffer has not been committed yet, or the commit that
   // carried it has not flipped (release thread or housekeeping).
   bool osd_publish_pending() const override;
+  // Lets the settings menu take the splash's plane before any video has
+  // ever been shown (docs/gs-menu.md "Before the first video frame"),
+  // driven every tick from SplashMenuGate (splash_menu.h) in main.cpp:
+  // while true, commit_osd_if_pending() below ignores splash_active's
+  // hold on a standalone OSD commit. In the osd_on_primary topology that
+  // commit does re-point the primary's FB_ID at the OSD's own buffer, but
+  // `splash_active` itself is deliberately left set -- present()'s own
+  // hand-off, on the first real video frame, is still what clears it,
+  // frees the splash's buffer, and (re)states the video plane's zpos and
+  // the colortrans CTM, none of which this commit touches. In the
+  // topologies where the OSD has a plane of its own above the splash this
+  // changes nothing beyond the gate: that commit only ever touched its
+  // own plane, so the splash stays up underneath exactly as before.
+  // Housekeeping thread.
+  void set_osd_over_splash(bool allow);
+
   // The standalone OSD commit: the published back buffer shown on its own,
   // when no video commit is coming to carry it. Runs only when the OSD is
-  // pending, no flip is in flight, the CRTC is up with no splash on it, and
-  // video and the last OSD commit have both been quiet for 100 ms. Blocking
-  // (at most one vsync). Release thread.
+  // pending, no flip is in flight, the CRTC is up with no splash on it (or
+  // set_osd_over_splash(true) says to show it anyway), and video and the
+  // last OSD commit have both been quiet for 100 ms. Blocking (at most one
+  // vsync). Release thread.
   void commit_osd_if_pending() override;
 
   // OSD-attributed atomic-commit failures. Deliberately NOT folded into
@@ -252,6 +300,13 @@ class DrmPresenter : public PresentSink {
   // the display does not offer is refused without tearing the display
   // down. Reads the connector's current mode list (no re-probe).
   bool offers_mode(const std::string& screen_mode) const;
+
+  // The connector's mode list as init() picked from it, and the index of
+  // the committed mode in it: what the display-follow rule judges the
+  // running mode by, with no connector I/O. Valid after init() succeeds;
+  // a hotplug rebuilds the presenter and so re-reads the list.
+  const std::vector<ModeCand>& modes() const;
+  int mode_index() const;
 
   // Whether the connector this presenter drives still reads connected.
   // drmModeGetConnectorCurrent: the status the kernel's HPD handling last

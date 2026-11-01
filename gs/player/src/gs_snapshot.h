@@ -49,6 +49,10 @@ struct GsSnapshot {
   // pick rather than the configured home. False when the block is absent
   // (older maburgs) or malformed.
   bool scan_auto = false;
+  // scan.pinned: the operator has pinned the channel (pinned mode,
+  // docs/channel-select.md), so the link never hops on its own. False when
+  // the block is absent or the key is not a bool.
+  bool pinned = false;
   // In-flight channel hop (keyed on scan.pick; there is no link.home):
   // true only while `channel` equals hop.target AND
   // scan.pick is present (non-null -- the GS has frozen its boot pick, or
@@ -67,6 +71,9 @@ struct GsSnapshot {
   // (link pairing). False when the block is absent (older
   // maburgs) or state is any other value.
   bool key_mismatch = false;
+  // link.state == "session": the drone is linked. False for any other
+  // state ("beaconing", "key_mismatch") and when the key is absent.
+  bool session = false;
   // drone.low_power (Telem flags bit7): the drone is
   // deliberately at its pre-arm low-power operating point (1 Mb/s /
   // 15 fps) because the FC reports DISARMED. False when the drone block is
