@@ -88,8 +88,8 @@ DEFAULT_SIZES = [19, 21, 22, 24, 26, 34, 38, 56]
 # U+00D7 and U+2260 are drawn by the settings menu: × by size_label()
 # ("1920×1080 @ 100 Hz" on the Display row's resolution picker, and the
 # burned-recording Size row's own "1920×1080" choices), ≠ by the Display
-# row's "≠ camera" warning. U+2026 has no committed menu string yet; it
-# stays reserved for row truncation.
+# row's "≠ camera" warning. U+2026 is drawn by the "Reading GS settings…"
+# toast.
 MENU_GLYPHS = [
     0x00B7,  # ·  MIDDLE DOT, picker separator
     0x00D7,  # ×  MULTIPLICATION SIGN, resolution "WxH" (size_label(): Display, rec.burn.size)
@@ -103,7 +103,7 @@ MENU_GLYPHS = [
     0x26A0,  # ⚠  WARNING SIGN, row warning
     0x2713,  # ✓  CHECK MARK, saved/confirmed
     0x2717,  # ✗  BALLOT X, failed
-    0x2026,  # …  HORIZONTAL ELLIPSIS, reserved for row truncation
+    0x2026,  # …  HORIZONTAL ELLIPSIS, drawn by the "Reading GS settings…" toast
     0x2260,  # ≠  NOT EQUAL TO, Display row's "≠ camera" warning
 ]
 
