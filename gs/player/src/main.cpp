@@ -2360,9 +2360,12 @@ int main(int argc, char** argv) {
       menu.tick(now_ms);
       menu_model.set_linked(gs_src && !gs_src->stale(now_ms) && gs_src->snapshot().session);
       menu_model.set_show_advanced(cfg.menu.show_advanced);
-      // A no-op unless a live set just changed it; then the next
-      // composition redraws the menu at the new size.
-      composer.menu_set_scale(maburplay::menu_scale_factor(cfg.menu.scale));
+      // The size the Menu size picker is on while it is open (and while
+      // the picked size is being saved), else the saved one. A no-op
+      // unless it moved; then the next composition redraws the menu.
+      const std::string size_preview = menu_model.preview(maburplay::kMenuSizeRow);
+      composer.menu_set_scale(
+          maburplay::menu_scale_factor(size_preview.empty() ? cfg.menu.scale : size_preview));
     }
     // Every iteration: sends on change, re-sends each second (CoreControlClient).
     core_ctl.tick(rec_on && rec_vtx, mono_ms());

@@ -572,14 +572,14 @@ std::vector<MenuNode> sys_rows(const Deps& d) {
   adv.current = [d] { return bool_text(d->cfg->menu.show_advanced); };
   adv.help = text("Shows the ADV rows in every group.");
 
-  MenuNode size = choice_row("sys.size", "Menu size", Owner::kPlayer, "menu.scale", quoted);
+  MenuNode size = choice_row(kMenuSizeRow, "Menu size", Owner::kPlayer, "menu.scale", quoted);
   size.choices = [] {
     return std::vector<Choice>{{"normal", "Normal", "", true},
                                {"large", "Large", "", true},
                                {"larger", "Larger", "", true}};
   };
   size.current = [d] { return d->cfg->menu.scale; };
-  size.help = text("Makes this menu's text and boxes bigger. The OSDs keep their size.");
+  size.help = text("Makes this menu bigger; ▲▼ shows each size, ◀ keeps the old one. The OSDs keep their size.");
 
   MenuNode debug = choice_row("sys.debug", "Debug log", Owner::kGs, "debug_log.enable");
   debug.choices = on_off;

@@ -33,6 +33,11 @@ struct MenuTreeDeps {
 
 std::vector<MenuNode> build_menu_tree(const MenuTreeDeps& d);
 
+// The System group's "Menu size" row. maburplay's loop draws the menu at
+// that row's MenuModel::preview() while one is running, so the operator
+// sees a size before saving it.
+inline constexpr const char* kMenuSizeRow = "sys.size";
+
 }  // namespace maburplay
 
 #endif  // MABUR_PLAYER_MENU_TREE_H_

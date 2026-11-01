@@ -351,6 +351,7 @@ MenuModel::Effect MenuModel::press_in_edit(Act act, uint64_t now_ms) {
   }
   edit_.reset();
   Effect e = emit(n, std::move(steps), now_ms);
+  if (!number && !e.steps.empty()) picked_[n.id] = v;
   e.repeat_off = number;
   return e;
 }
@@ -449,6 +450,7 @@ void MenuModel::apply_step(const std::string& row_id, int step_i) {
 
 void MenuModel::apply_done(const std::string& row_id, bool ok, const std::string& reason,
                            uint64_t now_ms) {
+  picked_.erase(row_id);
   Status& st = status_[row_id];
   for (size_t o = 0; o < busy_.size(); ++o)
     if (st.pending.locks[o]) busy_[o] = false;
@@ -461,6 +463,19 @@ void MenuModel::apply_done(const std::string& row_id, bool ok, const std::string
     st.state = Status::State::kErr;
     st.text = reason;
   }
+}
+
+std::string MenuModel::preview(const std::string& row_id) const {
+  if (edit_ && edit_->kind == EditKind::kChoices && edit_->node.id == row_id &&
+      !edit_->choices.empty())
+    return edit_->choices[static_cast<size_t>(edit_->cursor)].value;
+  // Only while its apply runs: a pick the applier never started (another
+  // row was running) has nothing that would ever settle it.
+  auto p = picked_.find(row_id);
+  auto st = status_.find(row_id);
+  if (p != picked_.end() && st != status_.end() && st->second.state == Status::State::kBusy)
+    return p->second;
+  return "";
 }
 
 MenuView MenuModel::view(uint64_t now_ms) const {

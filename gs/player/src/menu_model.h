@@ -132,6 +132,13 @@ class MenuModel {
   void close();
 
   MenuView view(uint64_t now_ms) const;   // pure; the times decide what is still shown
+  // What a choice row previews right now, or "" for nothing: the picker's
+  // cursor while that row's picker is open, then the value it applied for
+  // as long as that apply runs -- so a caller that shows the row's effect
+  // live (the menu size) never snaps back to the saved value in between.
+  // Cancelling the picker, closing the menu, or the apply settling (either
+  // way) ends it, and the caller falls back to the saved value.
+  std::string preview(const std::string& row_id) const;
 
  private:
   // A level is a group id (the root is "") and the cursor's index into
@@ -202,6 +209,7 @@ class MenuModel {
   std::optional<Edit> edit_;
   std::map<std::string, Status> status_;
   std::map<std::string, Pending> pending_;
+  std::map<std::string, std::string> picked_;   // a choice row's applied value, until it settles
   Locks busy_{};
 };
 

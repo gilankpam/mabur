@@ -402,6 +402,63 @@ TEST(a_changed_choice_returns_its_steps_and_locks_the_owner) {
   CHECK(!m.busy(Owner::kPlayer));
 }
 
+// A choice row's picker previews: the cursor's value while the picker is
+// open, the picked one while its apply runs, nothing once it settles or the
+// picker is cancelled -- so the caller falls back to the saved value.
+TEST(an_open_choice_picker_previews_its_cursor_and_left_drops_it) {
+  World w;
+  MenuModel m(tree(&w));
+  into_video(m);
+  CHECK(m.preview("v.colour").empty());
+  tap(m, Button::kRight);                    // picker on "true" (On)
+  CHECK(m.preview("v.colour") == "true");
+  CHECK(m.preview("v.num").empty());         // only the row being edited
+  tap(m, Button::kDown);
+  CHECK(m.preview("v.colour") == "false");
+  tap(m, Button::kLeft);                     // cancel
+  CHECK(m.view(0).picker == MenuView::Picker::kNone);
+  CHECK(m.preview("v.colour").empty());
+  tap(m, Button::kRight);
+  tap(m, Button::kDown);
+  key(m, Button::kLeft, KeyKind::kHold);     // close from the picker
+  CHECK(!m.is_open());
+  CHECK(m.preview("v.colour").empty());
+}
+
+TEST(a_picked_preview_holds_until_its_apply_settles) {
+  World w;
+  MenuModel m(tree(&w));
+  into_video(m);
+  tap(m, Button::kRight);
+  tap(m, Button::kDown);
+  auto e = tap(m, Button::kRight);           // apply "false"
+  REQUIRE(!e.steps.empty());
+  CHECK(m.view(0).picker == MenuView::Picker::kNone);
+  m.apply_started("v.colour", 1);
+  CHECK(m.preview("v.colour") == "false");   // no snap back while it applies
+  m.apply_done("v.colour", true, "", 10);
+  CHECK(m.preview("v.colour").empty());
+  // Failed: back to the saved value too.
+  tap(m, Button::kRight);
+  tap(m, Button::kDown);
+  REQUIRE(!tap(m, Button::kRight).steps.empty());
+  m.apply_started("v.colour", 1);
+  m.apply_done("v.colour", false, "no answer", 20);
+  CHECK(m.preview("v.colour").empty());
+}
+
+// An apply the applier never started (another row was running) is no
+// preview either: nothing will ever settle it.
+TEST(a_pick_whose_apply_never_starts_previews_nothing) {
+  World w;
+  MenuModel m(tree(&w));
+  into_video(m);
+  tap(m, Button::kRight);
+  tap(m, Button::kDown);
+  REQUIRE(!tap(m, Button::kRight).steps.empty());
+  CHECK(m.preview("v.colour").empty());
+}
+
 TEST(a_confirm_is_asked_when_the_row_says_so_and_left_cancels) {
   World w;
   w.num = 4;

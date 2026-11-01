@@ -488,7 +488,7 @@ TEST(the_string_values_pass_maburplays_setter) {
 
 TEST(menu_size_offers_three_steps_and_reads_the_config) {
   Fx f;
-  MenuNode n = f.node("sys.size");
+  MenuNode n = f.node(maburplay::kMenuSizeRow);
   CHECK(n.label == "Menu size");
   CHECK(n.owner == Owner::kPlayer);
   std::vector<std::string> values, labels;

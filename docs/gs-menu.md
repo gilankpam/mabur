@@ -114,7 +114,7 @@ real values.
 | `osd.fc` "Flight controller OSD" | player + gs | `osd.enable` + `msp.enable` | On/off, shown as `mixed` (with a help line naming which half is off) when the render and maburgs' MSP feed disagree; picking On or Off sends both. |
 | **System** | | | |
 | `sys.adv` "Show advanced settings" | player | `menu.show_advanced` | On/off; shows the rows marked (advanced) above in every group. |
-| `sys.size` "Menu size" | player | `menu.scale` | Normal / Large / Larger (×1, ×1.25, ×1.5). The menu re-lays out at the new size on the next tick, still open on this row. |
+| `sys.size` "Menu size" | player | `menu.scale` | Normal / Large / Larger (×1, ×1.25, ×1.5). Previews live: while its picker is open the whole menu is drawn at the size under the cursor (`MenuModel::preview`), nothing written; ◀ or a held ◀ drops back to the saved size, ▶ saves it — and the menu stays at the picked size while that set runs, so it never flicks back to the old size before the save lands. |
 | `sys.debug` "Debug log" | gs | `debug_log.enable` | On/off. |
 
 **Not covered yet:** a `Channel` group, a `Calibration` group, and any
