@@ -46,10 +46,11 @@ bool render_toml(const Value& v, std::string* out);
 // `current.record.enable`, `current.record.width > 0` (an explicit
 // record.size, not the "same as venc.size" default) and either the new
 // WxH's aspect ratio differs from the current recording size's (compared
-// by cross-multiplication, no float division) or the recording is larger
-// than 1920x1080 and than the new readout's sensor mode (camera_mode_for)
-// in either dimension, record.size is patched to the same WxH too and
-// *followed is set to "record.size" -- cleared at the start of every call
+// by cross-multiplication, no float division) or the new fps is above 30
+// and the recording is larger than 1920x1080 and than the new readout's
+// sensor mode (camera_mode_for) in either dimension, record.size is
+// patched to the same WxH too and *followed is set to "record.size" --
+// cleared at the start of every call
 // otherwise. record.fps never follows.
 bool patch_row(std::string* text, size_t idx, const Value& v, const Config& current,
                std::string* followed, std::string* err);

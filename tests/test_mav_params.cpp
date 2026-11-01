@@ -186,8 +186,8 @@ TEST(encode_wire_round_trips) {
   }
 }
 
-// The bundle's own VENC_MODE (60@1920x1080) and record (enable, explicit
-// 1920x1080) feed every patch_row case below; `cur` is the loaded Config
+// The bundle's own VENC_MODE (60@1920x1080/binned) and record (enable,
+// explicit 1920x1080) feed every patch_row case below; `cur` is the loaded Config
 // patch_row reads record.enable/width/height from -- never the text being
 // patched, which may have been edited out from under it.
 
@@ -293,6 +293,26 @@ TEST(patch_row_venc_mode_follow_when_the_recorder_would_need_4k) {
   REQUIRE(write_file_fsync(f.path, patched));
   const Config cand = load_config(f.path);
   CHECK(cand.venc.core.binning && cand.record.width == 1920 && cand.record.height == 1080);
+}
+
+TEST(patch_row_venc_mode_30fps_4k_recording_is_not_followed) {
+  // At 30 fps the loader's 4K rule never fires (it requires fps > 30:
+  // drone/src/config.cpp), so a record.size above 1920x1080 and above the
+  // tier is already legal, served from the 3840x2160@33 mode, with no
+  // follow needed. Revert check: drop `fps > 30` from needs_4k in
+  // mav_params.cpp's patch_row and this test fails (followed becomes
+  // "record.size").
+  std::string text; REQUIRE(read_text_file(bundle_path(), &text));
+  REQUIRE(patch_toml_key(&text, "venc", "fps", "30"));
+  REQUIRE(patch_toml_key(&text, "record", "fps", "30"));
+  REQUIRE(patch_toml_key(&text, "record", "size", "\"3840x2160\""));
+  ScratchFile f{"test_mav_params", ".toml"}; REQUIRE(write_file_fsync(f.path, text));
+  const Config cur = load_config(f.path);  // the loader accepts the 30 fps 4K recording
+  REQUIRE(cur.venc.core.fps == 30 && cur.record.width == 3840 && cur.record.height == 2160);
+  std::string patched = text, followed, err;
+  REQUIRE(patch_row(&patched, cfgparam::kVencModeRow, Value{Type::Str, false, 0, 0, "30@1280x720/binned"},
+                    cur, &followed, &err));
+  CHECK(followed.empty());
 }
 
 TEST(patch_row_venc_mode_leaves_a_legal_upscale_alone) {

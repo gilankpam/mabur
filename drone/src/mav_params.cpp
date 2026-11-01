@@ -181,16 +181,20 @@ bool patch_row(std::string* text, size_t idx, const Value& v, const Config& curr
   // tracks it with no line to patch), and either the aspect ratio changed
   // (cross-multiplied so this never depends on float rounding) or the
   // pinned recording is larger than 1920x1080 and than the new readout's
-  // sensor mode in either dimension -- the loader's 4K rule
-  // (drone/venc/camera_modes.c) would otherwise refuse the candidate.
-  // camera_mode_for's own w == 0 ("no mode for this readout at this rate")
-  // counts as "no follow" here: a candidate with no mode is refused by the
-  // loader's venc.fps check regardless of what record.size holds.
+  // sensor mode in either dimension, above 30 fps -- the loader's 4K rule
+  // (drone/venc/camera_modes.c, drone/src/config.cpp) would otherwise
+  // refuse the candidate. At 30 fps or below the loader allows a
+  // recording larger than the tier (it is served from the 4K mode), so
+  // needs_4k must stay false there or a legal recording gets rewritten
+  // for no reason. camera_mode_for's own w == 0 ("no mode for this
+  // readout at this rate") counts as "no follow" here: a candidate with
+  // no mode is refused by the loader's venc.fps check regardless of what
+  // record.size holds.
   if (current.record.enable && current.record.width > 0) {
     const bool aspect_changed = static_cast<int64_t>(w) * current.record.height !=
                                  static_cast<int64_t>(current.record.width) * h;
     const CameraMode tier = camera_mode_for(binning ? 1 : 0, static_cast<uint32_t>(fps), 0, 0);
-    const bool needs_4k = tier.w != 0 &&
+    const bool needs_4k = fps > 30 && tier.w != 0 &&
                            (current.record.width > 1920 || current.record.height > 1080) &&
                            (current.record.width > tier.w || current.record.height > tier.h);
     if (aspect_changed || needs_4k) {

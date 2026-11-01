@@ -227,16 +227,17 @@ nothing; send the other key first. The rules the loader enforces:
 - `REC_FPS` ≤ `VENC_MODE`'s fps (while the recorder is on): lower
   `REC_FPS` before lowering `VENC_MODE`'s fps; raise `VENC_MODE`'s fps
   before raising `REC_FPS`.
-- `REC_SIZE` above 1920x1080 needs `VENC_MODE`'s fps ≤ 30 first.
+- `REC_SIZE` above 1920x1080 and above the sensor mode needs `VENC_MODE`'s
+  fps ≤ 30 first.
 - `LOWPWR_ENABLE = 1` needs `MSP_ENABLE = 1` first; `MSP_ENABLE = 0` needs
   `LOWPWR_ENABLE = 0` first.
 - `/native` above 100 fps has no sensor mode: `VENC_MODE`'s fps must be
   ≤ 100, or `/binned` set first.
-- A `VENC_MODE` set that changes the sensor mode's aspect, or whose
-  recording (an explicit `record.size`, recorder on) is larger than
-  1920x1080 and larger than the new readout's sensor mode in either
-  dimension, also rewrites `record.size` to the new venc size in the
-  same candidate; `record.fps` never follows.
+- A `VENC_MODE` set that changes the sensor mode's aspect, or whose new
+  fps is above 30 and whose recording (an explicit `record.size`,
+  recorder on) is larger than 1920x1080 and larger than the new readout's
+  sensor mode in either dimension, also rewrites `record.size` to the
+  new venc size in the same candidate; `record.fps` never follows.
 
 Two loader rules involve keys the table does not expose:
 

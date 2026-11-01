@@ -155,12 +155,12 @@ into a new file.
 
 A `VENC_MODE` set that changes the sensor mode's aspect, or that would
 otherwise leave the recorder needing the 4K mode under the new readout
-(above 1920x1080 and above the new fps + readout's sensor mode in either
-dimension), while the recorder is on with an explicit `record.size`,
-rewrites `record.size` to the new venc size in the same candidate
-(`mavparam::patch_row`, `drone/src/mav_params.cpp`), so neither rule above
-is ever broken by the fps/size/readout set alone; `record.fps` never
-follows.
+(at a rate above 30 fps, above 1920x1080 and above the new fps +
+readout's sensor mode in either dimension), while the recorder is on
+with an explicit `record.size`, rewrites `record.size` to the new venc
+size in the same candidate (`mavparam::patch_row`,
+`drone/src/mav_params.cpp`), so neither rule above is ever broken by the
+fps/size/readout set alone; `record.fps` never follows.
 
 ## Power-loss contract
 
