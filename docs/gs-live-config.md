@@ -138,9 +138,13 @@ reading it as a missed latch.
 - **The publish resolves symlinks.** `maburplay`'s `/etc/maburplay.toml`
   is typically a symlink onto a vfat `/config` mount; every step —
   reading the original, writing the scratch, the backup, the rename —
-  happens beside the symlink's *target*, and both the file and its parent
-  directory are fsynced. The symlink itself is never unlinked or
-  replaced.
+  happens beside the symlink's *target*. After each rename (the
+  backup's and the publish's) the renamed file is fsynced, then its
+  parent directory: on vfat the new directory entry is the file's own
+  metadata, which an fsync of the directory alone leaves in the page
+  cache while the replaced file's clusters are already freed, so a power
+  cut before writeback left the config pointing at a free cluster chain.
+  The symlink itself is never unlinked or replaced.
 - **`ok` means the file holds it.** A `set` only answers `ok` once the
   publish has actually landed (or settled with nothing to write, per
   "Same-value sets"). A refused or failed set leaves the file
