@@ -68,7 +68,12 @@ outbound queue and the tunnel's uplink pacing.
     (`MAV_SEVERITY_ERROR`) carrying the reason (`<field>: <why>`, the
     loader's message without its file and line, cut to 50 characters).
     A key whose line is missing or commented out is `FAILED` with
-    `<section.key>: key not found`; nothing is written. A candidate
+    `<section.key>: key not found`; nothing is written. A config written
+    before `venc.binning` existed loads (the key defaults to `true`) but
+    has no `binning` line to patch, so this is the common way a fresh
+    `VENC_MODE` set hits it: add a `binning = true` line under `[venc]` by
+    hand before any `VENC_MODE` set, binned or native, can be applied
+    (`docs/deploy.md`). A candidate
     the loader accepts, and that is a real change, is handed to
     `ConfigApplier` instead of being written straight to disk: the set
     answers `PARAM_ACK_IN_PROGRESS` with the current value at once,
@@ -231,8 +236,8 @@ nothing; send the other key first. The rules the loader enforces:
   fps ≤ 30 first.
 - `LOWPWR_ENABLE = 1` needs `MSP_ENABLE = 1` first; `MSP_ENABLE = 0` needs
   `LOWPWR_ENABLE = 0` first.
-- `/native` above 100 fps has no sensor mode: `VENC_MODE`'s fps must be
-  ≤ 100, or `/binned` set first.
+- `/native` above 100 fps has no sensor mode: lower the rate or switch to
+  `/binned` in the same set.
 - A `VENC_MODE` set that changes the sensor mode's aspect, or whose new
   fps is above 30 and whose recording (an explicit `record.size`,
   recorder on) is larger than 1920x1080 and larger than the new readout's

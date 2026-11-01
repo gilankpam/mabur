@@ -181,6 +181,13 @@ the value they fell back to (`config: N key(s) defaulted:`). After
 hand-editing a config, read that list: anything unexpected in it is a knob
 you dropped.
 
+**A defaulted key still needs its own line before MAVLink can touch it.**
+`/etc/mabur.toml` written before `venc.binning` existed loads fine — the
+key defaults to `true` — but `PARAM_EXT_SET`'s row patcher only edits a
+line already in the file, so a `VENC_MODE` set, binned or native, fails
+with `venc.binning: key not found` until a `binning = true` line is added
+under `[venc]` by hand (`docs/vtx-config-mavlink.md`).
+
 **The bundles set every knob.** All three shipped defaults —
 `bundle/mabur.default.toml`, `gs/bundle/maburgs.default.toml`,
 `gs/player/bundle/maburplay.default.toml` — are the flight configs, with
@@ -343,14 +350,18 @@ prints it, only the fingerprint).
 - The remembered channel is `/etc/mabur.channel` (`docs/channel-select.md`).
 - The image loads waybeam_venc's IMX415 driver, `sensor_imx415_star6e.ko`,
   not the stock `sensor_imx415_mipi.ko` (`openipc-builder`'s
-  `load_sigmastar`; `docs/camera-modes.md`). It enumerates six modes;
+  `load_sigmastar`; `docs/camera-modes.md`). `openipc-builder` builds it
+  from upstream waybeam HEAD, a five-mode driver with no mode for
+  2304x1296@100 and a narrower 2816x1584 output on the 60 fps native mode.
   `venc.binning = false` (the native tiers, 2944x1656@60 and
-  2304x1296@100) needs the rebuilt module that unhides and widens them,
-  not an older build of the same driver. maburd fails boot with
-  `sensor mode WxH@F not offered by the driver` when the loaded module
-  lacks the mode it asked for. A drone on an older image takes it by hand:
-  copy the module into `/lib/modules/4.9.84/sigmastar/` under the name
-  `load_sigmastar` loads (keep the old file) and reboot; `lsmod` then
+  2304x1296@100) needs the module built from waybeam commit b723e91
+  instead — a branch not yet upstream that widens and unhides them — until
+  the change lands upstream or `openipc-builder` points at it. maburd
+  fails boot with `sensor mode WxH@F not offered by the driver` when the
+  loaded module lacks the mode it asked for; the binned tiers work on
+  either build. A drone on the upstream-build image takes the b723e91
+  module by hand: copy it into `/lib/modules/4.9.84/sigmastar/` under the
+  name `load_sigmastar` loads (keep the old file) and reboot; `lsmod` then
   lists `sensor_imx415_star6e`.
 
 **GS.**

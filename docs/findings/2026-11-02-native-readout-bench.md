@@ -13,23 +13,22 @@ side hold at link sizes above 1920x1080?
 Drone: the six-mode waybeam driver build (visibility list
 `{ 1, 2, 4, 5, 6, 8 }`, table index 5 = `2304x1296@100` newly enumerated,
 table index 2's output widened to `2944x1656`), `maburd` rebuilt with
-`venc.binning`. GS: Radxa, monitor 2560x1440@60.000 Hz
+`venc.binning` support. GS: Radxa, monitor 2560x1440@60.000 Hz
 (`display.phase_lock = true`, `phase_margin_ms = 4`). The 100 Hz goggles
 were not connected for this run, so every phase-lock and image
 observation below is against the 60.000 Hz monitor only.
 
 All `VENC_MODE` / `REC_*` live sets were driven generically — mavparam.py
-run on the GS against its loopback endpoint (the GS's python lacks
-`_ssl` and the `xml` module pymavlink needs, so the tool and stub
-modules were shipped to the GS first; a LAN bind was refused by the
-classifier, so the sets go out over the GS's own loopback MAVLink
-endpoint).
+run on the GS against its own loopback MAVLink endpoint (the GS's python
+lacks `_ssl` and the `xml` module pymavlink needs, so the tool and stub
+modules were shipped to the GS first; the GS endpoint stayed on loopback
+for this run, not a LAN bind).
 
-Both ends were power-cycled/restored to their pre-bench binaries and
-configs afterward: the drone's `/etc/mabur.toml` back to `.pre-native`
-plus `binning = true`, the module back to the 6-mode build (no change —
-it stays); the GS's `maburgs.toml` was never touched and
-`maburplay.toml`'s `dvr.burned.size` restored to `""`.
+Both ends were restored to their flying setup afterward: the drone keeps
+the new `maburd` binary and the six-mode module — only the bench's config
+edits were rolled back, `/etc/mabur.toml` to `.pre-native` plus `binning =
+true`; the GS's `maburgs.toml` was never touched and `maburplay.toml`'s
+`dvr.burned.size` restored to `""`.
 
 ## Gate 1 — mode selection and timing
 
@@ -202,7 +201,7 @@ Native 100's sweep (gate 4) read ausniff fps 100.7, 0 gaps throughout.
 
 - **Gate 5 on the goggles (100 Hz) is not run.** Only the 60.000 Hz
   monitor was on the bench; the native 100 tier's phase-lock behaviour
-  against a panel near its own 99.63 Hz ceiling is unmeasured.
+  against a panel near its own 99.631 Hz ceiling is unmeasured.
 - **Gate 6 on the OPi and the web GS is not run.** Both decode paths
   above 1920x1080 are untested; only the Radxa's `maburplay` and its
   burned DVR were exercised.
