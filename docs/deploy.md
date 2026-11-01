@@ -343,12 +343,15 @@ prints it, only the fingerprint).
 - The remembered channel is `/etc/mabur.channel` (`docs/channel-select.md`).
 - The image loads waybeam_venc's IMX415 driver, `sensor_imx415_star6e.ko`,
   not the stock `sensor_imx415_mipi.ko` (`openipc-builder`'s
-  `load_sigmastar`; `docs/camera-modes.md`). maburd fails boot with
-  `sensor mode WxH@F not offered by the driver` under the stock one. A
-  drone on an older image takes it by hand: copy the module into
-  `/lib/modules/4.9.84/sigmastar/` under the name `load_sigmastar` loads
-  (keep the old file) and reboot; `lsmod` then lists
-  `sensor_imx415_star6e`.
+  `load_sigmastar`; `docs/camera-modes.md`). It enumerates six modes;
+  `venc.binning = false` (the native tiers, 2944x1656@60 and
+  2304x1296@100) needs the rebuilt module that unhides and widens them,
+  not an older build of the same driver. maburd fails boot with
+  `sensor mode WxH@F not offered by the driver` when the loaded module
+  lacks the mode it asked for. A drone on an older image takes it by hand:
+  copy the module into `/lib/modules/4.9.84/sigmastar/` under the name
+  `load_sigmastar` loads (keep the old file) and reboot; `lsmod` then
+  lists `sensor_imx415_star6e`.
 
 **GS.**
 

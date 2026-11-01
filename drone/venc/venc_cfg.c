@@ -27,6 +27,7 @@ void venc_cfg_defaults(VencCfg *cfg)
 	cfg->width = 1920;
 	cfg->height = 1080;
 	cfg->fps = 60;
+	cfg->binning = true;
 	cfg->gop_s = 2.0;
 	cfg->qp_delta = -4;
 	cfg->max_ipprop = 0; /* leave the firmware default (unbounded) */

@@ -88,11 +88,15 @@ size. The SigmaStar encoder cannot scale, so the sizes decide the port:
   `[record] no frame 2000 ms after start` if none arrive. An idle port 1
   reads `Pixel MAX, OutputW 0` in `/proc/mi_modules/mi_vpe/mi_vpe0` until
   ch1 starts; that is not a failure.
-- **Above 1920x1080** none of the link's sensor modes (1920x1080 binned up
-  to 90 fps, 1728x972 / 1728x816 above; `docs/camera-modes.md`) can feed
-  it: the pipeline switches to the 3840x2160@33 mode (full view, not
-  binned), and the loader requires `venc.fps <= 30`. The link then also
-  runs at 30 fps from a downscaled 4K capture.
+- **Above 1920x1080 and above the selected sensor mode** (1920x1080 binned
+  up to 90 fps, 1728x972 / 1728x816 binned above, 2944x1656 / 2304x1296
+  native; `docs/camera-modes.md`): the pipeline switches to the
+  3840x2160@33 mode (full view, not binned), and the loader requires
+  `venc.fps <= 30`. The link then also runs at 30 fps from a downscaled 4K
+  capture. A `record.size` above 1920x1080 that still fits the selected
+  mode (2560x1440 under the native 60 fps tier) stays an ordinary upscale
+  on port 1, at the link's own rate — the rule above never tightens a
+  config that loads today.
 
 4K is not usable next to the link: the SigmaStar H.265 engine runs one
 encode at a time, and a 4K encode (~30 ms) fills the 31 ms frame period, so
@@ -100,14 +104,15 @@ the link queues behind it and the recorder drops frames. A 720p link with a
 1080p port-1 recording costs the link nothing. Measurements:
 `docs/findings/2026-09-26-vtx-recorder-bench.md`.
 
-Above 90 fps the link runs a binned crop mode (1728x972 to 100 fps,
-1728x816 above; `docs/camera-modes.md`) and the recorder's rules stay as
-they are, which carries three risks: a `record.size` larger than the mode
-(the bundle's 1920x1080 against 1728x972) is an upscale on port 1; a
-`record.fps` that does not divide `venc.fps` (60 from 100) records uneven
-frame spacing, since the bind's frame-rate limiter passes 60 of every 100;
-and the live 1728x972@100 encode alone is past the engine's rated rate, so
-recording adds encode time to the link.
+Above 90 fps the link runs a crop mode — binned (1728x972 to 100 fps,
+1728x816 above) or, under `venc.binning = false`, the native 2304x1296
+crop (no mode above 100 fps; `docs/camera-modes.md`) — and the recorder's
+rules stay as they are, which carries three risks: a `record.size` larger
+than the mode (the bundle's 1920x1080 against 1728x972) is an upscale on
+port 1; a `record.fps` that does not divide `venc.fps` (60 from 100)
+records uneven frame spacing, since the bind's frame-rate limiter passes
+60 of every 100; and the live crop-mode encode alone is past the engine's
+rated rate, so recording adds encode time to the link.
 
 Switching `venc.size` needs no other key change: the rolling-refresh key
 is `venc.intra_refresh_frames` (sweep length), whose rows per P the

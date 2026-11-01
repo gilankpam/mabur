@@ -34,11 +34,11 @@
 /* The sensor mode is not auto-selected: sensor_mode_cost() ranks maxFps
  * excess above resolution fit, so at 60 fps it would take the 2560x1440@60
  * non-binned crop (a 1.5x narrower view) over the 2x2-binned full-view
- * 1920x1080@90. camera_mode_for() names the mode for venc.fps instead, and
- * sensor_select finds it in the driver's list by geometry and ceiling
- * (camera_modes.h, docs/camera-modes.md); a driver without it fails boot
- * rather than silently running another geometry. Verify on the device with
- * `grep Cur /proc/mi_modules/mi_sensor/mi_sensor0`. */
+ * 1920x1080@90. camera_mode_for() names the mode for venc.fps and
+ * venc.binning instead, and sensor_select finds it in the driver's list by
+ * geometry and ceiling (camera_modes.h, docs/camera-modes.md); a driver
+ * without it fails boot rather than silently running another geometry.
+ * Verify on the device with `grep Cur /proc/mi_modules/mi_sensor/mi_sensor0`. */
 /* MJPEG snapshot channel; 7 is well clear of the encoder's ch0. */
 #define STAR6E_SNAPSHOT_CHANNEL     7
 /* Video codec is always H.265 and rate control is always CBR — the
@@ -988,10 +988,21 @@ static int prepare_pipeline_config(const VencCfg *cfg,
 
 	{
 		uint32_t rec_w, rec_h;
+		CameraMode mode;
+
 		venc_record_size(&rec_w, &rec_h);
+		mode = camera_mode_for(cfg->binning ? 1 : 0, pconf->sensor_framerate,
+			rec_w, rec_h);
+		if (mode.w == 0) {
+			/* The loader refuses this combination first; this guards the
+			 * in-process rebuild path (venc.binning / venc.fps can change
+			 * without a boot). */
+			fprintf(stderr, "ERROR: no sensor mode for binning=%d at %u fps\n",
+				cfg->binning ? 1 : 0, pconf->sensor_framerate);
+			return -1;
+		}
 		pconf->sensor_cfg = pipeline_common_build_sensor_select_config(
-			STAR6E_SENSOR_FORCED_PAD,
-			camera_mode_for(1, pconf->sensor_framerate, rec_w, rec_h),
+			STAR6E_SENSOR_FORCED_PAD, mode,
 			pconf->sensor_width,
 			pconf->sensor_height, pconf->sensor_framerate);
 	}

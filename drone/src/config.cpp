@@ -300,7 +300,7 @@ void parse_wxh(const Value& j, const char* section, int& w, int& h) {
 
 void parse_venc(const Value& j, VencSectionCfg& v) {
   check_known_keys(j,
-                    {"sensor_bin", "size", "fps", "gop_s", "qp_delta",
+                    {"sensor_bin", "size", "fps", "binning", "gop_s", "qp_delta",
                      "max_ipprop", "min_iqp", "superframe_p_pct",
                      "intra_refresh_frames", "intra_refresh_qp",
                      "ref_base", "ref_enhance", "ref_pred", "slices",
@@ -345,6 +345,10 @@ void parse_venc(const Value& j, VencSectionCfg& v) {
   } else {
     note_default("venc", "fps", to_text(kDef.core.fps));
   }
+
+  // Which sensor readout venc.fps picks a tier from; see the mode block
+  // below (after [record] is parsed).
+  assign_if_present(j, "binning", v.core.binning, "venc");
 
   if (j.contains("gop_s")) {
     assign_if_present(j, "gop_s", v.core.gop_s, "venc");
@@ -774,6 +778,17 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
       (cfg.record.fps < 1 || cfg.record.fps > static_cast<int>(cfg.venc.core.fps)))
     fail("record.fps", "must be in [1, venc.fps]");
 
+  // venc.fps and venc.binning together pick a sensor tier
+  // (drone/venc/camera_modes.c); a native (non-binned) rate above 100 fps
+  // has none. Checked here, before any record.size check, so a config that
+  // asks for an impossible native rate is always refused by venc.fps,
+  // whatever the recorder is doing.
+  const int binning = cfg.venc.core.binning ? 1 : 0;
+  const CameraMode tier = camera_mode_for(binning, cfg.venc.core.fps, 0, 0);
+  if (tier.w == 0)
+    fail("venc.fps",
+         "no non-binned sensor mode above 100 fps: set venc.binning = true or venc.fps <= 100");
+
   if (cfg.record.enable && cfg.record.width > 0) {
     const int rw = cfg.record.width, rh = cfg.record.height;
     const int vw = cfg.venc.core.width, vh = cfg.venc.core.height;
@@ -783,18 +798,21 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
       fail("record.size", "must have venc.size's aspect ratio");
     if (rw % 2 || rh % 2 || rw < 320 || rh < 180 || rw > 3840 || rh > 2160)
       fail("record.size", "must be even and within 320x180..3840x2160");
-    // Above 1080p only the sensor's 3840x2160 mode can feed it
-    // (camera_mode_for in drone/venc/camera_modes.c), and that caps the link too.
-    if ((rw > 1920 || rh > 1080) && cfg.venc.core.fps > 30)
-      fail("record.size", "above 1920x1080 needs the 30 fps sensor mode: set venc.fps <= 30");
+    // Only the sensor's 3840x2160 mode can feed a recording larger than
+    // 1080p AND larger than the selected tier in either dimension
+    // (camera_mode_for in drone/venc/camera_modes.c): a recording that
+    // still fits the tier is an ordinary upscale on VPE port 1, below.
+    if ((rw > 1920 || rh > 1080) && (rw > tier.w || rh > tier.h) && cfg.venc.core.fps > 30)
+      fail("record.size",
+           "larger than 1920x1080 and than the sensor mode needs the 30 fps 4K mode: set venc.fps <= 30");
   }
 
-  // venc.fps (and a 4K recording) selects the sensor mode; the VPE only
-  // scales that mode down, so venc.size must keep its aspect ratio and fit
-  // inside it (docs/camera-modes.md).
+  // venc.size must keep the selected mode's aspect ratio and fit inside it
+  // (the VPE only scales a mode down), the 4K rule above included
+  // (docs/camera-modes.md).
   {
     const bool rec = cfg.record.enable && cfg.record.width > 0;
-    const CameraMode m = camera_mode_for(1, cfg.venc.core.fps, rec ? cfg.record.width : 0,
+    const CameraMode m = camera_mode_for(binning, cfg.venc.core.fps, rec ? cfg.record.width : 0,
                                          rec ? cfg.record.height : 0);
     if (!camera_mode_size_ok(m, cfg.venc.core.width, cfg.venc.core.height))
       fail("venc.size", to_text(cfg.venc.core.width) + "x" + to_text(cfg.venc.core.height) +
