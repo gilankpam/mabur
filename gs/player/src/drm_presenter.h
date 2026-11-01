@@ -92,8 +92,26 @@ class DrmPresenter : public PresentSink {
   // ~86,000 lines a day into /tmp/maburplay.log, which is tmpfs on the GS.
   // The caller reports the episode instead: one line when retrying starts,
   // one when a display is acquired.
+  //
+  // `device_fd` >= 0 is an open /dev/dri/card0 to drive instead of a fresh
+  // open -- the one retire() handed back -- and the presenter owns it from
+  // here on, failure included.
   bool init(const std::string& resolved_mode, bool want_osd, ReleaseFn release,
-            bool log_failures = true);
+            bool log_failures = true, int device_fd = -1);
+
+  // Destroys `p` -- every frame, buffer and blob released as by its
+  // destructor -- but hands back its /dev/dri/card0 descriptor still open
+  // instead of closing it (-1 when it had none), for the next presenter's
+  // init(). Closing the descriptor ends this process's hold on the display
+  // and the kernel's fbdev console takes it straight back at its own mode
+  // (1280x720@60), so a rebuild that closed and reopened would show the
+  // sink two mode changes ~200 ms apart. Kept open, the CRTC stays on the
+  // old mode with its planes off until the next presenter's init(), which
+  // turns the output off for a while first when it changes the mode (see
+  // kModeChangeOffUs). Page-flip events still in flight are drained and
+  // discarded first: they carry this presenter's pointer, which the next
+  // one's poll_events() would otherwise dereference.
+  static int retire(std::unique_ptr<DrmPresenter> p);
 
   // Takes ownership of `frame` unconditionally (see class comment) and
   // returns whether it was actually queued for scanout (false = dropped,

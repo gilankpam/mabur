@@ -2005,22 +2005,26 @@ int main(int argc, char** argv) {
   //  - A live presenter: it is torn down first -- the burned recorder (it
   //    samples the old display's vblank grid) is stopped, both output
   //    threads park so nothing is held on the old presenter, the release
-  //    thread drops its sink, and only then is the presenter destroyed. If
-  //    the new one then fails, output resumes with no display and the
-  //    hotplug retry takes over on cfg.screen_mode.
+  //    thread drops its sink, and only then is the presenter retired. Its
+  //    DRM descriptor passes to the new one still open, so the sink sees
+  //    one mode change, not the fbdev console's mode in between
+  //    (DrmPresenter::retire). If the new one then fails, output resumes
+  //    with no display and the hotplug retry takes over on cfg.screen_mode.
   // Returns whether a presenter is live on `mode` afterwards.
   auto reacquire_display = [&](const std::string& mode, bool log_failures) -> bool {
     const bool tear_down = presenter != nullptr;
+    int device_fd = -1;
     if (tear_down) {
       if (burn) stop_burn();
       park_output("display rebuild");
       release.set_sink(nullptr);
-      presenter.reset();
+      device_fd = maburplay::DrmPresenter::retire(std::move(presenter));
     }
     auto p = std::make_unique<maburplay::DrmPresenter>();
     if (!p->init(resolve_screen_mode(mode, display_follower.resolve_hz(pump.source_hz())),
                  want_osd,
-                 [&releases](const maburplay::DmaFrame& f) { releases.push(f); }, log_failures)) {
+                 [&releases](const maburplay::DmaFrame& f) { releases.push(f); }, log_failures,
+                 device_fd)) {
       if (tear_down) {
         resume_output();
         std::fprintf(stderr,

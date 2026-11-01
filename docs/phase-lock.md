@@ -170,6 +170,16 @@ mid-window) never rebuilds alone. Like any presenter rebuild it restarts a
 burned recording in progress. The follow is an in-process rebuild, not a
 `set`: the file keeps `"auto"`.
 
+A rebuild keeps the DRM device open across the swap
+(`DrmPresenter::retire`), so the kernel's fbdev console never takes the
+output back at its own 1280x720@60 in between. When the new presenter's
+mode differs from the running one it turns the output off and holds it
+off 0.5 s before its modeset (about 0.75 s dark in all): an Avatar Goggles
+X stays blank when a new mode follows the old one within a few tens of
+milliseconds, and the follow's 60 → 100 Hz switch at startup did exactly
+that. A rebuild on the same mode (a `colortrans.enable` or overlay switch)
+keeps the output up.
+
 A camera rate the display has no mode for (an Avatar Goggles X has no
 90 Hz) takes the modes at the display's rate nearest the camera's (an
 exact tie: the higher rate), by the same size rule, and the rate mismatch
