@@ -11,7 +11,7 @@ station has to do to show it smoothly.
 
 The drone image loads waybeam_venc's star6e IMX415 driver,
 `sensor_imx415_star6e.ko` (from `../waybeam_venc/sensors/star6e/`, waybeam
-0c880d8), not OpenIPC's stock `sensor_imx415_mipi.ko`: `openipc-builder`'s
+b723e91), not OpenIPC's stock `sensor_imx415_mipi.ko`: `openipc-builder`'s
 `load_sigmastar` insmods it for `imx415`, and the stock module is left out
 of the image. Its visibility list (`imx415_linear_visible`, table indices
 `{ 1, 2, 4, 5, 6, 8 }` of a 9-row table) enumerates six modes:
