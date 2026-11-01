@@ -54,6 +54,10 @@ inline constexpr Row kTable[] = {
      "Lower bitrate and frame rate while disarmed to keep the VTX cool; needs msp.enable for arm state"},
     {"MSP_ENABLE", "msp", "enable", Type::Bool, Apply::Reprogram,
      "Flight-controller link for the OSD and arm state"},  // the MSP thread starts or stops
+    {"VENC_MIRROR", "venc", "mirror", Type::Bool, Apply::Rebuild,
+     "Flip the picture left-right, for a camera mounted mirrored"},  // the sensor's orientation is set as the pipeline starts
+    {"VENC_FLIP", "venc", "flip", Type::Bool, Apply::Rebuild,
+     "Flip the picture upside down, for a camera mounted upside down"},
 };
 inline constexpr size_t kCount = sizeof(kTable) / sizeof(kTable[0]);
 inline constexpr int kMaxIdLen = 16;

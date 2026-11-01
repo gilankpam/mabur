@@ -1,7 +1,7 @@
 # VTX config over MAVLink
 
-The drone's MAVLink component (`docs/mavlink.md`) serves twelve parameters
-over thirteen keys of `/etc/mabur.toml` (`VENC_MODE` spells two) as
+The drone's MAVLink component (`docs/mavlink.md`) serves fourteen parameters
+over fifteen keys of `/etc/mabur.toml` (`VENC_MODE` spells two) as
 MAVLink extended parameters (`PARAM_EXT_*`): a ground end holding the link
 key can list, read and set them while linked. A set applies to the running
 `maburd` before it is published to the file — a knob takes effect on
@@ -35,7 +35,7 @@ addressed to system 1, component 191; its replies share the component's
 outbound queue and the tunnel's uplink pacing.
 
 - **List.** One `PARAM_EXT_VALUE` per table row, in table order,
-  `param_count` 12 and `param_index` = the row. Values are read by loading
+  `param_count` 14 and `param_index` = the row. Values are read by loading
   the file with the boot loader (`mabur::load_config`) on every request,
   so a list shows a set made a moment ago or an ssh edit. A file that no
   longer loads answers nothing and logs the loader's reason. A list
@@ -129,10 +129,13 @@ column below:
   `RADIO_LDPC` row, which the VTX tab shows under it as a warning
   (`docs/web-gs.md`).
 - **Rebuild** (`VENC_MODE`, `VENC_SLICES`, `REC_ENABLE`,
-  `REC_BITRATE`, `REC_FPS`, `REC_SIZE`): the encoder pipeline is rebuilt
-  in-process (`docs/link-adaptation.md` "Rebuilding the encoder pipeline
-  in-process"), about 0.5 s plus ~0.1 s to the first frame of the new
-  mode. A recording in progress is stopped first and the record channel
+  `REC_BITRATE`, `REC_FPS`, `REC_SIZE`, `VENC_MIRROR`, `VENC_FLIP`): the
+  encoder pipeline is rebuilt in-process (`docs/link-adaptation.md`
+  "Rebuilding the encoder pipeline in-process"), about 0.5 s plus ~0.1 s
+  to the first frame of the new mode. The sensor's orientation is only
+  ever programmed as the pipeline starts, both before the sensor is
+  enabled and on the VPE channel, so a mirror or flip set is a rebuild
+  too. A recording in progress is stopped first and the record channel
   is recreated in its bind order; the GS's standing record wish restarts
   it (`docs/vtx-recorder.md`).
 
@@ -201,6 +204,8 @@ quoted string).
 | 9 | `REC_SIZE` | `record.size` | Str | rebuild | Onboard recording resolution, same aspect ratio as the camera's |
 | 10 | `LOWPWR_ENABLE` | `low_power.enable` | Bool | knob | Lower bitrate and frame rate while disarmed to keep the VTX cool; needs msp.enable for arm state |
 | 11 | `MSP_ENABLE` | `msp.enable` | Bool | reprogram | Flight-controller link for the OSD and arm state |
+| 12 | `VENC_MIRROR` | `venc.mirror` | Bool | rebuild | Flip the picture left-right, for a camera mounted mirrored |
+| 13 | `VENC_FLIP` | `venc.flip` | Bool | rebuild | Flip the picture upside down, for a camera mounted upside down |
 
 "apply" comes from each row's `Apply` value in the table itself
 (`cfgparam::apply_name`, `common/include/mabur/config_params.h`) — how the
@@ -332,7 +337,7 @@ one subcommand:
   non-zero exit.
 - `get ID` reads one parameter by id (1 s timeout, 3 retries) and prints
   its `id  type  value` row.
-- `set ID VALUE` looks `ID` up in its own copy of the 12-row table (ids
+- `set ID VALUE` looks `ID` up in its own copy of the 14-row table (ids
   and types mirrored from `common/include/mabur/config_params.h`) to
   encode `VALUE` for the wire and sends the set (2 s timeout, 3 retries).
   A set the drone applies (a real change past a loader check) answers

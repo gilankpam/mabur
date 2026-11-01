@@ -63,7 +63,7 @@ RESULT_NAMES = {
 DRONE_SYSTEM = 1
 DRONE_COMPONENT = 191  # MAV_COMP_ID_ONBOARD_COMPUTER
 
-# The 12-row parameter table, id -> wire type ('b' Bool, 'i' Int32,
+# The 14-row parameter table, id -> wire type ('b' Bool, 'i' Int32,
 # 'f' Real32, 's' Str/CUSTOM). common/include/mabur/config_params.h is the
 # source of truth for ids and types; this copy is kept in sync by hand.
 TABLE = [
@@ -79,6 +79,8 @@ TABLE = [
     ("REC_SIZE", "s"),
     ("LOWPWR_ENABLE", "b"),
     ("MSP_ENABLE", "b"),
+    ("VENC_MIRROR", "b"),
+    ("VENC_FLIP", "b"),
 ]
 TYPE_BY_ID = dict(TABLE)
 

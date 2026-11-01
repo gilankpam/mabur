@@ -202,6 +202,8 @@ export const LABELS = {
   RADIO_LDPC: 'LDPC coding',
   VENC_MODE: 'Camera mode',
   VENC_SLICES: 'Row slices',
+  VENC_MIRROR: 'Mirror',
+  VENC_FLIP: 'Flip',
   ENC_BITRATE_MAX: 'Max bitrate (kbps)',
   ENC_AIRTIME: 'Airtime budget',
   REC_ENABLE: 'Onboard recording',

@@ -464,8 +464,10 @@ static int configure_selected_sensor(const SensorSelectConfig *cfg,
 	/* Apply orientation before Enable so the sensor driver's pCus_sensor_init
 	 * (triggered by Enable) picks up the correct flip/mirror state.
 	 * Matches the sequence used by the reference majestic streamer.
+	 * Sent even when both are off: an in-process rebuild re-enables the
+	 * same sensor, which may still hold the previous orientation.
 	 * Non-fatal: log if it fails so BSP regressions surface. */
-	if (cfg->image_mirror || cfg->image_flip) {
+	{
 		MI_S32 orien_ret = MI_SNR_SetOrien(best_pad,
 			(uint8_t)(cfg->image_mirror ? 1 : 0),
 			(uint8_t)(cfg->image_flip   ? 1 : 0));

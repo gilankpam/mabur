@@ -9,7 +9,7 @@ the tunnel and what its tenants share; each tenant's protocol has its own
 page.
 
 - **VTX config** (`docs/vtx-config-mavlink.md`): the component serves
-  twelve drone config parameters as MAVLink extended parameters
+  fourteen drone config parameters as MAVLink extended parameters
   (`PARAM_EXT_*`). A ground end holding the link key can list, read and
   set them while linked; a set applies to the running `maburd` before it
   is published to `/etc/mabur.toml`. `tools/bench/mavparam.py` and the web

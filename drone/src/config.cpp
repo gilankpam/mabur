@@ -437,8 +437,8 @@ void parse_venc(const Value& j, VencSectionCfg& v) {
 
   assign_if_present(j, "ref_pred", v.core.ref_pred, "venc");
 
-  // Sensor orientation. Booleans, boot-time: programmed with MI_SNR_SetOrien
-  // before the sensor is enabled.
+  // Sensor orientation. Booleans, programmed with MI_SNR_SetOrien as the
+  // pipeline starts, so a MAVLink set takes effect through a rebuild.
   assign_if_present(j, "mirror", v.core.mirror, "venc");
   assign_if_present(j, "flip", v.core.flip, "venc");
 

@@ -225,6 +225,8 @@ const ROWS = [
   { id: 'REC_SIZE', section: 'record' },
   { id: 'LOWPWR_ENABLE', section: 'low_power' },
   { id: 'MSP_ENABLE', section: 'msp' },
+  { id: 'VENC_MIRROR', section: 'venc' },
+  { id: 'VENC_FLIP', section: 'venc' },
 ];
 
 test('groupRows: SECTION_KICKER order with Radio last, rows in table order', () => {
@@ -233,7 +235,7 @@ test('groupRows: SECTION_KICKER order with Radio last, rows in table order', () 
     ['Camera', 'Encoder', 'Recorder', 'Power', 'Flight controller', 'Radio']);
   assert.equal(groupRows([{ id: 'X', section: 'other' }, ...ROWS]).at(-1).key, 'other');
   const camera = groups.find((g) => g.key === 'venc');
-  assert.deepEqual(camera.rows.map((r) => r.id), ['VENC_MODE', 'VENC_SLICES']);
+  assert.deepEqual(camera.rows.map((r) => r.id), ['VENC_MODE', 'VENC_SLICES', 'VENC_MIRROR', 'VENC_FLIP']);
 });
 
 test('groupRows leaves out HIDDEN rows', () => {

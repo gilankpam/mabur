@@ -685,7 +685,7 @@ for it.
 ### VTX tab
 
 The drone's parameter table (`common/include/mabur/config_params.h`
-`kTable`, 12 rows), edited live over the MAVLink tunnel's `ParamClient`
+`kTable`, 14 rows), edited live over the MAVLink tunnel's `ParamClient`
 (see "MAVLink seam" below). `VtxPanel.svelte` groups the rows under the
 table's section kickers in the order Camera, Encoder, Recorder, Power,
 Flight controller, Radio (`SECTION_KICKER` in `vtxparams.js`), rows in
