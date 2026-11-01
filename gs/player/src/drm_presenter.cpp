@@ -373,6 +373,10 @@ struct DrmPresenter::Impl {
   uint32_t splash_zpos_prop = 0;
   uint64_t splash_zpos_val = 0;
   bool splash_active = false;   // a splash is on screen; present() must hand off
+  // The settings menu's override (set_osd_over_splash(), housekeeping
+  // thread): let a standalone OSD commit through despite splash_active.
+  // Read by commit_osd_if_pending() on the release thread.
+  std::atomic<bool> osd_over_splash{false};
   bool detach_warned = false;   // detach_splash_plane() has already logged once this episode
   // Consecutive commit failures observed while splash_active is true (Fix 3
   // in the splash-handoff review): if the driver keeps rejecting the
@@ -529,6 +533,7 @@ struct DrmPresenter::Impl {
   void poll_events();
   void drop_all();
   void commit_osd_if_pending();
+  void set_osd_over_splash(bool allow) { osd_over_splash.store(allow); }
 
   bool splash_show();
   void free_splash();
@@ -538,7 +543,7 @@ struct DrmPresenter::Impl {
   void on_flip(bool real_event = true);
 
   void add_osd_props(drmModeAtomicReqPtr req, int idx, bool one_time);
-  void commit_osd_only();
+  bool commit_osd_only();
   void osd_give_up();
 
   static void on_flip_static(int fd, unsigned int sequence, unsigned int tv_sec,
@@ -734,7 +739,7 @@ void DrmPresenter::Impl::osd_give_up() {
 // stall and only after video has already been silent -- it eliminates the
 // race instead of narrowing it. Also never PAGE_FLIP_EVENT (the video path
 // would mistake the event for its own flip) and never PAGE_FLIP_ASYNC.
-void DrmPresenter::Impl::commit_osd_only() {
+bool DrmPresenter::Impl::commit_osd_only() {
   drmModeAtomicReqPtr req = drmModeAtomicAlloc();
   int rc = -ENOMEM;
   if (req) {
@@ -761,12 +766,13 @@ void DrmPresenter::Impl::commit_osd_only() {
                    std::strerror(err));
     }
     if (osd_fail_streak >= kOsdMaxFailStreak) osd_give_up();
-    return;
+    return false;
   }
   osd_on_plane = true;
   osd_fail_streak = 0;
   osd_back ^= 1;       // swap first:
   osd_dirty = false;   // a drawer that sees this sees the new back index
+  return true;
 }
 
 bool DrmPresenter::Impl::init(const std::string& resolved_mode, bool want_osd, ReleaseFn rel,
@@ -1859,10 +1865,34 @@ void DrmPresenter::Impl::commit_osd_if_pending() {
   // feature on exactly the topology it targets. In topologies 1 and 3 the
   // OSD lives on a different plane above the splash, so this changes
   // nothing there; it only holds off the plane the splash actually owns.
+  //
+  // `osd_over_splash` lifts that hold: the settings menu wants the screen
+  // before any video exists, so set_osd_over_splash(true) (main.cpp,
+  // SplashMenuGate) lets this commit through anyway. When it does, and the
+  // OSD IS the splash plane (osd_on_primary), the commit just repointed the
+  // primary away from the splash FB -- splash_active must drop right here,
+  // not wait for present()'s own hand-off, which is the only other place
+  // that clears it and will not run while the menu has the screen (no
+  // video commit is coming to trigger it). Left `true`, a first video
+  // frame arriving later would read splash_handoff as still pending and
+  // re-run present()'s splash-specific bookkeeping (forcing the OSD to
+  // ride that commit, restating the video-plane CTM, and on OSD give-up
+  // in this topology, detach_splash_plane()'s plane-disable commit) for a
+  // repoint this earlier commit already made -- present()'s own comments
+  // document what each of those assumes about the splash still being on
+  // the primary, which is no longer true by then. The splash's buffer
+  // itself is NOT freed here: a close before any video frame (main.cpp)
+  // re-shows it from the same buffer via splash_show(). In the
+  // topologies where the OSD has a plane of its own above the splash,
+  // osd_on_primary is false and splash_active is left exactly as it was
+  // -- the splash stays lit beneath the menu, unaffected.
   const uint64_t now = mono_ms();
-  if (osd_dirty && osd_plane_id && osd.ok() && !flip_pending && crtc_active && !splash_active &&
-      now - last_video_commit_ms >= 100 && now - osd_last_commit_ms >= 100) {
-    commit_osd_only();
+  const bool over_splash = osd_over_splash.load();
+  if (osd_dirty && osd_plane_id && osd.ok() && !flip_pending && crtc_active &&
+      (!splash_active || over_splash) && now - last_video_commit_ms >= 100 &&
+      now - osd_last_commit_ms >= 100) {
+    const bool splash_takeover = splash_active && over_splash && osd_on_primary;
+    if (commit_osd_only() && splash_takeover) splash_active = false;
   }
 }
 
@@ -2066,6 +2096,8 @@ bool DrmPresenter::osd_publish_pending() const {
 }
 
 void DrmPresenter::commit_osd_if_pending() { impl_->commit_osd_if_pending(); }
+
+void DrmPresenter::set_osd_over_splash(bool allow) { impl_->set_osd_over_splash(allow); }
 
 uint64_t DrmPresenter::osd_commit_errors() const { return impl_->osd_commit_errors; }
 

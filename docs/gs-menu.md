@@ -1,7 +1,9 @@
 # The goggles settings menu
 
-A five-way-pad settings menu drawn into the OSD plane on top of the video,
-for adjusting the link, the display and recording without a laptop. It is
+A five-way-pad settings menu drawn into the OSD plane on top of the video
+-- or, before the first video frame ever arrives, over the startup splash
+("Before the first video frame" below) -- for adjusting the link, the
+display and recording without a laptop. It is
 read-and-write live: every row reads the running config and maburgs' live
 keys, and every value the operator picks goes out over the same two
 loopback setters `docs/gs-live-config.md` describes — nothing here reads
@@ -206,6 +208,30 @@ banner box (`menu_layer.h`/`.cpp`) is drawn centred, 12 % down the screen,
 with the menu closed; while the menu is open it moves below the panel
 and picker instead, so it never covers either.
 
+## Before the first video frame
+
+`maburplay` puts a startup splash on screen until the first decoded frame
+(`drm_presenter.h`'s splash); with no drone linked that can be forever,
+and the menu has to work the whole time, not just once video is flowing.
+Opening the menu while the splash is still up takes its plane: on the
+common hardware, where the OSD and the splash share the primary plane,
+the menu replaces the splash outright and shows over black; where the
+OSD has a plane of its own above the splash, the menu simply draws on
+top of it and the splash stays lit underneath. Closing the menu again
+before any frame has arrived brings the splash straight back, repainted
+fresh (the `show_splash` lambda, `main.cpp`); closing it after a frame
+has arrived does nothing special, since the ordinary first-frame
+hand-off onto the video plane already ran.
+
+The decision is a small, host-tested rule, `SplashMenuGate`
+(`gs/player/src/splash_menu.h`), ticked every housekeeping iteration from
+the menu's open/closed state and whether a video frame has ever been
+decoded; `DrmPresenter::set_osd_over_splash()` is the one knob it drives,
+and `commit_osd_if_pending()` reads it to let a standalone OSD commit
+through despite the splash. Each switch logs once: `maburplay: menu:
+over splash` on open, `maburplay: menu: splash restored` on a close that
+still precedes the first frame.
+
 ## Config
 
 `[input.<button>]` — one table per GPIO line: `input.rec` (the DVR
@@ -276,5 +302,9 @@ five GPIO lines and their gesture timing. `gs_live_view.h`/`.cpp` —
 parses maburgs' `get` dump. `display_follow.h` — the display-follows-
 camera rule. `menu_view_feed.h` — paces `MenuModel::view()` for the
 presentation loop. `menu_debug.h`/`.cpp` — the `MABUR_MENU_DEBUG` verbs.
-Wiring (opening the bank, loading the GS font the menu borrows, claiming
-the OSD plane, the startup/debug log lines) is in `gs/player/src/main.cpp`.
+`splash_menu.h` — the menu-before-any-video decision rule
+(`SplashMenuGate`, "Before the first video frame" above);
+`DrmPresenter::set_osd_over_splash()`/`commit_osd_if_pending()`
+(`drm_presenter.h`/`.cpp`) act on it. Wiring (opening the bank, loading
+the GS font the menu borrows, claiming the OSD plane, the startup/debug
+log lines) is in `gs/player/src/main.cpp`.

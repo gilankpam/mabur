@@ -68,6 +68,7 @@
 #include "rate_match.h"  // RateMatch: is the panel within the phase lock's reach
 #include "recorder_tap.h"  // the burned DVR's hook on the display's flip
 #include "release_loop.h"  // the release thread: regulator decisions and every present()
+#include "splash_menu.h"  // the settings menu over the splash before any video
 #include "wake_queue.h"    // the hand-over and release queues between the threads
 #include "gs_draw.h"         // set_colour_inverse() for the GS overlay pre-invert
 #include "lat_tracker.h"    // tail latency segments + 1 Hz lat line
@@ -1954,6 +1955,14 @@ int main(int argc, char** argv) {
   bool gs_laid_out = false;
   // The settings menu's layout, deferred the same way.
   bool menu_laid_out = false;
+  // The menu over the splash before any video (splash_menu.h): allows a
+  // standalone OSD commit despite the splash, and restores the splash on
+  // a close that still precedes the first frame. `over_splash_logged`
+  // makes the "over splash" line one-shot per switch, the same way the
+  // decision itself is -- set_osd_over_splash() is driven every tick (a
+  // level), but the log line marks only the rising edge.
+  maburplay::SplashMenuGate splash_menu_gate;
+  bool over_splash_logged = false;
   // Display hotplug recovery state. init() only accepts an already-CONNECTED
   // connector, so before this a display plugged in or powered on after
   // startup stayed invisible for the life of the process -- the screen was
@@ -2349,6 +2358,25 @@ int main(int argc, char** argv) {
     // Every iteration: sends on change, re-sends each second (CoreControlClient).
     core_ctl.tick(rec_on && rec_vtx, mono_ms());
 #ifdef MABUR_PLAYER_HW
+    // The menu with no video yet (splash_menu.h): open before the first
+    // frame takes the splash's plane, close before it restores the
+    // splash. Nothing to do with no presenter at all (--decode-only, menu
+    // debug's own case). Ticked on every presenter the menu runs under --
+    // a rebuild in between (display-follow, a replug) always sees the
+    // current decision on its very next present()/commit_osd_if_pending().
+    if (menu_on && presenter) {
+      const maburplay::SplashMenuGate::Decision d =
+          splash_menu_gate.tick(menu_model.is_open(), pump.have_frame());
+      presenter->set_osd_over_splash(d.allow_over_splash);
+      if (d.allow_over_splash != over_splash_logged) {
+        over_splash_logged = d.allow_over_splash;
+        if (over_splash_logged) std::fprintf(stderr, "maburplay: menu: over splash\n");
+      }
+      if (d.restore_splash) {
+        std::fprintf(stderr, "maburplay: menu: splash restored\n");
+        show_splash(presenter.get());
+      }
+    }
     // A burned start deferred for want of a decoded frame to size the
     // recording from runs as soon as one exists.
     if (burn_deferred && pump.have_frame()) {

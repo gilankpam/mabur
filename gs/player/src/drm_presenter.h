@@ -178,11 +178,27 @@ class DrmPresenter : public PresentSink {
   // A published back buffer has not been committed yet, or the commit that
   // carried it has not flipped (release thread or housekeeping).
   bool osd_publish_pending() const override;
+  // Lets the settings menu take the splash's plane before any video has
+  // ever been shown (docs/gs-menu.md "Before the first video frame"),
+  // driven every tick from SplashMenuGate (splash_menu.h) in main.cpp: while
+  // true, commit_osd_if_pending() below ignores splash_active's hold on a
+  // standalone OSD commit. In the osd_on_primary topology that commit
+  // re-points the primary at the OSD's own buffer, so the presenter also
+  // clears splash_active there (without freeing the splash's buffer,
+  // which a later splash_show() may still reuse to bring it back) --
+  // otherwise a later present() would mistake a stale `splash_active` for
+  // a still-pending splash hand-off. In the topologies where the OSD has
+  // a plane of its own above the splash this changes nothing beyond the
+  // gate: that commit only ever touched its own plane, so the splash
+  // stays up underneath exactly as before. Housekeeping thread.
+  void set_osd_over_splash(bool allow);
+
   // The standalone OSD commit: the published back buffer shown on its own,
   // when no video commit is coming to carry it. Runs only when the OSD is
-  // pending, no flip is in flight, the CRTC is up with no splash on it, and
-  // video and the last OSD commit have both been quiet for 100 ms. Blocking
-  // (at most one vsync). Release thread.
+  // pending, no flip is in flight, the CRTC is up with no splash on it (or
+  // set_osd_over_splash(true) says to show it anyway), and video and the
+  // last OSD commit have both been quiet for 100 ms. Blocking (at most one
+  // vsync). Release thread.
   void commit_osd_if_pending() override;
 
   // OSD-attributed atomic-commit failures. Deliberately NOT folded into

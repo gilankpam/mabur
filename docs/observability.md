@@ -1091,9 +1091,14 @@ settings…" forever, since there is no client left to read maburgs' live
 keys with: `maburplay: menu: maburgs live config: <reason> -- GS rows
 will not apply`. A failed layout or a missing link-state source logs once
 more, also non-fatally: `maburplay: menu: not drawn -- <reason>` /
-`maburplay: menu: no link state -- <reason>`. This is not an exhaustive
-list of every `maburplay: menu: …` line — see `docs/gs-menu.md` for the
-debug-verb replies, which are not logged at all.
+`maburplay: menu: no link state -- <reason>`. Before the first video
+frame ever arrives, opening the menu takes the startup splash's plane
+and closing it again (still with no frame) brings the splash back
+(`docs/gs-menu.md` "Before the first video frame"), each logged once:
+`maburplay: menu: over splash` / `maburplay: menu: splash restored`.
+This is not an exhaustive list of every `maburplay: menu: …` line — see
+`docs/gs-menu.md` for the debug-verb replies, which are not logged at
+all.
 
 ## Tools: which one when
 
