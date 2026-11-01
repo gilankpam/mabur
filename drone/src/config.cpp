@@ -794,7 +794,7 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
   // inside it (docs/camera-modes.md).
   {
     const bool rec = cfg.record.enable && cfg.record.width > 0;
-    const CameraMode m = camera_mode_for(cfg.venc.core.fps, rec ? cfg.record.width : 0,
+    const CameraMode m = camera_mode_for(1, cfg.venc.core.fps, rec ? cfg.record.width : 0,
                                          rec ? cfg.record.height : 0);
     if (!camera_mode_size_ok(m, cfg.venc.core.width, cfg.venc.core.height))
       fail("venc.size", to_text(cfg.venc.core.width) + "x" + to_text(cfg.venc.core.height) +

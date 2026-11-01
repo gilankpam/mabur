@@ -991,7 +991,7 @@ static int prepare_pipeline_config(const VencCfg *cfg,
 		venc_record_size(&rec_w, &rec_h);
 		pconf->sensor_cfg = pipeline_common_build_sensor_select_config(
 			STAR6E_SENSOR_FORCED_PAD,
-			camera_mode_for(pconf->sensor_framerate, rec_w, rec_h),
+			camera_mode_for(1, pconf->sensor_framerate, rec_w, rec_h),
 			pconf->sensor_width,
 			pconf->sensor_height, pconf->sensor_framerate);
 	}
