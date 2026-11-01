@@ -42,6 +42,8 @@ void venc_cfg_defaults(VencCfg *cfg)
 	cfg->ref_base = 1;
 	cfg->ref_enhance = 1;
 	cfg->ref_pred = true;
+	cfg->mirror = false;
+	cfg->flip = false;
 	cfg->slices = 1; /* split off */
 	cfg->roi_enabled = true;
 	cfg->roi_steps = 2;

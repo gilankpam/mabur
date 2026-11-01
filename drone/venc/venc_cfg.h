@@ -86,6 +86,13 @@ typedef struct {
                                 * is doing the recovering, not the stripe. */
   bool ref_pred;               /* venc.ref_pred: bEnablePred, enhance->base
                                 * prediction. */
+  /* Sensor orientation, applied with MI_SNR_SetOrien before MI_SNR_Enable
+   * (sensor_select.c) and again on the VPE channel in
+   * star6e_pipeline_start_vpe. Boot-time only: the sensor is re-initialised
+   * to change them. waybeam carried the same pair as image.mirror /
+   * image.flip. No rotate: the VPE rotate path is untested. */
+  bool mirror;                 /* venc.mirror: horizontal (left-right) */
+  bool flip;                   /* venc.flip: vertical (up-down) */
   uint8_t slices;              /* venc.slices: H.265 row slices per picture on
                                 * the LINK channel (the SD recorder is never
                                 * split). 1 = off. Applied with

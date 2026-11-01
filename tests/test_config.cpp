@@ -263,6 +263,8 @@ TEST(venc_absent_keys_fall_back_to_spec_defaults) {
   CHECK(c.venc.core.ref_base == 1);
   CHECK(c.venc.core.ref_enhance == 1);
   CHECK(c.venc.core.ref_pred == true);
+  CHECK(c.venc.core.mirror == false);
+  CHECK(c.venc.core.flip == false);
   CHECK(c.venc.core.roi_enabled == true);
   CHECK(c.venc.core.roi_steps == 2);
   CHECK(c.venc.core.roi_center == 0.4);
@@ -293,6 +295,33 @@ TEST(venc_intra_refresh_and_ref_keys_parse) {
   CHECK(c.venc.core.ref_enhance == 4);
   CHECK(c.venc.core.ref_pred == false);
   std::filesystem::remove(path);
+}
+
+// Orientation: booleans, so a string fails boot like any mistyped key -- the
+// drone must not silently fly unflipped because the config said "yes".
+TEST(venc_orientation_keys_parse_and_are_typed) {
+  auto path = write_temp_toml(
+      "[venc]\n"
+      "sensor_bin = \"/etc/sensors/imx415_greg_fpvXIX_colortrans.bin\"\n"
+      "mirror = true\n"
+      "flip = true\n");
+  Config c = load_config(path.string());
+  CHECK(c.venc.core.mirror == true);
+  CHECK(c.venc.core.flip == true);
+  std::filesystem::remove(path);
+
+  auto bad = write_temp_toml(
+      "[venc]\n"
+      "sensor_bin = \"/etc/sensors/imx415_greg_fpvXIX_colortrans.bin\"\n"
+      "flip = \"yes\"\n");
+  bool threw = false;
+  try {
+    (void)load_config(bad.string());
+  } catch (const std::exception& e) {
+    threw = std::string(e.what()).find("flip") != std::string::npos;
+  }
+  CHECK(threw);
+  std::filesystem::remove(bad);
 }
 
 // frames 0 is the off switch (bEnable=0): no stripe, and the QP alongside it

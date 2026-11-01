@@ -29,8 +29,6 @@
 #define STAR6E_OVERCLOCK_LEVEL      1      /* system.overclockLevel */
 #define STAR6E_KEEP_ASPECT          true   /* isp.keepAspect */
 #define STAR6E_SHUTTER_RULE_180     false  /* isp.shutterRule180 */
-#define STAR6E_IMAGE_MIRROR         0      /* image.mirror */
-#define STAR6E_IMAGE_FLIP           0      /* image.flip */
 #define STAR6E_VPE_LEVEL_3DNR       0      /* fpv.noiseLevel */
 #define STAR6E_SENSOR_FORCED_PAD    (-1)   /* sensor.index: auto-detect */
 /* The sensor mode is not auto-selected: sensor_mode_cost() ranks maxFps
@@ -997,8 +995,8 @@ static int prepare_pipeline_config(const VencCfg *cfg,
 			pconf->sensor_width,
 			pconf->sensor_height, pconf->sensor_framerate);
 	}
-	pconf->sensor_cfg.image_mirror = STAR6E_IMAGE_MIRROR;
-	pconf->sensor_cfg.image_flip   = STAR6E_IMAGE_FLIP;
+	pconf->sensor_cfg.image_mirror = cfg->mirror ? 1 : 0;
+	pconf->sensor_cfg.image_flip   = cfg->flip ? 1 : 0;
 	/* IMX415/IMX335 high-FPS register hook: MI_SNR_CustFunction(pad,
 	 * cmd_id=0x23, reg=0x300a, value=0x80, dir=0).  Required on cold boot
 	 * for both sensors, otherwise MI_SNR_SetFps(pad, 120) returns
@@ -1448,7 +1446,7 @@ int star6e_pipeline_start(Star6ePipelineState *state, const VencCfg *cfg,
 
 	ret = star6e_pipeline_start_vpe(&state->sensor, &pconf.precrop,
 		pconf.image_width, pconf.image_height,
-		STAR6E_IMAGE_MIRROR, STAR6E_IMAGE_FLIP,
+		cfg->mirror ? 1 : 0, cfg->flip ? 1 : 0,
 		STAR6E_VPE_LEVEL_3DNR, sdk_quiet);
 	if (ret != 0)
 		goto fail_vif;
