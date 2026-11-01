@@ -135,9 +135,10 @@ bitrate_kbps = 40000              # constant bitrate of the recording
 fps          = 60                 # at most venc.fps
 min_free_mb  = 512                # stop (or refuse to start) below this much free space
 size         = "1920x1080"        # recording resolution, same aspect ratio as venc.size. It may differ
-                                  # from venc.size (e.g. fly 1280x720, record 1920x1080). Above
-                                  # 1920x1080 the whole camera drops to 30 fps (set venc.fps = 30)
-                                  # and the live video lags badly, so 1920x1080 is the practical max
+                                  # from venc.size (e.g. fly 1280x720, record 1920x1080). Larger than
+                                  # 1920x1080 AND larger than the sensor mode needs the 30 fps 4K mode
+                                  # (set venc.fps <= 30) and the live video lags badly; under the
+                                  # native 60 fps readout, up to 2944x1656 fits without it
 
 # Software NACK answers (base layer): how much sent video the drone keeps for
 # re-sending, and the air it may spend on re-sends.

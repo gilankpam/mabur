@@ -801,7 +801,7 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
     // Only the sensor's 3840x2160 mode can feed a recording larger than
     // 1080p AND larger than the selected tier in either dimension
     // (camera_mode_for in drone/venc/camera_modes.c): a recording that
-    // still fits the tier is an ordinary upscale on VPE port 1, below.
+    // still fits the tier is scaled down from it on VPE port 1.
     if ((rw > 1920 || rh > 1080) && (rw > tier.w || rh > tier.h) && cfg.venc.core.fps > 30)
       fail("record.size",
            "larger than 1920x1080 and than the sensor mode needs the 30 fps 4K mode: set venc.fps <= 30");

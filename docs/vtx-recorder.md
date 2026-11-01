@@ -94,9 +94,8 @@ size. The SigmaStar encoder cannot scale, so the sizes decide the port:
   3840x2160@33 mode (full view, not binned), and the loader requires
   `venc.fps <= 30`. The link then also runs at 30 fps from a downscaled 4K
   capture. A `record.size` above 1920x1080 that still fits the selected
-  mode (2560x1440 under the native 60 fps tier) stays an ordinary upscale
-  on port 1, at the link's own rate — the rule above never tightens a
-  config that loads today.
+  mode (2560x1440 under the native 60 fps tier) fits the selected mode, so
+  port 1 scales it down from the mode's window, at the link's own rate.
 
 4K is not usable next to the link: the SigmaStar H.265 engine runs one
 encode at a time, and a 4K encode (~30 ms) fills the 31 ms frame period, so
