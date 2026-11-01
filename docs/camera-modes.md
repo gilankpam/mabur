@@ -40,10 +40,16 @@ when the loaded driver lacks it (the stock driver lacks modes 1, 3, 4 and
 | true | 1–90 | 1920x1080 binned | full |
 | true | 91–100 | 1728x972 binned crop | 1.11x zoom |
 | true | 101–120 | 1728x816 binned crop | 1.11x wider, 1.32x taller zoom |
-| false | 1–60 | 2944x1656 non-binned | 1.30x zoom (77 % × 77 % of the sensor) |
-| false | 61–100 | 2304x1296 non-binned crop | 1.67x zoom (60 % × 60 % of the sensor) |
+| false | 1–60 | 2944x1656 non-binned | 1.29x zoom (measured 77 % × 77 % of the binned view) |
+| false | 61–100 | 2304x1296 non-binned crop | 1.64x zoom (measured 61 % × 61 % of the binned view) |
 | false | 101–120 | none: the loader refuses `venc.fps` | — |
 | either | with a `record.size` that needs it (the 4K rule below) | 3840x2160 (the loader then requires `venc.fps` ≤ 30) | full |
+
+The native zoom figures are bench-measured, not computed: a fixed
+landmark's width in a 1280-wide snapshot, against the same landmark in
+the binned 1920x1080 mode (the 1728 finding's method, below).
+`docs/findings/2026-11-02-native-readout-bench.md` has the raw pixel
+counts.
 
 The link size never changes the view: the sensor window sets the zoom and
 the VPE only scales the window down to `venc.size`. A larger link size
@@ -69,11 +75,18 @@ above 90 fps and the steer's ceiling clamp are in `docs/airtime-model.md`
 Neither native mode reaches its nominal rate either: from the driver's
 table and the timing law fps = 74.25 MHz / (VMAX × HMAX), 2944x1656
 computes to 59.94 Hz and 2304x1296 to 99.63 Hz; widening the 60 fps mode's
-output does not change its timing. On a panel at or above either ceiling
+output does not change its timing. The sensor-rate calibration measures
+59.945 Hz and 99.63 Hz respectively. On a panel at or above either ceiling
 the phase lock cannot hold: it goes out of range, the fps cell turns
-caution, and a frame repeats periodically (`docs/phase-lock.md`). On a
-panel a little under the ceiling it locks as usual, the same as mode 4's
-119.660 Hz ceiling above.
+caution, and a frame repeats periodically (`docs/phase-lock.md`). On the
+bench's 60.000 Hz monitor, native 60's steer pins at its 59.945 Hz ceiling
+and the lock cycles acquire/out-of-range rather than holding, with a
+~0.9 ms/s latency sawtooth and a frame repeating about every 18 s (the
+0.055 Hz gap to the panel); native 100 against that same 60 Hz panel is a
+rate mismatch, not a lock case. On a panel a little under the ceiling it
+locks as usual, the same as mode 4's 119.660 Hz ceiling above. Bench
+record: `docs/findings/2026-11-02-native-readout-bench.md` (the 100 Hz
+goggles were not run).
 
 ## Sizes
 
@@ -97,11 +110,19 @@ Encoding the mode's own size keeps all its detail but costs encoder time:
 1728x972 at 100 fps reads 158 % of the H.265 engine's rated macroblock rate
 (1280x720 at 100 fps reads 86 %); it held 100 fps on the bench with the
 480 MHz encoder clock, with enc 6/8 ms p50/p90 against 4/5 ms at 1280x720.
-The native tiers are unbenched: 2304x1296@100 reads 78 % more pixels than
-1728x972@100's 158 %, and 2944x1656@60 reads 74 % more; nothing has run
-either mode on the drone, so this page does not yet say which native sizes
-hold at their tier's ceiling rate. The loader and the UI do not refuse any
-of them.
+Both native tiers hold their rate at every offered size (0 ausniff gaps or
+drops on the bench), measured enc p50/p90 (`curl 127.0.0.1:8301/venc`):
+
+| native 60 size | enc p50/p90 (ms) | native 100 size | enc p50/p90 (ms) |
+|---|---|---|---|
+| 2944x1656 | 14–15 / 15 | 2304x1296 | 11 / 11–12 |
+| 2560x1440 | 11 / 12 | — | — |
+| 1920x1080 | 8 / 8–9 | 1920x1080 | 9 / 9–10 |
+| 1600x900 | 5–6 / 6–7 | 1600x900 | 7–8 / 8 |
+| 1280x720 | 5 / 5–6 | 1280x720 | 6 / 7 |
+
+The loader and the UI do not refuse any of them; none is removed from the
+offered list. Bench record: `docs/findings/2026-11-02-native-readout-bench.md`.
 
 ## The ground station
 
@@ -138,6 +159,18 @@ decoded picture's own, which needs no letterbox.
 At a 100 Hz panel the GS's burned DVR cannot encode every vblank and
 costs live view ~4 ms while it records; run it at `dvr.burned.every = 2`.
 Details: `docs/colortrans.md` ("Known limitations").
+
+## The GS burned recorder at native sizes above 1920x1080
+
+The burned recorder's default picture size is the decoded picture's own
+(`dvr.burned.size = ""`). At a decoded size above 1920x1080 — the native
+tiers' larger sizes, 2944x1656, 2560x1440 and 2304x1296 — the colour
+stage cannot keep up and the recorder drops frames outright rather than
+just costing live latency the way 100 fps does: 22 % dropped, measured
+at 2944x1656 on the bench. Set `dvr.burned.size = "1920x1080"` to keep
+the burned recording at 1080p regardless of the link size; with it set,
+the drop falls to under 1 %. Bench record:
+`docs/findings/2026-11-02-native-readout-bench.md`.
 
 ## The SD recorder above 90 fps
 

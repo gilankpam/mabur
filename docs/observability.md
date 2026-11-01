@@ -1041,7 +1041,11 @@ in whichever `dvr.mode` is configured:
   — a hold, not a gap. The picture is `dvr.burned.size` (`""`, the
   default, is the decoded size when the recording starts; a later rung
   change is scaled to it, letterboxed if the aspect differs), and the
-  OSD is composed at that size. With `size = ""` a start before the
+  OSD is composed at that size. At a decoded size above 1920x1080 (the
+  native sensor readout's larger sizes, `docs/camera-modes.md`) the
+  colour stage cannot keep up and the recorder drops frames rather than
+  costing latency; set `dvr.burned.size = "1920x1080"` to avoid it. With
+  `size = ""` a start before the
   first decoded frame is deferred (`maburplay: rec: START deferred --
   waiting for the first decoded frame`) and the recorder comes up on the
   first frame; a start logs `maburplay: rec: burned WxH every=N`. A
