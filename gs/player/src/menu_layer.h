@@ -47,10 +47,17 @@ class MenuLayer {
  public:
   explicit MenuLayer(GsFont& font);
 
-  // Picks the atlas sizes from the surface height (row text = nearest baked
-  // to 22 * h/1080, help/keys/tags = nearest to 15 * h/1080); fails only when
-  // the font has no atlas at all. Panel: inset 24*h/1080, width 45 % of w.
+  // Picks the atlas sizes from the surface height and the menu scale (row
+  // text = nearest baked to 22 * scale * h/1080, help/keys/tags = nearest to
+  // 15 * scale * h/1080); fails only when the font has no atlas at all.
+  // Panel: inset 24 * scale * h/1080, width 45 % * scale of w -- narrower
+  // when that would leave a confirm picker no room at its full width.
   bool layout(int screen_w, int screen_h, std::string* err);
+  // The operator's menu size (menu_scale_factor()), multiplying every
+  // design length on top of the screen-height factor. Before layout() it
+  // only takes effect there; after, it re-lays the menu out at once and
+  // the next paint redraws it. The same scale again is a no-op.
+  void set_scale(double scale);
   void set_view(const MenuView& v);             // diffs against the last painted view
   void set_tick(uint64_t now_ms);               // advances the busy-row dots and sweep bar
   // Draws what changed (or everything after invalidate()) into s; appends the
@@ -67,6 +74,7 @@ class MenuLayer {
   // not it changed: what makes the menu win a collision with the MSP grid.
   int repaint_intersecting(const DirtyRect* rects, size_t n, const Surface& s,
                            std::vector<DirtyRect>* out);
+  int debug_row_px() const;   // the row text's baked size, 0 before layout()
   void invalidate();
   DirtyRect bounds() const;                     // union of panel, picker, toast, banner boxes
   bool dirty() const;
@@ -115,8 +123,10 @@ class MenuLayer {
   void build_picker_(int x, int y, Box* b) const;
   void build_note_(const std::string& text, bool banner, Box* b) const;
   void draw_block_(const Surface& s, const Block& b);
-  int sc_(double design_px) const;   // a 1080p design length at this height
+  int sc_(double design_px) const;   // a 1080p design length at this height and scale
+  bool pick_atlases_();
 
+  double scale_ = 1.0;
   GsFont& font_;
   const MaskAtlas* row_ = nullptr;     // row text, toast, banner
   const MaskAtlas* small_ = nullptr;   // header, help, keys, tags, status, notes

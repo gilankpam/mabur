@@ -164,6 +164,9 @@ class OsdComposer {
   // bar. Call before wants(): a step change on a busy row is a change the
   // screen has to show.
   void menu_tick(uint64_t now_ms);
+  // The operator's menu size, to both buffers' layers (MenuLayer::set_scale):
+  // the next composition redraws the menu at it with no new view.
+  void menu_set_scale(double scale);
 
   // Lays out gs_[0] and gs_[1] at screen_w x screen_h, and gs_[2] at the
   // same size UNLESS a burn size is set (set_burn_size), in which case

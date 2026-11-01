@@ -20,6 +20,7 @@ const std::vector<PlayerLiveKey> kPlayerLiveKeys = {
     {"dvr.burned.every", "dvr.burned", "every", PlayerLiveType::Int},
     {"dvr.burned.size", "dvr.burned", "size", PlayerLiveType::Str},
     {"menu.show_advanced", "menu", "show_advanced", PlayerLiveType::Bool},
+    {"menu.scale", "menu", "scale", PlayerLiveType::Str},
 };
 
 namespace {
@@ -47,6 +48,7 @@ void copy_live_field(const PlayerLiveKey& k, const Config& src, Config* dst) {
     dst->dvr.burned.size_h = src.dvr.burned.size_h;
   }
   else if (is(k, "menu.show_advanced")) dst->menu.show_advanced = src.menu.show_advanced;
+  else if (is(k, "menu.scale")) dst->menu.scale = src.menu.scale;
 }
 
 bool patch_live_key(std::string* text, const PlayerLiveKey& k, const std::string& value,
@@ -128,6 +130,7 @@ std::string render_player_live_value(const Config& c, const PlayerLiveKey& k) {
     return quoted(std::to_string(c.dvr.burned.size_w) + "x" + std::to_string(c.dvr.burned.size_h));
   }
   if (is(k, "menu.show_advanced")) return render_bool(c.menu.show_advanced);
+  if (is(k, "menu.scale")) return quoted(c.menu.scale);
   return "";
 }
 
@@ -139,7 +142,7 @@ PlayerApplyRule player_apply_rule(const PlayerLiveKey& k, const Config& before,
     return want_before != want_after ? PlayerApplyRule::Presenter : PlayerApplyRule::OsdLayers;
   }
   if (is(k, "screen_mode") || is(k, "colortrans.enable")) return PlayerApplyRule::Presenter;
-  if (is(k, "menu.show_advanced")) return PlayerApplyRule::Menu;
+  if (is(k, "menu.show_advanced") || is(k, "menu.scale")) return PlayerApplyRule::Menu;
   return PlayerApplyRule::NextStart;
 }
 

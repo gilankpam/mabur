@@ -476,12 +476,35 @@ TEST(the_string_values_pass_maburplays_setter) {
   CHECK(set(f.node("video.display").steps("1280x720").at(0)));
   CHECK(set(f.node("rec.burn.size").steps("1280x720").at(0)));
   CHECK(set(f.node("rec.target").steps("both").at(0)));
+  CHECK(set(f.node("sys.size").steps("larger").at(0)));
   const maburplay::Config c = maburplay::load_config(d.file);
   CHECK(c.screen_mode == "1280x720");
   CHECK(c.dvr.burned.size_w == 1280 && c.dvr.burned.size_h == 720);
   CHECK(c.dvr.target == "both");
+  CHECK(c.menu.scale == "larger");
   CHECK(set(f.node("rec.burn.size").steps("").at(0)));
   CHECK(maburplay::load_config(d.file).dvr.burned.size_w == 0);
+}
+
+TEST(menu_size_offers_three_steps_and_reads_the_config) {
+  Fx f;
+  MenuNode n = f.node("sys.size");
+  CHECK(n.label == "Menu size");
+  CHECK(n.owner == Owner::kPlayer);
+  std::vector<std::string> values, labels;
+  for (const Choice& c : n.choices()) {
+    values.push_back(c.value);
+    labels.push_back(c.label);
+  }
+  CHECK((values == std::vector<std::string>{"normal", "large", "larger"}));
+  CHECK((labels == std::vector<std::string>{"Normal", "Large", "Larger"}));
+  CHECK(n.current() == "normal");
+  f.cfg.menu.scale = "large";
+  CHECK(f.node("sys.size").current() == "large");
+  const std::vector<SetStep> s = n.steps("larger");
+  REQUIRE(s.size() == 1);
+  CHECK(s[0].key == "menu.scale");
+  CHECK(s[0].value == "\"larger\"");
 }
 
 // Until maburgs' first `get` lands the view holds GsLiveView's defaults,

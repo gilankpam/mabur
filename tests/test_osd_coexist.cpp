@@ -1696,6 +1696,35 @@ TEST(a_menu_change_alone_wants_a_composition_and_publishes) {
   CHECK(m.px(m.front, p.x, p.y) == kPanelPx);
 }
 
+// A live menu size change needs no new view: the composer wants a
+// composition on the scale alone, the buffer it publishes shows the larger
+// panel, and so does the other buffer the next time it is composed.
+TEST(a_menu_scale_change_recomposes_on_its_own) {
+  Rig r(false, false);
+  add_menu(r.comp);
+  const MenuView v = menu_view();
+  OsdComposeIn in;
+  in.menu = &v;
+  in.menu_dirty = true;
+  CHECK(r.tick(in));
+  in.menu_dirty = false;
+  const DirtyRect p = menu_panel(v);
+  // Just right of the normal panel, by its bottom edge: bare until the scale
+  // grows the panel over it.
+  const int x = p.x + p.w + 4, y = p.y + p.h - 2;
+  CHECK(r.px(r.front, x, y) == 0);
+  CHECK(!r.comp.wants(in));
+  r.comp.menu_set_scale(1.5);
+  CHECK(r.comp.wants(in));
+  CHECK(r.tick(in));
+  CHECK(r.px(r.front, x, y) != 0);
+  CHECK(!r.comp.wants(in));
+  // The other buffer, next composed for an unrelated view change.
+  in.menu_dirty = true;
+  CHECK(r.tick(in));
+  CHECK(r.px(r.front, x, y) != 0);
+}
+
 // A menu-only change wants a screen composition but must never trigger a
 // burn one: the recording can never show the menu, so composing it on a
 // cursor move or the busy sweep would be work with nothing to show for it.

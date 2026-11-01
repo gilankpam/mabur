@@ -46,9 +46,9 @@ missing record-button pin.
 
 Four boxes (`menu_layer.h`), each a filled panel in `tok::kMenuPanel`:
 
-- **Panel** — top-left, inset 24 px at 1080p (scaled by `screen_h / 1080`),
-  45 % of the screen's width, up to 10 rows scrolled around the cursor,
-  the crumb and link pill, two help lines and a keys line.
+- **Panel** — top-left, inset 24 px at 1080p, 45 % of the screen's width,
+  up to 10 rows scrolled around the cursor, the crumb and link pill, two
+  help lines and a keys line.
 - **Picker** — opens to the right of the panel while a value is being
   changed: a choice list, a number spinner, or a go-ahead confirm prompt.
   Neither carries a title line; the row beside it already names it.
@@ -59,6 +59,19 @@ Four boxes (`menu_layer.h`), each a filled panel in `tok::kMenuPanel`:
   either. It exists only when the menu itself is on (buttons wired, or
   `MABUR_MENU_DEBUG`); a unit with no menu never draws it, and shows the
   camera/panel mismatch only through the OSD's fps cell.
+
+Every design length — text size, padding, inset, the panel's 45 % — is
+multiplied by `screen_h / 1080` and by the operator's menu size
+(`[menu] scale`: Normal ×1, Large ×1.25, Larger ×1.5), so a given size
+takes the same share of the screen at 720p, 1080p, 1440p and 2160p. Text
+snaps to the nearest size `gs_osd.gfont` bakes (`GsFont::nearest`); the
+boxes follow the snapped size. Row text is 22 px and help/keys/tag text
+15 px at 1080p Normal; at 720p Normal the help text clamps up to the
+smallest baked size, 13 px. The panel gives up width before a confirm
+picker (the widest fixed-width picker) would be squeezed against the
+screen's right edge — on a 4:3 screen at Larger it is narrower than
+45 % × 1.5. Nothing else on the OSD plane follows the menu size: the GS
+bar and the MSP OSD keep their own.
 
 The selected row or choice is `tok::kMenuSelect`; a drone-owned row's VTX
 tag (reserved for when one exists) is `tok::kMenuTag` — both defined next
@@ -101,6 +114,7 @@ real values.
 | `osd.fc` "Flight controller OSD" | player + gs | `osd.enable` + `msp.enable` | On/off, shown as `mixed` (with a help line naming which half is off) when the render and maburgs' MSP feed disagree; picking On or Off sends both. |
 | **System** | | | |
 | `sys.adv` "Show advanced settings" | player | `menu.show_advanced` | On/off; shows the rows marked (advanced) above in every group. |
+| `sys.size` "Menu size" | player | `menu.scale` | Normal / Large / Larger (×1, ×1.25, ×1.5). The menu re-lays out at the new size on the next tick, still open on this row. |
 | `sys.debug` "Debug log" | gs | `debug_log.enable` | On/off. |
 
 **Not covered yet:** a `Channel` group, a `Calibration` group, and any
@@ -248,10 +262,17 @@ Each takes `pin` (the header pin number, required), `active_low` (default
 wired; the five menu buttons are per-unit wiring and have no sensible
 shared default, so the shipped bundle leaves all five commented out.
 
-`[menu]` has one key, `show_advanced` (bool, default `false`): whether
-the menu shows its advanced rows, persisted across a boot. A live `set
-menu.show_advanced = true|false` on 8403 reaches the running menu on its
-next tick — no presenter rebuild, no recording touched.
+`[menu]` has two keys, both persisted across a boot and both reaching the
+running menu on its next tick when set live on 8403 — no presenter
+rebuild, no recording touched:
+
+- `show_advanced` (bool, default `false`): whether the menu shows its
+  advanced rows.
+- `scale` (`"normal"` | `"large"` | `"larger"`, default `"normal"`): the
+  menu's size, ×1, ×1.25 or ×1.5 ("Screen anatomy" above). Any other
+  value fails the load. A live set re-lays the menu out; the GS's
+  `maburplay.toml` must already carry the key for the set to be written
+  (`docs/gs-live-config.md`).
 
 ## Debug verbs (`MABUR_MENU_DEBUG=1`)
 

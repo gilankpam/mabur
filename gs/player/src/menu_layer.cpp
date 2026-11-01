@@ -11,7 +11,8 @@
 namespace maburplay {
 namespace {
 
-// Design geometry, in pixels at 1080p (scaled by screen_h / 1080).
+// Design geometry, in pixels at 1080p (scaled by screen_h / 1080 and the
+// operator's menu scale).
 constexpr double kRowPx = 22, kSmallPx = 15;
 constexpr double kBigScale = 1.3;     // the number picker's value, x the row size
 constexpr double kInset = 24;         // panel from the top-left corner
@@ -140,7 +141,7 @@ bool MenuLayer::Box::same_geometry(const Box& o) const {
 MenuLayer::MenuLayer(GsFont& font) : font_(font), target_(kBoxes), drawn_(kBoxes) {}
 
 int MenuLayer::sc_(double design_px) const {
-  return (int)std::lround(design_px * screen_h_ / 1080.0);
+  return (int)std::lround(design_px * scale_ * screen_h_ / 1080.0);
 }
 
 int MenuLayer::clean_air_bars(double busy_pct) {
@@ -154,17 +155,33 @@ int MenuLayer::clean_air_bars(double busy_pct) {
 bool MenuLayer::layout(int screen_w, int screen_h, std::string* err) {
   screen_w_ = screen_w;
   screen_h_ = screen_h;
-  row_ = font_.nearest(sc_(kRowPx));
-  small_ = font_.nearest(sc_(kSmallPx));
-  if (!row_ || !small_) {
+  if (!pick_atlases_()) {
     laid_out_ = false;
     if (err) *err = "menu: the GS font has no atlas";
     return false;
   }
-  big_ = font_.nearest((int)std::lround(row_->px * kBigScale));
   laid_out_ = true;
   invalid_ = true;
   rebuild_();
+  return true;
+}
+
+void MenuLayer::set_scale(double scale) {
+  if (scale == scale_) return;
+  scale_ = scale;
+  if (!laid_out_) return;
+  // The font is the one layout() already found atlases in, so a re-pick
+  // cannot come up empty.
+  pick_atlases_();
+  invalid_ = true;
+  rebuild_();
+}
+
+bool MenuLayer::pick_atlases_() {
+  row_ = font_.nearest(sc_(kRowPx));
+  small_ = font_.nearest(sc_(kSmallPx));
+  if (!row_ || !small_) return false;
+  big_ = font_.nearest((int)std::lround(row_->px * kBigScale));
   return true;
 }
 
@@ -188,6 +205,8 @@ void MenuLayer::set_tick(uint64_t now_ms) {
 }
 
 void MenuLayer::invalidate() { invalid_ = true; }
+
+int MenuLayer::debug_row_px() const { return row_ ? row_->px : 0; }
 
 DirtyRect MenuLayer::bounds() const {
   DirtyRect r{0, 0, 0, 0};
@@ -237,7 +256,12 @@ void MenuLayer::rebuild_() {
 }
 
 void MenuLayer::build_panel_(Box* box) const {
-  const int x = sc_(kInset), w = (int)std::lround(kPanelW * screen_w_);
+  // 45 % of the width, grown with the menu scale -- but never so wide that
+  // a confirm picker (the widest fixed-width one) is squeezed against the
+  // screen edge: on a 4:3 screen at the largest scale the panel gives way.
+  const int x = sc_(kInset);
+  const int room = screen_w_ - 2 * sc_(kInset) - sc_(kPickerGap) - sc_(kConfirmW);
+  const int w = std::min((int)std::lround(kPanelW * scale_ * screen_w_), room);
   const int pad = sc_(kPadX), gap = sc_(kGap);
   const int inner = w - 2 * pad;
   int y = sc_(kInset);

@@ -193,6 +193,79 @@ TEST(a_picker_draws_to_the_right_of_the_panel_with_no_title) {
          std::vector<std::string>{"Restart the encoder?", "▶ Go ahead", "◀ Cancel"}));
 }
 
+// The operator's menu size multiplies every design length on top of the
+// screen-height factor: inset, text, rows, and the panel's share of the
+// width.
+TEST(a_larger_menu_size_scales_the_panel_and_its_text) {
+  for (auto [w, h] : {std::pair{1920, 1080}, std::pair{1280, 720}}) {
+    Canvas c(w, h);
+    MenuLayer normal(font()), larger(font());
+    std::string err;
+    REQUIRE(normal.layout(w, h, &err));
+    larger.set_scale(1.5);
+    REQUIRE(larger.layout(w, h, &err));
+    normal.set_view(sample());
+    larger.set_view(sample());
+    normal.paint(c.s, nullptr);
+    larger.paint(c.s, nullptr);
+    const DirtyRect n = normal.debug_panel_box(), l = larger.debug_panel_box();
+    CHECK(l.x == (int)std::lround(24.0 * 1.5 * h / 1080));
+    CHECK(l.w == (int)std::lround(0.45 * 1.5 * w));
+    // Text snaps to a baked size, so the height grows by about the scale, not
+    // exactly: at 720p the normal help text is already clamped up to the
+    // smallest baked size, so the panel grows less there.
+    CHECK(l.h > n.h * 1.2);
+    CHECK(larger.debug_row_px() == font().nearest((int)std::lround(22.0 * 1.5 * h / 1080))->px);
+    CHECK(larger.debug_row_px() > normal.debug_row_px());
+  }
+}
+
+// A live size change re-lays the menu out on its own: the caller never
+// calls layout() again, and the next paint moves the boxes.
+TEST(set_scale_after_layout_relays_out_and_dirties) {
+  Canvas c(1920, 1080);
+  MenuLayer m(font());
+  std::string err;
+  REQUIRE(m.layout(1920, 1080, &err));
+  m.set_view(sample());
+  m.paint(c.s, nullptr);
+  const DirtyRect before = m.debug_panel_box();
+  const int px_before = m.debug_row_px();
+  CHECK(!m.dirty());
+  m.set_scale(1.25);
+  CHECK(m.dirty());
+  std::vector<DirtyRect> out;
+  m.paint(c.s, &out);
+  CHECK(!out.empty());
+  CHECK(m.debug_panel_box().w > before.w);
+  CHECK(m.debug_row_px() > px_before);
+  // The same size again is a no-op.
+  m.set_scale(1.25);
+  CHECK(!m.dirty());
+}
+
+// The widest fixed-width picker (a confirm) keeps its full width beside the
+// panel at the largest size, 4:3 screens included: the panel gives up width
+// before the picker is squeezed against the screen edge.
+TEST(the_picker_keeps_its_width_at_the_largest_size) {
+  for (auto [w, h] : {std::pair{1920, 1080}, std::pair{1280, 720}, std::pair{1024, 768}}) {
+    Canvas c(w, h);
+    MenuLayer m(font());
+    std::string err;
+    m.set_scale(1.5);
+    REQUIRE(m.layout(w, h, &err));
+    MenuView v = sample();
+    v.picker = MenuView::Picker::kConfirm;
+    v.confirm_text = "Restart the encoder?";
+    m.set_view(v);
+    m.paint(c.s, nullptr);
+    const DirtyRect k = m.debug_picker_box();
+    const int inset = (int)std::lround(24.0 * 1.5 * h / 1080);
+    CHECK(k.w >= (int)std::lround(320.0 * 1.5 * h / 1080));
+    CHECK(k.x + k.w <= w - inset);
+  }
+}
+
 TEST(a_changed_row_dirties_only_its_rect) {
   Canvas c(1920, 1080);
   MenuLayer m(font());

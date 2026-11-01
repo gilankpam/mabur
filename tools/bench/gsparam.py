@@ -153,6 +153,7 @@ def expected_pairs(role, alt_mode=None):
             ("dvr.burned.every", "2", "1"),
             ("dvr.burned.size", '"1280x720"', '""'),
             ("menu.show_advanced", "true", "false"),
+            ("menu.scale", '"larger"', '"normal"'),
         ]
     raise ValueError("unknown role: %r" % role)
 

@@ -145,6 +145,11 @@ bool OsdComposer::menu_layout(int w, int h, std::string* err) {
   return true;
 }
 
+void OsdComposer::menu_set_scale(double scale) {
+  for (auto& m : menu_)
+    if (m) m->set_scale(scale);
+}
+
 void OsdComposer::menu_tick(uint64_t now_ms) {
   for (auto& m : menu_)
     if (m) m->set_tick(now_ms);

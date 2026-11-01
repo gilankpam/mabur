@@ -1000,9 +1000,11 @@ int main(int argc, char** argv) {
       std::fprintf(stderr, "maburplay: menu: no link state -- %s\n", err.c_str());
   }
   // The menu's two layers, laid out on the first real surface like the bar.
-  if (menu_on)
+  if (menu_on) {
     composer.set_menu(std::make_unique<maburplay::MenuLayer>(gs_font),
                       std::make_unique<maburplay::MenuLayer>(gs_font));
+    composer.menu_set_scale(maburplay::menu_scale_factor(cfg.menu.scale));
+  }
 
   // Player-measured half of the GS overlay's inputs, recomputed once a
   // second in the housekeeping loop. maburgs cannot supply these: its fps
@@ -2358,6 +2360,9 @@ int main(int argc, char** argv) {
       menu.tick(now_ms);
       menu_model.set_linked(gs_src && !gs_src->stale(now_ms) && gs_src->snapshot().session);
       menu_model.set_show_advanced(cfg.menu.show_advanced);
+      // A no-op unless a live set just changed it; then the next
+      // composition redraws the menu at the new size.
+      composer.menu_set_scale(maburplay::menu_scale_factor(cfg.menu.scale));
     }
     // Every iteration: sends on change, re-sends each second (CoreControlClient).
     core_ctl.tick(rec_on && rec_vtx, mono_ms());

@@ -520,6 +520,26 @@ TEST(menu_show_advanced_parses_and_defaults_false) {
   CHECK(!off.menu.show_advanced);
 }
 
+TEST(menu_scale_parses_and_defaults_normal) {
+  auto big = maburplay::load_config(write_tmp_play("[menu]\nscale = \"larger\"\n"));
+  CHECK(big.menu.scale == "larger");
+  std::vector<std::string> defaulted;
+  auto dflt = maburplay::load_config(write_tmp_play("backend = \"null\"\n"), &defaulted);
+  CHECK(dflt.menu.scale == "normal");
+}
+
+TEST(a_menu_scale_outside_the_three_steps_is_refused) {
+  CHECK(load_throws("[menu]\nscale = \"huge\"\n"));
+  CHECK(load_throws("[menu]\nscale = \"1.5\"\n"));
+  CHECK(load_throws("[menu]\nscale = 1.5\n"));
+}
+
+TEST(menu_scale_factor_per_step) {
+  CHECK(maburplay::menu_scale_factor("normal") == 1.0);
+  CHECK(maburplay::menu_scale_factor("large") == 1.25);
+  CHECK(maburplay::menu_scale_factor("larger") == 1.5);
+}
+
 TEST(an_unknown_menu_key_is_refused) {
   CHECK(load_throws("[menu]\nshow_advnaced = true\n"));
 }

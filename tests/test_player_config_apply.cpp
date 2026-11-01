@@ -121,11 +121,12 @@ PlayerApplyResult drive(PlayerConfigApplier& a) {
 
 }  // namespace
 
-TEST(player_live_table_has_ten_keys) {
-  REQUIRE(kPlayerLiveKeys.size() == 10);
+TEST(player_live_table_has_eleven_keys) {
+  REQUIRE(kPlayerLiveKeys.size() == 11);
   CHECK(std::string(kPlayerLiveKeys[0].key) == "screen_mode");
   CHECK(std::string(kPlayerLiveKeys[8].key) == "dvr.burned.size");
   CHECK(std::string(kPlayerLiveKeys[9].key) == "menu.show_advanced");
+  CHECK(std::string(kPlayerLiveKeys[10].key) == "menu.scale");
   CHECK(player_live_key("backend") == nullptr);
 }
 
@@ -141,6 +142,7 @@ TEST(render_player_live_value_renders_each_type) {
   CHECK(render_player_live_value(c, *player_live_key("menu.show_advanced")) == "false");
   c.menu.show_advanced = true;
   CHECK(render_player_live_value(c, *player_live_key("menu.show_advanced")) == "true");
+  CHECK(render_player_live_value(c, *player_live_key("menu.scale")) == "\"normal\"");
 }
 
 TEST(player_apply_rule_presenter_only_when_the_osd_plane_want_changes) {
@@ -161,6 +163,8 @@ TEST(player_apply_rule_menu_for_show_advanced) {
   Config a = b;
   a.menu.show_advanced = !a.menu.show_advanced;
   CHECK(player_apply_rule(*player_live_key("menu.show_advanced"), b, a) == PlayerApplyRule::Menu);
+  a.menu.scale = "large";
+  CHECK(player_apply_rule(*player_live_key("menu.scale"), b, a) == PlayerApplyRule::Menu);
 }
 
 TEST(player_applier_screen_mode_reacquires_then_publishes) {
@@ -288,6 +292,22 @@ TEST(a_menu_set_calls_the_menu_hook_and_publishes) {
   CHECK(f.menu_calls[0].menu.show_advanced);
   CHECK(a.live().menu.show_advanced);
   CHECK(slurp(sb.path()).find("show_advanced = true") != std::string::npos);
+}
+
+TEST(a_menu_scale_set_calls_the_menu_hook_and_publishes) {
+  ScratchPlayerBundle sb;
+  PFake f;
+  PlayerConfigApplier a(sb.path(), bundle(), BuildCaps{true, false}, f.hooks(), nullptr);
+  std::string why;
+  REQUIRE(a.submit("menu.scale", "\"larger\"", &why));
+  PlayerApplyResult r = drive(a);
+  CHECK(r.ok);
+  CHECK(f.reacquire_calls.empty());
+  CHECK(f.osd_calls.empty());
+  REQUIRE(f.menu_calls.size() == 1);
+  CHECK(f.menu_calls[0].menu.scale == "larger");
+  CHECK(a.live().menu.scale == "larger");
+  CHECK(slurp(sb.path()).find("scale = \"larger\"") != std::string::npos);
 }
 
 TEST(player_applier_osd_switch_keeping_the_plane_opens_layers_in_place) {

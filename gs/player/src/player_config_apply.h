@@ -36,7 +36,7 @@ struct PlayerLiveKey {
 
 // The closed live table, in `get` order: screen_mode, colortrans.enable,
 // osd.enable, osd.gs.enable, dvr.target, dvr.mode, dvr.burned.bitrate_kbps,
-// dvr.burned.every, dvr.burned.size, menu.show_advanced.
+// dvr.burned.every, dvr.burned.size, menu.show_advanced, menu.scale.
 extern const std::vector<PlayerLiveKey> kPlayerLiveKeys;
 const PlayerLiveKey* player_live_key(const std::string& dotted);  // nullptr = not live
 
@@ -56,9 +56,10 @@ enum class PlayerApplyRule : uint8_t {
   OsdLayers,
   // dvr.*: read when the next recording starts; nothing to do now.
   NextStart,
-  // menu.show_advanced: take the value onto the running config, which the
-  // running settings menu reads on its next tick. No presenter rebuild,
-  // nothing latched for a later recording start.
+  // menu.show_advanced, menu.scale: take the value onto the running config,
+  // which the running settings menu reads on its next tick (a new scale
+  // re-lays the menu out there). No presenter rebuild, nothing latched for
+  // a later recording start.
   Menu,
 };
 PlayerApplyRule player_apply_rule(const PlayerLiveKey& k, const Config& before,

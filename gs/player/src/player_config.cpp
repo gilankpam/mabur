@@ -279,11 +279,20 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
 
   if (j.contains("menu")) {
     const Value& m = j["menu"];
-    check_keys(m, "menu", {"show_advanced"});
+    check_keys(m, "menu", {"show_advanced", "scale"});
     c.menu.show_advanced = get_bool(m, "show_advanced", c.menu.show_advanced, "menu");
+    c.menu.scale = get_str(m, "scale", c.menu.scale, "menu");
+    if (c.menu.scale != "normal" && c.menu.scale != "large" && c.menu.scale != "larger")
+      fail("menu.scale", "must be \"normal\", \"large\" or \"larger\"");
   }
 
   return c;
+}
+
+double menu_scale_factor(const std::string& scale) {
+  if (scale == "large") return 1.25;
+  if (scale == "larger") return 1.5;
+  return 1.0;
 }
 
 namespace {

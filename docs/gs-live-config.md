@@ -107,6 +107,7 @@ it belongs to whatever follows, not to the ladder.
 | `dvr.burned.every` | int | read at the next recording's start | |
 | `dvr.burned.size` | string (`"WxH"` or `""` for the decoded size) | read at the next recording's start | |
 | `menu.show_advanced` | bool | taken onto the live config; the running settings menu shows or hides its advanced rows on its next tick; no presenter rebuild, no recording touched | Decides whether the settings menu shows its advanced rows. |
+| `menu.scale` | string (`"normal"`/`"large"`/`"larger"`) | taken onto the live config; the running settings menu re-lays out at the new size on its next tick; no presenter rebuild, no recording touched | The settings menu's size, ×1/×1.25/×1.5 (`docs/gs-menu.md` "Screen anatomy"). |
 
 A running recording keeps the plan (`RecPlan`: `gs`/`vtx`/`burned` and
 the `dvr.burned.*` size, cadence and bitrate) it was started with; a
@@ -129,6 +130,12 @@ reading it as a missed latch.
 
 ## File rules
 
+- **A set only rewrites a key the file already writes out.** The write is
+  line-surgical (`patch_toml_key`, `common/include/mabur/config_write.h`):
+  a key absent from the file — or only present commented out — is
+  refused as `<key>: not set in the config file`, with nothing changed.
+  A key added to a bundle therefore has to reach the device's TOML before
+  a live set of it can land.
 - **`.pre-live` backup, written once per daemon run**, before the first
   successful publish — the same `.pre-*` operator-rollback convention as
   `maburcal`'s `.pre-cal` (`docs/calibration.md`, `docs/deploy.md`).

@@ -167,11 +167,19 @@ struct DecoderCfg {
 
 // [menu]. show_advanced decides whether the settings menu shows its
 // advanced rows (the ones menu_model.h's MenuModel hides behind
-// MenuNode::advanced) rather than resetting to hidden every boot. A live
-// set reaches the running menu on its next tick.
+// MenuNode::advanced) rather than resetting to hidden every boot. scale is
+// the menu's size, "normal", "large" or "larger", for an operator who finds
+// the default text too small. A live set of either reaches the running
+// menu on its next tick.
 struct MenuCfg {
   bool show_advanced = false;
+  std::string scale = "normal";
 };
+
+// The size multiplier a [menu] scale step stands for, on top of the
+// menu's own screen-height scaling: 1, 1.25, 1.5. 1 for anything else (the
+// loader has already refused it).
+double menu_scale_factor(const std::string& scale);
 
 struct Config {
   std::string ring_path = "/dev/shm/mabur-au";
