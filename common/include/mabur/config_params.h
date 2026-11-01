@@ -107,7 +107,7 @@ inline int find(const char* id16) {
   return -1;
 }
 
-// "knob" | "reprogram" | "rebuild": how docs/mavlink.md and a future UI
+// "knob" | "reprogram" | "rebuild": how docs/vtx-config-mavlink.md and a future UI
 // label a row's apply path.
 inline const char* apply_name(Apply a) {
   switch (a) {

@@ -135,7 +135,7 @@ Boot log line that proves the order:
 ## Live parameter sets — `REC_*`, `VENC_MODE`
 
 A MAVLink set to any `[record]` key, or to `VENC_MODE`
-(`docs/mavlink.md` "Applying a set"), rebuilds the encoder pipeline
+(`docs/vtx-config-mavlink.md` "Applying a set"), rebuilds the encoder pipeline
 in-process (`docs/link-adaptation.md` "Rebuilding the encoder pipeline
 in-process") rather than restarting `maburd`. Before the rebuild,
 `ConfigApplier` stops a recording in progress

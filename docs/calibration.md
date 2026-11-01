@@ -424,7 +424,7 @@ efficiency_40 = [0.77, 0.75, 0.75, 0.75, 0.74, 0.77, 0.76, 0.75]
   `maburd` warns at boot — `maburd warning: radio: 20 MHz walls were
   measured with ldpc on; radio.ldpc is off — re-run maburcal` — and a
   `RADIO_LDPC` parameter set that creates the mismatch answers `ACCEPTED`
-  plus a `STATUSTEXT` WARNING with the same text (`docs/mavlink.md`). It
+  plus a `STATUSTEXT` WARNING with the same text (`docs/vtx-config-mavlink.md`). It
   warns, it does not refuse. Both checks consider only widths the radio
   can fly (40 only with `radio.width = 40`) and only under `"offset"`.
 - **`legacy_wall_rel`** (control and telemetry: legacy/CCK) is one

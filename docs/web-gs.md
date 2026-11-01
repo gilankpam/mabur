@@ -779,7 +779,7 @@ value, so a refused toggle or edit never stays on screen beside its
 refusal. On success the bar fills, the status reads "✓ Saved", and both
 fade after about 1.5 s — unless the drone followed its `ACCEPTED` with a
 warning `STATUSTEXT` (a `RADIO_LDPC` set against walls measured under the
-other setting, `docs/mavlink.md`): then "✓ Saved" stays in amber with the
+other setting, `docs/vtx-config-mavlink.md`): then "✓ Saved" stays in amber with the
 warning as a reason line under the hint until the next set of that row.
 On an error the control gives one small shake, the
 status turns red, and a reason line appears under the hint (the only time
@@ -791,7 +791,7 @@ unknown-id refusal, which carries no reason text); or "No answer" with
 "The drone did not answer; it may not have applied the change." on a
 timeout. With reduced motion there is no sweep, pulse, shake or fade: the
 bar is static while busy and the status text carries the state. The row's
-apply path (`docs/mavlink.md`) is not shown.
+apply path (`docs/vtx-config-mavlink.md`) is not shown.
 
 The tab lives both on the windowed sidebar's **VTX** segment (see "Stats
 panel" below) and on the immersive layout's Config|VTX panel (see "Config
@@ -916,7 +916,7 @@ their history and repair recipe are in
 `docs/findings/2026-09-29-web-gs-raw-dvr-irap-sync.md`.
 
 A coded-size change mid-recording (a drone `VENC_MODE` MAVLink set
-rebuilding the encoder pipeline, `docs/mavlink.md`, is the live case)
+rebuilding the encoder pipeline, `docs/vtx-config-mavlink.md`, is the live case)
 rolls to a new file rather than mixing two sizes in one header: one
 file's header can describe only one size. `RawDvr`'s OPFS open awaits
 through ASYNCIFY, which must run from the core loop and never from the

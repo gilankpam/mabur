@@ -591,7 +591,7 @@ This closes two holes:
 ### Rebuilding the encoder pipeline in-process
 
 A `VENC_MODE`/`VENC_SLICES`/`REC_*` MAVLink parameter set
-(`docs/mavlink.md` "Applying a set") rebuilds the MI sensor→ISP→VENC
+(`docs/vtx-config-mavlink.md` "Applying a set") rebuilds the MI sensor→ISP→VENC
 pipeline inside the running `maburd` — it does not restart the process.
 `ConfigApplier` (`drone/src/config_apply.h`) calls `venc_core_restart`,
 which stops the encoder thread, rebuilds under the same `MI_SYS_Init`
@@ -624,7 +624,7 @@ does `maburd` **exit and let its init wrapper**
 (`/etc/init.d/S00mabur`, repo file `bundle/S96mabur`) **respawn it**
 from the unchanged file — a cold bring-up of about 14–17 s with the
 link down. `MABUR_VENC_FAIL_RESTARTS` forces the restore rungs on a
-device (`docs/mavlink.md` "Applying a set").
+device (`docs/vtx-config-mavlink.md` "Applying a set").
 
 **A pipeline that faults on its own is still a process fault.** The
 ladder above only ever rebuilds a pipeline that `ConfigApplier` itself
@@ -644,7 +644,7 @@ it is turned on; the code defaults are 1000 kbps and 15 fps. An ARMED
 report returns full power.
 
 `low_power.enable` (`LOWPWR_ENABLE`) is a live knob: a MAVLink set
-(`docs/mavlink.md`) reaches `RcAgent::set_live_knobs` and is read on the
+(`docs/vtx-config-mavlink.md`) reaches `RcAgent::set_live_knobs` and is read on the
 agent's next tick, no pipeline rebuild and no restart — turning the mode
 on or off in flight takes effect against whichever arm state the agent
 last saw.

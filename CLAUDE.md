@@ -92,7 +92,8 @@ Two kinds of doc, two rules:
 | the software NACK (base-layer selective repeat): T_NACK, the retx ring, the air bucket, the retx accounting class, feclog 3 | docs/fec-nack.md (as built) + docs/findings/2026-10-05-fec-nack-spike.md (spike) |
 | H.265 row slices: slice salvage (SliceAssembler, skip-slice fills, `[venc] slices`, FrameHdr `slice_rows`, `kRecFlagSliceSalvaged`, aulog 5) and streamed decode (AU ring v4 open slots, StreamFeeder, the decoder-input thread (FeedLoop), `[decoder] stream`, the MPP patches in `gs/player/mpp-patches/`, the stream-mode GS image and its p1 flash) | docs/slices.md (as built) + docs/findings/2026-10-09-venc-slice.md; flashing: docs/deploy.md |
 | the phase lock (sensor-rate servo against the GS vblank: PhaseLock, the regulator's margin and placement switch, RCF `snr_off`, `display.phase_lock`/`phase_margin_ms`, `screen_mode` exact-rate pick, reg.log `lock=` fields, drone `[sensor] steer`) | docs/phase-lock.md + docs/findings/2026-10-17-phase-lock-spike-2.md |
-| MAVLink tunnel, drone parameters over the link, the GS MAVLink UDP endpoint, mavparam.py | docs/mavlink.md; the web GS VTX tab → `docs/web-gs.md` |
+| MAVLink tunnel (`T_MAV`, ids, the drone component's routing/heartbeat), the GS MAVLink UDP endpoint and its trust boundary | docs/mavlink.md |
+| drone config parameters over MAVLink (`PARAM_EXT_*` table, applying a set, `.pre-param`, ordering rules, `ParamClient`, mavparam.py) | docs/vtx-config-mavlink.md; the web GS VTX tab → `docs/web-gs.md` |
 | radio/PHY below mabur | `third_party/devourer/CLAUDE.md` |
 
 Design specs and plans live in `docs/superpowers/` — **gitignored**, so
