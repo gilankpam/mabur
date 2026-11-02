@@ -7,7 +7,11 @@
 // (binned or native), and the encoder sizes offered for each. The native
 // modes stop at 1920x1080: their larger sizes fit the mode but cost encode
 // and decode time and the GS recorder's frame rate, so they are set in the
-// drone's config by hand, and show here as the drone's own value.
+// drone's config by hand, and show here as the drone's own value. Mirrors
+// the drone's own table, common/include/mabur/camera_modes.h `modes()`
+// (shared with the goggles menu) -- the "MODE_SIZES and MODE_ZOOM match
+// the C++ camera-mode table" test in vtxparams.test.mjs parses that header
+// and checks the two stay equal.
 export const MODE_SIZES = [
   { native: false, maxFps: 90, sizes: ['1920x1080', '1280x720'] },
   { native: false, maxFps: 100, sizes: ['1728x972', '1280x720'] },
@@ -25,6 +29,26 @@ export function modeSizes(fps, native = false) {
   return m ? m.sizes : [];
 }
 
+// The zoom factor labelled on a camera-mode choice, by sensor mode
+// (fps/native select, same ranges as MODE_SIZES): how far the readout
+// crops the sensor against its widest binned view. Mirrors the same
+// camera_modes.h table as MODE_SIZES.
+export const MODE_ZOOM = [
+  { native: false, maxFps: 90, zoom: '1.0' },
+  { native: false, maxFps: 100, zoom: '1.1' },
+  { native: false, maxFps: 120, zoom: '1.1' },
+  { native: true, maxFps: 60, zoom: '1.3' },
+  { native: true, maxFps: 100, zoom: '1.7' },
+];
+
+// The zoom string for the sensor mode `fps`/`native` select, or null past
+// either readout's ceiling.
+export function modeZoom(fps, native = false) {
+  if (!Number.isInteger(fps) || fps < 1 || fps > 120) return null;
+  const m = MODE_ZOOM.find((e) => e.native === native && fps <= e.maxFps);
+  return m ? m.zoom : null;
+}
+
 export function modeText(fps, size, native) {
   return `${fps}@${size}/${native ? 'native' : 'binned'}`;
 }
@@ -36,7 +60,8 @@ export const MODE_FPS = [60, 90, 100, 120];
 const sizeLabel = (size) => size.replace('x', '×');
 
 function modeLabel(fps, size, native) {
-  return `${fps} fps · ${sizeLabel(size)} · ${native ? 'native · zoomed' : 'binned' + (fps > 90 ? ' · cropped view' : '')}`;
+  const zoom = modeZoom(fps, native);
+  return `${fps} fps · ${sizeLabel(size)} · ${zoom}×${native ? '' : ' bin'}`;
 }
 
 // How far the display's refresh may sit from a camera rate and still
@@ -236,7 +261,7 @@ export function rowLabel(row) {
 // Help text in place of the table's, where the table's spells the wire
 // format or a config key rather than what the tab shows.
 const HELP = {
-  VENC_MODE: 'Camera frame rate, encoder size and sensor readout. Binned keeps the full view, cropped above 90 fps; native reads 1:1 pixels, zoomed in at every rate, up to 100 fps.',
+  VENC_MODE: 'Camera frame rate, size and view. bin merges sensor pixels 2×2 for the widest view; without it the sensor is read pixel for pixel, sharper but zoomed in. 120 fps is letterboxed 2.1:1.',
   VENC_SLICES: 'Encodes each frame as 4 row slices, so the ground station can patch a frame that lost a slice instead of dropping it. Off sends whole frames.',
   REC_SIZE: 'Onboard recording resolution; the choices follow the camera mode.',
   LOWPWR_ENABLE: 'Lower bitrate and frame rate while disarmed to keep the VTX cool. Needs MSP on for the arm state.',

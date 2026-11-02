@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {
-  MODE_SIZES, modeSizes, modeText, parseMode, commitText, SECTION_KICKER, groupRows,
+  MODE_SIZES, MODE_ZOOM, modeSizes, modeZoom, modeText, parseMode, commitText, SECTION_KICKER, groupRows,
   HINTS, LABELS, HIDDEN, rowLabel, rowHint, headerText, rowView, invalidText, showNoHeartbeat, commitAnswered,
   MODE_FPS, modeChoices, recSizeChoices, rowWidget, toggleValues, toggleState, SLICES_ON, SLICES_OFF, REC_SETTINGS, rowShown, DISPLAY_MATCH_HZ, modeDisplayNote, rowStatus,
 } from '../ui/src/lib/vtxparams.js';
@@ -41,24 +41,32 @@ test('modeChoices: binned then native sizes of each rate, labelled', () => {
     '100@1920x1080/native', '100@1600x900/native', '100@1280x720/native',
     '120@1728x816/binned', '120@1152x544/binned', '120@864x408/binned',
   ]);
-  assert.equal(c[0].label, '60 fps · 1920×1080 · binned');
-  assert.equal(c[2].label, '60 fps · 1920×1080 · native · zoomed');
-  assert.equal(c[10].label, '100 fps · 1728×972 · binned · cropped view');
+  assert.equal(c[0].label, '60 fps · 1920×1080 · 1.0× bin');
+  assert.equal(c[2].label, '60 fps · 1920×1080 · 1.3×');
+  assert.equal(c[10].label, '100 fps · 1728×972 · 1.1× bin');
+  assert.equal(c[12].label, '100 fps · 1920×1080 · 1.7×');
+  assert.equal(c[15].label, '120 fps · 1728×816 · 1.1× bin');
+});
+
+test('modeZoom follows the sensor mode', () => {
+  assert.equal(modeZoom(90, false), '1.0');
+  assert.equal(modeZoom(90, true), '1.7');
+  assert.equal(modeZoom(101, true), null);
 });
 
 test('modeChoices puts an off-list live value first, and only then', () => {
-  assert.deepEqual(modeChoices('30@1280x720/binned')[0], { value: '30@1280x720/binned', label: '30 fps · 1280×720 · binned' });
+  assert.deepEqual(modeChoices('30@1280x720/binned')[0], { value: '30@1280x720/binned', label: '30 fps · 1280×720 · 1.0× bin' });
   assert.equal(modeChoices('30@1280x720/binned').length, 19);
   assert.equal(modeChoices('120@1152x544/binned').length, 18);
   assert.equal(modeChoices(null).length, 18);
   assert.equal(modeChoices('').length, 18);
   assert.deepEqual(modeChoices('60@2816x1584/native')[0],
-    { value: '60@2816x1584/native', label: '60 fps · 2816×1584 · native · zoomed' });
+    { value: '60@2816x1584/native', label: '60 fps · 2816×1584 · 1.3×' });
   // a native size above 1920x1080 is not offered, but one set in the config
   // by hand still shows as what the drone runs
   assert.ok(!values(modeChoices(null)).some((v) => /native/.test(v) && parseInt(v.split('@')[1], 10) > 1920));
   assert.deepEqual(modeChoices('60@2944x1656/native')[0],
-    { value: '60@2944x1656/native', label: '60 fps · 2944×1656 · native · zoomed' });
+    { value: '60@2944x1656/native', label: '60 fps · 2944×1656 · 1.3×' });
   assert.equal(modeChoices('60@2944x1656/native').length, 19);
 });
 
@@ -423,5 +431,32 @@ test('HINTS, LABELS, HIDDEN and SECTION_KICKER name real rows in config_params.h
   for (const id of ids) assert.ok(HIDDEN.has(id) || LABELS[id], `row ${id} has no label`);
   for (const section of Object.keys(SECTION_KICKER)) {
     assert.ok(sections.has(section), `SECTION_KICKER.${section} is not a table section`);
+  }
+});
+
+// Drift guard: the drone's own sensor-mode table (shared with the goggles
+// menu) must parse into the same modes this tab offers, or this test fails.
+test('MODE_SIZES and MODE_ZOOM match the C++ camera-mode table', () => {
+  const h = fs.readFileSync(new URL('../../common/include/mabur/camera_modes.h', import.meta.url), 'utf8');
+  const rowRe = /\{(true|false),\s*(\d+),\s*"([^"]+)",\s*\{((?:\{\s*\d+,\s*\d+\s*\},?\s*)+)\}\},/g;
+  const sizeRe = /\{\s*(\d+),\s*(\d+)\s*\}/g;
+  const rows = [];
+  let m;
+  while ((m = rowRe.exec(h))) {
+    const sizes = [];
+    let s;
+    while ((s = sizeRe.exec(m[4]))) sizes.push(`${s[1]}x${s[2]}`);
+    rows.push({ native: m[1] === 'false', maxFps: Number(m[2]), zoom: m[3], sizes });
+  }
+  assert.ok(rows.length > 0, 'parsed no sensor-mode rows out of camera_modes.h -- did its layout change?');
+  assert.equal(rows.length, MODE_SIZES.length);
+  assert.equal(rows.length, MODE_ZOOM.length);
+  for (const row of rows) {
+    const sizeEntry = MODE_SIZES.find((e) => e.native === row.native && e.maxFps === row.maxFps);
+    const zoomEntry = MODE_ZOOM.find((e) => e.native === row.native && e.maxFps === row.maxFps);
+    assert.ok(sizeEntry, `no MODE_SIZES entry for native=${row.native} maxFps=${row.maxFps}`);
+    assert.ok(zoomEntry, `no MODE_ZOOM entry for native=${row.native} maxFps=${row.maxFps}`);
+    assert.equal(zoomEntry.zoom, row.zoom);
+    assert.deepEqual(sizeEntry.sizes, row.sizes);
   }
 });

@@ -738,16 +738,23 @@ a reason line — "not a valid integer", "not a valid number", or for Str
 the allowed spelling — and keeps exactly what was typed, so the operator
 can fix it; both clear on that row's next edit.
 
-**VENC_MODE** is one dropdown of "`<fps>` fps · `<W>`×`<H>` · `<readout>`"
-choices: for each of the 60, 90, 100 and 120 fps rates (`MODE_FPS`), every
-size of its binned sensor mode, then its native sensor mode's sizes up to
-1920x1080 if that rate has one (`MODE_SIZES`, sizes from
-`docs/camera-modes.md`) — binned above 90 fps marked "cropped view",
-native always marked "zoomed". The native modes' larger sizes (2944x1656,
-2560x1440, 2272x1278) are not offered: they cost encode and decode time
-and the GS recorder's frame rate (`docs/camera-modes.md`), so they are
-set in the drone's config by hand. There is no native mode above 100 fps,
-so 120 fps lists only binned sizes.
+**VENC_MODE** is one dropdown of "`<fps>` fps · `<W>`×`<H>` · `<zoom>`×
+[bin]" choices: for each of the 60, 90, 100 and 120 fps rates (`MODE_FPS`),
+every size of its binned sensor mode, then its native sensor mode's sizes
+up to 1920x1080 if that rate has one (`MODE_SIZES`, sizes from
+`docs/camera-modes.md`). `bin` is appended for a binned readout; the zoom
+factor comes from the sensor mode's fps/readout select, not the size
+(`MODE_ZOOM`, kept equal to the drone's own table,
+`common/include/mabur/camera_modes.h`, by a parity test): binned 1.0 up
+to 90 fps, 1.1 above it; native 1.3 up to 60 fps, 1.7 above it. This is
+the same label wording the goggles menu uses. The row's help reads
+"Camera frame rate, size and view. bin merges sensor pixels 2×2 for the
+widest view; without it the sensor is read pixel for pixel, sharper but
+zoomed in. 120 fps is letterboxed 2.1:1." The native modes' larger sizes
+(2944x1656, 2560x1440, 2272x1278) are not offered: they cost encode and
+decode time and the GS recorder's frame rate (`docs/camera-modes.md`), so
+they are set in the drone's config by hand. There is no native mode above
+100 fps, so 120 fps lists only binned sizes.
 The wire value is `<fps>@<W>x<H>/binned` or `<fps>@<W>x<H>/native`
 (`modeText`/`parseMode`, mirroring `config_params.h`'s `parse_mode_text`).
 When the drone runs a value outside that list (an ssh-set rate, size or
