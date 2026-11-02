@@ -391,6 +391,7 @@ edit it, restart `S96maburgs` (`docs/deploy.md`).
 The web GS's VTX tab (`docs/web-gs.md` "VTX tab") renders the parameter
 table and drives it live, against its own `ParamClient`. The goggles
 settings menu (`docs/gs-menu.md`) is the screen onto `maburgs`'s hosted
-one, reading `link.vtx` off the sideport and driving `vtx set` on 8402;
-the menu's drone-owned rows exist, but a setter driving them from
-`maburplay` is not wired up yet (`docs/gs-menu.md`).
+one, reading `link.vtx` off the sideport and driving `vtx set` on 8402
+through `maburplay`'s `DroneLiveSetter`, which settles a row against
+`link.vtx.rows[]` rather than against the verb's own (merely "sent")
+reply (`docs/gs-menu.md`).

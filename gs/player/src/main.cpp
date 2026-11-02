@@ -2253,10 +2253,19 @@ int main(int argc, char** argv) {
   // menu_on.
   maburplay::GsLiveView gs_view;
   maburplay::LiveUdpClient gs_client;
+  // The drone's `vtx set` rides its own socket to the same listener: its
+  // reply only ever arrives right after the send, but sharing gs_client
+  // would otherwise let it collide with gs_client's own pending refresh
+  // get.
+  maburplay::LiveUdpClient vtx_client;
   if (menu_on) {
     std::string err;
     if (!gs_client.open(maburgs::kGsConfigControlPort, &err))
       std::fprintf(stderr, "maburplay: menu: maburgs live config: %s -- GS rows will not apply\n",
+                   err.c_str());
+    if (!vtx_client.open(maburgs::kGsConfigControlPort, &err))
+      std::fprintf(stderr,
+                   "maburplay: menu: maburgs live config: %s -- drone rows will not apply\n",
                    err.c_str());
   }
   maburplay::MenuTreeDeps menu_deps;
@@ -2284,7 +2293,11 @@ int main(int argc, char** argv) {
   menu_model.set_show_advanced(cfg.menu.show_advanced);
   maburplay::PlayerLiveSetter player_setter(cfg_ctl, cfg_apply);
   maburplay::GsLiveSetter gs_setter(gs_client);
-  maburplay::MenuApplier menu_applier(menu_model, player_setter, gs_setter);
+  maburplay::DroneLiveSetter drone_setter(vtx_client, [&] {
+    return maburplay::DroneSnapshotView{gs_src ? &gs_src->snapshot() : nullptr,
+                                        !gs_src || gs_src->stale(mono_ms())};
+  });
+  maburplay::MenuApplier menu_applier(menu_model, player_setter, gs_setter, drone_setter);
   maburplay::UdpGsViewSource gs_view_source(gs_client);
   maburplay::MenuSession menu(menu_model, menu_applier, gs_view_source, gs_view);
   menu.log = [](const std::string& line) { std::fprintf(stderr, "%s\n", line.c_str()); };

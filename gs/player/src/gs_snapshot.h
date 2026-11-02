@@ -68,6 +68,11 @@ struct VtxState {
 };
 
 struct GsSnapshot {
+  // Top-level t_ms: maburgs' own monotonic clock reading when this
+  // datagram was built. DroneSetWatch (menu_apply.cpp) uses it, paired
+  // with a vtx row's age_ms, to tell a genuinely new result from the same
+  // one seen again. Empty on an older maburgs that never exported it.
+  std::optional<uint64_t> t_ms;
   // link.channel: the GS radio's operating channel. Straight from the GS
   // config, not measured, so it never goes null on a bad window -- an
   // empty optional here means an older maburgs that did not export it.

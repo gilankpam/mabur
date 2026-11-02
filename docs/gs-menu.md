@@ -117,10 +117,7 @@ real values.
 | `sys.size` "Menu size" | player | `menu.scale` | Normal / Large / Larger (×1, ×1.25, ×1.5). Previews live: while its picker is open the whole menu is drawn at the size under the cursor (`MenuModel::preview`), nothing written; ◀ or a held ◀ drops back to the saved size, ▶ saves it — and the menu stays at the picked size while that set runs, so it never flicks back to the old size before the save lands. |
 | `sys.debug` "Debug log" | gs | `debug_log.enable` | On/off. |
 
-**Not covered yet:** a `Channel` group, a `Calibration` group, and any
-row owned by the drone. `MenuNode::owner = Owner::kDrone` is a real value
-the model understands, but `MenuApplier::start` refuses outright any row
-carrying a drone-owned step — there is no drone setter wired up yet.
+**Not covered yet:** a `Channel` group and a `Calibration` group.
 
 ## Applying a row
 
@@ -137,10 +134,31 @@ answered `err` or timed out.
   (`docs/gs-live-config.md` "Protocol").
 - A GS-owned step goes through `GsLiveSetter`, an ordinary
   `LiveUdpClient` exchange to maburgs' 8402.
+- A drone-owned step goes through `DroneLiveSetter`, over its own
+  `LiveUdpClient` to the same 8402 (so its reply never collides with a
+  GS step's or the view refresh's own exchange). Its `vtx set <PARAM_ID>
+  <value>` only confirms the line was sent (`ok`) or refused outright
+  (`err <why>`); the actual outcome is read back later from
+  `link.vtx.rows[]` (`docs/observability.md` "`link.vtx`"). `DroneSetWatch`
+  (`menu_apply.h`) is the settle rule: it remembers the row's result time
+  at submit (the sideport's own `t_ms` minus the row's `age_ms`) and
+  treats the next terminal state as this set's own outcome once either
+  the watch has seen the row leave idle (`sending`/`in_progress`) or the
+  row's new result time is later than the one it started from — never a
+  bare "age got smaller", which misses a genuinely new result that lands
+  while the previous one was itself still fresh. A stale sideport or
+  `link.vtx.linked == false` mid-wait ends the step at "link lost"; a
+  `failed`/`unsupported` row ends it at the row's own `status` text (or
+  "refused" when that's empty); `timeout` ends it at "no answer" — same
+  wording, same `kErrorMs` display, as any other owner's failure.
 - A step that gets no reply inside `LiveUdpClient::kReplyTimeoutMs`
   (8 s) ends the row at "No answer — it may not have applied", shown for
   `MenuModel::kErrorMs` (6000 ms), and releases every owner the row's
-  steps had locked — the next set on that owner can start at once.
+  steps had locked — the next set on that owner can start at once. A
+  drone step's own wait on the sideport is capped separately, at
+  `DroneLiveSetter::kDroneSettleMs` (30 s) — a backstop only, since the
+  client's own reply deadline above always ends the "was it sent" half
+  first.
 - A row's lock covers every owner its own steps touch, not only its own
   (`osd.fc`'s On/Off touches both player and GS). Pressing a row that
   needs an owner still locked toasts "One GS change at a time" / "One

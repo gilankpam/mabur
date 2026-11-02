@@ -1,16 +1,16 @@
 #ifndef MABUR_PLAYER_MENU_APPLY_H_
 #define MABUR_PLAYER_MENU_APPLY_H_
-// Runs one menu row's SetSteps (menu_model.h) against the player and
-// maburgs: each step goes to its owner's LiveSetter in turn, and the
-// model hears apply_started/apply_step/apply_done as it goes. A row
-// carrying a kDrone step has nowhere to go yet, so MenuApplier::start
-// refuses it outright.
+// Runs one menu row's SetSteps (menu_model.h) against the player,
+// maburgs and the drone: each step goes to its owner's LiveSetter in
+// turn, and the model hears apply_started/apply_step/apply_done as it
+// goes.
 #include <cstdint>
 #include <functional>
 #include <optional>
 #include <string>
 #include <vector>
 
+#include "gs_snapshot.h"
 #include "live_udp_client.h"
 #include "menu_model.h"
 #include "player_config_apply.h"
@@ -63,6 +63,76 @@ class GsLiveSetter final : public LiveSetter {
   LiveUdpClient& client_;
 };
 
+// What the drone setter watches: the sideport as the player holds it
+// right now. `snap` is null before the first datagram ever arrives;
+// `stale` mirrors the player's own staleness read on that snapshot
+// (gs_source.h's stale()), taken at the same instant.
+struct DroneSnapshotView {
+  const GsSnapshot* snap = nullptr;
+  bool stale = true;
+};
+
+// The settle rule on its own, testable without a socket: a drone set's
+// `vtx set` reply only says the line reached maburgs, never the outcome
+// -- that is the first later sideport snapshot whose row (a) is terminal
+// and (b) carries a result fresher than the one seen just before the
+// submit. "Fresher" is not simply "a smaller age_ms": if the previous
+// result was itself very recent (say 50 ms old at submit) a genuinely
+// new result can still read an age bigger than that (150 ms, a datagram
+// later) while being the later event. So the comparison is on each
+// side's absolute result time (the snapshot's own t_ms minus the row's
+// age_ms) rather than on the raw ages -- with age_ms < age_ms as the
+// fallback for a peer too old to export t_ms. A row seen `sending` or
+// `in_progress` at any point after begin() always settles on its next
+// terminal state, regardless of the age arithmetic: having watched the
+// row leave idle removes any doubt about which submit it is answering.
+class DroneSetWatch {
+ public:
+  // Remembers, from `before` (null if there is none, or the row has
+  // never been seen), the row's own last result time and raw age --
+  // nullopt either way when the row has no age yet (it then settles on
+  // its very first terminal state, see check()).
+  void begin(const std::string& param_id, const GsSnapshot* before);
+  // nullopt while waiting; {true,""} on accepted; {false, status|"refused"}
+  // on failed/unsupported; {false,"no answer"} on timeout; {false,"link
+  // lost"} when stale or !vtx->linked (this also ends the watch).
+  std::optional<LiveReply> check(const DroneSnapshotView& v);
+  bool active() const { return active_; }
+
+ private:
+  bool active_ = false;
+  std::string param_id_;
+  bool seen_in_flight_ = false;
+  std::optional<int64_t> before_age_ms_;
+  std::optional<uint64_t> before_result_ms_;  // before.t_ms - before_age_ms_, when both known
+};
+
+// A drone-owned step over 8402's `vtx set`, settled on the sideport
+// (DroneSetWatch above) rather than on the verb's own reply, which only
+// says the line was sent.
+class DroneLiveSetter final : public LiveSetter {
+ public:
+  // kDroneSettleMs is a backstop only: the client's own reply deadline
+  // (LiveUdpClient::kReplyTimeoutMs) always ends the "was it sent" half
+  // sooner, so this is purely how long the watch will wait on the
+  // sideport for a result that never shows up.
+  static constexpr uint64_t kDroneSettleMs = 30000;
+
+  DroneLiveSetter(LiveUdpClient& client, std::function<DroneSnapshotView()> view)
+      : client_(client), view_(std::move(view)) {}
+  bool submit(const std::string& param_id, const std::string& value, uint64_t now_ms,
+             std::string* why) override;
+  std::optional<LiveReply> poll(uint64_t now_ms) override;
+
+ private:
+  LiveUdpClient& client_;
+  std::function<DroneSnapshotView()> view_;
+  DroneSetWatch watch_;
+  std::string param_id_;
+  std::optional<GsSnapshot> before_;
+  uint64_t armed_ms_ = 0;
+};
+
 // Runs one row's steps, in order, one at a time: a later step is never
 // sent after an earlier one answers err or times out, and only one row
 // runs at a time (no per-owner runners). The model hears apply_started
@@ -70,11 +140,10 @@ class GsLiveSetter final : public LiveSetter {
 // step's bare reason.
 class MenuApplier {
  public:
-  MenuApplier(MenuModel& model, LiveSetter& player, LiveSetter& gs);
+  MenuApplier(MenuModel& model, LiveSetter& player, LiveSetter& gs, LiveSetter& drone);
 
   // False, nothing started and the model untouched, while another row is
-  // still running() or for a row carrying a kDrone step -- no setter for
-  // it in this build. An empty step list (an action with nothing to send)
+  // still running(). An empty step list (an action with nothing to send)
   // settles ok at once.
   bool start(const std::string& row_id, std::vector<SetStep> steps, uint64_t now_ms);
   // Every tick while running(): polls the current step's setter and
@@ -94,6 +163,7 @@ class MenuApplier {
   MenuModel& model_;
   LiveSetter& player_;
   LiveSetter& gs_;
+  LiveSetter& drone_;
   std::string row_id_;
   std::vector<SetStep> steps_;
   size_t step_i_ = 0;

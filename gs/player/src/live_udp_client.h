@@ -37,6 +37,10 @@ class LiveUdpClient {
 
   bool send_set(const std::string& key, const std::string& value, uint64_t now_ms, std::string* why);
   bool send_get(const std::string& key, uint64_t now_ms, std::string* why);  // "" = bare get
+  // A bare verb line, for an owner with its own vocabulary on this
+  // listener (the drone's `vtx set <PARAM_ID> <value>`) -- same one
+  // exchange in flight, same "busy" refusal, as send_set/send_get.
+  bool send_line(const std::string& line, uint64_t now_ms, std::string* why);
   bool in_flight() const { return in_flight_; }
 
   // nullopt while still waiting (and under the timeout); {false, "no

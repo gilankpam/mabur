@@ -91,6 +91,23 @@ struct FakePlayer : LiveSetter {
   }
 };
 
+// The drone setter: never answers on its own unless the test tells it to --
+// these session tests are about the one-row-at-a-time locking around the
+// applier, not DroneLiveSetter's own sideport settle rule (menu_apply.h).
+struct FakeDrone : LiveSetter {
+  std::vector<std::string> submitted;
+  std::optional<LiveReply> next;
+  bool submit(const std::string& key, const std::string& value, uint64_t, std::string*) override {
+    submitted.push_back(key + " = " + value);
+    return true;
+  }
+  std::optional<LiveReply> poll(uint64_t) override {
+    std::optional<LiveReply> r = next;
+    next.reset();
+    return r;
+  }
+};
+
 MenuNode action(std::string id, Owner owner, std::vector<SetStep> steps) {
   MenuNode n;
   n.id = std::move(id);
@@ -137,8 +154,9 @@ struct Fx {
   FakeGsSetter gs{link};
   FakeGsView gv{link};
   FakePlayer player;
+  FakeDrone drone;
   MenuModel model{fixture_tree};
-  MenuApplier applier{model, player, gs};
+  MenuApplier applier{model, player, gs, drone};
   GsLiveView view;
   MenuSession s{model, applier, gv, view};
   std::vector<std::string> logs;
@@ -340,14 +358,21 @@ TEST(a_row_the_running_applier_refuses_toasts_one_gs_change_at_a_time) {
   CHECK(!f.row("row.g").busy);
 }
 
+// Drone rows now run through the drone setter like any other owner --
+// the "One drone change at a time" wording fires the same way "One GS
+// change at a time" does, when a second row is attempted while the
+// applier is already busy with a first one.
 TEST(a_drone_row_is_refused_with_the_drone_wording) {
   Fx f;
   f.open_and_read();
   f.key(kDown);
+  f.key(kRight);   // row.p runs, no answer yet
+  CHECK(f.applier.running());
   f.key(kDown);
-  f.key(kRight);   // row.d
+  f.key(kRight);   // row.d: the applier is busy with row.p
   CHECK(f.toast() == "One drone change at a time");
-  CHECK(!f.applier.running());
+  CHECK(f.applier.running());        // row.p is still the one running
+  CHECK(f.drone.submitted.empty());  // row.d never reached its setter
 }
 
 TEST(key_hands_back_the_repeat_setting_and_logs_the_close) {

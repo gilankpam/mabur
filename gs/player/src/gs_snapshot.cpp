@@ -87,6 +87,12 @@ bool parse_gs_snapshot(const char* data, size_t n, GsSnapshot* out) {
   }
   if (!j.is_object()) return false;
 
+  // Top-level t_ms (maburgs' own monotonic ms at export): the reference a
+  // vtx row's age_ms counts back from. Negative or wrong-typed drops it,
+  // same contract as every other field.
+  if (const std::optional<int64_t> t = integer64(j, "t_ms"); t && *t >= 0)
+    out->t_ms = static_cast<uint64_t>(*t);
+
   // scan.pick (the boot pick, or the pin in pinned mode) is captured here,
   // top-level like `hop`, and consumed once the `link` block below has
   // parsed out->channel -- it is the reference the hop marker keys on

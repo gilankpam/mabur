@@ -46,9 +46,26 @@ TEST(pre_loss_falls_back_to_ctl_when_pooled_gauge_is_null) {
   CHECK(*s.pre_loss_pct > 2.09 && *s.pre_loss_pct < 2.11);
 }
 
+// Top-level t_ms (maburgs' own monotonic clock at export): the reference
+// DroneSetWatch (menu_apply.cpp) counts a vtx row's age_ms back from.
+TEST(parses_top_level_t_ms) {
+  GsSnapshot s;
+  REQUIRE(parse(R"({"v":1,"t_ms":12345})", &s));
+  REQUIRE(s.t_ms.has_value());
+  CHECK(*s.t_ms == 12345);
+  REQUIRE(parse(R"({"v":1})", &s));
+  CHECK(!s.t_ms.has_value());
+  REQUIRE(parse(R"({"v":1,"t_ms":"soon"})", &s));
+  CHECK(!s.t_ms.has_value());
+  REQUIRE(parse(R"({"v":1,"t_ms":-5})", &s));
+  CHECK(!s.t_ms.has_value());
+}
+
 TEST(parses_a_live_datagram) {
   GsSnapshot s;
   REQUIRE(parse(kLive, &s));
+  REQUIRE(s.t_ms.has_value());
+  CHECK(*s.t_ms == 1000);
   REQUIRE(s.mcs.has_value());
   CHECK(*s.mcs == 5);
   REQUIRE(s.bw.has_value());
