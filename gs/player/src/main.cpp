@@ -2467,9 +2467,10 @@ int main(int argc, char** argv) {
       // cadence), which lags a camera change by a window and is biased
       // low under loss -- rate_match above keeps the measured rate, since
       // it exists to catch exactly that kind of drift from the panel.
+      const double judged_hz = camera_hz_now();
       static const std::vector<maburplay::ModeCand> kNoModes;
       const maburplay::FollowOut follow = display_follower.on_window(
-          maburplay::parse_screen_want(cfg.screen_mode), camera_hz_now(), lp,
+          maburplay::parse_screen_want(cfg.screen_mode), judged_hz, lp,
           presenter ? presenter->modes() : kNoModes, presenter ? presenter->mode_index() : -1);
       g_display_banner.clear();
       if (follow.rebuild) {
@@ -2478,11 +2479,14 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "maburplay: display follows camera: %s\n", target.c_str());
         reacquire_display(target, /*log_failures=*/true);
       } else if (follow.mismatch) {
+        // judged_hz, not src_hz: during the first second of a link src_hz
+        // (the measured cadence) can still read 0 while the drone's
+        // reported mode already has a camera rate.
         char line[160];
         std::snprintf(line, sizeof line,
                       "⚠ Camera %.0f fps — this display has no %.0f Hz mode. Showing at "
                       "%.0f Hz (judder).",
-                      src_hz, src_hz, follow.shown_hz);
+                      judged_hz, judged_hz, follow.shown_hz);
         g_display_banner = line;
       }
     }
