@@ -249,10 +249,7 @@ overriding the decode pump's own measured cadence outright, with no
 cross-check between the two. The reported mode wins because the measured
 rate lags a real camera change by a whole averaging window and reads low
 under loss; with no sideport, or no `VENC_MODE` value yet, the measured
-rate is all there is. Only the mismatch banner's own printed text (below)
-still names the measured rate rather than this reported-first one, so the
-two numbers can disagree in the rare case a stale measurement and a fresh
-`VENC_MODE` report point at different fps.
+rate is all there is. The mismatch banner (below) prints this same rate.
 
 The Camera mode row never writes `screen_mode` itself: its own steps
 (`camera_steps`, `menu_tree.cpp`) are drone-only -- `REC_FPS` (when
@@ -298,12 +295,13 @@ OSD fps cell's own mismatch mark. Each one-second window that finds a
 mismatch (and does not itself trigger a rebuild) sets the banner to:
 
 ```
-⚠ Camera <src> fps — this display has no <src> Hz mode. Showing at <shown> Hz (judder).
+⚠ Camera <cam> fps — this display has no <cam> Hz mode. Showing at <shown> Hz (judder).
 ```
 
-(`<src>` the decode pump's own measured rate, not necessarily the
-reported-first rate the mismatch itself was judged on above; `<shown>`
-the rate the running mode actually shows at; `main.cpp`, the
+(`<cam>` the rate the window judged the mismatch on, the reported-first
+`camera_hz_now()` above, so the banner never reads `Camera 0 fps` in the
+first second of a link while the measured cadence is still empty;
+`<shown>` the rate the running mode actually shows at; `main.cpp`, the
 display-follow window). The banner is
 cleared at the start of every window and only re-set when that window
 still finds a mismatch, so it tracks the condition window to window; it
@@ -409,9 +407,17 @@ neither verb ever lies with an `ok` the menu cannot act on
 
 A manual check of the drone rows end to end, run from a shell on the GS
 (`ssh root@$GS`) with the drone linked and `MABUR_MENU_DEBUG=1` set in
-maburplay's environment:
+maburplay's environment. BusyBox `nc -u -w1` on the GS never returns
+after the reply, so send each line with a small UDP helper instead:
 
-a. `printf 'view' | nc -u -w1 127.0.0.1 8403` right after link-up: the
+```
+udp() { python3 -c 'import socket,sys; s=socket.socket(2,2); s.settimeout(3); s.sendto(sys.argv[2].encode(),("127.0.0.1",int(sys.argv[1]))); print(s.recv(65536).decode())' "$@"; }
+```
+
+Open the menu first: hold ▶ on the goggles, or `udp 8403 'key right
+hold'` (a tap on ▶ while closed only toasts "Hold ▶ to open the menu").
+
+a. `udp 8403 view` right after link-up: the
    Video group's drone rows carry real values and the header line reads
    empty (the table has already settled); caught mid-fetch instead it
    reads "Reading the drone's settings…".
@@ -426,8 +432,7 @@ d. Low power when disarmed On with the FC link off: the confirm reads
    "2/2", and both rows read On once it settles.
 e. VTX SD recorder On: the three sub-rows (SD bitrate, SD frame rate, SD
    size) appear once the re-list after the set lands.
-f. `printf 'vtx set ENC_BITRATE_MAX abc' | nc -u -w1 127.0.0.1 8402`
-   answers `err bad value for int32` straight from maburgs' own
+f. `udp 8402 'vtx set ENC_BITRATE_MAX abc'` answers `err bad value for int32` straight from maburgs' own
    refusal (`ParamClient::set`), before any `DroneSetWatch` is even
    armed, and leaves the menu's own rows untouched.
 g. Power the drone off mid-set: the row ends either at "No answer — it
