@@ -21,6 +21,11 @@ struct SensorMode {
 };
 
 inline const std::vector<SensorMode>& modes() {
+  // One sensor mode per source line, never wrapped or reflowed: a node
+  // test parses these rows with a regex to check them against the web
+  // tab's MODE_SIZES/MODE_ZOOM (web/ui/src/lib/vtxparams.js), so the
+  // literal shape here is load-bearing, not just style.
+  // clang-format off
   static const std::vector<SensorMode> kModes = {
       {true, 90, "1.0", {{1920, 1080}, {1280, 720}}},
       {true, 100, "1.1", {{1728, 972}, {1280, 720}}},
@@ -28,6 +33,7 @@ inline const std::vector<SensorMode>& modes() {
       {false, 60, "1.3", {{1920, 1080}, {1600, 900}, {1280, 720}}},
       {false, 100, "1.7", {{1920, 1080}, {1600, 900}, {1280, 720}}},
   };
+  // clang-format on
   return kModes;
 }
 
