@@ -55,9 +55,9 @@ TEST(choice_labels_carry_the_zoom_and_bin_tag) {
   CHECK(choice_label(60, 1920, 1080, true) == "60 fps · 1920×1080 · 1.0× bin");
   CHECK(choice_label(60, 1920, 1080, false) == "60 fps · 1920×1080 · 1.3×");
   CHECK(choice_label(100, 1728, 972, true) == "100 fps · 1728×972 · 1.1× bin");
-  CHECK(choice_label(100, 1920, 1080, false) == "100 fps · 1920×1080 · 1.6×");
+  CHECK(choice_label(100, 1920, 1080, false) == "100 fps · 1920×1080 · 1.7×");
   CHECK(choice_label(120, 1728, 816, true) == "120 fps · 1728×816 · 1.1× bin");
-  CHECK(choice_label(90, 1280, 720, false) == "90 fps · 1280×720 · 1.6×");
+  CHECK(choice_label(90, 1280, 720, false) == "90 fps · 1280×720 · 1.7×");
 }
 
 MTEST_MAIN
