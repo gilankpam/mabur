@@ -212,26 +212,35 @@ their variance into jitter. Knobs, in order of proven usefulness:
      the encoded frames' pts over 1 s windows (median step), and
      re-requests the sensor in milli-fps (the driver accepts
      `[min*1000, max*1000]`) until the real rate sits in
-     `[fps − 0.030, fps − 0.004]` Hz, just under the configured rate; one
-     VMAX line is 0.018 Hz at 60. A line is fps² / line rate (the IMX415
-     modes share ~202.5k lines/s), so above 60 fps the band and the
-     one-line nudge grow by (fps/60)²: at 100 fps a line is 0.049 Hz and
-     the band is `[fps − 0.083, fps − 0.011]`; a band narrower than a line
-     would be straddled forever. Locks in 2–3 rounds (`[sensor] cal:`
-     lines, `snr_mhz=` on the stats line, `sensor_mhz` on `GET /venc`).
+     `[fps − 0.300, fps − 0.004·k]` Hz, under the configured rate and
+     inside the phase lock's steering reach (`docs/phase-lock.md`), which
+     does the last fraction of a Hz. One VMAX line is fps² / line rate:
+     ~0.018 Hz at 60 on the binned modes (~202.5k lines/s), ~0.032 Hz on
+     native 2944x1656 (HMAX 652), ~0.074 Hz at 100 on native 2272x1278
+     (HMAX 548); the band spans several lines on every mode, since a band
+     narrower than a line can be straddled forever. Each request aims
+     0.040·k Hz under the rate, inside the band, so the driver's rounding
+     to a whole line lands the first request in it; k = (fps/60)² above
+     60 fps (the same number of lines), 1 below. Locks after one request
+     (`[sensor] cal:` lines, `snr_mhz=` on the stats line, `sensor_mhz` on
+     `GET /venc`); steering waits for the lock, so a fast trim is a fast
+     start for the phase lock after every boot and pipeline rebuild.
      The request never exceeds the sensor mode's ceiling (maxFps × 1000,
      which the driver refuses above); a mode whose fastest line sits under
      the band (1728x816@120 tops out at 119.660 Hz) locks at that ceiling
-     (`locked at the mode's ceiling`). After 8 rounds without convergence, or a driver that refuses
-     milli-fps, it restores the integer boot request and stops. It only
+     (`locked at the mode's ceiling`). After 8 rounds without convergence
+     it falls back to the request that measured fastest under the
+     configured rate, and to the integer boot request only when none did:
+     the native modes' integer request runs ~0.5 Hz fast, past the GS's
+     rate-match gate and the steer's reach. A driver that refuses
+     milli-fps keeps its last accepted request and stops. It only
      measures a full-rate stream: while the bind decimates (a drone that
      boots disarmed into low-power 30 fps) it holds, and resumes with a
      fresh window once the fps verb returns to full rate, so that drone
-     locks in the first ~13 s after arming. Measured
-     on the bench: 60000 → 59720 mfps = VMAX 3391 = 59.990 Hz, zero pts
-     holes in 120 s. What remains is the beat between the sensor and the
-     GS panel (60.000 Hz nominal): one panel repeat per ~100 s, the floor
-     without genlock. Bench record:
+     locks in the first ~13 s after arming. With the phase lock off, what
+     remains is the beat between the trimmed sensor and the GS panel:
+     one panel repeat per ~25 s at 0.04 Hz under a 60.000 Hz panel. Bench
+     record of the original trim:
      `docs/findings/2026-10-14-sensor-rate-trim.md`.
 - **Sensor mode and the shutter cap follow `venc.fps` and `venc.binning`.**
   The pipeline asks the driver for the mode `camera_mode_for` names

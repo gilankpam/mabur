@@ -12,28 +12,28 @@
 #define SETTLE_STEPS 10
 /* A step this long is a producer restart, not a frame interval. */
 #define RESYNC_US 1000000u
-/* Band under the target, in milli-Hz: the real rate must stay below the
- * target (the next stage drops anything above it) but no further than a
- * couple of sensor lines, so the band is wider than one line's 18 mHz
- * step and always reachable. */
-#define BAND_LO_MHZ 30
+/* Band under the target, in milli-Hz. The trim only has to hand the GS
+ * phase lock a sensor it can steer: under the target (the steer cannot
+ * pull a sensor down past its +-500 mfps reach, and the GS will not steer
+ * one more than 0.55 Hz off its panel) and close enough that the steer's
+ * offset stays small. The lock does the last fraction of a Hz, so the
+ * band is wide: several lines on every mode, whatever its line length
+ * (the binned modes ~18 mHz a line at 60 fps, native 2944x1656 ~32 mHz,
+ * native 2272x1278 ~74 mHz at 100). A band narrower than a line can be
+ * straddled forever. The bottom edge is fixed; the top edge scales. */
+#define BAND_LO_MHZ 300
 #define BAND_HI_MHZ 4
-/* The proportional step aims at the band's TOP edge, not its middle: the
- * driver rounds the request to a whole line (~18 mHz at 60 fps), so an
- * aim at the middle lands one line low half the time and every extra
- * line below the target shortens the beat against the GS panel. Aiming
- * at the top, the rounding lands on the nearest line below the target or
- * one line above it, and the above case costs one nudge down. */
-#define BAND_AIM_MHZ BAND_HI_MHZ
-/* One sensor line is ~18 mfps at 60 fps: the fallback nudge when the
+/* The proportional step aims well inside the band, so the driver's
+ * rounding to a whole line and the whole-microsecond pts land the first
+ * request in the band on any mode: one request, then lock. */
+#define BAND_AIM_MHZ 40
+/* One binned line is ~18 mfps at 60 fps: the fallback nudge when the
  * proportional step rounds to the same request. */
 #define NUDGE_MFPS 18
 
-/* The band and the nudge above are sized for 60 fps. One line is
- * fps^2 / line_rate, and the IMX415 modes share one line rate (~49 mHz a
- * line at 100 fps), so above 60 fps both grow by (fps/60)^2; a band
- * narrower than a line is straddled forever and never locks. Below 60 fps
- * they stay at their 60 fps size. */
+/* The top edge, the aim and the nudge are sized for 60 fps. One line is
+ * fps^2 / line_rate, so above 60 fps they grow by (fps/60)^2 to stay the
+ * same number of lines. Below 60 fps they stay at their 60 fps size. */
 static double line_scale(uint32_t target_fps)
 {
 	const double r = (double)target_fps / 60.0;
@@ -56,6 +56,7 @@ void sensor_cal_init(SensorCal *c, uint32_t target_fps, uint32_t initial_mfps,
 	c->request_mfps = initial_mfps;
 	c->prev_request_mfps = initial_mfps;
 	c->initial_mfps = initial_mfps;
+	c->best_mfps = 0;
 	c->state = SENSOR_CAL_STATE_IDLE;
 }
 
@@ -65,6 +66,8 @@ void sensor_cal_arm(SensorCal *c)
 	c->rounds = 0;
 	c->have_prev = 0;
 	c->measured_hz = 0.0;
+	c->best_mfps = 0;
+	c->best_hz = 0.0;
 	start_window(c, 0, 0);
 }
 
@@ -112,8 +115,12 @@ SensorCalAction sensor_cal_feed(SensorCal *c, uint32_t pts_us)
 	c->measured_hz = hz;
 	const double target = (double)c->target_fps;
 	const double scale = line_scale(c->target_fps);
-	const double lo = target - BAND_LO_MHZ * scale / 1000.0;
+	const double lo = target - BAND_LO_MHZ / 1000.0;
 	const double hi = target - BAND_HI_MHZ * scale / 1000.0;
+	if (hz <= hi && (!c->best_mfps || hz > c->best_hz)) {
+		c->best_mfps = c->request_mfps;
+		c->best_hz = hz;
+	}
 	if (hz >= lo && hz <= hi) {
 		c->state = SENSOR_CAL_STATE_LOCKED;
 		return SENSOR_CAL_LOCKED;
@@ -128,12 +135,15 @@ SensorCalAction sensor_cal_feed(SensorCal *c, uint32_t pts_us)
 		return SENSOR_CAL_LOCKED;
 	}
 	/* Not converging means the driver does not answer the request the
-	 * way this model expects: leave the sensor exactly as the integer
-	 * boot request set it rather than at some half-trimmed point. */
+	 * way this model expects. Fall back to the request that measured
+	 * fastest under the target: the integer boot request can run above
+	 * it (the native modes are timed ~0.5 Hz fast for the steer's
+	 * headroom), and a sensor above the target is out of the phase
+	 * lock's reach. The boot request only when nothing measured under. */
 	if (++c->rounds >= SENSOR_CAL_MAX_ROUNDS) {
 		c->state = SENSOR_CAL_STATE_GAVE_UP;
 		c->prev_request_mfps = c->request_mfps;
-		c->request_mfps = c->initial_mfps;
+		c->request_mfps = c->best_mfps ? c->best_mfps : c->initial_mfps;
 		return SENSOR_CAL_GAVE_UP;
 	}
 	/* Proportional step: the driver's rate is close to linear in the

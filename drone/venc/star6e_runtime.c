@@ -92,7 +92,7 @@ static void sensor_cal_apply(Star6eRunnerContext *ctx, SensorCalAction act)
 		g_sensor_applied_mfps = mfps;
 		if (act == SENSOR_CAL_GAVE_UP)
 			printf("[sensor] cal: no convergence in %d rounds "
-				"(measured %.3f Hz), back to %u mfps\n",
+				"(measured %.3f Hz), falling back to %u mfps\n",
 				sensor_cal_rounds(&g_sensor_cal), hz, (unsigned)mfps);
 		else
 			printf("[sensor] cal: round %d measured %.3f Hz -> request "
