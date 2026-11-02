@@ -108,15 +108,25 @@ real values.
 | `link.fec_enh` "FEC enh" (fixed only) | gs | `link.static_overhead_enh` | 0.10–base step 0.05. |
 | `link.ladder` "Ladder" (advanced) | gs | `link.ladder` | One `R<i>` group per rung: MCS (0–5), Width (40/20), FEC base/enh, Move up, Move down, Delete rung (confirm; refused at one rung left), plus "+ Add rung" below 8 rungs (copies the last rung, MCS+1 capped at 5). Every rung edit re-sends the whole ladder — the live key takes it as one unit. |
 | `link.nack` "Retransmit (NACK)" (advanced) | gs | `link.nack.enable` | On/off. |
+| `link.bitrate` "Max bitrate" | drone | `ENC_BITRATE_MAX` | 1–100 Mb/s step 1; the wire key is kbps. |
+| `link.airtime` "Airtime share" (advanced) | drone | `ENC_AIRTIME` | 5–100 % step 5; the wire key is a 0–1 fraction. |
+| `link.ldpc` "LDPC coding" (advanced) | drone | `RADIO_LDPC` | On/off. Keeps its applied row's `status` text amber in the help line (`warn_after_ok`) rather than a plain "✓ saved" once the set lands `accepted` with a non-empty status — the drone's calibration ties a wall-margin note to this flag. |
 | **Recording** | | | |
-| `rec.target` "REC records to" | player | `dvr.target` | GS / VTX SD card / Both. Saved text is "✓ at next recording" (2200 ms) while a recording runs, else "✓ saved" (1300 ms) — same rule on every recording row below. |
+| `rec.target` "REC records to" | player | `dvr.target` | GS / VTX SD card / Both. Saved text is "✓ at next recording" (2200 ms) while a recording runs, else "✓ saved" (1300 ms) — same rule on every recording row below. Warns "SD recorder off" while routed at least partly to the VTX SD card (`vtx`/`both`) and `REC_ENABLE == "0"`. |
 | `rec.mode` "GS recording" | player | `dvr.mode` | Burned (with OSD) / Raw (as received); hidden when `dvr.target` does not record to the GS. |
 | `rec.burn.bitrate` "Bitrate" (advanced) | player | `dvr.burned.bitrate_kbps` | 2–20 Mb/s step 1; visible only in burned mode. |
 | `rec.burn.every` "Frame rate" (advanced) | player | `dvr.burned.every` | Every 1st–4th frame, labelled in fps once the running mode is known; visible only in burned mode. |
 | `rec.burn.size` "Size" (advanced) | player | `dvr.burned.size` | Same as video / 1920×1080 / 1280×720 / 2560×1440; visible only in burned mode. |
+| `rec.vtx` "VTX SD recorder" | drone | `REC_ENABLE` | On/off; confirms the rebuild pause. |
+| `rec.vtx.bitrate` "SD bitrate" | drone | `REC_BITRATE` | 2–80 Mb/s step 1; the wire key is kbps. Visible only while `rec.vtx` is on. |
+| `rec.vtx.fps` "SD frame rate" | drone | `REC_FPS` | The camera's own fps and its whole divisors ≥ 30, descending, plus the drone's current value first when it is off that list. Visible only while `rec.vtx` is on. |
+| `rec.vtx.size` "SD size" | drone | `REC_SIZE` | The camera's own sensor mode's sizes (`WxH`), the camera's own size appended when it is off that list, plus the drone's current value first when it is off the resulting list. Visible only while `rec.vtx` is on. |
 | **OSD** | | | |
 | `osd.gs` "Link stats bar" | player | `osd.gs.enable` | On/off. Confirm: splits a running burned recording, only when turning ON (turning an overlay off never splits — the composer's erase reaches the recorder's canvas directly). |
-| `osd.fc` "Flight controller OSD" | player + gs | `osd.enable` + `msp.enable` | On/off, shown as `mixed` (with a help line naming which half is off) when the render and maburgs' MSP feed disagree; picking On or Off sends both. |
+| `osd.fc` "Flight controller OSD" | player + gs | `osd.enable` + `msp.enable` | On/off, shown as `mixed` (with a help line naming which half is off) when the render and maburgs' MSP feed disagree; picking On or Off sends both. Warns "FC link off" while the drone's own `MSP_ENABLE == "0"` (nothing feeds the OSD even with the render on). |
+| **Power & FC** | | | |
+| `power.lowpwr` "Low power when disarmed" | drone | `LOWPWR_ENABLE` (+ `MSP_ENABLE`) | On/off. Turning it on while `MSP_ENABLE == "0"` sends `MSP_ENABLE=1` first (confirm "Also turns the FC link on.") — low power needs the FC link for arm state. |
+| `power.msp` "FC link (MSP)" | drone | `MSP_ENABLE` (+ `LOWPWR_ENABLE`) | On/off. Turning it off while `LOWPWR_ENABLE == "1"` sends `LOWPWR_ENABLE=0` first (confirm "Also turns Low power off.") — low power depends on this link. |
 | **System** | | | |
 | `sys.adv` "Show advanced settings" | player | `menu.show_advanced` | On/off; shows the rows marked (advanced) above in every group. |
 | `sys.size` "Menu size" | player | `menu.scale` | Normal / Large / Larger (×1, ×1.25, ×1.5). Previews live: while its picker is open the whole menu is drawn at the size under the cursor (`MenuModel::preview`), nothing written; ◀ or a held ◀ drops back to the saved size, ▶ saves it — and the menu stays at the picked size while that set runs, so it never flicks back to the old size before the save lands. |

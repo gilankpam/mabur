@@ -447,9 +447,15 @@ MenuNode colour_row(const Deps& d) {
 
 // --- Link --------------------------------------------------------------
 
-// The rung Fixed pins: R3, or the top rung of a shorter ladder. The
-// ladder must not be empty.
-Rung current_rung(const GsLiveView& gs) {
+// The rung Fixed pins: the live rung off the sideport (the first ladder
+// rung matching both GsSnapshot::mcs and ::bw) when known, else R3, or the
+// top rung of a shorter ladder. The ladder must not be empty.
+Rung current_rung(const Deps& d) {
+  const GsLiveView& gs = *d->gs;
+  if (d->snap && d->snap->mcs && d->snap->bw) {
+    for (const Rung& r : gs.ladder)
+      if (r.mcs == *d->snap->mcs && r.bw == *d->snap->bw) return r;
+  }
   return gs.ladder[std::min<size_t>(3, gs.ladder.size() - 1)];
 }
 
@@ -517,7 +523,7 @@ MenuNode rate_row(const Deps& d) {
   n.steps = [d](const std::string& v) {
     if (v != "fixed") return Steps{{Owner::kGs, "link.static_mcs", "-1"}};
     if (d->gs->ladder.empty()) return Steps{};
-    const Rung r = current_rung(*d->gs);
+    const Rung r = current_rung(d);
     return Steps{{Owner::kGs, "link.static_bw", std::to_string(r.bw)},
                  {Owner::kGs, "link.static_overhead_base", real_text(r.base)},
                  {Owner::kGs, "link.static_overhead_enh", real_text(r.enh)},
@@ -715,6 +721,38 @@ MenuNode nack_row(const Deps& d) {
   return n;
 }
 
+// --- Link drone rows -----------------------------------------------------
+
+MenuNode bitrate_row(const Deps& d) {
+  MenuNode n = drone_number(d, "link.bitrate", "Max bitrate", "ENC_BITRATE_MAX", 1, 100, 1, 0.001,
+                            [](double v) { return std::to_string(std::lround(v)) + " Mb/s"; });
+  n.help = text("Ceiling on the video bitrate.");
+  return n;
+}
+
+MenuNode airtime_row(const Deps& d) {
+  MenuNode n = drone_number(d, "link.airtime", "Airtime share", "ENC_AIRTIME", 5, 100, 5, 100,
+                            [](double v) { return std::to_string(std::lround(v)) + " %"; });
+  n.advanced = true;
+  n.help = text("Share of the link's real capacity the video may use.");
+  return n;
+}
+
+MenuNode ldpc_row(const Deps& d) {
+  MenuNode n = drone_bool(d, "link.ldpc", "LDPC coding", "RADIO_LDPC");
+  n.advanced = true;
+  // The drone's own calibration keeps a wall-margin note tied to LDPC; a
+  // row that just turned it off (or on) keeps showing it rather than
+  // fading like a plain "✓ saved".
+  n.warn_after_ok = [d] {
+    const VtxRow* r = d->snap ? vtx_row(*d->snap, "RADIO_LDPC") : nullptr;
+    if (r && r->st == "accepted" && !r->status.empty()) return r->status;
+    return std::string();
+  };
+  n.help = text("LDPC coding on every frame; turn off only for a ground card that cannot decode it.");
+  return n;
+}
+
 // --- Recording ---------------------------------------------------------
 
 bool gs_records(const Deps& d) { return d->cfg->dvr.target != "vtx"; }
@@ -727,6 +765,69 @@ std::string ordinal(int n) {
   return std::to_string(n) + "th";
 }
 
+// The drone's onboard recorder is enabled (REC_ENABLE == "1").
+bool rec_vtx_on(const Deps& d) {
+  const auto v = vtx(d, "REC_ENABLE");
+  return v && *v == "1";
+}
+
+// The camera's fps and its whole divisors >= 30, descending: SD frame rate
+// outruns nothing above the camera's own rate, and a rate under 30 fps is
+// not worth offering.
+std::vector<int> rec_fps_divisors(int fps) {
+  std::vector<int> out;
+  for (int i = 30; i <= fps; ++i)
+    if (fps % i == 0) out.push_back(i);
+  std::sort(out.rbegin(), out.rend());
+  return out;
+}
+
+// REC_FPS choices: the camera's divisors (empty with no known camera
+// mode), plus the current value first when off that list -- so the row
+// stays usable (one value, the current one) even with no camera mode read
+// yet.
+std::vector<Choice> rec_fps_choices(const Deps& d) {
+  std::vector<Choice> out;
+  const auto cm = camera_mode(d);
+  if (cm)
+    for (int fps : rec_fps_divisors(cm->fps))
+      out.push_back({std::to_string(fps), std::to_string(fps) + " fps", "", true});
+  const auto cur = vtx(d, "REC_FPS");
+  if (cur) {
+    const bool listed =
+        std::any_of(out.begin(), out.end(), [&](const Choice& c) { return c.value == *cur; });
+    if (!listed) out.insert(out.begin(), {*cur, *cur + " fps", "", true});
+  }
+  return out;
+}
+
+// REC_SIZE choices: the camera's own sensor mode's sizes, the camera's own
+// size appended when it is off that list, plus the current value first
+// when it is off the resulting list (same "stays usable" rule as fps).
+std::vector<Choice> rec_size_choices(const Deps& d) {
+  std::vector<Choice> out;
+  const auto cm = camera_mode(d);
+  if (cm) {
+    if (const mabur::cammode::SensorMode* m = mabur::cammode::mode_for(cm->fps, cm->binned))
+      for (const mabur::cammode::Size& sz : m->sizes)
+        out.push_back({size_text(sz.w, sz.h), size_label(sz.w, sz.h), "", true});
+    const std::string own = size_text(cm->w, cm->h);
+    const bool has_own = std::any_of(out.begin(), out.end(), [&](const Choice& c) { return c.value == own; });
+    if (!has_own) out.push_back({own, size_label(cm->w, cm->h), "", true});
+  }
+  const auto cur = vtx(d, "REC_SIZE");
+  if (cur) {
+    const bool listed =
+        std::any_of(out.begin(), out.end(), [&](const Choice& c) { return c.value == *cur; });
+    if (!listed) {
+      int w = 0, h = 0;
+      const std::string label = std::sscanf(cur->c_str(), "%dx%d", &w, &h) == 2 ? size_label(w, h) : *cur;
+      out.insert(out.begin(), {*cur, label, "", true});
+    }
+  }
+  return out;
+}
+
 std::vector<MenuNode> rec_rows(const Deps& d) {
   MenuNode target = choice_row("rec.target", "REC records to", Owner::kPlayer, "dvr.target", quoted);
   target.choices = [] {
@@ -734,6 +835,13 @@ std::vector<MenuNode> rec_rows(const Deps& d) {
   };
   target.current = [d] { return d->cfg->dvr.target; };
   target.saved_text = next_rec_saved(d);
+  // The REC button has nowhere to write when it is routed at least partly
+  // to the VTX SD card and the drone's own recorder is off.
+  target.warn = [d] {
+    if (d->cfg->dvr.target != "vtx" && d->cfg->dvr.target != "both") return std::string();
+    const auto rec_enable = vtx(d, "REC_ENABLE");
+    return rec_enable && *rec_enable == "0" ? std::string("SD recorder off") : std::string();
+  };
   target.help = text("Where the REC button records.");
 
   MenuNode mode = choice_row("rec.mode", "GS recording", Owner::kPlayer, "dvr.mode", quoted);
@@ -792,7 +900,32 @@ std::vector<MenuNode> rec_rows(const Deps& d) {
   };
   size.saved_text = next_rec_saved(d);
   size.help = text("Burned recording size. A different shape gets black bars, never a stretch.");
-  return {target, mode, bitrate, every, size};
+
+  MenuNode vtx_enable = drone_bool(d, "rec.vtx", "VTX SD recorder", "REC_ENABLE");
+  vtx_enable.confirm = [](const std::string&) { return std::string(kPause); };
+  vtx_enable.help = text("Records straight to the VTX's own microSD card, independent of the GS.");
+
+  auto vtx_on = [d] { return rec_vtx_on(d); };
+
+  MenuNode vtx_bitrate = drone_number(d, "rec.vtx.bitrate", "  SD bitrate", "REC_BITRATE", 2, 80, 1,
+                                      0.001, [](double v) { return std::to_string(std::lround(v)) + " Mb/s"; });
+  vtx_bitrate.visible = vtx_on;
+  vtx_bitrate.confirm = [](const std::string&) { return std::string(kPause); };
+  vtx_bitrate.help = text("Constant bitrate of the onboard recording.");
+
+  MenuNode vtx_fps = drone_choice(d, "rec.vtx.fps", "  SD frame rate", "REC_FPS");
+  vtx_fps.visible = vtx_on;
+  vtx_fps.choices = [d] { return rec_fps_choices(d); };
+  vtx_fps.confirm = [](const std::string&) { return std::string(kPause); };
+  vtx_fps.help = text("Onboard recording frame rate, at most the camera's fps.");
+
+  MenuNode vtx_size = drone_choice(d, "rec.vtx.size", "  SD size", "REC_SIZE");
+  vtx_size.visible = vtx_on;
+  vtx_size.choices = [d] { return rec_size_choices(d); };
+  vtx_size.confirm = [](const std::string&) { return std::string(kPause); };
+  vtx_size.help = text("Onboard recording resolution, same aspect ratio as the camera's.");
+
+  return {target, mode, bitrate, every, size, vtx_enable, vtx_bitrate, vtx_fps, vtx_size};
 }
 
 // --- OSD ---------------------------------------------------------------
@@ -833,6 +966,11 @@ std::vector<MenuNode> osd_rows(const Deps& d) {
     return Steps{{Owner::kGs, "msp.enable", "false"}, {Owner::kPlayer, "osd.enable", "false"}};
   };
   fc.confirm = split_on;
+  // The FC OSD draws nothing while the drone's own MSP link is off.
+  fc.warn = [d] {
+    const auto msp_enable = vtx(d, "MSP_ENABLE");
+    return msp_enable && *msp_enable == "0" ? std::string("FC link off") : std::string();
+  };
   fc.help = [d] {
     const bool render = d->cfg->osd.enable, feed = d->gs->msp;
     if (render && !feed)
@@ -847,6 +985,58 @@ std::vector<MenuNode> osd_rows(const Deps& d) {
   };
   return {bar, fc};
 }
+
+// --- Power & FC ----------------------------------------------------------
+
+MenuNode lowpwr_row(const Deps& d) {
+  MenuNode n = drone_bool(d, "power.lowpwr", "Low power when disarmed", "LOWPWR_ENABLE");
+  // Low power needs the MSP link for arm state: turning it on with that
+  // link off takes the link on first.
+  n.steps = [d](const std::string& v) {
+    if (v == "true") {
+      const auto msp_enable = vtx(d, "MSP_ENABLE");
+      if (msp_enable && *msp_enable == "0")
+        return Steps{{Owner::kDrone, "MSP_ENABLE", "1"}, {Owner::kDrone, "LOWPWR_ENABLE", "1"}};
+    }
+    return Steps{{Owner::kDrone, "LOWPWR_ENABLE", v == "true" ? "1" : "0"}};
+  };
+  n.confirm = [d](const std::string& v) {
+    if (v == "true") {
+      const auto msp_enable = vtx(d, "MSP_ENABLE");
+      if (msp_enable && *msp_enable == "0") return std::string("Also turns the FC link on.");
+    }
+    return std::string();
+  };
+  n.help = text(
+      "Lower bitrate and frame rate while disarmed to keep the VTX cool. Needs the FC link for "
+      "arm state.");
+  return n;
+}
+
+MenuNode msp_row(const Deps& d) {
+  MenuNode n = drone_bool(d, "power.msp", "FC link (MSP)", "MSP_ENABLE");
+  // Turning the MSP link off under Low power takes Low power off first --
+  // it depends on this link for arm state.
+  n.steps = [d](const std::string& v) {
+    if (v == "false") {
+      const auto lowpwr = vtx(d, "LOWPWR_ENABLE");
+      if (lowpwr && *lowpwr == "1")
+        return Steps{{Owner::kDrone, "LOWPWR_ENABLE", "0"}, {Owner::kDrone, "MSP_ENABLE", "0"}};
+    }
+    return Steps{{Owner::kDrone, "MSP_ENABLE", v == "true" ? "1" : "0"}};
+  };
+  n.confirm = [d](const std::string& v) {
+    if (v == "false") {
+      const auto lowpwr = vtx(d, "LOWPWR_ENABLE");
+      if (lowpwr && *lowpwr == "1") return std::string("Also turns Low power off.");
+    }
+    return std::string();
+  };
+  n.help = text("Flight-controller link for the OSD and arm state.");
+  return n;
+}
+
+std::vector<MenuNode> power_rows(const Deps& d) { return {lowpwr_row(d), msp_row(d)}; }
 
 // --- System ------------------------------------------------------------
 
@@ -927,10 +1117,15 @@ std::vector<MenuNode> build_menu_tree(const MenuTreeDeps& deps) {
               for (MenuNode& n : fixed_rows(d)) rows.push_back(std::move(n));
               rows.push_back(ladder_group(d));
               rows.push_back(nack_row(d));
+              rows.push_back(bitrate_row(d));
+              rows.push_back(airtime_row(d));
+              rows.push_back(ldpc_row(d));
               return rows;
             }),
       group("rec", "Recording", "What REC records, and where.", [d] { return rec_rows(d); }),
       group("osd", "OSD", "What is drawn over the video.", [d] { return osd_rows(d); }),
+      group("power", "Power & FC", "The drone's power saving and its flight-controller link.",
+            [d] { return power_rows(d); }),
       group("sys", "System", "GS housekeeping.", [d] { return sys_rows(d); }),
   });
 }

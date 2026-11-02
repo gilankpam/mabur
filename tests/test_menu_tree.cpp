@@ -163,12 +163,20 @@ TEST(the_top_level_groups_are_video_link_recording_osd_system) {
     CHECK(n.kind == NodeKind::kGroup);
     got.push_back(n.label);
   }
-  REQUIRE((got == std::vector<std::string>{"Video", "Link", "Recording", "OSD", "System"}));
+  REQUIRE((got ==
+           std::vector<std::string>{"Video", "Link", "Recording", "OSD", "Power & FC", "System"}));
   // No Channel row and no Calibration group yet.
   for (const MenuNode& n : t[1].children()) {
     CHECK(n.label != "Channel");
     CHECK(n.label != "Calibration");
   }
+}
+
+TEST(top_level_groups_include_power_and_fc) {
+  Fx f;
+  std::vector<std::string> ids;
+  for (const MenuNode& n : f.tree()) ids.push_back(n.id);
+  CHECK((ids == std::vector<std::string>{"video", "link", "rec", "osd", "power", "sys"}));
 }
 
 TEST(rate_fixed_sends_four_steps_with_static_mcs_last) {
@@ -291,6 +299,63 @@ TEST(a_rung_edit_sends_the_whole_ladder_with_one_change) {
   CHECK(!vis(f.node("link.ladder.r0.del")));
 }
 
+TEST(fixed_pins_the_live_rung_from_the_sideport) {
+  Fx f;
+  // The bundle ladder is six rungs MCS0..5, all 20 MHz, 0.5/0.25: a live
+  // rung of MCS2/20 is not the index rule's R3.
+  f.snap.mcs = 2;
+  f.snap.bw = 20;
+  CHECK((f.node("link.rate").steps("fixed") == std::vector<SetStep>{
+             {Owner::kGs, "link.static_bw", "20"},
+             {Owner::kGs, "link.static_overhead_base", "0.5"},
+             {Owner::kGs, "link.static_overhead_enh", "0.25"},
+             {Owner::kGs, "link.static_mcs", "2"}}));
+  // No live rung (mcs unknown): the existing index rule, R3.
+  f.snap.mcs = std::nullopt;
+  CHECK((f.node("link.rate").steps("fixed") == std::vector<SetStep>{
+             {Owner::kGs, "link.static_bw", "20"},
+             {Owner::kGs, "link.static_overhead_base", "0.5"},
+             {Owner::kGs, "link.static_overhead_enh", "0.25"},
+             {Owner::kGs, "link.static_mcs", "3"}}));
+}
+
+TEST(max_bitrate_edits_megabits_and_sends_kbps) {
+  Fx f;
+  f.vtx_set("ENC_BITRATE_MAX", "24000");
+  MenuNode n = f.node("link.bitrate");
+  CHECK(!n.advanced);
+  CHECK(n.number.get() == 24);
+  CHECK(n.number.min == 1 && n.number.max == 100 && n.number.step == 1);
+  CHECK(n.number.fmt(24) == "24 Mb/s");
+  CHECK((n.steps("30") == std::vector<SetStep>{{Owner::kDrone, "ENC_BITRATE_MAX", "30000"}}));
+  CHECK(confirm(n, "30").empty());
+}
+
+TEST(airtime_edits_percent_and_sends_a_fraction) {
+  Fx f;
+  f.vtx_set("ENC_AIRTIME", "0.6");
+  MenuNode n = f.node("link.airtime");
+  CHECK(n.advanced);
+  CHECK(n.number.get() == 60);
+  CHECK(n.number.min == 5 && n.number.max == 100 && n.number.step == 5);
+  CHECK(n.number.fmt(60) == "60 %");
+  CHECK((n.steps("75") == std::vector<SetStep>{{Owner::kDrone, "ENC_AIRTIME", "0.75"}}));
+}
+
+TEST(ldpc_keeps_a_warning_after_ok) {
+  Fx f;
+  f.vtx_set("RADIO_LDPC", "0", "accepted");
+  for (VtxRow& r : f.snap.vtx->rows)
+    if (r.id == "RADIO_LDPC") r.status = "walls measured with LDPC on";
+  MenuNode n = f.node("link.ldpc");
+  CHECK(n.advanced);
+  REQUIRE(n.warn_after_ok != nullptr);
+  CHECK(n.warn_after_ok() == "walls measured with LDPC on");
+  for (VtxRow& r : f.snap.vtx->rows)
+    if (r.id == "RADIO_LDPC") r.status = "";
+  CHECK(f.node("link.ldpc").warn_after_ok().empty());
+}
+
 TEST(fc_osd_on_is_player_then_gs_and_off_is_gs_then_player) {
   Fx f;
   const MenuNode fc = f.node("osd.fc");
@@ -311,6 +376,42 @@ TEST(fc_osd_on_is_player_then_gs_and_off_is_gs_then_player) {
   f.gs.msp = false;
   f.cfg.osd.enable = true;
   CHECK(f.node("osd.fc").help().find("render is on") != std::string::npos);
+}
+
+TEST(fc_osd_warns_when_the_drones_fc_link_is_off) {
+  Fx f;
+  f.vtx_set("MSP_ENABLE", "0");
+  CHECK(f.node("osd.fc").warn() == "FC link off");
+  f.vtx_set("MSP_ENABLE", "1");
+  CHECK(f.node("osd.fc").warn().empty());
+}
+
+TEST(low_power_on_turns_the_fc_link_on_first) {
+  Fx f;
+  f.vtx_set("MSP_ENABLE", "0");
+  MenuNode n = f.node("power.lowpwr");
+  CHECK((n.steps("true") == std::vector<SetStep>{{Owner::kDrone, "MSP_ENABLE", "1"},
+                                                  {Owner::kDrone, "LOWPWR_ENABLE", "1"}}));
+  CHECK(confirm(n, "true") == "Also turns the FC link on.");
+  f.vtx_set("MSP_ENABLE", "1");
+  n = f.node("power.lowpwr");
+  CHECK((n.steps("true") == std::vector<SetStep>{{Owner::kDrone, "LOWPWR_ENABLE", "1"}}));
+  CHECK(confirm(n, "true").empty());
+  CHECK((n.steps("false") == std::vector<SetStep>{{Owner::kDrone, "LOWPWR_ENABLE", "0"}}));
+  CHECK(confirm(n, "false").empty());
+}
+
+TEST(fc_link_off_turns_low_power_off_first) {
+  Fx f;
+  f.vtx_set("LOWPWR_ENABLE", "1");
+  MenuNode n = f.node("power.msp");
+  CHECK((n.steps("false") == std::vector<SetStep>{{Owner::kDrone, "LOWPWR_ENABLE", "0"},
+                                                   {Owner::kDrone, "MSP_ENABLE", "0"}}));
+  CHECK(confirm(n, "false") == "Also turns Low power off.");
+  f.vtx_set("LOWPWR_ENABLE", "0");
+  n = f.node("power.msp");
+  CHECK((n.steps("false") == std::vector<SetStep>{{Owner::kDrone, "MSP_ENABLE", "0"}}));
+  CHECK(confirm(n, "false").empty());
 }
 
 TEST(dvr_rows_say_at_next_recording_while_recording) {
@@ -348,6 +449,76 @@ TEST(dvr_rows_say_at_next_recording_while_recording) {
   f.cfg.dvr.mode = "raw";
   CHECK(vis(f.node("rec.mode")));
   CHECK(!vis(f.node("rec.burn.size")));
+}
+
+TEST(sd_recorder_rows_follow_the_drones_rec_enable) {
+  Fx f;
+  f.vtx_set("REC_ENABLE", "0");
+  CHECK(f.node("rec.vtx").current() == "false");
+  CHECK(!vis(f.node("rec.vtx.bitrate")));
+  CHECK(!vis(f.node("rec.vtx.fps")));
+  CHECK(!vis(f.node("rec.vtx.size")));
+  f.vtx_set("REC_ENABLE", "1");
+  CHECK(f.node("rec.vtx").current() == "true");
+  CHECK(vis(f.node("rec.vtx.bitrate")));
+  CHECK(vis(f.node("rec.vtx.fps")));
+  CHECK(vis(f.node("rec.vtx.size")));
+  CHECK(confirm(f.node("rec.vtx"), "true") == "Video pauses about half a second.");
+  CHECK(confirm(f.node("rec.vtx.bitrate"), "10") == "Video pauses about half a second.");
+  CHECK(confirm(f.node("rec.vtx.fps"), "60") == "Video pauses about half a second.");
+  CHECK(confirm(f.node("rec.vtx.size"), "1280x720") == "Video pauses about half a second.");
+}
+
+TEST(sd_frame_rate_offers_the_cameras_divisors_from_30) {
+  Fx f;
+  f.vtx_set("VENC_MODE", "100@1280x720/binned");
+  CHECK((values(f.node("rec.vtx.fps").choices()) == std::vector<std::string>{"100", "50"}));
+  f.vtx_set("VENC_MODE", "60@1920x1080/native");
+  CHECK((values(f.node("rec.vtx.fps").choices()) == std::vector<std::string>{"60", "30"}));
+  f.vtx_set("VENC_MODE", "90@1728x972/binned");
+  CHECK((values(f.node("rec.vtx.fps").choices()) == std::vector<std::string>{"90", "45", "30"}));
+  f.vtx_set("VENC_MODE", "120@1728x816/binned");
+  CHECK((values(f.node("rec.vtx.fps").choices()) ==
+         std::vector<std::string>{"120", "60", "40", "30"}));
+  f.vtx_set("REC_FPS", "25");
+  f.vtx_set("VENC_MODE", "100@1280x720/binned");
+  const auto cs = f.node("rec.vtx.fps").choices();
+  CHECK((values(cs) == std::vector<std::string>{"25", "100", "50"}));
+  REQUIRE(!cs.empty());
+  CHECK(cs[0].label == "25 fps");
+}
+
+TEST(sd_size_offers_the_cameras_sensor_mode_sizes) {
+  Fx f;
+  f.vtx_set("VENC_MODE", "100@1280x720/binned");
+  CHECK((values(f.node("rec.vtx.size").choices()) ==
+         std::vector<std::string>{"1728x972", "1280x720"}));
+  f.vtx_set("VENC_MODE", "60@1920x1080/native");
+  CHECK((values(f.node("rec.vtx.size").choices()) ==
+         std::vector<std::string>{"1920x1080", "1600x900", "1280x720"}));
+  // The camera's own (off-list) size is appended.
+  f.vtx_set("VENC_MODE", "60@2944x1656/native");
+  CHECK((values(f.node("rec.vtx.size").choices()) ==
+         std::vector<std::string>{"1920x1080", "1600x900", "1280x720", "2944x1656"}));
+  // An off-list current REC_SIZE comes first.
+  f.vtx_set("REC_SIZE", "640x360");
+  const auto cs = f.node("rec.vtx.size").choices();
+  REQUIRE(!cs.empty());
+  CHECK(cs[0].value == "640x360");
+  CHECK(cs[0].label == "640×360");
+}
+
+TEST(rec_target_warns_when_the_sd_recorder_is_off) {
+  Fx f;
+  f.cfg.dvr.target = "vtx";
+  f.vtx_set("REC_ENABLE", "0");
+  CHECK(f.node("rec.target").warn() == "SD recorder off");
+  f.cfg.dvr.target = "gs";
+  CHECK(f.node("rec.target").warn().empty());
+  f.cfg.dvr.target = "both";
+  CHECK(f.node("rec.target").warn() == "SD recorder off");
+  f.vtx_set("REC_ENABLE", "1");
+  CHECK(f.node("rec.target").warn().empty());
 }
 
 TEST(display_and_colour_confirm_the_split_only_during_a_burned_recording) {
