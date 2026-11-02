@@ -89,7 +89,7 @@ size. The SigmaStar encoder cannot scale, so the sizes decide the port:
   reads `Pixel MAX, OutputW 0` in `/proc/mi_modules/mi_vpe/mi_vpe0` until
   ch1 starts; that is not a failure.
 - **Above 1920x1080 and above the selected sensor mode** (1920x1080 binned
-  up to 90 fps, 1728x972 / 1728x816 binned above, 2944x1656 / 2304x1296
+  up to 90 fps, 1728x972 / 1728x816 binned above, 2944x1656 / 2272x1278
   native; `docs/camera-modes.md`): the pipeline switches to the
   3840x2160@33 mode (full view, not binned), and the loader requires
   `venc.fps <= 30`. The link then also runs at 30 fps from a downscaled 4K
@@ -104,7 +104,7 @@ the link queues behind it and the recorder drops frames. A 720p link with a
 `docs/findings/2026-09-26-vtx-recorder-bench.md`.
 
 Above 90 fps the link runs a crop mode — binned (1728x972 to 100 fps,
-1728x816 above) or, under `venc.binning = false`, the native 2304x1296
+1728x816 above) or, under `venc.binning = false`, the native 2272x1278
 crop (no mode above 100 fps; `docs/camera-modes.md`) — and the recorder's
 rules stay as they are, which carries three risks: a `record.size` larger
 than the mode (the bundle's 1920x1080 against 1728x972) is an upscale on

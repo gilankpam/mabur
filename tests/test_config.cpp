@@ -1761,10 +1761,10 @@ TEST(venc_size_must_fit_the_native_mode) {
   };
   CHECK(!bad("2944x1656", 60));
   CHECK(!bad("1920x1080", 60));
-  CHECK(!bad("2304x1296", 100));
+  CHECK(!bad("2272x1278", 100));
   CHECK(!bad("1280x720", 90));
-  CHECK(bad("2560x1440", 100));   // larger than 2304x1296
-  CHECK(bad("2944x1656", 61));    // the 61-100 tier is 2304x1296
+  CHECK(bad("2560x1440", 100));   // larger than 2272x1278
+  CHECK(bad("2944x1656", 61));    // the 61-100 tier is 2272x1278
   CHECK(bad("1728x816", 60));     // other aspect
 }
 
@@ -1782,7 +1782,7 @@ TEST(record_4k_rule_is_relative_to_the_mode_and_1080p) {
   CHECK(msg(true, 60, "2560x1440").find("record.size") != std::string::npos);   // needs 4K at 60: refused
   CHECK(msg(false, 60, "2560x1440").empty());                                   // fits the 2944 mode
   CHECK(msg(false, 60, "2944x1656").empty());
-  CHECK(msg(false, 100, "2560x1440").find("record.size") != std::string::npos); // above the 2304 mode
+  CHECK(msg(false, 100, "2560x1440").find("record.size") != std::string::npos); // above the 2272 mode
   CHECK(msg(false, 30, "3840x2160").empty());                                   // the 4K mode, either readout
 }
 
