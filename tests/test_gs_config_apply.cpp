@@ -168,7 +168,7 @@ TEST(render_live_value_renders_each_type) {
   c.radio.pin = 112;
   CHECK(render_live_value(c, *gs_live_key("radio.channel")) == "112");
   const std::string l = render_live_value(c, *gs_live_key("link.ladder"));
-  CHECK(l.rfind("[{mcs = 0, bw = 40, overhead_base = 0.5, overhead_enh = 0.25}", 0) == 0);
+  CHECK(l.rfind("[{mcs = 0, bw = 20, overhead_base = 0.5, overhead_enh = 0.25}", 0) == 0);
   CHECK(render_live_value(c, *gs_live_key("link.static_overhead_base")) == "0.5");
   c.link.static_overhead_base = 2.0;
   CHECK(render_live_value(c, *gs_live_key("link.static_overhead_base")) == "2.0");

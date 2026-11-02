@@ -16,7 +16,7 @@ channel  = "auto"               # "auto" = measure the set at start and move the
                                 # Either way the link first forms wherever the drone is found, then
                                 # a hop order moves it to the pick or the pin. A pinned member is static:
                                 # the in-flight hop below runs only in auto mode.
-width   = 40               # 20 or 40 MHz; 40 is needed for the 40 MHz link speeds in [[link.ladder]] below.
+width   = 40               # 20 or 40 MHz; 40 is needed for any bw = 40 rung in [[link.ladder]] below.
                            # `maburcal start` calibrates 20 MHz, plus 40 when this is 40 and a rung uses it
 tx_card = -1               # card that transmits to the drone; -1 = pick the one with the best signal
 relays  = []               # CPE510 mabur-relay units, "ipv4:port" each (UDP 8310, numeric -- no hostnames); each is a card after the USB cards.
@@ -104,31 +104,37 @@ static_overhead_enh    = 0.5    # ...and on the enhance layer
 
 [[link.ladder]]
 mcs = 0
-bw  = 40
+bw  = 20
 overhead_base = 0.5
 overhead_enh  = 0.25
 
 [[link.ladder]]
 mcs = 1
-bw  = 40
+bw  = 20
 overhead_base = 0.5
 overhead_enh  = 0.25
 
 [[link.ladder]]
 mcs = 2
-bw  = 40
+bw  = 20
 overhead_base = 0.5
 overhead_enh  = 0.25
 
 [[link.ladder]]
 mcs = 3
-bw  = 40
+bw  = 20
 overhead_base = 0.5
 overhead_enh  = 0.25
 
 [[link.ladder]]
 mcs = 4
-bw  = 40
+bw  = 20
+overhead_base = 0.5
+overhead_enh  = 0.25
+
+[[link.ladder]]
+mcs = 5
+bw  = 20
 overhead_base = 0.5
 overhead_enh  = 0.25
 

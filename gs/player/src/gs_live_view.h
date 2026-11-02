@@ -64,8 +64,8 @@ enum class LadderWidth { k20, k40, kMixed };
 LadderWidth ladder_width(const std::vector<Rung>& l);
 
 // The two default width ladders the Width row loads: 40 -> MCS 0,1,2,3,4
-// at 0.50/0.25, all bw 40; anything else -> MCS 0,2,4,5 at 0.50/0.25, all
-// bw 20.
+// at 0.50/0.25, all bw 40; anything else -> MCS 0,1,2,3,4,5 at 0.50/0.25,
+// all bw 20 (the bundle ladder).
 const std::vector<Rung>& default_ladder(int bw);
 
 // Whether `l` is exactly one of the two default_ladder() tables.

@@ -13,8 +13,8 @@ const base = { connected: true, mode: 'gs', ch: 136, w: 40, core, page,
 test('stats view, GS adaptive', () => {
   const v = statsView(base);
   assert.equal(v.mcs, '3'); assert.equal(v.bw, '40');
-  assert.equal(v.rungNum, '4'); assert.equal(v.rungCount, '5'); assert.equal(v.rungMode, 'Adaptive');
-  assert.deepEqual(v.segs, [true, true, true, true, false]);
+  assert.equal(v.rungNum, '4'); assert.equal(v.rungCount, '6'); assert.equal(v.rungMode, 'Adaptive');
+  assert.deepEqual(v.segs, [true, true, true, true, false, false]);
   assert.equal(v.chLine, '136 · 40 MHz');
   assert.equal(v.cards.length, 1);
   assert.deepEqual({ ...v.cards[0], barPct: undefined }, { idx: 0, tx: true, rssi: '-58', snr: '28', barPct: undefined });

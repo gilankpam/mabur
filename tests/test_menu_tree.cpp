@@ -146,12 +146,12 @@ TEST(the_top_level_groups_are_video_link_recording_osd_system) {
 TEST(rate_fixed_sends_four_steps_with_static_mcs_last) {
   Fx f;
   REQUIRE(f.gs.static_mcs == -1);
-  REQUIRE(f.gs.ladder.size() == 5);
+  REQUIRE(f.gs.ladder.size() == 6);
   const MenuNode rate = f.node("link.rate");
   CHECK(rate.current() == "adaptive");
-  // The current rung: R3 of the bundle ladder, MCS3 at 40 MHz, 0.5/0.25.
+  // The current rung: R3 of the bundle ladder, MCS3 at 20 MHz, 0.5/0.25.
   CHECK((rate.steps("fixed") == std::vector<SetStep>{
-             {Owner::kGs, "link.static_bw", "40"},
+             {Owner::kGs, "link.static_bw", "20"},
              {Owner::kGs, "link.static_overhead_base", "0.5"},
              {Owner::kGs, "link.static_overhead_enh", "0.25"},
              {Owner::kGs, "link.static_mcs", "3"}}));
@@ -183,15 +183,15 @@ TEST(rate_adaptive_is_one_step) {
 
 TEST(width_pick_sends_the_default_ladder_and_confirms_when_the_ladder_is_custom) {
   Fx f;
-  const std::string l20 = maburplay::render_ladder_value(maburplay::default_ladder(20));
+  const std::string l40 = maburplay::render_ladder_value(maburplay::default_ladder(40));
   MenuNode w = f.node("link.width");
-  CHECK(w.value_text() == "40 MHz");
-  CHECK(w.current() == "40");
-  CHECK((w.steps("20") == std::vector<SetStep>{{Owner::kGs, "link.ladder", l20}}));
-  CHECK(confirm(w, "20").empty());   // the bundle ladder is the 40 MHz default
+  CHECK(w.value_text() == "20 MHz");
+  CHECK(w.current() == "20");
+  CHECK((w.steps("40") == std::vector<SetStep>{{Owner::kGs, "link.ladder", l40}}));
+  CHECK(confirm(w, "40").empty());   // the bundle ladder is the 20 MHz default
   f.gs.ladder[0].base = 0.6;
   w = f.node("link.width");
-  CHECK(confirm(w, "20") == "Replaces your ladder with the default 20 MHz ladder (4 rungs).");
+  CHECK(confirm(w, "20") == "Replaces your ladder with the default 20 MHz ladder (6 rungs).");
   CHECK(confirm(w, "40") == "Replaces your ladder with the default 40 MHz ladder (5 rungs).");
   // Under Fixed the row is the fixed rate's width: one static_bw set.
   f.gs.static_mcs = 3;
@@ -204,7 +204,7 @@ TEST(width_pick_sends_the_default_ladder_and_confirms_when_the_ladder_is_custom)
 
 TEST(width_reads_mixed_and_offers_only_20_and_40) {
   Fx f;
-  f.gs.ladder[0].bw = 20;
+  f.gs.ladder[0].bw = 40;
   const MenuNode w = f.node("link.width");
   CHECK(w.value_text() == "Mixed");
   CHECK((values(w.choices()) == std::vector<std::string>{"40", "20"}));
@@ -215,6 +215,7 @@ TEST(width_reads_mixed_and_offers_only_20_and_40) {
 
 TEST(a_rung_edit_sends_the_whole_ladder_with_one_change) {
   Fx f;
+  f.gs.ladder = maburplay::default_ladder(40);
   const MenuNode ladder = f.node("link.ladder");
   CHECK(ladder.advanced);
   CHECK(ladder.group_value() == "5 rungs");
@@ -404,7 +405,7 @@ TEST(mcs_rows_are_capped_at_five) {
   CHECK(m.number.min == 0 && m.number.max == 5 && m.number.step == 1);
   CHECK(m.number.fmt(3) == "MCS3");
   CHECK((m.steps("4") == std::vector<SetStep>{{Owner::kGs, "link.static_mcs", "4"}}));
-  for (int i = 0; i < 5; ++i) {
+  for (size_t i = 0; i < f.gs.ladder.size(); ++i) {
     const MenuNode r = f.node("link.ladder.r" + std::to_string(i) + ".mcs");
     CHECK(r.number.min == 0 && r.number.max == 5);
   }
@@ -521,11 +522,11 @@ TEST(gs_rows_read_a_dash_until_the_first_get_lands) {
         f.node("video.colour").value_text() != "—");
   CHECK(f.node("sys.adv").value_text == nullptr);
   f.gs = bundle_gs();
-  CHECK(f.node("link.width").value_text() == "40 MHz");
+  CHECK(f.node("link.width").value_text() == "20 MHz");
   CHECK(f.node("link.rate").value_text() == "Adaptive");
   CHECK(f.node("link.nack").value_text() == (f.gs.nack ? "On" : "Off"));
   CHECK(f.node("sys.debug").value_text() == (f.gs.debug_log ? "On" : "Off"));
-  CHECK(f.node("link.ladder").group_value() == "5 rungs");
+  CHECK(f.node("link.ladder").group_value() == "6 rungs");
   f.gs.static_mcs = 3;
   CHECK(f.node("link.mcs").value_text() == "MCS3");
   CHECK(f.node("link.fec_base").value_text() == "0.50");
@@ -538,11 +539,11 @@ TEST(gs_rows_read_a_dash_until_the_first_get_lands) {
 // since lost: nothing is sent rather than a guess.
 TEST(rate_fixed_and_rung_edits_send_nothing_without_their_rung) {
   Fx f;
-  const MenuNode mcs = f.node("link.ladder.r4.mcs");
-  const MenuNode bw = f.node("link.ladder.r4.bw");
-  const MenuNode base = f.node("link.ladder.r4.base");
-  const MenuNode enh = f.node("link.ladder.r4.enh");
-  f.gs.ladder.resize(3);   // shrunk under rows built for five rungs
+  const MenuNode mcs = f.node("link.ladder.r3.mcs");
+  const MenuNode bw = f.node("link.ladder.r3.bw");
+  const MenuNode base = f.node("link.ladder.r3.base");
+  const MenuNode enh = f.node("link.ladder.r3.enh");
+  f.gs.ladder.resize(3);   // shrunk under rows built for six rungs
   CHECK(mcs.steps("2").empty());
   CHECK(bw.steps("20").empty());
   CHECK(base.steps("1").empty());

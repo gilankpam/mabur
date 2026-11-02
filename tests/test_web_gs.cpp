@@ -968,7 +968,8 @@ TEST(gs_without_send_throws) {
 }
 
 TEST(channel_width_override_validation) {
-  auto c = cfg();   // bundle ladder has 40 MHz rungs
+  auto c = cfg();
+  c.link.ladder_cfg.ladder = {{0, 0.5, 0.25, 20}, {3, 0.5, 0.25, 40}};   // one 40 MHz rung
   c.radio.channels = {136};   // the start channel must be a member (set checks: the test below)
   CHECK(!channel_width_error(c, Mode::Gs, 136, 40));
   CHECK(!channel_width_error(c, Mode::Spotter, 136, 40));
@@ -1375,7 +1376,7 @@ TEST(channel_width_error_checks_the_set_membership_and_pin) {
   e = channel_width_error(c, Mode::Gs, 40, 40);
   REQUIRE(e.has_value());
   CHECK(e->find("radio.channels") != std::string::npos);
-  CHECK(!channel_width_error(c, Mode::Spotter, 40, 20).has_value());   // fine at 20 (Spotter: the bundle ladder's 40 MHz rungs refuse a 20 MHz GS)
+  CHECK(!channel_width_error(c, Mode::Spotter, 40, 20).has_value());   // fine at 20 (Spotter: the ladder's 40 MHz rung refuses a 20 MHz GS)
 }
 
 // The page's own shape: ONE card, owned by the scout. Its frames leave only

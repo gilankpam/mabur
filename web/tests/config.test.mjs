@@ -17,7 +17,7 @@ const mem = (init = {}) => {
 test('defaults match maburgs.default.toml', () => {
   const c = defaultConfig();
   assert.deepEqual(c, { channels: [40, 64, 112, 144], link: 'auto', width: 40, staticMcs: -1,
-    ladder: [0, 1, 2, 3, 4].map((mcs) => ({ mcs, bw: 40, ob: 0.5, oe: 0.25 })), colortrans: true, dvr: 'web', nack: true,
+    ladder: [0, 1, 2, 3, 4, 5].map((mcs) => ({ mcs, bw: 20, ob: 0.5, oe: 0.25 })), colortrans: true, dvr: 'web', nack: true,
     phaseLock: true, osdFont: 'btfl' });
   c.ladder[0].mcs = 7;
   assert.equal(defaultConfig().ladder[0].mcs, 0, 'fresh copy each call');
@@ -68,8 +68,11 @@ test('load/save round trip, storage failures tolerated, URL ch/w override', () =
   assert.deepEqual(loadConfig(mem({ 'webgs.cfg': '{not json' }), new URLSearchParams()), defaultConfig());
 });
 
+// The bundle ladder flies 20 MHz; the width checks need 40 MHz rungs.
+const with40 = (c) => ({ ...c, ladder: c.ladder.map((r) => ({ ...r, bw: 40 })) });
+
 test('rung warnings use the handoff strings, in order', () => {
-  let c = applyEdit(defaultConfig(), 'width', 20);
+  let c = applyEdit(with40(defaultConfig()), 'width', 20);
   c = applyRungEdit(c, 4, 'mcs', 7);
   c = applyRungEdit(c, 4, 'oe', '0.6');
   assert.deepEqual(rungWarnings(c, 4),
@@ -90,7 +93,8 @@ test('connect_blockers_gs_refuses_what_the_core_refuses', () => {
   assert.match(connectBlocker(applyRungEdit(d, 1, 'oe', '0.9'), 'gs'), /Rung 1/);
   assert.match(connectBlocker(applyRungEdit(d, 2, 'ob', '5'), 'gs'), /Rung 2.*0\.1.*2/);
   assert.match(connectBlocker(applyRungEdit(d, 2, 'ob', ''), 'gs'), /Rung 2/);
-  assert.match(connectBlocker(applyEdit(d, 'width', 20), 'gs'), /Rung 0.*40 MHz/);
+  assert.equal(connectBlocker(applyEdit(d, 'width', 20), 'gs'), null);   // 20 MHz rungs fly at 20
+  assert.match(connectBlocker(applyEdit(with40(d), 'width', 20), 'gs'), /Rung 0.*40 MHz/);
   // Every rung flies (no max MCS filter): a 40 MHz MCS 7 top rung still blocks at width 20.
   const w = { ...applyEdit(d, 'width', 20),
     ladder: [{ mcs: 0, bw: 20, ob: 0.5, oe: 0.25 }, { mcs: 7, bw: 40, ob: 0.5, oe: 0.25 }] };
@@ -112,7 +116,7 @@ test('overlay TOML, pinned: one always-loadable rung, max_mcs 7, saved ladder un
     + '\n[link]\nstatic_mcs = 3\nstatic_bw = 20\nmax_mcs = 7\n'
     + '\n[link.nack]\nenable = true\n'
     + '\n[[link.ladder]]\nmcs = 3\nbw = 20\noverhead_base = 0.5\noverhead_enh = 0.25\n');
-  assert.equal(c.ladder.length, 5);
+  assert.equal(c.ladder.length, 6);
   // hidden fields never block a pinned connect
   assert.equal(connectBlocker(applyRungEdit(c, 1, 'oe', '0.9'), 'gs'), null);
   assert.match(connectBlocker(applyEdit(applyEdit(c, 'width', 40), 'channels', [165]), 'gs'), /no 40 MHz pair/);
@@ -121,17 +125,17 @@ test('overlay TOML, pinned: one always-loadable rung, max_mcs 7, saved ladder un
 test('overlay TOML carries static_mcs, static_bw=width, max_mcs 7 and the ladder', () => {
   const t = toOverlayToml(defaultConfig());
   assert.match(t, /\n\[link\]\nstatic_mcs = -1\nstatic_bw = 40\nmax_mcs = 7\n/);
-  assert.equal((t.match(/\[\[link\.ladder\]\]/g) || []).length, 5);
-  assert.match(t, /\[\[link\.ladder\]\]\nmcs = 0\nbw = 40\noverhead_base = 0\.5\noverhead_enh = 0\.25\n/);
+  assert.equal((t.match(/\[\[link\.ladder\]\]/g) || []).length, 6);
+  assert.match(t, /\[\[link\.ladder\]\]\nmcs = 0\nbw = 20\noverhead_base = 0\.5\noverhead_enh = 0\.25\n/);
   assert.ok(!/NaN|undefined/.test(t));
 });
 
 test('rung add/remove limits and labels', () => {
   let c = defaultConfig();
   c = applyRungEdit(c, -1, '__add');
-  assert.equal(c.ladder.length, 6);
-  assert.deepEqual(c.ladder[5], { mcs: 5, bw: 40, ob: 0.5, oe: 0.25 });
-  for (let i = 0; i < 5; i++) c = applyRungEdit(c, -1, '__add');
+  assert.equal(c.ladder.length, 7);
+  assert.deepEqual(c.ladder[6], { mcs: 6, bw: 20, ob: 0.5, oe: 0.25 });
+  for (let i = 0; i < 4; i++) c = applyRungEdit(c, -1, '__add');
   assert.equal(c.ladder.length, 8, 'capped at 8');
   let one = { ...defaultConfig(), ladder: [{ mcs: 0, bw: 40, ob: 0.5, oe: 0.25 }] };
   assert.equal(applyRungEdit(one, 0, '__remove').ladder.length, 1, 'never below 1');
@@ -144,15 +148,15 @@ test('rung add/remove limits and labels', () => {
 });
 
 test('rung move: reorders, bounds-checked, described', () => {
-  const d = defaultConfig();   // mcs 0..4
-  const m = applyRungEdit(d, 4, '__move', 0);
-  assert.deepEqual(m.ladder.map((r) => r.mcs), [4, 0, 1, 2, 3]);
-  assert.deepEqual(d.ladder.map((r) => r.mcs), [0, 1, 2, 3, 4], 'input untouched');
-  assert.deepEqual(applyRungEdit(d, 0, '__move', 2).ladder.map((r) => r.mcs), [1, 2, 0, 3, 4]);
-  for (const to of [-1, 5, 1.5, 'x']) {
-    assert.deepEqual(applyRungEdit(d, 1, '__move', to).ladder.map((r) => r.mcs), [0, 1, 2, 3, 4], String(to));
+  const d = defaultConfig();   // mcs 0..5
+  const m = applyRungEdit(d, 5, '__move', 0);
+  assert.deepEqual(m.ladder.map((r) => r.mcs), [5, 0, 1, 2, 3, 4]);
+  assert.deepEqual(d.ladder.map((r) => r.mcs), [0, 1, 2, 3, 4, 5], 'input untouched');
+  assert.deepEqual(applyRungEdit(d, 0, '__move', 2).ladder.map((r) => r.mcs), [1, 2, 0, 3, 4, 5]);
+  for (const to of [-1, 6, 1.5, 'x']) {
+    assert.deepEqual(applyRungEdit(d, 1, '__move', to).ladder.map((r) => r.mcs), [0, 1, 2, 3, 4, 5], String(to));
   }
-  assert.equal(describeRungEdit(m, 4, '__move', 0), 'MCS 4 rung moved to position 1 of 5');
+  assert.equal(describeRungEdit(m, 5, '__move', 0), 'MCS 5 rung moved to position 1 of 6');
 });
 
 test('dvr target: default web, normalized, described', () => {
