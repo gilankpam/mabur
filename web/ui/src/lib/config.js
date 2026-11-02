@@ -21,7 +21,7 @@ const OV_MIN = 0.1, OV_MAX = 2.0;
 export function defaultConfig() {
   return {
     channels: [40, 64, 112, 144], link: 'auto', width: 40, staticMcs: -1,
-    ladder: [0, 1, 2, 3, 4].map((mcs) => ({ mcs, bw: 40, ob: 0.5, oe: 0.25 })),
+    ladder: [0, 1, 2, 3, 4, 5].map((mcs) => ({ mcs, bw: 20, ob: 0.5, oe: 0.25 })),
     // Page-only (never sent to the core): reverse the drone's colortrans
     // sensor tuning on the video (lib/colortrans.js). maburplay's bundle
     // default is on too.

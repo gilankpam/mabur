@@ -42,6 +42,10 @@ struct Rig {
       : agg(bundle().uep_layers(), 32, n_usb + n_relays, 0) {
     cfg.radio.channels = {40, 64, 112, 144};
     cfg.radio.width = 40;
+    // A 40 MHz rig flies the five-rung 40 MHz ladder; the hop-restore tests
+    // index into it (rung 2 = MCS 2).
+    cfg.link.ladder_cfg.ladder = {{0, 0.5, 0.25, 40}, {1, 0.5, 0.25, 40}, {2, 0.5, 0.25, 40},
+                                  {3, 0.5, 0.25, 40}, {4, 0.5, 0.25, 40}};
     if (pinned) cfg.radio.pin = start ? start : 40;
     const uint8_t start_ch = start ? start : (pinned ? *cfg.radio.pin : 40);
     for (int i = 0; i < n_usb + n_relays; ++i) {

@@ -331,6 +331,6 @@ the cost is zero.
 - **The aggregation mode is per rung and per width**: `ampdu.min_mcs_20`
   (bundle 4) / `ampdu.min_mcs_40` (bundle 2) — singles below the floor,
   the configured aggregate at and above (`drone/src/ampdu_policy.h`,
-  switched live by `RealActuator::apply_op`). The bundle ladder is five
-  40 MHz rungs, mcs0-4, so mcs0/1 fly singles and mcs2-4 aggregate. Do not
+  switched live by `RealActuator::apply_op`). The bundle ladder is six
+  20 MHz rungs, mcs0-5, so mcs0-3 fly singles and mcs4/5 aggregate. Do not
   read a fixed A-MPDU cost into the model.

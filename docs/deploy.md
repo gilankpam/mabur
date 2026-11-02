@@ -135,9 +135,10 @@ The second is devourer's **wide-TX IGI floor**
 switched on by the session's first 40 MHz frame and stays on while the card
 is tuned to 40 MHz. It exists because on a silent channel the receiver can
 settle where the secondary 20 MHz never reads idle, and the MAC then holds
-the first 40 MHz frame forever. The shipped ladder sends every rung at
-40 MHz, so on the drone the floor is on for the whole flight, and it costs
-the RCF uplink idle-channel sensitivity. `maburd` picks the value per image,
+the first 40 MHz frame forever. A ladder with 40 MHz rungs
+turns the floor on at the first 40 MHz rung and keeps it on for the rest
+of the flight, which costs the RCF uplink idle-channel sensitivity. The
+shipped ladder is all 20 MHz, so it never turns the floor on. `maburd` picks the value per image,
 from the one Jaguar3 chip that image compiles in:
 
 - **8812EU**: `0` (no floor). The EU has flown the 40 MHz rungs without a
