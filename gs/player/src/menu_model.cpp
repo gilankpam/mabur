@@ -474,11 +474,9 @@ void MenuModel::apply_done(const std::string& row_id, bool ok, const std::string
     st.state = Status::State::kOk;
     st.text = st.pending.saved_text ? st.pending.saved_text() : "";
     if (st.text.empty()) st.text = "✓ saved";
-    st.warn = st.pending.warn_after_ok ? st.pending.warn_after_ok() : "";
   } else {
     st.state = Status::State::kErr;
     st.text = reason;
-    st.warn.clear();
   }
 }
 
@@ -518,6 +516,7 @@ MenuView MenuModel::view(uint64_t now_ms) const {
   const int start = std::max(0, std::min(cursor - kScrollLead, n - max_rows));
 
   const Status* sel_status = nullptr;
+  std::string sel_warn;
   for (int i = start; i < n && i < start + max_rows; ++i) {
     const MenuNode& node = rows[i];
     ViewRow r;
@@ -539,18 +538,27 @@ MenuView MenuModel::view(uint64_t now_ms) const {
           if (st.n_steps > 1 && st.step > 0)
             r.status += " " + std::to_string(st.step) + "/" + std::to_string(st.n_steps);
           break;
-        case Status::State::kOk:
-          if (!st.warn.empty()) {
-            // warn_after_ok: amber and un-timed, until the row's next apply.
+        case Status::State::kOk: {
+          // warn_after_ok is read live here, not latched at apply_done: a
+          // drone warning (STATUSTEXT) can land in a later sideport
+          // datagram than the accepted/saved result it explains.
+          const std::string warn =
+              st.pending.warn_after_ok ? st.pending.warn_after_ok() : "";
+          if (!warn.empty()) {
+            // amber and un-timed, until the row's next apply.
             r.status = st.text;
             r.status_ok = true;
             r.status_warn = true;
-            if (r.selected) sel_status = &st;
+            if (r.selected) {
+              sel_status = &st;
+              sel_warn = warn;
+            }
           } else if (within(now_ms, st.t_ms, st.text == "✓ saved" ? kSavedMs : kSavedLongMs)) {
             r.status = st.text;
             r.status_ok = true;
           }
           break;
+        }
         case Status::State::kErr:
           if (within(now_ms, st.t_ms, kErrorMs)) {
             r.status = "✗ failed";
@@ -575,8 +583,8 @@ MenuView MenuModel::view(uint64_t now_ms) const {
     } else if (sel_status && sel_status->state == Status::State::kErr) {
       v.help = status_help(*sel_status);
       v.help_is_error = true;
-    } else if (sel_status && !sel_status->warn.empty()) {
-      v.help = sel_status->warn;
+    } else if (sel_status && !sel_warn.empty()) {
+      v.help = sel_warn;
     } else {
       v.help = std::move(h);
     }

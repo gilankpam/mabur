@@ -188,6 +188,11 @@ class MenuModel {
     Locks locks{};
     Owner owner = Owner::kPlayer;
     std::function<std::string()> saved_text;
+    // kOk only, read live in view(): non-empty keeps the saved status
+    // amber and this text in the help line, un-timed, until the row's
+    // next apply_started. Read on every view() rather than latched once
+    // at apply_done, since a warning (a STATUSTEXT from the drone) can
+    // land in a later sideport datagram than the accepted/saved result.
     std::function<std::string()> warn_after_ok;
   };
   struct Status {
@@ -195,9 +200,6 @@ class MenuModel {
     int n_steps = 1, step = 0;
     uint64_t t_ms = 0;
     std::string text;      // kOk: the saved text; kErr: the reason
-    // kOk only: non-empty keeps the saved status amber and this text in the
-    // help line, un-timed, until the row's next apply_started.
-    std::string warn;
     Pending pending;
   };
   struct Resolved {
