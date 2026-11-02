@@ -1102,6 +1102,26 @@ std::vector<MenuNode> guarded(const Deps& d, std::vector<MenuNode> rows) {
 
 }  // namespace
 
+std::string drone_header(const GsSnapshot* snap, bool stale) {
+  if (!snap || stale || !snap->vtx) return std::string();
+  const VtxState& vtx = *snap->vtx;
+  if (vtx.table_mismatch) return "Drone settings differ from this GS — update";
+  if (vtx.list == "pending") {
+    const bool missing = std::any_of(vtx.rows.begin(), vtx.rows.end(),
+                                     [](const VtxRow& r) { return !r.value.has_value(); });
+    if (missing) return "Reading the drone's settings…";
+  }
+  if (vtx.list == "partial") return "Some settings did not answer.";
+  return std::string();
+}
+
+std::string drone_pill_mark(const GsSnapshot* snap, bool stale) {
+  if (!snap || stale || !snap->vtx) return std::string();
+  const VtxState& vtx = *snap->vtx;
+  if (vtx.linked && vtx.alive.has_value() && !*vtx.alive) return "no heartbeat";
+  return std::string();
+}
+
 std::vector<MenuNode> build_menu_tree(const MenuTreeDeps& deps) {
   const Deps d = std::make_shared<const MenuTreeDeps>(deps);
   return guarded(d, {

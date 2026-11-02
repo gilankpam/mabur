@@ -1,18 +1,24 @@
 // Host test for gs/player/src/display_follow.h: whether, and to which mode,
 // the display follows the camera's frame rate.
+#include <optional>
+#include <string>
 #include <vector>
 
 #include "display_follow.h"
 #include "mtest.h"
 
 using maburplay::DisplayFollower;
+using maburplay::follow_camera_hz;
 using maburplay::follow_display;
 using maburplay::FollowIn;
 using maburplay::FollowOut;
+using maburplay::GsSnapshot;
 using maburplay::ModeCand;
 using maburplay::parse_screen_want;
 using maburplay::RateMatch;
 using maburplay::ScreenWant;
+using maburplay::VtxRow;
+using maburplay::VtxState;
 
 namespace {
 // CEA 1080p60 (preferred), 720p60, 1080p100, 720p100: a goggle with no 90 Hz.
@@ -83,6 +89,32 @@ TEST(a_size_want_follows_at_that_size) {
   const FollowOut out = follow_display(in);
   CHECK(out.rebuild);
   CHECK(out.mode == 3);  // 1280x720@100
+}
+
+TEST(a_size_want_offered_at_the_camera_rate_is_not_substituted) {
+  // Both 720p and 1080p exist at 100 Hz: the size want keeps the exact
+  // size rather than jumping to the larger mode auto would take.
+  FollowIn in = auto_in(100.0, 1);  // running 720p60
+  in.want = parse_screen_want("1280x720");
+  const FollowOut out = follow_display(in);
+  CHECK(out.rebuild);
+  CHECK(out.mode == 3);  // 1280x720@100, not 1920x1080@100
+  CHECK(!out.mismatch);
+}
+
+TEST(a_size_want_falls_back_to_the_largest_at_the_camera_rate_when_that_size_is_not_offered) {
+  // 1280x720 has no 100 Hz timing on this display, but 1080p does: the
+  // window is judged as "auto" rather than reporting a mismatch and
+  // sitting at 720p60.
+  FollowIn in;
+  in.want = parse_screen_want("1280x720");
+  in.camera_hz = 100.0;
+  in.modes = {k1080p60, k720p60, k1080p100};  // no 720p100
+  in.running = 1;                             // running 720p60
+  const FollowOut out = follow_display(in);
+  CHECK(out.rebuild);
+  CHECK(out.mode == 2);  // 1920x1080@100, the only progressive mode at 100
+  CHECK(!out.mismatch);
 }
 
 TEST(already_running_the_pick_means_no_rebuild_even_when_mismatched) {
@@ -231,6 +263,43 @@ TEST(a_rebuild_that_lands_elsewhere_is_not_reissued) {
     out = f.on_window(kAuto, 120.0, kNo, kMonitor, 0);
   CHECK(out.rebuild);
   CHECK(out.mode == 2);
+}
+
+// --- follow_camera_hz: the reported mode vs. the measured rate ---
+
+TEST(follow_rate_prefers_the_reported_mode_and_falls_back_to_measured) {
+  CHECK(follow_camera_hz(nullptr, 59.94) == 59.94);
+
+  GsSnapshot no_vtx;  // no link.vtx block at all
+  CHECK(follow_camera_hz(&no_vtx, 59.94) == 59.94);
+
+  GsSnapshot ok;
+  ok.vtx = VtxState{};
+  VtxRow mode_row;
+  mode_row.id = "VENC_MODE";
+  mode_row.value = "100@1280x720/binned";
+  ok.vtx->rows.push_back(mode_row);
+  CHECK(follow_camera_hz(&ok, 59.94) == 100.0);
+
+  GsSnapshot absent;  // vtx present, but no VENC_MODE row at all
+  absent.vtx = VtxState{};
+  absent.vtx->rows.push_back(VtxRow{"OTHER_ROW", std::string("1"), "accepted", "", std::nullopt});
+  CHECK(follow_camera_hz(&absent, 59.94) == 59.94);
+
+  GsSnapshot garbage;
+  garbage.vtx = VtxState{};
+  VtxRow garbage_row;
+  garbage_row.id = "VENC_MODE";
+  garbage_row.value = "garbage";
+  garbage.vtx->rows.push_back(garbage_row);
+  CHECK(follow_camera_hz(&garbage, 59.94) == 59.94);
+
+  GsSnapshot unanswered;  // the row exists but has never answered
+  unanswered.vtx = VtxState{};
+  VtxRow unanswered_row;
+  unanswered_row.id = "VENC_MODE";
+  unanswered.vtx->rows.push_back(unanswered_row);
+  CHECK(follow_camera_hz(&unanswered, 59.94) == 59.94);
 }
 
 TEST(a_settled_unmatched_pick_reports_the_mismatch) {

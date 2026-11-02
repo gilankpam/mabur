@@ -27,6 +27,8 @@
 
 using maburplay::build_menu_tree;
 using maburplay::Choice;
+using maburplay::drone_header;
+using maburplay::drone_pill_mark;
 using maburplay::GsLiveView;
 using maburplay::GsSnapshot;
 using maburplay::MenuNode;
@@ -737,6 +739,56 @@ TEST(drone_rows_refuse_until_their_value_lands_and_under_a_table_mismatch) {
   const auto m = f.find(t, "video.mirror");
   REQUIRE(m.has_value());
   CHECK(m->refuse() == "Reading the drone's settings…");
+}
+
+TEST(drone_header_texts) {
+  CHECK(drone_header(nullptr, false).empty());
+
+  GsSnapshot no_vtx;
+  CHECK(drone_header(&no_vtx, false).empty());
+
+  GsSnapshot snap;
+  snap.vtx = VtxState{};
+  snap.vtx->linked = true;
+  CHECK(drone_header(&snap, true).empty());  // stale
+
+  snap.vtx->table_mismatch = true;
+  CHECK(drone_header(&snap, false) == "Drone settings differ from this GS — update");
+  snap.vtx->table_mismatch = false;
+
+  snap.vtx->list = "pending";
+  VtxRow row;
+  row.id = "VENC_MODE";  // no value yet
+  snap.vtx->rows = {row};
+  CHECK(drone_header(&snap, false) == "Reading the drone's settings…");
+
+  snap.vtx->rows[0].value = "100@1280x720/binned";  // every row now valued
+  CHECK(drone_header(&snap, false).empty());
+
+  snap.vtx->list = "partial";
+  CHECK(drone_header(&snap, false) == "Some settings did not answer.");
+}
+
+TEST(drone_pill_mark_texts) {
+  CHECK(drone_pill_mark(nullptr, false).empty());
+
+  GsSnapshot no_vtx;
+  CHECK(drone_pill_mark(&no_vtx, false).empty());
+
+  GsSnapshot snap;
+  snap.vtx = VtxState{};
+  snap.vtx->linked = true;
+  CHECK(drone_pill_mark(&snap, false).empty());  // alive still null: no heartbeat yet on this link
+
+  snap.vtx->alive = true;
+  CHECK(drone_pill_mark(&snap, false).empty());
+
+  snap.vtx->alive = false;
+  CHECK(drone_pill_mark(&snap, false) == "no heartbeat");
+  CHECK(drone_pill_mark(&snap, true).empty());  // stale
+
+  snap.vtx->linked = false;
+  CHECK(drone_pill_mark(&snap, false).empty());  // not linked
 }
 
 TEST(video_group_order_has_the_drone_rows_in_place) {

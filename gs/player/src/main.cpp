@@ -1098,6 +1098,15 @@ int main(int argc, char** argv) {
   maburplay::DecodePump pump(lat, regulator, handover, releases);
   maburplay::ReleaseLoop release(regulator, lat, handover, releases, presenter.get(),
                                  maburplay::ReleaseLoop::Cfg{cfg.display.rt_priority});
+  // The camera rate the display follow, the menu and the resolved
+  // screen_mode all judge by: the drone's reported VENC_MODE when the
+  // sideport holds one, else the pump's measured cadence. The reported
+  // mode is preferred because the measured rate lags a camera change by a
+  // whole averaging window and is biased low under loss.
+  auto camera_hz_now = [&] {
+    return maburplay::follow_camera_hz(
+        gs_src && !gs_src->stale(mono_ms()) ? &gs_src->snapshot() : nullptr, pump.source_hz());
+  };
   // burn_in/burn_enc/burn_drop on the regulator line: the burned recorder's
   // cumulative frames_in/frames_encoded/frames_dropped (burn_recorder.h),
   // zero while `burn` holds no recorder -- no burned recording running, or
@@ -2023,7 +2032,7 @@ int main(int argc, char** argv) {
       device_fd = maburplay::DrmPresenter::retire(std::move(presenter));
     }
     auto p = std::make_unique<maburplay::DrmPresenter>();
-    if (!p->init(resolve_screen_mode(mode, display_follower.resolve_hz(pump.source_hz())),
+    if (!p->init(resolve_screen_mode(mode, display_follower.resolve_hz(camera_hz_now())),
                  want_osd,
                  [&releases](const maburplay::DmaFrame& f) { releases.push(f); }, log_failures,
                  device_fd)) {
@@ -2142,7 +2151,7 @@ int main(int argc, char** argv) {
                                ? presenter->offers_mode(c.screen_mode)
                                : maburplay::want_offered(
                                      presenter->modes(), want,
-                                     display_follower.resolve_hz(pump.source_hz()));
+                                     display_follower.resolve_hz(camera_hz_now()));
       if (!offered) {
         *err = "mode not offered: " + c.screen_mode;
         return false;
@@ -2277,7 +2286,7 @@ int main(int argc, char** argv) {
   menu_deps.modes = [&] {
     return presenter ? presenter->modes() : std::vector<maburplay::ModeCand>{};
   };
-  menu_deps.camera_hz = [&] { return display_follower.resolve_hz(pump.source_hz()); };
+  menu_deps.camera_hz = [&] { return display_follower.resolve_hz(camera_hz_now()); };
   menu_deps.running_mode = [&] {
     if (!presenter || presenter->mode_index() < 0) return std::string();
     return maburplay::mode_string(presenter->modes()[static_cast<size_t>(presenter->mode_index())]);
@@ -2372,6 +2381,12 @@ int main(int argc, char** argv) {
         if (const std::optional<bool> repeat = menu.key(e, now_ms)) bank.set_repeat(*repeat);
       menu.tick(now_ms);
       menu_model.set_linked(gs_src && !gs_src->stale(now_ms) && gs_src->snapshot().session);
+      {
+        const maburplay::GsSnapshot* snap = gs_src ? &gs_src->snapshot() : nullptr;
+        const bool stale = !gs_src || gs_src->stale(now_ms);
+        menu_model.set_header(maburplay::drone_header(snap, stale));
+        menu_model.set_pill_mark(maburplay::drone_pill_mark(snap, stale));
+      }
       menu_model.set_show_advanced(cfg.menu.show_advanced);
       // The size the Menu size picker is on while it is open (and while
       // the picked size is being saved), else the saved one. A no-op
@@ -2448,9 +2463,13 @@ int main(int argc, char** argv) {
                      rate_match.mismatch() && phase_lock ? " -- phase lock paused" : "");
       // The display following the camera: a rebuild runs synchronously, so
       // the next window already sees the new presenter's mode as running.
+      // Judged on the drone's reported mode, not src_hz (the measured
+      // cadence), which lags a camera change by a window and is biased
+      // low under loss -- rate_match above keeps the measured rate, since
+      // it exists to catch exactly that kind of drift from the panel.
       static const std::vector<maburplay::ModeCand> kNoModes;
       const maburplay::FollowOut follow = display_follower.on_window(
-          maburplay::parse_screen_want(cfg.screen_mode), src_hz, lp,
+          maburplay::parse_screen_want(cfg.screen_mode), camera_hz_now(), lp,
           presenter ? presenter->modes() : kNoModes, presenter ? presenter->mode_index() : -1);
       g_display_banner.clear();
       if (follow.rebuild) {
