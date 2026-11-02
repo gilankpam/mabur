@@ -10,22 +10,19 @@ station has to do to show it smoothly.
 ## The driver
 
 `openipc-builder`'s `load_sigmastar` insmods waybeam_venc's star6e IMX415
-driver, `sensor_imx415_star6e.ko` (from `../waybeam_venc/sensors/star6e/`),
-for `imx415`; OpenIPC's own stock `sensor_imx415_mipi.ko` is left out of
-the image either way. Built from upstream waybeam HEAD — what
-`openipc-builder` tracks today — the module is a five-mode driver
-(`imx415_linear_visible` = table indices `{ 1, 2, 4, 6, 8 }` of a 9-row
-table): it has no mode at all for 2304x1296@100, and its 60 fps native
-mode outputs a narrower 2816x1584. The native tiers (`venc.binning =
-false`, below) need the module built from waybeam commit b723e91 instead
-— on a branch not yet upstream, which widens the 60 fps native mode's
-output to 2944x1656 and adds table index 5 (`imx415_linear_visible = { 1,
-2, 4, 5, 6, 8 }`) — built and deployed by hand (`docs/deploy.md` "Device
-facts") until the change lands upstream or `openipc-builder` points at it.
-On an image still running the upstream build, `venc.binning = false` fails
-boot with `sensor mode WxH@F not offered by the driver`; the binned tiers
-(`venc.binning = true`, the default) work on either build. The six-mode
-(b723e91) driver's visibility list enumerates:
+driver, `sensor_imx415_star6e.ko`, for `imx415`; OpenIPC's own stock
+`sensor_imx415_mipi.ko` is left out of the image. The image build does not
+compile the driver or fetch waybeam: the module is a prebuilt binary,
+built in `../waybeam_venc` (`make drivers-star6e`, `sensors/star6e/`) and
+committed into `openipc-builder`'s mabur overlay
+(`lib/modules/4.9.84/sigmastar/`). Changing the modes means rebuilding it
+there and replacing that file. The module the image carries is built from
+waybeam_venc b723e91: six modes, `imx415_linear_visible = { 1, 2, 4, 5, 6,
+8 }` of a 9-row table. An older build (waybeam_venc 0c880d8, five modes,
+`{ 1, 2, 4, 6, 8 }`) has no 2304x1296@100 mode and outputs its 60 fps
+native mode at 2816x1584, so on it `venc.binning = false` fails boot with
+`sensor mode WxH@F not offered by the driver`; the binned tiers work on
+either build. The six-mode driver's visibility list enumerates:
 
 | idx | mode | readout | sensor window | share of the view (w × h) | aspect |
 |---|---|---|---|---|---|

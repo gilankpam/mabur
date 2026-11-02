@@ -350,19 +350,19 @@ prints it, only the fingerprint).
 - The remembered channel is `/etc/mabur.channel` (`docs/channel-select.md`).
 - The image loads waybeam_venc's IMX415 driver, `sensor_imx415_star6e.ko`,
   not the stock `sensor_imx415_mipi.ko` (`openipc-builder`'s
-  `load_sigmastar`; `docs/camera-modes.md`). `openipc-builder` builds it
-  from upstream waybeam HEAD, a five-mode driver with no mode for
-  2304x1296@100 and a narrower 2816x1584 output on the 60 fps native mode.
-  `venc.binning = false` (the native tiers, 2944x1656@60 and
-  2304x1296@100) needs the module built from waybeam commit b723e91
-  instead — a branch not yet upstream that widens and unhides them — until
-  the change lands upstream or `openipc-builder` points at it. maburd
-  fails boot with `sensor mode WxH@F not offered by the driver` when the
-  loaded module lacks the mode it asked for; the binned tiers work on
-  either build. A drone on the upstream-build image takes the b723e91
-  module by hand: copy it into `/lib/modules/4.9.84/sigmastar/` under the
-  name `load_sigmastar` loads (keep the old file) and reboot; `lsmod` then
-  lists `sensor_imx415_star6e`.
+  `load_sigmastar`; `docs/camera-modes.md`). It is a prebuilt module
+  committed into `openipc-builder`'s mabur overlay, not built with the
+  image: rebuild it in `../waybeam_venc` (`make drivers-star6e`, strip
+  with `--strip-debug`, vermagic `4.9.84 SMP preempt mod_unload ARMv7
+  thumb2 p2v8`) and replace that file. It has to be the six-mode build
+  (waybeam_venc b723e91): `venc.binning = false` asks for 2944x1656@60 and
+  2304x1296@100, and maburd fails boot with `sensor mode WxH@F not offered
+  by the driver` when the loaded module lacks the mode it asked for; the
+  binned tiers work on an older build too. A drone on an image with an
+  older module takes the new one by hand: copy it into
+  `/lib/modules/4.9.84/sigmastar/` under the name `load_sigmastar` loads
+  (keep the old file) and reboot; `lsmod` then lists
+  `sensor_imx415_star6e`.
 
 **GS.**
 
