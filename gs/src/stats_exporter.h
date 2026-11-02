@@ -14,6 +14,7 @@
 #include "mabur/rc_proto.h"
 #include "mav_tunnel.h"
 #include "op_point.h"
+#include "param_client.h"
 #include "refresh_requester.h"
 #include "relay_stats.h"
 #include "uplink_delivery.h"
@@ -223,6 +224,32 @@ struct StatsCalIn {
   uint32_t cell_i = 0, cell_n = 0;
 };
 
+// One row of ParamHost's table mirror (link.vtx.rows[]), straight off
+// ParamClient::state() -- see param_host.h. `value` is null while the row
+// has never answered; `age_ms` is null while its state isn't terminal.
+struct StatsVtxRow {
+  const char* id;
+  std::optional<std::string> value;
+  const char* st;
+  std::string status;
+  std::optional<int64_t> age_ms;
+};
+
+// ParamHost's sideport block (link.vtx, docs/gs-menu.md): the hosted
+// MAVLink parameter client's link state and its row table, filled by
+// ParamHost::sideport() so the exporter never sees the client itself --
+// same no-controller-reference pattern as StatsCalIn.
+struct StatsVtxIn {
+  bool present = false;
+  bool linked = false;
+  std::optional<bool> alive;
+  bool table_mismatch = false;
+  const char* list = "none";
+  int pending = -1;
+  std::vector<StatsVtxRow> rows;
+  ParamClientStats stats;
+};
+
 // Demand refresh: the core's RefreshRequester, exported as link.refresh
 // whenever the core has one (always in maburgs; never in the web GS).
 struct StatsRefreshIn {
@@ -311,6 +338,7 @@ struct StatsInput {
   StatsRefreshIn refresh;
   StatsMavIn mav;
   StatsCalIn cal;
+  StatsVtxIn vtx;
   bool in_session = false;  // VrxState::SESSION
   bool key_mismatch = false;   // VrxState::KEY_MISMATCH
   std::string key_fp;          // mabur::key_fingerprint(cfg.link.key)

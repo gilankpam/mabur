@@ -306,6 +306,31 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
                    {"bw", in.cal.bw},
                    {"cell", std::to_string(in.cal.cell_i) + "/" + std::to_string(in.cal.cell_n)}};
   }
+  // ParamHost's hosted MAVLink parameter client (docs/gs-menu.md,
+  // docs/vtx-config-mavlink.md "Ground client"): the drone's settings as
+  // maburplay's menu reads them, and the one `vtx set` apply in flight.
+  if (in.vtx.present) {
+    json& vtx = link["vtx"];
+    vtx["linked"] = in.vtx.linked;
+    vtx["alive"] = in.vtx.alive ? json(*in.vtx.alive) : json(nullptr);
+    vtx["table_mismatch"] = in.vtx.table_mismatch;
+    vtx["list"] = in.vtx.list;
+    vtx["pending"] = in.vtx.pending;
+    json rows = json::array();
+    for (const auto& r : in.vtx.rows) {
+      rows.push_back({{"id", r.id},
+                      {"value", r.value ? json(*r.value) : json(nullptr)},
+                      {"st", r.st},
+                      {"status", r.status},
+                      {"age_ms", r.age_ms ? json(*r.age_ms) : json(nullptr)}});
+    }
+    vtx["rows"] = std::move(rows);
+    vtx["stats"] = {{"tx", in.vtx.stats.tx},
+                    {"rx", in.vtx.stats.rx},
+                    {"drop_unknown", in.vtx.stats.drop_unknown},
+                    {"drop_bad", in.vtx.stats.drop_bad},
+                    {"timeouts", in.vtx.stats.timeouts}};
+  }
   // Demand refresh (docs/fec-nack.md "Demand refresh"): counters cumulative.
   if (in.refresh.present) {
     json& rf = link["refresh"];

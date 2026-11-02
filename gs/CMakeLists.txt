@@ -37,6 +37,7 @@ add_library(mabur_gs_core STATIC
   src/rcf_slot.cpp
   src/mav_tunnel.cpp
   src/param_client.cpp
+  src/param_host.cpp
   src/msp_sink.cpp
   src/frame_stream.cpp
   src/slice_assembler.cpp

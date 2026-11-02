@@ -1,5 +1,6 @@
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <string>
 #include <vector>
 #include "au_ring.h"
@@ -1429,6 +1430,56 @@ TEST(link_cal_block_present_only_while_a_run_owns_the_air) {
   in.cal.present = false;
   ex.poll(2200, in);
   CHECK(!cap.last()["link"].contains("cal"));
+}
+
+// link.vtx: ParamHost's sideport block (docs/gs-menu.md) -- the hosted
+// parameter client's link state and its row table, keyed exactly as
+// ParamHost::sideport() fills it, and absent when vtx.present is false
+// (the default on a StatsInput nothing has touched).
+TEST(link_vtx_block_exported_when_present) {
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  StatsInput in = base_input();
+  ex.poll(1000, in);
+  CHECK(!cap.last()["link"].contains("vtx"));
+
+  in.vtx.present = true;
+  in.vtx.linked = true;
+  in.vtx.alive = std::nullopt;
+  in.vtx.table_mismatch = false;
+  in.vtx.list = "pending";
+  in.vtx.pending = -1;
+  StatsVtxRow row;
+  row.id = "VENC_MODE";
+  row.value = std::string("100@1280x720/binned");
+  row.st = "idle";
+  row.status = "";
+  row.age_ms = std::nullopt;
+  in.vtx.rows = {row};
+  ex.poll(1600, in);
+  json j = cap.last();
+  REQUIRE(j["link"].contains("vtx"));
+  const json& v = j["link"]["vtx"];
+  CHECK(v["linked"] == true);
+  CHECK(v["alive"].is_null());
+  CHECK(v["table_mismatch"] == false);
+  CHECK(v["list"] == "pending");
+  CHECK(v["pending"] == -1);
+  REQUIRE(v["rows"].size() == 1);
+  CHECK(v["rows"][0]["id"] == "VENC_MODE");
+  CHECK(v["rows"][0]["value"] == "100@1280x720/binned");
+  CHECK(v["rows"][0]["st"] == "idle");
+  CHECK(v["rows"][0]["status"] == "");
+  CHECK(v["rows"][0]["age_ms"].is_null());
+  CHECK(v["stats"]["tx"] == 0);
+  CHECK(v["stats"]["rx"] == 0);
+  CHECK(v["stats"]["drop_unknown"] == 0);
+  CHECK(v["stats"]["drop_bad"] == 0);
+  CHECK(v["stats"]["timeouts"] == 0);
+
+  in.vtx.present = false;
+  ex.poll(2200, in);
+  CHECK(!cap.last()["link"].contains("vtx"));
 }
 
 MTEST_MAIN
