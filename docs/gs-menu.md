@@ -252,6 +252,12 @@ still names the measured rate rather than this reported-first one, so the
 two numbers can disagree in the rare case a stale measurement and a fresh
 `VENC_MODE` report point at different fps.
 
+The Camera mode row never writes `screen_mode` itself: its own steps
+(`camera_steps`, `menu_tree.cpp`) are drone-only -- `REC_FPS` (when
+dragging it down) then `VENC_MODE` -- so a camera-mode change only moves
+the display because `DisplayFollower` below picks up the new reported
+rate on its next one-second window and rebuilds to it on its own.
+
 `DisplayFollower` (`display_follow.h`) judges, once a second, whether the
 presenter should move to a different connector mode — never while
 `screen_mode` is pinned to `WxH@R`, never while the drone reports low
@@ -262,8 +268,15 @@ the presenter rebuild forever). Otherwise it follows whenever the running
 mode does not fit the want, is smaller than the pick, or sits further
 from the camera's rate than the pick does — so `"auto"` also climbs to a
 larger mode at a rate the panel already runs, not only on an outright
-mismatch. A rebuild only fires once three consecutive one-second windows
-agree on the same target mode, so one bad window (a fade, a camera change
+mismatch. A plain `WxH` want (a pinned size, not a pinned `WxH@R`) is kept
+as that exact size while some mode offers it at the camera's rate; when
+no mode at that rate matches it but some other mode there does, the
+window judges the want as `auto` instead for that pick — the largest
+mode at the camera's rate, with no mismatch — since the display cannot
+honour that exact size at the new rate (`follow_display`'s own `kSize`
+handling, `display_follow.h`). A rebuild only fires once three
+consecutive one-second windows agree on the same target mode, so one bad
+window (a fade, a camera change
 mid-window) never blanks the screen by itself; a rebuild whose presenter
 then lands on some other mode is not reissued for that target until the
 pick settles or moves elsewhere. The rate a presenter build resolves
