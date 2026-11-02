@@ -84,6 +84,8 @@ std::string menu_view_text(const MenuView& v) {
   out += "linked ";
   out += v.linked ? "1" : "0";
   out += "\n";
+  if (!v.pill_mark.empty()) out += "pill_mark: " + v.pill_mark + "\n";
+  if (!v.header.empty()) out += "header: " + v.header + "\n";
   for (const ViewRow& r : v.rows) {
     std::string flags;
     add_flag(&flags, r.dim, "dim");

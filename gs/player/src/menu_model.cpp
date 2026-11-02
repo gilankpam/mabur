@@ -76,9 +76,10 @@ int wrap(int i, int delta, int n) { return n <= 0 ? 0 : ((i + delta) % n + n) % 
 
 bool MenuView::operator==(const MenuView& o) const {
   auto tie = [](const MenuView& v) {
-    return std::tie(v.open, v.crumb, v.linked, v.rows, v.help, v.help_is_error, v.keys, v.picker,
-                    v.choices, v.picker_cursor, v.picker_current, v.number_text, v.number_range,
-                    v.confirm_text, v.toast, v.banner);
+    return std::tie(v.open, v.crumb, v.linked, v.header, v.pill_mark, v.rows, v.help,
+                    v.help_is_error, v.keys, v.picker, v.choices, v.picker_cursor,
+                    v.picker_current, v.number_text, v.number_range, v.confirm_text, v.toast,
+                    v.banner);
   };
   return tie(*this) == tie(o);
 }
@@ -90,6 +91,8 @@ void MenuModel::set_has_sel(bool has_sel) { has_sel_ = has_sel; }
 void MenuModel::set_gs_known(bool known) { gs_known_ = known; }
 void MenuModel::set_show_advanced(bool on) { show_advanced_ = on; }
 void MenuModel::set_banner(std::string text) { banner_ = std::move(text); }
+void MenuModel::set_header(std::string text) { header_ = std::move(text); }
+void MenuModel::set_pill_mark(std::string text) { pill_mark_ = std::move(text); }
 
 void MenuModel::toast(std::string text, uint64_t now_ms) {
   toast_ = std::move(text);
@@ -158,7 +161,10 @@ void MenuModel::sync_stack() {
   }
 }
 
-bool MenuModel::dim(const MenuNode& n) const { return n.owner == Owner::kDrone && !linked_; }
+bool MenuModel::dim(const MenuNode& n) const {
+  if (n.owner == Owner::kDrone && !linked_) return true;
+  return n.refuse && !n.refuse().empty();
+}
 
 std::string MenuModel::row_value(const MenuNode& n) const {
   if (dim(n)) return "—";
@@ -216,6 +222,7 @@ MenuModel::Effect MenuModel::emit(const MenuNode& n, std::vector<SetStep> steps,
   Pending p;
   p.owner = n.owner;
   p.saved_text = n.saved_text;
+  p.warn_after_ok = n.warn_after_ok;
   p.locks[idx(n.owner)] = true;
   for (const auto& s : steps) p.locks[idx(s.owner)] = true;
   // A row whose sets reach another owner (OSD's FC switch: player, then
@@ -232,9 +239,16 @@ MenuModel::Effect MenuModel::emit(const MenuNode& n, std::vector<SetStep> steps,
 }
 
 MenuModel::Effect MenuModel::press_right(const MenuNode& n, uint64_t now_ms) {
-  if (dim(n)) {
+  if (n.owner == Owner::kDrone && !linked_) {
     toast(kNeedsDrone, now_ms);
     return {};
+  }
+  if (n.refuse) {
+    const std::string reason = n.refuse();
+    if (!reason.empty()) {
+      toast(reason, now_ms);
+      return {};
+    }
   }
   switch (n.kind) {
     case NodeKind::kGroup:
@@ -434,6 +448,7 @@ void MenuModel::apply_started(const std::string& row_id, int n_steps) {
   } else if (auto n = find(row_id)) {
     st.pending.owner = n->owner;
     st.pending.saved_text = n->saved_text;
+    st.pending.warn_after_ok = n->warn_after_ok;
     st.pending.locks[idx(n->owner)] = true;
   }
   st.state = Status::State::kBusy;
@@ -459,9 +474,11 @@ void MenuModel::apply_done(const std::string& row_id, bool ok, const std::string
     st.state = Status::State::kOk;
     st.text = st.pending.saved_text ? st.pending.saved_text() : "";
     if (st.text.empty()) st.text = "✓ saved";
+    st.warn = st.pending.warn_after_ok ? st.pending.warn_after_ok() : "";
   } else {
     st.state = Status::State::kErr;
     st.text = reason;
+    st.warn.clear();
   }
 }
 
@@ -486,6 +503,8 @@ MenuView MenuModel::view(uint64_t now_ms) const {
 
   v.open = true;
   v.linked = linked_;
+  v.header = header_;
+  v.pill_mark = pill_mark_;
   auto levels = resolve();
   const size_t depth = levels.size();
   if (depth == 1) v.crumb = kTopCrumb;
@@ -521,7 +540,13 @@ MenuView MenuModel::view(uint64_t now_ms) const {
             r.status += " " + std::to_string(st.step) + "/" + std::to_string(st.n_steps);
           break;
         case Status::State::kOk:
-          if (within(now_ms, st.t_ms, st.text == "✓ saved" ? kSavedMs : kSavedLongMs)) {
+          if (!st.warn.empty()) {
+            // warn_after_ok: amber and un-timed, until the row's next apply.
+            r.status = st.text;
+            r.status_ok = true;
+            r.status_warn = true;
+            if (r.selected) sel_status = &st;
+          } else if (within(now_ms, st.t_ms, st.text == "✓ saved" ? kSavedMs : kSavedLongMs)) {
             r.status = st.text;
             r.status_ok = true;
           }
@@ -541,11 +566,17 @@ MenuView MenuModel::view(uint64_t now_ms) const {
   const MenuNode* sel = n > 0 ? &rows[cursor] : nullptr;
   if (sel) {
     std::string h = sel->help ? sel->help() : "";
-    if (dim(*sel)) {
+    const bool unlinked = sel->owner == Owner::kDrone && !linked_;
+    const std::string refused = !unlinked && sel->refuse ? sel->refuse() : "";
+    if (unlinked) {
       v.help = h.empty() ? std::string(kNeedsDrone) + "." : std::string(kNeedsDrone) + ". " + h;
-    } else if (sel_status) {
+    } else if (!refused.empty()) {
+      v.help = refused;
+    } else if (sel_status && sel_status->state == Status::State::kErr) {
       v.help = status_help(*sel_status);
       v.help_is_error = true;
+    } else if (sel_status && !sel_status->warn.empty()) {
+      v.help = sel_status->warn;
     } else {
       v.help = std::move(h);
     }

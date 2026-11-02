@@ -266,16 +266,36 @@ void MenuLayer::build_panel_(Box* box) const {
   const int inner = w - 2 * pad;
   int y = sc_(kInset);
 
-  // Header: the crumb, and the link pill on the right.
+  // Header: the crumb, and the link pill on the right. A non-empty pill
+  // mark (e.g. "no heartbeat") sits immediately to the pill's left, taking
+  // its room from the crumb rather than overlapping either; a non-empty
+  // header line goes under the crumb, before the rows.
   {
     Block b{x, y, w, small_->glyph_h + sc_(kLinePadY), tok::kMenuPanel, {}, {}};
     const int base = y + (b.h - small_->glyph_h) / 2 + small_->baseline;
     const std::string pill = view_.linked ? "● drone linked" : "○ no drone";
     const int pill_x = x + w - pad - tw(small_, pill);
+    int crumb_right = pill_x;
+    std::string mark;
+    int mark_x = 0;
+    if (!view_.pill_mark.empty()) {
+      mark = view_.pill_mark.rfind("⚠", 0) == 0 ? view_.pill_mark : "⚠ " + view_.pill_mark;
+      mark_x = pill_x - gap - tw(small_, mark);
+      crumb_right = mark_x;
+    }
     b.runs.push_back({small_, x + pad, base,
-                      fit(small_, view_.crumb, pill_x - gap - (x + pad)), tok::kTextPrimary});
+                      fit(small_, view_.crumb, crumb_right - gap - (x + pad)), tok::kTextPrimary});
+    if (!mark.empty()) b.runs.push_back({small_, mark_x, base, mark, tok::kStatusCaution});
     b.runs.push_back({small_, pill_x, base, pill,
                       view_.linked ? tok::kStatusOk : tok::kTextLabel});
+    if (view_.header.empty()) b.fills.push_back({x, y + b.h - 1, w, 1, tok::kTrack});
+    y += b.h;
+    box->blocks.push_back(std::move(b));
+  }
+  if (!view_.header.empty()) {
+    Block b{x, y, w, small_->glyph_h + sc_(kLinePadY), tok::kMenuPanel, {}, {}};
+    b.runs.push_back({small_, x + pad, y + (b.h - small_->glyph_h) / 2 + small_->baseline,
+                      fit(small_, view_.header, inner), tok::kStatusCaution});
     b.fills.push_back({x, y + b.h - 1, w, 1, tok::kTrack});
     y += b.h;
     box->blocks.push_back(std::move(b));
