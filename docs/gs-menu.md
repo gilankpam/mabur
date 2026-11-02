@@ -262,7 +262,7 @@ rate on its next one-second window and rebuilds to it on its own.
 presenter should move to a different connector mode — never while
 `screen_mode` is pinned to `WxH@R`, never while the drone reports low
 power (it drops its own fps on purpose; the screen should sit still),
-never before the camera's rate has been measured, and never with an empty
+never before a camera rate is known, and never with an empty
 mode list (a failed EDID read keeps the running mode rather than looping
 the presenter rebuild forever). Otherwise it follows whenever the running
 mode does not fit the want, is smaller than the pick, or sits further

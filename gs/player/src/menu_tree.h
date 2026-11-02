@@ -27,7 +27,8 @@ struct MenuTreeDeps {
   std::function<bool()> rec_running;         // any recording in progress
   std::function<bool()> burned_rec_running;  // a burned one
   std::function<std::vector<ModeCand>()> modes;   // the connector's modes (empty on host)
-  std::function<double()> camera_hz;              // the camera's measured rate, 0 = unknown
+  // follow_camera_hz: the drone's reported mode else the measured rate, 0 = unknown
+  std::function<double()> camera_hz;
   std::function<std::string()> running_mode;      // "WxH@R" the presenter runs, "" = none
 };
 

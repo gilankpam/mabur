@@ -47,9 +47,9 @@ class ParamHost {
 
  private:
   // Logs the outcome when the row that was pending before the call just
-  // left pending (an ack, a resend timeout, or a link drop mid-set) --
-  // compares client_.state().pending_row before and after, so the caller
-  // never has to.
+  // left pending (an ack or a resend timeout) -- compares
+  // client_.state().pending_row before and after, so the caller never has
+  // to.
   void note_terminal(int row_before);
 
   ParamClient client_;

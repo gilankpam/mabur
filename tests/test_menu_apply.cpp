@@ -370,7 +370,7 @@ TEST(a_stale_or_unlinked_snapshot_ends_the_step_with_link_lost) {
   CHECK(r2->text == "link lost");
 }
 
-// R12: the settle rule is keyed on each side's absolute result time
+// The settle rule is keyed on each side's absolute result time
 // (t_ms - age_ms), not the raw age, so a genuinely new result that
 // happens to read an older age than a very recent previous one still
 // settles.

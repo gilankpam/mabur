@@ -30,8 +30,10 @@ inline double follow_camera_hz(const GsSnapshot* snap, double measured_hz) {
 }
 
 // What the display follow rule sees once a second: the configured want,
-// the camera's measured rate, the drone's low-power state, and the mode
-// list the running presenter was built from with the index it runs.
+// the camera's rate (follow_camera_hz: the drone's reported camera mode
+// when known, else the decode pump's measured cadence), the drone's
+// low-power state, and the mode list the running presenter was built
+// from with the index it runs.
 struct FollowIn {
   ScreenWant want;
   double camera_hz = 0.0;
@@ -52,9 +54,14 @@ struct FollowOut {
 // Whether the display should move to follow the camera's rate
 // (pick_display_mode), judged on one window. Never for a fully pinned
 // screen_mode, for a drone in low power (it drops its fps on purpose), for
-// a camera rate not measured yet, or with no connector modes at all -- a
+// a camera rate not known yet, or with no connector modes at all -- a
 // failed EDID read keeps the running mode rather than rebuilding the
 // presenter over and over.
+//
+// A kSize want whose exact size has no mode near the camera's rate, with
+// some other mode there, is judged as "auto" for this window instead: the
+// display cannot honour that size at the new rate, and the alternative to
+// its largest offered mode is to keep running the old rate.
 //
 // The running mode is kept over the pick when it fits the want, is at
 // least as large, and is as near the camera's rate as the pick within
@@ -111,7 +118,7 @@ inline FollowOut follow_display(const FollowIn& in) {
 // The display follow over time, fed once a second. It follows only while
 // screen_mode follows (not "WxH@R"), the drone reports it is out of low
 // power (kNo: a quiet sideport, kUnknown, holds off as RateMatch does) and
-// the camera's rate is measured; it follows whether or not RateMatch
+// a camera rate is known; it follows whether or not RateMatch
 // reports a mismatch, so "auto" also moves up to a larger mode at a rate
 // the panel already runs.
 //
@@ -125,10 +132,11 @@ class DisplayFollower {
  public:
   static constexpr int kAgreeWindows = 3;
 
-  // One window: the configured want, the camera's measured rate (0 = not
-  // yet), the drone's low-power report, and the running presenter's modes
-  // with the index it runs (empty and -1 with no presenter). `mismatch` and
-  // `shown_hz` describe the running mode once the pick has settled on it.
+  // One window: the configured want, the camera's rate (follow_camera_hz;
+  // 0 = not yet known), the drone's low-power report, and the running
+  // presenter's modes with the index it runs (empty and -1 with no
+  // presenter). `mismatch` and `shown_hz` describe the running mode once
+  // the pick has settled on it.
   FollowOut on_window(const ScreenWant& want, double camera_hz, RateMatch::LowPower lp,
                       const std::vector<ModeCand>& modes, int running) {
     lp_ = lp;
