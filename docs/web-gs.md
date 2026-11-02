@@ -740,10 +740,14 @@ can fix it; both clear on that row's next edit.
 
 **VENC_MODE** is one dropdown of "`<fps>` fps · `<W>`×`<H>` · `<readout>`"
 choices: for each of the 60, 90, 100 and 120 fps rates (`MODE_FPS`), every
-size of its binned sensor mode, then every size of its native sensor mode
-if that rate has one (`MODE_SIZES`, sizes from `docs/camera-modes.md`) —
-binned above 90 fps marked "cropped view", native always marked "zoomed".
-There is no native mode above 100 fps, so 120 fps lists only binned sizes.
+size of its binned sensor mode, then its native sensor mode's sizes up to
+1920x1080 if that rate has one (`MODE_SIZES`, sizes from
+`docs/camera-modes.md`) — binned above 90 fps marked "cropped view",
+native always marked "zoomed". The native modes' larger sizes (2944x1656,
+2560x1440, 2304x1296) are not offered: they cost encode and decode time
+and the GS recorder's frame rate (`docs/camera-modes.md`), so they are
+set in the drone's config by hand. There is no native mode above 100 fps,
+so 120 fps lists only binned sizes.
 The wire value is `<fps>@<W>x<H>/binned` or `<fps>@<W>x<H>/native`
 (`modeText`/`parseMode`, mirroring `config_params.h`'s `parse_mode_text`).
 When the drone runs a value outside that list (an ssh-set rate, size or
@@ -766,7 +770,8 @@ power measures, and filters, at the lower rate.
 
 **REC_SIZE** is a dropdown scoped to the camera mode the drone runs
 (VENC_MODE's value, not a pick still in flight) — its rate and its
-readout, binned or native: that sensor mode's sizes, which share the
+readout, binned or native: that sensor mode's sizes as VENC_MODE offers
+them (native up to 1920x1080), which share the
 camera's aspect and fit the window the recorder's scaler reads
 (`docs/vtx-recorder.md`), plus the camera's own size and the drone's
 current recording size when either is off that list. Nothing that would

@@ -4,13 +4,16 @@
 // helpers compute. docs/web-gs.md documents the push shape.
 
 // docs/camera-modes.md: sensor field-of-view mode by fps and readout
-// (binned or native), and the encoder sizes that fit each.
+// (binned or native), and the encoder sizes offered for each. The native
+// modes stop at 1920x1080: their larger sizes fit the mode but cost encode
+// and decode time and the GS recorder's frame rate, so they are set in the
+// drone's config by hand, and show here as the drone's own value.
 export const MODE_SIZES = [
   { native: false, maxFps: 90, sizes: ['1920x1080', '1280x720'] },
   { native: false, maxFps: 100, sizes: ['1728x972', '1280x720'] },
   { native: false, maxFps: 120, sizes: ['1728x816', '1152x544', '864x408'] },
-  { native: true, maxFps: 60, sizes: ['2944x1656', '2560x1440', '1920x1080', '1600x900', '1280x720'] },
-  { native: true, maxFps: 100, sizes: ['2304x1296', '1920x1080', '1600x900', '1280x720'] },
+  { native: true, maxFps: 60, sizes: ['1920x1080', '1600x900', '1280x720'] },
+  { native: true, maxFps: 100, sizes: ['1920x1080', '1600x900', '1280x720'] },
 ];
 
 // The sizes of the sensor mode `fps`/`native` select, or [] past either
