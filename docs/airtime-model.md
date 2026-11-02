@@ -237,7 +237,7 @@ their variance into jitter. Knobs, in order of proven usefulness:
   The pipeline asks the driver for the mode `camera_mode_for` names
   (`drone/venc/camera_modes.c`): binned, 1920x1080@90 (2x2 binned, full
   view) up to 90 fps, 1728x972@100 up to 100, 1728x816@120 above; native
-  (`venc.binning = false`), 2944x1656@60 up to 60 fps, 2304x1296@100 up to
+  (`venc.binning = false`), 2944x1656@60 up to 60 fps, 2272x1278@100 up to
   100, nothing above. It finds that mode in the driver's list by size and
   ceiling and fails boot if the driver lacks it. The VPE only scales
   that mode down, so the loader requires `venc.size` to keep the mode's

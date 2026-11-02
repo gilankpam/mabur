@@ -8,9 +8,13 @@ static const CameraMode kFullView = {1920, 1080, 90};
 static const CameraMode kWide100 = {1728, 972, 100};
 static const CameraMode kWide120 = {1728, 816, 120};
 /* The native (non-binned) readout: a narrower fps range than the binned
- * one, and nothing above 100 fps (kNone — the loader refuses it). */
+ * one, and nothing above 100 fps (kNone — the loader refuses it). Both
+ * modes are timed ~0.5 Hz above nominal (60.57 and 100.52 Hz) so the GS
+ * phase lock can steer them up to a panel at the nominal rate; the 100 mode
+ * is 2272x1278 rather than 2304x1296 because the wider window had no blank
+ * lines left to give (docs/camera-modes.md). */
 static const CameraMode kNative60 = {2944, 1656, 60};
-static const CameraMode kNative100 = {2304, 1296, 100};
+static const CameraMode kNative100 = {2272, 1278, 100};
 static const CameraMode kNone = {0, 0, 0};
 static const CameraMode k4K = {3840, 2160, 33};
 

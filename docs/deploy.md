@@ -356,10 +356,12 @@ prints it, only the fingerprint).
   image: rebuild it in `../waybeam_venc` (`make drivers-star6e`, strip
   with `--strip-debug`, vermagic `4.9.84 SMP preempt mod_unload ARMv7
   thumb2 p2v8`) and replace that file. It has to be the six-mode build
-  (waybeam_venc b723e91): `venc.binning = false` asks for 2944x1656@60 and
-  2304x1296@100, and maburd fails boot with `sensor mode WxH@F not offered
-  by the driver` when the loaded module lacks the mode it asked for; the
-  binned tiers work on an older build too. A drone on an image with an
+  with the retimed native modes: `venc.binning = false` asks for
+  2944x1656@60 and 2272x1278@100, and maburd fails boot with `sensor mode
+  WxH@F not offered by the driver` when the loaded module lacks the mode
+  it asked for (an older six-mode build offers 2304x1296@100 instead, and
+  times both native modes under their nominal rate); the binned tiers
+  work on an older build too. A drone on an image with an
   older module takes the new one by hand: copy it into
   `/lib/modules/4.9.84/sigmastar/` under the name `load_sigmastar` loads
   (keep the old file) and reboot; `lsmod` then lists

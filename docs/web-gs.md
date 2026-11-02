@@ -744,7 +744,7 @@ size of its binned sensor mode, then its native sensor mode's sizes up to
 1920x1080 if that rate has one (`MODE_SIZES`, sizes from
 `docs/camera-modes.md`) — binned above 90 fps marked "cropped view",
 native always marked "zoomed". The native modes' larger sizes (2944x1656,
-2560x1440, 2304x1296) are not offered: they cost encode and decode time
+2560x1440, 2272x1278) are not offered: they cost encode and decode time
 and the GS recorder's frame rate (`docs/camera-modes.md`), so they are
 set in the drone's config by hand. There is no native mode above 100 fps,
 so 120 fps lists only binned sizes.

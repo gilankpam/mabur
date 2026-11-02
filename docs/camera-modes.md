@@ -17,7 +17,7 @@ built in `../waybeam_venc` (`make drivers-star6e`, `sensors/star6e/`) and
 committed into `openipc-builder`'s mabur overlay
 (`lib/modules/4.9.84/sigmastar/`). Changing the modes means rebuilding it
 there and replacing that file. The module the image carries is built from
-waybeam_venc b723e91: six modes, `imx415_linear_visible = { 1, 2, 4, 5, 6,
+waybeam_venc 581804a: six modes, `imx415_linear_visible = { 1, 2, 4, 5, 6,
 8 }` of a 9-row table. An older build (waybeam_venc 0c880d8, five modes,
 `{ 1, 2, 4, 6, 8 }`) has no 2304x1296@100 mode and outputs its 60 fps
 native mode at 2816x1584, so on it `venc.binning = false` fails boot with
@@ -29,7 +29,7 @@ either build. The six-mode driver's visibility list enumerates:
 | 0 | 3840x2160 @ ≤ 33 | all pixels, not binned | 3840x2160 | 100 % × 100 % | 16:9 |
 | 1 | 2944x1656 @ ≤ 60 | non-binned window (native readout) | 2952x1656 | 77 % × 77 % | 16:9 |
 | 2 | 1920x1080 @ ≤ 90 | 2x2 binned | 3840x2160 | 100 % × 100 % | 16:9 |
-| 3 | 2304x1296 @ ≤ 100 | non-binned window (native readout) | sensor crop, centred | 60 % × 60 % | 16:9 |
+| 3 | 2272x1278 @ ≤ 100 | non-binned window (native readout) | sensor crop, centred | 59 % × 59 % | 16:9 |
 | 4 | 1728x972 @ ≤ 100 | 2x2 binned crop | 3456x1944, centred | 90 % × 90 % (81 % of the area) | 16:9 |
 | 5 | 1728x816 @ ≤ 120 | 2x2 binned crop | 3456x1632, centred | 90 % × 76 % | 2.12:1 |
 
@@ -50,7 +50,7 @@ loaded on this image). Check what is running with
 | true | 91–100 | 1728x972 binned crop | 1.11x zoom |
 | true | 101–120 | 1728x816 binned crop | 1.11x wider, 1.32x taller zoom |
 | false | 1–60 | 2944x1656 non-binned | 1.29x zoom (measured 77 % × 77 % of the binned view) |
-| false | 61–100 | 2304x1296 non-binned crop | 1.64x zoom (measured 61 % × 61 % of the binned view) |
+| false | 61–100 | 2272x1278 non-binned crop | 1.67x zoom (measured 61 % × 61 % of the binned view at the former 2304x1296 window, 1.4 % narrower now) |
 | false | 101–120 | none: the loader refuses `venc.fps` | — |
 | either | with a `record.size` that needs it (above 1920x1080 and above the selected mode; `docs/vtx-recorder.md`) | 3840x2160 (the loader then requires `venc.fps` ≤ 30) | full |
 
@@ -81,21 +81,23 @@ at `venc.fps = 120` the rate trim locks at the mode's ceiling
 above 90 fps and the steer's ceiling clamp are in `docs/airtime-model.md`
 §3 and `docs/phase-lock.md`.
 
-Neither native mode reaches its nominal rate either: from the driver's
-table and the timing law fps = 74.25 MHz / (VMAX × HMAX), 2944x1656
-computes to 59.94 Hz and 2304x1296 to 99.63 Hz; the output width does not
-affect its timing. The sensor-rate calibration measures
-59.945 Hz and 99.63 Hz respectively. On a panel at or above either ceiling
-the phase lock cannot hold: it goes out of range, the fps cell turns
-caution, and a frame repeats periodically (`docs/phase-lock.md`). On the
-bench's 60.000 Hz monitor, native 60's steer pins at its 59.945 Hz ceiling
-and the lock cycles acquire/out-of-range rather than holding, with a
-~0.9 ms/s latency sawtooth and a frame repeating about every 18 s (the
-0.055 Hz gap to the panel); native 100 against that same 60 Hz panel is a
-rate mismatch, not a lock case. On a panel a little under the ceiling it
-locks as usual, the same as mode 5's 119.660 Hz ceiling above. Bench
-record: `docs/findings/2026-11-02-native-readout-bench.md` (the 100 Hz
-goggles were not run).
+Both native modes are timed about 0.5 Hz above their nominal rate so the
+phase lock has room to steer up: from the driver's table and the timing law
+fps = 74.25 MHz / (VMAX × HMAX), 2944x1656 (VMAX 1880, HMAX 652) computes
+to 60.57 Hz and 2272x1278 (VMAX 1348, HMAX 548) to 100.52 Hz; the output
+width does not affect the timing. The sensor-rate calibration measures
+60.573 and 100.513 Hz and trims to 59.97 / 99.98 Hz below them. The steer
+then reaches a panel at the nominal rate (60.000 Hz monitor, the 100 Hz
+goggles) with the offset near zero. A mode whose ceiling sits *under* the
+panel cannot be locked at all: the steer pins at the mode's maximum, the
+lock cycles acquire/out-of-range, the fps cell turns caution, latency
+drifts ~1 ms/s and a frame repeats every few seconds
+(`docs/phase-lock.md`). That is why the 100 fps native window is 2272x1278
+rather than 2304x1296: the wider window already ran at the ISP's
+~300 MPix/s wall with no blank lines to give, and its 99.63 Hz ceiling
+could not be steered to a 100 Hz panel. The 60 mode only gave up blank
+lines. Bench record of the under-ceiling state:
+`docs/findings/2026-11-02-native-readout-bench.md`.
 
 ## Sizes
 
@@ -112,8 +114,9 @@ fps and size move together as the single `VENC_MODE` parameter
   1152x544, 864x408). 1280x720 is refused (another aspect).
 - 1–60 fps, native: any 16:9 size up to 2944x1656 (2944x1656, 2560x1440,
   1920x1080, 1600x900, 1280x720).
-- 61–100 fps, native: any 16:9 size up to 2304x1296 (2304x1296, 1920x1080,
-  1600x900, 1280x720). 2560x1440 is refused (larger than the mode).
+- 61–100 fps, native: any 16:9 size up to 2272x1278 (2272x1278, 1920x1080,
+  1600x900, 1280x720). 2304x1296 and 2560x1440 are refused (larger than
+  the mode).
 
 Encoding the mode's own size keeps all its detail but costs encoder time:
 1728x972 at 100 fps reads 158 % of the H.265 engine's rated macroblock rate
@@ -124,7 +127,7 @@ drops on the bench), measured enc p50/p90 (`curl 127.0.0.1:8301/venc`):
 
 | native 60 size | enc p50/p90 (ms) | native 100 size | enc p50/p90 (ms) |
 |---|---|---|---|
-| 2944x1656 | 14–15 / 15 | 2304x1296 | 11 / 11–12 |
+| 2944x1656 | 14–15 / 15 | 2272x1278 | 11 / 11–12 |
 | 2560x1440 | 11 / 12 | — | — |
 | 1920x1080 | 8 / 8–9 | 1920x1080 | 9 / 9–10 |
 | 1600x900 | 5–6 / 6–7 | 1600x900 | 7–8 / 8 |
@@ -173,7 +176,7 @@ Details: `docs/colortrans.md` ("Known limitations").
 
 The burned recorder's default picture size is the decoded picture's own
 (`dvr.burned.size = ""`). At a decoded size above 1920x1080 — the native
-tiers' larger sizes, 2944x1656, 2560x1440 and 2304x1296 — the colour
+tiers' larger sizes, 2944x1656, 2560x1440 and 2272x1278 — the colour
 stage cannot keep up and the recorder drops frames outright rather than
 just costing live latency the way 100 fps does: 22 % dropped, measured
 at 2944x1656 on the bench. Set `dvr.burned.size = "1920x1080"` to keep
@@ -186,7 +189,7 @@ the drop falls to under 1 %. Bench record:
 `[record]` keeps its own rules (`docs/vtx-recorder.md`): `record.fps` ≤
 `venc.fps`, `record.size` with `venc.size`'s aspect. Above 90 fps the link
 runs a crop mode — binned 1728x972, or under `venc.binning = false` the
-native 2304x1296 crop — and the same three risks apply:
+native 2272x1278 crop — and the same three risks apply:
 
 - A `record.size` larger than the mode (the bundle's 1920x1080 against
   1728x972) is an upscale on VPE port 1.
