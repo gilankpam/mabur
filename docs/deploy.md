@@ -181,6 +181,13 @@ the value they fell back to (`config: N key(s) defaulted:`). After
 hand-editing a config, read that list: anything unexpected in it is a knob
 you dropped.
 
+**A defaulted key still needs its own line before MAVLink can touch it.**
+`/etc/mabur.toml` written before `venc.binning` existed loads fine — the
+key defaults to `true` — but `PARAM_EXT_SET`'s row patcher only edits a
+line already in the file, so a `VENC_MODE` set, binned or native, fails
+with `venc.binning: key not found` until a `binning = true` line is added
+under `[venc]` by hand (`docs/vtx-config-mavlink.md`).
+
 **The bundles set every knob.** All three shipped defaults —
 `bundle/mabur.default.toml`, `gs/bundle/maburgs.default.toml`,
 `gs/player/bundle/maburplay.default.toml` — are the flight configs, with
@@ -343,9 +350,16 @@ prints it, only the fingerprint).
 - The remembered channel is `/etc/mabur.channel` (`docs/channel-select.md`).
 - The image loads waybeam_venc's IMX415 driver, `sensor_imx415_star6e.ko`,
   not the stock `sensor_imx415_mipi.ko` (`openipc-builder`'s
-  `load_sigmastar`; `docs/camera-modes.md`). maburd fails boot with
-  `sensor mode WxH@F not offered by the driver` under the stock one. A
-  drone on an older image takes it by hand: copy the module into
+  `load_sigmastar`; `docs/camera-modes.md`). It is a prebuilt module
+  committed into `openipc-builder`'s mabur overlay, not built with the
+  image: rebuild it in `../waybeam_venc` (`make drivers-star6e`, strip
+  with `--strip-debug`, vermagic `4.9.84 SMP preempt mod_unload ARMv7
+  thumb2 p2v8`) and replace that file. It has to be the six-mode build
+  (waybeam_venc b723e91): `venc.binning = false` asks for 2944x1656@60 and
+  2304x1296@100, and maburd fails boot with `sensor mode WxH@F not offered
+  by the driver` when the loaded module lacks the mode it asked for; the
+  binned tiers work on an older build too. A drone on an image with an
+  older module takes the new one by hand: copy it into
   `/lib/modules/4.9.84/sigmastar/` under the name `load_sigmastar` loads
   (keep the old file) and reboot; `lsmod` then lists
   `sensor_imx415_star6e`.

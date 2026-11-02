@@ -10,12 +10,12 @@
 // real loader would refuse. Under lock_config_writes() it reads the file,
 // patches the row's own line(s) (mavparam::patch_row, built on
 // patch_toml_key, so every comment survives) and loads the candidate with
-// mabur::load_config; cross-key rules
-// (record.fps <= venc.fps, venc.size against the fps mode, low_power.enable
-// needs msp.enable) are the loader's, not this file's, so a set that breaks
-// one is answered PARAM_ACK_FAILED with the loader's message in a
-// STATUSTEXT and the operator learns which key must move first. A candidate
-// that loads is submitted to ConfigApplier (ApplyPort), acked
+// mabur::load_config; cross-key rules (record.fps <= venc.fps, venc.size
+// against the fps + readout mode, low_power.enable needs msp.enable) are
+// the loader's, not this file's, so a set that breaks one is answered
+// PARAM_ACK_FAILED with the loader's message in a STATUSTEXT and the
+// operator learns which key must move first. A candidate that loads is
+// submitted to ConfigApplier (ApplyPort), acked
 // PARAM_ACK_IN_PROGRESS, and resolved by poll_results once the applier has
 // applied it to the running daemon and published the file, or refused it.
 //

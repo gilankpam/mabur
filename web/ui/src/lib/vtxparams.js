@@ -3,31 +3,40 @@
 // mabur/config_params.h kTable, 12 rows); VtxPanel.svelte renders what these
 // helpers compute. docs/web-gs.md documents the push shape.
 
-// docs/camera-modes.md: sensor field-of-view mode by fps, and the encoder
-// sizes that fit it.
+// docs/camera-modes.md: sensor field-of-view mode by fps and readout
+// (binned or native), and the encoder sizes offered for each. The native
+// modes stop at 1920x1080: their larger sizes fit the mode but cost encode
+// and decode time and the GS recorder's frame rate, so they are set in the
+// drone's config by hand, and show here as the drone's own value.
 export const MODE_SIZES = [
-  { maxFps: 90, sizes: ['1920x1080', '1280x720'] },
-  { maxFps: 100, sizes: ['1728x972', '1280x720'] },
-  { maxFps: 120, sizes: ['1728x816', '1152x544', '864x408'] },
+  { native: false, maxFps: 90, sizes: ['1920x1080', '1280x720'] },
+  { native: false, maxFps: 100, sizes: ['1728x972', '1280x720'] },
+  { native: false, maxFps: 120, sizes: ['1728x816', '1152x544', '864x408'] },
+  { native: true, maxFps: 60, sizes: ['1920x1080', '1600x900', '1280x720'] },
+  { native: true, maxFps: 100, sizes: ['1920x1080', '1600x900', '1280x720'] },
 ];
 
-export function modeSizes(fps) {
+// The sizes of the sensor mode `fps`/`native` select, or [] past either
+// readout's ceiling (120 fps binned, 100 fps native -- there is no native
+// mode above it).
+export function modeSizes(fps, native = false) {
   if (!Number.isInteger(fps) || fps < 1 || fps > 120) return [];
-  return MODE_SIZES.find((m) => fps <= m.maxFps).sizes;
+  const m = MODE_SIZES.find((e) => e.native === native && fps <= e.maxFps);
+  return m ? m.sizes : [];
 }
 
-export function modeText(fps, size) {
-  return `${fps}@${size}`;
+export function modeText(fps, size, native) {
+  return `${fps}@${size}/${native ? 'native' : 'binned'}`;
 }
 
 // The camera-mode dropdown's frame rates, each offering every size of its
-// sensor mode.
+// binned sensor mode, then every size of its native sensor mode (if any).
 export const MODE_FPS = [60, 90, 100, 120];
 
 const sizeLabel = (size) => size.replace('x', '×');
 
-function modeLabel(fps, size) {
-  return `${fps} fps · ${sizeLabel(size)}${fps > 90 ? ' · cropped view' : ''}`;
+function modeLabel(fps, size, native) {
+  return `${fps} fps · ${sizeLabel(size)} · ${native ? 'native · zoomed' : 'binned' + (fps > 90 ? ' · cropped view' : '')}`;
 }
 
 // How far the display's refresh may sit from a camera rate and still
@@ -38,24 +47,29 @@ export const DISPLAY_MATCH_HZ = 0.55;
 const matchesDisplay = (fps, hz) => Math.abs(fps - hz) <= DISPLAY_MATCH_HZ;
 const knownHz = (hz) => Number.isFinite(hz) && hz > 0;
 
-// The VENC_MODE dropdown, as { value: "<fps>@<WxH>", label }: every size
-// of each MODE_FPS rate, plus the drone's own value first when it runs one
-// outside that list (an ssh-set rate or size), so the dropdown always
-// shows what the drone runs. With the display's measured refresh
-// (`displayHz`), only the rates that match it are offered -- a mismatched
-// pair can't phase-lock and judders -- unless none does, or the rate isn't
-// known yet, when every choice is.
+// The VENC_MODE dropdown, as { value: "<fps>@<WxH>/binned|native", label }:
+// each MODE_FPS rate's binned sizes then its native sizes, plus the
+// drone's own value first when it runs one outside that list (an ssh-set
+// rate, size or readout), so the dropdown always shows what the drone
+// runs. With the display's measured refresh (`displayHz`), only the rates
+// that match it are offered -- a mismatched pair can't phase-lock and
+// judders -- unless none does, or the rate isn't known yet, when every
+// choice is.
 export function modeChoices(liveValue, displayHz = null) {
   let choices = [];
   for (const fps of MODE_FPS) {
-    for (const size of modeSizes(fps)) choices.push({ value: modeText(fps, size), label: modeLabel(fps, size) });
+    for (const native of [false, true]) {
+      for (const size of modeSizes(fps, native)) {
+        choices.push({ value: modeText(fps, size, native), label: modeLabel(fps, size, native) });
+      }
+    }
   }
   if (knownHz(displayHz) && MODE_FPS.some((fps) => matchesDisplay(fps, displayHz))) {
     choices = choices.filter((c) => c.value === liveValue || matchesDisplay(parseMode(c.value).fps, displayHz));
   }
   const live = parseMode(liveValue);
   if (live && !choices.some((c) => c.value === liveValue)) {
-    choices.unshift({ value: liveValue, label: modeLabel(live.fps, live.size) });
+    choices.unshift({ value: liveValue, label: modeLabel(live.fps, live.size, live.native) });
   }
   return choices;
 }
@@ -71,15 +85,16 @@ export function modeDisplayNote(displayHz) {
 }
 
 // The REC_SIZE dropdown for the camera mode the drone runs (`modeValue`,
-// VENC_MODE's value): the sizes of that sensor mode, which share the
-// camera's aspect and fit the capture window the recorder's scaler reads
-// (docs/vtx-recorder.md), plus the camera's own size and the drone's
-// current recording size when either is outside that list. Nothing above
-// 1920x1080 is offered: that needs the 30 fps 4K sensor mode, which the
-// link cannot run beside.
+// VENC_MODE's value): the sizes of that sensor mode -- the live value's
+// own readout, binned or native -- which share the camera's aspect and fit
+// the capture window the recorder's scaler reads (docs/vtx-recorder.md),
+// plus the camera's own size and the drone's current recording size when
+// either is outside that list. Nothing that would need the 4K mode is
+// offered: that needs the 30 fps 4K sensor mode, which the link cannot run
+// beside.
 export function recSizeChoices(modeValue, recValue) {
   const m = parseMode(modeValue);
-  const sizes = m ? [...modeSizes(m.fps)] : [];
+  const sizes = m ? [...modeSizes(m.fps, m.native)] : [];
   if (m && sizes.length && !sizes.includes(m.size)) sizes.push(m.size);
   if (recValue && !sizes.includes(recValue)) sizes.push(recValue);
   return sizes.map((size) => ({ value: size, label: sizeLabel(size) }));
@@ -113,12 +128,12 @@ export function toggleState(row, shown) {
   return shown === t.on ? 'on' : null;
 }
 
-// Mirror of config_params.h parse_mode_text: "<fps>@<WxH>", each number a
-// run of 1..6 digits.
-const MODE_RE = /^(\d{1,6})@(\d{1,6}x\d{1,6})$/;
+// Mirror of config_params.h parse_mode_text: "<fps>@<WxH>/binned|native",
+// each number a run of 1..6 digits, the readout word exact and lowercase.
+const MODE_RE = /^(\d{1,6})@(\d{1,6}x\d{1,6})\/(binned|native)$/;
 export function parseMode(text) {
   const m = MODE_RE.exec(String(text));
-  return m ? { fps: Number(m[1]), size: m[2] } : null;
+  return m ? { fps: Number(m[1]), size: m[2], native: m[3] === 'native' } : null;
 }
 
 // Turns a typed or toggled value into the wire text VENC_MODE etc. expect,
@@ -221,7 +236,7 @@ export function rowLabel(row) {
 // Help text in place of the table's, where the table's spells the wire
 // format or a config key rather than what the tab shows.
 const HELP = {
-  VENC_MODE: 'Camera frame rate and encoder size. Above 90 fps the sensor crops its view.',
+  VENC_MODE: 'Camera frame rate, encoder size and sensor readout. Binned keeps the full view, cropped above 90 fps; native reads 1:1 pixels, zoomed in at every rate, up to 100 fps.',
   VENC_SLICES: 'Encodes each frame as 4 row slices, so the ground station can patch a frame that lost a slice instead of dropping it. Off sends whole frames.',
   REC_SIZE: 'Onboard recording resolution; the choices follow the camera mode.',
   LOWPWR_ENABLE: 'Lower bitrate and frame rate while disarmed to keep the VTX cool. Needs MSP on for the arm state.',
@@ -263,7 +278,7 @@ export function groupRows(rows) {
 
 // One sentence next to the rows this knob interacts with.
 export const HINTS = {
-  VENC_MODE: 'A change of aspect also sets the recording size to the new camera size',
+  VENC_MODE: 'A change of aspect, or a rate and readout whose recording would need the 4K mode, also sets the recording size to the new camera size',
   MSP_ENABLE: 'Turn low power off first',
 };
 

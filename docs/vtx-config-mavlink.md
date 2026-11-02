@@ -1,7 +1,7 @@
 # VTX config over MAVLink
 
 The drone's MAVLink component (`docs/mavlink.md`) serves fourteen parameters
-over fifteen keys of `/etc/mabur.toml` (`VENC_MODE` spells two) as
+over sixteen keys of `/etc/mabur.toml` (`VENC_MODE` spells three) as
 MAVLink extended parameters (`PARAM_EXT_*`): a ground end holding the link
 key can list, read and set them while linked. A set applies to the running
 `maburd` before it is published to the file — a knob takes effect on
@@ -51,8 +51,9 @@ outbound queue and the tunnel's uplink pacing.
     non-finite REAL32, or a CUSTOM value with no NUL in its 128 bytes or a
     non-printable byte: `PARAM_ACK_VALUE_UNSUPPORTED` with the current
     value; there is no cross-type coercion;
-  - a `VENC_MODE` value that is not `<fps>@<W>x<H>` — each number a run
-    of 1 to 6 digits, nothing before or after:
+  - a `VENC_MODE` value that is not `<fps>@<W>x<H>/binned` or
+    `<fps>@<W>x<H>/native` — each number a run of 1 to 6 digits, nothing
+    before or after, and the trailing word exactly `binned` or `native`:
     `PARAM_ACK_VALUE_UNSUPPORTED` with the current value. A well-formed
     value out of range is the loader's `FAILED`, below;
   - a set to the value the file already holds writes nothing and answers
@@ -67,7 +68,12 @@ outbound queue and the tunnel's uplink pacing.
     (`MAV_SEVERITY_ERROR`) carrying the reason (`<field>: <why>`, the
     loader's message without its file and line, cut to 50 characters).
     A key whose line is missing or commented out is `FAILED` with
-    `<section.key>: key not found`; nothing is written. A candidate
+    `<section.key>: key not found`; nothing is written. A config written
+    before `venc.binning` existed loads (the key defaults to `true`) but
+    has no `binning` line to patch, so this is the common way a fresh
+    `VENC_MODE` set hits it: add a `binning = true` line under `[venc]` by
+    hand before any `VENC_MODE` set, binned or native, can be applied
+    (`docs/deploy.md`). A candidate
     the loader accepts, and that is a real change, is handed to
     `ConfigApplier` instead of being written straight to disk: the set
     answers `PARAM_ACK_IN_PROGRESS` with the current value at once,
@@ -194,7 +200,7 @@ quoted string).
 |---|---|---|---|---|---|
 | 0 | `RADIO_WALL_MARGN` | `radio.wall_margin_db` | Real32 | reprogram | Safety margin below the calibrated TX-power walls; raise to lower TX power |
 | 1 | `RADIO_LDPC` | `radio.ldpc` | Bool | reprogram | LDPC coding on every frame; turn off only for a ground card that cannot decode it |
-| 2 | `VENC_MODE` | `venc.fps` + `venc.size` | Str | rebuild | Camera frame rate and encoder size, `<fps>@<WxH>`; the rate picks the sensor's field-of-view mode and the size must fit it |
+| 2 | `VENC_MODE` | `venc.fps` + `venc.size` + `venc.binning` | Str | rebuild | Camera frame rate, encoder size and sensor readout, `<fps>@<WxH>/binned\|native`; the rate and readout pick the sensor mode and the size must fit it |
 | 3 | `VENC_SLICES` | `venc.slices` | Int32 | rebuild | H.265 row slices on the link channel; 1 disables slice salvage |
 | 4 | `ENC_BITRATE_MAX` | `encoder.bitrate_max_kbps` | Int32 | knob | Bitrate ceiling, kbps |
 | 5 | `ENC_AIRTIME` | `encoder.airtime_budget` | Real32 | knob | Share of the link's real capacity the video may use |
@@ -226,13 +232,17 @@ nothing; send the other key first. The rules the loader enforces:
 - `REC_FPS` ≤ `VENC_MODE`'s fps (while the recorder is on): lower
   `REC_FPS` before lowering `VENC_MODE`'s fps; raise `VENC_MODE`'s fps
   before raising `REC_FPS`.
-- `REC_SIZE` above 1920x1080 needs `VENC_MODE`'s fps ≤ 30 first.
+- `REC_SIZE` above 1920x1080 and above the sensor mode needs `VENC_MODE`'s
+  fps ≤ 30 first.
 - `LOWPWR_ENABLE = 1` needs `MSP_ENABLE = 1` first; `MSP_ENABLE = 0` needs
   `LOWPWR_ENABLE = 0` first.
-- A `VENC_MODE` set that changes the sensor mode's aspect, while the
-  recorder is on with an explicit `record.size`, also rewrites
-  `record.size` to the new venc size in the same candidate; `record.fps`
-  never follows.
+- `/native` above 100 fps has no sensor mode: lower the rate or switch to
+  `/binned` in the same set.
+- A `VENC_MODE` set that changes the sensor mode's aspect, or whose new
+  fps is above 30 and whose recording (an explicit `record.size`,
+  recorder on) is larger than 1920x1080 and larger than the new readout's
+  sensor mode in either dimension, also rewrites `record.size` to the
+  new venc size in the same candidate; `record.fps` never follows.
 
 Two loader rules involve keys the table does not expose:
 

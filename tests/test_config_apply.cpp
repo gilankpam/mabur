@@ -306,7 +306,7 @@ TEST(second_submit_during_apply_is_refused) {
   Rig g;
   g.f.restart_block = true;  // the fake blocks on a latch
   std::string why;
-  REQUIRE(g.a.submit(kVencMode, Value{Type::Str, false, 0, 0, "60@1920x1080"}, &why));
+  REQUIRE(g.a.submit(kVencMode, Value{Type::Str, false, 0, 0, "60@1920x1080/binned"}, &why));
   CHECK(g.a.busy());
   CHECK(!g.a.submit(kBitrateMax, Value{Type::Int32, false, 9000}, &why) && why == "apply in progress");
   g.f.release();
@@ -391,7 +391,7 @@ TEST(loader_refusal_applies_nothing) {
   Rig g;
   // Shape-valid (parse_mode_text passes) but semantically refused: 100 fps
   // is the 1728x972 mode, so 1920x1080 is too large for it.
-  const ConfigApplyResult r = apply(g.a, kVencMode, Value{Type::Str, false, 0, 0, "100@1920x1080"});
+  const ConfigApplyResult r = apply(g.a, kVencMode, Value{Type::Str, false, 0, 0, "100@1920x1080/binned"});
   CHECK(!r.ok && g.f.pipeline_restart.empty() && r.reason.find("venc.size") != npos);
   CHECK(r.reason.find("config: ") == npos && r.reason.find(g.path()) == npos);
   CHECK(g.f.order.empty());
@@ -524,7 +524,7 @@ TEST(venc_mode_follow_reads_the_file_not_the_live_config) {
   spit(b.path(), text);
   REQUIRE(load_config(b.path()).record.width == 1920);
 
-  const ConfigApplyResult r = apply(a, kVencMode, Value{Type::Str, false, 0, 0, "120@1728x816"});
+  const ConfigApplyResult r = apply(a, kVencMode, Value{Type::Str, false, 0, 0, "120@1728x816/binned"});
   CHECK(r.ok);
   const Config now = load_config(b.path());
   CHECK(now.venc.core.fps == 120);

@@ -233,11 +233,13 @@ their variance into jitter. Knobs, in order of proven usefulness:
      GS panel (60.000 Hz nominal): one panel repeat per ~100 s, the floor
      without genlock. Bench record:
      `docs/findings/2026-10-14-sensor-rate-trim.md`.
-- **Sensor mode and the shutter cap follow `venc.fps`.** The pipeline asks
-  the driver for the mode `camera_mode_for` names (`drone/venc/camera_modes.c`):
-  1920x1080@90 (2x2 binned, full view) up to 90 fps, 1728x972@100 up to
-  100, 1728x816@120 above. It finds that mode in the driver's list by size
-  and ceiling and fails boot if the driver lacks it. The VPE only scales
+- **Sensor mode and the shutter cap follow `venc.fps` and `venc.binning`.**
+  The pipeline asks the driver for the mode `camera_mode_for` names
+  (`drone/venc/camera_modes.c`): binned, 1920x1080@90 (2x2 binned, full
+  view) up to 90 fps, 1728x972@100 up to 100, 1728x816@120 above; native
+  (`venc.binning = false`), 2944x1656@60 up to 60 fps, 2304x1296@100 up to
+  100, nothing above. It finds that mode in the driver's list by size and
+  ceiling and fails boot if the driver lacks it. The VPE only scales
   that mode down, so the loader requires `venc.size` to keep the mode's
   aspect ratio and fit inside it; modes, views and size rules are in
   `docs/camera-modes.md`. The AE shutter ceiling (`sensor_cal_shutter_cap_us`) is the whole frame

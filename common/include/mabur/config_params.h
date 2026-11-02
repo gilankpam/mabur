@@ -35,7 +35,7 @@ inline constexpr Row kTable[] = {
     {"RADIO_LDPC", "radio", "ldpc", Type::Bool, Apply::Reprogram,
      "LDPC coding on every frame; turn off only for a ground card that cannot decode it"},  // the radiotap flag
     {"VENC_MODE", "venc", "fps", Type::Str, Apply::Rebuild,
-     "Camera frame rate and encoder size, <fps>@<WxH>; the rate picks the sensor's field-of-view mode and the size must fit it"},
+     "Camera frame rate, encoder size and sensor readout, <fps>@<WxH>/binned|native; the rate and readout pick the sensor mode and the size must fit it"},
     {"VENC_SLICES", "venc", "slices", Type::Int32, Apply::Rebuild,
      "H.265 row slices on the link channel; 1 disables slice salvage"},
     {"ENC_BITRATE_MAX", "encoder", "bitrate_max_kbps", Type::Int32, Apply::Knob,
@@ -63,19 +63,22 @@ inline constexpr size_t kCount = sizeof(kTable) / sizeof(kTable[0]);
 inline constexpr int kMaxIdLen = 16;
 
 // kTable's row index for VENC_MODE -- the one row whose Str value packs
-// two config keys (venc.fps and venc.size) instead of one.
+// three config keys (venc.fps, venc.size and venc.binning) instead of one.
 inline constexpr size_t kVencModeRow = 2;
 
 // At most this many digits per VENC_MODE number: every value fits an int
 // with room to spare, so the text never overflows on its way in.
 inline constexpr size_t kModeMaxDigits = 6;
 
-// Splits a VENC_MODE text value "<fps>@<WxH>" into its three integers.
-// Shape only: each of fps/w/h is a run of 1..kModeMaxDigits digits,
-// separated by a literal '@' and 'x', with nothing else before or after --
-// no range check, that is the loader's job once the pieces land in the
-// config. A longer run is a shape refusal, never a wrapped value.
-inline bool parse_mode_text(const std::string& text, int* fps, int* w, int* h) {
+// Splits a VENC_MODE text value "<fps>@<WxH>/binned|native" into its three
+// integers and the readout flag. Shape only: each of fps/w/h is a run of
+// 1..kModeMaxDigits digits, separated by a literal '@' and 'x', followed by
+// a literal '/' and exactly "binned" (*binning = true) or "native"
+// (*binning = false) through the end of the string -- no range check, that
+// is the loader's job once the pieces land in the config. A longer digit
+// run, a missing or misspelled suffix, or trailing text is a shape
+// refusal, never a wrapped value.
+inline bool parse_mode_text(const std::string& text, int* fps, int* w, int* h, bool* binning) {
   size_t i = 0;
   auto digits = [&](int* out) {
     const size_t start = i;
@@ -96,7 +99,17 @@ inline bool parse_mode_text(const std::string& text, int* fps, int* w, int* h) {
   if (i >= text.size() || text[i] != 'x') return false;
   ++i;
   if (!digits(h)) return false;
-  return i == text.size();
+  if (i >= text.size() || text[i] != '/') return false;
+  ++i;
+  const std::string suffix = text.substr(i);
+  if (suffix == "binned") {
+    *binning = true;
+  } else if (suffix == "native") {
+    *binning = false;
+  } else {
+    return false;
+  }
+  return true;
 }
 
 // Index of the row with this id, or -1. `id16` is a wire-format field: only

@@ -645,16 +645,16 @@ TEST(drone_values_reach_the_client) {
   g.tick(t);
   REQUIRE(g.params() != nullptr);
   char wire[128] = {};
-  std::strncpy(wire, "60@1920x1080", sizeof wire);
+  std::strncpy(wire, "60@1920x1080/binned", sizeof wire);
   const auto pkt = param_ext_value_pkt(
       "VENC_MODE", mabur::cfgparam::mav_type(mabur::cfgparam::Type::Str), wire,
       mabur::cfgparam::kCount, static_cast<uint16_t>(mabur::cfgparam::kVencModeRow));
   g.on_rx(mav_body(pkt, 1, t));
   g.tick(t);
-  CHECK(g.params()->state().rows[mabur::cfgparam::kVencModeRow].value.s == "60@1920x1080");
+  CHECK(g.params()->state().rows[mabur::cfgparam::kVencModeRow].value.s == "60@1920x1080/binned");
   const std::string j = params_json(g, t / 1000);
   CHECK(j.find("\"id\":\"VENC_MODE\"") != std::string::npos);
-  CHECK(j.find("\"value\":\"60@1920x1080\"") != std::string::npos);
+  CHECK(j.find("\"value\":\"60@1920x1080/binned\"") != std::string::npos);
 }
 
 // "alive" is null between link-up and the drone's first HEARTBEAT (no
@@ -695,7 +695,7 @@ TEST(new_session_nonce_relists) {
   REQUIRE(g.params() != nullptr);
   CHECK(count_param_list_requests(sent) == 1);
   char wire[128] = {};
-  std::strncpy(wire, "60@1920x1080", sizeof wire);
+  std::strncpy(wire, "60@1920x1080/binned", sizeof wire);
   const auto pkt = param_ext_value_pkt(
       "VENC_MODE", mabur::cfgparam::mav_type(mabur::cfgparam::Type::Str), wire,
       mabur::cfgparam::kCount, static_cast<uint16_t>(mabur::cfgparam::kVencModeRow));
@@ -731,7 +731,7 @@ TEST(vtx_nonce_change_while_linked_relists) {
   REQUIRE(g.params() != nullptr);
   CHECK(count_param_list_requests(sent) == 1);
   char wire[128] = {};
-  std::strncpy(wire, "60@1920x1080", sizeof wire);
+  std::strncpy(wire, "60@1920x1080/binned", sizeof wire);
   const auto pkt = param_ext_value_pkt(
       "VENC_MODE", mabur::cfgparam::mav_type(mabur::cfgparam::Type::Str), wire,
       mabur::cfgparam::kCount, static_cast<uint16_t>(mabur::cfgparam::kVencModeRow));

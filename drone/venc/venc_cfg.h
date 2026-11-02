@@ -8,6 +8,9 @@ typedef struct {
   char sensor_bin[128];      /* venc.sensor_bin */
   uint16_t width, height;    /* venc.size "1920x1080" */
   uint16_t fps;              /* venc.fps */
+  bool binning;              /* venc.binning: true = full view, 2x2 binned;
+                              * false = 1:1 pixels, a zoomed non-binned
+                              * window (1..100 fps only) */
   double gop_s;              /* venc.gop_s: seconds between refresh starts; 0 = no periodic refresh (the GS asks for IDRs on demand) */
   int8_t qp_delta;           /* venc.qp_delta */
   uint8_t max_ipprop;        /* venc.max_ipprop: 0 (default) = leave the

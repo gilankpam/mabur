@@ -738,11 +738,20 @@ a reason line — "not a valid integer", "not a valid number", or for Str
 the allowed spelling — and keeps exactly what was typed, so the operator
 can fix it; both clear on that row's next edit.
 
-**VENC_MODE** is one dropdown of "`<fps>` fps · `<W>`×`<H>`" choices: every
-size of the 60, 90, 100 and 120 fps sensor modes (`MODE_FPS`, sizes from
-`docs/camera-modes.md`), the two crop modes (100, 120) marked "cropped
-view". When the drone runs a value outside that list (an ssh-set rate or
-size), it is added as the first choice, so the dropdown always shows
+**VENC_MODE** is one dropdown of "`<fps>` fps · `<W>`×`<H>` · `<readout>`"
+choices: for each of the 60, 90, 100 and 120 fps rates (`MODE_FPS`), every
+size of its binned sensor mode, then its native sensor mode's sizes up to
+1920x1080 if that rate has one (`MODE_SIZES`, sizes from
+`docs/camera-modes.md`) — binned above 90 fps marked "cropped view",
+native always marked "zoomed". The native modes' larger sizes (2944x1656,
+2560x1440, 2304x1296) are not offered: they cost encode and decode time
+and the GS recorder's frame rate (`docs/camera-modes.md`), so they are
+set in the drone's config by hand. There is no native mode above 100 fps,
+so 120 fps lists only binned sizes.
+The wire value is `<fps>@<W>x<H>/binned` or `<fps>@<W>x<H>/native`
+(`modeText`/`parseMode`, mirroring `config_params.h`'s `parse_mode_text`).
+When the drone runs a value outside that list (an ssh-set rate, size or
+readout), it is added as the first choice, so the dropdown always shows
 what the drone runs.
 
 The choices follow the display. A browser can measure only its current
@@ -760,12 +769,14 @@ matches this display (144 Hz)." A phone that drops its refresh to save
 power measures, and filters, at the lower rate.
 
 **REC_SIZE** is a dropdown scoped to the camera mode the drone runs
-(VENC_MODE's value, not a pick still in flight): that sensor mode's
-sizes, which share the camera's aspect and fit the window the recorder's
-scaler reads (`docs/vtx-recorder.md`), plus the camera's own size and
-the drone's current recording size when either is off that list.
-Nothing above 1920x1080 is offered, since that needs the 30 fps 4K sensor
-mode.
+(VENC_MODE's value, not a pick still in flight) — its rate and its
+readout, binned or native: that sensor mode's sizes as VENC_MODE offers
+them (native up to 1920x1080), which share the
+camera's aspect and fit the window the recorder's scaler reads
+(`docs/vtx-recorder.md`), plus the camera's own size and the drone's
+current recording size when either is off that list. Nothing that would
+need the 4K mode is offered, since the link cannot run the 30 fps 4K
+sensor mode beside either readout.
 
 A row's status sits at the right end of its label line (`rowStatus` in
 `vtxparams.js`), so it never moves the layout. While a set is in flight

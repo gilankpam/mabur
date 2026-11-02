@@ -51,8 +51,9 @@ roi_qp_normal      = 0
 [venc]
 sensor_bin = "/etc/sensors/imx415_greg_fpvXIX_colortrans.bin"  # camera sensor tuning file
 size       = "1920x1080"
-fps        = 60            # 1..120: up to 90 the full-view 1920x1080 camera mode, 91-100 1728x972, 101-120 1728x816;
+fps        = 60            # 1..120 binned: up to 90 the full-view 1920x1080 mode, 91-100 1728x972, 101-120 1728x816. 1..100 non-binned: up to 60 2944x1656, 61-100 2304x1296;
                            # size must keep that mode's aspect ratio and fit inside it (docs/camera-modes.md)
+binning    = true          # true: full view, 2x2 binned. false: 1:1 pixels, a zoomed non-binned window, 1..100 fps only (docs/camera-modes.md)
 gop_s      = 0             # seconds between refresh starts; 0 = none: the GS asks for an IDR when its picture is damaged
 qp_delta   = 4             # quality offset between keyframes and P-frames
 max_ipprop = 2             # keyframe may be at most this many times a P-frame's size
@@ -134,9 +135,10 @@ bitrate_kbps = 40000              # constant bitrate of the recording
 fps          = 60                 # at most venc.fps
 min_free_mb  = 512                # stop (or refuse to start) below this much free space
 size         = "1920x1080"        # recording resolution, same aspect ratio as venc.size. It may differ
-                                  # from venc.size (e.g. fly 1280x720, record 1920x1080). Above
-                                  # 1920x1080 the whole camera drops to 30 fps (set venc.fps = 30)
-                                  # and the live video lags badly, so 1920x1080 is the practical max
+                                  # from venc.size (e.g. fly 1280x720, record 1920x1080). Larger than
+                                  # 1920x1080 AND larger than the sensor mode needs the 30 fps 4K mode
+                                  # (set venc.fps <= 30) and the live video lags badly; under the
+                                  # native 60 fps readout, up to 2944x1656 fits without it
 
 # Software NACK answers (base layer): how much sent video the drone keeps for
 # re-sending, and the air it may spend on re-sends.
