@@ -141,12 +141,19 @@ std::optional<std::string> vtx(const Deps& d, const char* id) {
 
 // What stops a drone row from applying, checked after the model's own
 // "Needs the drone linked": a table mismatch refuses every drone row, and
-// a row whose own value has not landed yet refuses until it has.
+// a row whose own value has not landed yet refuses until it has -- with
+// "This setting did not answer." once the list has settled "partial"
+// (some rows answered, this one never will), rather than "Reading the
+// drone's settings…" forever for a row that is in fact done waiting.
 std::function<std::string()> drone_refuse(const Deps& d, const char* id) {
   return [d, id] {
     if (d->snap && d->snap->vtx && d->snap->vtx->table_mismatch)
       return std::string("Drone settings differ from this GS — update");
-    if (!vtx(d, id)) return std::string("Reading the drone's settings…");
+    if (!vtx(d, id)) {
+      if (d->snap && d->snap->vtx && d->snap->vtx->list == "partial")
+        return std::string("This setting did not answer.");
+      return std::string("Reading the drone's settings…");
+    }
     return std::string();
   };
 }
@@ -348,7 +355,10 @@ MenuNode fix_row(const Deps& d) {
     const auto cm = camera_mode(d);
     if (!cm) return false;
     const auto modes = d->modes ? d->modes() : std::vector<ModeCand>{};
-    return !modes.empty() && sizes_at(modes, cm->fps).empty();
+    // Also requires a fix_target: a display offering none of the fixed
+    // rates (60/90/100/120) leaves nothing to pick, so the row would send
+    // nothing and still read "✓ saved".
+    return !modes.empty() && sizes_at(modes, cm->fps).empty() && fix_target(d).has_value();
   };
   const auto target = fix_target(d);
   if (target) {

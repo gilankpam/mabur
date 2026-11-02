@@ -77,6 +77,10 @@ const ModeCand k1080p100{1920, 1080, 297000, 2640, 1125, false, false};
 const ModeCand k720p100{1280, 720, 148500, 1980, 750, false, false};
 const std::vector<ModeCand> kAvatar{k1080p60, k720p60, k1080p100, k720p100};
 
+// A display offering only 75 Hz: none of the fixed rates (60/90/100/120).
+const ModeCand k720p75{1280, 720, 74250, 1320, 750, false, true};
+const std::vector<ModeCand> kOnly75{k720p75};
+
 struct Fx {
   maburplay::Config cfg = maburplay::load_config(kPlayBundle);
   GsLiveView gs = bundle_gs();
@@ -685,6 +689,17 @@ TEST(fix_row_appears_only_for_an_unshowable_rate_and_targets_the_nearest_shown) 
   CHECK(!vis(f.node("video.fix")));
 }
 
+TEST(fix_row_stays_hidden_when_the_display_has_no_mode_at_any_fixed_rate) {
+  // The display offers only 75 Hz, which the camera's rate (90) does not
+  // show -- but none of 60/90/100/120 is near 75 either, so there is no
+  // target to fix to and the row must not offer one (it would send
+  // nothing and still read "✓ saved").
+  Fx f;
+  f.modes = kOnly75;
+  f.vtx_set("VENC_MODE", "90@1728x972/binned");
+  CHECK(!vis(f.node("video.fix")));
+}
+
 TEST(mirror_and_flip_are_standard_bool_rows_that_pause) {
   Fx f;
   f.vtx_set("VENC_MIRROR", "1");
@@ -739,6 +754,24 @@ TEST(drone_rows_refuse_until_their_value_lands_and_under_a_table_mismatch) {
   const auto m = f.find(t, "video.mirror");
   REQUIRE(m.has_value());
   CHECK(m->refuse() == "Reading the drone's settings…");
+}
+
+TEST(a_row_with_no_value_under_a_partial_list_refuses_as_done_waiting) {
+  // list == "partial" means the dump is finished, not still arriving: a
+  // row that never answered must not read "Reading the drone's
+  // settings…" forever.
+  Fx f;
+  f.snap.vtx = VtxState{};
+  f.snap.vtx->linked = true;
+  f.snap.vtx->list = "pending";
+  CHECK(f.node("video.flip").refuse() == "Reading the drone's settings…");
+
+  f.snap.vtx->list = "partial";
+  CHECK(f.node("video.flip").refuse() == "This setting did not answer.");
+
+  // A table mismatch still comes first.
+  f.snap.vtx->table_mismatch = true;
+  CHECK(f.node("video.flip").refuse() == "Drone settings differ from this GS — update");
 }
 
 TEST(drone_header_texts) {

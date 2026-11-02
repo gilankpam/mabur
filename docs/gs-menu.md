@@ -194,9 +194,11 @@ answered `err` or timed out.
   (`link.vtx.table_mismatch`) refuses every drone row with "Drone
   settings differ from this GS — update", and a row whose own parameter
   has never answered refuses with "Reading the drone's settings…" until
-  it has. A refused row is dimmed and reads "—"; its ▶ toasts the refuse
-  text instead of opening a picker, and the same text is its help line
-  while selected.
+  it has, or with "This setting did not answer." once `link.vtx.list`
+  has already settled "partial" — the dump is done, not still arriving,
+  so a row that never got a value is done waiting too. A refused row is
+  dimmed and reads "—"; its ▶ toasts the refuse text instead of opening a
+  picker, and the same text is its help line while selected.
 - The drone group's header line under the crumb (`drone_header`,
   `MenuModel::set_header`) carries the same table-mismatch and
   still-reading texts for the whole group, plus "Some settings did not
