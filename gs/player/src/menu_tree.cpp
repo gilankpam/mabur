@@ -5,7 +5,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
+#include <optional>
 #include <utility>
+
+#include "mabur/camera_modes.h"
+#include "mabur/config_params.h"
 
 namespace maburplay {
 namespace {
@@ -108,6 +112,286 @@ MenuNode group(std::string id, std::string label, std::string help,
   n.kind = NodeKind::kGroup;
   n.help = text(std::move(help));
   n.children = std::move(kids);
+  return n;
+}
+
+// --- Video drone rows ---------------------------------------------------
+
+// A pause every Rebuild-apply drone row shares: the encoder pipeline stops
+// and restarts in-process.
+constexpr const char* kPause = "Video pauses about half a second.";
+
+// Non-empty sentences joined with one space, rebuild sentence first.
+std::string join_confirm(std::initializer_list<std::string> parts) {
+  std::string out;
+  for (const std::string& p : parts) {
+    if (p.empty()) continue;
+    if (!out.empty()) out += " ";
+    out += p;
+  }
+  return out;
+}
+
+// The row's value text off the sideport, or nullopt with no snapshot or no
+// such row.
+std::optional<std::string> vtx(const Deps& d, const char* id) {
+  if (!d->snap) return std::nullopt;
+  return vtx_value(*d->snap, id);
+}
+
+// What stops a drone row from applying, checked after the model's own
+// "Needs the drone linked": a table mismatch refuses every drone row, and
+// a row whose own value has not landed yet refuses until it has.
+std::function<std::string()> drone_refuse(const Deps& d, const char* id) {
+  return [d, id] {
+    if (d->snap && d->snap->vtx && d->snap->vtx->table_mismatch)
+      return std::string("Drone settings differ from this GS — update");
+    if (!vtx(d, id)) return std::string("Reading the drone's settings…");
+    return std::string();
+  };
+}
+
+// A choice row that sets one drone parameter, reading its current value
+// straight off the sideport.
+MenuNode drone_choice(const Deps& d, std::string id, std::string label, const char* param_id) {
+  MenuNode n;
+  n.id = std::move(id);
+  n.label = std::move(label);
+  n.kind = NodeKind::kChoice;
+  n.owner = Owner::kDrone;
+  n.refuse = drone_refuse(d, param_id);
+  n.current = [d, param_id] { return vtx(d, param_id).value_or(std::string()); };
+  n.steps = [param_id](const std::string& v) { return Steps{{Owner::kDrone, param_id, v}}; };
+  return n;
+}
+
+// A drone_choice over a Bool param: the wire carries "1"/"0", the row
+// trades in the model's own "true"/"false".
+MenuNode drone_bool(const Deps& d, std::string id, std::string label, const char* param_id) {
+  MenuNode n = drone_choice(d, std::move(id), std::move(label), param_id);
+  n.choices = on_off;
+  n.current = [d, param_id] {
+    const auto v = vtx(d, param_id);
+    return std::string(v && *v == "1" ? "true" : "false");
+  };
+  n.steps = [param_id](const std::string& v) {
+    return Steps{{Owner::kDrone, param_id, v == "true" ? "1" : "0"}};
+  };
+  return n;
+}
+
+// A number row over a drone parameter: `scale` converts between the wire
+// text (what the drone takes) and the number the picker edits -- e.g. kbps
+// on the wire, Mb/s on the picker.
+MenuNode drone_number(const Deps& d, std::string id, std::string label, const char* param_id,
+                      double min, double max, double step, double scale,
+                      std::function<std::string(double)> fmt) {
+  MenuNode n;
+  n.id = std::move(id);
+  n.label = std::move(label);
+  n.kind = NodeKind::kNumber;
+  n.owner = Owner::kDrone;
+  n.refuse = drone_refuse(d, param_id);
+  n.number.min = min;
+  n.number.max = max;
+  n.number.step = step;
+  n.number.get = [d, param_id, scale] {
+    const auto v = vtx(d, param_id);
+    return v ? num(*v) * scale : 0.0;
+  };
+  n.number.fmt = std::move(fmt);
+  n.steps = [param_id, scale](const std::string& v) {
+    return Steps{{Owner::kDrone, param_id, real_text(num(v) / scale)}};
+  };
+  return n;
+}
+
+struct CamMode {
+  int fps = 0, w = 0, h = 0;
+  bool binned = false;
+};
+
+// The drone's camera mode, parsed off VENC_MODE; nullopt while that row has
+// no value yet or its text does not parse.
+std::optional<CamMode> camera_mode(const Deps& d) {
+  const auto v = vtx(d, "VENC_MODE");
+  if (!v) return std::nullopt;
+  CamMode m;
+  if (!mabur::cfgparam::parse_mode_text(*v, &m.fps, &m.w, &m.h, &m.binned)) return std::nullopt;
+  return m;
+}
+
+// Camera mode's steps: REC_FPS first, dragged down to `fps`, when the
+// onboard recorder is on and asking for more than the new rate can give --
+// the recorder never outruns the camera.
+Steps camera_steps(const Deps& d, const std::string& mode_text) {
+  Steps out;
+  int fps = 0, w = 0, h = 0;
+  bool binned = false;
+  if (mabur::cfgparam::parse_mode_text(mode_text, &fps, &w, &h, &binned)) {
+    const auto rec_enable = vtx(d, "REC_ENABLE");
+    const auto rec_fps = vtx(d, "REC_FPS");
+    if (rec_enable && *rec_enable == "1" && rec_fps && std::atoi(rec_fps->c_str()) > fps)
+      out.push_back({Owner::kDrone, "REC_FPS", std::to_string(fps)});
+  }
+  out.push_back({Owner::kDrone, "VENC_MODE", mode_text});
+  return out;
+}
+
+// Camera mode's confirm: the rebuild pause, plus the SD frame rate note
+// whenever camera_steps would drag REC_FPS down with it.
+std::string camera_confirm(const Deps& d, const std::string& mode_text) {
+  std::string extra;
+  int fps = 0, w = 0, h = 0;
+  bool binned = false;
+  if (mabur::cfgparam::parse_mode_text(mode_text, &fps, &w, &h, &binned)) {
+    const auto rec_enable = vtx(d, "REC_ENABLE");
+    const auto rec_fps = vtx(d, "REC_FPS");
+    if (rec_enable && *rec_enable == "1" && rec_fps && std::atoi(rec_fps->c_str()) > fps)
+      extra = "Also lowers the SD frame rate to " + std::to_string(fps) + ".";
+  }
+  return join_confirm({kPause, extra});
+}
+
+// The Camera mode choice list: binned sizes then native sizes, for every
+// rate the display shows (every rate when `modes` is empty -- the host
+// test build and a connector that could not be read); the 120 fps choices
+// are letterboxed. The drone's current value is pulled to the front when
+// it is off that list (an old REC_SIZE-shaped leftover, or a rate the
+// display cannot show), noting which, and stays listed-but-unpickable in
+// that second case (keep_current_if_unpickable on the row).
+std::vector<Choice> camera_choices(const Deps& d) {
+  std::vector<Choice> out;
+  const auto modes = d->modes ? d->modes() : std::vector<ModeCand>{};
+  for (int rate : mabur::cammode::kRates) {
+    if (!modes.empty() && sizes_at(modes, rate).empty()) continue;
+    for (bool binned : {true, false}) {
+      const mabur::cammode::SensorMode* m = mabur::cammode::mode_for(rate, binned);
+      if (!m) continue;
+      for (const mabur::cammode::Size& sz : m->sizes) {
+        out.push_back({mabur::cfgparam::render_mode_text(rate, sz.w, sz.h, binned),
+                       mabur::cammode::choice_label(rate, sz.w, sz.h, binned),
+                       rate == 120 ? "letterboxed 2.1:1" : "", true});
+      }
+    }
+  }
+  const auto cur = vtx(d, "VENC_MODE");
+  if (cur) {
+    const bool listed =
+        std::any_of(out.begin(), out.end(), [&](const Choice& c) { return c.value == *cur; });
+    if (!listed) {
+      int fps = 0, w = 0, h = 0;
+      bool binned = false;
+      if (mabur::cfgparam::parse_mode_text(*cur, &fps, &w, &h, &binned)) {
+        const bool shown = modes.empty() || !sizes_at(modes, fps).empty();
+        const std::string note =
+            !shown ? "display can't show" : fps == 120 ? "letterboxed 2.1:1" : "";
+        out.insert(out.begin(), {*cur, mabur::cammode::choice_label(fps, w, h, binned), note, shown});
+      }
+    }
+  }
+  return out;
+}
+
+MenuNode camera_row(const Deps& d) {
+  MenuNode n = drone_choice(d, "video.camera", "Camera mode", "VENC_MODE");
+  n.choices = [d] { return camera_choices(d); };
+  n.keep_current_if_unpickable = true;
+  n.confirm = [d](const std::string& v) { return camera_confirm(d, v); };
+  n.steps = [d](const std::string& v) { return camera_steps(d, v); };
+  n.help = text(
+      "Camera frame rate, size and view. bin merges sensor pixels 2×2 for the widest "
+      "view; without it the sensor is read pixel for pixel, sharper but zoomed in. Changing it "
+      "pauses video about half a second.");
+  return n;
+}
+
+// The display-shown rate nearest the camera's current one (a tie keeps the
+// higher rate), at the camera's own size when that rate's sensor mode
+// offers it, else that mode's first size; same readout (binned/native).
+std::optional<CamMode> fix_target(const Deps& d) {
+  const auto cm = camera_mode(d);
+  if (!cm) return std::nullopt;
+  const auto modes = d->modes ? d->modes() : std::vector<ModeCand>{};
+  int best = -1;
+  double best_d = 0;
+  for (int rate : mabur::cammode::kRates) {
+    if (sizes_at(modes, rate).empty()) continue;
+    const double dist = std::fabs(rate - cm->fps);
+    if (best < 0 || dist < best_d || (dist == best_d && rate > best)) {
+      best = rate;
+      best_d = dist;
+    }
+  }
+  if (best < 0) return std::nullopt;
+  const mabur::cammode::SensorMode* m = mabur::cammode::mode_for(best, cm->binned);
+  if (!m || m->sizes.empty()) return std::nullopt;
+  int w = cm->w, h = cm->h;
+  const bool offers =
+      std::any_of(m->sizes.begin(), m->sizes.end(),
+                  [&](const mabur::cammode::Size& s) { return s.w == w && s.h == h; });
+  if (!offers) {
+    w = m->sizes[0].w;
+    h = m->sizes[0].h;
+  }
+  return CamMode{best, w, h, cm->binned};
+}
+
+MenuNode fix_row(const Deps& d) {
+  MenuNode n;
+  n.id = "video.fix";
+  n.label = "Fix: set camera to …";
+  n.kind = NodeKind::kAction;
+  n.owner = Owner::kDrone;
+  n.refuse = drone_refuse(d, "VENC_MODE");
+  n.visible = [d] {
+    const auto cm = camera_mode(d);
+    if (!cm) return false;
+    const auto modes = d->modes ? d->modes() : std::vector<ModeCand>{};
+    return !modes.empty() && sizes_at(modes, cm->fps).empty();
+  };
+  const auto target = fix_target(d);
+  if (target) {
+    n.label = "Fix: set camera to " + std::to_string(target->fps) + " fps · " +
+              size_label(target->w, target->h);
+  }
+  n.action = [d, target] {
+    if (!target) return Steps{};
+    return camera_steps(
+        d, mabur::cfgparam::render_mode_text(target->fps, target->w, target->h, target->binned));
+  };
+  n.confirm = [d, target](const std::string&) {
+    if (!target) return std::string();
+    return camera_confirm(
+        d, mabur::cfgparam::render_mode_text(target->fps, target->w, target->h, target->binned));
+  };
+  return n;
+}
+
+MenuNode mirror_row(const Deps& d) {
+  MenuNode n = drone_bool(d, "video.mirror", "Mirror", "VENC_MIRROR");
+  n.confirm = [](const std::string&) { return std::string(kPause); };
+  n.help = text("Flip the picture left-right, for a camera mounted mirrored.");
+  return n;
+}
+
+MenuNode flip_row(const Deps& d) {
+  MenuNode n = drone_bool(d, "video.flip", "Flip", "VENC_FLIP");
+  n.confirm = [](const std::string&) { return std::string(kPause); };
+  n.help = text("Flip the picture upside down, for a camera mounted upside down.");
+  return n;
+}
+
+MenuNode slices_row(const Deps& d) {
+  MenuNode n = drone_choice(d, "video.slices", "Row slices", "VENC_SLICES");
+  n.advanced = true;
+  n.choices = [] { return std::vector<Choice>{{"4", "On", "", true}, {"1", "Off", "", true}}; };
+  n.current = [d] {
+    const auto v = vtx(d, "VENC_SLICES");
+    return std::string(v && num(*v) > 1 ? "4" : "1");
+  };
+  n.confirm = [](const std::string&) { return std::string(kPause); };
+  n.help = text("Splits each frame into row slices the GS can patch when one is lost.");
   return n;
 }
 
@@ -632,7 +916,11 @@ std::vector<MenuNode> build_menu_tree(const MenuTreeDeps& deps) {
   const Deps d = std::make_shared<const MenuTreeDeps>(deps);
   return guarded(d, {
       group("video", "Video", "Camera, display and picture.",
-            [d] { return std::vector<MenuNode>{display_row(d), colour_row(d)}; }),
+            [d] {
+              return std::vector<MenuNode>{camera_row(d), fix_row(d),    display_row(d),
+                                           colour_row(d), mirror_row(d), flip_row(d),
+                                           slices_row(d)};
+            }),
       group("link", "Link", "How the video crosses the air.",
             [d] {
               std::vector<MenuNode> rows{width_row(d), rate_row(d)};

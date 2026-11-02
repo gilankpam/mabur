@@ -93,8 +93,13 @@ real values.
 | Row | Owner | Live key(s) | Notes |
 |---|---|---|---|
 | **Video** | | | |
+| `video.camera` "Camera mode" | drone | `VENC_MODE` | Choices are binned sizes then native sizes, for every rate the display shows (every rate with no connector modes); each 120 fps choice notes "letterboxed 2.1:1". The drone's current value is pulled to the front when it is off that list, noted "display can't show" and unpickable if its rate is one the display cannot show at all (`keep_current_if_unpickable`), else picked straight through. Confirm/apply drag `REC_FPS` down first when the onboard recorder is on and set above the new rate. |
+| `video.fix` "Fix: set camera to …" | drone | `VENC_MODE` (+ `REC_FPS`) | Visible only while the camera's own rate is one the display cannot show; targets the display-shown rate in `60/90/100/120` nearest the camera's (a tie keeps the higher rate), at the camera's own size when that rate's sensor mode offers it, else that mode's first size. Same drag/confirm as Camera mode. |
 | `video.display` "Display" | player | `screen_mode` | Choices: `auto` (largest size at the camera's rate) or a `WxH` the display offers within the camera's rate. Confirm: splits a running burned recording. Warns `≠ camera` only when the display has modes but none at the camera's rate — not when the mode list itself is empty (a failed EDID read warns nothing). |
 | `video.colour` "Colour correction" | player | `colortrans.enable` | On/off. Confirm: splits a running burned recording. |
+| `video.mirror` "Mirror" | drone | `VENC_MIRROR` | On/off. Flips the picture left-right, for a camera mounted mirrored. |
+| `video.flip` "Flip" | drone | `VENC_FLIP` | On/off. Flips the picture upside down, for a camera mounted upside down. |
+| `video.slices` "Row slices" (advanced) | drone | `VENC_SLICES` | On (4) / Off (1); any stored value above 1 reads On. |
 | **Link** | | | |
 | `link.width` "Width" | gs | `link.static_bw` (fixed) or `link.ladder` (adaptive) | 40/20 MHz. Under a fixed rate this only re-pins the width. Under adaptive it loads that width's default ladder (MCS 0,1,2,3,4 at 0.50/0.25 bw 40; MCS 0,1,2,3,4,5 at 0.50/0.25 bw 20, the bundle default) unless the live ladder is already one of those two tables, with a confirm naming the rung count. |
 | `link.rate` "Rate" | gs | `link.static_mcs` (+ `static_bw`/`static_overhead_base`/`static_overhead_enh` into fixed) | Adaptive/Fixed. Switching to fixed sends the current rung's width and FEC overhead, then MCS last (capped at 5), so the link moves once; switching to adaptive is one set, `static_mcs = -1`, re-entering the ladder on that rung. |

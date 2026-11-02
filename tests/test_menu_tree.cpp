@@ -15,6 +15,8 @@
 #include "config.h"            // maburgs::Config, maburgs::load_config
 #include "gs_config_apply.h"   // maburgs::patch_live_key, kGsLiveKeys
 #include "gs_live_view.h"
+#include "gs_snapshot.h"
+#include "mabur/config_params.h"
 #include "menu_model.h"
 #include "menu_tree.h"
 #include "mode_pick.h"
@@ -26,6 +28,7 @@
 using maburplay::build_menu_tree;
 using maburplay::Choice;
 using maburplay::GsLiveView;
+using maburplay::GsSnapshot;
 using maburplay::MenuNode;
 using maburplay::MenuTreeDeps;
 using maburplay::ModeCand;
@@ -33,6 +36,8 @@ using maburplay::NodeKind;
 using maburplay::Owner;
 using maburplay::Rung;
 using maburplay::SetStep;
+using maburplay::VtxRow;
+using maburplay::VtxState;
 
 namespace {
 
@@ -73,16 +78,39 @@ const std::vector<ModeCand> kAvatar{k1080p60, k720p60, k1080p100, k720p100};
 struct Fx {
   maburplay::Config cfg = maburplay::load_config(kPlayBundle);
   GsLiveView gs = bundle_gs();
+  GsSnapshot snap;
   bool rec = false, burned = false;
   std::vector<ModeCand> modes;
   double cam = 0;
   std::string running;
 
+  // Fills snap.vtx (creating it linked, list "complete") with one row,
+  // updating it in place when `id` is already there.
+  void vtx_set(const char* id, const std::string& value, const std::string& st = "idle") {
+    if (!snap.vtx) {
+      snap.vtx = VtxState{};
+      snap.vtx->linked = true;
+      snap.vtx->list = "complete";
+    }
+    for (VtxRow& r : snap.vtx->rows) {
+      if (r.id == id) {
+        r.value = value;
+        r.st = st;
+        return;
+      }
+    }
+    VtxRow row;
+    row.id = id;
+    row.value = value;
+    row.st = st;
+    snap.vtx->rows.push_back(row);
+  }
+
   MenuTreeDeps deps() {
     MenuTreeDeps d;
     d.cfg = &cfg;
     d.gs = &gs;
-    d.snap = nullptr;
+    d.snap = &snap;
     d.rec_running = [this] { return rec; };
     d.burned_rec_running = [this] { return burned; };
     d.modes = [this] { return modes; };
@@ -375,6 +403,182 @@ TEST(display_choices_are_auto_plus_sizes_at_the_camera_rate) {
   CHECK(f.node("video.display").value_text() == "1920×1080 @ 59.94 Hz");
 }
 
+TEST(camera_mode_lists_binned_then_native_sizes_for_the_rates_the_display_shows) {
+  Fx f;
+  f.modes = kAvatar;   // 60 and 100 Hz, two sizes each
+  f.vtx_set("VENC_MODE", "100@1280x720/binned");
+  MenuNode cam = f.node("video.camera");
+  CHECK((values(cam.choices()) ==
+         std::vector<std::string>{"60@1920x1080/binned", "60@1280x720/binned",
+                                  "60@1920x1080/native", "60@1600x900/native",
+                                  "60@1280x720/native", "100@1728x972/binned",
+                                  "100@1280x720/binned", "100@1920x1080/native",
+                                  "100@1600x900/native", "100@1280x720/native"}));
+  const auto lbls = labels(cam.choices());
+  REQUIRE(lbls.size() == 10);
+  CHECK(lbls[0] == "60 fps · 1920×1080 · 1.0× bin");
+  CHECK(lbls[7] == "100 fps · 1920×1080 · 1.7×");
+  CHECK(cam.current() == "100@1280x720/binned");
+}
+
+TEST(camera_mode_lists_every_rate_with_no_display_modes_and_tags_120) {
+  Fx f;   // modes empty: every rate, binned then native, web order
+  const MenuNode cam = f.node("video.camera");
+  const auto cs = cam.choices();
+  CHECK(cs.size() == 18);
+  int n120 = 0;
+  for (const Choice& c : cs) {
+    if (c.value.rfind("120@", 0) == 0) {
+      CHECK(c.note == "letterboxed 2.1:1");
+      ++n120;
+    } else {
+      CHECK(c.note.empty());
+    }
+  }
+  CHECK(n120 == 3);
+}
+
+TEST(an_off_list_camera_mode_comes_first_with_the_display_note) {
+  Fx f;
+  f.modes = kAvatar;   // no 90 Hz mode
+  f.vtx_set("VENC_MODE", "90@1728x972/binned");
+  MenuNode cam = f.node("video.camera");
+  CHECK(cam.keep_current_if_unpickable);
+  auto cs = cam.choices();
+  REQUIRE(!cs.empty());
+  CHECK(cs[0].value == "90@1728x972/binned");
+  CHECK(cs[0].note == "display can't show");
+  CHECK(!cs[0].pickable);
+
+  // An off-list rate the display does show: no note, zoomed by its own
+  // sensor mode even though the size itself isn't on that mode's list.
+  f.vtx_set("VENC_MODE", "60@2944x1656/native");
+  cam = f.node("video.camera");
+  cs = cam.choices();
+  REQUIRE(!cs.empty());
+  CHECK(cs[0].value == "60@2944x1656/native");
+  CHECK(cs[0].note.empty());
+  CHECK(cs[0].label == "60 fps · 2944×1656 · 1.3×");
+}
+
+TEST(camera_mode_confirms_the_pause_and_drags_rec_fps_down_first) {
+  Fx f;
+  f.vtx_set("REC_ENABLE", "1");
+  f.vtx_set("REC_FPS", "100");
+  MenuNode cam = f.node("video.camera");
+  CHECK(confirm(cam, "60@1920x1080/binned") ==
+        "Video pauses about half a second. Also lowers the SD frame rate to 60.");
+  CHECK((cam.steps("60@1920x1080/binned") ==
+         std::vector<SetStep>{{Owner::kDrone, "REC_FPS", "60"},
+                              {Owner::kDrone, "VENC_MODE", "60@1920x1080/binned"}}));
+
+  f.vtx_set("REC_ENABLE", "0");
+  cam = f.node("video.camera");
+  CHECK(confirm(cam, "60@1920x1080/binned") == "Video pauses about half a second.");
+  CHECK((cam.steps("60@1920x1080/binned") ==
+         std::vector<SetStep>{{Owner::kDrone, "VENC_MODE", "60@1920x1080/binned"}}));
+
+  // Picking a higher or equal rate than REC_FPS never drags it.
+  f.vtx_set("REC_ENABLE", "1");
+  f.vtx_set("REC_FPS", "60");
+  cam = f.node("video.camera");
+  CHECK(confirm(cam, "100@1920x1080/native") == "Video pauses about half a second.");
+  CHECK((cam.steps("100@1920x1080/native") ==
+         std::vector<SetStep>{{Owner::kDrone, "VENC_MODE", "100@1920x1080/native"}}));
+}
+
+TEST(fix_row_appears_only_for_an_unshowable_rate_and_targets_the_nearest_shown) {
+  Fx f;
+  f.modes = kAvatar;
+  f.vtx_set("VENC_MODE", "90@1728x972/binned");
+  MenuNode fix = f.node("video.fix");
+  CHECK(vis(fix));
+  CHECK(fix.label == "Fix: set camera to 100 fps · 1728×972");
+  CHECK((fix.action() ==
+         std::vector<SetStep>{{Owner::kDrone, "VENC_MODE", "100@1728x972/binned"}}));
+
+  // 100 binned lacks 1920x1080: falls back to that mode's first size.
+  f.vtx_set("VENC_MODE", "90@1920x1080/binned");
+  fix = f.node("video.fix");
+  CHECK(fix.label == "Fix: set camera to 100 fps · 1728×972");
+
+  // A rate the display already shows: no Fix row.
+  f.vtx_set("VENC_MODE", "100@1280x720/binned");
+  CHECK(!vis(f.node("video.fix")));
+
+  // No display modes at all: nothing to target, so no Fix row either.
+  f.modes.clear();
+  f.vtx_set("VENC_MODE", "90@1728x972/binned");
+  CHECK(!vis(f.node("video.fix")));
+}
+
+TEST(mirror_and_flip_are_standard_bool_rows_that_pause) {
+  Fx f;
+  f.vtx_set("VENC_MIRROR", "1");
+  MenuNode mirror = f.node("video.mirror");
+  CHECK(mirror.current() == "true");
+  CHECK(!mirror.advanced);
+  const auto mcs = mirror.choices();
+  REQUIRE(mcs.size() == 2);
+  CHECK(mcs[0].value == "true" && mcs[0].label == "On");
+  CHECK((mirror.steps("false") == std::vector<SetStep>{{Owner::kDrone, "VENC_MIRROR", "0"}}));
+  CHECK(confirm(mirror, "false") == "Video pauses about half a second.");
+  CHECK(mirror.help().find("mirrored") != std::string::npos);
+
+  f.vtx_set("VENC_FLIP", "1");
+  MenuNode flip = f.node("video.flip");
+  CHECK(flip.current() == "true");
+  CHECK((flip.steps("false") == std::vector<SetStep>{{Owner::kDrone, "VENC_FLIP", "0"}}));
+  CHECK(confirm(flip, "false") == "Video pauses about half a second.");
+  CHECK(flip.help().find("upside down") != std::string::npos);
+}
+
+TEST(slices_reads_on_for_any_count_above_one_and_sends_4_or_1) {
+  Fx f;
+  f.vtx_set("VENC_SLICES", "6");
+  MenuNode sl = f.node("video.slices");
+  CHECK(sl.advanced);
+  CHECK(sl.current() == "4");
+  f.vtx_set("VENC_SLICES", "1");
+  CHECK(f.node("video.slices").current() == "1");
+  CHECK((sl.steps("4") == std::vector<SetStep>{{Owner::kDrone, "VENC_SLICES", "4"}}));
+  CHECK(confirm(sl, "4") == "Video pauses about half a second.");
+}
+
+TEST(drone_rows_refuse_until_their_value_lands_and_under_a_table_mismatch) {
+  Fx f;
+  f.snap.vtx = VtxState{};
+  f.snap.vtx->linked = true;
+  f.snap.vtx->list = "complete";
+  CHECK(f.node("video.mirror").refuse() == "Reading the drone's settings…");
+
+  f.snap.vtx->table_mismatch = true;
+  CHECK(f.node("video.mirror").refuse() == "Drone settings differ from this GS — update");
+
+  f.snap.vtx->table_mismatch = false;
+  f.vtx_set("VENC_MIRROR", "1");
+  CHECK(f.node("video.mirror").refuse().empty());
+
+  // No sideport datagram at all yet.
+  MenuTreeDeps d = f.deps();
+  d.snap = nullptr;
+  const auto t = build_menu_tree(d);
+  const auto m = f.find(t, "video.mirror");
+  REQUIRE(m.has_value());
+  CHECK(m->refuse() == "Reading the drone's settings…");
+}
+
+TEST(video_group_order_has_the_drone_rows_in_place) {
+  Fx f;
+  const auto t = f.tree();
+  REQUIRE(!t.empty());
+  std::vector<std::string> ids;
+  for (const MenuNode& n : t[0].children()) ids.push_back(n.id);
+  CHECK((ids == std::vector<std::string>{"video.camera", "video.fix", "video.display",
+                                         "video.colour", "video.mirror", "video.flip",
+                                         "video.slices"}));
+}
+
 TEST(fec_enh_max_follows_base) {
   Fx f;
   f.gs.static_mcs = 3;
@@ -602,6 +806,10 @@ TEST(every_step_key_is_a_live_key_of_its_owner) {
       if (s.owner == Owner::kGs) {
         if (!maburgs::gs_live_key(s.key)) std::printf("not a maburgs live key: %s\n", s.key.c_str());
         CHECK(maburgs::gs_live_key(s.key) != nullptr);
+      } else if (s.owner == Owner::kDrone) {
+        if (mabur::cfgparam::find(s.key.c_str()) < 0)
+          std::printf("not a drone param id: %s\n", s.key.c_str());
+        CHECK(mabur::cfgparam::find(s.key.c_str()) >= 0);
       } else {
         CHECK(s.owner == Owner::kPlayer);
         if (!maburplay::player_live_key(s.key))
