@@ -306,6 +306,11 @@ static VerdictOut blocked_here(int ref = 5) {
 static VerdictOut unknown_here(int ref = 5) {
   VerdictOut o = interfered(ref); o.evidence = kEvImpaired; o.v = Verdict::Unknown; return o;
 }
+// The detect route's per-window reading: same shape as blocked_here(), the
+// other bit trigger_evidence() treats alike.
+static VerdictOut detected_here(int ref = 5) {
+  VerdictOut o = interfered(ref); o.evidence = kEvImpaired | kEvDetected; return o;
+}
 static bool has(const std::vector<uint8_t>& v, uint8_t ch) {
   for (auto c : v) if (c == ch) return true;
   return false;
@@ -327,6 +332,26 @@ TEST(escape_from_blocked_op_into_fled_channel) {
   CHECK(!has(h.backed_off_failed(1001), 136));          // ...fled, not failed
   // the escape target goes through the normal confirm/verify flow
   CHECK(h.tick(T(1080, blocked_here(), std::nullopt, 136, true)).kind == HopAction::Confirm);
+  CHECK(h.state() == HopState::Verifying);
+}
+// The detect route's escape: same as above, triggered by kEvDetected instead
+// of kEvBlocked -- escape_allowed() reads trigger_evidence(), not kEvBlocked
+// alone.
+// Revert (escape_allowed() back to `& kEvBlocked`): Hold, hold_exhausted.
+TEST(escape_from_detected_op_into_fled_channel) {
+  HopController h(cfg());
+  HopTick k = T(1000, detected_here(), std::nullopt, 136);   // on 136: nothing ranked
+  k.escape = 112; k.escape_score = 7;
+  auto a = h.tick(k);
+  CHECK(a.kind == HopAction::Order && a.target == 112 && a.restore_rung == 5);
+  CHECK(h.state() == HopState::Ordered);
+  auto ev = h.take_events();
+  REQUIRE(ev.size() == 1);
+  CHECK(ev[0].kind == "escape" && ev[0].target == 112 && ev[0].score == 7);
+  CHECK(backed(h, 136, 1001));                          // the detected op is fled
+  CHECK(!has(h.backed_off_failed(1001), 136));          // ...fled, not failed
+  // the escape target goes through the normal confirm/verify flow
+  CHECK(h.tick(T(1080, detected_here(), std::nullopt, 136, true)).kind == HopAction::Confirm);
   CHECK(h.state() == HopState::Verifying);
 }
 // Revert (escape without the kEvBlocked gate): Order 112.
@@ -443,6 +468,21 @@ TEST(confirm_extends_while_op_blocked) {
   CHECK(h.tick(T(1500, blocked_here(), 112, 144)).kind == HopAction::None);
   CHECK(h.tick(T(2000, blocked_here(), 112, 144)).kind == HopAction::None);
   CHECK(h.tick(T(3900, blocked_here(), 112, 144)).kind == HopAction::None);
+  CHECK(h.state() == HopState::Ordered && h.hop_ch() == 112);
+  auto ev = h.take_events();
+  REQUIRE(ev.size() == 1);   // logged once, on entering the extension
+  CHECK(ev[0].kind == "confirm_extend" && ev[0].target == 112 && ev[0].elapsed_ms == 500);
+}
+// Same engage, on the detect route instead of blocked -- the extension
+// gate reads trigger_evidence(), not kEvBlocked alone.
+// Revert (gate back to `& kEvBlocked`): Withdraw at 1500.
+TEST(confirm_extend_engages_on_a_detected_verdict) {
+  HopController h(cfg());
+  REQUIRE(h.tick(T(1000, detected_here(), 112, 144)).kind == HopAction::Order);
+  (void)h.take_events();
+  CHECK(h.tick(T(1500, detected_here(), 112, 144)).kind == HopAction::None);
+  CHECK(h.tick(T(2000, detected_here(), 112, 144)).kind == HopAction::None);
+  CHECK(h.tick(T(3900, detected_here(), 112, 144)).kind == HopAction::None);
   CHECK(h.state() == HopState::Ordered && h.hop_ch() == 112);
   auto ev = h.take_events();
   REQUIRE(ev.size() == 1);   // logged once, on entering the extension

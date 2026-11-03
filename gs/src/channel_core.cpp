@@ -338,6 +338,7 @@ void ChannelCore::apply_hop_action_(const HopAction& act, double now_ms) {
       break;
     case HopAction::Confirm:
       plan_.hop_confirmed(now_ms);
+      verdict_.landed();
       break;
     case HopAction::Withdraw:
       vrx_.set_hop(act.target, act.epoch);

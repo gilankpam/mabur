@@ -596,6 +596,38 @@ TEST(reactive_hop_onto_a_blocked_target_fails_verify_on_its_first_blocked_readin
   CHECK(g.clk.ms - landed < kHopSettleBlankMs + 4 * g.cfg.hop.window_ms);
 }
 
+// Unlike blocked_streak_, the detect ring must NOT carry: landing on a
+// clean target with HopVerdict::landed() uncalled would mix the old
+// channel's ring entries into the target's first reading. This rig's
+// Aggregator never decodes a real body (see interfere()'s comment above),
+// so loss_impaired -- and with it kEvDetected -- can never fire here
+// regardless of the ring's contents, which means this test cannot by
+// itself FAIL on a reverted landed() call (checked locally: it passes
+// either way). It still exercises the Confirm flow onto a clean target
+// end to end; the actual pin on the ring-clearing behaviour is
+// HopVerdict's own landed_clears_the_detect_ring_and_keeps_the_blocked_streak
+// unit test, backed by a code-review check of the Confirm case below.
+TEST(confirm_clears_the_detect_ring) {
+  Rig g(2, 0); freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
+  interfere_until_order(g);
+  const auto r = pump_rcf(g);
+  REQUIRE(r.has_value());
+  REQUIRE(r->hop_ch != 0 && r->hop_ch != 40);
+  g.core->note_video(r->hop_ch);
+  g.tick(true);
+  REQUIRE(g.sink.has_hop("lead_confirm"));
+  // the target's first window: low-foreign, no busy jam riding it
+  for (int i = 0; i < g.cfg.hop.window_ms / 10 + 2; ++i) {
+    g.vrx->on_video(static_cast<double>(g.clk.ms));
+    g.tick(true);
+  }
+  const std::string v = g.core->snapshot(0).hop.verdict;
+  CHECK((v == "healthy" || v == "unknown"));
+}
+
 // Onset -> order on two cards, bounded: the trigger needs occupied_windows
 // blocked windows plus the persist, and the order then waits on at most one
 // more freshness burst (burst_period_ms) to rank the candidates (1350 ms

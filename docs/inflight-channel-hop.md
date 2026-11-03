@@ -318,8 +318,10 @@ route has the same rule for the same reason: a `detected` window with no
 busy reading of its own is `unknown`
 (`detected_reading_less_current_window_is_unknown`). Neither
 the escape (`HopController::escape_allowed`) nor the confirm extension keys
-on `occupied`: both read `kEvBlocked`, so a no-reading occupied window
-neither escapes nor extends an order. The hop trigger
+on `occupied`: both read `trigger_evidence()` (`kEvBlocked | kEvDetected`),
+so a no-reading occupied window neither escapes nor extends an order, and
+a `detected` window engages either path the same as a `blocked` one. The
+hop trigger
 (`VerdictOut::trigger`) is `interfered` in `hop.persist` (2) of the last 3
 windows. `fade` and `unknown` never hop.
 
@@ -568,30 +570,35 @@ pair").
   keep running, so a fading enh layer can still demote itself. A demote
   taken on mid-hop evidence is overwritten by `restore()`; the per-rung
   store stays clean because it was not written during the blank.
-- **The blank starts at the first blocked window of the episode**, from
-  two call sites that compose because `blank_store()` keeps the LATER
-  deadline:
+- **The blank starts at the first window of the episode that is a
+  lead-in to either hop route**, from two call sites that compose because
+  `blank_store()` keeps the LATER deadline:
   1. `hop_store_blank_until()` (`gs/src/hop_blank.h`, pure), called from
      `ChannelCore::step_hop_edge_and_window_()`, returns
-     `t_ms + confirm_ms + 150 ms` **once per impaired episode**, on its
-     first impaired, non-weak, `blocked` window (`VerdictOut::first_blocked`).
-     That is the jam's lossy lead-in, `occupied_windows − 1` windows before
-     the first `interfered` one (§2): the lead-in is where the ladder takes
-     its demotes, and arming only at `interfered` would write them into the
-     per-rung store against the jammed channel. A zero-loss blocked window
-     is not impaired and arms nothing (no loss, no demote).
+     `t_ms + confirm_ms + 150 ms` **once per impaired episode**, on the
+     first impaired, non-weak window that is either route's lead-in
+     (`VerdictOut::first_blocked`): `blocked` (the occupied route's
+     lead-in, `occupied_windows − 1` windows before the first `interfered`
+     one, §2); loss-impaired with this window's own foreign reading at or
+     above `detect_pct` (the earliest window a detect run can start from);
+     or `detected` itself, when that run's own loss window read under
+     `detect_pct` and so was no lead-in on its own. Either way the lead-in
+     is where the ladder takes its demotes, and arming only at
+     `interfered` would write them into the per-rung store against the
+     jammed channel. A zero-loss blocked window is not impaired and arms
+     nothing (no loss, no demote).
   2. `HopAction::Order` calls `blank_store(now_ms + hop.confirm_ms + 150)`.
 
   Three gates on (1):
   - **Pinned.** Not reactive: nothing is ordered, so there is no hop to
     protect the store from, and blanking would change what a pinned flight
     records. (2) never fires pinned either.
-  - **`blocked` and not weak, not merely `impaired`.** A fade and an
-    unknown window with no blocked reading are impaired too; they leave
-    the ladder alone. Only foreign airtime can lead to a hop, so only a
-    blocked reading blanks.
+  - **A hop-route lead-in, and not weak, not merely `impaired`.** A fade
+    and an unknown window with no qualifying reading are impaired too;
+    they leave the ladder alone. Only foreign airtime that is a lead-in to
+    one of the two routes above blanks.
   - **One edge per frozen episode.** The deadline is computed once, at
-    the first blocked window, and not re-extended by later blocked or
+    the first lead-in window, and not re-extended by later lead-in or
     `interfered` windows, so a long or flickering jam cannot roll it
     forward. The store resumes `confirm_ms + 150 ms` after that window
     whether or not a hop was ordered (an order sets its own deadline);
@@ -677,7 +684,8 @@ has no home or fallback channel.
   the drone also jams the uplink, so the order never arrives; withdrawing at
   `confirm_ms` would back the clean target off as failed. Once `confirm_ms`
   has passed, if `hop.confirm_extend_ms` (3000) > `confirm_ms` **and** the
-  current verdict carries `kEvBlocked` **and** the order is younger than
+  current verdict reads a hop-route trigger (`trigger_evidence()`:
+  `kEvBlocked` or `kEvDetected`) **and** the order is younger than
   `confirm_extend_ms`, the controller stays `Ordered` (the RCFs keep
   carrying the order) and logs one H `confirm_extend`. Once engaged it holds
   to `confirm_extend_ms` whatever later windows say — the jam lifting is
@@ -694,8 +702,9 @@ has no home or fallback channel.
 - **Escape.** `HopTick::escape` = `ranker.best(op, backed_off_failed(),
   require_unblocked)` — fled and undelivered channels allowed, failed and
   blocked never. The controller orders it (H `escape`) only when there is no
-  `best`, the current verdict carries `kEvBlocked` (the link's own channel
-  is blocked) and the hop cap allows it (`HopController::escape_allowed`):
+  `best`, the current verdict reads a hop-route trigger (`trigger_evidence()`:
+  the link's own channel is blocked or detected) and the hop cap allows it
+  (`HopController::escape_allowed`):
   in `idle_tick` before `hold_exhausted` (after the cooldown check), and in
   `verifying_tick`'s verify-fail branch before its `verify_fail` hold.
 - **Session lost mid-hop** (`HopController::on_session_lost`, on
@@ -778,7 +787,11 @@ The busy threshold and level the `blocked` bit and both rankers use are
 the trigger, the in-flight ranker's blocked tier, the boot pick's tier and
 the calibration pick all read `blocked_pct`, so a hop target the ranker
 calls unblocked is unblocked to the verdict too and does not fail its
-verify on landing. `blocked_pct` 30 is three times the worst clean-channel
+verify on landing — for the occupied route: `HopVerdict::landed()` clears
+the detect ring at `HopAction::Confirm` (§2), so the detect route fails a
+verify only if a fresh full ring — a reading majority and a loss window
+among them — forms on the target inside `verify_ms`, never from the old
+channel's carried readings. `blocked_pct` 30 is three times the worst clean-channel
 single-window error (~10) and well under a real interferer (95–99), and it
 catches a 250 frames/s long-frame jam (32.8 % busy) that a threshold of
 50 misses
