@@ -17,8 +17,7 @@ const char* to_string(Verdict v) {
   return "unknown";
 }
 
-HopVerdict::HopVerdict(HopCfg cfg, BusyCfg busy, int n_cards)
-    : cfg_(cfg), busy_(busy), n_cards_(n_cards) {}
+HopVerdict::HopVerdict(HopCfg cfg, BusyCfg busy) : cfg_(cfg), busy_(busy) {}
 
 void HopVerdict::reset() {
   frozen_ = false;
@@ -61,7 +60,7 @@ bool HopVerdict::ring_reads_detect_(int lossy_needed) const {
     if (s.reading) fg.push_back(s.foreign);
     if (s.lossy) ++lossy;
   }
-  if (lossy < lossy_needed || static_cast<int>(fg.size()) < (n + 1) / 2 || fg.empty()) return false;
+  if (lossy < lossy_needed || static_cast<int>(fg.size()) < (n + 1) / 2) return false;
   // The median of the readings; with an even count, the mean of the two
   // middle ones (so at the threshold the two middle readings must average
   // detect_pct).

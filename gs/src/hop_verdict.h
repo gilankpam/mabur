@@ -100,7 +100,7 @@ struct VerdictOut {
 // I/O, no threads, no hardware.
 class HopVerdict {
  public:
-  HopVerdict(HopCfg cfg, BusyCfg busy, int n_cards);
+  HopVerdict(HopCfg cfg, BusyCfg busy);
   // One window. cards[i].valid=false = skipped (mid-dwell / dead); rung = ladder rung now.
   VerdictOut window(double now_ms, const std::vector<VerdictCardIn>& cards,
                     const VerdictLinkIn& link, int rung);
@@ -131,7 +131,6 @@ class HopVerdict {
  private:
   HopCfg cfg_;
   BusyCfg busy_;
-  int n_cards_;
   // trailing reference (5 s = 5000 / window_ms samples): link recovered mean.
   std::deque<double> rec_hist_;
   bool frozen_ = false;

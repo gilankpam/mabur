@@ -35,7 +35,7 @@ ChannelCore::ChannelCore(ChannelCoreCfg cfg, std::vector<LinkCard*> cards, VrxCo
       plan_(ChannelPlanCfg{cfg_.start_ch, cfg_.radio.channels, n_cards_,
                            cfg_.radio.scan.search_after_ms}),
       boot_pick_(false),
-      verdict_(cfg_.hop, cfg_.radio.scan.busy, n_cards_),
+      verdict_(cfg_.hop, cfg_.radio.scan.busy),
       ranker_(cfg_.hop, cfg_.radio.scan.busy, cfg_.radio.channels, 0, cfg_.radio.width),
       hopc_(cfg_.hop),
       cur_ch_(static_cast<size_t>(n_cards_), cfg_.start_ch),

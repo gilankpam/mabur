@@ -52,7 +52,7 @@ static VerdictOut unknown(HopVerdict& v, double t) {      // impaired, no domain
 }
 
 TEST(no_blank_while_the_link_is_clean) {
-  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
+  HopVerdict v(cfg(), BusyCfg{}); double t = warm(v);
   auto o = v.window(t, {clean(), clean()}, {0.0, 20}, 5);
   CHECK(o.v == Verdict::Healthy);
   CHECK(!hop_store_blank_until(o, true, 500).has_value());
@@ -64,7 +64,7 @@ TEST(no_blank_while_the_link_is_clean) {
 // Revert (arm on the first `interfered` window): the first window has no
 // deadline and the occupied_windows-th one does.
 TEST(blank_opens_at_the_first_blocked_window) {
-  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
+  HopVerdict v(cfg(), BusyCfg{}); double t = warm(v);
   const double onset = t;
   auto first = jam(v, t); t += 150;
   CHECK(first.v == Verdict::Unknown);
@@ -89,7 +89,7 @@ static VerdictCardIn low_busy(double nhm) {
 // loss-driven demotes meanwhile land in the per-rung store.
 // Revert (arm on `blocked` alone): the first window has no deadline.
 TEST(blank_opens_at_the_first_lossy_low_foreign_window) {
-  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
+  HopVerdict v(cfg(), BusyCfg{}); double t = warm(v);
   auto first = v.window(t, {low_busy(45), low_busy(45)}, {0.04, 80}, 5);   // lossy, foreign 10 >= detect_pct, not blocked
   CHECK(!(first.evidence & kEvBlocked));
   REQUIRE(hop_store_blank_until(first, true, 500).has_value());
@@ -101,7 +101,7 @@ TEST(blank_opens_at_the_first_lossy_low_foreign_window) {
 // not a detect run's lead-in: the ladder owns it.
 // Revert (arm on any lossy window with a reading): the first window arms.
 TEST(a_lossy_window_with_low_foreign_never_blanks) {
-  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
+  HopVerdict v(cfg(), BusyCfg{}); double t = warm(v);
   for (int i = 0; i < 3; ++i, t += 150) {
     auto o = v.window(t, {low_busy(40), low_busy(40)}, {0.04, 80}, 5);
     CHECK(o.v == Verdict::Unknown);
@@ -114,7 +114,7 @@ TEST(a_lossy_window_with_low_foreign_never_blanks) {
 // reaches Order with the store unprotected.
 // Revert (drop `|| detected` from the lead-in): no window of the run arms.
 TEST(blank_opens_at_the_first_detected_window_when_the_loss_window_read_low) {
-  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
+  HopVerdict v(cfg(), BusyCfg{}); double t = warm(v);
   auto lossy = v.window(t, {low_busy(40), low_busy(40)}, {0.04, 80}, 5); t += 150;   // foreign 5: no lead-in
   CHECK(lossy.ref_frozen);
   CHECK(!hop_store_blank_until(lossy, true, 500).has_value());
@@ -130,7 +130,7 @@ TEST(blank_opens_at_the_first_detected_window_when_the_loss_window_read_low) {
 }
 // A weak blocked window is a fade: the ladder owns it, no blank.
 TEST(a_weak_blocked_window_never_blanks) {
-  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
+  HopVerdict v(cfg(), BusyCfg{}); double t = warm(v);
   auto c = card(-90, 8, 237, 2); c.busy_valid = true; c.nhm_busy_pct = 95; c.own_air_pct = 3;
   auto o = v.window(t, {c, c}, {0.06, 80}, 5);
   CHECK(o.v == Verdict::Fade);
@@ -144,7 +144,7 @@ TEST(a_weak_blocked_window_never_blanks) {
 // seconds at a time, on flights whose whole purpose is recording what the
 // ladder does.
 TEST(a_fade_never_blanks_the_store_even_though_it_freezes_the_references) {
-  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
+  HopVerdict v(cfg(), BusyCfg{}); double t = warm(v);
   auto o = fade(v, t);
   CHECK(o.v == Verdict::Fade);
   CHECK(o.evidence & kEvImpaired);
@@ -156,7 +156,7 @@ TEST(a_fade_never_blanks_the_store_even_though_it_freezes_the_references) {
 }
 
 TEST(an_unknown_window_never_blanks_the_store) {
-  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
+  HopVerdict v(cfg(), BusyCfg{}); double t = warm(v);
   auto o = unknown(v, t);
   CHECK(o.v == Verdict::Unknown);
   CHECK(o.evidence & kEvImpaired);
@@ -167,7 +167,7 @@ TEST(an_unknown_window_never_blanks_the_store) {
 // Pinned mode: the reactive layer is off, nothing is ever ordered and the
 // rung is never restored, so there is no hop to protect the store from.
 TEST(pinned_never_blanks) {
-  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
+  HopVerdict v(cfg(), BusyCfg{}); double t = warm(v);
   for (int i = 0; i < occ_n(); ++i, t += 150) {
     const auto o = jam(v, t);
     CHECK(!hop_store_blank_until(o, /*reactive=*/false, 500).has_value());
@@ -184,14 +184,14 @@ TEST(pinned_never_blanks) {
 // for det_n() - ceil(N/2) quiet windows, and only the two after them are
 // healthy.
 TEST(a_sustained_jam_arms_the_blank_exactly_once) {
-  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
+  HopVerdict v(cfg(), BusyCfg{}); double t = warm(v);
   int armed = 0;
   for (int i = 0; i < 40; ++i)
     if (hop_store_blank_until(jam(v, t + 150 * i), true, 500)) ++armed;
   CHECK(armed == 1);
 }
 TEST(interfered_healthy_alternation_inside_one_episode_does_not_rearm) {
-  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
+  HopVerdict v(cfg(), BusyCfg{}); double t = warm(v);
   const int tail = det_n() - (det_n() + 1) / 2;
   int armed = 0, interfered = 0;
   for (int i = 0; i < 10; ++i) {
@@ -211,7 +211,7 @@ TEST(interfered_healthy_alternation_inside_one_episode_does_not_rearm) {
 
 // ...and it re-arms after a genuine thaw, by either rule.
 TEST(rearms_after_three_healthy_windows) {
-  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
+  HopVerdict v(cfg(), BusyCfg{}); double t = warm(v);
   CHECK(occupy(v, t) == 1);
   // The ring reads the jam for its tail, then three healthy windows thaw.
   const int tail = det_n() - (det_n() + 1) / 2;
@@ -220,7 +220,7 @@ TEST(rearms_after_three_healthy_windows) {
   CHECK(occupy(v, t) == 1);
 }
 TEST(rearms_after_reset_ends_a_verify_window) {
-  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
+  HopVerdict v(cfg(), BusyCfg{}); double t = warm(v);
   CHECK(occupy(v, t) == 1);
   CHECK(!hop_store_blank_until(jam(v, t), true, 500).has_value());
   t += 150;
@@ -229,7 +229,7 @@ TEST(rearms_after_reset_ends_a_verify_window) {
 }
 
 TEST(span_follows_the_configured_confirm_ms) {
-  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
+  HopVerdict v(cfg(), BusyCfg{}); double t = warm(v);
   CHECK(*hop_store_blank_until(jam(v, t), true, 2000) == t + 2000 + kHopSettleBlankMs);
 }
 MTEST_MAIN
