@@ -68,9 +68,6 @@ struct HopVerdictCfg {
   int recovered_min = 8;
   int weak_rssi_dbm = -78;
   int weak_snr_db = 12;
-  int fading_drop_db = 6;
-  int foreign_pps = 50;
-  int fa_pps = 100;
   // AU rate below this fraction of the trailing per-window AU mean reads
   // `starved` even when a trickle of own frames still arrives (bench
   // session 0232: 5-30 own frames/s under a long-frame jam).

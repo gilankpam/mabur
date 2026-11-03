@@ -15,22 +15,14 @@ const char* to_string(Verdict v) {
   return "unknown";
 }
 
-double HopVerdict::median(std::deque<double> v) {
-  if (v.empty()) return 0.0;
-  std::sort(v.begin(), v.end());
-  const size_t n = v.size();
-  return (n % 2) ? v[n / 2] : (v[n / 2 - 1] + v[n / 2]) / 2.0;
-}
-
 HopVerdict::HopVerdict(HopCfg cfg, BusyCfg busy, int n_cards)
-    : cfg_(cfg), busy_(busy), n_cards_(n_cards), rssi_hist_(n_cards) {}
+    : cfg_(cfg), busy_(busy), n_cards_(n_cards) {}
 
 void HopVerdict::reset() {
   frozen_ = false;
   ref_rec_ = 0;
   ref_au_ = 0;
   ref_rung_ = -1;
-  ref_rssi_.clear();
   healthy_streak_ = 0;
   seen_blocked_ = false;
   recent_interfered_.clear();
@@ -39,10 +31,10 @@ void HopVerdict::reset() {
   // latched would hand the controller a trigger built from windows
   // measured on the channel we have just left.
   //
-  // Histories (rssi_hist_, rec_hist_, au_hist_) survive a reset -- they
-  // are the trailing baseline, not per-hop state. ref_rssi_/ref_rec_/
-  // ref_au_/ref_rung_ are the frozen snapshot taken AT a hop's onset and
-  // must not leak across a hop boundary.
+  // Histories (rec_hist_, au_hist_) survive a reset -- they are the
+  // trailing baseline, not per-hop state. ref_rec_/ref_au_/ref_rung_ are
+  // the frozen snapshot taken AT a hop's onset and must not leak across a
+  // hop boundary.
 }
 
 void HopVerdict::new_session() {
@@ -55,7 +47,6 @@ int HopVerdict::ref_rung() const { return ref_rung_; }
 
 VerdictOut HopVerdict::window(double now_ms, const std::vector<VerdictCardIn>& cards,
                               const VerdictLinkIn& link, int rung) {
-  const double w_s = cfg_.window_ms / 1000.0;
   const size_t hist_n = static_cast<size_t>(std::max(1, 5000 / cfg_.window_ms));
   // best card = highest RSSI among valid cards
   int best = -1;
@@ -70,12 +61,11 @@ VerdictOut HopVerdict::window(double now_ms, const std::vector<VerdictCardIn>& c
   have_prev_ = true;
   if (best < 0) { o.v = Verdict::Unknown; o.ref_frozen = frozen_; return o; }
   const auto& hv = cfg_.verdict;
-  // ---- per-card terms (contended/raised/blocked), computed before
-  // `impaired` so the occupancy trigger below can fold into it on the
-  // SAME window that trips it -- the reference freeze right after reads
-  // `impaired` once it already carries `occupied`. contended and raised
-  // are evidence only.
-  bool contended = false, raised = false, blocked = false;
+  // ---- the per-card term (blocked), computed before `impaired` so the
+  // occupancy trigger below can fold into it on the SAME window that trips
+  // it -- the reference freeze right after reads `impaired` once it
+  // already carries `occupied`.
+  bool blocked = false;
   // blocked = the MINIMUM foreign-busy reading across cards that have one,
   // not any-card. A weakly-receiving diversity card's NHM busy counts our
   // own frames too, but its own_air_pct is reconstructed only from the
@@ -89,8 +79,6 @@ VerdictOut HopVerdict::window(double now_ms, const std::vector<VerdictCardIn>& c
   double min_foreign_busy_pct = 0.0;
   for (const auto& c : cards) {
     if (!c.valid) continue;
-    contended = contended || c.foreign / w_s > hv.foreign_pps;
-    raised = raised || c.fa / w_s > hv.fa_pps;
     if (c.busy_valid) {
       const double foreign_pct = std::max(c.nhm_busy_pct - c.own_air_pct, 0.0);
       min_foreign_busy_pct = have_busy_reading ? std::min(min_foreign_busy_pct, foreign_pct)
@@ -135,26 +123,14 @@ VerdictOut HopVerdict::window(double now_ms, const std::vector<VerdictCardIn>& c
   const bool impaired = loss_impaired || occupied;
   const bool weak = cards[best].rssi_dbm < hv.weak_rssi_dbm &&
                     (!cards[best].snr_valid || cards[best].snr_db < hv.weak_snr_db);
-  // Guard: a frozen reference that was never established for this card
-  // (out-of-range or invalid-with-no-history at freeze time, see below)
-  // reads back as 0 -- a real RSSI is never exactly 0 dBm, so treat 0 as
-  // "no reference yet" and fall back to the card's own current reading
-  // (d_rssi = 0, fading can't fire) instead of fabricating a fade.
-  const double frozen_ref = (frozen_ && best < (int)ref_rssi_.size()) ? ref_rssi_[best] : 0.0;
-  const double rssi_ref = frozen_
-      ? (frozen_ref != 0.0 ? frozen_ref : cards[best].rssi_dbm)
-      : (rssi_hist_[best].empty() ? cards[best].rssi_dbm : median(rssi_hist_[best]));
-  const bool fading = cards[best].rssi_dbm < rssi_ref - hv.fading_drop_db;
-  o.evidence = (impaired ? kEvImpaired : 0) | (weak ? kEvWeak : 0) | (fading ? kEvFading : 0) |
-               (contended ? kEvContended : 0) | (raised ? kEvRaised : 0) | (blocked ? kEvBlocked : 0) |
+  o.evidence = (impaired ? kEvImpaired : 0) | (weak ? kEvWeak : 0) | (blocked ? kEvBlocked : 0) |
                (starved ? kEvStarved : 0) | (occupied ? kEvOccupied : 0);
   // Detection is NHM occupancy only. A fade -- range, a tree, a flip, a
   // wall -- can lower our signal but cannot add foreign energy to the air,
   // so sustained foreign airtime is the one signal no fade can fake. Loss,
   // recovered and starved still mark the window impaired (the reference
-  // freeze); they and contended, raised and fading are reported evidence,
-  // never a route to `interfered`: each also moves when the link merely
-  // fades.
+  // freeze), but none of them routes to `interfered` on its own: each also
+  // moves when the link merely fades.
   //
   // weak gates first: at the range edge our own frames stop decoding, so
   // own_air_pct (rebuilt from decoded frames) undercounts and the
@@ -171,18 +147,6 @@ VerdictOut HopVerdict::window(double now_ms, const std::vector<VerdictCardIn>& c
   // ---- reference freeze / thaw
   if (impaired && !frozen_) {
     frozen_ = true; ref_rung_ = rung; ref_rec_ = rec_ref; ref_au_ = au_ref;
-    if ((int)ref_rssi_.size() != n_cards_) ref_rssi_.assign(n_cards_, 0);
-    for (int i = 0; i < n_cards_; ++i) {
-      if (!rssi_hist_[i].empty()) {
-        ref_rssi_[i] = median(rssi_hist_[i]);
-      } else if (i < (int)cards.size() && cards[i].valid) {
-        ref_rssi_[i] = cards[i].rssi_dbm;
-      }
-      // else: card i is beyond the cards vector, or mid-dwell (invalid)
-      // with no trailing history yet -- leave its reference untouched
-      // rather than fabricate one from a skipped card's meaningless
-      // rssi_dbm == 0.
-    }
   }
   // The rung-store blank's arming edge: the first impaired, non-weak,
   // blocked window of this frozen episode (hop_blank.h) -- the jam's lossy
@@ -195,17 +159,12 @@ VerdictOut HopVerdict::window(double now_ms, const std::vector<VerdictCardIn>& c
   healthy_streak_ = (o.v == Verdict::Healthy) ? healthy_streak_ + 1 : 0;
   if (frozen_ && healthy_streak_ >= 3) { frozen_ = false; ref_rung_ = -1; seen_blocked_ = false; }
   if (!frozen_) {   // only unfrozen windows feed the trailing references
-    for (int i = 0; i < n_cards_ && i < (int)cards.size(); ++i)
-      if (cards[i].valid) {
-        rssi_hist_[i].push_back(cards[i].rssi_dbm);
-        if (rssi_hist_[i].size() > hist_n) rssi_hist_[i].pop_front();
-      }
     rec_hist_.push_back(link.recovered);
     if (rec_hist_.size() > hist_n) rec_hist_.pop_front();
     au_hist_.push_back(link.au_count);
     if (au_hist_.size() > hist_n) au_hist_.pop_front();
   }
-  o.ref_rung = ref_rung_; o.ref_rssi_dbm = rssi_ref; o.d_rssi_db = cards[best].rssi_dbm - rssi_ref;
+  o.ref_rung = ref_rung_;
   o.ref_frozen = frozen_;
   // ---- persistence
   recent_interfered_.push_back(o.v == Verdict::Interfered);

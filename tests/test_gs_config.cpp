@@ -564,7 +564,7 @@ TEST(hop_defaults_when_absent) {
   CHECK(cfg.hop.dwell_observe_ms == 20 && cfg.hop.dwell_period_ms == 1000);
   CHECK(cfg.hop.confirm_ms == 500 && cfg.hop.verify_ms == 1000 && cfg.hop.cooldown_ms == 2000);
   CHECK(cfg.hop.max_hops_per_min == 4 && cfg.hop.backoff_ms == 30000 && cfg.hop.one_card_repeats == 5);
-  CHECK(cfg.hop.verdict.loss_pct == 3.0 && cfg.hop.verdict.fa_pps == 100 && cfg.hop.verdict.weak_rssi_dbm == -78);
+  CHECK(cfg.hop.verdict.loss_pct == 3.0 && cfg.hop.verdict.weak_rssi_dbm == -78);
   CHECK(cfg.radio.scan.busy.busy_dbm == -83 && cfg.radio.scan.busy.blocked_pct == 30.0);
 }
 // Pin is static. The mode knob is radio.channel alone; the busy-air thresholds
@@ -578,12 +578,23 @@ TEST(removed_hop_keys_fail_boot) {
     CHECK(threw);
   }
 }
+// fading/contended/raised were evidence-only (never a hop trigger) and are
+// gone along with their config keys; the keys fail boot like any other
+// removed key.
+TEST(hop_verdict_rejects_the_removed_evidence_only_keys) {
+  auto throws = [](const std::string& text) {
+    try { maburgs::load_config(write_tmp(text)); } catch (const std::exception&) { return true; }
+    return false;
+  };
+  for (const char* k : {"fading_drop_db", "foreign_pps", "fa_pps"})
+    CHECK(throws(std::string("[hop.verdict]\n") + k + " = 1\n"));
+}
 TEST(hop_parses_and_validates) {
   auto cfg = maburgs::load_config(write_tmp(
       "[hop]\nwindow_ms = 200\npersist = 3\ndwell_observe_ms = 8\n"
-      "[hop.verdict]\nfa_pps = 250\nweak_rssi_dbm = -80\n"));
+      "[hop.verdict]\nrecovered_x = 5\nweak_rssi_dbm = -80\n"));
   CHECK(cfg.hop.window_ms == 200 && cfg.hop.persist == 3 && cfg.hop.dwell_observe_ms == 8);
-  CHECK(cfg.hop.verdict.fa_pps == 250 && cfg.hop.verdict.weak_rssi_dbm == -80);
+  CHECK(cfg.hop.verdict.recovered_x == 5 && cfg.hop.verdict.weak_rssi_dbm == -80);
   bool threw = false;
   try { maburgs::load_config(write_tmp("[hop]\nwindow_ms = 10\n")); }
   catch (const std::runtime_error& e) { threw = std::string(e.what()).find("hop.window_ms") != std::string::npos; }

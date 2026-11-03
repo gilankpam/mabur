@@ -8,7 +8,7 @@
 namespace maburgs {
 
 ScanLog::ScanLog(LogWriter& w, const std::string& dir, const std::string& header_info)
-    : w_(w), s_(w.open(dir, "scan.log", "scanlog 8 " + header_info)) {}
+    : w_(w), s_(w.open(dir, "scan.log", "scanlog 9 " + header_info)) {}
 
 void ScanLog::put_(const char* b, int n) {
   if (s_ == LogWriter::kBadStream || n <= 0) return;
@@ -116,9 +116,9 @@ void ScanLog::verdict(double t_ms, const VerdictOut& o, const std::vector<Verdic
     if (c.busy_valid) std::snprintf(busy, sizeof(busy), "%.1f", c.nhm_busy_pct);
     else std::snprintf(busy, sizeof(busy), "-");
     char cb[192];
-    const int cn = std::snprintf(cb, sizeof(cb), " %u %u %u %u %u %.1f %.1f %.1f %s %.1f",
+    const int cn = std::snprintf(cb, sizeof(cb), " %u %u %u %u %u %.1f %.1f %s %.1f",
                                  static_cast<unsigned>(i), c.foreign, c.fa, c.cca, c.crc_fail,
-                                 c.rssi_dbm, c.snr_db, o.d_rssi_db, busy, c.own_air_pct);
+                                 c.rssi_dbm, c.snr_db, busy, c.own_air_pct);
     line.append(cb, static_cast<size_t>(std::min(cn, static_cast<int>(sizeof(cb) - 1))));
   }
   put_(line.c_str(), static_cast<int>(std::min(line.size(), LogWriter::kMaxLine - 1)));

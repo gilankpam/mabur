@@ -303,8 +303,8 @@ TEST(verify_ignores_a_window_that_starts_inside_the_landing_settle) {
 static VerdictOut blocked_here(int ref = 5) {
   VerdictOut o = interfered(ref); o.evidence = kEvImpaired | kEvBlocked; return o;
 }
-static VerdictOut raised_here(int ref = 5) {
-  VerdictOut o = interfered(ref); o.evidence = kEvImpaired | kEvRaised; return o;
+static VerdictOut unknown_here(int ref = 5) {
+  VerdictOut o = interfered(ref); o.evidence = kEvImpaired; o.v = Verdict::Unknown; return o;
 }
 static bool has(const std::vector<uint8_t>& v, uint8_t ch) {
   for (auto c : v) if (c == ch) return true;
@@ -332,7 +332,7 @@ TEST(escape_from_blocked_op_into_fled_channel) {
 // Revert (escape without the kEvBlocked gate): Order 112.
 TEST(no_escape_when_op_not_blocked) {
   HopController h(cfg());
-  HopTick k = T(1000, raised_here(), std::nullopt, 136);
+  HopTick k = T(1000, unknown_here(), std::nullopt, 136);
   k.escape = 112;
   auto a = h.tick(k);
   CHECK(a.kind == HopAction::Hold);
@@ -418,7 +418,7 @@ TEST(escape_after_verify_fail) {
   HopController g(cfg());
   g.tick(T(1000, interfered(), 149, 136));
   g.tick(T(1080, interfered(), 149, 136, true));
-  HopTick m = T(1400, measured(raised_here(), 1250, 1400), std::nullopt, 149);
+  HopTick m = T(1400, measured(interfered(), 1250, 1400), std::nullopt, 149);
   m.escape = 112;
   CHECK(g.tick(m).kind == HopAction::Hold);
 }
@@ -468,9 +468,9 @@ TEST(extension_expires_as_undelivered) {
 // Revert (extend regardless of kEvBlocked): None at 1500.
 TEST(unblocked_op_withdraws_at_confirm_ms) {
   HopController h(cfg());
-  h.tick(T(1000, raised_here(), 112, 144));
+  h.tick(T(1000, interfered(), 112, 144));
   (void)h.take_events();
-  CHECK(h.tick(T(1500, raised_here(), 112, 144)).kind == HopAction::Withdraw);
+  CHECK(h.tick(T(1500, interfered(), 112, 144)).kind == HopAction::Withdraw);
   auto ev = h.take_events();
   REQUIRE(ev.size() == 1);
   CHECK(ev[0].kind == "withdraw");
@@ -492,7 +492,7 @@ TEST(extension_holds_after_op_unblocks) {
   h.tick(T(1000, blocked_here(), 112, 144));
   h.tick(T(1500, blocked_here(), 112, 144));   // blocked at confirm_ms: extended
   (void)h.take_events();
-  CHECK(h.tick(T(1800, raised_here(), 112, 144)).kind == HopAction::None);
+  CHECK(h.tick(T(1800, interfered(), 112, 144)).kind == HopAction::None);
   CHECK(h.tick(T(2500, healthy(), 112, 144)).kind == HopAction::None);
   CHECK(h.state() == HopState::Ordered && h.hop_ch() == 112);
   CHECK(h.take_events().empty());

@@ -21,26 +21,17 @@ TEST(baseline_is_healthy) {
   CHECK(o.v == Verdict::Healthy); CHECK(!o.trigger); CHECK(o.ref_rung == -1);
 }
 // Detection is NHM occupancy only: foreign frames and false alarms next to
-// loss are reported evidence, never a trigger. A fade can lower our signal
-// but cannot add foreign energy, so only sustained foreign airtime names
-// interference.
-// Revert (restore `loss_impaired && (contended || raised) && !fading` ->
-// Interfered): o1 reads Interfered and o2 triggers.
+// loss do not trip the trigger. A fade can lower our signal but cannot add
+// foreign energy, so only sustained foreign airtime names interference.
 TEST(co_channel_802_11_neighbour_with_loss_is_not_a_trigger) {
   HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   // spike jam250c120: loss 4-8 %, foreign 237/s, FA 2/s, RSSI rose to -55, SNR 33
   auto o1 = v.window(t, {card(-55, 33, 237, 2), card(-55, 33, 237, 2)}, {0.06, 80}, 5);
   CHECK(o1.v == Verdict::Unknown); CHECK(!o1.trigger); CHECK(o1.ref_rung == 5);
-  CHECK(o1.evidence & kEvImpaired); CHECK(o1.evidence & kEvContended); CHECK(!(o1.evidence & kEvRaised));
+  CHECK(o1.evidence & kEvImpaired);
   auto o2 = v.window(t + 150, {card(-55, 33, 237, 2), card(-55, 33, 237, 2)}, {0.06, 80}, 4);  // ladder demoted meanwhile
   CHECK(o2.v == Verdict::Unknown); CHECK(!o2.trigger);
   CHECK(o2.ref_rung == 5);   // snapshot taken at the FIRST impaired window
-}
-// Revert (restore the contended/raised route): reads Interfered.
-TEST(o4_raised_floor_with_loss_is_evidence_not_interfered) {
-  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
-  auto o = v.window(t, {card(-48, 30, 0, 744, 130), card(-50, 27, 0, 388, 130)}, {0.85, 5}, 0);
-  CHECK(o.v == Verdict::Unknown); CHECK(o.evidence & kEvRaised); CHECK(!(o.evidence & kEvFading));
 }
 TEST(fade_is_fade_not_interfered) {
   HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
@@ -51,12 +42,6 @@ TEST(loss_with_no_domain_evidence_is_unknown) {
   HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   auto o = v.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.08, 100}, 5);
   CHECK(o.v == Verdict::Unknown); CHECK(!o.trigger);
-}
-// Revert (restore the contended/raised route): reads Interfered.
-TEST(off_channel_blocking_reads_as_raised_evidence_only) {
-  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
-  auto o = v.window(t, {card(-59, 28, 0, 209, 94), card(-59, 28, 0, 299, 130)}, {0.04, 70}, 4);
-  CHECK(o.v == Verdict::Unknown); CHECK(o.evidence & kEvRaised);
 }
 TEST(recovered_rate_alone_marks_impaired_and_its_reference_freezes) {
   HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);          // recovered mean 20/window
@@ -81,52 +66,23 @@ TEST(references_thaw_after_three_healthy_windows) {
   for (int i = 1; i <= 3; ++i) v.window(t + 150 * i, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, 20}, 3);
   CHECK(v.ref_rung() == -1);
 }
-// Guard fix: a mid-dwell (invalid) card with no trailing RSSI history yet
-// must not have its frozen reference fabricated from a stale rssi_dbm=0
-// reading. Freeze while card 1 has never once been valid (so its history is
-// empty), then let card 1 come back as the best card and check its fading
-// evidence is not fabricated from a bogus 0 dBm reference.
-TEST(frozen_reference_for_a_mid_dwell_card_is_not_fabricated_from_zero) {
-  HopVerdict v(cfg(), BusyCfg{}, 2);
-  VerdictCardIn dead; dead.valid = false;
-  double t = 0;
-  // 5 s of clean windows -- card 1 hasn't dwelt on home once yet, so its
-  // trailing RSSI history stays empty the whole time.
-  for (int i = 0; i < 40; ++i, t += 150) v.window(t, {card(-61, 30, 0, 4), dead}, {0.0, 20}, 5);
-  // Card 0 goes impaired: freezes references, including card 1's (still
-  // invalid this window, still no history) -- it must not get ref_rssi = 0.
-  auto o1 = v.window(t, {card(-55, 33, 237, 2), dead}, {0.06, 80}, 5);
-  CHECK(o1.ref_frozen);
-  CHECK(v.ref_rung() == 5);
-  // Card 1 now comes back as the best card (much stronger than card 0) with
-  // a perfectly normal RSSI. If its frozen reference had been fabricated as
-  // 0 dBm, this reading (well above 0) would spuriously read as "fading"
-  // relative to that bogus reference -- it must not.
-  auto o2 = v.window(t + 150, {card(-55, 33, 237, 2), card(-40, 30, 0, 4)}, {0.06, 80}, 5);
-  CHECK(!(o2.evidence & kEvFading));
-}
-// weak takes priority over unknown: a lossy, contended window that is weak
-// (RSSI stable, just low -- not fading) is a fade, the ladder's, not an
-// unexplained loss. Foreign frames are evidence only, so without `weak` the
-// same window reads unknown, never interfered (weak over occupied is
+// weak takes priority over unknown: a lossy window that is weak (range
+// edge) is a fade, the ladder's, not an unexplained loss. Without `weak`
+// the same window reads unknown, never interfered (weak over occupied is
 // weak_still_wins_over_occupied).
 // Revert (drop the `weak` branch): reads Unknown.
 TEST(weak_takes_priority_over_unknown) {
   HopVerdict v(cfg(), BusyCfg{}, 2);
   double t = 0;
   // Warm at RSSI -80 / SNR 10, no loss: not impaired, so these windows are
-  // Healthy and the per-card RSSI references build at -80 (not frozen).
+  // Healthy.
   for (int i = 0; i < 40; ++i, t += 150) v.window(t, {card(-80, 10, 0, 4), card(-80, 10, 0, 4)}, {0.0, 20}, 5);
   // Now: loss 6% (> loss_pct 3) -> impaired. RSSI/SNR still -80/10 -> weak.
-  // RSSI unchanged from the just-built -80 reference -> NOT fading.
-  // foreign 237/s (> foreign_pps 50) -> contended.
   auto o = v.window(t, {card(-80, 10, 237, 2), card(-80, 10, 237, 2)}, {0.06, 20}, 5);
   CHECK(o.v == Verdict::Fade);
   CHECK(!o.trigger);
   CHECK(o.evidence & kEvImpaired);
   CHECK(o.evidence & kEvWeak);
-  CHECK(o.evidence & kEvContended);
-  CHECK(!(o.evidence & kEvFading));
 }
 // C1: every VerdictOut carries the wall-clock span its counter deltas were
 // gathered over, because the consumer (main.cpp -> HopController) re-feeds
@@ -239,8 +195,7 @@ TEST(reset_thaws_the_snapshot_and_clears_the_latched_trigger) {
   v.reset();
   CHECK(v.ref_rung() == -1);
   // One clean window on the NEW channel: no latched trigger, no frozen
-  // reference, and `fading` measured against the trailing history rather
-  // than the old channel's frozen median.
+  // reference.
   auto o3 = v.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, 20}, 5);
   CHECK(!o3.trigger && !o3.ref_frozen && o3.v == Verdict::Healthy);
 }
@@ -335,30 +290,6 @@ TEST(own_airtime_is_subtracted) {
   CHECK(!(o.evidence & maburgs::kEvBlocked));
   CHECK(o.v == maburgs::Verdict::Unknown);
 }
-// A real fade lowers power and cannot raise NHM busy; analog desense reads
-// as a fade (docs/findings/2026-09-25-analog-vtx.md) while filling the air.
-// Occupancy therefore beats `fading`, but never `weak`.
-TEST(occupied_beats_fading_but_not_weak) {
-  maburgs::HopCfg cfg;
-  maburgs::VerdictLinkIn bad; bad.pre_fec_loss = 0.5;
-  {  // fading: RSSI 15 dB under its trailing reference (analog desense)
-    maburgs::HopVerdict v(cfg, BusyCfg{}, 1);
-    maburgs::VerdictLinkIn ok;
-    double t = 0;
-    for (int i = 0; i < 10; ++i) v.window(t += 150, {busy_card(0, 2)}, ok, 0);
-    auto c = busy_card(100, 2); c.rssi_dbm = -63;
-    maburgs::VerdictOut o;
-    for (int i = 0; i < occ_n(); ++i) o = v.window(t += 150, {c}, bad, 0);
-    CHECK(o.evidence & maburgs::kEvFading);
-    CHECK(o.v == maburgs::Verdict::Interfered);
-  }
-  {  // weak: range edge
-    maburgs::HopVerdict v(cfg, BusyCfg{}, 1);
-    auto c = busy_card(100, 2); c.rssi_dbm = -85; c.snr_db = 5;
-    auto o = v.window(150, {c}, bad, 0);
-    CHECK(o.v == maburgs::Verdict::Fade);
-  }
-}
 TEST(no_busy_reading_is_todays_verdict) {
   maburgs::HopCfg cfg;
   maburgs::HopVerdict v(cfg, BusyCfg{}, 1);
@@ -409,8 +340,8 @@ TEST(card_without_reading_does_not_veto) {
 // ---- a floor on the recovered-symbols impaired term --------------------
 // Bench (session 0232): on a clean channel whose trailing recovered mean is
 // ~0.2/window, 1-5 recovered symbols read "3x the reference" and marked the
-// window impaired with 0 % loss -- which, next to 112's ambient FA background
-// (`raised`), hopped a perfectly good link into a blocked channel.
+// window impaired with 0 % loss -- which, next to 112's ambient false-alarm
+// background, hopped a perfectly good link into a blocked channel.
 // recovered_min (default 8) removes ~97 % of those. Revert (drop
 // `&& recovered >= recovered_min` in hop_verdict.cpp):
 // recovered_below_floor_is_not_impaired fails (impaired, not healthy).
@@ -694,22 +625,22 @@ TEST(occupied_persists_but_a_reading_less_window_classifies_unknown) {
 TEST(occupied_reading_less_window_with_foreign_or_fa_stays_unknown) {
   HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   for (int i = 0; i < occ_n(); ++i, t += 150) v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);   // reach occupied
-  auto o = v.window(t, {card(-61, 30, 60, 4), card(-61, 30, 60, 4)}, {0.0, 20}, 5);   // contended, no NHM
-  CHECK(o.evidence & kEvContended); CHECK(o.evidence & kEvOccupied); CHECK(o.evidence & kEvImpaired);
+  auto o = v.window(t, {card(-61, 30, 60, 4), card(-61, 30, 60, 4)}, {0.0, 20}, 5);   // foreign frames, no NHM
+  CHECK(o.evidence & kEvOccupied); CHECK(o.evidence & kEvImpaired);
   CHECK(o.v == Verdict::Unknown);
   t += 150;
-  o = v.window(t, {card(-61, 30, 0, 150), card(-61, 30, 0, 150)}, {0.0, 20}, 5);      // raised, no NHM
-  CHECK(o.evidence & kEvRaised); CHECK(o.evidence & kEvOccupied); CHECK(o.evidence & kEvImpaired);
+  o = v.window(t, {card(-61, 30, 0, 150), card(-61, 30, 0, 150)}, {0.0, 20}, 5);      // false alarms, no NHM
+  CHECK(o.evidence & kEvOccupied); CHECK(o.evidence & kEvImpaired);
   CHECK(o.v == Verdict::Unknown);
 }
 // Pin (b) while occupied: loss + foreign frames on a window with no NHM
 // reading is still not interference -- only a blocked reading is.
-// Revert (restore `loss_impaired && (contended || raised) && !fading` ->
-// Interfered): reads Interfered.
-TEST(lossy_contended_reading_less_window_is_unknown_while_occupied) {
+// Revert (classify occupied + a reading-less loss window as Interfered):
+// reads Interfered.
+TEST(lossy_foreign_reading_less_window_is_unknown_while_occupied) {
   HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   for (int i = 0; i < occ_n(); ++i, t += 150) v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);   // reach occupied
-  auto o = v.window(t, {card(-61, 30, 60, 4), card(-61, 30, 60, 4)}, {0.06, 20}, 5);  // lossy, contended, no NHM
-  CHECK(o.evidence & kEvContended); CHECK(o.evidence & kEvOccupied);
+  auto o = v.window(t, {card(-61, 30, 60, 4), card(-61, 30, 60, 4)}, {0.06, 20}, 5);  // lossy, foreign frames, no NHM
+  CHECK(o.evidence & kEvOccupied);
   CHECK(o.v == Verdict::Unknown);
 }

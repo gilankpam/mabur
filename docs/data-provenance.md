@@ -139,6 +139,11 @@ Chronological; each line names the section below that carries the detail.
   `radio.scan.blocked_pct` 50 → 30, `hop.verdict.occupied_windows` 7 → 5.
   Verdict histograms and blocked/occupied tallies are not comparable across
   the break (same marker, `scanlog 8`).
+- 2026-11-04 — hop verdict evidence terms retired: `scanlog 9` drops the
+  `fading`/`contended`/`raised` evidence bits (0x04/0x08/0x10, now
+  unassigned) and the V line's per-card `drssi` field (10-field card
+  blocks become 9-field); `hop.verdict.fading_drop_db`/`foreign_pps`/
+  `fa_pps` are removed config keys.
 
 ## 2026-09-23 — `link.pre_fec_loss` scale break, twice
 
@@ -1413,3 +1418,20 @@ the calibration pick, fire on less foreign airtime) and
 counts, its `blocked`/`occupied` evidence tallies and its onset → order
 timing are therefore not comparable across the break; the other evidence
 bits are unchanged.
+
+## 2026-11-04 — hop verdict evidence terms retired: scanlog 9
+
+`fading`, `contended` and `raised` were evidence-only bits even before the
+2026-11-03 change above — they moved on a plain fade or a quiet neighbour
+and never routed to `interfered` — and this build deletes them along with
+the per-card RSSI trailing reference that fed `fading` and the
+`hop.verdict.fading_drop_db`/`foreign_pps`/`fa_pps` config keys that fed
+all three. `scan.log` bumps to `scanlog 9`: the `V` line's per-card block
+drops its `drssi` field (10 columns → 9) and evidence bits 0x04/0x08/0x10
+go unassigned. `VerdictCardIn::foreign`/`fa` are unchanged and still reach
+the sideport's per-card `foreign_pps` and the in-flight ranker — only the
+hop verdict's own use of them is gone. `scanlog <= 8` files still decode
+under the old 10-field blocks and the old bit names
+(`tools/flightreport.py`'s `evidence_bit_tally`); a session's `blocked`/
+`starved`/`occupied` counts are comparable across the break, `fading`/
+`contended`/`raised` obviously are not.

@@ -11,11 +11,13 @@ namespace maburgs {
 enum class Verdict { Healthy, Fade, Interfered, Unknown };
 const char* to_string(Verdict v);   // "healthy" "fade" "interfered" "unknown"
 
-enum : uint8_t { kEvImpaired = 1, kEvWeak = 2, kEvFading = 4, kEvContended = 8, kEvRaised = 16,
+// 0x04/0x08/0x10 are unassigned (the retired fading/contended/raised
+// evidence-only bits).
+enum : uint8_t { kEvImpaired = 1, kEvWeak = 2,
                  kEvBlocked = 32, kEvStarved = 64, kEvOccupied = 128 };
 
-// The verdict thresholds (hop.verdict.weak_rssi_dbm / weak_snr_db /
-// fading_drop_db) are written in dBm / dB. The aggregator's EMAs are
+// The verdict thresholds (hop.verdict.weak_rssi_dbm / weak_snr_db) are
+// written in dBm / dB. The aggregator's EMAs are
 // devourer raw units -- RSSI on a 0..110 scale where raw - 110 is dBm
 // (the sideport's own conversion), SNR in half-dB (snr_units.h) -- so the
 // fill site converts HERE, never at the threshold, and scan.log V lines
@@ -60,8 +62,6 @@ struct VerdictOut {
   uint8_t evidence = 0;
   int ref_rung = -1;
   bool trigger = false;   // interfered in >= persist of the last 3 windows
-  double ref_rssi_dbm = 0;
-  double d_rssi_db = 0;
   // The wall-clock span this verdict's counter deltas were gathered over:
   // t_start_ms = the previous window's now_ms (== now_ms on the first
   // window ever), t_ms = this window's now_ms. Carried because a cached
@@ -120,15 +120,14 @@ class HopVerdict {
   HopCfg cfg_;
   BusyCfg busy_;
   int n_cards_;
-  // trailing references (5 s = 5000 / window_ms samples), per card RSSI median, link recovered mean
-  std::vector<std::deque<double>> rssi_hist_;
+  // trailing references (5 s = 5000 / window_ms samples): link recovered
+  // mean, AU count mean.
   std::deque<double> rec_hist_;
   std::deque<double> au_hist_;     // per-window AU count, same trailing rule as rec_hist_
   bool frozen_ = false;
   double prev_ms_ = 0;
   bool have_prev_ = false;
   bool seen_blocked_ = false;   // a first_blocked edge in the current frozen episode
-  std::vector<double> ref_rssi_;
   double ref_rec_ = 0;
   double ref_au_ = 0;
   int ref_rung_ = -1;
@@ -141,7 +140,6 @@ class HopVerdict {
   // its first window, not get occupied_windows of free pass.
   int blocked_streak_ = 0;
   std::deque<bool> recent_interfered_;   // last 3
-  static double median(std::deque<double> v);
 };
 
 }  // namespace maburgs
