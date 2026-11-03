@@ -470,15 +470,15 @@ card (two or more cards, not relay-only); pinned and one-card GSs run on
 - **The score** (`cal_round_pick`) uses only terms both instruments
   measure alike: decoded foreign frames plus NHM foreign busy %, the busy
   term only when both sides have a reading (the `cca − own` term is
-  dropped: under A-MPDU video it clamps to 0 on `op`). A pair scores as
-  its worse half and needs a reading on both. A candidate with no busy
-  reading is not ranked while any candidate has one (scored on foreign
-  frames alone it would beat the candidates that pay the busy term).
-  Leaving `op` takes beating
+  dropped: under A-MPDU video it clamps to 0 on `op`). A candidate is one
+  reading — at 40 MHz, the pair's primary's own row, not the worse of its
+  two halves. A candidate with no busy reading is not ranked while any
+  candidate has one (scored on foreign frames alone it would beat the
+  candidates that pay the busy term). Leaving `op` takes beating
   it by `pick_margin` in every tier; a blocked candidate never replaces an
-  unblocked `op`. Logged as a `K` record with the round's scores and
-  `maburgs channel: calibration measure picks <best> (op <op>[ unread:
-  staying])`.
+  unblocked `op`. Logged as a `K` record with the round's scores (one row
+  per member read plus `op`'s) and `maburgs channel: calibration measure
+  picks <best> (op <op>[ unread: staying])`.
 - **The relocate** is the boot pick's own: `set_want(best)` and the boot
   pick re-armed, so it hands out one relocate order next tick
   (`maburgs channel: calibration wants <c>, link on <op>: relocating`).

@@ -1276,7 +1276,6 @@ TEST(cal_measure_round_ranks_the_set_once) {
   freeze_auto(g);
   link_up(g);
   for (int i = 0; i < 30; ++i) live_tick(g, 200);
-  g.cards[1]->foreign_per_ms_on[60] = 1;
   g.cards[1]->foreign_per_ms_on[64] = 1;
   ChannelCorePicker p(*g.core);
   REQUIRE(p.mode() == CalPicker::Mode::Auto);
@@ -1415,8 +1414,8 @@ TEST(pinned_core_has_no_measure) {
 }
 
 // ---- the calibration round's pick rule (cal_round_pick.h) ----
-static std::vector<CalReading> halves_with(std::initializer_list<std::pair<uint8_t, uint32_t>> fr,
-                                           std::optional<double> busy = std::nullopt) {
+static std::vector<CalReading> readings_with(std::initializer_list<std::pair<uint8_t, uint32_t>> fr,
+                                             std::optional<double> busy = std::nullopt) {
   std::vector<CalReading> v;
   for (auto [ch, f] : fr) v.push_back(CalReading{ch, f, busy.has_value(), busy.value_or(0.0)});
   return v;
@@ -1424,61 +1423,64 @@ static std::vector<CalReading> halves_with(std::initializer_list<std::pair<uint8
 static const std::vector<uint8_t> kSet{40, 64, 112, 144};
 
 TEST(cal_pick_op_slightly_worse_than_a_candidate_stays) {
-  // 112's pair reads 15, op 30: better, but not by pick_margin (20).
-  const auto h = halves_with({{60, 100}, {64, 100}, {108, 15}, {112, 15}, {140, 100}, {144, 100}});
+  // 112 reads 15, op 30: better, but not by pick_margin (20).
+  const auto h = readings_with({{64, 100}, {112, 15}, {144, 100}});
   CHECK(cal_round_pick(h, CalReading{40, 30}, 40, kSet, 40, 20, 50.0).best == 40);
   // 20 better than op: it moves.
   CHECK(cal_round_pick(h, CalReading{40, 35}, 40, kSet, 40, 20, 50.0).best == 112);
 }
 
 TEST(cal_pick_clearly_blocked_op_moves) {
-  const auto h = halves_with({{60, 0}, {64, 0}, {108, 0}, {112, 0}, {140, 0}, {144, 0}}, 5.0);
+  const auto h = readings_with({{64, 0}, {112, 0}, {144, 0}}, 5.0);
   CHECK(cal_round_pick(h, CalReading{40, 0, true, 90.0}, 40, kSet, 40, 20, 50.0).best == 64);
 }
 
 TEST(cal_pick_margin_holds_in_the_blocked_tier) {
   // Op just blocked (55 %), every candidate just under (45 %): unblocked
   // beats blocked only by pick_margin, like any other move.
-  const auto h = halves_with({{60, 0}, {64, 0}, {108, 0}, {112, 0}, {140, 0}, {144, 0}}, 45.0);
+  const auto h = readings_with({{64, 0}, {112, 0}, {144, 0}}, 45.0);
   CHECK(cal_round_pick(h, CalReading{40, 0, true, 55.0}, 40, kSet, 40, 20, 50.0).best == 40);
   // A blocked candidate never replaces an unblocked op, however busy op's
   // frame count reads.
-  const auto b = halves_with({{60, 0}, {64, 0}, {108, 0}, {112, 0}, {140, 0}, {144, 0}}, 60.0);
+  const auto b = readings_with({{64, 0}, {112, 0}, {144, 0}}, 60.0);
   CHECK(cal_round_pick(b, CalReading{40, 300, true, 40.0}, 40, kSet, 40, 20, 50.0).best == 40);
 }
 
-TEST(cal_pick_scores_a_pair_by_its_worse_half_and_needs_every_half) {
-  // 108 (112's lower half) is busy: 112's pair scores 100, 144's pair 0.
-  const auto h = halves_with({{60, 50}, {64, 50}, {108, 100}, {112, 0}, {140, 0}, {144, 0}});
-  CHECK(cal_round_pick(h, CalReading{40, 200}, 40, kSet, 40, 20, 50.0).best == 144);
-  // 140 never read: 144 is not ranked; 64's pair is the best left.
-  const auto m = halves_with({{60, 50}, {64, 50}, {108, 100}, {112, 0}, {144, 0}});
-  CHECK(cal_round_pick(m, CalReading{40, 200}, 40, kSet, 40, 20, 50.0).best == 64);
+TEST(cal_pick_rows_are_one_per_member_plus_op) {
+  const auto h = readings_with({{64, 0}, {112, 0}, {144, 0}}, 5.0);
+  const auto out = cal_round_pick(h, CalReading{40, 0, true, 5.0}, 40, kSet, 40, 20, 50.0);
+  CHECK(out.rows.size() == 4);
+}
+
+TEST(cal_pick_excludes_a_member_never_read) {
+  // 144 never read: it is not ranked, even though its would-be score (as
+  // the config-order first candidate with no reading) would otherwise win.
+  const auto h = readings_with({{64, 50}, {112, 100}});
+  CHECK(cal_round_pick(h, CalReading{40, 200}, 40, kSet, 40, 20, 50.0).best == 64);
   // Op unread: stay, whatever the candidates read.
   CHECK(cal_round_pick(h, std::nullopt, 40, kSet, 40, 20, 50.0).best == 40);
-  // K rows: every half read plus op's two halves, one visit each.
+  // K rows: every member read plus op's, one row each, one visit each.
   const auto out = cal_round_pick(h, CalReading{40, 200}, 40, kSet, 40, 20, 50.0);
-  CHECK(out.rows.size() == 8);
+  CHECK(out.rows.size() == 3);
   for (const auto& r : out.rows) CHECK(r.visits == 1);
 }
 
 TEST(cal_pick_a_candidate_without_a_busy_reading_never_outranks_one_with) {
-  // 112's lower half has no NHM busy reading: scored on foreign alone it
-  // would read 0 and beat 144's pair (5 frames + 10 %) on a term the others
-  // pay and it does not. While any candidate has a busy reading, one
-  // without is not eligible.
+  // 112 has no NHM busy reading: scored on foreign alone it would read 0
+  // and beat 144 (5 frames + 10 %) on a term the others pay and it does
+  // not. While any candidate has a busy reading, one without is not
+  // eligible.
   const std::vector<CalReading> h = {
-      {60, 10, true, 20.0}, {64, 10, true, 20.0}, {108, 0, false, 0.0},
-      {112, 0, true, 0.0},  {140, 5, true, 10.0}, {144, 5, true, 10.0}};
+      {64, 10, true, 20.0}, {112, 0, false, 0.0}, {144, 5, true, 10.0}};
   CHECK(cal_round_pick(h, CalReading{40, 100, true, 30.0}, 40, kSet, 40, 20, 50.0).best == 144);
   // With no busy reading anywhere, foreign alone still ranks them.
-  const auto f = halves_with({{60, 50}, {64, 50}, {108, 0}, {112, 0}, {140, 5}, {144, 5}});
+  const auto f = readings_with({{64, 50}, {112, 0}, {144, 5}});
   CHECK(cal_round_pick(f, CalReading{40, 100}, 40, kSet, 40, 20, 50.0).best == 112);
 }
 
 TEST(cal_pick_width_20_compares_members) {
   const std::vector<uint8_t> set{36, 40, 44};
-  const auto h = halves_with({{40, 90}, {44, 0}});
+  const auto h = readings_with({{40, 90}, {44, 0}});
   CHECK(cal_round_pick(h, CalReading{36, 50}, 36, set, 20, 20, 50.0).best == 44);
 }
 

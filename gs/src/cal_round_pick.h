@@ -3,10 +3,11 @@
 // the run should calibrate on. Pure, header-only.
 //
 // Op and the candidates are read by different instruments: each candidate
-// half by the scout card's 20 MHz observe, op by the link cards' verdict
-// window at the link width (the scout never dwells on op's own pair while
-// linked: it carries the drone's video). So only terms that mean the same
-// thing on both sides are compared:
+// by the scout card's own 20 MHz observe of its channel (at 40 MHz, the
+// pair's primary), op by the link cards' verdict window at the link width
+// (the scout never dwells on op's own pair while linked: it carries the
+// drone's video). So only terms that mean the same thing on both sides are
+// compared:
 //  - NHM busy %: foreign airtime share (op's reading has our own video's
 //    airtime taken out), and
 //  - decoded foreign frames per dwell_ms observe.
@@ -16,25 +17,23 @@
 //
 // score = foreign + busy % (one unit per frame, one per percentage point;
 // the busy term only when both sides being compared have a reading). A
-// candidate pair scores as its worse half, and a candidate with no busy
-// reading is not ranked while any candidate has one. Leaving op takes
-// beating it by `margin` in every tier: a blocked candidate never replaces
-// an unblocked op, and a candidate that is unblocked while op is blocked
-// still has to be `margin` better. Op unread, or no candidate read on every half: stay.
-// Both rules lean toward staying where the link already works.
-#include <algorithm>
+// candidate with no busy reading is not ranked while any candidate has one.
+// Leaving op takes beating it by `margin` in every tier: a blocked
+// candidate never replaces an unblocked op, and a candidate that is
+// unblocked while op is blocked still has to be `margin` better. Op
+// unread, or no candidate read at all: stay. Both rules lean toward staying
+// where the link already works.
 #include <cmath>
 #include <cstdint>
 #include <optional>
 #include <vector>
 
 #include "channel_ranker.h"
-#include "mabur/ht40.h"
 
 namespace maburgs {
 
-// One reading of one channel: a 20 MHz half from the round's scout dwell,
-// or op from the verdict window.
+// One reading of one channel: the member's own 20 MHz observe from the
+// round's scout dwell, or op from the verdict window.
 struct CalReading {
   uint8_t ch = 0;
   uint32_t foreign = 0;      // decoded foreign frames, per dwell_ms observe
@@ -44,8 +43,8 @@ struct CalReading {
 
 struct CalPickOut {
   uint8_t best = 0;
-  // The K record's rows: every half read this round plus op's (both halves
-  // at width 40), worst_busy = the score above, one visit each.
+  // The K record's rows: every member read this round plus op's,
+  // worst_busy = the score above, one visit each.
   std::vector<RankEntry> rows;
 };
 
@@ -62,33 +61,14 @@ inline double score(const Side& s, bool use_busy) {
 inline bool blocked(const Side& s, double blocked_pct) {
   return s.busy_valid && s.busy_pct >= blocked_pct;
 }
-inline std::vector<uint8_t> halves_of(uint8_t member, int width_mhz) {
-  if (width_mhz != 40) return {member};
-  const uint8_t other = mabur::ht40_pair_other(member);
-  if (other == 0) return {member};
-  return {member, other};
-}
-// The worse half's terms; not ok unless every half has a reading.
-inline Side member_side(const std::vector<CalReading>& rd, uint8_t member, int width_mhz) {
-  Side s;
-  s.ok = true;
-  s.busy_valid = true;
-  for (uint8_t h : halves_of(member, width_mhz)) {
-    bool seen = false, busy_seen = false;
-    for (const CalReading& r : rd) {
-      if (r.ch != h) continue;
-      seen = true;
-      s.foreign = std::max(s.foreign, r.foreign);
-      if (r.busy_valid) {
-        busy_seen = true;
-        s.busy_pct = std::max(s.busy_pct, r.busy_pct);
-      }
-    }
-    if (!seen) s.ok = false;
-    if (!busy_seen) s.busy_valid = false;
+// The member's own reading (at 40 MHz, the pair's primary's); not ok unless
+// it was read this round.
+inline Side member_side(const std::vector<CalReading>& rd, uint8_t member) {
+  for (const CalReading& r : rd) {
+    if (r.ch != member) continue;
+    return Side{true, r.foreign, r.busy_valid, r.busy_valid ? r.busy_pct : 0.0};
   }
-  if (!s.busy_valid) s.busy_pct = 0;
-  return s;
+  return Side{};
 }
 inline RankEntry row(const CalReading& r) {
   RankEntry e;
@@ -107,35 +87,31 @@ inline CalPickOut cal_round_pick(const std::vector<CalReading>& halves,
                                  const std::vector<uint8_t>& set, int width_mhz, uint32_t margin,
                                  double blocked_pct) {
   using namespace cal_pick_detail;
+  (void)width_mhz;  // every member reads its own row now, at any width
   CalPickOut out;
   out.best = op;
-  for (const CalReading& r : halves) out.rows.push_back(row(r));
-  if (op_read) {
-    for (uint8_t h : halves_of(op, width_mhz)) {
-      CalReading r = *op_read;
-      r.ch = h;
-      out.rows.push_back(row(r));
-    }
-  }
-  if (!op_read) return out;
-  Side o{true, op_read->foreign, op_read->busy_valid, op_read->busy_valid ? op_read->busy_pct : 0.0};
-
   // A candidate with no busy reading would score on foreign alone, a term
   // short of what the others pay: it is not eligible while any candidate
-  // has a busy reading.
+  // has a busy reading. Gathered alongside the rows: both are one pass
+  // over the set's members.
   bool any_busy = false;
   for (uint8_t c : set) {
     if (c == op) continue;
-    const Side s = member_side(halves, c, width_mhz);
-    if (s.ok && s.busy_valid) any_busy = true;
+    const Side s = member_side(halves, c);
+    if (!s.ok) continue;
+    out.rows.push_back(row(CalReading{c, s.foreign, s.busy_valid, s.busy_pct}));
+    if (s.busy_valid) any_busy = true;
   }
+  if (op_read) out.rows.push_back(row(*op_read));
+  if (!op_read) return out;
+  Side o{true, op_read->foreign, op_read->busy_valid, op_read->busy_valid ? op_read->busy_pct : 0.0};
 
   // Best candidate: unblocked first, then score, then config order.
   std::optional<uint8_t> best;
   Side bs;
   for (uint8_t c : set) {
     if (c == op) continue;
-    const Side s = member_side(halves, c, width_mhz);
+    const Side s = member_side(halves, c);
     if (!s.ok) continue;
     if (any_busy && !s.busy_valid) continue;
     if (!best) {
