@@ -87,8 +87,9 @@ struct HopCfg {
   int dwell_observe_ms = 20;
   int dwell_period_ms = 1000;
   // USB freshness-burst pacing: at most one sweep of every candidate per
-  // this, while a hop trigger is live. dwell_period_ms is the periodic
-  // spare-card dwell only.
+  // this, while a hop trigger is live and no hop is in flight.
+  // dwell_period_ms is the periodic spare-card dwell, and also paces the
+  // USB burst in a Hold whose candidates are all ranked.
   int burst_period_ms = 333;
   int rank_visits = 5;
   int rank_max_age_ms = 10000;
@@ -104,8 +105,7 @@ struct HopCfg {
   int backoff_ms = 30000;
   int one_card_repeats = 5;
   // Freshness-burst pacing when the burst card is a relay: its sweep blanks
-  // it for ~280 ms, so 333 ms (dwell_period_ms) in Hold would leave it ~85
-  // % deaf.
+  // it for ~280 ms, so 333 ms (burst_period_ms) would leave it ~85 % deaf.
   int relay_burst_period_ms = 1000;
   HopVerdictCfg verdict;
 };

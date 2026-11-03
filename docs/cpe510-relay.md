@@ -291,9 +291,10 @@ relay reboot or a lost `SCAN_RESULT` mid-sweep.
 
 **`hop.relay_burst_period_ms`** (default 1000, range 500–60000,
 `gs/src/config.{h,cpp}`, `gs/bundle/maburgs.default.toml`): `hop_burst_due()`
-uses this instead of `hop.burst_period_ms` (333 ms) when the burst card is
-a relay — a 280 ms sweep every 333 ms in a sustained `Hold` would leave the
-relay deaf ~85 % of the time. The first burst after a trigger is still
+uses this instead of the USB burst's period (`hop.burst_period_ms`, 333 ms,
+or `hop.dwell_period_ms` in a fully ranked `Hold`) whenever the burst card
+is a relay — a 280 ms sweep every 333 ms in a sustained `Hold` would leave
+the relay deaf ~85 % of the time. The first burst after a trigger is still
 immediate, as for a USB burst.
 
 **Burst-card order** (`pick_burst_card()`, `gs/src/scout_pick.h`), first
@@ -321,8 +322,8 @@ is the whole score contribution), `busy_valid = true`, `busy_pct = 100·busy/act
 — **raw busy, no rx subtraction** (none of our own frames land on a
 candidate, same as the USB ranker's candidate NHM reading) — and `src =
 VisitSrc::Relay`. `HopRanker::ranking()` (`gs/src/hop_ranker.cpp`) uses
-only the **newest visit's source kind**: a USB 5 ms CCA-event visit and a
-relay 20 ms survey visit are different scales, and one burst always covers
+only the **newest visit's source kind**: a USB CCA-event visit and a
+relay survey visit are different scales, and one burst always covers
 the whole candidate set with one card, so a ranking is never built mixing
 the two.
 

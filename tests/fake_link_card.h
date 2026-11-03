@@ -21,6 +21,7 @@ struct FakeCard : maburgs::LinkCard {
   uint8_t ch = 0, width_mhz = 20;
   bool is_ready = true, is_alive = true, scout_ok = true, relay = false;
   bool retune_ok = true;
+  int refuse_ch = -1;                 // retune() to this one channel fails
   // Relay-style: retune() takes the target at once (channel() reads it, as
   // RemoteCard's does) but ready() reads false until the test re-readies
   // the card (the TUNE's ~0.2 s to STATUS).
@@ -62,7 +63,7 @@ struct FakeCard : maburgs::LinkCard {
   // ScoutRadio
   bool retune(uint8_t c) override {
     calls.push_back("retune " + std::to_string(c));
-    if (!retune_ok) return false;
+    if (!retune_ok || c == refuse_ch) return false;
     ch = c;
     if (retune_deferred) is_ready = false;
     return true;

@@ -13,7 +13,8 @@ namespace maburgs {
 //   - "no hop in flight" is Idle OR Hold (Ordered/Verifying excluded: a
 //     hop is actually in progress and the radio must not wander);
 //   - the trigger must be live this tick;
-//   - rate-limited to at most one burst per burst_period_ms, checked
+//   - rate-limited to at most one burst per burst period
+//     (hop_burst_period_ms(), below), checked
 //     against the caller's own last_burst_ms (a sustained
 //     Hold re-enters on every core-loop tick with trigger latched true,
 //     and neither cooldown_ms nor max_hops_per_min paces a burst that
@@ -77,6 +78,27 @@ inline bool hop_burst_due(HopState state, bool trigger, double now_ms,
                           double last_burst_ms, int burst_period_ms) {
   const bool hop_free = state == HopState::Idle || state == HopState::Hold;
   return hop_free && trigger && (now_ms - last_burst_ms >= burst_period_ms);
+}
+
+// Pure: the freshness burst's pacing, the period hop_burst_due() checks.
+// A relay sweeps asynchronously and blanks itself for ~280 ms per SCAN:
+// relay_burst_period_ms in any state. A USB burst runs synchronously on
+// the core thread and takes its card off op for every candidate dwell
+// (dwell_observe_ms plus a retune away and back, per candidate), so it
+// paces on burst_period_ms while it is what stands between the trigger
+// and an order: in Idle, and in a Hold entered because some non-op
+// candidate is not ranked yet (HopRanker marks one ranked at two fresh
+// visits, so the cold-ranker path is burst -> hold_exhausted -> burst ->
+// order). Once every non-op candidate is ranked (`ranking_complete`) and
+// the controller still holds, everything read blocked or backed off and
+// the trigger can stay live indefinitely on a link that still carries
+// video (an occupied op): re-bursting at the Idle cadence would make the
+// burst itself the outage, so that Hold paces on dwell_period_ms, the
+// spare card's own periodic cadence.
+inline int hop_burst_period_ms(HopState state, bool relay_burst, bool ranking_complete,
+                               const HopCfg& hop) {
+  if (relay_burst) return hop.relay_burst_period_ms;
+  return (state == HopState::Hold && ranking_complete) ? hop.dwell_period_ms : hop.burst_period_ms;
 }
 
 // Holds the link-pairing move edge (VrxController::take_move_edge()) for

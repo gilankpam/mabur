@@ -43,6 +43,24 @@ TEST(first_burst_not_delayed_by_initial_last_burst_ms) {
   CHECK(hop_burst_due(HopState::Idle, true, /*now_ms=*/0.0, -1e18, 333));
   CHECK(hop_burst_due(HopState::Idle, true, /*now_ms=*/10.0, -1e18, 333));
 }
+// A USB burst runs synchronously on the core thread and holds its card off
+// op for every candidate dwell, so a Hold whose candidates are all ranked
+// (everything blocked or backed off) and whose trigger stays live must not
+// re-burst at the Idle cadence: it paces on dwell_period_ms. A Hold with an
+// unranked candidate still needs the next burst to rank it (the cold-ranker
+// path to the first order) and keeps burst_period_ms, as does Idle; a relay
+// keeps relay_burst_period_ms in any state.
+// Revert (return burst_period_ms for every USB burst): the ranked-Hold check
+// reads 333. Revert (drop ranking_complete): the unranked-Hold check reads 1000.
+TEST(burst_period_is_dwell_period_only_in_a_fully_ranked_hold) {
+  HopCfg h; h.burst_period_ms = 333; h.dwell_period_ms = 1000; h.relay_burst_period_ms = 1500;
+  CHECK(hop_burst_period_ms(HopState::Hold, /*relay_burst=*/false, /*ranking_complete=*/true, h) == 1000);
+  CHECK(hop_burst_period_ms(HopState::Hold, false, false, h) == 333);
+  CHECK(hop_burst_period_ms(HopState::Idle, false, true, h) == 333);
+  CHECK(hop_burst_period_ms(HopState::Idle, false, false, h) == 333);
+  CHECK(hop_burst_period_ms(HopState::Idle, true, false, h) == 1500);
+  CHECK(hop_burst_period_ms(HopState::Hold, true, true, h) == 1500);
+}
 // Bench: nothing in the hop block may run before the link is in SESSION, or
 // during a calibration run (see hop_active's comment). The boot scout owning a
 // card no longer deactivates it -- the boot pick stays open after link-up and

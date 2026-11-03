@@ -356,8 +356,8 @@ card stays on diversity. Every `hop.dwell_period_ms` (1000 ms):
 5. A `D` scan.log line with `sess=1` and the step timings.
 
 Cost: the spare card is off op for `dwell_observe_ms` plus two retunes,
-once a second — about 2.5 % of its time (was ~3 % at the old 5 ms observe
-every 333 ms, on the spur-free default channel set).
+once a second — about 2.5 % of its time on the spur-free default channel
+set.
 
 `dwell()` checks **both** retunes. If either fails, the card's position is
 uncertain: it sets `kFlagRetuneFailed` and returns `false` without a
@@ -378,12 +378,22 @@ The burst holds `inflight_mu_`, keeping the periodic scout thread off the
 same `InflightScout`/`RadioFrontend`, and runs synchronously on the core
 thread, so it stalls RX processing while it runs.
 
-The period is `hop.burst_period_ms` (333 ms) for a USB burst card and
-`hop.relay_burst_period_ms` (1000 ms) for a relay. Without a rate limit a
-sustained `Hold` re-enters the burst on every ~10 ms control tick (neither
-`cooldown_ms` nor `max_hops_per_min` paces a hold that never orders), and a
-one-card GS's sole radio would be off air almost continuously; a relay
-sweep takes ~280 ms, so it gets the longer period.
+The period (`hop_burst_period_ms()`, `gs/src/hop_burst_gate.h`) is
+`hop.relay_burst_period_ms` (1000 ms) for a relay in any state, and for a
+USB burst card `hop.burst_period_ms` (333 ms) — except in a `Hold` where
+every non-op candidate is already ranked (the ranker's own 2-fresh-visit
+rule, the one `best()` relies on), which paces on `hop.dwell_period_ms`
+(1000 ms). Without a rate limit a sustained `Hold` re-enters the burst on
+every ~10 ms control tick (neither `cooldown_ms` nor `max_hops_per_min`
+paces a hold that never orders), and a one-card GS's sole radio would be
+off air almost continuously; a relay sweep takes ~280 ms, so it gets the
+longer period. A USB burst costs `dwell_observe_ms` (20 ms) plus a retune
+away and back per candidate — ~75 ms for three candidates, all on the core
+thread — so a fully ranked `Hold` (everything blocked or backed off, the
+trigger still live on an occupied op that carries video) would otherwise
+spend a fifth of its time bursting. A `Hold` with an unranked candidate
+keeps 333 ms: it is the cold-ranker path to the first order ("Known
+limitations"), and the next burst is what ranks it.
 
 **Which card bursts** (`pick_burst_card()`), first match wins:
 
@@ -408,8 +418,8 @@ before the result lands.
 last `hop.rank_visits` (5) visits not older than `hop.rank_max_age_ms`
 (10 000 ms): `score = Σ (fa + max(cca − own, 0) + 4·foreign)`.
 `ranking()` uses only the **newest visit's source kind**, so USB dwells
-(5 ms, CCA-event counts) and relay sweeps (20 ms, survey counts) are never
-averaged together. Fewer than 2 fresh visits = unranked, never chosen.
+(CCA-event counts plus an NHM busy %) and relay sweeps (survey counts) are
+never averaged together. Fewer than 2 fresh visits = unranked, never chosen.
 Lowest score wins; ties fall to the boot-time pick, then config order
 (`tie_break_falls_through_to_config_order`). The boot pick is published
 with `HopRanker::set_boot_pick()` when `ChannelCore` freezes the pick (next
@@ -428,7 +438,7 @@ orders (`at_20_order_is_unchanged_by_busy_mean`).
 (`busy_valid`/`busy_pct`, armed by `dwell()` for the observe span; no
 own-airtime subtraction, since none of our frames land on a candidate).
 `HopRankEntry.busy_pct` is the **mean** over an entry's fresh, valid
-visits (a 5 ms window on a bursty interferer reads 0 or 100). An entry is
+visits (one short dwell on a bursty interferer reads near 0 or 100). An entry is
 `blocked` when that mean is `>= radio.scan.blocked_pct`. This is tiering,
 not a score weight: `ranking()` puts every blocked ranked entry after every
 unblocked one, tiebreaking blocked pairs by lower `busy_pct` before the
@@ -503,8 +513,9 @@ has no home or fallback channel.
 - **Orders.** From `Idle`/`Hold` with a live trigger, past `cooldown_ms`
   and under `max_hops_per_min`: order `HopTick::best` (H `order`) and back
   off the channel being fled (`flee()`, same schedule as a failed target),
-  so a failed target's retry cannot go straight back to the jam — the 5 ms
-  event-count dwells score a long-frame jammer low. A withdraw still returns
+  so a failed target's retry cannot go straight back to the jam — the
+  event-count score terms rate a long-frame jammer low (only the NHM busy
+  tier sees it). A withdraw still returns
   to the fled channel: it restores op, it does not consult the ranker.
 - **Relocation** (`HopTick::relocate`, H `relocate`): the order that moves
   the link to `ChannelPlan::want()` (the pin, or the boot pick), placed
@@ -817,9 +828,15 @@ DJI O4), `docs/findings/2026-09-25-analog-vtx.md` (one-card analog VTX) and
   burst leaves every candidate unranked and the controller holds
   (`hold_exhausted`) until the second, ~333 ms later.
 - **A one-card freshness burst takes the sole radio off air** for one dwell
-  per dwell-set channel (a few ms each). The return retune, the `cur_ch`
-  resync and, if needed, the mechanical retune loop all run in the same
-  tick.
+  per non-op dwell-set channel (`dwell_observe_ms`, 20 ms, plus two
+  retunes each — ~75 ms for three candidates). The return retune, the
+  `cur_ch` resync and, if needed, the mechanical retune loop all run in the
+  same tick. Off air ~22 % of the time at the 333 ms Idle period; a fully
+  ranked `Hold` paces on `dwell_period_ms` (1000 ms), ~7.5 %.
+- **A two-card freshness burst stalls the core thread** for the same
+  ~75 ms (it runs synchronously in `ChannelCore::tick`): up to three times
+  a second while a trigger is live in `Idle` or an unranked `Hold`, once a
+  second in a fully ranked `Hold`.
 - **`dwell_busy`/`dwell_card` are two separate atomics**
   (`gs/src/channel_core.h`), read by the mechanical retune loop, the
   verdict window and the TX selector. A reader can see `dwell_busy == false`

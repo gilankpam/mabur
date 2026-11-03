@@ -12,6 +12,7 @@
 #include "channel_core.h"
 #include "fake_link_card.h"
 #include "mabur/rc_proto.h"
+#include "nhm_busy.h"
 #include "recording_sink.h"
 #include "vrx_cfg.h"
 using namespace maburgs;
@@ -1079,6 +1080,72 @@ TEST(usb_burst_paces_on_burst_period_not_dwell_period) {
   REQUIRE(d1 > d0);
   interfere(g, 3);                   // > 333 ms later, trigger still live -> burst 2
   CHECK(g.sink.dwells.size() > d1);
+}
+
+// Interfered windows for `windows` x window_ms, ticking the core directly;
+// returns the clock of every tick on which a burst ran (new D records).
+static std::vector<uint64_t> interfere_bursts(Rig& g, int windows) {
+  std::vector<uint64_t> bursts;
+  size_t seen = g.sink.dwells.size();
+  for (int w = 0; w < windows; ++w) {
+    for (auto& c : g.cards) c->fr.foreign += 40;
+    for (int i = 0; i < g.cfg.hop.window_ms / 10 + 1; ++i) {
+      const uint64_t t = g.clk.ms;
+      g.vrx->on_video(static_cast<double>(t));
+      g.core->tick(g.in(true));
+      if (g.sink.dwells.size() > seen) { bursts.push_back(t); seen = g.sink.dwells.size(); }
+      g.clk.ms += 10;
+    }
+  }
+  return bursts;
+}
+
+// Every candidate blocked (100 % NHM busy on the burst card's dwells) and
+// the op interfered: the cold ranker holds after burst 1 (one visit each,
+// nothing ranked), burst 2 comes burst_period_ms later and ranks them all
+// -- blocked -- so the controller stays in hold_exhausted with the trigger
+// live. From there each USB burst takes its card off op for every candidate,
+// so it paces on dwell_period_ms: no burst within burst_period_ms, one once
+// dwell_period_ms has passed.
+TEST(usb_burst_in_a_fully_ranked_all_blocked_hold_paces_on_dwell_period) {
+  Rig g(2, 0);
+  g.cfg.hop.dwell_period_ms = 1000;
+  g.cfg.hop.burst_period_ms = 333;
+  rebuild_with_set(g, g.cfg.radio.channels, 2);
+  freeze_auto(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  NhmBusyRead full; full.valid = true; full.period = nhm_period_4us(g.cfg.hop.dwell_observe_ms);
+  full.buckets[11] = 100;                          // every sample above busy_dbm: 100 % busy
+  g.cards[1]->nhm_arm_ok = true; g.cards[1]->nhm_read = full;
+  const auto bursts = interfere_bursts(g, 22);     // ~3.5 s
+  CHECK(g.sink.has_hop("hold_exhausted"));
+  CHECK(!g.sink.has_hop("order")); CHECK(!g.sink.has_hop("escape"));
+  CHECK(std::string(g.core->snapshot(0).hop.state) == "hold");
+  REQUIRE(bursts.size() >= 4);
+  CHECK(bursts[1] - bursts[0] < 1000);             // burst 2 ranks the set: burst_period_ms
+  for (size_t i = 2; i < bursts.size(); ++i) {
+    CHECK(bursts[i] - bursts[i - 1] >= 1000);      // fully ranked Hold: dwell_period_ms
+    CHECK(bursts[i] - bursts[i - 1] < 1000 + 333);
+  }
+}
+
+// The same Hold with one candidate that never gets a visit (its retune
+// fails, so it stays unranked): the next burst is still what could rank it,
+// so Hold keeps burst_period_ms. max_hops_per_min = 0 holds (hold_cap) on
+// the first triggered tick.
+TEST(usb_burst_in_a_hold_with_an_unranked_candidate_paces_on_burst_period) {
+  Rig g(2, 0);
+  g.cfg.hop.dwell_period_ms = 1000;
+  g.cfg.hop.burst_period_ms = 333;
+  g.cfg.hop.max_hops_per_min = 0;
+  rebuild_with_set(g, g.cfg.radio.channels, 2);
+  freeze_auto(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  g.cards[1]->refuse_ch = 144;
+  const auto bursts = interfere_bursts(g, 16);     // ~2.6 s
+  CHECK(std::string(g.core->snapshot(0).hop.state) == "hold");
+  REQUIRE(bursts.size() >= 5);
+  for (size_t i = 1; i < bursts.size(); ++i) CHECK(bursts[i] - bursts[i - 1] < 1000);
 }
 
 TEST(relay_only_single_member_set_sends_no_scan) {
