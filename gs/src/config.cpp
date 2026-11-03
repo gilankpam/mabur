@@ -264,7 +264,7 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
       const Value& s = r["scan"];
       check_keys(s, "radio.scan",
                  {"dwell_ms", "settle_ms", "min_rounds", "search_ms", "op_window_ms",
-                  "search_after_ms", "pick_margin", "pick_margin_pct", "one_card_ms", "max_ms", "busy_dbm", "blocked_pct"});
+                  "search_after_ms", "pick_margin_pct", "one_card_ms", "max_ms", "busy_dbm", "blocked_pct"});
       ScanCfg& sc = c.radio.scan;
       sc.dwell_ms = static_cast<int>(get_int(s, "dwell_ms", 250, 50, 10000, "radio.scan"));
       sc.settle_ms = static_cast<int>(get_int(s, "settle_ms", 30, 0, 1000, "radio.scan"));
@@ -272,7 +272,6 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
       sc.search_ms = static_cast<int>(get_int(s, "search_ms", 100, 40, 2000, "radio.scan"));
       sc.op_window_ms = static_cast<int>(get_int(s, "op_window_ms", 300, 40, 10000, "radio.scan"));
       sc.search_after_ms = static_cast<int>(get_int(s, "search_after_ms", 5000, 0, 600000, "radio.scan"));
-      sc.pick_margin = static_cast<int>(get_int(s, "pick_margin", 20, 0, 100000, "radio.scan"));
       sc.pick_margin_pct = static_cast<int>(get_int(s, "pick_margin_pct", 10, 0, 100, "radio.scan"));
       sc.one_card_ms = static_cast<int>(get_int(s, "one_card_ms", 5000, 0, 60000, "radio.scan"));
       sc.max_ms = static_cast<int>(get_int(s, "max_ms", 30000, 1000, 600000, "radio.scan"));

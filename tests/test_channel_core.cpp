@@ -216,7 +216,7 @@ TEST(disc_targets_is_tx_when_scout_owns_nothing) {
 // thing that can ever set link_edge_seen_).
 TEST(one_card_prelude_commits_before_first_disc) {
   Rig g(1, 0);
-  g.cards[0]->cca_per_ms_on[40] = 5;   // 40 busy, the rest clean
+  g.cards[0]->nhm_busy_pct_on[40] = 100;   // 40 blocked, the rest unread
   // run the scout + core for one_card_ms + a round
   for (int i = 0; i < 800 && !g.sink.has_line("one-card prelude ranking picks"); ++i) g.tick();
   REQUIRE(g.sink.has_line("one-card prelude ranking picks"));
@@ -230,7 +230,7 @@ TEST(one_card_prelude_commits_before_first_disc) {
 // Two cards, no link, auto: maturity commits the pick (K line) and freezes.
 TEST(two_card_no_link_commits_at_maturity) {
   Rig g(2, 0);
-  g.cards[1]->cca_per_ms_on[40] = 5; g.cards[1]->cca_per_ms_on[36] = 5;   // op pair busy
+  g.cards[1]->nhm_busy_pct_on[40] = 100;   // op's pair blocked
   for (int i = 0; i < 3000 && !g.sink.has_line("pick frozen on"); ++i) g.tick();
   REQUIRE(g.sink.has_line("pick frozen on"));
   CHECK(g.sink.has_line("(commit)"));
@@ -245,7 +245,7 @@ TEST(two_card_no_link_commits_at_maturity) {
 TEST(store_failure_is_logged_not_fatal) {
   Rig g(2, 0);
   g.store_ok = false;
-  g.cards[1]->cca_per_ms_on[40] = 5; g.cards[1]->cca_per_ms_on[36] = 5;
+  g.cards[1]->nhm_busy_pct_on[40] = 100;   // op's pair blocked
   for (int i = 0; i < 3000 && !g.sink.has_line("pick frozen on"); ++i) g.tick();
   REQUIRE(g.sink.has_line("pick frozen on"));
   CHECK(g.sink.has_line("maburgs channel: could not write the-store"));
@@ -859,7 +859,7 @@ TEST(relocate_lands_on_verify_pass_and_freezes_relocated) {
 // "pick frozen on <pick> (relocated)".
 TEST(auto_want_pick_relocates_linked_drone_to_the_pick) {
   Rig g(2, 0);
-  g.cards[1]->cca_per_ms_on[64] = 5;   // 64's pair is the busy one
+  g.cards[1]->nhm_busy_pct_on[64] = 100;   // 64's pair is blocked
   // The scout sweeps 40,64,112,144 each round: stop right after 64's
   // min_rounds-th visit, i.e. inside the last round.
   const auto visits = [&g](uint8_t ch) {
@@ -1541,15 +1541,21 @@ static const HopEvent* find_hop(const RecordingSink& s, const char* kind) {
 // Auto, two cards, linked, the boot pick long closed: one measure round
 // dwells once on every pair outside op's own, reads op from the
 // verdict's live window, emits one K record and names the best member.
-// Op (40) reads busy (foreign frames on the TX card), 64's pair reads busy
-// (foreign frames on the scout): 112 is the first clean member in config
-// order.
+// Op (40) and 64's pair read NHM busy: 112 is the clean member, well past
+// the pick margin.
 TEST(cal_measure_round_ranks_the_set_once) {
   Rig g(2, 0);
   freeze_auto(g);
   link_up(g);
+  g.cards[0]->nhm_arm_ok = true;
+  g.cards[0]->nhm_any_period = true;
+  g.cards[0]->nhm_read.valid = true;
+  g.cards[0]->nhm_read.buckets[11] = 25;   // op's NHM busy: 25 % (below blocked_pct)
+  g.cards[0]->nhm_read.buckets[0] = 75;
+  g.cards[1]->nhm_busy_pct_on[64] = 25;
+  g.cards[1]->nhm_busy_pct_on[112] = 5;    // the clean member
+  g.cards[1]->nhm_busy_pct_on[144] = 25;
   for (int i = 0; i < 30; ++i) live_tick(g, 200);
-  g.cards[1]->foreign_per_ms_on[64] = 1;
   ChannelCorePicker p(*g.core);
   REQUIRE(p.mode() == CalPicker::Mode::Auto);
   CHECK(p.op() == 40);
@@ -1580,15 +1586,22 @@ TEST(cal_measure_round_ranks_the_set_once) {
   CHECK(*p.measured_best() == 112);
 }
 
-// The same round over a quiet op: a candidate must beat op by pick_margin,
-// so a clean op stays the target.
+// The same round over a quiet-ish op: a candidate must beat op by
+// pick_margin_pct busy points, so a close-but-not-clear op stays the
+// target.
 TEST(cal_measure_round_keeps_a_clean_op) {
   Rig g(2, 0);
   freeze_auto(g);
   link_up(g);
+  g.cards[0]->nhm_arm_ok = true;
+  g.cards[0]->nhm_any_period = true;
+  g.cards[0]->nhm_read.valid = true;
+  g.cards[0]->nhm_read.buckets[11] = 15;   // op's NHM busy: 15 %
+  g.cards[0]->nhm_read.buckets[0] = 85;
+  g.cards[1]->nhm_busy_pct_on[64] = 40;
+  g.cards[1]->nhm_busy_pct_on[112] = 10;   // 5 points short of the margin (10)
+  g.cards[1]->nhm_busy_pct_on[144] = 40;
   for (int i = 0; i < 30; ++i) live_tick(g);
-  g.cards[1]->foreign_per_ms_on[60] = 1;
-  g.cards[1]->foreign_per_ms_on[64] = 1;
   ChannelCorePicker p(*g.core);
   p.begin_measure(g.clk.ms);
   for (int i = 0; i < 50 && !p.measured_best(); ++i) live_tick(g);
@@ -1695,12 +1708,23 @@ static std::vector<CalReading> readings_with(std::initializer_list<std::pair<uin
 }
 static const std::vector<uint8_t> kSet{40, 64, 112, 144};
 
-TEST(cal_pick_op_slightly_worse_than_a_candidate_stays) {
-  // 112 reads 15, op 30: better, but not by pick_margin (20).
-  const auto h = readings_with({{64, 100}, {112, 15}, {144, 100}});
-  CHECK(cal_round_pick(h, CalReading{40, 30}, 40, kSet, 20, 50.0).best == 40);
-  // 20 better than op: it moves.
-  CHECK(cal_round_pick(h, CalReading{40, 35}, 40, kSet, 20, 50.0).best == 112);
+TEST(cal_pick_busy_margin_decides_among_read_candidates) {
+  // 112 reads busy 15 %, the others more; op 30 %: a real gap, but short
+  // of the pick margin (20 points).
+  const std::vector<CalReading> h = {
+      {64, 0, true, 40.0}, {112, 0, true, 15.0}, {144, 0, true, 40.0}};
+  CHECK(cal_round_pick(h, CalReading{40, 0, true, 30.0}, 40, kSet, 20, 50.0).best == 40);
+  // 20 points better than op: it moves.
+  CHECK(cal_round_pick(h, CalReading{40, 0, true, 35.0}, 40, kSet, 20, 50.0).best == 112);
+}
+
+TEST(cal_pick_busy_tie_stays_on_op) {
+  // 64 ties op on busy %, even though op's frame count (foreign) reads far
+  // worse: foreign only orders the candidates among themselves, never the
+  // move itself.
+  const std::vector<CalReading> h = {
+      {64, 0, true, 30.0}, {112, 0, true, 30.0}, {144, 0, true, 50.0}};
+  CHECK(cal_round_pick(h, CalReading{40, 300, true, 30.0}, 40, kSet, 20, 50.0).best == 40);
 }
 
 TEST(cal_pick_clearly_blocked_op_moves) {
@@ -1708,11 +1732,11 @@ TEST(cal_pick_clearly_blocked_op_moves) {
   CHECK(cal_round_pick(h, CalReading{40, 0, true, 90.0}, 40, kSet, 20, 50.0).best == 64);
 }
 
-TEST(cal_pick_margin_holds_in_the_blocked_tier) {
-  // Op just blocked (55 %), every candidate just under (45 %): unblocked
-  // beats blocked only by pick_margin, like any other move.
+TEST(cal_pick_unblocked_beats_blocked_op_at_once) {
+  // Op just blocked (55 %), every candidate just under (45 %, unblocked):
+  // a better tier moves at once, no margin needed.
   const auto h = readings_with({{64, 0}, {112, 0}, {144, 0}}, 45.0);
-  CHECK(cal_round_pick(h, CalReading{40, 0, true, 55.0}, 40, kSet, 20, 50.0).best == 40);
+  CHECK(cal_round_pick(h, CalReading{40, 0, true, 55.0}, 40, kSet, 20, 50.0).best == 64);
   // A blocked candidate never replaces an unblocked op, however busy op's
   // frame count reads.
   const auto b = readings_with({{64, 0}, {112, 0}, {144, 0}}, 60.0);
@@ -1726,14 +1750,13 @@ TEST(cal_pick_rows_are_one_per_member_plus_op) {
 }
 
 TEST(cal_pick_excludes_a_member_never_read) {
-  // 144 never read: it is not ranked, even though its would-be score (as
-  // the config-order first candidate with no reading) would otherwise win.
-  const auto h = readings_with({{64, 50}, {112, 100}});
-  CHECK(cal_round_pick(h, CalReading{40, 200}, 40, kSet, 20, 50.0).best == 64);
+  // 144 never read: it is not ranked, even though it is in the set.
+  const std::vector<CalReading> h = {{64, 0, true, 10.0}, {112, 0, true, 40.0}};
+  CHECK(cal_round_pick(h, CalReading{40, 0, true, 50.0}, 40, kSet, 20, 50.0).best == 64);
   // Op unread: stay, whatever the candidates read.
   CHECK(cal_round_pick(h, std::nullopt, 40, kSet, 20, 50.0).best == 40);
   // K rows: every member read plus op's, one row each, one visit each.
-  const auto out = cal_round_pick(h, CalReading{40, 200}, 40, kSet, 20, 50.0);
+  const auto out = cal_round_pick(h, CalReading{40, 0, true, 50.0}, 40, kSet, 20, 50.0);
   CHECK(out.rows.size() == 3);
   for (const auto& r : out.rows) CHECK(r.visits == 1);
 }
@@ -1746,15 +1769,17 @@ TEST(cal_pick_a_candidate_without_a_busy_reading_never_outranks_one_with) {
   const std::vector<CalReading> h = {
       {64, 10, true, 20.0}, {112, 0, false, 0.0}, {144, 5, true, 10.0}};
   CHECK(cal_round_pick(h, CalReading{40, 100, true, 30.0}, 40, kSet, 20, 50.0).best == 144);
-  // With no busy reading anywhere, foreign alone still ranks them.
+  // With no busy reading anywhere, foreign still orders the candidates
+  // (the K rows), but the move itself needs a busy reading on both sides:
+  // stay.
   const auto f = readings_with({{64, 50}, {112, 0}, {144, 5}});
-  CHECK(cal_round_pick(f, CalReading{40, 100}, 40, kSet, 20, 50.0).best == 112);
+  CHECK(cal_round_pick(f, CalReading{40, 100}, 40, kSet, 20, 50.0).best == 40);
 }
 
 TEST(cal_pick_width_20_compares_members) {
   const std::vector<uint8_t> set{36, 40, 44};
-  const auto h = readings_with({{40, 90}, {44, 0}});
-  CHECK(cal_round_pick(h, CalReading{36, 50}, 36, set, 20, 50.0).best == 44);
+  const std::vector<CalReading> h = {{40, 0, true, 40.0}, {44, 0, true, 5.0}};
+  CHECK(cal_round_pick(h, CalReading{36, 0, true, 50.0}, 36, set, 20, 50.0).best == 44);
 }
 
 // ---- the round's lifecycle ----
@@ -2109,8 +2134,8 @@ TEST(set_auto_while_unlinked_reopens_the_boot_pick) {
   g.tick();
   CHECK(g.core->pick_open());                   // max_ms counts from the reopen
   // the scout measures again (one 40 MHz dwell per pair, on its primary)
-  // and the pick commits off the busy op pair
-  g.cards[1]->cca_per_ms_on[40] = 5;
+  // and the pick commits off the blocked op pair
+  g.cards[1]->nhm_busy_pct_on[40] = 100;
   for (int i = 0; i < 3000 && !g.sink.has_line("pick frozen on"); ++i) g.tick();
   REQUIRE(g.sink.has_line("pick frozen on"));
   CHECK(g.sink.has_line("(commit)"));
@@ -2177,7 +2202,7 @@ TEST(set_auto_while_unlinked_one_card_reruns_the_prelude_and_commits) {
   for (int i = 0; i < 10; ++i) g.tick();
   g.clk.ms += 60000;                            // long past max_ms and one_card_ms since start
   g.tick();
-  g.cards[0]->cca_per_ms_on[40] = 5;            // 40 busy, the rest clean
+  g.cards[0]->nhm_busy_pct_on[40] = 100;         // 40 blocked, the rest unread
   g.core->set_auto();
   CHECK(g.core->pick_open());
   for (int i = 0; i < 800 && !g.sink.has_line("one-card prelude ranking picks"); ++i) g.tick();

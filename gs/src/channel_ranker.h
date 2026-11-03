@@ -35,20 +35,21 @@ struct RankEntry {
 // is_blocked() below.
 //
 // There is no fixed home: proposal(current) plays the current channel's
-// row in the margin check below. When current and the best candidate are
-// BOTH blocked, the tiebreak above (lower busy) decides ordering -- but
-// proposal()'s margin check (like pair_pick.h's pair_proposal()) compares
-// the *event* score, not busy, so a candidate that out-orders current on
-// busy alone usually still loses to margin on score and current keeps the
-// channel.
+// row in the margin check below. The margin is a busy-%-points comparison
+// (ranked()'s own ordering, mirrored in pair_pick.h's pair_proposal() and
+// cal_round_pick.h): current/the best candidate's row is left only when
+// the best is in a better tier, has a busy reading where current has
+// none, or both read and current's busy % beats the best's by margin_pct
+// points. An exact tie, or neither side reading busy, stays.
 class ChannelRanker {
  public:
-  // margin: a candidate replaces `current` only when its worst visit is at
-  // least this many busy units below current's (0 = lowest worst wins, the
-  // original rule). Bench: clean channels tie within ~10 units,
-  // so without it the pick among clean channels is a coin toss that costs
-  // a calibrated current channel for nothing.
-  ChannelRanker(std::vector<uint8_t> channels, int min_rounds, uint32_t margin = 0,
+  // margin_pct: a candidate replaces `current` only when its worst-visit
+  // busy % reads at least this many points below current's (0 = lowest
+  // busy wins outright, even on an exact tie -- the original rule). Bench:
+  // clean channels tie within a few points, so without it the pick among
+  // clean channels is a coin toss that costs a calibrated current channel
+  // for nothing.
+  ChannelRanker(std::vector<uint8_t> channels, int min_rounds, double margin_pct = 0,
                 double blocked_pct = 1e9);
   void add(const RankSample& s);
   std::vector<RankEntry> ranked() const { return ranked(min_rounds_); }
@@ -65,7 +66,7 @@ class ChannelRanker {
 
  private:
   int min_rounds_;
-  uint32_t margin_;
+  double margin_pct_;
   double blocked_pct_;
   std::vector<RankEntry> entries_;  // config order
 };

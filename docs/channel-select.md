@@ -53,8 +53,7 @@ min_rounds      = 3     # full passes before the ranking is mature
 search_ms       = 100   # DISC burst at the start of every unlinked dwell on a primary (5 beacon periods)
 op_window_ms    = 300   # one card: how long the sole card beacons on op between dwells
 search_after_ms = 5000  # on link loss, keep every card on op this long before sweeping
-pick_margin     = 20    # auto: the pick must beat the channel the link is on by this many busy units
-pick_margin_pct = 10    # 40 MHz: a candidate pair must beat op's busy % by this many points to take the link
+pick_margin_pct = 10    # auto: a candidate must beat the channel the link is on by this many busy-% points
 one_card_ms     = 5000  # one card, auto: measure silently this long before the first DISC
 max_ms          = 30000 # auto: the pick is frozen at the latest this long after GS start
 busy_dbm        = -83   # both modes: energy level that counts the air as busy (an NHM bucket edge)
@@ -74,12 +73,12 @@ width    = 40
 | piece | runs when | knobs |
 |---|---|---|
 | **search** — find the drone over the set (`ChannelScout`, search job) | link down, both modes | `radio.scan.search_ms`, `op_window_ms`, `search_after_ms` |
-| **measure** — rank the set, pick, freeze (`ChannelScout` measure job, `BootPick`) | pick open, `channel = "auto"` only | `radio.scan.dwell_ms`, `settle_ms`, `min_rounds`, `pick_margin`, `pick_margin_pct` (40 MHz), `one_card_ms`, `max_ms` |
+| **measure** — rank the set, pick, freeze (`ChannelScout` measure job, `BootPick`) | pick open, `channel = "auto"` only | `radio.scan.dwell_ms`, `settle_ms`, `min_rounds`, `pick_margin_pct`, `one_card_ms`, `max_ms` |
 | **busy air** — what every measurer calls blocked | always | `radio.scan.busy_dbm`, `blocked_pct` (boot ranker, in-flight ranker, verdict alike) |
 | **relocate** — the link forms where the drone is, one order moves it to `want` (pin or pick) | each link-up with `op ≠ want`, both modes | `[hop] confirm_ms`, `confirm_extend_ms`, `verify_ms`, `max_hops_per_min`, `one_card_repeats` (shared with the reactive hop) |
 | **verdict** — is `op` bad right now | always (OSD / sideport `hop.verdict`) | `[hop] window_ms`, `persist`, `[hop.verdict] *` |
 | **reactive hop** — in-flight scout, freshness burst, order/verify/withdraw | `channel = "auto"` only, after the freeze | everything else in `[hop]` |
-| **calibration pick** — one measure round, then a relocate to the quietest member (`CalPicker`) | each `maburcal start`, auto mode with two or more cards | `radio.scan.dwell_ms`, `settle_ms`, `pick_margin`, `busy_dbm`, `blocked_pct`; the relocate's `[hop] confirm_ms`, `max_hops_per_min` |
+| **calibration pick** — one measure round, then a relocate to the quietest member (`CalPicker`) | each `maburcal start`, auto mode with two or more cards | `radio.scan.dwell_ms`, `settle_ms`, `pick_margin_pct`, `busy_dbm`, `blocked_pct`; the relocate's `[hop] confirm_ms`, `max_hops_per_min` |
 | **one-card mode** | exactly one USB card in the roster (one `[[radio.cards]]` entry, or auto-scan finding one card) | no in-flight scout; `one_card_ms`, `op_window_ms`, `one_card_repeats` apply |
 
 There is no other mode switch: auto and pinned are the only two modes.
@@ -114,7 +113,6 @@ Validation (`gs/src/config.cpp`, `drone/src/config.cpp`, shared code in
 | `radio.scan.search_ms` | 40–2000 |
 | `radio.scan.op_window_ms` | 40–10000 |
 | `radio.scan.search_after_ms` | 0–600000 |
-| `radio.scan.pick_margin` | 0–100000 |
 | `radio.scan.pick_margin_pct` | 0–100 |
 | `radio.scan.one_card_ms` | 0–60000 |
 | `radio.scan.max_ms` | 1000–600000 |
@@ -256,7 +254,7 @@ counter delta over the observe span (`ChannelScout::set_tx_frames()`, fed
 every card) and `k` (`leak_per_frame`) is a **compiled constant**, `1.0`
 (`gs/src/main.cpp`, and `web/src/web_gs.cpp` for the browser GS), not a
 config key. The leak is uniform across candidates, so it biases only the
-stay-or-move comparison, and `pick_margin` absorbs the residual. `k` is
+stay-or-move comparison, and `pick_margin_pct` absorbs the residual. `k` is
 provisional: bench row 7 could not fit it ("Open items").
 
 Why every dwell is silent and why `cca − own` is subtracted: the scout
@@ -376,7 +374,7 @@ reach it.
 
 **Ranking.** At width 20, `ChannelRanker::proposal` over single
 channels. At width 40, `pair_proposal(all, current, set, min_rounds,
-pick_margin, pick_margin_pct, blocked_pct)` (`gs/src/pair_pick.h`) over
+pick_margin_pct, blocked_pct)` (`gs/src/pair_pick.h`) over
 one row per pair, keyed by its primary. Either way a row is ranked once it
 has `min_rounds` visits (the one-card deadline uses the *effective*
 `min_rounds` — 1, once the prelude is done and fewer than `min_rounds`
@@ -389,9 +387,8 @@ order; no noise-floor tie-break. The channel the link currently sits on
 (`op`) is the reference: a candidate in a better tier wins outright (a
 blocked `op` loses to any unblocked candidate), as does one with a busy
 reading where `op` has none; otherwise it must beat `op`'s busy % by
-`pick_margin_pct` points, or — on an exact busy tie, or with neither
-read — beat `op`'s frame score by `pick_margin`. Ties stay on `op`.
-Returns `op` when nothing else is ranked.
+`pick_margin_pct` points. An exact busy tie, or neither side reading
+busy, stays. Returns `op` when nothing else is ranked.
 
 The whole pick is `BootPick` (`gs/src/boot_pick.{h,cpp}`, pure, every
 exit covered by `tests/test_boot_pick.cpp`); `ChannelCore` only feeds it a
@@ -482,9 +479,12 @@ card (two or more cards, not relay-only); pinned and one-card GSs run on
   reading — its own dwell, at 40 MHz one dwell on the pair. A candidate
   with no busy reading is not ranked while any
   candidate has one (scored on foreign frames alone it would beat the
-  candidates that pay the busy term). Leaving `op` takes beating
-  it by `pick_margin` in every tier; a blocked candidate never replaces an
-  unblocked `op`. Logged as a `K` record with the round's scores (one row
+  candidates that pay the busy term; foreign otherwise stays in the row's
+  score for ordering only). Leaving `op` is the same margin rule as the
+  boot pick: a better tier (an unblocked candidate against a blocked `op`)
+  moves at once, a blocked candidate never replaces an unblocked `op`, and
+  otherwise the candidate must beat `op`'s busy % by `pick_margin_pct`
+  points. Logged as a `K` record with the round's scores (one row
   per member read plus `op`'s) and `maburgs channel: calibration measure
   picks <best> (op <op>[ unread: staying])`.
 - **The relocate** is the boot pick's own: `set_want(best)` and the boot

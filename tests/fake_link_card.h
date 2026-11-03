@@ -2,6 +2,7 @@
 // FakeCard: a LinkCard for ChannelCore tests. Every control-plane call is
 // recorded; energy/frames are programmable; the clock is shared with the
 // core through FakeClock.
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -94,13 +95,28 @@ struct FakeCard : maburgs::LinkCard {
   // read it. Off, nhm_read.period decides which of them it is valid for.
   bool nhm_any_period = false;
   uint16_t nhm_armed_period = 0;
+  // Per-channel NHM busy % override, read at whatever `ch` the card is
+  // tuned to when the scout dwells on it: -1 (default, every entry) falls
+  // back to the single nhm_arm_ok/nhm_read reading above, which is what
+  // op's own (unchanging) channel uses.
+  std::array<int, 256> nhm_busy_pct_on;
+  FakeCard() { nhm_busy_pct_on.fill(-1); }
   bool arm_nhm_busy(uint16_t period_4us) override {
     calls.push_back("arm_nhm " + std::to_string(period_4us));
     nhm_armed_period = period_4us;
+    if (nhm_busy_pct_on[ch] >= 0) return true;
     return nhm_arm_ok;
   }
   maburgs::NhmBusyRead read_nhm_busy() override {
     calls.push_back("read_nhm");
+    if (nhm_busy_pct_on[ch] >= 0) {
+      maburgs::NhmBusyRead r;
+      r.valid = true;
+      r.period = nhm_armed_period;
+      r.buckets[11] = static_cast<uint8_t>(nhm_busy_pct_on[ch]);
+      r.buckets[0] = static_cast<uint8_t>(100 - nhm_busy_pct_on[ch]);
+      return r;
+    }
     maburgs::NhmBusyRead r = nhm_read;
     if (nhm_any_period) r.period = nhm_armed_period;
     return r;

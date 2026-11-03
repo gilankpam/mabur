@@ -23,14 +23,13 @@ namespace maburgs {
 // keeps the pick unless the best candidate
 //  - is in a better tier (a blocked current loses to any unblocked
 //    candidate outright), or has a busy reading where current has none;
-//  - or, both read, beats current's busy by margin_pct points;
-//  - or, on an exact busy tie or with neither read, beats current's frame
-//    score by `margin` events.
-// Ties stay on current. Returns the winning primary (current, or the
-// candidate as listed in `set`), current when nothing is ranked, and the
-// best ranked candidate when current's pair is not ranked.
+//  - or, both read, beats current's busy by margin_pct points.
+// An exact busy tie, or neither side reading busy, stays. Returns the
+// winning primary (current, or the candidate as listed in `set`), current
+// when nothing is ranked, and the best ranked candidate when current's
+// pair is not ranked.
 uint8_t pair_proposal(const std::vector<RankEntry>& all, uint8_t current,
-                      const std::vector<uint8_t>& set, int min_rounds, uint32_t margin,
+                      const std::vector<uint8_t>& set, int min_rounds,
                       double margin_pct, double blocked_pct = 1e9);
 
 // True when any pair in `set` is ranked (its primary's row at min_rounds).

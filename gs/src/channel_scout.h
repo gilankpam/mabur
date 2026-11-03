@@ -22,8 +22,7 @@ struct ScoutCfg {
   int op_window_ms = 300;          // one card: beacon window on op between dwells
   int beacon_period_ms = 20;
   int one_card_ms = 5000;          // one card + measure: silent prelude before the first DISC
-  uint32_t pick_margin = 20;
-  double pick_margin_pct = 10;     // width 40: busy % points a candidate pair must beat op's by
+  double pick_margin_pct = 10;     // busy % points a candidate must beat the current channel by
   bool one_card = false;
   uint8_t link_width_mhz = 20;     // radio.width: the card is opened at it; 40 = one dwell per pair, pick a pair
   int busy_dbm = -83;

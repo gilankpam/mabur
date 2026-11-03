@@ -110,9 +110,11 @@ Before the first sweep the GS puts the pair on the quietest member of
   foreign frames per `radio.scan.dwell_ms` plus NHM foreign busy %. A
   candidate is one reading — its own dwell, at 40 MHz one dwell on the
   pair — and a candidate without a busy reading is not ranked while any
-  has one; leaving op takes beating it by `radio.scan.pick_margin` in
-  every tier, and a blocked candidate never replaces an unblocked op; op
-  unread means stay. When the best member is not op, the GS orders the
+  has one; leaving op takes a better tier (an unblocked candidate against
+  a blocked op moves at once; a blocked candidate never replaces an
+  unblocked op), or — once both are in the same tier — beating op's busy
+  % by `radio.scan.pick_margin_pct` points; op unread means stay. When the
+  best member is not op, the GS orders the
   boot pick's relocate (scan.log `H relocate … cal`, no verify window —
   the confirm lands it) and waits for it to settle. Detail:
   `docs/channel-select.md` "Calibration pick".

@@ -482,7 +482,7 @@ TEST(radio_channels_default_set_and_auto) {
   CHECK(cfg.radio.scan.search_ms == 100);
   CHECK(cfg.radio.scan.op_window_ms == 300);
   CHECK(cfg.radio.scan.search_after_ms == 5000);
-  CHECK(cfg.radio.scan.pick_margin == 20);
+  CHECK(cfg.radio.scan.pick_margin_pct == 10);
   CHECK(cfg.radio.scan.one_card_ms == 5000);
   CHECK(cfg.radio.scan.max_ms == 30000);
 }
@@ -534,18 +534,27 @@ TEST(radio_channels_validated_by_channel_set_rules) {
 TEST(radio_scan_parses_and_validates) {
   auto cfg = maburgs::load_config(write_tmp(
       "[radio.scan]\ndwell_ms = 500\nsettle_ms = 40\nmin_rounds = 2\nsearch_ms = 60\n"
-      "op_window_ms = 400\nsearch_after_ms = 8000\npick_margin = 5\none_card_ms = 0\nmax_ms = 20000\n"));
+      "op_window_ms = 400\nsearch_after_ms = 8000\npick_margin_pct = 5\none_card_ms = 0\nmax_ms = 20000\n"));
   CHECK(cfg.radio.scan.dwell_ms == 500);
   CHECK(cfg.radio.scan.search_ms == 60);
   CHECK(cfg.radio.scan.op_window_ms == 400);
   CHECK(cfg.radio.scan.search_after_ms == 8000);
-  CHECK(cfg.radio.scan.pick_margin == 5);
+  CHECK(cfg.radio.scan.pick_margin_pct == 5);
   CHECK(cfg.radio.scan.one_card_ms == 0);
   CHECK(cfg.radio.scan.max_ms == 20000);
   bool threw = false;
   try { maburgs::load_config(write_tmp("[radio.scan]\nsearch_ms = 10\n")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw);                                        // [40,2000]
+}
+// A removed key fails boot, as every removed key does: pick_margin (the
+// frame-score margin) is gone, pick_margin_pct (busy-% points) is the only
+// margin left, for every pick.
+TEST(radio_scan_rejects_pick_margin) {
+  bool threw = false;
+  try { maburgs::load_config(write_tmp("[radio.scan]\npick_margin = 20\n")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw);
 }
 
 TEST(removed_scan_and_home_keys_fail_boot) {

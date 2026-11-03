@@ -82,7 +82,6 @@ ChannelCore::ChannelCore(ChannelCoreCfg cfg, std::vector<LinkCard*> cards, VrxCo
     sc.op_window_ms = cfg_.radio.scan.op_window_ms;
     sc.beacon_period_ms = 20;
     sc.one_card_ms = cfg_.radio.scan.one_card_ms;
-    sc.pick_margin = static_cast<uint32_t>(cfg_.radio.scan.pick_margin);
     sc.pick_margin_pct = cfg_.radio.scan.pick_margin_pct;
     sc.one_card = one_card_ || relay_search_only_;   // a sole relay interleaves op windows like a sole USB card
     sc.link_width_mhz = cfg_.radio.width;
@@ -1126,7 +1125,7 @@ void ChannelCore::finish_cal_measure_(double now_ms) {
     members.push_back(CalReading{s.ch, s.foreign, s.busy_valid, s.busy_pct});
   const CalPickOut pick =
       cal_round_pick(members, have_op ? op_live_ : std::nullopt, op, cfg_.radio.channels,
-                     static_cast<uint32_t>(cfg_.radio.scan.pick_margin),
+                     cfg_.radio.scan.pick_margin_pct,
                      cfg_.radio.scan.busy.blocked_pct);
   const uint8_t best = pick.best;
   sink_.pick(now_ms, best, scout_->rounds(), pick.rows, 1);

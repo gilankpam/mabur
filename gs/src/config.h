@@ -23,9 +23,10 @@ struct CardCfg {
 /// Channel search + measurement over radio.channels. dwell/settle/min_rounds
 /// are the measurement; search_ms the DISC burst at the start of an unlinked
 /// dwell; op_window_ms the one-card beacon window on op; search_after_ms how
-/// long every card holds op after a loss before sweeping; pick_margin how
-/// much a candidate must beat the current channel by; one_card_ms the
-/// one-card silent measurement prelude; max_ms the ceiling on an open pick.
+/// long every card holds op after a loss before sweeping; pick_margin_pct
+/// how many busy-% points a candidate must beat the current channel by;
+/// one_card_ms the one-card silent measurement prelude; max_ms the ceiling
+/// on an open pick.
 /// What counts as busy air. Shared by every measurer -- the boot scout
 /// and its pair ranker, the in-flight scout and its ranker, the verdict
 /// engine -- so it lives under [radio.scan], not [hop]: a pinned GS with
@@ -47,10 +48,10 @@ struct ScanCfg {
   int search_ms = 100;
   int op_window_ms = 300;
   int search_after_ms = 5000;
-  int pick_margin = 20;
-  // 40 MHz boot pair pick: a candidate pair's busy % must beat op's by this
-  // many percentage points before it takes the link; an exact busy tie
-  // still falls to pick_margin (frame-score units, 20 MHz semantics).
+  // Every pick (boot, 20 or 40 MHz, and the calibration round): a
+  // candidate must beat the current channel's busy % by this many
+  // percentage points before it takes the link; an exact busy tie, or
+  // neither side reading busy, stays.
   int pick_margin_pct = 10;
   int one_card_ms = 5000;
   int max_ms = 30000;

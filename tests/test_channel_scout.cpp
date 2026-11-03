@@ -45,7 +45,7 @@ struct FakeRadio : ScoutRadio {
 static ScoutCfg two(bool measure = true) {
   ScoutCfg c; c.channels = {136, 144}; c.measure = measure; c.dwell_ms = 250; c.settle_ms = 30;
   c.min_rounds = 2; c.search_ms = 100; c.op_window_ms = 300; c.beacon_period_ms = 20;
-  c.pick_margin = 20; c.link_width_mhz = 40;
+  c.link_width_mhz = 40;
   return c;
 }
 
@@ -193,16 +193,17 @@ TEST(a_tx_counter_that_goes_back_is_no_leak) {
 
 // Unlinked (searching): op is measured like every other channel. A linked
 // scout skips op's own pair (tests below).
-TEST(two_card_proposal_matures_after_min_rounds_and_moves_only_past_the_margin) {
+TEST(two_card_proposal_matures_after_min_rounds_and_moves_only_past_the_busy_margin) {
   Rig g(two()); g.s.set_op(136); g.s.set_search(true);
   for (int i = 0; i < 2; ++i) g.s.run_once();
   CHECK(!g.s.mature()); CHECK(g.s.proposal() == 136);
   CHECK(g.s.pick_ranking().empty());
   for (int i = 0; i < 2; ++i) g.s.run_once();
   CHECK(g.s.mature()); CHECK(g.s.rounds() == 2);
-  CHECK(g.s.proposal() == 136);            // tie: stay
+  CHECK(g.s.proposal() == 136);            // neither pair reads busy: stay
   Rig h(two()); h.s.set_op(136); h.s.set_search(true);
-  h.r.cca_per_ms_on[136] = 1;              // 136's pair = 250/visit; 144 clean
+  h.r.busy_pct_on[136] = 30;                // 136's pair busy; 144 clean
+  h.r.busy_pct_on[144] = 0;
   for (int i = 0; i < 4; ++i) h.s.run_once();
   CHECK(h.s.proposal() == 144);
   auto pr = h.s.pick_ranking();
@@ -260,10 +261,11 @@ TEST(op_change_during_the_observe_is_what_the_dwell_publishes_against) {
   CHECK(s.proposal() == 144);              // the tie is judged against the new op
 }
 
-TEST(two_card_width_20_ranks_the_members_and_proposes_past_the_margin) {
+TEST(two_card_width_20_ranks_the_members_and_proposes_past_the_busy_margin) {
   ScoutCfg c = two(); c.link_width_mhz = 20; Rig g(c);
   g.s.set_op(136); g.s.set_search(true);
-  g.r.cca_per_ms_on[136] = 1;
+  g.r.busy_pct_on[136] = 30;
+  g.r.busy_pct_on[144] = 0;
   for (int i = 0; i < 4; ++i) g.s.run_once();
   CHECK(g.s.mature()); CHECK(g.s.rounds() == 2);
   CHECK(g.s.proposal() == 144);

@@ -15,14 +15,19 @@
 // (PPDUs minus MPDUs) clamp to zero, while a candidate keeps its CCA, so the
 // term would score op clean no matter what.
 //
-// score = foreign + busy % (one unit per frame, one per percentage point;
-// the busy term only when both sides being compared have a reading). A
-// candidate with no busy reading is not ranked while any candidate has one.
-// Leaving op takes beating it by `margin` in every tier: a blocked
-// candidate never replaces an unblocked op, and a candidate that is
-// unblocked while op is blocked still has to be `margin` better. Op
-// unread, or no candidate read at all: stay. Both rules lean toward staying
-// where the link already works.
+// Candidate selection among the set (which one is "best") still scores
+// foreign + busy % (one unit per frame, one per percentage point; the busy
+// term only when both sides being compared have a reading) -- foreign
+// stays in the row's score for ordering only. A candidate with no busy
+// reading is not ranked while any candidate has one.
+//
+// Leaving op is the same margin rule as ChannelRanker::proposal and
+// pair_proposal: the best candidate replaces op only when it is in a
+// better tier (a blocked op loses to any unblocked candidate at once; a
+// blocked candidate never replaces an unblocked op), has a busy reading
+// where op has none, or both read and beats op's busy % by `margin_pct`
+// points. An exact busy tie, or neither side reading busy, stays -- as
+// does op unread, or no candidate read at all.
 #include <cmath>
 #include <cstdint>
 #include <optional>
@@ -83,7 +88,7 @@ inline RankEntry row(const CalReading& r) {
 
 inline CalPickOut cal_round_pick(const std::vector<CalReading>& members,
                                  const std::optional<CalReading>& op_read, uint8_t op,
-                                 const std::vector<uint8_t>& set, uint32_t margin,
+                                 const std::vector<uint8_t>& set, double margin_pct,
                                  double blocked_pct) {
   using namespace cal_pick_detail;
   CalPickOut out;
@@ -128,9 +133,20 @@ inline CalPickOut cal_round_pick(const std::vector<CalReading>& members,
     }
   }
   if (!best) return out;
-  if (blocked(bs, blocked_pct) && !blocked(o, blocked_pct)) return out;
-  const bool use_busy = bs.busy_valid && o.busy_valid;
-  if (score(bs, use_busy) + static_cast<double>(margin) <= score(o, use_busy)) out.best = *best;
+  // Leaving op: a better tier (op blocked, the candidate not) or a busy
+  // reading where op has none moves at once; both read, the busy-%
+  // margin decides; an exact tie, or neither read, stays -- the same rule
+  // as ChannelRanker::proposal and pair_proposal.
+  const bool bb = blocked(bs, blocked_pct), ob = blocked(o, blocked_pct);
+  if (bb != ob) {
+    if (!bb) out.best = *best;   // a blocked candidate never replaces an unblocked op
+    return out;
+  }
+  if (bs.busy_valid != o.busy_valid) {
+    if (bs.busy_valid) out.best = *best;
+    return out;
+  }
+  if (bs.busy_valid && o.busy_pct - bs.busy_pct >= margin_pct) out.best = *best;
   return out;
 }
 

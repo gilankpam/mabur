@@ -1214,7 +1214,7 @@ struct GsRig {
 
 TEST(gs_roster_builds_core_and_one_card_prelude_commits_and_stores) {
   GsRig r;
-  r.card.cca_per_ms_on[40] = 5;              // the start pair is the busy one
+  r.card.nhm_busy_pct_on[40] = 100;           // the start pair is blocked
   REQUIRE(r.g->channel_core() != nullptr);
   CHECK(r.g->stats().chan.has_value());
   CHECK(r.g->stats().chan->scan_state == "scouting");

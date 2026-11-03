@@ -34,7 +34,7 @@ bool better(const RankEntry& a, const RankEntry& b, double blocked_pct) {
 }  // namespace
 
 uint8_t pair_proposal(const std::vector<RankEntry>& all, uint8_t current,
-                      const std::vector<uint8_t>& set, int min_rounds, uint32_t margin,
+                      const std::vector<uint8_t>& set, int min_rounds,
                       double margin_pct, double blocked_pct) {
   const std::optional<RankEntry> h = row_for(all, current, min_rounds);
   std::optional<RankEntry> best;
@@ -53,7 +53,7 @@ uint8_t pair_proposal(const std::vector<RankEntry>& all, uint8_t current,
   if (best->busy_valid != h->busy_valid) return best->ch;
   if (best->busy_valid && best->worst_busy_pct != h->worst_busy_pct)
     return h->worst_busy_pct - best->worst_busy_pct >= margin_pct ? best->ch : current;
-  return best->worst_busy + margin <= h->worst_busy ? best->ch : current;
+  return current;   // an exact busy tie, or neither side read: stay
 }
 
 bool any_pair_ranked(const std::vector<RankEntry>& all, const std::vector<uint8_t>& set,

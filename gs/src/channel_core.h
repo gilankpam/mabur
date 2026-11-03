@@ -21,10 +21,11 @@
 // drone's video. Op is read from the verdict window instead
 // (the worst valid card on op: decoded foreign frames scaled to dwell_ms,
 // NHM busy minus our own airtime). The pick compares only those two terms
-// on both sides, with pick_margin against op in every tier
-// (cal_round_pick.h); it is logged as a K record. The round starts only
-// with the scout thread up and its card alive, is dropped when a run is
-// already calibrating, and ends at a wall-clock bound (twice a full
+// on both sides, with pick_margin_pct against op's busy % once both are
+// in the same tier (cal_round_pick.h); it is logged as a K record. The
+// round starts only with the scout thread up and its card alive, is
+// dropped when a run is already calibrating, and ends at a wall-clock
+// bound (twice a full
 // round's dwell time) with op as the answer; cancel_cal_measure() releases
 // it at any point. order_cal_relocate() moves want and re-arms BootPick's
 // relocation, so the move is the boot pick's own relocate order (H
