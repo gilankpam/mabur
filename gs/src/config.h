@@ -43,6 +43,10 @@ struct ScanCfg {
   int op_window_ms = 300;
   int search_after_ms = 5000;
   int pick_margin = 20;
+  // 40 MHz boot pair pick: a candidate pair's busy % must beat op's by this
+  // many percentage points before it takes the link; an exact busy tie
+  // still falls to pick_margin (frame-score units, 20 MHz semantics).
+  int pick_margin_pct = 10;
   int one_card_ms = 5000;
   int max_ms = 30000;
   BusyCfg busy;
@@ -67,6 +71,10 @@ struct HopVerdictCfg {
   // session 0232: 5-30 own frames/s under a long-frame jam).
   // 0 disables the AU term. 60->30 fps low-power is 0.5, so keep it below.
   double starved_frac = 0.25;
+  // Consecutive blocked windows that read `occupied` -> impaired on their
+  // own, with no loss or weak signal needed. A window with no busy reading
+  // neither advances nor resets the count.
+  int occupied_windows = 7;
 };
 
 /// In-flight channel hop (docs/inflight-channel-hop.md). Runs in
@@ -76,8 +84,12 @@ struct HopVerdictCfg {
 struct HopCfg {
   int window_ms = 150;
   int persist = 2;
-  int dwell_observe_ms = 5;
-  int dwell_period_ms = 333;
+  int dwell_observe_ms = 20;
+  int dwell_period_ms = 1000;
+  // USB freshness-burst pacing: at most one sweep of every candidate per
+  // this, while a hop trigger is live. dwell_period_ms is the periodic
+  // spare-card dwell only.
+  int burst_period_ms = 333;
   int rank_visits = 5;
   int rank_max_age_ms = 10000;
   int confirm_ms = 500;

@@ -41,6 +41,7 @@ search_ms       = 100
 op_window_ms    = 300
 search_after_ms = 5000
 pick_margin     = 20
+pick_margin_pct = 10    # 40 MHz: a candidate pair must be this many busy-% points cleaner than the link's pair
 one_card_ms     = 5000
 max_ms          = 30000
 busy_dbm        = -83   # energy level that counts the air as busy: an NHM bucket edge, -104 -101 -98 -95 -92 -89 -86 -83 -80 -75 -70
@@ -235,8 +236,9 @@ rung_period_s = 10            # per-rung summary log interval
 [hop]
 window_ms            = 150    # length of one channel-health check
 persist              = 2      # bad checks in a row before hopping
-dwell_observe_ms     = 5      # scout: time listening per candidate visit...
-dwell_period_ms      = 333    # ...and time between visits
+dwell_observe_ms     = 20     # scout: time listening per candidate visit...
+dwell_period_ms      = 1000   # ...and time between visits -- background spare-card dwell only
+burst_period_ms      = 333    # USB freshness burst: sweep of every candidate while a hop trigger is live, at most one per this
 relay_burst_period_ms = 1000  # relay sweep (~280 ms deaf): at most one per this, while hop-free
 rank_visits          = 5      # visits remembered per candidate
 rank_max_age_ms      = 10000  # visits older than this are ignored
@@ -259,3 +261,4 @@ fading_drop_db       = 6      # signal this much below its recent level = fading
 foreign_pps          = 50     # other transmitters' packets per second
 fa_pps               = 100    # false detections per second (non-Wi-Fi noise)
 starved_frac         = 0.25   # video rate below this fraction of normal = starved (keep below 0.5)
+occupied_windows     = 7      # channel blocked this many checks in a row = interfered, even with no loss

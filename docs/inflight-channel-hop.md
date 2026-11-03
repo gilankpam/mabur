@@ -552,8 +552,9 @@ no hop config; it obeys whatever `hop_ch`/`hop_epoch` arrive on the RCF.
 [hop]
 window_ms            = 150
 persist              = 2
-dwell_observe_ms     = 5
-dwell_period_ms      = 333
+dwell_observe_ms     = 20
+dwell_period_ms      = 1000
+burst_period_ms      = 333
 relay_burst_period_ms = 1000
 rank_visits          = 5
 rank_max_age_ms      = 10000
@@ -575,6 +576,7 @@ fading_drop_db       = 6
 foreign_pps          = 50
 fa_pps               = 100
 starved_frac         = 0.25
+occupied_windows     = 7
 ```
 
 The bundle ships `confirm_ms = 1000` because hops to or from the 8822E
@@ -593,6 +595,7 @@ Validation (`gs/src/config.cpp`) — unknown keys fail boot:
 | `persist` | 1–3 |
 | `dwell_observe_ms` | 1–250 |
 | `dwell_period_ms` | 20–60000 |
+| `burst_period_ms` | 100–60000 |
 | `relay_burst_period_ms` | 500–60000 |
 | `rank_visits` | 1–100 |
 | `rank_max_age_ms` | 1000–600000 |
@@ -612,6 +615,7 @@ Validation (`gs/src/config.cpp`) — unknown keys fail boot:
 | `hop.verdict.foreign_pps` | 1–100000 |
 | `hop.verdict.fa_pps` | 1–100000 |
 | `hop.verdict.starved_frac` | 0.0–1.0 (0 = zero-own-frames rule only) |
+| `hop.verdict.occupied_windows` | 1–100 |
 | `radio.scan.busy_dbm` | −104 – −70, must sit on an `nf::kNhmAbsThDbm` bucket edge |
 | `radio.scan.blocked_pct` | 1.0–100.0 |
 

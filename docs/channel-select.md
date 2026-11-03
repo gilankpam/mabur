@@ -54,6 +54,7 @@ search_ms       = 100   # DISC burst at the start of every unlinked dwell on a p
 op_window_ms    = 300   # one card: how long the sole card beacons on op between dwells
 search_after_ms = 5000  # on link loss, keep every card on op this long before sweeping
 pick_margin     = 20    # auto: the pick must beat the channel the link is on by this many busy units
+pick_margin_pct = 10    # 40 MHz: a candidate pair must beat op's busy % by this many points to take the link
 one_card_ms     = 5000  # one card, auto: measure silently this long before the first DISC
 max_ms          = 30000 # auto: the pick is frozen at the latest this long after GS start
 busy_dbm        = -83   # both modes: energy level that counts the air as busy (an NHM bucket edge)
@@ -114,6 +115,7 @@ Validation (`gs/src/config.cpp`, `drone/src/config.cpp`, shared code in
 | `radio.scan.op_window_ms` | 40–10000 |
 | `radio.scan.search_after_ms` | 0–600000 |
 | `radio.scan.pick_margin` | 0–100000 |
+| `radio.scan.pick_margin_pct` | 0–100 |
 | `radio.scan.one_card_ms` | 0–60000 |
 | `radio.scan.max_ms` | 1000–600000 |
 | `radio.scan.busy_dbm` | −104 – −70, on an NHM bucket edge (`-104 -101 -98 -95 -92 -89 -86 -83 -80 -75 -70`; `gs/src/nhm_busy.h` `busy_dbm_is_edge`) |

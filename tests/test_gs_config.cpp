@@ -561,7 +561,7 @@ TEST(removed_scan_and_home_keys_fail_boot) {
 TEST(hop_defaults_when_absent) {
   auto cfg = maburgs::load_config(write_tmp(""));
   CHECK(cfg.hop.window_ms == 150 && cfg.hop.persist == 2);
-  CHECK(cfg.hop.dwell_observe_ms == 5 && cfg.hop.dwell_period_ms == 333);
+  CHECK(cfg.hop.dwell_observe_ms == 20 && cfg.hop.dwell_period_ms == 1000);
   CHECK(cfg.hop.confirm_ms == 500 && cfg.hop.verify_ms == 1000 && cfg.hop.cooldown_ms == 2000);
   CHECK(cfg.hop.max_hops_per_min == 4 && cfg.hop.backoff_ms == 30000 && cfg.hop.one_card_repeats == 5);
   CHECK(cfg.hop.verdict.loss_pct == 3.0 && cfg.hop.verdict.fa_pps == 100 && cfg.hop.verdict.weak_rssi_dbm == -78);
@@ -606,6 +606,25 @@ TEST(hop_relay_burst_period_ms_default_and_range) {
   // returns after a result and starve the controller
   CHECK(what_of([] { maburgs::load_config(write_tmp("[hop]\nrelay_burst_period_ms = 400\n")); })
             .find("relay_burst_period_ms") != std::string::npos);
+}
+// hop.dwell_observe_ms/dwell_period_ms slowed down for the 40 MHz pair
+// dwell (background dwell only); hop.burst_period_ms is the new USB
+// freshness-burst pace, split off from dwell_period_ms; hop.verdict's
+// occupied_windows and radio.scan's pick_margin_pct are new.
+TEST(hop_defaults_dwell_20ms_period_1000_burst_333_occupied_7) {
+  auto cfg = maburgs::load_config(write_tmp(""));
+  CHECK(cfg.hop.dwell_observe_ms == 20 && cfg.hop.dwell_period_ms == 1000);
+  CHECK(cfg.hop.burst_period_ms == 333);
+  CHECK(cfg.hop.verdict.occupied_windows == 7);
+  CHECK(cfg.radio.scan.pick_margin_pct == 10);
+}
+TEST(new_keys_parse_and_range_check) {
+  auto cfg = maburgs::load_config(write_tmp(
+      "[hop]\nburst_period_ms = 500\n[hop.verdict]\noccupied_windows = 3\n[radio.scan]\npick_margin_pct = 25\n"));
+  CHECK(cfg.hop.burst_period_ms == 500 && cfg.hop.verdict.occupied_windows == 3 && cfg.radio.scan.pick_margin_pct == 25);
+  CHECK(!what_of([] { maburgs::load_config(write_tmp("[hop]\nburst_period_ms = 50\n")); }).empty());         // < 100
+  CHECK(!what_of([] { maburgs::load_config(write_tmp("[hop.verdict]\noccupied_windows = 0\n")); }).empty());  // < 1
+  CHECK(!what_of([] { maburgs::load_config(write_tmp("[radio.scan]\npick_margin_pct = 101\n")); }).empty());  // > 100
 }
 TEST(radio_scan_energy_period_ms_is_gone) {
   bool threw = false;

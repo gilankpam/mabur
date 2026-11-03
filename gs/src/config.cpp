@@ -264,7 +264,7 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
       const Value& s = r["scan"];
       check_keys(s, "radio.scan",
                  {"dwell_ms", "settle_ms", "min_rounds", "search_ms", "op_window_ms",
-                  "search_after_ms", "pick_margin", "one_card_ms", "max_ms", "busy_dbm", "blocked_pct"});
+                  "search_after_ms", "pick_margin", "pick_margin_pct", "one_card_ms", "max_ms", "busy_dbm", "blocked_pct"});
       ScanCfg& sc = c.radio.scan;
       sc.dwell_ms = static_cast<int>(get_int(s, "dwell_ms", 250, 50, 10000, "radio.scan"));
       sc.settle_ms = static_cast<int>(get_int(s, "settle_ms", 30, 0, 1000, "radio.scan"));
@@ -273,6 +273,7 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
       sc.op_window_ms = static_cast<int>(get_int(s, "op_window_ms", 300, 40, 10000, "radio.scan"));
       sc.search_after_ms = static_cast<int>(get_int(s, "search_after_ms", 5000, 0, 600000, "radio.scan"));
       sc.pick_margin = static_cast<int>(get_int(s, "pick_margin", 20, 0, 100000, "radio.scan"));
+      sc.pick_margin_pct = static_cast<int>(get_int(s, "pick_margin_pct", 10, 0, 100, "radio.scan"));
       sc.one_card_ms = static_cast<int>(get_int(s, "one_card_ms", 5000, 0, 60000, "radio.scan"));
       sc.max_ms = static_cast<int>(get_int(s, "max_ms", 30000, 1000, 600000, "radio.scan"));
       sc.busy.busy_dbm = static_cast<int>(get_int(s, "busy_dbm", -83, -104, -70, "radio.scan"));
@@ -301,13 +302,14 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
   if (j.contains("hop")) {
     const Value& h = j["hop"];
     check_keys(h, "hop", {"window_ms", "persist", "dwell_observe_ms",
-                          "dwell_period_ms", "rank_visits", "rank_max_age_ms", "confirm_ms", "confirm_extend_ms", "verify_ms",
+                          "dwell_period_ms", "burst_period_ms", "rank_visits", "rank_max_age_ms", "confirm_ms", "confirm_extend_ms", "verify_ms",
                           "cooldown_ms", "max_hops_per_min", "backoff_ms", "one_card_repeats", "relay_burst_period_ms", "verdict"});
     HopCfg& hc = c.hop;
     hc.window_ms = (int)get_int(h, "window_ms", 150, 50, 2000, "hop");
     hc.persist = (int)get_int(h, "persist", 2, 1, 3, "hop");
-    hc.dwell_observe_ms = (int)get_int(h, "dwell_observe_ms", 5, 1, 250, "hop");
-    hc.dwell_period_ms = (int)get_int(h, "dwell_period_ms", 333, 20, 60000, "hop");
+    hc.dwell_observe_ms = (int)get_int(h, "dwell_observe_ms", 20, 1, 250, "hop");
+    hc.dwell_period_ms = (int)get_int(h, "dwell_period_ms", 1000, 20, 60000, "hop");
+    hc.burst_period_ms = (int)get_int(h, "burst_period_ms", 333, 100, 60000, "hop");
     hc.rank_visits = (int)get_int(h, "rank_visits", 5, 1, 100, "hop");
     hc.rank_max_age_ms = (int)get_int(h, "rank_max_age_ms", 10000, 1000, 600000, "hop");
     hc.confirm_ms = (int)get_int(h, "confirm_ms", 500, 100, 5000, "hop");
@@ -322,7 +324,7 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
       const Value& v = h["verdict"];
       check_keys(v, "hop.verdict", {"loss_pct", "recovered_x", "weak_rssi_dbm", "weak_snr_db",
                                     "fading_drop_db", "foreign_pps", "fa_pps",
-                                    "recovered_min", "starved_frac"});
+                                    "recovered_min", "starved_frac", "occupied_windows"});
       HopVerdictCfg& vc = hc.verdict;
       vc.loss_pct = get_num(v, "loss_pct", 3.0, 0.1, 100.0, "hop.verdict");
       vc.recovered_x = get_num(v, "recovered_x", 3.0, 1.0, 100.0, "hop.verdict");
@@ -333,6 +335,7 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
       vc.foreign_pps = (int)get_int(v, "foreign_pps", 50, 1, 100000, "hop.verdict");
       vc.fa_pps = (int)get_int(v, "fa_pps", 100, 1, 100000, "hop.verdict");
       vc.starved_frac = get_num(v, "starved_frac", 0.25, 0.0, 1.0, "hop.verdict");
+      vc.occupied_windows = (int)get_int(v, "occupied_windows", 7, 1, 100, "hop.verdict");
     } else {
       note_default("hop", "verdict", "(section absent)");
     }
