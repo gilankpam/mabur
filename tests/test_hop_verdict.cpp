@@ -350,7 +350,7 @@ TEST(weak_diversity_card_alone_is_not_blocked) {
   maburgs::HopCfg cfg;
   maburgs::HopVerdict v(cfg, BusyCfg{}, 2);
   maburgs::VerdictLinkIn bad; bad.pre_fec_loss = 0.2;
-  auto a = busy_card(70, 5);    // foreign 65 -- would clear blocked_pct(50) alone
+  auto a = busy_card(70, 5);    // foreign 65 -- would clear blocked_pct alone
   auto b = busy_card(70, 68);   // foreign 2 -- the same interferer, seen weakly
   auto o = v.window(150, {a, b}, bad, 0);
   CHECK(!(o.evidence & maburgs::kEvBlocked));

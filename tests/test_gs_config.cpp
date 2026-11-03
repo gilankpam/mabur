@@ -565,7 +565,7 @@ TEST(hop_defaults_when_absent) {
   CHECK(cfg.hop.confirm_ms == 500 && cfg.hop.verify_ms == 1000 && cfg.hop.cooldown_ms == 2000);
   CHECK(cfg.hop.max_hops_per_min == 4 && cfg.hop.backoff_ms == 30000 && cfg.hop.one_card_repeats == 5);
   CHECK(cfg.hop.verdict.loss_pct == 3.0 && cfg.hop.verdict.fa_pps == 100 && cfg.hop.verdict.weak_rssi_dbm == -78);
-  CHECK(cfg.radio.scan.busy.busy_dbm == -83 && cfg.radio.scan.busy.blocked_pct == 50.0);
+  CHECK(cfg.radio.scan.busy.busy_dbm == -83 && cfg.radio.scan.busy.blocked_pct == 30.0);
 }
 // Pin is static. The mode knob is radio.channel alone; the busy-air thresholds
 // belong to every measurer, so they live under radio.scan. Removed keys fail
@@ -608,14 +608,14 @@ TEST(hop_relay_burst_period_ms_default_and_range) {
             .find("relay_burst_period_ms") != std::string::npos);
 }
 // hop.dwell_observe_ms/dwell_period_ms slowed down for the 40 MHz pair
-// dwell (background dwell only); hop.burst_period_ms is the new USB
-// freshness-burst pace, split off from dwell_period_ms; hop.verdict's
-// occupied_windows and radio.scan's pick_margin_pct are new.
-TEST(hop_defaults_dwell_20ms_period_1000_burst_333_occupied_7) {
+// dwell (background dwell only); hop.burst_period_ms is the USB
+// freshness-burst pace, split off from dwell_period_ms. occupied_windows is
+// the hop's only trigger, at 5 x 150 ms.
+TEST(hop_defaults_dwell_20ms_period_1000_burst_333_occupied_5) {
   auto cfg = maburgs::load_config(write_tmp(""));
   CHECK(cfg.hop.dwell_observe_ms == 20 && cfg.hop.dwell_period_ms == 1000);
   CHECK(cfg.hop.burst_period_ms == 333);
-  CHECK(cfg.hop.verdict.occupied_windows == 7);
+  CHECK(cfg.hop.verdict.occupied_windows == 5);
   CHECK(cfg.radio.scan.pick_margin_pct == 10);
 }
 TEST(new_keys_parse_and_range_check) {
@@ -1335,9 +1335,10 @@ TEST(bundle_default_sets_every_known_key_but_radio_cards) {
   CHECK(!defaulted.empty() && defaulted[0] == "radio.cards=(auto-scan)");
 }
 
-// radio.scan busy-air keys: default blocked_pct is 50, not 30 -- hw spike
-// findings (docs/findings/2026-09-25-nhm-airtime-spike.md). They live under
-// radio.scan because every measurer reads them.
+// radio.scan busy-air keys: default blocked_pct is 30 -- one threshold for
+// the hop trigger, the in-flight ranker, the boot pick and the calibration
+// pick, so a target the ranker calls unblocked is unblocked to the verdict.
+// They live under radio.scan because every measurer reads them.
 TEST(scan_busy_keys_parse_and_validate) {
   auto c = maburgs::load_config(write_tmp("[radio.scan]\nbusy_dbm = -86\nblocked_pct = 40\n"));
   CHECK(c.radio.scan.busy.busy_dbm == -86 && c.radio.scan.busy.blocked_pct == 40.0);

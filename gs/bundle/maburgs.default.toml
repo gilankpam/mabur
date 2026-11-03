@@ -47,7 +47,7 @@ pick_margin_pct = 10    # 40 MHz: a candidate pair must be this many busy-% poin
 one_card_ms     = 5000
 max_ms          = 30000
 busy_dbm        = -83   # energy level that counts the air as busy: an NHM bucket edge, -104 -101 -98 -95 -92 -89 -86 -83 -80 -75 -70
-blocked_pct     = 50    # % of time the air is busy with others = channel blocked; every measurer uses it (boot scout, in-flight scout, verdict)
+blocked_pct     = 30    # % of time the air is busy with others = channel blocked; every measurer uses it (boot scout, in-flight scout, verdict)
 
 # Radio cards: by default maburgs uses every supported card it finds on USB.
 # To use only specific cards (e.g. fly one card without unplugging the other),
@@ -257,10 +257,10 @@ one_card_repeats     = 5      # single card: send the hop order this many times 
 loss_pct             = 3.0    # packet loss %
 recovered_x          = 3.0    # FEC repairs this many times above normal
 recovered_min        = 8      # ...and at least this many repairs; 0 = off
-weak_rssi_dbm        = -78    # below this signal AND weak_snr_db, loss is blamed on range, not interference
+weak_rssi_dbm        = -78    # below this signal AND weak_snr_db = range edge: never a hop, even on a blocked channel
 weak_snr_db          = 12
-fading_drop_db       = 6      # signal this much below its recent level = fading, not interference
-foreign_pps          = 50     # other transmitters' packets per second
-fa_pps               = 100    # false detections per second (non-Wi-Fi noise)
+fading_drop_db       = 6      # signal this much below its recent level = fading (reported, never a hop)
+foreign_pps          = 50     # other transmitters' packets per second (reported, never a hop)
+fa_pps               = 100    # false detections per second, non-Wi-Fi noise (reported, never a hop)
 starved_frac         = 0.25   # video rate below this fraction of normal = starved (keep below 0.5)
-occupied_windows     = 7      # channel blocked this many checks in a row = interfered, even with no loss
+occupied_windows     = 5      # channel blocked this many checks in a row = interfered: the only thing that triggers a hop

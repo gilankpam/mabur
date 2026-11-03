@@ -135,8 +135,10 @@ Chronological; each line names the section below that carries the detail.
   scan writes one `D` row per pair per round; `scanlog ≤ 7` files have
   two, one per half, at bw 20. No column change.
 - 2026-11-03 — hop detection is NHM occupancy only: `interfered` needs
-  `occupied` + `blocked`; loss/foreign/FA windows read `unknown`. Verdict
-  histograms are not comparable across the break (same marker, `scanlog 8`).
+  `occupied` + `blocked`; loss/foreign/FA windows read `unknown`;
+  `radio.scan.blocked_pct` 50 → 30, `hop.verdict.occupied_windows` 7 → 5.
+  Verdict histograms and blocked/occupied tallies are not comparable across
+  the break (same marker, `scanlog 8`).
 
 ## 2026-09-23 — `link.pre_fec_loss` scale break, twice
 
@@ -1400,10 +1402,14 @@ blocked for `hop.verdict.occupied_windows` consecutive windows with a busy
 reading) and `blocked` in that window (`docs/inflight-channel-hop.md` §2).
 Before, `blocked` plus loss-type impairment, or loss plus `contended` /
 `raised` without `fading`, also read `interfered`. No format marker moved:
-`V` lines keep their columns and every evidence bit is still set as
-before, so the evidence-bit tallies stay comparable, but the verdict
-column is not — a `V` line that read `interfered` on loss with foreign
-frames or FA reads `unknown` from this build on, and the first
-`interfered` window of a jam comes `occupied_windows` windows into it.
-`flightreport.py`'s HOP verdict counts and its `trigger`/`order` timing
-are therefore not comparable across the break.
+`V` lines keep their columns, but the verdict column changes meaning — a
+`V` line that read `interfered` on loss with foreign frames or FA reads
+`unknown` from this build on, and the first `interfered` window of a jam
+comes `occupied_windows` windows into it. The same build moves the
+defaults: `radio.scan.blocked_pct` 50 → 30 (the `blocked` bit, and with it
+`occupied`, the in-flight ranker's and the boot pick's blocked tiers and
+the calibration pick, fire on less foreign airtime) and
+`hop.verdict.occupied_windows` 7 → 5. `flightreport.py`'s HOP verdict
+counts, its `blocked`/`occupied` evidence tallies and its onset → order
+timing are therefore not comparable across the break; the other evidence
+bits are unchanged.

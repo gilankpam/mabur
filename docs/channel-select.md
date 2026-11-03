@@ -58,7 +58,7 @@ pick_margin_pct = 10    # 40 MHz: a candidate pair must beat op's busy % by this
 one_card_ms     = 5000  # one card, auto: measure silently this long before the first DISC
 max_ms          = 30000 # auto: the pick is frozen at the latest this long after GS start
 busy_dbm        = -83   # both modes: energy level that counts the air as busy (an NHM bucket edge)
-blocked_pct     = 50    # both modes: % of busy foreign airtime that makes a dwell/window "blocked"
+blocked_pct     = 30    # both modes: % of busy foreign airtime that makes a dwell/window "blocked"
 ```
 
 Drone, `bundle/mabur.default.toml`:
@@ -580,11 +580,12 @@ open from it:
 - **Row 6 — the event-score ranker is fooled by a strong co-located
   jammer.** The jam's frames decode once each as `foreign` on the jammed
   pair but leak into every other channel as several FA/CCA events, so the
-  jammed pair won. NHM busy was the honest signal but sat below
-  `blocked_pct = 50`. At 40 MHz NHM busy is the first ranking term
-  ("The pick: Ranking"); at 20 MHz the event score still ranks first.
-  Candidate fixes there: an airtime-weighted foreign term or a lower
-  `blocked_pct`.
+  jammed pair won. NHM busy was the honest signal: 32.8 % on the jammed
+  pair against 0–12 % elsewhere, which `blocked_pct` 30 puts in the blocked
+  tier (the row has not been re-run at 30). At 40 MHz NHM busy is the first
+  ranking term ("The pick: Ranking"); at 20 MHz the event score still ranks
+  first within a tier. Candidate fix for a jam under `blocked_pct`: an
+  airtime-weighted foreign term.
 - **Row 7 — `leak_per_frame = 1.0` is unfitted.** With the drone centimetres
   from the GS its own TX cannot be separated from the control-frame leak;
   measure with the drone ≥ 20 m away or on a dummy load.

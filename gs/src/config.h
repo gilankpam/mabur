@@ -32,7 +32,12 @@ struct CardCfg {
 /// no reactive hop still measures.
 struct BusyCfg {
   int busy_dbm = -83;         // nf::kNhmAbsThDbm bucket edge (nhm_busy.h::busy_dbm_is_edge)
-  double blocked_pct = 50.0;  // foreign busy airtime that makes a window/channel "blocked"
+  // Foreign busy airtime % that makes a window/channel "blocked". One
+  // threshold for every measurer on purpose: the hop trigger, the in-flight
+  // ranker's blocked tier, the boot pick and the calibration pick, so a hop
+  // target the ranker calls unblocked is unblocked to the verdict too and
+  // its verify does not fail on landing.
+  double blocked_pct = 30.0;
 };
 
 struct ScanCfg {
@@ -72,9 +77,10 @@ struct HopVerdictCfg {
   // 0 disables the AU term. 60->30 fps low-power is 0.5, so keep it below.
   double starved_frac = 0.25;
   // Consecutive blocked windows that read `occupied` -> impaired on their
-  // own, with no loss or weak signal needed. A window with no busy reading
-  // neither advances nor resets the count.
-  int occupied_windows = 7;
+  // own, with no loss or weak signal needed, and (with that window's own
+  // blocked reading) the hop's only route to `interfered`. A window with no
+  // busy reading neither advances nor resets the count.
+  int occupied_windows = 5;
 };
 
 /// In-flight channel hop (docs/inflight-channel-hop.md). Runs in

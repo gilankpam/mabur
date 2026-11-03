@@ -280,7 +280,7 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
       if (!maburgs::busy_dbm_is_edge(sc.busy.busy_dbm))
         fail("radio.scan.busy_dbm",
              "must be an NHM bucket edge: -104 -101 -98 -95 -92 -89 -86 -83 -80 -75 -70");
-      sc.busy.blocked_pct = get_num(s, "blocked_pct", 50.0, 1.0, 100.0, "radio.scan");
+      sc.busy.blocked_pct = get_num(s, "blocked_pct", 30.0, 1.0, 100.0, "radio.scan");
     } else {
       note_default("radio", "scan", "(section absent)");
     }
@@ -335,7 +335,7 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
       vc.foreign_pps = (int)get_int(v, "foreign_pps", 50, 1, 100000, "hop.verdict");
       vc.fa_pps = (int)get_int(v, "fa_pps", 100, 1, 100000, "hop.verdict");
       vc.starved_frac = get_num(v, "starved_frac", 0.25, 0.0, 1.0, "hop.verdict");
-      vc.occupied_windows = (int)get_int(v, "occupied_windows", 7, 1, 100, "hop.verdict");
+      vc.occupied_windows = (int)get_int(v, "occupied_windows", 5, 1, 100, "hop.verdict");
     } else {
       note_default("hop", "verdict", "(section absent)");
     }

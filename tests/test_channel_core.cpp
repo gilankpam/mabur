@@ -395,6 +395,15 @@ static void interfere(Rig& g, int windows, int tx = 0) {
   }
 }
 
+// Interfered windows until the controller orders, bounded. The trigger
+// lands occupied_windows in, and the order then waits on a burst ranking the
+// candidates (two fresh visits each), so a fixed window count would pin the
+// test to how the trigger falls against the burst schedule.
+static void interfere_until_order(Rig& g, int tx = 0) {
+  for (int w = 0; w < occ_lead(g) + 12 && !g.sink.has_hop("order"); ++w) interfere(g, 1, tx);
+  REQUIRE(g.sink.has_hop("order"));
+}
+
 // Bring an AUTO rig to a frozen pick on 40 without a hop, so the reactive
 // layer is live exactly as in flight. Two cards: no dwell ever completes
 // (the scout card refuses to retune), so max_ms freezes op in place. One
@@ -438,8 +447,7 @@ TEST(hop_restore_survives_ladder_swap) {
   onset_then_swap(g, {{2, 0.5, 0.25, 40}, {3, 0.5, 0.25, 40}, {4, 0.5, 0.25, 40}});
   REQUIRE(g.vrx->cur_op().mcs == 2);                        // the swap itself keeps MCS 2
   CHECK(*g.core->snapshot(0).hop.ref_rung == 0);
-  interfere(g, occ_lead(g) + 4);                                          // interference goes on: hop ordered
-  REQUIRE(g.sink.has_hop("order"));
+  interfere_until_order(g);                                 // interference goes on: hop ordered
   CHECK(g.vrx->cur_op().mcs == 2);                          // the pre-onset MCS
 }
 // A pre-onset rung the new ladder lacks restores rung 0, as the swap
@@ -449,8 +457,7 @@ TEST(hop_restore_after_swap_dropping_the_ref_rung_lands_on_rung_0) {
   onset_then_swap(g, {{0, 0.5, 0.25, 40}, {4, 0.5, 0.25, 40}});
   REQUIRE(g.vrx->cur_op().mcs == 0);
   CHECK(*g.core->snapshot(0).hop.ref_rung == 0);
-  interfere(g, occ_lead(g) + 4);
-  REQUIRE(g.sink.has_hop("order"));
+  interfere_until_order(g);
   CHECK(g.vrx->cur_op().mcs == 0);
 }
 
@@ -533,8 +540,7 @@ TEST(two_card_order_rcf_carries_hop_and_plan_leads_then_follows) {
   // the trigger fires; so first interfere, then the burst ranks, then order.
   g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
   g.cards[0]->fr.foreign = 0; g.cards[1]->fr.foreign = 0;
-  interfere(g, occ_lead(g) + 4);
-  REQUIRE(g.sink.has_hop("order"));
+  interfere_until_order(g);
   const auto r = pump_rcf(g);
   REQUIRE(r.has_value());
   CHECK(r->hop_ch != 0 && r->hop_ch != 40);
@@ -561,8 +567,7 @@ TEST(stale_pre_hop_verdict_does_not_break_verify) {
   link_up(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
   g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
-  interfere(g, occ_lead(g) + 4);
-  REQUIRE(g.sink.has_hop("order"));
+  interfere_until_order(g);
   const auto r = pump_rcf(g);
   REQUIRE(r.has_value());
   g.core->note_video(r->hop_ch);
@@ -577,8 +582,7 @@ TEST(one_card_order_rides_repeats_then_retunes) {
   Rig g(1, 0); freeze_auto(g);               // links too
   for (int i = 0; i < 5; ++i) g.tick(true);
   g.cards[0]->cca_per_ms_on[40] = 50;
-  interfere(g, occ_lead(g) + 4);
-  REQUIRE(g.sink.has_hop("order"));
+  interfere_until_order(g);
   CHECK(g.cards[0]->ch == 40);              // radio stays until one_card_repeats RCFs
   // interfere() only drives core->tick() (closing verdict windows), never
   // vrx.step() -- unlike run_radio(), where the SAME control-loop pass that
@@ -617,8 +621,7 @@ TEST(withdraw_on_no_video_restores_cards) {
   link_up(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
   g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
-  interfere(g, occ_lead(g) + 4);
-  REQUIRE(g.sink.has_hop("order"));
+  interfere_until_order(g);
   const auto r = pump_rcf(g);
   REQUIRE(r.has_value());
   for (int i = 0; i < (g.cfg.hop.confirm_extend_ms / 10) + 20; ++i) { g.vrx->on_video(static_cast<double>(g.clk.ms)); g.tick(true); }
@@ -633,8 +636,7 @@ TEST(lead_card_dies_mid_order_withdraws_to_op) {
   link_up(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
   g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
-  interfere(g, occ_lead(g) + 4);
-  REQUIRE(g.sink.has_hop("order"));
+  interfere_until_order(g);
   g.cards[1]->is_ready = false;               // the lead vanishes
   g.tick(true);
   CHECK(std::string(g.core->snapshot(0).hop.state) == "ordered");   // latched lead, no re-pick
@@ -651,8 +653,7 @@ TEST(session_loss_mid_order_withdraws) {
   link_up(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
   g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
-  interfere(g, occ_lead(g) + 4);
-  REQUIRE(g.sink.has_hop("order"));
+  interfere_until_order(g);
   g.tick(false);                              // hop_active falling edge
   // on_session_lost() returns HopAction::Withdraw, but the EVENT it logs
   // (hop_controller.cpp) is kind "session_lost", not "withdraw" -- that
@@ -867,8 +868,7 @@ TEST(tx_frozen_while_hopping) {
   link_up(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
   g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
-  interfere(g, occ_lead(g) + 4);
-  REQUIRE(g.sink.has_hop("order"));
+  interfere_until_order(g);
   const auto out = g.core->tick(g.in(true));
   CHECK(out.tx_frozen);
   CHECK(g.core->tx_frozen());
@@ -1925,8 +1925,7 @@ TEST(set_pin_refused_while_hopping) {
   link_up(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
   g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
-  interfere(g, occ_lead(g) + 4);
-  REQUIRE(g.sink.has_hop("order"));
+  interfere_until_order(g);
   REQUIRE(g.core->hopping());
   const size_t lines0 = g.sink.lines.size();
   CHECK(g.core->set_pin(112) == std::optional<std::string>("hop in flight"));
@@ -2000,7 +1999,7 @@ TEST(set_auto_from_pinned_rearms_the_hop_from_op_without_a_relocate) {
   CHECK(!g.sink.has_hop("relocate"));
   // and an interfered op is fled again
   g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
-  interfere(g, occ_lead(g) + 4);
+  interfere_until_order(g);
   CHECK(g.sink.has_hop("order"));
 }
 
@@ -2151,7 +2150,7 @@ TEST(pin_refusal_agrees_with_set_pin_while_a_two_card_hop_is_in_flight) {
   link_up(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
   g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
-  interfere(g, occ_lead(g) + 4);
+  interfere_until_order(g);
   REQUIRE(g.core->hopping());
   pin_refusal_agrees(g, 112, std::string("hop in flight"));
 }
@@ -2163,8 +2162,7 @@ TEST(pin_refusal_agrees_with_set_pin_while_a_one_card_reactive_hop_is_ordered) {
   freeze_auto(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
   g.cards[0]->cca_per_ms_on[40] = 50;
-  interfere(g, occ_lead(g) + 4);
-  REQUIRE(g.sink.has_hop("order"));
+  interfere_until_order(g);
   REQUIRE(!g.sink.has_hop("one_card_retune"));
   REQUIRE(!g.core->hopping());
   REQUIRE(!g.core->sweep_pending());

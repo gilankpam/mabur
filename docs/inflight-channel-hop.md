@@ -201,9 +201,9 @@ kEvBlocked/kEvStarved/kEvOccupied`):
 | fading (0x04) | best card's RSSI more than `fading_drop_db` below its frozen/trailing reference | `fading_drop_db` (6) |
 | contended (0x08) | any card's foreign frames/s > `foreign_pps` | `foreign_pps` (50) |
 | raised (0x10) | any card's FA/s > `fa_pps` | `fa_pps` (100) |
-| blocked (0x20) | the MINIMUM, across cards with a busy reading, of that card's busy % minus its own reconstructed airtime % >= `blocked_pct` | `radio.scan.busy_dbm` (−83), `radio.scan.blocked_pct` (50) |
+| blocked (0x20) | the MINIMUM, across cards with a busy reading, of that card's busy % minus its own reconstructed airtime % >= `blocked_pct` | `radio.scan.busy_dbm` (−83), `radio.scan.blocked_pct` (30) |
 | starved (0x40) | at least one card valid this window and **zero** own frames on every valid card (`VerdictLinkIn::starved`), **or** the window's AU count (`VerdictLinkIn::au_count`, the `au_seq` delta) < `starved_frac` × its trailing mean, when that mean is >= 2 AUs/window | `hop.verdict.starved_frac` (0.25; 0 = zero-frames rule only) |
-| occupied (0x80) | `blocked` has held, across windows with a usable busy reading, for `occupied_windows` consecutive windows; a window with no busy reading (mid-dwell, no usable card) neither resets nor advances the count ⇒ `impaired`; with `blocked` in the same window, the trigger | `hop.verdict.occupied_windows` (7) |
+| occupied (0x80) | `blocked` has held, across windows with a usable busy reading, for `occupied_windows` consecutive windows; a window with no busy reading (mid-dwell, no usable card) neither resets nor advances the count ⇒ `impaired`; with `blocked` in the same window, the trigger | `hop.verdict.occupied_windows` (5) |
 
 Why the two floors exist: on a clean channel the recovered term's trailing
 mean sits near 0.2/window, so a handful of recovered symbols reads "3× the
@@ -685,16 +685,27 @@ fading_drop_db       = 6
 foreign_pps          = 50
 fa_pps               = 100
 starved_frac         = 0.25
-occupied_windows     = 7
+occupied_windows     = 5
 ```
 
 The bundle ships `confirm_ms = 1000` because hops to or from the 8822E
 spur pairs (149+153, 157+161) confirm in 423–460 ms, too close to 500.
 The busy threshold and level the `blocked` bit and both rankers use are
 `radio.scan.busy_dbm` / `radio.scan.blocked_pct`, shared with the boot scan
-(`docs/channel-select.md` "Config"). `blocked_pct` 50 sits midway between
-the worst clean-channel error (~10) and a real interferer (95–99)
-(`docs/findings/2026-09-25-nhm-airtime-spike.md`).
+(`docs/channel-select.md` "Config"). One threshold everywhere on purpose:
+the trigger, the in-flight ranker's blocked tier, the boot pick's tier and
+the calibration pick all read `blocked_pct`, so a hop target the ranker
+calls unblocked is unblocked to the verdict too and does not fail its
+verify on landing. `blocked_pct` 30 is three times the worst clean-channel
+single-window error (~10) and well under a real interferer (95–99), and it
+catches a 250 frames/s long-frame jam (32.8 % busy) that a threshold of
+50 misses
+(`docs/findings/2026-09-25-nhm-airtime-spike.md`,
+`docs/findings/2026-10-04-channel-set-bench.md`). The range-edge artefact
+the wider margin used to absorb — our own frames heard above `busy_dbm`
+but failing CRC, so not subtracted — is the `weak` gate's job (§2).
+`occupied_windows` 5 at `window_ms` 150 puts the first `interfered` window
+about 750 ms into a jam and the trigger (persist 2) one window later.
 
 Validation (`gs/src/config.cpp`) — unknown keys fail boot:
 
