@@ -76,16 +76,19 @@ struct VerdictOut {
   // The frozen-reference episode is open (the first impaired window has
   // been seen and the references have not thawed yet).
   bool ref_frozen = false;
-  // True on the FIRST `interfered` window of a frozen-reference episode,
-  // and never again until the references thaw (3 healthy windows, or
-  // HopVerdict::reset() after a hop's verify window ends). This is the
-  // edge the rung-store blank is scoped to -- see gs/src/hop_blank.h. It
-  // is deliberately NOT `ref_frozen`, which is keyed on `impaired`: Fade
-  // and Unknown are impaired too, and fade/unknown leave the ladder's
-  // behaviour unchanged. One edge per episode
-  // is also what bounds the blank -- a jam that alternates interfered and
-  // healthy windows stays inside ONE frozen episode and re-arms nothing.
-  bool first_interfered = false;
+  // True on the FIRST impaired, non-weak, `blocked` window of a
+  // frozen-reference episode, and never again until the references thaw
+  // (3 healthy windows, or HopVerdict::reset() after a hop's verify window
+  // ends). This is the edge the rung-store blank is scoped to -- see
+  // gs/src/hop_blank.h. A jam is acted on only occupied_windows windows in,
+  // but its lossy lead-in windows are already blocked: arming here keeps
+  // their demotes out of the per-rung store. It is deliberately NOT
+  // `ref_frozen`, which is keyed on `impaired` alone: a fade (weak) and an
+  // unknown window with no blocked reading leave the ladder's behaviour
+  // unchanged. One edge per episode is also what bounds the blank -- a jam
+  // that alternates blocked and healthy windows stays inside ONE frozen
+  // episode and re-arms nothing.
+  bool first_blocked = false;
 };
 
 // Per-window classifier: fade / interfered / unknown / healthy. Pure: the
@@ -124,7 +127,7 @@ class HopVerdict {
   bool frozen_ = false;
   double prev_ms_ = 0;
   bool have_prev_ = false;
-  bool seen_interfered_ = false;   // an `interfered` window in the current frozen episode
+  bool seen_blocked_ = false;   // a first_blocked edge in the current frozen episode
   std::vector<double> ref_rssi_;
   double ref_rec_ = 0;
   double ref_au_ = 0;

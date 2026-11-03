@@ -271,8 +271,12 @@ so `raised` on a relay card is `fa` (OFDM/HT PHY errors) alone. Hop
 detection is NHM-occupancy only (`docs/inflight-channel-hop.md` §2), which
 on a relay means `SURVEY` busy minus `rx`: non-WiFi energy (an analog VTX
 carrier, DJI O4). Decodable foreign WiFi lands in `rx` and is subtracted
-with our own video, so a relay-only GS reports a co-channel 802.11
-neighbour as `contended` but does not hop off it.
+with our own video, so a relay reads a co-channel 802.11 neighbour as
+unblocked. That blinds more than a relay-only GS: `blocked` is the MINIMUM
+across every card with a busy reading, so on a relay + USB GS a relay
+tuned to op vetoes the USB card's blocked NHM reading of the same
+neighbour, and that GS does not hop off it either. Both report the
+neighbour as `contended`.
 
 **Async sweep (spec §4).** On a trigger, `ChannelCore` sends one `SCAN`
 for `radio.channels` minus the op channel, `passes = 2`, `observe_ms = 20`
@@ -484,7 +488,8 @@ name once the user allows local network access — see `docs/web-gs.md`,
 - **~250 ms lost between `SCAN_RESULT` and the order** on every relay hop:
   the trigger is held off while the sweep is pending and the verdict then
   needs 2 interfered windows again. Keeping the trigger latched across the
-  sweep would bring onset → video to ~0.8 s.
+  sweep would bring onset → video to ~1.4 s (the `occupied_windows`
+  lead-in puts the first trigger ~600 ms into the jam).
 - **Relay-only auto boot relocates to `channels[0]`** after "link where
   found" with no measurement behind it — a pointless hop on each
   relay-only boot.

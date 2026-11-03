@@ -12,7 +12,7 @@ constexpr double kHopSettleBlankMs = 150.0;
 
 // Pure: how far ahead the ladder's rung store should be blanked, given the
 // verdict window that just closed: the store's residual/util EWMAs are not
-// updated from the first impaired window until hop confirmation plus the
+// updated from a jam's first blocked window until hop confirmation plus the
 // existing 150 ms post-transition settle-blank.
 //
 // Extracted like hop_burst_gate.h so the one decision has a unit test
@@ -31,32 +31,34 @@ constexpr double kHopSettleBlankMs = 150.0;
 //    HopAction::Order's own blank_store() call never fires there (the
 //    controller is never fed a trigger), so this keeps the two consistent.
 //
-//  - VerdictOut::first_interfered, NOT ref_frozen. ref_frozen is keyed on
-//    `impaired`, and Fade (impaired AND weak) and Unknown (impaired
-//    otherwise) are impaired too -- so keying on it blanked the store
-//    through every fade and every unknown window, while section 4's last
-//    bullet is "fade/unknown: unchanged ladder behaviour". Only
-//    interference hops, so only interference blanks.
+//  - VerdictOut::first_blocked: the first impaired, non-weak, `blocked`
+//    window of the frozen episode, NOT ref_frozen and NOT the first
+//    `interfered` window. ref_frozen is keyed on `impaired` alone, and a
+//    fade (impaired AND weak) or an unknown window with no blocked reading
+//    is impaired too -- keying on it blanked the store through every fade
+//    and every unexplained loss, which must leave the ladder alone. The
+//    first `interfered` window is too late: a jam classifies interfered
+//    only occupied_windows windows in (hop.verdict.occupied_windows), and
+//    the lossy windows before it -- already blocked -- are exactly where
+//    the ladder takes the "demote or two, each an IDR" that
+//    docs/inflight-channel-hop.md §4 accepts; arming at interfered wrote
+//    them all into the per-rung store against the jammed channel. A zero-loss blocked window is not
+//    impaired, so it arms nothing: there is no loss to demote on.
 //
 //  - One edge per frozen episode, which is what BOUNDS the blank. The
-//    deadline is computed once, at the episode's first interfered window,
+//    deadline is computed once, at the episode's first blocked window,
 //    and spans exactly confirm_ms + the settle -- the same span the
 //    Order-time call uses, so detection and the hop itself are scoped
-//    alike. It is not re-extended by later interfered windows, so a jam
-//    that runs for seconds (or alternates interfered and healthy windows
-//    inside one frozen episode) cannot roll it forward indefinitely; the
-//    store resumes writing confirm_ms + 150 ms after onset whether or not
-//    a hop was ever ordered. Re-arming needs a genuine thaw: 3 consecutive
+//    alike. It is not re-extended by later blocked or interfered windows,
+//    so a jam that runs for seconds (or alternates blocked and healthy
+//    windows inside one frozen episode) cannot roll it forward
+//    indefinitely; the store resumes writing confirm_ms + 150 ms after the
+//    edge whether or not a hop was ever ordered (the order, when it comes,
+//    sets its own deadline). Re-arming needs a genuine thaw: 3 consecutive
 //    healthy windows, or HopVerdict::reset() after a verify window ends.
-//
-// Starting at the first interfered window rather than at the order is the
-// point: the order is 2-3 persistence windows (300-450 ms) later, so every
-// detection window -- including the demotes section 4 explicitly expects,
-// "a demote or two, each an IDR" -- was being written into the per-rung
-// store against the interfered channel.
 inline std::optional<double> hop_store_blank_until(const VerdictOut& vo, bool reactive,
                                                    int confirm_ms) {
-  if (!reactive || !vo.first_interfered) return std::nullopt;
+  if (!reactive || !vo.first_blocked) return std::nullopt;
   return vo.t_ms + static_cast<double>(confirm_ms) + kHopSettleBlankMs;
 }
 

@@ -105,11 +105,13 @@ TEST(frozen_reference_for_a_mid_dwell_card_is_not_fabricated_from_zero) {
   auto o2 = v.window(t + 150, {card(-55, 33, 237, 2), card(-40, 30, 0, 4)}, {0.06, 80}, 5);
   CHECK(!(o2.evidence & kEvFading));
 }
-// weak takes priority over interfered evidence: a link that is weak but
-// NOT currently fading (RSSI stable, just low) and also shows genuine
-// jammer symptoms (contended) must still classify as Fade and must never
-// trigger a hop -- the ladder owns weak links, not the hop.
-TEST(weak_takes_priority_over_contended_when_not_fading) {
+// weak takes priority over unknown: a lossy, contended window that is weak
+// (RSSI stable, just low -- not fading) is a fade, the ladder's, not an
+// unexplained loss. Foreign frames are evidence only, so without `weak` the
+// same window reads unknown, never interfered (weak over occupied is
+// weak_still_wins_over_occupied).
+// Revert (drop the `weak` branch): reads Unknown.
+TEST(weak_takes_priority_over_unknown) {
   HopVerdict v(cfg(), BusyCfg{}, 2);
   double t = 0;
   // Warm at RSSI -80 / SNR 10, no loss: not impaired, so these windows are
@@ -144,10 +146,12 @@ TEST(every_window_carries_the_span_it_was_measured_over) {
   auto o4 = v.window(1450, {dead, dead}, {0.0, 20}, 5);
   CHECK(o4.v == Verdict::Unknown && o4.t_start_ms == 1300 && o4.t_ms == 1450);
 }
-// I4: the rung-store blank's arming edge (gs/src/hop_blank.h) -- the
-// FIRST interfered window of a frozen episode, once and once only until a
-// thaw. Deliberately not ref_frozen, which is keyed on `impaired` and so
-// is set through fades and unknown windows too.
+// The rung-store blank's arming edge (gs/src/hop_blank.h) -- the FIRST
+// impaired, non-weak, blocked window of a frozen episode, once and once only
+// until a thaw. That is the jam's lossy lead-in, occupied_windows - 1
+// windows before the first `interfered` one. Deliberately not ref_frozen,
+// which is keyed on `impaired` and so is set through fades and unknown
+// windows too.
 // A blocked card (NHM foreign busy 92 %) on a lossy link: impaired, and
 // interfered once the blocked streak reaches occupied_windows.
 static VerdictCardIn jam_card() {
@@ -159,33 +163,54 @@ static VerdictOut jam(HopVerdict& v, double& t, int n, int rung = 5) {
   for (int i = 0; i < n; ++i, t += 150) o = v.window(t, {jam_card(), jam_card()}, {0.06, 80}, rung);
   return o;
 }
-TEST(first_interfered_fires_once_per_frozen_episode) {
+// Revert (arm on the first `interfered` window, `o.v == Interfered`): u1
+// carries no edge and o1 does.
+TEST(first_blocked_fires_once_per_frozen_episode) {
   HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   // A fade freezes the references but is not interference: no edge.
   auto f = v.window(t, {card(-90, 8, 0, 0, 30), card(-86, 10, 0, 10, 5)}, {0.05, 90}, 1);
-  CHECK(f.v == Verdict::Fade && f.ref_frozen && !f.first_interfered);
+  CHECK(f.v == Verdict::Fade && f.ref_frozen && !f.first_blocked);
   t += 150;
-  // Blocked-but-not-yet-occupied windows are unknown: no edge either.
-  auto u = jam(v, t, occ_n() - 1);
-  CHECK(u.v == Verdict::Unknown && u.ref_frozen && !u.first_interfered);
+  // Loss without a blocked reading: unknown, no edge.
+  auto n = v.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.08, 100}, 5); t += 150;
+  CHECK(n.v == Verdict::Unknown && !n.first_blocked);
+  // The jam's first blocked window -- still unknown, not occupied -- arms.
+  auto u1 = jam(v, t, 1);
+  CHECK(u1.v == Verdict::Unknown && u1.ref_frozen && u1.first_blocked);
+  auto u = jam(v, t, occ_n() - 2);
+  CHECK(u.v == Verdict::Unknown && !u.first_blocked);
   auto o1 = jam(v, t, 1);
-  CHECK(o1.v == Verdict::Interfered && o1.first_interfered);
-  auto o2 = jam(v, t, 1);
-  CHECK(o2.v == Verdict::Interfered && !o2.first_interfered);   // same episode
+  CHECK(o1.v == Verdict::Interfered && !o1.first_blocked);   // same episode
   // A thaw re-arms it. A thaw needs healthy windows, and a held occupied
   // streak keeps every window impaired, so the healthy windows carry a
-  // clean NHM reading -- which resets the streak, and occupancy is
-  // re-earned.
+  // clean NHM reading -- which resets the streak.
   auto clean = [] { auto c = card(-61, 30, 0, 4); c.busy_valid = true; c.nhm_busy_pct = 10; c.own_air_pct = 3; return c; };
   for (int i = 0; i < 3; ++i, t += 150) v.window(t, {clean(), clean()}, {0.0, 20}, 5);
   CHECK(!v.window(t, {clean(), clean()}, {0.0, 20}, 5).ref_frozen); t += 150;
-  auto o3 = jam(v, t, occ_n());
-  CHECK(o3.v == Verdict::Interfered && o3.first_interfered);
-  // ...and so does reset(), the other thaw rule (which also clears the
-  // streak, so occupancy is re-earned).
+  CHECK(jam(v, t, 1).first_blocked);
+  // ...and so does reset(), the other thaw rule.
   v.reset();
-  auto o4 = jam(v, t, occ_n());
-  CHECK(o4.v == Verdict::Interfered && o4.first_interfered);
+  CHECK(jam(v, t, 1).first_blocked);
+}
+// A blocked window at zero loss before occupancy is not impaired, so it is
+// no episode and arms nothing: no loss, no demote to keep out of the store.
+// Revert (drop `impaired &&` from the edge): w1 arms.
+TEST(zero_loss_blocked_lead_in_does_not_arm) {
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
+  auto c = card(-61, 30, 0, 4); c.busy_valid = true; c.nhm_busy_pct = 95; c.own_air_pct = 3;
+  auto w1 = v.window(t, {c, c}, {0.0, 20}, 5); t += 150;
+  CHECK(w1.v == Verdict::Healthy && !w1.first_blocked);
+  VerdictOut o;
+  for (int i = 1; i < occ_n(); ++i, t += 150) o = v.window(t, {c, c}, {0.0, 20}, 5);
+  CHECK(o.v == Verdict::Interfered && o.first_blocked);   // occupancy itself is the first impaired window
+}
+// A weak blocked window is a fade, and a fade never arms.
+// Revert (drop `!weak` from the edge): reads first_blocked.
+TEST(weak_blocked_window_does_not_arm) {
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
+  auto c = jam_card(); c.rssi_dbm = -90; c.snr_db = 8;
+  auto o = v.window(t, {c, c}, {0.06, 80}, 5);
+  CHECK(o.v == Verdict::Fade && (o.evidence & kEvBlocked) && !o.first_blocked);
 }
 TEST(ref_frozen_marks_the_impaired_episode) {
   HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
@@ -279,7 +304,7 @@ TEST(loss_and_blocked_without_occupancy_is_unknown) {
   auto o = v.window(t, {busy_card(98, 0), busy_card(98, 0)}, bad, 5);
   CHECK(o.evidence & kEvBlocked); CHECK(o.evidence & kEvImpaired); CHECK(!(o.evidence & kEvOccupied));
   CHECK(o.v == Verdict::Unknown);
-  CHECK(!o.first_interfered);
+  CHECK(o.first_blocked);   // the store blank's edge: before occupancy
 }
 // A 40 % busy jam: blocked under radio.scan.blocked_pct 35, not under 45 --
 // the threshold is the engine's input, not a constant.
@@ -446,12 +471,13 @@ TEST(starved_and_blocked_is_interfered_only_once_occupied) {
     o = v.window(t, {busy_card(98, 0), busy_card(98, 0)}, s, 5);
     CHECK(o.v == Verdict::Unknown);
     CHECK(o.evidence & kEvStarved); CHECK(o.evidence & kEvBlocked);
+    CHECK(o.first_blocked == (i == 1));   // the store blank arms on the first
     CHECK(!o.trigger);
   }
   o = v.window(t, {busy_card(98, 0), busy_card(98, 0)}, s, 5);
   CHECK(o.v == Verdict::Interfered);
   CHECK(o.evidence & kEvOccupied);
-  CHECK(o.first_interfered);
+  CHECK(!o.first_blocked);
 }
 // Starved with nothing else to explain it falls through to Unknown, like
 // any other unexplained impairment -- never a trigger on its own.

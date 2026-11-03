@@ -11,6 +11,7 @@
 #include "cal_picker.h"
 #include "channel_core.h"
 #include "fake_link_card.h"
+#include "hop_blank.h"
 #include "mabur/rc_proto.h"
 #include "nhm_busy.h"
 #include "recording_sink.h"
@@ -557,6 +558,63 @@ TEST(two_card_order_rcf_carries_hop_and_plan_leads_then_follows) {
   for (int i = 0; i < (g.cfg.hop.verify_ms / 10) + 30; ++i) { g.vrx->on_video(static_cast<double>(g.clk.ms)); g.tick(true); }
   CHECK(g.sink.has_hop("verify_pass"));
   CHECK(g.core->snapshot(0).hop.hops == 1);
+}
+
+// The occupied count carries across a hop: a reactive hop lands with it
+// already at occupied_windows, so a target that reads blocked fails verify
+// on its FIRST blocked reading there (~300 ms: the settle, then one window)
+// instead of rebuilding the count over occupied_windows readings.
+// Revert (verdict_.reset() on HopAction::Confirm in apply_hop_action_): the
+// count rebuilds and verify_fail comes ~900 ms after landing -- past the
+// bound below, and with occupied_windows one higher, past verify_ms.
+TEST(reactive_hop_onto_a_blocked_target_fails_verify_on_its_first_blocked_reading) {
+  Rig g(2, 0); freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
+  interfere_until_order(g);
+  const auto r = pump_rcf(g);
+  REQUIRE(r.has_value());
+  REQUIRE(r->hop_ch != 0 && r->hop_ch != 40);
+  OpJam jam(g);                              // the air is blocked wherever the sampler arms
+  g.core->note_video(r->hop_ch);
+  g.tick(true);
+  REQUIRE(g.sink.has_hop("lead_confirm"));
+  const uint64_t landed = g.clk.ms;
+  for (int i = 0; i < g.cfg.hop.verify_ms / 10 + 30 && !g.sink.has_hop("verify_fail") &&
+                  !g.sink.has_hop("verify_pass"); ++i) {
+    g.vrx->on_video(static_cast<double>(g.clk.ms));
+    g.tick(true);
+  }
+  CHECK(g.sink.has_hop("verify_fail"));
+  CHECK(!g.sink.has_hop("verify_pass"));
+  // The settle, the NHM re-arm on the target and one blocked window: well
+  // inside the occupied_windows x window_ms a rebuilt count would need.
+  CHECK(g.clk.ms - landed < kHopSettleBlankMs + 4 * g.cfg.hop.window_ms);
+}
+
+// Onset -> order on two cards, bounded: the trigger needs occupied_windows
+// blocked windows plus the persist, and the order then waits on at most one
+// more freshness burst (burst_period_ms) to rank the candidates (1350 ms
+// against a 1533 ms bound at the bundle defaults). Revert (`occupied` at
+// blocked_streak_ >= occupied_windows + 2 in hop_verdict.cpp): the order
+// lands at 1650 ms, past the bound.
+TEST(two_card_onset_to_order_is_occupancy_plus_persist_plus_one_burst) {
+  Rig g(2, 0); freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
+  const uint64_t onset = g.clk.ms;
+  interfere_until_order(g);
+  double order_ms = -1;
+  for (const auto& h : g.sink.hops) if (h.kind == "order") { order_ms = h.t_ms; break; }
+  REQUIRE(order_ms >= 0);
+  const auto& v = g.cfg.hop.verdict;
+  // + 1 window: the first jammed window only arms NHM.
+  const double bound = (v.occupied_windows + g.cfg.hop.persist + 1) * g.cfg.hop.window_ms +
+                       g.cfg.hop.burst_period_ms;
+  CHECK(order_ms - static_cast<double>(onset) <= bound);
+  CHECK(order_ms - static_cast<double>(onset) >= v.occupied_windows * g.cfg.hop.window_ms);
 }
 
 TEST(stale_pre_hop_verdict_does_not_break_verify) {

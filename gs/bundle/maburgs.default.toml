@@ -47,7 +47,7 @@ pick_margin_pct = 10    # 40 MHz: a candidate pair must be this many busy-% poin
 one_card_ms     = 5000
 max_ms          = 30000
 busy_dbm        = -83   # energy level that counts the air as busy: an NHM bucket edge, -104 -101 -98 -95 -92 -89 -86 -83 -80 -75 -70
-blocked_pct     = 30    # % of time the air is busy with others = channel blocked; every measurer uses it (boot scout, in-flight scout, verdict)
+blocked_pct     = 30    # % of time the air is busy with others = channel blocked; every measurer uses it (boot scout, in-flight scout, verdict, calibration pick)
 
 # Radio cards: by default maburgs uses every supported card it finds on USB.
 # To use only specific cards (e.g. fly one card without unplugging the other),

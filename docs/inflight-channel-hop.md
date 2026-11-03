@@ -325,10 +325,13 @@ count rebuilds from zero. A post-landing window with no busy reading (the
 retune can invalidate the NHM arm) classifies `unknown` instead — even
 with a neighbour's foreign frames, false alarms or loss in it — and does
 not fail verify on its own; the streak holds, so the next window that does
-have a blocked reading still reads `interfered`. A target the ranker calls
-unblocked is unblocked to the verdict too (both read the one
-`radio.scan.blocked_pct`), so its first reading resets the streak rather
-than failing verify.
+have a blocked reading still reads `interfered`. The ranker and the
+verdict compare against the one `radio.scan.blocked_pct`, so the direction
+agrees, but they do not read the same thing: the ranker's busy % is the
+raw NHM mean of dwells up to `rank_max_age_ms` old (a few seconds on a two-card
+GS), the verdict's is this window's minimum of busy minus own airtime
+across cards. A target that was clean when dwelt and has filled up since
+lands blocked, and its first blocked reading fails verify.
 
 Every `VerdictOut` carries the span its deltas cover (`t_start_ms`, `t_ms`).
 `ChannelCore` recomputes a verdict every `hop.window_ms` but ticks
@@ -512,25 +515,35 @@ pair").
   keep running, so a fading enh layer can still demote itself. A demote
   taken on mid-hop evidence is overwritten by `restore()`; the per-rung
   store stays clean because it was not written during the blank.
-- **The blank starts at the first `interfered` window**, from two call
-  sites that compose because `blank_store()` keeps the LATER deadline:
+- **The blank starts at the first blocked window of the episode**, from
+  two call sites that compose because `blank_store()` keeps the LATER
+  deadline:
   1. `hop_store_blank_until()` (`gs/src/hop_blank.h`, pure), called from
      `ChannelCore::step_hop_edge_and_window_()`, returns
      `t_ms + confirm_ms + 150 ms` **once per impaired episode**, on its
-     first `interfered` window (`VerdictOut::first_interfered`).
+     first impaired, non-weak, `blocked` window (`VerdictOut::first_blocked`).
+     That is the jam's lossy lead-in, `occupied_windows − 1` windows before
+     the first `interfered` one (§2): the lead-in is where the ladder takes
+     its demotes, and arming only at `interfered` would write them into the
+     per-rung store against the jammed channel. A zero-loss blocked window
+     is not impaired and arms nothing (no loss, no demote).
   2. `HopAction::Order` calls `blank_store(now_ms + hop.confirm_ms + 150)`.
 
   Three gates on (1):
   - **Pinned.** Not reactive: nothing is ordered, so there is no hop to
     protect the store from, and blanking would change what a pinned flight
     records. (2) never fires pinned either.
-  - **`interfered`, not `impaired`.** `fade` and `unknown` are impaired too;
-    only interference hops, so only interference blanks.
+  - **`blocked` and not weak, not merely `impaired`.** A fade and an
+    unknown window with no blocked reading are impaired too; they leave
+    the ladder alone. Only foreign airtime can lead to a hop, so only a
+    blocked reading blanks.
   - **One edge per frozen episode.** The deadline is computed once, at
-    onset, and not re-extended by later `interfered` windows, so a long or
-    flickering jam cannot roll it forward. The store resumes
-    `confirm_ms + 150 ms` after onset whether or not a hop was ordered;
-    re-arming needs a thaw (3 healthy windows, or `reset()` after a verify).
+    the first blocked window, and not re-extended by later blocked or
+    `interfered` windows, so a long or flickering jam cannot roll it
+    forward. The store resumes `confirm_ms + 150 ms` after that window
+    whether or not a hop was ordered (an order sets its own deadline);
+    re-arming needs a thaw (3 healthy windows, or `reset()` after a
+    verify).
 
   Any part of the verify window past `confirm_ms + 150 ms` updates the store
   normally.
@@ -583,6 +596,23 @@ has no home or fallback channel.
     no candidate it tries the escape (below), else holds (`verify_fail`).
     Retries are exempt from `cooldown_ms` but counted against
     `max_hops_per_min` (`hold_cap` when full).
+  - **A reactive hop's verify fails on the first blocked reading on the
+    target.** `interfered` needs `occupied` (§2), but the occupied count
+    carries across the hop, so a trigger's count is already at
+    `occupied_windows` when the link lands: the first blocked window
+    measured after landing (~300 ms after the confirm: the settle, then one
+    window) is `interfered`
+    (`reactive_hop_onto_a_blocked_target_fails_verify_on_its_first_blocked_reading`).
+  - **An auto-mode boot-pick relocation barely can fail verify.** Its count
+    starts near 0 (`new_session()` clears it at the session's start and no
+    trigger drove the move), so a blocked pick needs `occupied_windows`
+    blocked readings on it in a row. At the bundle defaults the 5th lands
+    ~900 ms after the confirm, just inside `verify_ms` (1000 ms): every
+    window from the first eligible one must read blocked, and one window
+    without a reading or under `blocked_pct` lets the relocation stand.
+    Raising `occupied_windows` to 6 or more removes the case entirely. A
+    relocation that stands on a blocked pick is then fled by the reactive
+    hop like any other occupied op.
 - **Back-off.** `hop.backoff_ms` (30 000 ms), doubling per repeat of the same
   channel, capped at 300 000 ms. Each entry records why: `fled`, `failed`
   (verify fail, withdraw, session lost) or `undelivered` (a withdraw after a
