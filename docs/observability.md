@@ -575,7 +575,7 @@ heal_ms distribution, and how many requests fall within 2 s of a ladder
 demote / a FEC episode) prints from it — on a bare `fec.log` argument and
 in session mode alike.
 
-### `scan.log` (`scanlog 7`)
+### `scan.log` (`scanlog 8`)
 
 The channel-selection record (`gs/src/scan_log.h`, formats locked there).
 Six record letters, one line each:

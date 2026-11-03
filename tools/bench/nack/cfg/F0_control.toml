@@ -26,7 +26,7 @@ relays  = []   # CPE disabled for maburcal; was ["10.83.11.1:8310"]
 # detect an analog transmitter, so keep the candidate list far from any band
 # one might use.
 [radio.scan]
-dwell_ms        = 250      # measurement observe per 20 MHz half
+dwell_ms        = 250      # measurement observe per dwell: a pair at 40, a member at 20
 settle_ms       = 30       # after every retune
 min_rounds      = 3        # full passes before the ranking is mature
 search_ms       = 100      # DISC burst at the start of every unlinked dwell on a member

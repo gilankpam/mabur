@@ -67,10 +67,6 @@ struct FakeCard : maburgs::LinkCard {
     if (retune_deferred) is_ready = false;
     return true;
   }
-  bool retune_width(uint8_t c, uint8_t w) override {
-    calls.push_back("retune_width " + std::to_string(c) + "/" + std::to_string(w));
-    ch = c; width_mhz = w; return true;
-  }
   maburgs::ScoutEnergy read_energy(bool with_nhm) override {
     maburgs::ScoutEnergy e; e.fa_valid = !relay;
     const uint64_t now = clk ? clk->ms : 0;

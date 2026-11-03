@@ -128,8 +128,8 @@ bool RadioFrontend::open_and_start() {
     device_.reset(static_cast<IRtlRadio*>(radio.release()));
   if (!device_) { open_error_ = "unsupported chip"; stop(); return false; }
   // width_, not the constructor's cfg_.width_mhz: a set_width() that landed
-  // while the card was down (the boot scout card dying mid-scan) is the
-  // width a revive must come up at.
+  // while the card was down (the core's width resync) is the width a revive
+  // must come up at.
   device_->InitWrite(width() == 40
                          ? SelectedChannel{cfg_.channel, mabur::ht40_offset(cfg_.channel), CHANNEL_WIDTH_40}
                          : SelectedChannel{cfg_.channel, 0, CHANNEL_WIDTH_20});

@@ -131,6 +131,9 @@ Chronological; each line names the section below that carries the detail.
   `ctl.log` can carry a second `ctllog 13 <header_info>` line mid-file at a
   live ladder swap, and its rows index the most recent header; `E` reasons
   `ladder_swap` and `unpin`; sideport `scan.pinned` (the live pin).
+- 2026-11-03 — HT40 pair dwell: `scanlog 8` — at `radio.width` 40 the boot
+  scan writes one `D` row per pair per round; `scanlog ≤ 7` files have
+  two, one per half, at bw 20. No column change.
 
 ## 2026-09-23 — `link.pre_fec_loss` scale break, twice
 

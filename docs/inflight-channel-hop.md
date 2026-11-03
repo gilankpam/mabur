@@ -434,8 +434,9 @@ pair, within 0.5 points of a 20 MHz dwell on either half
 ranking term at 40 MHz, ahead of the frame-term score. `foreign` still
 never counts secondary frames — they are never decoded at 40 MHz — so it
 stays primary-only even where it still matters (the blocked tiebreak, the
-score tiebreak within a busy tier). The per-half boot scan is
-`ChannelScout`'s alone (`docs/bw40.md`).
+score tiebreak within a busy tier). The boot scan dwells the same way,
+once per pair on its primary (`docs/bw40.md` "Boot scan dwells once per
+pair").
 
 ## 4. Ladder interaction: restore the pre-onset rung
 
@@ -664,7 +665,7 @@ Validation (`gs/src/config.cpp`) — unknown keys fail boot:
 
 ## 8. Observability
 
-**`scan.log`** (`gs/src/scan_log.{h,cpp}`, marker `scanlog 7`; formats
+**`scan.log`** (`gs/src/scan_log.{h,cpp}`, marker `scanlog 8`; formats
 locked by `tests/test_scan_log.cpp`; marker history in
 `docs/data-provenance.md`). The hop adds two record kinds and extends `D`:
 

@@ -23,8 +23,9 @@ struct ScoutCfg {
   int beacon_period_ms = 20;
   int one_card_ms = 5000;          // one card + measure: silent prelude before the first DISC
   uint32_t pick_margin = 20;
+  double pick_margin_pct = 10;     // width 40: busy % points a candidate pair must beat op's by
   bool one_card = false;
-  uint8_t link_width_mhz = 20;     // radio.width: 40 = dwell every half at 20, pick a pair, park at 40
+  uint8_t link_width_mhz = 20;     // radio.width: the card is opened at it; 40 = one dwell per pair, pick a pair
   int busy_dbm = -83;
   double blocked_pct = 1e9;
   double leak_per_frame = 1.0;     // RankSample::leak per TX-card frame sent during an observe
@@ -51,22 +52,23 @@ struct ScoutDwell {
 //  - search (link down): sweep the set, bursting DISC (beaconing() true for
 //    search_ms) on every member dwell so the drone can be FOUND wherever
 //    it is. Bursts happen only when search && the dwell channel is a member.
-//  - measure (auto mode, pick open): observe every dwell channel (both 20
-//    MHz halves of each member's pair at width 40) and rank it. An observe
-//    while unlinked is quiet(): the TX card holds its DISC (bench: a
-//    beaconing card's TX leaks into the adjacent scout).
+//  - measure (auto mode, pick open): observe every member at the link
+//    width (at 40 one dwell on the primary reads the whole pair) and rank
+//    it. An observe while unlinked is quiet(): the TX card holds its DISC
+//    (bench: a beaconing card's TX leaks into the adjacent scout).
 //    Linked, the TX card carries video and is never held; its leak is
 //    subtracted instead: RankSample::leak = round(leak_per_frame x frames
 //    the TX card sent during the observe), fed in via set_tx_frames().
-//    With the search off (linked), op's own halves are skipped: they carry
-//    the drone's video.
-//  - no work (linked and pinned, or frozen): park on op at link_width_mhz
-//    (once), working() false. freeze() closes the pick for good.
+//    With the search off (linked), op is skipped: its pair carries the
+//    drone's video.
+//  - no work (linked and pinned, or frozen): park on op (once), working()
+//    false. freeze() closes the pick for good. The card never changes
+//    width: it was opened at link_width_mhz.
 //  - one round (a calibration run's channel pick, after the freeze):
 //    begin_round() measures again exactly once -- a fresh ranker, every
-//    dwell channel visited once except op's own halves (skipped as above
-//    while the search is off), then no work again and it parks. The core
-//    takes the round's samples (round_samples) and makes the pick.
+//    member visited once except op (skipped as above while the search is
+//    off), then no work again and it parks. The core takes the round's
+//    samples (round_samples) and makes the pick.
 //
 // One card: with measure on, a silent prelude of one_card_ms (observe-only
 // dwells, no DISC anywhere) runs first and re-arms only on unfreeze();
@@ -94,10 +96,9 @@ class ChannelScout {
   // prelude runs again from the next step, because a one-card pick commits
   // only at the prelude's end; prelude_done() reads false from this call.
   void unfreeze();
-  // Measuring on or off (auto / pinned). The dwell set follows it at width
-  // 40 (both halves of every pair vs the members alone), so the ranker is
-  // rebuilt here and the scheduler by the run thread on its next step (it
-  // is the scheduler's only user). Unchanged: a no-op.
+  // Measuring on or off (auto / pinned). The ranker is rebuilt here and the
+  // scheduler by the run thread on its next step (it is the scheduler's
+  // only user), so ranks and rounds start over. Unchanged: a no-op.
   void set_measure(bool on);
   void stop() { stop_.store(true, std::memory_order_release); }
   // One card + measure: the core has committed the prelude pick (op = the
@@ -128,11 +129,11 @@ class ChannelScout {
   // After freeze() proposal() is stale: it holds its last value even if op
   // changes.
   // mature(): every member except op ranked (op too while searching: then
-  // it is visited like any other). op_ranked(): op's pair (width 40) / op
-  // itself (width 20) has the effective min_rounds. While the search is off
-  // and the pick open, op's halves are never dwelt on (they carry
-  // the drone's own video), so op keeps only its pre-link visits
-  // and may well be unranked at maturity -- the core freezes in place then.
+  // it is visited like any other). op_ranked(): op's row has the effective
+  // min_rounds. While the search is off and the pick open, op is never
+  // dwelt on (its pair carries the drone's own video), so op keeps only its
+  // pre-link visits and may well be unranked at maturity -- the core
+  // freezes in place then.
   bool mature() const;
   bool op_ranked() const;
   uint8_t proposal() const { return proposal_.load(std::memory_order_acquire); }
@@ -152,10 +153,8 @@ class ChannelScout {
   bool member_(uint8_t ch) const;
   int eff_min_rounds_() const;
   void park_();
-  bool tune_(uint8_t ch);
   bool step_dwell_(bool burst_ok, bool observe);
-  bool is_op_half_(uint8_t ch) const;
-  bool skip_op_half_(uint8_t ch) const;
+  bool skip_op_(uint8_t ch) const;
   bool op_ranked_locked_(int mr) const;   // mu_ held
   void note_round_dwell_();               // run thread: a round dwell finished
   void end_round_measuring_();
@@ -188,9 +187,8 @@ class ChannelScout {
   // begin_round() racing the run thread's park can never be lost.
   static constexpr int kRoundIdle = 0, kRoundMeasuring = 1, kRoundMeasured = 2;
   std::atomic<int> round_{kRoundIdle};
-  int round_dwells_ = 0;     // under mu_: dwells taken this round (bounds a dead half)
+  int round_dwells_ = 0;     // under mu_: dwells taken this round (bounds a dead member)
   std::vector<RankSample> round_samples_;   // under mu_
-  bool need_width_ = true;   // run thread only: the next tune switches the card to 20 MHz
   int64_t t0_ = -1;          // run thread only: one-card prelude start (first run_once(), or a re-armed prelude)
 };
 

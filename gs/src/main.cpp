@@ -78,7 +78,6 @@
 #include "remote_card.h"
 #include "rf_labels.h"
 #include "scan_log.h"
-#include "scout_pick.h"
 #include "snr_units.h"
 #include "stats_exporter.h"
 #include "stats_sink.h"
@@ -311,16 +310,6 @@ static int run_radio(const maburgs::Config& cfg, const std::string& cfg_path) {
   const int n_cards = n_usb + n_relays;
   maburgs::BodyQueue queue;  // all cards share one queue; card_id tags origin
   std::vector<std::unique_ptr<maburgs::LinkCard>> fronts;
-  // The boot scout card (spare card, or the only card) scans the 20 MHz
-  // halves at 20 MHz tuning and joins the link at radio.width once the
-  // pick freezes (the core's boot scout retunes its width). Every other card,
-  // and every card when the scan is off, tunes radio.width from the start.
-  // can_scout per roster slot: every USB card can; relays (after the USB
-  // cards) cannot. Built before the fronts because the USB loop below needs
-  // boot_scout_card for its width.
-  std::vector<bool> can_scout(static_cast<size_t>(n_cards), true);
-  for (int i = n_usb; i < n_cards; ++i) can_scout[static_cast<size_t>(i)] = false;
-  const int boot_scout_card = maburgs::pick_boot_scout(can_scout);
   for (int i = 0; i < n_usb; ++i) {
     maburgs::RadioFrontend::Cfg fc;
     if (cfg.radio.auto_scan) {
@@ -334,8 +323,7 @@ static int run_radio(const maburgs::Config& cfg, const std::string& cfg_path) {
       fc.index = cfg.radio.cards[static_cast<size_t>(i)].index;
     }
     fc.channel = start_ch;
-    // The scout card always starts at 20: it searches at 20 even when pinned.
-    fc.width_mhz = (boot_scout_card >= 0 && i == boot_scout_card) ? 20 : cfg.radio.width;
+    fc.width_mhz = cfg.radio.width;
     fc.card_id = static_cast<uint8_t>(i);
     fronts.push_back(std::make_unique<maburgs::RadioFrontend>(fc, queue));
   }
@@ -343,7 +331,7 @@ static int run_radio(const maburgs::Config& cfg, const std::string& cfg_path) {
     maburgs::RemoteCard::Cfg rc;
     rc.addr = cfg.radio.relays[static_cast<size_t>(k)];
     rc.channel = start_ch;
-    rc.width_mhz = cfg.radio.width;  // never the boot scout: full width from the start
+    rc.width_mhz = cfg.radio.width;
     rc.card_id = static_cast<uint8_t>(n_usb + k);
     fronts.push_back(std::make_unique<maburgs::RemoteCard>(rc, queue));
     std::fprintf(stderr, "cards: card %d = relay %s\n", n_usb + k, rc.addr.c_str());
@@ -608,7 +596,7 @@ static int run_radio(const maburgs::Config& cfg, const std::string& cfg_path) {
   // the end-of-AU callback calls chan.note_au_end().
   maburgs::VrxController vrx(maburgs::vrx_cfg_from(cfg, start_ch));
 
-  // scan.log (scanlog 7): the channel-selection record -- card caps, scout
+  // scan.log (scanlog 8): the channel-selection record -- card caps, scout
   // dwells (boot-time AND in-flight), the pick, every link move, and the
   // in-flight hop verdict/hop-event lines. Same session directory and
   // writer as ctl.log, same debug_log.enable gate; opened by

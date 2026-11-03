@@ -83,6 +83,7 @@ ChannelCore::ChannelCore(ChannelCoreCfg cfg, std::vector<LinkCard*> cards, VrxCo
     sc.beacon_period_ms = 20;
     sc.one_card_ms = cfg_.radio.scan.one_card_ms;
     sc.pick_margin = static_cast<uint32_t>(cfg_.radio.scan.pick_margin);
+    sc.pick_margin_pct = cfg_.radio.scan.pick_margin_pct;
     sc.one_card = one_card_ || relay_search_only_;   // a sole relay interleaves op windows like a sole USB card
     sc.link_width_mhz = cfg_.radio.width;
     sc.busy_dbm = cfg_.radio.scan.busy.busy_dbm;
@@ -562,10 +563,10 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
       energy_last_[si] = StatsEnergyIn{cs.energy.cca_ofdm, cs.energy.fa_ofdm, cs.frames.own - window_prev_[si].own,
                                        cs.frames.foreign - window_prev_[si].foreign, std::nullopt, busy_pct, own_used};
       // Op's reading for a calibration run's pick (the scout never dwells
-      // on op's halves while linked): decoded foreign frames scaled from
-      // this window's span to one dwell_ms observe, and the foreign share
-      // of the NHM busy airtime (our own video is not interference). The
-      // worst card on each term, as the scout keeps a half's worst visit.
+      // on op while linked): decoded foreign frames scaled from this
+      // window's span to one dwell_ms observe, and the foreign share of the
+      // NHM busy airtime (our own video is not interference). The worst
+      // card on each term, as the scout keeps a member's worst visit.
       if (win_us > 0) {
         const double k = static_cast<double>(cfg_.radio.scan.dwell_ms) * 1000.0 / win_us;
         const auto foreign = static_cast<uint32_t>(std::lround(
@@ -1083,10 +1084,9 @@ void ChannelCore::step_cal_(const ChannelTickIn& in) {
     }
     cal_meas_.s = CalMeasure::Running;
     cal_meas_.t0 = now_ms;
-    // Twice a full round's dwell time (every dwell channel, op's included,
-    // at dwell_ms + settle_ms), never under a second.
-    const size_t n = cfg_.radio.width == 40 ? scan_half_set(cfg_.radio.channels).size()
-                                            : cfg_.radio.channels.size();
+    // Twice a full round's dwell time (every member, op's included, at
+    // dwell_ms + settle_ms; one dwell per pair at 40), never under a second.
+    const size_t n = cfg_.radio.channels.size();
     cal_meas_.bound_ms = std::max(
         1000.0, 2.0 * static_cast<double>(n) *
                     static_cast<double>(cfg_.radio.scan.dwell_ms + cfg_.radio.scan.settle_ms));
@@ -1109,12 +1109,12 @@ void ChannelCore::finish_cal_measure_(double now_ms) {
   // one op is unmeasured and a working link is not moved on a one-sided
   // comparison (the boot pick's "op unmeasured" rule).
   const bool have_op = op_live_.has_value() && op_live_ms_ >= cal_meas_.t0;
-  std::vector<CalReading> halves;
+  std::vector<CalReading> members;
   for (const RankSample& s : scout_->round_samples())
-    halves.push_back(CalReading{s.ch, s.foreign, s.busy_valid, s.busy_pct});
+    members.push_back(CalReading{s.ch, s.foreign, s.busy_valid, s.busy_pct});
   const CalPickOut pick =
-      cal_round_pick(halves, have_op ? op_live_ : std::nullopt, op, cfg_.radio.channels,
-                     cfg_.radio.width, static_cast<uint32_t>(cfg_.radio.scan.pick_margin),
+      cal_round_pick(members, have_op ? op_live_ : std::nullopt, op, cfg_.radio.channels,
+                     static_cast<uint32_t>(cfg_.radio.scan.pick_margin),
                      cfg_.radio.scan.busy.blocked_pct);
   const uint8_t best = pick.best;
   sink_.pick(now_ms, best, scout_->rounds(), pick.rows, 1);

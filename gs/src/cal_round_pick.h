@@ -3,11 +3,11 @@
 // the run should calibrate on. Pure, header-only.
 //
 // Op and the candidates are read by different instruments: each candidate
-// by the scout card's own 20 MHz observe of its channel (at 40 MHz, the
-// pair's primary), op by the link cards' verdict window at the link width
-// (the scout never dwells on op's own pair while linked: it carries the
-// drone's video). So only terms that mean the same thing on both sides are
-// compared:
+// by the scout card's own observe of its channel at the link width (at 40
+// MHz one dwell on the pair's primary reads the whole pair), op by the
+// link cards' verdict window (the scout never dwells on op's own pair
+// while linked: it carries the drone's video). So only terms that mean the
+// same thing on both sides are compared:
 //  - NHM busy %: foreign airtime share (op's reading has our own video's
 //    airtime taken out), and
 //  - decoded foreign frames per dwell_ms observe.
@@ -32,8 +32,8 @@
 
 namespace maburgs {
 
-// One reading of one channel: the member's own 20 MHz observe from the
-// round's scout dwell, or op from the verdict window.
+// One reading of one channel: the member's own observe from the round's
+// scout dwell, or op from the verdict window.
 struct CalReading {
   uint8_t ch = 0;
   uint32_t foreign = 0;      // decoded foreign frames, per dwell_ms observe
@@ -61,8 +61,7 @@ inline double score(const Side& s, bool use_busy) {
 inline bool blocked(const Side& s, double blocked_pct) {
   return s.busy_valid && s.busy_pct >= blocked_pct;
 }
-// The member's own reading (at 40 MHz, the pair's primary's); not ok unless
-// it was read this round.
+// The member's own reading; not ok unless it was read this round.
 inline Side member_side(const std::vector<CalReading>& rd, uint8_t member) {
   for (const CalReading& r : rd) {
     if (r.ch != member) continue;
@@ -82,12 +81,11 @@ inline RankEntry row(const CalReading& r) {
 }
 }  // namespace cal_pick_detail
 
-inline CalPickOut cal_round_pick(const std::vector<CalReading>& halves,
+inline CalPickOut cal_round_pick(const std::vector<CalReading>& members,
                                  const std::optional<CalReading>& op_read, uint8_t op,
-                                 const std::vector<uint8_t>& set, int width_mhz, uint32_t margin,
+                                 const std::vector<uint8_t>& set, uint32_t margin,
                                  double blocked_pct) {
   using namespace cal_pick_detail;
-  (void)width_mhz;  // every member reads its own row now, at any width
   CalPickOut out;
   out.best = op;
   // A candidate with no busy reading would score on foreign alone, a term
@@ -97,7 +95,7 @@ inline CalPickOut cal_round_pick(const std::vector<CalReading>& halves,
   bool any_busy = false;
   for (uint8_t c : set) {
     if (c == op) continue;
-    const Side s = member_side(halves, c);
+    const Side s = member_side(members, c);
     if (!s.ok) continue;
     out.rows.push_back(row(CalReading{c, s.foreign, s.busy_valid, s.busy_pct}));
     if (s.busy_valid) any_busy = true;
@@ -111,7 +109,7 @@ inline CalPickOut cal_round_pick(const std::vector<CalReading>& halves,
   Side bs;
   for (uint8_t c : set) {
     if (c == op) continue;
-    const Side s = member_side(halves, c);
+    const Side s = member_side(members, c);
     if (!s.ok) continue;
     if (any_busy && !s.busy_valid) continue;
     if (!best) {

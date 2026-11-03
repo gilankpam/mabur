@@ -798,11 +798,9 @@ int run_live(const LiveOpts& o) {
     maburgs::RadioFrontend::Cfg fc;
     fc.ids = kCards;
     fc.channel = ch;
-    // GS mode: the one card is the boot scout card and opens at 20 MHz like
-    // maburgs's (main.cpp: "the scout card always starts at 20"); the core's
-    // width resync brings it to the link width when the pick freezes.
-    // A spotter opens at the link width.
-    fc.width_mhz = o.mode == webgs::Mode::Gs ? 20 : static_cast<uint8_t>(width);
+    // Every card opens at the link width, the GS mode's boot scout card
+    // included (it scans at the link width, as maburgs's does).
+    fc.width_mhz = static_cast<uint8_t>(width);
     fc.card_id = 0;
     fc.usb_late_gauge = true;
     auto fe = std::make_unique<maburgs::RadioFrontend>(fc, q);
@@ -817,7 +815,7 @@ int run_live(const LiveOpts& o) {
     maburgs::RemoteCard::Cfg rcfg;
     rcfg.addr = o.relay;
     rcfg.channel = ch;
-    rcfg.width_mhz = static_cast<uint8_t>(width);   // never the boot scout: full width from the start
+    rcfg.width_mhz = static_cast<uint8_t>(width);
     rcfg.card_id = 0;
     rcfg.restart_when_refused = false;   // one relay, one client: a refusal is reported, not retried
     maburgs::RemoteCard::OpenFn open =

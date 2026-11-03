@@ -15,9 +15,9 @@
 // units, no parallel path. begin_cal_measure() arms one measure round of
 // the boot scout (ChannelScout::begin_round): once the boot pick has closed
 // and nothing else holds the scout card, a hop or the controller, the
-// scout measures every 20 MHz half of the set (every member at width 20)
+// scout measures every member of the set (one dwell per pair at width 40)
 // once on a fresh ranker -- the same dwell_ms observes, settle and send
-// gating as the boot pick -- skipping op's own halves, which carry the
+// gating as the boot pick -- skipping op's own pair, which carries the
 // drone's video. Op is read from the verdict window instead
 // (the worst valid card on op: decoded foreign frames scaled to dwell_ms,
 // NHM busy minus our own airtime). The pick compares only those two terms

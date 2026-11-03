@@ -71,7 +71,7 @@ TEST(scan_log_records_are_byte_exact) {
   log.hop(h3);
   w.flush_now();
   std::string text = read_all(log.path());
-  CHECK(text.rfind("scanlog 7 channels=40,64,112,144 mode=auto dwell_ms=250\n", 0) == 0);
+  CHECK(text.rfind("scanlog 8 channels=40,64,112,144 mode=auto dwell_ms=250\n", 0) == 0);
   CHECK(text.find("\nC 1000 1 RTL8822E jaguar3 2x2 1f 5080-6165 1 1 1 1 0\n") != std::string::npos);
   CHECK(text.find("\nC 1001 0 ? ? 0x0 0 0-0 0 0 0 0 0\n") != std::string::npos);
   CHECK(text.find("\nD 1300 1 161 2 250 812 790 3 2 42 -93 10 0 0 0 0 20 - -\n") != std::string::npos);

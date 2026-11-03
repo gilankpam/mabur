@@ -158,7 +158,7 @@ an operator in front of it, and a page that silently grabbed the relay later
 would start commanding the drone without anyone choosing that. Spotter mode
 proceeds non-owned, as before.
 
-**Tuning.** `retune(ch)` / `set_width(ch, w)` (= `retune_width`) record the
+**Tuning.** `retune(ch)` / `set_width(ch, w)` record the
 target and send `TUNE` at once (`sec` = `mabur::ht40_offset(ch)` at 40 MHz,
 0 at 20); they return true, `channel()` reads the commanded channel, and
 `ready()` stays false until a `STATUS` confirms it — so every boot-scan

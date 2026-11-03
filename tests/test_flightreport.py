@@ -1507,6 +1507,24 @@ class HopReportTest(unittest.TestCase):
         self.assertEqual([h["elapsed_ms"] for h in s["H"]], [0.0, 0.0, 100.0])
         self.assertEqual([h["reason"] for h in s["H"]], [None, "cal", None])
 
+    def test_v8_scanlog_boot_dwell_one_per_pair(self):
+        """scanlog 8: at radio.width 40 the boot scan writes one D row per
+        pair per round, bw 40 (scanlog <= 7 files have two, one per half, at
+        bw 20). No column change -- D parses identically either way, keyed
+        only by the row count and the bw field's value."""
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "scan.log")
+        with open(p, "w") as f:
+            f.write("scanlog 7 channels=40,64 mode=auto dwell_ms=250\n")
+            f.write("D 100 0 40 0 250 0 0 0 0 - nan 0 0 0 0 0 20 12.0 -\n")
+            f.write("D 150 0 64 0 250 0 0 0 0 - nan 0 0 0 0 0 20 12.0 -\n")
+            f.write("scanlog 8 channels=40,64 mode=auto dwell_ms=250\n")
+            f.write("D 300 0 40 1 250 0 0 0 0 - nan 0 0 0 0 0 40 12.0 -\n")
+        s = flightreport.load_scanlog(p)
+        self.assertEqual(s["version"], 8)
+        self.assertEqual([x["bw"] for x in s["D"]], [20, 20, 40])
+        self.assertEqual([x["round"] for x in s["D"]], [0, 0, 1])
+
     def test_v4_scanlog_carries_busy_and_own_air(self):
         """scanlog 4 (NHM airtime): the V card block grows two fields, nhm_busy
         (%, '-' when the window wasn't ours) and own_air (%). A rejoined

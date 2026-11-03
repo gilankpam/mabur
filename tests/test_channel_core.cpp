@@ -51,8 +51,7 @@ struct Rig {
     for (int i = 0; i < n_usb + n_relays; ++i) {
       auto c = std::make_unique<FakeCard>();
       c->clk = &clk; c->ch = start_ch; c->relay = i >= n_usb;
-      // main.cpp: the boot scout card opens at 20, every other card at radio.width
-      c->width_mhz = (i == n_usb - 1 && n_usb >= 1) ? 20 : cfg.radio.width;
+      c->width_mhz = cfg.radio.width;   // main.cpp: every card, the boot scout's included
       ptrs.push_back(c.get());
       cards.push_back(std::move(c));
     }
@@ -163,7 +162,7 @@ TEST(disc_for_card_retags_only_members) {
   const auto p1 = mabur::rc::parse_disc(f1.data(), f1.size());
   REQUIRE(p1.has_value());
   CHECK(p1->op_channel == 64);
-  g.cards[1]->ch = 60;                                   // a 20 MHz half, not a member
+  g.cards[1]->ch = 60;                                   // not a member
   const auto f2 = g.core->disc_for_card(frame, 1);
   CHECK(f2 == frame);
 }
@@ -272,21 +271,21 @@ TEST(scout_card_death_while_working_freezes_pick) {
 
 // Pinned + linked: the scout has no work (search off, nothing to measure),
 // so once it parks and gives up the card, the core's own width resync is
-// the only thing left that can fix a card that reopened at 20 MHz.
+// the only thing that can fix a card that reopened at the wrong width.
 TEST(reopened_scout_card_at_20_gets_width_resync) {
   Rig g(2, 0, /*pinned=*/true, 40);
   for (int i = 0; i < 10; ++i) g.tick(true, false, 0);   // linked: search off, the scout parks and owns nothing
-  REQUIRE(g.cards[1]->width_mhz == 40);                   // parked at radio.width by the scout itself
+  REQUIRE(g.cards[1]->width_mhz == 40);                   // opened at radio.width, never switched
   g.cards[1]->is_alive = false;
   g.core->on_card_died(1);
-  // reopen as RadioFrontend would: InitWrite at the card's own cfg width (20 for the scout card)
+  // a revive that comes up at the wrong width
   g.cards[1]->is_alive = true; g.cards[1]->ch = 40; g.cards[1]->width_mhz = 20;
   g.cards[1]->calls.clear();
   g.core->on_card_reopened(1);
   for (int i = 0; i < 50; ++i) g.tick(true, false, 0);
   bool resynced = false;
   for (auto& c : g.cards[1]->calls) if (c.rfind("set_width", 0) == 0) resynced = true;
-  CHECK(resynced);                                        // the CORE's width resync, not the scout's park
+  CHECK(resynced);                                        // the CORE's width resync: the scout never sets a width
   CHECK(g.cards[1]->width_mhz == 40);
 }
 
@@ -723,17 +722,16 @@ TEST(relocate_lands_on_verify_pass_and_freezes_relocated) {
 
 // The AUTO boot hop. The scout measures op's pair to
 // min_rounds BEFORE the drone appears on 64 (a linked scout never visits
-// op's own halves, so without that BootPick freezes "op unmeasured"), and
+// op's own pair, so without that BootPick freezes "op unmeasured"), and
 // the link forms while the later pairs are still short of min_rounds (else
 // the unlinked pick would already have committed). At maturity the pick
 // wants another pair -> WantPick -> relocate -> confirm -> verify_pass ->
 // "pick frozen on <pick> (relocated)".
 TEST(auto_want_pick_relocates_linked_drone_to_the_pick) {
   Rig g(2, 0);
-  g.cards[1]->cca_per_ms_on[60] = 5;   // 64's pair is the busy one
-  g.cards[1]->cca_per_ms_on[64] = 5;
-  // The scout sweeps 36,40,60,64,108,112,140,144 each round: stop right
-  // after 64's min_rounds-th visit, i.e. inside the last round.
+  g.cards[1]->cca_per_ms_on[64] = 5;   // 64's pair is the busy one
+  // The scout sweeps 40,64,112,144 each round: stop right after 64's
+  // min_rounds-th visit, i.e. inside the last round.
   const auto visits = [&g](uint8_t ch) {
     int n = 0;
     for (const auto& d : g.sink.dwells) if (d.second.survey.def.primary == ch) ++n;
@@ -741,7 +739,7 @@ TEST(auto_want_pick_relocates_linked_drone_to_the_pick) {
   };
   const int mr = g.cfg.radio.scan.min_rounds;
   for (int i = 0; i < 3000 && visits(64) < mr; ++i) g.tick();
-  REQUIRE(visits(60) >= mr && visits(64) >= mr);
+  REQUIRE(visits(64) >= mr);
   REQUIRE(visits(144) < mr);                // not mature yet
   REQUIRE(g.core->pick_open());             // ... so nothing committed unlinked
   g.core->on_rc_body(64);
@@ -860,7 +858,7 @@ TEST(shutdown_joins_threads_and_is_idempotent) {
   cfg.radio.channels = {40, 64}; cfg.radio.width = 40;
   cfg.radio.scan.max_ms = 1000;
   cfg.hop.dwell_period_ms = 200;
-  FakeCard a, b; a.ch = b.ch = 40; a.width_mhz = 40; b.width_mhz = 20;
+  FakeCard a, b; a.ch = b.ch = 40; a.width_mhz = 40; b.width_mhz = 40;
   std::vector<LinkCard*> ptrs{&a, &b};
   VrxController vrx(vrx_cfg_from(cfg, 40));
   RecordingSink sink;
@@ -901,7 +899,7 @@ TEST(relay_only_roster_searches_without_measuring) {
   // the relay scouts: search bursts retune it across the set
   for (int i = 0; i < 40; ++i) g.tick();
   bool retuned_off_start = false;
-  for (auto& c : g.cards[0]->calls) if (c == "retune 64" || c == "retune_width 64/20") retuned_off_start = true;
+  for (auto& c : g.cards[0]->calls) if (c == "retune 64") retuned_off_start = true;
   CHECK(retuned_off_start);
   CHECK(g.sink.picks.empty());                // no K line ever: nothing measured
 }
@@ -1266,7 +1264,7 @@ static const HopEvent* find_hop(const RecordingSink& s, const char* kind) {
 }
 
 // Auto, two cards, linked, the boot pick long closed: one measure round
-// dwells every half outside op's own pair exactly once, reads op from the
+// dwells once on every pair outside op's own, reads op from the
 // verdict's live window, emits one K record and names the best member.
 // Op (40) reads busy (foreign frames on the TX card), 64's pair reads busy
 // (foreign frames on the scout): 112 is the first clean member in config
@@ -1295,7 +1293,7 @@ TEST(cal_measure_round_ranks_the_set_once) {
     chs.push_back(g.sink.dwells[i].second.survey.def.primary);
   }
   std::sort(chs.begin(), chs.end());
-  CHECK((chs == std::vector<uint8_t>{60, 64, 108, 112, 140, 144}));   // op's 36/40 never dwelt on
+  CHECK((chs == std::vector<uint8_t>{64, 112, 144}));   // one dwell per pair; op's (40) never dwelt on
   CHECK(g.core->op() == 40);                                          // measuring moves nothing
   for (int i = 0; i < 3; ++i) live_tick(g, 200);
   CHECK(!g.core->scout_owns_card(1));                                 // parked again ...
@@ -1425,30 +1423,30 @@ static const std::vector<uint8_t> kSet{40, 64, 112, 144};
 TEST(cal_pick_op_slightly_worse_than_a_candidate_stays) {
   // 112 reads 15, op 30: better, but not by pick_margin (20).
   const auto h = readings_with({{64, 100}, {112, 15}, {144, 100}});
-  CHECK(cal_round_pick(h, CalReading{40, 30}, 40, kSet, 40, 20, 50.0).best == 40);
+  CHECK(cal_round_pick(h, CalReading{40, 30}, 40, kSet, 20, 50.0).best == 40);
   // 20 better than op: it moves.
-  CHECK(cal_round_pick(h, CalReading{40, 35}, 40, kSet, 40, 20, 50.0).best == 112);
+  CHECK(cal_round_pick(h, CalReading{40, 35}, 40, kSet, 20, 50.0).best == 112);
 }
 
 TEST(cal_pick_clearly_blocked_op_moves) {
   const auto h = readings_with({{64, 0}, {112, 0}, {144, 0}}, 5.0);
-  CHECK(cal_round_pick(h, CalReading{40, 0, true, 90.0}, 40, kSet, 40, 20, 50.0).best == 64);
+  CHECK(cal_round_pick(h, CalReading{40, 0, true, 90.0}, 40, kSet, 20, 50.0).best == 64);
 }
 
 TEST(cal_pick_margin_holds_in_the_blocked_tier) {
   // Op just blocked (55 %), every candidate just under (45 %): unblocked
   // beats blocked only by pick_margin, like any other move.
   const auto h = readings_with({{64, 0}, {112, 0}, {144, 0}}, 45.0);
-  CHECK(cal_round_pick(h, CalReading{40, 0, true, 55.0}, 40, kSet, 40, 20, 50.0).best == 40);
+  CHECK(cal_round_pick(h, CalReading{40, 0, true, 55.0}, 40, kSet, 20, 50.0).best == 40);
   // A blocked candidate never replaces an unblocked op, however busy op's
   // frame count reads.
   const auto b = readings_with({{64, 0}, {112, 0}, {144, 0}}, 60.0);
-  CHECK(cal_round_pick(b, CalReading{40, 300, true, 40.0}, 40, kSet, 40, 20, 50.0).best == 40);
+  CHECK(cal_round_pick(b, CalReading{40, 300, true, 40.0}, 40, kSet, 20, 50.0).best == 40);
 }
 
 TEST(cal_pick_rows_are_one_per_member_plus_op) {
   const auto h = readings_with({{64, 0}, {112, 0}, {144, 0}}, 5.0);
-  const auto out = cal_round_pick(h, CalReading{40, 0, true, 5.0}, 40, kSet, 40, 20, 50.0);
+  const auto out = cal_round_pick(h, CalReading{40, 0, true, 5.0}, 40, kSet, 20, 50.0);
   CHECK(out.rows.size() == 4);
 }
 
@@ -1456,11 +1454,11 @@ TEST(cal_pick_excludes_a_member_never_read) {
   // 144 never read: it is not ranked, even though its would-be score (as
   // the config-order first candidate with no reading) would otherwise win.
   const auto h = readings_with({{64, 50}, {112, 100}});
-  CHECK(cal_round_pick(h, CalReading{40, 200}, 40, kSet, 40, 20, 50.0).best == 64);
+  CHECK(cal_round_pick(h, CalReading{40, 200}, 40, kSet, 20, 50.0).best == 64);
   // Op unread: stay, whatever the candidates read.
-  CHECK(cal_round_pick(h, std::nullopt, 40, kSet, 40, 20, 50.0).best == 40);
+  CHECK(cal_round_pick(h, std::nullopt, 40, kSet, 20, 50.0).best == 40);
   // K rows: every member read plus op's, one row each, one visit each.
-  const auto out = cal_round_pick(h, CalReading{40, 200}, 40, kSet, 40, 20, 50.0);
+  const auto out = cal_round_pick(h, CalReading{40, 200}, 40, kSet, 20, 50.0);
   CHECK(out.rows.size() == 3);
   for (const auto& r : out.rows) CHECK(r.visits == 1);
 }
@@ -1472,16 +1470,16 @@ TEST(cal_pick_a_candidate_without_a_busy_reading_never_outranks_one_with) {
   // eligible.
   const std::vector<CalReading> h = {
       {64, 10, true, 20.0}, {112, 0, false, 0.0}, {144, 5, true, 10.0}};
-  CHECK(cal_round_pick(h, CalReading{40, 100, true, 30.0}, 40, kSet, 40, 20, 50.0).best == 144);
+  CHECK(cal_round_pick(h, CalReading{40, 100, true, 30.0}, 40, kSet, 20, 50.0).best == 144);
   // With no busy reading anywhere, foreign alone still ranks them.
   const auto f = readings_with({{64, 50}, {112, 0}, {144, 5}});
-  CHECK(cal_round_pick(f, CalReading{40, 100}, 40, kSet, 40, 20, 50.0).best == 112);
+  CHECK(cal_round_pick(f, CalReading{40, 100}, 40, kSet, 20, 50.0).best == 112);
 }
 
 TEST(cal_pick_width_20_compares_members) {
   const std::vector<uint8_t> set{36, 40, 44};
   const auto h = readings_with({{40, 90}, {44, 0}});
-  CHECK(cal_round_pick(h, CalReading{36, 50}, 36, set, 20, 20, 50.0).best == 44);
+  CHECK(cal_round_pick(h, CalReading{36, 50}, 36, set, 20, 50.0).best == 44);
 }
 
 // ---- the round's lifecycle ----
@@ -1836,17 +1834,20 @@ TEST(set_auto_while_unlinked_reopens_the_boot_pick) {
   CHECK(!g.core->snapshot(0).scan_pick.has_value());
   g.tick();
   CHECK(g.core->pick_open());                   // max_ms counts from the reopen
-  // the scout measures again (both halves of every pair at width 40) and
-  // the pick commits off the busy op pair
-  g.cards[1]->cca_per_ms_on[40] = 5; g.cards[1]->cca_per_ms_on[36] = 5;
+  // the scout measures again (one 40 MHz dwell per pair, on its primary)
+  // and the pick commits off the busy op pair
+  g.cards[1]->cca_per_ms_on[40] = 5;
   for (int i = 0; i < 3000 && !g.sink.has_line("pick frozen on"); ++i) g.tick();
   REQUIRE(g.sink.has_line("pick frozen on"));
   CHECK(g.sink.has_line("(commit)"));
   CHECK(g.core->op() != 40);
-  bool observed_36 = false;
-  for (const auto& d : g.sink.dwells)
-    if (d.second.survey.def.primary == 36) observed_36 = true;
-  CHECK(observed_36);
+  bool observed_40 = false;
+  for (const auto& d : g.sink.dwells) {
+    if (d.second.survey.def.primary == 40) observed_40 = true;
+    CHECK(d.second.survey.def.primary != 36);   // never a secondary
+    CHECK(d.second.survey.def.width == CHANNEL_WIDTH_40);
+  }
+  CHECK(observed_40);
 }
 
 // A pin's relocate cut by link loss is a relocate like any other: the GS

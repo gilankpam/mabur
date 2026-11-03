@@ -29,8 +29,7 @@ static_assert(ht40_offset(157) == 1 && ht40_offset(161) == 2, "157+161");
 static_assert(ht40_offset(165) == 0 && ht40_offset(6) == 0, "no pair");
 
 // The other 20 MHz half of ch's standard pair (136 -> 132, 144 -> 140,
-// 40 -> 36); 0 when ch has no pair. The boot scout at 40 MHz dwells on
-// both halves of every pair (docs/bw40.md).
+// 40 -> 36); 0 when ch has no pair.
 constexpr uint8_t ht40_pair_other(uint8_t ch) {
   const uint8_t off = ht40_offset(ch);
   if (off == 1) return static_cast<uint8_t>(ch + 4);

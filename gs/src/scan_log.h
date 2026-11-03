@@ -14,26 +14,28 @@
 
 namespace maburgs {
 
-// scan.log (scanlog 7) -- the channel-selection record in the debug-log
+// scan.log (scanlog 8) -- the channel-selection record in the debug-log
 // session directory. Formats are
 // LOCKED by tests/test_scan_log.cpp:
 //
-//   scanlog 7 <header_info>
+//   scanlog 8 <header_info>
 //   C <t> <card> <chip> <gen> <tx>x<rx> <bw_mask_hex> <tune5g_lo>-<tune5g_hi>
 //     <fast_retune> <fa_ok> <igi_ok> <nhm_ok> <floor_ok>        # card caps
 //   D <t> <card> <ch> <round> <observe_ms> <cca> <fa> <own> <foreign> <igi|->
 //     <floor_dbm|nan> <flags_hex> <sess> <to_us> <read_us> <back_us> <bw>
 //     <busy|-> <rx|->                                             # one scout dwell
-//     (scanlog 3: <bw> = tuned width of the dwell, 20 during the boot
-//     scan, radio.width in session)
+//     (scanlog 3: <bw> = tuned width of the dwell, radio.width; scanlog
+//     <= 7 files read 20 for boot-scan dwells at width 40)
 //     (scanlog 4: D + trailing <busy|-> = NHM busy % over the dwell's
 //     observe span)
 //     (scanlog 6: D + trailing <rx|-> = relay sweep rx % of the observe;
 //     - for USB dwells)
+//     (scanlog 8: at radio.width 40 the boot scan writes one D per pair,
+//     bw 40; scanlog <= 7 files have one per half, bw 20)
 //   K <t> <picked|none> <rounds> <ch>:<worst_busy>:<floor|nan>:<busy|-> ...
 //     pair=<lo>+<hi>|-                                            # the pick
 //     (also closes a calibration run's measure round: its rows are that
-//     round's halves plus op's, read from the live verdict window)
+//     round's members plus op's, read from the live verdict window)
 //     (scanlog 3: the picked channel's standard 40 MHz pair, - when none)
 //     (scanlog 4: K entries <ch>:<worst_busy>:<floor|nan>:<busy|->)
 //   M <t> <card|all> <from> <to> <reason>                        # a link move

@@ -1,6 +1,6 @@
-// Pair pick for a 40 MHz boot scan (docs/bw40.md "Boot scan scores every half"): halves are ranked
-// as today's 20 MHz channels; a pair scores as its WORSE half and is only
-// ranked once both halves have min_rounds visits.
+// Pair pick for a 40 MHz boot scan (docs/bw40.md "Boot scan dwells once per
+// pair"): one row per pair, keyed by its primary; NHM busy % first, the
+// frame score second.
 #include <vector>
 #include "mtest.h"
 #include "pair_pick.h"
@@ -11,90 +11,45 @@ static_assert(mabur::ht40_pair_other(136) == 132 && mabur::ht40_pair_other(132) 
 static_assert(mabur::ht40_pair_other(144) == 140 && mabur::ht40_pair_other(40) == 36, "");
 static_assert(mabur::ht40_pair_other(128) == 124 && mabur::ht40_pair_other(165) == 0, "");
 
-TEST(half_set_is_both_halves_of_home_and_candidates_in_config_order) {
-  const std::vector<uint8_t> want = {132, 136, 140, 144, 36, 40, 124, 128};
-  CHECK(scan_half_set({136, 144, 40, 128}) == want);
-  CHECK(scan_half_set({136, 165}).size() == 2);   // no pair: skipped (config rejects it anyway)
-  CHECK(scan_half_set({136, 132}).size() == 2);   // same pair as home: deduplicated
+TEST(pair_ranked_on_the_primary_row_alone) {
+  std::vector<RankEntry> all = {{136, 0, 3, false, 0, true, 5}, {144, 0, 2, false, 0, true, 5}};
+  CHECK(any_pair_ranked(all, {136}, 3)); CHECK(!any_pair_ranked(all, {144}, 3));
+  CHECK(!all_pairs_ranked(all, {136, 144}, 3)); CHECK(all_pairs_ranked(all, {136, 144}, 2));
 }
-
-TEST(pair_score_is_the_worse_half_and_home_margin_applies_to_the_pair) {
-  // Home 132+136: 136 clean, 132 dirty. Candidate 140+144: both moderate.
-  std::vector<RankEntry> all = {{136, 0, 3, false, 0}, {132, 500, 3, false, 0},
-                                {144, 100, 3, false, 0}, {140, 120, 3, false, 0}};
-  CHECK(pair_proposal(all, 136, {136, 144}, 3, 20) == 144);    // 120 + 20 <= 500
-  CHECK(pair_proposal(all, 136, {136, 144}, 3, 400) == 136);   // margin not met -> home
+TEST(lower_busy_pct_beats_lower_frame_score) {
+  std::vector<RankEntry> all = {{136, 10, 3, false, 0, true, 40}, {144, 500, 3, false, 0, true, 12}};
+  CHECK(pair_proposal(all, 136, {136, 144}, 3, 20, 10) == 144);     // 40 - 12 >= 10
+  CHECK(pair_ranking(all, {136, 144}, 3)[0] == 144);
 }
-
-TEST(pair_unranked_until_both_halves_reach_min_rounds) {
-  std::vector<RankEntry> all = {{136, 0, 3, false, 0}, {132, 0, 1, false, 0},
-                                {144, 50, 3, false, 0}, {140, 50, 3, false, 0}};
-  // Home's pair is unranked (132 has one visit): the best RANKED candidate
-  // wins, the same rule ChannelRanker::proposal applies to an unranked home.
-  CHECK(pair_proposal(all, 136, {136, 144}, 3, 20) == 144);
-  std::vector<RankEntry> none = {{136, 0, 3, false, 0}, {132, 0, 1, false, 0},
-                                 {144, 50, 3, false, 0}, {140, 50, 1, false, 0}};
-  CHECK(pair_proposal(none, 136, {136, 144}, 3, 20) == 136);   // nothing ranked -> home
-  std::vector<RankEntry> half = {{136, 0, 3, false, 0}, {132, 0, 3, false, 0},
-                                 {144, 0, 3, false, 0}};   // 140 never visited
-  CHECK(pair_proposal(half, 136, {136, 144}, 3, 0) == 136);    // a pair on half the evidence never wins
+TEST(margin_pct_holds_current_pair) {
+  std::vector<RankEntry> all = {{136, 10, 3, false, 0, true, 20}, {144, 0, 3, false, 0, true, 12}};
+  CHECK(pair_proposal(all, 136, {136, 144}, 3, 20, 10) == 136);     // 8 points short of 10
+  CHECK(pair_proposal(all, 136, {136, 144}, 3, 20, 8) == 144);
 }
-
-TEST(pair_ties_stay_on_current_then_a_strictly_cleaner_pair_wins_at_margin_zero) {
-  std::vector<RankEntry> all = {{136, 10, 3, false, 0}, {132, 10, 3, false, 0},
-                                {144, 10, 3, false, 0}, {140, 10, 3, false, 0},
-                                {40, 10, 3, false, 0},  {36, 10, 3, false, 0}};
-  CHECK(pair_proposal(all, 136, {136, 144, 40}, 3, 0) == 136);
-  all[4].worst_busy = 5; all[5].worst_busy = 5;
-  CHECK(pair_proposal(all, 136, {136, 144, 40}, 3, 0) == 40);
+TEST(busy_tie_falls_to_frame_score_with_event_margin) {
+  std::vector<RankEntry> all = {{136, 100, 3, false, 0, true, 15}, {144, 70, 3, false, 0, true, 15}};
+  CHECK(pair_proposal(all, 136, {136, 144}, 3, 20, 10) == 144);     // 70 + 20 <= 100
+  CHECK(pair_proposal(all, 136, {136, 144}, 3, 40, 10) == 136);
 }
-
-TEST(any_pair_ranked_needs_both_halves_of_some_pair) {
-  // The boot-pick freeze's "was anything measured" test at radio.width 40:
-  // one half of home's pair at min_rounds (the one-card home half also
-  // collects home-window visits) is NOT a ranked pair.
-  std::vector<RankEntry> one_half = {{136, 0, 3, false, 0}, {132, 0, 1, false, 0},
-                                     {144, 0, 2, false, 0}, {140, 0, 2, false, 0}};
-  CHECK(!any_pair_ranked(one_half, {136, 144}, 3));
-  CHECK(!any_pair_ranked({{136, 0, 3, false, 0}}, {136, 144}, 3));   // 132 never visited
-  CHECK(!any_pair_ranked({}, {136, 144}, 3));
-  // Both halves of a candidate pair: ranked, home's pair still is not.
-  std::vector<RankEntry> cand = {{136, 0, 3, false, 0}, {132, 0, 1, false, 0},
-                                 {144, 0, 3, false, 0}, {140, 0, 3, false, 0}};
-  CHECK(any_pair_ranked(cand, {136, 144}, 3));
-  // Both halves of home's pair, no candidate ranked.
-  std::vector<RankEntry> home = {{136, 0, 3, false, 0}, {132, 0, 4, false, 0},
-                                 {144, 0, 1, false, 0}};
-  CHECK(any_pair_ranked(home, {136, 144}, 3));
+TEST(blocked_pair_ranks_last_and_blocked_current_loses_to_any_unblocked) {
+  std::vector<RankEntry> all = {{136, 0, 3, false, 0, true, 60}, {144, 900, 3, false, 0, true, 30}};
+  CHECK(pair_proposal(all, 136, {136, 144}, 3, 1000, 100, 50) == 144);
+  CHECK(pair_ranking(all, {136, 144}, 3, 50)[0] == 144);
 }
-
-static maburgs::RankEntry re(uint8_t ch, uint32_t busy, double bpct) {
-  maburgs::RankEntry e; e.ch = ch; e.worst_busy = busy; e.visits = 3;
-  e.busy_valid = true; e.worst_busy_pct = bpct; return e;
+TEST(pair_without_busy_reading_ranks_after_pairs_with_one) {
+  std::vector<RankEntry> all = {{136, 0, 3, false, 0, false, 0}, {144, 300, 3, false, 0, true, 45}};
+  CHECK(pair_ranking(all, {136, 144}, 3)[0] == 144);
+  CHECK(pair_proposal(all, 136, {136, 144}, 3, 20, 10) == 144);
 }
-TEST(one_blocked_half_blocks_the_pair) {
-  std::vector<maburgs::RankEntry> all = {re(132, 0, 0), re(136, 0, 0), re(140, 0, 90), re(144, 0, 0),
-                                         re(60, 5, 0), re(64, 5, 0)};
-  // 140+144 scores 0 events but its 140 half is blocked; 60+64 wins over it.
-  CHECK(maburgs::pair_proposal(all, 136, {136, 144, 64}, 3, 1000, 30.0) == 136);   // home clean, margin
-  all[0] = re(132, 0, 100);   // home's other half blocked
-  CHECK(maburgs::pair_proposal(all, 136, {136, 144, 64}, 3, 1000, 30.0) == 64);
+TEST(unranked_current_yields_to_best_ranked_and_nothing_ranked_stays) {
+  std::vector<RankEntry> a = {{136, 0, 1, false, 0, true, 0}, {144, 50, 3, false, 0, true, 20}};
+  CHECK(pair_proposal(a, 136, {136, 144}, 3, 20, 10) == 144);
+  std::vector<RankEntry> b = {{136, 0, 1, false, 0, true, 0}, {144, 50, 1, false, 0, true, 20}};
+  CHECK(pair_proposal(b, 136, {136, 144}, 3, 20, 10) == 136);
 }
-
-TEST(pair_ranking_is_best_first_and_skips_unranked) {
-  std::vector<RankEntry> all = {{136, 10, 3, false, 0}, {132, 10, 3, false, 0},
-                                {144, 50, 3, false, 0}, {140, 5, 3, false, 0},
-                                {40, 1, 3, false, 0},  {36, 1, 3, false, 0},
-                                {112, 0, 1, false, 0}, {108, 0, 1, false, 0}};   // 112 unranked
-  const std::vector<uint8_t> want = {40, 136, 144};
-  CHECK(pair_ranking(all, {40, 136, 144, 112}, 3) == want);
-  CHECK(!all_pairs_ranked(all, {40, 136, 144, 112}, 3));
-  CHECK(all_pairs_ranked(all, {40, 136, 144}, 3));
-}
-TEST(current_unranked_means_best_ranked_wins) {
-  std::vector<RankEntry> all = {{144, 50, 3, false, 0}, {140, 50, 3, false, 0}};
-  CHECK(pair_proposal(all, 136, {136, 144}, 3, 20) == 144);
-  CHECK(pair_proposal({}, 136, {136, 144}, 3, 20) == 136);   // nothing ranked: stay
+TEST(config_order_breaks_full_ties) {
+  std::vector<RankEntry> all = {{144, 10, 3, false, 0, true, 10}, {136, 10, 3, false, 0, true, 10}};
+  CHECK(pair_ranking(all, {136, 144}, 3)[0] == 136);
 }
 
 MTEST_MAIN

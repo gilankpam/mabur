@@ -1497,6 +1497,10 @@ def load_scanlog(path):
     calibration run orders, '-' otherwise), popped off before the
     end-anchored fields; older H lines read reason None.
 
+    scanlog 8: at radio.width 40 the boot scan writes one D row per pair
+    per round, bw 40; scanlog <= 7 files have two, one per half, at bw 20.
+    No column change, so D's parsing above is unaffected.
+
     Returns {"version": int, "V": [...], "H": [...], "D": [...], "M": [...]}.
     Silent on lines that don't parse (older/newer record shapes) rather
     than aborting the report -- CLAUDE.md: recordings outlive the code that
