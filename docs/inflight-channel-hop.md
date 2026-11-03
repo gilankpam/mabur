@@ -177,19 +177,20 @@ delta. The loss input is the verdict's own 500 ms window
 so a verify is judged on the channel it verifies; `s1_loss`, which feeds
 the sideport/ctl-log/OSD gauge, is never blanked.
 
-Seven independent evidence bits, OR'd together every window
+Eight independent evidence bits, OR'd together every window
 (`hop_verdict.h`'s `kEvImpaired/kEvWeak/kEvFading/kEvContended/kEvRaised/
-kEvBlocked/kEvStarved`):
+kEvBlocked/kEvStarved/kEvOccupied`):
 
 | bit | rule | key (default) |
 |---|---|---|
-| impaired (0x01) | link pre-FEC loss % > `loss_pct` **or** (recovered count > `recovered_x` × its 5 s trailing mean **and** recovered count >= `recovered_min`) **or** `starved` | `hop.verdict.loss_pct` (3.0), `recovered_x` (3.0), `recovered_min` (8) |
+| impaired (0x01) | link pre-FEC loss % > `loss_pct` **or** (recovered count > `recovered_x` × its 5 s trailing mean **and** recovered count >= `recovered_min`) **or** `starved` **or** `occupied` | `hop.verdict.loss_pct` (3.0), `recovered_x` (3.0), `recovered_min` (8) |
 | weak (0x02) | best card's RSSI < `weak_rssi_dbm` **and** SNR < `weak_snr_db` (RSSI alone when that card has no real SNR — `snr_valid` false on a CPE510 relay) | `weak_rssi_dbm` (−78), `weak_snr_db` (12) |
 | fading (0x04) | best card's RSSI more than `fading_drop_db` below its frozen/trailing reference | `fading_drop_db` (6) |
 | contended (0x08) | any card's foreign frames/s > `foreign_pps` | `foreign_pps` (50) |
 | raised (0x10) | any card's FA/s > `fa_pps` | `fa_pps` (100) |
 | blocked (0x20) | the MINIMUM, across cards with a busy reading, of that card's busy % minus its own reconstructed airtime % >= `blocked_pct` | `radio.scan.busy_dbm` (−83), `radio.scan.blocked_pct` (50) |
 | starved (0x40) | at least one card valid this window and **zero** own frames on every valid card (`VerdictLinkIn::starved`), **or** the window's AU count (`VerdictLinkIn::au_count`, the `au_seq` delta) < `starved_frac` × its trailing mean, when that mean is >= 2 AUs/window | `hop.verdict.starved_frac` (0.25; 0 = zero-frames rule only) |
+| occupied (0x80) | `blocked` has held, across windows with a usable busy reading, for `occupied_windows` consecutive windows; a window with no busy reading (mid-dwell, no usable card) neither resets nor advances the count ⇒ `impaired` | `hop.verdict.occupied_windows` (7) |
 
 Why the two floors exist: on a clean channel the recovered term's trailing
 mean sits near 0.2/window, so a handful of recovered symbols reads "3× the
@@ -245,10 +246,24 @@ else if ((contended || raised) && !fading) o.v = Verdict::Interfered;
 else o.v = Verdict::Unknown;
 ```
 
-`weak` wins outright (range edge; a hop does not help). `blocked`
+`weak` wins outright (range edge; a hop does not help) — weak still wins
+over `occupied` simply by branch order: `weak` is checked before
+`blocked`, so a window that is both weak and occupied classifies `fade`
+like any other weak window. `blocked`
 classifies `interfered` **even while `fading`**: a real fade lowers RX
 power and cannot raise NHM busy airtime, so fading-and-blocked is desense
 from an interferer (the analog-VTX shape: RSSI −58 → −70…−79, SNR intact).
+`occupied` needs no entry of its own in the classification order **on the
+window that first reaches `occupied_windows`**: that window's own busy
+reading is what advanced `blocked_streak_` to the threshold, so it is
+itself `blocked` and falls into the `blocked` branch above. On a LATER
+window of the same occupied run that has no busy reading at all
+(mid-dwell, no usable card, an NHM arm invalidated by a retune) the streak
+holds but that window's own `blocked` is false — `occupied` (and so
+`impaired`) stays true, but with no `blocked`/`contended`/`raised` to
+classify it `interfered` it falls through to `unknown`: impaired, unknown,
+counting toward neither the persist nor a verify failure
+(`occupied_persists_but_a_reading_less_window_classifies_unknown`).
 `contended`/`raised` need `!fading`, so an edge-of-range link with
 jammer-like FA/foreign symptoms classifies `fade` (weak) or `unknown`
 (fading, not weak) — never `interfered` — and the ladder owns both. The
@@ -272,6 +287,17 @@ current RSSI is used, so `fading` can't fire off it. References thaw after
 thawing on those would let the next impaired window re-freeze `ref_rung` at
 the mid-hop rung. `reset()` clears only the frozen snapshot and the latched
 persistence window; the trailing histories survive it.
+
+The `occupied` consecutive-blocked count (`blocked_streak_`) is cleared
+only by `reset()` and `new_session()` — never at a hop's order or landing,
+since there is no such hook in `HopVerdict`. It carries across the hop: a
+target that is already occupied reads `interfered` on its first **blocked**
+window there and fails verify at once, on one card and on two alike,
+rather than getting `occupied_windows × window_ms` of free pass while the
+count rebuilds from zero. A post-landing window with no busy reading (the
+retune can invalidate the NHM arm) classifies `unknown` instead and does
+not fail verify on its own — the streak holds, so the next window that
+does have a blocked reading still reads `interfered`.
 
 Every `VerdictOut` carries the span its deltas cover (`t_start_ms`, `t_ms`).
 `ChannelCore` recomputes a verdict every `hop.window_ms` but ticks
@@ -640,7 +666,7 @@ H <t> <kind> <epoch> <target> <score> <elapsed_ms> <reason|->  # a hop event
   `d_rssi_db` (best-card RSSI minus its reference), repeated identically in
   every card's chunk. The evidence field is the §2 bitmask in hex: impaired
   0x01, weak 0x02, fading 0x04, contended 0x08, raised 0x10, blocked 0x20,
-  starved 0x40.
+  starved 0x40, occupied 0x80.
 - **H** — one per `HopController` state transition or logged decision.
   `kind` is a single snake_case token: `order`, `relocate`, `escape`,
   `lead_confirm`, `one_card_retune`, `confirm_extend`, `verify_pass`,

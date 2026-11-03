@@ -1772,14 +1772,14 @@ def verdict_histogram(V):
     return {k: counts[k] for k in ("healthy", "fade", "interfered", "unknown") if counts.get(k)}
 
 
-# gs/src/hop_verdict.h's five independent evidence bits, in the same order
+# A subset of gs/src/hop_verdict.h's evidence bits, in the same order
 # they're OR'd together in HopVerdict::window(). A window's verdict can be
 # Healthy while some of these are still set (only `impaired` gates the top-
 # level Healthy/not split; weak/fading/contended/raised are computed and
 # OR'd in unconditionally) -- so the bit tally is over ALL windows, not
 # just non-healthy ones, matching what the bitmask itself actually counts.
 _EVIDENCE_BITS = (("impaired", 1), ("weak", 2), ("fading", 4),
-                  ("contended", 8), ("raised", 16))
+                  ("contended", 8), ("raised", 16), ("occupied", 0x80))
 
 
 def evidence_bit_tally(V):

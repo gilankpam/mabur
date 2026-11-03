@@ -12,7 +12,7 @@ enum class Verdict { Healthy, Fade, Interfered, Unknown };
 const char* to_string(Verdict v);   // "healthy" "fade" "interfered" "unknown"
 
 enum : uint8_t { kEvImpaired = 1, kEvWeak = 2, kEvFading = 4, kEvContended = 8, kEvRaised = 16,
-                 kEvBlocked = 32, kEvStarved = 64 };
+                 kEvBlocked = 32, kEvStarved = 64, kEvOccupied = 128 };
 
 // The verdict thresholds (hop.verdict.weak_rssi_dbm / weak_snr_db /
 // fading_drop_db) are written in dBm / dB. The aggregator's EMAs are
@@ -130,6 +130,13 @@ class HopVerdict {
   double ref_au_ = 0;
   int ref_rung_ = -1;
   int healthy_streak_ = 0;
+  // Consecutive `blocked` windows with a usable busy reading. A window
+  // with no busy reading (mid-dwell, no usable card) holds this rather
+  // than resetting or advancing it -- see occupied's fold into `impaired`
+  // in window(). Survives a hop (reset()/new_session() clear it, nothing
+  // else does): a target that is already occupied must fail verify on
+  // its first window, not get occupied_windows of free pass.
+  int blocked_streak_ = 0;
   std::deque<bool> recent_interfered_;   // last 3
   static double median(std::deque<double> v);
 };

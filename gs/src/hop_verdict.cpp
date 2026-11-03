@@ -34,6 +34,7 @@ void HopVerdict::reset() {
   healthy_streak_ = 0;
   seen_interfered_ = false;
   recent_interfered_.clear();
+  blocked_streak_ = 0;
   // The persistence window is cleared with the snapshot: leaving it
   // latched would hand the controller a trigger built from windows
   // measured on the channel we have just left.
@@ -47,6 +48,7 @@ void HopVerdict::reset() {
 void HopVerdict::new_session() {
   au_hist_.clear();
   ref_au_ = 0;
+  blocked_streak_ = 0;
 }
 
 int HopVerdict::ref_rung() const { return ref_rung_; }
@@ -68,43 +70,10 @@ VerdictOut HopVerdict::window(double now_ms, const std::vector<VerdictCardIn>& c
   have_prev_ = true;
   if (best < 0) { o.v = Verdict::Unknown; o.ref_frozen = frozen_; return o; }
   const auto& hv = cfg_.verdict;
-  // ---- terms
-  const double rec_ref = frozen_ ? ref_rec_
-                                  : (rec_hist_.empty() ? 0.0
-                                         : std::accumulate(rec_hist_.begin(), rec_hist_.end(), 0.0) / rec_hist_.size());
-  const double au_ref = frozen_ ? ref_au_
-                                 : (au_hist_.empty() ? 0.0
-                                        : std::accumulate(au_hist_.begin(), au_hist_.end(), 0.0) / au_hist_.size());
-  // starved: zero own frames on every valid card (main.cpp), OR the AU rate
-  // collapsed under starved_frac of its trailing mean. A long-frame jam
-  // lets a trickle of own frames through (bench session 0232:
-  // 5-30/s vs ~3200/s), so the zero-frames rule alone read the second jam
-  // window `healthy` and broke the 2-of-3 persistence. au_ref < 2 AUs per
-  // window is no baseline (boot, or a stream that barely runs).
-  const bool starved =
-      link.starved || (hv.starved_frac > 0 && au_ref >= 2.0 &&
-                       static_cast<double>(link.au_count) < hv.starved_frac * au_ref);
-  // recovered_min: a floor under the recovered term. On a clean channel
-  // the trailing mean sits near 0.2/window, so 1-5 recovered symbols read
-  // "3x the reference" with 0 % loss (bench session 0232: 97 %
-  // of recovered-only impaired windows had <= 8). starved (above): no
-  // frames means no loss, but not healthy either.
-  const bool impaired = link.pre_fec_loss * 100.0 > hv.loss_pct ||
-                        (rec_ref > 0 && link.recovered > hv.recovered_x * rec_ref &&
-                         link.recovered >= static_cast<uint32_t>(std::max(hv.recovered_min, 0))) ||
-                        starved;
-  const bool weak = cards[best].rssi_dbm < hv.weak_rssi_dbm &&
-                    (!cards[best].snr_valid || cards[best].snr_db < hv.weak_snr_db);
-  // Guard: a frozen reference that was never established for this card
-  // (out-of-range or invalid-with-no-history at freeze time, see below)
-  // reads back as 0 -- a real RSSI is never exactly 0 dBm, so treat 0 as
-  // "no reference yet" and fall back to the card's own current reading
-  // (d_rssi = 0, fading can't fire) instead of fabricating a fade.
-  const double frozen_ref = (frozen_ && best < (int)ref_rssi_.size()) ? ref_rssi_[best] : 0.0;
-  const double rssi_ref = frozen_
-      ? (frozen_ref != 0.0 ? frozen_ref : cards[best].rssi_dbm)
-      : (rssi_hist_[best].empty() ? cards[best].rssi_dbm : median(rssi_hist_[best]));
-  const bool fading = cards[best].rssi_dbm < rssi_ref - hv.fading_drop_db;
+  // ---- per-card terms (contended/raised/blocked), computed before
+  // `impaired` so the occupancy trigger below can fold into it on the
+  // SAME window that trips it -- the reference freeze right after reads
+  // `impaired` once it already carries `occupied`.
   bool contended = false, raised = false, blocked = false;
   // blocked = the MINIMUM foreign-busy reading across cards that have one,
   // not any-card. A weakly-receiving diversity card's NHM busy counts our
@@ -129,9 +98,54 @@ VerdictOut HopVerdict::window(double now_ms, const std::vector<VerdictCardIn>& c
     }
   }
   blocked = have_busy_reading && min_foreign_busy_pct >= busy_.blocked_pct;
+  // Sustained occupancy is impaired on its own, no loss or weak signal
+  // needed: a window with a busy reading either continues or resets the
+  // streak; a window with none (mid-dwell, no usable card) holds it.
+  if (have_busy_reading) blocked_streak_ = blocked ? blocked_streak_ + 1 : 0;
+  const bool occupied = blocked_streak_ >= hv.occupied_windows;
+  // ---- terms
+  const double rec_ref = frozen_ ? ref_rec_
+                                  : (rec_hist_.empty() ? 0.0
+                                         : std::accumulate(rec_hist_.begin(), rec_hist_.end(), 0.0) / rec_hist_.size());
+  const double au_ref = frozen_ ? ref_au_
+                                 : (au_hist_.empty() ? 0.0
+                                        : std::accumulate(au_hist_.begin(), au_hist_.end(), 0.0) / au_hist_.size());
+  // starved: zero own frames on every valid card (main.cpp), OR the AU rate
+  // collapsed under starved_frac of its trailing mean. A long-frame jam
+  // lets a trickle of own frames through (bench session 0232:
+  // 5-30/s vs ~3200/s), so the zero-frames rule alone read the second jam
+  // window `healthy` and broke the 2-of-3 persistence. au_ref < 2 AUs per
+  // window is no baseline (boot, or a stream that barely runs).
+  const bool starved =
+      link.starved || (hv.starved_frac > 0 && au_ref >= 2.0 &&
+                       static_cast<double>(link.au_count) < hv.starved_frac * au_ref);
+  // recovered_min: a floor under the recovered term. On a clean channel
+  // the trailing mean sits near 0.2/window, so 1-5 recovered symbols read
+  // "3x the reference" with 0 % loss (bench session 0232: 97 %
+  // of recovered-only impaired windows had <= 8). starved (above): no
+  // frames means no loss, but not healthy either. occupied: a long-frame
+  // or sub-correlator jam that fills airtime without tripping foreign/fa
+  // or moving loss (§2 `blocked`) -- sustained on its own, independent of
+  // everything else here.
+  const bool impaired = link.pre_fec_loss * 100.0 > hv.loss_pct ||
+                        (rec_ref > 0 && link.recovered > hv.recovered_x * rec_ref &&
+                         link.recovered >= static_cast<uint32_t>(std::max(hv.recovered_min, 0))) ||
+                        starved || occupied;
+  const bool weak = cards[best].rssi_dbm < hv.weak_rssi_dbm &&
+                    (!cards[best].snr_valid || cards[best].snr_db < hv.weak_snr_db);
+  // Guard: a frozen reference that was never established for this card
+  // (out-of-range or invalid-with-no-history at freeze time, see below)
+  // reads back as 0 -- a real RSSI is never exactly 0 dBm, so treat 0 as
+  // "no reference yet" and fall back to the card's own current reading
+  // (d_rssi = 0, fading can't fire) instead of fabricating a fade.
+  const double frozen_ref = (frozen_ && best < (int)ref_rssi_.size()) ? ref_rssi_[best] : 0.0;
+  const double rssi_ref = frozen_
+      ? (frozen_ref != 0.0 ? frozen_ref : cards[best].rssi_dbm)
+      : (rssi_hist_[best].empty() ? cards[best].rssi_dbm : median(rssi_hist_[best]));
+  const bool fading = cards[best].rssi_dbm < rssi_ref - hv.fading_drop_db;
   o.evidence = (impaired ? kEvImpaired : 0) | (weak ? kEvWeak : 0) | (fading ? kEvFading : 0) |
                (contended ? kEvContended : 0) | (raised ? kEvRaised : 0) | (blocked ? kEvBlocked : 0) |
-               (starved ? kEvStarved : 0);
+               (starved ? kEvStarved : 0) | (occupied ? kEvOccupied : 0);
   if (!impaired) o.v = Verdict::Healthy;
   else if (weak) o.v = Verdict::Fade;
   // blocked beats fading: a real fade lowers power and cannot raise NHM

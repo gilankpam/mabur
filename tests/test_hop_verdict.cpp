@@ -500,3 +500,80 @@ TEST(weak_without_a_real_snr_fires_on_rssi_alone) {
   auto o2 = u.window(t, {card(-90, 40, 0, 0, 30), VerdictCardIn{}}, {0.05, 90}, 1);
   CHECK(!(o2.evidence & kEvWeak));
 }
+
+// ---- sustained occupancy is impaired on its own -------------------------
+// A long-frame or sub-correlator jam fills airtime (`blocked`) without
+// moving loss or tripping foreign/fa: at zero loss a clean signal reads
+// `healthy` forever unless `blocked` holding for occupied_windows
+// consecutive windows becomes `impaired` on its own (hop.verdict.
+// occupied_windows). Width-free: HopVerdict never sees radio.width.
+static VerdictCardIn busy(double nhm, double own) { auto c = card(-61, 30, 0, 4); c.busy_valid = true; c.nhm_busy_pct = nhm; c.own_air_pct = own; return c; }
+TEST(occupied_fires_at_default_width_after_seven_blocked_windows_with_zero_loss) {
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
+  VerdictOut o;
+  for (int i = 0; i < 6; ++i, t += 150) { o = v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5); CHECK(o.v == Verdict::Healthy); CHECK(!(o.evidence & kEvOccupied)); }
+  o = v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);          // 7th
+  CHECK(o.v == Verdict::Interfered); CHECK(o.evidence & kEvOccupied); CHECK(o.evidence & kEvImpaired); CHECK(o.ref_rung == 5);
+  o = v.window(t + 150, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 4);   // 8th: persist 2 of 3
+  CHECK(o.trigger); CHECK(o.ref_rung == 5);
+}
+TEST(a_clean_window_resets_the_occupied_count) {
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
+  for (int i = 0; i < 6; ++i, t += 150) v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);
+  v.window(t, {busy(10, 3), busy(10, 3)}, {0.0, 20}, 5); t += 150;
+  auto o = v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);
+  CHECK(o.v == Verdict::Healthy); CHECK(!(o.evidence & kEvOccupied));
+}
+TEST(no_busy_reading_holds_the_occupied_count) {
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
+  for (int i = 0; i < 6; ++i, t += 150) v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);
+  v.window(t, {card(-61, 30, 0, 4), card(-61, 30, 0, 4)}, {0.0, 20}, 5); t += 150;   // valid cards, no NHM
+  VerdictCardIn off; off.valid = false;
+  v.window(t, {off, off}, {0.0, 20}, 5); t += 150;                                    // no usable card
+  auto o = v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);                    // the 7th blocked
+  CHECK(o.v == Verdict::Interfered); CHECK(o.evidence & kEvOccupied);
+}
+TEST(weak_still_wins_over_occupied) {
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
+  auto weak_busy = [] { auto c = busy(95, 3); c.rssi_dbm = -90; c.snr_db = 8; return c; };
+  VerdictOut o;
+  for (int i = 0; i < 7; ++i, t += 150) o = v.window(t, {weak_busy(), weak_busy()}, {0.0, 20}, 1);
+  CHECK(o.v == Verdict::Fade); CHECK(o.evidence & kEvOccupied); CHECK(!o.trigger);
+}
+TEST(reset_and_new_session_clear_the_occupied_count) {
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
+  for (int i = 0; i < 6; ++i, t += 150) v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);
+  v.reset();
+  auto o = v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);
+  CHECK(!(o.evidence & kEvOccupied));
+  for (int i = 0; i < 6; ++i, t += 150) v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);
+  v.new_session();
+  o = v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);
+  CHECK(!(o.evidence & kEvOccupied));
+}
+TEST(own_airtime_is_subtracted_before_the_occupied_count) {
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
+  VerdictOut o;
+  for (int i = 0; i < 9; ++i, t += 150) o = v.window(t, {busy(80, 45), busy(80, 45)}, {0.0, 20}, 5);  // 35 % foreign < 50
+  CHECK(o.v == Verdict::Healthy); CHECK(!(o.evidence & kEvOccupied));
+}
+// Controller ruling: once occupied, a window with NO busy reading (valid
+// cards, no NHM -- the common shape right after a hop lands, since the
+// retune invalidates the NHM arm) must classify `unknown`, never
+// `interfered` on its own -- `HopController` fails verify only on an
+// `interfered` window measured after landing, and failing it on a reading
+// that never happened would kill a clean target. The streak still holds
+// (no_busy_reading_holds_the_occupied_count), so the very next window with
+// an actual blocked reading reads `interfered` again.
+TEST(occupied_persists_but_a_reading_less_window_classifies_unknown) {
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
+  for (int i = 0; i < 7; ++i, t += 150) v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);   // reach occupied
+  t += 150;
+  auto o = v.window(t, {card(-61, 30, 0, 4), card(-61, 30, 0, 4)}, {0.0, 20}, 5);   // valid cards, no NHM
+  CHECK(o.v == Verdict::Unknown);
+  CHECK(o.evidence & kEvOccupied);
+  CHECK(o.evidence & kEvImpaired);
+  t += 150;
+  auto o2 = v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);
+  CHECK(o2.v == Verdict::Interfered);
+}
