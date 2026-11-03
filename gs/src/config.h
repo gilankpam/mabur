@@ -73,6 +73,14 @@ struct HopVerdictCfg {
   // blocked reading) the hop's only route to `interfered`. A window with no
   // busy reading neither advances nor resets the count.
   int occupied_windows = 5;
+  // Detect route: foreign airtime % (median over detect_windows checks)
+  // that says "someone is on this channel"; must not exceed radio.scan.blocked_pct.
+  double detect_pct = 8.0;
+  // Checks in a detect run.
+  int detect_windows = 5;
+  // ...and this many of them lossy = interfered: the low-level route,
+  // under blocked_pct.
+  int detect_impaired = 1;
 };
 
 /// In-flight channel hop (docs/inflight-channel-hop.md). Runs in

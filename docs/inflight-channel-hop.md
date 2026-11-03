@@ -697,6 +697,9 @@ recovered_min        = 8
 weak_rssi_dbm        = -78
 weak_snr_db          = 12
 occupied_windows     = 5
+detect_pct           = 8
+detect_windows       = 5
+detect_impaired      = 1
 ```
 
 The bundle ships `confirm_ms = 1000` because hops to or from the 8822E
@@ -743,6 +746,9 @@ Validation (`gs/src/config.cpp`) — unknown keys fail boot:
 | `hop.verdict.weak_rssi_dbm` | −110 – −20 |
 | `hop.verdict.weak_snr_db` | 0–40 |
 | `hop.verdict.occupied_windows` | 1–100 |
+| `hop.verdict.detect_pct` | 1.0–100.0, ≤ `radio.scan.blocked_pct` |
+| `hop.verdict.detect_windows` | 2–100 |
+| `hop.verdict.detect_impaired` | 1–`detect_windows` |
 | `radio.scan.busy_dbm` | −104 – −70, must sit on an `nf::kNhmAbsThDbm` bucket edge |
 | `radio.scan.blocked_pct` | 1.0–100.0 |
 

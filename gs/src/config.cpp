@@ -323,7 +323,7 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
     if (h.contains("verdict")) {
       const Value& v = h["verdict"];
       check_keys(v, "hop.verdict", {"loss_pct", "recovered_x", "weak_rssi_dbm", "weak_snr_db",
-                                    "recovered_min", "occupied_windows"});
+                                    "recovered_min", "occupied_windows", "detect_pct", "detect_windows", "detect_impaired"});
       HopVerdictCfg& vc = hc.verdict;
       vc.loss_pct = get_num(v, "loss_pct", 3.0, 0.1, 100.0, "hop.verdict");
       vc.recovered_x = get_num(v, "recovered_x", 3.0, 1.0, 100.0, "hop.verdict");
@@ -331,6 +331,14 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
       vc.weak_rssi_dbm = (int)get_int(v, "weak_rssi_dbm", -78, -110, -20, "hop.verdict");
       vc.weak_snr_db = (int)get_int(v, "weak_snr_db", 12, 0, 40, "hop.verdict");
       vc.occupied_windows = (int)get_int(v, "occupied_windows", 5, 1, 100, "hop.verdict");
+      vc.detect_pct = get_num(v, "detect_pct", 8.0, 1.0, 100.0, "hop.verdict");
+      vc.detect_windows = (int)get_int(v, "detect_windows", 5, 2, 100, "hop.verdict");
+      vc.detect_impaired = (int)get_int(v, "detect_impaired", 1, 1, 100, "hop.verdict");
+      // Cross-key validations
+      if (vc.detect_pct > c.radio.scan.busy.blocked_pct)
+        fail("hop.verdict.detect_pct", "must not exceed radio.scan.blocked_pct");
+      if (vc.detect_impaired > vc.detect_windows)
+        fail("hop.verdict.detect_impaired", "must not exceed detect_windows");
     } else {
       note_default("hop", "verdict", "(section absent)");
     }

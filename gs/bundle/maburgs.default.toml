@@ -260,3 +260,6 @@ recovered_min        = 8      # ...and at least this many repairs; 0 = off
 weak_rssi_dbm        = -78    # below this signal AND weak_snr_db = range edge: never a hop, even on a blocked channel
 weak_snr_db          = 12
 occupied_windows     = 5      # channel blocked this many checks in a row = interfered: the only thing that triggers a hop
+detect_pct           = 8      # foreign airtime % (median over detect_windows checks) that says "someone is on this channel"; must not exceed radio.scan.blocked_pct
+detect_windows       = 5      # checks in that run
+detect_impaired      = 1      # ...and this many of them lossy = interfered: the low-level route, under blocked_pct
