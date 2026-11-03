@@ -193,6 +193,35 @@ verify pass. maburtop draws `CAL <kind><bw> <i>/<n>` (e.g. `CAL power40
 312/840`, warn colour) on the top bar after the `mav` cell and in the
 compact header. Design: `docs/calibration.md`.
 
+### `link.vtx` — the drone's parameters
+
+`link.vtx{linked, alive, table_mismatch, list, pending, rows[], stats}`:
+the hosted MAVLink parameter client (`ParamHost`, `gs/src/param_host.h`)
+maburgs runs against the drone's component, present whenever the client
+exists (unconditionally in maburgs, same pattern as `link.cal`'s
+controller-free fill). `linked` mirrors the GS session, not the heartbeat;
+`alive` is null before the drone's first HEARTBEAT and otherwise true
+while one has arrived within the alive timeout, false once it lapses.
+`table_mismatch` flags a `PARAM_EXT_VALUE` whose `param_count` disagreed
+with the GS's own table. `list` is one of `none pending complete
+partial`; `pending` is the in-flight set's row index, or `-1` when none is
+outstanding.
+
+`rows[]` mirrors `common/include/mabur/config_params.h`'s `kTable`, one
+entry per parameter: `id` the table's own id string; `value` the row's
+last known text (`mabur::paramval::format_text`), null until the row has
+ever answered; `st` one of `idle sending in_progress accepted failed
+unsupported timeout`; `status` the row's own text (a refusal reason, a
+warning, or empty); `age_ms` the time since the row's state went
+terminal, null while `st` is not `accepted`/`failed`/`unsupported`/
+`timeout`. `stats{tx, rx, drop_unknown, drop_bad, timeouts}` are the
+client's own packet counters, cumulative since the daemon started.
+
+The one 8402 verb against this block is `vtx set <PARAM_ID> <value>`
+(`docs/gs-live-config.md` "Protocol"); the menu that reads and drives it
+is `docs/gs-menu.md`; the wire and the drone-side table are
+`docs/vtx-config-mavlink.md`.
+
 ### `link.refresh` — demand refresh
 
 `link.refresh{armed, requests, retries, heals, heal_ms_last, by_reason{hole,

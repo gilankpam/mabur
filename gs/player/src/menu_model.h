@@ -51,6 +51,10 @@ struct MenuNode {
   std::function<std::string()> help;
   std::function<std::string()> value_text;             // the row's right-hand text
   std::function<std::string()> warn;                   // "" = none; rendered amber before the value
+  // "" = usable; otherwise the row is dim (even when linked) and ▶ toasts
+  // this text instead of opening its picker. Checked after the "needs the
+  // drone linked" refusal, so that one still wins for an unlinked drone row.
+  std::function<std::string()> refuse;
   std::function<std::vector<Choice>()> choices;        // kChoice
   std::function<std::string()> current;                // kChoice: the current value key
   // List the current choice even when it is not pickable, so a row whose
@@ -60,6 +64,11 @@ struct MenuNode {
   std::function<std::string(const std::string& v)> confirm;  // "" = no prompt
   std::function<std::vector<SetStep>(const std::string& v)> steps;  // kChoice/kNumber: the sets
   std::function<std::string()> saved_text;             // null = "✓ saved"
+  // "" = none; otherwise, when the row's apply settles ok, the saved status
+  // is drawn amber (ViewRow::status_warn) and the help line reads this text
+  // until the row's next apply starts -- not timed out like a plain
+  // "✓ saved". Used for LDPC's wall warning.
+  std::function<std::string()> warn_after_ok;
   std::function<std::vector<SetStep>()> action;        // kAction: its sets (empty = nothing to send)
   std::function<std::vector<MenuNode>()> children;     // kGroup
   std::function<std::string()> group_value;            // kGroup: "5 rungs" or "" (= "▸")
@@ -68,7 +77,7 @@ struct MenuNode {
 struct ViewRow {
   std::string id, label, value, warn, status;
   bool vtx = false, adv = false, dim = false, selected = false, busy = false,
-       status_ok = false, status_err = false;
+       status_ok = false, status_err = false, status_warn = false;
   bool operator==(const ViewRow&) const = default;
 };
 
@@ -76,6 +85,13 @@ struct MenuView {
   bool open = false;
   std::string crumb;
   bool linked = false;
+  // "" = none, otherwise an amber line under the crumb (a drone/GS table
+  // mismatch, or "reading the drone's settings" while rows have no value
+  // yet).
+  std::string header;
+  // "" = none, otherwise an amber mark beside the link pill (e.g. "no
+  // heartbeat" while linked but the drone has gone quiet).
+  std::string pill_mark;
   std::vector<ViewRow> rows;        // the visible window (<= 10), scrolled around the cursor
   std::string help;
   bool help_is_error = false;
@@ -111,6 +127,11 @@ class MenuModel {
   void set_gs_known(bool known);
   void set_show_advanced(bool on);
   void set_banner(std::string text);
+  // The amber line under the crumb, and the amber mark beside the link
+  // pill; both shown only while the menu is open (view()'s crumb/pill are
+  // empty when closed too). "" clears either.
+  void set_header(std::string text);
+  void set_pill_mark(std::string text);
   void toast(std::string text, uint64_t now_ms);
 
   // One button event; returns what the caller must do next.
@@ -167,6 +188,12 @@ class MenuModel {
     Locks locks{};
     Owner owner = Owner::kPlayer;
     std::function<std::string()> saved_text;
+    // kOk only, read live in view(): non-empty keeps the saved status
+    // amber and this text in the help line, un-timed, until the row's
+    // next apply_started. Read on every view() rather than latched once
+    // at apply_done, since a warning (a STATUSTEXT from the drone) can
+    // land in a later sideport datagram than the accepted/saved result.
+    std::function<std::string()> warn_after_ok;
   };
   struct Status {
     enum class State : uint8_t { kBusy, kOk, kErr } state = State::kBusy;
@@ -203,6 +230,8 @@ class MenuModel {
   bool gs_known_ = true;
   bool show_advanced_ = false;
   std::string banner_;
+  std::string header_;
+  std::string pill_mark_;
   std::string toast_;
   uint64_t toast_ms_ = 0;
   std::vector<Level> stack_;

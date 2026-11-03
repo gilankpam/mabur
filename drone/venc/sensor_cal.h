@@ -7,7 +7,8 @@
  * costs one dropped frame per beat period, which the GS sees as a periodic
  * repeated frame. This controller measures the real rate from the encoded
  * frames' pts and re-requests the sensor rate in milli-fps until the real
- * rate sits in a narrow band just under venc.fps. Pure logic: the caller
+ * rate sits in a band under venc.fps, within the GS phase lock's steering
+ * reach; the lock does the rest. Pure logic: the caller
  * applies each request to the sensor (MI_SNR_SetFps) and feeds every
  * frame's pts. */
 #ifndef MABUR_VENC_SENSOR_CAL_H
@@ -30,7 +31,8 @@ typedef enum {
 	SENSOR_CAL_REQUEST,   /* apply sensor_cal_request_mfps() to the sensor */
 	SENSOR_CAL_LOCKED,    /* measured rate is inside the band; done */
 	SENSOR_CAL_GAVE_UP,   /* round cap hit: apply sensor_cal_request_mfps()
-	                       * (back to the boot request) and stop */
+	                       * (the fastest request measured under the
+	                       * target, else the boot request) and stop */
 } SensorCalAction;
 
 typedef enum {
@@ -44,7 +46,11 @@ typedef struct {
 	uint32_t target_fps;
 	uint32_t request_mfps;   /* the request currently applied to the sensor */
 	uint32_t prev_request_mfps;
-	uint32_t initial_mfps;   /* the boot request, restored on give-up */
+	uint32_t initial_mfps;   /* the boot request, the give-up fallback when
+	                          * no request measured under the target */
+	uint32_t best_mfps;      /* fastest request measured under the target;
+	                          * 0 = none yet */
+	double best_hz;
 	uint32_t max_mfps;       /* the mode's ceiling; 0 = none */
 	SensorCalState state;
 	int rounds;

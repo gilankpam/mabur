@@ -259,8 +259,21 @@ protocol client: list, read, set and link/heartbeat state, driven only by
 a send callback and `on_packet`/`tick(now)` -- pure data handling, no
 socket or clock of its own. The web GS core owns one (`docs/web-gs.md`
 "MAVLink seam"), fed by the tunnel's `deliver` callback, and its VTX tab
-is the operator screen onto it. `maburgs` does not run one: it only
-bridges the tunnel to the UDP endpoint.
+is the operator screen onto it. `maburgs` hosts its own, wrapped as
+`ParamHost` (`gs/src/param_host.h`): the daemon's MAVLink tunnel is one
+endpoint with one peer, so the session state a client needs -- linked or
+not, which `vtx_nonce` -- already lives in the same process, and a
+ground-station UI only ever reaches the drone's parameters through
+`maburgs` anyway. `ParamHost` mirrors the session into the client's
+`set_linked`/`refresh` calls (a `vtx_nonce` change while still linked
+re-lists, the same re-rendezvous rule as a session edge), publishes
+`client().state()` on the stats sideport as `link.vtx`
+(`docs/observability.md` "`link.vtx`"), and answers the loopback live-
+config port's one extra verb, `vtx set <PARAM_ID> <value>`
+(`docs/gs-live-config.md` "Protocol") -- immediately with `ok`/`err
+<reason>`, the set's own outcome following later on `link.vtx.rows[]` as
+the client's ack lands. It adds nothing to the wire: every rule above is
+`ParamClient`'s own.
 
 - **Link.** `set_linked(true)` starts a fresh list: every row is cleared,
   `list` becomes `Pending`, and one `PARAM_EXT_REQUEST_LIST` goes to
@@ -376,5 +389,9 @@ edit it, restart `S96maburgs` (`docs/deploy.md`).
 ## Operator UIs
 
 The web GS's VTX tab (`docs/web-gs.md` "VTX tab") renders the parameter
-table and drives it live; a `maburplay` screen onto the same table is not
-built.
+table and drives it live, against its own `ParamClient`. The goggles
+settings menu (`docs/gs-menu.md`) is the screen onto `maburgs`'s hosted
+one, reading `link.vtx` off the sideport and driving `vtx set` on 8402
+through `maburplay`'s `DroneLiveSetter`, which settles a row against
+`link.vtx.rows[]` rather than against the verb's own (merely "sent")
+reply (`docs/gs-menu.md`).

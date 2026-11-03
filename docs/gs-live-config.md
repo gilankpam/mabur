@@ -61,6 +61,20 @@ reach. When `debug_log.enable = true` failed to open its session at boot
 live value reads the pin, the link sits elsewhere), set the key away and
 back: `false` then `true`, or `"auto"` then the channel.
 
+**`vtx set <PARAM_ID> <value>` (maburgs only).** The one verb besides
+`set`/`get` on 8402: `GsConfigControl.extra_verb` hands anything that
+isn't `set`/`get` to `ParamHost::handle_verb` (`gs/src/param_host.h`),
+which forwards a `vtx set` straight to the hosted MAVLink parameter
+client against the drone. The reply is immediate, not a `pending` wait
+for the drone's own ack — `ok` means the `PARAM_EXT_SET` is on its way,
+not that the drone accepted it; the outcome lands on the stats sideport's
+`link.vtx.rows[]` (`docs/observability.md` "`link.vtx`") as that row's
+`st` goes terminal. Refusals are the client's own: `err not linked`,
+`err apply in progress`, `err no such parameter`, `err bad value for
+<type>` (`bool`, `int32`, …, lowercase), or `err usage: vtx set
+<PARAM_ID> <value>` for a malformed line. There is no `vtx get`: a row's
+current value is read off `link.vtx.rows[]`.
+
 ## maburgs — `kGsLiveKeys` (`gs/src/gs_config_apply.cpp`)
 
 | Key | Type | Applies to | Notes |

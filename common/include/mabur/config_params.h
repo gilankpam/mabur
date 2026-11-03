@@ -112,6 +112,13 @@ inline bool parse_mode_text(const std::string& text, int* fps, int* w, int* h, b
   return true;
 }
 
+// The inverse of parse_mode_text: packs fps/w/h/binning back into the
+// VENC_MODE wire text.
+inline std::string render_mode_text(int fps, int w, int h, bool binning) {
+  return std::to_string(fps) + "@" + std::to_string(w) + "x" + std::to_string(h) +
+         "/" + (binning ? "binned" : "native");
+}
+
 // Index of the row with this id, or -1. `id16` is a wire-format field: only
 // an id of the full 16 chars is guaranteed to lack a NUL, so strncmp's own
 // stop-at-NUL behaviour keeps every comparison within the shorter buffer.

@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace maburplay {
@@ -39,7 +40,39 @@ struct GsCard {
 // sideport. kNone also covers an unknown spelling and an absent block.
 enum class GsUplink { kNone, kWait, kOk, kLow, kDead, kIdle, kStale };
 
+// One row of link.vtx.rows: a single drone parameter as the hosted MAVLink
+// client (ParamHost) last saw it. `value` is the row's last known text,
+// null until it has ever answered; `age_ms` is time-since-terminal, null
+// while `st` is not one of the terminal spellings (see vtx_terminal()).
+struct VtxRow {
+  std::string id;
+  std::optional<std::string> value;
+  std::string st = "idle";
+  std::string status;
+  std::optional<int64_t> age_ms;
+};
+
+// link.vtx: the drone's parameter table as maburgs' hosted MAVLink client
+// (ParamHost, docs/vtx-config-mavlink.md "Ground client") last reported it.
+// `linked` mirrors the GS session, not the heartbeat; `alive` is null
+// before the drone's first HEARTBEAT. `list` is one of
+// "none"/"pending"/"complete"/"partial"; `pending` is the in-flight set's
+// row index, -1 when none is outstanding.
+struct VtxState {
+  bool linked = false;
+  std::optional<bool> alive;
+  bool table_mismatch = false;
+  std::string list = "none";
+  int pending = -1;
+  std::vector<VtxRow> rows;
+};
+
 struct GsSnapshot {
+  // Top-level t_ms: maburgs' own monotonic clock reading when this
+  // datagram was built. DroneSetWatch (menu_apply.cpp) uses it, paired
+  // with a vtx row's age_ms, to tell a genuinely new result from the same
+  // one seen again. Empty on an older maburgs that never exported it.
+  std::optional<uint64_t> t_ms;
   // link.channel: the GS radio's operating channel. Straight from the GS
   // config, not measured, so it never goes null on a bad window -- an
   // empty optional here means an older maburgs that did not export it.
@@ -125,6 +158,10 @@ struct GsSnapshot {
   std::optional<double> rtt_ms;         // link.rtt.ms
   std::optional<int64_t> pts_off_us;    // link.rtt.pts_off_us
   std::vector<GsCard> cards;            // in wire order
+  // link.vtx: empty when the block is absent or not an object (older
+  // maburgs, or a malformed datagram) -- NOT a default-constructed
+  // VtxState, so the menu can tell "never exported" from "exported empty".
+  std::optional<VtxState> vtx;
 };
 
 // Decodes a sideport datagram. Returns false on unparseable input or a
@@ -135,6 +172,16 @@ struct GsSnapshot {
 // NEVER throws: this runs on maburplay's 2 ms main loop, where an escaping
 // exception is a dead player.
 bool parse_gs_snapshot(const char* data, size_t n, GsSnapshot* out);
+
+// The row with this id, or null when `vtx` is empty or no row matches.
+const VtxRow* vtx_row(const GsSnapshot& s, const char* id);
+// Convenience over vtx_row(): the row's value text, or nullopt while the
+// row is unknown, absent, or has never answered.
+std::optional<std::string> vtx_value(const GsSnapshot& s, const char* id);
+// One of the terminal `st` spellings: accepted, failed, unsupported,
+// timeout. Everything else (idle, sending, in_progress, and any unknown
+// future spelling) reads false.
+bool vtx_terminal(const std::string& st);
 
 }  // namespace maburplay
 

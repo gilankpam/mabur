@@ -874,6 +874,186 @@ TEST(a_nested_group_crumb_names_its_parent_and_a_vanished_group_pops) {
   CHECK(m.view(0).crumb == "Menu");
 }
 
+TEST(a_refusing_row_is_dim_and_toasts_its_reason) {
+  World w;
+  std::string reason = "Reading the drone's settings…";
+  auto base = tree(&w);
+  MenuModel m([base, &reason] {
+    auto t = base();
+    auto kids = t[0].children();
+    for (auto& k : kids)
+      if (k.id == "v.drone") k.refuse = [&reason] { return reason; };
+    t[0].children = [kids] { return kids; };
+    return t;
+  });
+  m.set_linked(true);
+  into_video(m);
+  cursor_to(m, "v.drone");
+  MenuView v = m.view(0);
+  int i = selected(v);
+  REQUIRE(i >= 0);
+  CHECK(v.rows[i].dim);
+  auto e = tap(m, Button::kRight, 50);
+  CHECK(e.steps.empty());
+  v = m.view(50);
+  CHECK(v.picker == MenuView::Picker::kNone);
+  CHECK(v.toast == reason);
+
+  // refuse() returns "" -> not dim, ▶ opens the picker.
+  reason.clear();
+  v = m.view(50);
+  CHECK(!v.rows[selected(v)].dim);
+  tap(m, Button::kRight, 60);
+  CHECK(m.view(60).picker == MenuView::Picker::kChoices);
+}
+
+TEST(unlinked_wins_over_refuse) {
+  World w;
+  auto base = tree(&w);
+  MenuModel m([base] {
+    auto t = base();
+    auto kids = t[0].children();
+    for (auto& k : kids)
+      if (k.id == "v.drone")
+        k.refuse = [] { return std::string("Reading the drone's settings…"); };
+    t[0].children = [kids] { return kids; };
+    return t;
+  });
+  // Starts unlinked.
+  into_video(m);
+  cursor_to(m, "v.drone");
+  CHECK(m.view(0).rows[selected(m.view(0))].dim);
+  auto e = tap(m, Button::kRight, 10);
+  CHECK(e.steps.empty());
+  CHECK(m.view(10).toast == "Needs the drone linked");
+}
+
+TEST(a_warning_after_ok_keeps_the_saved_status_amber_with_the_text_in_help) {
+  MenuNode row;
+  row.id = "r.warn";
+  row.label = "Row";
+  row.kind = NodeKind::kChoice;
+  row.owner = Owner::kPlayer;
+  row.help = [] { return std::string("Normal help."); };
+  row.choices = [] {
+    return std::vector<Choice>{{"on", "On", "", true}, {"off", "Off", "", true}};
+  };
+  row.current = [] { return std::string("off"); };
+  row.steps = [](const std::string& v) {
+    return std::vector<SetStep>{{Owner::kPlayer, "k", v}};
+  };
+  row.warn_after_ok = [] { return std::string("walls measured with LDPC on"); };
+  MenuModel m([row] { return std::vector<MenuNode>{row}; });
+  m.open();
+  tap(m, Button::kRight);
+  tap(m, Button::kUp);
+  auto e = tap(m, Button::kRight);
+  REQUIRE(!e.steps.empty());
+  m.apply_started("r.warn", 1);
+  m.apply_done("r.warn", true, "", 0);
+
+  MenuView v = m.view(0);
+  CHECK(v.rows[0].status == "✓ saved");
+  CHECK(v.rows[0].status_ok);
+  CHECK(v.rows[0].status_warn);
+  CHECK(v.help == "walls measured with LDPC on");
+
+  // Not timed out by kSavedMs.
+  v = m.view(MenuModel::kSavedMs + 1);
+  CHECK(v.rows[0].status == "✓ saved");
+  CHECK(v.rows[0].status_warn);
+  CHECK(v.help == "walls measured with LDPC on");
+
+  // Cleared once the row's next apply starts.
+  m.apply_started("r.warn", 1);
+  v = m.view(MenuModel::kSavedMs + 1);
+  CHECK(!v.rows[0].status_warn);
+  CHECK(v.rows[0].status == "applying");
+  CHECK(v.help == "Normal help.");
+}
+
+TEST(a_warning_landing_after_the_settle_still_turns_the_saved_status_amber) {
+  // The drone's LDPC warning STATUSTEXT can land in a later sideport
+  // datagram than the "accepted" it explains, so warn_after_ok must be
+  // read live at view() time, not latched once when the row settles.
+  bool warn_landed = false;
+  MenuNode row;
+  row.id = "r.warn2";
+  row.label = "Row";
+  row.kind = NodeKind::kChoice;
+  row.owner = Owner::kPlayer;
+  row.help = [] { return std::string("Normal help."); };
+  row.choices = [] {
+    return std::vector<Choice>{{"on", "On", "", true}, {"off", "Off", "", true}};
+  };
+  row.current = [] { return std::string("off"); };
+  row.steps = [](const std::string& v) {
+    return std::vector<SetStep>{{Owner::kPlayer, "k", v}};
+  };
+  row.warn_after_ok = [&warn_landed] {
+    return warn_landed ? std::string("walls measured with LDPC on") : std::string();
+  };
+  MenuModel m([row] { return std::vector<MenuNode>{row}; });
+  m.open();
+  tap(m, Button::kRight);
+  tap(m, Button::kUp);
+  auto e = tap(m, Button::kRight);
+  REQUIRE(!e.steps.empty());
+  m.apply_started("r.warn2", 1);
+  m.apply_done("r.warn2", true, "", 0);
+
+  // Settles plain: the warning has not landed yet.
+  MenuView v = m.view(0);
+  CHECK(v.rows[0].status == "✓ saved");
+  CHECK(v.rows[0].status_ok);
+  CHECK(!v.rows[0].status_warn);
+  CHECK(v.help == "Normal help.");
+
+  // The warning lands later; a view at the same row still picks it up.
+  warn_landed = true;
+  v = m.view(1);
+  CHECK(v.rows[0].status == "✓ saved");
+  CHECK(v.rows[0].status_warn);
+  CHECK(v.help == "walls measured with LDPC on");
+
+  // An err settle must never show a stale warning.
+  warn_landed = false;
+  m.apply_started("r.warn2", 1);
+  m.apply_done("r.warn2", false, "refused", 2);
+  warn_landed = true;
+  v = m.view(2);
+  CHECK(!v.rows[0].status_warn);
+  CHECK(v.rows[0].status_err);
+}
+
+TEST(the_header_is_in_the_view_and_compares) {
+  World w;
+  MenuModel m(tree(&w));
+  m.open();
+  CHECK(m.view(0).header.empty());
+  m.set_header("Drone settings differ from this GS — update");
+  CHECK(m.view(0).header == "Drone settings differ from this GS — update");
+
+  MenuView a = m.view(0);
+  MenuModel m2(tree(&w));
+  m2.open();
+  CHECK(!(a == m2.view(0)));   // header is the only difference
+}
+
+TEST(the_pill_mark_is_in_the_view_and_compares) {
+  World w;
+  MenuModel m(tree(&w));
+  m.open();
+  CHECK(m.view(0).pill_mark.empty());
+  m.set_pill_mark("no heartbeat");
+  CHECK(m.view(0).pill_mark == "no heartbeat");
+
+  MenuView a = m.view(0);
+  MenuModel m2(tree(&w));
+  m2.open();
+  CHECK(!(a == m2.view(0)));   // pill_mark is the only difference
+}
+
 TEST(views_compare_field_wise) {
   World w;
   MenuModel m(tree(&w));

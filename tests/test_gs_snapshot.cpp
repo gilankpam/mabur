@@ -46,9 +46,26 @@ TEST(pre_loss_falls_back_to_ctl_when_pooled_gauge_is_null) {
   CHECK(*s.pre_loss_pct > 2.09 && *s.pre_loss_pct < 2.11);
 }
 
+// Top-level t_ms (maburgs' own monotonic clock at export): the reference
+// DroneSetWatch (menu_apply.cpp) counts a vtx row's age_ms back from.
+TEST(parses_top_level_t_ms) {
+  GsSnapshot s;
+  REQUIRE(parse(R"({"v":1,"t_ms":12345})", &s));
+  REQUIRE(s.t_ms.has_value());
+  CHECK(*s.t_ms == 12345);
+  REQUIRE(parse(R"({"v":1})", &s));
+  CHECK(!s.t_ms.has_value());
+  REQUIRE(parse(R"({"v":1,"t_ms":"soon"})", &s));
+  CHECK(!s.t_ms.has_value());
+  REQUIRE(parse(R"({"v":1,"t_ms":-5})", &s));
+  CHECK(!s.t_ms.has_value());
+}
+
 TEST(parses_a_live_datagram) {
   GsSnapshot s;
   REQUIRE(parse(kLive, &s));
+  REQUIRE(s.t_ms.has_value());
+  CHECK(*s.t_ms == 1000);
   REQUIRE(s.mcs.has_value());
   CHECK(*s.mcs == 5);
   REQUIRE(s.bw.has_value());
@@ -621,4 +638,95 @@ TEST(drone_rec_parses_and_is_empty_when_absent) {
   REQUIRE(parse(R"({"link": {"channel": 136}, "drone": null})", &s));
   CHECK(!s.rec_state.has_value());
 }
+// link.vtx: the hosted ParamClient's view of the drone's parameter table
+// (docs/observability.md "link.vtx"). A full, well-formed block.
+TEST(parses_the_vtx_block) {
+  const char* j = R"({"link": {"channel": 136, "vtx": {
+    "linked": true, "alive": true, "table_mismatch": false,
+    "list": "complete", "pending": 4,
+    "rows": [
+      {"id": "VENC_MODE", "value": "100@1280x720/binned", "st": "idle", "status": "", "age_ms": null},
+      {"id": "ENC_BITRATE_MAX", "value": "12000", "st": "accepted", "status": "", "age_ms": 300}
+    ]}}})";
+  GsSnapshot s;
+  REQUIRE(parse(j, &s));
+  REQUIRE(s.vtx.has_value());
+  CHECK(s.vtx->linked);
+  REQUIRE(s.vtx->alive.has_value());
+  CHECK(*s.vtx->alive);
+  CHECK(!s.vtx->table_mismatch);
+  CHECK(s.vtx->list == "complete");
+  CHECK(s.vtx->pending == 4);
+  REQUIRE(s.vtx->rows.size() == 2);
+
+  const std::optional<std::string> mode = vtx_value(s, "VENC_MODE");
+  REQUIRE(mode.has_value());
+  CHECK(*mode == "100@1280x720/binned");
+
+  const VtxRow* bitrate = vtx_row(s, "ENC_BITRATE_MAX");
+  REQUIRE(bitrate != nullptr);
+  CHECK(bitrate->st == "accepted");
+  REQUIRE(bitrate->age_ms.has_value());
+  CHECK(*bitrate->age_ms == 300);
+}
+
+// alive null (before the drone's first HEARTBEAT) and a row's value null
+// (never answered) both stay empty optionals, never a default/sentinel.
+// `st` defaults to "idle" when the key is missing entirely.
+TEST(alive_null_and_value_null_stay_empty) {
+  const char* j = R"({"link": {"vtx": {
+    "linked": true, "alive": null, "table_mismatch": false,
+    "list": "pending", "pending": 0,
+    "rows": [{"id": "VENC_MODE", "value": null, "status": ""}]}}})";
+  GsSnapshot s;
+  REQUIRE(parse(j, &s));
+  REQUIRE(s.vtx.has_value());
+  CHECK(!s.vtx->alive.has_value());
+  CHECK(!vtx_value(s, "VENC_MODE").has_value());
+  const VtxRow* row = vtx_row(s, "VENC_MODE");
+  REQUIRE(row != nullptr);
+  CHECK(row->st == "idle");
+}
+
+// An unknown row id (a future parameter the player doesn't know about yet)
+// is kept as a plain row, never dropped or thrown on; a missing "rows"
+// array still leaves `vtx` present with an empty rows vector; a non-object
+// link.vtx, and no "vtx" key at all, both leave `vtx` empty. Every parse()
+// call here returns true and the rest of the snapshot still lands.
+TEST(an_unknown_row_id_and_a_missing_rows_array_never_throw) {
+  GsSnapshot s;
+  REQUIRE(parse(R"({"v": 1, "session": 7, "link": {"vtx": {
+    "linked": true, "rows": [{"id": "FUTURE_KEY", "value": "1", "st": "accepted"}]}}})",
+                &s));
+  REQUIRE(s.vtx.has_value());
+  const VtxRow* future = vtx_row(s, "FUTURE_KEY");
+  REQUIRE(future != nullptr);
+  CHECK(future->value.has_value());
+  CHECK(*future->value == "1");
+
+  REQUIRE(parse(R"({"v": 1, "session": 7, "link": {"vtx": {"linked": false}}})", &s));
+  REQUIRE(s.vtx.has_value());
+  CHECK(s.vtx->rows.empty());
+
+  REQUIRE(parse(R"({"v": 1, "session": 7, "link": {"vtx": 7}})", &s));
+  CHECK(!s.vtx.has_value());
+  CHECK(s.session == true || s.session == false);  // the rest of the snapshot still parsed
+
+  REQUIRE(parse(R"({"v": 1, "session": 7, "link": {"channel": 136}})", &s));
+  CHECK(!s.vtx.has_value());
+  REQUIRE(s.channel.has_value());
+  CHECK(*s.channel == 136);  // no "vtx" key at all: the rest still lands
+}
+
+TEST(vtx_terminal_names) {
+  CHECK(vtx_terminal("accepted"));
+  CHECK(vtx_terminal("failed"));
+  CHECK(vtx_terminal("unsupported"));
+  CHECK(vtx_terminal("timeout"));
+  CHECK(!vtx_terminal("idle"));
+  CHECK(!vtx_terminal("sending"));
+  CHECK(!vtx_terminal("in_progress"));
+  CHECK(!vtx_terminal(""));
+}
+
 MTEST_MAIN

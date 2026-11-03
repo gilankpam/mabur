@@ -86,9 +86,9 @@ phase lock has room to steer up: from the driver's table and the timing law
 fps = 74.25 MHz / (VMAX × HMAX), 2944x1656 (VMAX 1880, HMAX 652) computes
 to 60.57 Hz and 2272x1278 (VMAX 1348, HMAX 548) to 100.52 Hz; the output
 width does not affect the timing. The sensor-rate calibration measures
-60.573 and 100.513 Hz and trims to 59.97 / 99.98 Hz below them. The steer
-then reaches a panel at the nominal rate (60.000 Hz monitor, the 100 Hz
-goggles) with the offset near zero. A mode whose ceiling sits *under* the
+60.573 and 100.513 Hz and trims to a line under 60 / 100 (59.966 /
+99.917 Hz). The steer then reaches a panel at the nominal rate (60.000 Hz
+monitor, the 100 Hz goggles) with a small offset. A mode whose ceiling sits *under* the
 panel cannot be locked at all: the steer pins at the mode's maximum, the
 lock cycles acquire/out-of-range, the fps cell turns caution, latency
 drifts ~1 ms/s and a frame repeats every few seconds

@@ -97,8 +97,9 @@ u16 crc16
   would be component 1, the MAVLink convention.
 - Ground senders use their own ids (QGroundControl sends 255/190).
   `maburgs` forwards a ground app's bytes unchanged in both directions;
-  the only packets it originates are calibration's, which it sends as
-  255/190.
+  the packets it originates itself -- calibration's, and its hosted
+  parameter client's (`docs/vtx-config-mavlink.md` "Ground client") --
+  it sends as 255/190, same as any other ground app.
 
 ## The drone component
 

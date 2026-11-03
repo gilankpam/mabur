@@ -121,6 +121,22 @@ TEST(view_text_for_a_closed_view_is_open_0_with_empty_fields) {
   CHECK(menu_view_text(v) == expected);
 }
 
+TEST(view_text_prints_header_and_pill_mark_lines_only_when_set) {
+  MenuView v;
+  v.open = true;
+  v.crumb = "Video";
+  v.linked = true;
+  const std::string without = menu_view_text(v);
+  CHECK(without.find("header:") == std::string::npos);
+  CHECK(without.find("pill_mark:") == std::string::npos);
+
+  v.header = "Drone settings differ from this GS — update";
+  v.pill_mark = "no heartbeat";
+  const std::string with = menu_view_text(v);
+  CHECK(with.find("header: Drone settings differ from this GS — update\n") != std::string::npos);
+  CHECK(with.find("pill_mark: no heartbeat\n") != std::string::npos);
+}
+
 TEST(pam_round_trips_straight_alpha_from_premultiplied) {
   std::vector<uint32_t> buf(4, 0u);
   buf[0] = premul(0xFFFFFF, 128);  // half-alpha white; the other 3 px stay transparent

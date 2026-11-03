@@ -476,6 +476,82 @@ TEST(an_open_menu_moves_the_banner_off_the_panel_and_picker) {
   CHECK(!c.any_in(DirtyRect{p.x, below, p.w, p.y + p.h - below}));
 }
 
+TEST(a_header_draws_under_the_crumb_and_only_when_set) {
+  Canvas c(1920, 1080);
+  MenuLayer m(font());
+  std::string err;
+  REQUIRE(m.layout(1920, 1080, &err));
+
+  MenuView v = sample();
+  v.header = "Reading the drone's settings…";
+  m.set_view(v);
+  m.paint(c.s, nullptr);
+  CHECK(m.debug_texts()[2] == v.header);
+
+  MenuView without = sample();
+  m.set_view(without);
+  m.paint(c.s, nullptr);
+  const std::vector<std::string> want = {
+      "Video", "● drone linked",
+      "Camera mode", "VTX", "60 fps",
+      "Slices", "ADV", "On",
+      "Colour", "⚠ judder", "Vivid",
+      "Pick the camera mode.",
+      "▶ change · ◀ back"};
+  CHECK(m.debug_texts() == want);
+}
+
+// A non-empty pill mark sits beside the link pill, in amber, and shrinks
+// the crumb's fit() width rather than overlapping it.
+TEST(a_pill_mark_draws_beside_the_pill_and_only_when_set) {
+  Canvas c(1920, 1080);
+  MenuLayer m(font());
+  std::string err;
+  REQUIRE(m.layout(1920, 1080, &err));
+
+  MenuView v = sample();
+  m.set_view(v);
+  m.paint(c.s, nullptr);
+  const std::vector<std::string> without = m.debug_texts();
+  REQUIRE(without.size() >= 2);
+  CHECK(without[0] == "Video");
+  CHECK(without[1] == "● drone linked");
+
+  v.pill_mark = "no heartbeat";
+  m.set_view(v);
+  m.paint(c.s, nullptr);
+  const std::vector<std::string> with = m.debug_texts();
+  REQUIRE(with.size() == without.size() + 1);
+  CHECK(with[0] == "Video");
+  CHECK(with[1] == "⚠ no heartbeat");
+  CHECK(with[2] == "● drone linked");
+
+  // Clearing it goes back to the two-run header.
+  v.pill_mark.clear();
+  m.set_view(v);
+  m.paint(c.s, nullptr);
+  CHECK(m.debug_texts() == without);
+}
+
+TEST(a_pill_mark_takes_room_from_the_crumb_rather_than_overlapping) {
+  Canvas c(1920, 1080);
+  MenuLayer m(font());
+  std::string err;
+  REQUIRE(m.layout(1920, 1080, &err));
+
+  MenuView v = sample();
+  v.crumb = std::string(80, 'x');   // long enough to be clipped either way
+  m.set_view(v);
+  m.paint(c.s, nullptr);
+  const std::string crumb_no_mark = m.debug_texts()[0];
+
+  v.pill_mark = "no heartbeat";
+  m.set_view(v);
+  m.paint(c.s, nullptr);
+  const std::string crumb_with_mark = m.debug_texts()[0];
+  CHECK(crumb_with_mark.size() < crumb_no_mark.size());
+}
+
 TEST(clean_air_bars_follow_the_bands) {
   CHECK(MenuLayer::clean_air_bars(0.0) == 5);
   CHECK(MenuLayer::clean_air_bars(4.9) == 5);

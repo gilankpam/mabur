@@ -93,8 +93,13 @@ real values.
 | Row | Owner | Live key(s) | Notes |
 |---|---|---|---|
 | **Video** | | | |
+| `video.camera` "Camera mode" | drone | `VENC_MODE` | Choices are binned sizes then native sizes, for every rate the display shows (every rate with no connector modes); each 120 fps choice notes "letterboxed 2.1:1". The drone's current value is pulled to the front when it is off that list, noted "display can't show" and unpickable if its rate is one the display cannot show at all (`keep_current_if_unpickable`), else picked straight through. Confirm/apply drag `REC_FPS` down first when the onboard recorder is on and set above the new rate. |
+| `video.fix` "Fix: set camera to …" | drone | `VENC_MODE` (+ `REC_FPS`) | Visible only while the camera's own rate is one the display cannot show; targets the display-shown rate in `60/90/100/120` nearest the camera's (a tie keeps the higher rate), at the camera's own size when that rate's sensor mode offers it, else that mode's first size. Same drag/confirm as Camera mode. |
 | `video.display` "Display" | player | `screen_mode` | Choices: `auto` (largest size at the camera's rate) or a `WxH` the display offers within the camera's rate. Confirm: splits a running burned recording. Warns `≠ camera` only when the display has modes but none at the camera's rate — not when the mode list itself is empty (a failed EDID read warns nothing). |
 | `video.colour` "Colour correction" | player | `colortrans.enable` | On/off. Confirm: splits a running burned recording. |
+| `video.mirror` "Mirror" | drone | `VENC_MIRROR` | On/off. Flips the picture left-right, for a camera mounted mirrored. |
+| `video.flip` "Flip" | drone | `VENC_FLIP` | On/off. Flips the picture upside down, for a camera mounted upside down. |
+| `video.slices` "Row slices" (advanced) | drone | `VENC_SLICES` | On (4) / Off (1); any stored value above 1 reads On. |
 | **Link** | | | |
 | `link.width` "Width" | gs | `link.static_bw` (fixed) or `link.ladder` (adaptive) | 40/20 MHz. Under a fixed rate this only re-pins the width. Under adaptive it loads that width's default ladder (MCS 0,1,2,3,4 at 0.50/0.25 bw 40; MCS 0,1,2,3,4,5 at 0.50/0.25 bw 20, the bundle default) unless the live ladder is already one of those two tables, with a confirm naming the rung count. |
 | `link.rate` "Rate" | gs | `link.static_mcs` (+ `static_bw`/`static_overhead_base`/`static_overhead_enh` into fixed) | Adaptive/Fixed. Switching to fixed sends the current rung's width and FEC overhead, then MCS last (capped at 5), so the link moves once; switching to adaptive is one set, `static_mcs = -1`, re-entering the ladder on that rung. |
@@ -103,24 +108,31 @@ real values.
 | `link.fec_enh` "FEC enh" (fixed only) | gs | `link.static_overhead_enh` | 0.10–base step 0.05. |
 | `link.ladder` "Ladder" (advanced) | gs | `link.ladder` | One `R<i>` group per rung: MCS (0–5), Width (40/20), FEC base/enh, Move up, Move down, Delete rung (confirm; refused at one rung left), plus "+ Add rung" below 8 rungs (copies the last rung, MCS+1 capped at 5). Every rung edit re-sends the whole ladder — the live key takes it as one unit. |
 | `link.nack` "Retransmit (NACK)" (advanced) | gs | `link.nack.enable` | On/off. |
+| `link.bitrate` "Max bitrate" | drone | `ENC_BITRATE_MAX` | 1–100 Mb/s step 1; the wire key is kbps. |
+| `link.airtime` "Airtime share" (advanced) | drone | `ENC_AIRTIME` | 5–100 % step 5; the wire key is a 0–1 fraction. |
+| `link.ldpc` "LDPC coding" (advanced) | drone | `RADIO_LDPC` | On/off. Keeps its applied row's `status` text amber in the help line (`warn_after_ok`) rather than a plain "✓ saved" once the set lands `accepted` with a non-empty status — the drone's calibration ties a wall-margin note to this flag. |
 | **Recording** | | | |
-| `rec.target` "REC records to" | player | `dvr.target` | GS / VTX SD card / Both. Saved text is "✓ at next recording" (2200 ms) while a recording runs, else "✓ saved" (1300 ms) — same rule on every recording row below. |
+| `rec.target` "REC records to" | player | `dvr.target` | GS / VTX SD card / Both. Saved text is "✓ at next recording" (2200 ms) while a recording runs, else "✓ saved" (1300 ms) — same rule on every recording row below. Warns "SD recorder off" while routed at least partly to the VTX SD card (`vtx`/`both`) and `REC_ENABLE == "0"`. |
 | `rec.mode` "GS recording" | player | `dvr.mode` | Burned (with OSD) / Raw (as received); hidden when `dvr.target` does not record to the GS. |
 | `rec.burn.bitrate` "Bitrate" (advanced) | player | `dvr.burned.bitrate_kbps` | 2–20 Mb/s step 1; visible only in burned mode. |
 | `rec.burn.every` "Frame rate" (advanced) | player | `dvr.burned.every` | Every 1st–4th frame, labelled in fps once the running mode is known; visible only in burned mode. |
 | `rec.burn.size` "Size" (advanced) | player | `dvr.burned.size` | Same as video / 1920×1080 / 1280×720 / 2560×1440; visible only in burned mode. |
+| `rec.vtx` "VTX SD recorder" | drone | `REC_ENABLE` | On/off; confirms the rebuild pause. |
+| `rec.vtx.bitrate` "SD bitrate" | drone | `REC_BITRATE` | 2–80 Mb/s step 1; the wire key is kbps. Visible only while `rec.vtx` is on. |
+| `rec.vtx.fps` "SD frame rate" | drone | `REC_FPS` | The camera's own fps and its whole divisors ≥ 30, descending, plus the drone's current value first when it is off that list. Visible only while `rec.vtx` is on. |
+| `rec.vtx.size` "SD size" | drone | `REC_SIZE` | The camera's own sensor mode's sizes (`WxH`), the camera's own size appended when it is off that list, plus the drone's current value first when it is off the resulting list. Visible only while `rec.vtx` is on. |
 | **OSD** | | | |
 | `osd.gs` "Link stats bar" | player | `osd.gs.enable` | On/off. Confirm: splits a running burned recording, only when turning ON (turning an overlay off never splits — the composer's erase reaches the recorder's canvas directly). |
-| `osd.fc` "Flight controller OSD" | player + gs | `osd.enable` + `msp.enable` | On/off, shown as `mixed` (with a help line naming which half is off) when the render and maburgs' MSP feed disagree; picking On or Off sends both. |
+| `osd.fc` "Flight controller OSD" | player + gs | `osd.enable` + `msp.enable` | On/off, shown as `mixed` (with a help line naming which half is off) when the render and maburgs' MSP feed disagree; picking On or Off sends both. Warns "FC link off" while the drone's own `MSP_ENABLE == "0"` (nothing feeds the OSD even with the render on). |
+| **Power & FC** | | | |
+| `power.lowpwr` "Low power when disarmed" | drone | `LOWPWR_ENABLE` (+ `MSP_ENABLE`) | On/off. Turning it on while `MSP_ENABLE == "0"` sends `MSP_ENABLE=1` first (confirm "Also turns the FC link on.") — low power needs the FC link for arm state. |
+| `power.msp` "FC link (MSP)" | drone | `MSP_ENABLE` (+ `LOWPWR_ENABLE`) | On/off. Turning it off while `LOWPWR_ENABLE == "1"` sends `LOWPWR_ENABLE=0` first (confirm "Also turns Low power off.") — low power depends on this link. |
 | **System** | | | |
 | `sys.adv` "Show advanced settings" | player | `menu.show_advanced` | On/off; shows the rows marked (advanced) above in every group. |
 | `sys.size` "Menu size" | player | `menu.scale` | Normal / Large / Larger (×1, ×1.25, ×1.5). Previews live: while its picker is open the whole menu is drawn at the size under the cursor (`MenuModel::preview`), nothing written; ◀ or a held ◀ drops back to the saved size, ▶ saves it — and the menu stays at the picked size while that set runs, so it never flicks back to the old size before the save lands. |
 | `sys.debug` "Debug log" | gs | `debug_log.enable` | On/off. |
 
-**Not covered yet:** a `Channel` group, a `Calibration` group, and any
-row owned by the drone. `MenuNode::owner = Owner::kDrone` is a real value
-the model understands, but `MenuApplier::start` refuses outright any row
-carrying a drone-owned step — there is no drone setter wired up yet.
+**Not covered yet:** a `Channel` group and a `Calibration` group.
 
 ## Applying a row
 
@@ -137,10 +149,37 @@ answered `err` or timed out.
   (`docs/gs-live-config.md` "Protocol").
 - A GS-owned step goes through `GsLiveSetter`, an ordinary
   `LiveUdpClient` exchange to maburgs' 8402.
+- A drone-owned step goes through `DroneLiveSetter`, over its own
+  `LiveUdpClient` to the same 8402 (so its reply never collides with a
+  GS step's or the view refresh's own exchange). Its `vtx set <PARAM_ID>
+  <value>` only confirms the line was sent (`ok`) or refused outright
+  (`err <why>`); the actual outcome is read back later from
+  `link.vtx.rows[]` (`docs/observability.md` "`link.vtx`"). `DroneSetWatch`
+  (`menu_apply.h`) is the settle rule: a set is taken as settled by the
+  row's next terminal state once any of — the watch has seen the row
+  leave idle (`sending`/`in_progress`) since the set began; the row's
+  result time on maburgs' own clock (the sideport's `t_ms` minus the
+  row's `age_ms`) reads later than the one in the snapshot taken at
+  submit; or the row carried no result at all before the submit. A bare
+  "the age got smaller" comparison is kept only as the fallback for a
+  peer that never exported `t_ms` on one side or the other — on its own
+  it is not trustworthy, since a result that was already very recent at
+  submit (say 50 ms old) can be followed by a genuinely new result that
+  still reads a *bigger* age (150 ms, off a datagram that arrived later)
+  while still being the later event; only the absolute result time tells
+  the two apart. A stale sideport or `link.vtx.linked == false` mid-wait
+  ends the step at "link lost"; a `failed`/`unsupported` row ends it at
+  the row's own `status` text (or "refused" when that's empty);
+  `timeout` ends it at "no answer" — same wording, same `kErrorMs`
+  display, as any other owner's failure.
 - A step that gets no reply inside `LiveUdpClient::kReplyTimeoutMs`
   (8 s) ends the row at "No answer — it may not have applied", shown for
   `MenuModel::kErrorMs` (6000 ms), and releases every owner the row's
-  steps had locked — the next set on that owner can start at once.
+  steps had locked — the next set on that owner can start at once. A
+  drone step's own wait on the sideport is capped separately, at
+  `DroneLiveSetter::kDroneSettleMs` (30 s) — a backstop only, since the
+  client's own reply deadline above always ends the "was it sent" half
+  first.
 - A row's lock covers every owner its own steps touch, not only its own
   (`osd.fc`'s On/Off touches both player and GS). Pressing a row that
   needs an owner still locked toasts "One GS change at a time" / "One
@@ -148,6 +187,28 @@ answered `err` or timed out.
 - A settled row shows "✓ saved" (or its own `saved_text`, such as the
   recording rows' "✓ at next recording") for `MenuModel::kSavedMs`
   (1300 ms) or `kSavedLongMs` (2200 ms) respectively.
+- Any drone-owned row refuses with "Needs the drone linked" while the
+  session is unlinked, checked first, before the row's own `refuse`
+  (`MenuModel::press_right`). Linked, each drone row still carries
+  `drone_refuse` (`menu_tree.cpp`): a drone/GS table mismatch
+  (`link.vtx.table_mismatch`) refuses every drone row with "Drone
+  settings differ from this GS — update", and a row whose own parameter
+  has never answered refuses with "Reading the drone's settings…" until
+  it has, or with "This setting did not answer." once `link.vtx.list`
+  has already settled "partial" — the dump is done, not still arriving,
+  so a row that never got a value is done waiting too. A refused row is
+  dimmed and reads "—"; its ▶ toasts the refuse text instead of opening a
+  picker, and the same text is its help line while selected.
+- The drone group's header line under the crumb (`drone_header`,
+  `MenuModel::set_header`) carries the same table-mismatch and
+  still-reading texts for the whole group, plus "Some settings did not
+  answer." once a fetch gave up with `link.vtx.list == "partial"`; it
+  reads empty with no snapshot, a stale session, no `link.vtx` block, or
+  once every row has landed. An amber mark beside the link pill
+  (`drone_pill_mark`, `MenuModel::set_pill_mark`) reads "no heartbeat"
+  once the drone is linked but its MAVLink heartbeat has lapsed
+  (`link.vtx.alive == false`) — not before the first heartbeat has ever
+  arrived on this link, which is not itself a fault.
 
 ## The GS view refresh
 
@@ -180,18 +241,41 @@ applying and the client is idle.
 
 ## Display follows the camera
 
+The camera rate every piece below judges by -- the follow rule, the
+Video `Display` row's own `camera_hz` dependency, and the menu's
+`camera_hz_now()` -- is `follow_camera_hz` (`display_follow.h`): the fps
+of the drone's reported `VENC_MODE` once the sideport holds one,
+overriding the decode pump's own measured cadence outright, with no
+cross-check between the two. The reported mode wins because the measured
+rate lags a real camera change by a whole averaging window and reads low
+under loss; with no sideport, or no `VENC_MODE` value yet, the measured
+rate is all there is. The mismatch banner (below) prints this same rate.
+
+The Camera mode row never writes `screen_mode` itself: its own steps
+(`camera_steps`, `menu_tree.cpp`) are drone-only -- `REC_FPS` (when
+dragging it down) then `VENC_MODE` -- so a camera-mode change only moves
+the display because `DisplayFollower` below picks up the new reported
+rate on its next one-second window and rebuilds to it on its own.
+
 `DisplayFollower` (`display_follow.h`) judges, once a second, whether the
 presenter should move to a different connector mode — never while
 `screen_mode` is pinned to `WxH@R`, never while the drone reports low
 power (it drops its own fps on purpose; the screen should sit still),
-never before the camera's rate has been measured, and never with an empty
+never before a camera rate is known, and never with an empty
 mode list (a failed EDID read keeps the running mode rather than looping
 the presenter rebuild forever). Otherwise it follows whenever the running
 mode does not fit the want, is smaller than the pick, or sits further
 from the camera's rate than the pick does — so `"auto"` also climbs to a
 larger mode at a rate the panel already runs, not only on an outright
-mismatch. A rebuild only fires once three consecutive one-second windows
-agree on the same target mode, so one bad window (a fade, a camera change
+mismatch. A plain `WxH` want (a pinned size, not a pinned `WxH@R`) is kept
+as that exact size while some mode offers it at the camera's rate; when
+no mode at that rate matches it but some other mode there does, the
+window judges the want as `auto` instead for that pick — the largest
+mode at the camera's rate, with no mismatch — since the display cannot
+honour that exact size at the new rate (`follow_display`'s own `kSize`
+handling, `display_follow.h`). A rebuild only fires once three
+consecutive one-second windows agree on the same target mode, so one bad
+window (a fade, a camera change
 mid-window) never blanks the screen by itself; a rebuild whose presenter
 then lands on some other mode is not reissued for that target until the
 pick settles or moves elsewhere. The rate a presenter build resolves
@@ -201,7 +285,8 @@ to the low-power rate.
 
 Video's `Display` row's "≠ camera" warning uses the same distinction: it
 says nothing when the mode list is simply empty, and warns only when the
-display has modes but none of them sit at the camera's measured rate.
+display has modes but none of them sit at the camera's rate (the same
+reported-first `follow_camera_hz` the follow rule itself uses).
 
 **The same mismatch drives the menu's banner,** not only the `Display`
 row's warning -- but only when the menu itself is on (buttons wired, or
@@ -210,11 +295,14 @@ OSD fps cell's own mismatch mark. Each one-second window that finds a
 mismatch (and does not itself trigger a rebuild) sets the banner to:
 
 ```
-⚠ Camera <src> fps — this display has no <src> Hz mode. Showing at <shown> Hz (judder).
+⚠ Camera <cam> fps — this display has no <cam> Hz mode. Showing at <shown> Hz (judder).
 ```
 
-(`<src>` the camera's measured rate, `<shown>` the rate the running mode
-actually shows at; `main.cpp`, the display-follow window). The banner is
+(`<cam>` the rate the window judged the mismatch on, the reported-first
+`camera_hz_now()` above, so the banner never reads `Camera 0 fps` in the
+first second of a link while the measured cadence is still empty;
+`<shown>` the rate the running mode actually shows at; `main.cpp`, the
+display-follow window). The banner is
 cleared at the start of every window and only re-set when that window
 still finds a mismatch, so it tracks the condition window to window; it
 is unrelated to the three-window agreement a rebuild itself needs. The
@@ -315,23 +403,79 @@ neither verb ever lies with an `ok` the menu cannot act on
   mid-write; answers `ok /tmp/maburplay-osd.pam`, or `err no osd
   surface` before the first real frame.
 
+### Linked-drone walk-through
+
+A manual check of the drone rows end to end, run from a shell on the GS
+(`ssh root@$GS`) with the drone linked and `MABUR_MENU_DEBUG=1` set in
+maburplay's environment. BusyBox `nc -u -w1` on the GS never returns
+after the reply, so send each line with a small UDP helper instead:
+
+```
+udp() { python3 -c 'import socket,sys; s=socket.socket(2,2); s.settimeout(3); s.sendto(sys.argv[2].encode(),("127.0.0.1",int(sys.argv[1]))); print(s.recv(65536).decode())' "$@"; }
+```
+
+Open the menu first: hold ▶ on the goggles, or `udp 8403 'key right
+hold'` (a tap on ▶ while closed only toasts "Hold ▶ to open the menu").
+
+a. `udp 8403 view` right after link-up: the
+   Video group's drone rows carry real values and the header line reads
+   empty (the table has already settled); caught mid-fetch instead it
+   reads "Reading the drone's settings…".
+b. Queue Mirror's row, ▶, confirm: the row settles "✓ saved", the
+   picture flips, and `tools/bench/ausniff.py` shows the rebuild gap
+   followed by zero resyncs.
+c. Camera mode → a native 1920×1080 choice at the display's own rate:
+   "✓ saved", the display stays at that rate, and the picked zoom shows
+   in the choice's own label.
+d. Low power when disarmed On with the FC link off: the confirm reads
+   "Also turns the FC link on.", the row goes "applying 1/2" then
+   "2/2", and both rows read On once it settles.
+e. VTX SD recorder On: the three sub-rows (SD bitrate, SD frame rate, SD
+   size) appear once the re-list after the set lands.
+f. `udp 8402 'vtx set ENC_BITRATE_MAX abc'` answers `err bad value for int32` straight from maburgs' own
+   refusal (`ParamClient::set`), before any `DroneSetWatch` is even
+   armed, and leaves the menu's own rows untouched.
+g. Power the drone off mid-set: the row ends either at "No answer — it
+   may not have applied" (`LiveUdpClient::kReplyTimeoutMs`, 8 s) or
+   `err link lost` (the sideport going stale, caught by
+   `DroneSetWatch::check`); either way the next drone row is usable
+   again once the drone relinks.
+
 ## Where the code lives
 
 `menu_model.h`/`.cpp` — the pure state machine: button events in, a
 `MenuView` and the `SetStep`s to run out. `menu_tree.h`/`.cpp` — the rows
-themselves, built from live state through `MenuTreeDeps`. `menu_layer.h`/
-`.cpp` — paints a `MenuView` into the OSD surface. `menu_apply.h`/`.cpp`
-— runs a row's steps against the player's own live-config engine or
-maburgs' 8402. `menu_session.h`/`.cpp` — ties button events, the applier
-and the GS view refresh together, and owns the `maburplay: menu: open` /
-`close` log lines. `button_bank.h`/`.cpp` and `key_timer.h`/`.cpp` — the
-five GPIO lines and their gesture timing. `gs_live_view.h`/`.cpp` —
-parses maburgs' `get` dump. `display_follow.h` — the display-follows-
-camera rule. `menu_view_feed.h` — paces `MenuModel::view()` for the
-presentation loop. `menu_debug.h`/`.cpp` — the `MABUR_MENU_DEBUG` verbs.
-`splash_menu.h` — the menu-before-any-video decision rule
-(`SplashMenuGate`, "Before the first video frame" above);
-`DrmPresenter::set_osd_over_splash()`/`commit_osd_if_pending()`
-(`drm_presenter.h`/`.cpp`) act on it. Wiring (opening the bank, loading
-the GS font the menu borrows, claiming the OSD plane, the startup/debug
-log lines) is in `gs/player/src/main.cpp`.
+themselves, built from live state through `MenuTreeDeps`, including the
+drone rows' `drone_choice`/`drone_bool`/`drone_number`, their shared
+`drone_refuse`, and the `drone_header`/`drone_pill_mark` pair the group
+header and link-pill mark read. `menu_layer.h`/`.cpp` — paints a
+`MenuView` into the OSD surface. `menu_apply.h`/`.cpp` — runs a row's
+steps against the player's own live-config engine, maburgs' 8402, or the
+drone: `DroneLiveSetter` is the drone side of that, and `DroneSetWatch`
+inside it is the sideport settle rule ("Applying a row" above).
+`menu_session.h`/`.cpp` — ties button events, the applier and the GS view
+refresh together, and owns the `maburplay: menu: open` / `close` log
+lines. `button_bank.h`/`.cpp` and `key_timer.h`/`.cpp` — the five GPIO
+lines and their gesture timing. `gs_live_view.h`/`.cpp` — parses maburgs'
+`get` dump. `display_follow.h` — the display-follows-camera rule,
+including `follow_camera_hz`'s reported-mode-first pick. `menu_view_feed.h`
+— paces `MenuModel::view()` for the presentation loop. `menu_debug.h`/
+`.cpp` — the `MABUR_MENU_DEBUG` verbs. `splash_menu.h` — the
+menu-before-any-video decision rule (`SplashMenuGate`, "Before the first
+video frame" above); `DrmPresenter::set_osd_over_splash()`/
+`commit_osd_if_pending()` (`drm_presenter.h`/`.cpp`) act on it. Wiring
+(opening the bank, loading the GS font the menu borrows, claiming the OSD
+plane, the startup/debug log lines) is in `gs/player/src/main.cpp`.
+
+`common/include/mabur/camera_modes.h` — the drone's sensor-mode table
+(rate, binned/native, sizes, zoom label) the Camera mode row's choice
+list and labels are built from; shared with the web VTX tab's own copy of
+the same table, kept equal by a test. `gs/src/param_host.h`/`.cpp`
+(maburgs) — `ParamHost`, the hosted MAVLink parameter client against the
+drone's component: the `link.vtx` sideport block this whole menu reads
+(`docs/observability.md` "`link.vtx`"), and the `vtx set` verb it answers
+on 8402 (`docs/gs-live-config.md` "Protocol"). Each submitted set and its
+terminal outcome reach maburgs' stderr as `maburgs: vtx set <ID> <text>`
+and `maburgs: vtx <ID> accepted` / `maburgs: vtx <ID> failed <status>`
+(`ParamHost::take_log_lines`) — a link drop mid-set that never reaches a
+terminal state logs nothing there.

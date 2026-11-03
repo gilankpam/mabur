@@ -64,6 +64,7 @@
 #include "mabur/sw_wire.h"
 #include "mabur/uep_encoder.h"
 #include "msp_sink.h"
+#include "param_host.h"
 #include "pts_anchor.h"
 #include "probe_log.h"
 #include "fec_log.h"
@@ -1017,6 +1018,11 @@ static int run_radio(const maburgs::Config& cfg, const std::string& cfg_path) {
   int mav_tick_card = 0;
   uint64_t mav_rx_ms = 0;      // the clock of the T_MAV frame being delivered
   uint32_t mav_vtx_seen = 0;   // the session the CAP_MAVLINK check last ran for
+  // Wired to the ParamHost below once it exists. The deliver lambda sits
+  // inside mav_tunnel's own constructor call, textually ahead of that
+  // declaration, but nothing drives a packet through it until the main
+  // loop starts -- long after both objects are built.
+  maburgs::ParamHost* param_host = nullptr;
   maburgs::MavTunnel mav_tunnel(
       cfg.link.key,
       [&](std::vector<uint8_t> frame) {
@@ -1031,12 +1037,23 @@ static int run_radio(const maburgs::Config& cfg, const std::string& cfg_path) {
       [&](const uint8_t* b, size_t n) {
         mav_ep.send_to_peer(b, n);
         maburgs::feed_cal_packet(cal_session, b, n, mav_rx_ms);
+        if (param_host) param_host->on_packet(b, n, mav_rx_ms);
       },
       [&](std::vector<uint8_t> frame) {
         maburgs::SlotFrame sf{std::move(frame), 0, mav_tick_card, false};
         sf.offered_ms = mav_tick_ms;
         send_control_frame(sf);
       });
+  // maburgs hosts the drone's parameter client rather than just relaying
+  // it: the MAVLink endpoint's session state -- the one peer, its
+  // vtx_nonce -- already lives here, so the client's list/set state can
+  // live here too, reached by the player only over the loopback live-
+  // config port.
+  maburgs::ParamHost params([&](const uint8_t* p, size_t n) { mav_tunnel.push_outbound(p, n); });
+  param_host = &params;
+  cfg_ctl.extra_verb = [&](const std::string& v, const std::string& r) {
+    return params.handle_verb(v, r, mono_ms());
+  };
   agg.set_rc_sink([&](uint8_t, const std::vector<uint8_t>& f, uint64_t us) {
     if (mabur::rc::frame_type(f.data(), f.size()) == mabur::rc::T_MAV) {
       mav_rx_ms = us / 1000;
@@ -1476,6 +1493,11 @@ static int run_radio(const maburgs::Config& cfg, const std::string& cfg_path) {
           std::fprintf(stderr, "maburgs: mavlink: drone lacks CAP_MAVLINK\n");
       }
       mav_tunnel.set_session(mav_ctx);
+      // vtx_nonce 0 while unlinked: the same "no drone to list" value
+      // mav_ctx itself carries above.
+      params.tick(mav_linked, mav_ctx.vtx_nonce, drained_ms);
+      for (const std::string& line : params.take_log_lines())
+        std::fprintf(stderr, "maburgs: %s\n", line.c_str());
       mav_ep.poll(mav_tunnel);
       mav_tick_ms = drained_ms;
       mav_tick_card = sel.selected();
@@ -1939,6 +1961,7 @@ static int run_radio(const maburgs::Config& cfg, const std::string& cfg_path) {
         sin.mav.peer = mav_ep.has_peer();
       }
       sin.cal = maburgs::cal_sideport(cal_session);
+      sin.vtx = params.sideport(drained_ms);
       // link.nack: take_window() is destructive; safe here because the
       // block runs only on a poll that will emit.
       if (nack_on) {

@@ -84,6 +84,10 @@ bool LiveUdpClient::send_get(const std::string& key, uint64_t now_ms, std::strin
   return send(key.empty() ? "get" : "get " + key, now_ms, why);
 }
 
+bool LiveUdpClient::send_line(const std::string& line, uint64_t now_ms, std::string* why) {
+  return send(line, now_ms, why);
+}
+
 std::optional<LiveReply> LiveUdpClient::poll(uint64_t now_ms) {
   if (!in_flight_) return std::nullopt;
   if (fd_ >= 0) {

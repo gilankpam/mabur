@@ -55,6 +55,13 @@ TEST(find_compares_at_most_16_bytes) {
 TEST(mav_type_values) {
   CHECK(mav_type(Type::Bool) == 1 && mav_type(Type::Int32) == 6 && mav_type(Type::Real32) == 9 && mav_type(Type::Str) == 11);
 }
+TEST(render_mode_text_round_trips_parse_mode_text) {
+  CHECK(render_mode_text(100, 1280, 720, true) == "100@1280x720/binned");
+  CHECK(render_mode_text(60, 1920, 1080, false) == "60@1920x1080/native");
+  int fps, w, h; bool b;
+  REQUIRE(parse_mode_text(render_mode_text(90, 1728, 972, true), &fps, &w, &h, &b));
+  CHECK(fps == 90 && w == 1728 && h == 972 && b);
+}
 TEST(apply_column_matches_the_mavlink_doc) {
   CHECK(kTable[0].apply == Apply::Reprogram && kTable[1].apply == Apply::Reprogram);   // RADIO_*
   CHECK(kTable[2].apply == Apply::Rebuild && kTable[3].apply == Apply::Rebuild);        // VENC_MODE, VENC_SLICES

@@ -52,6 +52,26 @@ std::optional<int64_t> integer64(const json& o, const char* key) {
   if (it == o.end() || !it->is_number_integer()) return std::nullopt;
   return it->get<int64_t>();
 }
+
+std::optional<std::string> str(const json& o, const char* key) {
+  if (!o.is_object()) return std::nullopt;
+  auto it = o.find(key);
+  if (it == o.end() || !it->is_string()) return std::nullopt;
+  return it->get<std::string>();
+}
+
+bool boolean(const json& o, const char* key) {
+  if (!o.is_object()) return false;
+  auto it = o.find(key);
+  return it != o.end() && it->is_boolean() && it->get<bool>();
+}
+
+std::optional<bool> boolean_opt(const json& o, const char* key) {
+  if (!o.is_object()) return std::nullopt;
+  auto it = o.find(key);
+  if (it == o.end() || !it->is_boolean()) return std::nullopt;
+  return it->get<bool>();
+}
 }  // namespace
 
 bool parse_gs_snapshot(const char* data, size_t n, GsSnapshot* out) {
@@ -66,6 +86,12 @@ bool parse_gs_snapshot(const char* data, size_t n, GsSnapshot* out) {
     return false;  // counted by the caller; never propagated
   }
   if (!j.is_object()) return false;
+
+  // Top-level t_ms (maburgs' own monotonic ms at export): the reference a
+  // vtx row's age_ms counts back from. Negative or wrong-typed drops it,
+  // same contract as every other field.
+  if (const std::optional<int64_t> t = integer64(j, "t_ms"); t && *t >= 0)
+    out->t_ms = static_cast<uint64_t>(*t);
 
   // scan.pick (the boot pick, or the pin in pinned mode) is captured here,
   // top-level like `hop`, and consumed once the `link` block below has
@@ -189,6 +215,37 @@ bool parse_gs_snapshot(const char* data, size_t n, GsSnapshot* out) {
           out->fec_pct = *ov * 100.0;
       }
     }
+    // link.vtx (ParamHost, docs/observability.md "link.vtx"): the hosted
+    // MAVLink parameter client's view of the drone's settings. Absent, or
+    // present but not an object (a foreign/future maburgs), both leave
+    // out->vtx empty -- never a default-constructed VtxState, so the menu
+    // can tell "no block" from "block exported empty".
+    if (const auto vit = link->find("vtx"); vit != link->end() && vit->is_object()) {
+      const json& v = *vit;
+      VtxState vs;
+      vs.linked = boolean(v, "linked");
+      vs.alive = boolean_opt(v, "alive");
+      vs.table_mismatch = boolean(v, "table_mismatch");
+      if (const std::optional<std::string> list = str(v, "list")) vs.list = *list;
+      if (const std::optional<int> pending = integer(v, "pending")) vs.pending = *pending;
+      if (const auto rit = v.find("rows"); rit != v.end() && rit->is_array()) {
+        for (const json& r : *rit) {
+          if (!r.is_object()) continue;
+          // A row missing its id is meaningless -- there is nothing to
+          // key it on -- so it is skipped rather than kept half-blank.
+          const std::optional<std::string> id = str(r, "id");
+          if (!id) continue;
+          VtxRow row;
+          row.id = *id;
+          row.value = str(r, "value");
+          if (const std::optional<std::string> st = str(r, "st")) row.st = *st;
+          if (const std::optional<std::string> status = str(r, "status")) row.status = *status;
+          row.age_ms = integer64(r, "age_ms");
+          vs.rows.push_back(std::move(row));
+        }
+      }
+      out->vtx = std::move(vs);
+    }
   }
 
   if (j.contains("cards") && j["cards"].is_array()) {
@@ -215,6 +272,23 @@ bool parse_gs_snapshot(const char* data, size_t n, GsSnapshot* out) {
     }
   }
   return true;
+}
+
+const VtxRow* vtx_row(const GsSnapshot& s, const char* id) {
+  if (!s.vtx || !id) return nullptr;
+  for (const VtxRow& row : s.vtx->rows)
+    if (row.id == id) return &row;
+  return nullptr;
+}
+
+std::optional<std::string> vtx_value(const GsSnapshot& s, const char* id) {
+  const VtxRow* row = vtx_row(s, id);
+  if (!row) return std::nullopt;
+  return row->value;
+}
+
+bool vtx_terminal(const std::string& st) {
+  return st == "accepted" || st == "failed" || st == "unsupported" || st == "timeout";
 }
 
 }  // namespace maburplay
