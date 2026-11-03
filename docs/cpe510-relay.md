@@ -291,7 +291,7 @@ relay reboot or a lost `SCAN_RESULT` mid-sweep.
 
 **`hop.relay_burst_period_ms`** (default 1000, range 500–60000,
 `gs/src/config.{h,cpp}`, `gs/bundle/maburgs.default.toml`): `hop_burst_due()`
-uses this instead of `hop.dwell_period_ms` (333 ms) when the burst card is
+uses this instead of `hop.burst_period_ms` (333 ms) when the burst card is
 a relay — a 280 ms sweep every 333 ms in a sustained `Hold` would leave the
 relay deaf ~85 % of the time. The first burst after a trigger is still
 immediate, as for a USB burst.

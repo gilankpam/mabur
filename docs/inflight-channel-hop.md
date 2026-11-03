@@ -329,7 +329,7 @@ the target before the drone is there.
 (`ChannelCore::scout_loop_`) starts once the boot pick is closed and the
 boot scout owns no card, and only when `n_cards >= 2` and the GS is not
 pinned (`ChannelCore::step_drains_`). Pinned, it never starts and the spare
-card stays on diversity. Every `hop.dwell_period_ms` (333 ms):
+card stays on diversity. Every `hop.dwell_period_ms` (1000 ms):
 1. Card = `pick_inflight_scout()`.
 2. Channel = `InflightScout::next_candidate(fe.channel())`: round-robin over
    the **dwell set** — `radio.channels` in config order — skipping the
@@ -337,9 +337,13 @@ card stays on diversity. Every `hop.dwell_period_ms` (333 ms):
    per period whatever the set size.
 3. Wait for the next AU boundary on that card.
 4. `InflightScout::dwell()`: `FastRetune(candidate)` → discard read → arm
-   NHM, observe `hop.dwell_observe_ms` (5 ms) → real read (FA/CCA/frame
+   NHM, observe `hop.dwell_observe_ms` (20 ms) → real read (FA/CCA/frame
    counters, NHM busy) → `FastRetune(back)`.
 5. A `D` scan.log line with `sess=1` and the step timings.
+
+Cost: the spare card is off op for `dwell_observe_ms` plus two retunes,
+once a second — about 2.5 % of its time (was ~3 % at the old 5 ms observe
+every 333 ms, on the spur-free default channel set).
 
 `dwell()` checks **both** retunes. If either fails, the card's position is
 uncertain: it sets `kFlagRetuneFailed` and returns `false` without a
@@ -360,7 +364,7 @@ The burst holds `inflight_mu_`, keeping the periodic scout thread off the
 same `InflightScout`/`RadioFrontend`, and runs synchronously on the core
 thread, so it stalls RX processing while it runs.
 
-The period is `hop.dwell_period_ms` (333 ms) for a USB burst card and
+The period is `hop.burst_period_ms` (333 ms) for a USB burst card and
 `hop.relay_burst_period_ms` (1000 ms) for a relay. Without a rate limit a
 sustained `Hold` re-enters the burst on every ~10 ms control tick (neither
 `cooldown_ms` nor `max_hops_per_min` paces a hold that never orders), and a
@@ -781,7 +785,7 @@ DJI O4), `docs/findings/2026-09-25-analog-vtx.md` (one-card analog VTX) and
   the confirm. `blank_store` covers the rung store only.
 - **A one-card GS needs two freshness bursts before it can hop.** A
   channel needs 2 fresh visits to be ranked and the burst makes one per
-  channel, rate-limited to one per `dwell_period_ms`; the first trigger's
+  channel, rate-limited to one per `burst_period_ms`; the first trigger's
   burst leaves every candidate unranked and the controller holds
   (`hold_exhausted`) until the second, ~333 ms later.
 - **A one-card freshness burst takes the sole radio off air** for one dwell

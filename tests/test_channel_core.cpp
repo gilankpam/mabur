@@ -563,8 +563,12 @@ TEST(one_card_order_rides_repeats_then_retunes) {
   REQUIRE(r.has_value());
   CHECK(g.cards[0]->ch == r->hop_ch);        // the sole radio moved (mechanical retune)
   CHECK(g.sink.has_move(MoveReason::HopOneCard));
+  // Upper bound widened from 400: dwell_observe_ms (20 ms, up from 5 ms)
+  // lengthens the one-card ranking burst itself (3 candidates observed per
+  // burst), pushing the order a little later and phase-shifting it against
+  // vrx's own RCF/DISC cadence during the repeats that follow.
   for (auto& e : g.sink.hops)
-    if (e.kind == "one_card_retune") CHECK(e.elapsed_ms >= 200 && e.elapsed_ms <= 400);
+    if (e.kind == "one_card_retune") CHECK(e.elapsed_ms >= 200 && e.elapsed_ms <= 600);
   g.core->note_video(r->hop_ch);
   g.tick(true);
   CHECK(g.sink.has_hop("lead_confirm"));
@@ -848,10 +852,14 @@ TEST(shutdown_joins_threads_and_is_idempotent) {
   // scout thread measures for ~1 s, the pick freezes in place, the scout
   // parks, and the in-flight thread starts and dwells on the non-TX card
   // every dwell_period_ms; shutdown() must join both. (Pinned would start
-  // no in-flight thread at all.)
+  // no in-flight thread at all.) dwell_period_ms is overridden to 200 ms
+  // (below the bundle's 1000 ms default) so the post-shutdown sleep below
+  // comfortably outlasts one period -- a thread left running would dwell
+  // again well inside it.
   Config cfg = bundle();
   cfg.radio.channels = {40, 64}; cfg.radio.width = 40;
   cfg.radio.scan.max_ms = 1000;
+  cfg.hop.dwell_period_ms = 200;
   FakeCard a, b; a.ch = b.ch = 40; a.width_mhz = 40; b.width_mhz = 20;
   std::vector<LinkCard*> ptrs{&a, &b};
   VrxController vrx(vrx_cfg_from(cfg, 40));
@@ -864,7 +872,7 @@ TEST(shutdown_joins_threads_and_is_idempotent) {
                    [](int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); });
   ChannelTickIn in; in.agg = &agg; in.in_session = true; in.tx_card = 0;
   // Up to 5 s of linked ticks: a dwell record drained from the in-flight
-  // thread proves that thread ran (dwell_period_ms is 333 in the bundle).
+  // thread proves that thread ran (dwell_period_ms is 200 here, see above).
   bool dwelt = false;
   for (int i = 0; i < 500 && !dwelt; ++i) {
     in.now_ms = static_cast<double>(now_ms());
@@ -1024,12 +1032,12 @@ TEST(relay_sweep_expired_across_session_drop_discards_late_result) {
 }
 
 // The relay burst paces on hop.relay_burst_period_ms (1000), not the USB
-// burst's dwell_period_ms: an empty result lands at once, and a burst 400 ms
-// after the first SCAN must not happen.
+// burst's hop.burst_period_ms: an empty result lands at once, and a burst
+// 400 ms after the first SCAN must not happen.
 TEST(relay_burst_waits_relay_burst_period_ms) {
   Rig g(0, 1);
   freeze_auto(g);
-  REQUIRE(g.cfg.hop.dwell_period_ms < 400);
+  REQUIRE(g.cfg.hop.burst_period_ms < 400);
   REQUIRE(g.cfg.hop.relay_burst_period_ms > 600);
   for (int i = 0; i < 5; ++i) g.tick(true);
   interfere(g, 3);
@@ -1042,17 +1050,37 @@ TEST(relay_burst_waits_relay_burst_period_ms) {
   CHECK(g.cards[0]->sweeps.size() == 1);
 }
 
-// Rebuild a relay-only rig's VrxController + core around another channel
-// set (start 40, n_usb 0).
-static void rebuild_with_set(Rig& g, std::vector<uint8_t> set) {
+// Rebuild a rig's VrxController + core around another channel set (start
+// 40), e.g. after mutating g.cfg.hop post-construction (ChannelCoreCfg
+// captures hop by value at construction time). n_usb defaults to 0 for the
+// relay-only callers below.
+static void rebuild_with_set(Rig& g, std::vector<uint8_t> set, int n_usb = 0) {
   g.cfg.radio.channels = std::move(set);
   g.core.reset();
   g.vrx = std::make_unique<VrxController>(vrx_cfg_from(g.cfg, 40));
   ChannelCoreCfg cc; cc.radio = g.cfg.radio; cc.hop = g.cfg.hop; cc.key = g.cfg.link.key;
-  cc.start_ch = 40; cc.n_usb = 0; cc.threaded = false; cc.store_name = "s";
+  cc.start_ch = 40; cc.n_usb = n_usb; cc.threaded = false; cc.store_name = "s";
   g.core = std::make_unique<ChannelCore>(cc, g.ptrs, *g.vrx, g.sink,
       [](uint8_t) { return true; }, [&g] { return g.clk.now_ms(); }, [&g] { return g.clk.now_us(); },
       [&g](int ms) { g.clk.sleep(ms); });
+}
+
+// Mirror of relay_burst_waits_relay_burst_period_ms for a USB burst card:
+// the burst paces on hop.burst_period_ms, not on the periodic dwell
+// thread's hop.dwell_period_ms.
+TEST(usb_burst_paces_on_burst_period_not_dwell_period) {
+  Rig g(2, 0);                       // two USB cards; the spare bursts
+  g.cfg.hop.dwell_period_ms = 5000;  // periodic dwell far slower than the burst
+  g.cfg.hop.burst_period_ms = 333;
+  rebuild_with_set(g, g.cfg.radio.channels, 2);   // ChannelCoreCfg captured hop by value at construction
+  freeze_auto(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  const size_t d0 = g.sink.dwells.size();
+  interfere(g, 3);                   // trigger live -> burst 1 (sess=1 D records)
+  const size_t d1 = g.sink.dwells.size();
+  REQUIRE(d1 > d0);
+  interfere(g, 3);                   // > 333 ms later, trigger still live -> burst 2
+  CHECK(g.sink.dwells.size() > d1);
 }
 
 TEST(relay_only_single_member_set_sends_no_scan) {

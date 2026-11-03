@@ -652,7 +652,7 @@ void ChannelCore::step_controller_(const ChannelTickIn& in) {
   const int burst_card = pick_burst_card(can_scout_, sweepable, in.tx_card);
   const bool relay_burst = burst_card >= 0 && !can_scout_[static_cast<size_t>(burst_card)] &&
                            sweepable[static_cast<size_t>(burst_card)];
-  const int burst_period = relay_burst ? cfg_.hop.relay_burst_period_ms : cfg_.hop.dwell_period_ms;
+  const int burst_period = relay_burst ? cfg_.hop.relay_burst_period_ms : cfg_.hop.burst_period_ms;
   if (reactive_ && !scout_owns_() && !relocation_owns && !sweep_.on &&
       hop_burst_due(hopc_.state(), last_verdict_out_.trigger, now_ms, last_burst_ms_, burst_period)) {
     const double prev_burst_ms = last_burst_ms_;

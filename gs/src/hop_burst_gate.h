@@ -13,7 +13,7 @@ namespace maburgs {
 //   - "no hop in flight" is Idle OR Hold (Ordered/Verifying excluded: a
 //     hop is actually in progress and the radio must not wander);
 //   - the trigger must be live this tick;
-//   - rate-limited to at most one burst per dwell_period_ms, checked
+//   - rate-limited to at most one burst per burst_period_ms, checked
 //     against the caller's own last_burst_ms (a sustained
 //     Hold re-enters on every core-loop tick with trigger latched true,
 //     and neither cooldown_ms nor max_hops_per_min paces a burst that
@@ -74,9 +74,9 @@ inline bool verdict_card_usable(bool ready, bool mid_dwell, uint8_t card_ch, uin
 }
 
 inline bool hop_burst_due(HopState state, bool trigger, double now_ms,
-                          double last_burst_ms, int dwell_period_ms) {
+                          double last_burst_ms, int burst_period_ms) {
   const bool hop_free = state == HopState::Idle || state == HopState::Hold;
-  return hop_free && trigger && (now_ms - last_burst_ms >= dwell_period_ms);
+  return hop_free && trigger && (now_ms - last_burst_ms >= burst_period_ms);
 }
 
 // Holds the link-pairing move edge (VrxController::take_move_edge()) for
