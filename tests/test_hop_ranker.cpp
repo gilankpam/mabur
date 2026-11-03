@@ -153,3 +153,32 @@ TEST(ranking_uses_only_the_newest_visit_source) {
   for (const auto& e : r.ranking(300))
     if (e.ch == 112) CHECK(e.visits == 2 && e.score == 180);
 }
+
+// ---- width_mhz = 40: NHM busy mean orders ahead of the frame-term score --
+// a 20 MHz-sized dwell's fa/cca/foreign see only the primary half of a 40
+// MHz pair, but NHM busy % reads the whole pair, so at 40 it goes first.
+TEST(at_40_lower_busy_mean_beats_lower_frame_score) {
+  HopRanker r(cfg(), BusyCfg{}, {120, 149, 165}, 0, 40);
+  for (int i = 0; i < 3; ++i) { r.add(bv(120, i * 300, 0, 40)); r.add(bv(149, i * 300, 30, 10)); r.add(bv(165, i * 300, 5, 25)); }
+  auto k = r.ranking(1000);
+  CHECK(k[0].ch == 149 && k[1].ch == 165 && k[2].ch == 120);   // busy 10 < 25 < 40 although 149's score is worst
+  CHECK(*r.best(1000, 0, {}) == 149);
+}
+TEST(at_20_order_is_unchanged_by_busy_mean) {
+  HopRanker r(cfg(), BusyCfg{}, {120, 149, 165}, 0, 20);
+  for (int i = 0; i < 3; ++i) { r.add(bv(120, i * 300, 0, 40)); r.add(bv(149, i * 300, 30, 10)); r.add(bv(165, i * 300, 5, 25)); }
+  auto k = r.ranking(1000);
+  CHECK(k[0].ch == 120 && k[1].ch == 165 && k[2].ch == 149);   // score order
+}
+TEST(no_busy_entries_sort_after_busy_entries_within_tier_at_40) {
+  HopRanker r(cfg(), BusyCfg{}, {120, 149}, 0, 40);
+  for (int i = 0; i < 3; ++i) { r.add(V(120, i * 300, 0)); r.add(bv(149, i * 300, 50, 30)); }
+  auto k = r.ranking(1000);
+  CHECK(k[0].ch == 149 && k[1].ch == 120);
+}
+TEST(blocked_tier_still_last_at_40) {
+  HopRanker r(cfg(), BusyCfg{}, {120, 149}, 0, 40);
+  for (int i = 0; i < 3; ++i) { r.add(bv(120, i * 300, 0, 60)); r.add(bv(149, i * 300, 90, 45)); }
+  CHECK(r.ranking(1000)[0].ch == 149);
+  CHECK(*r.best(1000, 0, {}, true) == 149);
+}

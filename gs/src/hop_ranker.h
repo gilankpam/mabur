@@ -41,18 +41,28 @@ struct HopRankEntry {
   // behind every non-blocked ranked channel, tiebroken by lower busy_pct.
   bool blocked = false;
   double busy_pct = 0;
+  // True when at least one fresh visit carried an NHM busy reading. At
+  // 40 MHz this orders entries with a reading ahead of entries without one,
+  // within a tier, before the score/boot-pick/config-order chain.
+  bool busy_valid = false;
 };
 
 // Ranks candidate channels by how busy recent brief visits found them, with
 // NHM-blocked channels (mean busy_pct >= radio.scan.blocked_pct) pushed
 // into their own tier below every non-blocked ranked channel, tiebroken by
-// lower busy_pct.
+// lower busy_pct. At 40 MHz a 20 MHz dwell's frame terms (fa/cca/foreign)
+// see the primary only, so within a tier entries carrying an NHM busy
+// reading rank ahead of entries without one, then by lower busy_pct, before
+// the score/boot-pick/config-order chain -- NHM busy % reads the whole pair
+// (`docs/findings/2026-11-03-ht40-dwell-secondary.md`), the frame terms do
+// not. At 20 MHz this busy-first ordering is skipped; score alone orders.
 // Pure: no I/O, no clock of its own -- the caller passes now_ms. No home:
 // `channels` is the full set; ties go to the boot-time pick, then config
 // order.
 class HopRanker {
  public:
-  HopRanker(HopCfg cfg, BusyCfg busy, std::vector<uint8_t> channels, uint8_t boot_pick);
+  HopRanker(HopCfg cfg, BusyCfg busy, std::vector<uint8_t> channels, uint8_t boot_pick,
+            uint8_t width_mhz = 20);
 
   void add(const HopVisit& v);
 
@@ -79,6 +89,7 @@ class HopRanker {
   BusyCfg busy_;
   std::vector<uint8_t> candidates_;   // config order, exactly as given
   uint8_t boot_pick_ = 0;
+  uint8_t width_mhz_ = 20;
   std::vector<std::deque<HopVisit>> visits_;   // one deque per entry in candidates_
 };
 

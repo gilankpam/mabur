@@ -403,7 +403,12 @@ to the `K` scan.log line), and only when the scan measured something (some
 channel reached `min_rounds`); until then `boot_pick` is 0 and ties fall
 straight to config order (`no_boot_pick_falls_through_to_config_order`).
 Candidates = `radio.channels`, the same set the boot scout ranks and
-`InflightScout` dwells on.
+`InflightScout` dwells on. At `radio.width = 40` (`HopRanker`'s
+`width_mhz` constructor argument, from `radio.width`), within a tier
+entries carrying an NHM busy reading rank ahead of entries without one,
+then by lower `busy_pct`, before the score/boot-pick/config-order chain
+— see "40 MHz" below. At 20 MHz this step is skipped and score alone
+orders (`at_20_order_is_unchanged_by_busy_mean`).
 
 **Blocked tier.** Each `HopVisit` carries an NHM busy reading
 (`busy_valid`/`busy_pct`, armed by `dwell()` for the observe span; no
@@ -417,12 +422,20 @@ score/boot-pick/config-order chain. A channel with no busy evidence ranks on
 score alone. `best()` with `require_unblocked` skips blocked entries; every
 hop target comes from that call (§5).
 
-**40 MHz.** At `radio.width = 40` dwells keep the 40 MHz tuning and score
-the primary only, and the ranker is built over the same primaries. Only
-`burst()` and in-flight dwells feed `HopRanker::add()`, both on primaries,
-and every member shares one `ht40_offset` (a config rule), which
-`FastRetune` keeps — so every ranked channel is a valid hop target. The
-per-half boot scan is `ChannelScout`'s alone (`docs/bw40.md`).
+**40 MHz.** At `radio.width = 40` dwells keep the 40 MHz tuning, so the
+`fa`/`cca`/`foreign` score terms see the primary only, and the ranker is
+built over the same primaries. Only `burst()` and in-flight dwells feed
+`HopRanker::add()`, both on primaries, and every member shares one
+`ht40_offset` (a config rule), which `FastRetune` keeps — so every ranked
+channel is a valid hop target. NHM busy % is not primary-only: a
+40-tuned card's busy reading is the max-of-halves energy over the whole
+pair, within 0.5 points of a 20 MHz dwell on either half
+(`docs/findings/2026-11-03-ht40-dwell-secondary.md`), so it is the first
+ranking term at 40 MHz, ahead of the frame-term score. `foreign` still
+never counts secondary frames — they are never decoded at 40 MHz — so it
+stays primary-only even where it still matters (the blocked tiebreak, the
+score tiebreak within a busy tier). The per-half boot scan is
+`ChannelScout`'s alone (`docs/bw40.md`).
 
 ## 4. Ladder interaction: restore the pre-onset rung
 
