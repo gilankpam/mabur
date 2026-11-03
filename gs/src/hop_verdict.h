@@ -79,7 +79,9 @@ struct VerdictOut {
   // episode that is the lead-in of either route to `interfered`: `blocked`
   // (the occupied route), or loss-impaired with this window's own foreign
   // reading >= hop.verdict.detect_pct (the earliest window a detect run can
-  // start from). Never again until the references thaw (3 healthy windows,
+  // start from), or `detected` itself (a detect run whose loss window read
+  // under detect_pct has no earlier lead-in). Never again until the
+  // references thaw (3 healthy windows,
   // or HopVerdict::reset() after a hop's verify window ends). This is the
   // edge the rung-store blank is scoped to -- see gs/src/hop_blank.h.
   // Either route is acted on only windows after its lead-in (the occupied

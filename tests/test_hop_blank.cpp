@@ -108,6 +108,26 @@ TEST(a_lossy_window_with_low_foreign_never_blanks) {
     CHECK(!hop_store_blank_until(o, true, 500).has_value());
   }
 }
+// A detect run whose loss window read under detect_pct (foreign 5) among
+// foreign-10 readings has no lossy lead-in to arm on: the window that first
+// reads `detected` arms the blank instead, so a detect-route hop never
+// reaches Order with the store unprotected.
+// Revert (drop `|| detected` from the lead-in): no window of the run arms.
+TEST(blank_opens_at_the_first_detected_window_when_the_loss_window_read_low) {
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
+  auto lossy = v.window(t, {low_busy(40), low_busy(40)}, {0.04, 80}, 5); t += 150;   // foreign 5: no lead-in
+  CHECK(lossy.ref_frozen);
+  CHECK(!hop_store_blank_until(lossy, true, 500).has_value());
+  VerdictOut o;
+  for (int i = 0; i < 2 * det_n() && !(o.evidence & kEvDetected); ++i, t += 150) {
+    o = v.window(t, {low_busy(45), low_busy(45)}, {0.0, 20}, 4);                     // foreign 10, clean
+    if (!(o.evidence & kEvDetected)) CHECK(!hop_store_blank_until(o, true, 500).has_value());
+  }
+  REQUIRE(o.evidence & kEvDetected);
+  CHECK(!(o.evidence & kEvWeak));
+  REQUIRE(hop_store_blank_until(o, true, 500).has_value());
+  CHECK(*hop_store_blank_until(o, true, 500) == o.t_ms + 500 + kHopSettleBlankMs);
+}
 // A weak blocked window is a fade: the ladder owns it, no blank.
 TEST(a_weak_blocked_window_never_blanks) {
   HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);

@@ -349,7 +349,12 @@ restore that rung (`thaw_is_held_while_the_ring_is_detecting`). In clean
 air the ring's median sits far under `detect_pct` and the hold never
 applies, a loss window in the ring or not
 (`references_thaw_after_three_healthy_windows`,
-`thaw_is_not_held_in_clean_air_with_a_loss_window_in_the_ring`).
+`thaw_is_not_held_in_clean_air_with_a_loss_window_in_the_ring`). The hold
+is decided at the third healthy window, when the run has put four readings
+in the ring (its loss window and three healthy ones); it protects
+`ref_rung` only while four readings are a reading majority over
+`detect_pct` — at the default `detect_windows` 5, yes; from about 8 up, no
+(Known limitations).
 
 The `occupied` consecutive-blocked count (`blocked_streak_`) is cleared
 only by `reset()` and `new_session()` — never at a hop's order or landing
@@ -990,6 +995,15 @@ DJI O4), `docs/findings/2026-09-25-analog-vtx.md` (one-card analog VTX) and
   one the minimum-across-cards rule hides, is never hopped from, however
   much video it costs — the engine does not track foreign frame or
   false-alarm rate at all, only NHM foreign airtime.
+- **The thaw hold stops protecting `ref_rung` at large `detect_windows`.**
+  When the thaw is decided (the third healthy window after a detect run's
+  loss window) the run has four readings in the ring. At `detect_windows`
+  8 or more, four readings are either under the ⌈`detect_windows`/2⌉
+  reading minimum (after a clear, from 9) or not a median majority over
+  the ring's older clean readings (from 8), so the hold lapses, the
+  references thaw, and the detected window re-freezes `ref_rung` at the
+  rung the ladder sank to — the hop restores that rung, not the pre-onset
+  one. The default 5 holds; config validation allows up to 100.
 - **One loss window makes a short detection.** At `detect_impaired` 1 the
   ring reads `detected` only while its loss window is inside it: a run
   with a single loss window gives `detect_windows − ⌈detect_windows/2⌉ + 1`

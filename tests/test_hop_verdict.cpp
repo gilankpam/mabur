@@ -616,18 +616,23 @@ TEST(weak_still_wins_over_detected) {
 // this one, median 92) and read detected. Written for the shipped defaults,
 // where occupied_windows == detect_windows.
 // Revert (landed() leaves the ring): reads detected. Revert (landed() also
-// clears blocked_streak_): not occupied.
+// clears blocked_streak_): not occupied. Revert (landed() also thaws):
+// ref_rung reads -1, then 3.
 TEST(landed_clears_the_detect_ring_and_keeps_the_blocked_streak) {
   REQUIRE(occ_n() == det_n());
   HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   for (int i = 1; i < occ_n(); ++i, t += 150) v.window(t, {busy(95, 3), busy(95, 3)}, {0.04, 20}, 5);   // blocked AND detecting
+  REQUIRE(v.ref_rung() == 5);
   v.landed();
-  auto o = v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);     // the occupied_windows-th blocked
+  CHECK(v.ref_rung() == 5);                                           // the frozen references survive
+  auto o = v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 3);     // the occupied_windows-th blocked; ladder sank
   CHECK(o.evidence & kEvOccupied);
   CHECK(!(o.evidence & kEvDetected));
+  CHECK(o.ref_frozen); CHECK(o.ref_rung == 5);                        // a thawing landed() re-freezes at 3
 }
-// Each leg leaves det_n() - 1 windows in the ring with a loss window among
-// them, so without the clear the next window would read detected.
+// Each leg leaves a full ring that already reads detected before the clear
+// (a 10 % reading majority with a loss window among them), so without the
+// clear the next window would read detected too.
 // Revert (reset() keeps the ring) / (new_session() keeps the ring): the
 // matching leg reads detected.
 TEST(reset_and_new_session_clear_the_detect_ring) {

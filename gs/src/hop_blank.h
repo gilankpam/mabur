@@ -35,12 +35,14 @@ constexpr double kHopSettleBlankMs = 150.0;
 //    frozen episode that is the lead-in of either route to `interfered` --
 //    `blocked` (the occupied route), or loss-impaired with its own foreign
 //    reading at or above hop.verdict.detect_pct (the earliest window a
-//    detect run can start from). NOT ref_frozen and NOT the first
-//    `interfered` window. ref_frozen is keyed on `impaired` alone, and a
-//    fade (impaired AND weak) or a lossy window with no foreign reading
-//    behind it is impaired too -- keying on it blanked the store through
-//    every fade and every unexplained loss, which must leave the ladder
-//    alone. The first `interfered` window is too late: either route
+//    detect run can start from), or `detected` itself (a detect run whose
+//    loss window read under detect_pct has no earlier lead-in, so its
+//    first detected window arms). NOT ref_frozen and NOT, in general, the
+//    first `interfered` window. ref_frozen is keyed on `impaired` alone,
+//    and a fade (impaired AND weak) or a lossy window with no foreign
+//    reading behind it is impaired too -- keying on it blanked the store
+//    through every fade and every unexplained loss, which must leave the
+//    ladder alone. The first `interfered` window is too late: either route
 //    classifies interfered only windows after its lead-in (the blocked
 //    streak reaching hop.verdict.occupied_windows, the detect ring
 //    filling), and the lossy windows before it are exactly where the

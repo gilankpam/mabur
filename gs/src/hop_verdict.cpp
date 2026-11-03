@@ -177,10 +177,13 @@ VerdictOut HopVerdict::window(double now_ms, const std::vector<VerdictCardIn>& c
   // The rung-store blank's arming edge: the first impaired, non-weak window
   // of this frozen episode that is either route's lead-in (hop_blank.h) --
   // blocked, or lossy with its own foreign reading at or above detect_pct
-  // -- not the later window that classifies `interfered`. Re-armed only by
-  // a thaw, below or in reset().
-  const bool lead_in = blocked || (loss_impaired && have_busy_reading &&
-                                   min_foreign_busy_pct >= hv.detect_pct);
+  // -- not the later window that classifies `interfered`; or, when a detect
+  // run's loss window read under detect_pct and so was no lead-in, the
+  // first `detected` window, so the detect route never reaches an order
+  // with the store unprotected. Re-armed only by a thaw, below or in
+  // reset().
+  const bool lead_in = blocked || detected ||
+                       (loss_impaired && have_busy_reading && min_foreign_busy_pct >= hv.detect_pct);
   if (impaired && lead_in && !weak && !seen_blocked_) {
     seen_blocked_ = true;
     o.first_blocked = true;
