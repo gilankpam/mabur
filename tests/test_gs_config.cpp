@@ -1390,35 +1390,6 @@ TEST(hop_verdict_recovered_min_key) {
 // The confirm extension while the op reads blocked.
 // Revert (drop the key from check_keys / the parse): the first load throws
 // "unknown key".
-TEST(hop_verdict_detect_defaults) {
-  auto c = maburgs::load_config(write_tmp(""));
-  CHECK(c.hop.verdict.detect_pct == 8.0);
-  CHECK(c.hop.verdict.detect_windows == 5);
-  CHECK(c.hop.verdict.detect_impaired == 1);
-}
-
-TEST(hop_verdict_detect_pct_must_not_exceed_blocked_pct) {
-  CHECK(!([](const std::string& text) {
-    try { maburgs::load_config(write_tmp(text)); return true; }
-    catch (const std::exception&) { return false; }
-  }("[radio.scan]\nblocked_pct = 20\n[hop.verdict]\ndetect_pct = 25\n")));
-  CHECK(([](const std::string& text) {
-    try { maburgs::load_config(write_tmp(text)); return true; }
-    catch (const std::exception&) { return false; }
-  }("[radio.scan]\nblocked_pct = 20\n[hop.verdict]\ndetect_pct = 20\n")));
-}
-
-TEST(hop_verdict_detect_impaired_is_bounded_by_detect_windows) {
-  CHECK(!([](const std::string& text) {
-    try { maburgs::load_config(write_tmp(text)); return true; }
-    catch (const std::exception&) { return false; }
-  }("[hop.verdict]\ndetect_windows = 3\ndetect_impaired = 4\n")));
-  CHECK(([](const std::string& text) {
-    try { maburgs::load_config(write_tmp(text)); return true; }
-    catch (const std::exception&) { return false; }
-  }("[hop.verdict]\ndetect_windows = 3\ndetect_impaired = 3\n")));
-}
-
 TEST(hop_confirm_extend_ms_key) {
   auto c = maburgs::load_config(write_tmp("[hop]\nconfirm_extend_ms = 0\n"));
   CHECK(c.hop.confirm_extend_ms == 0);
@@ -1433,6 +1404,35 @@ TEST(hop_confirm_extend_ms_key) {
   catch (const std::runtime_error&) { threw = true; }
   CHECK(threw);
   CHECK(maburgs::HopCfg{}.confirm_extend_ms == 3000);
+}
+
+TEST(hop_verdict_detect_defaults) {
+  auto c = maburgs::load_config(write_tmp(""));
+  CHECK(c.hop.verdict.detect_pct == 8.0);
+  CHECK(c.hop.verdict.detect_windows == 5);
+  CHECK(c.hop.verdict.detect_impaired == 1);
+}
+
+TEST(hop_verdict_detect_pct_must_not_exceed_blocked_pct) {
+  bool threw = false;
+  try { maburgs::load_config(write_tmp("[radio.scan]\nblocked_pct = 20\n[hop.verdict]\ndetect_pct = 25\n")); }
+  catch (const std::runtime_error&) { threw = true; }
+  CHECK(threw);
+  threw = false;
+  try { maburgs::load_config(write_tmp("[radio.scan]\nblocked_pct = 20\n[hop.verdict]\ndetect_pct = 20\n")); }
+  catch (const std::runtime_error&) { threw = true; }
+  CHECK(!threw);
+}
+
+TEST(hop_verdict_detect_impaired_is_bounded_by_detect_windows) {
+  bool threw = false;
+  try { maburgs::load_config(write_tmp("[hop.verdict]\ndetect_windows = 3\ndetect_impaired = 4\n")); }
+  catch (const std::runtime_error&) { threw = true; }
+  CHECK(threw);
+  threw = false;
+  try { maburgs::load_config(write_tmp("[hop.verdict]\ndetect_windows = 3\ndetect_impaired = 3\n")); }
+  catch (const std::runtime_error&) { threw = true; }
+  CHECK(!threw);
 }
 
 // ---- link.key_file + link.key overlay (link pairing) ----
