@@ -89,11 +89,22 @@ struct FakeCard : maburgs::LinkCard {
   // NHM busy window programmability (ScoutRadio defaults are "unsupported").
   bool nhm_arm_ok = false;                          // arm_nhm_busy() result
   maburgs::NhmBusyRead nhm_read;                    // returned by read_nhm_busy()
+  // Air that reads nhm_read's buckets under whatever period was last armed:
+  // the op-window sampler and a scout dwell (each arms its own period) both
+  // read it. Off, nhm_read.period decides which of them it is valid for.
+  bool nhm_any_period = false;
+  uint16_t nhm_armed_period = 0;
   bool arm_nhm_busy(uint16_t period_4us) override {
     calls.push_back("arm_nhm " + std::to_string(period_4us));
+    nhm_armed_period = period_4us;
     return nhm_arm_ok;
   }
-  maburgs::NhmBusyRead read_nhm_busy() override { calls.push_back("read_nhm"); return nhm_read; }
+  maburgs::NhmBusyRead read_nhm_busy() override {
+    calls.push_back("read_nhm");
+    maburgs::NhmBusyRead r = nhm_read;
+    if (nhm_any_period) r.period = nhm_armed_period;
+    return r;
+  }
   bool can_sweep() const override { return relay && sweep_ok; }
   bool start_sweep(const std::vector<uint8_t>& ch, uint8_t, uint8_t) override {
     if (!can_sweep() || !is_ready) return false;   // RemoteCard: running + owned_and_tuned

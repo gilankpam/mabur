@@ -2,6 +2,9 @@
 #include "mtest.h"
 using namespace maburgs;
 static HopCfg cfg() { HopCfg c; return c; }   // config defaults
+// hop.verdict.occupied_windows at its default: the consecutive blocked
+// windows it takes for `occupied`, the only route to `interfered`.
+static int occ_n() { return cfg().verdict.occupied_windows; }
 static VerdictCardIn card(double rssi, double snr, double foreign_ps, double fa_ps, double crc_ps = 0) {
   VerdictCardIn c; c.valid = true; c.rssi_dbm = rssi; c.snr_db = snr;
   c.foreign = (uint32_t)(foreign_ps * 0.15 + 0.5); c.fa = (uint32_t)(fa_ps * 0.15 + 0.5);
@@ -17,19 +20,27 @@ TEST(baseline_is_healthy) {
   auto o = v.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.005, 20}, 5);
   CHECK(o.v == Verdict::Healthy); CHECK(!o.trigger); CHECK(o.ref_rung == -1);
 }
-TEST(co_channel_802_11_neighbour_is_interfered_after_two_windows) {
+// Detection is NHM occupancy only: foreign frames and false alarms next to
+// loss are reported evidence, never a trigger. A fade can lower our signal
+// but cannot add foreign energy, so only sustained foreign airtime names
+// interference.
+// Revert (restore `loss_impaired && (contended || raised) && !fading` ->
+// Interfered): o1 reads Interfered and o2 triggers.
+TEST(co_channel_802_11_neighbour_with_loss_is_not_a_trigger) {
   HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   // spike jam250c120: loss 4-8 %, foreign 237/s, FA 2/s, RSSI rose to -55, SNR 33
   auto o1 = v.window(t, {card(-55, 33, 237, 2), card(-55, 33, 237, 2)}, {0.06, 80}, 5);
-  CHECK(o1.v == Verdict::Interfered); CHECK(!o1.trigger); CHECK(o1.ref_rung == 5);
+  CHECK(o1.v == Verdict::Unknown); CHECK(!o1.trigger); CHECK(o1.ref_rung == 5);
   CHECK(o1.evidence & kEvImpaired); CHECK(o1.evidence & kEvContended); CHECK(!(o1.evidence & kEvRaised));
   auto o2 = v.window(t + 150, {card(-55, 33, 237, 2), card(-55, 33, 237, 2)}, {0.06, 80}, 4);  // ladder demoted meanwhile
-  CHECK(o2.trigger); CHECK(o2.ref_rung == 5);   // snapshot taken at the FIRST impaired window
+  CHECK(o2.v == Verdict::Unknown); CHECK(!o2.trigger);
+  CHECK(o2.ref_rung == 5);   // snapshot taken at the FIRST impaired window
 }
-TEST(o4_raised_floor_is_interfered_even_with_rssi_up) {
+// Revert (restore the contended/raised route): reads Interfered.
+TEST(o4_raised_floor_with_loss_is_evidence_not_interfered) {
   HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   auto o = v.window(t, {card(-48, 30, 0, 744, 130), card(-50, 27, 0, 388, 130)}, {0.85, 5}, 0);
-  CHECK(o.v == Verdict::Interfered); CHECK(o.evidence & kEvRaised); CHECK(!(o.evidence & kEvFading));
+  CHECK(o.v == Verdict::Unknown); CHECK(o.evidence & kEvRaised); CHECK(!(o.evidence & kEvFading));
 }
 TEST(fade_is_fade_not_interfered) {
   HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
@@ -41,10 +52,11 @@ TEST(loss_with_no_domain_evidence_is_unknown) {
   auto o = v.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.08, 100}, 5);
   CHECK(o.v == Verdict::Unknown); CHECK(!o.trigger);
 }
-TEST(off_channel_blocking_reads_as_raised) {
+// Revert (restore the contended/raised route): reads Interfered.
+TEST(off_channel_blocking_reads_as_raised_evidence_only) {
   HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   auto o = v.window(t, {card(-59, 28, 0, 209, 94), card(-59, 28, 0, 299, 130)}, {0.04, 70}, 4);
-  CHECK(o.v == Verdict::Interfered); CHECK(o.evidence & kEvRaised);
+  CHECK(o.v == Verdict::Unknown); CHECK(o.evidence & kEvRaised);
 }
 TEST(recovered_rate_alone_marks_impaired_and_its_reference_freezes) {
   HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);          // recovered mean 20/window
@@ -81,10 +93,10 @@ TEST(frozen_reference_for_a_mid_dwell_card_is_not_fabricated_from_zero) {
   // 5 s of clean windows -- card 1 hasn't dwelt on home once yet, so its
   // trailing RSSI history stays empty the whole time.
   for (int i = 0; i < 40; ++i, t += 150) v.window(t, {card(-61, 30, 0, 4), dead}, {0.0, 20}, 5);
-  // Card 0 goes interfered: freezes references, including card 1's (still
+  // Card 0 goes impaired: freezes references, including card 1's (still
   // invalid this window, still no history) -- it must not get ref_rssi = 0.
   auto o1 = v.window(t, {card(-55, 33, 237, 2), dead}, {0.06, 80}, 5);
-  CHECK(o1.v == Verdict::Interfered);
+  CHECK(o1.ref_frozen);
   CHECK(v.ref_rung() == 5);
   // Card 1 now comes back as the best card (much stronger than card 0) with
   // a perfectly normal RSSI. If its frozen reference had been fabricated as
@@ -136,32 +148,51 @@ TEST(every_window_carries_the_span_it_was_measured_over) {
 // FIRST interfered window of a frozen episode, once and once only until a
 // thaw. Deliberately not ref_frozen, which is keyed on `impaired` and so
 // is set through fades and unknown windows too.
+// A blocked card (NHM foreign busy 92 %) on a lossy link: impaired, and
+// interfered once the blocked streak reaches occupied_windows.
+static VerdictCardIn jam_card() {
+  auto c = card(-55, 33, 237, 2); c.busy_valid = true; c.nhm_busy_pct = 95; c.own_air_pct = 3; return c;
+}
+// Feed n blocked lossy windows from t; returns the last verdict.
+static VerdictOut jam(HopVerdict& v, double& t, int n, int rung = 5) {
+  VerdictOut o;
+  for (int i = 0; i < n; ++i, t += 150) o = v.window(t, {jam_card(), jam_card()}, {0.06, 80}, rung);
+  return o;
+}
 TEST(first_interfered_fires_once_per_frozen_episode) {
   HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   // A fade freezes the references but is not interference: no edge.
   auto f = v.window(t, {card(-90, 8, 0, 0, 30), card(-86, 10, 0, 10, 5)}, {0.05, 90}, 1);
   CHECK(f.v == Verdict::Fade && f.ref_frozen && !f.first_interfered);
   t += 150;
-  auto o1 = v.window(t, {card(-55, 33, 237, 2), card(-55, 33, 237, 2)}, {0.06, 80}, 5);
+  // Blocked-but-not-yet-occupied windows are unknown: no edge either.
+  auto u = jam(v, t, occ_n() - 1);
+  CHECK(u.v == Verdict::Unknown && u.ref_frozen && !u.first_interfered);
+  auto o1 = jam(v, t, 1);
   CHECK(o1.v == Verdict::Interfered && o1.first_interfered);
-  t += 150;
-  auto o2 = v.window(t, {card(-55, 33, 237, 2), card(-55, 33, 237, 2)}, {0.06, 80}, 5);
+  auto o2 = jam(v, t, 1);
   CHECK(o2.v == Verdict::Interfered && !o2.first_interfered);   // same episode
-  // A thaw re-arms it.
-  for (int i = 1; i <= 3; ++i) v.window(t + 150 * i, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, 20}, 5);
-  auto o3 = v.window(t + 600, {card(-55, 33, 237, 2), card(-55, 33, 237, 2)}, {0.06, 80}, 5);
-  CHECK(o3.first_interfered);
-  // ...and so does reset(), the other thaw rule.
+  // A thaw re-arms it. A thaw needs healthy windows, and a held occupied
+  // streak keeps every window impaired, so the healthy windows carry a
+  // clean NHM reading -- which resets the streak, and occupancy is
+  // re-earned.
+  auto clean = [] { auto c = card(-61, 30, 0, 4); c.busy_valid = true; c.nhm_busy_pct = 10; c.own_air_pct = 3; return c; };
+  for (int i = 0; i < 3; ++i, t += 150) v.window(t, {clean(), clean()}, {0.0, 20}, 5);
+  CHECK(!v.window(t, {clean(), clean()}, {0.0, 20}, 5).ref_frozen); t += 150;
+  auto o3 = jam(v, t, occ_n());
+  CHECK(o3.v == Verdict::Interfered && o3.first_interfered);
+  // ...and so does reset(), the other thaw rule (which also clears the
+  // streak, so occupancy is re-earned).
   v.reset();
-  auto o4 = v.window(t + 750, {card(-55, 33, 237, 2), card(-55, 33, 237, 2)}, {0.06, 80}, 5);
-  CHECK(o4.first_interfered);
+  auto o4 = jam(v, t, occ_n());
+  CHECK(o4.v == Verdict::Interfered && o4.first_interfered);
 }
 TEST(ref_frozen_marks_the_impaired_episode) {
   HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   CHECK(!v.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, 20}, 5).ref_frozen);
   t += 150;
   auto o = v.window(t, {card(-55, 33, 237, 2), card(-55, 33, 237, 2)}, {0.06, 80}, 5);
-  CHECK(o.v == Verdict::Interfered);
+  CHECK(o.evidence & kEvImpaired);
   CHECK(o.ref_frozen);                      // the first impaired window itself
   t += 150;
   CHECK(v.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, 20}, 5).ref_frozen);
@@ -177,15 +208,15 @@ TEST(ref_frozen_marks_the_impaired_episode) {
 // survive the hop.
 TEST(reset_thaws_the_snapshot_and_clears_the_latched_trigger) {
   HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
-  auto o1 = v.window(t, {card(-55, 33, 237, 2), card(-55, 33, 237, 2)}, {0.06, 80}, 5);
-  auto o2 = v.window(t + 150, {card(-55, 33, 237, 2), card(-55, 33, 237, 2)}, {0.06, 80}, 5);
+  auto o1 = jam(v, t, occ_n());
+  auto o2 = jam(v, t, 1);
   CHECK(o1.ref_frozen && o2.trigger && v.ref_rung() == 5);
   v.reset();
   CHECK(v.ref_rung() == -1);
   // One clean window on the NEW channel: no latched trigger, no frozen
   // reference, and `fading` measured against the trailing history rather
   // than the old channel's frozen median.
-  auto o3 = v.window(t + 300, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, 20}, 5);
+  auto o3 = v.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, 20}, 5);
   CHECK(!o3.trigger && !o3.ref_frozen && o3.v == Verdict::Healthy);
 }
 // Bench: main.cpp fed the aggregator's RAW EMAs (RSSI ~64, SNR ~66 half-dB)
@@ -216,32 +247,53 @@ static maburgs::VerdictCardIn busy_card(double busy, double own, bool valid = tr
   return c;
 }
 // Bench run 1: 80 % loss, no foreign/FA, strong signal, air 95 % busy.
-// blocked_pct default is 50 (hw spike findings,
-// docs/findings/2026-09-25-nhm-airtime-spike.md), not 30 -- 95-2=93 still
-// clears it.
-TEST(long_frame_jam_is_interfered_via_blocked) {
+// Loss next to a blocked reading is still not interference until the
+// blocked streak reaches occupied_windows: a lossy window is no evidence
+// that the foreign energy is sustained.
+// Revert (restore `blocked` + loss-type impairment -> Interfered): the
+// first window reads Interfered.
+TEST(long_frame_jam_is_interfered_once_occupied) {
   maburgs::HopCfg cfg;
   maburgs::HopVerdict v(cfg, BusyCfg{}, 1);
   maburgs::VerdictLinkIn bad; bad.pre_fec_loss = 0.80;
   maburgs::VerdictOut o;
   double t = 0;
-  for (int i = 0; i < 3; ++i) o = v.window(t += 150, {busy_card(95, 2)}, bad, 0);
+  for (int i = 1; i < occ_n(); ++i) {
+    o = v.window(t += 150, {busy_card(95, 2)}, bad, 0);
+    CHECK(o.v == maburgs::Verdict::Unknown);
+    CHECK(o.evidence & maburgs::kEvBlocked);
+    CHECK(!(o.evidence & maburgs::kEvOccupied));
+  }
+  o = v.window(t += 150, {busy_card(95, 2)}, bad, 0);
   CHECK(o.v == maburgs::Verdict::Interfered);
-  CHECK(o.evidence & maburgs::kEvBlocked);
+  CHECK(o.evidence & maburgs::kEvOccupied);
+  o = v.window(t += 150, {busy_card(95, 2)}, bad, 0);
   CHECK(o.trigger);
 }
-// Same jam at 40 % busy: blocked only when radio.scan.blocked_pct (BusyCfg)
-// is lowered to 30 -- the threshold is the engine's input, not a constant.
+// Pin (a): loss + blocked without occupancy is unknown, whatever the loss.
+// Revert (restore `blocked` + loss-type impairment -> Interfered): reads
+// Interfered.
+TEST(loss_and_blocked_without_occupancy_is_unknown) {
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
+  VerdictLinkIn bad; bad.pre_fec_loss = 0.5; bad.recovered = 200; bad.au_count = 20;
+  auto o = v.window(t, {busy_card(98, 0), busy_card(98, 0)}, bad, 5);
+  CHECK(o.evidence & kEvBlocked); CHECK(o.evidence & kEvImpaired); CHECK(!(o.evidence & kEvOccupied));
+  CHECK(o.v == Verdict::Unknown);
+  CHECK(!o.first_interfered);
+}
+// A 40 % busy jam: blocked under radio.scan.blocked_pct 35, not under 45 --
+// the threshold is the engine's input, not a constant.
 TEST(blocked_threshold_comes_from_busy_cfg) {
   maburgs::HopCfg cfg;
-  BusyCfg b; b.blocked_pct = 30;
-  maburgs::HopVerdict low(cfg, b, 1), def(cfg, BusyCfg{}, 1);
+  BusyCfg lo; lo.blocked_pct = 35;
+  BusyCfg hi; hi.blocked_pct = 45;
+  maburgs::HopVerdict low(cfg, lo, 1), high(cfg, hi, 1);
   maburgs::VerdictLinkIn bad; bad.pre_fec_loss = 0.80;
-  maburgs::VerdictOut ol, od;
+  maburgs::VerdictOut ol, oh;
   double t = 0;
-  for (int i = 0; i < 3; ++i) { ol = low.window(t += 150, {busy_card(40, 2)}, bad, 0); od = def.window(t, {busy_card(40, 2)}, bad, 0); }
+  for (int i = 0; i < 3; ++i) { ol = low.window(t += 150, {busy_card(40, 2)}, bad, 0); oh = high.window(t, {busy_card(40, 2)}, bad, 0); }
   CHECK(ol.evidence & maburgs::kEvBlocked);
-  CHECK(!(od.evidence & maburgs::kEvBlocked));
+  CHECK(!(oh.evidence & maburgs::kEvBlocked));
 }
 TEST(busy_but_healthy_link_stays_healthy) {
   maburgs::HopCfg cfg;
@@ -254,11 +306,14 @@ TEST(own_airtime_is_subtracted) {
   maburgs::HopCfg cfg;
   maburgs::HopVerdict v(cfg, BusyCfg{}, 1);
   maburgs::VerdictLinkIn bad; bad.pre_fec_loss = 0.20;
-  auto o = v.window(150, {busy_card(60, 45)}, bad, 0);   // 15 % foreign < 50
+  auto o = v.window(150, {busy_card(60, 45)}, bad, 0);   // 15 % foreign, under blocked_pct
   CHECK(!(o.evidence & maburgs::kEvBlocked));
   CHECK(o.v == maburgs::Verdict::Unknown);
 }
-TEST(blocked_beats_fading_but_not_weak) {
+// A real fade lowers power and cannot raise NHM busy; analog desense reads
+// as a fade (docs/findings/2026-09-25-analog-vtx.md) while filling the air.
+// Occupancy therefore beats `fading`, but never `weak`.
+TEST(occupied_beats_fading_but_not_weak) {
   maburgs::HopCfg cfg;
   maburgs::VerdictLinkIn bad; bad.pre_fec_loss = 0.5;
   {  // fading: RSSI 15 dB under its trailing reference (analog desense)
@@ -267,7 +322,8 @@ TEST(blocked_beats_fading_but_not_weak) {
     double t = 0;
     for (int i = 0; i < 10; ++i) v.window(t += 150, {busy_card(0, 2)}, ok, 0);
     auto c = busy_card(100, 2); c.rssi_dbm = -63;
-    auto o = v.window(t += 150, {c}, bad, 0);
+    maburgs::VerdictOut o;
+    for (int i = 0; i < occ_n(); ++i) o = v.window(t += 150, {c}, bad, 0);
     CHECK(o.evidence & maburgs::kEvFading);
     CHECK(o.v == maburgs::Verdict::Interfered);
   }
@@ -306,7 +362,9 @@ TEST(interferer_seen_by_both_cards_is_blocked) {
   maburgs::VerdictLinkIn bad; bad.pre_fec_loss = 0.2;
   auto a = busy_card(95, 2);   // foreign 93
   auto b = busy_card(95, 2);   // foreign 93
-  auto o = v.window(150, {a, b}, bad, 0);
+  maburgs::VerdictOut o;
+  double t = 0;
+  for (int i = 0; i < occ_n(); ++i) o = v.window(t += 150, {a, b}, bad, 0);
   CHECK(o.evidence & maburgs::kEvBlocked);
   CHECK(o.v == maburgs::Verdict::Interfered);
 }
@@ -316,7 +374,9 @@ TEST(card_without_reading_does_not_veto) {
   maburgs::VerdictLinkIn bad; bad.pre_fec_loss = 0.2;
   auto a = busy_card(95, 2);                     // foreign 93, only reading card
   auto b = busy_card(100, 0, /*valid=*/false);   // no busy reading this window
-  auto o = v.window(150, {a, b}, bad, 0);
+  maburgs::VerdictOut o;
+  double t = 0;
+  for (int i = 0; i < occ_n(); ++i) o = v.window(t += 150, {a, b}, bad, 0);
   CHECK(o.evidence & maburgs::kEvBlocked);
   CHECK(o.v == maburgs::Verdict::Interfered);
 }
@@ -363,16 +423,35 @@ TEST(recovered_min_zero_disables_floor) {
 // Earlier bench run: the drone was completely starved by a jam (zero own
 // frames on every card) and the verdict read `healthy` -- no frames means
 // no loss. main.cpp now sets VerdictLinkIn::starved.
-// Revert (drop `|| link.starved`): starved_and_blocked_is_interfered reads
+// Revert (drop `|| link.starved`): starved_and_blocked_is_evidence reads
 // Healthy with no kEvStarved.
-TEST(starved_and_blocked_is_interfered) {
+TEST(starved_and_blocked_is_evidence) {
   HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   VerdictLinkIn s; s.pre_fec_loss = 0.0; s.recovered = 0; s.starved = true;
   auto o = v.window(t, {busy_card(98, 0), busy_card(98, 0)}, s, 5);
-  CHECK(o.v == Verdict::Interfered);
   CHECK(o.evidence & kEvStarved);
   CHECK(o.evidence & kEvBlocked);
   CHECK(o.evidence & kEvImpaired);
+}
+// Pin (c): starved + blocked is unknown for occupied_windows - 1 windows
+// and interfered on the occupied_windows-th consecutive blocked window.
+// Revert (restore `blocked` + loss-type impairment -> Interfered): the
+// first window reads Interfered. Revert (`blocked_streak_ > occupied_windows`
+// instead of >=): the occupied_windows-th window reads Unknown.
+TEST(starved_and_blocked_is_interfered_only_once_occupied) {
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
+  VerdictLinkIn s; s.starved = true;
+  VerdictOut o;
+  for (int i = 1; i < occ_n(); ++i, t += 150) {
+    o = v.window(t, {busy_card(98, 0), busy_card(98, 0)}, s, 5);
+    CHECK(o.v == Verdict::Unknown);
+    CHECK(o.evidence & kEvStarved); CHECK(o.evidence & kEvBlocked);
+    CHECK(!o.trigger);
+  }
+  o = v.window(t, {busy_card(98, 0), busy_card(98, 0)}, s, 5);
+  CHECK(o.v == Verdict::Interfered);
+  CHECK(o.evidence & kEvOccupied);
+  CHECK(o.first_interfered);
 }
 // Starved with nothing else to explain it falls through to Unknown, like
 // any other unexplained impairment -- never a trigger on its own.
@@ -422,7 +501,7 @@ TEST(au_collapse_is_starved) {
   auto o = v.window(t, {busy_card(98, 0), busy_card(98, 0)}, au_link(1), 5);
   CHECK(o.evidence & kEvStarved);
   CHECK(o.evidence & kEvImpaired);
-  CHECK(o.v == Verdict::Interfered);
+  CHECK(o.v == Verdict::Unknown);   // one blocked window: not yet occupied
 }
 // Revert (threshold 0.5 instead of starved_frac): 4 < 4.5 reads starved.
 TEST(half_rate_is_not_starved) {
@@ -508,45 +587,48 @@ TEST(weak_without_a_real_snr_fires_on_rssi_alone) {
 // consecutive windows becomes `impaired` on its own (hop.verdict.
 // occupied_windows). Width-free: HopVerdict never sees radio.width.
 static VerdictCardIn busy(double nhm, double own) { auto c = card(-61, 30, 0, 4); c.busy_valid = true; c.nhm_busy_pct = nhm; c.own_air_pct = own; return c; }
-TEST(occupied_fires_at_default_width_after_seven_blocked_windows_with_zero_loss) {
+TEST(occupied_fires_at_default_width_after_occupied_windows_blocked_windows_with_zero_loss) {
   HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   VerdictOut o;
-  for (int i = 0; i < 6; ++i, t += 150) { o = v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5); CHECK(o.v == Verdict::Healthy); CHECK(!(o.evidence & kEvOccupied)); }
-  o = v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);          // 7th
+  for (int i = 1; i < occ_n(); ++i, t += 150) { o = v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5); CHECK(o.v == Verdict::Healthy); CHECK(!(o.evidence & kEvOccupied)); }
+  o = v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);          // the occupied_windows-th
   CHECK(o.v == Verdict::Interfered); CHECK(o.evidence & kEvOccupied); CHECK(o.evidence & kEvImpaired); CHECK(o.ref_rung == 5);
-  o = v.window(t + 150, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 4);   // 8th: persist 2 of 3
+  o = v.window(t + 150, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 4);   // next: persist 2 of 3
   CHECK(o.trigger); CHECK(o.ref_rung == 5);
 }
 TEST(a_clean_window_resets_the_occupied_count) {
   HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
-  for (int i = 0; i < 6; ++i, t += 150) v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);
+  for (int i = 1; i < occ_n(); ++i, t += 150) v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);
   v.window(t, {busy(10, 3), busy(10, 3)}, {0.0, 20}, 5); t += 150;
   auto o = v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);
   CHECK(o.v == Verdict::Healthy); CHECK(!(o.evidence & kEvOccupied));
 }
 TEST(no_busy_reading_holds_the_occupied_count) {
   HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
-  for (int i = 0; i < 6; ++i, t += 150) v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);
+  for (int i = 1; i < occ_n(); ++i, t += 150) v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);
   v.window(t, {card(-61, 30, 0, 4), card(-61, 30, 0, 4)}, {0.0, 20}, 5); t += 150;   // valid cards, no NHM
   VerdictCardIn off; off.valid = false;
   v.window(t, {off, off}, {0.0, 20}, 5); t += 150;                                    // no usable card
-  auto o = v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);                    // the 7th blocked
+  auto o = v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);                    // the occupied_windows-th blocked
   CHECK(o.v == Verdict::Interfered); CHECK(o.evidence & kEvOccupied);
 }
+// Pin (d): at the range edge our own frames stop decoding and the own-airtime
+// subtraction can read our video as foreign, so `weak` gates occupancy.
+// Revert (test `occupied && blocked` before `weak`): reads Interfered.
 TEST(weak_still_wins_over_occupied) {
   HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   auto weak_busy = [] { auto c = busy(95, 3); c.rssi_dbm = -90; c.snr_db = 8; return c; };
   VerdictOut o;
-  for (int i = 0; i < 7; ++i, t += 150) o = v.window(t, {weak_busy(), weak_busy()}, {0.0, 20}, 1);
+  for (int i = 0; i < occ_n() + 1; ++i, t += 150) o = v.window(t, {weak_busy(), weak_busy()}, {0.0, 20}, 1);
   CHECK(o.v == Verdict::Fade); CHECK(o.evidence & kEvOccupied); CHECK(!o.trigger);
 }
 TEST(reset_and_new_session_clear_the_occupied_count) {
   HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
-  for (int i = 0; i < 6; ++i, t += 150) v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);
+  for (int i = 1; i < occ_n(); ++i, t += 150) v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);
   v.reset();
   auto o = v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);
   CHECK(!(o.evidence & kEvOccupied));
-  for (int i = 0; i < 6; ++i, t += 150) v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);
+  for (int i = 1; i < occ_n(); ++i, t += 150) v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);
   v.new_session();
   o = v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);
   CHECK(!(o.evidence & kEvOccupied));
@@ -554,7 +636,7 @@ TEST(reset_and_new_session_clear_the_occupied_count) {
 TEST(own_airtime_is_subtracted_before_the_occupied_count) {
   HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   VerdictOut o;
-  for (int i = 0; i < 9; ++i, t += 150) o = v.window(t, {busy(80, 45), busy(80, 45)}, {0.0, 20}, 5);  // 35 % foreign < 50
+  for (int i = 0; i < occ_n() + 2; ++i, t += 150) o = v.window(t, {busy(60, 45), busy(60, 45)}, {0.0, 20}, 5);  // 15 % foreign under blocked_pct
   CHECK(o.v == Verdict::Healthy); CHECK(!(o.evidence & kEvOccupied));
 }
 // Controller ruling: once occupied, a window with NO busy reading (valid
@@ -565,9 +647,11 @@ TEST(own_airtime_is_subtracted_before_the_occupied_count) {
 // that never happened would kill a clean target. The streak still holds
 // (no_busy_reading_holds_the_occupied_count), so the very next window with
 // an actual blocked reading reads `interfered` again.
+// Pin (e). Revert (classify on `occupied` alone, without `&& blocked`): the
+// reading-less window reads Interfered.
 TEST(occupied_persists_but_a_reading_less_window_classifies_unknown) {
   HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
-  for (int i = 0; i < 7; ++i, t += 150) v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);   // reach occupied
+  for (int i = 0; i < occ_n(); ++i, t += 150) v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);   // reach occupied
   t += 150;
   auto o = v.window(t, {card(-61, 30, 0, 4), card(-61, 30, 0, 4)}, {0.0, 20}, 5);   // valid cards, no NHM
   CHECK(o.v == Verdict::Unknown);
@@ -577,14 +661,13 @@ TEST(occupied_persists_but_a_reading_less_window_classifies_unknown) {
   auto o2 = v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);
   CHECK(o2.v == Verdict::Interfered);
 }
-// `occupied` reaches `interfered` only through `blocked`: the contended /
-// raised branch needs loss-type impairment (loss, recovered, starved). A
-// no-reading window on a busy-but-unblocked target that hears foreign
-// frames or false alarms is `unknown`, not `interfered`, so it cannot fail
-// a hop's verify on traffic that never cost a frame.
+// `occupied` reaches `interfered` only together with `blocked` in the same
+// window. A no-reading window on a busy-but-unblocked target that hears
+// foreign frames or false alarms is `unknown`, not `interfered`, so it
+// cannot fail a hop's verify on traffic NHM never measured.
 TEST(occupied_reading_less_window_with_foreign_or_fa_stays_unknown) {
   HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
-  for (int i = 0; i < 7; ++i, t += 150) v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);   // reach occupied
+  for (int i = 0; i < occ_n(); ++i, t += 150) v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);   // reach occupied
   auto o = v.window(t, {card(-61, 30, 60, 4), card(-61, 30, 60, 4)}, {0.0, 20}, 5);   // contended, no NHM
   CHECK(o.evidence & kEvContended); CHECK(o.evidence & kEvOccupied); CHECK(o.evidence & kEvImpaired);
   CHECK(o.v == Verdict::Unknown);
@@ -593,10 +676,14 @@ TEST(occupied_reading_less_window_with_foreign_or_fa_stays_unknown) {
   CHECK(o.evidence & kEvRaised); CHECK(o.evidence & kEvOccupied); CHECK(o.evidence & kEvImpaired);
   CHECK(o.v == Verdict::Unknown);
 }
-TEST(lossy_contended_window_still_interfered_while_occupied) {
+// Pin (b) while occupied: loss + foreign frames on a window with no NHM
+// reading is still not interference -- only a blocked reading is.
+// Revert (restore `loss_impaired && (contended || raised) && !fading` ->
+// Interfered): reads Interfered.
+TEST(lossy_contended_reading_less_window_is_unknown_while_occupied) {
   HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
-  for (int i = 0; i < 7; ++i, t += 150) v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);   // reach occupied
+  for (int i = 0; i < occ_n(); ++i, t += 150) v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);   // reach occupied
   auto o = v.window(t, {card(-61, 30, 60, 4), card(-61, 30, 60, 4)}, {0.06, 20}, 5);  // lossy, contended, no NHM
   CHECK(o.evidence & kEvContended); CHECK(o.evidence & kEvOccupied);
-  CHECK(o.v == Verdict::Interfered);
+  CHECK(o.v == Verdict::Unknown);
 }

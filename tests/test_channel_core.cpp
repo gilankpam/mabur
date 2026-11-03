@@ -341,15 +341,50 @@ static std::optional<mabur::rc::Rcf> pump_rcf(Rig& g) {
   }
   return std::nullopt;
 }
-// An interfered verdict window: foreign >> foreign_pps on every usable
-// card, AND impaired (HopVerdict::window() -- hop_verdict.cpp -- gates
-// Interfered on `impaired`, which `contended`/`raised` alone never set;
-// only pre_fec_loss/recovered/starved do). This rig's Aggregator never
-// decodes a real body, so pre_fec_loss/recovered are permanently 0 --
-// `own` is deliberately left unbumped (own delta 0 every window) so
-// `starved` carries `impaired` instead. Runs enough windows for the
-// trigger (persist 2).
-static void interfere(Rig& g, int windows = 3, int tx = 0) {
+// The op's air held by a foreign transmitter for the lifetime of this
+// object: NHM reads 100 % busy on every USB card, armed at the sampler's
+// op-window period (nhm_period_4us(window_ms - 10)) so a scout dwell -- which
+// arms its own period -- reads nothing and the candidates stay clean; a
+// relay's SURVEY reads 97 % busy. A card the test already gave NHM air of
+// its own (nhm_any_period) keeps it. The previous state comes back on
+// destruction: the interference lives on op for exactly that span, and a
+// channel landed on later reads whatever the test set.
+struct OpJam {
+  Rig& g;
+  struct Saved { bool arm_ok; NhmBusyRead read; SurveyWindow survey; };
+  std::vector<Saved> saved;
+  explicit OpJam(Rig& rig) : g(rig) {
+    NhmBusyRead full; full.valid = true; full.period = nhm_period_4us(g.cfg.hop.window_ms - 10);
+    full.buckets[11] = 100;                        // every sample above busy_dbm
+    for (auto& c : g.cards) {
+      saved.push_back({c->nhm_arm_ok, c->nhm_read, c->survey_win});
+      if (c->relay) { c->survey_win = SurveyWindow{true, 97.0, 2.0}; continue; }
+      if (c->nhm_any_period) continue;
+      c->nhm_arm_ok = true; c->nhm_read = full;
+    }
+  }
+  ~OpJam() {
+    for (size_t i = 0; i < g.cards.size(); ++i) {
+      if (g.cards[i]->nhm_any_period) continue;
+      g.cards[i]->nhm_arm_ok = saved[i].arm_ok; g.cards[i]->nhm_read = saved[i].read;
+      g.cards[i]->survey_win = saved[i].survey;
+    }
+  }
+};
+// Detection is NHM occupancy only: `interfered` needs the op blocked for
+// hop.verdict.occupied_windows consecutive windows with a busy reading. The
+// windows a blocked op needs on top of the old three-window trigger shape.
+static int occ_lead(const Rig& g) { return g.cfg.hop.verdict.occupied_windows - 1; }
+// Interfered verdict windows: the op jammed (OpJam), foreign >> foreign_pps
+// on every usable card (reported evidence), and own frames left unbumped so
+// `starved` makes the very first window impaired -- the onset that freezes
+// the references. This rig's Aggregator never decodes a real body, so
+// pre_fec_loss/recovered stay 0. The first window arms NHM (no reading yet);
+// the occupied_windows-th blocked window after it is the first
+// `interfered`, the next one the trigger (persist 2): occ_lead(g) + 3
+// windows.
+static void interfere(Rig& g, int windows, int tx = 0) {
+  OpJam jam(g);
   for (int w = 0; w < windows; ++w) {
     for (auto& c : g.cards) { c->fr.foreign += 40; }
     for (int i = 0; i < g.cfg.hop.window_ms / 10 + 1; ++i) {
@@ -403,7 +438,7 @@ TEST(hop_restore_survives_ladder_swap) {
   onset_then_swap(g, {{2, 0.5, 0.25, 40}, {3, 0.5, 0.25, 40}, {4, 0.5, 0.25, 40}});
   REQUIRE(g.vrx->cur_op().mcs == 2);                        // the swap itself keeps MCS 2
   CHECK(*g.core->snapshot(0).hop.ref_rung == 0);
-  interfere(g, 4);                                          // interference goes on: hop ordered
+  interfere(g, occ_lead(g) + 4);                                          // interference goes on: hop ordered
   REQUIRE(g.sink.has_hop("order"));
   CHECK(g.vrx->cur_op().mcs == 2);                          // the pre-onset MCS
 }
@@ -414,7 +449,7 @@ TEST(hop_restore_after_swap_dropping_the_ref_rung_lands_on_rung_0) {
   onset_then_swap(g, {{0, 0.5, 0.25, 40}, {4, 0.5, 0.25, 40}});
   REQUIRE(g.vrx->cur_op().mcs == 0);
   CHECK(*g.core->snapshot(0).hop.ref_rung == 0);
-  interfere(g, 4);
+  interfere(g, occ_lead(g) + 4);
   REQUIRE(g.sink.has_hop("order"));
   CHECK(g.vrx->cur_op().mcs == 0);
 }
@@ -428,7 +463,7 @@ TEST(pinned_two_card_never_hops_on_interference) {
   for (int i = 0; i < 5; ++i) g.tick(true);
   g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
   g.cards[0]->fr.foreign = 0; g.cards[1]->fr.foreign = 0;
-  interfere(g, 6);
+  interfere(g, occ_lead(g) + 6);
   CHECK(std::string(g.core->snapshot(0).hop.verdict) == "interfered");
   CHECK(g.sink.hops.empty());                 // no order/escape/hold of any kind
   CHECK(std::string(g.core->snapshot(0).hop.state) == "idle");
@@ -451,7 +486,7 @@ TEST(pinned_one_card_never_hops_on_interference) {
   link_up(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
   g.cards[0]->cca_per_ms_on[40] = 50;
-  interfere(g, 6);
+  interfere(g, occ_lead(g) + 6);
   CHECK(std::string(g.core->snapshot(0).hop.verdict) == "interfered");
   CHECK(g.sink.hops.empty());
   CHECK(g.cards[0]->ch == 40);
@@ -479,7 +514,7 @@ TEST(pinned_relocation_is_not_failed_by_a_dirty_pin) {
   REQUIRE(g.sink.has_hop("lead_confirm"));
   // the pin reads interfered through what would have been the verify window
   g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
-  interfere(g, 8);
+  interfere(g, occ_lead(g) + 8);
   CHECK(g.sink.has_hop("verify_pass"));
   CHECK(!g.sink.has_hop("verify_fail"));
   CHECK(!g.sink.has_line("did not land"));
@@ -498,7 +533,7 @@ TEST(two_card_order_rcf_carries_hop_and_plan_leads_then_follows) {
   // the trigger fires; so first interfere, then the burst ranks, then order.
   g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
   g.cards[0]->fr.foreign = 0; g.cards[1]->fr.foreign = 0;
-  interfere(g, 4);
+  interfere(g, occ_lead(g) + 4);
   REQUIRE(g.sink.has_hop("order"));
   const auto r = pump_rcf(g);
   REQUIRE(r.has_value());
@@ -526,7 +561,7 @@ TEST(stale_pre_hop_verdict_does_not_break_verify) {
   link_up(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
   g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
-  interfere(g, 4);
+  interfere(g, occ_lead(g) + 4);
   REQUIRE(g.sink.has_hop("order"));
   const auto r = pump_rcf(g);
   REQUIRE(r.has_value());
@@ -542,7 +577,7 @@ TEST(one_card_order_rides_repeats_then_retunes) {
   Rig g(1, 0); freeze_auto(g);               // links too
   for (int i = 0; i < 5; ++i) g.tick(true);
   g.cards[0]->cca_per_ms_on[40] = 50;
-  interfere(g, 4);
+  interfere(g, occ_lead(g) + 4);
   REQUIRE(g.sink.has_hop("order"));
   CHECK(g.cards[0]->ch == 40);              // radio stays until one_card_repeats RCFs
   // interfere() only drives core->tick() (closing verdict windows), never
@@ -582,7 +617,7 @@ TEST(withdraw_on_no_video_restores_cards) {
   link_up(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
   g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
-  interfere(g, 4);
+  interfere(g, occ_lead(g) + 4);
   REQUIRE(g.sink.has_hop("order"));
   const auto r = pump_rcf(g);
   REQUIRE(r.has_value());
@@ -598,7 +633,7 @@ TEST(lead_card_dies_mid_order_withdraws_to_op) {
   link_up(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
   g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
-  interfere(g, 4);
+  interfere(g, occ_lead(g) + 4);
   REQUIRE(g.sink.has_hop("order"));
   g.cards[1]->is_ready = false;               // the lead vanishes
   g.tick(true);
@@ -616,7 +651,7 @@ TEST(session_loss_mid_order_withdraws) {
   link_up(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
   g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
-  interfere(g, 4);
+  interfere(g, occ_lead(g) + 4);
   REQUIRE(g.sink.has_hop("order"));
   g.tick(false);                              // hop_active falling edge
   // on_session_lost() returns HopAction::Withdraw, but the EVENT it logs
@@ -832,7 +867,7 @@ TEST(tx_frozen_while_hopping) {
   link_up(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
   g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
-  interfere(g, 4);
+  interfere(g, occ_lead(g) + 4);
   REQUIRE(g.sink.has_hop("order"));
   const auto out = g.core->tick(g.in(true));
   CHECK(out.tx_frozen);
@@ -995,14 +1030,14 @@ TEST(relay_only_sweep_ranks_in_one_burst_then_hops) {
   Rig g(0, 1);
   freeze_auto(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
-  interfere(g, 3);
+  interfere(g, occ_lead(g) + 3);
   REQUIRE(g.cards[0]->sweeps.size() == 1);
   CHECK((g.cards[0]->sweeps[0] == std::vector<uint8_t>{64, 112, 144}));   // set minus op 40
   CHECK(g.core->sweep_pending());
   CHECK(!g.sink.has_hop("order"));                 // waits for the result, no hold_exhausted either
   CHECK(!g.sink.has_hop("hold_exhausted"));
   g.cards[0]->pending_result = sweep_of({{64, 20}, {112, 1}, {144, 4}});
-  interfere(g, 3);                                 // persist 2-of-3 again once the card is usable
+  interfere(g, occ_lead(g) + 3);                                 // persist 2-of-3 again once the card is usable
   CHECK(!g.core->sweep_pending());
   REQUIRE(g.sink.has_hop("order"));
   pump_rcf(g);
@@ -1021,7 +1056,7 @@ TEST(relay_only_sweep_timeout_allows_next_burst) {
   Rig g(0, 1);
   freeze_auto(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
-  interfere(g, 3);
+  interfere(g, occ_lead(g) + 3);
   REQUIRE(g.cards[0]->sweeps.size() == 1);
   g.cards[0]->sweep_in_flight = false;             // the relay never answers
   // Checked AT the timeout, not 1100 ms on: the verdict's 2-of-3 window
@@ -1035,6 +1070,8 @@ TEST(relay_only_sweep_timeout_allows_next_burst) {
   CHECK(!g.core->sweep_pending());
   CHECK(g.core->sweep_timeouts() == 1);
   CHECK(g.core->snapshot(0).hop.sweep_timeouts == 1);   // -> sideport hop.sweep_timeouts
+  // The blocked streak held through the windows without a busy reading, so
+  // the op is still occupied: no new lead-in before the trigger.
   interfere(g, 3);
   CHECK(g.cards[0]->sweeps.size() == 2);           // relay_burst_period_ms (1000) has passed
 }
@@ -1048,12 +1085,12 @@ TEST(relay_lost_scan_result_does_not_blind_the_verdict) {
   Rig g(0, 1);
   freeze_auto(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
-  interfere(g, 3);
+  interfere(g, occ_lead(g) + 3);
   REQUIRE(g.cards[0]->sweeps.size() == 1);
   for (int i = 0; i < 150 && g.core->sweep_timeouts() == 0; ++i) g.tick(true);
   REQUIRE(g.core->sweep_timeouts() == 1);
   CHECK(g.cards[0]->sweeping());                   // the relay still thinks a scan is pending
-  interfere(g, 3);
+  interfere(g, 3);                                 // still occupied: the streak held
   CHECK(g.cards[0]->sweeps.size() == 2);           // interfered verdicts again -> the next SCAN
 }
 
@@ -1064,7 +1101,7 @@ TEST(relay_sweep_expired_across_session_drop_discards_late_result) {
   Rig g(0, 1);
   freeze_auto(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
-  interfere(g, 3);
+  interfere(g, occ_lead(g) + 3);
   REQUIRE(g.cards[0]->sweeps.size() == 1);
   REQUIRE(g.core->sweep_pending());
   const size_t dwells0 = g.sink.dwells.size();
@@ -1088,7 +1125,7 @@ TEST(relay_burst_waits_relay_burst_period_ms) {
   REQUIRE(g.cfg.hop.burst_period_ms < 400);
   REQUIRE(g.cfg.hop.relay_burst_period_ms > 600);
   for (int i = 0; i < 5; ++i) g.tick(true);
-  interfere(g, 3);
+  interfere(g, occ_lead(g) + 3);
   REQUIRE(g.cards[0]->sweeps.size() == 1);
   g.cards[0]->sweep_in_flight = false;
   g.cards[0]->pending_result = SweepResult{};      // an empty answer: nothing ranked
@@ -1124,16 +1161,17 @@ TEST(usb_burst_paces_on_burst_period_not_dwell_period) {
   freeze_auto(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
   const size_t d0 = g.sink.dwells.size();
-  interfere(g, 3);                   // trigger live -> burst 1 (sess=1 D records)
+  interfere(g, occ_lead(g) + 3);                   // trigger live -> burst 1 (sess=1 D records)
   const size_t d1 = g.sink.dwells.size();
   REQUIRE(d1 > d0);
-  interfere(g, 3);                   // > 333 ms later, trigger still live -> burst 2
+  interfere(g, occ_lead(g) + 3);                   // > 333 ms later, trigger still live -> burst 2
   CHECK(g.sink.dwells.size() > d1);
 }
 
 // Interfered windows for `windows` x window_ms, ticking the core directly;
 // returns the clock of every tick on which a burst ran (new D records).
 static std::vector<uint64_t> interfere_bursts(Rig& g, int windows) {
+  OpJam jam(g);
   std::vector<uint64_t> bursts;
   size_t seen = g.sink.dwells.size();
   for (int w = 0; w < windows; ++w) {
@@ -1167,7 +1205,8 @@ TEST(one_card_burst_in_a_fully_ranked_all_blocked_hold_paces_on_dwell_period) {
   NhmBusyRead full; full.valid = true; full.period = nhm_period_4us(g.cfg.hop.dwell_observe_ms);
   full.buckets[11] = 100;                          // every sample above busy_dbm: 100 % busy
   g.cards[0]->nhm_arm_ok = true; g.cards[0]->nhm_read = full;
-  const auto bursts = interfere_bursts(g, 22);     // ~3.5 s
+  g.cards[0]->nhm_any_period = true;               // op reads it too: the op is occupied
+  const auto bursts = interfere_bursts(g, occ_lead(g) + 22);     // ~3.5 s past the lead-in
   CHECK(g.sink.has_hop("hold_exhausted"));
   CHECK(!g.sink.has_hop("order")); CHECK(!g.sink.has_hop("escape"));
   CHECK(std::string(g.core->snapshot(0).hop.state) == "hold");
@@ -1194,7 +1233,8 @@ TEST(two_card_spare_burst_stops_once_every_candidate_is_ranked) {
   NhmBusyRead full; full.valid = true; full.period = nhm_period_4us(g.cfg.hop.dwell_observe_ms);
   full.buckets[11] = 100;
   g.cards[1]->nhm_arm_ok = true; g.cards[1]->nhm_read = full;
-  const auto bursts = interfere_bursts(g, 22);     // ~3.5 s
+  g.cards[1]->nhm_any_period = true;               // between dwells card 1 reads op busy too
+  const auto bursts = interfere_bursts(g, occ_lead(g) + 22);     // ~3.5 s past the lead-in
   CHECK(g.sink.has_hop("hold_exhausted"));
   CHECK(std::string(g.core->snapshot(0).hop.state) == "hold");
   CHECK(bursts.size() == 2);                       // burst 1, burst 2 (ranks), then none
@@ -1213,7 +1253,7 @@ TEST(usb_burst_in_a_hold_with_an_unranked_candidate_paces_on_burst_period) {
   freeze_auto(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
   g.cards[1]->refuse_ch = 144;
-  const auto bursts = interfere_bursts(g, 16);     // ~2.6 s
+  const auto bursts = interfere_bursts(g, occ_lead(g) + 16);     // ~2.6 s past the lead-in
   CHECK(std::string(g.core->snapshot(0).hop.state) == "hold");
   REQUIRE(bursts.size() >= 5);
   for (size_t i = 1; i < bursts.size(); ++i) CHECK(bursts[i] - bursts[i - 1] < 1000);
@@ -1224,7 +1264,7 @@ TEST(relay_only_single_member_set_sends_no_scan) {
   rebuild_with_set(g, {40});
   link_up(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
-  interfere(g, 4);
+  interfere(g, occ_lead(g) + 4);
   CHECK(g.cards[0]->sweeps.empty());
   CHECK(!g.core->sweep_pending());
 }
@@ -1234,7 +1274,7 @@ TEST(relay_survey_window_feeds_blocked) {
   freeze_auto(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
   g.cards[0]->survey_win = SurveyWindow{true, 97.0, 2.0};   // analog-VTX shape: busy, not decodable
-  interfere(g, 2);
+  interfere(g, occ_lead(g) + 2);
   REQUIRE(g.sink.last_cards.size() == 1);
   CHECK(g.sink.last_cards[0].busy_valid);
   CHECK(std::abs(g.sink.last_cards[0].nhm_busy_pct - 97.0) < 1e-9);
@@ -1255,7 +1295,7 @@ TEST(relay_plus_usb_tx_usb_lets_the_relay_sweep) {
   REQUIRE(g.cards[0]->ch == 40);
   g.cards[0]->calls.clear();                       // the refused boot-scan retunes above are not the hop's
   g.cards[0]->cca_per_ms_on[40] = 50;
-  interfere(g, 3);                                 // tx_card 0 (USB) by default in g.in()
+  interfere(g, occ_lead(g) + 3);                                 // tx_card 0 (USB) by default in g.in()
   CHECK(g.cards[1]->sweeps.size() == 1);           // the relay spare swept
   bool usb_retuned_off_op = false;
   for (auto& c : g.cards[0]->calls) if (c == "retune 64" || c == "retune 112" || c == "retune 144") usb_retuned_off_op = true;
@@ -1274,13 +1314,16 @@ TEST(relay_sweep_timeout_scales_with_the_request) {
   REQUIRE(!g.core->pick_open());
   for (int i = 0; i < 5; ++i) g.tick(true);
   uint64_t sent_ms = 0;
-  for (int w = 0; w < 4 && g.cards[0]->sweeps.empty(); ++w) {
-    for (auto& c : g.cards) c->fr.foreign += 40;
-    for (int i = 0; i < g.cfg.hop.window_ms / 10 + 1 && g.cards[0]->sweeps.empty(); ++i) {
-      g.vrx->on_video(static_cast<double>(g.clk.ms));
-      sent_ms = g.clk.ms;
-      g.core->tick(g.in(true));
-      g.clk.ms += 10;
+  {
+    OpJam jam(g);
+    for (int w = 0; w < occ_lead(g) + 4 && g.cards[0]->sweeps.empty(); ++w) {
+      for (auto& c : g.cards) c->fr.foreign += 40;
+      for (int i = 0; i < g.cfg.hop.window_ms / 10 + 1 && g.cards[0]->sweeps.empty(); ++i) {
+        g.vrx->on_video(static_cast<double>(g.clk.ms));
+        sent_ms = g.clk.ms;
+        g.core->tick(g.in(true));
+        g.clk.ms += 10;
+      }
     }
   }
   REQUIRE(g.cards[0]->sweeps.size() == 1);
@@ -1307,7 +1350,7 @@ TEST(relay_plus_usb_relay_not_ready_usb_tx_bursts) {
   for (int i = 0; i < 5; ++i) g.tick(true, false, /*tx=*/0);
   const size_t d0 = g.sink.dwells.size();
   g.cards[0]->cca_per_ms_on[40] = 50;
-  interfere(g, 3, /*tx=*/0);
+  interfere(g, occ_lead(g) + 3, /*tx=*/0);
   CHECK(g.cards[1]->sweeps.empty());
   CHECK(!g.core->sweep_pending());
   size_t usb_dwells = 0;
@@ -1326,7 +1369,7 @@ TEST(relay_plus_usb_usb_spare_bursts) {
   for (int i = 0; i < 5; ++i) g.tick(true, false, /*tx=*/1);
   const size_t d0 = g.sink.dwells.size();
   g.cards[0]->cca_per_ms_on[40] = 50;
-  interfere(g, 3, /*tx=*/1);
+  interfere(g, occ_lead(g) + 3, /*tx=*/1);
   CHECK(g.cards[1]->sweeps.empty());
   size_t usb_dwells = 0;
   for (size_t i = d0; i < g.sink.dwells.size(); ++i) if (g.sink.dwells[i].first == 0) ++usb_dwells;
@@ -1343,7 +1386,7 @@ TEST(tx_frozen_while_relay_sweeps) {
   link_up(g);
   for (int i = 0; i < 5; ++i) g.tick(true, false, 0);
   g.cards[0]->cca_per_ms_on[40] = 50;
-  interfere(g, 3);
+  interfere(g, occ_lead(g) + 3);
   REQUIRE(g.core->sweep_pending());
   REQUIRE(!g.core->hopping());
   REQUIRE(!g.core->dwell_busy());
@@ -1813,7 +1856,7 @@ TEST(set_pin_while_linked_relocates_and_freezes_the_reactive_layer) {
   const size_t hops0 = g.sink.hops.size();
   g.cards[0]->cca_per_ms_on[112] = 50; g.cards[1]->cca_per_ms_on[112] = 50;
   g.cards[0]->fr.foreign = 0; g.cards[1]->fr.foreign = 0;
-  interfere(g, 6);
+  interfere(g, occ_lead(g) + 6);
   CHECK(std::string(g.core->snapshot(0).hop.verdict) == "interfered");
   CHECK(g.sink.hops.size() == hops0);          // no order/escape/hold of any kind
   CHECK(!g.core->hopping());
@@ -1882,7 +1925,7 @@ TEST(set_pin_refused_while_hopping) {
   link_up(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
   g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
-  interfere(g, 4);
+  interfere(g, occ_lead(g) + 4);
   REQUIRE(g.sink.has_hop("order"));
   REQUIRE(g.core->hopping());
   const size_t lines0 = g.sink.lines.size();
@@ -1957,7 +2000,7 @@ TEST(set_auto_from_pinned_rearms_the_hop_from_op_without_a_relocate) {
   CHECK(!g.sink.has_hop("relocate"));
   // and an interfered op is fled again
   g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
-  interfere(g, 4);
+  interfere(g, occ_lead(g) + 4);
   CHECK(g.sink.has_hop("order"));
 }
 
@@ -2108,7 +2151,7 @@ TEST(pin_refusal_agrees_with_set_pin_while_a_two_card_hop_is_in_flight) {
   link_up(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
   g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
-  interfere(g, 4);
+  interfere(g, occ_lead(g) + 4);
   REQUIRE(g.core->hopping());
   pin_refusal_agrees(g, 112, std::string("hop in flight"));
 }
@@ -2120,7 +2163,7 @@ TEST(pin_refusal_agrees_with_set_pin_while_a_one_card_reactive_hop_is_ordered) {
   freeze_auto(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
   g.cards[0]->cca_per_ms_on[40] = 50;
-  interfere(g, 4);
+  interfere(g, occ_lead(g) + 4);
   REQUIRE(g.sink.has_hop("order"));
   REQUIRE(!g.sink.has_hop("one_card_retune"));
   REQUIRE(!g.core->hopping());
@@ -2151,7 +2194,7 @@ TEST(pin_refusal_agrees_with_set_pin_while_a_relay_sweeps) {
   link_up(g);
   for (int i = 0; i < 5; ++i) g.tick(true, false, 0);
   g.cards[0]->cca_per_ms_on[40] = 50;
-  interfere(g, 3);
+  interfere(g, occ_lead(g) + 3);
   REQUIRE(g.core->sweep_pending());
   REQUIRE(!g.core->hopping());
   pin_refusal_agrees(g, 112, std::string("sweep in flight"));

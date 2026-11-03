@@ -73,7 +73,8 @@ VerdictOut HopVerdict::window(double now_ms, const std::vector<VerdictCardIn>& c
   // ---- per-card terms (contended/raised/blocked), computed before
   // `impaired` so the occupancy trigger below can fold into it on the
   // SAME window that trips it -- the reference freeze right after reads
-  // `impaired` once it already carries `occupied`.
+  // `impaired` once it already carries `occupied`. contended and raised
+  // are evidence only.
   bool contended = false, raised = false, blocked = false;
   // blocked = the MINIMUM foreign-busy reading across cards that have one,
   // not any-card. A weakly-receiving diversity card's NHM busy counts our
@@ -128,9 +129,9 @@ VerdictOut HopVerdict::window(double now_ms, const std::vector<VerdictCardIn>& c
                              (rec_ref > 0 && link.recovered > hv.recovered_x * rec_ref &&
                               link.recovered >= static_cast<uint32_t>(std::max(hv.recovered_min, 0))) ||
                              starved;
-  // occupied: a long-frame or sub-correlator jam that fills airtime
-  // without tripping foreign/fa or moving loss (`blocked`) -- impaired
-  // on its own, independent of everything else here.
+  // occupied: foreign airtime held for occupied_windows consecutive
+  // windows that had a busy reading -- impaired on its own, with or without
+  // loss, and the only route to `interfered` below.
   const bool impaired = loss_impaired || occupied;
   const bool weak = cards[best].rssi_dbm < hv.weak_rssi_dbm &&
                     (!cards[best].snr_valid || cards[best].snr_db < hv.weak_snr_db);
@@ -147,17 +148,25 @@ VerdictOut HopVerdict::window(double now_ms, const std::vector<VerdictCardIn>& c
   o.evidence = (impaired ? kEvImpaired : 0) | (weak ? kEvWeak : 0) | (fading ? kEvFading : 0) |
                (contended ? kEvContended : 0) | (raised ? kEvRaised : 0) | (blocked ? kEvBlocked : 0) |
                (starved ? kEvStarved : 0) | (occupied ? kEvOccupied : 0);
+  // Detection is NHM occupancy only. A fade -- range, a tree, a flip, a
+  // wall -- can lower our signal but cannot add foreign energy to the air,
+  // so sustained foreign airtime is the one signal no fade can fake. Loss,
+  // recovered and starved still mark the window impaired (the reference
+  // freeze); they and contended, raised and fading are reported evidence,
+  // never a route to `interfered`: each also moves when the link merely
+  // fades.
+  //
+  // weak gates first: at the range edge our own frames stop decoding, so
+  // own_air_pct (rebuilt from decoded frames) undercounts and the
+  // subtraction can read our own video as foreign airtime.
+  //
+  // `occupied && blocked`, not `occupied` alone: an occupied window without
+  // a busy reading (the usual shape right after a hop lands, before the
+  // NHM arm is back) stays unknown, so a hop's verify fails only on a
+  // blocked reading actually taken on the target.
   if (!impaired) o.v = Verdict::Healthy;
   else if (weak) o.v = Verdict::Fade;
-  // blocked beats fading: a real fade lowers power and cannot raise NHM
-  // busy; analog desense reads as a fade (docs/findings/2026-09-25-analog-vtx.md).
-  else if (blocked) o.v = Verdict::Interfered;
-  // foreign/fa evidence names the cause of LOSS, so it needs loss-type
-  // impairment: `occupied` reaches interfered only through `blocked`, and
-  // an occupied window without a busy reading stays unknown -- otherwise a
-  // busy-but-unblocked hop target that hears a neighbour's frames would
-  // fail verify on a window that cost nothing.
-  else if (loss_impaired && (contended || raised) && !fading) o.v = Verdict::Interfered;
+  else if (occupied && blocked) o.v = Verdict::Interfered;
   else o.v = Verdict::Unknown;
   // ---- reference freeze / thaw
   if (impaired && !frozen_) {

@@ -11,6 +11,7 @@
 #include "fake_link_card.h"
 #include "mav_ring.h"
 #include "mtest.h"
+#include "nhm_busy.h"
 #include "param_client.h"
 #include "web_gs.h"
 #include "mabur/config_params.h"
@@ -1237,8 +1238,24 @@ TEST(gs_roster_builds_core_and_one_card_prelude_commits_and_stores) {
 // overlay, the loader sets radio.pin, WebGs hands cfg.radio to ChannelCore.
 // Same interference on the one card, two rigs: auto (pick frozen at
 // link-up) orders a one-card reactive hop; pinned never does.
+// Detection is NHM occupancy only, so the op's air is held for the call:
+// NHM 100 % busy at the core's op-window arm period on a USB card, SURVEY
+// 97 % busy on a relay; restored afterwards. A first jam needs the
+// occupied_windows lead-in (occ_lead) before its trigger.
+static int occ_lead(const GsRig& r) { return r.c.hop.verdict.occupied_windows - 1; }
 static void interfere_one_card(GsRig& r, int windows) {
   r.card.cca_per_ms_on[r.card.ch] = 50;
+  const bool arm_ok = r.card.nhm_arm_ok;
+  const maburgs::NhmBusyRead read = r.card.nhm_read;
+  const maburgs::SurveyWindow survey = r.card.survey_win;
+  if (r.card.relay) {
+    r.card.survey_win = maburgs::SurveyWindow{true, 97.0, 2.0};
+  } else {
+    maburgs::NhmBusyRead full; full.valid = true;
+    full.period = maburgs::nhm_period_4us(r.c.hop.window_ms - 10);
+    full.buckets[11] = 100;
+    r.card.nhm_arm_ok = true; r.card.nhm_read = full;
+  }
   for (int w = 0; w < windows; ++w) {
     r.card.fr.foreign += 40;
     for (int i = 0; i < r.c.hop.window_ms / 10 + 1; ++i) {
@@ -1246,6 +1263,7 @@ static void interfere_one_card(GsRig& r, int windows) {
       r.ticks(1);
     }
   }
+  r.card.nhm_arm_ok = arm_ok; r.card.nhm_read = read; r.card.survey_win = survey;
 }
 TEST(gs_one_card_auto_hops_on_interference_but_pinned_never) {
   GsRig a;                                    // auto, one card
@@ -1257,7 +1275,7 @@ TEST(gs_one_card_auto_hops_on_interference_but_pinned_never) {
   for (int i = 0; i < 20 && !a.has_log("one-card linked"); ++i) { a.g->vrx()->on_video(static_cast<double>(a.t) / 1000.0); a.ticks(1); }
   REQUIRE(a.has_log("one-card linked"));
   a.card.ch = a.g->channel_core()->op();      // the sole card sits on op once the scout parks
-  interfere_one_card(a, 8);
+  interfere_one_card(a, occ_lead(a) + 8);
   REQUIRE(a.g->stats().session);
   REQUIRE(a.has_log("maburgs hop: order"));   // the injection is strong enough to trigger
 
@@ -1267,7 +1285,7 @@ TEST(gs_one_card_auto_hops_on_interference_but_pinned_never) {
   p.g->vrx()->test_set_move_edge();
   REQUIRE(p.g->stats().session);
   for (int i = 0; i < 20; ++i) { p.g->vrx()->on_video(static_cast<double>(p.t) / 1000.0); p.ticks(1); }
-  interfere_one_card(p, 8);
+  interfere_one_card(p, occ_lead(p) + 8);
   REQUIRE(p.g->stats().session);              // judged while linked, not after a drop
   CHECK(!p.has_log("maburgs hop:"));          // no order, no hold, nothing
   CHECK(std::string(p.g->stats().chan->hop.state) == "idle");
@@ -1287,7 +1305,7 @@ TEST(gs_relay_page_sweeps_and_hops_on_interference) {
   REQUIRE(a.g->stats().session);
   for (int i = 0; i < 20; ++i) { a.g->vrx()->on_video(static_cast<double>(a.t) / 1000.0); a.ticks(1); }
   a.card.ch = a.g->channel_core()->op();
-  interfere_one_card(a, 4);
+  interfere_one_card(a, occ_lead(a) + 4);
   REQUIRE(a.card.sweeps.size() == 1);
   CHECK((a.card.sweeps[0] == std::vector<uint8_t>{64, 112, 144}));
   maburgs::SweepResult res;
@@ -1298,7 +1316,7 @@ TEST(gs_relay_page_sweeps_and_hops_on_interference) {
       res.entries.push_back(e);
     }
   a.card.pending_result = res;
-  interfere_one_card(a, 3);
+  interfere_one_card(a, 3);                   // still occupied: the streak held through the sweep
   REQUIRE(a.has_log("maburgs hop: order"));
   for (int i = 0; i < 400 && a.card.ch != 112; ++i) { a.g->vrx()->on_video(static_cast<double>(a.t) / 1000.0); a.ticks(1); }
   CHECK(a.card.ch == 112);                    // blocked 64 skipped; least-busy 112 won

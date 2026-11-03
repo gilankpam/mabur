@@ -134,6 +134,9 @@ Chronological; each line names the section below that carries the detail.
 - 2026-11-03 — HT40 pair dwell: `scanlog 8` — at `radio.width` 40 the boot
   scan writes one `D` row per pair per round; `scanlog ≤ 7` files have
   two, one per half, at bw 20. No column change.
+- 2026-11-03 — hop detection is NHM occupancy only: `interfered` needs
+  `occupied` + `blocked`; loss/foreign/FA windows read `unknown`. Verdict
+  histograms are not comparable across the break (same marker, `scanlog 8`).
 
 ## 2026-09-23 — `link.pre_fec_loss` scale break, twice
 
@@ -1389,3 +1392,18 @@ pin, NACK, MSP and debug-log switches can change without a restart.
   `link.nack` the live `link.nack.enable`. A recording can switch between
   static and adaptive, or change ladders, mid-session: the GS config a
   session booted with is no longer proof of what every row flew.
+
+## 2026-11-03 — hop detection is NHM occupancy only
+
+`HopVerdict` classifies a window `interfered` only when `occupied` (the op
+blocked for `hop.verdict.occupied_windows` consecutive windows with a busy
+reading) and `blocked` in that window (`docs/inflight-channel-hop.md` §2).
+Before, `blocked` plus loss-type impairment, or loss plus `contended` /
+`raised` without `fading`, also read `interfered`. No format marker moved:
+`V` lines keep their columns and every evidence bit is still set as
+before, so the evidence-bit tallies stay comparable, but the verdict
+column is not — a `V` line that read `interfered` on loss with foreign
+frames or FA reads `unknown` from this build on, and the first
+`interfered` window of a jam comes `occupied_windows` windows into it.
+`flightreport.py`'s HOP verdict counts and its `trigger`/`order` timing
+are therefore not comparable across the break.

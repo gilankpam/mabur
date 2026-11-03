@@ -260,17 +260,19 @@ relay card — `gs/src/channel_core.cpp`'s per-card verdict loop):
 
 | field | source | feeds |
 |---|---|---|
-| `fa` | Δ`ofdm_err` (`RemoteCard::read_energy_scout()`) | `raised` |
-| `foreign` | Δ`foreign` (`RemoteCard::frames()`) | `contended` |
-| `busy_valid`, `nhm_busy_pct` | `SURVEY` delta valid (same `gen`, span ≥ 100 ms); `100·Δbusy/Δactive` | `blocked` |
-| `own_air_pct` | `100·Δrx/Δactive` — on the op channel `rx` ≈ our own video | subtracted in `blocked` (decodable foreign WiFi is already `contended`) |
+| `fa` | Δ`ofdm_err` (`RemoteCard::read_energy_scout()`) | `raised` (evidence only) |
+| `foreign` | Δ`foreign` (`RemoteCard::frames()`) | `contended` (evidence only) |
+| `busy_valid`, `nhm_busy_pct` | `SURVEY` delta valid (same `gen`, span ≥ 100 ms); `100·Δbusy/Δactive` | `blocked` → `occupied`, the hop trigger |
+| `own_air_pct` | `100·Δrx/Δactive` — on the op channel `rx` ≈ our own video | subtracted in `blocked` (`rx` also counts decodable foreign WiFi) |
 | `rssi`, `snr_valid=false` | RSSI from the FRAME header (no second measurement: "The relay has no SNR" above) | `weak`, `fading` |
 
 `cca` reads 0 on a relay (ath9k has no CCA-event count the relay exposes),
-so `raised` on a relay card is `fa` (OFDM/HT PHY errors) alone — and
-`ofdm_err` barely moves under a decodable 802.11 jam (decodable frames are
-not PHY errors), so in practice relay detection rests on `blocked`
-(non-WiFi energy) and `contended` (WiFi).
+so `raised` on a relay card is `fa` (OFDM/HT PHY errors) alone. Hop
+detection is NHM-occupancy only (`docs/inflight-channel-hop.md` §2), which
+on a relay means `SURVEY` busy minus `rx`: non-WiFi energy (an analog VTX
+carrier, DJI O4). Decodable foreign WiFi lands in `rx` and is subtracted
+with our own video, so a relay-only GS reports a co-channel 802.11
+neighbour as `contended` but does not hop off it.
 
 **Async sweep (spec §4).** On a trigger, `ChannelCore` sends one `SCAN`
 for `radio.channels` minus the op channel, `passes = 2`, `observe_ms = 20`
