@@ -3,9 +3,9 @@
 
 namespace maburgs {
 
-// Pure: whether the core loop's synchronous freshness burst
-// (HopController's ONLY source of ranking data on a one-card GS -- see the
-// call site's own comment in channel_core.cpp) should run this tick.
+// Pure: whether the freshness burst (HopController's ONLY source of
+// ranking data on a one-card GS -- see the call site's own comment in
+// channel_core.cpp) should run or be posted this tick.
 // Extracted so the four properties below, each of which has been wrong at
 // some point, have a direct unit test instead of only ever running inside
 // the hardware-touching burst body (inflight_mu, fronts[], RadioFrontend,
@@ -82,10 +82,9 @@ inline bool hop_burst_due(HopState state, bool trigger, double now_ms,
 
 // Pure: the freshness burst's pacing, the period hop_burst_due() checks.
 // A relay sweeps asynchronously and blanks itself for ~280 ms per SCAN:
-// relay_burst_period_ms in any state. A USB burst runs synchronously on
-// the core thread and takes its card off op for every candidate dwell
-// (dwell_observe_ms plus a retune away and back, per candidate), so it
-// paces on burst_period_ms while it is what stands between the trigger
+// relay_burst_period_ms in any state. A USB burst takes its card off op
+// for every candidate dwell (dwell_observe_ms plus a retune away and back,
+// per candidate), so it paces on burst_period_ms while it is what stands between the trigger
 // and an order: in Idle, and in a Hold entered because some non-op
 // candidate is not ranked yet (HopRanker marks one ranked at two fresh
 // visits, so the cold-ranker path is burst -> hold_exhausted -> burst ->
@@ -104,10 +103,10 @@ inline int hop_burst_period_ms(HopState state, bool relay_burst, bool ranking_co
 // Pure: whether a due freshness burst is worth running. A burst on a spare
 // USB card (not the TX card) re-measures what the periodic dwell thread
 // already keeps ranked on that same card -- one candidate per
-// dwell_period_ms -- and it runs synchronously, stalling the core loop
-// (AU publishing included) for every candidate dwell. So once every non-op
-// candidate is ranked, a spare-card burst is skipped and the hop acts on
-// the periodic dwells' ranking (newest visit at most one dwell round old).
+// dwell_period_ms -- and takes that card off diversity for every candidate
+// dwell. So once every non-op candidate is ranked, a spare-card burst is
+// skipped and the hop acts on the periodic dwells' ranking (newest visit
+// at most one dwell round old).
 // A one-card GS's burst is its only ranking source, and a relay sweeps
 // asynchronously: both run regardless. An incomplete ranking (cold start,
 // a candidate whose dwells fail, visits aged past rank_max_age_ms) still

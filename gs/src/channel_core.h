@@ -344,6 +344,10 @@ class ChannelCore {
   uint64_t sweep_round_ = 0, sweep_timeouts_ = 0;
   static constexpr double kSweepTimeoutMinMs = 1000, kSweepPerChannelMs = 40, kSweepSlackMs = 300;
   static constexpr uint8_t kSweepPasses = 2, kSweepObserveMs = 20;
+  // In-flight thread: how often its period wait checks for a posted burst;
+  // and how long the core waits for a posted burst before giving it up.
+  static constexpr int kScoutPollMs = 5;
+  static constexpr double kBurstLostMs = 2000;
   uint64_t rcf_sent_total_ = 0, rcf_sent_at_order_ = 0, ctrl_sent_total_ = 0;
   mutable uint64_t scout_gated_sends_ = 0;   // bumped inside the const gate query
   uint8_t last_video_ch_ = 0;
@@ -374,6 +378,15 @@ class ChannelCore {
   std::mutex dwell_mu_;
   std::vector<std::pair<int, ScoutDwell>> dwell_recs_;
   std::vector<HopVisit> dwell_visits_;
+  bool burst_done_ = false;   // dwell_mu_: the posted burst's results are in dwell_recs_/dwell_visits_
+  // A spare card's freshness burst, posted by the core thread and run by the
+  // in-flight thread (threaded, two cards): the card and the op to return to.
+  // -1 = nothing posted. The core holds the hop trigger back from the post
+  // until step_drains_ has ranked the results (burst_inflight_).
+  std::atomic<int> burst_req_card_{-1};
+  std::atomic<uint8_t> burst_req_op_{0};
+  bool burst_inflight_ = false;   // core thread
+  double burst_posted_ms_ = 0;    // core thread
   std::mutex inflight_mu_;
   bool inflight_started_ = false;
   std::thread scout_thread2_;
@@ -429,6 +442,10 @@ class ChannelCore {
   std::optional<std::string> relocate_refusal_(uint8_t ch) const;
   void inflight_body_();
   void scout_loop_();
+  // One freshness burst on `card`, back to `op`; caller holds inflight_mu_.
+  std::vector<HopVisit> burst_on_card_(int card, uint8_t op, std::vector<ScoutDwell>& recs);
+  void run_posted_burst_();
+  void start_inflight_if_due_();
   std::string logf_(const char* fmt, ...);
 };
 

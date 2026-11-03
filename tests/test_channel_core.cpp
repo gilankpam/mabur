@@ -892,6 +892,55 @@ TEST(shutdown_joins_threads_and_is_idempotent) {
   CHECK(core.snapshot(0).dwell[1]->visits == visits);             // no thread left dwelling
 }
 
+// Real threads, real clock. Two USB cards, the op occupied on both (100 %
+// NHM busy), so the occupancy trigger goes live with no video at all. The
+// spare card's freshness burst is posted to the in-flight thread: its dwell
+// records arrive (dwell_period_ms is 60 s, so no periodic dwell can be the
+// source), and no core tick ever waits for it -- one burst is three 20 ms
+// observes, so a tick that ran it inline would take >= 60 ms.
+// Revert (burst inline on the core thread): max_tick_ms reads >= 60.
+TEST(threaded_two_card_burst_runs_off_the_core_thread) {
+  Config cfg = bundle();
+  cfg.radio.channels = {40, 64, 112, 144}; cfg.radio.width = 40;
+  cfg.radio.scan.max_ms = 1000;
+  cfg.hop.dwell_period_ms = 60000;
+  // The op window's arm period (the sampler's), so op reads 100 % busy.
+  NhmBusyRead full; full.valid = true; full.period = nhm_period_4us(cfg.hop.window_ms - 10);
+  full.buckets[11] = 100;
+  FakeCard a, b;
+  for (FakeCard* c : {&a, &b}) {
+    c->ch = 40; c->width_mhz = 40; c->nhm_arm_ok = true; c->nhm_read = full;
+  }
+  std::vector<LinkCard*> ptrs{&a, &b};
+  VrxController vrx(vrx_cfg_from(cfg, 40));
+  RecordingSink sink;
+  Aggregator agg(cfg.uep_layers(), 32, 2, 0);
+  ChannelCoreCfg cc; cc.radio = cfg.radio; cc.hop = cfg.hop; cc.key = cfg.link.key; cc.start_ch = 40; cc.n_usb = 2;
+  auto now_ms = [] { return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()); };
+  auto now_us = [] { return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()); };
+  ChannelCore core(cc, ptrs, vrx, sink, [](uint8_t) { return true; }, now_ms, now_us,
+                   [](int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); });
+  ChannelTickIn in; in.agg = &agg; in.in_session = true; in.tx_card = 0;
+  auto burst_recs = [&] {
+    size_t n = 0;
+    for (const auto& d : sink.dwells) if (d.first == 1 && d.second.in_session) ++n;
+    return n;
+  };
+  uint64_t max_tick_ms = 0;
+  bool armed = false;   // boot pick closed: from here on the core may burst
+  for (int i = 0; i < 800 && burst_recs() < 3; ++i) {
+    in.now_ms = static_cast<double>(now_ms());
+    const uint64_t t0 = now_ms();
+    core.tick(in);
+    if (armed) max_tick_ms = std::max(max_tick_ms, now_ms() - t0);
+    armed = armed || !core.pick_open();
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  core.shutdown();
+  REQUIRE(burst_recs() >= 3);           // one burst: every candidate but op
+  CHECK(max_tick_ms < 40);
+}
+
 TEST(relay_only_roster_searches_without_measuring) {
   Rig g(0, 1);                                // one relay, auto
   const auto s = g.core->snapshot(0);
