@@ -102,6 +102,8 @@ class RadioFrontend : public LinkCard {
   NhmBusyRead read_nhm_busy() override;
   // Debug: the chip's programmed central channel (RF18 readback), -1 if unknown.
   int tuned_central() override;              // reads it back
+  // SPIKE (throwaway): the bench downcasts to peek PHY counters.
+  IRtlRadio* debug_radio() const { return device_.get(); }
   CardCaps caps() const override { return caps_; }            // filled in open_and_start() after InitWrite
   uint8_t channel() const override { return channel_.load(std::memory_order_acquire); }  // last channel handed to InitWrite/retune
 

@@ -19,6 +19,7 @@
 #include "body_queue.h"
 #include "radio_frontend.h"
 #include "nhm_busy.h"
+#include "jaguar3/RtlJaguar3Device.h"  // SPIKE: DebugPeekBb
 
 #include "SignalStop.h"
 #include "mabur/cal_wire.h"
@@ -50,6 +51,10 @@ struct Args {
   // --nhm-reset: also run a FA/CCA counter reset mid-window (spike q. b).
   int nhm_busy_ms = 0;
   bool nhm_reset = false;
+  // --dwell-ms N (SPIKE, throwaway): every N ms print one "D" line with the
+  // raw page-0x2c PHY counters (read before the scout reset), FA/CCA, decoded
+  // own/foreign deltas and a busy-NHM window armed at the previous tick.
+  int dwell_ms = 0;
   // --retune-bench a,b,..: after bring-up cycle FastRetune through the list
   // --retune-n times, printing "R from to us" per call, then exit.
   std::vector<int> retune_list;
@@ -107,6 +112,7 @@ bool parse_args(int argc, char** argv, Args* a) {
     else if (k == "--energy-ms") { if (!next(&a->energy_ms)) return false; }
     else if (k == "--nhm-busy-ms") { if (!next(&a->nhm_busy_ms)) return false; }
     else if (k == "--nhm-reset") { a->nhm_reset = true; }
+    else if (k == "--dwell-ms") { if (!next(&a->dwell_ms)) return false; }
     else if (k == "--retune-n") { if (!next(&a->retune_n)) return false; }
     else if (k == "--retune-bench") {
       if (i + 1 >= argc) return false;
@@ -217,6 +223,18 @@ int main(int argc, char** argv) {
     fe.arm_nhm_busy(nhm_period);
     next_nhm = mono_us() + static_cast<uint64_t>(a.nhm_busy_ms) * 1000;
     mid_nhm = mono_us() + static_cast<uint64_t>(a.nhm_busy_ms) * 500;
+  }
+  // SPIKE dwell mode state.
+  auto* j3 = dynamic_cast<RtlJaguar3Device*>(fe.debug_radio());
+  const uint16_t dwell_period =
+      maburgs::nhm_period_4us(a.dwell_ms > 10 ? a.dwell_ms - 10 : a.dwell_ms);
+  uint64_t next_dwell = 0, last_dwell = mono_us();
+  maburgs::ScoutFrames dwell_prev_fr = fe.frames();
+  if (a.dwell_ms > 0) {
+    if (!j3) std::fprintf(stderr, "dwell: not a Jaguar3 -- raw regs will read 0\n");
+    (void)fe.read_energy_scout();  // zero the FA/CCA block
+    fe.arm_nhm_busy(dwell_period);
+    next_dwell = mono_us() + static_cast<uint64_t>(a.dwell_ms) * 1000;
   }
   struct WallCell { uint32_t rx = 0; double rssi0 = 0, rssi1 = 0; };
   std::map<std::pair<int, int>, WallCell> wall_cells;
@@ -330,6 +348,32 @@ int main(int argc, char** argv) {
       // late window's successor before its NHM period had elapsed.
       next_nhm = now + static_cast<uint64_t>(a.nhm_busy_ms) * 1000;
       mid_nhm = now + static_cast<uint64_t>(a.nhm_busy_ms) * 500;
+    }
+    if (a.dwell_ms > 0 && now >= next_dwell) {
+      uint32_t r[6] = {};
+      if (j3) for (int i = 0; i < 6; ++i) r[i] = j3->DebugPeekBb(static_cast<uint16_t>(0x2c04 + 4 * i));
+      const maburgs::ScoutEnergy e = fe.read_energy_scout();
+      const maburgs::NhmBusyRead nb = fe.read_nhm_busy();
+      const maburgs::ScoutFrames fr = fe.frames();
+      const double own_pct = 100.0 * static_cast<double>(fr.own_air_us - dwell_prev_fr.own_air_us) /
+                             static_cast<double>(now - last_dwell);
+      last_dwell = now;
+      const auto b83 = maburgs::nhm_busy_pct(nb, -83), b80 = maburgs::nhm_busy_pct(nb, -80),
+                 b75 = maburgs::nhm_busy_pct(nb, -75);
+      std::printf("D %llu fa=%u cca=%u r04=%08x r08=%08x r0c=%08x r10=%08x r14=%08x r18=%08x own=%llu foreign=%llu nhm=%d busy83=%.1f busy80=%.1f busy75=%.1f ownair=%.1f",
+                  static_cast<unsigned long long>((now - t0) / 1000),
+                  e.fa_valid ? e.fa_ofdm : 0u, e.fa_valid ? e.cca_ofdm : 0u,
+                  r[0], r[1], r[2], r[3], r[4], r[5],
+                  static_cast<unsigned long long>(fr.own - dwell_prev_fr.own),
+                  static_cast<unsigned long long>(fr.foreign - dwell_prev_fr.foreign),
+                  nb.valid ? 1 : 0, b83 ? *b83 : -1.0, b80 ? *b80 : -1.0, b75 ? *b75 : -1.0, own_pct);
+      std::printf(" b=");
+      for (int i = 0; i < 12; ++i) std::printf("%s%u", i ? "," : "", nb.buckets[i]);
+      std::printf("\n");
+      std::fflush(stdout);
+      dwell_prev_fr = fr;
+      fe.arm_nhm_busy(dwell_period);
+      next_dwell = now + static_cast<uint64_t>(a.dwell_ms) * 1000;
     }
     if (a.energy_ms > 0 && now >= next_energy) {
       next_energy += static_cast<uint64_t>(a.energy_ms) * 1000;
