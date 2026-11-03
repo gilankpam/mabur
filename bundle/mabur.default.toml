@@ -39,6 +39,7 @@ blocks_per_body = [4, 4]   # base layer, enhance layer
 base_overhead   = 0.5      # extra repair data on the base layer (0.5 = +50 %)
 feed_batch      = 1        # blocks handed to the radio together (1 = send each as soon as it is ready)
 flush_ms        = 25       # send out a partly filled block after this many ms without new video
+repairs_with_frame = false # true: hold a frame's repairs to its end so each covers the whole frame (a late loss does not wait for the next frame); use window = 64
 
 [encoder]
 bitrate_min_kbps   = 1000

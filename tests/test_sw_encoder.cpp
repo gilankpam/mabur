@@ -1,6 +1,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "mabur/sw_decoder.h"
 #include "mabur/sw_encoder.h"
 #include "mabur/sw_wire.h"
 #include "mtest.h"
@@ -173,4 +174,97 @@ TEST(sink_form_matches_vector_form) {
   CHECK(got_span == want);
   CHECK(!want.empty());
 }
+// repairs_with_frame: a frame's credit is held to its end, spent there
+// rounded up, and the remainder forgiven.
+TEST(repairs_with_frame_holds_the_credit_to_the_frame_end) {
+  SwEncoder e(SwConfig{64, 32, 0.5, true});
+  auto count_rep = [](const std::vector<std::vector<uint8_t>>& v) {
+    int n = 0;
+    for (auto& env : v) n += hdr(env).repair ? 1 : 0;
+    return n;
+  };
+  auto a = feed(e, 5);                 // 4 sealed, credit 2.0: held
+  CHECK(count_rep(a) == 0);
+  auto ta = e.flush();                 // 5th sealed, 2.5: three repairs
+  CHECK(ta.size() == 4 && !hdr(ta[0]).repair);
+  CHECK(count_rep(ta) == 3);
+  for (size_t i = 1; i < ta.size(); ++i) {
+    CHECK(hdr(ta[i]).seq + hdr(ta[i]).window_len == 5);  // each covers the whole frame
+    CHECK(hdr(ta[i]).window_len == 5);
+  }
+  auto b = feed(e, 3);
+  CHECK(count_rep(b) == 0);
+  auto tb = e.flush();                 // 1.5, nothing carried: two
+  CHECK(count_rep(tb) == 2);
+  CHECK(e.flush().empty());            // an idle re-flush adds nothing
+}
+
+TEST(repairs_with_frame_windows_still_span_frames) {
+  SwEncoder e(SwConfig{64, 32, 0.5, true});
+  feed(e, 4);
+  e.flush();
+  auto b = feed(e, 2);
+  for (auto& t : e.flush()) b.push_back(std::move(t));
+  bool reaches_back = false;
+  for (auto& env : b) {
+    auto h = hdr(env);
+    if (h.repair && h.seq < 4) reaches_back = true;
+  }
+  CHECK(reaches_back);
+}
+
+// A frame longer than the window spends its credit a window at a time, so
+// no symbol is left without repairs built over it.
+TEST(repairs_with_frame_long_frame_spends_per_window) {
+  SwEncoder e(SwConfig{64, 8, 0.5, true});
+  auto out = feed(e, 20);
+  for (auto& t : e.flush()) out.push_back(std::move(t));
+  uint32_t covered_to = 0;
+  int reps = 0;
+  for (auto& env : out) {
+    auto h = hdr(env);
+    if (!h.repair) continue;
+    ++reps;
+    CHECK(h.window_len == 8);
+    CHECK(h.seq <= covered_to);        // no gap between repair windows
+    covered_to = std::max(covered_to, h.seq + h.window_len);
+  }
+  CHECK(covered_to == 20);
+  CHECK(reps == 10);                   // 4 + 4 at the window marks, 2 at the end
+}
+
+// The point of the mode: a loss late in a frame is repaired by envelopes
+// that arrive with that frame, before anything of the next frame.
+TEST(repairs_with_frame_loss_recovers_within_the_frame) {
+  const SwConfig cfg{64, 32, 0.25, true};
+  SwEncoder e(cfg);
+  auto prev = feed(e, 8);
+  for (auto& t : e.flush()) prev.push_back(std::move(t));
+  auto a = feed(e, 8);
+  for (auto& t : e.flush()) a.push_back(std::move(t));
+  SwDecoder d(cfg);
+  size_t got = 0;
+  for (auto& env : prev) got += d.add_symbol(env.data(), env.size(), 1000).size();
+  int src = 0;
+  for (auto& env : a) {
+    if (!hdr(env).repair && ++src >= 7) continue;  // lose frame A's last two sources
+    got += d.add_symbol(env.data(), env.size(), 1000).size();
+  }
+  CHECK(got == 16);
+  CHECK(d.syms_recovered() == 2);
+}
+
+TEST(default_mode_windows_still_span_frames) {
+  SwEncoder e(SwConfig{64, 32, 1.0});
+  feed(e, 4);
+  e.flush();
+  auto b = feed(e, 3);
+  bool reaches_back = false;
+  for (auto& env : b) {
+    auto h = hdr(env);
+    if (h.repair && h.seq < 4) reaches_back = true;
+  }
+  CHECK(reaches_back);
+}
+
 MTEST_MAIN

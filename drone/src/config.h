@@ -89,6 +89,10 @@ struct FecCfg {
   // ladder translation. Default 0.5 matches the flattened reference ladder.
   double base_overhead = 0.5;
   int flush_ms = 15;
+  // Hold a frame's repairs to its end, built inline, each covering the
+  // whole frame (SwConfig::repairs_with_frame); false = repairs spent as
+  // credit accrues, tail repair on the FEC worker.
+  bool repairs_with_frame = false;
   // Feed grouping: release sealed bodies to the TX writer in groups of N
   // (TxQueue wakeup batching + grouped pool submit) so URBs fill their
   // 3-descriptor cap and A-MPDU aggregates can form, instead of the

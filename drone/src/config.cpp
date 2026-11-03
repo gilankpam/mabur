@@ -196,7 +196,7 @@ void parse_radio(const Value& j, RadioCfg& r) {
 }
 
 void parse_fec(const Value& j, FecCfg& f) {
-  check_known_keys(j, {"symbol_size", "window", "blocks_per_body", "base_overhead", "flush_ms", "feed_batch"}, "fec");
+  check_known_keys(j, {"symbol_size", "window", "blocks_per_body", "base_overhead", "flush_ms", "feed_batch", "repairs_with_frame"}, "fec");
   if (j.contains("symbol_size")) {
     auto& s = j.at("symbol_size");
     g_line = s.line();
@@ -233,6 +233,7 @@ void parse_fec(const Value& j, FecCfg& f) {
   assign_if_present(j, "base_overhead", f.base_overhead, "fec");
   assign_if_present(j, "flush_ms", f.flush_ms, "fec");
   assign_if_present(j, "feed_batch", f.feed_batch, "fec");
+  assign_if_present(j, "repairs_with_frame", f.repairs_with_frame, "fec");
   if (f.feed_batch < 0 || f.feed_batch > 8)
     fail("fec.feed_batch", "must be in [0,8] (0 = streaming push)");
 
@@ -713,7 +714,8 @@ std::array<UepLayerCfg, 2> Config::uep_layers() const {
   std::array<UepLayerCfg, 2> layers;
   for (int sid = 0; sid < 2; ++sid) {
     layers[static_cast<size_t>(sid)].fec = SwConfig{
-        fec.symbol_size[static_cast<size_t>(sid)], fec.window, fec.base_overhead};
+        fec.symbol_size[static_cast<size_t>(sid)], fec.window, fec.base_overhead,
+        fec.repairs_with_frame};
     layers[static_cast<size_t>(sid)].blocks_per_body =
         fec.blocks_per_body[static_cast<size_t>(sid)];
   }

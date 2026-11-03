@@ -80,6 +80,13 @@ void UepEncoder::add_frame(int stream_id, const uint8_t* data, size_t len,
   // short final body — otherwise the tail envelope(s) just sealed above sit
   // buffered until a future frame's envelopes happen to fill the group,
   // defeating the "ship now" point of the frame-end seal.
+  if (layer.fec.repairs_with_frame) {
+    // The frame's sources close their body first; the frame-end repairs go
+    // in the next one. A lost body then takes either the sources or their
+    // repairs, not both.
+    layer.sw.seal(es);
+    emit_flush(layer, sink);
+  }
   layer.sw.flush(es);
   emit_flush(layer, sink);
   layer.last_activity_ms = now_ms;

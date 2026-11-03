@@ -111,6 +111,42 @@ per-class air difference, which the jitter EMA shows at ~2× Δair /
 wire-rate. Measurement basis for the pairs:
 `docs/findings/2026-08-30-same-rate-uep.md`.
 
+### Repairs at the frame end (`fec.repairs_with_frame`)
+
+Sources ship as soon as they are sealed. By default repairs are paid from
+a credit as it accrues (`overhead` per sealed source, one repair per whole
+credit) and built on the FEC worker; the frame end adds one tail repair.
+A repair covers the last `fec.window` symbols sent **before** it, so the
+repairs spread through a frame protect its early symbols well and its
+tail poorly: a lost body near the end of a frame leaves one or two
+repairs behind it, and the frame waits for the next frame of its layer
+(two display periods at 120 fps, since base and enhance alternate). It
+then completes next to that frame, and the display drops one of the
+pair.
+
+`fec.repairs_with_frame = true` (default `false`) holds a frame's credit
+to the frame end. There its repairs are built inline, each covering every
+symbol of the frame, and ship in a body of their own right behind the
+frame's last source body. A frame longer than the window spends its
+credit a window at a time. The frame end rounds the credit up and
+forgives the remainder, which keeps the repair count close to the default
+mode's (whose tail repair is also on top of the credit). The repair
+header carries `seq` and `window_len`, so the wire and the GS decoders
+are unchanged.
+
+The cost is pooling. A frame its own repairs cannot save (two bodies
+lost) relies on the next frames' repairs; with those held to the next
+frame's end, their window reaches back into this frame only by
+`window − next frame's symbols`. Run the mode with a window of about two
+frames (`fec.window = 64` for frames of ~20 symbols). On a recorded
+120 fps sequence (`tools/bench/frame_fec_sim.cpp`, whole-body loss),
+window 64: lossy frames waiting longer than one display period fall from
+~30 % to ~10 % at 4 % body loss, and frames never completed rise from 0
+to 0.04 % (0.03 % to 0.33 % at 8 %). The NACK (`docs/fec-nack.md`) is
+not in that model; it fills base-layer holes the FEC leaves, and with the
+frame's repairs right behind it a single lost body is repaired before the
+NACK settle time, so fewer requests race the FEC.
+
 ## 3. Encoder-side size shaping — what works on this SoC
 
 The encoder decides payload sizes; the transport faithfully converts
