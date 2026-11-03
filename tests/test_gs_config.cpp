@@ -638,7 +638,7 @@ TEST(hop_relay_burst_period_ms_default_and_range) {
 // hop.dwell_observe_ms/dwell_period_ms slowed down for the 40 MHz pair
 // dwell (background dwell only); hop.burst_period_ms is the USB
 // freshness-burst pace, split off from dwell_period_ms. occupied_windows is
-// the hop's only trigger, at 5 x 150 ms.
+// the occupied route's streak, at 5 x 150 ms.
 TEST(hop_defaults_dwell_20ms_period_1000_burst_333_occupied_5) {
   auto cfg = maburgs::load_config(write_tmp(""));
   CHECK(cfg.hop.dwell_observe_ms == 20 && cfg.hop.dwell_period_ms == 1000);

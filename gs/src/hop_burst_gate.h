@@ -66,10 +66,12 @@ inline bool tx_selection_frozen(bool dwell_busy, bool hopping) {
 // The verdict describes the OP channel, so a card tuned anywhere else is
 // skipped exactly like one mid-dwell. A hop's lead card sits on the target
 // from the Order to the Confirm; mixed into the op verdict, its readings
-// (clean target, no own frames) would -- through blocked's MIN-across-cards
-// rule -- clear kEvBlocked within ~3 windows of every order. During Ordered
-// the op verdict runs on the TX card alone; a one-card GS after its
-// OneCardRetune has no valid card at all (Verdict::Unknown, no kEvBlocked).
+// (clean target, no own frames) would -- through the MIN-across-cards
+// foreign reading that both blocked and the detect ring take -- clear the
+// trigger evidence (trigger_evidence(): kEvBlocked or kEvDetected) within
+// ~3 windows of every order. During Ordered the op verdict runs on the TX
+// card alone; a one-card GS after its OneCardRetune has no valid card at
+// all (Verdict::Unknown, no trigger evidence).
 inline bool verdict_card_usable(bool ready, bool mid_dwell, uint8_t card_ch, uint8_t op_ch) {
   return ready && !mid_dwell && card_ch == op_ch;
 }

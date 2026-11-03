@@ -372,12 +372,15 @@ struct OpJam {
     }
   }
 };
-// Detection is NHM occupancy only: `interfered` needs the op blocked for
-// hop.verdict.occupied_windows consecutive windows with a busy reading. The
-// windows a blocked op needs on top of the old three-window trigger shape.
+// Detection in this rig is NHM occupancy only (the detect route needs a
+// loss window, and pre_fec_loss/recovered stay 0 here): `interfered` needs
+// the op blocked for hop.verdict.occupied_windows consecutive windows with
+// a busy reading. The windows a blocked op needs on top of the old
+// three-window trigger shape.
 static int occ_lead(const Rig& g) { return g.cfg.hop.verdict.occupied_windows - 1; }
-// Interfered verdict windows: the op jammed (OpJam), foreign >> foreign_pps
-// on every usable card (reported evidence). This rig's Aggregator never
+// Interfered verdict windows: the op jammed (OpJam: every NHM sample above
+// busy_dbm on every usable card), foreign frames added alongside as
+// context only -- the verdict does not read them. This rig's Aggregator never
 // decodes a real body, so pre_fec_loss/recovered stay 0: the only route to
 // `impaired` here is occupancy. The first window arms NHM (no reading yet);
 // the occupied_windows-th blocked window after it is the first `impaired`

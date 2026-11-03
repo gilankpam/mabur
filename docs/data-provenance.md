@@ -147,6 +147,16 @@ Chronological; each line names the section below that carries the detail.
 - 2026-11-04 — the detect route: evidence bit 0x04 is `detected` from
   `scanlog 9` on (same marker); `interfered` gains a second route below
   `blocked_pct`. Verdict histograms are not comparable across the change.
+- 2026-11-04 — every pick moves on busy %: `radio.scan.pick_margin` (the
+  frame-score margin) is a removed config key; the boot pick (20 and
+  40 MHz) and the calibration pick leave the current channel only for a
+  better tier, a busy reading where it has none, or a `pick_margin_pct`
+  busy-% lead. At 20 MHz `ChannelRanker::ranked` sorts the unblocked tier
+  by busy % before frame score (it did so only for the blocked tier
+  before), and the calibration pick ranks its best candidate the same way,
+  so a `K` record's picked channel is not comparable across the change
+  (same marker, `scanlog 9`). The `K` rows themselves are unchanged: same
+  fields, written in config order.
 
 ## 2026-09-23 — `link.pre_fec_loss` scale break, twice
 
@@ -1445,11 +1455,10 @@ valid card, or an AU-rate collapse against `hop.verdict.starved_frac`).
 Detection is left entirely to `occupied` now: a jam that starves the link
 without also filling NHM airtime for `occupied_windows` consecutive
 windows reads `healthy` indefinitely. No further `scan.log` field or
-marker change: `scanlog` stays at 9, so 0x40 is unassigned from this
-point on but a `scanlog 9` file written between the two changes may still
-carry it set. `starved_frac` and `VerdictLinkIn::au_count`/`starved` are
-gone; `tools/flightreport.py` prints the `starved windows` tally only for
-`scanlog < 9` files.
+marker change: `scanlog` stays at 9 and 0x40 is unassigned in it.
+`starved_frac` and `VerdictLinkIn::au_count`/`starved` are gone;
+`tools/flightreport.py` prints the `starved windows` tally only for
+`scanlog < 9` rows.
 
 A second same-day follow-up reuses 0x04 for `detected` — the detect route
 (`docs/inflight-channel-hop.md` §2): a ring of `hop.verdict.detect_windows`
@@ -1458,7 +1467,12 @@ a loss-impaired window inside it, reads `interfered` well under
 `blocked_pct`. Again no marker change: a `scanlog 9` file written before
 this build never sets 0x04 (the `fading` bit went with the 9 bump), so
 decoding it as `detected` is safe, and `flightreport.py` tallies it under
-that name for every `scanlog 9` file. Its verdict histogram is not
+that name for every `scanlog 9` row. A file's verdict histogram is not
 comparable with an earlier `scanlog 9` file's: a lossy run over
 `detect_pct` that used to read `unknown` (or, lossy and blocked, waited
 for `occupied`) now reads `interfered` once the ring's median crosses.
+A GS restart rejoins the session directory, so a deploy session can hold
+`scanlog 8` rows followed by `scanlog 9` rows in one file:
+`flightreport.py` decodes each `V` row under the marker in force when it
+was written, so 0x04 reads `fading` in the first and `detected` in the
+second.

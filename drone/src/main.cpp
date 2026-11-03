@@ -1354,8 +1354,9 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
   // foreign-preamble channel, so the deferral being avoided was never there
   // (docs/tx-rx-timing.md §3, docs/findings/2026-09-23-cca-on.md). The
   // altitude view the ground cards cannot see rides Telem
-  // rx_foreign/rx_crcfail; the hop verdict's only route to interfered is
-  // sustained NHM occupancy and never reacts to this counter, so if a
+  // rx_foreign/rx_crcfail; both of the hop verdict's routes to interfered
+  // (sustained NHM occupancy, and a lower NHM floor confirmed by loss) read
+  // the ground cards' airtime and never react to this counter, so if a
   // flight shows the drone deferring to neighbours, this is the only place
   // it shows up. GS-only carrier sense is NOT a fallback: it defers to the
   // burst edge where a blind drone restarts

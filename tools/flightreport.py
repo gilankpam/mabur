@@ -1228,10 +1228,11 @@ def print_drone_rx_report(rows):
     telemetry period -- the altitude view the GS cards cannot measure. With
     carrier sense ON `foreign` (CRC-clean, not ours) and
     `crcfail` (preamble heard, payload undecodable) are the frames the
-    drone's transmitter deferred to; the hop verdict's only route to
-    interfered is sustained NHM occupancy and never looks at this counter,
-    so DRONE RX is the only place a foreign neighbour that stays below the
-    occupancy threshold shows up at all. Silent on old recordings."""
+    drone's transmitter deferred to; both of the hop verdict's routes to
+    interfered (sustained NHM occupancy, and a lower NHM floor confirmed by
+    loss) read the GS cards' airtime and never look at this counter, so
+    DRONE RX is the only place a foreign neighbour the GS cards do not read
+    over either threshold shows up at all. Silent on old recordings."""
     s = drone_rx_samples(rows)
     if not s:
         return
@@ -1470,9 +1471,11 @@ def load_scanlog(path):
     cca crc rssi snr drssi nhm_busy|- own_air]...' (scanlog 4-8, 10-field
     blocks), or 'V ... [card foreign fa cca crc rssi snr nhm_busy|-
     own_air]...' with drssi dropped (scanlog 9+, 9-field blocks) -- the
-    stride is picked from the marker version seen so far, since a
-    rejoined session's later section can carry a newer marker than its
-    header line.
+    stride is picked from the marker in force when the line was read (the
+    last 'scanlog N' line above it), since a rejoined session's later
+    section can carry a newer marker than its header line. Each V row
+    carries that marker as row["version"], so a per-version decode of its
+    evidence (evidence_bit_tally, the starved line) reads the row's own.
 
     scanlog 5: M loses the "split_home"/"reunite" reasons (older files
     still carry them and are read as-is -- M's `reason` field is tokenised
@@ -1504,18 +1507,18 @@ def load_scanlog(path):
     No column change, so D's parsing above is unaffected.
 
     scanlog 9: the per-card block drops drssi -- the verdict no longer
-    freezes a per-card RSSI reference -- and evidence bits 0x04/0x08/0x10
-    (fading/contended/raised) are retired, followed by 0x40 (starved);
-    older files still decode under those names (evidence_bit_tally). No
-    further field-count or marker change -- a scanlog 9 file written
-    before the starved retirement may still carry the bit set, but the
-    tally and the HOP section's "starved windows" line no longer name it.
+    freezes a per-card RSSI reference -- evidence bits 0x08/0x10/0x40
+    (contended/raised/starved) are retired, and 0x04 (fading) becomes
+    `detected`; older rows still decode under the old names
+    (evidence_bit_tally).
 
-    Returns {"version": int, "V": [...], "H": [...], "D": [...], "M": [...]}.
+    Returns {"version": int, "V": [...], "H": [...], "D": [...], "M": [...]};
+    "version" is the highest marker in the file.
     Silent on lines that don't parse (older/newer record shapes) rather
     than aborting the report -- CLAUDE.md: recordings outlive the code that
     wrote them."""
-    version = 0
+    version = 0   # the highest marker seen
+    current = 0   # the marker in force: the last one above this line
     V, H, D, M = [], [], [], []
     with open(path) as f:
         for line in f:
@@ -1527,17 +1530,18 @@ def load_scanlog(path):
             # A GS restart REJOINS the session directory, so one scan.log can
             # carry several 'scanlog N' markers -- after a deploy the first
             # session starts under the old binary's header with the new
-            # binary's marker (and all its V/H/D records) further down. The
-            # highest marker seen decides the version; the old sections hold
-            # no record kind this report reads. (Bench: reading
+            # binary's marker (and its V/H/D records) further down. Each
+            # record is parsed under the marker in force when it was
+            # written; the file's version is the highest. (Bench: reading
             # only line 1 skipped the HOP section on the session with the
             # first real hop.)
             if tag == "scanlog" and len(toks) >= 2 and toks[1].isdigit():
-                version = max(version, int(toks[1]))
+                current = int(toks[1])
+                version = max(version, current)
                 continue
             try:
                 if tag == "V" and len(toks) >= 7:
-                    stride = 9 if version >= 9 else (10 if version >= 4 else 8)
+                    stride = 9 if current >= 9 else (10 if current >= 4 else 8)
                     n_extra = len(toks) - 7
                     if n_extra % stride != 0:
                         continue  # malformed card block; skip rather than misparse
@@ -1567,11 +1571,11 @@ def load_scanlog(path):
                         "t_ms": float(toks[1]), "verdict": toks[2],
                         "evidence": int(toks[3], 16), "ref_rung": ref_rung,
                         "link_loss_pct": float(toks[5]), "recovered": int(toks[6]),
-                        "cards": cards,
+                        "cards": cards, "version": current,
                     })
                 elif tag == "H" and len(toks) >= 7:
                     reason = None
-                    if version >= 7:
+                    if current >= 7:
                         if len(toks) < 8:
                             continue
                         reason = None if toks[-1] == "-" else toks[-1]
@@ -1798,14 +1802,12 @@ def verdict_histogram(V):
 # Healthy/not split) -- so the bit tally is over ALL windows, not just
 # non-healthy ones, matching what the bitmask itself actually counts.
 #
-# scan.log <= 8 recordings carry the retired fading/contended/raised bits
-# at 0x04/0x08/0x10 under those names; scanlog 9 frees 0x08/0x10 and reuses
-# 0x04 for `detected` (the detect route) -- never set by a scanlog 9 file
-# written before the detect route existed, since fading went with the same
-# marker bump. starved (0x40) is also retired -- a scanlog 9 file written
-# before that may still have it set, but neither bit map names it any more.
-# The bit map to decode a file with is picked from its own `scanlog N`
-# marker, never the current build's.
+# scan.log <= 8 recordings carry the retired fading/contended/raised/
+# starved bits at 0x04/0x08/0x10/0x40 under those names; scanlog 9 frees
+# 0x08/0x10/0x40 and reuses 0x04 for `detected` (the detect route). The bit
+# map to decode a V row with is picked from the `scanlog N` marker in force
+# when the row was written (row["version"]), never the current build's: a
+# rejoined session can hold rows under both.
 _EVIDENCE_BITS_V8 = (("impaired", 1), ("weak", 2), ("fading", 4),
                      ("contended", 8), ("raised", 16), ("blocked", 0x20),
                      ("starved", 0x40), ("occupied", 0x80))
@@ -1813,13 +1815,27 @@ _EVIDENCE_BITS_V9 = (("impaired", 1), ("weak", 2), ("detected", 4),
                      ("blocked", 0x20), ("occupied", 0x80))
 
 
+def _evidence_bits(version):
+    return _EVIDENCE_BITS_V9 if version >= 9 else _EVIDENCE_BITS_V8
+
+
 def evidence_bit_tally(V, version):
     """{"impaired": n, "weak": n, ...} -- how many windows set each bit.
-    Picked by the scan.log marker: scanlog <= 8 files decode under the old
-    fading/contended/raised/starved names, scanlog 9+ under the current
-    ones."""
-    bits = _EVIDENCE_BITS_V9 if version >= 9 else _EVIDENCE_BITS_V8
-    return {name: sum(1 for v in V if v["evidence"] & mask) for name, mask in bits}
+    Each row decodes under its own scan.log marker (row["version"];
+    `version`, the file's, for a row without one): scanlog <= 8 rows under
+    the old fading/contended/raised/starved names, scanlog 9+ under the
+    current ones. Every name of each bit map in use is listed, at 0 when
+    no row set it; a file holding both lists both (the <= 8 names first)."""
+    used = sorted({v.get("version", version) >= 9 for v in V}) or [version >= 9]
+    tally = {}
+    for v9 in used:
+        for name, _ in (_EVIDENCE_BITS_V9 if v9 else _EVIDENCE_BITS_V8):
+            tally.setdefault(name, 0)
+    for v in V:
+        for name, mask in _evidence_bits(v.get("version", version)):
+            if v["evidence"] & mask:
+                tally[name] += 1
+    return tally
 
 
 def evidence_card_medians(V):
@@ -1929,15 +1945,16 @@ def print_hop_report(scanlog, ctllog):
                   f"foreign={m['foreign']:.0f} fa={m['fa']:.0f} "
                   f"rssi={m['rssi_dbm']:.1f} snr={m['snr_db']:.1f}")
 
-    # How often the controller escaped a blocked hold, and -- on an older
-    # recording that still carries the retired `starved` term (no own frame
+    # How often the controller escaped a blocked hold, and -- on scanlog
+    # <= 8 rows, which can carry the retired `starved` term (no own frame
     # on any valid card, evidence 0x40) -- how many windows read it.
-    # scanlog 9 dropped starved from the live verdict, so current sessions
-    # never carry it.
+    # scanlog 9 dropped starved from the live verdict and frees the bit.
     escapes = sum(1 for h in H if _strip_would(h["kind"]) == "escape")
     line = f"escapes: {escapes}"
-    if scanlog.get("version", 0) < 9:
-        starved = sum(1 for v in V if v["evidence"] & 0x40)
+    file_version = scanlog.get("version", 0)
+    old_rows = [v for v in V if v.get("version", file_version) < 9]
+    if old_rows or (not V and file_version < 9):
+        starved = sum(1 for v in old_rows if v["evidence"] & 0x40)
         line += f"  starved windows: {starved} (evidence & 0x40)"
     print(line)
     # Orders held past confirm_ms because the op read blocked,

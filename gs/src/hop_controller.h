@@ -41,8 +41,8 @@ struct HopTick {
   bool no_verify = false;
   // The escape from a blocked hold: the best UNBLOCKED
   // candidate that is not verify-failed (fled channels allowed). Used only
-  // when there is no `best` and the current verdict's evidence carries
-  // kEvBlocked.
+  // when there is no `best` and the current verdict's evidence is a
+  // hop-route reading (trigger_evidence(): kEvBlocked or kEvDetected).
   std::optional<uint8_t> escape;
   uint32_t escape_score = 0;
 };

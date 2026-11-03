@@ -215,7 +215,7 @@ starved bits; 0x04 was the retired fading bit):
 
 | bit | rule | key (default) |
 |---|---|---|
-| impaired (0x01) | `loss_impaired` — link pre-FEC loss % > `loss_pct` **or** (recovered count > `recovered_x` × its 5 s trailing mean **and** recovered count >= `recovered_min`) — **or** `occupied` **or** `detected` | `hop.verdict.loss_pct` (3.0), `recovered_x` (3.0), `recovered_min` (8) |
+| impaired (0x01) | `loss_impaired` — base-layer pre-FEC loss % > `loss_pct` **or** (recovered count > `recovered_x` × its 5 s trailing mean **and** recovered count >= `recovered_min`) — **or** `occupied` **or** `detected` | `hop.verdict.loss_pct` (3.0), `recovered_x` (3.0), `recovered_min` (8) |
 | weak (0x02) | best card's RSSI < `weak_rssi_dbm` **and** SNR < `weak_snr_db` (RSSI alone when that card has no real SNR — `snr_valid` false on a CPE510 relay) | `weak_rssi_dbm` (−78), `weak_snr_db` (12) |
 | detected (0x04) | the detect ring (one slot per window with a usable card — reading-less windows take a slot too) is full, at least ⌈`detect_windows`/2⌉ of its slots had a busy reading, the median of those readings (the same minimum-across-cards foreign % `blocked` uses; with an even count, the mean of the middle two) >= `detect_pct`, and at least `detect_impaired` of its slots were `loss_impaired` (not `occupied` — that would make the confirmation circular) ⇒ `impaired`; with this window's own busy reading, the trigger | `hop.verdict.detect_pct` (8), `detect_windows` (5), `detect_impaired` (1) |
 | blocked (0x20) | the MINIMUM, across cards with a busy reading, of that card's busy % minus its own reconstructed airtime % >= `blocked_pct` | `radio.scan.busy_dbm` (−83), `radio.scan.blocked_pct` (30) |
@@ -860,11 +860,13 @@ H <t> <kind> <epoch> <target> <score> <elapsed_ms> <reason|->  # a hop event
   `foreign fa cca crc rssi snr nhm_busy own_air`. `nhm_busy` is `-`
   when the card's busy reading was invalid for this window (§2); `own_air`
   is always present, % of the window. The evidence field is the §2 bitmask
-  in hex: impaired 0x01, weak 0x02, blocked 0x20, occupied
-  0x80 (0x04/0x08/0x10/0x40 unassigned). `scanlog <= 8` files carry a tenth
+  in hex: impaired 0x01, weak 0x02, detected 0x04, blocked 0x20, occupied
+  0x80 (0x08/0x10/0x40 unassigned). `scanlog <= 8` files carry a tenth
   per-card field, `drssi` (the link-level best-card RSSI minus its
-  reference), may set the retired fading/contended/raised bits
-  (0x04/0x08/0x10), and may also set the retired `starved` bit (0x40).
+  reference), and may set the retired fading/contended/raised/starved bits
+  (0x04/0x08/0x10/0x40) — 0x04 is `fading` there, not `detected`.
+  `flightreport.py` decodes each V row under the marker in force when it
+  was written, so a rejoined session holding both reads each right.
 - **H** — one per `HopController` state transition or logged decision.
   `kind` is a single snake_case token: `order`, `relocate`, `escape`,
   `lead_confirm`, `one_card_retune`, `confirm_extend`, `verify_pass`,
@@ -1026,6 +1028,24 @@ DJI O4), `docs/findings/2026-09-25-analog-vtx.md` (one-card analog VTX) and
   references thaw, and the detected window re-freezes `ref_rung` at the
   rung the ladder sank to — the hop restores that rung, not the pre-onset
   one. The default 5 holds; config validation allows up to 100.
+- **The detect route confirms on base-layer loss.** Its loss window is
+  `loss_impaired`: the base layer's pre-FEC loss over
+  `hop.verdict.loss_pct` (`ChannelCore` feeds the verdict stream 0's
+  arrival counters, not the pooled `link.pre_fec_loss` the OSD LOSS row
+  shows — `docs/observability.md` "Pre-FEC loss is late, not lost"), or
+  the recovered rule. A jam that damages the enhancement layer first sinks
+  the ladder (`residual`/`s3_residual` demotes) before any window
+  confirms, and on a ladder with bitrate headroom the quality trade can
+  hold base-layer loss under `loss_pct` while it sinks: confirmation waits
+  for a window over `loss_pct`, and lowering `loss_pct` does not help an
+  enhancement-first jam. Where it does help, `loss_pct` is shared with
+  `impaired`: lowering it also widens the reference freeze and the
+  `fade`/`unknown` verdicts. See
+  `docs/findings/2026-11-03-nhm-hop-threshold-bench.md`.
+- **The detect route's clean-site record is bench-only.** Its evidence
+  against firing on a clean site is bench soaks and replayed captures
+  (`docs/findings/2026-11-03-nhm-hop-threshold-bench.md`); a first clean
+  flight on this build is flown watching `hop.hops` / `hop.holds`.
 - **One loss window makes a short detection.** At `detect_impaired` 1 the
   ring reads `detected` only while its loss window is inside it: a run
   with a single loss window gives `detect_windows − ⌈detect_windows/2⌉ + 1`
