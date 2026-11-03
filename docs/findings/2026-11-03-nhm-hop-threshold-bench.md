@@ -26,9 +26,10 @@ timing figure below is an approximation of what the verdict code actually
 sees, not an exact replay of it.
 
 The TX takes measurable time to actually get on air after its process
-launches (antenna/PHY bring-up): measured 5.0–5.4 s across 25 trials (one
-7.2 s outlier), so "on-air" is anchored on the TX's **exit** timestamp
-minus its run duration minus a 0.3 s close margin, not its launch mark.
+launches (antenna/PHY bring-up): measured 5.0–5.45 s across 27 timed
+trials (one 7.2 s outlier), so "on-air" is anchored on the TX's **exit**
+timestamp minus its run duration minus a 0.3 s close margin, not its
+launch mark.
 All "+Ns" times below are relative to that anchor.
 
 Four sweeps, same method, different ladder/jammer combinations:
@@ -97,7 +98,7 @@ the same app rate.
 ### 3. 40 MHz ladder at the 24 Mb/s cap, both jammer widths (`runs40l/`)
 
 | trial | jammer width | app rate | jammer airtime | NHM foreign med/max | blocked/occupied windows | existing-route result | ch end | pre-FEC loss med/max | fps min | AU drop | AU trunc | rung path |
-|---|---|---|---|---|---|---|---|---|---|---|---|
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | p0500 | 20 MHz | 0.5 Mb/s | 15.9 % | 22.4/30.2 % | 0/0 | no hop | 64 | 0.2/0.2 | 30.0 | 119 | 267 | 0–0 |
 | p0750 | 20 MHz | 0.75 Mb/s | 23.8 % | 32.7/32.7 % | 1/1 | hop, ordered +2.1 s | 144 | 0.3/0.3 | 33.3 | 0 | 0 | 3–3 |
 | p0900 | 20 MHz | 0.9 Mb/s | 28.5 % | 34.8/41.8 % | 8/2 | hop, ordered +1.5 s | 64 | 0.2/0.3 | 44.3 | 3 | 35 | 0–3 |
@@ -152,11 +153,25 @@ readings) — 1511 readings total, ≈4 minutes:
 Single-window spikes above the floor happen in clean air (p99 is already
 close to 8 %, and one window hit 30.2 %), but no ring of 5 ever carried
 both a sustained median there *and* a confirming loss window — see the
-rule replay below. Comparing NHM's foreign reading against the
-interferer's own reported airtime across every jam trial above, the gap
-is consistently **+2 to +4.3 points** (narrowest at low rates, e.g.
-measured 1.6 % reads 3.4 % NHM; widest at a075's 23.8 % reading 28.1 %),
-matching clean air's own ~1 % median plus noise.
+rule replay below.
+
+Comparing NHM's foreign reading against the interferer's own reported
+airtime, the gap depends on whether the jammer's width matches the
+ladder's tuned width. **Same-width trials** — table 1 (20 MHz jammer, 20
+MHz ladder) and the HT40 rows of tables 3 and 4 (HT40 jammer, 40 MHz
+ladder) — hold to **+1.4 to +4.3 points** (narrowest at table 3's w2500,
+39.1 % reading 40.5 %; widest at a075's 23.8 % reading 28.1 %), matching
+clean air's own ~1 % median plus noise. **Cross-width trials** — table 2
+(HT40 jammer, 20 MHz ladder) and table 3's `p*` rows (20 MHz jammer,
+40 MHz ladder) — run wider and less predictably, **+2.9 to +15.6
+points** (table 2's w1500: 23.5 % reading 39.1 %, is the outlier; table
+3's `p*` rows alone run +6.3 to +9.8). A ladder reading a jammer whose
+width doesn't match its own tuned width is a less reliable NHM-foreign
+measurement; the `detect_pct` floor (8.0) has enough margin over either
+range to still separate clean air from jam, but a "NHM tracks real
+airtime within a couple of points" claim only holds for the same-width
+case — the common one, an interferer on the same channel plan as the
+link.
 
 ## 60 s control vs. 60 s HT40-1M jam — the harm table
 
@@ -173,17 +188,20 @@ instead of 25, recomputed against the 60 s control capture:
 | video bitrate, median | 26.6 Mb/s | 10.8 Mb/s |
 | drone `txq_wait_ms` median/max | 4/5 ms | 1/51 ms |
 
-The jammer's reported 15.6 % airtime reads 18.5 % median NHM foreign —
-consistent with the +2–4 point gap above. The ladder spends 86 % of the
-minute at rung ≤ 1 and the video bitrate halves (26.6 → 10.8 Mb/s), but
-drops stay near-zero and fps holds, because the controller sinks quality
-instead of losing packets — the same effect as table 3's w1500. The one
-`txq_wait` spike (to 51 ms, vs. a control max of 5 ms) is not a sustained
-climb: it is a 1.8 s episode (t+32.7–34.5 s) that coincides with a
-promote attempt (rung 2→3) cut short by the jam — carrier sense defers,
-loss ticks to 2.2 %, the ladder demotes back to rung 1 within 2 s, and
-`txq_wait` falls back to 1–2 ms. The harm shows up as repeated short
-promote/demote episodes, not a steady-state number.
+The jammer's reported 15.6 % airtime (HT40, matching the ladder's own
+40 MHz tuning — a same-width trial) reads 18.5 % median NHM foreign, a
++2.9 point gap, inside the +1.4–4.3 same-width range above. The ladder
+spends 86 % of the minute at rung ≤ 1 and the video bitrate halves
+(26.6 → 10.8 Mb/s), but drops stay near-zero and fps holds, because the
+controller sinks quality instead of losing packets — the same effect as
+table 3's w1500. The one `txq_wait` spike (to 51 ms, vs. a control max
+of 5 ms) is not a sustained climb: it is a 1.8 s episode (t+32.7–34.5 s)
+that coincides with a `promote_probed` re-climb (rung 2→3, confirmed at
+t+32.9 s in the capture) cut short by the jam — carrier sense defers,
+loss ticks to 2.2 %, an `s3_residual` demote lands at t+33.7 s and the
+ladder settles back to rung 1 by t+34.7 s, and `txq_wait` falls back to
+1–2 ms. The harm shows up as repeated short promote/demote episodes, not
+a steady-state number.
 
 ## Chain of harm — a075 (0.75 Mb/s, 23.8 % jammer airtime, never hops)
 
@@ -206,51 +224,94 @@ Within 3 s the ladder bottoms at rung 0 and **stays there for the
 remaining 22 s**, with pre-FEC loss sustained at 17–21 % — more than 5x
 the 3.0 % `loss_pct` threshold the detect route's confirm step uses, and
 never transient — while fps bounces 35–65 and AU drops/truncations climb
-steadily (280 drops, 201 truncations over the window). None of this is
-visible to the occupied route, because foreign airtime stays just under
-the blocked wall. The finer-grained chain, from a090 (28.5 %, which does
-hop): foreign jumps to 31–35 % within 0.15 s of the first interfering
-frame, pre-FEC loss spikes to 10–18 % over the next 0.6 s as the ladder
-demotes 4→1, the blocked streak reaches 5 at +0.95 s and the hop orders
-immediately — landing costs only 1–3 AU drops, confirming that *once it
-fires*, the existing route is cheap; the problem is entirely how long it
-takes to fire, or whether it fires at all, below the wall.
+steadily (280 drops, 201 truncations over the window). The capture's own
+`link.ctl.last_event` names the cycle: a `promote_probed` climb to rung 5
+just before on-air, then five `residual` demotes in 1.2 s (5→4→3→2→1→0,
+one per onset window) — the onset cascade demotes under `residual`, not
+`s3_residual` (that reason shows up later, once the controller has
+re-climbed and settles into a steadier loss regime — the `runs_re`
+episode above is an example of that path). None of this is visible to
+the occupied route, because foreign airtime stays just under the blocked
+wall. The finer-grained chain, from a090 (28.5 %, which does hop):
+foreign jumps to 31–35 % within 0.15 s of the first interfering frame,
+pre-FEC loss spikes to 10–18 % over the next 0.6 s as a `residual`
+cascade demotes the ladder 4→1, the blocked streak reaches 5 at +0.95 s
+and the hop orders immediately — landing costs only 1–3 AU drops,
+confirming that *once it fires*, the existing route is cheap; the
+problem is entirely how long it takes to fire, or whether it fires at
+all, below the wall.
 
 ## Rule replay: a low floor confirmed by loss
 
 Replayed datagram-by-datagram (`t7/replay.py`) over every raw capture
 with the current defaults — a ring of the last `detect_windows` (5)
-readings, firing when the ring is full, the current window has a reading,
-the median of the ring's foreign readings is ≥ `detect_pct` (8.0), and at
-least `detect_impaired` (1) of the ring's windows had `pre_fec_loss × 100
-> loss_pct` (3.0). This is an approximation: the sideport's ~200 ms
-cadence is coarser than the verdict's 150 ms window, so ring-fill and
-first-fire times are offset from what the shipped code would see on the
-same jam.
+readings, firing when the ring is full, the current window has a
+reading, the median of the ring's foreign readings is ≥ `detect_pct`
+(8.0), and at least `detect_impaired` (1) of the ring's windows had
+`pre_fec_loss × 100 > loss_pct` (3.0):
+
+| trial | jammer airtime | first fire (s after on-air) | note |
+|---|---|---|---|
+| runs/a025 | 7.9 % | 1.0 | below the existing route's wall, never hops today |
+| runs/a050 | 15.9 % | 0.5 | below the existing route's wall, never hops today |
+| runs/a075 | 23.8 % | 0.5 | below the existing route's wall, never hops today |
+| runs/a090 | 28.5 % | 0.5 | existing route also hops, +1.0 s |
+| runs/a100 | 31.7 % | 0.4 | existing route also hops, +0.8 s |
+| runs/a120 | 38.0 % | 0.3 | existing route also hops, +0.5 s |
+| runs40/w1000 | 15.6 % | 0.6 | below the existing route's wall, never hops today |
+| runs40/w1500 | 23.5 % | 0.5 | existing route also hops, but slower (+2.6 s) |
+| runs40/w2000 | 31.3 % | 0.5 | existing route also hops, +0.9 s |
+| runs40/w2500 | 39.1 % | 0.7 | existing route also hops, +0.9 s |
+| runs40l/p0500 | 15.9 % | 0.7 | below the existing route's wall, never hops today |
+| runs40l/p0750 | 23.8 % | 0.5 | existing route also hops, +2.1 s |
+| runs40l/p0900 | 28.5 % | 0.5 | existing route also hops, +1.5 s |
+| runs40l/p1200 | 38.0 % | 0.6 | existing route also hops, +1.0 s |
+| runs40l/w1000 | 15.6 % | none in 25 s | 24 Mb/s-cap ladder, controller absorbs it with ~0 loss |
+| runs40l/w1500 | 23.5 % | 9.0 | slow — the confirming loss window took most of the window |
+| runs40l/w2000 | 31.3 % | 0.6 | existing route also hops, +0.8 s |
+| runs40l/w2500 | 39.1 % | none in 25 s | existing route hops first (+1.0 s); channel changes before the ring fills |
+| runs40low/w0100 | 1.6 % | none in 25 s | below `detect_pct`, as designed |
+| runs40low/w0200 | 3.1 % | none in 25 s | below `detect_pct`, as designed |
+| runs40low/w0300 | 4.7 % | none in 25 s | below `detect_pct`, as designed |
+| runs40low/w0500 | 7.9 % | 0.7 | right at the floor — ring median crossed 8 % on noise |
+| runs40low/w1000 | 15.6 % | none in 25 s | same case as `runs40l/w1000`, 24 Mb/s-cap ladder |
+| runs_re/w1000 (60 s) | 15.6 % | 1.0 | 60 s repeat of the two `w1000` "none in 25 s" rows above |
+| runs-pilot/a100 | 31.7 % | 0.8 | pilot trial, same rig, existing route also hops |
+| control (60 s, no jammer) | 0 % | none (0/300) | — |
+
+This is an approximation: the sideport's ~200 ms cadence is coarser than
+the verdict's 150 ms window, so ring-fill and first-fire times are
+offset from what the shipped code would see on the same jam.
 
 - **Clean air: 0 fires.** Across the pooled 238 s of pre-jam quiet plus
   the 60 s control capture (≈5 minutes, 1511+ readings), the replayed
   rule never fired — comfortably clearing the design goal of "0 fires in
   two clean minutes."
-- **At or above the floor, it fires fast, usually.** Every trial at
+- **At or above the floor, it mostly fires fast.** Every trial at
   ≥ 15.9 % measured/reported airtime fired within 0.3–1.0 s of on-air,
-  including several below the existing route's wall that never hop today
-  (a025 at 7.9 %: 1.0 s; a050 at 15.9 %: 0.5 s; a075 at 23.8 %: 0.5 s;
-  p0500 at 15.9 %: 0.7 s).
-- **Right at the floor, timing is inconsistent.** w0500 (≈7.9 % measured,
-  just under `detect_pct`) fired once at 0.7 s — the ring's median can
-  cross 8 % on noise even when the session average sits just under it.
-  w0100–w0300 (1.6–4.7 %) never fired, as designed.
+  except the three 24 Mb/s-cap-ladder exceptions below — including
+  several below the existing route's wall that never hop today (a025 at
+  7.9 %: 1.0 s; a050 at 15.9 %: 0.5 s; a075 at 23.8 %: 0.5 s; p0500 at
+  15.9 %: 0.7 s).
+- **Right at the floor, timing is inconsistent.** w0500 (≈7.9 %
+  measured, just under `detect_pct`) fired once at 0.7 s — the ring's
+  median can cross 8 % on noise even when the session average sits just
+  under it. w0100–w0300 (1.6–4.7 %) never fired, as designed.
 - **On the headroom-rich 40 MHz/24 Mb/s-cap ladder, confirmation can lag
-  or miss within a short window.** `runs40l`'s w1000 and w1500 (15.6 %
-  and 23.5 % airtime) never fired in their 25 s windows; `runs40low`'s
-  w1000 (same 15.6 %) didn't either. The 60 s repeat of the same trial
-  (`runs_re/w1000`) did fire, at +1.0 s. Because this ladder can absorb
-  jam by sinking bitrate alone (tables 3 and the harm comparison above),
-  a confirming loss window is not guaranteed to land quickly — the
-  detect route's latency here depends on when the controller's own
-  quality-for-continuity trade happens to let a loss window through, and
-  that varied run to run on the same nominal jam level.
+  or miss within a short window.** `runs40l`'s w1000 (15.6 %) and w2500
+  (39.1 %) and `runs40low`'s w1000 (also 15.6 %) never fired within
+  their 25 s windows; `runs40l`'s w1500 (23.5 %) did fire, but slowly, at
+  +9.0 s — more than 10x the floor-trial latency above. (w2500's own
+  `occupied` route hops at +1.0 s — before its ring can fill — so the
+  replay never gets a chance to fire there; immaterial, since the
+  existing route already handles that case.) The 60 s repeat of the
+  w1000 case (`runs_re/w1000`) did fire, at +1.0 s. Because this ladder
+  can absorb jam by sinking bitrate alone (tables 3 and the harm
+  comparison above), a confirming loss window is not guaranteed to land
+  quickly — the detect route's latency here depends on when the
+  controller's own quality-for-continuity trade happens to let a loss
+  window through, and that varied run to run on the same nominal jam
+  level.
 
 ## Conclusion
 
@@ -266,9 +327,12 @@ same jam.
   and pins the rung low while hiding the harm from every loss-based
   signal — a different failure shape, equally invisible to `occupied`.
 - NHM foreign airtime tracks the interferer's real airtime to within
-  about +2 to +4 points all the way down to ~1.6 % measured, against a
-  clean-air baseline of ~1 % median, ~3–4 % p90, and p99 under 10 % — the
-  signal has enough headroom under a low floor (8 %) to be useful.
+  about +1.4 to +4.3 points, all the way down to ~1.6 % measured, when
+  the jammer's width matches the ladder's tuned width (the common case);
+  when the two widths differ the gap runs wider and less predictably,
+  +2.9 to +15.6 points. Against a clean-air baseline of ~1 % median,
+  ~3–4 % p90, and p99 under 10 %, the signal has enough headroom under a
+  low floor (8 %) to be useful either way.
 - A low-floor-plus-loss-confirmation rule, replayed against these same
   captures, would hop in well under 2 s for most of the damaging
   sub-threshold cases above while firing on none of ~5 clean minutes —
