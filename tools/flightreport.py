@@ -1782,8 +1782,10 @@ def verdict_histogram(V):
 # level Healthy/not split; weak/fading/contended/raised are computed and
 # OR'd in unconditionally) -- so the bit tally is over ALL windows, not
 # just non-healthy ones, matching what the bitmask itself actually counts.
+# Every kEv* bit in gs/src/hop_verdict.h, in mask order.
 _EVIDENCE_BITS = (("impaired", 1), ("weak", 2), ("fading", 4),
-                  ("contended", 8), ("raised", 16), ("occupied", 0x80))
+                  ("contended", 8), ("raised", 16), ("blocked", 0x20),
+                  ("starved", 0x40), ("occupied", 0x80))
 
 
 def evidence_bit_tally(V):

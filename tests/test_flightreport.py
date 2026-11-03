@@ -1720,8 +1720,10 @@ class HopReportTest(unittest.TestCase):
         # raised line and the unknown line; weak=1 (only the fade line);
         # fading=1 (only the unknown line -- the one bit with zero
         # coverage before this line was added); contended=2 (only the two
-        # 0x09 lines); raised=1 (only the 0x11 line).
-        self.assertIn("evidence bits: impaired=5 weak=1 fading=1 contended=2 raised=1", out)
+        # 0x09 lines); raised=1 (only the 0x11 line). blocked/starved/
+        # occupied are listed at 0: the tally names every kEv* bit.
+        self.assertIn("evidence bits: impaired=5 weak=1 fading=1 contended=2 raised=1 "
+                      "blocked=0 starved=0 occupied=0", out)
         # card 0: the 2 contended-interfered windows (foreign=15/fa=3) plus
         # the 1 fade window (foreign=2/fa=1) -- median of [15,15,2]/[3,3,1]
         # is still 15/3 (2 of 3 samples agree), n=3.
