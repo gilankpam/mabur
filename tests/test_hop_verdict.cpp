@@ -577,3 +577,26 @@ TEST(occupied_persists_but_a_reading_less_window_classifies_unknown) {
   auto o2 = v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);
   CHECK(o2.v == Verdict::Interfered);
 }
+// `occupied` reaches `interfered` only through `blocked`: the contended /
+// raised branch needs loss-type impairment (loss, recovered, starved). A
+// no-reading window on a busy-but-unblocked target that hears foreign
+// frames or false alarms is `unknown`, not `interfered`, so it cannot fail
+// a hop's verify on traffic that never cost a frame.
+TEST(occupied_reading_less_window_with_foreign_or_fa_stays_unknown) {
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
+  for (int i = 0; i < 7; ++i, t += 150) v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);   // reach occupied
+  auto o = v.window(t, {card(-61, 30, 60, 4), card(-61, 30, 60, 4)}, {0.0, 20}, 5);   // contended, no NHM
+  CHECK(o.evidence & kEvContended); CHECK(o.evidence & kEvOccupied); CHECK(o.evidence & kEvImpaired);
+  CHECK(o.v == Verdict::Unknown);
+  t += 150;
+  o = v.window(t, {card(-61, 30, 0, 150), card(-61, 30, 0, 150)}, {0.0, 20}, 5);      // raised, no NHM
+  CHECK(o.evidence & kEvRaised); CHECK(o.evidence & kEvOccupied); CHECK(o.evidence & kEvImpaired);
+  CHECK(o.v == Verdict::Unknown);
+}
+TEST(lossy_contended_window_still_interfered_while_occupied) {
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
+  for (int i = 0; i < 7; ++i, t += 150) v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);   // reach occupied
+  auto o = v.window(t, {card(-61, 30, 60, 4), card(-61, 30, 60, 4)}, {0.06, 20}, 5);  // lossy, contended, no NHM
+  CHECK(o.evidence & kEvContended); CHECK(o.evidence & kEvOccupied);
+  CHECK(o.v == Verdict::Interfered);
+}

@@ -123,14 +123,15 @@ VerdictOut HopVerdict::window(double now_ms, const std::vector<VerdictCardIn>& c
   // the trailing mean sits near 0.2/window, so 1-5 recovered symbols read
   // "3x the reference" with 0 % loss (bench session 0232: 97 %
   // of recovered-only impaired windows had <= 8). starved (above): no
-  // frames means no loss, but not healthy either. occupied: a long-frame
-  // or sub-correlator jam that fills airtime without tripping foreign/fa
-  // or moving loss (§2 `blocked`) -- sustained on its own, independent of
-  // everything else here.
-  const bool impaired = link.pre_fec_loss * 100.0 > hv.loss_pct ||
-                        (rec_ref > 0 && link.recovered > hv.recovered_x * rec_ref &&
-                         link.recovered >= static_cast<uint32_t>(std::max(hv.recovered_min, 0))) ||
-                        starved || occupied;
+  // frames means no loss, but not healthy either.
+  const bool loss_impaired = link.pre_fec_loss * 100.0 > hv.loss_pct ||
+                             (rec_ref > 0 && link.recovered > hv.recovered_x * rec_ref &&
+                              link.recovered >= static_cast<uint32_t>(std::max(hv.recovered_min, 0))) ||
+                             starved;
+  // occupied: a long-frame or sub-correlator jam that fills airtime
+  // without tripping foreign/fa or moving loss (`blocked`) -- impaired
+  // on its own, independent of everything else here.
+  const bool impaired = loss_impaired || occupied;
   const bool weak = cards[best].rssi_dbm < hv.weak_rssi_dbm &&
                     (!cards[best].snr_valid || cards[best].snr_db < hv.weak_snr_db);
   // Guard: a frozen reference that was never established for this card
@@ -151,7 +152,12 @@ VerdictOut HopVerdict::window(double now_ms, const std::vector<VerdictCardIn>& c
   // blocked beats fading: a real fade lowers power and cannot raise NHM
   // busy; analog desense reads as a fade (docs/findings/2026-09-25-analog-vtx.md).
   else if (blocked) o.v = Verdict::Interfered;
-  else if ((contended || raised) && !fading) o.v = Verdict::Interfered;
+  // foreign/fa evidence names the cause of LOSS, so it needs loss-type
+  // impairment: `occupied` reaches interfered only through `blocked`, and
+  // an occupied window without a busy reading stays unknown -- otherwise a
+  // busy-but-unblocked hop target that hears a neighbour's frames would
+  // fail verify on a window that cost nothing.
+  else if (loss_impaired && (contended || raised) && !fading) o.v = Verdict::Interfered;
   else o.v = Verdict::Unknown;
   // ---- reference freeze / thaw
   if (impaired && !frozen_) {

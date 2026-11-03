@@ -242,9 +242,14 @@ channel `rx` is our own video. `blocked_pct` is shared with the NHM path.
 if (!impaired) o.v = Verdict::Healthy;
 else if (weak) o.v = Verdict::Fade;
 else if (blocked) o.v = Verdict::Interfered;
-else if ((contended || raised) && !fading) o.v = Verdict::Interfered;
+else if (loss_impaired && (contended || raised) && !fading) o.v = Verdict::Interfered;
 else o.v = Verdict::Unknown;
 ```
+
+`impaired` is `loss_impaired || occupied`, where `loss_impaired` is the
+loss / recovered / starved terms. Foreign frames and false alarms name the
+cause of *loss*, so the `contended`/`raised` branch needs `loss_impaired`;
+`occupied` reaches `interfered` only through `blocked`.
 
 `weak` wins outright (range edge; a hop does not help) — weak still wins
 over `occupied` simply by branch order: `weak` is checked before
@@ -260,10 +265,18 @@ itself `blocked` and falls into the `blocked` branch above. On a LATER
 window of the same occupied run that has no busy reading at all
 (mid-dwell, no usable card, an NHM arm invalidated by a retune) the streak
 holds but that window's own `blocked` is false — `occupied` (and so
-`impaired`) stays true, but with no `blocked`/`contended`/`raised` to
-classify it `interfered` it falls through to `unknown`: impaired, unknown,
-counting toward neither the persist nor a verify failure
-(`occupied_persists_but_a_reading_less_window_classifies_unknown`).
+`impaired`, `kEvImpaired`) stays true, but without `blocked`, and with no
+`loss_impaired` to let `contended`/`raised` speak, it falls through to
+`unknown` even when that window hears foreign frames or false alarms above
+`foreign_pps`/`fa_pps`: impaired, unknown, counting toward neither the
+persist nor a verify failure
+(`occupied_persists_but_a_reading_less_window_classifies_unknown`,
+`occupied_reading_less_window_with_foreign_or_fa_stays_unknown`). A lossy
+window that is contended still reads `interfered` whether or not
+`occupied` is set (`lossy_contended_window_still_interfered_while_occupied`).
+Neither the escape (`HopController::escape_allowed`) nor the confirm
+extension keys on `occupied`: both read `kEvBlocked`, so a no-reading
+occupied window neither escapes nor extends an order.
 `contended`/`raised` need `!fading`, so an edge-of-range link with
 jammer-like FA/foreign symptoms classifies `fade` (weak) or `unknown`
 (fading, not weak) — never `interfered` — and the ladder owns both. The
@@ -295,8 +308,9 @@ target that is already occupied reads `interfered` on its first **blocked**
 window there and fails verify at once, on one card and on two alike,
 rather than getting `occupied_windows × window_ms` of free pass while the
 count rebuilds from zero. A post-landing window with no busy reading (the
-retune can invalidate the NHM arm) classifies `unknown` instead and does
-not fail verify on its own — the streak holds, so the next window that
+retune can invalidate the NHM arm) classifies `unknown` instead — even
+with a neighbour's foreign frames or false alarms in it, since those need
+loss-type impairment — and does not fail verify on its own; the streak holds, so the next window that
 does have a blocked reading still reads `interfered`.
 
 Every `VerdictOut` carries the span its deltas cover (`t_start_ms`, `t_ms`).
