@@ -157,6 +157,11 @@ Chronological; each line names the section below that carries the detail.
   so a `K` record's picked channel is not comparable across the change
   (same marker, `scanlog 9`). The `K` rows themselves are unchanged: same
   fields, written in config order.
+- 2026-11-04 — the verdict's loss is the worse video layer: the `V` line's
+  `link_loss_pct` was the base layer's pre-FEC loss and is now the larger
+  of the base and enhancement layers' (`hop_verdict_link_loss`), so it and
+  the `impaired` bit read higher under a jam that hurts the enhancement
+  layer first; not comparable across the change (same marker, `scanlog 9`).
 
 ## 2026-09-23 — `link.pre_fec_loss` scale break, twice
 

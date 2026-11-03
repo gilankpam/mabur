@@ -296,7 +296,11 @@ class ChannelCore {
   HopRanker ranker_;
   HopController hopc_;
   std::unique_ptr<InflightScout> inflight_;
+  // The verdict's own pre-FEC loss windows, one per video layer (base =
+  // decoder stream 0, enhancement = stream 1); the verdict reads the worse
+  // (hop_verdict_link_loss).
   S1LossWindow s1_hop_loss_;
+  S1LossWindow enh_hop_loss_;
 
   // ---- per-card bookkeeping (core thread) ----
   std::vector<uint8_t> cur_ch_;

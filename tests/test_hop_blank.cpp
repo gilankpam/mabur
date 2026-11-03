@@ -266,3 +266,21 @@ TEST(carried_over_loss_does_not_reach_the_new_channels_verify) {
   auto s = w.sample(t);
   CHECK(!s.valid || s.loss < 0.001);
 }
+
+// ---- the verdict's confirming loss: the worse of the two video layers ----
+// The ladder demotes on loss in either layer, so the verdict confirms on
+// either: a jam that hurts the enhancement layer first must not read clean.
+// Revert (base layer only): the enh-only case reads 0.0.
+TEST(verdict_link_loss_is_the_worse_layer) {
+  using S = S1LossWindow::Sample;
+  CHECK(hop_verdict_link_loss(S{true, 0.0}, S{true, 0.04}) == 0.04);
+  CHECK(hop_verdict_link_loss(S{true, 0.05}, S{true, 0.01}) == 0.05);
+}
+// A layer with no window (blanked, or a single-layer rung with no enh
+// stream) contributes nothing; neither valid reads 0.
+TEST(verdict_link_loss_ignores_an_invalid_layer) {
+  using S = S1LossWindow::Sample;
+  CHECK(hop_verdict_link_loss(S{false, 0.9}, S{true, 0.02}) == 0.02);
+  CHECK(hop_verdict_link_loss(S{true, 0.03}, S{false, 0.9}) == 0.03);
+  CHECK(hop_verdict_link_loss(S{false, 0.9}, S{false, 0.9}) == 0.0);
+}

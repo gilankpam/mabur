@@ -1,8 +1,10 @@
 #pragma once
+#include <algorithm>
 #include <optional>
 
 #include "hop_controller.h"
 #include "hop_verdict.h"
+#include "s1_loss.h"
 
 namespace maburgs {
 
@@ -84,6 +86,19 @@ inline std::optional<double> hop_store_blank_until(const VerdictOut& vo, bool re
 inline std::optional<double> hop_verdict_loss_blank_until(const HopAction& act, double now_ms) {
   if (act.kind != HopAction::Confirm) return std::nullopt;
   return now_ms + kHopSettleBlankMs;
+}
+
+// Pure: the pre-FEC loss the verdict confirms on -- the worse of the base and
+// enhancement layers' own trailing windows. The ladder demotes on loss in
+// either layer, and UEP gives the enhancement layer the thinner FEC, so a
+// jam often shows there first; a base-only reading stays clean while the
+// ladder sinks. A layer whose window is not valid (blanked after a landing,
+// or a rung without an enhancement stream) contributes nothing.
+inline double hop_verdict_link_loss(S1LossWindow::Sample base, S1LossWindow::Sample enh) {
+  double loss = 0.0;
+  if (base.valid) loss = std::max(loss, base.loss);
+  if (enh.valid) loss = std::max(loss, enh.loss);
+  return loss;
 }
 
 }  // namespace maburgs

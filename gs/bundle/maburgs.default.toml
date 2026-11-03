@@ -253,7 +253,7 @@ one_card_repeats     = 5      # single card: send the hop order this many times 
 
 # What counts as a bad channel.
 [hop.verdict]
-loss_pct             = 3.0    # packet loss % (base layer); also the detect route's confirming loss
+loss_pct             = 3.0    # packet loss % (worse video layer); also the detect route's confirming loss
 recovered_x          = 3.0    # FEC repairs this many times above normal
 recovered_min        = 8      # ...and at least this many repairs; 0 = off
 weak_rssi_dbm        = -78    # below this signal AND weak_snr_db = range edge: never a hop, even on a blocked channel

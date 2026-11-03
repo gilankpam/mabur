@@ -197,13 +197,15 @@ ChannelTickOut ChannelCore::tick(const ChannelTickIn& in) {
   // tick is gated before the sampler's next pass, not a tick later.
   step_gates_();
   // s1_hop_loss is fed from the same base-sid arrival counters as the
-  // assembler's s1_loss, on the same now_ms.
-  // Fed at the end of tick() (old main.cpp: right after fstream.poll);
-  // nothing in between touches decoder().stats(0), and the window samples
-  // before this tick's add either way.
+  // assembler's s1_loss, on the same now_ms; enh_hop_loss from the
+  // enhancement stream's. Fed at the end of tick() (old main.cpp: right
+  // after fstream.poll); nothing in between touches decoder().stats(), and
+  // the windows sample before this tick's add either way.
   if (in.agg) {
     const auto s1 = in.agg->decoder().stats(0);
     s1_hop_loss_.add(s1.arr_expected, s1.arr_arrived, in.now_ms);
+    const auto enh = in.agg->decoder().stats(1);
+    enh_hop_loss_.add(enh.arr_expected, enh.arr_arrived, in.now_ms);
   }
   ChannelTickOut out;
   out.dwell_busy = dwell_busy_.load();
@@ -371,7 +373,10 @@ void ChannelCore::dispatch_hop_action_(const HopAction& act, bool relocate_tick,
       default: break;
     }
   }
-  if (auto b = hop_verdict_loss_blank_until(act, now_ms)) s1_hop_loss_.blank_until(*b);
+  if (auto b = hop_verdict_loss_blank_until(act, now_ms)) {
+    s1_hop_loss_.blank_until(*b);
+    enh_hop_loss_.blank_until(*b);
+  }
   switch (act.kind) {
     case HopAction::Order:
       hopping_atomic_.store(true);
@@ -584,8 +589,7 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
     op_live_ms_ = now_ms;
   }
   VerdictLinkIn vl;
-  const auto s1 = s1_hop_loss_.sample(now_ms);
-  vl.pre_fec_loss = s1.valid ? s1.loss : 0.0;
+  vl.pre_fec_loss = hop_verdict_link_loss(s1_hop_loss_.sample(now_ms), enh_hop_loss_.sample(now_ms));
   const uint64_t recovered_now = in.agg ? in.agg->decoder().stats(0).syms_recovered +
                                               in.agg->decoder().stats(1).syms_recovered
                                         : 0;

@@ -51,6 +51,8 @@ namespace maburgs {
 //     longer freezes a per-card RSSI reference; evidence bits 0x08/0x10/
 //     0x40 (contended/raised/starved) are retired and unassigned, and 0x04
 //     (fading) is reused for `detected`)
+//     (<link_loss_pct> is the worse video layer's pre-FEC loss, base or
+//     enhancement -- docs/data-provenance.md has when that changed)
 //   H <t> <kind> <epoch> <target> <score> <elapsed_ms> <reason|-> # a hop event
 //     (scanlog 5: <kind> gains "relocate"; M <reason> gains "link_found")
 //     (scanlog 7: H + trailing <reason|->: "cal" on the relocate a
