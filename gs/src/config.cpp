@@ -333,17 +333,19 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
       vc.detect_pct = get_num(v, "detect_pct", 8.0, 1.0, 100.0, "hop.verdict");
       vc.detect_windows = (int)get_int(v, "detect_windows", 5, 2, 100, "hop.verdict");
       vc.detect_impaired = (int)get_int(v, "detect_impaired", 1, 1, 100, "hop.verdict");
-      // Cross-key validations
-      if (vc.detect_pct > c.radio.scan.busy.blocked_pct)
-        fail("hop.verdict.detect_pct", "must not exceed radio.scan.blocked_pct");
-      if (vc.detect_impaired > vc.detect_windows)
-        fail("hop.verdict.detect_impaired", "must not exceed detect_windows");
     } else {
       note_default("hop", "verdict", "(section absent)");
     }
   } else {
     note_default("", "hop", "(section absent)");
   }
+  // Cross-key validations, outside the sections: either side may be the
+  // one set, so a lowered radio.scan.blocked_pct under the default
+  // detect_pct fails with no [hop.verdict] at all.
+  if (c.hop.verdict.detect_pct > c.radio.scan.busy.blocked_pct)
+    fail("hop.verdict.detect_pct", "must not exceed radio.scan.blocked_pct");
+  if (c.hop.verdict.detect_impaired > c.hop.verdict.detect_windows)
+    fail("hop.verdict.detect_impaired", "must not exceed detect_windows");
 
   if (j.contains("fec")) {
     const Value& r = j["fec"];

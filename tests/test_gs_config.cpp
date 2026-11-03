@@ -654,6 +654,21 @@ TEST(new_keys_parse_and_range_check) {
   CHECK(!what_of([] { maburgs::load_config(write_tmp("[hop.verdict]\noccupied_windows = 0\n")); }).empty());  // < 1
   CHECK(!what_of([] { maburgs::load_config(write_tmp("[radio.scan]\npick_margin_pct = 101\n")); }).empty());  // > 100
 }
+// The detect route's floor must not exceed the blocked threshold, whichever
+// side sets it: a lowered radio.scan.blocked_pct under the default
+// detect_pct fails with no [hop.verdict] (or no [hop]) section at all.
+// Revert (cross-key checks inside the [hop.verdict] branch): the first two
+// load.
+TEST(hop_verdict_cross_key_checks_run_without_the_section) {
+  CHECK(what_of([] { maburgs::load_config(write_tmp("[radio.scan]\nblocked_pct = 5\n")); })
+            .find("hop.verdict.detect_pct") != std::string::npos);
+  CHECK(what_of([] { maburgs::load_config(write_tmp("[radio.scan]\nblocked_pct = 5\n[hop]\nwindow_ms = 150\n")); })
+            .find("hop.verdict.detect_pct") != std::string::npos);
+  CHECK(what_of([] { maburgs::load_config(write_tmp("[radio.scan]\nblocked_pct = 5\n[hop.verdict]\ndetect_pct = 5\n")); })
+            .empty());
+  CHECK(what_of([] { maburgs::load_config(write_tmp("[hop.verdict]\ndetect_windows = 3\ndetect_impaired = 4\n")); })
+            .find("hop.verdict.detect_impaired") != std::string::npos);
+}
 TEST(radio_scan_energy_period_ms_is_gone) {
   bool threw = false;
   try { maburgs::load_config(write_tmp("[radio.scan]\nenergy_period_ms = 1000\n")); }
