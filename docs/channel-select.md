@@ -472,15 +472,17 @@ card (two or more cards, not relay-only); pinned and one-card GSs run on
   valid card on `op`, decoded foreign frames scaled to `dwell_ms`, NHM
   busy minus our own airtime. Without a reading newer than the round's
   start, `op` is unread and the run stays.
-- **The score** (`cal_round_pick`) uses only terms both instruments
-  measure alike: decoded foreign frames plus NHM foreign busy %, the busy
-  term only when both sides have a reading (the `cca − own` term is
-  dropped: under A-MPDU video it clamps to 0 on `op`). A candidate is one
-  reading — its own dwell, at 40 MHz one dwell on the pair. A candidate
-  with no busy reading is not ranked while any
-  candidate has one (scored on foreign frames alone it would beat the
-  candidates that pay the busy term; foreign otherwise stays in the row's
-  score for ordering only). Leaving `op` is the same margin rule as the
+- **The pick** (`cal_round_pick`) uses only terms both instruments
+  measure alike: NHM foreign busy % and decoded foreign frames (the
+  `cca − own` term is dropped: under A-MPDU video it clamps to 0 on
+  `op`). A candidate is one reading — its own dwell, at 40 MHz one dwell
+  on the pair. The best candidate is ranked like the boot pick's pairs:
+  unblocked before blocked, then the lower busy %, then the lower score
+  (foreign frames plus busy %), then config order — busy % first, because
+  the move is decided on it. A candidate with no busy reading is not
+  ranked while any candidate has one (scored on foreign frames alone it
+  would beat the candidates that pay the busy term; foreign otherwise
+  orders only busy-% ties and the K rows). Leaving `op` is the same margin rule as the
   boot pick: a better tier (an unblocked candidate against a blocked `op`)
   moves at once, a blocked candidate never replaces an unblocked `op`, and
   otherwise the candidate must beat `op`'s busy % by `pick_margin_pct`

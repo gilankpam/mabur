@@ -1776,6 +1776,19 @@ TEST(cal_pick_a_candidate_without_a_busy_reading_never_outranks_one_with) {
   CHECK(cal_round_pick(f, CalReading{40, 100}, 40, kSet, 20, 50.0).best == 40);
 }
 
+// The best candidate is the one with the lowest busy %, not the lowest
+// foreign + busy % score: the move is decided on busy %, so the candidate
+// it is decided for must be ranked on it. 112 reads 5 % with 30 foreign
+// frames (score 35), 64 reads 20 % with 2 (score 22); op 30 %: 112 clears
+// the 20-point margin, 64 would not.
+// Revert (best by score): 64 is best, short of the margin, and op stays.
+TEST(cal_pick_best_ranks_on_busy_before_score) {
+  const std::vector<CalReading> h = {{64, 2, true, 20.0}, {112, 30, true, 5.0}};
+  CHECK(cal_round_pick(h, CalReading{40, 0, true, 30.0}, 40, kSet, 20, 50.0).best == 112);
+  // Under the margin the pick still stays on op.
+  CHECK(cal_round_pick(h, CalReading{40, 0, true, 20.0}, 40, kSet, 20, 50.0).best == 40);
+}
+
 TEST(cal_pick_width_20_compares_members) {
   const std::vector<uint8_t> set{36, 40, 44};
   const std::vector<CalReading> h = {{40, 0, true, 40.0}, {44, 0, true, 5.0}};

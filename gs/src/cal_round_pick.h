@@ -15,11 +15,16 @@
 // (PPDUs minus MPDUs) clamp to zero, while a candidate keeps its CCA, so the
 // term would score op clean no matter what.
 //
-// Candidate selection among the set (which one is "best") still scores
-// foreign + busy % (one unit per frame, one per percentage point; the busy
-// term only when both sides being compared have a reading) -- foreign
-// stays in the row's score for ordering only. A candidate with no busy
-// reading is not ranked while any candidate has one.
+// Candidate selection among the set (which one is "best") mirrors
+// pair_pick's order: unblocked before blocked, a busy reading before none,
+// then the lower busy %, then the lower foreign + busy % score (one unit
+// per frame, one per percentage point; the busy term only when the
+// candidate has a reading), then config order. Busy % ranks first because
+// the move below is decided on it: the candidate it is decided for must be
+// the one with the lowest busy %, not one whose low frame count outscores
+// a quieter channel. Foreign orders only busy-% ties and the K rows. A
+// candidate with no busy reading is not ranked while any candidate has
+// one.
 //
 // Leaving op is the same margin rule as ChannelRanker::proposal and
 // pair_proposal: the best candidate replaces op only when it is in a
@@ -74,6 +79,15 @@ inline Side member_side(const std::vector<CalReading>& rd, uint8_t member) {
   }
   return Side{};
 }
+// Strict, like pair_pick's better(): equal candidates are not better, so
+// the scan keeps config order on ties.
+inline bool better(const Side& a, const Side& b, double blocked_pct) {
+  const bool ab = blocked(a, blocked_pct), bb = blocked(b, blocked_pct);
+  if (ab != bb) return !ab;
+  if (a.busy_valid != b.busy_valid) return a.busy_valid;
+  if (a.busy_valid && a.busy_pct != b.busy_pct) return a.busy_pct < b.busy_pct;
+  return score(a, a.busy_valid) < score(b, b.busy_valid);
+}
 inline RankEntry row(const CalReading& r) {
   RankEntry e;
   e.ch = r.ch;
@@ -109,7 +123,7 @@ inline CalPickOut cal_round_pick(const std::vector<CalReading>& members,
   if (!op_read) return out;
   Side o{true, op_read->foreign, op_read->busy_valid, op_read->busy_valid ? op_read->busy_pct : 0.0};
 
-  // Best candidate: unblocked first, then score, then config order.
+  // Best candidate: tier, busy reading, busy %, score, then config order.
   std::optional<uint8_t> best;
   Side bs;
   for (uint8_t c : set) {
@@ -117,17 +131,7 @@ inline CalPickOut cal_round_pick(const std::vector<CalReading>& members,
     const Side s = member_side(members, c);
     if (!s.ok) continue;
     if (any_busy && !s.busy_valid) continue;
-    if (!best) {
-      best = c;
-      bs = s;
-      continue;
-    }
-    const bool sb = blocked(s, blocked_pct), bb = blocked(bs, blocked_pct);
-    if (sb != bb) {
-      if (!sb) { best = c; bs = s; }
-      continue;
-    }
-    if (score(s, s.busy_valid) < score(bs, bs.busy_valid)) {
+    if (!best || better(s, bs, blocked_pct)) {
       best = c;
       bs = s;
     }
