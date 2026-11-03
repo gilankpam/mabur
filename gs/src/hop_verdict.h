@@ -113,13 +113,15 @@ class HopVerdict {
   // leftovers from the previous session. The recovered history is
   // untouched; reset() is still the per-hop thaw.
   void new_session();
-  // A hop has landed (HopAction::Confirm): clears the detect
-  // ring only. The ring holds the old channel's readings, and carrying them
-  // onto the target would fail every detect-route hop's verify on a clean
-  // channel. The blocked streak and the frozen references are untouched:
-  // the streak carries on purpose, so an already occupied target fails
-  // verify on its first blocked reading.
-  void landed();
+  // A hop has landed (HopAction::Confirm) at now_ms: clears the detect
+  // ring and records the landing. The ring holds the old channel's
+  // readings, and carrying them onto the target would fail every
+  // detect-route hop's verify on a clean channel. A window whose span starts
+  // inside the landing settle (kHopSettleBlankMs) then never counts as the
+  // ring's loss window. The blocked streak and the frozen references are
+  // untouched: the streak carries on purpose, so an already occupied target
+  // fails verify on its first blocked reading.
+  void landed(double now_ms);
   int ref_rung() const;               // -1 while healthy
   // A live ladder swap inside a frozen episode: the frozen rung index is
   // re-pointed at the same operating point in the new ladder (the caller
@@ -153,9 +155,13 @@ class HopVerdict {
   struct DetectSlot {
     bool reading;     // the window had a usable busy reading
     double foreign;   // its minimum-across-cards foreign busy %
-    bool lossy;       // loss_impaired (the link's own term, not occupied)
+    bool lossy;       // loss_impaired (the link's own term, not occupied),
+                      // never on a window starting inside the landing settle
   };
   std::deque<DetectSlot> detect_ring_;
+  // The last landed() time; cleared by reset() and new_session().
+  bool have_landed_ = false;
+  double landed_ms_ = 0;
   // The ring holds a detection, full or not: a majority of reading slots,
   // their median foreign % >= detect_pct, and at least `lossy_needed` lossy
   // slots.

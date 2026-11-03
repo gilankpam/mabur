@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <numeric>
 
+#include "hop_blank.h"
+
 namespace maburgs {
 
 const char* to_string(Verdict v) {
@@ -27,6 +29,7 @@ void HopVerdict::reset() {
   recent_interfered_.clear();
   blocked_streak_ = 0;
   detect_ring_.clear();
+  have_landed_ = false;
   // The persistence window is cleared with the snapshot: leaving it
   // latched would hand the controller a trigger built from windows
   // measured on the channel we have just left.
@@ -41,9 +44,14 @@ void HopVerdict::reset() {
 void HopVerdict::new_session() {
   blocked_streak_ = 0;
   detect_ring_.clear();
+  have_landed_ = false;
 }
 
-void HopVerdict::landed() { detect_ring_.clear(); }
+void HopVerdict::landed(double now_ms) {
+  detect_ring_.clear();
+  landed_ms_ = now_ms;
+  have_landed_ = true;
+}
 
 bool HopVerdict::ring_reads_detect_(int lossy_needed) const {
   const int n = cfg_.verdict.detect_windows;
@@ -128,7 +136,15 @@ VerdictOut HopVerdict::window(double now_ms, const std::vector<VerdictCardIn>& c
   // reading-less ones too (they count against the ceil(N/2) readings rule
   // and can carry the ring's loss window). A window with no valid card at
   // all returned above and takes none.
-  detect_ring_.push_back({have_busy_reading, min_foreign_busy_pct, loss_impaired});
+  //
+  // A window whose span starts inside the landing settle keeps its reading
+  // but is never the ring's loss window: the hop's own retune gap is still
+  // being repaired then and reads as recovered symbols (loss_impaired), the
+  // same debris HopController::verifying_tick ignores for its fail
+  // decision. Counted here, it would confirm a target's foreign reading a
+  // ring later and fail verify on a channel with no loss of its own.
+  const bool settle_debris = have_landed_ && o.t_start_ms < landed_ms_ + kHopSettleBlankMs;
+  detect_ring_.push_back({have_busy_reading, min_foreign_busy_pct, loss_impaired && !settle_debris});
   while (detect_ring_.size() > static_cast<size_t>(std::max(hv.detect_windows, 1)))
     detect_ring_.pop_front();
   // detected: a low-floor occupant confirmed by loss -- the median foreign

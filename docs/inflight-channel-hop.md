@@ -376,17 +376,25 @@ GS), the verdict's is this window's minimum of busy minus own airtime
 across cards. A target that was clean when dwelt and has filled up since
 lands blocked, and its first blocked reading fails verify.
 
-The detect ring follows the opposite rule: `HopVerdict::landed()`, the
-landing hook (`HopAction::Confirm`), clears it along with `reset()` and
+The detect ring follows the opposite rule: `HopVerdict::landed(now_ms)`,
+the landing hook (`HopAction::Confirm`), clears it along with `reset()` and
 `new_session()`, and touches nothing else
 (`landed_clears_the_detect_ring_and_keeps_the_blocked_streak`). Carrying
 the old channel's lossy readings onto the target would read `detected` on
 its first window and fail verify on every detect-route hop, clean target
-or not. The cost: the detect route can fail a verify only if a full ring
-of windows — a reading majority and a loss window among them — fits
-between the landing and the end of `verify_ms`; a target at 8–29 % foreign
-that does not show loss that fast passes verify and is left by the detect
-route later if loss shows there.
+or not. `landed()` also records the landing time: a window whose span
+starts inside the landing settle (`kHopSettleBlankMs` after the confirm)
+keeps its foreign reading in the ring but never counts as the ring's loss
+window (`settle_debris_never_confirms_the_detect_ring`). The hop's own
+retune gap is still being repaired then and reads as recovered symbols —
+the same debris `HopController` ignores for its fail decision (§5) — and
+counting it would confirm a target's foreign reading a ring later and fail
+verify on a channel with no loss of its own. The cost: the detect route
+can fail a verify only if a fresh full ring of windows — a reading
+majority and a loss window among them, that loss window starting after the
+settle — forms on the target between the landing and the end of
+`verify_ms`; a target at 8–29 % foreign that does not show loss that fast
+passes verify and is left by the detect route later if loss shows there.
 
 Every `VerdictOut` carries the span its deltas cover (`t_start_ms`, `t_ms`).
 `ChannelCore` recomputes a verdict every `hop.window_ms` but ticks
@@ -790,8 +798,9 @@ calls unblocked is unblocked to the verdict too and does not fail its
 verify on landing — for the occupied route: `HopVerdict::landed()` clears
 the detect ring at `HopAction::Confirm` (§2), so the detect route fails a
 verify only if a fresh full ring — a reading majority and a loss window
-among them — forms on the target inside `verify_ms`, never from the old
-channel's carried readings. `blocked_pct` 30 is three times the worst clean-channel
+among them, that loss window starting after the landing settle — forms on
+the target inside `verify_ms`, never from the old channel's carried
+readings or the hop's own retune debris. `blocked_pct` 30 is three times the worst clean-channel
 single-window error (~10) and well under a real interferer (95–99), and it
 catches a 250 frames/s long-frame jam (32.8 % busy) that a threshold of
 50 misses

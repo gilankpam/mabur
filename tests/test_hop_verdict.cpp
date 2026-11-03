@@ -1,4 +1,5 @@
 #include "hop_verdict.h"
+#include "hop_blank.h"
 #include "mtest.h"
 using namespace maburgs;
 static HopCfg cfg() { HopCfg c; return c; }   // config defaults
@@ -623,12 +624,45 @@ TEST(landed_clears_the_detect_ring_and_keeps_the_blocked_streak) {
   HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   for (int i = 1; i < occ_n(); ++i, t += 150) v.window(t, {busy(95, 3), busy(95, 3)}, {0.04, 20}, 5);   // blocked AND detecting
   REQUIRE(v.ref_rung() == 5);
-  v.landed();
+  v.landed(t);
   CHECK(v.ref_rung() == 5);                                           // the frozen references survive
   auto o = v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 3);     // the occupied_windows-th blocked; ladder sank
   CHECK(o.evidence & kEvOccupied);
   CHECK(!(o.evidence & kEvDetected));
   CHECK(o.ref_frozen); CHECK(o.ref_rung == 5);                        // a thawing landed() re-freezes at 3
+}
+// A window whose measurement span starts inside the landing settle
+// (kHopSettleBlankMs after landed()) carries the hop's own retune gap as
+// recovered symbols: its slot keeps its foreign reading but never counts as
+// the ring's loss window, so a 10 % target with no loss of its own never
+// reads detected once the ring fills. HopController ignores the same
+// windows for its verify decision; without this the ring would hold the
+// debris and fail verify a ring later.
+// Revert (the slot keeps loss_impaired inside the settle): the fifth window
+// reads detected.
+TEST(settle_debris_never_confirms_the_detect_ring) {
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
+  v.landed(t - 150);                                                  // between windows
+  auto o = v.window(t, {low_jam(), low_jam()}, {0.04, 20}, 5); t += 150;   // starts inside the settle, lossy
+  CHECK(!(o.evidence & kEvDetected));
+  for (int i = 1; i < det_n() + 2; ++i, t += 150) {
+    o = v.window(t, {low_jam(), low_jam()}, {0.0, 20}, 4);
+    CHECK(!(o.evidence & kEvDetected));
+  }
+}
+// The twin: a loss window whose span starts exactly at the settle's end is
+// the target's own loss and confirms the ring like any other.
+// Revert (the settle test widened to `<=`, or every slot after a landing
+// non-lossy): never reads detected.
+TEST(a_loss_window_after_the_settle_confirms_the_detect_ring) {
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
+  const double landed_ms = t - 150;
+  v.landed(landed_ms);
+  v.window(t, {low_jam(), low_jam()}, {0.0, 20}, 5); t += 150;        // inside the settle, clean
+  REQUIRE(t - 150 == landed_ms + kHopSettleBlankMs);
+  auto o = v.window(t, {low_jam(), low_jam()}, {0.04, 20}, 5); t += 150;   // starts at the settle's end
+  for (int i = 2; i < det_n(); ++i, t += 150) o = v.window(t, {low_jam(), low_jam()}, {0.0, 20}, 4);
+  CHECK(o.v == Verdict::Interfered); CHECK(o.evidence & kEvDetected);
 }
 // Each leg leaves a full ring that already reads detected before the clear
 // (a 10 % reading majority with a loss window among them), so without the
