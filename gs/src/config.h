@@ -68,11 +68,6 @@ struct HopVerdictCfg {
   int recovered_min = 8;
   int weak_rssi_dbm = -78;
   int weak_snr_db = 12;
-  // AU rate below this fraction of the trailing per-window AU mean reads
-  // `starved` even when a trickle of own frames still arrives (bench
-  // session 0232: 5-30 own frames/s under a long-frame jam).
-  // 0 disables the AU term. 60->30 fps low-power is 0.5, so keep it below.
-  double starved_frac = 0.25;
   // Consecutive blocked windows that read `occupied` -> impaired on their
   // own, with no loss or weak signal needed, and (with that window's own
   // blocked reading) the hop's only route to `interfered`. A window with no

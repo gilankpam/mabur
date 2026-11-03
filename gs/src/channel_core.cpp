@@ -506,7 +506,6 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
     recovered_prev_window_ = in.agg ? in.agg->decoder().stats(0).syms_recovered +
                                           in.agg->decoder().stats(1).syms_recovered
                                     : 0;
-    au_seq_prev_ = au_seq_.load(std::memory_order_relaxed);
     verdict_.new_session();
     sampler_->reset(now_ms_u);
   }
@@ -526,8 +525,6 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
   const uint64_t t_ms = rec->t_ms;   // the sample instant: every per-window span is measured to it
   std::vector<VerdictCardIn> vc(static_cast<size_t>(n_cards_));
   std::optional<CalReading> op_read;   // the worst valid card's reading of op this window
-  int starved_valid = 0;
-  bool starved_all_zero = true;
   for (int i = 0; i < n_cards_; ++i) {
     const size_t si = static_cast<size_t>(i);
     const CardSample& cs = rec->cards[si];
@@ -540,8 +537,6 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
     const double snr_raw = in.agg ? in.agg->card(i).snr_ema : 0.0;
     if (window_prev_ok_[si]) {
       vc[si].valid = true;
-      ++starved_valid;
-      if (cs.frames.own - window_prev_[si].own != 0) starved_all_zero = false;
       vc[si].fa = cs.energy.fa_ofdm;
       vc[si].cca = cs.energy.cca_ofdm;
       vc[si].foreign = static_cast<uint32_t>(cs.frames.foreign - window_prev_[si].foreign);
@@ -596,10 +591,6 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
                                         : 0;
   vl.recovered = static_cast<uint32_t>(recovered_now - recovered_prev_window_);
   recovered_prev_window_ = recovered_now;
-  vl.starved = starved_valid > 0 && starved_all_zero;
-  const uint64_t au_now = au_seq_.load(std::memory_order_relaxed);
-  vl.au_count = static_cast<uint32_t>(au_now - au_seq_prev_);
-  au_seq_prev_ = au_now;
   const auto vo = verdict_.window(now_ms, vc, vl, vrx_.ctl().rung());
   if (vo.v != Verdict::Healthy || vo.v != last_verdict_) sink_.verdict(now_ms, vo, vc, vl);
   last_verdict_ = vo.v;

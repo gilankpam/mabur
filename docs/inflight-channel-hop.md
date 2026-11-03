@@ -133,7 +133,7 @@ run on `WindowSampler` (`gs/src/window_sampler.{h,cpp}`), not on the core
 thread: every `hop.window_ms` the sampler samples each card and publishes
 one `WindowRecord`; `ChannelCore::step_hop_edge_and_window_` takes the
 latest record and runs the verdict on it, reading its own in-memory inputs
-(per-card CRC failures, RSSI/SNR EMAs, recovered symbols, AU count) at that
+(per-card CRC failures, RSSI/SNR EMAs, recovered symbols) at that
 moment. Per-window spans (`own_air_pct`) are measured between sample
 instants. The sampler runs on its own thread wherever `ChannelCore` runs
 threaded -- maburgs, and the web GS page build (`core_threads`); with
@@ -152,8 +152,8 @@ across `stop()` + `open_and_start()`, so no read lands on a card being
 torn down or tuned away. Lock order: `inflight_mu_` before the card lock.
 
 On every edge of `hop_active`, `ChannelCore::
-step_hop_edge_and_window_()` resets the engine, re-primes the `au_seq` and
-recovered baselines and calls `HopVerdict::new_session()`; on the falling
+step_hop_edge_and_window_()` resets the engine, re-primes the recovered
+baseline and calls `HopVerdict::new_session()`; on the falling
 edge it also hands `HopController::on_session_lost()`'s action to the
 dispatcher. Without the gate the boot rendezvous (80–90 % s1 loss while
 the link comes up) and a calibration run (video stopped on purpose) read as
@@ -181,37 +181,34 @@ the sideport/ctl-log/OSD gauge, is never blanked.
 `occupied` — foreign airtime held for `occupied_windows` consecutive windows
 — together with `blocked` in the window itself. A fade (range, a tree, a
 flip, a wall) can lower our signal but cannot add foreign energy to the air,
-so sustained foreign airtime is the one signal no fade can fake. Loss,
-recovered and starved are all still computed and reported (sideport
-`hop.evidence`, scan.log `V` lines), and the loss-type terms still mark a
-window `impaired` (which freezes the references), but none of them
-triggers a hop: each also moves when the link merely fades. The cost is
-detection latency — `occupied_windows × window_ms` before the first
-`interfered` window — taken on purpose: accuracy over speed.
+so sustained foreign airtime is the one signal no fade can fake. Loss and
+recovered are both still computed and reported (sideport `hop.evidence`,
+scan.log `V` lines), and still mark a window `impaired` (which freezes the
+reference), but neither triggers a hop on its own: each also moves when
+the link merely fades. The cost is detection latency —
+`occupied_windows × window_ms` before the first `interfered` window —
+taken on purpose: accuracy over speed.
 
-Five independent evidence bits, OR'd together every window
-(`hop_verdict.h`'s `kEvImpaired/kEvWeak/kEvBlocked/kEvStarved/kEvOccupied`;
-0x04/0x08/0x10 are unassigned, the retired fading/contended/raised bits):
+Four independent evidence bits, OR'd together every window
+(`hop_verdict.h`'s `kEvImpaired/kEvWeak/kEvBlocked/kEvOccupied`;
+0x04/0x08/0x10/0x40 are unassigned, the retired fading/contended/raised/
+starved bits):
 
 | bit | rule | key (default) |
 |---|---|---|
-| impaired (0x01) | link pre-FEC loss % > `loss_pct` **or** (recovered count > `recovered_x` × its 5 s trailing mean **and** recovered count >= `recovered_min`) **or** `starved` **or** `occupied` | `hop.verdict.loss_pct` (3.0), `recovered_x` (3.0), `recovered_min` (8) |
+| impaired (0x01) | link pre-FEC loss % > `loss_pct` **or** (recovered count > `recovered_x` × its 5 s trailing mean **and** recovered count >= `recovered_min`) **or** `occupied` | `hop.verdict.loss_pct` (3.0), `recovered_x` (3.0), `recovered_min` (8) |
 | weak (0x02) | best card's RSSI < `weak_rssi_dbm` **and** SNR < `weak_snr_db` (RSSI alone when that card has no real SNR — `snr_valid` false on a CPE510 relay) | `weak_rssi_dbm` (−78), `weak_snr_db` (12) |
 | blocked (0x20) | the MINIMUM, across cards with a busy reading, of that card's busy % minus its own reconstructed airtime % >= `blocked_pct` | `radio.scan.busy_dbm` (−83), `radio.scan.blocked_pct` (30) |
-| starved (0x40) | at least one card valid this window and **zero** own frames on every valid card (`VerdictLinkIn::starved`), **or** the window's AU count (`VerdictLinkIn::au_count`, the `au_seq` delta) < `starved_frac` × its trailing mean, when that mean is >= 2 AUs/window | `hop.verdict.starved_frac` (0.25; 0 = zero-frames rule only) |
 | occupied (0x80) | `blocked` has held, across windows with a usable busy reading, for `occupied_windows` consecutive windows; a window with no busy reading (mid-dwell, no usable card) neither resets nor advances the count ⇒ `impaired`; with `blocked` in the same window, the trigger | `hop.verdict.occupied_windows` (5) |
 
-Why the two floors exist: on a clean channel the recovered term's trailing
-mean sits near 0.2/window, so a handful of recovered symbols reads "3× the
-reference" at 0 % loss — `recovered_min` keeps that from marking a clean
-window `impaired` and freezing the references. A jammed link delivers no
-frames and therefore no loss; `starved` makes that impaired, and its AU-rate
-term catches a long-frame jam that still lets a trickle of frames through.
-60 → 30 fps low-power is a 0.5 AU-rate drop, so keep `starved_frac` below
-0.5. The AU reference behaves like the recovered one: a 5 s history pushed
-only while unfrozen, captured at the freeze, cleared by `reset()`; the AU
-history and reference (only those) are also dropped by `new_session()` —
-the frame rate before an outage is no baseline for the session after it.
+Why `recovered_min` exists: on a clean channel the recovered term's
+trailing mean sits near 0.2/window, so a handful of recovered symbols
+reads "3× the reference" at 0 % loss — `recovered_min` keeps that from
+marking a clean window `impaired` and freezing the reference. A jammed
+link that delivers no frames at all has no loss or recovered symbols
+either, so with `starved` gone it reads `healthy` unless the jam also
+fills NHM airtime for `occupied_windows` consecutive windows — detection
+is occupancy-only (above), not a fallback for the zero-frames case.
 
 **`blocked` and NHM busy.** The only other RSSI/SNR-based evidence bit is
 `weak`, so an interferer that fills airtime without lowering our signal —
@@ -257,10 +254,9 @@ else o.v = Verdict::Unknown;
 ```
 
 `impaired` is `loss_impaired || occupied`, where `loss_impaired` is the
-loss / recovered / starved terms. So a lossy window with a blocked reading
-but no occupancy yet is `unknown`
-(`loss_and_blocked_without_occupancy_is_unknown`,
-`starved_and_blocked_is_interfered_only_once_occupied`), and so is a lossy
+loss / recovered terms. So a lossy window with a blocked reading but no
+occupancy yet is `unknown`
+(`loss_and_blocked_without_occupancy_is_unknown`), and so is a lossy
 window full of foreign frames or false alarms, blocked reading or not
 (`co_channel_802_11_neighbour_with_loss_is_not_a_trigger`). An occupied run
 at zero loss reads `healthy` until the window that reaches
@@ -290,18 +286,19 @@ neither escapes nor extends an order. The hop trigger
 (`VerdictOut::trigger`) is `interfered` in `hop.persist` (2) of the last 3
 windows. `fade` and `unknown` never hop.
 
-**References.** Link-level, the 5 s trailing means of the FEC recovered
-count and of the AU count. Both are frozen at the first impaired window,
-along with `ref_rung` (the ladder's rung at that instant), so an
-interferer cannot raise its own baseline mid-episode; impaired windows
-push nothing into the trailing histories
-(`starved_windows_do_not_feed_the_trailing_references`). References thaw
-after 3 consecutive `healthy` windows, or on `HopVerdict::reset()`, which
+**References.** Link-level, the 5 s trailing mean of the FEC recovered
+count. It is frozen at the first impaired window, along with `ref_rung`
+(the ladder's rung at that instant), so an interferer cannot raise its own
+baseline mid-episode; impaired windows push nothing into the trailing
+history, so the frozen mean holds steady through a sustained jam
+(`recovered_rate_alone_marks_impaired_and_its_reference_freezes`). The
+reference thaws after 3 consecutive `healthy` windows, or on
+`HopVerdict::reset()`, which
 `apply_hop_action_()` calls on `HopAction::VerifyPass` and only there. A
 `verify_fail` or `withdraw` re-orders with the pre-onset `ref_rung` (§5);
 thawing on those would let the next impaired window re-freeze `ref_rung` at
 the mid-hop rung. `reset()` clears only the frozen snapshot and the latched
-persistence window; the trailing histories survive it.
+persistence window; the trailing history survives it.
 
 The `occupied` consecutive-blocked count (`blocked_streak_`) is cleared
 only by `reset()` and `new_session()` — never at a hop's order or landing,
@@ -699,7 +696,6 @@ recovered_x          = 3.0
 recovered_min        = 8
 weak_rssi_dbm        = -78
 weak_snr_db          = 12
-starved_frac         = 0.25
 occupied_windows     = 5
 ```
 
@@ -746,7 +742,6 @@ Validation (`gs/src/config.cpp`) — unknown keys fail boot:
 | `hop.verdict.recovered_min` | 0–1000 (0 = no floor) |
 | `hop.verdict.weak_rssi_dbm` | −110 – −20 |
 | `hop.verdict.weak_snr_db` | 0–40 |
-| `hop.verdict.starved_frac` | 0.0–1.0 (0 = zero-own-frames rule only) |
 | `hop.verdict.occupied_windows` | 1–100 |
 | `radio.scan.busy_dbm` | −104 – −70, must sit on an `nf::kNhmAbsThDbm` bucket edge |
 | `radio.scan.blocked_pct` | 1.0–100.0 |
@@ -769,11 +764,11 @@ H <t> <kind> <epoch> <target> <score> <elapsed_ms> <reason|->  # a hop event
   `foreign fa cca crc rssi snr nhm_busy own_air`. `nhm_busy` is `-`
   when the card's busy reading was invalid for this window (§2); `own_air`
   is always present, % of the window. The evidence field is the §2 bitmask
-  in hex: impaired 0x01, weak 0x02, blocked 0x20, starved 0x40, occupied
-  0x80 (0x04/0x08/0x10 unassigned). `scanlog <= 8` files carry a tenth
+  in hex: impaired 0x01, weak 0x02, blocked 0x20, occupied
+  0x80 (0x04/0x08/0x10/0x40 unassigned). `scanlog <= 8` files carry a tenth
   per-card field, `drssi` (the link-level best-card RSSI minus its
-  reference) and may set the retired fading/contended/raised bits
-  (0x04/0x08/0x10).
+  reference), may set the retired fading/contended/raised bits
+  (0x04/0x08/0x10), and may also set the retired `starved` bit (0x40).
 - **H** — one per `HopController` state transition or logged decision.
   `kind` is a single snake_case token: `order`, `relocate`, `escape`,
   `lead_confirm`, `one_card_retune`, `confirm_extend`, `verify_pass`,
@@ -857,11 +852,12 @@ ends mid-attempt"). On a session with zero real hops the report prints
 instead the verdict histogram, an evidence-bit tally over all windows, and
 per-card medians of `foreign`/`fa`/`rssi_dbm`/`snr_db` over non-healthy
 windows — the data for calibrating the `[hop.verdict]` thresholds. Always
-printed: `escapes: N  starved windows: M`, `confirm extensions: N
-undelivered withdraws: M` (`withdraw_undelivered` closes its attempt row
-like `withdraw`; `confirm_extend` leaves it open), and a per-card
-dwell-cost summary (count and median `to_us+read_us+back_us` over `sess == 1`
-dwells).
+printed: `escapes: N` (a `starved windows: M` field is appended only on a
+`scanlog` version below 9 — scanlog 9 dropped the verdict's `starved`
+term) and `confirm extensions: N  undelivered withdraws: M`
+(`withdraw_undelivered` closes its attempt row like `withdraw`;
+`confirm_extend` leaves it open), and a per-card dwell-cost summary (count
+and median `to_us+read_us+back_us` over `sess == 1` dwells).
 
 ## Measurements
 

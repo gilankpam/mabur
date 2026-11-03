@@ -259,5 +259,4 @@ recovered_x          = 3.0    # FEC repairs this many times above normal
 recovered_min        = 8      # ...and at least this many repairs; 0 = off
 weak_rssi_dbm        = -78    # below this signal AND weak_snr_db = range edge: never a hop, even on a blocked channel
 weak_snr_db          = 12
-starved_frac         = 0.25   # video rate below this fraction of normal = starved (keep below 0.5)
 occupied_windows     = 5      # channel blocked this many checks in a row = interfered: the only thing that triggers a hop

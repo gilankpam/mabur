@@ -323,14 +323,13 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
     if (h.contains("verdict")) {
       const Value& v = h["verdict"];
       check_keys(v, "hop.verdict", {"loss_pct", "recovered_x", "weak_rssi_dbm", "weak_snr_db",
-                                    "recovered_min", "starved_frac", "occupied_windows"});
+                                    "recovered_min", "occupied_windows"});
       HopVerdictCfg& vc = hc.verdict;
       vc.loss_pct = get_num(v, "loss_pct", 3.0, 0.1, 100.0, "hop.verdict");
       vc.recovered_x = get_num(v, "recovered_x", 3.0, 1.0, 100.0, "hop.verdict");
       vc.recovered_min = (int)get_int(v, "recovered_min", 8, 0, 1000, "hop.verdict");
       vc.weak_rssi_dbm = (int)get_int(v, "weak_rssi_dbm", -78, -110, -20, "hop.verdict");
       vc.weak_snr_db = (int)get_int(v, "weak_snr_db", 12, 0, 40, "hop.verdict");
-      vc.starved_frac = get_num(v, "starved_frac", 0.25, 0.0, 1.0, "hop.verdict");
       vc.occupied_windows = (int)get_int(v, "occupied_windows", 5, 1, 100, "hop.verdict");
     } else {
       note_default("hop", "verdict", "(section absent)");

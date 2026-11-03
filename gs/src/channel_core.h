@@ -325,7 +325,6 @@ class ChannelCore {
   // ---- hop state ----
   int hop_lead_latched_ = -1;
   uint64_t recovered_prev_window_ = 0;
-  uint64_t au_seq_prev_ = 0;
   bool hop_was_active_ = false;
   CalMoveEdgeHold cal_move_hold_;
   Verdict last_verdict_ = Verdict::Healthy;

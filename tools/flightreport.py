@@ -1505,8 +1505,11 @@ def load_scanlog(path):
 
     scanlog 9: the per-card block drops drssi -- the verdict no longer
     freezes a per-card RSSI reference -- and evidence bits 0x04/0x08/0x10
-    (fading/contended/raised) are retired; older files still decode under
-    those names (evidence_bit_tally).
+    (fading/contended/raised) are retired, followed by 0x40 (starved);
+    older files still decode under those names (evidence_bit_tally). No
+    further field-count or marker change -- a scanlog 9 file written
+    before the starved retirement may still carry the bit set, but the
+    tally and the HOP section's "starved windows" line no longer name it.
 
     Returns {"version": int, "V": [...], "H": [...], "D": [...], "M": [...]}.
     Silent on lines that don't parse (older/newer record shapes) rather
@@ -1796,20 +1799,23 @@ def verdict_histogram(V):
 # non-healthy ones, matching what the bitmask itself actually counts.
 #
 # scan.log <= 8 recordings carry the retired fading/contended/raised bits
-# at 0x04/0x08/0x10 under those names; scanlog 9 frees them. The bit map
-# to decode a file with is picked from its own `scanlog N` marker, never
-# the current build's.
+# at 0x04/0x08/0x10 under those names; scanlog 9 frees them. starved (0x40)
+# is also retired -- a scanlog 9 file written before this build may still
+# have it set, but neither bit map names it any more. The bit map to decode
+# a file with is picked from its own `scanlog N` marker, never the current
+# build's.
 _EVIDENCE_BITS_V8 = (("impaired", 1), ("weak", 2), ("fading", 4),
                      ("contended", 8), ("raised", 16), ("blocked", 0x20),
                      ("starved", 0x40), ("occupied", 0x80))
 _EVIDENCE_BITS_V9 = (("impaired", 1), ("weak", 2), ("blocked", 0x20),
-                     ("starved", 0x40), ("occupied", 0x80))
+                     ("occupied", 0x80))
 
 
 def evidence_bit_tally(V, version):
     """{"impaired": n, "weak": n, ...} -- how many windows set each bit.
     Picked by the scan.log marker: scanlog <= 8 files decode under the old
-    fading/contended/raised names, scanlog 9+ under the current ones."""
+    fading/contended/raised/starved names, scanlog 9+ under the current
+    ones."""
     bits = _EVIDENCE_BITS_V9 if version >= 9 else _EVIDENCE_BITS_V8
     return {name: sum(1 for v in V if v["evidence"] & mask) for name, mask in bits}
 
@@ -1921,11 +1927,17 @@ def print_hop_report(scanlog, ctllog):
                   f"foreign={m['foreign']:.0f} fa={m['fa']:.0f} "
                   f"rssi={m['rssi_dbm']:.1f} snr={m['snr_db']:.1f}")
 
-    # How often the controller escaped a blocked hold, and how many
-    # windows read `starved` (no own frame on any valid card, evidence 0x40).
+    # How often the controller escaped a blocked hold, and -- on an older
+    # recording that still carries the retired `starved` term (no own frame
+    # on any valid card, evidence 0x40) -- how many windows read it.
+    # scanlog 9 dropped starved from the live verdict, so current sessions
+    # never carry it.
     escapes = sum(1 for h in H if _strip_would(h["kind"]) == "escape")
-    starved = sum(1 for v in V if v["evidence"] & 0x40)
-    print(f"escapes: {escapes}  starved windows: {starved} (evidence & 0x40)")
+    line = f"escapes: {escapes}"
+    if scanlog.get("version", 0) < 9:
+        starved = sum(1 for v in V if v["evidence"] & 0x40)
+        line += f"  starved windows: {starved} (evidence & 0x40)"
+    print(line)
     # Orders held past confirm_ms because the op read blocked,
     # and how many of those still never landed.
     extends = sum(1 for h in H if _strip_would(h["kind"]) == "confirm_extend")

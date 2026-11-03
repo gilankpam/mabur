@@ -589,6 +589,14 @@ TEST(hop_verdict_rejects_the_removed_evidence_only_keys) {
   for (const char* k : {"fading_drop_db", "foreign_pps", "fa_pps"})
     CHECK(throws(std::string("[hop.verdict]\n") + k + " = 1\n"));
 }
+// `starved` (zero-own-frames / AU-rate-collapse) is gone along with its
+// config key; the key fails boot like any other removed key.
+TEST(hop_verdict_rejects_starved_frac) {
+  bool threw = false;
+  try { maburgs::load_config(write_tmp("[hop.verdict]\nstarved_frac = 0.25\n")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw);
+}
 TEST(hop_parses_and_validates) {
   auto cfg = maburgs::load_config(write_tmp(
       "[hop]\nwindow_ms = 200\npersist = 3\ndwell_observe_ms = 8\n"
@@ -1377,24 +1385,6 @@ TEST(hop_verdict_recovered_min_key) {
   catch (const std::runtime_error&) { threw = true; }
   CHECK(threw);
   CHECK(maburgs::HopVerdictCfg{}.recovered_min == 8);
-}
-
-// The AU-rate starved term. Revert (drop the key from check_keys / the parse):
-// the first load throws "unknown key".
-TEST(hop_verdict_starved_frac_key) {
-  auto c = maburgs::load_config(write_tmp("[hop.verdict]\nstarved_frac = 0\n"));
-  CHECK(c.hop.verdict.starved_frac == 0.0);
-  auto d = maburgs::load_config(write_tmp("[hop.verdict]\nstarved_frac = 0.5\n"));
-  CHECK(d.hop.verdict.starved_frac == 0.5);
-  bool threw = false;
-  try { maburgs::load_config(write_tmp("[hop.verdict]\nstarved_frac = 1.5\n")); }
-  catch (const std::runtime_error& e) { threw = std::string(e.what()).find("hop.verdict") != std::string::npos; }
-  CHECK(threw);
-  threw = false;
-  try { maburgs::load_config(write_tmp("[hop.verdict]\nstarved_frac = -0.1\n")); }
-  catch (const std::runtime_error&) { threw = true; }
-  CHECK(threw);
-  CHECK(maburgs::HopVerdictCfg{}.starved_frac == 0.25);
 }
 
 // The confirm extension while the op reads blocked.

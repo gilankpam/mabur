@@ -377,13 +377,12 @@ struct OpJam {
 // windows a blocked op needs on top of the old three-window trigger shape.
 static int occ_lead(const Rig& g) { return g.cfg.hop.verdict.occupied_windows - 1; }
 // Interfered verdict windows: the op jammed (OpJam), foreign >> foreign_pps
-// on every usable card (reported evidence), and own frames left unbumped so
-// `starved` makes the very first window impaired -- the onset that freezes
-// the references. This rig's Aggregator never decodes a real body, so
-// pre_fec_loss/recovered stay 0. The first window arms NHM (no reading yet);
-// the occupied_windows-th blocked window after it is the first
-// `interfered`, the next one the trigger (persist 2): occ_lead(g) + 3
-// windows.
+// on every usable card (reported evidence). This rig's Aggregator never
+// decodes a real body, so pre_fec_loss/recovered stay 0: the only route to
+// `impaired` here is occupancy. The first window arms NHM (no reading yet);
+// the occupied_windows-th blocked window after it is the first `impaired`
+// window (and also the first `interfered`, since occupancy is both at
+// once), the next one the trigger (persist 2): occ_lead(g) + 3 windows.
 static void interfere(Rig& g, int windows, int tx = 0) {
   OpJam jam(g);
   for (int w = 0; w < windows; ++w) {
@@ -436,7 +435,11 @@ static void onset_then_swap(Rig& g, std::vector<Rung> new_rungs) {
   REQUIRE(g.vrx->cur_op().mcs == 2);
   g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
   g.cards[0]->fr.foreign = 0; g.cards[1]->fr.foreign = 0;
-  interfere(g, 1);                                          // onset: ref_rung = 2
+  // Onset: the ref_rung snapshot freezes on the first `impaired` window,
+  // which here (no loss in this rig) is the first occupied one, occ_lead(g)
+  // + 2 windows into the jam. The ladder itself never demotes in this rig
+  // (no real decode to drive it), so the rung is still 2 at that window.
+  interfere(g, occ_lead(g) + 2);
   REQUIRE(*g.core->snapshot(0).hop.ref_rung == 2);
   REQUIRE(!g.sink.has_hop("order"));
   LadderCfg nl = g.vrx->ladder();
@@ -1488,8 +1491,9 @@ TEST(sampled_record_consumed_next_tick_uses_sample_span) {
 // ---- calibration channel pick (CalPicker / ChannelCore) ----
 
 // One linked tick with the TX card (card 0) on op hearing its own video and
-// `op_foreign` foreign frames: own frames keep the verdict out of `starved`,
-// foreign frames are what op's live reading scores. Card 1 is the scout card.
+// `op_foreign` foreign frames: own frames feed the sideport's own-frame
+// delta (StatsEnergyIn::own), foreign frames are what op's live reading
+// scores. Card 1 is the scout card.
 static void live_tick(Rig& g, uint32_t op_foreign = 0) {
   g.cards[0]->fr.own += 5;
   g.cards[0]->fr.foreign += op_foreign;

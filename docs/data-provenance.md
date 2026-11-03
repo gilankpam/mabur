@@ -1435,3 +1435,15 @@ under the old 10-field blocks and the old bit names
 (`tools/flightreport.py`'s `evidence_bit_tally`); a session's `blocked`/
 `starved`/`occupied` counts are comparable across the break, `fading`/
 `contended`/`raised` obviously are not.
+
+A same-day follow-up drops `starved` (0x40) too — unlike the three bits
+above, `starved` drove `impaired` on its own (zero own frames on every
+valid card, or an AU-rate collapse against `hop.verdict.starved_frac`).
+Detection is left entirely to `occupied` now: a jam that starves the link
+without also filling NHM airtime for `occupied_windows` consecutive
+windows reads `healthy` indefinitely. No further `scan.log` field or
+marker change: `scanlog` stays at 9, so 0x40 is unassigned from this
+point on but a `scanlog 9` file written between the two changes may still
+carry it set. `starved_frac` and `VerdictLinkIn::au_count`/`starved` are
+gone; `tools/flightreport.py` prints the `starved windows` tally only for
+`scanlog < 9` files.

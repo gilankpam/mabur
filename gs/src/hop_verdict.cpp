@@ -21,7 +21,6 @@ HopVerdict::HopVerdict(HopCfg cfg, BusyCfg busy, int n_cards)
 void HopVerdict::reset() {
   frozen_ = false;
   ref_rec_ = 0;
-  ref_au_ = 0;
   ref_rung_ = -1;
   healthy_streak_ = 0;
   seen_blocked_ = false;
@@ -31,15 +30,13 @@ void HopVerdict::reset() {
   // latched would hand the controller a trigger built from windows
   // measured on the channel we have just left.
   //
-  // Histories (rec_hist_, au_hist_) survive a reset -- they are the
-  // trailing baseline, not per-hop state. ref_rec_/ref_au_/ref_rung_ are
-  // the frozen snapshot taken AT a hop's onset and must not leak across a
-  // hop boundary.
+  // rec_hist_ survives a reset -- it is the trailing baseline, not
+  // per-hop state. ref_rec_/ref_rung_ are the frozen snapshot taken AT a
+  // hop's onset and must not leak across a hop boundary.
 }
 
+// A new in-session run: the blocked streak is per-run state.
 void HopVerdict::new_session() {
-  au_hist_.clear();
-  ref_au_ = 0;
   blocked_streak_ = 0;
 }
 
@@ -96,27 +93,13 @@ VerdictOut HopVerdict::window(double now_ms, const std::vector<VerdictCardIn>& c
   const double rec_ref = frozen_ ? ref_rec_
                                   : (rec_hist_.empty() ? 0.0
                                          : std::accumulate(rec_hist_.begin(), rec_hist_.end(), 0.0) / rec_hist_.size());
-  const double au_ref = frozen_ ? ref_au_
-                                 : (au_hist_.empty() ? 0.0
-                                        : std::accumulate(au_hist_.begin(), au_hist_.end(), 0.0) / au_hist_.size());
-  // starved: zero own frames on every valid card (main.cpp), OR the AU rate
-  // collapsed under starved_frac of its trailing mean. A long-frame jam
-  // lets a trickle of own frames through (bench session 0232:
-  // 5-30/s vs ~3200/s), so the zero-frames rule alone read the second jam
-  // window `healthy` and broke the 2-of-3 persistence. au_ref < 2 AUs per
-  // window is no baseline (boot, or a stream that barely runs).
-  const bool starved =
-      link.starved || (hv.starved_frac > 0 && au_ref >= 2.0 &&
-                       static_cast<double>(link.au_count) < hv.starved_frac * au_ref);
   // recovered_min: a floor under the recovered term. On a clean channel
   // the trailing mean sits near 0.2/window, so 1-5 recovered symbols read
   // "3x the reference" with 0 % loss (bench session 0232: 97 %
-  // of recovered-only impaired windows had <= 8). starved (above): no
-  // frames means no loss, but not healthy either.
+  // of recovered-only impaired windows had <= 8).
   const bool loss_impaired = link.pre_fec_loss * 100.0 > hv.loss_pct ||
                              (rec_ref > 0 && link.recovered > hv.recovered_x * rec_ref &&
-                              link.recovered >= static_cast<uint32_t>(std::max(hv.recovered_min, 0))) ||
-                             starved;
+                              link.recovered >= static_cast<uint32_t>(std::max(hv.recovered_min, 0)));
   // occupied: foreign airtime held for occupied_windows consecutive
   // windows that had a busy reading -- impaired on its own, with or without
   // loss, and the only route to `interfered` below.
@@ -124,13 +107,13 @@ VerdictOut HopVerdict::window(double now_ms, const std::vector<VerdictCardIn>& c
   const bool weak = cards[best].rssi_dbm < hv.weak_rssi_dbm &&
                     (!cards[best].snr_valid || cards[best].snr_db < hv.weak_snr_db);
   o.evidence = (impaired ? kEvImpaired : 0) | (weak ? kEvWeak : 0) | (blocked ? kEvBlocked : 0) |
-               (starved ? kEvStarved : 0) | (occupied ? kEvOccupied : 0);
+               (occupied ? kEvOccupied : 0);
   // Detection is NHM occupancy only. A fade -- range, a tree, a flip, a
   // wall -- can lower our signal but cannot add foreign energy to the air,
-  // so sustained foreign airtime is the one signal no fade can fake. Loss,
-  // recovered and starved still mark the window impaired (the reference
-  // freeze), but none of them routes to `interfered` on its own: each also
-  // moves when the link merely fades.
+  // so sustained foreign airtime is the one signal no fade can fake. Loss
+  // and recovered still mark the window impaired (the reference freeze),
+  // but neither routes to `interfered` on its own: each also moves when
+  // the link merely fades.
   //
   // weak gates first: at the range edge our own frames stop decoding, so
   // own_air_pct (rebuilt from decoded frames) undercounts and the
@@ -146,7 +129,7 @@ VerdictOut HopVerdict::window(double now_ms, const std::vector<VerdictCardIn>& c
   else o.v = Verdict::Unknown;
   // ---- reference freeze / thaw
   if (impaired && !frozen_) {
-    frozen_ = true; ref_rung_ = rung; ref_rec_ = rec_ref; ref_au_ = au_ref;
+    frozen_ = true; ref_rung_ = rung; ref_rec_ = rec_ref;
   }
   // The rung-store blank's arming edge: the first impaired, non-weak,
   // blocked window of this frozen episode (hop_blank.h) -- the jam's lossy
@@ -158,11 +141,9 @@ VerdictOut HopVerdict::window(double now_ms, const std::vector<VerdictCardIn>& c
   }
   healthy_streak_ = (o.v == Verdict::Healthy) ? healthy_streak_ + 1 : 0;
   if (frozen_ && healthy_streak_ >= 3) { frozen_ = false; ref_rung_ = -1; seen_blocked_ = false; }
-  if (!frozen_) {   // only unfrozen windows feed the trailing references
+  if (!frozen_) {   // only unfrozen windows feed the trailing reference
     rec_hist_.push_back(link.recovered);
     if (rec_hist_.size() > hist_n) rec_hist_.pop_front();
-    au_hist_.push_back(link.au_count);
-    if (au_hist_.size() > hist_n) au_hist_.pop_front();
   }
   o.ref_rung = ref_rung_;
   o.ref_frozen = frozen_;

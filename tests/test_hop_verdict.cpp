@@ -255,7 +255,7 @@ TEST(long_frame_jam_is_interfered_once_occupied) {
 // Interfered.
 TEST(loss_and_blocked_without_occupancy_is_unknown) {
   HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
-  VerdictLinkIn bad; bad.pre_fec_loss = 0.5; bad.recovered = 200; bad.au_count = 20;
+  VerdictLinkIn bad; bad.pre_fec_loss = 0.5; bad.recovered = 200;
   auto o = v.window(t, {busy_card(98, 0), busy_card(98, 0)}, bad, 5);
   CHECK(o.evidence & kEvBlocked); CHECK(o.evidence & kEvImpaired); CHECK(!(o.evidence & kEvOccupied));
   CHECK(o.v == Verdict::Unknown);
@@ -375,153 +375,15 @@ TEST(recovered_min_zero_disables_floor) {
   CHECK(o.evidence & kEvImpaired);
 }
 
-// ---- a starved window is impaired --------------------------------------
-// Earlier bench run: the drone was completely starved by a jam (zero own
-// frames on every card) and the verdict read `healthy` -- no frames means
-// no loss. main.cpp now sets VerdictLinkIn::starved.
-// Revert (drop `|| link.starved`): starved_and_blocked_is_evidence reads
-// Healthy with no kEvStarved.
-TEST(starved_and_blocked_is_evidence) {
-  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
-  VerdictLinkIn s; s.pre_fec_loss = 0.0; s.recovered = 0; s.starved = true;
-  auto o = v.window(t, {busy_card(98, 0), busy_card(98, 0)}, s, 5);
-  CHECK(o.evidence & kEvStarved);
-  CHECK(o.evidence & kEvBlocked);
-  CHECK(o.evidence & kEvImpaired);
-}
-// Pin (c): starved + blocked is unknown for occupied_windows - 1 windows
-// and interfered on the occupied_windows-th consecutive blocked window.
-// Revert (restore `blocked` + loss-type impairment -> Interfered): the
-// first window reads Interfered. Revert (`blocked_streak_ > occupied_windows`
-// instead of >=): the occupied_windows-th window reads Unknown.
-TEST(starved_and_blocked_is_interfered_only_once_occupied) {
-  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
-  VerdictLinkIn s; s.starved = true;
-  VerdictOut o;
-  for (int i = 1; i < occ_n(); ++i, t += 150) {
-    o = v.window(t, {busy_card(98, 0), busy_card(98, 0)}, s, 5);
-    CHECK(o.v == Verdict::Unknown);
-    CHECK(o.evidence & kEvStarved); CHECK(o.evidence & kEvBlocked);
-    CHECK(o.first_blocked == (i == 1));   // the store blank arms on the first
-    CHECK(!o.trigger);
-  }
-  o = v.window(t, {busy_card(98, 0), busy_card(98, 0)}, s, 5);
-  CHECK(o.v == Verdict::Interfered);
-  CHECK(o.evidence & kEvOccupied);
-  CHECK(!o.first_blocked);
-}
-// Starved with nothing else to explain it falls through to Unknown, like
-// any other unexplained impairment -- never a trigger on its own.
-// Revert (classify starved as Interfered directly): this reads Interfered.
-TEST(starved_alone_is_unknown) {
-  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
-  VerdictLinkIn s; s.starved = true;
-  VerdictOut o;
-  for (int i = 0; i < 3; ++i) o = v.window(t + 150 * i, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, s, 5);
-  CHECK(o.v == Verdict::Unknown);
-  CHECK(o.evidence & kEvStarved);
-  CHECK(!o.trigger);
-}
-// The reference-poisoning check: a starved window is impaired, so it freezes
-// the references and pushes nothing into the trailing histories; after the
-// starve ends, the recovered reference is still the pre-starve one.
-TEST(starved_windows_do_not_feed_the_trailing_references) {
+// new_session() clears only the blocked streak
+// (reset_and_new_session_clear_the_occupied_count); the recovered trailing
+// reference is untouched -- a session that resumes mid-stream has no reason
+// to forget what "normal" recovered looked like.
+TEST(new_session_leaves_the_recovered_reference_intact) {
   HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);   // recovered mean 20
-  VerdictLinkIn s; s.starved = true;             // recovered 0 while starved
-  for (int i = 0; i < 30; ++i, t += 150) {
-    auto o = v.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, s, 5);
-    CHECK(o.ref_frozen);
-  }
-  // 3 healthy windows thaw. 12 recovered is well under 3x the pre-starve
-  // mean of 20 -- had the 30 zero-recovered starved windows been pushed,
-  // the mean would sit near 2 and 12 would trip (it clears the floor of 8).
-  // Revert (push histories regardless of frozen_): this window is impaired.
-  for (int i = 0; i < 3; ++i, t += 150) v.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, 20}, 5);
-  auto ok = v.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, 12}, 5);
-  CHECK(!(ok.evidence & kEvImpaired));
-}
-
-// ---- an AU-rate collapse counts as starved -----------------------------
-// Bench (GS session 0232): a long-frame jam let a trickle of own
-// frames through (5-30/s vs ~3200/s), so the zero-own-frames rule missed
-// it and the loss tracker had nothing to measure yet: the second window
-// read `healthy` and broke the 2-of-3 persistence. The AU count against its
-// trailing mean catches it.
-static VerdictLinkIn au_link(uint32_t au) { VerdictLinkIn l; l.recovered = 20; l.au_count = au; return l; }
-static double warm_au(HopVerdict& v, uint32_t au, double t = 0, int n = 10) {
-  for (int i = 0; i < n; ++i, t += 150) v.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, au_link(au), 5);
-  return t;
-}
-// Revert (drop the au_count term from `starved`): Healthy, no kEvStarved.
-TEST(au_collapse_is_starved) {
-  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm_au(v, 9);
-  auto o = v.window(t, {busy_card(98, 0), busy_card(98, 0)}, au_link(1), 5);
-  CHECK(o.evidence & kEvStarved);
-  CHECK(o.evidence & kEvImpaired);
-  CHECK(o.v == Verdict::Unknown);   // one blocked window: not yet occupied
-}
-// Revert (threshold 0.5 instead of starved_frac): 4 < 4.5 reads starved.
-TEST(half_rate_is_not_starved) {
-  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm_au(v, 9);
-  auto o = v.window(t, {busy_card(98, 0), busy_card(98, 0)}, au_link(4), 5);
-  CHECK(!(o.evidence & kEvStarved));
-  CHECK(o.v == Verdict::Healthy);
-}
-// No history (first window, or a trailing mean under 2 AUs): the AU rule
-// has no baseline and stays silent; own frames are present so the
-// zero-own-frames rule is not set either.
-// Revert (drop `au_ref >= 2.0`): 0 < 0.25 * 0 is false anyway, so the
-// second half pins it -- a mean of 1 with au_count 0 would read starved.
-TEST(no_au_baseline_is_not_starved) {
-  HopVerdict v(cfg(), BusyCfg{}, 2);
-  auto o = v.window(0, {busy_card(98, 0), busy_card(98, 0)}, au_link(0), 5);
-  CHECK(!(o.evidence & kEvStarved));
-  CHECK(o.v == Verdict::Healthy);
-  HopVerdict w(cfg(), BusyCfg{}, 2); double t = warm_au(w, 1);
-  auto p = w.window(t, {busy_card(98, 0), busy_card(98, 0)}, au_link(0), 5);
-  CHECK(!(p.evidence & kEvStarved));
-}
-// Revert (ignore starved_frac == 0): au 1 against 9 reads starved.
-TEST(starved_frac_zero_disables_au_rule) {
-  HopCfg c = cfg(); c.verdict.starved_frac = 0.0;
-  HopVerdict v(c, BusyCfg{}, 2); double t = warm_au(v, 9);
-  auto o = v.window(t, {busy_card(98, 0), busy_card(98, 0)}, au_link(1), 5);
-  CHECK(!(o.evidence & kEvStarved));
-  CHECK(o.v == Verdict::Healthy);
-}
-// A starved window freezes the references; every later window of the
-// episode compares against the pre-freeze AU rate, not a mean poisoned by
-// the collapse itself. 30 windows at 1 AU would drag a live mean under the
-// 2-AU baseline floor and silence the rule mid-jam.
-// Revert (push au_hist_ regardless of frozen_ and read the live mean):
-// the later windows lose kEvStarved.
-TEST(frozen_au_reference_is_used_while_frozen) {
-  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm_au(v, 9, 0, 33);
-  for (int i = 0; i < 30; ++i, t += 150) {
-    auto o = v.window(t, {busy_card(98, 0), busy_card(98, 0)}, au_link(1), 5);
-    CHECK(o.evidence & kEvStarved);
-    CHECK(o.ref_frozen);
-  }
-  // reset() drops the frozen snapshot; the trailing history (still 9s)
-  // survives, so the rule keeps its baseline.
-  v.reset();
-  auto r = v.window(t, {busy_card(98, 0), busy_card(98, 0)}, au_link(1), 5);
-  CHECK(r.evidence & kEvStarved);
-}
-// A new in-session verdict run (hop_active rising edge) drops the AU
-// baseline: the frame rate before an outage says nothing about the one
-// after it. rssi/recovered histories are left alone.
-// Revert (new_session() a no-op): the first window at 0 AUs reads starved.
-TEST(new_session_clears_au_baseline) {
-  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm_au(v, 9);
   v.new_session();
-  for (int i = 0; i < 3; ++i, t += 150) {
-    auto o = v.window(t, {busy_card(98, 0), busy_card(98, 0)}, au_link(0), 5);
-    CHECK(!(o.evidence & kEvStarved));
-  }
-  // recovered history survived: 100 is 5x the pre-session mean of 20
   auto r = v.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.0, 100}, 5);
-  CHECK(r.evidence & kEvImpaired);
+  CHECK(r.evidence & kEvImpaired);   // 100 is 5x the pre-session mean of 20
 }
 TEST(weak_without_a_real_snr_fires_on_rssi_alone) {
   // Relay-only evidence this window: RSSI -90 dBm, "SNR" reads RSSI+95 = 5
