@@ -177,27 +177,47 @@ delta. The loss input is the verdict's own 500 ms window
 so a verify is judged on the channel it verifies; `s1_loss`, which feeds
 the sideport/ctl-log/OSD gauge, is never blanked.
 
-**Detection is NHM occupancy only.** The one route to `interfered` is
-`occupied` — foreign airtime held for `occupied_windows` consecutive windows
-— together with `blocked` in the window itself. A fade (range, a tree, a
-flip, a wall) can lower our signal but cannot add foreign energy to the air,
-so sustained foreign airtime is the one signal no fade can fake. Loss and
-recovered are both still computed and reported (sideport `hop.evidence`,
-scan.log `V` lines), and still mark a window `impaired` (which freezes the
-reference), but neither triggers a hop on its own: each also moves when
-the link merely fades. The cost is detection latency —
-`occupied_windows × window_ms` before the first `interfered` window —
-taken on purpose: accuracy over speed.
+**Detection reads NHM foreign airtime, by two routes.** A fade (range, a
+tree, a flip, a wall) can lower our signal but cannot add foreign energy to
+the air, so foreign airtime is the one signal no fade can fake, and both
+routes to `interfered` read it:
 
-Four independent evidence bits, OR'd together every window
-(`hop_verdict.h`'s `kEvImpaired/kEvWeak/kEvBlocked/kEvOccupied`;
-0x04/0x08/0x10/0x40 are unassigned, the retired fading/contended/raised/
-starved bits):
+- **occupied** — foreign airtime over `blocked_pct` held for
+  `occupied_windows` consecutive windows, together with `blocked` in the
+  window itself. Loss is not needed: a long-frame jam that fills the air
+  without costing a frame still hops.
+- **detected** — a lower floor confirmed by loss: over the last
+  `detect_windows` windows (the detect ring), the median foreign reading is
+  at least `detect_pct`, and at least `detect_impaired` of those windows
+  were loss-impaired; the window itself must carry a busy reading. This
+  catches the low-level occupant — a neighbour at 8–29 % airtime — that
+  costs video but never reaches `blocked_pct`. Neither half alone is
+  enough: foreign airtime under `blocked_pct` with no loss is a neighbour
+  we coexist with, and loss with no foreign airtime is a fade.
+
+Loss and recovered on their own are still computed and reported (sideport
+`hop.evidence`, scan.log `V` lines) and still mark a window `impaired`
+(which freezes the reference), but neither triggers a hop without a
+foreign reading behind it: each also moves when the link merely fades.
+The cost is detection latency, taken on purpose (accuracy over speed):
+the occupied route's first `interfered` window comes `occupied_windows ×
+window_ms` into a jam; the detect route's comes once the ring's median
+crosses `detect_pct` — the ⌈`detect_windows`/2⌉-th reading window over it
+when the ring already holds clean readings, a full `detect_windows` after
+the ring was cleared (a landing, a new session). A lossy jam over
+`blocked_pct` satisfies both routes and reads `interfered` on whichever
+comes first.
+
+Five independent evidence bits, OR'd together every window
+(`hop_verdict.h`'s `kEvImpaired/kEvWeak/kEvDetected/kEvBlocked/
+kEvOccupied`; 0x08/0x10/0x40 are unassigned, the retired contended/raised/
+starved bits; 0x04 was the retired fading bit):
 
 | bit | rule | key (default) |
 |---|---|---|
-| impaired (0x01) | link pre-FEC loss % > `loss_pct` **or** (recovered count > `recovered_x` × its 5 s trailing mean **and** recovered count >= `recovered_min`) **or** `occupied` | `hop.verdict.loss_pct` (3.0), `recovered_x` (3.0), `recovered_min` (8) |
+| impaired (0x01) | `loss_impaired` — link pre-FEC loss % > `loss_pct` **or** (recovered count > `recovered_x` × its 5 s trailing mean **and** recovered count >= `recovered_min`) — **or** `occupied` **or** `detected` | `hop.verdict.loss_pct` (3.0), `recovered_x` (3.0), `recovered_min` (8) |
 | weak (0x02) | best card's RSSI < `weak_rssi_dbm` **and** SNR < `weak_snr_db` (RSSI alone when that card has no real SNR — `snr_valid` false on a CPE510 relay) | `weak_rssi_dbm` (−78), `weak_snr_db` (12) |
+| detected (0x04) | the detect ring (one slot per window with a usable card — reading-less windows take a slot too) is full, at least ⌈`detect_windows`/2⌉ of its slots had a busy reading, the median of those readings (the same minimum-across-cards foreign % `blocked` uses; with an even count, the mean of the middle two) >= `detect_pct`, and at least `detect_impaired` of its slots were `loss_impaired` (not `occupied` — that would make the confirmation circular) ⇒ `impaired`; with this window's own busy reading, the trigger | `hop.verdict.detect_pct` (8), `detect_windows` (5), `detect_impaired` (1) |
 | blocked (0x20) | the MINIMUM, across cards with a busy reading, of that card's busy % minus its own reconstructed airtime % >= `blocked_pct` | `radio.scan.busy_dbm` (−83), `radio.scan.blocked_pct` (30) |
 | occupied (0x80) | `blocked` has held, across windows with a usable busy reading, for `occupied_windows` consecutive windows; a window with no busy reading (mid-dwell, no usable card) neither resets nor advances the count ⇒ `impaired`; with `blocked` in the same window, the trigger | `hop.verdict.occupied_windows` (5) |
 
@@ -207,8 +227,8 @@ reads "3× the reference" at 0 % loss — `recovered_min` keeps that from
 marking a clean window `impaired` and freezing the reference. A jammed
 link that delivers no frames at all has no loss or recovered symbols
 either, so with `starved` gone it reads `healthy` unless the jam also
-fills NHM airtime for `occupied_windows` consecutive windows — detection
-is occupancy-only (above), not a fallback for the zero-frames case.
+fills NHM airtime for `occupied_windows` consecutive windows — neither
+route (above) is a fallback for the zero-frames case.
 
 **`blocked` and NHM busy.** The only other RSSI/SNR-based evidence bit is
 `weak`, so an interferer that fills airtime without lowering our signal —
@@ -216,7 +236,7 @@ a long-frame 802.11 jam at low pps, or a co-channel analog VTX carrier
 that desenses the front end and reads as a fade with SNR intact
 (`docs/findings/2026-09-25-analog-vtx.md`) — is invisible to it, and
 `weak` also moves on a plain fade. NHM busy minus our own airtime is
-foreign energy, which is why it alone drives detection. `nhm_busy_pct` comes from the chip's NHM histogram
+foreign energy, which is why both routes read it. `nhm_busy_pct` comes from the chip's NHM histogram
 (airtime above `radio.scan.busy_dbm`, which config validation requires to
 be an `nf::kNhmAbsThDbm` bucket edge), armed and read once per verdict
 window per op card; `own_air_pct` is the GS's own reconstruction of that
@@ -250,23 +270,37 @@ is `100·Δrx/Δactive` — on the op channel `rx` is our own video.
 if (!impaired) o.v = Verdict::Healthy;
 else if (weak) o.v = Verdict::Fade;
 else if (occupied && blocked) o.v = Verdict::Interfered;
+else if (detected && have_busy_reading) o.v = Verdict::Interfered;
 else o.v = Verdict::Unknown;
 ```
 
-`impaired` is `loss_impaired || occupied`, where `loss_impaired` is the
-loss / recovered terms. So a lossy window with a blocked reading but no
-occupancy yet is `unknown`
+`impaired` is `loss_impaired || occupied || detected`, where
+`loss_impaired` is the loss / recovered terms. So a single lossy window
+with a blocked reading but no occupancy and no detection yet is `unknown`
 (`loss_and_blocked_without_occupancy_is_unknown`), and so is a lossy
-window full of foreign frames or false alarms, blocked reading or not
+window full of foreign frames or false alarms with no NHM reading
 (`co_channel_802_11_neighbour_with_loss_is_not_a_trigger`). An occupied run
 at zero loss reads `healthy` until the window that reaches
 `occupied_windows`, which is `interfered` on its own
 (`occupied_fires_at_default_width_after_occupied_windows_blocked_windows_with_zero_loss`).
+A detect run reads `interfered` on every window whose ring holds the
+detection, its own loss or not: one loss window early in a run of 10 %
+foreign readings makes the window that fills the ring `interfered` and
+`impaired` (`detected_fires_with_one_loss_window_inside_a_low_foreign_run`).
+A run of foreign readings with no loss window
+(`detected_needs_a_loss_window`), loss under a sub-`detect_pct` median
+(`detected_does_not_fire_below_detect_pct`), and one high window among
+clean ones (`detected_needs_the_median_not_a_single_window`) never detect.
+The ring is a sliding window, so it also reads a run for a few windows
+after the run ends: once a lossy run stops, the next
+`detect_windows − ⌈detect_windows/2⌉` clean windows still hold its
+majority and read `interfered`.
 
-`weak` wins outright, occupancy included: at the range edge our own frames
-stop decoding, so `own_air_pct` (rebuilt from decoded frames only)
-undercounts and the subtraction can read our own video as foreign airtime —
-and a hop does not help range anyway (`weak_still_wins_over_occupied`).
+`weak` wins outright, occupancy and detection included: at the range edge
+our own frames stop decoding, so `own_air_pct` (rebuilt from decoded frames
+only) undercounts and the subtraction can read our own video as foreign
+airtime — and a hop does not help range anyway
+(`weak_still_wins_over_occupied`, `weak_still_wins_over_detected`).
 
 `occupied && blocked`, not `occupied` alone: the window that first reaches
 `occupied_windows` is itself `blocked` (its own reading advanced the
@@ -279,7 +313,10 @@ frames, false alarms or loss it carries: impaired, unknown, counting toward
 neither the persist nor a verify failure
 (`occupied_persists_but_a_reading_less_window_classifies_unknown`,
 `occupied_reading_less_window_with_foreign_or_fa_stays_unknown`,
-`lossy_foreign_reading_less_window_is_unknown_while_occupied`). Neither
+`lossy_foreign_reading_less_window_is_unknown_while_occupied`). The detect
+route has the same rule for the same reason: a `detected` window with no
+busy reading of its own is `unknown`
+(`detected_reading_less_current_window_is_unknown`). Neither
 the escape (`HopController::escape_allowed`) nor the confirm extension keys
 on `occupied`: both read `kEvBlocked`, so a no-reading occupied window
 neither escapes nor extends an order. The hop trigger
@@ -297,12 +334,26 @@ reference thaws after 3 consecutive `healthy` windows, or on
 `apply_hop_action_()` calls on `HopAction::VerifyPass` and only there. A
 `verify_fail` or `withdraw` re-orders with the pre-onset `ref_rung` (§5);
 thawing on those would let the next impaired window re-freeze `ref_rung` at
-the mid-hop rung. `reset()` clears only the frozen snapshot and the latched
-persistence window; the trailing history survives it.
+the mid-hop rung. `reset()` clears the frozen snapshot, the latched
+persistence window, the blocked streak and the detect ring; the trailing
+history survives it.
+
+The 3-healthy-window thaw is held while the detect ring holds a detection
+in the making — at least ⌈`detect_windows`/2⌉ readings with a median at or
+over `detect_pct` and a loss-impaired window among them, full or not. A
+detect run's loss window freezes the references at the pre-demote rung,
+and the windows that follow it while the ring fills (after a clear) read
+`healthy`; thawing on them would let the detected window re-freeze
+`ref_rung` at the rung the ladder sank to meanwhile, and the hop would
+restore that rung (`thaw_is_held_while_the_ring_is_detecting`). In clean
+air the ring's median sits far under `detect_pct` and the hold never
+applies, a loss window in the ring or not
+(`references_thaw_after_three_healthy_windows`,
+`thaw_is_not_held_in_clean_air_with_a_loss_window_in_the_ring`).
 
 The `occupied` consecutive-blocked count (`blocked_streak_`) is cleared
-only by `reset()` and `new_session()` — never at a hop's order or landing,
-since there is no such hook in `HopVerdict`. It carries across the hop: a
+only by `reset()` and `new_session()` — never at a hop's order or landing
+(`HopVerdict::landed()` leaves it alone). It carries across the hop: a
 target that is already occupied reads `interfered` on its first **blocked**
 window there and fails verify at once, on one card and on two alike,
 rather than getting `occupied_windows × window_ms` of free pass while the
@@ -317,6 +368,18 @@ raw NHM mean of dwells up to `rank_max_age_ms` old (a few seconds on a two-card
 GS), the verdict's is this window's minimum of busy minus own airtime
 across cards. A target that was clean when dwelt and has filled up since
 lands blocked, and its first blocked reading fails verify.
+
+The detect ring follows the opposite rule: `HopVerdict::landed()`, the
+landing hook (`HopAction::Confirm`), clears it along with `reset()` and
+`new_session()`, and touches nothing else
+(`landed_clears_the_detect_ring_and_keeps_the_blocked_streak`). Carrying
+the old channel's lossy readings onto the target would read `detected` on
+its first window and fail verify on every detect-route hop, clean target
+or not. The cost: the detect route can fail a verify only if a full ring
+of windows — a reading majority and a loss window among them — fits
+between the landing and the end of `verify_ms`; a target at 8–29 % foreign
+that does not show loss that fast passes verify and is left by the detect
+route later if loss shows there.
 
 Every `VerdictOut` carries the span its deltas cover (`t_start_ms`, `t_ms`).
 `ChannelCore` recomputes a verdict every `hop.window_ms` but ticks
@@ -919,9 +982,17 @@ DJI O4), `docs/findings/2026-09-25-analog-vtx.md` (one-card analog VTX) and
   retune completed reads as the new channel. devourer exposes no RX flush.
 - **The 5 s `flightreport.py` `hop_restore` match window is uncalibrated.**
   It fails safe: an unmatched restore prints "not found".
-- **Detection waits `occupied_windows` windows.** An interferer is acted
-  on only once NHM has read it for `occupied_windows × window_ms` plus the
-  persist; a jam that costs video but fills too little airtime to clear
-  `blocked_pct` (a short-burst neighbour, a jammer the minimum-across-cards
-  rule hides) is never hopped from — the engine does not track foreign
-  frame or false-alarm rate at all, only NHM occupancy.
+- **Detection waits for the ring or the streak.** A lossy interferer over
+  `detect_pct` is acted on once the detect ring's median crosses it — up
+  to `detect_windows × window_ms` (a full ring after a clear) — plus the
+  persist; a lossless one is acted on only once it clears `blocked_pct`
+  for `occupied_windows × window_ms`. An interferer under `detect_pct`, or
+  one the minimum-across-cards rule hides, is never hopped from, however
+  much video it costs — the engine does not track foreign frame or
+  false-alarm rate at all, only NHM foreign airtime.
+- **One loss window makes a short detection.** At `detect_impaired` 1 the
+  ring reads `detected` only while its loss window is inside it: a run
+  with a single loss window gives `detect_windows − ⌈detect_windows/2⌉ + 1`
+  detected windows (3 at defaults) when the ring already held clean
+  readings, but only one after a clear, where the persist (2 of 3) then
+  needs a second loss window in the run.

@@ -144,6 +144,9 @@ Chronological; each line names the section below that carries the detail.
   unassigned) and the V line's per-card `drssi` field (10-field card
   blocks become 9-field); `hop.verdict.fading_drop_db`/`foreign_pps`/
   `fa_pps` are removed config keys.
+- 2026-11-04 — the detect route: evidence bit 0x04 is `detected` from
+  `scanlog 9` on (same marker); `interfered` gains a second route below
+  `blocked_pct`. Verdict histograms are not comparable across the change.
 
 ## 2026-09-23 — `link.pre_fec_loss` scale break, twice
 
@@ -1447,3 +1450,15 @@ point on but a `scanlog 9` file written between the two changes may still
 carry it set. `starved_frac` and `VerdictLinkIn::au_count`/`starved` are
 gone; `tools/flightreport.py` prints the `starved windows` tally only for
 `scanlog < 9` files.
+
+A second same-day follow-up reuses 0x04 for `detected` — the detect route
+(`docs/inflight-channel-hop.md` §2): a ring of `hop.verdict.detect_windows`
+windows whose median foreign busy % is at least `detect_pct`, confirmed by
+a loss-impaired window inside it, reads `interfered` well under
+`blocked_pct`. Again no marker change: a `scanlog 9` file written before
+this build never sets 0x04 (the `fading` bit went with the 9 bump), so
+decoding it as `detected` is safe, and `flightreport.py` tallies it under
+that name for every `scanlog 9` file. Its verdict histogram is not
+comparable with an earlier `scanlog 9` file's: a lossy run over
+`detect_pct` that used to read `unknown` (or, lossy and blocked, waited
+for `occupied`) now reads `interfered` once the ring's median crosses.

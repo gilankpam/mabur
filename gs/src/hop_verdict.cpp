@@ -26,6 +26,7 @@ void HopVerdict::reset() {
   seen_blocked_ = false;
   recent_interfered_.clear();
   blocked_streak_ = 0;
+  detect_ring_.clear();
   // The persistence window is cleared with the snapshot: leaving it
   // latched would hand the controller a trigger built from windows
   // measured on the channel we have just left.
@@ -35,9 +36,32 @@ void HopVerdict::reset() {
   // hop's onset and must not leak across a hop boundary.
 }
 
-// A new in-session run: the blocked streak is per-run state.
+// A new in-session run: the blocked streak and the detect ring are per-run
+// state.
 void HopVerdict::new_session() {
   blocked_streak_ = 0;
+  detect_ring_.clear();
+}
+
+void HopVerdict::landed() { detect_ring_.clear(); }
+
+bool HopVerdict::ring_reads_detect_(int lossy_needed) const {
+  const int n = cfg_.verdict.detect_windows;
+  std::vector<double> fg;
+  int lossy = 0;
+  for (const auto& s : detect_ring_) {
+    if (s.reading) fg.push_back(s.foreign);
+    if (s.lossy) ++lossy;
+  }
+  if (lossy < lossy_needed || static_cast<int>(fg.size()) < (n + 1) / 2 || fg.empty()) return false;
+  // The median of the readings; with an even count, the mean of the two
+  // middle ones (so at the threshold the two middle readings must average
+  // detect_pct).
+  const size_t mid = fg.size() / 2;
+  std::nth_element(fg.begin(), fg.begin() + mid, fg.end());
+  double med = fg[mid];
+  if (fg.size() % 2 == 0) med = (med + *std::max_element(fg.begin(), fg.begin() + mid)) / 2.0;
+  return med >= cfg_.verdict.detect_pct;
 }
 
 int HopVerdict::ref_rung() const { return ref_rung_; }
@@ -100,47 +124,77 @@ VerdictOut HopVerdict::window(double now_ms, const std::vector<VerdictCardIn>& c
   const bool loss_impaired = link.pre_fec_loss * 100.0 > hv.loss_pct ||
                              (rec_ref > 0 && link.recovered > hv.recovered_x * rec_ref &&
                               link.recovered >= static_cast<uint32_t>(std::max(hv.recovered_min, 0)));
+  // ---- the detect ring: every window with a usable card takes a slot,
+  // reading-less ones too (they count against the ceil(N/2) readings rule
+  // and can carry the ring's loss window). A window with no valid card at
+  // all returned above and takes none.
+  detect_ring_.push_back({have_busy_reading, min_foreign_busy_pct, loss_impaired});
+  while (detect_ring_.size() > static_cast<size_t>(std::max(hv.detect_windows, 1)))
+    detect_ring_.pop_front();
+  // detected: a low-floor occupant confirmed by loss -- the median foreign
+  // reading over a full ring at or above detect_pct, with detect_impaired
+  // lossy windows inside it. `loss_impaired`, not `impaired`: counting
+  // `occupied` (or `detected` itself) would make the confirmation circular.
+  const bool detected = detect_ring_.size() == static_cast<size_t>(hv.detect_windows) &&
+                        ring_reads_detect_(hv.detect_impaired);
   // occupied: foreign airtime held for occupied_windows consecutive
   // windows that had a busy reading -- impaired on its own, with or without
-  // loss, and the only route to `interfered` below.
-  const bool impaired = loss_impaired || occupied;
+  // loss. detected: impaired on its own too, so a run whose last window is
+  // clean still reads impaired (the reference freeze and the persist see
+  // it). These are the two routes to `interfered` below.
+  const bool impaired = loss_impaired || occupied || detected;
   const bool weak = cards[best].rssi_dbm < hv.weak_rssi_dbm &&
                     (!cards[best].snr_valid || cards[best].snr_db < hv.weak_snr_db);
-  o.evidence = (impaired ? kEvImpaired : 0) | (weak ? kEvWeak : 0) | (blocked ? kEvBlocked : 0) |
-               (occupied ? kEvOccupied : 0);
-  // Detection is NHM occupancy only. A fade -- range, a tree, a flip, a
-  // wall -- can lower our signal but cannot add foreign energy to the air,
-  // so sustained foreign airtime is the one signal no fade can fake. Loss
-  // and recovered still mark the window impaired (the reference freeze),
-  // but neither routes to `interfered` on its own: each also moves when
-  // the link merely fades.
+  o.evidence = (impaired ? kEvImpaired : 0) | (weak ? kEvWeak : 0) | (detected ? kEvDetected : 0) |
+               (blocked ? kEvBlocked : 0) | (occupied ? kEvOccupied : 0);
+  // Every route to `interfered` reads foreign NHM airtime. A fade -- range,
+  // a tree, a flip, a wall -- can lower our signal but cannot add foreign
+  // energy to the air, so foreign airtime is the one signal no fade can
+  // fake. Two routes: sustained occupancy over blocked_pct (`occupied`,
+  // loss or not), and a lower foreign floor (detect_pct) that only counts
+  // once loss confirms it (`detected`). Loss and recovered alone still mark
+  // the window impaired (the reference freeze) but never route to
+  // `interfered`: each also moves when the link merely fades.
   //
   // weak gates first: at the range edge our own frames stop decoding, so
   // own_air_pct (rebuilt from decoded frames) undercounts and the
   // subtraction can read our own video as foreign airtime.
   //
-  // `occupied && blocked`, not `occupied` alone: an occupied window without
-  // a busy reading (the usual shape right after a hop lands, before the
-  // NHM arm is back) stays unknown, so a hop's verify fails only on a
-  // blocked reading actually taken on the target.
+  // Each route also needs this window's own busy reading (`blocked` for
+  // occupied, `have_busy_reading` for detected): a window without one (the
+  // usual shape right after a hop lands, before the NHM arm is back) stays
+  // unknown, so a hop's verify fails only on a reading actually taken on
+  // the target.
   if (!impaired) o.v = Verdict::Healthy;
   else if (weak) o.v = Verdict::Fade;
   else if (occupied && blocked) o.v = Verdict::Interfered;
+  else if (detected && have_busy_reading) o.v = Verdict::Interfered;
   else o.v = Verdict::Unknown;
   // ---- reference freeze / thaw
   if (impaired && !frozen_) {
     frozen_ = true; ref_rung_ = rung; ref_rec_ = rec_ref;
   }
-  // The rung-store blank's arming edge: the first impaired, non-weak,
-  // blocked window of this frozen episode (hop_blank.h) -- the jam's lossy
-  // lead-in, not the occupied_windows-th window that classifies
-  // `interfered`. Re-armed only by a thaw, below or in reset().
-  if (impaired && blocked && !weak && !seen_blocked_) {
+  // The rung-store blank's arming edge: the first impaired, non-weak window
+  // of this frozen episode that is either route's lead-in (hop_blank.h) --
+  // blocked, or lossy with its own foreign reading at or above detect_pct
+  // -- not the later window that classifies `interfered`. Re-armed only by
+  // a thaw, below or in reset().
+  const bool lead_in = blocked || (loss_impaired && have_busy_reading &&
+                                   min_foreign_busy_pct >= hv.detect_pct);
+  if (impaired && lead_in && !weak && !seen_blocked_) {
     seen_blocked_ = true;
     o.first_blocked = true;
   }
   healthy_streak_ = (o.v == Verdict::Healthy) ? healthy_streak_ + 1 : 0;
-  if (frozen_ && healthy_streak_ >= 3) { frozen_ = false; ref_rung_ = -1; seen_blocked_ = false; }
+  // The thaw is held while the ring holds a detection in the making: the
+  // windows between a detect run's loss window and the ring filling read
+  // healthy, and thawing on them would let the detected window re-freeze
+  // ref_rung at the rung the ladder sank to meanwhile -- the hop would then
+  // restore that rung, not the pre-onset one. In clean air the ring's
+  // median sits far under detect_pct and the hold never applies.
+  if (frozen_ && healthy_streak_ >= 3 && !ring_holds_detection()) {
+    frozen_ = false; ref_rung_ = -1; seen_blocked_ = false;
+  }
   if (!frozen_) {   // only unfrozen windows feed the trailing reference
     rec_hist_.push_back(link.recovered);
     if (rec_hist_.size() > hist_n) rec_hist_.pop_front();

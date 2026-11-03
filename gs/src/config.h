@@ -70,7 +70,7 @@ struct HopVerdictCfg {
   int weak_snr_db = 12;
   // Consecutive blocked windows that read `occupied` -> impaired on their
   // own, with no loss or weak signal needed, and (with that window's own
-  // blocked reading) the hop's only route to `interfered`. A window with no
+  // blocked reading) one of the hop's two routes to `interfered`. A window with no
   // busy reading neither advances nor resets the count.
   int occupied_windows = 5;
   // Detect route: foreign airtime % (median over detect_windows checks)

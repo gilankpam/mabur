@@ -1733,6 +1733,17 @@ class HopReportTest(unittest.TestCase):
         # card 2: only the 1 unknown (fading) window.
         self.assertIn("card 2 (non-healthy, n=1): foreign=3 fa=2 rssi=-66.0 snr=9.0", out)
 
+    def test_scanlog9_bit_tally_names_detected_and_scanlog8_keeps_fading(self):
+        """0x04 is `detected` under scanlog 9 and `fading` under <= 8: the
+        bit map follows the file's own marker. Revert (drop ("detected", 4)
+        from _EVIDENCE_BITS_V9): the scanlog 9 tally has no detected key."""
+        V = [{"evidence": 0x05}, {"evidence": 0x25}, {"evidence": 0x01}]
+        self.assertEqual(flightreport.evidence_bit_tally(V, 9),
+                         {"impaired": 3, "weak": 0, "detected": 2,
+                          "blocked": 1, "occupied": 0})
+        self.assertEqual(flightreport.evidence_bit_tally(V, 8)["fading"], 2)
+        self.assertNotIn("detected", flightreport.evidence_bit_tally(V, 8))
+
     def test_shadow_would_events_labeled_and_histogram_still_shown(self):
         """hop.enable=false: HopController still runs and still logs, every
         event 'would_'-prefixed (HopController::log_event). video never

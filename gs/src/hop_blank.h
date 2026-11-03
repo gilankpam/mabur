@@ -12,8 +12,8 @@ constexpr double kHopSettleBlankMs = 150.0;
 
 // Pure: how far ahead the ladder's rung store should be blanked, given the
 // verdict window that just closed: the store's residual/util EWMAs are not
-// updated from a jam's first blocked window until hop confirmation plus the
-// existing 150 ms post-transition settle-blank.
+// updated from an interferer's lead-in window until hop confirmation plus
+// the existing 150 ms post-transition settle-blank.
 //
 // Extracted like hop_burst_gate.h so the one decision has a unit test
 // instead of only ever running inside ChannelCore's hardware-touching
@@ -31,22 +31,27 @@ constexpr double kHopSettleBlankMs = 150.0;
 //    HopAction::Order's own blank_store() call never fires there (the
 //    controller is never fed a trigger), so this keeps the two consistent.
 //
-//  - VerdictOut::first_blocked: the first impaired, non-weak, `blocked`
-//    window of the frozen episode, NOT ref_frozen and NOT the first
+//  - VerdictOut::first_blocked: the first impaired, non-weak window of the
+//    frozen episode that is the lead-in of either route to `interfered` --
+//    `blocked` (the occupied route), or loss-impaired with its own foreign
+//    reading at or above hop.verdict.detect_pct (the earliest window a
+//    detect run can start from). NOT ref_frozen and NOT the first
 //    `interfered` window. ref_frozen is keyed on `impaired` alone, and a
-//    fade (impaired AND weak) or an unknown window with no blocked reading
-//    is impaired too -- keying on it blanked the store through every fade
-//    and every unexplained loss, which must leave the ladder alone. The
-//    first `interfered` window is too late: a jam classifies interfered
-//    only occupied_windows windows in (hop.verdict.occupied_windows), and
-//    the lossy windows before it -- already blocked -- are exactly where
-//    the ladder takes the "demote or two, each an IDR" that
+//    fade (impaired AND weak) or a lossy window with no foreign reading
+//    behind it is impaired too -- keying on it blanked the store through
+//    every fade and every unexplained loss, which must leave the ladder
+//    alone. The first `interfered` window is too late: either route
+//    classifies interfered only windows after its lead-in (the blocked
+//    streak reaching hop.verdict.occupied_windows, the detect ring
+//    filling), and the lossy windows before it are exactly where the
+//    ladder takes the "demote or two, each an IDR" that
 //    docs/inflight-channel-hop.md §4 accepts; arming at interfered wrote
-//    them all into the per-rung store against the jammed channel. A zero-loss blocked window is not
-//    impaired, so it arms nothing: there is no loss to demote on.
+//    them all into the per-rung store against the jammed channel. A
+//    zero-loss blocked window is not impaired, so it arms nothing: there
+//    is no loss to demote on.
 //
 //  - One edge per frozen episode, which is what BOUNDS the blank. The
-//    deadline is computed once, at the episode's first blocked window,
+//    deadline is computed once, at the episode's lead-in window,
 //    and spans exactly confirm_ms + the settle -- the same span the
 //    Order-time call uses, so detection and the hop itself are scoped
 //    alike. It is not re-extended by later blocked or interfered windows,

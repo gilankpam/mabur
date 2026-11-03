@@ -1799,16 +1799,18 @@ def verdict_histogram(V):
 # non-healthy ones, matching what the bitmask itself actually counts.
 #
 # scan.log <= 8 recordings carry the retired fading/contended/raised bits
-# at 0x04/0x08/0x10 under those names; scanlog 9 frees them. starved (0x40)
-# is also retired -- a scanlog 9 file written before this build may still
-# have it set, but neither bit map names it any more. The bit map to decode
-# a file with is picked from its own `scanlog N` marker, never the current
-# build's.
+# at 0x04/0x08/0x10 under those names; scanlog 9 frees 0x08/0x10 and reuses
+# 0x04 for `detected` (the detect route) -- never set by a scanlog 9 file
+# written before the detect route existed, since fading went with the same
+# marker bump. starved (0x40) is also retired -- a scanlog 9 file written
+# before that may still have it set, but neither bit map names it any more.
+# The bit map to decode a file with is picked from its own `scanlog N`
+# marker, never the current build's.
 _EVIDENCE_BITS_V8 = (("impaired", 1), ("weak", 2), ("fading", 4),
                      ("contended", 8), ("raised", 16), ("blocked", 0x20),
                      ("starved", 0x40), ("occupied", 0x80))
-_EVIDENCE_BITS_V9 = (("impaired", 1), ("weak", 2), ("blocked", 0x20),
-                     ("occupied", 0x80))
+_EVIDENCE_BITS_V9 = (("impaired", 1), ("weak", 2), ("detected", 4),
+                     ("blocked", 0x20), ("occupied", 0x80))
 
 
 def evidence_bit_tally(V, version):

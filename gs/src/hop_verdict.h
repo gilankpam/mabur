@@ -11,11 +11,18 @@ namespace maburgs {
 enum class Verdict { Healthy, Fade, Interfered, Unknown };
 const char* to_string(Verdict v);   // "healthy" "fade" "interfered" "unknown"
 
-// 0x04/0x08/0x10 are unassigned (the retired fading/contended/raised
-// evidence-only bits); 0x40 is unassigned too (the retired starved bit,
-// which drove `impaired` rather than being evidence-only).
-enum : uint8_t { kEvImpaired = 1, kEvWeak = 2,
+// 0x08/0x10 are unassigned (the retired contended/raised evidence-only
+// bits); 0x40 is unassigned too (the retired starved bit, which drove
+// `impaired` rather than being evidence-only). 0x04, once the retired
+// fading bit, is `detected`.
+enum : uint8_t { kEvImpaired = 1, kEvWeak = 2, kEvDetected = 4,
                  kEvBlocked = 32, kEvOccupied = 128 };
+
+// This window's evidence is a hop-route reading: `blocked` (the occupied
+// route's per-window reading) or `detected` (the detect route). One
+// predicate, so every consumer that acts on "a route to `interfered` is
+// reading" treats the two routes alike.
+inline bool trigger_evidence(uint8_t ev) { return ev & (kEvBlocked | kEvDetected); }
 
 // The verdict thresholds (hop.verdict.weak_rssi_dbm / weak_snr_db) are
 // written in dBm / dB. The aggregator's EMAs are
@@ -68,18 +75,21 @@ struct VerdictOut {
   // The frozen-reference episode is open (the first impaired window has
   // been seen and the references have not thawed yet).
   bool ref_frozen = false;
-  // True on the FIRST impaired, non-weak, `blocked` window of a
-  // frozen-reference episode, and never again until the references thaw
-  // (3 healthy windows, or HopVerdict::reset() after a hop's verify window
-  // ends). This is the edge the rung-store blank is scoped to -- see
-  // gs/src/hop_blank.h. A jam is acted on only occupied_windows windows in,
-  // but its lossy lead-in windows are already blocked: arming here keeps
-  // their demotes out of the per-rung store. It is deliberately NOT
-  // `ref_frozen`, which is keyed on `impaired` alone: a fade (weak) and an
-  // unknown window with no blocked reading leave the ladder's behaviour
-  // unchanged. One edge per episode is also what bounds the blank -- a jam
-  // that alternates blocked and healthy windows stays inside ONE frozen
-  // episode and re-arms nothing.
+  // True on the FIRST impaired, non-weak window of a frozen-reference
+  // episode that is the lead-in of either route to `interfered`: `blocked`
+  // (the occupied route), or loss-impaired with this window's own foreign
+  // reading >= hop.verdict.detect_pct (the earliest window a detect run can
+  // start from). Never again until the references thaw (3 healthy windows,
+  // or HopVerdict::reset() after a hop's verify window ends). This is the
+  // edge the rung-store blank is scoped to -- see gs/src/hop_blank.h.
+  // Either route is acted on only windows after its lead-in (the occupied
+  // streak, the detect ring filling), and the lead-in is lossy: arming here
+  // keeps the demotes meanwhile out of the per-rung store. It is
+  // deliberately NOT `ref_frozen`, which is keyed on `impaired` alone: a
+  // fade (weak) and an unexplained loss with no foreign reading behind it
+  // leave the ladder's behaviour unchanged. One edge per episode is also
+  // what bounds the blank -- a jam that alternates blocked and healthy
+  // windows stays inside ONE frozen episode and re-arms nothing.
   bool first_blocked = false;
 };
 
@@ -97,12 +107,17 @@ class HopVerdict {
   void reset();
   // A new in-session verdict run is starting (ChannelCore: hop_active's
   // rising edge, where the recovered counter baseline is re-primed).
-  // Clears only the blocked streak: a target already occupied before this
-  // session must fail verify on its first window, not get
-  // occupied_windows of free pass left over from the previous session.
-  // RSSI/recovered histories are untouched; reset() is still the per-hop
-  // thaw.
+  // Clears the blocked streak and the detect ring: per-run state, not
+  // leftovers from the previous session. The recovered history is
+  // untouched; reset() is still the per-hop thaw.
   void new_session();
+  // A hop has landed (HopAction::Confirm): clears the detect
+  // ring only. The ring holds the old channel's readings, and carrying them
+  // onto the target would fail every detect-route hop's verify on a clean
+  // channel. The blocked streak and the frozen references are untouched:
+  // the streak carries on purpose, so an already occupied target fails
+  // verify on its first blocked reading.
+  void landed();
   int ref_rung() const;               // -1 while healthy
   // A live ladder swap inside a frozen episode: the frozen rung index is
   // re-pointed at the same operating point in the new ladder (the caller
@@ -129,6 +144,23 @@ class HopVerdict {
   // else does): a target that is already occupied must fail verify on
   // its first window, not get occupied_windows of free pass.
   int blocked_streak_ = 0;
+  // The detect ring: one slot per window (the last hop.verdict.
+  // detect_windows of them), reading-less windows included. Cleared by
+  // reset(), new_session() and landed() -- unlike blocked_streak_, it does
+  // not carry across a hop's landing.
+  struct DetectSlot {
+    bool reading;     // the window had a usable busy reading
+    double foreign;   // its minimum-across-cards foreign busy %
+    bool lossy;       // loss_impaired (the link's own term, not occupied)
+  };
+  std::deque<DetectSlot> detect_ring_;
+  // The ring holds a detection, full or not: a majority of reading slots,
+  // their median foreign % >= detect_pct, and at least `lossy_needed` lossy
+  // slots.
+  bool ring_reads_detect_(int lossy_needed) const;
+  // The thaw hold: a detection is in the making (one lossy slot is enough,
+  // the ring need not be full).
+  bool ring_holds_detection() const { return ring_reads_detect_(1); }
   std::deque<bool> recent_interfered_;   // last 3
 };
 

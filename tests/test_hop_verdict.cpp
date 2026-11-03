@@ -3,8 +3,10 @@
 using namespace maburgs;
 static HopCfg cfg() { HopCfg c; return c; }   // config defaults
 // hop.verdict.occupied_windows at its default: the consecutive blocked
-// windows it takes for `occupied`, the only route to `interfered`.
+// windows it takes for `occupied`, one of the two routes to `interfered`.
 static int occ_n() { return cfg().verdict.occupied_windows; }
+// hop.verdict.detect_windows at its default: the detect ring's length.
+static int det_n() { return cfg().verdict.detect_windows; }
 static VerdictCardIn card(double rssi, double snr, double foreign_ps, double fa_ps, double crc_ps = 0) {
   VerdictCardIn c; c.valid = true; c.rssi_dbm = rssi; c.snr_db = snr;
   c.foreign = (uint32_t)(foreign_ps * 0.15 + 0.5); c.fa = (uint32_t)(fa_ps * 0.15 + 0.5);
@@ -20,9 +22,9 @@ TEST(baseline_is_healthy) {
   auto o = v.window(t, {card(-61, 30, 0, 4), card(-61, 29, 0, 4)}, {0.005, 20}, 5);
   CHECK(o.v == Verdict::Healthy); CHECK(!o.trigger); CHECK(o.ref_rung == -1);
 }
-// Detection is NHM occupancy only: foreign frames and false alarms next to
-// loss do not trip the trigger. A fade can lower our signal but cannot add
-// foreign energy, so only sustained foreign airtime names interference.
+// Detection reads NHM foreign airtime only: foreign frames and false alarms
+// next to loss do not trip the trigger. A fade can lower our signal but
+// cannot add foreign energy, so only foreign airtime names interference.
 TEST(co_channel_802_11_neighbour_with_loss_is_not_a_trigger) {
   HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
   // spike jam250c120: loss 4-8 %, foreign 237/s, FA 2/s, RSSI rose to -55, SNR 33
@@ -104,12 +106,13 @@ TEST(every_window_carries_the_span_it_was_measured_over) {
 }
 // The rung-store blank's arming edge (gs/src/hop_blank.h) -- the FIRST
 // impaired, non-weak, blocked window of a frozen episode, once and once only
-// until a thaw. That is the jam's lossy lead-in, occupied_windows - 1
-// windows before the first `interfered` one. Deliberately not ref_frozen,
-// which is keyed on `impaired` and so is set through fades and unknown
-// windows too.
+// until a thaw. That is the jam's lossy lead-in, windows before the first
+// `interfered` one. Deliberately not ref_frozen, which is keyed on
+// `impaired` and so is set through fades and unknown windows too.
 // A blocked card (NHM foreign busy 92 %) on a lossy link: impaired, and
-// interfered once the blocked streak reaches occupied_windows.
+// interfered once the detect ring holds a majority of its readings (the
+// lossy jam is the detect route too) or the blocked streak reaches
+// occupied_windows, whichever comes first.
 static VerdictCardIn jam_card() {
   auto c = card(-55, 33, 237, 2); c.busy_valid = true; c.nhm_busy_pct = 95; c.own_air_pct = 3; return c;
 }
@@ -134,14 +137,17 @@ TEST(first_blocked_fires_once_per_frozen_episode) {
   auto u1 = jam(v, t, 1);
   CHECK(u1.v == Verdict::Unknown && u1.ref_frozen && u1.first_blocked);
   auto u = jam(v, t, occ_n() - 2);
-  CHECK(u.v == Verdict::Unknown && !u.first_blocked);
+  CHECK(!u.first_blocked);
   auto o1 = jam(v, t, 1);
   CHECK(o1.v == Verdict::Interfered && !o1.first_blocked);   // same episode
   // A thaw re-arms it. A thaw needs healthy windows, and a held occupied
   // streak keeps every window impaired, so the healthy windows carry a
-  // clean NHM reading -- which resets the streak.
+  // clean NHM reading -- which resets the streak. The detect ring still
+  // holds the jam's lossy majority for its first det_n() - ceil(N/2)
+  // windows (detected, not healthy); three healthy windows follow.
   auto clean = [] { auto c = card(-61, 30, 0, 4); c.busy_valid = true; c.nhm_busy_pct = 10; c.own_air_pct = 3; return c; };
-  for (int i = 0; i < 3; ++i, t += 150) v.window(t, {clean(), clean()}, {0.0, 20}, 5);
+  const int tail = det_n() - (det_n() + 1) / 2;
+  for (int i = 0; i < tail + 3; ++i, t += 150) v.window(t, {clean(), clean()}, {0.0, 20}, 5);
   CHECK(!v.window(t, {clean(), clean()}, {0.0, 20}, 5).ref_frozen); t += 150;
   CHECK(jam(v, t, 1).first_blocked);
   // ...and so does reset(), the other thaw rule.
@@ -412,6 +418,7 @@ TEST(occupied_fires_at_default_width_after_occupied_windows_blocked_windows_with
   for (int i = 1; i < occ_n(); ++i, t += 150) { o = v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5); CHECK(o.v == Verdict::Healthy); CHECK(!(o.evidence & kEvOccupied)); }
   o = v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);          // the occupied_windows-th
   CHECK(o.v == Verdict::Interfered); CHECK(o.evidence & kEvOccupied); CHECK(o.evidence & kEvImpaired); CHECK(o.ref_rung == 5);
+  CHECK(!(o.evidence & kEvDetected));   // the occupied route: no loss in the ring, so not the detect route
   o = v.window(t + 150, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 4);   // next: persist 2 of 3
   CHECK(o.trigger); CHECK(o.ref_rung == 5);
 }
@@ -505,4 +512,163 @@ TEST(lossy_foreign_reading_less_window_is_unknown_while_occupied) {
   auto o = v.window(t, {card(-61, 30, 60, 4), card(-61, 30, 60, 4)}, {0.06, 20}, 5);  // lossy, foreign frames, no NHM
   CHECK(o.evidence & kEvOccupied);
   CHECK(o.v == Verdict::Unknown);
+}
+
+// ---- the detect route: low-floor NHM occupancy confirmed by loss ---------
+// `detected` = the last detect_windows windows (the ring) hold at least
+// ceil(N/2) busy readings whose median foreign % is >= detect_pct, and at
+// least detect_impaired of them were loss-impaired, with the ring full.
+// A "low jam" window is busy(45, 35): foreign 10, over detect_pct (8) and
+// well under blocked_pct (30), so neither `blocked` nor `occupied` moves.
+// Every window pushes a slot, so warm()'s reading-less windows fill the
+// ring; the tests that pin the full-ring rule start from an empty ring --
+// the state a clear (landing, new session) leaves it in -- via
+// new_session(), whose clear reset_and_new_session_clear_the_detect_ring
+// pins on its own.
+static VerdictCardIn low_jam() { return busy(45, 35); }
+// Fill an empty ring: one loss window, then det_n() - 1 clean ones. The
+// last is the first detected window.
+static VerdictOut detect_run(HopVerdict& v, double& t, int first_rung = 5, int rung = 4) {
+  auto o = v.window(t, {low_jam(), low_jam()}, {0.04, 20}, first_rung); t += 150;
+  for (int i = 1; i < det_n(); ++i, t += 150) o = v.window(t, {low_jam(), low_jam()}, {0.0, 20}, rung);
+  return o;
+}
+// The final window carries no loss of its own and still reads impaired (the
+// ring holds the loss) -- so the freeze and the persist see the run.
+// Revert (drop the ring-full condition): the third window already reads
+// detected. Revert (no thaw hold): ref_rung re-freezes at the demoted 4.
+TEST(detected_fires_with_one_loss_window_inside_a_low_foreign_run) {
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
+  v.new_session();                                                      // empty ring
+  auto o = v.window(t, {low_jam(), low_jam()}, {0.04, 20}, 5); t += 150;   // loss 4 % > loss_pct
+  CHECK(o.v == Verdict::Unknown); CHECK(o.ref_rung == 5);
+  for (int i = 1; i < det_n() - 1; ++i, t += 150) { o = v.window(t, {low_jam(), low_jam()}, {0.0, 20}, 4); CHECK(!(o.evidence & kEvDetected)); }
+  o = v.window(t, {low_jam(), low_jam()}, {0.0, 20}, 4);               // ring full
+  CHECK(o.v == Verdict::Interfered); CHECK(o.evidence & kEvDetected); CHECK(o.evidence & kEvImpaired);
+  CHECK(!(o.evidence & kEvBlocked)); CHECK(!(o.evidence & kEvOccupied)); CHECK(o.ref_rung == 5);
+}
+// Revert (drop the loss condition): reads Interfered.
+TEST(detected_needs_a_loss_window) {
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v); VerdictOut o;
+  for (int i = 0; i < det_n() + 2; ++i, t += 150) o = v.window(t, {low_jam(), low_jam()}, {0.0, 20}, 5);
+  CHECK(o.v == Verdict::Healthy); CHECK(!(o.evidence & kEvDetected));
+}
+// Readings 2,2,2,2,40: mean 9.6 clears detect_pct, median 2 does not.
+// Revert (mean, or max, instead of the median): reads Interfered.
+TEST(detected_needs_the_median_not_a_single_window) {
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v); VerdictOut o;
+  for (int i = 0; i < det_n() - 1; ++i, t += 150) o = v.window(t, {busy(37, 35), busy(37, 35)}, {0.0, 20}, 5);   // foreign 2
+  o = v.window(t, {busy(75, 35), busy(75, 35)}, {0.04, 20}, 5);   // one 40 % window with loss
+  CHECK(o.v == Verdict::Unknown); CHECK(!(o.evidence & kEvDetected));
+}
+// Foreign 5 with the loss windows last, so the final window is impaired and
+// Unknown (not Interfered) is the meaningful reading.
+// Revert (drop the detect_pct test, or compare against a lower floor): reads
+// Interfered.
+TEST(detected_does_not_fire_below_detect_pct) {
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v); VerdictOut o;
+  for (int i = 0; i < det_n(); ++i, t += 150) o = v.window(t, {busy(40, 35), busy(40, 35)}, {i >= det_n() - 2 ? 0.04 : 0.0, 20}, 5);   // foreign 5
+  CHECK(o.evidence & kEvImpaired);
+  CHECK(o.v == Verdict::Unknown); CHECK(!(o.evidence & kEvDetected));
+}
+// Reading-less windows take a slot (warm() filled the ring with them): two
+// readings of five is no majority, three is.
+// Revert (drop the ceil(N/2) readings condition): the second window reads
+// detected.
+TEST(detected_needs_a_majority_of_reading_windows) {
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
+  REQUIRE(det_n() == 5);   // two readings is under ceil(5/2), three is not
+  v.window(t, {low_jam(), low_jam()}, {0.04, 20}, 5); t += 150;
+  auto o = v.window(t, {low_jam(), low_jam()}, {0.0, 20}, 5); t += 150;
+  CHECK(o.v == Verdict::Healthy); CHECK(!(o.evidence & kEvDetected));
+  o = v.window(t, {low_jam(), low_jam()}, {0.0, 20}, 5);
+  CHECK(o.v == Verdict::Interfered); CHECK(o.evidence & kEvDetected);
+}
+// The current window must carry a busy reading of its own for `detected` to
+// classify -- a post-landing window with valid cards and no NHM stays
+// unknown, like `occupied && blocked`. The window carries loss itself so a
+// loss window is still inside the ring once it evicts the run's first one.
+// Revert (classify `detected` without `have_busy_reading`): reads
+// Interfered.
+TEST(detected_reading_less_current_window_is_unknown) {
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
+  v.new_session();
+  CHECK(detect_run(v, t).evidence & kEvDetected);
+  auto o = v.window(t, {card(-61, 30, 0, 4), card(-61, 30, 0, 4)}, {0.04, 20}, 4);   // valid cards, no NHM
+  CHECK(o.v == Verdict::Unknown); CHECK(o.evidence & kEvDetected);
+}
+// At the range edge the own-airtime subtraction can read our video as
+// foreign, so `weak` gates the detect route as it gates occupancy.
+// Revert (test `detected` before `weak`): reads Interfered.
+TEST(weak_still_wins_over_detected) {
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
+  v.new_session();
+  auto weak_low = [] { auto c = low_jam(); c.rssi_dbm = -90; c.snr_db = 8; return c; };
+  auto o = v.window(t, {weak_low(), weak_low()}, {0.04, 20}, 5); t += 150;
+  for (int i = 1; i < det_n(); ++i, t += 150) o = v.window(t, {weak_low(), weak_low()}, {0.0, 20}, 4);
+  CHECK(o.v == Verdict::Fade); CHECK(o.evidence & kEvDetected);
+  CHECK(!o.first_blocked); CHECK(!o.trigger);
+}
+// landed() is the hop's landing: the ring holds the old channel's readings
+// and must not fail verify on a clean target, while the blocked streak
+// carries so an occupied target still fails on its first blocked reading.
+// Without landed() the ring would be full (the four lossy 92 % windows and
+// this one, median 92) and read detected. Written for the shipped defaults,
+// where occupied_windows == detect_windows.
+// Revert (landed() leaves the ring): reads detected. Revert (landed() also
+// clears blocked_streak_): not occupied.
+TEST(landed_clears_the_detect_ring_and_keeps_the_blocked_streak) {
+  REQUIRE(occ_n() == det_n());
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
+  for (int i = 1; i < occ_n(); ++i, t += 150) v.window(t, {busy(95, 3), busy(95, 3)}, {0.04, 20}, 5);   // blocked AND detecting
+  v.landed();
+  auto o = v.window(t, {busy(95, 3), busy(95, 3)}, {0.0, 20}, 5);     // the occupied_windows-th blocked
+  CHECK(o.evidence & kEvOccupied);
+  CHECK(!(o.evidence & kEvDetected));
+}
+// Each leg leaves det_n() - 1 windows in the ring with a loss window among
+// them, so without the clear the next window would read detected.
+// Revert (reset() keeps the ring) / (new_session() keeps the ring): the
+// matching leg reads detected.
+TEST(reset_and_new_session_clear_the_detect_ring) {
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
+  for (int i = 0; i < det_n() - 1; ++i, t += 150) v.window(t, {low_jam(), low_jam()}, {i == 0 ? 0.04 : 0.0, 20}, 5);
+  v.reset();
+  auto o = v.window(t, {low_jam(), low_jam()}, {0.0, 20}, 5); t += 150;
+  CHECK(!(o.evidence & kEvDetected));
+  for (int i = 0; i < det_n() - 1; ++i, t += 150) v.window(t, {low_jam(), low_jam()}, {i == 0 ? 0.04 : 0.0, 20}, 5);
+  v.new_session();
+  o = v.window(t, {low_jam(), low_jam()}, {0.0, 20}, 5);
+  CHECK(!(o.evidence & kEvDetected));
+}
+// The loss window freezes the references at the pre-demote rung; the ring is
+// not yet full, so the next windows read healthy -- three of them would thaw
+// the references and the detected window would re-freeze at the demoted
+// rung, and the hop would restore that. The thaw waits while the ring holds
+// a detection in the making (median >= detect_pct, a loss window inside).
+// Revert (thaw on three healthy windows alone): ref_rung reads -1, then 3.
+TEST(thaw_is_held_while_the_ring_is_detecting) {
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
+  v.new_session();
+  v.window(t, {low_jam(), low_jam()}, {0.04, 20}, 5); t += 150;    // loss window: freeze at rung 5
+  for (int i = 0; i < 3; ++i, t += 150) CHECK(v.window(t, {low_jam(), low_jam()}, {0.0, 20}, 3).v == Verdict::Healthy);   // ladder sank
+  CHECK(v.ref_rung() == 5);                                        // held: foreign still >= detect_pct with a loss window in the ring
+  auto o = v.window(t, {low_jam(), low_jam()}, {0.0, 20}, 3);
+  CHECK(o.v == Verdict::Interfered); CHECK(o.ref_rung == 5);
+}
+// The hold needs the median too: in clean air (foreign 2) a loss window in
+// the ring does not hold the thaw.
+// Revert (hold on a loss window in the ring alone): ref_rung stays 5.
+TEST(thaw_is_not_held_in_clean_air_with_a_loss_window_in_the_ring) {
+  HopVerdict v(cfg(), BusyCfg{}, 2); double t = warm(v);
+  v.new_session();
+  v.window(t, {busy(37, 35), busy(37, 35)}, {0.04, 20}, 5); t += 150;
+  CHECK(v.ref_rung() == 5);
+  for (int i = 0; i < 3; ++i, t += 150) v.window(t, {busy(37, 35), busy(37, 35)}, {0.0, 20}, 3);
+  CHECK(v.ref_rung() == -1);
+}
+TEST(trigger_evidence_names_both_routes) {
+  CHECK(trigger_evidence(kEvBlocked)); CHECK(trigger_evidence(kEvDetected));
+  CHECK(trigger_evidence(kEvBlocked | kEvDetected | kEvImpaired));
+  CHECK(!trigger_evidence(kEvImpaired | kEvWeak | kEvOccupied));
 }
