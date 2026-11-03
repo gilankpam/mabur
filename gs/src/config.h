@@ -89,7 +89,9 @@ struct HopCfg {
   // USB freshness-burst pacing: at most one sweep of every candidate per
   // this, while a hop trigger is live and no hop is in flight.
   // dwell_period_ms is the periodic spare-card dwell, and also paces the
-  // USB burst in a Hold whose candidates are all ranked.
+  // USB burst in a Hold whose candidates are all ranked. A spare card's
+  // burst is skipped once every candidate is ranked (the periodic dwell
+  // already keeps that ranking).
   int burst_period_ms = 333;
   int rank_visits = 5;
   int rank_max_age_ms = 10000;

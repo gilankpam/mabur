@@ -61,6 +61,16 @@ TEST(burst_period_is_dwell_period_only_in_a_fully_ranked_hold) {
   CHECK(hop_burst_period_ms(HopState::Idle, true, false, h) == 1500);
   CHECK(hop_burst_period_ms(HopState::Hold, true, true, h) == 1500);
 }
+// A spare USB card's burst duplicates the periodic dwell thread once the
+// ranking is complete; the one-card burst (the TX card) and a relay sweep
+// always run, and an incomplete ranking always bursts.
+// Revert (return true): the first check fails.
+TEST(spare_usb_burst_skipped_only_once_the_ranking_is_complete) {
+  CHECK(!hop_burst_wanted(/*spare_usb_burst=*/true, /*ranking_complete=*/true));
+  CHECK(hop_burst_wanted(true, false));
+  CHECK(hop_burst_wanted(false, true));
+  CHECK(hop_burst_wanted(false, false));
+}
 // Bench: nothing in the hop block may run before the link is in SESSION, or
 // during a calibration run (see hop_active's comment). The boot scout owning a
 // card no longer deactivates it -- the boot pick stays open after link-up and

@@ -101,6 +101,21 @@ inline int hop_burst_period_ms(HopState state, bool relay_burst, bool ranking_co
   return (state == HopState::Hold && ranking_complete) ? hop.dwell_period_ms : hop.burst_period_ms;
 }
 
+// Pure: whether a due freshness burst is worth running. A burst on a spare
+// USB card (not the TX card) re-measures what the periodic dwell thread
+// already keeps ranked on that same card -- one candidate per
+// dwell_period_ms -- and it runs synchronously, stalling the core loop
+// (AU publishing included) for every candidate dwell. So once every non-op
+// candidate is ranked, a spare-card burst is skipped and the hop acts on
+// the periodic dwells' ranking (newest visit at most one dwell round old).
+// A one-card GS's burst is its only ranking source, and a relay sweeps
+// asynchronously: both run regardless. An incomplete ranking (cold start,
+// a candidate whose dwells fail, visits aged past rank_max_age_ms) still
+// bursts, which is what brings a stalled periodic dwell's ranking back.
+inline bool hop_burst_wanted(bool spare_usb_burst, bool ranking_complete) {
+  return !(spare_usb_burst && ranking_complete);
+}
+
 // Holds the link-pairing move edge (VrxController::take_move_edge()) for
 // the length of a calibration run. The GS still beacons DISC between sweep
 // phases, so a re-pair -- and its move edge -- can land mid-run, and acting

@@ -657,7 +657,9 @@ void ChannelCore::step_controller_(const ChannelTickIn& in) {
   for (const auto& e : ranker_.ranking(now_ms))
     if (e.ch != plan_.op() && !e.ranked) ranking_complete = false;
   const int burst_period = hop_burst_period_ms(hopc_.state(), relay_burst, ranking_complete, cfg_.hop);
+  const bool spare_usb_burst = burst_card >= 0 && !relay_burst && burst_card != in.tx_card;
   if (reactive_ && !scout_owns_() && !relocation_owns && !sweep_.on &&
+      hop_burst_wanted(spare_usb_burst, ranking_complete) &&
       hop_burst_due(hopc_.state(), last_verdict_out_.trigger, now_ms, last_burst_ms_, burst_period)) {
     const double prev_burst_ms = last_burst_ms_;
     last_burst_ms_ = now_ms;

@@ -1101,22 +1101,23 @@ static std::vector<uint64_t> interfere_bursts(Rig& g, int windows) {
 }
 
 // Every candidate blocked (100 % NHM busy on the burst card's dwells) and
-// the op interfered: the cold ranker holds after burst 1 (one visit each,
-// nothing ranked), burst 2 comes burst_period_ms later and ranks them all
-// -- blocked -- so the controller stays in hold_exhausted with the trigger
-// live. From there each USB burst takes its card off op for every candidate,
-// so it paces on dwell_period_ms: no burst within burst_period_ms, one once
-// dwell_period_ms has passed.
-TEST(usb_burst_in_a_fully_ranked_all_blocked_hold_paces_on_dwell_period) {
-  Rig g(2, 0);
+// the op interfered, one card: the cold ranker holds after burst 1 (one
+// visit each, nothing ranked), burst 2 comes burst_period_ms later and
+// ranks them all -- blocked -- so the controller stays in hold_exhausted
+// with the trigger live. The one card's burst is its only ranking source,
+// so it keeps bursting, but each burst takes the sole radio off op for
+// every candidate: it paces on dwell_period_ms, no burst within
+// burst_period_ms, one once dwell_period_ms has passed.
+TEST(one_card_burst_in_a_fully_ranked_all_blocked_hold_paces_on_dwell_period) {
+  Rig g(1, 0);
   g.cfg.hop.dwell_period_ms = 1000;
   g.cfg.hop.burst_period_ms = 333;
-  rebuild_with_set(g, g.cfg.radio.channels, 2);
+  rebuild_with_set(g, g.cfg.radio.channels, 1);
   freeze_auto(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
   NhmBusyRead full; full.valid = true; full.period = nhm_period_4us(g.cfg.hop.dwell_observe_ms);
   full.buckets[11] = 100;                          // every sample above busy_dbm: 100 % busy
-  g.cards[1]->nhm_arm_ok = true; g.cards[1]->nhm_read = full;
+  g.cards[0]->nhm_arm_ok = true; g.cards[0]->nhm_read = full;
   const auto bursts = interfere_bursts(g, 22);     // ~3.5 s
   CHECK(g.sink.has_hop("hold_exhausted"));
   CHECK(!g.sink.has_hop("order")); CHECK(!g.sink.has_hop("escape"));
@@ -1127,6 +1128,27 @@ TEST(usb_burst_in_a_fully_ranked_all_blocked_hold_paces_on_dwell_period) {
     CHECK(bursts[i] - bursts[i - 1] >= 1000);      // fully ranked Hold: dwell_period_ms
     CHECK(bursts[i] - bursts[i - 1] < 1000 + 333);
   }
+}
+
+// The same all-blocked Hold on two cards: the spare card's bursts stop
+// once burst 2 has ranked every candidate -- from there the periodic dwell
+// thread keeps the ranking on that card, and a burst would only stall the
+// core loop. Revert (burst regardless of ranking_complete): bursts 3.. come
+// back at dwell_period_ms.
+TEST(two_card_spare_burst_stops_once_every_candidate_is_ranked) {
+  Rig g(2, 0);
+  g.cfg.hop.dwell_period_ms = 1000;
+  g.cfg.hop.burst_period_ms = 333;
+  rebuild_with_set(g, g.cfg.radio.channels, 2);
+  freeze_auto(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  NhmBusyRead full; full.valid = true; full.period = nhm_period_4us(g.cfg.hop.dwell_observe_ms);
+  full.buckets[11] = 100;
+  g.cards[1]->nhm_arm_ok = true; g.cards[1]->nhm_read = full;
+  const auto bursts = interfere_bursts(g, 22);     // ~3.5 s
+  CHECK(g.sink.has_hop("hold_exhausted"));
+  CHECK(std::string(g.core->snapshot(0).hop.state) == "hold");
+  CHECK(bursts.size() == 2);                       // burst 1, burst 2 (ranks), then none
 }
 
 // The same Hold with one candidate that never gets a visit (its retune

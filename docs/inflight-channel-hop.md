@@ -374,6 +374,13 @@ period old. It also requires auto mode, no boot-scout ownership, no
 relocation in progress and no relay sweep pending. It runs on both card
 counts — on a one-card GS it is the only source of ranking data — and does
 not require a ranked candidate first (on one card that would be circular).
+On a spare USB card it is skipped once every non-op candidate is ranked
+(`hop_burst_wanted()`): the periodic dwell thread already keeps the ranking
+on that same card, so the hop acts on readings at most one dwell round old
+(three candidates × `dwell_period_ms` ≈ 3 s) instead of stalling the core
+thread to refresh them. A cold or stale ranking (boot, a candidate whose
+dwells fail, visits aged past `rank_max_age_ms`) still bursts. A one-card
+burst and a relay sweep are never skipped this way.
 The burst holds `inflight_mu_`, keeping the periodic scout thread off the
 same `InflightScout`/`RadioFrontend`, and runs synchronously on the core
 thread, so it stalls RX processing while it runs.
@@ -834,9 +841,11 @@ DJI O4), `docs/findings/2026-09-25-analog-vtx.md` (one-card analog VTX) and
   same tick. Off air ~22 % of the time at the 333 ms Idle period; a fully
   ranked `Hold` paces on `dwell_period_ms` (1000 ms), ~7.5 %.
 - **A two-card freshness burst stalls the core thread** for the same
-  ~75 ms (it runs synchronously in `ChannelCore::tick`): up to three times
-  a second while a trigger is live in `Idle` or an unranked `Hold`, once a
-  second in a fully ranked `Hold`.
+  ~75 ms (it runs synchronously in `ChannelCore::tick`), up to three times
+  a second — but only while some candidate is unranked (boot, failing
+  dwells, stale visits); with a complete ranking the spare card's burst is
+  skipped and the periodic dwells carry the ranking. The price is
+  freshness: a hop can land on a target whose newest reading is ~3 s old.
 - **`dwell_busy`/`dwell_card` are two separate atomics**
   (`gs/src/channel_core.h`), read by the mechanical retune loop, the
   verdict window and the TX selector. A reader can see `dwell_busy == false`
