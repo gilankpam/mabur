@@ -122,11 +122,12 @@ void HopController::ordered_tick(const HopTick& in, HopAction& out) {
     // the jammed op). Keep ordering until confirm_extend_ms; an order that
     // still does not land is withdrawn as undelivered, not failed.
     //
-    // Engaged only by a blocked verdict at the confirm_ms expiry; once
-    // engaged it holds to confirm_extend_ms whatever later windows say.
-    // The jam lifting is exactly when the order lands, and withdrawing then
-    // would race the drone's retune into a move_unconfirmed split.
-    const bool engage = confirm_extended_ || (in.verdict.evidence & kEvBlocked);
+    // Engaged only by a hop-route reading (blocked or detected) at the
+    // confirm_ms expiry; once engaged it holds to confirm_extend_ms
+    // whatever later windows say. The jam lifting is exactly when the
+    // order lands, and withdrawing then would race the drone's retune
+    // into a move_unconfirmed split.
+    const bool engage = confirm_extended_ || trigger_evidence(in.verdict.evidence);
     if (cfg_.confirm_extend_ms > cfg_.confirm_ms && engage &&
         in.now_ms - order_ms_ < cfg_.confirm_extend_ms) {
       if (!confirm_extended_) {
@@ -301,11 +302,12 @@ void HopController::flee(uint8_t ch, double now) { back_off(ch, now, BackoffWhy:
 
 // The escape is used only when (the callers have already established)
 // there is no ranked target: the caller supplied one, and the verdict in
-// hand says the channel we are on is blocked. A verify-failed channel is
-// excluded upstream (ChannelCore passes backed_off_failed() to the ranker) and again here,
-// so a stale tick can never order one.
+// hand reads a hop-route trigger (blocked or detected) on the channel we
+// are on. A verify-failed channel is excluded upstream (ChannelCore passes
+// backed_off_failed() to the ranker) and again here, so a stale tick can
+// never order one.
 bool HopController::escape_allowed(const HopTick& in) const {
-  if (!in.escape.has_value() || !(in.verdict.evidence & kEvBlocked)) return false;
+  if (!in.escape.has_value() || !trigger_evidence(in.verdict.evidence)) return false;
   auto it = backoff_.find(*in.escape);
   return !(it != backoff_.end() && it->second.until_ms > in.now_ms &&
            it->second.why == BackoffWhy::Failed);

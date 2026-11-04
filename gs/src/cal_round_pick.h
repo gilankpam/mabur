@@ -3,10 +3,11 @@
 // the run should calibrate on. Pure, header-only.
 //
 // Op and the candidates are read by different instruments: each candidate
-// half by the scout card's 20 MHz observe, op by the link cards' verdict
-// window at the link width (the scout never dwells on op's own pair while
-// linked: it carries the drone's video). So only terms that mean the same
-// thing on both sides are compared:
+// by the scout card's own observe of its channel at the link width (at 40
+// MHz one dwell on the pair's primary reads the whole pair), op by the
+// link cards' verdict window (the scout never dwells on op's own pair
+// while linked: it carries the drone's video). So only terms that mean the
+// same thing on both sides are compared:
 //  - NHM busy %: foreign airtime share (op's reading has our own video's
 //    airtime taken out), and
 //  - decoded foreign frames per dwell_ms observe.
@@ -14,27 +15,35 @@
 // (PPDUs minus MPDUs) clamp to zero, while a candidate keeps its CCA, so the
 // term would score op clean no matter what.
 //
-// score = foreign + busy % (one unit per frame, one per percentage point;
-// the busy term only when both sides being compared have a reading). A
-// candidate pair scores as its worse half, and a candidate with no busy
-// reading is not ranked while any candidate has one. Leaving op takes
-// beating it by `margin` in every tier: a blocked candidate never replaces
-// an unblocked op, and a candidate that is unblocked while op is blocked
-// still has to be `margin` better. Op unread, or no candidate read on every half: stay.
-// Both rules lean toward staying where the link already works.
-#include <algorithm>
+// Candidate selection among the set (which one is "best") mirrors
+// pair_pick's order: unblocked before blocked, a busy reading before none,
+// then the lower busy %, then the lower foreign + busy % score (one unit
+// per frame, one per percentage point; the busy term only when the
+// candidate has a reading), then config order. Busy % ranks first because
+// the move below is decided on it: the candidate it is decided for must be
+// the one with the lowest busy %, not one whose low frame count outscores
+// a quieter channel. Foreign orders only busy-% ties and the K rows. A
+// candidate with no busy reading is not ranked while any candidate has
+// one.
+//
+// Leaving op is the same margin rule as ChannelRanker::proposal and
+// pair_proposal: the best candidate replaces op only when it is in a
+// better tier (a blocked op loses to any unblocked candidate at once; a
+// blocked candidate never replaces an unblocked op), has a busy reading
+// where op has none, or both read and beats op's busy % by `margin_pct`
+// points. An exact busy tie, or neither side reading busy, stays -- as
+// does op unread, or no candidate read at all.
 #include <cmath>
 #include <cstdint>
 #include <optional>
 #include <vector>
 
 #include "channel_ranker.h"
-#include "mabur/ht40.h"
 
 namespace maburgs {
 
-// One reading of one channel: a 20 MHz half from the round's scout dwell,
-// or op from the verdict window.
+// One reading of one channel: the member's own observe from the round's
+// scout dwell, or op from the verdict window.
 struct CalReading {
   uint8_t ch = 0;
   uint32_t foreign = 0;      // decoded foreign frames, per dwell_ms observe
@@ -44,8 +53,8 @@ struct CalReading {
 
 struct CalPickOut {
   uint8_t best = 0;
-  // The K record's rows: every half read this round plus op's (both halves
-  // at width 40), worst_busy = the score above, one visit each.
+  // The K record's rows: every member read this round plus op's,
+  // worst_busy = the score above, one visit each.
   std::vector<RankEntry> rows;
 };
 
@@ -62,33 +71,22 @@ inline double score(const Side& s, bool use_busy) {
 inline bool blocked(const Side& s, double blocked_pct) {
   return s.busy_valid && s.busy_pct >= blocked_pct;
 }
-inline std::vector<uint8_t> halves_of(uint8_t member, int width_mhz) {
-  if (width_mhz != 40) return {member};
-  const uint8_t other = mabur::ht40_pair_other(member);
-  if (other == 0) return {member};
-  return {member, other};
-}
-// The worse half's terms; not ok unless every half has a reading.
-inline Side member_side(const std::vector<CalReading>& rd, uint8_t member, int width_mhz) {
-  Side s;
-  s.ok = true;
-  s.busy_valid = true;
-  for (uint8_t h : halves_of(member, width_mhz)) {
-    bool seen = false, busy_seen = false;
-    for (const CalReading& r : rd) {
-      if (r.ch != h) continue;
-      seen = true;
-      s.foreign = std::max(s.foreign, r.foreign);
-      if (r.busy_valid) {
-        busy_seen = true;
-        s.busy_pct = std::max(s.busy_pct, r.busy_pct);
-      }
-    }
-    if (!seen) s.ok = false;
-    if (!busy_seen) s.busy_valid = false;
+// The member's own reading; not ok unless it was read this round.
+inline Side member_side(const std::vector<CalReading>& rd, uint8_t member) {
+  for (const CalReading& r : rd) {
+    if (r.ch != member) continue;
+    return Side{true, r.foreign, r.busy_valid, r.busy_valid ? r.busy_pct : 0.0};
   }
-  if (!s.busy_valid) s.busy_pct = 0;
-  return s;
+  return Side{};
+}
+// Strict, like pair_pick's better(): equal candidates are not better, so
+// the scan keeps config order on ties.
+inline bool better(const Side& a, const Side& b, double blocked_pct) {
+  const bool ab = blocked(a, blocked_pct), bb = blocked(b, blocked_pct);
+  if (ab != bb) return !ab;
+  if (a.busy_valid != b.busy_valid) return a.busy_valid;
+  if (a.busy_valid && a.busy_pct != b.busy_pct) return a.busy_pct < b.busy_pct;
+  return score(a, a.busy_valid) < score(b, b.busy_valid);
 }
 inline RankEntry row(const CalReading& r) {
   RankEntry e;
@@ -102,61 +100,57 @@ inline RankEntry row(const CalReading& r) {
 }
 }  // namespace cal_pick_detail
 
-inline CalPickOut cal_round_pick(const std::vector<CalReading>& halves,
+inline CalPickOut cal_round_pick(const std::vector<CalReading>& members,
                                  const std::optional<CalReading>& op_read, uint8_t op,
-                                 const std::vector<uint8_t>& set, int width_mhz, uint32_t margin,
+                                 const std::vector<uint8_t>& set, double margin_pct,
                                  double blocked_pct) {
   using namespace cal_pick_detail;
   CalPickOut out;
   out.best = op;
-  for (const CalReading& r : halves) out.rows.push_back(row(r));
-  if (op_read) {
-    for (uint8_t h : halves_of(op, width_mhz)) {
-      CalReading r = *op_read;
-      r.ch = h;
-      out.rows.push_back(row(r));
-    }
-  }
-  if (!op_read) return out;
-  Side o{true, op_read->foreign, op_read->busy_valid, op_read->busy_valid ? op_read->busy_pct : 0.0};
-
   // A candidate with no busy reading would score on foreign alone, a term
   // short of what the others pay: it is not eligible while any candidate
-  // has a busy reading.
+  // has a busy reading. Gathered alongside the rows: both are one pass
+  // over the set's members.
   bool any_busy = false;
   for (uint8_t c : set) {
     if (c == op) continue;
-    const Side s = member_side(halves, c, width_mhz);
-    if (s.ok && s.busy_valid) any_busy = true;
+    const Side s = member_side(members, c);
+    if (!s.ok) continue;
+    out.rows.push_back(row(CalReading{c, s.foreign, s.busy_valid, s.busy_pct}));
+    if (s.busy_valid) any_busy = true;
   }
+  if (op_read) out.rows.push_back(row(*op_read));
+  if (!op_read) return out;
+  Side o{true, op_read->foreign, op_read->busy_valid, op_read->busy_valid ? op_read->busy_pct : 0.0};
 
-  // Best candidate: unblocked first, then score, then config order.
+  // Best candidate: tier, busy reading, busy %, score, then config order.
   std::optional<uint8_t> best;
   Side bs;
   for (uint8_t c : set) {
     if (c == op) continue;
-    const Side s = member_side(halves, c, width_mhz);
+    const Side s = member_side(members, c);
     if (!s.ok) continue;
     if (any_busy && !s.busy_valid) continue;
-    if (!best) {
-      best = c;
-      bs = s;
-      continue;
-    }
-    const bool sb = blocked(s, blocked_pct), bb = blocked(bs, blocked_pct);
-    if (sb != bb) {
-      if (!sb) { best = c; bs = s; }
-      continue;
-    }
-    if (score(s, s.busy_valid) < score(bs, bs.busy_valid)) {
+    if (!best || better(s, bs, blocked_pct)) {
       best = c;
       bs = s;
     }
   }
   if (!best) return out;
-  if (blocked(bs, blocked_pct) && !blocked(o, blocked_pct)) return out;
-  const bool use_busy = bs.busy_valid && o.busy_valid;
-  if (score(bs, use_busy) + static_cast<double>(margin) <= score(o, use_busy)) out.best = *best;
+  // Leaving op: a better tier (op blocked, the candidate not) or a busy
+  // reading where op has none moves at once; both read, the busy-%
+  // margin decides; an exact tie, or neither read, stays -- the same rule
+  // as ChannelRanker::proposal and pair_proposal.
+  const bool bb = blocked(bs, blocked_pct), ob = blocked(o, blocked_pct);
+  if (bb != ob) {
+    if (!bb) out.best = *best;   // a blocked candidate never replaces an unblocked op
+    return out;
+  }
+  if (bs.busy_valid != o.busy_valid) {
+    if (bs.busy_valid) out.best = *best;
+    return out;
+  }
+  if (bs.busy_valid && o.busy_pct - bs.busy_pct >= margin_pct) out.best = *best;
   return out;
 }
 

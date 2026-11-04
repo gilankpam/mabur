@@ -133,7 +133,7 @@ run on `WindowSampler` (`gs/src/window_sampler.{h,cpp}`), not on the core
 thread: every `hop.window_ms` the sampler samples each card and publishes
 one `WindowRecord`; `ChannelCore::step_hop_edge_and_window_` takes the
 latest record and runs the verdict on it, reading its own in-memory inputs
-(per-card CRC failures, RSSI/SNR EMAs, recovered symbols, AU count) at that
+(per-card CRC failures, RSSI/SNR EMAs, recovered symbols) at that
 moment. Per-window spans (`own_air_pct`) are measured between sample
 instants. The sampler runs on its own thread wherever `ChannelCore` runs
 threaded -- maburgs, and the web GS page build (`core_threads`); with
@@ -152,8 +152,8 @@ across `stop()` + `open_and_start()`, so no read lands on a card being
 torn down or tuned away. Lock order: `inflight_mu_` before the card lock.
 
 On every edge of `hop_active`, `ChannelCore::
-step_hop_edge_and_window_()` resets the engine, re-primes the `au_seq` and
-recovered baselines and calls `HopVerdict::new_session()`; on the falling
+step_hop_edge_and_window_()` resets the engine, re-primes the recovered
+baseline and calls `HopVerdict::new_session()`; on the falling
 edge it also hands `HopController::on_session_lost()`'s action to the
 dispatcher. Without the gate the boot rendezvous (80–90 % s1 loss while
 the link comes up) and a calibration run (video stopped on purpose) read as
@@ -170,45 +170,78 @@ is excluded; during `Ordered` the op verdict runs on the TX card alone, and
 a one-card GS after `OneCardRetune` has no valid card (`unknown`, no
 `kEvBlocked`).
 
-Link-level inputs: the s1 (BASE) pre-FEC loss and the FEC recovered-symbol
-delta. The loss input is the verdict's own 500 ms window
-(`ChannelCore::s1_hop_loss_`), blanked when a hop lands (`HopAction::Confirm`
-+ 150 ms settle, `hop_verdict_loss_blank_until()` in `gs/src/hop_blank.h`)
-so a verify is judged on the channel it verifies; `s1_loss`, which feeds
-the sideport/ctl-log/OSD gauge, is never blanked.
+Link-level inputs: the pre-FEC loss of the worse video layer and the FEC
+recovered-symbol delta (both layers). The loss input is the verdict's own
+pair of 500 ms windows, one per layer (`ChannelCore::s1_hop_loss_` on the
+base stream, `enh_hop_loss_` on the enhancement stream), combined by
+`hop_verdict_link_loss()` in `gs/src/hop_blank.h`: the larger valid
+reading, so a jam that hurts the enhancement layer first (UEP gives it the
+thinner FEC, and the ladder demotes on either layer) is not read as a clean
+link. Both windows are blanked when a hop lands (`HopAction::Confirm`
++ 150 ms settle, `hop_verdict_loss_blank_until()`) so a verify is judged
+on the channel it verifies; `s1_loss`, which feeds the
+sideport/ctl-log/OSD gauge, is never blanked.
 
-Seven independent evidence bits, OR'd together every window
-(`hop_verdict.h`'s `kEvImpaired/kEvWeak/kEvFading/kEvContended/kEvRaised/
-kEvBlocked/kEvStarved`):
+**Detection reads NHM foreign airtime, by two routes.** A fade (range, a
+tree, a flip, a wall) can lower our signal but cannot add foreign energy to
+the air, so foreign airtime is the one signal no fade can fake, and both
+routes to `interfered` read it:
+
+- **occupied** — foreign airtime over `blocked_pct` held for
+  `occupied_windows` consecutive windows, together with `blocked` in the
+  window itself. Loss is not needed: a long-frame jam that fills the air
+  without costing a frame still hops.
+- **detected** — a lower floor confirmed by loss: over the last
+  `detect_windows` windows (the detect ring), the median foreign reading is
+  at least `detect_pct`, and at least `detect_impaired` of those windows
+  were loss-impaired; the window itself must carry a busy reading. This
+  catches the low-level occupant — a neighbour at 8–29 % airtime — that
+  costs video but never reaches `blocked_pct`. Neither half alone is
+  enough: foreign airtime under `blocked_pct` with no loss is a neighbour
+  we coexist with, and loss with no foreign airtime is a fade.
+
+Loss and recovered on their own are still computed and reported (sideport
+`hop.evidence`, scan.log `V` lines) and still mark a window `impaired`
+(which freezes the reference), but neither triggers a hop without a
+foreign reading behind it: each also moves when the link merely fades.
+The cost is detection latency, taken on purpose (accuracy over speed):
+the occupied route's first `interfered` window comes `occupied_windows ×
+window_ms` into a jam; the detect route's comes once the ring's median
+crosses `detect_pct` — the ⌈`detect_windows`/2⌉-th reading window over it
+when the ring already holds clean readings, a full `detect_windows` after
+the ring was cleared (a landing, a new session). A lossy jam over
+`blocked_pct` satisfies both routes and reads `interfered` on whichever
+comes first.
+
+Five independent evidence bits, OR'd together every window
+(`hop_verdict.h`'s `kEvImpaired/kEvWeak/kEvDetected/kEvBlocked/
+kEvOccupied`; 0x08/0x10/0x40 are unassigned, the retired contended/raised/
+starved bits; 0x04 was the retired fading bit):
 
 | bit | rule | key (default) |
 |---|---|---|
-| impaired (0x01) | link pre-FEC loss % > `loss_pct` **or** (recovered count > `recovered_x` × its 5 s trailing mean **and** recovered count >= `recovered_min`) **or** `starved` | `hop.verdict.loss_pct` (3.0), `recovered_x` (3.0), `recovered_min` (8) |
+| impaired (0x01) | `loss_impaired` — the worse layer's pre-FEC loss % > `loss_pct` **or** (recovered count > `recovered_x` × its 5 s trailing mean **and** recovered count >= `recovered_min`) — **or** `occupied` **or** `detected` | `hop.verdict.loss_pct` (3.0), `recovered_x` (3.0), `recovered_min` (8) |
 | weak (0x02) | best card's RSSI < `weak_rssi_dbm` **and** SNR < `weak_snr_db` (RSSI alone when that card has no real SNR — `snr_valid` false on a CPE510 relay) | `weak_rssi_dbm` (−78), `weak_snr_db` (12) |
-| fading (0x04) | best card's RSSI more than `fading_drop_db` below its frozen/trailing reference | `fading_drop_db` (6) |
-| contended (0x08) | any card's foreign frames/s > `foreign_pps` | `foreign_pps` (50) |
-| raised (0x10) | any card's FA/s > `fa_pps` | `fa_pps` (100) |
-| blocked (0x20) | the MINIMUM, across cards with a busy reading, of that card's busy % minus its own reconstructed airtime % >= `blocked_pct` | `radio.scan.busy_dbm` (−83), `radio.scan.blocked_pct` (50) |
-| starved (0x40) | at least one card valid this window and **zero** own frames on every valid card (`VerdictLinkIn::starved`), **or** the window's AU count (`VerdictLinkIn::au_count`, the `au_seq` delta) < `starved_frac` × its trailing mean, when that mean is >= 2 AUs/window | `hop.verdict.starved_frac` (0.25; 0 = zero-frames rule only) |
+| detected (0x04) | the detect ring (one slot per window with a usable card — reading-less windows take a slot too) is full, at least ⌈`detect_windows`/2⌉ of its slots had a busy reading, the median of those readings (the same minimum-across-cards foreign % `blocked` uses; with an even count, the mean of the middle two) >= `detect_pct`, and at least `detect_impaired` of its slots were `loss_impaired` (not `occupied` — that would make the confirmation circular) ⇒ `impaired`; with this window's own busy reading, the trigger | `hop.verdict.detect_pct` (8), `detect_windows` (5), `detect_impaired` (1) |
+| blocked (0x20) | the MINIMUM, across cards with a busy reading, of that card's busy % minus its own reconstructed airtime % >= `blocked_pct` | `radio.scan.busy_dbm` (−83), `radio.scan.blocked_pct` (30) |
+| occupied (0x80) | `blocked` has held, across windows with a usable busy reading, for `occupied_windows` consecutive windows; a window with no busy reading (mid-dwell, no usable card) neither resets nor advances the count ⇒ `impaired`; with `blocked` in the same window, the trigger | `hop.verdict.occupied_windows` (5) |
 
-Why the two floors exist: on a clean channel the recovered term's trailing
-mean sits near 0.2/window, so a handful of recovered symbols reads "3× the
-reference" at 0 % loss — `recovered_min` keeps that from combining with a
-noisy FA background into a false `interfered`. A jammed link delivers no
-frames and therefore no loss; `starved` makes that impaired, and its AU-rate
-term catches a long-frame jam that still lets a trickle of frames through.
-60 → 30 fps low-power is a 0.5 AU-rate drop, so keep `starved_frac` below
-0.5. The AU reference behaves like the recovered one: a 5 s history pushed
-only while unfrozen, captured at the freeze, cleared by `reset()`; the AU
-history and reference (only those) are also dropped by `new_session()` —
-the frame rate before an outage is no baseline for the session after it.
+Why `recovered_min` exists: on a clean channel the recovered term's
+trailing mean sits near 0.2/window, so a handful of recovered symbols
+reads "3× the reference" at 0 % loss — `recovered_min` keeps that from
+marking a clean window `impaired` and freezing the reference. A jammed
+link that delivers no frames at all has no loss or recovered symbols
+either, so with `starved` gone it reads `healthy` unless the jam also
+fills NHM airtime for `occupied_windows` consecutive windows — neither
+route (above) is a fallback for the zero-frames case.
 
-**`blocked` and NHM busy.** The other evidence bits come from the preamble
-detector (`foreign`, `fa`) or RSSI/SNR, so an interferer that fills airtime
-without tripping the correlator — a long-frame 802.11 jam at low pps, or a
-co-channel analog VTX carrier that desenses the front end and reads as a
-fade with SNR intact (`docs/findings/2026-09-25-analog-vtx.md`) — is
-invisible to them. `nhm_busy_pct` comes from the chip's NHM histogram
+**`blocked` and NHM busy.** The only other RSSI/SNR-based evidence bit is
+`weak`, so an interferer that fills airtime without lowering our signal —
+a long-frame 802.11 jam at low pps, or a co-channel analog VTX carrier
+that desenses the front end and reads as a fade with SNR intact
+(`docs/findings/2026-09-25-analog-vtx.md`) — is invisible to it, and
+`weak` also moves on a plain fade. NHM busy minus our own airtime is
+foreign energy, which is why both routes read it. `nhm_busy_pct` comes from the chip's NHM histogram
 (airtime above `radio.scan.busy_dbm`, which config validation requires to
 be an `nf::kNhmAbsThDbm` bucket edge), armed and read once per verdict
 window per op card; `own_air_pct` is the GS's own reconstruction of that
@@ -228,11 +261,12 @@ no interferer present. Bench numbers:
 
 **A CPE510 relay card's inputs** (protocol v4, `docs/cpe510-relay.md`
 "Interference + hop on a relay"): `cca` is always 0 (ath9k has no CCA-event
-count), so `raised` reads off `fa` alone — the OFDM/HT PHY-error delta
-(`RemoteCard::read_energy_scout()`), same `fa_pps` key. `blocked` reads the
-relay's `SURVEY` stream instead of NHM: busy % is `100·Δbusy/Δactive` (same
-`gen`, span >= 100 ms) and `own_air_pct` is `100·Δrx/Δactive` — on the op
-channel `rx` is our own video. `blocked_pct` is shared with the NHM path.
+count) and `fa` is the OFDM/HT PHY-error delta
+(`RemoteCard::read_energy_scout()`) — neither feeds a hop-verdict evidence
+bit any more. `blocked` reads the relay's `SURVEY` stream instead of NHM:
+busy % is `100·Δbusy/Δactive` (same `gen`, span >= 100 ms) and `own_air_pct`
+is `100·Δrx/Δactive` — on the op channel `rx` is our own video.
+`blocked_pct` is shared with the NHM path.
 
 **Classification**, in this order (`HopVerdict::window`,
 `gs/src/hop_verdict.cpp`):
@@ -240,38 +274,132 @@ channel `rx` is our own video. `blocked_pct` is shared with the NHM path.
 ```cpp
 if (!impaired) o.v = Verdict::Healthy;
 else if (weak) o.v = Verdict::Fade;
-else if (blocked) o.v = Verdict::Interfered;
-else if ((contended || raised) && !fading) o.v = Verdict::Interfered;
+else if (occupied && blocked) o.v = Verdict::Interfered;
+else if (detected && have_busy_reading) o.v = Verdict::Interfered;
 else o.v = Verdict::Unknown;
 ```
 
-`weak` wins outright (range edge; a hop does not help). `blocked`
-classifies `interfered` **even while `fading`**: a real fade lowers RX
-power and cannot raise NHM busy airtime, so fading-and-blocked is desense
-from an interferer (the analog-VTX shape: RSSI −58 → −70…−79, SNR intact).
-`contended`/`raised` need `!fading`, so an edge-of-range link with
-jammer-like FA/foreign symptoms classifies `fade` (weak) or `unknown`
-(fading, not weak) — never `interfered` — and the ladder owns both. The
-`weak`-over-`contended` ordering is pinned by
-`weak_takes_priority_over_contended_when_not_fading`. The hop trigger
+`impaired` is `loss_impaired || occupied || detected`, where
+`loss_impaired` is the loss / recovered terms. So a single lossy window
+with a blocked reading but no occupancy and no detection yet is `unknown`
+(`loss_and_blocked_without_occupancy_is_unknown`), and so is a lossy
+window full of foreign frames or false alarms with no NHM reading
+(`co_channel_802_11_neighbour_with_loss_is_not_a_trigger`). An occupied run
+at zero loss reads `healthy` until the window that reaches
+`occupied_windows`, which is `interfered` on its own
+(`occupied_fires_at_default_width_after_occupied_windows_blocked_windows_with_zero_loss`).
+A detect run reads `interfered` on every window whose ring holds the
+detection, its own loss or not: one loss window early in a run of 10 %
+foreign readings makes the window that fills the ring `interfered` and
+`impaired` (`detected_fires_with_one_loss_window_inside_a_low_foreign_run`).
+A run of foreign readings with no loss window
+(`detected_needs_a_loss_window`), loss under a sub-`detect_pct` median
+(`detected_does_not_fire_below_detect_pct`), and one high window among
+clean ones (`detected_needs_the_median_not_a_single_window`) never detect.
+The ring is a sliding window, so it also reads a run for a few windows
+after the run ends: once a lossy run stops, the next
+`detect_windows − ⌈detect_windows/2⌉` clean windows still hold its
+majority and read `interfered`.
+
+`weak` wins outright, occupancy and detection included: at the range edge
+our own frames stop decoding, so `own_air_pct` (rebuilt from decoded frames
+only) undercounts and the subtraction can read our own video as foreign
+airtime — and a hop does not help range anyway
+(`weak_still_wins_over_occupied`, `weak_still_wins_over_detected`).
+
+`occupied && blocked`, not `occupied` alone: the window that first reaches
+`occupied_windows` is itself `blocked` (its own reading advanced the
+streak). On a LATER window of the same occupied run that has no busy
+reading at all (mid-dwell, no usable card, an NHM arm invalidated by a
+retune — the usual shape right after a hop lands) the streak holds but that
+window's own `blocked` is false — `occupied` (and so `impaired`,
+`kEvImpaired`) stays true, and the window is `unknown` whatever foreign
+frames, false alarms or loss it carries: impaired, unknown, counting toward
+neither the persist nor a verify failure
+(`occupied_persists_but_a_reading_less_window_classifies_unknown`,
+`occupied_reading_less_window_with_foreign_or_fa_stays_unknown`,
+`lossy_foreign_reading_less_window_is_unknown_while_occupied`). The detect
+route has the same rule for the same reason: a `detected` window with no
+busy reading of its own is `unknown`
+(`detected_reading_less_current_window_is_unknown`). Neither
+the escape (`HopController::escape_allowed`) nor the confirm extension keys
+on `occupied`: both read `trigger_evidence()` (`kEvBlocked | kEvDetected`),
+so a no-reading occupied window neither escapes nor extends an order, and
+a `detected` window engages either path the same as a `blocked` one. The
+hop trigger
 (`VerdictOut::trigger`) is `interfered` in `hop.persist` (2) of the last 3
 windows. `fade` and `unknown` never hop.
 
-**References.** Per card, a 5 s trailing median of RSSI; link-level, the
-5 s trailing means of the FEC recovered count and of the AU count. All are
-frozen at the first impaired window, along with `ref_rung` (the ladder's
-rung at that instant), so an interferer cannot raise its own baseline
-mid-episode; impaired windows push nothing into the trailing histories
-(`starved_windows_do_not_feed_the_trailing_references`). A card with no
-trailing history at freeze time keeps no fabricated reference: a frozen
-reference of exactly 0 dBm reads as "no reference yet" and the card's
-current RSSI is used, so `fading` can't fire off it. References thaw after
-3 consecutive `healthy` windows, or on `HopVerdict::reset()`, which
+**References.** Link-level, the 5 s trailing mean of the FEC recovered
+count. It is frozen at the first impaired window, along with `ref_rung`
+(the ladder's rung at that instant), so an interferer cannot raise its own
+baseline mid-episode; impaired windows push nothing into the trailing
+history, so the frozen mean holds steady through a sustained jam
+(`recovered_rate_alone_marks_impaired_and_its_reference_freezes`). The
+reference thaws after 3 consecutive `healthy` windows, or on
+`HopVerdict::reset()`, which
 `apply_hop_action_()` calls on `HopAction::VerifyPass` and only there. A
 `verify_fail` or `withdraw` re-orders with the pre-onset `ref_rung` (§5);
 thawing on those would let the next impaired window re-freeze `ref_rung` at
-the mid-hop rung. `reset()` clears only the frozen snapshot and the latched
-persistence window; the trailing histories survive it.
+the mid-hop rung. `reset()` clears the frozen snapshot, the latched
+persistence window, the blocked streak and the detect ring; the trailing
+history survives it.
+
+The 3-healthy-window thaw is held while the detect ring holds a detection
+in the making — at least ⌈`detect_windows`/2⌉ readings with a median at or
+over `detect_pct` and a loss-impaired window among them, full or not. A
+detect run's loss window freezes the references at the pre-demote rung,
+and the windows that follow it while the ring fills (after a clear) read
+`healthy`; thawing on them would let the detected window re-freeze
+`ref_rung` at the rung the ladder sank to meanwhile, and the hop would
+restore that rung (`thaw_is_held_while_the_ring_is_detecting`). In clean
+air the ring's median sits far under `detect_pct` and the hold never
+applies, a loss window in the ring or not
+(`references_thaw_after_three_healthy_windows`,
+`thaw_is_not_held_in_clean_air_with_a_loss_window_in_the_ring`). The hold
+is decided at the third healthy window, when the run has put four readings
+in the ring (its loss window and three healthy ones); it protects
+`ref_rung` only while four readings are a reading majority over
+`detect_pct` — at the default `detect_windows` 5, yes; from about 8 up, no
+(Known limitations).
+
+The `occupied` consecutive-blocked count (`blocked_streak_`) is cleared
+only by `reset()` and `new_session()` — never at a hop's order or landing
+(`HopVerdict::landed()` leaves it alone). It carries across the hop: a
+target that is already occupied reads `interfered` on its first **blocked**
+window there and fails verify at once, on one card and on two alike,
+rather than getting `occupied_windows × window_ms` of free pass while the
+count rebuilds from zero. A post-landing window with no busy reading (the
+retune can invalidate the NHM arm) classifies `unknown` instead — even
+with a neighbour's foreign frames, false alarms or loss in it — and does
+not fail verify on its own; the streak holds, so the next window that does
+have a blocked reading still reads `interfered`. The ranker and the
+verdict compare against the one `radio.scan.blocked_pct`, so the direction
+agrees, but they do not read the same thing: the ranker's busy % is the
+raw NHM mean of dwells up to `rank_max_age_ms` old (a few seconds on a two-card
+GS), the verdict's is this window's minimum of busy minus own airtime
+across cards. A target that was clean when dwelt and has filled up since
+lands blocked, and its first blocked reading fails verify.
+
+The detect ring follows the opposite rule: `HopVerdict::landed(now_ms)`,
+the landing hook (`HopAction::Confirm`), clears it along with `reset()` and
+`new_session()`, and touches nothing else
+(`landed_clears_the_detect_ring_and_keeps_the_blocked_streak`). Carrying
+the old channel's lossy readings onto the target would read `detected` on
+its first window and fail verify on every detect-route hop, clean target
+or not. `landed()` also records the landing time: a window whose span
+starts inside the landing settle (`kHopSettleBlankMs` after the confirm)
+keeps its foreign reading in the ring but never counts as the ring's loss
+window (`settle_debris_never_confirms_the_detect_ring`). The hop's own
+retune gap is still being repaired then and reads as recovered symbols —
+the same debris `HopController` ignores for its fail decision (§5) — and
+counting it would confirm a target's foreign reading a ring later and fail
+verify on a channel with no loss of its own. The cost: the detect route
+can fail a verify only if a fresh full ring of windows — a reading
+majority and a loss window among them, that loss window starting after the
+settle — forms on the target between the landing and the end of
+`verify_ms`; a target at 8–29 % foreign that does not show loss that fast
+passes verify and is left by the detect route later if loss shows there.
 
 Every `VerdictOut` carries the span its deltas cover (`t_start_ms`, `t_ms`).
 `ChannelCore` recomputes a verdict every `hop.window_ms` but ticks
@@ -303,7 +431,7 @@ the target before the drone is there.
 (`ChannelCore::scout_loop_`) starts once the boot pick is closed and the
 boot scout owns no card, and only when `n_cards >= 2` and the GS is not
 pinned (`ChannelCore::step_drains_`). Pinned, it never starts and the spare
-card stays on diversity. Every `hop.dwell_period_ms` (333 ms):
+card stays on diversity. Every `hop.dwell_period_ms` (1000 ms):
 1. Card = `pick_inflight_scout()`.
 2. Channel = `InflightScout::next_candidate(fe.channel())`: round-robin over
    the **dwell set** — `radio.channels` in config order — skipping the
@@ -311,9 +439,13 @@ card stays on diversity. Every `hop.dwell_period_ms` (333 ms):
    per period whatever the set size.
 3. Wait for the next AU boundary on that card.
 4. `InflightScout::dwell()`: `FastRetune(candidate)` → discard read → arm
-   NHM, observe `hop.dwell_observe_ms` (5 ms) → real read (FA/CCA/frame
+   NHM, observe `hop.dwell_observe_ms` (20 ms) → real read (FA/CCA/frame
    counters, NHM busy) → `FastRetune(back)`.
 5. A `D` scan.log line with `sess=1` and the step timings.
+
+Cost: the spare card is off op for `dwell_observe_ms` plus two retunes,
+once a second — about 2.5 % of its time on the spur-free default channel
+set.
 
 `dwell()` checks **both** retunes. If either fails, the card's position is
 uncertain: it sets `kFlagRetuneFailed` and returns `false` without a
@@ -330,16 +462,49 @@ period old. It also requires auto mode, no boot-scout ownership, no
 relocation in progress and no relay sweep pending. It runs on both card
 counts — on a one-card GS it is the only source of ranking data — and does
 not require a ranked candidate first (on one card that would be circular).
+On a spare USB card it is skipped once every non-op candidate is ranked
+(`hop_burst_wanted()`): the periodic dwell thread already keeps the ranking
+on that same card, so the hop acts on readings at most one dwell round old
+(three candidates × `dwell_period_ms` ≈ 3 s) instead of taking the spare
+card off diversity to refresh them. A cold or stale ranking (boot, a candidate whose
+dwells fail, visits aged past `rank_max_age_ms`) still bursts. A one-card
+burst and a relay sweep are never skipped this way.
 The burst holds `inflight_mu_`, keeping the periodic scout thread off the
-same `InflightScout`/`RadioFrontend`, and runs synchronously on the core
-thread, so it stalls RX processing while it runs.
+same `InflightScout`/`RadioFrontend`. Where it runs depends on the card:
 
-The period is `hop.dwell_period_ms` (333 ms) for a USB burst card and
-`hop.relay_burst_period_ms` (1000 ms) for a relay. Without a rate limit a
-sustained `Hold` re-enters the burst on every ~10 ms control tick (neither
-`cooldown_ms` nor `max_hops_per_min` paces a hold that never orders), and a
-one-card GS's sole radio would be off air almost continuously; a relay
-sweep takes ~280 ms, so it gets the longer period.
+- **Spare USB card, threaded core** (two cards): the core posts the burst
+  (`burst_req_card_`) and the in-flight thread runs it — that thread owns
+  the spare card's dwells anyway, and its period wait wakes on a post
+  within `kScoutPollMs` (5 ms). The core keeps draining and publishing the
+  TX card's video meanwhile. The card is marked mid-dwell
+  (`dwell_busy`/`dwell_card`) for the verdict, the TX selector and the
+  mechanical retune loop; the results come back through the periodic
+  dwell's hand-off (`dwell_recs_`/`dwell_visits_`) and `step_drains_` ranks
+  them. From the post until that drain the core holds the trigger back,
+  as for a relay sweep, so the controller neither exhausts nor orders on
+  the pre-burst ranking. A posted burst that never comes back is given up
+  after `kBurstLostMs` (2 s), with a log line.
+- **The TX card** (one card) **or a core without threads** (the host
+  tests, a single-threaded web GS): synchronously on the core thread,
+  which stalls RX processing while it runs — on one card the sole radio is
+  off op for the burst either way.
+
+The period (`hop_burst_period_ms()`, `gs/src/hop_burst_gate.h`) is
+`hop.relay_burst_period_ms` (1000 ms) for a relay in any state, and for a
+USB burst card `hop.burst_period_ms` (333 ms) — except in a `Hold` where
+every non-op candidate is already ranked (the ranker's own 2-fresh-visit
+rule, the one `best()` relies on), which paces on `hop.dwell_period_ms`
+(1000 ms). Without a rate limit a sustained `Hold` re-enters the burst on
+every ~10 ms control tick (neither `cooldown_ms` nor `max_hops_per_min`
+paces a hold that never orders), and a one-card GS's sole radio would be
+off air almost continuously; a relay sweep takes ~280 ms, so it gets the
+longer period. A USB burst costs `dwell_observe_ms` (20 ms) plus a retune
+away and back per candidate — ~75 ms for three candidates with its card
+off op — so a fully ranked `Hold` (everything blocked or backed off, the
+trigger still live on an occupied op that carries video) would otherwise
+spend a fifth of its time bursting. A `Hold` with an unranked candidate
+keeps 333 ms: it is the cold-ranker path to the first order ("Known
+limitations"), and the next burst is what ranks it.
 
 **Which card bursts** (`pick_burst_card()`), first match wins:
 
@@ -364,8 +529,8 @@ before the result lands.
 last `hop.rank_visits` (5) visits not older than `hop.rank_max_age_ms`
 (10 000 ms): `score = Σ (fa + max(cca − own, 0) + 4·foreign)`.
 `ranking()` uses only the **newest visit's source kind**, so USB dwells
-(5 ms, CCA-event counts) and relay sweeps (20 ms, survey counts) are never
-averaged together. Fewer than 2 fresh visits = unranked, never chosen.
+(CCA-event counts plus an NHM busy %) and relay sweeps (survey counts) are
+never averaged together. Fewer than 2 fresh visits = unranked, never chosen.
 Lowest score wins; ties fall to the boot-time pick, then config order
 (`tie_break_falls_through_to_config_order`). The boot pick is published
 with `HopRanker::set_boot_pick()` when `ChannelCore` freezes the pick (next
@@ -373,13 +538,18 @@ to the `K` scan.log line), and only when the scan measured something (some
 channel reached `min_rounds`); until then `boot_pick` is 0 and ties fall
 straight to config order (`no_boot_pick_falls_through_to_config_order`).
 Candidates = `radio.channels`, the same set the boot scout ranks and
-`InflightScout` dwells on.
+`InflightScout` dwells on. At `radio.width = 40` (`HopRanker`'s
+`width_mhz` constructor argument, from `radio.width`), within a tier
+entries carrying an NHM busy reading rank ahead of entries without one,
+then by lower `busy_pct`, before the score/boot-pick/config-order chain
+— see "40 MHz" below. At 20 MHz this step is skipped and score alone
+orders (`at_20_order_is_unchanged_by_busy_mean`).
 
 **Blocked tier.** Each `HopVisit` carries an NHM busy reading
 (`busy_valid`/`busy_pct`, armed by `dwell()` for the observe span; no
 own-airtime subtraction, since none of our frames land on a candidate).
 `HopRankEntry.busy_pct` is the **mean** over an entry's fresh, valid
-visits (a 5 ms window on a bursty interferer reads 0 or 100). An entry is
+visits (one short dwell on a bursty interferer reads near 0 or 100). An entry is
 `blocked` when that mean is `>= radio.scan.blocked_pct`. This is tiering,
 not a score weight: `ranking()` puts every blocked ranked entry after every
 unblocked one, tiebreaking blocked pairs by lower `busy_pct` before the
@@ -387,12 +557,21 @@ score/boot-pick/config-order chain. A channel with no busy evidence ranks on
 score alone. `best()` with `require_unblocked` skips blocked entries; every
 hop target comes from that call (§5).
 
-**40 MHz.** At `radio.width = 40` dwells keep the 40 MHz tuning and score
-the primary only, and the ranker is built over the same primaries. Only
-`burst()` and in-flight dwells feed `HopRanker::add()`, both on primaries,
-and every member shares one `ht40_offset` (a config rule), which
-`FastRetune` keeps — so every ranked channel is a valid hop target. The
-per-half boot scan is `ChannelScout`'s alone (`docs/bw40.md`).
+**40 MHz.** At `radio.width = 40` dwells keep the 40 MHz tuning, so the
+`fa`/`cca`/`foreign` score terms see the primary only, and the ranker is
+built over the same primaries. Only `burst()` and in-flight dwells feed
+`HopRanker::add()`, both on primaries, and every member shares one
+`ht40_offset` (a config rule), which `FastRetune` keeps — so every ranked
+channel is a valid hop target. NHM busy % is not primary-only: a
+40-tuned card's busy reading is the max-of-halves energy over the whole
+pair, within 0.5 points of a 20 MHz dwell on either half
+(`docs/findings/2026-11-03-ht40-dwell-secondary.md`), so it is the first
+ranking term at 40 MHz, ahead of the frame-term score. `foreign` still
+never counts secondary frames — they are never decoded at 40 MHz — so it
+stays primary-only even where it still matters (the blocked tiebreak, the
+score tiebreak within a busy tier). The boot scan dwells the same way,
+once per pair on its primary (`docs/bw40.md` "Boot scan dwells once per
+pair").
 
 ## 4. Ladder interaction: restore the pre-onset rung
 
@@ -404,25 +583,40 @@ per-half boot scan is `ChannelScout`'s alone (`docs/bw40.md`).
   keep running, so a fading enh layer can still demote itself. A demote
   taken on mid-hop evidence is overwritten by `restore()`; the per-rung
   store stays clean because it was not written during the blank.
-- **The blank starts at the first `interfered` window**, from two call
-  sites that compose because `blank_store()` keeps the LATER deadline:
+- **The blank starts at the first window of the episode that is a
+  lead-in to either hop route**, from two call sites that compose because
+  `blank_store()` keeps the LATER deadline:
   1. `hop_store_blank_until()` (`gs/src/hop_blank.h`, pure), called from
      `ChannelCore::step_hop_edge_and_window_()`, returns
-     `t_ms + confirm_ms + 150 ms` **once per impaired episode**, on its
-     first `interfered` window (`VerdictOut::first_interfered`).
+     `t_ms + confirm_ms + 150 ms` **once per impaired episode**, on the
+     first impaired, non-weak window that is either route's lead-in
+     (`VerdictOut::first_blocked`): `blocked` (the occupied route's
+     lead-in, `occupied_windows − 1` windows before the first `interfered`
+     one, §2); loss-impaired with this window's own foreign reading at or
+     above `detect_pct` (the earliest window a detect run can start from);
+     or `detected` itself, when that run's own loss window read under
+     `detect_pct` and so was no lead-in on its own. Either way the lead-in
+     is where the ladder takes its demotes, and arming only at
+     `interfered` would write them into the per-rung store against the
+     jammed channel. A zero-loss blocked window is not impaired and arms
+     nothing (no loss, no demote).
   2. `HopAction::Order` calls `blank_store(now_ms + hop.confirm_ms + 150)`.
 
   Three gates on (1):
   - **Pinned.** Not reactive: nothing is ordered, so there is no hop to
     protect the store from, and blanking would change what a pinned flight
     records. (2) never fires pinned either.
-  - **`interfered`, not `impaired`.** `fade` and `unknown` are impaired too;
-    only interference hops, so only interference blanks.
+  - **A hop-route lead-in, and not weak, not merely `impaired`.** A fade
+    and an unknown window with no qualifying reading are impaired too;
+    they leave the ladder alone. Only foreign airtime that is a lead-in to
+    one of the two routes above blanks.
   - **One edge per frozen episode.** The deadline is computed once, at
-    onset, and not re-extended by later `interfered` windows, so a long or
-    flickering jam cannot roll it forward. The store resumes
-    `confirm_ms + 150 ms` after onset whether or not a hop was ordered;
-    re-arming needs a thaw (3 healthy windows, or `reset()` after a verify).
+    the first lead-in window, and not re-extended by later lead-in or
+    `interfered` windows, so a long or flickering jam cannot roll it
+    forward. The store resumes `confirm_ms + 150 ms` after that window
+    whether or not a hop was ordered (an order sets its own deadline);
+    re-arming needs a thaw (3 healthy windows, or `reset()` after a
+    verify).
 
   Any part of the verify window past `confirm_ms + 150 ms` updates the store
   normally.
@@ -445,8 +639,9 @@ has no home or fallback channel.
 - **Orders.** From `Idle`/`Hold` with a live trigger, past `cooldown_ms`
   and under `max_hops_per_min`: order `HopTick::best` (H `order`) and back
   off the channel being fled (`flee()`, same schedule as a failed target),
-  so a failed target's retry cannot go straight back to the jam — the 5 ms
-  event-count dwells score a long-frame jammer low. A withdraw still returns
+  so a failed target's retry cannot go straight back to the jam — the
+  event-count score terms rate a long-frame jammer low (only the NHM busy
+  tier sees it). A withdraw still returns
   to the fled channel: it restores op, it does not consult the ranker.
 - **Relocation** (`HopTick::relocate`, H `relocate`): the order that moves
   the link to `ChannelPlan::want()` (the pin, or the boot pick), placed
@@ -474,6 +669,23 @@ has no home or fallback channel.
     no candidate it tries the escape (below), else holds (`verify_fail`).
     Retries are exempt from `cooldown_ms` but counted against
     `max_hops_per_min` (`hold_cap` when full).
+  - **A reactive hop's verify fails on the first blocked reading on the
+    target.** `interfered` needs `occupied` (§2), but the occupied count
+    carries across the hop, so a trigger's count is already at
+    `occupied_windows` when the link lands: the first blocked window
+    measured after landing (~300 ms after the confirm: the settle, then one
+    window) is `interfered`
+    (`reactive_hop_onto_a_blocked_target_fails_verify_on_its_first_blocked_reading`).
+  - **An auto-mode boot-pick relocation barely can fail verify.** Its count
+    starts near 0 (`new_session()` clears it at the session's start and no
+    trigger drove the move), so a blocked pick needs `occupied_windows`
+    blocked readings on it in a row. At the bundle defaults the 5th lands
+    ~900 ms after the confirm, just inside `verify_ms` (1000 ms): every
+    window from the first eligible one must read blocked, and one window
+    without a reading or under `blocked_pct` lets the relocation stand.
+    Raising `occupied_windows` to 6 or more removes the case entirely. A
+    relocation that stands on a blocked pick is then fled by the reactive
+    hop like any other occupied op.
 - **Back-off.** `hop.backoff_ms` (30 000 ms), doubling per repeat of the same
   channel, capped at 300 000 ms. Each entry records why: `fled`, `failed`
   (verify fail, withdraw, session lost) or `undelivered` (a withdraw after a
@@ -485,7 +697,8 @@ has no home or fallback channel.
   the drone also jams the uplink, so the order never arrives; withdrawing at
   `confirm_ms` would back the clean target off as failed. Once `confirm_ms`
   has passed, if `hop.confirm_extend_ms` (3000) > `confirm_ms` **and** the
-  current verdict carries `kEvBlocked` **and** the order is younger than
+  current verdict reads a hop-route trigger (`trigger_evidence()`:
+  `kEvBlocked` or `kEvDetected`) **and** the order is younger than
   `confirm_extend_ms`, the controller stays `Ordered` (the RCFs keep
   carrying the order) and logs one H `confirm_extend`. Once engaged it holds
   to `confirm_extend_ms` whatever later windows say — the jam lifting is
@@ -502,8 +715,9 @@ has no home or fallback channel.
 - **Escape.** `HopTick::escape` = `ranker.best(op, backed_off_failed(),
   require_unblocked)` — fled and undelivered channels allowed, failed and
   blocked never. The controller orders it (H `escape`) only when there is no
-  `best`, the current verdict carries `kEvBlocked` (the link's own channel
-  is blocked) and the hop cap allows it (`HopController::escape_allowed`):
+  `best`, the current verdict reads a hop-route trigger (`trigger_evidence()`:
+  the link's own channel is blocked or detected) and the hop cap allows it
+  (`HopController::escape_allowed`):
   in `idle_tick` before `hold_exhausted` (after the cooldown check), and in
   `verifying_tick`'s verify-fail branch before its `verify_fail` hold.
 - **Session lost mid-hop** (`HopController::on_session_lost`, on
@@ -552,8 +766,9 @@ no hop config; it obeys whatever `hop_ch`/`hop_epoch` arrive on the RCF.
 [hop]
 window_ms            = 150
 persist              = 2
-dwell_observe_ms     = 5
-dwell_period_ms      = 333
+dwell_observe_ms     = 20
+dwell_period_ms      = 1000
+burst_period_ms      = 333
 relay_burst_period_ms = 1000
 rank_visits          = 5
 rank_max_age_ms      = 10000
@@ -571,19 +786,35 @@ recovered_x          = 3.0
 recovered_min        = 8
 weak_rssi_dbm        = -78
 weak_snr_db          = 12
-fading_drop_db       = 6
-foreign_pps          = 50
-fa_pps               = 100
-starved_frac         = 0.25
+occupied_windows     = 5
+detect_pct           = 8
+detect_windows       = 5
+detect_impaired      = 1
 ```
 
 The bundle ships `confirm_ms = 1000` because hops to or from the 8822E
 spur pairs (149+153, 157+161) confirm in 423–460 ms, too close to 500.
 The busy threshold and level the `blocked` bit and both rankers use are
 `radio.scan.busy_dbm` / `radio.scan.blocked_pct`, shared with the boot scan
-(`docs/channel-select.md` "Config"). `blocked_pct` 50 sits midway between
-the worst clean-channel error (~10) and a real interferer (95–99)
-(`docs/findings/2026-09-25-nhm-airtime-spike.md`).
+(`docs/channel-select.md` "Config"). One threshold everywhere on purpose:
+the trigger, the in-flight ranker's blocked tier, the boot pick's tier and
+the calibration pick all read `blocked_pct`, so a hop target the ranker
+calls unblocked is unblocked to the verdict too and does not fail its
+verify on landing — for the occupied route: `HopVerdict::landed()` clears
+the detect ring at `HopAction::Confirm` (§2), so the detect route fails a
+verify only if a fresh full ring — a reading majority and a loss window
+among them, that loss window starting after the landing settle — forms on
+the target inside `verify_ms`, never from the old channel's carried
+readings or the hop's own retune debris. `blocked_pct` 30 is three times the worst clean-channel
+single-window error (~10) and well under a real interferer (95–99), and it
+catches a 250 frames/s long-frame jam (32.8 % busy) that a threshold of
+50 misses
+(`docs/findings/2026-09-25-nhm-airtime-spike.md`,
+`docs/findings/2026-10-04-channel-set-bench.md`). The range-edge artefact
+the wider margin used to absorb — our own frames heard above `busy_dbm`
+but failing CRC, so not subtracted — is the `weak` gate's job (§2).
+`occupied_windows` 5 at `window_ms` 150 puts the first `interfered` window
+about 750 ms into a jam and the trigger (persist 2) one window later.
 
 Validation (`gs/src/config.cpp`) — unknown keys fail boot:
 
@@ -593,6 +824,7 @@ Validation (`gs/src/config.cpp`) — unknown keys fail boot:
 | `persist` | 1–3 |
 | `dwell_observe_ms` | 1–250 |
 | `dwell_period_ms` | 20–60000 |
+| `burst_period_ms` | 100–60000 |
 | `relay_burst_period_ms` | 500–60000 |
 | `rank_visits` | 1–100 |
 | `rank_max_age_ms` | 1000–600000 |
@@ -608,35 +840,38 @@ Validation (`gs/src/config.cpp`) — unknown keys fail boot:
 | `hop.verdict.recovered_min` | 0–1000 (0 = no floor) |
 | `hop.verdict.weak_rssi_dbm` | −110 – −20 |
 | `hop.verdict.weak_snr_db` | 0–40 |
-| `hop.verdict.fading_drop_db` | 1–40 |
-| `hop.verdict.foreign_pps` | 1–100000 |
-| `hop.verdict.fa_pps` | 1–100000 |
-| `hop.verdict.starved_frac` | 0.0–1.0 (0 = zero-own-frames rule only) |
+| `hop.verdict.occupied_windows` | 1–100 |
+| `hop.verdict.detect_pct` | 1.0–100.0, ≤ `radio.scan.blocked_pct` |
+| `hop.verdict.detect_windows` | 2–100 |
+| `hop.verdict.detect_impaired` | 1–`detect_windows` |
 | `radio.scan.busy_dbm` | −104 – −70, must sit on an `nf::kNhmAbsThDbm` bucket edge |
 | `radio.scan.blocked_pct` | 1.0–100.0 |
 
 ## 8. Observability
 
-**`scan.log`** (`gs/src/scan_log.{h,cpp}`, marker `scanlog 7`; formats
+**`scan.log`** (`gs/src/scan_log.{h,cpp}`, marker `scanlog 9`; formats
 locked by `tests/test_scan_log.cpp`; marker history in
 `docs/data-provenance.md`). The hop adds two record kinds and extends `D`:
 
 ```
 V <t> <verdict> <evidence_hex> <ref_rung|-> <link_loss_pct> <recovered>
-  [<card> <foreign> <fa> <cca> <crc> <rssi> <snr> <drssi> <nhm_busy|->
+  [<card> <foreign> <fa> <cca> <crc> <rssi> <snr> <nhm_busy|->
    <own_air>]...                                             # a verdict window
 H <t> <kind> <epoch> <target> <score> <elapsed_ms> <reason|->  # a hop event
 ```
 
 - **V** — one per `HopVerdict::window()` call **that changed the verdict or
   was non-healthy**. Per-card block order is
-  `foreign fa cca crc rssi snr drssi nhm_busy own_air`. `nhm_busy` is `-`
+  `foreign fa cca crc rssi snr nhm_busy own_air`. `nhm_busy` is `-`
   when the card's busy reading was invalid for this window (§2); `own_air`
-  is always present, % of the window. `drssi` is the **link-level**
-  `d_rssi_db` (best-card RSSI minus its reference), repeated identically in
-  every card's chunk. The evidence field is the §2 bitmask in hex: impaired
-  0x01, weak 0x02, fading 0x04, contended 0x08, raised 0x10, blocked 0x20,
-  starved 0x40.
+  is always present, % of the window. The evidence field is the §2 bitmask
+  in hex: impaired 0x01, weak 0x02, detected 0x04, blocked 0x20, occupied
+  0x80 (0x08/0x10/0x40 unassigned). `scanlog <= 8` files carry a tenth
+  per-card field, `drssi` (the link-level best-card RSSI minus its
+  reference), and may set the retired fading/contended/raised/starved bits
+  (0x04/0x08/0x10/0x40) — 0x04 is `fading` there, not `detected`.
+  `flightreport.py` decodes each V row under the marker in force when it
+  was written, so a rejoined session holding both reads each right.
 - **H** — one per `HopController` state transition or logged decision.
   `kind` is a single snake_case token: `order`, `relocate`, `escape`,
   `lead_confirm`, `one_card_retune`, `confirm_extend`, `verify_pass`,
@@ -720,11 +955,12 @@ ends mid-attempt"). On a session with zero real hops the report prints
 instead the verdict histogram, an evidence-bit tally over all windows, and
 per-card medians of `foreign`/`fa`/`rssi_dbm`/`snr_db` over non-healthy
 windows — the data for calibrating the `[hop.verdict]` thresholds. Always
-printed: `escapes: N  starved windows: M`, `confirm extensions: N
-undelivered withdraws: M` (`withdraw_undelivered` closes its attempt row
-like `withdraw`; `confirm_extend` leaves it open), and a per-card
-dwell-cost summary (count and median `to_us+read_us+back_us` over `sess == 1`
-dwells).
+printed: `escapes: N` (a `starved windows: M` field is appended only on a
+`scanlog` version below 9 — scanlog 9 dropped the verdict's `starved`
+term) and `confirm extensions: N  undelivered withdraws: M`
+(`withdraw_undelivered` closes its attempt row like `withdraw`;
+`confirm_extend` leaves it open), and a per-card dwell-cost summary (count
+and median `to_us+read_us+back_us` over `sess == 1` dwells).
 
 ## Measurements
 
@@ -751,13 +987,20 @@ DJI O4), `docs/findings/2026-09-25-analog-vtx.md` (one-card analog VTX) and
   the confirm. `blank_store` covers the rung store only.
 - **A one-card GS needs two freshness bursts before it can hop.** A
   channel needs 2 fresh visits to be ranked and the burst makes one per
-  channel, rate-limited to one per `dwell_period_ms`; the first trigger's
+  channel, rate-limited to one per `burst_period_ms`; the first trigger's
   burst leaves every candidate unranked and the controller holds
   (`hold_exhausted`) until the second, ~333 ms later.
 - **A one-card freshness burst takes the sole radio off air** for one dwell
-  per dwell-set channel (a few ms each). The return retune, the `cur_ch`
-  resync and, if needed, the mechanical retune loop all run in the same
-  tick.
+  per non-op dwell-set channel (`dwell_observe_ms`, 20 ms, plus two
+  retunes each — ~75 ms for three candidates). The return retune, the
+  `cur_ch` resync and, if needed, the mechanical retune loop all run in the
+  same tick. Off air ~22 % of the time at the 333 ms Idle period; a fully
+  ranked `Hold` paces on `dwell_period_ms` (1000 ms), ~7.5 %.
+- **A two-card hop can act on readings ~3 s old.** With a complete
+  ranking the spare card's burst is skipped and the periodic dwells carry
+  the ranking; it bursts (on the in-flight thread, ~75 ms with the spare
+  card off diversity) only while some candidate is unranked — boot,
+  failing dwells, stale visits.
 - **`dwell_busy`/`dwell_card` are two separate atomics**
   (`gs/src/channel_core.h`), read by the mechanical retune loop, the
   verdict window and the TX selector. A reader can see `dwell_busy == false`
@@ -773,6 +1016,38 @@ DJI O4), `docs/findings/2026-09-25-analog-vtx.md` (one-card analog VTX) and
   retune completed reads as the new channel. devourer exposes no RX flush.
 - **The 5 s `flightreport.py` `hop_restore` match window is uncalibrated.**
   It fails safe: an unmatched restore prints "not found".
-- **`fa_pps` 100 is marginal on a channel with a busy FA background**
-  (bench: 70–133 FA/s on a candidate after the follow failed its verify).
-  Calibration, not code.
+- **Detection waits for the ring or the streak.** A lossy interferer over
+  `detect_pct` is acted on once the detect ring's median crosses it — up
+  to `detect_windows × window_ms` (a full ring after a clear) — plus the
+  persist; a lossless one is acted on only once it clears `blocked_pct`
+  for `occupied_windows × window_ms`. An interferer under `detect_pct`, or
+  one the minimum-across-cards rule hides, is never hopped from, however
+  much video it costs — the engine does not track foreign frame or
+  false-alarm rate at all, only NHM foreign airtime.
+- **The thaw hold stops protecting `ref_rung` at large `detect_windows`.**
+  When the thaw is decided (the third healthy window after a detect run's
+  loss window) the run has four readings in the ring. At `detect_windows`
+  8 or more, four readings are either under the ⌈`detect_windows`/2⌉
+  reading minimum (after a clear, from 9) or not a median majority over
+  the ring's older clean readings (from 8), so the hold lapses, the
+  references thaw, and the detected window re-freezes `ref_rung` at the
+  rung the ladder sank to — the hop restores that rung, not the pre-onset
+  one. The default 5 holds; config validation allows up to 100.
+- **The detect route's confirmation waits on `loss_pct`.** Its loss window
+  is `loss_impaired`: the worse video layer's pre-FEC loss over
+  `hop.verdict.loss_pct`, or the recovered rule. On a ladder with bitrate
+  headroom the quality trade (`residual`/`s3_residual` demotes) can hold
+  that loss under `loss_pct` while the ladder sinks, and confirmation
+  waits for a window over it. `loss_pct` is shared with `impaired`:
+  lowering it also widens the reference freeze and the `fade`/`unknown`
+  verdicts. See `docs/findings/2026-11-03-nhm-hop-threshold-bench.md`.
+- **The detect route's clean-site record is bench-only.** Its evidence
+  against firing on a clean site is bench soaks and replayed captures
+  (`docs/findings/2026-11-03-nhm-hop-threshold-bench.md`); a first clean
+  flight on this build is flown watching `hop.hops` / `hop.holds`.
+- **One loss window makes a short detection.** At `detect_impaired` 1 the
+  ring reads `detected` only while its loss window is inside it: a run
+  with a single loss window gives `detect_windows − ⌈detect_windows/2⌉ + 1`
+  detected windows (3 at defaults) when the ring already held clean
+  readings, but only one after a clear, where the persist (2 of 3) then
+  needs a second loss window in the run.

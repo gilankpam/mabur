@@ -14,37 +14,45 @@
 
 namespace maburgs {
 
-// scan.log (scanlog 7) -- the channel-selection record in the debug-log
+// scan.log (scanlog 9) -- the channel-selection record in the debug-log
 // session directory. Formats are
 // LOCKED by tests/test_scan_log.cpp:
 //
-//   scanlog 7 <header_info>
+//   scanlog 9 <header_info>
 //   C <t> <card> <chip> <gen> <tx>x<rx> <bw_mask_hex> <tune5g_lo>-<tune5g_hi>
 //     <fast_retune> <fa_ok> <igi_ok> <nhm_ok> <floor_ok>        # card caps
 //   D <t> <card> <ch> <round> <observe_ms> <cca> <fa> <own> <foreign> <igi|->
 //     <floor_dbm|nan> <flags_hex> <sess> <to_us> <read_us> <back_us> <bw>
 //     <busy|-> <rx|->                                             # one scout dwell
-//     (scanlog 3: <bw> = tuned width of the dwell, 20 during the boot
-//     scan, radio.width in session)
+//     (scanlog 3: <bw> = tuned width of the dwell, radio.width; scanlog
+//     <= 7 files read 20 for boot-scan dwells at width 40)
 //     (scanlog 4: D + trailing <busy|-> = NHM busy % over the dwell's
 //     observe span)
 //     (scanlog 6: D + trailing <rx|-> = relay sweep rx % of the observe;
 //     - for USB dwells)
+//     (scanlog 8: at radio.width 40 the boot scan writes one D per pair,
+//     bw 40; scanlog <= 7 files have one per half, bw 20)
 //   K <t> <picked|none> <rounds> <ch>:<worst_busy>:<floor|nan>:<busy|-> ...
 //     pair=<lo>+<hi>|-                                            # the pick
 //     (also closes a calibration run's measure round: its rows are that
-//     round's halves plus op's, read from the live verdict window)
+//     round's members plus op's, read from the live verdict window)
 //     (scanlog 3: the picked channel's standard 40 MHz pair, - when none)
 //     (scanlog 4: K entries <ch>:<worst_busy>:<floor|nan>:<busy|->)
 //   M <t> <card|all> <from> <to> <reason>                        # a link move
 //     (scanlog 5: <reason> loses split_home/reunite, M stays present for
 //     other reasons like commit/confirm/freeze)
 //   V <t> <verdict> <evidence_hex> <ref_rung|-> <link_loss_pct> <recovered>
-//     [<card> <foreign> <fa> <cca> <crc> <rssi> <snr> <drssi> <nhm_busy|->
+//     [<card> <foreign> <fa> <cca> <crc> <rssi> <snr> <nhm_busy|->
 //      <own_air>]...                                             # a verdict window
 //     (scanlog 4: + nhm_busy/own_air per card, % of the window; nhm_busy
 //     is - when the card's NHM window didn't cover this verdict window on
 //     this channel, own_air is always present)
+//     (scanlog 9: the per-card block drops <drssi> -- the verdict no
+//     longer freezes a per-card RSSI reference; evidence bits 0x08/0x10/
+//     0x40 (contended/raised/starved) are retired and unassigned, and 0x04
+//     (fading) is reused for `detected`)
+//     (<link_loss_pct> is the worse video layer's pre-FEC loss, base or
+//     enhancement -- docs/data-provenance.md has when that changed)
 //   H <t> <kind> <epoch> <target> <score> <elapsed_ms> <reason|-> # a hop event
 //     (scanlog 5: <kind> gains "relocate"; M <reason> gains "link_found")
 //     (scanlog 7: H + trailing <reason|->: "cal" on the relocate a

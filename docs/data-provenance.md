@@ -131,6 +131,37 @@ Chronological; each line names the section below that carries the detail.
   `ctl.log` can carry a second `ctllog 13 <header_info>` line mid-file at a
   live ladder swap, and its rows index the most recent header; `E` reasons
   `ladder_swap` and `unpin`; sideport `scan.pinned` (the live pin).
+- 2026-11-03 — HT40 pair dwell: `scanlog 8` — at `radio.width` 40 the boot
+  scan writes one `D` row per pair per round; `scanlog ≤ 7` files have
+  two, one per half, at bw 20. No column change.
+- 2026-11-03 — hop detection is NHM occupancy only: `interfered` needs
+  `occupied` + `blocked`; loss/foreign/FA windows read `unknown`;
+  `radio.scan.blocked_pct` 50 → 30, `hop.verdict.occupied_windows` 7 → 5.
+  Verdict histograms and blocked/occupied tallies are not comparable across
+  the break (same marker, `scanlog 8`).
+- 2026-11-04 — hop verdict evidence terms retired: `scanlog 9` drops the
+  `fading`/`contended`/`raised` evidence bits (0x04/0x08/0x10, now
+  unassigned) and the V line's per-card `drssi` field (10-field card
+  blocks become 9-field); `hop.verdict.fading_drop_db`/`foreign_pps`/
+  `fa_pps` are removed config keys.
+- 2026-11-04 — the detect route: evidence bit 0x04 is `detected` from
+  `scanlog 9` on (same marker); `interfered` gains a second route below
+  `blocked_pct`. Verdict histograms are not comparable across the change.
+- 2026-11-04 — every pick moves on busy %: `radio.scan.pick_margin` (the
+  frame-score margin) is a removed config key; the boot pick (20 and
+  40 MHz) and the calibration pick leave the current channel only for a
+  better tier, a busy reading where it has none, or a `pick_margin_pct`
+  busy-% lead. At 20 MHz `ChannelRanker::ranked` sorts the unblocked tier
+  by busy % before frame score (it did so only for the blocked tier
+  before), and the calibration pick ranks its best candidate the same way,
+  so a `K` record's picked channel is not comparable across the change
+  (same marker, `scanlog 9`). The `K` rows themselves are unchanged: same
+  fields, written in config order.
+- 2026-11-04 — the verdict's loss is the worse video layer: the `V` line's
+  `link_loss_pct` was the base layer's pre-FEC loss and is now the larger
+  of the base and enhancement layers' (`hop_verdict_link_loss`), so it and
+  the `impaired` bit read higher under a jam that hurts the enhancement
+  layer first; not comparable across the change (same marker, `scanlog 9`).
 
 ## 2026-09-23 — `link.pre_fec_loss` scale break, twice
 
@@ -1386,3 +1417,67 @@ pin, NACK, MSP and debug-log switches can change without a restart.
   `link.nack` the live `link.nack.enable`. A recording can switch between
   static and adaptive, or change ladders, mid-session: the GS config a
   session booted with is no longer proof of what every row flew.
+
+## 2026-11-03 — hop detection is NHM occupancy only
+
+`HopVerdict` classifies a window `interfered` only when `occupied` (the op
+blocked for `hop.verdict.occupied_windows` consecutive windows with a busy
+reading) and `blocked` in that window (`docs/inflight-channel-hop.md` §2).
+Before, `blocked` plus loss-type impairment, or loss plus `contended` /
+`raised` without `fading`, also read `interfered`. No format marker moved:
+`V` lines keep their columns, but the verdict column changes meaning — a
+`V` line that read `interfered` on loss with foreign frames or FA reads
+`unknown` from this build on, and the first `interfered` window of a jam
+comes `occupied_windows` windows into it. The same build moves the
+defaults: `radio.scan.blocked_pct` 50 → 30 (the `blocked` bit, and with it
+`occupied`, the in-flight ranker's and the boot pick's blocked tiers and
+the calibration pick, fire on less foreign airtime) and
+`hop.verdict.occupied_windows` 7 → 5. `flightreport.py`'s HOP verdict
+counts, its `blocked`/`occupied` evidence tallies and its onset → order
+timing are therefore not comparable across the break; the other evidence
+bits are unchanged.
+
+## 2026-11-04 — hop verdict evidence terms retired: scanlog 9
+
+`fading`, `contended` and `raised` were evidence-only bits even before the
+2026-11-03 change above — they moved on a plain fade or a quiet neighbour
+and never routed to `interfered` — and this build deletes them along with
+the per-card RSSI trailing reference that fed `fading` and the
+`hop.verdict.fading_drop_db`/`foreign_pps`/`fa_pps` config keys that fed
+all three. `scan.log` bumps to `scanlog 9`: the `V` line's per-card block
+drops its `drssi` field (10 columns → 9) and evidence bits 0x04/0x08/0x10
+go unassigned. `VerdictCardIn::foreign`/`fa` are unchanged and still reach
+the sideport's per-card `foreign_pps` and the in-flight ranker — only the
+hop verdict's own use of them is gone. `scanlog <= 8` files still decode
+under the old 10-field blocks and the old bit names
+(`tools/flightreport.py`'s `evidence_bit_tally`); a session's `blocked`/
+`starved`/`occupied` counts are comparable across the break, `fading`/
+`contended`/`raised` obviously are not.
+
+A same-day follow-up drops `starved` (0x40) too — unlike the three bits
+above, `starved` drove `impaired` on its own (zero own frames on every
+valid card, or an AU-rate collapse against `hop.verdict.starved_frac`).
+Detection is left entirely to `occupied` now: a jam that starves the link
+without also filling NHM airtime for `occupied_windows` consecutive
+windows reads `healthy` indefinitely. No further `scan.log` field or
+marker change: `scanlog` stays at 9 and 0x40 is unassigned in it.
+`starved_frac` and `VerdictLinkIn::au_count`/`starved` are gone;
+`tools/flightreport.py` prints the `starved windows` tally only for
+`scanlog < 9` rows.
+
+A second same-day follow-up reuses 0x04 for `detected` — the detect route
+(`docs/inflight-channel-hop.md` §2): a ring of `hop.verdict.detect_windows`
+windows whose median foreign busy % is at least `detect_pct`, confirmed by
+a loss-impaired window inside it, reads `interfered` well under
+`blocked_pct`. Again no marker change: a `scanlog 9` file written before
+this build never sets 0x04 (the `fading` bit went with the 9 bump), so
+decoding it as `detected` is safe, and `flightreport.py` tallies it under
+that name for every `scanlog 9` row. A file's verdict histogram is not
+comparable with an earlier `scanlog 9` file's: a lossy run over
+`detect_pct` that used to read `unknown` (or, lossy and blocked, waited
+for `occupied`) now reads `interfered` once the ring's median crosses.
+A GS restart rejoins the session directory, so a deploy session can hold
+`scanlog 8` rows followed by `scanlog 9` rows in one file:
+`flightreport.py` decodes each `V` row under the marker in force when it
+was written, so 0x04 reads `fading` in the first and `detected` in the
+second.

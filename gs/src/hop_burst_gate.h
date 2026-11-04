@@ -3,9 +3,9 @@
 
 namespace maburgs {
 
-// Pure: whether the core loop's synchronous freshness burst
-// (HopController's ONLY source of ranking data on a one-card GS -- see the
-// call site's own comment in channel_core.cpp) should run this tick.
+// Pure: whether the freshness burst (HopController's ONLY source of
+// ranking data on a one-card GS -- see the call site's own comment in
+// channel_core.cpp) should run or be posted this tick.
 // Extracted so the four properties below, each of which has been wrong at
 // some point, have a direct unit test instead of only ever running inside
 // the hardware-touching burst body (inflight_mu, fronts[], RadioFrontend,
@@ -13,7 +13,8 @@ namespace maburgs {
 //   - "no hop in flight" is Idle OR Hold (Ordered/Verifying excluded: a
 //     hop is actually in progress and the radio must not wander);
 //   - the trigger must be live this tick;
-//   - rate-limited to at most one burst per dwell_period_ms, checked
+//   - rate-limited to at most one burst per burst period
+//     (hop_burst_period_ms(), below), checked
 //     against the caller's own last_burst_ms (a sustained
 //     Hold re-enters on every core-loop tick with trigger latched true,
 //     and neither cooldown_ms nor max_hops_per_min paces a burst that
@@ -65,18 +66,55 @@ inline bool tx_selection_frozen(bool dwell_busy, bool hopping) {
 // The verdict describes the OP channel, so a card tuned anywhere else is
 // skipped exactly like one mid-dwell. A hop's lead card sits on the target
 // from the Order to the Confirm; mixed into the op verdict, its readings
-// (clean target, no own frames) would -- through blocked's MIN-across-cards
-// rule -- clear kEvBlocked within ~3 windows of every order. During Ordered
-// the op verdict runs on the TX card alone; a one-card GS after its
-// OneCardRetune has no valid card at all (Verdict::Unknown, no kEvBlocked).
+// (clean target, no own frames) would -- through the MIN-across-cards
+// foreign reading that both blocked and the detect ring take -- clear the
+// trigger evidence (trigger_evidence(): kEvBlocked or kEvDetected) within
+// ~3 windows of every order. During Ordered the op verdict runs on the TX
+// card alone; a one-card GS after its OneCardRetune has no valid card at
+// all (Verdict::Unknown, no trigger evidence).
 inline bool verdict_card_usable(bool ready, bool mid_dwell, uint8_t card_ch, uint8_t op_ch) {
   return ready && !mid_dwell && card_ch == op_ch;
 }
 
 inline bool hop_burst_due(HopState state, bool trigger, double now_ms,
-                          double last_burst_ms, int dwell_period_ms) {
+                          double last_burst_ms, int burst_period_ms) {
   const bool hop_free = state == HopState::Idle || state == HopState::Hold;
-  return hop_free && trigger && (now_ms - last_burst_ms >= dwell_period_ms);
+  return hop_free && trigger && (now_ms - last_burst_ms >= burst_period_ms);
+}
+
+// Pure: the freshness burst's pacing, the period hop_burst_due() checks.
+// A relay sweeps asynchronously and blanks itself for ~280 ms per SCAN:
+// relay_burst_period_ms in any state. A USB burst takes its card off op
+// for every candidate dwell (dwell_observe_ms plus a retune away and back,
+// per candidate), so it paces on burst_period_ms while it is what stands between the trigger
+// and an order: in Idle, and in a Hold entered because some non-op
+// candidate is not ranked yet (HopRanker marks one ranked at two fresh
+// visits, so the cold-ranker path is burst -> hold_exhausted -> burst ->
+// order). Once every non-op candidate is ranked (`ranking_complete`) and
+// the controller still holds, everything read blocked or backed off and
+// the trigger can stay live indefinitely on a link that still carries
+// video (an occupied op): re-bursting at the Idle cadence would make the
+// burst itself the outage, so that Hold paces on dwell_period_ms, the
+// spare card's own periodic cadence.
+inline int hop_burst_period_ms(HopState state, bool relay_burst, bool ranking_complete,
+                               const HopCfg& hop) {
+  if (relay_burst) return hop.relay_burst_period_ms;
+  return (state == HopState::Hold && ranking_complete) ? hop.dwell_period_ms : hop.burst_period_ms;
+}
+
+// Pure: whether a due freshness burst is worth running. A burst on a spare
+// USB card (not the TX card) re-measures what the periodic dwell thread
+// already keeps ranked on that same card -- one candidate per
+// dwell_period_ms -- and takes that card off diversity for every candidate
+// dwell. So once every non-op candidate is ranked, a spare-card burst is
+// skipped and the hop acts on the periodic dwells' ranking (newest visit
+// at most one dwell round old).
+// A one-card GS's burst is its only ranking source, and a relay sweeps
+// asynchronously: both run regardless. An incomplete ranking (cold start,
+// a candidate whose dwells fail, visits aged past rank_max_age_ms) still
+// bursts, which is what brings a stalled periodic dwell's ranking back.
+inline bool hop_burst_wanted(bool spare_usb_burst, bool ranking_complete) {
+  return !(spare_usb_burst && ranking_complete);
 }
 
 // Holds the link-pairing move edge (VrxController::take_move_edge()) for

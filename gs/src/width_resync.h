@@ -1,13 +1,14 @@
 #pragma once
-// Per-card RX width as desired state (docs/bw40.md "Boot scan"). The boot
-// scout card InitWrites at 20 MHz and its only 20 -> radio.width switch is
-// ChannelScout::run()'s retune_width at the freeze. Two paths skip that:
-// the scout card dying mid-scan (the revive reopens it), and the first
-// DISC_ACK freezing the plan before the scout thread ever started. Either
-// leaves the card at 20 -- a one-card GS capped at the 20 rungs, a two-card
-// GS without diversity on the 40 rungs. The core loop therefore checks,
-// every tick and for every card, whether a one-shot set_width is due;
-// these two predicates are that check, kept pure for the test.
+// Per-card RX width as desired state (docs/bw40.md "Boot scan dwells once
+// per pair"). Every card, the boot scout card included, InitWrites at
+// radio.width and the scout never changes a card's width. A card that still
+// reads another width -- a revive that came up at the wrong width -- would
+// leave a one-card GS capped at the 20 rungs, a two-card GS without
+// diversity on the 40 rungs. The core loop therefore checks, every tick and
+// for every card, whether a one-shot set_width is due, once no scout thread
+// can own a card (including one that never started because the first
+// DISC_ACK froze the plan first); these two predicates are that check,
+// kept pure for the test.
 #include <cstdint>
 
 namespace maburgs {

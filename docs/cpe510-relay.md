@@ -158,7 +158,7 @@ an operator in front of it, and a page that silently grabbed the relay later
 would start commanding the drone without anyone choosing that. Spotter mode
 proceeds non-owned, as before.
 
-**Tuning.** `retune(ch)` / `set_width(ch, w)` (= `retune_width`) record the
+**Tuning.** `retune(ch)` / `set_width(ch, w)` record the
 target and send `TUNE` at once (`sec` = `mabur::ht40_offset(ch)` at 40 MHz,
 0 at 20); they return true, `channel()` reads the commanded channel, and
 `ready()` stays false until a `STATUS` confirms it — so every boot-scan
@@ -260,17 +260,23 @@ relay card — `gs/src/channel_core.cpp`'s per-card verdict loop):
 
 | field | source | feeds |
 |---|---|---|
-| `fa` | Δ`ofdm_err` (`RemoteCard::read_energy_scout()`) | `raised` |
-| `foreign` | Δ`foreign` (`RemoteCard::frames()`) | `contended` |
-| `busy_valid`, `nhm_busy_pct` | `SURVEY` delta valid (same `gen`, span ≥ 100 ms); `100·Δbusy/Δactive` | `blocked` |
-| `own_air_pct` | `100·Δrx/Δactive` — on the op channel `rx` ≈ our own video | subtracted in `blocked` (decodable foreign WiFi is already `contended`) |
+| `fa` | Δ`ofdm_err` (`RemoteCard::read_energy_scout()`) | `raised` (evidence only) |
+| `foreign` | Δ`foreign` (`RemoteCard::frames()`) | `contended` (evidence only) |
+| `busy_valid`, `nhm_busy_pct` | `SURVEY` delta valid (same `gen`, span ≥ 100 ms); `100·Δbusy/Δactive` | `blocked` → `occupied`, the hop trigger |
+| `own_air_pct` | `100·Δrx/Δactive` — on the op channel `rx` ≈ our own video | subtracted in `blocked` (`rx` also counts decodable foreign WiFi) |
 | `rssi`, `snr_valid=false` | RSSI from the FRAME header (no second measurement: "The relay has no SNR" above) | `weak`, `fading` |
 
 `cca` reads 0 on a relay (ath9k has no CCA-event count the relay exposes),
-so `raised` on a relay card is `fa` (OFDM/HT PHY errors) alone — and
-`ofdm_err` barely moves under a decodable 802.11 jam (decodable frames are
-not PHY errors), so in practice relay detection rests on `blocked`
-(non-WiFi energy) and `contended` (WiFi).
+so `raised` on a relay card is `fa` (OFDM/HT PHY errors) alone. Hop
+detection is NHM-occupancy only (`docs/inflight-channel-hop.md` §2), which
+on a relay means `SURVEY` busy minus `rx`: non-WiFi energy (an analog VTX
+carrier, DJI O4). Decodable foreign WiFi lands in `rx` and is subtracted
+with our own video, so a relay reads a co-channel 802.11 neighbour as
+unblocked. That blinds more than a relay-only GS: `blocked` is the MINIMUM
+across every card with a busy reading, so on a relay + USB GS a relay
+tuned to op vetoes the USB card's blocked NHM reading of the same
+neighbour, and that GS does not hop off it either. Both report the
+neighbour as `contended`.
 
 **Async sweep (spec §4).** On a trigger, `ChannelCore` sends one `SCAN`
 for `radio.channels` minus the op channel, `passes = 2`, `observe_ms = 20`
@@ -291,9 +297,10 @@ relay reboot or a lost `SCAN_RESULT` mid-sweep.
 
 **`hop.relay_burst_period_ms`** (default 1000, range 500–60000,
 `gs/src/config.{h,cpp}`, `gs/bundle/maburgs.default.toml`): `hop_burst_due()`
-uses this instead of `hop.dwell_period_ms` (333 ms) when the burst card is
-a relay — a 280 ms sweep every 333 ms in a sustained `Hold` would leave the
-relay deaf ~85 % of the time. The first burst after a trigger is still
+uses this instead of the USB burst's period (`hop.burst_period_ms`, 333 ms,
+or `hop.dwell_period_ms` in a fully ranked `Hold`) whenever the burst card
+is a relay — a 280 ms sweep every 333 ms in a sustained `Hold` would leave
+the relay deaf ~85 % of the time. The first burst after a trigger is still
 immediate, as for a USB burst.
 
 **Burst-card order** (`pick_burst_card()`, `gs/src/scout_pick.h`), first
@@ -321,8 +328,8 @@ is the whole score contribution), `busy_valid = true`, `busy_pct = 100·busy/act
 — **raw busy, no rx subtraction** (none of our own frames land on a
 candidate, same as the USB ranker's candidate NHM reading) — and `src =
 VisitSrc::Relay`. `HopRanker::ranking()` (`gs/src/hop_ranker.cpp`) uses
-only the **newest visit's source kind**: a USB 5 ms CCA-event visit and a
-relay 20 ms survey visit are different scales, and one burst always covers
+only the **newest visit's source kind**: a USB CCA-event visit and a
+relay survey visit are different scales, and one burst always covers
 the whole candidate set with one card, so a ranking is never built mixing
 the two.
 
@@ -481,7 +488,8 @@ name once the user allows local network access — see `docs/web-gs.md`,
 - **~250 ms lost between `SCAN_RESULT` and the order** on every relay hop:
   the trigger is held off while the sweep is pending and the verdict then
   needs 2 interfered windows again. Keeping the trigger latched across the
-  sweep would bring onset → video to ~0.8 s.
+  sweep would bring onset → video to ~1.4 s (the `occupied_windows`
+  lead-in puts the first trigger ~600 ms into the jam).
 - **Relay-only auto boot relocates to `channels[0]`** after "link where
   found" with no measurement behind it — a pointless hop on each
   relay-only boot.

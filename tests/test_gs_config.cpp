@@ -482,7 +482,7 @@ TEST(radio_channels_default_set_and_auto) {
   CHECK(cfg.radio.scan.search_ms == 100);
   CHECK(cfg.radio.scan.op_window_ms == 300);
   CHECK(cfg.radio.scan.search_after_ms == 5000);
-  CHECK(cfg.radio.scan.pick_margin == 20);
+  CHECK(cfg.radio.scan.pick_margin_pct == 10);
   CHECK(cfg.radio.scan.one_card_ms == 5000);
   CHECK(cfg.radio.scan.max_ms == 30000);
 }
@@ -534,18 +534,27 @@ TEST(radio_channels_validated_by_channel_set_rules) {
 TEST(radio_scan_parses_and_validates) {
   auto cfg = maburgs::load_config(write_tmp(
       "[radio.scan]\ndwell_ms = 500\nsettle_ms = 40\nmin_rounds = 2\nsearch_ms = 60\n"
-      "op_window_ms = 400\nsearch_after_ms = 8000\npick_margin = 5\none_card_ms = 0\nmax_ms = 20000\n"));
+      "op_window_ms = 400\nsearch_after_ms = 8000\npick_margin_pct = 5\none_card_ms = 0\nmax_ms = 20000\n"));
   CHECK(cfg.radio.scan.dwell_ms == 500);
   CHECK(cfg.radio.scan.search_ms == 60);
   CHECK(cfg.radio.scan.op_window_ms == 400);
   CHECK(cfg.radio.scan.search_after_ms == 8000);
-  CHECK(cfg.radio.scan.pick_margin == 5);
+  CHECK(cfg.radio.scan.pick_margin_pct == 5);
   CHECK(cfg.radio.scan.one_card_ms == 0);
   CHECK(cfg.radio.scan.max_ms == 20000);
   bool threw = false;
   try { maburgs::load_config(write_tmp("[radio.scan]\nsearch_ms = 10\n")); }
   catch (const std::exception&) { threw = true; }
   CHECK(threw);                                        // [40,2000]
+}
+// A removed key fails boot, as every removed key does: pick_margin (the
+// frame-score margin) is gone, pick_margin_pct (busy-% points) is the only
+// margin left, for every pick.
+TEST(radio_scan_rejects_pick_margin) {
+  bool threw = false;
+  try { maburgs::load_config(write_tmp("[radio.scan]\npick_margin = 20\n")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw);
 }
 
 TEST(removed_scan_and_home_keys_fail_boot) {
@@ -561,11 +570,11 @@ TEST(removed_scan_and_home_keys_fail_boot) {
 TEST(hop_defaults_when_absent) {
   auto cfg = maburgs::load_config(write_tmp(""));
   CHECK(cfg.hop.window_ms == 150 && cfg.hop.persist == 2);
-  CHECK(cfg.hop.dwell_observe_ms == 5 && cfg.hop.dwell_period_ms == 333);
+  CHECK(cfg.hop.dwell_observe_ms == 20 && cfg.hop.dwell_period_ms == 1000);
   CHECK(cfg.hop.confirm_ms == 500 && cfg.hop.verify_ms == 1000 && cfg.hop.cooldown_ms == 2000);
   CHECK(cfg.hop.max_hops_per_min == 4 && cfg.hop.backoff_ms == 30000 && cfg.hop.one_card_repeats == 5);
-  CHECK(cfg.hop.verdict.loss_pct == 3.0 && cfg.hop.verdict.fa_pps == 100 && cfg.hop.verdict.weak_rssi_dbm == -78);
-  CHECK(cfg.radio.scan.busy.busy_dbm == -83 && cfg.radio.scan.busy.blocked_pct == 50.0);
+  CHECK(cfg.hop.verdict.loss_pct == 3.0 && cfg.hop.verdict.weak_rssi_dbm == -78);
+  CHECK(cfg.radio.scan.busy.busy_dbm == -83 && cfg.radio.scan.busy.blocked_pct == 30.0);
 }
 // Pin is static. The mode knob is radio.channel alone; the busy-air thresholds
 // belong to every measurer, so they live under radio.scan. Removed keys fail
@@ -578,12 +587,31 @@ TEST(removed_hop_keys_fail_boot) {
     CHECK(threw);
   }
 }
+// fading/contended/raised were evidence-only (never a hop trigger) and are
+// gone along with their config keys; the keys fail boot like any other
+// removed key.
+TEST(hop_verdict_rejects_the_removed_evidence_only_keys) {
+  auto throws = [](const std::string& text) {
+    try { maburgs::load_config(write_tmp(text)); } catch (const std::exception&) { return true; }
+    return false;
+  };
+  for (const char* k : {"fading_drop_db", "foreign_pps", "fa_pps"})
+    CHECK(throws(std::string("[hop.verdict]\n") + k + " = 1\n"));
+}
+// `starved` (zero-own-frames / AU-rate-collapse) is gone along with its
+// config key; the key fails boot like any other removed key.
+TEST(hop_verdict_rejects_starved_frac) {
+  bool threw = false;
+  try { maburgs::load_config(write_tmp("[hop.verdict]\nstarved_frac = 0.25\n")); }
+  catch (const std::exception&) { threw = true; }
+  CHECK(threw);
+}
 TEST(hop_parses_and_validates) {
   auto cfg = maburgs::load_config(write_tmp(
       "[hop]\nwindow_ms = 200\npersist = 3\ndwell_observe_ms = 8\n"
-      "[hop.verdict]\nfa_pps = 250\nweak_rssi_dbm = -80\n"));
+      "[hop.verdict]\nrecovered_x = 5\nweak_rssi_dbm = -80\n"));
   CHECK(cfg.hop.window_ms == 200 && cfg.hop.persist == 3 && cfg.hop.dwell_observe_ms == 8);
-  CHECK(cfg.hop.verdict.fa_pps == 250 && cfg.hop.verdict.weak_rssi_dbm == -80);
+  CHECK(cfg.hop.verdict.recovered_x == 5 && cfg.hop.verdict.weak_rssi_dbm == -80);
   bool threw = false;
   try { maburgs::load_config(write_tmp("[hop]\nwindow_ms = 10\n")); }
   catch (const std::runtime_error& e) { threw = std::string(e.what()).find("hop.window_ms") != std::string::npos; }
@@ -606,6 +634,40 @@ TEST(hop_relay_burst_period_ms_default_and_range) {
   // returns after a result and starve the controller
   CHECK(what_of([] { maburgs::load_config(write_tmp("[hop]\nrelay_burst_period_ms = 400\n")); })
             .find("relay_burst_period_ms") != std::string::npos);
+}
+// hop.dwell_observe_ms/dwell_period_ms slowed down for the 40 MHz pair
+// dwell (background dwell only); hop.burst_period_ms is the USB
+// freshness-burst pace, split off from dwell_period_ms. occupied_windows is
+// the occupied route's streak, at 5 x 150 ms.
+TEST(hop_defaults_dwell_20ms_period_1000_burst_333_occupied_5) {
+  auto cfg = maburgs::load_config(write_tmp(""));
+  CHECK(cfg.hop.dwell_observe_ms == 20 && cfg.hop.dwell_period_ms == 1000);
+  CHECK(cfg.hop.burst_period_ms == 333);
+  CHECK(cfg.hop.verdict.occupied_windows == 5);
+  CHECK(cfg.radio.scan.pick_margin_pct == 10);
+}
+TEST(new_keys_parse_and_range_check) {
+  auto cfg = maburgs::load_config(write_tmp(
+      "[hop]\nburst_period_ms = 500\n[hop.verdict]\noccupied_windows = 3\n[radio.scan]\npick_margin_pct = 25\n"));
+  CHECK(cfg.hop.burst_period_ms == 500 && cfg.hop.verdict.occupied_windows == 3 && cfg.radio.scan.pick_margin_pct == 25);
+  CHECK(!what_of([] { maburgs::load_config(write_tmp("[hop]\nburst_period_ms = 50\n")); }).empty());         // < 100
+  CHECK(!what_of([] { maburgs::load_config(write_tmp("[hop.verdict]\noccupied_windows = 0\n")); }).empty());  // < 1
+  CHECK(!what_of([] { maburgs::load_config(write_tmp("[radio.scan]\npick_margin_pct = 101\n")); }).empty());  // > 100
+}
+// The detect route's floor must not exceed the blocked threshold, whichever
+// side sets it: a lowered radio.scan.blocked_pct under the default
+// detect_pct fails with no [hop.verdict] (or no [hop]) section at all.
+// Revert (cross-key checks inside the [hop.verdict] branch): the first two
+// load.
+TEST(hop_verdict_cross_key_checks_run_without_the_section) {
+  CHECK(what_of([] { maburgs::load_config(write_tmp("[radio.scan]\nblocked_pct = 5\n")); })
+            .find("hop.verdict.detect_pct") != std::string::npos);
+  CHECK(what_of([] { maburgs::load_config(write_tmp("[radio.scan]\nblocked_pct = 5\n[hop]\nwindow_ms = 150\n")); })
+            .find("hop.verdict.detect_pct") != std::string::npos);
+  CHECK(what_of([] { maburgs::load_config(write_tmp("[radio.scan]\nblocked_pct = 5\n[hop.verdict]\ndetect_pct = 5\n")); })
+            .empty());
+  CHECK(what_of([] { maburgs::load_config(write_tmp("[hop.verdict]\ndetect_windows = 3\ndetect_impaired = 4\n")); })
+            .find("hop.verdict.detect_impaired") != std::string::npos);
 }
 TEST(radio_scan_energy_period_ms_is_gone) {
   bool threw = false;
@@ -1316,9 +1378,10 @@ TEST(bundle_default_sets_every_known_key_but_radio_cards) {
   CHECK(!defaulted.empty() && defaulted[0] == "radio.cards=(auto-scan)");
 }
 
-// radio.scan busy-air keys: default blocked_pct is 50, not 30 -- hw spike
-// findings (docs/findings/2026-09-25-nhm-airtime-spike.md). They live under
-// radio.scan because every measurer reads them.
+// radio.scan busy-air keys: default blocked_pct is 30 -- one threshold for
+// the hop trigger, the in-flight ranker, the boot pick and the calibration
+// pick, so a target the ranker calls unblocked is unblocked to the verdict.
+// They live under radio.scan because every measurer reads them.
 TEST(scan_busy_keys_parse_and_validate) {
   auto c = maburgs::load_config(write_tmp("[radio.scan]\nbusy_dbm = -86\nblocked_pct = 40\n"));
   CHECK(c.radio.scan.busy.busy_dbm == -86 && c.radio.scan.busy.blocked_pct == 40.0);
@@ -1348,24 +1411,6 @@ TEST(hop_verdict_recovered_min_key) {
   CHECK(maburgs::HopVerdictCfg{}.recovered_min == 8);
 }
 
-// The AU-rate starved term. Revert (drop the key from check_keys / the parse):
-// the first load throws "unknown key".
-TEST(hop_verdict_starved_frac_key) {
-  auto c = maburgs::load_config(write_tmp("[hop.verdict]\nstarved_frac = 0\n"));
-  CHECK(c.hop.verdict.starved_frac == 0.0);
-  auto d = maburgs::load_config(write_tmp("[hop.verdict]\nstarved_frac = 0.5\n"));
-  CHECK(d.hop.verdict.starved_frac == 0.5);
-  bool threw = false;
-  try { maburgs::load_config(write_tmp("[hop.verdict]\nstarved_frac = 1.5\n")); }
-  catch (const std::runtime_error& e) { threw = std::string(e.what()).find("hop.verdict") != std::string::npos; }
-  CHECK(threw);
-  threw = false;
-  try { maburgs::load_config(write_tmp("[hop.verdict]\nstarved_frac = -0.1\n")); }
-  catch (const std::runtime_error&) { threw = true; }
-  CHECK(threw);
-  CHECK(maburgs::HopVerdictCfg{}.starved_frac == 0.25);
-}
-
 // The confirm extension while the op reads blocked.
 // Revert (drop the key from check_keys / the parse): the first load throws
 // "unknown key".
@@ -1383,6 +1428,35 @@ TEST(hop_confirm_extend_ms_key) {
   catch (const std::runtime_error&) { threw = true; }
   CHECK(threw);
   CHECK(maburgs::HopCfg{}.confirm_extend_ms == 3000);
+}
+
+TEST(hop_verdict_detect_defaults) {
+  auto c = maburgs::load_config(write_tmp(""));
+  CHECK(c.hop.verdict.detect_pct == 8.0);
+  CHECK(c.hop.verdict.detect_windows == 5);
+  CHECK(c.hop.verdict.detect_impaired == 1);
+}
+
+TEST(hop_verdict_detect_pct_must_not_exceed_blocked_pct) {
+  bool threw = false;
+  try { maburgs::load_config(write_tmp("[radio.scan]\nblocked_pct = 20\n[hop.verdict]\ndetect_pct = 25\n")); }
+  catch (const std::runtime_error&) { threw = true; }
+  CHECK(threw);
+  threw = false;
+  try { maburgs::load_config(write_tmp("[radio.scan]\nblocked_pct = 20\n[hop.verdict]\ndetect_pct = 20\n")); }
+  catch (const std::runtime_error&) { threw = true; }
+  CHECK(!threw);
+}
+
+TEST(hop_verdict_detect_impaired_is_bounded_by_detect_windows) {
+  bool threw = false;
+  try { maburgs::load_config(write_tmp("[hop.verdict]\ndetect_windows = 3\ndetect_impaired = 4\n")); }
+  catch (const std::runtime_error&) { threw = true; }
+  CHECK(threw);
+  threw = false;
+  try { maburgs::load_config(write_tmp("[hop.verdict]\ndetect_windows = 3\ndetect_impaired = 3\n")); }
+  catch (const std::runtime_error&) { threw = true; }
+  CHECK(!threw);
 }
 
 // ---- link.key_file + link.key overlay (link pairing) ----

@@ -70,7 +70,7 @@ static maburgs::HopVisit bv(uint8_t ch, double t, uint32_t fa, double busy) {
   maburgs::HopVisit v; v.ch = ch; v.t_ms = t; v.fa = fa; v.busy_valid = true; v.busy_pct = busy; return v;
 }
 TEST(blocked_channel_loses_to_a_busier_by_events_unblocked_one) {
-  maburgs::HopCfg c;   // blocked_pct 50
+  maburgs::HopCfg c;   // default blocked_pct
   maburgs::HopRanker r(c, BusyCfg{}, {144, 64}, 0);
   for (int i = 0; i < 3; ++i) { r.add(bv(144, i, 0, 90)); r.add(bv(64, i, 40, 0)); }
   auto b = r.best(10, 136, {});
@@ -79,14 +79,15 @@ TEST(blocked_channel_loses_to_a_busier_by_events_unblocked_one) {
 }
 // radio.scan.blocked_pct is the ranker's own input (BusyCfg), not a
 // constant: at 30 a 40 %-busy channel is blocked and loses to a busier-by-
-// events clean one; at the default 50 it is not.
+// events clean one; at 50 it is not.
 TEST(blocked_threshold_comes_from_busy_cfg) {
   maburgs::HopCfg c;
   BusyCfg b; b.blocked_pct = 30;
   maburgs::HopRanker r(c, b, {144, 64}, 0);
   for (int i = 0; i < 3; ++i) { r.add(bv(144, i, 0, 40)); r.add(bv(64, i, 40, 0)); }
   CHECK(*r.best(10, 136, {}) == 64);
-  maburgs::HopRanker d(c, BusyCfg{}, {144, 64}, 0);
+  BusyCfg hi; hi.blocked_pct = 50;
+  maburgs::HopRanker d(c, hi, {144, 64}, 0);
   for (int i = 0; i < 3; ++i) { d.add(bv(144, i, 0, 40)); d.add(bv(64, i, 40, 0)); }
   CHECK(*d.best(10, 136, {}) == 144);
 }
@@ -121,7 +122,7 @@ MTEST_MAIN
 // require_unblocked skips it.
 // Revert (ignore require_unblocked in best()): the second CHECK returns 144.
 TEST(best_require_unblocked_skips_blocked) {
-  maburgs::HopCfg c;   // blocked_pct 50
+  maburgs::HopCfg c;   // default blocked_pct
   maburgs::HopRanker r(c, BusyCfg{}, {144, 112}, 0);
   for (int i = 0; i < 3; ++i) { r.add(bv(144, i, 0, 95)); r.add(bv(112, i, 40, 0)); }
   auto b = r.best(10, 136, {}, /*require_unblocked=*/true);
@@ -152,4 +153,33 @@ TEST(ranking_uses_only_the_newest_visit_source) {
   CHECK(*best == 64);                 // the relay set alone ranks; the stale USB visits are ignored
   for (const auto& e : r.ranking(300))
     if (e.ch == 112) CHECK(e.visits == 2 && e.score == 180);
+}
+
+// ---- width_mhz = 40: NHM busy mean orders ahead of the frame-term score --
+// a 20 MHz-sized dwell's fa/cca/foreign see only the primary half of a 40
+// MHz pair, but NHM busy % reads the whole pair, so at 40 it goes first.
+TEST(at_40_lower_busy_mean_beats_lower_frame_score) {
+  HopRanker r(cfg(), BusyCfg{}, {120, 149, 165}, 0, 40);
+  for (int i = 0; i < 3; ++i) { r.add(bv(120, i * 300, 0, 25)); r.add(bv(149, i * 300, 30, 5)); r.add(bv(165, i * 300, 5, 15)); }
+  auto k = r.ranking(1000);
+  CHECK(k[0].ch == 149 && k[1].ch == 165 && k[2].ch == 120);   // busy 5 < 15 < 25 (all unblocked) although 149's score is worst
+  CHECK(*r.best(1000, 0, {}) == 149);
+}
+TEST(at_20_order_is_unchanged_by_busy_mean) {
+  HopRanker r(cfg(), BusyCfg{}, {120, 149, 165}, 0, 20);
+  for (int i = 0; i < 3; ++i) { r.add(bv(120, i * 300, 0, 25)); r.add(bv(149, i * 300, 30, 5)); r.add(bv(165, i * 300, 5, 15)); }
+  auto k = r.ranking(1000);
+  CHECK(k[0].ch == 120 && k[1].ch == 165 && k[2].ch == 149);   // score order
+}
+TEST(no_busy_entries_sort_after_busy_entries_within_tier_at_40) {
+  HopRanker r(cfg(), BusyCfg{}, {120, 149}, 0, 40);
+  for (int i = 0; i < 3; ++i) { r.add(V(120, i * 300, 0)); r.add(bv(149, i * 300, 50, 20)); }
+  auto k = r.ranking(1000);
+  CHECK(k[0].ch == 149 && k[1].ch == 120);
+}
+TEST(blocked_tier_still_last_at_40) {
+  HopRanker r(cfg(), BusyCfg{}, {120, 149}, 0, 40);
+  for (int i = 0; i < 3; ++i) { r.add(bv(120, i * 300, 0, 60)); r.add(bv(149, i * 300, 90, 25)); }   // 120 blocked, 149 not
+  CHECK(r.ranking(1000)[0].ch == 149);
+  CHECK(*r.best(1000, 0, {}, true) == 149);
 }

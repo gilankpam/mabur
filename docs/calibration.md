@@ -103,15 +103,18 @@ Before the first sweep the GS puts the pair on the quietest member of
 `radio.channels` (`CalPicker`, `gs/src/cal_picker.h`, over `ChannelCore`):
 
 - **Auto, two or more cards** (`channel = "auto"`): one fresh measure
-  round by the boot scout — every 20 MHz half of every member once, op's
-  own pair skipped (it carries the drone's video); op is read from the
-  verdict's live window instead. Both sides are scored on the terms that
-  mean the same thing on either instrument: decoded foreign frames per
-  `radio.scan.dwell_ms` plus NHM foreign busy %. A pair scores as its
-  worse half, and a candidate without a busy reading is not ranked while
-  any has one; leaving op takes beating it by `radio.scan.pick_margin` in
-  every tier, and a blocked candidate never replaces an unblocked op; op
-  unread means stay. When the best member is not op, the GS orders the
+  round by the boot scout — every member once (one dwell per pair at
+  40 MHz), op's own pair skipped (it carries the drone's video); op is
+  read from the verdict's live window instead. Both sides are scored on
+  the terms that mean the same thing on either instrument: decoded
+  foreign frames per `radio.scan.dwell_ms` plus NHM foreign busy %. A
+  candidate is one reading — its own dwell, at 40 MHz one dwell on the
+  pair — and a candidate without a busy reading is not ranked while any
+  has one; leaving op takes a better tier (an unblocked candidate against
+  a blocked op moves at once; a blocked candidate never replaces an
+  unblocked op), or — once both are in the same tier — beating op's busy
+  % by `radio.scan.pick_margin_pct` points; op unread means stay. When the
+  best member is not op, the GS orders the
   boot pick's relocate (scan.log `H relocate … cal`, no verify window —
   the confirm lands it) and waits for it to settle. Detail:
   `docs/channel-select.md` "Calibration pick".
@@ -119,7 +122,7 @@ Before the first sweep the GS puts the pair on the quietest member of
   measurement; the run uses op.
 
 The whole pick is bounded by `pick_timeout_ms` (8 s); the round itself
-by twice a full round's dwell time (4.5 s at the defaults). A relocate
+by twice a full round's dwell time (2.2 s at the defaults). A relocate
 that is refused (hop cap, a hop in flight) or does not confirm leaves the
 pair on op and the run proceeds there. The outcome is the `pick` token on
 `cal.log`'s `R` line (`auto|pinned|onecard|stayed`) and the note on the
@@ -297,7 +300,7 @@ and resume video on its own.
 
 | step | time |
 |---|---|
-| channel pick | 0 pinned or one card; ~2 s for the round (six halves at 280 ms) plus up to `[hop] confirm_ms` for a relocate |
+| channel pick | 0 pinned or one card; ~1 s for the round (three members at 280 ms) plus up to `[hop] confirm_ms` for a relocate |
 | power sweep | 21 s per width (840 × 25 ms) + 200 ms start + ack |
 | apply + verify | ~1.5 s per power sweep (8 × 25 ms of verify air, 200 ms start, 1 s listen tail) |
 | capacity sweep | 18.4 s per width (8 × 2.3 s) + 200 ms start + ack |

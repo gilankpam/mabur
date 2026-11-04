@@ -1,7 +1,7 @@
 #pragma once
 // LinkCard: what main.cpp drives on every radio card, USB (RadioFrontend)
 // or CPE510 relay (RemoteCard).
-// ScoutRadio supplies retune()/retune_width()/read_energy*()/frames()/nhm.
+// ScoutRadio supplies retune()/read_energy*()/frames()/nhm.
 #include <cstdint>
 #include <optional>
 #include <vector>

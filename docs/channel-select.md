@@ -47,17 +47,17 @@ tx_card  = -1
 relays   = []
 
 [radio.scan]
-dwell_ms        = 250   # measurement observe per 20 MHz half
+dwell_ms        = 250   # measurement observe per dwell: a pair at 40, a member at 20
 settle_ms       = 30    # after every retune
 min_rounds      = 3     # full passes before the ranking is mature
 search_ms       = 100   # DISC burst at the start of every unlinked dwell on a primary (5 beacon periods)
 op_window_ms    = 300   # one card: how long the sole card beacons on op between dwells
 search_after_ms = 5000  # on link loss, keep every card on op this long before sweeping
-pick_margin     = 20    # auto: the pick must beat the channel the link is on by this many busy units
+pick_margin_pct = 10    # auto: a candidate must beat the channel the link is on by this many busy-% points
 one_card_ms     = 5000  # one card, auto: measure silently this long before the first DISC
 max_ms          = 30000 # auto: the pick is frozen at the latest this long after GS start
 busy_dbm        = -83   # both modes: energy level that counts the air as busy (an NHM bucket edge)
-blocked_pct     = 50    # both modes: % of busy foreign airtime that makes a half/window "blocked"
+blocked_pct     = 30    # both modes: % of busy foreign airtime that makes a dwell/window "blocked"
 ```
 
 Drone, `bundle/mabur.default.toml`:
@@ -73,12 +73,12 @@ width    = 40
 | piece | runs when | knobs |
 |---|---|---|
 | **search** — find the drone over the set (`ChannelScout`, search job) | link down, both modes | `radio.scan.search_ms`, `op_window_ms`, `search_after_ms` |
-| **measure** — rank the set, pick, freeze (`ChannelScout` measure job, `BootPick`) | pick open, `channel = "auto"` only | `radio.scan.dwell_ms`, `settle_ms`, `min_rounds`, `pick_margin`, `one_card_ms`, `max_ms` |
+| **measure** — rank the set, pick, freeze (`ChannelScout` measure job, `BootPick`) | pick open, `channel = "auto"` only | `radio.scan.dwell_ms`, `settle_ms`, `min_rounds`, `pick_margin_pct`, `one_card_ms`, `max_ms` |
 | **busy air** — what every measurer calls blocked | always | `radio.scan.busy_dbm`, `blocked_pct` (boot ranker, in-flight ranker, verdict alike) |
 | **relocate** — the link forms where the drone is, one order moves it to `want` (pin or pick) | each link-up with `op ≠ want`, both modes | `[hop] confirm_ms`, `confirm_extend_ms`, `verify_ms`, `max_hops_per_min`, `one_card_repeats` (shared with the reactive hop) |
 | **verdict** — is `op` bad right now | always (OSD / sideport `hop.verdict`) | `[hop] window_ms`, `persist`, `[hop.verdict] *` |
 | **reactive hop** — in-flight scout, freshness burst, order/verify/withdraw | `channel = "auto"` only, after the freeze | everything else in `[hop]` |
-| **calibration pick** — one measure round, then a relocate to the quietest member (`CalPicker`) | each `maburcal start`, auto mode with two or more cards | `radio.scan.dwell_ms`, `settle_ms`, `pick_margin`, `busy_dbm`, `blocked_pct`; the relocate's `[hop] confirm_ms`, `max_hops_per_min` |
+| **calibration pick** — one measure round, then a relocate to the quietest member (`CalPicker`) | each `maburcal start`, auto mode with two or more cards | `radio.scan.dwell_ms`, `settle_ms`, `pick_margin_pct`, `busy_dbm`, `blocked_pct`; the relocate's `[hop] confirm_ms`, `max_hops_per_min` |
 | **one-card mode** | exactly one USB card in the roster (one `[[radio.cards]]` entry, or auto-scan finding one card) | no in-flight scout; `one_card_ms`, `op_window_ms`, `one_card_repeats` apply |
 
 There is no other mode switch: auto and pinned are the only two modes.
@@ -113,7 +113,7 @@ Validation (`gs/src/config.cpp`, `drone/src/config.cpp`, shared code in
 | `radio.scan.search_ms` | 40–2000 |
 | `radio.scan.op_window_ms` | 40–10000 |
 | `radio.scan.search_after_ms` | 0–600000 |
-| `radio.scan.pick_margin` | 0–100000 |
+| `radio.scan.pick_margin_pct` | 0–100 |
 | `radio.scan.one_card_ms` | 0–60000 |
 | `radio.scan.max_ms` | 1000–600000 |
 | `radio.scan.busy_dbm` | −104 – −70, on an NHM bucket edge (`-104 -101 -98 -95 -92 -89 -86 -83 -80 -75 -70`; `gs/src/nhm_busy.h` `busy_dbm_is_edge`) |
@@ -212,32 +212,31 @@ link is down and/or measures while the pick is still open (auto mode
 only); with no work it parks the card on `op` at `radio.width` and sits
 idle.
 
-**Dwell schedule.** Measuring at width 40: round-robin over the 20 MHz
-**half set** (`pair_pick.h`'s `scan_half_set` — each member's pair, low
-half then high half, config order). Search only (pinned), or measuring at
-width 20: the members themselves. Per dwell:
+**Dwell schedule.** Round-robin over the members, config order, at every
+width, pinned or measuring. At width 40 a member is a pair's primary and
+the card is tuned 40, so one dwell reads the whole pair (`docs/bw40.md`
+"Boot scan dwells once per pair"). Per dwell:
 
 | phase | when | what |
 |---|---|---|
-| retune + settle | always | `FastRetune(half, 20)`, `settle_ms` |
+| retune + settle | always | `FastRetune(member)` at the card's width, `settle_ms` |
 | **search burst** | link down AND the dwell channel is a member | send DISC proposing that channel every beacon period for `search_ms`; listen for the ack |
 | gap | after a burst | one beacon period, so the card's own TX is out of its receiver |
 | discard read | measuring | zero the delta counters before the observe |
 | **observe** | pick open (auto) | silent `dwell_ms`, read FA/CCA/own/foreign/NHM |
 
 Pinned mode: no observe, ever (`measure = false`) — a sweep of four
-primaries ≈ 0.6 s. Auto, link down: burst + observe (≈ 3.2 s per round
-over eight halves at the shipped defaults). Auto, linked, pick open:
-observe only.
+members ≈ 0.6 s. Auto, link down: burst + observe (≈ 1.6 s per round of
+four members at the shipped defaults). Auto, linked, pick open: observe
+only.
 
 **Op's own pair is never measured while linked.** With the search off
 (linked, or inside `search_after_ms` after a loss) and the pick open, the
-scout skips both halves of `op`'s pair (`op` alone at `width = 20`): no
-retune, no observe. They carry the drone's own video — at width 40
-undecodable to a 20 MHz observe and so counted busy, and in NHM's airtime
-either way — and scoring them would make the boot hop leave a clean `op`
-almost every time. A skipped half is completed in the scheduler (stamped
-one dwell ahead) so the round-robin and `rounds()` keep moving. `op` keeps
+scout skips `op`: no retune, no observe. It carries the drone's own video —
+in NHM's airtime and in the frame counts — and scoring it would make the
+boot hop leave a clean `op` almost every time. A skipped member is
+completed in the scheduler (stamped one dwell ahead) so the round-robin
+and `rounds()` keep moving. `op` keeps
 only its pre-link visits: `ChannelScout::mature()` waits for every member
 **except** `op` (and for `op` too while searching, when it is visited like
 any other), and `op_ranked()` says whether `op`'s pre-link visits reached
@@ -255,7 +254,7 @@ counter delta over the observe span (`ChannelScout::set_tx_frames()`, fed
 every card) and `k` (`leak_per_frame`) is a **compiled constant**, `1.0`
 (`gs/src/main.cpp`, and `web/src/web_gs.cpp` for the browser GS), not a
 config key. The leak is uniform across candidates, so it biases only the
-stay-or-move comparison, and `pick_margin` absorbs the residual. `k` is
+stay-or-move comparison, and `pick_margin_pct` absorbs the residual. `k` is
 provisional: bench row 7 could not fit it ("Open items").
 
 Why every dwell is silent and why `cca − own` is subtracted: the scout
@@ -265,7 +264,7 @@ event (bench record: `docs/findings/2026-09-13-channel-select-bench.md`).
 
 **One card.** Cycle: op window of `op_window_ms` on `op` (DISC every
 beacon period, listen; leave only after one quiet beacon period), then one
-dwell on the next half. Auto mode adds a **silent prelude**: for the first
+dwell on the next member. Auto mode adds a **silent prelude**: for the first
 `one_card_ms` after start the card only observes (no DISC anywhere); once
 the deadline passes, the core commits the prelude's ranking (if not
 already linked and it differs from `op`) and calls
@@ -277,11 +276,12 @@ the link and cannot measure: the pick freezes at link-up (`"one-card
 linked"`), and a link found off `op`/`want` is then relocated by the
 one-card hop path.
 
-**Width.** The scout card is opened at 20 MHz and tunes 20 MHz for its
-dwells; it rejoins the link at `radio.width` on `op` when it has no work
-(`ChannelScout::park_()`). The core's one-shot width resync
-(`gs/src/width_resync.h`) covers the scout-card-died and
-freeze-before-scout-started edge cases (`docs/bw40.md` "Boot scan").
+**Width.** The scout card is opened at `radio.width` like every other
+card and never changes it: dwells and the park on `op` when it has no
+work (`ChannelScout::park_()`) are plain retunes, so there is no rejoin.
+The core's one-shot width resync (`gs/src/width_resync.h`) stays as a
+safety net for a card that comes back at the wrong width (`docs/bw40.md`
+"Boot scan dwells once per pair").
 
 **Send gating** (`gs/src/channel_core.cpp`): the scout owns a card
 (`scout_owns_()`: `working() || search requested || (!pinned &&
@@ -372,17 +372,23 @@ reach it.
 
 ## The pick: maturity, commit, relocation, freeze
 
-**Ranking.** `pair_proposal(all, current, set, min_rounds, pick_margin,
-blocked_pct)` (`gs/src/pair_pick.h`; at width 20 `ChannelRanker::proposal`
-over single channels): a pair is ranked once both halves have `min_rounds`
-visits (the one-card deadline uses the *effective* `min_rounds` — 1, once
-the prelude is done and fewer than `min_rounds` full passes exist, else
-the configured value — so a one-card prelude pick counts as measured).
-Score = the worse half's worst-visit busy; the blocked tier (either half's
-NHM busy ≥ `radio.scan.blocked_pct`) ranks after every unblocked pair. The
-channel the link currently sits on (`op`) is the reference: a candidate
-must beat it by `pick_margin`, ties stay on `op`. Config order breaks
-remaining ties. Returns `op` when nothing else is ranked.
+**Ranking.** At width 20, `ChannelRanker::proposal` over single
+channels. At width 40, `pair_proposal(all, current, set, min_rounds,
+pick_margin_pct, blocked_pct)` (`gs/src/pair_pick.h`) over
+one row per pair, keyed by its primary. Either way a row is ranked once it
+has `min_rounds` visits (the one-card deadline uses the *effective*
+`min_rounds` — 1, once the prelude is done and fewer than `min_rounds`
+full passes exist, else the configured value — so a one-card prelude pick
+counts as measured). The pair order is NHM-first: tier (unblocked first;
+blocked = worst-visit NHM busy ≥ `radio.scan.blocked_pct`), then rows
+with a busy reading before rows without, then the lower worst-visit busy
+%, then the lower frame score (worst-visit busy units), then config
+order; no noise-floor tie-break. The channel the link currently sits on
+(`op`) is the reference: a candidate in a better tier wins outright (a
+blocked `op` loses to any unblocked candidate), as does one with a busy
+reading where `op` has none; otherwise it must beat `op`'s busy % by
+`pick_margin_pct` points. An exact busy tie, or neither side reading
+busy, stays. Returns `op` when nothing else is ranked.
 
 The whole pick is `BootPick` (`gs/src/boot_pick.{h,cpp}`, pure, every
 exit covered by `tests/test_boot_pick.cpp`); `ChannelCore` only feeds it a
@@ -437,7 +443,7 @@ armed drone only after a GS restart or a loss, and then it costs what a
 reactive hop costs.
 
 Timing at the defaults, two cards, both powered together: link on the
-remembered member within ~1 s; three rounds of eight halves ≈ 10 s;
+remembered member within ~1 s; three rounds of four pairs ≈ 3.5 s;
 relocation lands ≈ 0.5 s later.
 
 ## Calibration pick
@@ -453,10 +459,11 @@ card (two or more cards, not relay-only); pinned and one-card GSs run on
   the card, and the scout thread is running with its card up
   (`maburgs channel: calibration measure round on card N (op X)`).
   `ChannelScout::begin_round()` gives the scout a fresh ranker for one
-  pass: every 20 MHz half of the set once, `op`'s pair skipped as while
-  linked, the leak subtracted as usual; then it parks. The round is
-  bounded at twice a full round's dwell time, never under 1 s (4.5 s at
-  the defaults; `... round overran <n> ms; staying on <op>`). A round
+  pass: every member once (one dwell per pair at 40 MHz), `op` skipped as
+  while linked, the leak subtracted as usual; then it parks. The round is
+  bounded at twice a full round's dwell time — every member at
+  `dwell_ms + settle_ms` — never under 1 s (2.2 s at the defaults;
+  `... round overran <n> ms; staying on <op>`). A round
   still waiting when the run starts calibrating is dropped (`... round
   dropped: a run is calibrating`), and the run's abort, failure or pick
   timeout cancels it (`... round cancelled`), so it never holds the card
@@ -465,18 +472,23 @@ card (two or more cards, not relay-only); pinned and one-card GSs run on
   valid card on `op`, decoded foreign frames scaled to `dwell_ms`, NHM
   busy minus our own airtime. Without a reading newer than the round's
   start, `op` is unread and the run stays.
-- **The score** (`cal_round_pick`) uses only terms both instruments
-  measure alike: decoded foreign frames plus NHM foreign busy %, the busy
-  term only when both sides have a reading (the `cca − own` term is
-  dropped: under A-MPDU video it clamps to 0 on `op`). A pair scores as
-  its worse half and needs a reading on both. A candidate with no busy
-  reading is not ranked while any candidate has one (scored on foreign
-  frames alone it would beat the candidates that pay the busy term).
-  Leaving `op` takes beating
-  it by `pick_margin` in every tier; a blocked candidate never replaces an
-  unblocked `op`. Logged as a `K` record with the round's scores and
-  `maburgs channel: calibration measure picks <best> (op <op>[ unread:
-  staying])`.
+- **The pick** (`cal_round_pick`) uses only terms both instruments
+  measure alike: NHM foreign busy % and decoded foreign frames (the
+  `cca − own` term is dropped: under A-MPDU video it clamps to 0 on
+  `op`). A candidate is one reading — its own dwell, at 40 MHz one dwell
+  on the pair. The best candidate is ranked like the boot pick's pairs:
+  unblocked before blocked, then the lower busy %, then the lower score
+  (foreign frames plus busy %), then config order — busy % first, because
+  the move is decided on it. A candidate with no busy reading is not
+  ranked while any candidate has one (scored on foreign frames alone it
+  would beat the candidates that pay the busy term; foreign otherwise
+  orders only busy-% ties and the K rows). Leaving `op` is the same margin rule as the
+  boot pick: a better tier (an unblocked candidate against a blocked `op`)
+  moves at once, a blocked candidate never replaces an unblocked `op`, and
+  otherwise the candidate must beat `op`'s busy % by `pick_margin_pct`
+  points. Logged as a `K` record with the round's scores (one row
+  per member read plus `op`'s) and `maburgs channel: calibration measure
+  picks <best> (op <op>[ unread: staying])`.
 - **The relocate** is the boot pick's own: `set_want(best)` and the boot
   pick re-armed, so it hands out one relocate order next tick
   (`maburgs channel: calibration wants <c>, link on <op>: relocating`).
@@ -510,8 +522,8 @@ the in-flight thread picks the reactive hop back up on its next tick.
 
 ## Observability
 
-- **`scan.log`** (`gs/src/scan_log.h`): marker `scanlog 7`. Header line:
-  `scanlog 7 channels=<c1,c2,...> mode=<auto|pinned> dwell_ms=<n>
+- **`scan.log`** (`gs/src/scan_log.h`): marker `scanlog 8`. Header line:
+  `scanlog 8 channels=<c1,c2,...> mode=<auto|pinned> dwell_ms=<n>
   min_rounds=<n> cards=<n>`. Record shapes are documented in
   `scan_log.h` (`docs/bw40.md`,
   `docs/findings/2026-09-25-nhm-airtime-spike.md` for the width and NHM
@@ -554,7 +566,7 @@ the in-flight thread picks the reactive hop back up on its next tick.
   /etc/maburgs.channel`; `maburd: retune <a> -> <b> (<reason>)`.
 - **`tools/maburtop.py`**: shows `scan.state` (including `moving`) and
   `scan.rounds` next to the channel, and `pin` while `scan.pinned`.
-- **`tools/flightreport.py`**: reads `scanlog` up to 7 (an `H` line's
+- **`tools/flightreport.py`**: reads `scanlog` up to 8 (an `H` line's
   reason as `reason`, `None` before 7); treats `relocate`
   (and the bench builds' `boot_order`) as a HOP-section order kind
   alongside `order`/`verify_fail`/`escape`; still parses `split_home` out
@@ -569,10 +581,13 @@ open from it:
 
 - **Row 6 — the event-score ranker is fooled by a strong co-located
   jammer.** The jam's frames decode once each as `foreign` on the jammed
-  pair but leak into every other half as several FA/CCA events, so the
-  jammed pair won. NHM busy was the honest signal but sat below
-  `blocked_pct = 50`. Candidate fixes: an airtime-weighted foreign term, a
-  lower `blocked_pct`, or NHM busy as a primary score term.
+  pair but leak into every other channel as several FA/CCA events, so the
+  jammed pair won. NHM busy was the honest signal: 32.8 % on the jammed
+  pair against 0–12 % elsewhere, which `blocked_pct` 30 puts in the blocked
+  tier (the row has not been re-run at 30). At 40 MHz NHM busy is the first
+  ranking term ("The pick: Ranking"); at 20 MHz the event score still ranks
+  first within a tier. Candidate fix for a jam under `blocked_pct`: an
+  airtime-weighted foreign term.
 - **Row 7 — `leak_per_frame = 1.0` is unfitted.** With the drone centimetres
   from the GS its own TX cannot be separated from the control-frame leak;
   measure with the drone ≥ 20 m away or on a dummy load.

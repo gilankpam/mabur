@@ -25,13 +25,12 @@ relays  = []   # CPE disabled for maburcal; was ["10.83.11.1:8310"]
 # detect an analog transmitter, so keep the candidate list far from any band
 # one might use.
 [radio.scan]
-dwell_ms        = 250      # measurement observe per 20 MHz half
+dwell_ms        = 250      # measurement observe per dwell: a pair at 40, a member at 20
 settle_ms       = 30       # after every retune
 min_rounds      = 3        # full passes before the ranking is mature
 search_ms       = 100      # DISC burst at the start of every unlinked dwell on a member
 op_window_ms    = 300      # one card: beacon window on op between dwells
 search_after_ms = 5000     # on link loss, hold op this long before sweeping
-pick_margin     = 20       # the pick must beat the current channel by this many busy units
 one_card_ms     = 5000     # one card, auto: silent measurement before the first DISC
 max_ms          = 30000    # the pick is frozen at the latest this long after start
 busy_dbm        = -83      # energy level that counts the air as busy (an NHM bucket edge); every measurer uses it
@@ -227,7 +226,3 @@ recovered_x          = 3.0    # FEC repairs this many times above normal
 recovered_min        = 8      # ...and at least this many repairs; 0 = off
 weak_rssi_dbm        = -78    # below this signal AND weak_snr_db, loss is blamed on range, not interference
 weak_snr_db          = 12
-fading_drop_db       = 6      # signal this much below its recent level = fading, not interference
-foreign_pps          = 50     # other transmitters' packets per second
-fa_pps               = 100    # false detections per second (non-Wi-Fi noise)
-starved_frac         = 0.25   # video rate below this fraction of normal = starved (keep below 0.5)

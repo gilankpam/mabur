@@ -35,8 +35,8 @@ ChannelCore::ChannelCore(ChannelCoreCfg cfg, std::vector<LinkCard*> cards, VrxCo
       plan_(ChannelPlanCfg{cfg_.start_ch, cfg_.radio.channels, n_cards_,
                            cfg_.radio.scan.search_after_ms}),
       boot_pick_(false),
-      verdict_(cfg_.hop, cfg_.radio.scan.busy, n_cards_),
-      ranker_(cfg_.hop, cfg_.radio.scan.busy, cfg_.radio.channels, 0),
+      verdict_(cfg_.hop, cfg_.radio.scan.busy),
+      ranker_(cfg_.hop, cfg_.radio.scan.busy, cfg_.radio.channels, 0, cfg_.radio.width),
       hopc_(cfg_.hop),
       cur_ch_(static_cast<size_t>(n_cards_), cfg_.start_ch),
       width_tried_(static_cast<size_t>(n_cards_), false),
@@ -82,7 +82,7 @@ ChannelCore::ChannelCore(ChannelCoreCfg cfg, std::vector<LinkCard*> cards, VrxCo
     sc.op_window_ms = cfg_.radio.scan.op_window_ms;
     sc.beacon_period_ms = 20;
     sc.one_card_ms = cfg_.radio.scan.one_card_ms;
-    sc.pick_margin = static_cast<uint32_t>(cfg_.radio.scan.pick_margin);
+    sc.pick_margin_pct = cfg_.radio.scan.pick_margin_pct;
     sc.one_card = one_card_ || relay_search_only_;   // a sole relay interleaves op windows like a sole USB card
     sc.link_width_mhz = cfg_.radio.width;
     sc.busy_dbm = cfg_.radio.scan.busy.busy_dbm;
@@ -197,13 +197,15 @@ ChannelTickOut ChannelCore::tick(const ChannelTickIn& in) {
   // tick is gated before the sampler's next pass, not a tick later.
   step_gates_();
   // s1_hop_loss is fed from the same base-sid arrival counters as the
-  // assembler's s1_loss, on the same now_ms.
-  // Fed at the end of tick() (old main.cpp: right after fstream.poll);
-  // nothing in between touches decoder().stats(0), and the window samples
-  // before this tick's add either way.
+  // assembler's s1_loss, on the same now_ms; enh_hop_loss from the
+  // enhancement stream's. Fed at the end of tick() (old main.cpp: right
+  // after fstream.poll); nothing in between touches decoder().stats(), and
+  // the windows sample before this tick's add either way.
   if (in.agg) {
     const auto s1 = in.agg->decoder().stats(0);
     s1_hop_loss_.add(s1.arr_expected, s1.arr_arrived, in.now_ms);
+    const auto enh = in.agg->decoder().stats(1);
+    enh_hop_loss_.add(enh.arr_expected, enh.arr_arrived, in.now_ms);
   }
   ChannelTickOut out;
   out.dwell_busy = dwell_busy_.load();
@@ -337,6 +339,7 @@ void ChannelCore::apply_hop_action_(const HopAction& act, double now_ms) {
       break;
     case HopAction::Confirm:
       plan_.hop_confirmed(now_ms);
+      verdict_.landed(now_ms);
       break;
     case HopAction::Withdraw:
       vrx_.set_hop(act.target, act.epoch);
@@ -370,7 +373,10 @@ void ChannelCore::dispatch_hop_action_(const HopAction& act, bool relocate_tick,
       default: break;
     }
   }
-  if (auto b = hop_verdict_loss_blank_until(act, now_ms)) s1_hop_loss_.blank_until(*b);
+  if (auto b = hop_verdict_loss_blank_until(act, now_ms)) {
+    s1_hop_loss_.blank_until(*b);
+    enh_hop_loss_.blank_until(*b);
+  }
   switch (act.kind) {
     case HopAction::Order:
       hopping_atomic_.store(true);
@@ -505,7 +511,6 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
     recovered_prev_window_ = in.agg ? in.agg->decoder().stats(0).syms_recovered +
                                           in.agg->decoder().stats(1).syms_recovered
                                     : 0;
-    au_seq_prev_ = au_seq_.load(std::memory_order_relaxed);
     verdict_.new_session();
     sampler_->reset(now_ms_u);
   }
@@ -525,8 +530,6 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
   const uint64_t t_ms = rec->t_ms;   // the sample instant: every per-window span is measured to it
   std::vector<VerdictCardIn> vc(static_cast<size_t>(n_cards_));
   std::optional<CalReading> op_read;   // the worst valid card's reading of op this window
-  int starved_valid = 0;
-  bool starved_all_zero = true;
   for (int i = 0; i < n_cards_; ++i) {
     const size_t si = static_cast<size_t>(i);
     const CardSample& cs = rec->cards[si];
@@ -539,8 +542,6 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
     const double snr_raw = in.agg ? in.agg->card(i).snr_ema : 0.0;
     if (window_prev_ok_[si]) {
       vc[si].valid = true;
-      ++starved_valid;
-      if (cs.frames.own - window_prev_[si].own != 0) starved_all_zero = false;
       vc[si].fa = cs.energy.fa_ofdm;
       vc[si].cca = cs.energy.cca_ofdm;
       vc[si].foreign = static_cast<uint32_t>(cs.frames.foreign - window_prev_[si].foreign);
@@ -562,10 +563,10 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
       energy_last_[si] = StatsEnergyIn{cs.energy.cca_ofdm, cs.energy.fa_ofdm, cs.frames.own - window_prev_[si].own,
                                        cs.frames.foreign - window_prev_[si].foreign, std::nullopt, busy_pct, own_used};
       // Op's reading for a calibration run's pick (the scout never dwells
-      // on op's halves while linked): decoded foreign frames scaled from
-      // this window's span to one dwell_ms observe, and the foreign share
-      // of the NHM busy airtime (our own video is not interference). The
-      // worst card on each term, as the scout keeps a half's worst visit.
+      // on op while linked): decoded foreign frames scaled from this
+      // window's span to one dwell_ms observe, and the foreign share of the
+      // NHM busy airtime (our own video is not interference). The worst
+      // card on each term, as the scout keeps a member's worst visit.
       if (win_us > 0) {
         const double k = static_cast<double>(cfg_.radio.scan.dwell_ms) * 1000.0 / win_us;
         const auto foreign = static_cast<uint32_t>(std::lround(
@@ -588,17 +589,12 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
     op_live_ms_ = now_ms;
   }
   VerdictLinkIn vl;
-  const auto s1 = s1_hop_loss_.sample(now_ms);
-  vl.pre_fec_loss = s1.valid ? s1.loss : 0.0;
+  vl.pre_fec_loss = hop_verdict_link_loss(s1_hop_loss_.sample(now_ms), enh_hop_loss_.sample(now_ms));
   const uint64_t recovered_now = in.agg ? in.agg->decoder().stats(0).syms_recovered +
                                               in.agg->decoder().stats(1).syms_recovered
                                         : 0;
   vl.recovered = static_cast<uint32_t>(recovered_now - recovered_prev_window_);
   recovered_prev_window_ = recovered_now;
-  vl.starved = starved_valid > 0 && starved_all_zero;
-  const uint64_t au_now = au_seq_.load(std::memory_order_relaxed);
-  vl.au_count = static_cast<uint32_t>(au_now - au_seq_prev_);
-  au_seq_prev_ = au_now;
   const auto vo = verdict_.window(now_ms, vc, vl, vrx_.ctl().rung());
   if (vo.v != Verdict::Healthy || vo.v != last_verdict_) sink_.verdict(now_ms, vo, vc, vl);
   last_verdict_ = vo.v;
@@ -652,8 +648,14 @@ void ChannelCore::step_controller_(const ChannelTickIn& in) {
   const int burst_card = pick_burst_card(can_scout_, sweepable, in.tx_card);
   const bool relay_burst = burst_card >= 0 && !can_scout_[static_cast<size_t>(burst_card)] &&
                            sweepable[static_cast<size_t>(burst_card)];
-  const int burst_period = relay_burst ? cfg_.hop.relay_burst_period_ms : cfg_.hop.dwell_period_ms;
-  if (reactive_ && !scout_owns_() && !relocation_owns && !sweep_.on &&
+  bool ranking_complete = true;
+  for (const auto& e : ranker_.ranking(now_ms))
+    if (e.ch != plan_.op() && !e.ranked) ranking_complete = false;
+  const int burst_period = hop_burst_period_ms(hopc_.state(), relay_burst, ranking_complete, cfg_.hop);
+  const bool spare_usb_burst = burst_card >= 0 && !relay_burst && burst_card != in.tx_card;
+  start_inflight_if_due_();
+  if (reactive_ && !scout_owns_() && !relocation_owns && !sweep_.on && !burst_inflight_ &&
+      hop_burst_wanted(spare_usb_burst, ranking_complete) &&
       hop_burst_due(hopc_.state(), last_verdict_out_.trigger, now_ms, last_burst_ms_, burst_period)) {
     const double prev_burst_ms = last_burst_ms_;
     last_burst_ms_ = now_ms;
@@ -675,34 +677,39 @@ void ChannelCore::step_controller_(const ChannelTickIn& in) {
       fill_hop_targets(ht);
     } else if (burst_card < 0 || !inflight_) {
       fill_hop_targets(ht);
+    } else if (spare_usb_burst && cfg_.threaded && inflight_started_) {
+      // The spare card's burst runs on the in-flight thread, which owns that
+      // card's dwells anyway: the core loop keeps draining and publishing the
+      // TX card's video while it runs. step_drains_ ranks the results; the
+      // trigger is held back below until it has.
+      burst_req_op_.store(plan_.op());
+      burst_req_card_.store(burst_card);
+      burst_inflight_ = true;
+      burst_posted_ms_ = now_ms;
     } else {
-      std::lock_guard<std::mutex> ilk(inflight_mu_);
-      auto& fe = *cards_[static_cast<size_t>(burst_card)];
-      inflight_->set_radio(fe);
-      // The burst leaves the op channel and returns to it, so only the
-      // generation (not the channel number) can mark an NHM arm as stale
-      // if it spans the burst; bump before and after so a read on either
-      // side of the retune-away sees a generation newer than its arm.
-      // The burst holds the card's device-use lock throughout: the
-      // sampler's op-channel check cannot see the retune-away (the card
-      // stores its channel only after each retune returns), and a pass
-      // landing mid-burst would cut the dwells' FA/CCA delta and re-arm
-      // NHM over theirs. Taken after inflight_mu_, the order every holder
-      // of both follows.
-      auto hold = sampler_->hold_card(static_cast<size_t>(burst_card));
-      tune_gen_[static_cast<size_t>(burst_card)].fetch_add(1, std::memory_order_release);
+      // A one-card GS (the burst card is the TX card, off op either way) and
+      // a core without threads run the burst here, synchronously.
       std::vector<ScoutDwell> recs;
-      for (const auto& v : inflight_->burst(plan_.op(), recs)) ranker_.add(v);
-      cur_ch_[static_cast<size_t>(burst_card)] = fe.channel();
-      tune_gen_[static_cast<size_t>(burst_card)].fetch_add(1, std::memory_order_release);
-      hold.unlock();
+      {
+        std::lock_guard<std::mutex> ilk(inflight_mu_);
+        for (const auto& v : burst_on_card_(burst_card, plan_.op(), recs)) ranker_.add(v);
+      }
+      cur_ch_[static_cast<size_t>(burst_card)] = cards_[static_cast<size_t>(burst_card)]->channel();
       for (const auto& d : recs) sink_.dwell(now_ms, burst_card, d);
       fill_hop_targets(ht);
     }
   }
-  // A relay sweep in flight: the ranking is about to change; holding the
-  // trigger back keeps the controller out of hold_exhausted until it lands.
-  if (sweep_.on) {
+  // A posted burst that never came back (the in-flight thread stopped) must
+  // not hold the trigger forever; a burst takes ~75 ms at the defaults.
+  if (burst_inflight_ && now_ms - burst_posted_ms_ >= kBurstLostMs) {
+    burst_inflight_ = false;
+    burst_req_card_.store(-1);
+    sink_.log(logf_("maburgs hop: posted burst lost after %.0f ms", now_ms - burst_posted_ms_));
+  }
+  // A relay sweep or a posted spare-card burst in flight: the ranking is
+  // about to change; holding the trigger back keeps the controller out of
+  // hold_exhausted (and its order off the bursting card) until it lands.
+  if (sweep_.on || burst_inflight_) {
     ht.verdict.trigger = false;
     ht.best.reset();
     ht.escape.reset();
@@ -770,23 +777,17 @@ void ChannelCore::step_move_edge_(const ChannelTickIn& in) {
 void ChannelCore::step_drains_() {
   if (scout_)
     for (const auto& d : scout_->take_dwells()) sink_.dwell(now_ms_cur_, scout_card_, d);
-  // In-flight scout thread: started once the boot pick is closed and the
-  // boot scout owns no card. Two-card, auto mode only -- pinned never ranks
-  // (nothing to move to), and the spare card stays on diversity.
-  if (!inflight_started_ && reactive_ && !scout_owns_() && !boot_pick_.open() && n_cards_ >= 2) {
-    inflight_started_ = true;
-    if (cfg_.threaded) {
-      scout_run_.store(true);
-      scout_thread2_ = std::thread([this] { scout_loop_(); });
-    }
-  }
+  start_inflight_if_due_();
   std::vector<std::pair<int, ScoutDwell>> drained;
   std::vector<HopVisit> visits;
+  bool burst_done = false;
   {
     std::lock_guard<std::mutex> lk(dwell_mu_);
     drained.swap(dwell_recs_);
     visits.swap(dwell_visits_);
+    std::swap(burst_done, burst_done_);
   }
+  if (burst_done) burst_inflight_ = false;   // its visits are ranked below, before the next controller step
   size_t vi = 0;
   for (auto& rec : drained) {
     const int card = rec.first;
@@ -801,6 +802,21 @@ void ChannelCore::step_drains_() {
     if (ok) ++vi;
   }
   for (const auto& v : visits) ranker_.add(v);
+}
+
+// In-flight scout thread: started once the boot pick is closed and the
+// boot scout owns no card. Two-card, auto mode only -- pinned never ranks
+// (nothing to move to), and the spare card stays on diversity. Also checked
+// before the freshness burst: the tick the boot scout lets go of its card
+// may burst, and that burst belongs on this thread.
+void ChannelCore::start_inflight_if_due_() {
+  if (!inflight_started_ && reactive_ && !scout_owns_() && !boot_pick_.open() && n_cards_ >= 2) {
+    inflight_started_ = true;
+    if (cfg_.threaded) {
+      scout_run_.store(true);
+      scout_thread2_ = std::thread([this] { scout_loop_(); });
+    }
+  }
 }
 
 void ChannelCore::step_width_resync_() {
@@ -1083,10 +1099,9 @@ void ChannelCore::step_cal_(const ChannelTickIn& in) {
     }
     cal_meas_.s = CalMeasure::Running;
     cal_meas_.t0 = now_ms;
-    // Twice a full round's dwell time (every dwell channel, op's included,
-    // at dwell_ms + settle_ms), never under a second.
-    const size_t n = cfg_.radio.width == 40 ? scan_half_set(cfg_.radio.channels).size()
-                                            : cfg_.radio.channels.size();
+    // Twice a full round's dwell time (every member, op's included, at
+    // dwell_ms + settle_ms; one dwell per pair at 40), never under a second.
+    const size_t n = cfg_.radio.channels.size();
     cal_meas_.bound_ms = std::max(
         1000.0, 2.0 * static_cast<double>(n) *
                     static_cast<double>(cfg_.radio.scan.dwell_ms + cfg_.radio.scan.settle_ms));
@@ -1109,12 +1124,12 @@ void ChannelCore::finish_cal_measure_(double now_ms) {
   // one op is unmeasured and a working link is not moved on a one-sided
   // comparison (the boot pick's "op unmeasured" rule).
   const bool have_op = op_live_.has_value() && op_live_ms_ >= cal_meas_.t0;
-  std::vector<CalReading> halves;
+  std::vector<CalReading> members;
   for (const RankSample& s : scout_->round_samples())
-    halves.push_back(CalReading{s.ch, s.foreign, s.busy_valid, s.busy_pct});
+    members.push_back(CalReading{s.ch, s.foreign, s.busy_valid, s.busy_pct});
   const CalPickOut pick =
-      cal_round_pick(halves, have_op ? op_live_ : std::nullopt, op, cfg_.radio.channels,
-                     cfg_.radio.width, static_cast<uint32_t>(cfg_.radio.scan.pick_margin),
+      cal_round_pick(members, have_op ? op_live_ : std::nullopt, op, cfg_.radio.channels,
+                     cfg_.radio.scan.pick_margin_pct,
                      cfg_.radio.scan.busy.blocked_pct);
   const uint8_t best = pick.best;
   sink_.pick(now_ms, best, scout_->rounds(), pick.rows, 1);
@@ -1174,10 +1189,63 @@ void ChannelCore::inflight_body_() {
 
 void ChannelCore::scout_loop_() {
   while (scout_run_.load()) {
-    sleep_(cfg_.hop.dwell_period_ms);
+    // The periodic dwell's period, cut short by a posted burst.
+    const auto t0 = now_ms_();
+    while (scout_run_.load() && burst_req_card_.load() < 0 &&
+           static_cast<double>(now_ms_() - t0) < static_cast<double>(cfg_.hop.dwell_period_ms))
+      sleep_(kScoutPollMs);
     if (!scout_run_.load()) break;
-    inflight_body_();
+    if (burst_req_card_.load() >= 0) run_posted_burst_();
+    else inflight_body_();
   }
+}
+
+std::vector<HopVisit> ChannelCore::burst_on_card_(int card, uint8_t op, std::vector<ScoutDwell>& recs) {
+  auto& fe = *cards_[static_cast<size_t>(card)];
+  inflight_->set_radio(fe);
+  // The burst leaves the op channel and returns to it, so only the
+  // generation (not the channel number) can mark an NHM arm as stale
+  // if it spans the burst; bump before and after so a read on either
+  // side of the retune-away sees a generation newer than its arm.
+  // The burst holds the card's device-use lock throughout: the
+  // sampler's op-channel check cannot see the retune-away (the card
+  // stores its channel only after each retune returns), and a pass
+  // landing mid-burst would cut the dwells' FA/CCA delta and re-arm
+  // NHM over theirs. Taken after inflight_mu_, the order every holder
+  // of both follows. dwell_busy/dwell_card mark the card mid-dwell for
+  // the verdict, the TX selector and the mechanical retune loop, which
+  // run on while a posted burst is out.
+  auto hold = sampler_->hold_card(static_cast<size_t>(card));
+  tune_gen_[static_cast<size_t>(card)].fetch_add(1, std::memory_order_release);
+  dwell_card_.store(card);
+  dwell_busy_.store(true);
+  auto visits = inflight_->burst(op, recs);
+  dwell_busy_.store(false);
+  dwell_card_.store(-1);
+  tune_gen_[static_cast<size_t>(card)].fetch_add(1, std::memory_order_release);
+  return visits;
+}
+
+void ChannelCore::run_posted_burst_() {
+  const int card = burst_req_card_.load();
+  std::vector<ScoutDwell> recs;
+  std::vector<HopVisit> visits;
+  {
+    std::lock_guard<std::mutex> ilk(inflight_mu_);
+    // A calibration measure round may have taken the scout card since the
+    // post (step_cal_ starts the round under inflight_mu_): stand down, but
+    // still report done so the core stops holding the trigger.
+    if (!scout_working_atomic_.load()) visits = burst_on_card_(card, burst_req_op_.load(), recs);
+  }
+  // Clear the request before the results become visible: once the core
+  // sees burst_done_ it may post the next burst, which this must not erase
+  // (nor one the core re-posted after giving this one up as lost).
+  int posted = card;
+  burst_req_card_.compare_exchange_strong(posted, -1);
+  std::lock_guard<std::mutex> lk(dwell_mu_);
+  for (auto& d : recs) dwell_recs_.emplace_back(card, std::move(d));
+  for (auto& v : visits) dwell_visits_.push_back(v);
+  burst_done_ = true;
 }
 
 }  // namespace maburgs

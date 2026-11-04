@@ -17,8 +17,9 @@ bool InflightScout::dwell(uint8_t ch, uint8_t back, ScoutDwell& d, HopVisit& vis
   s.seq = seq_++;
   s.def.band = ch >= 36 ? 5 : 2;
   s.def.primary = ch;
-  // FastRetune keeps the card's width and offset: a 40 MHz dwell scores the
-  // candidate's PRIMARY only (secondary-blind, docs/bw40.md "In-flight scout").
+  // FastRetune keeps the card's width and offset: a 40 MHz dwell's frame
+  // terms score the candidate's primary, its NHM busy the whole pair
+  // (docs/bw40.md "In-flight scout").
   s.def.width = cfg_.width_mhz == 40 ? CHANNEL_WIDTH_40 : CHANNEL_WIDTH_20;
   s.def.offset = cfg_.width_mhz == 40 ? mabur::ht40_offset(ch) : 0;
   d.in_session = true;

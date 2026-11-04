@@ -23,16 +23,22 @@ struct CardCfg {
 /// Channel search + measurement over radio.channels. dwell/settle/min_rounds
 /// are the measurement; search_ms the DISC burst at the start of an unlinked
 /// dwell; op_window_ms the one-card beacon window on op; search_after_ms how
-/// long every card holds op after a loss before sweeping; pick_margin how
-/// much a candidate must beat the current channel by; one_card_ms the
-/// one-card silent measurement prelude; max_ms the ceiling on an open pick.
+/// long every card holds op after a loss before sweeping; pick_margin_pct
+/// how many busy-% points a candidate must beat the current channel by;
+/// one_card_ms the one-card silent measurement prelude; max_ms the ceiling
+/// on an open pick.
 /// What counts as busy air. Shared by every measurer -- the boot scout
 /// and its pair ranker, the in-flight scout and its ranker, the verdict
 /// engine -- so it lives under [radio.scan], not [hop]: a pinned GS with
 /// no reactive hop still measures.
 struct BusyCfg {
   int busy_dbm = -83;         // nf::kNhmAbsThDbm bucket edge (nhm_busy.h::busy_dbm_is_edge)
-  double blocked_pct = 50.0;  // foreign busy airtime that makes a window/channel "blocked"
+  // Foreign busy airtime % that makes a window/channel "blocked". One
+  // threshold for every measurer on purpose: the hop trigger, the in-flight
+  // ranker's blocked tier, the boot pick and the calibration pick, so a hop
+  // target the ranker calls unblocked is unblocked to the verdict too and
+  // its verify does not fail on landing.
+  double blocked_pct = 30.0;
 };
 
 struct ScanCfg {
@@ -42,7 +48,11 @@ struct ScanCfg {
   int search_ms = 100;
   int op_window_ms = 300;
   int search_after_ms = 5000;
-  int pick_margin = 20;
+  // Every pick (boot, 20 or 40 MHz, and the calibration round): a
+  // candidate must beat the current channel's busy % by this many
+  // percentage points before it takes the link; an exact busy tie, or
+  // neither side reading busy, stays.
+  int pick_margin_pct = 10;
   int one_card_ms = 5000;
   int max_ms = 30000;
   BusyCfg busy;
@@ -59,14 +69,19 @@ struct HopVerdictCfg {
   int recovered_min = 8;
   int weak_rssi_dbm = -78;
   int weak_snr_db = 12;
-  int fading_drop_db = 6;
-  int foreign_pps = 50;
-  int fa_pps = 100;
-  // AU rate below this fraction of the trailing per-window AU mean reads
-  // `starved` even when a trickle of own frames still arrives (bench
-  // session 0232: 5-30 own frames/s under a long-frame jam).
-  // 0 disables the AU term. 60->30 fps low-power is 0.5, so keep it below.
-  double starved_frac = 0.25;
+  // Consecutive blocked windows that read `occupied` -> impaired on their
+  // own, with no loss or weak signal needed, and (with that window's own
+  // blocked reading) one of the hop's two routes to `interfered`. A window
+  // with no busy reading neither advances nor resets the count.
+  int occupied_windows = 5;
+  // Detect route: foreign airtime % (median over detect_windows checks)
+  // that says "someone is on this channel"; must not exceed radio.scan.blocked_pct.
+  double detect_pct = 8.0;
+  // Checks in a detect run.
+  int detect_windows = 5;
+  // ...and this many of them lossy = interfered: the low-level route,
+  // under blocked_pct.
+  int detect_impaired = 1;
 };
 
 /// In-flight channel hop (docs/inflight-channel-hop.md). Runs in
@@ -76,8 +91,15 @@ struct HopVerdictCfg {
 struct HopCfg {
   int window_ms = 150;
   int persist = 2;
-  int dwell_observe_ms = 5;
-  int dwell_period_ms = 333;
+  int dwell_observe_ms = 20;
+  int dwell_period_ms = 1000;
+  // USB freshness-burst pacing: at most one sweep of every candidate per
+  // this, while a hop trigger is live and no hop is in flight.
+  // dwell_period_ms is the periodic spare-card dwell, and also paces the
+  // USB burst in a Hold whose candidates are all ranked. A spare card's
+  // burst is skipped once every candidate is ranked (the periodic dwell
+  // already keeps that ranking).
+  int burst_period_ms = 333;
   int rank_visits = 5;
   int rank_max_age_ms = 10000;
   int confirm_ms = 500;
@@ -92,8 +114,7 @@ struct HopCfg {
   int backoff_ms = 30000;
   int one_card_repeats = 5;
   // Freshness-burst pacing when the burst card is a relay: its sweep blanks
-  // it for ~280 ms, so 333 ms (dwell_period_ms) in Hold would leave it ~85
-  // % deaf.
+  // it for ~280 ms, so 333 ms (burst_period_ms) would leave it ~85 % deaf.
   int relay_burst_period_ms = 1000;
   HopVerdictCfg verdict;
 };

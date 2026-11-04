@@ -82,7 +82,6 @@ class RemoteCard final : public LinkCard {
 
   // ScoutRadio
   bool retune(uint8_t ch) override;
-  bool retune_width(uint8_t ch, uint8_t width_mhz) override { return set_width(ch, width_mhz); }
   ScoutEnergy read_energy(bool) override { return {}; }
   ScoutEnergy read_energy_scout() override;   // fa_ofdm = relay OFDM errors since the previous call
   ScoutFrames frames() const override;

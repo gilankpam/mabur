@@ -11,11 +11,21 @@ namespace maburgs {
 enum class Verdict { Healthy, Fade, Interfered, Unknown };
 const char* to_string(Verdict v);   // "healthy" "fade" "interfered" "unknown"
 
-enum : uint8_t { kEvImpaired = 1, kEvWeak = 2, kEvFading = 4, kEvContended = 8, kEvRaised = 16,
-                 kEvBlocked = 32, kEvStarved = 64 };
+// 0x08/0x10 are unassigned (the retired contended/raised evidence-only
+// bits); 0x40 is unassigned too (the retired starved bit, which drove
+// `impaired` rather than being evidence-only). 0x04, once the retired
+// fading bit, is `detected`.
+enum : uint8_t { kEvImpaired = 1, kEvWeak = 2, kEvDetected = 4,
+                 kEvBlocked = 32, kEvOccupied = 128 };
 
-// The verdict thresholds (hop.verdict.weak_rssi_dbm / weak_snr_db /
-// fading_drop_db) are written in dBm / dB. The aggregator's EMAs are
+// This window's evidence is a hop-route reading: `blocked` (the occupied
+// route's per-window reading) or `detected` (the detect route). One
+// predicate, so every consumer that acts on "a route to `interfered` is
+// reading" treats the two routes alike.
+inline bool trigger_evidence(uint8_t ev) { return ev & (kEvBlocked | kEvDetected); }
+
+// The verdict thresholds (hop.verdict.weak_rssi_dbm / weak_snr_db) are
+// written in dBm / dB. The aggregator's EMAs are
 // devourer raw units -- RSSI on a 0..110 scale where raw - 110 is dBm
 // (the sideport's own conversion), SNR in half-dB (snr_units.h) -- so the
 // fill site converts HERE, never at the threshold, and scan.log V lines
@@ -44,15 +54,6 @@ struct VerdictCardIn {
 struct VerdictLinkIn {
   double pre_fec_loss = 0;   // 0..1 over the window
   uint32_t recovered = 0;
-  // No own frame on ANY valid card this window (main.cpp: the own-frame
-  // delta is 0 on every card with a valid reading, and at least one card
-  // is valid). No frames means no loss, so without this a drone starved
-  // by a jam read `healthy`. Counts as impaired (kEvStarved).
-  bool starved = false;
-  // Video AUs published this window (main.cpp: the au_seq delta). Against
-  // its trailing mean it widens `starved` to an AU-rate collapse -- see
-  // HopVerdictCfg::starved_frac.
-  uint32_t au_count = 0;
 };
 
 struct VerdictOut {
@@ -60,8 +61,6 @@ struct VerdictOut {
   uint8_t evidence = 0;
   int ref_rung = -1;
   bool trigger = false;   // interfered in >= persist of the last 3 windows
-  double ref_rssi_dbm = 0;
-  double d_rssi_db = 0;
   // The wall-clock span this verdict's counter deltas were gathered over:
   // t_start_ms = the previous window's now_ms (== now_ms on the first
   // window ever), t_ms = this window's now_ms. Carried because a cached
@@ -76,16 +75,24 @@ struct VerdictOut {
   // The frozen-reference episode is open (the first impaired window has
   // been seen and the references have not thawed yet).
   bool ref_frozen = false;
-  // True on the FIRST `interfered` window of a frozen-reference episode,
-  // and never again until the references thaw (3 healthy windows, or
-  // HopVerdict::reset() after a hop's verify window ends). This is the
-  // edge the rung-store blank is scoped to -- see gs/src/hop_blank.h. It
-  // is deliberately NOT `ref_frozen`, which is keyed on `impaired`: Fade
-  // and Unknown are impaired too, and fade/unknown leave the ladder's
-  // behaviour unchanged. One edge per episode
-  // is also what bounds the blank -- a jam that alternates interfered and
-  // healthy windows stays inside ONE frozen episode and re-arms nothing.
-  bool first_interfered = false;
+  // True on the FIRST impaired, non-weak window of a frozen-reference
+  // episode that is the lead-in of either route to `interfered`: `blocked`
+  // (the occupied route), or loss-impaired with this window's own foreign
+  // reading >= hop.verdict.detect_pct (the earliest window a detect run can
+  // start from), or `detected` itself (a detect run whose loss window read
+  // under detect_pct has no earlier lead-in). Never again until the
+  // references thaw (3 healthy windows,
+  // or HopVerdict::reset() after a hop's verify window ends). This is the
+  // edge the rung-store blank is scoped to -- see gs/src/hop_blank.h.
+  // Either route is acted on only windows after its lead-in (the occupied
+  // streak, the detect ring filling), and the lead-in is lossy: arming here
+  // keeps the demotes meanwhile out of the per-rung store. It is
+  // deliberately NOT `ref_frozen`, which is keyed on `impaired` alone: a
+  // fade (weak) and an unexplained loss with no foreign reading behind it
+  // leave the ladder's behaviour unchanged. One edge per episode is also
+  // what bounds the blank -- a jam that alternates blocked and healthy
+  // windows stays inside ONE frozen episode and re-arms nothing.
+  bool first_blocked = false;
 };
 
 // Per-window classifier: fade / interfered / unknown / healthy. Pure: the
@@ -93,7 +100,7 @@ struct VerdictOut {
 // I/O, no threads, no hardware.
 class HopVerdict {
  public:
-  HopVerdict(HopCfg cfg, BusyCfg busy, int n_cards);
+  HopVerdict(HopCfg cfg, BusyCfg busy);
   // One window. cards[i].valid=false = skipped (mid-dwell / dead); rung = ladder rung now.
   VerdictOut window(double now_ms, const std::vector<VerdictCardIn>& cards,
                     const VerdictLinkIn& link, int rung);
@@ -101,12 +108,20 @@ class HopVerdict {
   // Called from ChannelCore::apply_hop_action_ on HopAction::VerifyPass -- see hop_controller.h.
   void reset();
   // A new in-session verdict run is starting (ChannelCore: hop_active's
-  // rising edge, where the AU/recovered counter baselines are re-primed).
-  // Drops the AU history and its frozen reference only: the frame rate
-  // before an outage is no baseline for the one after it (a session that
-  // comes back at a lower fps would read starved). RSSI/recovered
-  // histories are untouched; reset() is still the per-hop thaw.
+  // rising edge, where the recovered counter baseline is re-primed).
+  // Clears the blocked streak and the detect ring: per-run state, not
+  // leftovers from the previous session. The recovered history is
+  // untouched; reset() is still the per-hop thaw.
   void new_session();
+  // A hop has landed (HopAction::Confirm) at now_ms: clears the detect
+  // ring and records the landing. The ring holds the old channel's
+  // readings, and carrying them onto the target would fail every
+  // detect-route hop's verify on a clean channel. A window whose span starts
+  // inside the landing settle (kHopSettleBlankMs) then never counts as the
+  // ring's loss window. The blocked streak and the frozen references are
+  // untouched: the streak carries on purpose, so an already occupied target
+  // fails verify on its first blocked reading.
+  void landed(double now_ms);
   int ref_rung() const;               // -1 while healthy
   // A live ladder swap inside a frozen episode: the frozen rung index is
   // re-pointed at the same operating point in the new ladder (the caller
@@ -116,22 +131,44 @@ class HopVerdict {
  private:
   HopCfg cfg_;
   BusyCfg busy_;
-  int n_cards_;
-  // trailing references (5 s = 5000 / window_ms samples), per card RSSI median, link recovered mean
-  std::vector<std::deque<double>> rssi_hist_;
+  // trailing reference (5 s = 5000 / window_ms samples): link recovered mean.
   std::deque<double> rec_hist_;
-  std::deque<double> au_hist_;     // per-window AU count, same trailing rule as rec_hist_
   bool frozen_ = false;
   double prev_ms_ = 0;
   bool have_prev_ = false;
-  bool seen_interfered_ = false;   // an `interfered` window in the current frozen episode
-  std::vector<double> ref_rssi_;
+  bool seen_blocked_ = false;   // a first_blocked edge in the current frozen episode
   double ref_rec_ = 0;
-  double ref_au_ = 0;
   int ref_rung_ = -1;
   int healthy_streak_ = 0;
+  // Consecutive `blocked` windows with a usable busy reading. A window
+  // with no busy reading (mid-dwell, no usable card) holds this rather
+  // than resetting or advancing it -- see occupied's fold into `impaired`
+  // in window(). Survives a hop (reset()/new_session() clear it, nothing
+  // else does): a target that is already occupied must fail verify on
+  // its first window, not get occupied_windows of free pass.
+  int blocked_streak_ = 0;
+  // The detect ring: one slot per window (the last hop.verdict.
+  // detect_windows of them), reading-less windows included. Cleared by
+  // reset(), new_session() and landed() -- unlike blocked_streak_, it does
+  // not carry across a hop's landing.
+  struct DetectSlot {
+    bool reading;     // the window had a usable busy reading
+    double foreign;   // its minimum-across-cards foreign busy %
+    bool lossy;       // loss_impaired (the link's own term, not occupied),
+                      // never on a window starting inside the landing settle
+  };
+  std::deque<DetectSlot> detect_ring_;
+  // The last landed() time; cleared by reset() and new_session().
+  bool have_landed_ = false;
+  double landed_ms_ = 0;
+  // The ring holds a detection, full or not: a majority of reading slots,
+  // their median foreign % >= detect_pct, and at least `lossy_needed` lossy
+  // slots.
+  bool ring_reads_detect_(int lossy_needed) const;
+  // The thaw hold: a detection is in the making (one lossy slot is enough,
+  // the ring need not be full).
+  bool ring_holds_detection() const { return ring_reads_detect_(1); }
   std::deque<bool> recent_interfered_;   // last 3
-  static double median(std::deque<double> v);
 };
 
 }  // namespace maburgs

@@ -45,8 +45,8 @@ class RadioFrontend : public LinkCard {
     int index = 0;             // ordinal among matching devices
     uint8_t channel = 149;
     // RX width: 20, or 40 (channel is the primary 20; the secondary is the
-    // standard pairing, mabur::ht40_offset). radio.width for link cards; the
-    // boot scout card starts at 20 and joins at 40 via set_width().
+    // standard pairing, mabur::ht40_offset). radio.width for every card,
+    // the boot scout card included.
     uint8_t width_mhz = 20;
     uint8_t card_id = 0;
     // Set by the startup scan (card_scan.h): open the device at this
@@ -84,14 +84,13 @@ class RadioFrontend : public LinkCard {
 
   // ScoutRadio interface: the scout thread's control plane on this card.
   bool retune(uint8_t ch) override;                 // FastRetune; false pre-ready
-  // Full SetMonitorChannel to `ch` at `width_mhz` (20|40): the boot scout
-  // card joining the 40 MHz link once the pick freezes (docs/bw40.md "Boot scan scores every half").
-  // Tens of ms, once per process. False when 40 has no pair (nothing
-  // recorded) or pre-ready -- the width is then still recorded as desired,
-  // so the next open_and_start() comes up at it (width_resync.h).
+  // Full SetMonitorChannel to `ch` at `width_mhz` (20|40): the core loop's
+  // width resync on a card that came up at the wrong width (width_resync.h).
+  // Tens of ms. False when 40 has no pair (nothing recorded) or pre-ready
+  // -- the width is then still recorded as desired, so the next
+  // open_and_start() comes up at it.
   bool set_width(uint8_t ch, uint8_t width_mhz) override;
   uint8_t width() const override { return width_.load(std::memory_order_acquire); }  // current/desired RX width
-  bool retune_width(uint8_t ch, uint8_t width_mhz) override { return set_width(ch, width_mhz); }
   ScoutEnergy read_energy(bool with_nhm) override;  // GetRxEnergy -> ScoutEnergy
   ScoutEnergy read_energy_scout() override;         // GetRxEnergyScout -> ScoutEnergy
   ScoutFrames frames() const override {
@@ -102,6 +101,8 @@ class RadioFrontend : public LinkCard {
   NhmBusyRead read_nhm_busy() override;
   // Debug: the chip's programmed central channel (RF18 readback), -1 if unknown.
   int tuned_central() override;              // reads it back
+  // SPIKE (throwaway): the bench downcasts to peek PHY counters.
+  IRtlRadio* debug_radio() const { return device_.get(); }
   CardCaps caps() const override { return caps_; }            // filled in open_and_start() after InitWrite
   uint8_t channel() const override { return channel_.load(std::memory_order_acquire); }  // last channel handed to InitWrite/retune
 

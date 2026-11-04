@@ -1507,6 +1507,24 @@ class HopReportTest(unittest.TestCase):
         self.assertEqual([h["elapsed_ms"] for h in s["H"]], [0.0, 0.0, 100.0])
         self.assertEqual([h["reason"] for h in s["H"]], [None, "cal", None])
 
+    def test_v8_scanlog_boot_dwell_one_per_pair(self):
+        """scanlog 8: at radio.width 40 the boot scan writes one D row per
+        pair per round, bw 40 (scanlog <= 7 files have two, one per half, at
+        bw 20). No column change -- D parses identically either way, keyed
+        only by the row count and the bw field's value."""
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "scan.log")
+        with open(p, "w") as f:
+            f.write("scanlog 7 channels=40,64 mode=auto dwell_ms=250\n")
+            f.write("D 100 0 40 0 250 0 0 0 0 - nan 0 0 0 0 0 20 12.0 -\n")
+            f.write("D 150 0 64 0 250 0 0 0 0 - nan 0 0 0 0 0 20 12.0 -\n")
+            f.write("scanlog 8 channels=40,64 mode=auto dwell_ms=250\n")
+            f.write("D 300 0 40 1 250 0 0 0 0 - nan 0 0 0 0 0 40 12.0 -\n")
+        s = flightreport.load_scanlog(p)
+        self.assertEqual(s["version"], 8)
+        self.assertEqual([x["bw"] for x in s["D"]], [20, 20, 40])
+        self.assertEqual([x["round"] for x in s["D"]], [0, 0, 1])
+
     def test_v4_scanlog_carries_busy_and_own_air(self):
         """scanlog 4 (NHM airtime): the V card block grows two fields, nhm_busy
         (%, '-' when the window wasn't ours) and own_air (%). A rejoined
@@ -1702,8 +1720,10 @@ class HopReportTest(unittest.TestCase):
         # raised line and the unknown line; weak=1 (only the fade line);
         # fading=1 (only the unknown line -- the one bit with zero
         # coverage before this line was added); contended=2 (only the two
-        # 0x09 lines); raised=1 (only the 0x11 line).
-        self.assertIn("evidence bits: impaired=5 weak=1 fading=1 contended=2 raised=1", out)
+        # 0x09 lines); raised=1 (only the 0x11 line). blocked/starved/
+        # occupied are listed at 0: the tally names every kEv* bit.
+        self.assertIn("evidence bits: impaired=5 weak=1 fading=1 contended=2 raised=1 "
+                      "blocked=0 starved=0 occupied=0", out)
         # card 0: the 2 contended-interfered windows (foreign=15/fa=3) plus
         # the 1 fade window (foreign=2/fa=1) -- median of [15,15,2]/[3,3,1]
         # is still 15/3 (2 of 3 samples agree), n=3.
@@ -1712,6 +1732,69 @@ class HopReportTest(unittest.TestCase):
         self.assertIn("card 1 (non-healthy, n=1): foreign=1 fa=30 rssi=-50.0 snr=18.0", out)
         # card 2: only the 1 unknown (fading) window.
         self.assertIn("card 2 (non-healthy, n=1): foreign=3 fa=2 rssi=-66.0 snr=9.0", out)
+
+    def test_scanlog9_bit_tally_names_detected_and_scanlog8_keeps_fading(self):
+        """0x04 is `detected` under scanlog 9 and `fading` under <= 8: the
+        bit map follows the file's own marker. Revert (drop ("detected", 4)
+        from _EVIDENCE_BITS_V9): the scanlog 9 tally has no detected key."""
+        V = [{"evidence": 0x05}, {"evidence": 0x25}, {"evidence": 0x01}]
+        self.assertEqual(flightreport.evidence_bit_tally(V, 9),
+                         {"impaired": 3, "weak": 0, "detected": 2,
+                          "blocked": 1, "occupied": 0})
+        self.assertEqual(flightreport.evidence_bit_tally(V, 8)["fading"], 2)
+        self.assertNotIn("detected", flightreport.evidence_bit_tally(V, 8))
+
+    def test_scanlog9_v_line_parses_the_9_field_card_block(self):
+        """scanlog 9 drops drssi from the V card block (9 fields: card
+        foreign fa cca crc rssi snr nhm_busy|- own_air); a scanlog 8 section
+        ahead of it in the same file keeps its 10-field block. Revert (stride
+        10 for scanlog 9): the 9-field line is skipped as malformed."""
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "scan.log")
+        with open(p, "w") as f:
+            f.write("scanlog 8 channels=40,64 mode=auto dwell_ms=250\n")
+            f.write("V 500.0 unknown 01 5 4.0 12 0 3 2 9 1 -55.0 30.0 -1.5 40.0 3.0\n")
+            f.write("scanlog 9 channels=40,64 mode=auto dwell_ms=250\n")
+            f.write("V 1000.0 interfered 05 5 0.0 2 0 3 2 9 1 -55.0 30.0 45.0 35.0 "
+                    "1 1 0 4 0 -57.0 28.0 - 34.0\n")
+        s = flightreport.load_scanlog(p)
+        self.assertEqual(s["version"], 9)
+        self.assertEqual(len(s["V"]), 2)
+        v8, v9 = s["V"]
+        self.assertEqual(len(v8["cards"]), 1)
+        self.assertEqual(v8["cards"][0]["d_rssi_db"], -1.5)
+        self.assertEqual(v8["cards"][0]["nhm_busy"], 40.0)
+        self.assertEqual(v8["cards"][0]["own_air"], 3.0)
+        self.assertEqual(len(v9["cards"]), 2)
+        c0, c1 = v9["cards"]
+        self.assertEqual((c0["rssi_dbm"], c0["snr_db"]), (-55.0, 30.0))
+        self.assertIsNone(c0["d_rssi_db"])
+        self.assertEqual(c0["nhm_busy"], 45.0)
+        self.assertEqual(c0["own_air"], 35.0)
+        self.assertEqual(c1["card"], 1)
+        self.assertIsNone(c1["nhm_busy"])
+        self.assertEqual(c1["own_air"], 34.0)
+
+    def test_rejoined_scanlog_8_then_9_tallies_each_row_under_its_own_marker(self):
+        """A GS restart rejoins the session directory, so a deploy session
+        holds scanlog 8 rows followed by scanlog 9 rows in one file. 0x04 is
+        `fading` in the first and `detected` in the second: each V row is
+        decoded under the marker in force when it was written, not the
+        file's highest. Revert (tally every row under the file's version):
+        fading reads 0 and detected 2."""
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "scan.log")
+        with open(p, "w") as f:
+            f.write("scanlog 8 channels=40,64 mode=auto dwell_ms=250\n")
+            f.write("V 500.0 unknown 05 5 4.0 12 0 3 2 9 1 -55.0 30.0 -1.5 40.0 3.0\n")
+            f.write("scanlog 9 channels=40,64 mode=auto dwell_ms=250\n")
+            f.write("V 1000.0 interfered 05 5 0.0 2 0 3 2 9 1 -55.0 30.0 45.0 35.0\n")
+        s = flightreport.load_scanlog(p)
+        self.assertEqual([v["version"] for v in s["V"]], [8, 9])
+        tally = flightreport.evidence_bit_tally(s["V"], s["version"])
+        self.assertEqual(tally["impaired"], 2)
+        self.assertEqual(tally["fading"], 1)
+        self.assertEqual(tally["detected"], 1)
 
     def test_shadow_would_events_labeled_and_histogram_still_shown(self):
         """hop.enable=false: HopController still runs and still logs, every

@@ -2,6 +2,7 @@
 // FakeCard: a LinkCard for ChannelCore tests. Every control-plane call is
 // recorded; energy/frames are programmable; the clock is shared with the
 // core through FakeClock.
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -21,6 +22,7 @@ struct FakeCard : maburgs::LinkCard {
   uint8_t ch = 0, width_mhz = 20;
   bool is_ready = true, is_alive = true, scout_ok = true, relay = false;
   bool retune_ok = true;
+  int refuse_ch = -1;                 // retune() to this one channel fails
   // Relay-style: retune() takes the target at once (channel() reads it, as
   // RemoteCard's does) but ready() reads false until the test re-readies
   // the card (the TUNE's ~0.2 s to STATUS).
@@ -62,14 +64,10 @@ struct FakeCard : maburgs::LinkCard {
   // ScoutRadio
   bool retune(uint8_t c) override {
     calls.push_back("retune " + std::to_string(c));
-    if (!retune_ok) return false;
+    if (!retune_ok || c == refuse_ch) return false;
     ch = c;
     if (retune_deferred) is_ready = false;
     return true;
-  }
-  bool retune_width(uint8_t c, uint8_t w) override {
-    calls.push_back("retune_width " + std::to_string(c) + "/" + std::to_string(w));
-    ch = c; width_mhz = w; return true;
   }
   maburgs::ScoutEnergy read_energy(bool with_nhm) override {
     maburgs::ScoutEnergy e; e.fa_valid = !relay;
@@ -92,11 +90,37 @@ struct FakeCard : maburgs::LinkCard {
   // NHM busy window programmability (ScoutRadio defaults are "unsupported").
   bool nhm_arm_ok = false;                          // arm_nhm_busy() result
   maburgs::NhmBusyRead nhm_read;                    // returned by read_nhm_busy()
+  // Air that reads nhm_read's buckets under whatever period was last armed:
+  // the op-window sampler and a scout dwell (each arms its own period) both
+  // read it. Off, nhm_read.period decides which of them it is valid for.
+  bool nhm_any_period = false;
+  uint16_t nhm_armed_period = 0;
+  // Per-channel NHM busy % override, read at whatever `ch` the card is
+  // tuned to when the scout dwells on it: -1 (default, every entry) falls
+  // back to the single nhm_arm_ok/nhm_read reading above, which is what
+  // op's own (unchanging) channel uses.
+  std::array<int, 256> nhm_busy_pct_on;
+  FakeCard() { nhm_busy_pct_on.fill(-1); }
   bool arm_nhm_busy(uint16_t period_4us) override {
     calls.push_back("arm_nhm " + std::to_string(period_4us));
+    nhm_armed_period = period_4us;
+    if (nhm_busy_pct_on[ch] >= 0) return true;
     return nhm_arm_ok;
   }
-  maburgs::NhmBusyRead read_nhm_busy() override { calls.push_back("read_nhm"); return nhm_read; }
+  maburgs::NhmBusyRead read_nhm_busy() override {
+    calls.push_back("read_nhm");
+    if (nhm_busy_pct_on[ch] >= 0) {
+      maburgs::NhmBusyRead r;
+      r.valid = true;
+      r.period = nhm_armed_period;
+      r.buckets[11] = static_cast<uint8_t>(nhm_busy_pct_on[ch]);
+      r.buckets[0] = static_cast<uint8_t>(100 - nhm_busy_pct_on[ch]);
+      return r;
+    }
+    maburgs::NhmBusyRead r = nhm_read;
+    if (nhm_any_period) r.period = nhm_armed_period;
+    return r;
+  }
   bool can_sweep() const override { return relay && sweep_ok; }
   bool start_sweep(const std::vector<uint8_t>& ch, uint8_t, uint8_t) override {
     if (!can_sweep() || !is_ready) return false;   // RemoteCard: running + owned_and_tuned

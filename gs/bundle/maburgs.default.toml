@@ -24,15 +24,17 @@ relays  = []               # CPE510 mabur-relay units, "ipv4:port" each (UDP 831
 
 # Channel search + measurement (docs/channel-select.md). While the link is
 # down the spare card sweeps the set, beaconing DISC on each member for
-# search_ms to find the drone. In auto mode it also measures every 20 MHz
-# half for dwell_ms, min_rounds times, and once the ranking is mature the
-# link moves to the cleanest member if it beats the current one by
-# pick_margin busy units. One card: op_window_ms beacon windows on op between
-# dwells, and a silent one_card_ms measurement before the first DISC.
-# Auto only: dwell_ms, settle_ms, min_rounds, pick_margin, one_card_ms, max_ms.
+# search_ms to find the drone. In auto mode it also measures every member
+# (one dwell per pair at width 40) for dwell_ms, min_rounds times, and once
+# the ranking is mature the link moves to the cleanest member if it beats
+# the current one by pick_margin_pct busy-% points. One card: op_window_ms
+# beacon windows on op between dwells, and a silent one_card_ms measurement
+# before the first DISC.
+# Auto only: dwell_ms, settle_ms, min_rounds, pick_margin_pct, one_card_ms,
+# max_ms.
 # Both modes: search_ms, op_window_ms, search_after_ms, busy_dbm, blocked_pct.
 # A maburcal run (auto, two cards) measures the set once more with dwell_ms,
-# settle_ms and pick_margin and moves the link to the quietest member first.
+# settle_ms and pick_margin_pct and moves the link to the quietest member first.
 [radio.scan]
 dwell_ms        = 250
 settle_ms       = 30
@@ -40,11 +42,11 @@ min_rounds      = 3
 search_ms       = 100
 op_window_ms    = 300
 search_after_ms = 5000
-pick_margin     = 20
+pick_margin_pct = 10    # a candidate must be this many busy-% points cleaner than the current channel to take the pick
 one_card_ms     = 5000
 max_ms          = 30000
 busy_dbm        = -83   # energy level that counts the air as busy: an NHM bucket edge, -104 -101 -98 -95 -92 -89 -86 -83 -80 -75 -70
-blocked_pct     = 50    # % of time the air is busy with others = channel blocked; every measurer uses it (boot scout, in-flight scout, verdict)
+blocked_pct     = 30    # % of time the air is busy with others = channel blocked; every measurer uses it (boot scout, in-flight scout, verdict, calibration pick)
 
 # Radio cards: by default maburgs uses every supported card it finds on USB.
 # To use only specific cards (e.g. fly one card without unplugging the other),
@@ -235,8 +237,9 @@ rung_period_s = 10            # per-rung summary log interval
 [hop]
 window_ms            = 150    # length of one channel-health check
 persist              = 2      # bad checks in a row before hopping
-dwell_observe_ms     = 5      # scout: time listening per candidate visit...
-dwell_period_ms      = 333    # ...and time between visits
+dwell_observe_ms     = 20     # scout: time listening per candidate visit...
+dwell_period_ms      = 1000   # ...and time between visits -- background spare-card dwell only
+burst_period_ms      = 333    # USB freshness burst: sweep of every candidate while a hop trigger is live, at most one per this (dwell_period_ms once a hold has every candidate ranked; skipped on a two-card GS once every candidate is ranked)
 relay_burst_period_ms = 1000  # relay sweep (~280 ms deaf): at most one per this, while hop-free
 rank_visits          = 5      # visits remembered per candidate
 rank_max_age_ms      = 10000  # visits older than this are ignored
@@ -250,12 +253,12 @@ one_card_repeats     = 5      # single card: send the hop order this many times 
 
 # What counts as a bad channel.
 [hop.verdict]
-loss_pct             = 3.0    # packet loss %
+loss_pct             = 3.0    # packet loss % (worse video layer); also the detect route's confirming loss
 recovered_x          = 3.0    # FEC repairs this many times above normal
 recovered_min        = 8      # ...and at least this many repairs; 0 = off
-weak_rssi_dbm        = -78    # below this signal AND weak_snr_db, loss is blamed on range, not interference
+weak_rssi_dbm        = -78    # below this signal AND weak_snr_db = range edge: never a hop, even on a blocked channel
 weak_snr_db          = 12
-fading_drop_db       = 6      # signal this much below its recent level = fading, not interference
-foreign_pps          = 50     # other transmitters' packets per second
-fa_pps               = 100    # false detections per second (non-Wi-Fi noise)
-starved_frac         = 0.25   # video rate below this fraction of normal = starved (keep below 0.5)
+occupied_windows     = 5      # channel blocked this many checks in a row = interfered: the heavy route; detect_* below is the second
+detect_pct           = 8      # foreign airtime % (median over detect_windows checks) that says "someone is on this channel"; must not exceed radio.scan.blocked_pct
+detect_windows       = 5      # checks in that run
+detect_impaired      = 1      # ...and this many of them lossy = interfered: the low-level route, under blocked_pct

@@ -11,7 +11,9 @@
 #include "cal_picker.h"
 #include "channel_core.h"
 #include "fake_link_card.h"
+#include "hop_blank.h"
 #include "mabur/rc_proto.h"
+#include "nhm_busy.h"
 #include "recording_sink.h"
 #include "vrx_cfg.h"
 using namespace maburgs;
@@ -51,8 +53,7 @@ struct Rig {
     for (int i = 0; i < n_usb + n_relays; ++i) {
       auto c = std::make_unique<FakeCard>();
       c->clk = &clk; c->ch = start_ch; c->relay = i >= n_usb;
-      // main.cpp: the boot scout card opens at 20, every other card at radio.width
-      c->width_mhz = (i == n_usb - 1 && n_usb >= 1) ? 20 : cfg.radio.width;
+      c->width_mhz = cfg.radio.width;   // main.cpp: every card, the boot scout's included
       ptrs.push_back(c.get());
       cards.push_back(std::move(c));
     }
@@ -163,7 +164,7 @@ TEST(disc_for_card_retags_only_members) {
   const auto p1 = mabur::rc::parse_disc(f1.data(), f1.size());
   REQUIRE(p1.has_value());
   CHECK(p1->op_channel == 64);
-  g.cards[1]->ch = 60;                                   // a 20 MHz half, not a member
+  g.cards[1]->ch = 60;                                   // not a member
   const auto f2 = g.core->disc_for_card(frame, 1);
   CHECK(f2 == frame);
 }
@@ -215,7 +216,7 @@ TEST(disc_targets_is_tx_when_scout_owns_nothing) {
 // thing that can ever set link_edge_seen_).
 TEST(one_card_prelude_commits_before_first_disc) {
   Rig g(1, 0);
-  g.cards[0]->cca_per_ms_on[40] = 5;   // 40 busy, the rest clean
+  g.cards[0]->nhm_busy_pct_on[40] = 100;   // 40 blocked, the rest unread
   // run the scout + core for one_card_ms + a round
   for (int i = 0; i < 800 && !g.sink.has_line("one-card prelude ranking picks"); ++i) g.tick();
   REQUIRE(g.sink.has_line("one-card prelude ranking picks"));
@@ -229,7 +230,7 @@ TEST(one_card_prelude_commits_before_first_disc) {
 // Two cards, no link, auto: maturity commits the pick (K line) and freezes.
 TEST(two_card_no_link_commits_at_maturity) {
   Rig g(2, 0);
-  g.cards[1]->cca_per_ms_on[40] = 5; g.cards[1]->cca_per_ms_on[36] = 5;   // op pair busy
+  g.cards[1]->nhm_busy_pct_on[40] = 100;   // op's pair blocked
   for (int i = 0; i < 3000 && !g.sink.has_line("pick frozen on"); ++i) g.tick();
   REQUIRE(g.sink.has_line("pick frozen on"));
   CHECK(g.sink.has_line("(commit)"));
@@ -244,7 +245,7 @@ TEST(two_card_no_link_commits_at_maturity) {
 TEST(store_failure_is_logged_not_fatal) {
   Rig g(2, 0);
   g.store_ok = false;
-  g.cards[1]->cca_per_ms_on[40] = 5; g.cards[1]->cca_per_ms_on[36] = 5;
+  g.cards[1]->nhm_busy_pct_on[40] = 100;   // op's pair blocked
   for (int i = 0; i < 3000 && !g.sink.has_line("pick frozen on"); ++i) g.tick();
   REQUIRE(g.sink.has_line("pick frozen on"));
   CHECK(g.sink.has_line("maburgs channel: could not write the-store"));
@@ -272,21 +273,21 @@ TEST(scout_card_death_while_working_freezes_pick) {
 
 // Pinned + linked: the scout has no work (search off, nothing to measure),
 // so once it parks and gives up the card, the core's own width resync is
-// the only thing left that can fix a card that reopened at 20 MHz.
+// the only thing that can fix a card that reopened at the wrong width.
 TEST(reopened_scout_card_at_20_gets_width_resync) {
   Rig g(2, 0, /*pinned=*/true, 40);
   for (int i = 0; i < 10; ++i) g.tick(true, false, 0);   // linked: search off, the scout parks and owns nothing
-  REQUIRE(g.cards[1]->width_mhz == 40);                   // parked at radio.width by the scout itself
+  REQUIRE(g.cards[1]->width_mhz == 40);                   // opened at radio.width, never switched
   g.cards[1]->is_alive = false;
   g.core->on_card_died(1);
-  // reopen as RadioFrontend would: InitWrite at the card's own cfg width (20 for the scout card)
+  // a revive that comes up at the wrong width
   g.cards[1]->is_alive = true; g.cards[1]->ch = 40; g.cards[1]->width_mhz = 20;
   g.cards[1]->calls.clear();
   g.core->on_card_reopened(1);
   for (int i = 0; i < 50; ++i) g.tick(true, false, 0);
   bool resynced = false;
   for (auto& c : g.cards[1]->calls) if (c.rfind("set_width", 0) == 0) resynced = true;
-  CHECK(resynced);                                        // the CORE's width resync, not the scout's park
+  CHECK(resynced);                                        // the CORE's width resync: the scout never sets a width
   CHECK(g.cards[1]->width_mhz == 40);
 }
 
@@ -341,15 +342,52 @@ static std::optional<mabur::rc::Rcf> pump_rcf(Rig& g) {
   }
   return std::nullopt;
 }
-// An interfered verdict window: foreign >> foreign_pps on every usable
-// card, AND impaired (HopVerdict::window() -- hop_verdict.cpp -- gates
-// Interfered on `impaired`, which `contended`/`raised` alone never set;
-// only pre_fec_loss/recovered/starved do). This rig's Aggregator never
-// decodes a real body, so pre_fec_loss/recovered are permanently 0 --
-// `own` is deliberately left unbumped (own delta 0 every window) so
-// `starved` carries `impaired` instead. Runs enough windows for the
-// trigger (persist 2).
-static void interfere(Rig& g, int windows = 3, int tx = 0) {
+// The op's air held by a foreign transmitter for the lifetime of this
+// object: NHM reads 100 % busy on every USB card, armed at the sampler's
+// op-window period (nhm_period_4us(window_ms - 10)) so a scout dwell -- which
+// arms its own period -- reads nothing and the candidates stay clean; a
+// relay's SURVEY reads 97 % busy. A card the test already gave NHM air of
+// its own (nhm_any_period) keeps it. The previous state comes back on
+// destruction: the interference lives on op for exactly that span, and a
+// channel landed on later reads whatever the test set.
+struct OpJam {
+  Rig& g;
+  struct Saved { bool arm_ok; NhmBusyRead read; SurveyWindow survey; };
+  std::vector<Saved> saved;
+  explicit OpJam(Rig& rig) : g(rig) {
+    NhmBusyRead full; full.valid = true; full.period = nhm_period_4us(g.cfg.hop.window_ms - 10);
+    full.buckets[11] = 100;                        // every sample above busy_dbm
+    for (auto& c : g.cards) {
+      saved.push_back({c->nhm_arm_ok, c->nhm_read, c->survey_win});
+      if (c->relay) { c->survey_win = SurveyWindow{true, 97.0, 2.0}; continue; }
+      if (c->nhm_any_period) continue;
+      c->nhm_arm_ok = true; c->nhm_read = full;
+    }
+  }
+  ~OpJam() {
+    for (size_t i = 0; i < g.cards.size(); ++i) {
+      if (g.cards[i]->nhm_any_period) continue;
+      g.cards[i]->nhm_arm_ok = saved[i].arm_ok; g.cards[i]->nhm_read = saved[i].read;
+      g.cards[i]->survey_win = saved[i].survey;
+    }
+  }
+};
+// Detection in this rig is NHM occupancy only (the detect route needs a
+// loss window, and pre_fec_loss/recovered stay 0 here): `interfered` needs
+// the op blocked for hop.verdict.occupied_windows consecutive windows with
+// a busy reading. The windows a blocked op needs on top of the old
+// three-window trigger shape.
+static int occ_lead(const Rig& g) { return g.cfg.hop.verdict.occupied_windows - 1; }
+// Interfered verdict windows: the op jammed (OpJam: every NHM sample above
+// busy_dbm on every usable card), foreign frames added alongside as
+// context only -- the verdict does not read them. This rig's Aggregator never
+// decodes a real body, so pre_fec_loss/recovered stay 0: the only route to
+// `impaired` here is occupancy. The first window arms NHM (no reading yet);
+// the occupied_windows-th blocked window after it is the first `impaired`
+// window (and also the first `interfered`, since occupancy is both at
+// once), the next one the trigger (persist 2): occ_lead(g) + 3 windows.
+static void interfere(Rig& g, int windows, int tx = 0) {
+  OpJam jam(g);
   for (int w = 0; w < windows; ++w) {
     for (auto& c : g.cards) { c->fr.foreign += 40; }
     for (int i = 0; i < g.cfg.hop.window_ms / 10 + 1; ++i) {
@@ -358,6 +396,15 @@ static void interfere(Rig& g, int windows = 3, int tx = 0) {
       g.clk.ms += 10;
     }
   }
+}
+
+// Interfered windows until the controller orders, bounded. The trigger
+// lands occupied_windows in, and the order then waits on a burst ranking the
+// candidates (two fresh visits each), so a fixed window count would pin the
+// test to how the trigger falls against the burst schedule.
+static void interfere_until_order(Rig& g, int tx = 0) {
+  for (int w = 0; w < occ_lead(g) + 12 && !g.sink.has_hop("order"); ++w) interfere(g, 1, tx);
+  REQUIRE(g.sink.has_hop("order"));
 }
 
 // Bring an AUTO rig to a frozen pick on 40 without a hop, so the reactive
@@ -391,7 +438,11 @@ static void onset_then_swap(Rig& g, std::vector<Rung> new_rungs) {
   REQUIRE(g.vrx->cur_op().mcs == 2);
   g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
   g.cards[0]->fr.foreign = 0; g.cards[1]->fr.foreign = 0;
-  interfere(g, 1);                                          // onset: ref_rung = 2
+  // Onset: the ref_rung snapshot freezes on the first `impaired` window,
+  // which here (no loss in this rig) is the first occupied one, occ_lead(g)
+  // + 2 windows into the jam. The ladder itself never demotes in this rig
+  // (no real decode to drive it), so the rung is still 2 at that window.
+  interfere(g, occ_lead(g) + 2);
   REQUIRE(*g.core->snapshot(0).hop.ref_rung == 2);
   REQUIRE(!g.sink.has_hop("order"));
   LadderCfg nl = g.vrx->ladder();
@@ -403,8 +454,7 @@ TEST(hop_restore_survives_ladder_swap) {
   onset_then_swap(g, {{2, 0.5, 0.25, 40}, {3, 0.5, 0.25, 40}, {4, 0.5, 0.25, 40}});
   REQUIRE(g.vrx->cur_op().mcs == 2);                        // the swap itself keeps MCS 2
   CHECK(*g.core->snapshot(0).hop.ref_rung == 0);
-  interfere(g, 4);                                          // interference goes on: hop ordered
-  REQUIRE(g.sink.has_hop("order"));
+  interfere_until_order(g);                                 // interference goes on: hop ordered
   CHECK(g.vrx->cur_op().mcs == 2);                          // the pre-onset MCS
 }
 // A pre-onset rung the new ladder lacks restores rung 0, as the swap
@@ -414,8 +464,7 @@ TEST(hop_restore_after_swap_dropping_the_ref_rung_lands_on_rung_0) {
   onset_then_swap(g, {{0, 0.5, 0.25, 40}, {4, 0.5, 0.25, 40}});
   REQUIRE(g.vrx->cur_op().mcs == 0);
   CHECK(*g.core->snapshot(0).hop.ref_rung == 0);
-  interfere(g, 4);
-  REQUIRE(g.sink.has_hop("order"));
+  interfere_until_order(g);
   CHECK(g.vrx->cur_op().mcs == 0);
 }
 
@@ -428,7 +477,7 @@ TEST(pinned_two_card_never_hops_on_interference) {
   for (int i = 0; i < 5; ++i) g.tick(true);
   g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
   g.cards[0]->fr.foreign = 0; g.cards[1]->fr.foreign = 0;
-  interfere(g, 6);
+  interfere(g, occ_lead(g) + 6);
   CHECK(std::string(g.core->snapshot(0).hop.verdict) == "interfered");
   CHECK(g.sink.hops.empty());                 // no order/escape/hold of any kind
   CHECK(std::string(g.core->snapshot(0).hop.state) == "idle");
@@ -451,7 +500,7 @@ TEST(pinned_one_card_never_hops_on_interference) {
   link_up(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
   g.cards[0]->cca_per_ms_on[40] = 50;
-  interfere(g, 6);
+  interfere(g, occ_lead(g) + 6);
   CHECK(std::string(g.core->snapshot(0).hop.verdict) == "interfered");
   CHECK(g.sink.hops.empty());
   CHECK(g.cards[0]->ch == 40);
@@ -479,7 +528,7 @@ TEST(pinned_relocation_is_not_failed_by_a_dirty_pin) {
   REQUIRE(g.sink.has_hop("lead_confirm"));
   // the pin reads interfered through what would have been the verify window
   g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
-  interfere(g, 8);
+  interfere(g, occ_lead(g) + 8);
   CHECK(g.sink.has_hop("verify_pass"));
   CHECK(!g.sink.has_hop("verify_fail"));
   CHECK(!g.sink.has_line("did not land"));
@@ -498,8 +547,7 @@ TEST(two_card_order_rcf_carries_hop_and_plan_leads_then_follows) {
   // the trigger fires; so first interfere, then the burst ranks, then order.
   g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
   g.cards[0]->fr.foreign = 0; g.cards[1]->fr.foreign = 0;
-  interfere(g, 4);
-  REQUIRE(g.sink.has_hop("order"));
+  interfere_until_order(g);
   const auto r = pump_rcf(g);
   REQUIRE(r.has_value());
   CHECK(r->hop_ch != 0 && r->hop_ch != 40);
@@ -518,6 +566,95 @@ TEST(two_card_order_rcf_carries_hop_and_plan_leads_then_follows) {
   CHECK(g.core->snapshot(0).hop.hops == 1);
 }
 
+// The occupied count carries across a hop: a reactive hop lands with it
+// already at occupied_windows, so a target that reads blocked fails verify
+// on its FIRST blocked reading there (~300 ms: the settle, then one window)
+// instead of rebuilding the count over occupied_windows readings.
+// Revert (verdict_.reset() on HopAction::Confirm in apply_hop_action_): the
+// count rebuilds and verify_fail comes ~900 ms after landing -- past the
+// bound below, and with occupied_windows one higher, past verify_ms.
+TEST(reactive_hop_onto_a_blocked_target_fails_verify_on_its_first_blocked_reading) {
+  Rig g(2, 0); freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
+  interfere_until_order(g);
+  const auto r = pump_rcf(g);
+  REQUIRE(r.has_value());
+  REQUIRE(r->hop_ch != 0 && r->hop_ch != 40);
+  OpJam jam(g);                              // the air is blocked wherever the sampler arms
+  g.core->note_video(r->hop_ch);
+  g.tick(true);
+  REQUIRE(g.sink.has_hop("lead_confirm"));
+  const uint64_t landed = g.clk.ms;
+  for (int i = 0; i < g.cfg.hop.verify_ms / 10 + 30 && !g.sink.has_hop("verify_fail") &&
+                  !g.sink.has_hop("verify_pass"); ++i) {
+    g.vrx->on_video(static_cast<double>(g.clk.ms));
+    g.tick(true);
+  }
+  CHECK(g.sink.has_hop("verify_fail"));
+  CHECK(!g.sink.has_hop("verify_pass"));
+  // The settle, the NHM re-arm on the target and one blocked window: well
+  // inside the occupied_windows x window_ms a rebuilt count would need.
+  CHECK(g.clk.ms - landed < kHopSettleBlankMs + 4 * g.cfg.hop.window_ms);
+}
+
+// Unlike blocked_streak_, the detect ring must NOT carry: landing on a
+// clean target with HopVerdict::landed() uncalled would mix the old
+// channel's ring entries into the target's first reading. This rig's
+// Aggregator never decodes a real body (see interfere()'s comment above),
+// so loss_impaired -- and with it kEvDetected -- can never fire here
+// regardless of the ring's contents, which means this test cannot by
+// itself FAIL on a reverted landed() call (checked locally: it passes
+// either way). It still exercises the Confirm flow onto a clean target
+// end to end; the actual pin on the ring-clearing behaviour is
+// HopVerdict's own landed_clears_the_detect_ring_and_keeps_the_blocked_streak
+// unit test, backed by a code-review check of the Confirm case below.
+TEST(confirm_clears_the_detect_ring) {
+  Rig g(2, 0); freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
+  interfere_until_order(g);
+  const auto r = pump_rcf(g);
+  REQUIRE(r.has_value());
+  REQUIRE(r->hop_ch != 0 && r->hop_ch != 40);
+  g.core->note_video(r->hop_ch);
+  g.tick(true);
+  REQUIRE(g.sink.has_hop("lead_confirm"));
+  // the target's first window: low-foreign, no busy jam riding it
+  for (int i = 0; i < g.cfg.hop.window_ms / 10 + 2; ++i) {
+    g.vrx->on_video(static_cast<double>(g.clk.ms));
+    g.tick(true);
+  }
+  const std::string v = g.core->snapshot(0).hop.verdict;
+  CHECK((v == "healthy" || v == "unknown"));
+}
+
+// Onset -> order on two cards, bounded: the trigger needs occupied_windows
+// blocked windows plus the persist, and the order then waits on at most one
+// more freshness burst (burst_period_ms) to rank the candidates (1350 ms
+// against a 1533 ms bound at the bundle defaults). Revert (`occupied` at
+// blocked_streak_ >= occupied_windows + 2 in hop_verdict.cpp): the order
+// lands at 1650 ms, past the bound.
+TEST(two_card_onset_to_order_is_occupancy_plus_persist_plus_one_burst) {
+  Rig g(2, 0); freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
+  const uint64_t onset = g.clk.ms;
+  interfere_until_order(g);
+  double order_ms = -1;
+  for (const auto& h : g.sink.hops) if (h.kind == "order") { order_ms = h.t_ms; break; }
+  REQUIRE(order_ms >= 0);
+  const auto& v = g.cfg.hop.verdict;
+  // + 1 window: the first jammed window only arms NHM.
+  const double bound = (v.occupied_windows + g.cfg.hop.persist + 1) * g.cfg.hop.window_ms +
+                       g.cfg.hop.burst_period_ms;
+  CHECK(order_ms - static_cast<double>(onset) <= bound);
+  CHECK(order_ms - static_cast<double>(onset) >= v.occupied_windows * g.cfg.hop.window_ms);
+}
+
 TEST(stale_pre_hop_verdict_does_not_break_verify) {
   // After Confirm the cached VerdictOut (measured on the old channel) is
   // re-fed every tick until the next window: the controller must stay in
@@ -526,8 +663,7 @@ TEST(stale_pre_hop_verdict_does_not_break_verify) {
   link_up(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
   g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
-  interfere(g, 4);
-  REQUIRE(g.sink.has_hop("order"));
+  interfere_until_order(g);
   const auto r = pump_rcf(g);
   REQUIRE(r.has_value());
   g.core->note_video(r->hop_ch);
@@ -542,8 +678,7 @@ TEST(one_card_order_rides_repeats_then_retunes) {
   Rig g(1, 0); freeze_auto(g);               // links too
   for (int i = 0; i < 5; ++i) g.tick(true);
   g.cards[0]->cca_per_ms_on[40] = 50;
-  interfere(g, 4);
-  REQUIRE(g.sink.has_hop("order"));
+  interfere_until_order(g);
   CHECK(g.cards[0]->ch == 40);              // radio stays until one_card_repeats RCFs
   // interfere() only drives core->tick() (closing verdict windows), never
   // vrx.step() -- unlike run_radio(), where the SAME control-loop pass that
@@ -563,8 +698,12 @@ TEST(one_card_order_rides_repeats_then_retunes) {
   REQUIRE(r.has_value());
   CHECK(g.cards[0]->ch == r->hop_ch);        // the sole radio moved (mechanical retune)
   CHECK(g.sink.has_move(MoveReason::HopOneCard));
+  // Upper bound widened from 400: dwell_observe_ms (20 ms, up from 5 ms)
+  // lengthens the one-card ranking burst itself (3 candidates observed per
+  // burst), pushing the order a little later and phase-shifting it against
+  // vrx's own RCF/DISC cadence during the repeats that follow.
   for (auto& e : g.sink.hops)
-    if (e.kind == "one_card_retune") CHECK(e.elapsed_ms >= 200 && e.elapsed_ms <= 400);
+    if (e.kind == "one_card_retune") CHECK(e.elapsed_ms >= 200 && e.elapsed_ms <= 600);
   g.core->note_video(r->hop_ch);
   g.tick(true);
   CHECK(g.sink.has_hop("lead_confirm"));
@@ -578,8 +717,7 @@ TEST(withdraw_on_no_video_restores_cards) {
   link_up(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
   g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
-  interfere(g, 4);
-  REQUIRE(g.sink.has_hop("order"));
+  interfere_until_order(g);
   const auto r = pump_rcf(g);
   REQUIRE(r.has_value());
   for (int i = 0; i < (g.cfg.hop.confirm_extend_ms / 10) + 20; ++i) { g.vrx->on_video(static_cast<double>(g.clk.ms)); g.tick(true); }
@@ -594,8 +732,7 @@ TEST(lead_card_dies_mid_order_withdraws_to_op) {
   link_up(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
   g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
-  interfere(g, 4);
-  REQUIRE(g.sink.has_hop("order"));
+  interfere_until_order(g);
   g.cards[1]->is_ready = false;               // the lead vanishes
   g.tick(true);
   CHECK(std::string(g.core->snapshot(0).hop.state) == "ordered");   // latched lead, no re-pick
@@ -612,8 +749,7 @@ TEST(session_loss_mid_order_withdraws) {
   link_up(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
   g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
-  interfere(g, 4);
-  REQUIRE(g.sink.has_hop("order"));
+  interfere_until_order(g);
   g.tick(false);                              // hop_active falling edge
   // on_session_lost() returns HopAction::Withdraw, but the EVENT it logs
   // (hop_controller.cpp) is kind "session_lost", not "withdraw" -- that
@@ -719,17 +855,16 @@ TEST(relocate_lands_on_verify_pass_and_freezes_relocated) {
 
 // The AUTO boot hop. The scout measures op's pair to
 // min_rounds BEFORE the drone appears on 64 (a linked scout never visits
-// op's own halves, so without that BootPick freezes "op unmeasured"), and
+// op's own pair, so without that BootPick freezes "op unmeasured"), and
 // the link forms while the later pairs are still short of min_rounds (else
 // the unlinked pick would already have committed). At maturity the pick
 // wants another pair -> WantPick -> relocate -> confirm -> verify_pass ->
 // "pick frozen on <pick> (relocated)".
 TEST(auto_want_pick_relocates_linked_drone_to_the_pick) {
   Rig g(2, 0);
-  g.cards[1]->cca_per_ms_on[60] = 5;   // 64's pair is the busy one
-  g.cards[1]->cca_per_ms_on[64] = 5;
-  // The scout sweeps 36,40,60,64,108,112,140,144 each round: stop right
-  // after 64's min_rounds-th visit, i.e. inside the last round.
+  g.cards[1]->nhm_busy_pct_on[64] = 100;   // 64's pair is blocked
+  // The scout sweeps 40,64,112,144 each round: stop right after 64's
+  // min_rounds-th visit, i.e. inside the last round.
   const auto visits = [&g](uint8_t ch) {
     int n = 0;
     for (const auto& d : g.sink.dwells) if (d.second.survey.def.primary == ch) ++n;
@@ -737,7 +872,7 @@ TEST(auto_want_pick_relocates_linked_drone_to_the_pick) {
   };
   const int mr = g.cfg.radio.scan.min_rounds;
   for (int i = 0; i < 3000 && visits(64) < mr; ++i) g.tick();
-  REQUIRE(visits(60) >= mr && visits(64) >= mr);
+  REQUIRE(visits(64) >= mr);
   REQUIRE(visits(144) < mr);                // not mature yet
   REQUIRE(g.core->pick_open());             // ... so nothing committed unlinked
   g.core->on_rc_body(64);
@@ -829,8 +964,7 @@ TEST(tx_frozen_while_hopping) {
   link_up(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
   g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
-  interfere(g, 4);
-  REQUIRE(g.sink.has_hop("order"));
+  interfere_until_order(g);
   const auto out = g.core->tick(g.in(true));
   CHECK(out.tx_frozen);
   CHECK(g.core->tx_frozen());
@@ -848,11 +982,15 @@ TEST(shutdown_joins_threads_and_is_idempotent) {
   // scout thread measures for ~1 s, the pick freezes in place, the scout
   // parks, and the in-flight thread starts and dwells on the non-TX card
   // every dwell_period_ms; shutdown() must join both. (Pinned would start
-  // no in-flight thread at all.)
+  // no in-flight thread at all.) dwell_period_ms is overridden to 200 ms
+  // (below the bundle's 1000 ms default) so the post-shutdown sleep below
+  // comfortably outlasts one period -- a thread left running would dwell
+  // again well inside it.
   Config cfg = bundle();
   cfg.radio.channels = {40, 64}; cfg.radio.width = 40;
   cfg.radio.scan.max_ms = 1000;
-  FakeCard a, b; a.ch = b.ch = 40; a.width_mhz = 40; b.width_mhz = 20;
+  cfg.hop.dwell_period_ms = 200;
+  FakeCard a, b; a.ch = b.ch = 40; a.width_mhz = 40; b.width_mhz = 40;
   std::vector<LinkCard*> ptrs{&a, &b};
   VrxController vrx(vrx_cfg_from(cfg, 40));
   RecordingSink sink;
@@ -864,7 +1002,7 @@ TEST(shutdown_joins_threads_and_is_idempotent) {
                    [](int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); });
   ChannelTickIn in; in.agg = &agg; in.in_session = true; in.tx_card = 0;
   // Up to 5 s of linked ticks: a dwell record drained from the in-flight
-  // thread proves that thread ran (dwell_period_ms is 333 in the bundle).
+  // thread proves that thread ran (dwell_period_ms is 200 here, see above).
   bool dwelt = false;
   for (int i = 0; i < 500 && !dwelt; ++i) {
     in.now_ms = static_cast<double>(now_ms());
@@ -885,6 +1023,55 @@ TEST(shutdown_joins_threads_and_is_idempotent) {
   CHECK(core.snapshot(0).dwell[1]->visits == visits);             // no thread left dwelling
 }
 
+// Real threads, real clock. Two USB cards, the op occupied on both (100 %
+// NHM busy), so the occupancy trigger goes live with no video at all. The
+// spare card's freshness burst is posted to the in-flight thread: its dwell
+// records arrive (dwell_period_ms is 60 s, so no periodic dwell can be the
+// source), and no core tick ever waits for it -- one burst is three 20 ms
+// observes, so a tick that ran it inline would take >= 60 ms.
+// Revert (burst inline on the core thread): max_tick_ms reads >= 60.
+TEST(threaded_two_card_burst_runs_off_the_core_thread) {
+  Config cfg = bundle();
+  cfg.radio.channels = {40, 64, 112, 144}; cfg.radio.width = 40;
+  cfg.radio.scan.max_ms = 1000;
+  cfg.hop.dwell_period_ms = 60000;
+  // The op window's arm period (the sampler's), so op reads 100 % busy.
+  NhmBusyRead full; full.valid = true; full.period = nhm_period_4us(cfg.hop.window_ms - 10);
+  full.buckets[11] = 100;
+  FakeCard a, b;
+  for (FakeCard* c : {&a, &b}) {
+    c->ch = 40; c->width_mhz = 40; c->nhm_arm_ok = true; c->nhm_read = full;
+  }
+  std::vector<LinkCard*> ptrs{&a, &b};
+  VrxController vrx(vrx_cfg_from(cfg, 40));
+  RecordingSink sink;
+  Aggregator agg(cfg.uep_layers(), 32, 2, 0);
+  ChannelCoreCfg cc; cc.radio = cfg.radio; cc.hop = cfg.hop; cc.key = cfg.link.key; cc.start_ch = 40; cc.n_usb = 2;
+  auto now_ms = [] { return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()); };
+  auto now_us = [] { return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()); };
+  ChannelCore core(cc, ptrs, vrx, sink, [](uint8_t) { return true; }, now_ms, now_us,
+                   [](int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); });
+  ChannelTickIn in; in.agg = &agg; in.in_session = true; in.tx_card = 0;
+  auto burst_recs = [&] {
+    size_t n = 0;
+    for (const auto& d : sink.dwells) if (d.first == 1 && d.second.in_session) ++n;
+    return n;
+  };
+  uint64_t max_tick_ms = 0;
+  bool armed = false;   // boot pick closed: from here on the core may burst
+  for (int i = 0; i < 800 && burst_recs() < 3; ++i) {
+    in.now_ms = static_cast<double>(now_ms());
+    const uint64_t t0 = now_ms();
+    core.tick(in);
+    if (armed) max_tick_ms = std::max(max_tick_ms, now_ms() - t0);
+    armed = armed || !core.pick_open();
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  core.shutdown();
+  REQUIRE(burst_recs() >= 3);           // one burst: every candidate but op
+  CHECK(max_tick_ms < 40);
+}
+
 TEST(relay_only_roster_searches_without_measuring) {
   Rig g(0, 1);                                // one relay, auto
   const auto s = g.core->snapshot(0);
@@ -893,7 +1080,7 @@ TEST(relay_only_roster_searches_without_measuring) {
   // the relay scouts: search bursts retune it across the set
   for (int i = 0; i < 40; ++i) g.tick();
   bool retuned_off_start = false;
-  for (auto& c : g.cards[0]->calls) if (c == "retune 64" || c == "retune_width 64/20") retuned_off_start = true;
+  for (auto& c : g.cards[0]->calls) if (c == "retune 64") retuned_off_start = true;
   CHECK(retuned_off_start);
   CHECK(g.sink.picks.empty());                // no K line ever: nothing measured
 }
@@ -939,14 +1126,14 @@ TEST(relay_only_sweep_ranks_in_one_burst_then_hops) {
   Rig g(0, 1);
   freeze_auto(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
-  interfere(g, 3);
+  interfere(g, occ_lead(g) + 3);
   REQUIRE(g.cards[0]->sweeps.size() == 1);
   CHECK((g.cards[0]->sweeps[0] == std::vector<uint8_t>{64, 112, 144}));   // set minus op 40
   CHECK(g.core->sweep_pending());
   CHECK(!g.sink.has_hop("order"));                 // waits for the result, no hold_exhausted either
   CHECK(!g.sink.has_hop("hold_exhausted"));
   g.cards[0]->pending_result = sweep_of({{64, 20}, {112, 1}, {144, 4}});
-  interfere(g, 3);                                 // persist 2-of-3 again once the card is usable
+  interfere(g, occ_lead(g) + 3);                                 // persist 2-of-3 again once the card is usable
   CHECK(!g.core->sweep_pending());
   REQUIRE(g.sink.has_hop("order"));
   pump_rcf(g);
@@ -965,7 +1152,7 @@ TEST(relay_only_sweep_timeout_allows_next_burst) {
   Rig g(0, 1);
   freeze_auto(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
-  interfere(g, 3);
+  interfere(g, occ_lead(g) + 3);
   REQUIRE(g.cards[0]->sweeps.size() == 1);
   g.cards[0]->sweep_in_flight = false;             // the relay never answers
   // Checked AT the timeout, not 1100 ms on: the verdict's 2-of-3 window
@@ -979,6 +1166,8 @@ TEST(relay_only_sweep_timeout_allows_next_burst) {
   CHECK(!g.core->sweep_pending());
   CHECK(g.core->sweep_timeouts() == 1);
   CHECK(g.core->snapshot(0).hop.sweep_timeouts == 1);   // -> sideport hop.sweep_timeouts
+  // The blocked streak held through the windows without a busy reading, so
+  // the op is still occupied: no new lead-in before the trigger.
   interfere(g, 3);
   CHECK(g.cards[0]->sweeps.size() == 2);           // relay_burst_period_ms (1000) has passed
 }
@@ -992,12 +1181,12 @@ TEST(relay_lost_scan_result_does_not_blind_the_verdict) {
   Rig g(0, 1);
   freeze_auto(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
-  interfere(g, 3);
+  interfere(g, occ_lead(g) + 3);
   REQUIRE(g.cards[0]->sweeps.size() == 1);
   for (int i = 0; i < 150 && g.core->sweep_timeouts() == 0; ++i) g.tick(true);
   REQUIRE(g.core->sweep_timeouts() == 1);
   CHECK(g.cards[0]->sweeping());                   // the relay still thinks a scan is pending
-  interfere(g, 3);
+  interfere(g, 3);                                 // still occupied: the streak held
   CHECK(g.cards[0]->sweeps.size() == 2);           // interfered verdicts again -> the next SCAN
 }
 
@@ -1008,7 +1197,7 @@ TEST(relay_sweep_expired_across_session_drop_discards_late_result) {
   Rig g(0, 1);
   freeze_auto(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
-  interfere(g, 3);
+  interfere(g, occ_lead(g) + 3);
   REQUIRE(g.cards[0]->sweeps.size() == 1);
   REQUIRE(g.core->sweep_pending());
   const size_t dwells0 = g.sink.dwells.size();
@@ -1024,15 +1213,15 @@ TEST(relay_sweep_expired_across_session_drop_discards_late_result) {
 }
 
 // The relay burst paces on hop.relay_burst_period_ms (1000), not the USB
-// burst's dwell_period_ms: an empty result lands at once, and a burst 400 ms
-// after the first SCAN must not happen.
+// burst's hop.burst_period_ms: an empty result lands at once, and a burst
+// 400 ms after the first SCAN must not happen.
 TEST(relay_burst_waits_relay_burst_period_ms) {
   Rig g(0, 1);
   freeze_auto(g);
-  REQUIRE(g.cfg.hop.dwell_period_ms < 400);
+  REQUIRE(g.cfg.hop.burst_period_ms < 400);
   REQUIRE(g.cfg.hop.relay_burst_period_ms > 600);
   for (int i = 0; i < 5; ++i) g.tick(true);
-  interfere(g, 3);
+  interfere(g, occ_lead(g) + 3);
   REQUIRE(g.cards[0]->sweeps.size() == 1);
   g.cards[0]->sweep_in_flight = false;
   g.cards[0]->pending_result = SweepResult{};      // an empty answer: nothing ranked
@@ -1042,17 +1231,128 @@ TEST(relay_burst_waits_relay_burst_period_ms) {
   CHECK(g.cards[0]->sweeps.size() == 1);
 }
 
-// Rebuild a relay-only rig's VrxController + core around another channel
-// set (start 40, n_usb 0).
-static void rebuild_with_set(Rig& g, std::vector<uint8_t> set) {
+// Rebuild a rig's VrxController + core around another channel set (start
+// 40), e.g. after mutating g.cfg.hop post-construction (ChannelCoreCfg
+// captures hop by value at construction time). n_usb defaults to 0 for the
+// relay-only callers below.
+static void rebuild_with_set(Rig& g, std::vector<uint8_t> set, int n_usb = 0) {
   g.cfg.radio.channels = std::move(set);
   g.core.reset();
   g.vrx = std::make_unique<VrxController>(vrx_cfg_from(g.cfg, 40));
   ChannelCoreCfg cc; cc.radio = g.cfg.radio; cc.hop = g.cfg.hop; cc.key = g.cfg.link.key;
-  cc.start_ch = 40; cc.n_usb = 0; cc.threaded = false; cc.store_name = "s";
+  cc.start_ch = 40; cc.n_usb = n_usb; cc.threaded = false; cc.store_name = "s";
   g.core = std::make_unique<ChannelCore>(cc, g.ptrs, *g.vrx, g.sink,
       [](uint8_t) { return true; }, [&g] { return g.clk.now_ms(); }, [&g] { return g.clk.now_us(); },
       [&g](int ms) { g.clk.sleep(ms); });
+}
+
+// Mirror of relay_burst_waits_relay_burst_period_ms for a USB burst card:
+// the burst paces on hop.burst_period_ms, not on the periodic dwell
+// thread's hop.dwell_period_ms.
+TEST(usb_burst_paces_on_burst_period_not_dwell_period) {
+  Rig g(2, 0);                       // two USB cards; the spare bursts
+  g.cfg.hop.dwell_period_ms = 5000;  // periodic dwell far slower than the burst
+  g.cfg.hop.burst_period_ms = 333;
+  rebuild_with_set(g, g.cfg.radio.channels, 2);   // ChannelCoreCfg captured hop by value at construction
+  freeze_auto(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  const size_t d0 = g.sink.dwells.size();
+  interfere(g, occ_lead(g) + 3);                   // trigger live -> burst 1 (sess=1 D records)
+  const size_t d1 = g.sink.dwells.size();
+  REQUIRE(d1 > d0);
+  interfere(g, occ_lead(g) + 3);                   // > 333 ms later, trigger still live -> burst 2
+  CHECK(g.sink.dwells.size() > d1);
+}
+
+// Interfered windows for `windows` x window_ms, ticking the core directly;
+// returns the clock of every tick on which a burst ran (new D records).
+static std::vector<uint64_t> interfere_bursts(Rig& g, int windows) {
+  OpJam jam(g);
+  std::vector<uint64_t> bursts;
+  size_t seen = g.sink.dwells.size();
+  for (int w = 0; w < windows; ++w) {
+    for (auto& c : g.cards) c->fr.foreign += 40;
+    for (int i = 0; i < g.cfg.hop.window_ms / 10 + 1; ++i) {
+      const uint64_t t = g.clk.ms;
+      g.vrx->on_video(static_cast<double>(t));
+      g.core->tick(g.in(true));
+      if (g.sink.dwells.size() > seen) { bursts.push_back(t); seen = g.sink.dwells.size(); }
+      g.clk.ms += 10;
+    }
+  }
+  return bursts;
+}
+
+// Every candidate blocked (100 % NHM busy on the burst card's dwells) and
+// the op interfered, one card: the cold ranker holds after burst 1 (one
+// visit each, nothing ranked), burst 2 comes burst_period_ms later and
+// ranks them all -- blocked -- so the controller stays in hold_exhausted
+// with the trigger live. The one card's burst is its only ranking source,
+// so it keeps bursting, but each burst takes the sole radio off op for
+// every candidate: it paces on dwell_period_ms, no burst within
+// burst_period_ms, one once dwell_period_ms has passed.
+TEST(one_card_burst_in_a_fully_ranked_all_blocked_hold_paces_on_dwell_period) {
+  Rig g(1, 0);
+  g.cfg.hop.dwell_period_ms = 1000;
+  g.cfg.hop.burst_period_ms = 333;
+  rebuild_with_set(g, g.cfg.radio.channels, 1);
+  freeze_auto(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  NhmBusyRead full; full.valid = true; full.period = nhm_period_4us(g.cfg.hop.dwell_observe_ms);
+  full.buckets[11] = 100;                          // every sample above busy_dbm: 100 % busy
+  g.cards[0]->nhm_arm_ok = true; g.cards[0]->nhm_read = full;
+  g.cards[0]->nhm_any_period = true;               // op reads it too: the op is occupied
+  const auto bursts = interfere_bursts(g, occ_lead(g) + 22);     // ~3.5 s past the lead-in
+  CHECK(g.sink.has_hop("hold_exhausted"));
+  CHECK(!g.sink.has_hop("order")); CHECK(!g.sink.has_hop("escape"));
+  CHECK(std::string(g.core->snapshot(0).hop.state) == "hold");
+  REQUIRE(bursts.size() >= 4);
+  CHECK(bursts[1] - bursts[0] < 1000);             // burst 2 ranks the set: burst_period_ms
+  for (size_t i = 2; i < bursts.size(); ++i) {
+    CHECK(bursts[i] - bursts[i - 1] >= 1000);      // fully ranked Hold: dwell_period_ms
+    CHECK(bursts[i] - bursts[i - 1] < 1000 + 333);
+  }
+}
+
+// The same all-blocked Hold on two cards: the spare card's bursts stop
+// once burst 2 has ranked every candidate -- from there the periodic dwell
+// thread keeps the ranking on that card, and a burst would only stall the
+// core loop. Revert (burst regardless of ranking_complete): bursts 3.. come
+// back at dwell_period_ms.
+TEST(two_card_spare_burst_stops_once_every_candidate_is_ranked) {
+  Rig g(2, 0);
+  g.cfg.hop.dwell_period_ms = 1000;
+  g.cfg.hop.burst_period_ms = 333;
+  rebuild_with_set(g, g.cfg.radio.channels, 2);
+  freeze_auto(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  NhmBusyRead full; full.valid = true; full.period = nhm_period_4us(g.cfg.hop.dwell_observe_ms);
+  full.buckets[11] = 100;
+  g.cards[1]->nhm_arm_ok = true; g.cards[1]->nhm_read = full;
+  g.cards[1]->nhm_any_period = true;               // between dwells card 1 reads op busy too
+  const auto bursts = interfere_bursts(g, occ_lead(g) + 22);     // ~3.5 s past the lead-in
+  CHECK(g.sink.has_hop("hold_exhausted"));
+  CHECK(std::string(g.core->snapshot(0).hop.state) == "hold");
+  CHECK(bursts.size() == 2);                       // burst 1, burst 2 (ranks), then none
+}
+
+// The same Hold with one candidate that never gets a visit (its retune
+// fails, so it stays unranked): the next burst is still what could rank it,
+// so Hold keeps burst_period_ms. max_hops_per_min = 0 holds (hold_cap) on
+// the first triggered tick.
+TEST(usb_burst_in_a_hold_with_an_unranked_candidate_paces_on_burst_period) {
+  Rig g(2, 0);
+  g.cfg.hop.dwell_period_ms = 1000;
+  g.cfg.hop.burst_period_ms = 333;
+  g.cfg.hop.max_hops_per_min = 0;
+  rebuild_with_set(g, g.cfg.radio.channels, 2);
+  freeze_auto(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  g.cards[1]->refuse_ch = 144;
+  const auto bursts = interfere_bursts(g, occ_lead(g) + 16);     // ~2.6 s past the lead-in
+  CHECK(std::string(g.core->snapshot(0).hop.state) == "hold");
+  REQUIRE(bursts.size() >= 5);
+  for (size_t i = 1; i < bursts.size(); ++i) CHECK(bursts[i] - bursts[i - 1] < 1000);
 }
 
 TEST(relay_only_single_member_set_sends_no_scan) {
@@ -1060,7 +1360,7 @@ TEST(relay_only_single_member_set_sends_no_scan) {
   rebuild_with_set(g, {40});
   link_up(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
-  interfere(g, 4);
+  interfere(g, occ_lead(g) + 4);
   CHECK(g.cards[0]->sweeps.empty());
   CHECK(!g.core->sweep_pending());
 }
@@ -1070,7 +1370,7 @@ TEST(relay_survey_window_feeds_blocked) {
   freeze_auto(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
   g.cards[0]->survey_win = SurveyWindow{true, 97.0, 2.0};   // analog-VTX shape: busy, not decodable
-  interfere(g, 2);
+  interfere(g, occ_lead(g) + 2);
   REQUIRE(g.sink.last_cards.size() == 1);
   CHECK(g.sink.last_cards[0].busy_valid);
   CHECK(std::abs(g.sink.last_cards[0].nhm_busy_pct - 97.0) < 1e-9);
@@ -1091,7 +1391,7 @@ TEST(relay_plus_usb_tx_usb_lets_the_relay_sweep) {
   REQUIRE(g.cards[0]->ch == 40);
   g.cards[0]->calls.clear();                       // the refused boot-scan retunes above are not the hop's
   g.cards[0]->cca_per_ms_on[40] = 50;
-  interfere(g, 3);                                 // tx_card 0 (USB) by default in g.in()
+  interfere(g, occ_lead(g) + 3);                                 // tx_card 0 (USB) by default in g.in()
   CHECK(g.cards[1]->sweeps.size() == 1);           // the relay spare swept
   bool usb_retuned_off_op = false;
   for (auto& c : g.cards[0]->calls) if (c == "retune 64" || c == "retune 112" || c == "retune 144") usb_retuned_off_op = true;
@@ -1110,13 +1410,16 @@ TEST(relay_sweep_timeout_scales_with_the_request) {
   REQUIRE(!g.core->pick_open());
   for (int i = 0; i < 5; ++i) g.tick(true);
   uint64_t sent_ms = 0;
-  for (int w = 0; w < 4 && g.cards[0]->sweeps.empty(); ++w) {
-    for (auto& c : g.cards) c->fr.foreign += 40;
-    for (int i = 0; i < g.cfg.hop.window_ms / 10 + 1 && g.cards[0]->sweeps.empty(); ++i) {
-      g.vrx->on_video(static_cast<double>(g.clk.ms));
-      sent_ms = g.clk.ms;
-      g.core->tick(g.in(true));
-      g.clk.ms += 10;
+  {
+    OpJam jam(g);
+    for (int w = 0; w < occ_lead(g) + 4 && g.cards[0]->sweeps.empty(); ++w) {
+      for (auto& c : g.cards) c->fr.foreign += 40;
+      for (int i = 0; i < g.cfg.hop.window_ms / 10 + 1 && g.cards[0]->sweeps.empty(); ++i) {
+        g.vrx->on_video(static_cast<double>(g.clk.ms));
+        sent_ms = g.clk.ms;
+        g.core->tick(g.in(true));
+        g.clk.ms += 10;
+      }
     }
   }
   REQUIRE(g.cards[0]->sweeps.size() == 1);
@@ -1143,7 +1446,7 @@ TEST(relay_plus_usb_relay_not_ready_usb_tx_bursts) {
   for (int i = 0; i < 5; ++i) g.tick(true, false, /*tx=*/0);
   const size_t d0 = g.sink.dwells.size();
   g.cards[0]->cca_per_ms_on[40] = 50;
-  interfere(g, 3, /*tx=*/0);
+  interfere(g, occ_lead(g) + 3, /*tx=*/0);
   CHECK(g.cards[1]->sweeps.empty());
   CHECK(!g.core->sweep_pending());
   size_t usb_dwells = 0;
@@ -1162,7 +1465,7 @@ TEST(relay_plus_usb_usb_spare_bursts) {
   for (int i = 0; i < 5; ++i) g.tick(true, false, /*tx=*/1);
   const size_t d0 = g.sink.dwells.size();
   g.cards[0]->cca_per_ms_on[40] = 50;
-  interfere(g, 3, /*tx=*/1);
+  interfere(g, occ_lead(g) + 3, /*tx=*/1);
   CHECK(g.cards[1]->sweeps.empty());
   size_t usb_dwells = 0;
   for (size_t i = d0; i < g.sink.dwells.size(); ++i) if (g.sink.dwells[i].first == 0) ++usb_dwells;
@@ -1179,7 +1482,7 @@ TEST(tx_frozen_while_relay_sweeps) {
   link_up(g);
   for (int i = 0; i < 5; ++i) g.tick(true, false, 0);
   g.cards[0]->cca_per_ms_on[40] = 50;
-  interfere(g, 3);
+  interfere(g, occ_lead(g) + 3);
   REQUIRE(g.core->sweep_pending());
   REQUIRE(!g.core->hopping());
   REQUIRE(!g.core->dwell_busy());
@@ -1223,8 +1526,9 @@ TEST(sampled_record_consumed_next_tick_uses_sample_span) {
 // ---- calibration channel pick (CalPicker / ChannelCore) ----
 
 // One linked tick with the TX card (card 0) on op hearing its own video and
-// `op_foreign` foreign frames: own frames keep the verdict out of `starved`,
-// foreign frames are what op's live reading scores. Card 1 is the scout card.
+// `op_foreign` foreign frames: own frames feed the sideport's own-frame
+// delta (StatsEnergyIn::own), foreign frames are what op's live reading
+// scores. Card 1 is the scout card.
 static void live_tick(Rig& g, uint32_t op_foreign = 0) {
   g.cards[0]->fr.own += 5;
   g.cards[0]->fr.foreign += op_foreign;
@@ -1238,18 +1542,23 @@ static const HopEvent* find_hop(const RecordingSink& s, const char* kind) {
 }
 
 // Auto, two cards, linked, the boot pick long closed: one measure round
-// dwells every half outside op's own pair exactly once, reads op from the
+// dwells once on every pair outside op's own, reads op from the
 // verdict's live window, emits one K record and names the best member.
-// Op (40) reads busy (foreign frames on the TX card), 64's pair reads busy
-// (foreign frames on the scout): 112 is the first clean member in config
-// order.
+// Op (40) and 64's pair read NHM busy: 112 is the clean member, well past
+// the pick margin.
 TEST(cal_measure_round_ranks_the_set_once) {
   Rig g(2, 0);
   freeze_auto(g);
   link_up(g);
+  g.cards[0]->nhm_arm_ok = true;
+  g.cards[0]->nhm_any_period = true;
+  g.cards[0]->nhm_read.valid = true;
+  g.cards[0]->nhm_read.buckets[11] = 25;   // op's NHM busy: 25 % (below blocked_pct)
+  g.cards[0]->nhm_read.buckets[0] = 75;
+  g.cards[1]->nhm_busy_pct_on[64] = 25;
+  g.cards[1]->nhm_busy_pct_on[112] = 5;    // the clean member
+  g.cards[1]->nhm_busy_pct_on[144] = 25;
   for (int i = 0; i < 30; ++i) live_tick(g, 200);
-  g.cards[1]->foreign_per_ms_on[60] = 1;
-  g.cards[1]->foreign_per_ms_on[64] = 1;
   ChannelCorePicker p(*g.core);
   REQUIRE(p.mode() == CalPicker::Mode::Auto);
   CHECK(p.op() == 40);
@@ -1268,7 +1577,7 @@ TEST(cal_measure_round_ranks_the_set_once) {
     chs.push_back(g.sink.dwells[i].second.survey.def.primary);
   }
   std::sort(chs.begin(), chs.end());
-  CHECK((chs == std::vector<uint8_t>{60, 64, 108, 112, 140, 144}));   // op's 36/40 never dwelt on
+  CHECK((chs == std::vector<uint8_t>{64, 112, 144}));   // one dwell per pair; op's (40) never dwelt on
   CHECK(g.core->op() == 40);                                          // measuring moves nothing
   for (int i = 0; i < 3; ++i) live_tick(g, 200);
   CHECK(!g.core->scout_owns_card(1));                                 // parked again ...
@@ -1280,15 +1589,22 @@ TEST(cal_measure_round_ranks_the_set_once) {
   CHECK(*p.measured_best() == 112);
 }
 
-// The same round over a quiet op: a candidate must beat op by pick_margin,
-// so a clean op stays the target.
+// The same round over a quiet-ish op: a candidate must beat op by
+// pick_margin_pct busy points, so a close-but-not-clear op stays the
+// target.
 TEST(cal_measure_round_keeps_a_clean_op) {
   Rig g(2, 0);
   freeze_auto(g);
   link_up(g);
+  g.cards[0]->nhm_arm_ok = true;
+  g.cards[0]->nhm_any_period = true;
+  g.cards[0]->nhm_read.valid = true;
+  g.cards[0]->nhm_read.buckets[11] = 15;   // op's NHM busy: 15 %
+  g.cards[0]->nhm_read.buckets[0] = 85;
+  g.cards[1]->nhm_busy_pct_on[64] = 40;
+  g.cards[1]->nhm_busy_pct_on[112] = 10;   // 5 points short of the margin (10)
+  g.cards[1]->nhm_busy_pct_on[144] = 40;
   for (int i = 0; i < 30; ++i) live_tick(g);
-  g.cards[1]->foreign_per_ms_on[60] = 1;
-  g.cards[1]->foreign_per_ms_on[64] = 1;
   ChannelCorePicker p(*g.core);
   p.begin_measure(g.clk.ms);
   for (int i = 0; i < 50 && !p.measured_best(); ++i) live_tick(g);
@@ -1387,71 +1703,99 @@ TEST(pinned_core_has_no_measure) {
 }
 
 // ---- the calibration round's pick rule (cal_round_pick.h) ----
-static std::vector<CalReading> halves_with(std::initializer_list<std::pair<uint8_t, uint32_t>> fr,
-                                           std::optional<double> busy = std::nullopt) {
+static std::vector<CalReading> readings_with(std::initializer_list<std::pair<uint8_t, uint32_t>> fr,
+                                             std::optional<double> busy = std::nullopt) {
   std::vector<CalReading> v;
   for (auto [ch, f] : fr) v.push_back(CalReading{ch, f, busy.has_value(), busy.value_or(0.0)});
   return v;
 }
 static const std::vector<uint8_t> kSet{40, 64, 112, 144};
 
-TEST(cal_pick_op_slightly_worse_than_a_candidate_stays) {
-  // 112's pair reads 15, op 30: better, but not by pick_margin (20).
-  const auto h = halves_with({{60, 100}, {64, 100}, {108, 15}, {112, 15}, {140, 100}, {144, 100}});
-  CHECK(cal_round_pick(h, CalReading{40, 30}, 40, kSet, 40, 20, 50.0).best == 40);
-  // 20 better than op: it moves.
-  CHECK(cal_round_pick(h, CalReading{40, 35}, 40, kSet, 40, 20, 50.0).best == 112);
+TEST(cal_pick_busy_margin_decides_among_read_candidates) {
+  // 112 reads busy 15 %, the others more; op 30 %: a real gap, but short
+  // of the pick margin (20 points).
+  const std::vector<CalReading> h = {
+      {64, 0, true, 40.0}, {112, 0, true, 15.0}, {144, 0, true, 40.0}};
+  CHECK(cal_round_pick(h, CalReading{40, 0, true, 30.0}, 40, kSet, 20, 50.0).best == 40);
+  // 20 points better than op: it moves.
+  CHECK(cal_round_pick(h, CalReading{40, 0, true, 35.0}, 40, kSet, 20, 50.0).best == 112);
+}
+
+TEST(cal_pick_busy_tie_stays_on_op) {
+  // 64 ties op on busy %, even though op's frame count (foreign) reads far
+  // worse: foreign only orders the candidates among themselves, never the
+  // move itself.
+  const std::vector<CalReading> h = {
+      {64, 0, true, 30.0}, {112, 0, true, 30.0}, {144, 0, true, 50.0}};
+  CHECK(cal_round_pick(h, CalReading{40, 300, true, 30.0}, 40, kSet, 20, 50.0).best == 40);
 }
 
 TEST(cal_pick_clearly_blocked_op_moves) {
-  const auto h = halves_with({{60, 0}, {64, 0}, {108, 0}, {112, 0}, {140, 0}, {144, 0}}, 5.0);
-  CHECK(cal_round_pick(h, CalReading{40, 0, true, 90.0}, 40, kSet, 40, 20, 50.0).best == 64);
+  const auto h = readings_with({{64, 0}, {112, 0}, {144, 0}}, 5.0);
+  CHECK(cal_round_pick(h, CalReading{40, 0, true, 90.0}, 40, kSet, 20, 50.0).best == 64);
 }
 
-TEST(cal_pick_margin_holds_in_the_blocked_tier) {
-  // Op just blocked (55 %), every candidate just under (45 %): unblocked
-  // beats blocked only by pick_margin, like any other move.
-  const auto h = halves_with({{60, 0}, {64, 0}, {108, 0}, {112, 0}, {140, 0}, {144, 0}}, 45.0);
-  CHECK(cal_round_pick(h, CalReading{40, 0, true, 55.0}, 40, kSet, 40, 20, 50.0).best == 40);
+TEST(cal_pick_unblocked_beats_blocked_op_at_once) {
+  // Op just blocked (55 %), every candidate just under (45 %, unblocked):
+  // a better tier moves at once, no margin needed.
+  const auto h = readings_with({{64, 0}, {112, 0}, {144, 0}}, 45.0);
+  CHECK(cal_round_pick(h, CalReading{40, 0, true, 55.0}, 40, kSet, 20, 50.0).best == 64);
   // A blocked candidate never replaces an unblocked op, however busy op's
   // frame count reads.
-  const auto b = halves_with({{60, 0}, {64, 0}, {108, 0}, {112, 0}, {140, 0}, {144, 0}}, 60.0);
-  CHECK(cal_round_pick(b, CalReading{40, 300, true, 40.0}, 40, kSet, 40, 20, 50.0).best == 40);
+  const auto b = readings_with({{64, 0}, {112, 0}, {144, 0}}, 60.0);
+  CHECK(cal_round_pick(b, CalReading{40, 300, true, 40.0}, 40, kSet, 20, 50.0).best == 40);
 }
 
-TEST(cal_pick_scores_a_pair_by_its_worse_half_and_needs_every_half) {
-  // 108 (112's lower half) is busy: 112's pair scores 100, 144's pair 0.
-  const auto h = halves_with({{60, 50}, {64, 50}, {108, 100}, {112, 0}, {140, 0}, {144, 0}});
-  CHECK(cal_round_pick(h, CalReading{40, 200}, 40, kSet, 40, 20, 50.0).best == 144);
-  // 140 never read: 144 is not ranked; 64's pair is the best left.
-  const auto m = halves_with({{60, 50}, {64, 50}, {108, 100}, {112, 0}, {144, 0}});
-  CHECK(cal_round_pick(m, CalReading{40, 200}, 40, kSet, 40, 20, 50.0).best == 64);
+TEST(cal_pick_rows_are_one_per_member_plus_op) {
+  const auto h = readings_with({{64, 0}, {112, 0}, {144, 0}}, 5.0);
+  const auto out = cal_round_pick(h, CalReading{40, 0, true, 5.0}, 40, kSet, 20, 50.0);
+  CHECK(out.rows.size() == 4);
+}
+
+TEST(cal_pick_excludes_a_member_never_read) {
+  // 144 never read: it is not ranked, even though it is in the set.
+  const std::vector<CalReading> h = {{64, 0, true, 10.0}, {112, 0, true, 40.0}};
+  CHECK(cal_round_pick(h, CalReading{40, 0, true, 50.0}, 40, kSet, 20, 50.0).best == 64);
   // Op unread: stay, whatever the candidates read.
-  CHECK(cal_round_pick(h, std::nullopt, 40, kSet, 40, 20, 50.0).best == 40);
-  // K rows: every half read plus op's two halves, one visit each.
-  const auto out = cal_round_pick(h, CalReading{40, 200}, 40, kSet, 40, 20, 50.0);
-  CHECK(out.rows.size() == 8);
+  CHECK(cal_round_pick(h, std::nullopt, 40, kSet, 20, 50.0).best == 40);
+  // K rows: every member read plus op's, one row each, one visit each.
+  const auto out = cal_round_pick(h, CalReading{40, 0, true, 50.0}, 40, kSet, 20, 50.0);
+  CHECK(out.rows.size() == 3);
   for (const auto& r : out.rows) CHECK(r.visits == 1);
 }
 
 TEST(cal_pick_a_candidate_without_a_busy_reading_never_outranks_one_with) {
-  // 112's lower half has no NHM busy reading: scored on foreign alone it
-  // would read 0 and beat 144's pair (5 frames + 10 %) on a term the others
-  // pay and it does not. While any candidate has a busy reading, one
-  // without is not eligible.
+  // 112 has no NHM busy reading: scored on foreign alone it would read 0
+  // and beat 144 (5 frames + 10 %) on a term the others pay and it does
+  // not. While any candidate has a busy reading, one without is not
+  // eligible.
   const std::vector<CalReading> h = {
-      {60, 10, true, 20.0}, {64, 10, true, 20.0}, {108, 0, false, 0.0},
-      {112, 0, true, 0.0},  {140, 5, true, 10.0}, {144, 5, true, 10.0}};
-  CHECK(cal_round_pick(h, CalReading{40, 100, true, 30.0}, 40, kSet, 40, 20, 50.0).best == 144);
-  // With no busy reading anywhere, foreign alone still ranks them.
-  const auto f = halves_with({{60, 50}, {64, 50}, {108, 0}, {112, 0}, {140, 5}, {144, 5}});
-  CHECK(cal_round_pick(f, CalReading{40, 100}, 40, kSet, 40, 20, 50.0).best == 112);
+      {64, 10, true, 20.0}, {112, 0, false, 0.0}, {144, 5, true, 10.0}};
+  CHECK(cal_round_pick(h, CalReading{40, 100, true, 30.0}, 40, kSet, 20, 50.0).best == 144);
+  // With no busy reading anywhere, foreign still orders the candidates
+  // (the K rows), but the move itself needs a busy reading on both sides:
+  // stay.
+  const auto f = readings_with({{64, 50}, {112, 0}, {144, 5}});
+  CHECK(cal_round_pick(f, CalReading{40, 100}, 40, kSet, 20, 50.0).best == 40);
+}
+
+// The best candidate is the one with the lowest busy %, not the lowest
+// foreign + busy % score: the move is decided on busy %, so the candidate
+// it is decided for must be ranked on it. 112 reads 5 % with 30 foreign
+// frames (score 35), 64 reads 20 % with 2 (score 22); op 30 %: 112 clears
+// the 20-point margin, 64 would not.
+// Revert (best by score): 64 is best, short of the margin, and op stays.
+TEST(cal_pick_best_ranks_on_busy_before_score) {
+  const std::vector<CalReading> h = {{64, 2, true, 20.0}, {112, 30, true, 5.0}};
+  CHECK(cal_round_pick(h, CalReading{40, 0, true, 30.0}, 40, kSet, 20, 50.0).best == 112);
+  // Under the margin the pick still stays on op.
+  CHECK(cal_round_pick(h, CalReading{40, 0, true, 20.0}, 40, kSet, 20, 50.0).best == 40);
 }
 
 TEST(cal_pick_width_20_compares_members) {
   const std::vector<uint8_t> set{36, 40, 44};
-  const auto h = halves_with({{40, 90}, {44, 0}});
-  CHECK(cal_round_pick(h, CalReading{36, 50}, 36, set, 20, 20, 50.0).best == 44);
+  const std::vector<CalReading> h = {{40, 0, true, 40.0}, {44, 0, true, 5.0}};
+  CHECK(cal_round_pick(h, CalReading{36, 0, true, 50.0}, 36, set, 20, 50.0).best == 44);
 }
 
 // ---- the round's lifecycle ----
@@ -1647,7 +1991,7 @@ TEST(set_pin_while_linked_relocates_and_freezes_the_reactive_layer) {
   const size_t hops0 = g.sink.hops.size();
   g.cards[0]->cca_per_ms_on[112] = 50; g.cards[1]->cca_per_ms_on[112] = 50;
   g.cards[0]->fr.foreign = 0; g.cards[1]->fr.foreign = 0;
-  interfere(g, 6);
+  interfere(g, occ_lead(g) + 6);
   CHECK(std::string(g.core->snapshot(0).hop.verdict) == "interfered");
   CHECK(g.sink.hops.size() == hops0);          // no order/escape/hold of any kind
   CHECK(!g.core->hopping());
@@ -1716,8 +2060,7 @@ TEST(set_pin_refused_while_hopping) {
   link_up(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
   g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
-  interfere(g, 4);
-  REQUIRE(g.sink.has_hop("order"));
+  interfere_until_order(g);
   REQUIRE(g.core->hopping());
   const size_t lines0 = g.sink.lines.size();
   CHECK(g.core->set_pin(112) == std::optional<std::string>("hop in flight"));
@@ -1791,7 +2134,7 @@ TEST(set_auto_from_pinned_rearms_the_hop_from_op_without_a_relocate) {
   CHECK(!g.sink.has_hop("relocate"));
   // and an interfered op is fled again
   g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
-  interfere(g, 4);
+  interfere_until_order(g);
   CHECK(g.sink.has_hop("order"));
 }
 
@@ -1806,17 +2149,20 @@ TEST(set_auto_while_unlinked_reopens_the_boot_pick) {
   CHECK(!g.core->snapshot(0).scan_pick.has_value());
   g.tick();
   CHECK(g.core->pick_open());                   // max_ms counts from the reopen
-  // the scout measures again (both halves of every pair at width 40) and
-  // the pick commits off the busy op pair
-  g.cards[1]->cca_per_ms_on[40] = 5; g.cards[1]->cca_per_ms_on[36] = 5;
+  // the scout measures again (one 40 MHz dwell per pair, on its primary)
+  // and the pick commits off the blocked op pair
+  g.cards[1]->nhm_busy_pct_on[40] = 100;
   for (int i = 0; i < 3000 && !g.sink.has_line("pick frozen on"); ++i) g.tick();
   REQUIRE(g.sink.has_line("pick frozen on"));
   CHECK(g.sink.has_line("(commit)"));
   CHECK(g.core->op() != 40);
-  bool observed_36 = false;
-  for (const auto& d : g.sink.dwells)
-    if (d.second.survey.def.primary == 36) observed_36 = true;
-  CHECK(observed_36);
+  bool observed_40 = false;
+  for (const auto& d : g.sink.dwells) {
+    if (d.second.survey.def.primary == 40) observed_40 = true;
+    CHECK(d.second.survey.def.primary != 36);   // never a secondary
+    CHECK(d.second.survey.def.width == CHANNEL_WIDTH_40);
+  }
+  CHECK(observed_40);
 }
 
 // A pin's relocate cut by link loss is a relocate like any other: the GS
@@ -1872,7 +2218,7 @@ TEST(set_auto_while_unlinked_one_card_reruns_the_prelude_and_commits) {
   for (int i = 0; i < 10; ++i) g.tick();
   g.clk.ms += 60000;                            // long past max_ms and one_card_ms since start
   g.tick();
-  g.cards[0]->cca_per_ms_on[40] = 5;            // 40 busy, the rest clean
+  g.cards[0]->nhm_busy_pct_on[40] = 100;         // 40 blocked, the rest unread
   g.core->set_auto();
   CHECK(g.core->pick_open());
   for (int i = 0; i < 800 && !g.sink.has_line("one-card prelude ranking picks"); ++i) g.tick();
@@ -1939,7 +2285,7 @@ TEST(pin_refusal_agrees_with_set_pin_while_a_two_card_hop_is_in_flight) {
   link_up(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
   g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
-  interfere(g, 4);
+  interfere_until_order(g);
   REQUIRE(g.core->hopping());
   pin_refusal_agrees(g, 112, std::string("hop in flight"));
 }
@@ -1951,8 +2297,7 @@ TEST(pin_refusal_agrees_with_set_pin_while_a_one_card_reactive_hop_is_ordered) {
   freeze_auto(g);
   for (int i = 0; i < 5; ++i) g.tick(true);
   g.cards[0]->cca_per_ms_on[40] = 50;
-  interfere(g, 4);
-  REQUIRE(g.sink.has_hop("order"));
+  interfere_until_order(g);
   REQUIRE(!g.sink.has_hop("one_card_retune"));
   REQUIRE(!g.core->hopping());
   REQUIRE(!g.core->sweep_pending());
@@ -1982,7 +2327,7 @@ TEST(pin_refusal_agrees_with_set_pin_while_a_relay_sweeps) {
   link_up(g);
   for (int i = 0; i < 5; ++i) g.tick(true, false, 0);
   g.cards[0]->cca_per_ms_on[40] = 50;
-  interfere(g, 3);
+  interfere(g, occ_lead(g) + 3);
   REQUIRE(g.core->sweep_pending());
   REQUIRE(!g.core->hopping());
   pin_refusal_agrees(g, 112, std::string("sweep in flight"));

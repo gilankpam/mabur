@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdio>
 
 #include "mabur/channel_set.h"
 #include "mabur/ht40.h"
@@ -12,18 +11,20 @@
 namespace maburgs {
 
 namespace {
-// The channels the scheduler dwells on, in dwell-set order (also the
-// ranker's row order: the K log line and ranking() expose it). Pinned
-// (search only): the members. Measuring at 40: both halves of every
-// member's pair. Measuring at 20: the members.
-std::vector<uint8_t> dwell_channels(const ScoutCfg& c, bool measure) {
-  if (measure && c.link_width_mhz == 40) return scan_half_set(c.channels);
-  return c.channels;
+// The scout card is opened at the link width and never switches it, so a
+// dwell is as wide as the link: at 40 one dwell on a member (a pair's
+// primary) reads the whole pair.
+ChannelWidth_t dwell_width(const ScoutCfg& c) {
+  return c.link_width_mhz == 40 ? CHANNEL_WIDTH_40 : CHANNEL_WIDTH_20;
 }
 
-devourer::chanmig::ScanPlanConfig plan_for(const ScoutCfg& c, bool measure) {
+// The scheduler dwells on the members, in config order (also the ranker's
+// row order: the K log line and ranking() expose it), pinned or measuring.
+// Plan candidates are 20 MHz defs at any link width: the scheduler splits a
+// wider def into its 20 MHz bins, and the scout wants one bin per member.
+devourer::chanmig::ScanPlanConfig plan_for(const ScoutCfg& c) {
   devourer::chanmig::ScanPlanConfig p;
-  for (uint8_t ch : dwell_channels(c, measure)) {
+  for (uint8_t ch : c.channels) {
     bool dup = false;
     for (const auto& d : p.candidates) dup = dup || d.primary == ch;
     if (dup) continue;
@@ -49,8 +50,8 @@ ChannelScout::ChannelScout(ScoutCfg cfg, ScoutRadio& radio, NowFn now_ms, SleepF
       radio_(radio),
       now_(std::move(now_ms)),
       sleep_(std::move(sleep_ms)),
-      sched_(plan_for(cfg_, cfg_.measure)),
-      ranker_(dwell_channels(cfg_, cfg_.measure), cfg_.min_rounds, cfg_.pick_margin, cfg_.blocked_pct),
+      sched_(plan_for(cfg_)),
+      ranker_(cfg_.channels, cfg_.min_rounds, cfg_.pick_margin_pct, cfg_.blocked_pct),
       proposal_(cfg_.channels.empty() ? 0 : cfg_.channels.front()),
       op_(cfg_.channels.empty() ? 0 : cfg_.channels.front()) {
   measure_.store(cfg_.measure, std::memory_order_release);
@@ -71,8 +72,7 @@ void ChannelScout::set_op(uint8_t ch) {
 void ChannelScout::unfreeze() {
   {
     std::lock_guard<std::mutex> lk(mu_);
-    ranker_ = ChannelRanker(dwell_channels(cfg_, measure_.load(std::memory_order_acquire)),
-                            cfg_.min_rounds, cfg_.pick_margin, cfg_.blocked_pct);
+    ranker_ = ChannelRanker(cfg_.channels, cfg_.min_rounds, cfg_.pick_margin_pct, cfg_.blocked_pct);
   }
   // A fresh schedule restarts rounds(): the one-card prelude's effective
   // min_rounds (1 until min_rounds full passes) holds again, as at boot.
@@ -94,7 +94,7 @@ void ChannelScout::set_measure(bool on) {
   {
     std::lock_guard<std::mutex> lk(mu_);
     measure_.store(on, std::memory_order_release);
-    ranker_ = ChannelRanker(dwell_channels(cfg_, on), cfg_.min_rounds, cfg_.pick_margin, cfg_.blocked_pct);
+    ranker_ = ChannelRanker(cfg_.channels, cfg_.min_rounds, cfg_.pick_margin_pct, cfg_.blocked_pct);
   }
   resched_.store(true, std::memory_order_release);
 }
@@ -112,8 +112,7 @@ bool ChannelScout::measuring_() const {
 void ChannelScout::begin_round() {
   {
     std::lock_guard<std::mutex> lk(mu_);
-    ranker_ = ChannelRanker(dwell_channels(cfg_, measure_.load(std::memory_order_acquire)),
-                            cfg_.min_rounds, cfg_.pick_margin, cfg_.blocked_pct);
+    ranker_ = ChannelRanker(cfg_.channels, cfg_.min_rounds, cfg_.pick_margin_pct, cfg_.blocked_pct);
     round_dwells_ = 0;
     round_samples_.clear();
   }
@@ -138,19 +137,19 @@ void ChannelScout::end_round_measuring_() {
   round_.compare_exchange_strong(m, kRoundMeasured, std::memory_order_acq_rel);
 }
 
-// The round is over once every dwell channel it does not skip has a visit,
-// or after two passes' worth of dwells (a half whose retune or read keeps
+// The round is over once every member it does not skip has a visit, or
+// after two passes' worth of dwells (a member whose retune or read keeps
 // failing must not hold the run's channel pick forever).
 void ChannelScout::note_round_dwell_() {
   if (!round_measuring()) return;
-  const int cap = 2 * static_cast<int>(dwell_channels(cfg_, measure_.load(std::memory_order_acquire)).size());
+  const int cap = 2 * static_cast<int>(cfg_.channels.size());
   bool all = true;
   int taken = 0;
   {
     std::lock_guard<std::mutex> lk(mu_);
     taken = ++round_dwells_;
     for (const RankEntry& e : ranker_.all())
-      if (!skip_op_half_(e.ch) && e.visits == 0) all = false;
+      if (!skip_op_(e.ch) && e.visits == 0) all = false;
   }
   if (all || taken >= cap) end_round_measuring_();
 }
@@ -160,7 +159,7 @@ bool ChannelScout::member_(uint8_t ch) const {
 }
 
 // One card: at the prelude deadline the pick may run on a single visit per
-// half until min_rounds full passes exist.
+// member until min_rounds full passes exist.
 int ChannelScout::eff_min_rounds_() const {
   return (cfg_.one_card && prelude_done_.load(std::memory_order_acquire) &&
           rounds_.load(std::memory_order_acquire) < static_cast<uint64_t>(cfg_.min_rounds))
@@ -169,28 +168,10 @@ int ChannelScout::eff_min_rounds_() const {
 }
 
 void ChannelScout::park_() {
-  const uint8_t op = op_.load(std::memory_order_acquire);
-  if (cfg_.link_width_mhz == 40) {
-    // Join the link at 40 (docs/bw40.md "Boot scan scores every half"). A failure (dead or unready
-    // card) is not retried here: the core loop's width resync
-    // (width_resync.h) sets the card's width once it is ready again.
-    if (!radio_.retune_width(op, 40))
-      std::fprintf(stderr, "maburgs channel: scout card width switch to 40 MHz on ch %u "
-                           "failed; the core loop retries once the card is ready\n",
-                   static_cast<unsigned>(op));
-  } else {
-    radio_.retune(op);
-  }
+  radio_.retune(op_.load(std::memory_order_acquire));
   beaconing_.store(false, std::memory_order_release);
   quiet_.store(false, std::memory_order_release);
   working_.store(false, std::memory_order_release);
-  need_width_ = true;
-}
-
-bool ChannelScout::tune_(uint8_t ch) {
-  const bool ok = need_width_ ? radio_.retune_width(ch, 20) : radio_.retune(ch);
-  if (ok) need_width_ = false;
-  return ok;
 }
 
 void ChannelScout::run() {
@@ -201,36 +182,29 @@ void ChannelScout::run() {
   done_.store(true, std::memory_order_release);
 }
 
-// While the search is off (linked, or inside
-// search_after_ms after a loss) op's own pair carries the drone's video.
-// At width 40 a 20 MHz observe cannot decode it (counted busy), and NHM
-// counts its airtime either way, so a linked visit would score op against
+// While the search is off (linked, or inside search_after_ms after a
+// loss) op's own pair carries the drone's video. NHM counts its airtime
+// and the frame counts see it, so a linked visit would score op against
 // the link itself and the boot hop would leave a clean op almost every
-// time. Those halves are skipped instead -- no retune, no observe -- and op
-// keeps only its pre-link visits (mature() then does not wait for it, and
-// the core freezes in place when op_ranked() is false).
-bool ChannelScout::is_op_half_(uint8_t ch) const {
-  const uint8_t op = op_.load(std::memory_order_acquire);
-  if (ch == op) return true;
-  return measure_.load(std::memory_order_acquire) && cfg_.link_width_mhz == 40 &&
-         ch == mabur::ht40_pair_other(op);
-}
-
-bool ChannelScout::skip_op_half_(uint8_t ch) const {
-  return !search_.load(std::memory_order_acquire) && measuring_() && is_op_half_(ch);
+// time. Op is skipped instead -- no retune, no observe -- and keeps only
+// its pre-link visits (mature() then does not wait for it, and the core
+// freezes in place when op_ranked() is false).
+bool ChannelScout::skip_op_(uint8_t ch) const {
+  return !search_.load(std::memory_order_acquire) && measuring_() &&
+         ch == op_.load(std::memory_order_acquire);
 }
 
 // One scheduler dwell. burst_ok: a DISC burst is allowed on this dwell
-// (still only when searching and on a member). A skipped op half is
-// completed in the scheduler without touching the card (so the round-robin
-// and rounds() advance) and the next bin is taken; false when every bin is
-// one of op's.
+// (still only when searching and on a member). A skipped op is completed
+// in the scheduler without touching the card (so the round-robin and
+// rounds() advance) and the next bin is taken; false when op is the only
+// bin.
 bool ChannelScout::step_dwell_(bool burst_ok, bool observe) {
-  const size_t bins = dwell_channels(cfg_, measure_.load(std::memory_order_acquire)).size();
+  const size_t bins = cfg_.channels.size();
   for (size_t i = 0; i <= bins; ++i) {
     auto p = sched_.next(now_());
     if (!p.valid) return true;
-    if (skip_op_half_(p.bin_ch)) {
+    if (skip_op_(p.bin_ch)) {
       // Stamped one dwell ahead: a skipped bin completed at `now` ties with
       // the dwell that just finished and, by plan order, could win the tie
       // forever (width 20, one other member).
@@ -245,7 +219,7 @@ bool ChannelScout::step_dwell_(bool burst_ok, bool observe) {
     if (observe) note_round_dwell_();
     return true;
   }
-  // Every bin is one of op's (a one-member set): a round has nothing to visit.
+  // Op is the only bin (a one-member set): a round has nothing to visit.
   end_round_measuring_();
   return false;
 }
@@ -253,7 +227,7 @@ bool ChannelScout::step_dwell_(bool burst_ok, bool observe) {
 bool ChannelScout::run_once() {
   if (t0_ < 0) t0_ = now_();
   if (resched_.exchange(false, std::memory_order_acq_rel)) {
-    sched_ = devourer::chanmig::ScanScheduler(plan_for(cfg_, measure_.load(std::memory_order_acquire)));
+    sched_ = devourer::chanmig::ScanScheduler(plan_for(cfg_));
     rounds_.store(sched_.rounds_complete(), std::memory_order_release);
   }
   if (!has_work_()) {
@@ -280,7 +254,7 @@ bool ChannelScout::run_once() {
     if (measuring_() && !prelude_ack_.load(std::memory_order_acquire)) return false;
     // Op window: the core may beacon on op through this (only) card, then a
     // gap so the last DISC's ack lands before leaving.
-    if (!tune_(op_.load(std::memory_order_acquire))) return true;
+    if (!radio_.retune(op_.load(std::memory_order_acquire))) return true;
     beaconing_.store(true, std::memory_order_release);
     sleep_(cfg_.op_window_ms);
     beaconing_.store(false, std::memory_order_release);
@@ -296,11 +270,12 @@ bool ChannelScout::dwell(uint8_t ch, uint64_t round, bool burst, bool observe) {
   s.seq = seq_++;
   s.def.band = ch >= 36 ? 5 : 2;
   s.def.primary = ch;
-  s.def.width = CHANNEL_WIDTH_20;
+  s.def.width = dwell_width(cfg_);
+  s.def.offset = cfg_.link_width_mhz == 40 ? mabur::ht40_offset(ch) : 0;   // as FastRetune keeps it
   s.round = round;
   s.t_start_ms = now_();
   s.settle_ms = cfg_.settle_ms;
-  if (!tune_(ch)) {
+  if (!radio_.retune(ch)) {
     s.flags |= devourer::chanmig::kFlagRetuneFailed;
     s.t_end_ms = now_();
     std::lock_guard<std::mutex> lk(mu_);
@@ -388,8 +363,8 @@ void ChannelScout::publish_() {
   const uint8_t op = op_.load(std::memory_order_acquire);
   const int mr = eff_min_rounds_();
   const uint8_t p = cfg_.link_width_mhz == 40
-                        ? pair_proposal(ranker_.all(), op, cfg_.channels, mr, cfg_.pick_margin,
-                                        cfg_.blocked_pct)
+                        ? pair_proposal(ranker_.all(), op, cfg_.channels, mr,
+                                        cfg_.pick_margin_pct, cfg_.blocked_pct)
                         : ranker_.proposal(op, mr);
   proposal_.store(p, std::memory_order_release);
 }
@@ -408,7 +383,7 @@ bool ChannelScout::op_ranked() const {
   return op_ranked_locked_(eff_min_rounds_());
 }
 
-// Every member but op ranked (a linked scout never visits op's pair, so
+// Every member but op ranked (a linked scout never visits op, so
 // waiting for it would never end). While searching op is visited like any
 // other channel, so it is waited for too -- otherwise maturity could land a
 // dwell before op's last visit and an unlinked commit would compare against
