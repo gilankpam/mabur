@@ -131,7 +131,7 @@ struct ChannelTickIn {
   bool in_session = false;     // VrxState::SESSION
   bool cal_running = false;    // CalSession::running()
   int tx_card = 0;             // TxSelector::selected()
-  const Aggregator* agg = nullptr;   // per-card crc_fail/rssi_a_ema/snr_ema, decoder stats
+  const Aggregator* agg = nullptr;   // per-card crc_fail/rssi_ema/snr_ema, decoder stats
 };
 
 struct ChannelTickOut {

@@ -1664,6 +1664,29 @@ static mabur::node::RxBody junk_body(uint8_t card, uint16_t seq) {
   m.body.assign(20, 0);   // not SBI, not RC: misroutes, still walks the seq
   return m;
 }
+
+// The weak gate reads the card's best receive chain, not chain A. Chain A
+// under weak_rssi_dbm with chain B well above it is a card still hearing
+// the drone fine on one antenna, so a jammed op reads interfered, not
+// fade. Revert (rssi_a_ema at the window fill): weak trips on chain A and
+// the window is a fade.
+TEST(weak_gate_reads_the_best_chain_not_chain_a) {
+  Rig g(2, 0, /*pinned=*/true, 40);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  for (uint8_t card = 0; card < 2; ++card) {
+    auto m = junk_body(card, 1);
+    m.phy_valid = true;
+    m.rssi[0] = 25; m.rssi[1] = 40;   // chain A -85 dBm (under the wall), chain B -70 dBm
+    m.snr[0] = 10; m.snr[1] = 10;     // 5 dB on both: under weak_snr_db, so RSSI alone decides
+    g.agg.on_rx_body(m);
+  }
+  g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
+  g.cards[0]->fr.foreign = 0; g.cards[1]->fr.foreign = 0;
+  interfere(g, occ_lead(g) + 6);
+  CHECK(std::string(g.core->snapshot(0).hop.verdict) == "interfered");
+  CHECK((g.core->snapshot(0).hop.evidence & kEvWeak) == 0);
+}
 // One sampled window on a one-card pinned rig: `before` runs between the
 // T1 record and its consume (the previous window), `during` inside the
 // 140 ms window that the second record closes. Returns the window's energy.

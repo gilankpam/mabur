@@ -546,7 +546,12 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
     const uint64_t crc_fail = in.agg ? in.agg->card(i).crc_fail : 0;
     const uint64_t seq_exp = in.agg ? in.agg->card(i).seq_expected : 0;
     const uint64_t seq_rcv = in.agg ? in.agg->card(i).seq_received : 0;
-    const double rssi_raw = in.agg ? in.agg->card(i).rssi_a_ema : 0.0;
+    // The pooled EMA is the per-frame best of the two receive chains, in
+    // the same raw unit as snr_ema beside it: a card still hearing the
+    // drone on one antenna is not weak, and a deaf chain (raw 0) must not
+    // make its card the "best" one with a signal the gate can never call
+    // weak.
+    const double rssi_raw = in.agg ? in.agg->card(i).rssi_ema : 0.0;
     const double snr_raw = in.agg ? in.agg->card(i).snr_ema : 0.0;
     if (window_prev_ok_[si]) {
       vc[si].valid = true;
