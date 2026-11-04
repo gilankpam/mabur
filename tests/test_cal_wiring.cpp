@@ -229,7 +229,7 @@ TEST(a_bare_start_on_a_40_gs_linked_to_a_20_drone_runs_two_sweeps) {
   // And a 40 token is refused against that drone.
   s.abort("x");
   CHECK(!CalControl::apply("start power40", s, &reply, default_sweeps(w, ladder), w));
-  CHECK(reply == "err refused: GS radio.width is 20");
+  CHECK(reply == "err refused: GS receiver width is 20 (load a 40 MHz ladder to calibrate 40 MHz)");
 }
 
 // --- CalSession::is_running ----------------------------------------------

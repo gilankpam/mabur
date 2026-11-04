@@ -18,7 +18,7 @@ const std::vector<cal::SweepSpec> kDefault20 = {{cal::Kind::Power, 20},
 
 TEST(default_sweeps_is_two_for_a_20_mhz_gs) {
   LadderCfg ladder;  // every rung defaults to bw 20
-  const auto sweeps = default_sweeps(/*radio_width=*/20, ladder);
+  const auto sweeps = default_sweeps(/*rx_width=*/20, ladder);
   REQUIRE(sweeps.size() == 2);
   CHECK(sweeps[0].kind == cal::Kind::Power);
   CHECK(sweeps[0].bw == 20);
@@ -31,14 +31,14 @@ TEST(default_sweeps_ignores_a_40_rung_on_a_20_mhz_gs) {
   // it can never hear that rung's sweep frames.
   LadderCfg ladder;
   ladder.ladder.push_back({4, 0.5, 0.5, 40});
-  const auto sweeps = default_sweeps(/*radio_width=*/20, ladder);
+  const auto sweeps = default_sweeps(/*rx_width=*/20, ladder);
   CHECK(sweeps.size() == 2);
 }
 
 TEST(four_for_a_40_gs_with_a_40_rung) {
   LadderCfg ladder;
   ladder.ladder.push_back({4, 0.5, 0.5, 40});
-  const auto sweeps = default_sweeps(/*radio_width=*/40, ladder);
+  const auto sweeps = default_sweeps(/*rx_width=*/40, ladder);
   CHECK(sweeps.size() == 4);
 }
 
@@ -46,7 +46,7 @@ TEST(default_sweeps_is_two_for_a_40_gs_with_no_40_rung) {
   // The GS can fly 40, but nothing on its ladder ever does -- a 40 MHz
   // sweep would calibrate a width the ladder never picks.
   LadderCfg ladder;
-  const auto sweeps = default_sweeps(/*radio_width=*/40, ladder);
+  const auto sweeps = default_sweeps(/*rx_width=*/40, ladder);
   CHECK(sweeps.size() == 2);
 }
 
@@ -56,7 +56,7 @@ TEST(start_with_no_tokens_uses_the_defaults) {
   CalSession s(CalSessionCfg{});
   s.set_peer(true, true);
   std::string reply;
-  CHECK(CalControl::apply("start", s, &reply, kDefault20, /*radio_width=*/20));
+  CHECK(CalControl::apply("start", s, &reply, kDefault20, /*rx_width=*/20));
   CHECK(reply == "ok started power20,cap20");
   CHECK(s.state() != CalSession::State::Idle);
   REQUIRE(s.sweeps().size() == 2);
@@ -69,7 +69,7 @@ TEST(start_with_tokens_builds_that_list) {
   // Any order, plus a duplicate -- the session sorts (20 before 40, power
   // before capacity within a width) and drops the repeat.
   CHECK(CalControl::apply("start cap40 power20 cap20 power40 power20", s, &reply,
-                          kDefault20, /*radio_width=*/40));
+                          kDefault20, /*rx_width=*/40));
   CHECK(reply == "ok started power20,cap20,power40,cap40");
   REQUIRE(s.sweeps().size() == 4);
 }
@@ -79,8 +79,8 @@ TEST(start_power40_on_a_20_gs_is_refused_with_nothing_started) {
   s.set_peer(true, true);
   std::string reply;
   CHECK(!CalControl::apply("start power20 power40", s, &reply, kDefault20,
-                           /*radio_width=*/20));
-  CHECK(reply == "err refused: GS radio.width is 20");
+                           /*rx_width=*/20));
+  CHECK(reply == "err refused: GS receiver width is 20 (load a 40 MHz ladder to calibrate 40 MHz)");
   CHECK(s.state() == CalSession::State::Idle);
 }
 
@@ -89,7 +89,7 @@ TEST(bad_token_is_an_error) {
   s.set_peer(true, true);
   std::string reply;
   CHECK(!CalControl::apply("start power20 frobnicate", s, &reply, kDefault20,
-                           /*radio_width=*/20));
+                           /*rx_width=*/20));
   CHECK(reply == "err bad token: frobnicate");
   CHECK(s.state() == CalSession::State::Idle);
 }
@@ -98,7 +98,7 @@ TEST(start_reports_why_it_refused) {
   CalSession s(CalSessionCfg{});
   s.set_peer(/*linked=*/false, /*cal_capable=*/true);
   std::string reply;
-  CHECK(!CalControl::apply("start", s, &reply, kDefault20, /*radio_width=*/20));
+  CHECK(!CalControl::apply("start", s, &reply, kDefault20, /*rx_width=*/20));
   CHECK(reply.find("err") == 0);
   CHECK(reply.find("link") != std::string::npos);
 }
@@ -109,7 +109,7 @@ TEST(status_never_changes_state) {
   CalSession s(CalSessionCfg{});
   s.set_peer(true, true);
   std::string reply;
-  CHECK(!CalControl::apply("status", s, &reply, kDefault20, /*radio_width=*/20));
+  CHECK(!CalControl::apply("status", s, &reply, kDefault20, /*rx_width=*/20));
   CHECK(reply.find("idle") != std::string::npos);
   CHECK(s.state() == CalSession::State::Idle);
 }
@@ -118,9 +118,9 @@ TEST(status_renders_the_snapshot) {
   CalSession s(CalSessionCfg{});
   s.set_peer(true, true);
   std::string reply;
-  REQUIRE(CalControl::apply("start", s, &reply, kDefault20, /*radio_width=*/20));
+  REQUIRE(CalControl::apply("start", s, &reply, kDefault20, /*rx_width=*/20));
   reply.clear();
-  CHECK(!CalControl::apply("status", s, &reply, kDefault20, /*radio_width=*/20));
+  CHECK(!CalControl::apply("status", s, &reply, kDefault20, /*rx_width=*/20));
   CHECK(reply.find("ok state=") == 0);
   CHECK(reply.find("sweep=1/2") != std::string::npos);
   CHECK(reply.find("kind=power") != std::string::npos);
@@ -195,8 +195,8 @@ TEST(abort_stops_a_running_session) {
   CalSession s(CalSessionCfg{});
   s.set_peer(true, true);
   std::string reply;
-  REQUIRE(CalControl::apply("start", s, &reply, kDefault20, /*radio_width=*/20));
-  CHECK(CalControl::apply("abort", s, &reply, kDefault20, /*radio_width=*/20));
+  REQUIRE(CalControl::apply("start", s, &reply, kDefault20, /*rx_width=*/20));
+  CHECK(CalControl::apply("abort", s, &reply, kDefault20, /*rx_width=*/20));
   CHECK(s.state() == CalSession::State::Idle);
 }
 
@@ -207,7 +207,7 @@ TEST(abort_while_idle_is_a_no_op_and_is_not_logged) {
   CalSession s(CalSessionCfg{});
   s.set_peer(true, true);
   std::string reply;
-  CHECK(!CalControl::apply("abort", s, &reply, kDefault20, /*radio_width=*/20));
+  CHECK(!CalControl::apply("abort", s, &reply, kDefault20, /*rx_width=*/20));
   CHECK(s.state() == CalSession::State::Idle);
 }
 
@@ -215,9 +215,9 @@ TEST(unknown_and_empty_commands_are_errors_not_crashes) {
   CalSession s(CalSessionCfg{});
   s.set_peer(true, true);
   std::string reply;
-  CHECK(!CalControl::apply("", s, &reply, kDefault20, /*radio_width=*/20));
+  CHECK(!CalControl::apply("", s, &reply, kDefault20, /*rx_width=*/20));
   CHECK(reply.find("err") == 0);
-  CHECK(!CalControl::apply("frobnicate", s, &reply, kDefault20, /*radio_width=*/20));
+  CHECK(!CalControl::apply("frobnicate", s, &reply, kDefault20, /*rx_width=*/20));
   CHECK(reply.find("err") == 0);
 }
 

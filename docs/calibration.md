@@ -42,9 +42,10 @@ logged into the GS to start a run.
 **What a run measures.** A run is a list of sweeps, each a kind (`power`
 or `cap`) at a width (20 or 40). `maburcal start` with no arguments runs
 the GS's own composition (`default_sweeps`, `gs/src/cal_control.h`):
-`power20, cap20`, plus `power40, cap40` when the GS's `radio.width` is 40
+`power20, cap20`, plus `power40, cap40` when the GS receiver width
+(derived from the ladder, `docs/bw40.md`) is 40
 **and** some `[[link.ladder]]` rung has `bw = 40`. The width is the
-narrower of the GS's `radio.width` and the linked drone's DISC_ACK
+narrower of the GS receiver width and the linked drone's DISC_ACK
 `agreed_width`, so a 40 MHz GS linked to a drone flying 20 composes the
 20 MHz pair only. Arguments `power20|power40|cap20|cap40` pick a subset;
 duplicates drop. Whatever was typed, the session runs widths ascending and,
@@ -57,12 +58,12 @@ Refusals come back at once, before anything airs:
 | reply | why |
 |---|---|
 | `err bad token: <tok>` | not one of the four tokens |
-| `err refused: GS radio.width is 20` | a `*40` token while the effective width (above) is 20 |
+| `err refused: GS receiver width is 20 (load a 40 MHz ladder to calibrate 40 MHz)` | a `*40` token while the effective width (above) is 20 |
 | `err a calibration session is already running` | a run, or its channel pick, is in progress |
 | `err refused: link is down` | `maburgs` is not in `SESSION` |
 | `err refused: peer does not advertise CAP_CALIBRATE` | the drone's DISC_ACK lacks the bit (a build without the mabur-dialect calibration) |
 
-The "GS radio.width is 20" wording is also what a 40 MHz GS says when it
+The "GS receiver width is 20" wording is also what a 40 MHz GS says when it
 is the linked drone that flies 20.
 
 **Progress.** `start` then polls `status` every 500 ms and prints each
@@ -782,7 +783,7 @@ findings page.
 | walls | the table vs the spike's reference at the same geometry | within ±2 on mcs4–7, mcs0–3 `no_dip` |
 | capacity | `eff` per width vs the spike's low-MCS points | within ±0.03 at mcs0–4; high points plausible, or flagged `tx_bound` and left at the existing value |
 | subset | `maburcal start power20` | one sweep, `done` < 30 s, `_40` lines untouched (`diff` against `.pre-cal`) |
-| 20 MHz GS | temporarily `radio.width = 20` and an all-20 ladder on the GS | `maburcal start` runs two sweeps; `maburcal start power40` → `err refused: GS radio.width is 20` |
+| 20 MHz GS | an all-20 ladder on the GS (derived receiver width 20) | `maburcal start` runs two sweeps; `maburcal start power40` → `err refused: GS receiver width is 20 (load a 40 MHz ladder to calibrate 40 MHz)` |
 | table swap | `link.static_mcs` pinned at 20 then at 40 (or watch rung changes) | `maburd` log `power table 40 MHz live`; `GetTxPowerState` read-back differs between widths |
 | config | `/etc/mabur.toml` diff vs `.pre-cal` | only the per-width keys above plus `power_mode`; comments intact |
 | legacy | `legacy_wall_rel` after a `power20` | equals the 20 MHz mcs0 wall |
