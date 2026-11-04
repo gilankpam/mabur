@@ -96,13 +96,15 @@ VerdictOut HopVerdict::window(double now_ms, const std::vector<VerdictCardIn>& c
   bool blocked = false;
   // blocked = the MINIMUM foreign-busy reading across cards that have one,
   // not any-card. A weakly-receiving diversity card's NHM busy counts our
-  // own frames too, but its own_air_pct is reconstructed only from the
-  // frames it actually decoded -- so a card that hears little of our video
-  // reads "foreign" close to our own airtime and would false-block alone.
-  // The strong card in the same window reads the interferer's real share,
-  // so requiring every reading card to agree needs an interferer that all
-  // of them can see, not a receive-weak diversity path. No card with a
-  // reading -> not blocked (same as today).
+  // own frames too, while its own_air_pct is rebuilt from the frames it
+  // decoded, scaled by its seq delivery (channel_core's window fill). The
+  // scale repairs frames the card heard but missed; frames so faint they
+  // never advanced its seq walk at all still leave it reading "foreign"
+  // close to our own airtime, so a card that hears little of our video
+  // would false-block alone. The strong card in the same window reads the
+  // interferer's real share, so requiring every reading card to agree
+  // needs an interferer that all of them can see, not a receive-weak
+  // diversity path. No card with a reading -> not blocked (same as today).
   bool have_busy_reading = false;
   double min_foreign_busy_pct = 0.0;
   for (const auto& c : cards) {
@@ -171,9 +173,10 @@ VerdictOut HopVerdict::window(double now_ms, const std::vector<VerdictCardIn>& c
   // the window impaired (the reference freeze) but never route to
   // `interfered`: each also moves when the link merely fades.
   //
-  // weak gates first: at the range edge our own frames stop decoding, so
-  // own_air_pct (rebuilt from decoded frames) undercounts and the
-  // subtraction can read our own video as foreign airtime.
+  // weak gates first: at the range edge our own frames drop below the NHM
+  // busy threshold and out of the seq walk at once, so own_air_pct (decoded
+  // airtime scaled by seq delivery) no longer tracks what the air carried
+  // and the subtraction can read our own video as foreign airtime.
   //
   // Each route also needs this window's own busy reading (`blocked` for
   // occupied, `have_busy_reading` for detected): a window without one (the

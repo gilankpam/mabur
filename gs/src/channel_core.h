@@ -337,6 +337,9 @@ class ChannelCore {
   std::vector<std::optional<StatsDwellIn>> dwell_stats_;
   std::vector<ScoutFrames> window_prev_;
   std::vector<uint64_t> window_prev_crc_;
+  // The card's seq walk at the previous sample (CardTrack::seq_expected /
+  // seq_received): the window's delivery ratio scales its own airtime.
+  std::vector<uint64_t> window_prev_seq_exp_, window_prev_seq_rcv_;
   std::vector<bool> window_prev_ok_;
   std::vector<uint64_t> window_prev_ms_;
 

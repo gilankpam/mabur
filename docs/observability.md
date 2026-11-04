@@ -259,8 +259,10 @@ draws a `refresh:` line in the LADDER panel, right after `nack:`, folding
 - `energy = {cca, fa, own, foreign, igi, busy_pct, own_air_pct}` — refilled
   from the verdict engine's ~150 ms window reads. `busy_pct` is NHM busy %
   (`null` when that window's reading was invalid or none has landed),
-  `own_air_pct` the GS's own reconstructed airtime on that card (`null` only
-  before the first window). maburtop's `busy` column tracks `energy`, and
+  `own_air_pct` the GS's own reconstructed airtime on that card — decoded
+  frames scaled by the window's seq delivery, `docs/inflight-channel-hop.md`
+  §2 (`null` only before the first window). maburtop's `busy` column tracks
+  `energy`, and
   its `fbusy` column is `max(0, busy_pct − own_air_pct)` — the same
   foreign-busy-airtime figure the verdict's `blocked` bit and both rankers
   use (`docs/findings/2026-09-25-nhm-airtime-spike.md`).

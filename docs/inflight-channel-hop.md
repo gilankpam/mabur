@@ -245,8 +245,20 @@ foreign energy, which is why both routes read it. `nhm_busy_pct` comes from the 
 (airtime above `radio.scan.busy_dbm`, which config validation requires to
 be an `nf::kNhmAbsThDbm` bucket edge), armed and read once per verdict
 window per op card; `own_air_pct` is the GS's own reconstruction of that
-card's airtime from the CRC-good frames it decoded (bytes·8 / HT rate, plus
-one preamble per PPDU from the `physt` A-MPDU boundary). A busy reading is
+card's airtime: the CRC-good frames it decoded (bytes·8 / HT rate, plus
+one preamble per PPDU from the `physt` A-MPDU boundary), scaled by the
+window's delivery ratio from the card's hardware-seq walk
+(`seq_expected / seq_received`, `CardTrack`), capped at 100 %. Own airtime
+is what the drone transmitted, not what the card decoded: a card fading at
+mid range decodes a fraction of our frames while every one of them still
+fills its NHM busy, so the decoded-only figure booked the rest as foreign
+and a fade read as interference confirmed by its own loss
+(`docs/findings/2026-11-04-fade-false-hops.md`). The seq walk counts
+every frame the drone sent whether or not this card heard it, so the
+scale restores the frames it missed; a window that decoded nothing has
+no ratio and keeps the decoded figure. Below `busy_dbm` our own frames
+leave NHM busy too, where the scale overcounts — that regime is `weak`'s.
+A busy reading is
 invalid — `blocked` can't fire off it — when the chip has no NHM, the card
 was mid-dwell, its channel changed mid-window, or an in-flight scout dwell
 landed inside the armed window (per-card dwell-generation counter, since
@@ -302,9 +314,9 @@ after the run ends: once a lossy run stops, the next
 majority and read `interfered`.
 
 `weak` wins outright, occupancy and detection included: at the range edge
-our own frames stop decoding, so `own_air_pct` (rebuilt from decoded frames
-only) undercounts and the subtraction can read our own video as foreign
-airtime — and a hop does not help range anyway
+our own frames fall below `busy_dbm` and out of the seq walk at once, so
+`own_air_pct` no longer tracks what the air carried and the subtraction can
+read our own video as foreign airtime — and a hop does not help range anyway
 (`weak_still_wins_over_occupied`, `weak_still_wins_over_detected`).
 
 `occupied && blocked`, not `occupied` alone: the window that first reaches
@@ -865,7 +877,9 @@ H <t> <kind> <epoch> <target> <score> <elapsed_ms> <reason|->  # a hop event
   was non-healthy**. Per-card block order is
   `foreign fa cca crc rssi snr nhm_busy own_air`. `nhm_busy` is `-`
   when the card's busy reading was invalid for this window (§2); `own_air`
-  is always present, % of the window. The evidence field is the §2 bitmask
+  is always present, % of the window, delivery-scaled (§2; decoded-only in
+  files from before 2026-11-04, `docs/data-provenance.md`). The evidence
+  field is the §2 bitmask
   in hex: impaired 0x01, weak 0x02, detected 0x04, blocked 0x20, occupied
   0x80 (0x08/0x10/0x40 unassigned). `scanlog <= 8` files carry a tenth
   per-card field, `drssi` (the link-level best-card RSSI minus its

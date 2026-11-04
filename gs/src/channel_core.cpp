@@ -47,6 +47,8 @@ ChannelCore::ChannelCore(ChannelCoreCfg cfg, std::vector<LinkCard*> cards, VrxCo
       dwell_stats_(static_cast<size_t>(n_cards_)),
       window_prev_(static_cast<size_t>(n_cards_)),
       window_prev_crc_(static_cast<size_t>(n_cards_), 0),
+      window_prev_seq_exp_(static_cast<size_t>(n_cards_), 0),
+      window_prev_seq_rcv_(static_cast<size_t>(n_cards_), 0),
       window_prev_ok_(static_cast<size_t>(n_cards_), false),
       window_prev_ms_(static_cast<size_t>(n_cards_), 0),
       dwell_gen_(static_cast<size_t>(n_cards_)),
@@ -542,6 +544,8 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
       continue;
     }
     const uint64_t crc_fail = in.agg ? in.agg->card(i).crc_fail : 0;
+    const uint64_t seq_exp = in.agg ? in.agg->card(i).seq_expected : 0;
+    const uint64_t seq_rcv = in.agg ? in.agg->card(i).seq_received : 0;
     const double rssi_raw = in.agg ? in.agg->card(i).rssi_a_ema : 0.0;
     const double snr_raw = in.agg ? in.agg->card(i).snr_ema : 0.0;
     if (window_prev_ok_[si]) {
@@ -554,8 +558,23 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
       vc[si].snr_db = snr_ok_[si] ? snr_raw_to_db(snr_raw) : std::nan("");
       vc[si].snr_valid = snr_ok_[si];
       const double win_us = static_cast<double>(t_ms - window_prev_ms_[si]) * 1000.0;
+      // Own airtime is what the drone transmitted, not what this card
+      // decoded: a card fading at mid range decodes a fraction of our
+      // frames while every one of them still fills its NHM busy, so the
+      // decoded-only figure books the rest as foreign and a fade reads as
+      // interference confirmed by its own loss. Scale by the window's
+      // delivery (sent / decoded, from the drone's hardware seq walk,
+      // which counts every frame the drone sent whether or not this card
+      // heard it), capped at the window. A window that decoded nothing
+      // has no ratio and keeps the decoded figure. Below busy_dbm our own
+      // frames leave NHM busy too, so there the scale overcounts; that
+      // regime is the weak gate's.
+      const uint64_t d_exp = seq_exp - window_prev_seq_exp_[si];
+      const uint64_t d_rcv = seq_rcv - window_prev_seq_rcv_[si];
+      const double delivery = d_rcv > 0 ? static_cast<double>(d_exp) / static_cast<double>(d_rcv) : 1.0;
       const double own_pct = win_us > 0
-          ? std::min(100.0, 100.0 * static_cast<double>(cs.frames.own_air_us - window_prev_[si].own_air_us) / win_us)
+          ? std::min(100.0, 100.0 * delivery *
+                                static_cast<double>(cs.frames.own_air_us - window_prev_[si].own_air_us) / win_us)
           : 0.0;
       // A relay reports op-channel airtime through SURVEY (busy %, rx %);
       // rx ~ our own video on the op, so it plays own_air.
@@ -585,6 +604,8 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
     }
     window_prev_[si] = cs.frames;
     window_prev_crc_[si] = crc_fail;
+    window_prev_seq_exp_[si] = seq_exp;
+    window_prev_seq_rcv_[si] = seq_rcv;
     window_prev_ms_[si] = t_ms;
     window_prev_ok_[si] = true;
   }

@@ -1647,6 +1647,82 @@ TEST(sampled_record_consumed_next_tick_uses_sample_span) {
   CHECK(*e->own_air_pct > 49.0 && *e->own_air_pct < 51.0);
 }
 
+// Own airtime is what the drone transmitted, not what the card decoded. A
+// card fading at mid range decodes a fraction of our frames while every one
+// of them still fills NHM busy, so an own-airtime figure rebuilt from decoded
+// frames alone books the undecoded rest as foreign -- a fade then reads as
+// interference and confirms itself with its own loss. The window fill scales
+// the decoded airtime by the card's sequence delivery (expected / received
+// over the window, from the drone's hardware seq walk), which counts every
+// frame the drone sent whether or not this card heard it.
+// Revert (own_used = own_pct unscaled): card 0 reads 40 %.
+static mabur::node::RxBody junk_body(uint8_t card, uint16_t seq) {
+  mabur::node::RxBody m;
+  m.card_id = card; m.mac_seq = seq; m.crc_ok = true;
+  m.rssi[0] = 38; m.rssi[1] = 40; m.snr[0] = 10; m.snr[1] = 25;
+  m.mono_us = 1000u * seq;
+  m.body.assign(20, 0);   // not SBI, not RC: misroutes, still walks the seq
+  return m;
+}
+// One sampled window on a one-card pinned rig: `before` runs between the
+// T1 record and its consume (the previous window), `during` inside the
+// 140 ms window that the second record closes. Returns the window's energy.
+static std::optional<StatsEnergyIn> one_window(Rig& g, const std::function<void()>& before,
+                                               const std::function<void()>& during) {
+  link_up(g);
+  for (int i = 0; i < 2 * (g.cfg.hop.window_ms / 10) + 2; ++i) g.tick(true);
+  before();
+  g.core->run_sampler_step();
+  g.clk.ms += 10;
+  g.core->tick(g.in(true));                // consumed at T1 + 10
+  for (int i = 0; i < 13; ++i) g.tick(true);   // T1 + 140
+  during();
+  g.core->run_sampler_step();              // sample at T1 + 140
+  g.clk.ms += 10;
+  g.core->tick(g.in(true));
+  return g.core->snapshot(0).energy[0];
+}
+TEST(own_air_scales_by_the_cards_seq_delivery) {
+  Rig g(1, 0, /*pinned=*/true, 40);
+  const auto e = one_window(g,
+      [&] { for (uint16_t s = 0; s < 10; ++s) g.agg.on_rx_body(junk_body(0, s)); },
+      [&] {
+        // seq 20..30 after 9: 11 decoded of 21 sent in this window
+        for (uint16_t s = 20; s <= 30; ++s) g.agg.on_rx_body(junk_body(0, s));
+        g.cards[0]->fr.own_air_us += 56000;   // 40 % of the 140 ms span, decoded frames only
+        g.cards[0]->fr.own += 11;
+      });
+  REQUIRE(e.has_value());
+  REQUIRE(e->own_air_pct.has_value());
+  // 40 % x 21/11 = 76.4 %
+  CHECK(*e->own_air_pct > 75.0 && *e->own_air_pct < 78.0);
+}
+TEST(own_air_scaled_is_capped_at_100) {
+  Rig g(1, 0, /*pinned=*/true, 40);
+  const auto e = one_window(g,
+      [&] { for (uint16_t s = 0; s < 10; ++s) g.agg.on_rx_body(junk_body(0, s)); },
+      [&] {
+        for (uint16_t s = 20; s <= 30; ++s) g.agg.on_rx_body(junk_body(0, s));
+        g.cards[0]->fr.own_air_us += 84000;   // 60 % decoded x 21/11 = 114 %
+        g.cards[0]->fr.own += 11;
+      });
+  REQUIRE(e.has_value());
+  REQUIRE(e->own_air_pct.has_value());
+  CHECK(*e->own_air_pct > 99.9 && *e->own_air_pct < 100.1);
+}
+
+// A window that decoded nothing has no delivery ratio (the seq walk only
+// advances on a decoded frame): the decoded figure stands, unscaled.
+TEST(own_air_unscaled_when_the_window_decoded_nothing) {
+  Rig g(1, 0, /*pinned=*/true, 40);
+  const auto e = one_window(g,
+      [&] { for (uint16_t s = 0; s < 10; ++s) g.agg.on_rx_body(junk_body(0, s)); },
+      [&] { g.cards[0]->fr.own_air_us += 14000; });   // 10 % of the span, no frame decoded
+  REQUIRE(e.has_value());
+  REQUIRE(e->own_air_pct.has_value());
+  CHECK(*e->own_air_pct > 9.0 && *e->own_air_pct < 11.0);
+}
+
 // ---- calibration channel pick (CalPicker / ChannelCore) ----
 
 // One linked tick with the TX card (card 0) on op hearing its own video and
