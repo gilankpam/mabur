@@ -538,8 +538,8 @@ to the `K` scan.log line), and only when the scan measured something (some
 channel reached `min_rounds`); until then `boot_pick` is 0 and ties fall
 straight to config order (`no_boot_pick_falls_through_to_config_order`).
 Candidates = `radio.channels`, the same set the boot scout ranks and
-`InflightScout` dwells on. At `radio.width = 40` (`HopRanker`'s
-`width_mhz` constructor argument, from `radio.width`), within a tier
+`InflightScout` dwells on. At a derived receiver width of 40 (`HopRanker`'s
+`width_mhz` constructor argument, from `derived_width`), within a tier
 entries carrying an NHM busy reading rank ahead of entries without one,
 then by lower `busy_pct`, before the score/boot-pick/config-order chain
 — see "40 MHz" below. At 20 MHz this step is skipped and score alone
@@ -557,8 +557,8 @@ score/boot-pick/config-order chain. A channel with no busy evidence ranks on
 score alone. `best()` with `require_unblocked` skips blocked entries; every
 hop target comes from that call (§5).
 
-**40 MHz.** At `radio.width = 40` dwells keep the 40 MHz tuning, so the
-`fa`/`cca`/`foreign` score terms see the primary only, and the ranker is
+**40 MHz.** At a derived receiver width of 40 dwells keep the 40 MHz
+tuning, so the `fa`/`cca`/`foreign` score terms see the primary only, and the ranker is
 built over the same primaries. Only `burst()` and in-flight dwells feed
 `HopRanker::add()`, both on primaries, and every member shares one
 `ht40_offset` (a config rule), which `FastRetune` keeps — so every ranked

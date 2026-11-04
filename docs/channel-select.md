@@ -42,7 +42,6 @@ GS, `gs/bundle/maburgs.default.toml`:
 [radio]
 channels = [40, 64, 112, 144]   # the set; the drone parks on a member, the GS picks among them
 channel  = "auto"               # or a member: pin the link there, no measurement
-width    = 40
 tx_card  = -1
 relays   = []
 
@@ -105,7 +104,7 @@ Validation (`gs/src/config.cpp`, `drone/src/config.cpp`, shared code in
 
 | key | range |
 |---|---|
-| `radio.channels` | 1–8 members, unique, each in `[1,177]`; at `width = 40` every member must be a standard HT40 pair primary and all members must share one `ht40_offset` (`docs/bw40.md` "Channels") |
+| `radio.channels` | 1–8 members, unique, each in `[1,177]`; when the derived receiver width is 40 every member must be a standard HT40 pair primary and all members must share one `ht40_offset` (`docs/bw40.md` "Channels") |
 | GS `radio.channel` | the string `"auto"`, or an integer that is a member of `radio.channels` — anything else fails |
 | `radio.scan.dwell_ms` | 50–10000 |
 | `radio.scan.settle_ms` | 0–1000 |
@@ -209,8 +208,8 @@ the durable record).
 (two-card) or the sole card between op windows (one card) whenever it has
 work: `has_work = search || (measure && !frozen)` — it searches while the
 link is down and/or measures while the pick is still open (auto mode
-only); with no work it parks the card on `op` at `radio.width` and sits
-idle.
+only); with no work it parks the card on `op` at the derived receiver
+width and sits idle.
 
 **Dwell schedule.** Round-robin over the members, config order, at every
 width, pinned or measuring. At width 40 a member is a pair's primary and
@@ -276,9 +275,10 @@ the link and cannot measure: the pick freezes at link-up (`"one-card
 linked"`), and a link found off `op`/`want` is then relocated by the
 one-card hop path.
 
-**Width.** The scout card is opened at `radio.width` like every other
-card and never changes it: dwells and the park on `op` when it has no
-work (`ChannelScout::park_()`) are plain retunes, so there is no rejoin.
+**Width.** The scout card is opened at the derived receiver width like
+every other card and never changes it: dwells and the park on `op` when
+it has no work (`ChannelScout::park_()`) are plain retunes, so there is
+no rejoin.
 The core's one-shot width resync (`gs/src/width_resync.h`) stays as a
 safety net for a card that comes back at the wrong width (`docs/bw40.md`
 "Boot scan dwells once per pair").
@@ -598,8 +598,9 @@ open from it:
 
 ## Out of scope
 
-A runtime auto/pin switch. Width negotiation over DISC (both ends keep
-`radio.width = 40`). Relay channel capability — the operator rule that
+A runtime auto/pin switch. Width negotiation over DISC (the GS derives
+its receiver width from `[link]`; the drone keeps its own `radio.width =
+40`, independently). Relay channel capability — the operator rule that
 every member must be CPE-tunable stays a documented rule,
 `docs/cpe510-relay.md` "ath9k quirks" (the current CPE image tunes the
 whole 36–177 grid, 144 included; an older image cannot tune 144, and the

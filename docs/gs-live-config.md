@@ -80,11 +80,11 @@ current value is read off `link.vtx.rows[]`.
 | Key | Type | Applies to | Notes |
 |---|---|---|---|
 | `radio.channel` | int or `"auto"` | `ChannelCore::set_pin` / `set_auto` | An order placed only *after* the file holds the new value (`order_after_publish`), not an apply before it. A pin to a member is checked at submit, before any file work, by `ChannelCore::pin_refusal` — everything `set_pin` refuses, in its words: `relocate in flight`, `hop in flight` (a one-card hop still riding its RCFs included), `calibration running` (a run, its measure round or its relocate), and, for a linked move off the current channel, `sweep in flight` or `hop cap`. A channel that isn't a member, or a value that isn't a channel, is the loader's refusal, in its message. `"auto"` is never refused (`set_auto` withdraws a pin relocate not yet placed). A set to the live value (the pinned channel, or `"auto"` while auto) is a same-value `ok` with no check and no file write. `ok` on a linked pin means the order was accepted and the file holds it, not that the link has moved: the relocate runs afterwards, and one that does not land (the drone does not follow, the link drops) leaves the GS pinned with the link on the channel it was on, while `get` and the file read the requested one. The sideport shows it as `scan.pick` (the pin) ≠ `link.channel` (the link), and stderr logs `relocation to <want> did not land; staying on <op>`. An order still refused once the file is published (a hop started between the check and the order) re-publishes the previous file text under the still-held write lock; if that restore fails too, the reply is `err <reason>; restoring the file failed: <error>`. |
-| `link.static_mcs` | int | `VrxController::set_pin` | `mcs < 0` is adaptive (the ladder drives the operating point); `mcs >= 0` bypasses the ladder with a fixed rung. Applied together with `static_bw`/`static_overhead_base`/`static_overhead_enh` as one call. Back to adaptive from a pin re-enters the ladder on the rung with the pinned `{mcs, bw}`, else rung 0 — an `E … unpin` ctl line — with the feedback timeout counted from that moment: the ladder gets no feedback while pinned, and that is not a feedback loss. |
-| `link.static_bw` | int | `VrxController::set_pin` | |
+| `link.static_mcs` | int | `VrxController::set_pin` | `mcs < 0` is adaptive (the ladder drives the operating point); `mcs >= 0` bypasses the ladder with a fixed rung. Applied together with `static_bw`/`static_overhead_base`/`static_overhead_enh` as one call. Back to adaptive from a pin re-enters the ladder on the rung with the pinned `{mcs, bw}`, else rung 0 — an `E … unpin` ctl line — with the feedback timeout counted from that moment: the ladder gets no feedback while pinned, and that is not a feedback loss. Applied together with `static_bw`, this set also flips the receiver width first — see "Width flip". |
+| `link.static_bw` | int | `VrxController::set_pin` | Flips the receiver width first — see "Width flip". |
 | `link.static_overhead_base` | real | `VrxController::set_pin` | |
 | `link.static_overhead_enh` | real | `VrxController::set_pin` | |
-| `link.ladder` | array of inline tables | `ChannelCore::replace_ladder` | Rebuilds the ladder controller inside the session (`VrxController::replace_ladder`). The old rung's `{mcs, bw}` is looked up in the new ladder: present → restored to that index; absent → rung 0. The new controller keeps the old one's last feedback time, so the feedback timeout does not fire on the swap. A hop's restore rung, frozen as a ladder index at the impairment onset, is translated the same way (by `{mcs, bw}`, else rung 0), so a hop after the swap restores the pre-onset operating point. A rung the loader would silently drop for being above `link.max_mcs` instead refuses the whole set (`rung <i> exceeds link.max_mcs`), rather than flying a ladder shorter than what was asked for. The rewrite replaces the first run of `[[link.ladder]]` blocks in the file; a second run further down (which the loader would append) refuses the set with `the config file holds more [[link.ladder]] rungs than the set`. Also re-headers `ctl.log` — see below. |
+| `link.ladder` | array of inline tables | `ChannelCore::replace_ladder` | Flips the receiver width first — see "Width flip". Rebuilds the ladder controller inside the session (`VrxController::replace_ladder`). The old rung's `{mcs, bw}` is looked up in the new ladder: present → restored to that index; absent → rung 0. The new controller keeps the old one's last feedback time, so the feedback timeout does not fire on the swap. A hop's restore rung, frozen as a ladder index at the impairment onset, is translated the same way (by `{mcs, bw}`, else rung 0), so a hop after the swap restores the pre-onset operating point. A rung the loader would silently drop for being above `link.max_mcs` instead refuses the whole set (`rung <i> exceeds link.max_mcs`), rather than flying a ladder shorter than what was asked for. The rewrite replaces the first run of `[[link.ladder]]` blocks in the file; a second run further down (which the loader would append) refuses the set with `the config file holds more [[link.ladder]] rungs than the set`. Also re-headers `ctl.log` — see below. |
 | `link.nack.enable` | bool | `NackTracker::set_enable` | Turning it off also clears the tracker's pending retransmit requests; its request counter is kept (not reset) so a later re-enable stays monotonic. |
 | `debug_log.enable` | bool | `DebugSession::enable`/`disable` + opening/closing the six per-session log files | A failing `enable` (the log root is unwritable, e.g. `/media/dvr` missing) reports `debug_log.dir <dir> unusable` and closes nothing, opens nothing — the running session, if any, is untouched. |
 | `msp.enable` | bool | build or drop the MSP OSD sink (the MSP stream's UDP feed to `maburplay`, `[msp.out]`) | |
@@ -106,6 +106,39 @@ replaced `[[link.ladder]]` region — between or inside the old rung blocks
 — are not preserved.** Only the run of blank/comment lines that leads into
 the *next* table (by position, not ownership) survives the replace, since
 it belongs to whatever follows, not to the ladder.
+
+## Width flip
+
+The GS has no `radio.width` key: the receiver width is derived from
+`[link]` (`derived_width`, `gs/src/config.h` — `static_bw` when
+`static_mcs >= 0`, else 40 iff any `[[link.ladder]]` rung has `bw = 40`,
+else 20). A live `link.ladder`, `link.static_mcs` or `link.static_bw` set
+asks what the candidate config derives (`derived_width(cand.link)`)
+against the width the process is actually running at. When that differs,
+the set is checked against `ChannelCore::width_refusal` before any file
+work — the same shape as `radio.channel`'s `pin_refusal` precheck — and,
+once accepted, flips every ready card to the new width before the ladder
+is replaced or the static pin is applied, so the cards are already
+retuned when the new operating point takes effect. A set that cannot move
+`derived_width` (the two overhead keys) is a no-op here: `set_width` to
+the width already live does nothing.
+
+Refusals, in `width_refusal`'s own words: `ladder refused: scan in
+flight` while the boot scan (or a calibration measure round) owns a
+card — the width resync has nothing to retune it with until the scan lets
+go; `ladder refused: channel set is not 40 MHz pair-valid (member <n>)`
+on a flip to 40 over a channel set that is not a standard HT40 pair set,
+naming the first member with no pair; and the existing `calibration
+running`, `hop in flight` / `relocate in flight` (the same predicates
+`radio.channel`'s pin uses).
+
+The flip itself logs `maburgs link: width <A> -> <B> MHz (ladder set)`
+(`ChannelCore::set_width`), followed by one `maburgs radio: card <N>
+width <A> -> <B> MHz on ch <C>` line per card as each retunes
+(`RadioFrontend::set_width`); a card the resync cannot reach yet (busy on
+a dwell, or down) keeps its untried flag and picks up the fix-up on a
+later tick (`gs/src/width_resync.h`). The sideport's `link.width` tracks
+the live derived width throughout (`docs/observability.md`).
 
 ## maburplay — `kPlayerLiveKeys` (`gs/player/src/player_config_apply.cpp`)
 

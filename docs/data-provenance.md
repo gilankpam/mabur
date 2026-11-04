@@ -131,9 +131,9 @@ Chronological; each line names the section below that carries the detail.
   `ctl.log` can carry a second `ctllog 13 <header_info>` line mid-file at a
   live ladder swap, and its rows index the most recent header; `E` reasons
   `ladder_swap` and `unpin`; sideport `scan.pinned` (the live pin).
-- 2026-11-03 — HT40 pair dwell: `scanlog 8` — at `radio.width` 40 the boot
-  scan writes one `D` row per pair per round; `scanlog ≤ 7` files have
-  two, one per half, at bw 20. No column change.
+- 2026-11-03 — HT40 pair dwell: `scanlog 8` — at a derived receiver width
+  of 40 the boot scan writes one `D` row per pair per round; `scanlog ≤ 7`
+  files have two, one per half, at bw 20. No column change.
 - 2026-11-03 — hop detection is NHM occupancy only: `interfered` needs
   `occupied` + `blocked`; loss/foreign/FA windows read `unknown`;
   `radio.scan.blocked_pct` 50 → 30, `hop.verdict.occupied_windows` 7 → 5.
@@ -162,6 +162,10 @@ Chronological; each line names the section below that carries the detail.
   of the base and enhancement layers' (`hop_verdict_link_loss`), so it and
   the `impaired` bit read higher under a jam that hurts the enhancement
   layer first; not comparable across the change (same marker, `scanlog 9`).
+- 2026-11-04 — `radio.width` is removed from the GS config: the receiver
+  width is derived from `[link]` instead (`derived_width`). New sideport
+  key `link.width` (the live derived width, 20 or 40); a recording from
+  before this date has no `link.width` key.
 
 ## 2026-09-23 — `link.pre_fec_loss` scale break, twice
 
@@ -970,9 +974,9 @@ Full detail: `docs/bw40.md`.
   parses the prefix but still keys rungs by MCS only.
 - **`scanlog 3`.** Bumped from `scanlog 2`: the `D` dwell line gains a
   trailing `bw` column (the dwell's tuned width — 20 during a boot scan,
-  `radio.width` in an in-flight session), and the `K` pick line gains a
-  trailing `pair=<lo>+<hi>|-` (the picked channel's standard 40 MHz pair, or
-  `-`). A `scanlog 2` file has neither column.
+  the derived receiver width in an in-flight session), and the `K` pick
+  line gains a trailing `pair=<lo>+<hi>|-` (the picked channel's standard
+  40 MHz pair, or `-`). A `scanlog 2` file has neither column.
 - **Removed drone config keys:** `air_clock.efficiency` → `efficiency_20` /
   `efficiency_40`; `ampdu.min_mcs` → `min_mcs_20` / `min_mcs_40` — both keyed
   by width, not a single table/threshold. No migration; an old key fails
