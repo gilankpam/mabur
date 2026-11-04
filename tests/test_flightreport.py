@@ -1544,10 +1544,10 @@ class HopReportTest(unittest.TestCase):
         self.assertEqual([h["reason"] for h in s["H"]], [None, "cal", None])
 
     def test_v8_scanlog_boot_dwell_one_per_pair(self):
-        """scanlog 8: at radio.width 40 the boot scan writes one D row per
-        pair per round, bw 40 (scanlog <= 7 files have two, one per half, at
-        bw 20). No column change -- D parses identically either way, keyed
-        only by the row count and the bw field's value."""
+        """scanlog 8: at the derived receiver width 40 the boot scan writes
+        one D row per pair per round, bw 40 (scanlog <= 7 files have two,
+        one per half, at bw 20). No column change -- D parses identically
+        either way, keyed only by the row count and the bw field's value."""
         d = tempfile.mkdtemp()
         p = os.path.join(d, "scan.log")
         with open(p, "w") as f:

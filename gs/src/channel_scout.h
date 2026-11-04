@@ -24,7 +24,7 @@ struct ScoutCfg {
   int one_card_ms = 5000;          // one card + measure: silent prelude before the first DISC
   double pick_margin_pct = 10;     // busy % points a candidate must beat the current channel by
   bool one_card = false;
-  uint8_t link_width_mhz = 20;     // radio.width: the card is opened at it; 40 = one dwell per pair, pick a pair
+  uint8_t link_width_mhz = 20;     // the derived receiver width: the card is opened at it; 40 = one dwell per pair, pick a pair
   int busy_dbm = -83;
   double blocked_pct = 1e9;
   double leak_per_frame = 1.0;     // RankSample::leak per TX-card frame sent during an observe

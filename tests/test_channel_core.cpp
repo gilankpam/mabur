@@ -37,6 +37,10 @@ struct Rig {
   std::unique_ptr<VrxController> vrx;
   std::unique_ptr<ChannelCore> core;
   Aggregator agg;
+  // The width the rig was built at (ChannelCoreCfg::width_mhz is no longer
+  // read back off cfg.radio, which no longer carries it); rebuild_with_set
+  // reuses it unchanged.
+  uint8_t width = 40;
   // {may_send(0), may_send(1)} sampled from inside the scout's sleep
   // callback -- the synchronous equivalent of the core thread reading the
   // gate while the scout thread is mid-dwell on another thread in prod.
@@ -52,8 +56,8 @@ struct Rig {
   Rig(int n_usb, int n_relays, bool pinned, uint8_t start, std::vector<uint8_t> channels,
       uint8_t width)
       : agg(bundle().uep_layers(), 32, n_usb + n_relays, 0) {
+    this->width = width;
     cfg.radio.channels = std::move(channels);
-    cfg.radio.width = width;
     // A 40 MHz rig flies the five-rung 40 MHz ladder; the hop-restore tests
     // index into it (rung 2 = MCS 2). A 20 MHz rig flies the same rungs at 20.
     cfg.link.ladder_cfg.ladder = {{0, 0.5, 0.25, width}, {1, 0.5, 0.25, width},
@@ -64,14 +68,14 @@ struct Rig {
     for (int i = 0; i < n_usb + n_relays; ++i) {
       auto c = std::make_unique<FakeCard>();
       c->clk = &clk; c->ch = start_ch; c->relay = i >= n_usb;
-      c->width_mhz = cfg.radio.width;   // main.cpp: every card, the boot scout's included
+      c->width_mhz = width;   // main.cpp: every card, the boot scout's included
       ptrs.push_back(c.get());
       cards.push_back(std::move(c));
     }
     vrx = std::make_unique<VrxController>(vrx_cfg_from(cfg, start_ch));
     ChannelCoreCfg cc;
     cc.radio = cfg.radio; cc.hop = cfg.hop; cc.key = cfg.link.key;
-    cc.width_mhz = cfg.radio.width;
+    cc.width_mhz = width;
     cc.start_ch = start_ch; cc.n_usb = n_usb; cc.threaded = false;
     cc.store_name = "the-store";
     core = std::make_unique<ChannelCore>(
@@ -290,7 +294,7 @@ TEST(scout_card_death_while_working_freezes_pick) {
 TEST(reopened_scout_card_at_20_gets_width_resync) {
   Rig g(2, 0, /*pinned=*/true, 40);
   for (int i = 0; i < 10; ++i) g.tick(true, false, 0);   // linked: search off, the scout parks and owns nothing
-  REQUIRE(g.cards[1]->width_mhz == 40);                   // opened at radio.width, never switched
+  REQUIRE(g.cards[1]->width_mhz == 40);                   // opened at the derived receiver width, never switched
   g.cards[1]->is_alive = false;
   g.core->on_card_died(1);
   // a revive that comes up at the wrong width
@@ -1104,7 +1108,7 @@ TEST(shutdown_joins_threads_and_is_idempotent) {
   // comfortably outlasts one period -- a thread left running would dwell
   // again well inside it.
   Config cfg = bundle();
-  cfg.radio.channels = {40, 64}; cfg.radio.width = 40;
+  cfg.radio.channels = {40, 64};
   cfg.radio.scan.max_ms = 1000;
   cfg.hop.dwell_period_ms = 200;
   FakeCard a, b; a.ch = b.ch = 40; a.width_mhz = 40; b.width_mhz = 40;
@@ -1113,7 +1117,7 @@ TEST(shutdown_joins_threads_and_is_idempotent) {
   RecordingSink sink;
   Aggregator agg(cfg.uep_layers(), 32, 2, 0);
   ChannelCoreCfg cc; cc.radio = cfg.radio; cc.hop = cfg.hop; cc.key = cfg.link.key; cc.start_ch = 40; cc.n_usb = 2;
-  cc.width_mhz = cfg.radio.width;
+  cc.width_mhz = 40;
   auto now_ms = [] { return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()); };
   auto now_us = [] { return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()); };
   ChannelCore core(cc, ptrs, vrx, sink, [](uint8_t) { return true; }, now_ms, now_us,
@@ -1150,7 +1154,7 @@ TEST(shutdown_joins_threads_and_is_idempotent) {
 // Revert (burst inline on the core thread): max_tick_ms reads >= 60.
 TEST(threaded_two_card_burst_runs_off_the_core_thread) {
   Config cfg = bundle();
-  cfg.radio.channels = {40, 64, 112, 144}; cfg.radio.width = 40;
+  cfg.radio.channels = {40, 64, 112, 144};
   cfg.radio.scan.max_ms = 1000;
   cfg.hop.dwell_period_ms = 60000;
   // The op window's arm period (the sampler's), so op reads 100 % busy.
@@ -1165,7 +1169,7 @@ TEST(threaded_two_card_burst_runs_off_the_core_thread) {
   RecordingSink sink;
   Aggregator agg(cfg.uep_layers(), 32, 2, 0);
   ChannelCoreCfg cc; cc.radio = cfg.radio; cc.hop = cfg.hop; cc.key = cfg.link.key; cc.start_ch = 40; cc.n_usb = 2;
-  cc.width_mhz = cfg.radio.width;
+  cc.width_mhz = 40;
   auto now_ms = [] { return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()); };
   auto now_us = [] { return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()); };
   ChannelCore core(cc, ptrs, vrx, sink, [](uint8_t) { return true; }, now_ms, now_us,
@@ -1359,7 +1363,7 @@ static void rebuild_with_set(Rig& g, std::vector<uint8_t> set, int n_usb = 0) {
   g.core.reset();
   g.vrx = std::make_unique<VrxController>(vrx_cfg_from(g.cfg, 40));
   ChannelCoreCfg cc; cc.radio = g.cfg.radio; cc.hop = g.cfg.hop; cc.key = g.cfg.link.key;
-  cc.width_mhz = g.cfg.radio.width;
+  cc.width_mhz = g.width;
   cc.start_ch = 40; cc.n_usb = n_usb; cc.threaded = false; cc.store_name = "s";
   g.core = std::make_unique<ChannelCore>(cc, g.ptrs, *g.vrx, g.sink,
       [](uint8_t) { return true; }, [&g] { return g.clk.now_ms(); }, [&g] { return g.clk.now_us(); },

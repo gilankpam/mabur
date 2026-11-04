@@ -180,8 +180,7 @@ std::string params_json(const WebGs& g, uint64_t now_ms);
 // Validates the page's channel set/start/width with the shared rules: width
 // 20|40; the set 1-8 unique members in [1,177], at width 40 every member an
 // HT40 pair primary on one offset (mabur::channel_set_issue); start_ch a
-// member; in pinned mode start_ch == the pin; GS mode additionally no 40 MHz
-// rung while tuned 20 (maburgs::link_width_issue). Spotter only listens, so
+// member; in pinned mode start_ch == the pin. Spotter only listens, so
 // a 20 MHz spotter under a 40-capable ladder is fine (it sees the 20 MHz
 // rungs). std::nullopt = OK, else the reason.
 std::optional<std::string> channel_width_error(const maburgs::Config& cfg, Mode mode,

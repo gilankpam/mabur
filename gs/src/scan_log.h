@@ -24,14 +24,14 @@ namespace maburgs {
 //   D <t> <card> <ch> <round> <observe_ms> <cca> <fa> <own> <foreign> <igi|->
 //     <floor_dbm|nan> <flags_hex> <sess> <to_us> <read_us> <back_us> <bw>
 //     <busy|-> <rx|->                                             # one scout dwell
-//     (scanlog 3: <bw> = tuned width of the dwell, radio.width; scanlog
-//     <= 7 files read 20 for boot-scan dwells at width 40)
+//     (scanlog 3: <bw> = tuned width of the dwell, the derived receiver
+//     width; scanlog <= 7 files read 20 for boot-scan dwells at width 40)
 //     (scanlog 4: D + trailing <busy|-> = NHM busy % over the dwell's
 //     observe span)
 //     (scanlog 6: D + trailing <rx|-> = relay sweep rx % of the observe;
 //     - for USB dwells)
-//     (scanlog 8: at radio.width 40 the boot scan writes one D per pair,
-//     bw 40; scanlog <= 7 files have one per half, bw 20)
+//     (scanlog 8: at the derived receiver width 40 the boot scan writes
+//     one D per pair, bw 40; scanlog <= 7 files have one per half, bw 20)
 //   K <t> <picked|none> <rounds> <ch>:<worst_busy>:<floor|nan>:<busy|-> ...
 //     pair=<lo>+<hi>|-                                            # the pick
 //     (also closes a calibration run's measure round: its rows are that

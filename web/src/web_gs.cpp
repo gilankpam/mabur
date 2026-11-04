@@ -37,8 +37,6 @@ std::optional<std::string> channel_width_error(const maburgs::Config& cfg, Mode 
            " but the start channel is " + std::to_string(start_ch);
   if (auto e = maburgs::radio_width_issue(static_cast<uint8_t>(start_ch), width))
     return e->field + ": " + e->why;
-  if (mode == Mode::Gs)
-    if (auto e = maburgs::link_width_issue(cfg.link, width)) return e->field + ": " + e->why;
   return std::nullopt;
 }
 

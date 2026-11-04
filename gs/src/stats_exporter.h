@@ -325,8 +325,8 @@ struct StatsInput {
   // and reading it out of maburplay's own config instead would say what
   // the PLAYER believes rather than what the receiver is tuned to.
   int channel = 0;
-  // The live receiver width in MHz (ChannelCore::width_mhz()): what the
-  // link ladder / static pin derives, not the boot config's radio.width.
+  // The live receiver width in MHz (ChannelCore::width_mhz()): derived
+  // from the link ladder / static pin, not a config key of its own.
   int width = 20;
   // Boot-time scan's state (auto channel select):
   // "off" | "scouting" | "moving" | "frozen".

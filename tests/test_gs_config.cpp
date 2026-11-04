@@ -488,10 +488,10 @@ TEST(radio_channels_default_set_and_auto) {
 }
 
 TEST(radio_channel_auto_string_or_member_pin) {
-  auto a = maburgs::load_config(write_tmp("[radio]\nchannel = \"auto\"\nchannels = [136, 144]\nwidth = 40\n"));
+  auto a = maburgs::load_config(write_tmp("[radio]\nchannel = \"auto\"\nchannels = [136, 144]\n"));
   CHECK(!a.radio.pin.has_value());
   REQUIRE(a.radio.channels.size() == 2);
-  auto p = maburgs::load_config(write_tmp("[radio]\nchannel = 144\nchannels = [136, 144]\nwidth = 40\n"));
+  auto p = maburgs::load_config(write_tmp("[radio]\nchannel = 144\nchannels = [136, 144]\n"));
   REQUIRE(p.radio.pin.has_value()); CHECK(*p.radio.pin == 144);
   bool threw = false;
   try { maburgs::load_config(write_tmp("[radio]\nchannel = 112\nchannels = [136, 144]\n")); }
@@ -518,7 +518,13 @@ TEST(radio_channel_pin_out_of_range_fails_before_the_cast) {
 
 TEST(radio_channels_validated_by_channel_set_rules) {
   bool threw = false;
-  try { maburgs::load_config(write_tmp("[radio]\nchannels = [40, 36]\nwidth = 40\n")); }
+  // A 40 MHz rung derives the receiver width to 40, which is what makes the
+  // mixed-offset check below fire (it is a no-op at width 20).
+  try {
+    maburgs::load_config(write_tmp(
+        "[radio]\nchannels = [40, 36]\n"
+        "[[link.ladder]]\nmcs = 0\nbw = 40\noverhead_base = 0.5\noverhead_enh = 0.25\n"));
+  }
   catch (const std::exception& e) { threw = std::string(e.what()).find("radio.channels") != std::string::npos; }
   CHECK(threw);                                        // mixed offsets
   threw = false;
@@ -676,11 +682,39 @@ TEST(radio_scan_energy_period_ms_is_gone) {
   CHECK(threw);
 }
 
+// ---- radio.width is gone; the channel-set rule runs at the derived width --
+
+TEST(radio_width_is_an_unknown_key_now) {
+  std::string msg = what_of([] { maburgs::load_config(write_tmp("[radio]\nwidth = 40\n")); });
+  CHECK(msg.find("radio.width") != std::string::npos);
+  CHECK(msg.find("unknown key") != std::string::npos);
+}
+
+TEST(channel_set_rule_follows_the_derived_width) {
+  // A 20-only set with the loader's struct-default ladder (no [[link.ladder]]
+  // in the file -- all-20, Rung's own default) loads.
+  CHECK(what_of([] { maburgs::load_config(write_tmp("[radio]\nchannels = [165]\n")); }).empty());
+  // The same set with a 40 MHz rung fails on the set, not on the rung: the
+  // receiver width derives to 40 from the ladder, and 165 has no HT40 pair.
+  std::string msg = what_of([] {
+    maburgs::load_config(write_tmp(
+        "[radio]\nchannels = [165]\n"
+        "[[link.ladder]]\nmcs = 0\nbw = 40\noverhead_base = 0.5\noverhead_enh = 0.25\n"));
+  });
+  CHECK(msg.find("radio.channels") != std::string::npos);
+  CHECK(msg.find("165") != std::string::npos);
+  // And a static pin at 40 on that set fails the same way: static_bw alone
+  // now derives the width, with no radio.width left to disagree with it.
+  CHECK(what_of([] {
+          maburgs::load_config(write_tmp(
+              "[radio]\nchannels = [165]\n[link]\nstatic_mcs = 3\nstatic_bw = 40\n"));
+        }).find("radio.channels") != std::string::npos);
+}
+
 // ---- per-rung width (40 MHz rungs) ---------------------------------------
 
 TEST(ladder_rung_bw_is_required_and_20_or_40) {
   auto cfg = maburgs::load_config(write_tmp(
-      "[radio]\nwidth = 40\n"
       "[[link.ladder]]\nmcs = 4\nbw = 20\noverhead_base = 0.5\noverhead_enh = 0.25\n"
       "[[link.ladder]]\nmcs = 3\nbw = 40\noverhead_base = 0.5\noverhead_enh = 0.25\n"));
   auto& L = cfg.link.ladder_cfg.ladder;
@@ -706,54 +740,20 @@ TEST(ladder_rung_bw_is_required_and_20_or_40) {
   CHECK(threw);
 }
 
-TEST(ladder_rung_bw_40_needs_radio_width_40) {
-  // A 20-tuned receiver cannot hear HT40 at all (findings "Mixed width"):
-  // commanding a 40 rung from a GS tuned 20 would blank the video silently.
-  bool threw = false;
-  try {
-    maburgs::load_config(write_tmp(
-        "[radio]\nwidth = 20\n"
-        "[[link.ladder]]\nmcs = 3\nbw = 40\noverhead_base = 0.5\noverhead_enh = 0.25\n"));
-  } catch (const std::exception& e) {
-    threw = std::string(e.what()).find("link.ladder[0].bw") != std::string::npos &&
-            std::string(e.what()).find("radio.width") != std::string::npos;
-  }
-  CHECK(threw);
-}
-
-TEST(radio_width_is_20_or_40_and_40_needs_a_pair) {
-  CHECK(maburgs::load_config(write_tmp("[radio]\nwidth = 40\n")).radio.width == 40);
-  bool threw = false;
-  try { maburgs::load_config(write_tmp("[radio]\nwidth = 80\n")); }
-  catch (const std::exception& e) { threw = std::string(e.what()).find("radio.width") != std::string::npos; }
-  CHECK(threw);
-  threw = false;
-  // A channel-set member with no 40 MHz pair is caught by channel_set_issue
-  // on radio.channels now, not a bare radio.channel pin check.
-  try { maburgs::load_config(write_tmp("[radio]\nchannels = [165]\nwidth = 40\n")); }
-  catch (const std::exception& e) {
-    threw = std::string(e.what()).find("radio.channels") != std::string::npos &&
-            std::string(e.what()).find("165") != std::string::npos;
-  }
-  CHECK(threw);
-}
+// radio.width is gone: the receiver width is derived from the link section
+// (derived_width), so a 40 MHz rung or pin can no longer disagree with it --
+// see channel_set_rule_follows_the_derived_width below for what replaces
+// the old "rung/pin needs radio.width 40" refusals.
 
 TEST(width_issue_helpers_match_the_loader) {
-  // The web GS validates its page channel/width override with these same
-  // helpers; load_config's radio.width / ladder checks go through them.
+  // The web GS validates its page channel/width override with this same
+  // helper; load_config's per-channel HT40-pair check goes through it too.
   CHECK(!maburgs::radio_width_issue(136, 40));
   CHECK(!maburgs::radio_width_issue(165, 20));
   auto e = maburgs::radio_width_issue(165, 40);
   REQUIRE(e.has_value());
   CHECK(e->field == "radio.width" && e->why.find("165") != std::string::npos);
   CHECK(maburgs::radio_width_issue(136, 80).has_value());
-  maburgs::LinkCfg link;
-  CHECK(!maburgs::link_width_issue(link, 20));   // default ladder is all 20
-  link.ladder_cfg.ladder.back().bw = 40;
-  auto l = maburgs::link_width_issue(link, 20);
-  REQUIRE(l.has_value());
-  CHECK(l->field.rfind("link.ladder[", 0) == 0);
-  CHECK(!maburgs::link_width_issue(link, 40));
 }
 
 TEST(derived_width_follows_the_ladder_under_adaptive) {
@@ -780,15 +780,14 @@ TEST(derived_width_follows_static_bw_under_a_pin) {
   CHECK(maburgs::derived_width_reason(c.link) == "static_bw 20");
 }
 
-TEST(static_bw_defaults_20_and_40_needs_radio_width_40) {
+TEST(static_bw_defaults_20_and_derives_the_receiver_width) {
   CHECK(maburgs::load_config(write_tmp("")).link.static_bw == 20);
-  auto cfg = maburgs::load_config(write_tmp(
-      "[radio]\nwidth = 40\n[link]\nstatic_mcs = 3\nstatic_bw = 40\n"));
+  // static_bw = 40 alone now derives the receiver width to 40 (derived_width)
+  // -- there is no separate radio.width to keep in step with it, and the
+  // bundle's default channel set is already a valid 40 MHz pair set.
+  auto cfg = maburgs::load_config(write_tmp("[link]\nstatic_mcs = 3\nstatic_bw = 40\n"));
   CHECK(cfg.link.static_bw == 40);
-  bool threw = false;
-  try { maburgs::load_config(write_tmp("[link]\nstatic_mcs = 3\nstatic_bw = 40\n")); }
-  catch (const std::exception& e) { threw = std::string(e.what()).find("link.static_bw") != std::string::npos; }
-  CHECK(threw);
+  CHECK(maburgs::derived_width(cfg.link) == 40);
 }
 
 // Operator rule: the base layer, which every frame depends on, never gets

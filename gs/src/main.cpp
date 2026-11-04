@@ -211,6 +211,10 @@ static int run_radio(const maburgs::Config& cfg, const std::string& cfg_path) {
   // Computed once: cfg.link.key never changes over the life of this
   // process, and the sideport exports it every tick (sin.key_fp below).
   const std::string key_fp = mabur::key_fingerprint(cfg.link.key);
+  // The receiver width the link config implies (derived_width): 40 if the
+  // ladder has a 40 MHz rung (adaptive) or static_bw is 40 (fixed), else
+  // 20. There is no radio.width key any more to disagree with this.
+  const uint8_t rx_width = maburgs::derived_width(cfg.link);
 
   std::fprintf(stderr, "fec: symbol_size=[%d,%d] seq_horizon=%d\n",
                cfg.fec.symbol_size[0], cfg.fec.symbol_size[1],
@@ -323,7 +327,7 @@ static int run_radio(const maburgs::Config& cfg, const std::string& cfg_path) {
       fc.index = cfg.radio.cards[static_cast<size_t>(i)].index;
     }
     fc.channel = start_ch;
-    fc.width_mhz = cfg.radio.width;
+    fc.width_mhz = rx_width;
     fc.card_id = static_cast<uint8_t>(i);
     fronts.push_back(std::make_unique<maburgs::RadioFrontend>(fc, queue));
   }
@@ -331,19 +335,14 @@ static int run_radio(const maburgs::Config& cfg, const std::string& cfg_path) {
     maburgs::RemoteCard::Cfg rc;
     rc.addr = cfg.radio.relays[static_cast<size_t>(k)];
     rc.channel = start_ch;
-    rc.width_mhz = cfg.radio.width;
+    rc.width_mhz = rx_width;
     rc.card_id = static_cast<uint8_t>(n_usb + k);
     fronts.push_back(std::make_unique<maburgs::RemoteCard>(rc, queue));
     std::fprintf(stderr, "cards: card %d = relay %s\n", n_usb + k, rc.addr.c_str());
   }
 
-  // The receiver width the link config implies (Task 1's derived_width):
-  // 40 if the ladder has a 40 MHz rung (adaptive) or static_bw is 40
-  // (fixed), else 20. Cards still open at cfg.radio.width until that key
-  // is removed; this just reports what the link settings would pick.
   std::fprintf(stderr, "maburgs radio: width %u MHz (%s)\n",
-               static_cast<unsigned>(maburgs::derived_width(cfg.link)),
-               maburgs::derived_width_reason(cfg.link).c_str());
+               static_cast<unsigned>(rx_width), maburgs::derived_width_reason(cfg.link).c_str());
 
   // A pin that outruns the cards actually found is a missing antenna, not a
   // config error: fall back to auto-select rather than lose the uplink.
@@ -632,7 +631,7 @@ static int run_radio(const maburgs::Config& cfg, const std::string& cfg_path) {
   for (auto& fe : fronts) card_ptrs.push_back(fe.get());
   maburgs::ChannelCoreCfg ccfg;
   ccfg.radio = cfg.radio;
-  ccfg.width_mhz = cfg.radio.width;
+  ccfg.width_mhz = rx_width;
   ccfg.hop = cfg.hop;
   ccfg.key = cfg.link.key;
   ccfg.start_ch = start_ch;

@@ -25,8 +25,8 @@ struct Rung {
   double overhead_enh = 1.0;
   // Channel width the rung airs at, 20 or 40. LAST so the
   // {mcs, ov_base, ov_enh} initializers everywhere keep compiling at 20.
-  // Carried to the drone in the RCF profile byte; a 40 rung needs
-  // radio.width = 40 on the GS (a 20-tuned receiver cannot hear HT40).
+  // Carried to the drone in the RCF profile byte; a 40 rung makes the GS's
+  // derived receiver width 40 too (a 20-tuned receiver cannot hear HT40).
   int bw = 20;
 };
 
