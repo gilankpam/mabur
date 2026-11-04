@@ -33,9 +33,8 @@ player's GS OSD (:8302), `tools/flightreport.py` (over `flight.jsonl`).
   `tx_card` — pairing is `docs/link-pairing.md`.
 - `width` — the live receiver width in MHz (20 or 40), `ChannelCore`'s own
   `width_mhz()`: what the link ladder (any 40 MHz rung) or the static pin
-  (`static_bw`) derives, not the boot config's `radio.width`. A live
-  ladder/pin change that moves it flips the cards first, so this reflects
-  the width the cards are actually tuned to.
+  (`static_bw`) derives. A live ladder/pin change that moves it flips the
+  cards first, so this reflects the width the cards are actually tuned to.
 - `op = {mcs, bw, sgi, vht, overhead_base, overhead_enh, snr_req}` — the
   GS-commanded op point.
 - `ctl` — the ladder controller's rung, util, probation/counters and last
