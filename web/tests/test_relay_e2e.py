@@ -14,14 +14,20 @@ def overlay(text):
 
 # The bundle's set does not hold 136: a one-member set so --ch 136 is a
 # member. channel = "auto" (not a pin), so a relay-only GS roster takes the
-# core's relay search-only path (no boot scan) rather than the pin's.
-OVERLAY = overlay('[radio]\nchannels = [136]\nchannel = "auto"\n')
-# What the page sends at 20 MHz for a set with no 40 MHz pair: [radio] width
-# 20 (the loader checks the set at 20, not the bundle's 40) and a ladder at 20.
+# core's relay search-only path (no boot scan) rather than the pin's. The
+# ladder's one 40 MHz rung is what derives the receiver width below (136 is
+# HT40- only, no 20 MHz pair test here) -- the bundle's own all-20 ladder
+# would derive 20 instead.
+OVERLAY = overlay('[radio]\nchannels = [136]\nchannel = "auto"\n'
+                   '\n[link]\nstatic_mcs = -1\nmax_mcs = 7\n'
+                   '\n[[link.ladder]]\nmcs = 0\nbw = 40\noverhead_base = 0.5\noverhead_enh = 0.25\n')
+# What the page sends at 20 MHz for a set with no 40 MHz pair: no width key
+# under [radio] (there is none any more) and a ladder at 20, so the loader
+# checks the set at the derived width, 20, not the bundle's 40.
 LINK20 = ('\n[link]\nstatic_mcs = -1\nstatic_bw = 20\nmax_mcs = 7\n'
           '\n[[link.ladder]]\nmcs = 0\nbw = 20\noverhead_base = 0.5\noverhead_enh = 0.25\n')
-OVERLAY_GS20 = overlay('[radio]\nchannels = [165]\nchannel = 165\nwidth = 20\n' + LINK20)
-OVERLAY_SP20 = overlay('[radio]\nchannels = [165]\nchannel = "auto"\nwidth = 20\n' + LINK20)
+OVERLAY_GS20 = overlay('[radio]\nchannels = [165]\nchannel = 165\n' + LINK20)
+OVERLAY_SP20 = overlay('[radio]\nchannels = [165]\nchannel = "auto"\n' + LINK20)
 
 def hdr(t): return struct.pack('<HBB', 0x524D, 4, t)
 def status(state, ch, sec, you_own, tune_id=0):
@@ -73,10 +79,16 @@ class FakeRelay:
                     self.s.sendto(qos_frame(seq, seq & 0xFFF), self.peer); seq += 1
     def types(self): return [b[3] for b in self.got]
 
-def run_webgs(port, mode, secs, ch=136, w=40, ov=OVERLAY):
-    return subprocess.run([WEBGS, 'live', '--relay', f'127.0.0.1:{port}', '--mode', mode,
-                           '--ch', str(ch), '--w', str(w), '--secs', str(secs), '--overlay', ov],
-                          capture_output=True, text=True, timeout=30)
+# w=None (the default) omits --w, so the CLI derives the width from the
+# overlay's [link] (maburgs::derived_width) instead of asserting one that
+# might disagree with it; pass w= explicitly only to exercise a page pick
+# that itself needs checking against that derivation.
+def run_webgs(port, mode, secs, ch=136, w=None, ov=OVERLAY):
+    args = [WEBGS, 'live', '--relay', f'127.0.0.1:{port}', '--mode', mode,
+            '--ch', str(ch), '--secs', str(secs), '--overlay', ov]
+    if w is not None:
+        args += ['--w', str(w)]
+    return subprocess.run(args, capture_output=True, text=True, timeout=30)
 
 def stats(out):
     return [json.loads(l[6:]) for l in out.splitlines() if l.startswith('STATS ')]
@@ -100,8 +112,8 @@ class RelayE2E(unittest.TestCase):
         self.assertIsNone(st['follow_state'])
 
     def test_gs_20mhz_set_passes_the_loader(self):
-        # 165 has no 40 MHz pair: valid at 20 only. The overlay's [radio]
-        # width = 20 is what lets the loader accept it (Important 1).
+        # 165 has no 40 MHz pair: valid at 20 only. The overlay's all-20
+        # ladder derives width 20, which is what lets the loader accept it.
         r = FakeRelay()
         p = run_webgs(r.port, 'gs', 3, ch=165, w=20, ov=OVERLAY_GS20); r.stop = True
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
