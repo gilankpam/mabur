@@ -143,6 +143,28 @@ std::optional<ConfigIssue> link_width_issue(const LinkCfg& link, int width) {
   return std::nullopt;
 }
 
+uint8_t derived_width(const LinkCfg& link) {
+  // Fixed mode (static_mcs >= 0): use static_bw, ignore ladder.
+  if (link.static_mcs >= 0)
+    return link.static_bw == 40 ? 40 : 20;
+  // Adaptive mode (static_mcs < 0): check ladder for any 40 MHz rung.
+  for (const auto& rung : link.ladder_cfg.ladder)
+    if (rung.bw == 40)
+      return 40;
+  return 20;
+}
+
+std::string derived_width_reason(const LinkCfg& link) {
+  // Fixed mode (static_mcs >= 0): use static_bw.
+  if (link.static_mcs >= 0)
+    return std::string("static_bw ") + std::to_string(link.static_bw);
+  // Adaptive mode (static_mcs < 0): find the first 40 MHz rung or report none.
+  for (std::size_t i = 0; i < link.ladder_cfg.ladder.size(); ++i)
+    if (link.ladder_cfg.ladder[i].bw == 40)
+      return std::string("ladder: rung ") + std::to_string(i) + " bw 40";
+  return "ladder: no 40 rung";
+}
+
 Config load_config(const std::string& path, std::vector<std::string>* defaulted,
                    const std::string& overlay_path) {
   Value j;

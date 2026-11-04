@@ -756,6 +756,30 @@ TEST(width_issue_helpers_match_the_loader) {
   CHECK(!maburgs::link_width_issue(link, 40));
 }
 
+TEST(derived_width_follows_the_ladder_under_adaptive) {
+  maburgs::Config c = maburgs::load_config(write_tmp(""));            // all-20 bundle ladder, static_mcs -1
+  CHECK(maburgs::derived_width(c.link) == 20);
+  CHECK(maburgs::derived_width_reason(c.link) == "ladder: no 40 rung");
+  c.link.ladder_cfg.ladder[3].bw = 40;
+  CHECK(maburgs::derived_width(c.link) == 40);
+  CHECK(maburgs::derived_width_reason(c.link) == "ladder: rung 3 bw 40");
+  c.link.static_bw = 40;                          // ignored while adaptive
+  c.link.ladder_cfg.ladder[3].bw = 20;
+  CHECK(maburgs::derived_width(c.link) == 20);
+}
+
+TEST(derived_width_follows_static_bw_under_a_pin) {
+  maburgs::Config c = maburgs::load_config(write_tmp(""));
+  c.link.static_mcs = 3;
+  c.link.static_bw = 40;
+  CHECK(maburgs::derived_width(c.link) == 40);
+  CHECK(maburgs::derived_width_reason(c.link) == "static_bw 40");
+  c.link.ladder_cfg.ladder[0].bw = 40;            // ignored while pinned
+  c.link.static_bw = 20;
+  CHECK(maburgs::derived_width(c.link) == 20);
+  CHECK(maburgs::derived_width_reason(c.link) == "static_bw 20");
+}
+
 TEST(static_bw_defaults_20_and_40_needs_radio_width_40) {
   CHECK(maburgs::load_config(write_tmp("")).link.static_bw == 20);
   auto cfg = maburgs::load_config(write_tmp(

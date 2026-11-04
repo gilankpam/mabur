@@ -349,6 +349,13 @@ std::optional<ConfigIssue> radio_width_issue(uint8_t channel, int width);
 /// its override. std::nullopt = OK.
 std::optional<ConfigIssue> link_width_issue(const LinkCfg& link, int width);
 
+/// Receiver width derived from link settings: 40 if (static_mcs >= 0 &&
+/// static_bw == 40), or (static_mcs < 0 and) any ladder_cfg.ladder[i].bw == 40;
+/// else 20. Under adaptive static_bw is ignored; under fixed the ladder is
+/// ignored. The reason string is the parenthesised part of the boot log line.
+uint8_t derived_width(const LinkCfg& link);
+std::string derived_width_reason(const LinkCfg& link);
+
 /// Loads configuration from a TOML file (MABUR_GS_BUNDLE_DIR/maburgs.default.toml).
 /// Fail-fast: missing keys use struct defaults; unknown keys, out-of-range values,
 /// or missing file throw std::runtime_error("config: <file>:<line>: <field>: <why>").
