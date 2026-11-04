@@ -113,15 +113,30 @@ The GS has no `radio.width` key: the receiver width is derived from
 `[link]` (`derived_width`, `gs/src/config.h` — `static_bw` when
 `static_mcs >= 0`, else 40 iff any `[[link.ladder]]` rung has `bw = 40`,
 else 20). A live `link.ladder`, `link.static_mcs` or `link.static_bw` set
-asks what the candidate config derives (`derived_width(cand.link)`)
-against the width the process is actually running at. When that differs,
-the set is checked against `ChannelCore::width_refusal` before any file
-work — the same shape as `radio.channel`'s `pin_refusal` precheck — and,
-once accepted, flips every ready card to the new width before the ladder
-is replaced or the static pin is applied, so the cards are already
+that would move the width is checked against `ChannelCore::width_refusal`
+twice, both times on the core loop (the thread that owns `ChannelCore`):
+
+- at submit, before any file work — the same shape as `radio.channel`'s
+  `pin_refusal` precheck — with the width the value's own text derives
+  against the live `[link]`;
+- in the apply, right before the cards are retuned, with
+  `derived_width` of the loaded candidate: a scan, hop, sweep or
+  calibration that started while the worker read and loaded the file
+  refuses the set here. A refusal at either point leaves the file
+  byte-identical, writes no `.pre-live`, changes no card or ladder, and
+  the reply is the refusal's own text (`err ladder refused: scan in
+  flight`).
+
+Accepted, the apply flips every ready card to the new width before the
+ladder is replaced or the static pin is applied, so the cards are already
 retuned when the new operating point takes effect. A set that cannot move
 `derived_width` (the two overhead keys) is a no-op here: `set_width` to
-the width already live does nothing.
+the width already live does nothing. A publish that fails after the apply
+re-applies the previous config the same way, cards first; if the core
+refuses that width now, the revert changes nothing — the cards stay at
+the new width and the process keeps the new ladder or pin, in step with
+each other but not with the file — and stderr logs `maburgs: cfg set
+<key>: revert failed: <refusal>`.
 
 Refusals, in `width_refusal`'s own words: `ladder refused: scan in
 flight` while the boot pick is open (up to `radio.scan.max_ms` after
@@ -129,7 +144,10 @@ boot, or after a `"auto"` set while unlinked) or a calibration measure
 round runs — the scan ranks at the width it started at and the width
 resync is closed until it ends; `ladder refused: channel set is not 40
 MHz pair-valid (member <n>)` on a flip to 40 over a channel set that is
-not a standard HT40 pair set, naming the first member with no pair; the
+not a standard HT40 pair set, naming the first member with no pair — the
+submit-time check catches it before the candidate is loaded, so this is
+what a 40 MHz ladder over e.g. `[40, 165]` reads, not the loader's
+`radio.channels` message; the
 existing `calibration running`, `hop in flight` / `relocate in flight`
 (the same predicates `radio.channel`'s pin uses); and `sweep in flight`
 while a relay sweep holds its card off op. An unlinked GS whose pick has
