@@ -389,10 +389,14 @@ URL params override the saved form on load:
 - `?ch=auto` unpins.
 
 On Connect the form goes to the core as the overlay's `[radio]` table
-(`channels = [...]`, `channel = "auto"|N` and `width`) in **both** modes
-(`toOverlayToml()`). The core's loader therefore checks the set at the
-page's width, not the bundle's 40. A 20 MHz set like `[165]` would otherwise
-fail with `ERROR bad config`.
+(`channels = [...]`, `channel = "auto"|N`) in **both** modes
+(`toOverlayToml()`); there is no `width` key. The width the receiver tunes
+to -- and the width the set is checked at -- comes from `[link]` instead: a
+spotter's one synthetic rung carries the page's width (`pageWidth()`), a GS
+derives it from the ladder (any 40 MHz rung) or, pinned, from `static_bw`
+(mirroring `maburgs::derived_width`, `gs/src/config.h`). A 20 MHz-only set
+like `[165]` flies fine as long as the derived width comes out 20; it would
+fail with `ERROR bad config` only if it came out 40.
 
 `--ch` is "start on this member" (`startChannel()`). It is the pin when
 there is one. Otherwise it is the remembered member, if that is still in
@@ -430,7 +434,9 @@ The set is validated twice:
   - The set rules.
   - The start channel is a member.
   - Pinned ⇒ start == the pin.
-  - In GS mode, no 40 MHz rung at width 20 (the GS could not receive it).
+  - In GS mode, the page width equals the width `[link]` derives
+    (`maburgs::derived_width`) -- a mismatch reads `page width <w> but the
+    link settings derive <d>`.
 
   A core refusal reads `Channel/width refused: <reason>` (core line `ERROR
   bad channel/width: <reason>`).
@@ -828,8 +834,10 @@ is live and back on Config once it drops.
 
 In both modes:
 
-- The channel set, the link channel and the width (see "Channel set" under
-  Use).
+- The channel set and the link channel (see "Channel set" under Use). The
+  **Channel width** control shows only in Spotter mode or while Fixed MCS
+  is pinned -- a GS in Adaptive hides it and derives the width from the
+  ladder instead (`pageWidth()`, `ConfigPanel.svelte`).
 - The DVR target (see Record).
 - The Display group's colour correction (see Colour correction) and OSD font
   (see MSP OSD). Both are page-only (never sent to the core) and stay editable
@@ -857,12 +865,16 @@ On Connect, the form is always serialized to TOML, even when it matches the
 embedded default (`toOverlayToml()`), and handed to the core as `--overlay
 /overlay.toml`. The overlay contains:
 
-- `[radio] channels/channel/width`, in both modes.
+- `[radio] channels/channel`, in both modes. There is no `width` key: the
+  receiver width is derived from `[link]` (`derived_width`,
+  `gs/src/config.h`), not loaded from `radio.width`.
 - In GS mode, `[link]` with:
   - `key = "<hex>"` (only when a key is loaded; otherwise the bundle's
     default key applies).
   - `static_mcs`.
-  - `static_bw`, carrying the form's width.
+  - `static_bw`, carrying the form's width field -- the value `derived_width`
+    reads while pinned (`static_mcs >= 0`); ignored while Adaptive, where the
+    ladder decides instead.
   - `max_mcs`, always 7. The form has no Max MCS, so the ladder as listed
     is the whole policy.
 - In GS mode, a `[link.nack] enable = true|false` table. The bundle's other
@@ -871,8 +883,7 @@ embedded default (`toOverlayToml()`), and handed to the core as `--overlay
 
 While Fixed MCS is pinned, the form hides the ladder, and the overlay sends
 a single `{mcs = static_mcs, bw = width}` rung instead of the saved ladder.
-The loader validates the ladder even when pinned (a 40 MHz rung at width 20
-would fail boot), and the user can't see those fields to fix them.
+The loader still validates that rung, and the user can't see it to fix it;
 `connectBlocker()` skips the ladder checks likewise, and the saved ladder
 comes back untouched with Adaptive.
 
@@ -883,16 +894,16 @@ then re-runs the same validation the native loader runs. A rejected overlay
 surfaces as `ERROR bad config: <reason>` from the core.
 
 `connectBlocker()` mirrors the same checks page-side, so a bad form is
-refused before Connect ever starts the device request. It checks
-channel/width, FEC overhead range 0.1–2.0, enh ≤ base, and no 40 MHz rung
-under a 20 MHz width. Separately, per-field warnings (`rungWarnings()` /
-`channelWarning()`) flag a 40 MHz rung under a 20 MHz width, enh above base,
-or a channel with no HT40 pair, without blocking the rest of the form.
+refused before Connect ever starts the device request. It checks the
+channel set at the derived width (`pageWidth()`) and the FEC overhead range
+0.1–2.0, enh ≤ base. Separately, a per-rung warning (`rungWarnings()`)
+flags enh above base, and `channelWarning()` flags a channel with no HT40
+pair when the derived width is 40, without blocking the rest of the form.
 
 Spotter mode's overlay carries `[radio]` plus a fixed minimal `[link]`:
-`static_bw` and one MCS 0 rung at the page width, so the loader's
-ladder-vs-width check passes at 20 MHz. A spotter only listens, so only the
-channel set, link channel and width apply.
+`static_bw` and one MCS 0 rung, both at the page's width field -- there is
+no ladder to derive from, so the pick stands as given. A spotter only
+listens, so only the channel set, link channel and width apply.
 
 ## Record
 

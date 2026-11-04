@@ -25,7 +25,7 @@ int64_t cap_to_complete_us(uint32_t pts32, uint64_t t_complete_us, int64_t pts_o
 
 std::optional<std::string> channel_width_error(const maburgs::Config& cfg, Mode mode,
                                                int start_ch, int width) {
-  if (width != 20 && width != 40) return "radio.width: must be 20 or 40";
+  if (width != 20 && width != 40) return "page width: must be 20 or 40";
   if (auto e = mabur::channel_set_issue(cfg.radio.channels, static_cast<uint8_t>(width),
                                         "radio.channels"))
     return e->field + ": " + e->why;
@@ -37,6 +37,13 @@ std::optional<std::string> channel_width_error(const maburgs::Config& cfg, Mode 
            " but the start channel is " + std::to_string(start_ch);
   if (auto e = maburgs::radio_width_issue(static_cast<uint8_t>(start_ch), width))
     return e->field + ": " + e->why;
+  // Gs mode's width isn't an independent pick: the receiver tunes to the
+  // ladder/pin's derived width, so a page width that disagrees would be
+  // flying a width the core never actually runs at. Spotter's width is
+  // its own choice (no ladder to derive from), so it stands as given.
+  if (mode == Mode::Gs && width != maburgs::derived_width(cfg.link))
+    return "page width " + std::to_string(width) + " but the link settings derive " +
+           std::to_string(static_cast<int>(maburgs::derived_width(cfg.link)));
   return std::nullopt;
 }
 

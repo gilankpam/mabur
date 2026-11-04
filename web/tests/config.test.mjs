@@ -5,7 +5,7 @@ import {
   connectBlocker, toOverlayToml, chipChannels, applyEdit, applyRungEdit, describeEdit,
   describeRungEdit, parseKeyText, loadKey, saveKey, KEY_STORE, DEFAULT_KEY_HEX,
   toggleChannel, checkChannelSet, CHANNEL_STORE, loadRememberedChannel, saveRememberedChannel,
-  startChannel,
+  startChannel, pageWidth,
 } from '../ui/src/lib/config.js';
 
 const mem = (init = {}) => {
@@ -71,20 +71,40 @@ test('load/save round trip, storage failures tolerated, URL ch/w override', () =
 // The bundle ladder flies 20 MHz; the width checks need 40 MHz rungs.
 const with40 = (c) => ({ ...c, ladder: c.ladder.map((r) => ({ ...r, bw: 40 })) });
 
+test('page_width_is_derived_in_gs_mode_and_picked_in_spotter', () => {
+  const d = defaultConfig();                                   // all-20 ladder, width 40 picked
+  assert.equal(pageWidth(d, 'gs'), 20);
+  assert.equal(pageWidth(with40(d), 'gs'), 40);
+  assert.equal(pageWidth(applyEdit(d, 'staticMcs', 3), 'gs'), 40);   // pinned: the pick is static_bw
+  assert.equal(pageWidth(d, 'spotter'), 40);
+});
+
+test('overlay_carries_no_radio_width', () => {
+  const t = toOverlayToml(defaultConfig());
+  assert.doesNotMatch(t, /^width = /m);
+  assert.match(t, /static_bw = 40/);
+  assert.doesNotMatch(toOverlayToml(defaultConfig(), null, 'spotter'), /^width = /m);
+});
+
+test('a_40_rung_at_width_20_is_no_longer_a_blocker', () => {
+  assert.equal(connectBlocker(applyEdit(with40(defaultConfig()), 'width', 20), 'gs'), null);
+  assert.deepEqual(rungWarnings(applyEdit(with40(defaultConfig()), 'width', 20), 0), []);
+});
+
 test('rung warnings use the handoff strings, in order', () => {
   let c = applyEdit(with40(defaultConfig()), 'width', 20);
   c = applyRungEdit(c, 4, 'mcs', 7);
   c = applyRungEdit(c, 4, 'oe', '0.6');
-  assert.deepEqual(rungWarnings(c, 4),
-    ['40 MHz needs channel width 40', 'Enh overhead above base']);
+  assert.deepEqual(rungWarnings(c, 4), ['Enh overhead above base']);
   assert.deepEqual(rungWarnings(defaultConfig(), 0), []);
 });
 
 test('channel warning for an unpaired channel at 40', () => {
-  assert.equal(channelWarning(defaultConfig()), null);
-  assert.match(channelWarning(applyEdit(defaultConfig(), 'channels', [40, 165])), /165/);
-  assert.match(channelWarning(applyEdit(defaultConfig(), 'channels', [40, 165])), /no 40 MHz pair/);
-  assert.equal(channelWarning(applyEdit(applyEdit(defaultConfig(), 'channels', [40, 165]), 'width', 20)), null);
+  assert.equal(channelWarning(defaultConfig()), null);   // all-20 ladder derives width 20: no pair check
+  const bad = applyEdit(with40(defaultConfig()), 'channels', [40, 165]);   // a 40 MHz rung derives width 40
+  assert.match(channelWarning(bad), /165/);
+  assert.match(channelWarning(bad), /no 40 MHz pair/);
+  assert.equal(channelWarning(applyEdit(defaultConfig(), 'channels', [40, 165])), null);
 });
 
 test('connect_blockers_gs_refuses_what_the_core_refuses', () => {
@@ -93,13 +113,8 @@ test('connect_blockers_gs_refuses_what_the_core_refuses', () => {
   assert.match(connectBlocker(applyRungEdit(d, 1, 'oe', '0.9'), 'gs'), /Rung 1/);
   assert.match(connectBlocker(applyRungEdit(d, 2, 'ob', '5'), 'gs'), /Rung 2.*0\.1.*2/);
   assert.match(connectBlocker(applyRungEdit(d, 2, 'ob', ''), 'gs'), /Rung 2/);
-  assert.equal(connectBlocker(applyEdit(d, 'width', 20), 'gs'), null);   // 20 MHz rungs fly at 20
-  assert.match(connectBlocker(applyEdit(with40(d), 'width', 20), 'gs'), /Rung 0.*40 MHz/);
-  // Every rung flies (no max MCS filter): a 40 MHz MCS 7 top rung still blocks at width 20.
-  const w = { ...applyEdit(d, 'width', 20),
-    ladder: [{ mcs: 0, bw: 20, ob: 0.5, oe: 0.25 }, { mcs: 7, bw: 40, ob: 0.5, oe: 0.25 }] };
-  assert.match(connectBlocker(w, 'gs'), /Rung 1/);
-  assert.match(connectBlocker(applyEdit(d, 'channels', [165]), 'gs'), /no 40 MHz pair/);
+  // A 40 MHz rung derives width 40, so the set check runs at 40 too.
+  assert.match(connectBlocker(applyEdit(with40(d), 'channels', [165]), 'gs'), /no 40 MHz pair/);
 });
 
 test('connect_blockers_spotter_only_checks_channel_width', () => {
@@ -112,7 +127,7 @@ test('connect_blockers_spotter_only_checks_channel_width', () => {
 test('overlay TOML, pinned: one always-loadable rung, max_mcs 7, saved ladder untouched', () => {
   const c = applyEdit(applyEdit(defaultConfig(), 'staticMcs', 3), 'width', 20);
   const t = toOverlayToml(c);
-  assert.equal(t, '[radio]\nchannels = [40, 64, 112, 144]\nchannel = "auto"\nwidth = 20\n'
+  assert.equal(t, '[radio]\nchannels = [40, 64, 112, 144]\nchannel = "auto"\n'
     + '\n[link]\nstatic_mcs = 3\nstatic_bw = 20\nmax_mcs = 7\n'
     + '\n[link.nack]\nenable = true\n'
     + '\n[[link.ladder]]\nmcs = 3\nbw = 20\noverhead_base = 0.5\noverhead_enh = 0.25\n');
@@ -219,19 +234,19 @@ test('connectBlocker accepts 144 on the relay radio (CPE full 5 GHz grid since m
   assert.equal(connectBlocker(toggleChannel(c, 144), 'spotter', 'relay'), null);
 });
 
-test('toOverlayToml carries the set + width in both modes; the spotter gets a minimal [link]', () => {
+test('toOverlayToml carries the channel set in both modes, no radio.width; the spotter gets a minimal [link] at cfg.width', () => {
   const c = defaultConfig();
   const gs = toOverlayToml(c, null, 'gs');
-  assert.match(gs, /^\[radio\]\nchannels = \[40, 64, 112, 144\]\nchannel = "auto"\nwidth = 40\n/);
-  assert.match(gs, /\[link\]/);
+  assert.match(gs, /^\[radio\]\nchannels = \[40, 64, 112, 144\]\nchannel = "auto"\n\n\[link\]/);
   const sp = toOverlayToml({ ...c, link: 64 }, 'ab'.repeat(16), 'spotter');
-  assert.equal(sp, '[radio]\nchannels = [40, 64, 112, 144]\nchannel = 64\nwidth = 40\n'
+  assert.equal(sp, '[radio]\nchannels = [40, 64, 112, 144]\nchannel = 64\n'
     + '\n[link]\nstatic_mcs = -1\nstatic_bw = 40\nmax_mcs = 7\n'
     + '\n[[link.ladder]]\nmcs = 0\nbw = 40\noverhead_base = 0.5\noverhead_enh = 0.25\n');
-  // A 20 MHz-only set (no 40 MHz pair) carries width 20, so the loader checks it at 20.
+  // A 20 MHz-only set (no 40 MHz pair): the spotter's rung carries cfg.width
+  // regardless, so the loader checks the set at 20, not 40.
   const w20 = { ...c, channels: [165], link: 'auto', width: 20 };
-  assert.match(toOverlayToml(w20, null, 'gs'), /^\[radio\]\nchannels = \[165\]\nchannel = "auto"\nwidth = 20\n/);
-  assert.match(toOverlayToml(w20, null, 'spotter'), /\nwidth = 20\n[\s\S]*static_bw = 20\n[\s\S]*bw = 20\n/);
+  assert.match(toOverlayToml(w20, null, 'gs'), /^\[radio\]\nchannels = \[165\]\nchannel = "auto"\n\n\[link\]/);
+  assert.match(toOverlayToml(w20, null, 'spotter'), /static_bw = 20\n[\s\S]*bw = 20\n/);
 });
 
 test('chipChannels shows an off-list member; ?ch= keeps the set sorted', () => {

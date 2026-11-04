@@ -82,6 +82,7 @@
         </select>
         <div class="hint">{cfg.link === 'auto' ? 'The link forms where the drone is found, then moves to the pick once.' : `The link forms where the drone is found, then moves to ${cfg.link}.`}</div>
       </div>
+      {#if spotter || pinned}
       <div class="field">
         <span id="cfg-width-label" class="fieldlabel">Channel width</span>
         <div class="seg" role="radiogroup" aria-labelledby="cfg-width-label">
@@ -89,6 +90,7 @@
           <label class="seg-opt"><input type="radio" name="{uid}width" checked={cfg.width === 40} onchange={() => set('width', 40)}>40 MHz</label>
         </div>
       </div>
+      {/if}
     </div>
 
     <div class={groupClass}>

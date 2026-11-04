@@ -235,6 +235,8 @@ struct Opts {
 
 class WebGs {
  public:
+  // width: the receiver width -- the page's derived width (Gs: the
+  // ladder/pin's derived_width; Spotter: the page's own pick).
   // cards: the roster (USB first, then relays), n_usb of them USB. They
   // outlive this object: the core's threads are joined in the destructor,
   // before the caller stops the cards. Empty = no radio (replay/tests) -> Gs

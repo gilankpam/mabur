@@ -977,16 +977,18 @@ TEST(channel_width_override_validation) {
   CHECK(channel_width_error(c, Mode::Gs, 0, 20).has_value());
   CHECK(channel_width_error(c, Mode::Gs, 201, 20).has_value());
   CHECK(channel_width_error(c, Mode::Spotter, 136, 80).has_value());
+  // Gs mode's width isn't an independent pick: c's ladder has a 40 MHz
+  // rung, so the link settings derive 40, and a page width of 20 is
+  // refused as disagreeing with it.
+  auto g = channel_width_error(c, Mode::Gs, 136, 20);      // c has a 40 rung → derives 40
+  REQUIRE(g.has_value());
+  CHECK(*g == "page width 20 but the link settings derive 40");
+
   c.radio.channels = {165};
   auto e = channel_width_error(c, Mode::Spotter, 165, 40);   // no HT40 pair: the set check says so
   REQUIRE(e.has_value());
   CHECK(e->find("radio.channels") != std::string::npos && e->find("165") != std::string::npos);
-  // GS mode's "no 40 MHz rung while tuned 20" refusal is gone now that the
-  // receiver width is derived from the ladder rather than an independent
-  // override -- a mismatch between the two can no longer exist (the web
-  // page's own override check is a separate, not-yet-updated concern).
-  CHECK(!channel_width_error(c, Mode::Gs, 165, 20));
-  CHECK(!channel_width_error(c, Mode::Spotter, 165, 20));
+  CHECK(!channel_width_error(c, Mode::Spotter, 165, 20));  // spotter: the pick stands
 }
 
 TEST(relay_stats_fields_keeps_the_page_keys) {
@@ -1371,6 +1373,7 @@ TEST(stats_json_carries_channel_fields_gs_and_spotter) {
 
 TEST(channel_width_error_checks_the_set_membership_and_pin) {
   auto c = cfg();
+  c.link.ladder_cfg.ladder = {{0, 0.5, 0.25, 20}, {3, 0.5, 0.25, 40}};   // derives 40: the Gs checks below use width 40
   c.radio.channels = {40, 64, 112, 144};
   CHECK(!channel_width_error(c, Mode::Gs, 40, 40).has_value());
   CHECK(!channel_width_error(c, Mode::Spotter, 144, 20).has_value());
@@ -1777,11 +1780,11 @@ TEST(nack_stats_null_in_spotter_and_with_nack_off) {
 
 // The page's overlay (web/ui/src/lib/config.js toOverlayToml, GS mode) carries
 // [link.nack] between [link] and the ladder; the loader must take the switch
-// and leave the bundle's other NACK keys alone. The string was the JS test's
-// pinned fixture (config.test.mjs "overlay TOML, pinned"), byte for byte;
-// its "width = 20" line is dropped here since radio.width no longer loads --
-// the page's overlay writer (toOverlayToml) and its JS fixture still emit
-// it; they change together, in a follow-up to this one.
+// and leave the bundle's other NACK keys alone. The string matches the JS
+// test's pinned fixture (config.test.mjs "overlay TOML, pinned"), byte for
+// byte -- neither carries a "width =" line under [radio]: the receiver
+// width is derived from [link] (static_bw / the ladder), not loaded from a
+// radio.width key.
 TEST(web_overlay_link_nack_switch_loads_over_the_bundle) {
   const std::string overlay =
       "[radio]\nchannels = [40, 64, 112, 144]\nchannel = \"auto\"\n"
