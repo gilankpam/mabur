@@ -752,7 +752,7 @@ TEST(width_issue_helpers_match_the_loader) {
   CHECK(!maburgs::radio_width_issue(165, 20));
   auto e = maburgs::radio_width_issue(165, 40);
   REQUIRE(e.has_value());
-  CHECK(e->field == "radio.width" && e->why.find("165") != std::string::npos);
+  CHECK(e->field == "radio.channels" && e->why.find("165") != std::string::npos);
   CHECK(maburgs::radio_width_issue(136, 80).has_value());
 }
 

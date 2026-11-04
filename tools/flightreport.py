@@ -1504,7 +1504,7 @@ def load_scanlog(path):
     calibration run orders, '-' otherwise), popped off before the
     end-anchored fields; older H lines read reason None.
 
-    scanlog 8: at radio.width 40 the boot scan writes one D row per pair
+    scanlog 8: at receiver width 40 the boot scan writes one D row per pair
     per round, bw 40; scanlog <= 7 files have two, one per half, at bw 20.
     No column change, so D's parsing above is unaffected.
 

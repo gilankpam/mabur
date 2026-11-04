@@ -124,12 +124,16 @@ std::array<mabur::UepLayerCfg, 2> Config::uep_layers() const {
 }
 
 std::optional<ConfigIssue> radio_width_issue(uint8_t channel, int width) {
+  // Field is radio.channels, not radio.width: there is no radio.width key
+  // on the GS any more, and both callers (the loader's per-channel check
+  // at the derived width, the web GS's page-width check) are really
+  // asking whether this member of radio.channels can fly at this width.
   if (width != 20 && width != 40)
-    return ConfigIssue{"radio.width", "must be 20 or 40 (HT20 / HT40)"};
+    return ConfigIssue{"radio.channels", "width must be 20 or 40 (HT20 / HT40)"};
   if (width == 40 && mabur::ht40_offset(channel) == 0)
-    return ConfigIssue{"radio.width", "40 MHz needs a standard 5 GHz pair and channel " +
-                                          std::to_string(static_cast<int>(channel)) +
-                                          " has none (common/include/mabur/ht40.h)"};
+    return ConfigIssue{"radio.channels", "40 MHz needs a standard 5 GHz pair and channel " +
+                                             std::to_string(static_cast<int>(channel)) +
+                                             " has none (common/include/mabur/ht40.h)"};
   return std::nullopt;
 }
 

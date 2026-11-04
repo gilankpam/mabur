@@ -11,7 +11,6 @@ channels = [40, 64, 112, 144]   # the channel set: the drone parks on a member, 
                                 # PROVISIONAL until bench row 8 (maburcal on 64 and 112; swap 64 for 128 if it fails).
 channel  = 144
                                 # member once; a member number = pin the link there.
-width   = 40               # 20 or 40 MHz; 40 is needed for the 40 MHz link speeds in [[link.ladder]] below
 tx_card = -1               # card that transmits to the drone; -1 = pick the one with the best signal
 relays  = []   # CPE disabled for maburcal; was ["10.83.11.1:8310"]
 
@@ -56,7 +55,7 @@ rcf_slot_hold_ms       = 30     # time feedback so it doesn't collide with incom
 arrival_guard_syms     = 192    # how late a packet may arrive before it counts as lost
 beacon_keepalive_ms    = 1000   # while linked, re-announce the ground station to the drone this often
 static_mcs             = -1  # -1 = adaptive link; 0..7 pins a fixed MCS (bench testing)
-static_bw              = 40  # width used with static_mcs; 40 needs radio.width = 40
+static_bw              = 40  # width used with static_mcs; 40 here makes the GS's receiver width 40 too
 max_mcs                = 5      # highest MCS the adaptive link may use
 
 # Adaptive link: the link speed is chosen from a ladder of rungs (listed
@@ -86,7 +85,8 @@ static_overhead_base   = 0.5  # FEC overhead with static_mcs only
 static_overhead_enh    = 0.25  # ...and on the enhance layer
 
 # Ladder rungs, from most robust to fastest. Each rung is an MCS, a channel
-# width (20 or 40 MHz; 40 needs radio.width = 40 here and on the drone) and
+# width (20 or 40 MHz; any 40 here makes the GS's receiver width 40, here
+# and on the drone) and
 # the extra FEC repair data per layer (0.5 = +50 %). Keep
 # overhead_base >= overhead_enh on every rung: the base layer is the one
 # every frame depends on.
