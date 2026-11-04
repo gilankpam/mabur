@@ -984,7 +984,7 @@ TEST(channel_width_override_validation) {
   // GS mode's "no 40 MHz rung while tuned 20" refusal is gone now that the
   // receiver width is derived from the ladder rather than an independent
   // override -- a mismatch between the two can no longer exist (the web
-  // layer's own override check is Task 8).
+  // page's own override check is a separate, not-yet-updated concern).
   CHECK(!channel_width_error(c, Mode::Gs, 165, 20));
   CHECK(!channel_width_error(c, Mode::Spotter, 165, 20));
 }
@@ -1780,7 +1780,8 @@ TEST(nack_stats_null_in_spotter_and_with_nack_off) {
 // and leave the bundle's other NACK keys alone. The string was the JS test's
 // pinned fixture (config.test.mjs "overlay TOML, pinned"), byte for byte;
 // its "width = 20" line is dropped here since radio.width no longer loads --
-// toOverlayToml and its JS fixture still emit it (Task 8 resyncs both).
+// the page's overlay writer (toOverlayToml) and its JS fixture still emit
+// it; they change together, in a follow-up to this one.
 TEST(web_overlay_link_nack_switch_loads_over_the_bundle) {
   const std::string overlay =
       "[radio]\nchannels = [40, 64, 112, 144]\nchannel = \"auto\"\n"
