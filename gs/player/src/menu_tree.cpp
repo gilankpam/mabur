@@ -555,6 +555,21 @@ MenuNode rate_row(const Deps& d) {
                  {Owner::kGs, "link.static_overhead_enh", real_text(r.enh)},
                  {Owner::kGs, "link.static_mcs", std::to_string(std::min(r.mcs, kMaxMcs))}};
   };
+  // Fixed pins the live rung's width, Adaptive goes back to the ladder's:
+  // when that moves the receiver width, the cards retune (the Width row's
+  // rule).
+  n.confirm = [d](const std::string& v) {
+    GsLiveView after = *d->gs;
+    if (v == "fixed") {
+      if (after.ladder.empty()) return std::string();   // nothing is sent
+      after.static_bw = current_rung(d).bw;
+      after.static_mcs = std::max(after.static_mcs, 0);
+    } else {
+      after.static_mcs = -1;
+    }
+    if (receiver_width(after) != receiver_width(*d->gs)) return std::string("Retunes the receiver.");
+    return std::string();
+  };
   n.help = [d] {
     if (fixed(d))
       return std::string(
