@@ -1,5 +1,7 @@
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <functional>
 #include <cmath>
 #include <memory>
 #include <optional>
@@ -40,14 +42,23 @@ struct Rig {
   // gate while the scout thread is mid-dwell on another thread in prod.
   std::vector<std::pair<bool, bool>> gate_obs;
 
+  // Called after every injected sleep (the scout's and the in-flight
+  // dwell's): a test acts from inside a dwell through it.
+  std::function<void(int)> on_sleep;
+
   Rig(int n_usb, int n_relays, bool pinned = false, uint8_t start = 0)
+      : Rig(n_usb, n_relays, pinned, start, {40, 64, 112, 144}, 40) {}
+  // The set and the width go into the config before the core is built.
+  Rig(int n_usb, int n_relays, bool pinned, uint8_t start, std::vector<uint8_t> channels,
+      uint8_t width)
       : agg(bundle().uep_layers(), 32, n_usb + n_relays, 0) {
-    cfg.radio.channels = {40, 64, 112, 144};
-    cfg.radio.width = 40;
+    cfg.radio.channels = std::move(channels);
+    cfg.radio.width = width;
     // A 40 MHz rig flies the five-rung 40 MHz ladder; the hop-restore tests
-    // index into it (rung 2 = MCS 2).
-    cfg.link.ladder_cfg.ladder = {{0, 0.5, 0.25, 40}, {1, 0.5, 0.25, 40}, {2, 0.5, 0.25, 40},
-                                  {3, 0.5, 0.25, 40}, {4, 0.5, 0.25, 40}};
+    // index into it (rung 2 = MCS 2). A 20 MHz rig flies the same rungs at 20.
+    cfg.link.ladder_cfg.ladder = {{0, 0.5, 0.25, width}, {1, 0.5, 0.25, width},
+                                  {2, 0.5, 0.25, width}, {3, 0.5, 0.25, width},
+                                  {4, 0.5, 0.25, width}};
     if (pinned) cfg.radio.pin = start ? start : 40;
     const uint8_t start_ch = start ? start : (pinned ? *cfg.radio.pin : 40);
     for (int i = 0; i < n_usb + n_relays; ++i) {
@@ -60,6 +71,7 @@ struct Rig {
     vrx = std::make_unique<VrxController>(vrx_cfg_from(cfg, start_ch));
     ChannelCoreCfg cc;
     cc.radio = cfg.radio; cc.hop = cfg.hop; cc.key = cfg.link.key;
+    cc.width_mhz = cfg.radio.width;
     cc.start_ch = start_ch; cc.n_usb = n_usb; cc.threaded = false;
     cc.store_name = "the-store";
     core = std::make_unique<ChannelCore>(
@@ -69,6 +81,7 @@ struct Rig {
         [this](int ms) {
           clk.sleep(ms);
           if (core) gate_obs.emplace_back(core->may_send(0), core->may_send(1));
+          if (on_sleep) on_sleep(ms);
         });
   }
   ChannelTickIn in(bool session, bool cal = false, int tx = 0) {
@@ -289,6 +302,69 @@ TEST(reopened_scout_card_at_20_gets_width_resync) {
   for (auto& c : g.cards[1]->calls) if (c.rfind("set_width", 0) == 0) resynced = true;
   CHECK(resynced);                                        // the CORE's width resync: the scout never sets a width
   CHECK(g.cards[1]->width_mhz == 40);
+}
+
+// Pinned + linked: no scout work, so the flip retunes both cards at once.
+TEST(set_width_retunes_every_ready_card_before_returning) {
+  Rig g(2, 0, /*pinned=*/true, 40);
+  for (int i = 0; i < 10; ++i) g.tick(true, false, 0);
+  CHECK(g.core->width_mhz() == 40);
+  CHECK(!g.core->width_refusal(20));
+  for (auto& c : g.cards) c->calls.clear();
+  g.core->set_width(20);
+  CHECK(g.core->width_mhz() == 20);
+  for (auto& c : g.cards) {
+    bool set = false;
+    for (auto& s : c->calls) if (s.rfind("set_width", 0) == 0) set = true;
+    CHECK(set);
+    CHECK(c->width_mhz == 20);
+  }
+  CHECK(g.sink.has_line("maburgs link: width 40 -> 20 MHz (ladder set)"));
+  for (auto& c : g.cards) c->calls.clear();
+  g.core->set_width(20);                                     // same width: nothing happens
+  for (auto& c : g.cards) CHECK(c->calls.empty());
+  CHECK(g.core->width_refusal(20) == std::nullopt);
+}
+
+TEST(set_width_orders_relay_cards_too) {
+  Rig g(1, 1, /*pinned=*/true, 40);
+  for (int i = 0; i < 10; ++i) g.tick(true, false, 0);
+  g.core->set_width(20);
+  CHECK(g.cards[1]->width_mhz == 20);                        // the relay, ordered like a local card
+}
+
+TEST(width_refusal_while_the_boot_scan_owns_a_card) {
+  Rig g(2, 0);                                               // auto: the scout owns card 1
+  g.tick(false, false, 0);
+  CHECK(g.core->pick_open());
+  auto r = g.core->width_refusal(20);
+  REQUIRE(r.has_value());
+  CHECK(*r == "ladder refused: scan in flight");
+}
+
+TEST(width_refusal_names_a_non_pair_member_on_a_flip_to_40) {
+  // A 20 MHz rig on a set 165 cannot fly at 40: 165 has no HT40 pair.
+  Rig g(2, 0, /*pinned=*/true, 40, {40, 165}, 20);
+  for (int i = 0; i < 10; ++i) g.tick(true, false, 0);
+  REQUIRE(g.core->width_mhz() == 20);
+  auto r = g.core->width_refusal(40);
+  REQUIRE(r.has_value());
+  CHECK(*r == "ladder refused: channel set is not 40 MHz pair-valid (member 165)");
+  CHECK(!g.core->width_refusal(20));                         // staying at 20 is no flip
+}
+
+TEST(set_width_on_a_down_card_lands_on_revive) {
+  Rig g(2, 0, /*pinned=*/true, 40);
+  for (int i = 0; i < 10; ++i) g.tick(true, false, 0);
+  g.cards[1]->is_alive = false; g.cards[1]->is_ready = false; g.core->on_card_died(1);
+  g.core->set_width(20);
+  CHECK(g.cards[0]->width_mhz == 20);
+  CHECK(g.cards[1]->width_mhz == 40);                        // down: not touched by the flip
+  g.cards[1]->is_alive = true; g.cards[1]->is_ready = true;
+  g.cards[1]->width_mhz = 40; g.cards[1]->calls.clear();
+  g.core->on_card_reopened(1);
+  for (int i = 0; i < 50; ++i) g.tick(true, false, 0);
+  CHECK(g.cards[1]->width_mhz == 20);                        // the per-tick resync, not the flip
 }
 
 TEST(mechanical_retune_skips_scout_card_and_follows_desired) {
@@ -936,6 +1012,47 @@ TEST(inflight_dwell_feeds_ranker_and_dwell_stats) {
   CHECK(g.cards[1]->ch == 40);               // back on op after the dwell
 }
 
+// A flip while the in-flight scout has a card off on a dwell. In prod the
+// dwell runs on the in-flight thread under inflight_mu_ and the flip on the
+// core thread; here a second thread runs the dwell and parks inside its
+// observe sleep until the flip's card walk has passed the dwelling card
+// (card 0: TX is card 1) and reached card 1. The dwelling card is skipped,
+// not marked tried, so the per-tick resync retunes it once the dwell ends;
+// card 1 is retuned before set_width returns.
+TEST(set_width_retunes_a_busy_card_on_a_later_tick) {
+  Rig g(2, 0); freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 10; ++i) g.tick(true, false, /*tx=*/1);
+  REQUIRE(g.cards[0]->width_mhz == 40 && g.cards[1]->width_mhz == 40);
+  std::atomic<bool> in_dwell{false}, release{false}, armed{false}, released_in_time{false};
+  const auto wait_for = [](const std::atomic<bool>& f) {
+    const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!f.load() && std::chrono::steady_clock::now() < end) std::this_thread::yield();
+    return f.load();
+  };
+  g.on_sleep = [&](int) {
+    if (in_dwell.load()) return;
+    in_dwell.store(true);
+    released_in_time.store(wait_for(release));
+  };
+  g.cards[1]->on_ready = [&] { if (armed.load()) release.store(true); };
+  std::thread dweller([&] { g.core->run_inflight_step(); });
+  REQUIRE(wait_for(in_dwell));
+  CHECK(g.core->dwell_busy());
+  CHECK(!g.core->width_refusal(20));         // a dwell in flight is no refusal
+  armed.store(true);
+  g.core->set_width(20);
+  armed.store(false);
+  dweller.join();
+  g.on_sleep = nullptr;
+  g.cards[1]->on_ready = nullptr;
+  CHECK(released_in_time.load());            // the walk reached card 1 while card 0 still dwelt
+  CHECK(g.cards[1]->width_mhz == 20);        // idle: retuned before set_width returned
+  CHECK(g.cards[0]->width_mhz == 40);        // busy: skipped now
+  for (int i = 0; i < 3; ++i) g.tick(true, false, 1);
+  CHECK(g.cards[0]->width_mhz == 20);        // picked up once idle
+}
+
 TEST(inflight_step_skips_when_not_in_session_or_hopping_or_one_card) {
   Rig g(1, 0, true, 40);
   link_up(g);
@@ -996,6 +1113,7 @@ TEST(shutdown_joins_threads_and_is_idempotent) {
   RecordingSink sink;
   Aggregator agg(cfg.uep_layers(), 32, 2, 0);
   ChannelCoreCfg cc; cc.radio = cfg.radio; cc.hop = cfg.hop; cc.key = cfg.link.key; cc.start_ch = 40; cc.n_usb = 2;
+  cc.width_mhz = cfg.radio.width;
   auto now_ms = [] { return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()); };
   auto now_us = [] { return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()); };
   ChannelCore core(cc, ptrs, vrx, sink, [](uint8_t) { return true; }, now_ms, now_us,
@@ -1047,6 +1165,7 @@ TEST(threaded_two_card_burst_runs_off_the_core_thread) {
   RecordingSink sink;
   Aggregator agg(cfg.uep_layers(), 32, 2, 0);
   ChannelCoreCfg cc; cc.radio = cfg.radio; cc.hop = cfg.hop; cc.key = cfg.link.key; cc.start_ch = 40; cc.n_usb = 2;
+  cc.width_mhz = cfg.radio.width;
   auto now_ms = [] { return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()); };
   auto now_us = [] { return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()); };
   ChannelCore core(cc, ptrs, vrx, sink, [](uint8_t) { return true; }, now_ms, now_us,
@@ -1240,6 +1359,7 @@ static void rebuild_with_set(Rig& g, std::vector<uint8_t> set, int n_usb = 0) {
   g.core.reset();
   g.vrx = std::make_unique<VrxController>(vrx_cfg_from(g.cfg, 40));
   ChannelCoreCfg cc; cc.radio = g.cfg.radio; cc.hop = g.cfg.hop; cc.key = g.cfg.link.key;
+  cc.width_mhz = g.cfg.radio.width;
   cc.start_ch = 40; cc.n_usb = n_usb; cc.threaded = false; cc.store_name = "s";
   g.core = std::make_unique<ChannelCore>(cc, g.ptrs, *g.vrx, g.sink,
       [](uint8_t) { return true; }, [&g] { return g.clk.now_ms(); }, [&g] { return g.clk.now_us(); },

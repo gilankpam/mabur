@@ -624,6 +624,7 @@ static int run_radio(const maburgs::Config& cfg, const std::string& cfg_path) {
   for (auto& fe : fronts) card_ptrs.push_back(fe.get());
   maburgs::ChannelCoreCfg ccfg;
   ccfg.radio = cfg.radio;
+  ccfg.width_mhz = cfg.radio.width;
   ccfg.hop = cfg.hop;
   ccfg.key = cfg.link.key;
   ccfg.start_ch = start_ch;

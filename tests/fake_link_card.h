@@ -4,6 +4,7 @@
 // core through FakeClock.
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
@@ -41,7 +42,10 @@ struct FakeCard : maburgs::LinkCard {
   // LinkCard
   bool open_and_start() override { calls.push_back("open"); is_alive = true; is_ready = true; return true; }
   void stop() override { calls.push_back("stop"); }
-  bool ready() const override { return is_ready; }
+  // Called on every ready() read: a test sequences another thread against
+  // the core's per-card walk through it.
+  std::function<void()> on_ready;
+  bool ready() const override { if (on_ready) on_ready(); return is_ready; }
   bool alive() const override { return is_alive; }
   maburgs::CardCaps caps() const override {
     maburgs::CardCaps c; c.valid = true; c.chip = relay ? "ath9k" : "RTL8822E"; c.gen = relay ? "CPE510" : "jaguar3";

@@ -173,6 +173,7 @@ WebGs::WebGs(const maburgs::Config& cfg, Mode mode, uint8_t start_ch, int width,
       sink_ = std::make_unique<Sink>(this);
       maburgs::ChannelCoreCfg cc;
       cc.radio = cfg.radio;
+      cc.width_mhz = static_cast<uint8_t>(width);
       cc.hop = cfg.hop;
       cc.key = cfg.link.key;
       cc.start_ch = start_ch;

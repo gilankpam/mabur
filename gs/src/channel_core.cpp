@@ -7,6 +7,8 @@
 
 #include "hop_blank.h"
 #include "hop_burst_gate.h"
+#include "mabur/channel_set.h"
+#include "mabur/ht40.h"
 #include "pair_pick.h"
 #include "scout_pick.h"
 #include "width_resync.h"
@@ -36,9 +38,10 @@ ChannelCore::ChannelCore(ChannelCoreCfg cfg, std::vector<LinkCard*> cards, VrxCo
                            cfg_.radio.scan.search_after_ms}),
       boot_pick_(false),
       verdict_(cfg_.hop, cfg_.radio.scan.busy),
-      ranker_(cfg_.hop, cfg_.radio.scan.busy, cfg_.radio.channels, 0, cfg_.radio.width),
+      ranker_(cfg_.hop, cfg_.radio.scan.busy, cfg_.radio.channels, 0, cfg_.width_mhz),
       hopc_(cfg_.hop),
       cur_ch_(static_cast<size_t>(n_cards_), cfg_.start_ch),
+      width_mhz_(cfg_.width_mhz),
       width_tried_(static_cast<size_t>(n_cards_), false),
       energy_last_(static_cast<size_t>(n_cards_)),
       dwell_stats_(static_cast<size_t>(n_cards_)),
@@ -84,7 +87,7 @@ ChannelCore::ChannelCore(ChannelCoreCfg cfg, std::vector<LinkCard*> cards, VrxCo
     sc.one_card_ms = cfg_.radio.scan.one_card_ms;
     sc.pick_margin_pct = cfg_.radio.scan.pick_margin_pct;
     sc.one_card = one_card_ || relay_search_only_;   // a sole relay interleaves op windows like a sole USB card
-    sc.link_width_mhz = cfg_.radio.width;
+    sc.link_width_mhz = cfg_.width_mhz;
     sc.busy_dbm = cfg_.radio.scan.busy.busy_dbm;
     sc.blocked_pct = cfg_.radio.scan.busy.blocked_pct;
     sc.leak_per_frame = cfg_.leak_per_frame;
@@ -107,7 +110,7 @@ ChannelCore::ChannelCore(ChannelCoreCfg cfg, std::vector<LinkCard*> cards, VrxCo
     // ever returns scout_card_ and inflight_ is never driven.
     inflight_ = std::make_unique<InflightScout>(
         InflightScoutCfg{cfg_.hop.dwell_observe_ms, cfg_.hop.dwell_period_ms,
-                         cfg_.radio.channels, cfg_.radio.width, cfg_.radio.scan.busy.busy_dbm},
+                         cfg_.radio.channels, width_mhz_, cfg_.radio.scan.busy.busy_dbm},
         *cards_[static_cast<size_t>(scout_card_)],
         [this] { return static_cast<int64_t>(now_us_()); },
         [this](int ms) { sleep_(ms); });
@@ -235,7 +238,7 @@ void ChannelCore::on_card_died(int card) {
       sink_.log(logf_("maburgs channel: scout card %d died at %llu rounds; search held "
                       "until it reopens, card rejoins at %u MHz",
                       card, static_cast<unsigned long long>(scout_->rounds()),
-                      static_cast<unsigned>(cfg_.radio.width)));
+                      static_cast<unsigned>(width_mhz_)));
     }
     scout_search_req_ = false;
     scout_->set_search(false);
@@ -310,7 +313,7 @@ void ChannelCore::freeze_pick_(double t, const char* why) {
                      : cfg_.radio.scan.min_rounds;
   const auto all = scout_->ranking();
   bool any = false;
-  if (cfg_.radio.width == 40) {
+  if (width_mhz_ == 40) {
     any = any_pair_ranked(all, cfg_.radio.channels, mr);
   } else {
     for (const auto& e : all) any = any || e.visits >= static_cast<uint32_t>(mr);
@@ -825,16 +828,16 @@ void ChannelCore::step_width_resync_() {
     auto& fe = *cards_[static_cast<size_t>(i)];
     const WidthCard wc{fe.ready(), fe.width(), width_tried_[static_cast<size_t>(i)],
                        dwell_busy_.load() && dwell_card_.load() == i};
-    if (!needs_width_fix(wc, cfg_.radio.width)) continue;
+    if (!needs_width_fix(wc, width_mhz_)) continue;
     width_tried_[static_cast<size_t>(i)] = true;
     std::lock_guard<std::mutex> ilk(inflight_mu_);
     const uint8_t ch = fe.channel();
-    if (fe.set_width(ch, cfg_.radio.width)) {
+    if (fe.set_width(ch, width_mhz_)) {
       cur_ch_[static_cast<size_t>(i)] = fe.channel();
       tune_gen_[static_cast<size_t>(i)].fetch_add(1, std::memory_order_release);
     } else {
       sink_.log(logf_("maburgs radio: card %d width resync to %u MHz on ch %u failed", i,
-                      static_cast<unsigned>(cfg_.radio.width), static_cast<unsigned>(ch)));
+                      static_cast<unsigned>(width_mhz_), static_cast<unsigned>(ch)));
     }
   }
 }
@@ -910,13 +913,26 @@ std::optional<uint8_t> ChannelCore::cal_measure_best() {
 
 // Something already owns where the link goes: a calibration's relocate, a
 // relocation or a hop in flight.
-std::optional<std::string> ChannelCore::move_refusal_(uint8_t ch) const {
-  if (!plan_.member(ch)) return std::string("not a member");
+std::optional<std::string> ChannelCore::link_moving_refusal_() const {
   if (cal_reloc_.s == CalReloc::Waiting || cal_reloc_.s == CalReloc::InFlight)
     return std::string("calibration running");
   if (boot_pick_.relocating()) return std::string("relocate in flight");
   if (plan_.hopping() || hopc_.state() == HopState::Ordered || hopc_.state() == HopState::Verifying)
     return std::string("hop in flight");
+  return std::nullopt;
+}
+
+std::optional<std::string> ChannelCore::move_refusal_(uint8_t ch) const {
+  if (!plan_.member(ch)) return std::string("not a member");
+  return link_moving_refusal_();
+}
+
+// The above, plus a calibration run or its pick still measuring: the run
+// calibrates where it stands, at the width it started on.
+std::optional<std::string> ChannelCore::busy_refusal_() const {
+  if (auto r = link_moving_refusal_()) return r;
+  if (cal_running_cur_ || cal_meas_.s == CalMeasure::Waiting || cal_meas_.s == CalMeasure::Running)
+    return std::string("calibration running");
   return std::nullopt;
 }
 
@@ -949,13 +965,48 @@ bool ChannelCore::order_cal_relocate(uint8_t ch) {
 }
 
 std::optional<std::string> ChannelCore::pin_refusal(uint8_t ch) const {
-  if (auto r = move_refusal_(ch)) return r;
-  // A run, or its pick still measuring: the run calibrates where it stands.
-  if (cal_running_cur_ || cal_meas_.s == CalMeasure::Waiting || cal_meas_.s == CalMeasure::Running)
-    return std::string("calibration running");
+  if (!plan_.member(ch)) return std::string("not a member");
+  if (auto r = busy_refusal_()) return r;
   // A linked move is one more relocate order.
   if (in_session_cur_ && ch != plan_.op()) return relocate_refusal_(ch);
   return std::nullopt;
+}
+
+std::optional<std::string> ChannelCore::width_refusal(uint8_t want) const {
+  if (want == width_mhz_) return std::nullopt;
+  // The boot scan (or a calibration measure round) owns the scout card and
+  // the width resync is closed: a flip now would leave that card at the old
+  // width with nothing to retune it until the scan lets go.
+  if (!width_resync_open(!scout_owns_(), scout_ != nullptr, !boot_pick_.open()))
+    return std::string("ladder refused: scan in flight");
+  if (want == 40 && mabur::channel_set_issue(cfg_.radio.channels, 40, "radio.channels")) {
+    // Name the member with no pair; a set whose pairs disagree on the
+    // offset names its first member, the one the others are held to.
+    uint8_t n = cfg_.radio.channels.empty() ? 0 : cfg_.radio.channels.front();
+    for (uint8_t ch : cfg_.radio.channels)
+      if (mabur::ht40_offset(ch) == 0) { n = ch; break; }
+    return "ladder refused: channel set is not 40 MHz pair-valid (member " + std::to_string(n) + ")";
+  }
+  return busy_refusal_();
+}
+
+void ChannelCore::set_width(uint8_t want) {
+  if (want == width_mhz_) return;
+  const uint8_t was = width_mhz_;
+  width_mhz_ = want;
+  sink_.log(logf_("maburgs link: width %u -> %u MHz (ladder set)", static_cast<unsigned>(was),
+                  static_cast<unsigned>(want)));
+  // Every card owes one fix-up at the new width. The resync runs now for
+  // the cards it can take; one off on an in-flight dwell (or down) keeps
+  // its untried flag and the per-tick resync takes it once it is free.
+  width_tried_.assign(width_tried_.size(), false);
+  step_width_resync_();
+  // After the resync: inflight_mu_ is held for a whole dwell, so taking it
+  // first would wait the dwell out before any card is touched.
+  if (inflight_) {
+    std::lock_guard<std::mutex> ilk(inflight_mu_);
+    inflight_->set_width_mhz(want);
+  }
 }
 
 std::optional<std::string> ChannelCore::set_pin(uint8_t ch) {

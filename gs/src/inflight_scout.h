@@ -16,7 +16,7 @@ struct InflightScoutCfg {
   // The dwell set is radio.channels; the card's own channel (op) is
   // skipped per cycle.
   std::vector<uint8_t> candidates;
-  uint8_t width_mhz = 20;  // radio.width: the dwell keeps the card's tuning (FastRetune), recorded here
+  uint8_t width_mhz = 20;  // the link width: the dwell keeps the card's tuning (FastRetune), recorded here
   int busy_dbm = -83;      // radio.scan.busy_dbm: NHM bucket edge for the dwell's busy-airtime read
 };
 
@@ -54,6 +54,11 @@ class InflightScout {
   // Takes a reference (never null) so neither entry point can hand this a
   // dangling/absent radio.
   void set_radio(ScoutRadio& radio);
+
+  // The link width moved (a live width flip): later dwells record it. The
+  // caller serialises this with dwell()/burst() (ChannelCore holds
+  // inflight_mu_ around both).
+  void set_width_mhz(uint8_t w) { cfg_.width_mhz = w; }
 
   // One dwell on `ch`, returning to `back`. Fills d.survey (fa/cca/frames/
   // observe_ms), d.in_session=true, and the three step timings regardless

@@ -1,8 +1,9 @@
 #pragma once
 // Per-card RX width as desired state (docs/bw40.md "Boot scan dwells once
-// per pair"). Every card, the boot scout card included, InitWrites at
-// radio.width and the scout never changes a card's width. A card that still
-// reads another width -- a revive that came up at the wrong width -- would
+// per pair"). Every card, the boot scout card included, InitWrites at the
+// link width and the scout never changes a card's width. A card that still
+// reads another width -- a revive that came up at the wrong width, or any
+// card after a live width flip (ChannelCore::set_width) -- would
 // leave a one-card GS capped at the 20 rungs, a two-card GS without
 // diversity on the 40 rungs. The core loop therefore checks, every tick and
 // for every card, whether a one-shot set_width is due, once no scout thread
@@ -27,8 +28,8 @@ struct WidthCard {
   bool busy = false;    // the in-flight scout thread has it off on a dwell
 };
 
-// Once per bring-up (tried resets when the card is reopened): a failed
-// set_width is logged, not retried every tick.
+// Once per bring-up and width (tried resets when the card is reopened or
+// the width flips): a failed set_width is logged, not retried every tick.
 inline bool needs_width_fix(const WidthCard& c, uint8_t want_mhz) {
   return c.ready && !c.tried && !c.busy && c.width != want_mhz;
 }

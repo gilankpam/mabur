@@ -90,9 +90,13 @@ inline const char* hop_state_name(HopState s) {
 }
 
 struct ChannelCoreCfg {
-  RadioCfg radio;              // channels, pin, width, scan knobs
+  RadioCfg radio;              // channels, pin, scan knobs (the width is width_mhz)
   HopCfg hop;                  // [hop] + [hop.verdict]
   mabur::LinkKey key;          // disc_for_channel re-tags per channel
+  // The receiver width every card was opened at. The live value is
+  // ChannelCore::width_mhz(); the boot scout and the hop ranker keep this
+  // construction-time one.
+  uint8_t width_mhz = 20;
   uint8_t start_ch = 0;        // the pin, else the remembered member, else channels[0]
   int n_usb = 0;               // USB cards come first in the roster
   double leak_per_frame = 1.0; // bench row 7 pins this (docs/channel-select.md)
@@ -251,6 +255,25 @@ class ChannelCore {
   std::optional<std::string> pin_refusal(uint8_t ch) const;
   // Back to auto. Never refused: nothing moves on the spot.
   void set_auto();
+  // ---- live receiver width (core thread) ----
+  // The width the cards are held at (the per-tick width resync's target).
+  uint8_t width_mhz() const { return width_mhz_; }
+  // What set_width(want) would be refused with, asked without changing
+  // anything. nullopt when want is the current width; otherwise, first
+  // match: "ladder refused: scan in flight" (the boot scan or a measure
+  // round owns a card, so the width resync is closed), "ladder refused:
+  // channel set is not 40 MHz pair-valid (member <n>)" on a flip to 40,
+  // then the calibration / relocate / hop refusals pin_refusal gives. An
+  // in-flight dwell is no refusal: the dwelling card is retuned once it is
+  // back.
+  std::optional<std::string> width_refusal(uint8_t want) const;
+  // Flip the receiver width. A no-op at the current width. Otherwise every
+  // card's one-shot width resync is re-armed and run once on the spot, so
+  // each ready card that is not off on an in-flight dwell is retuned before
+  // this returns; a dwelling or down card is taken by the per-tick resync
+  // once it is free (or reopened). The in-flight scout records its dwells
+  // at the new width. The caller has checked width_refusal first.
+  void set_width(uint8_t want);
   // ---- live ladder swap (core thread) ----
   // VrxController::replace_ladder, plus the hop verdict's frozen restore
   // rung translated by {mcs, bw} into the new ladder (rung 0 when it has no
@@ -304,6 +327,7 @@ class ChannelCore {
 
   // ---- per-card bookkeeping (core thread) ----
   std::vector<uint8_t> cur_ch_;
+  uint8_t width_mhz_ = 20;     // the live receiver width (set_width); cfg_.width_mhz at start
   std::vector<bool> width_tried_;
   std::vector<std::optional<StatsEnergyIn>> energy_last_;
   std::vector<std::optional<StatsDwellIn>> dwell_stats_;
@@ -443,6 +467,8 @@ class ChannelCore {
   void finish_cal_measure_(double now_ms);
   void settle_cal_reloc_(bool ok, const char* why);
   std::optional<std::string> move_refusal_(uint8_t ch) const;
+  std::optional<std::string> link_moving_refusal_() const;
+  std::optional<std::string> busy_refusal_() const;
   std::optional<std::string> relocate_refusal_(uint8_t ch) const;
   void inflight_body_();
   void scout_loop_();
