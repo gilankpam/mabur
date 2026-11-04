@@ -2,25 +2,23 @@
 #include "width_resync.h"
 using namespace maburgs;
 
-// Gate: the boot scout owns its card until joined; the fix-up opens once no
-// scout thread runs AND the scan is over (frozen), or when there is no scout.
-TEST(gate_closed_while_the_scout_thread_runs) {
-  CHECK(!width_resync_open(/*scout_joined=*/false, /*has_scout=*/true, /*frozen=*/false));
-  CHECK(!width_resync_open(false, true, true));   // frozen but not yet joined
+// Gate: closed while a scan holds the scout card (the boot pick open, or a
+// calibration measure round), open otherwise or when there is no scout.
+TEST(gate_closed_while_the_boot_pick_is_open) {
+  CHECK(!width_resync_open(/*has_scout=*/true, /*pick_open=*/true, /*round_open=*/false));
 }
 
-TEST(gate_closed_before_the_scout_thread_ever_started) {
-  // Joined (no thread yet) but not frozen: the scan has not even begun.
-  CHECK(!width_resync_open(true, true, false));
+TEST(gate_closed_while_a_measure_round_runs) {
+  CHECK(!width_resync_open(true, false, true));
 }
 
-TEST(gate_open_after_join_or_when_frozen_without_a_run) {
-  CHECK(width_resync_open(true, true, true));     // joined after run(), or frozen before it ran
-  CHECK(width_resync_open(true, false, false));   // scan off: no scout at all
+TEST(gate_open_once_the_pick_froze_or_without_a_scout) {
+  CHECK(width_resync_open(true, false, false));    // frozen: a searching scout keeps only its own card
+  CHECK(width_resync_open(false, true, false));    // scan off: no scout at all
 }
 
 TEST(card_needs_fix_only_when_ready_idle_untried_and_off_width) {
-  WidthCard c{/*ready=*/true, /*width=*/20, /*tried=*/false, /*busy=*/false};
+  WidthCard c{/*ready=*/true, /*width=*/20, /*tried=*/false, /*busy=*/false, /*scouting=*/false};
   CHECK(needs_width_fix(c, 40));
   CHECK(!needs_width_fix(c, 20));                 // already there
   WidthCard notready = c; notready.ready = false;
@@ -29,6 +27,8 @@ TEST(card_needs_fix_only_when_ready_idle_untried_and_off_width) {
   CHECK(!needs_width_fix(tried, 40));             // once per bring-up
   WidthCard busy = c; busy.busy = true;
   CHECK(!needs_width_fix(busy, 40));              // in-flight dwell owns it now; retry next tick
+  WidthCard scouting = c; scouting.scouting = true;
+  CHECK(!needs_width_fix(scouting, 40));          // the search owns it; fixed once it lets go
   WidthCard at40 = c; at40.width = 40;
   CHECK(!needs_width_fix(at40, 40));
 }

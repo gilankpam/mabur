@@ -276,12 +276,17 @@ linked"`), and a link found off `op`/`want` is then relocated by the
 one-card hop path.
 
 **Width.** The scout card is opened at the derived receiver width like
-every other card and never changes it: dwells and the park on `op` when
-it has no work (`ChannelScout::park_()`) are plain retunes, so there is
-no rejoin.
-The core's one-shot width resync (`gs/src/width_resync.h`) stays as a
-safety net for a card that comes back at the wrong width (`docs/bw40.md`
-"Boot scan dwells once per pair").
+every other card and the scout never changes it: dwells and the park on
+`op` when it has no work (`ChannelScout::park_()`) are plain retunes, so
+there is no rejoin. The core's one-shot width resync
+(`gs/src/width_resync.h`) changes it: for a card that comes back at the
+wrong width, and after a live width flip (`docs/gs-live-config.md`
+"Width flip"). The resync is closed while the boot pick is open or a
+calibration measure round runs; outside those it fixes every card but a
+scout card that is out searching, which it takes once the search lets go
+(the core then tells the scout its card's width,
+`ChannelScout::set_link_width_mhz`, so later dwells, ranks and picks
+are as wide as the card).
 
 **Send gating** (`gs/src/channel_core.cpp`): the scout owns a card
 (`scout_owns_()`: `working() || search requested || (!pinned &&

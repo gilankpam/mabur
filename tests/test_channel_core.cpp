@@ -2484,4 +2484,158 @@ TEST(pin_refusal_agrees_with_set_pin_while_a_calibration_picks_its_channel) {
   pin_refusal_agrees(g, 144, std::string("calibration running"));
 }
 
+// ---- the width flip while the scout searches or a sweep runs ----
+
+static bool called_set_width(const FakeCard& c) {
+  for (const auto& s : c.calls) if (s.rfind("set_width", 0) == 0) return true;
+  return false;
+}
+
+// Auto, the pick frozen long ago, the drone never found: the scout card is
+// out searching and stays out for as long as the GS is unlinked. A flip is
+// taken: the link card is retuned on the spot, the searching scout card is
+// left alone until the search lets go of it, then retuned to the new width.
+TEST(width_flip_while_unlinked_after_the_pick_froze_retunes_the_free_cards) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  for (int i = 0; i < 5; ++i) g.tick();
+  REQUIRE(g.core->scout_owns_card(1));            // the unlinked search
+  CHECK(g.core->width_refusal(20) == std::nullopt);
+  for (auto& c : g.cards) c->calls.clear();
+  g.core->set_width(20);
+  CHECK(g.cards[0]->width_mhz == 20);              // retuned before set_width returned
+  CHECK(g.cards[1]->width_mhz == 40);              // the search's card: not touched
+  CHECK(!called_set_width(*g.cards[1]));
+  for (int i = 0; i < 20; ++i) g.tick();
+  CHECK(g.cards[1]->width_mhz == 40);              // still searching: still left alone
+  // Dwells taken meanwhile are as wide as the card they ran on.
+  bool saw_scout_dwell = false;
+  for (const auto& d : g.sink.dwells)
+    if (d.first == 1 && !(d.second.survey.flags & devourer::chanmig::kFlagRetuneFailed)) {
+      saw_scout_dwell = true;
+      CHECK(d.second.survey.def.width == CHANNEL_WIDTH_40);
+    }
+  CHECK(saw_scout_dwell);
+  link_up(g);
+  for (int i = 0; i < 10; ++i) g.tick(true);
+  CHECK(!g.core->scout_owns_card(1));
+  CHECK(g.cards[1]->width_mhz == 20);              // released: the resync takes it
+  CHECK(called_set_width(*g.cards[1]));
+  // The next search (link lost for radio.scan.search_after_ms) dwells at
+  // the width the card now holds.
+  g.sink.dwells.clear();
+  for (int i = 0; i < g.cfg.radio.scan.search_after_ms / 10 + 60; ++i) g.tick();
+  REQUIRE(g.core->scout_owns_card(1));
+  bool saw = false;
+  for (const auto& d : g.sink.dwells)
+    if (d.first == 1) { saw = true; CHECK(d.second.survey.def.width == CHANNEL_WIDTH_20); }
+  CHECK(saw);
+  CHECK(g.cards[1]->width_mhz == 20);
+}
+
+// Pinned and unlinked: the scout only searches (no pick to hold open), so
+// a flip is taken at once.
+TEST(width_flip_pinned_unlinked_is_accepted) {
+  Rig g(2, 0, /*pinned=*/true, 40);
+  for (int i = 0; i < 5; ++i) g.tick();
+  REQUIRE(g.core->scout_owns_card(1));
+  CHECK(g.core->width_refusal(20) == std::nullopt);
+  g.core->set_width(20);
+  CHECK(g.cards[0]->width_mhz == 20);
+  CHECK(g.cards[1]->width_mhz == 40);
+}
+
+// Pinned, linked, then the link lost for longer than search_after_ms: the
+// search is back on the scout card, and a flip is still taken.
+TEST(width_flip_after_the_link_is_lost_is_accepted) {
+  Rig g(2, 0, /*pinned=*/true, 40);
+  link_up(g);
+  for (int i = 0; i < 10; ++i) g.tick(true);
+  for (int i = 0; i < g.cfg.radio.scan.search_after_ms / 10 + 20; ++i) g.tick();
+  REQUIRE(g.core->scout_owns_card(1));
+  CHECK(g.core->width_refusal(20) == std::nullopt);
+}
+
+// While the boot pick is open no card's width is fixed up -- not even a
+// card that is not the scout's -- and a flip is refused.
+TEST(no_width_fixup_while_the_boot_pick_is_open) {
+  Rig g(2, 0);
+  g.cards[1]->retune_ok = false;                   // no dwell completes: only max_ms freezes the pick
+  g.tick();
+  REQUIRE(g.core->pick_open());
+  g.cards[0]->width_mhz = 20;                      // a revive at the wrong width
+  g.cards[0]->calls.clear();
+  g.core->on_card_reopened(0);
+  for (int i = 0; i < 20; ++i) g.tick();
+  REQUIRE(g.core->pick_open());
+  CHECK(!called_set_width(*g.cards[0]));
+  CHECK(g.core->width_refusal(20) == std::optional<std::string>("ladder refused: scan in flight"));
+  for (int i = 0; i < 4000 && g.core->pick_open(); ++i) g.tick();
+  REQUIRE(!g.core->pick_open());
+  g.tick();
+  CHECK(g.cards[0]->width_mhz == 40);              // fixed once the pick froze
+}
+
+// A calibration measure round owns the scout card: refused as a scan.
+TEST(width_refusal_while_a_measure_round_runs) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 10; ++i) live_tick(g);
+  ChannelCorePicker p(*g.core);
+  start_round(g, p);
+  CHECK(g.core->width_refusal(20) == std::optional<std::string>("ladder refused: scan in flight"));
+}
+
+// Past the scan check, width_refusal gives the busy refusals pin_refusal
+// gives: a calibration run, a hop in flight.
+TEST(width_refusal_falls_through_to_the_busy_refusals) {
+  {
+    Rig g(2, 0);
+    freeze_auto(g);
+    link_up(g);
+    for (int i = 0; i < 5; ++i) live_tick(g);
+    g.tick(true, /*cal=*/true);
+    CHECK(g.core->width_refusal(20) == std::optional<std::string>("calibration running"));
+    CHECK(g.core->width_refusal(40) == std::nullopt);   // no flip, no refusal
+  }
+  {
+    Rig g(1, 0);
+    freeze_auto(g);
+    for (int i = 0; i < 5; ++i) g.tick(true);
+    g.cards[0]->cca_per_ms_on[40] = 50;
+    interfere_until_order(g);
+    CHECK(g.core->width_refusal(20) == std::optional<std::string>("hop in flight"));
+  }
+}
+
+// A relay sweep holds a card off op: no retune under it. The pin's own
+// refusal for the same state is unchanged.
+TEST(width_refusal_while_a_relay_sweeps) {
+  Rig g(1, 1);
+  g.cards[0]->retune_ok = false;
+  freeze_auto(g);
+  g.cards[0]->retune_ok = true;
+  link_up(g);
+  for (int i = 0; i < 5; ++i) g.tick(true, false, 0);
+  g.cards[0]->cca_per_ms_on[40] = 50;
+  interfere(g, occ_lead(g) + 3);
+  REQUIRE(g.core->sweep_pending());
+  REQUIRE(!g.core->hopping());
+  CHECK(g.core->width_refusal(20) == std::optional<std::string>("sweep in flight"));
+  CHECK(g.core->pin_refusal(40) == std::nullopt);      // pinning where the link is: unchanged
+}
+
+// The hop ranker ranks at the live width: at 40 a dwell's NHM busy reading
+// (the whole pair) orders ahead of the frame terms (the primary only).
+TEST(set_width_moves_the_hop_ranker_to_the_new_width) {
+  Rig g(2, 0, /*pinned=*/true, 40, {40, 64, 112, 144}, 20);
+  for (int i = 0; i < 10; ++i) g.tick(true, false, 0);
+  CHECK(g.core->hop_ranker().width_mhz() == 20);
+  g.core->set_width(40);
+  CHECK(g.core->hop_ranker().width_mhz() == 40);
+  g.core->set_width(20);
+  CHECK(g.core->hop_ranker().width_mhz() == 20);
+}
+
 MTEST_MAIN

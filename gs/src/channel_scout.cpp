@@ -11,11 +11,10 @@
 namespace maburgs {
 
 namespace {
-// The scout card is opened at the link width and never switches it, so a
-// dwell is as wide as the link: at 40 one dwell on a member (a pair's
-// primary) reads the whole pair.
-ChannelWidth_t dwell_width(const ScoutCfg& c) {
-  return c.link_width_mhz == 40 ? CHANNEL_WIDTH_40 : CHANNEL_WIDTH_20;
+// The scout never switches its card's width, so a dwell is as wide as the
+// card: at 40 one dwell on a member (a pair's primary) reads the whole pair.
+ChannelWidth_t dwell_width(uint8_t width_mhz) {
+  return width_mhz == 40 ? CHANNEL_WIDTH_40 : CHANNEL_WIDTH_20;
 }
 
 // The scheduler dwells on the members, in config order (also the ranker's
@@ -55,6 +54,7 @@ ChannelScout::ChannelScout(ScoutCfg cfg, ScoutRadio& radio, NowFn now_ms, SleepF
       proposal_(cfg_.channels.empty() ? 0 : cfg_.channels.front()),
       op_(cfg_.channels.empty() ? 0 : cfg_.channels.front()) {
   measure_.store(cfg_.measure, std::memory_order_release);
+  link_width_.store(cfg_.link_width_mhz, std::memory_order_release);
   prelude_done_.store(!(cfg_.one_card && cfg_.measure), std::memory_order_release);
   prelude_ack_.store(!(cfg_.one_card && cfg_.measure), std::memory_order_release);
 }
@@ -270,8 +270,9 @@ bool ChannelScout::dwell(uint8_t ch, uint64_t round, bool burst, bool observe) {
   s.seq = seq_++;
   s.def.band = ch >= 36 ? 5 : 2;
   s.def.primary = ch;
-  s.def.width = dwell_width(cfg_);
-  s.def.offset = cfg_.link_width_mhz == 40 ? mabur::ht40_offset(ch) : 0;   // as FastRetune keeps it
+  const uint8_t width = link_width_mhz();
+  s.def.width = dwell_width(width);
+  s.def.offset = width == 40 ? mabur::ht40_offset(ch) : 0;   // as FastRetune keeps it
   s.round = round;
   s.t_start_ms = now_();
   s.settle_ms = cfg_.settle_ms;
@@ -362,7 +363,7 @@ void ChannelScout::publish_() {
   std::lock_guard<std::mutex> lk(mu_);
   const uint8_t op = op_.load(std::memory_order_acquire);
   const int mr = eff_min_rounds_();
-  const uint8_t p = cfg_.link_width_mhz == 40
+  const uint8_t p = link_width_mhz() == 40
                         ? pair_proposal(ranker_.all(), op, cfg_.channels, mr,
                                         cfg_.pick_margin_pct, cfg_.blocked_pct)
                         : ranker_.proposal(op, mr);
@@ -372,7 +373,7 @@ void ChannelScout::publish_() {
 bool ChannelScout::op_ranked_locked_(int mr) const {
   const uint8_t op = op_.load(std::memory_order_acquire);
   const auto all = ranker_.all();
-  if (cfg_.link_width_mhz == 40) return any_pair_ranked(all, {op}, mr);
+  if (link_width_mhz() == 40) return any_pair_ranked(all, {op}, mr);
   for (const RankEntry& e : all)
     if (e.ch == op) return e.visits >= static_cast<uint32_t>(mr);
   return false;
@@ -394,7 +395,7 @@ bool ChannelScout::mature() const {
   const uint8_t op = op_.load(std::memory_order_acquire);
   const auto all = ranker_.all();
   if (all.empty()) return false;
-  if (cfg_.link_width_mhz == 40) {
+  if (link_width_mhz() == 40) {
     std::vector<uint8_t> others;
     for (uint8_t c : cfg_.channels)
       if (c != op) others.push_back(c);
@@ -409,7 +410,7 @@ bool ChannelScout::mature() const {
 std::vector<uint8_t> ChannelScout::pick_ranking() const {
   std::lock_guard<std::mutex> lk(mu_);
   const int mr = eff_min_rounds_();
-  if (cfg_.link_width_mhz == 40)
+  if (link_width_mhz() == 40)
     return pair_ranking(ranker_.all(), cfg_.channels, mr, cfg_.blocked_pct);
   std::vector<uint8_t> out;
   for (const RankEntry& e : ranker_.ranked(mr)) out.push_back(e.ch);

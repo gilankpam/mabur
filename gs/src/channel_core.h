@@ -93,9 +93,9 @@ struct ChannelCoreCfg {
   RadioCfg radio;              // channels, pin, scan knobs (the width is width_mhz)
   HopCfg hop;                  // [hop] + [hop.verdict]
   mabur::LinkKey key;          // disc_for_channel re-tags per channel
-  // The receiver width every card was opened at. The live value is
-  // ChannelCore::width_mhz(); the boot scout and the hop ranker keep this
-  // construction-time one.
+  // The receiver width every card is opened at. The live value is
+  // ChannelCore::width_mhz(); set_width moves it, the hop ranker and the
+  // in-flight scout with it, and the boot scout once its card is retuned.
   uint8_t width_mhz = 20;
   uint8_t start_ch = 0;        // the pin, else the remembered member, else channels[0]
   int n_usb = 0;               // USB cards come first in the roster
@@ -192,7 +192,7 @@ class ChannelCore {
   // ---- state ----
   ChannelSnapshot snapshot(int tx_card) const;   // channel = cards[tx_card]->channel()
   uint8_t op() const { return plan_.op(); }
-  int scout_card() const { return scout_card_; }   // the boot scout card (-1 = none); opens at 20 MHz
+  int scout_card() const { return scout_card_; }   // the boot scout card (-1 = none); opens at the receiver width
   bool hopping() const { return plan_.hopping(); }
   uint8_t hop_target() const { return plan_.hop_target(); }
   // Live reads of the cross-thread state at call time (not the end-of-tick
@@ -260,19 +260,22 @@ class ChannelCore {
   uint8_t width_mhz() const { return width_mhz_; }
   // What set_width(want) would be refused with, asked without changing
   // anything. nullopt when want is the current width; otherwise, first
-  // match: "ladder refused: scan in flight" (the boot scan or a measure
-  // round owns a card, so the width resync is closed), "ladder refused:
-  // channel set is not 40 MHz pair-valid (member <n>)" on a flip to 40,
-  // then the calibration / relocate / hop refusals pin_refusal gives. An
-  // in-flight dwell is no refusal: the dwelling card is retuned once it is
-  // back.
+  // match: "ladder refused: scan in flight" (the boot pick is open or a
+  // calibration measure round runs, so the width resync is closed),
+  // "ladder refused: channel set is not 40 MHz pair-valid (member <n>)" on
+  // a flip to 40, the calibration / relocate / hop refusals pin_refusal
+  // gives, then "sweep in flight" (a relay sweep holds its card off op).
+  // An unlinked search on the scout card is no refusal, nor is an in-flight
+  // dwell: that card is retuned once it is back.
   std::optional<std::string> width_refusal(uint8_t want) const;
   // Flip the receiver width. A no-op at the current width. Otherwise every
   // card's one-shot width resync is re-armed and run once on the spot, so
-  // each ready card that is not off on an in-flight dwell is retuned before
-  // this returns; a dwelling or down card is taken by the per-tick resync
-  // once it is free (or reopened). The in-flight scout records its dwells
-  // at the new width. The caller has checked width_refusal first.
+  // each ready card that is neither off on an in-flight dwell nor held by
+  // the unlinked search is retuned before this returns; a dwelling,
+  // searching or down card is taken by the per-tick resync once it is free
+  // (or reopened). The hop ranker ranks at the new width from here, the
+  // in-flight scout records its dwells at it, and the boot scout follows
+  // once its card is retuned. The caller has checked width_refusal first.
   void set_width(uint8_t want);
   // ---- live ladder swap (core thread) ----
   // VrxController::replace_ladder, plus the hop verdict's frozen restore
@@ -285,6 +288,7 @@ class ChannelCore {
   void run_scout_step();      // one ChannelScout::run_once()
   void run_inflight_step();   // one body of the in-flight loop (no sleep)
   void run_sampler_step();    // WindowSampler::step_now() at the tick's time: sample, publish, restart the cadence
+  const HopRanker& hop_ranker() const { return ranker_; }
 
  private:
   // ---- construction-time ----
@@ -470,6 +474,9 @@ class ChannelCore {
   std::optional<std::string> link_moving_refusal_() const;
   std::optional<std::string> busy_refusal_() const;
   std::optional<std::string> relocate_refusal_(uint8_t ch) const;
+  // The boot pick is open or a measure round runs: the width resync is
+  // closed and a width flip is refused.
+  bool scan_holds_width_() const;
   void inflight_body_();
   void scout_loop_();
   // One freshness burst on `card`, back to `op`; caller holds inflight_mu_.

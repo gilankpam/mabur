@@ -313,7 +313,8 @@ void ChannelCore::freeze_pick_(double t, const char* why) {
                      : cfg_.radio.scan.min_rounds;
   const auto all = scout_->ranking();
   bool any = false;
-  if (width_mhz_ == 40) {
+  // The ranking's width is the scout's: its dwells ran at its card's width.
+  if (scout_->link_width_mhz() == 40) {
     any = any_pair_ranked(all, cfg_.radio.channels, mr);
   } else {
     for (const auto& e : all) any = any || e.visits >= static_cast<uint32_t>(mr);
@@ -822,23 +823,36 @@ void ChannelCore::start_inflight_if_due_() {
   }
 }
 
+bool ChannelCore::scan_holds_width_() const {
+  return !width_resync_open(scout_ != nullptr, boot_pick_.open(), scout_ && scout_->round_open());
+}
+
 void ChannelCore::step_width_resync_() {
-  if (!width_resync_open(!scout_owns_(), scout_ != nullptr, /*scout_frozen=*/!boot_pick_.open())) return;
+  if (scan_holds_width_()) return;
+  // The scout thread drives only its own card (ChannelScout's radio), so
+  // while it searches every other card is fixed here and the scout card is
+  // left to it; step_scout_inputs_ re-arms that card once the search lets go.
+  const bool scout_busy = scout_owns_();
   for (int i = 0; i < n_cards_; ++i) {
     auto& fe = *cards_[static_cast<size_t>(i)];
+    const bool scouting = scout_busy && i == scout_card_;
     const WidthCard wc{fe.ready(), fe.width(), width_tried_[static_cast<size_t>(i)],
-                       dwell_busy_.load() && dwell_card_.load() == i};
-    if (!needs_width_fix(wc, width_mhz_)) continue;
-    width_tried_[static_cast<size_t>(i)] = true;
-    std::lock_guard<std::mutex> ilk(inflight_mu_);
-    const uint8_t ch = fe.channel();
-    if (fe.set_width(ch, width_mhz_)) {
-      cur_ch_[static_cast<size_t>(i)] = fe.channel();
-      tune_gen_[static_cast<size_t>(i)].fetch_add(1, std::memory_order_release);
-    } else {
-      sink_.log(logf_("maburgs radio: card %d width resync to %u MHz on ch %u failed", i,
-                      static_cast<unsigned>(width_mhz_), static_cast<unsigned>(ch)));
+                       dwell_busy_.load() && dwell_card_.load() == i, scouting};
+    if (needs_width_fix(wc, width_mhz_)) {
+      width_tried_[static_cast<size_t>(i)] = true;
+      std::lock_guard<std::mutex> ilk(inflight_mu_);
+      const uint8_t ch = fe.channel();
+      if (fe.set_width(ch, width_mhz_)) {
+        cur_ch_[static_cast<size_t>(i)] = fe.channel();
+        tune_gen_[static_cast<size_t>(i)].fetch_add(1, std::memory_order_release);
+      } else {
+        sink_.log(logf_("maburgs radio: card %d width resync to %u MHz on ch %u failed", i,
+                        static_cast<unsigned>(width_mhz_), static_cast<unsigned>(ch)));
+      }
     }
+    // The scout's dwells, ranks and picks are as wide as its card. Told
+    // only while the scout has no work, so no dwell is in flight.
+    if (i == scout_card_ && !scouting && fe.ready()) scout_->set_link_width_mhz(fe.width());
   }
 }
 
@@ -974,11 +988,12 @@ std::optional<std::string> ChannelCore::pin_refusal(uint8_t ch) const {
 
 std::optional<std::string> ChannelCore::width_refusal(uint8_t want) const {
   if (want == width_mhz_) return std::nullopt;
-  // The boot scan (or a calibration measure round) owns the scout card and
-  // the width resync is closed: a flip now would leave that card at the old
-  // width with nothing to retune it until the scan lets go.
-  if (!width_resync_open(!scout_owns_(), scout_ != nullptr, !boot_pick_.open()))
-    return std::string("ladder refused: scan in flight");
+  // The boot pick is open or a calibration measure round runs: the scan
+  // ranks at the width it started at and the width resync is closed, so no
+  // card would be retuned until it ends. An unlinked search alone is no
+  // refusal: the resync retunes every other card now and the scout card
+  // once the search lets go of it.
+  if (scan_holds_width_()) return std::string("ladder refused: scan in flight");
   if (want == 40 && mabur::channel_set_issue(cfg_.radio.channels, 40, "radio.channels")) {
     // Name the member with no pair; a set whose pairs disagree on the
     // offset names its first member, the one the others are held to.
@@ -987,7 +1002,10 @@ std::optional<std::string> ChannelCore::width_refusal(uint8_t want) const {
       if (mabur::ht40_offset(ch) == 0) { n = ch; break; }
     return "ladder refused: channel set is not 40 MHz pair-valid (member " + std::to_string(n) + ")";
   }
-  return busy_refusal_();
+  if (auto r = busy_refusal_()) return r;
+  // A relay sweep holds its card off op until it ends: no retune under it.
+  if (sweep_.on) return std::string("sweep in flight");
+  return std::nullopt;
 }
 
 void ChannelCore::set_width(uint8_t want) {
@@ -1001,6 +1019,9 @@ void ChannelCore::set_width(uint8_t want) {
   // its untried flag and the per-tick resync takes it once it is free.
   width_tried_.assign(width_tried_.size(), false);
   step_width_resync_();
+  // At 40 the ranker orders by NHM busy % (the whole pair) before the frame
+  // terms (the primary only); at 20 by the frame terms alone.
+  ranker_.set_width_mhz(want);
   // After the resync: inflight_mu_ is held for a whole dwell, so taking it
   // first would wait the dwell out before any card is touched.
   if (inflight_) {

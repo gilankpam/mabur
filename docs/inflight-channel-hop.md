@@ -538,8 +538,9 @@ to the `K` scan.log line), and only when the scan measured something (some
 channel reached `min_rounds`); until then `boot_pick` is 0 and ties fall
 straight to config order (`no_boot_pick_falls_through_to_config_order`).
 Candidates = `radio.channels`, the same set the boot scout ranks and
-`InflightScout` dwells on. At a derived receiver width of 40 (`HopRanker`'s
-`width_mhz` constructor argument, from `derived_width`), within a tier
+`InflightScout` dwells on. At a receiver width of 40 (`HopRanker`'s
+`width_mhz`: `derived_width` at construction, moved by a live width flip,
+`ChannelCore::set_width` → `HopRanker::set_width_mhz`), within a tier
 entries carrying an NHM busy reading rank ahead of entries without one,
 then by lower `busy_pct`, before the score/boot-pick/config-order chain
 — see "40 MHz" below. At 20 MHz this step is skipped and score alone

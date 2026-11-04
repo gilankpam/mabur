@@ -124,20 +124,29 @@ retuned when the new operating point takes effect. A set that cannot move
 the width already live does nothing.
 
 Refusals, in `width_refusal`'s own words: `ladder refused: scan in
-flight` while the boot scan (or a calibration measure round) owns a
-card — the width resync has nothing to retune it with until the scan lets
-go; `ladder refused: channel set is not 40 MHz pair-valid (member <n>)`
-on a flip to 40 over a channel set that is not a standard HT40 pair set,
-naming the first member with no pair; and the existing `calibration
-running`, `hop in flight` / `relocate in flight` (the same predicates
-`radio.channel`'s pin uses).
+flight` while the boot pick is open (up to `radio.scan.max_ms` after
+boot, or after a `"auto"` set while unlinked) or a calibration measure
+round runs — the scan ranks at the width it started at and the width
+resync is closed until it ends; `ladder refused: channel set is not 40
+MHz pair-valid (member <n>)` on a flip to 40 over a channel set that is
+not a standard HT40 pair set, naming the first member with no pair; the
+existing `calibration running`, `hop in flight` / `relocate in flight`
+(the same predicates `radio.channel`'s pin uses); and `sweep in flight`
+while a relay sweep holds its card off op. An unlinked GS whose pick has
+frozen (the drone off, or lost for `radio.scan.search_after_ms`) takes a
+flip: the boot scout is out searching on its own card only, so every
+other card is retuned at once and the scout card once the search lets go
+of it.
 
 The flip itself logs `maburgs link: width <A> -> <B> MHz (ladder set)`
 (`ChannelCore::set_width`), followed by one `maburgs radio: card <N>
 width <A> -> <B> MHz on ch <C>` line per card as each retunes
 (`RadioFrontend::set_width`); a card the resync cannot reach yet (busy on
-a dwell, or down) keeps its untried flag and picks up the fix-up on a
-later tick (`gs/src/width_resync.h`). The sideport's `link.width` tracks
+a dwell, out searching, or down) keeps its untried flag and picks up the
+fix-up on a later tick (`gs/src/width_resync.h`). The hop ranker orders
+for the new width from the flip on (`docs/inflight-channel-hop.md`), the
+in-flight scout records its dwells at it, and the boot scout follows once
+its card is retuned. The sideport's `link.width` tracks
 the live derived width throughout (`docs/observability.md`).
 
 ## maburplay — `kPlayerLiveKeys` (`gs/player/src/player_config_apply.cpp`)
