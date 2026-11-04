@@ -42,6 +42,15 @@ bool exists(const std::string& path) { return std::ifstream(path).good(); }
 
 std::string dirname_of(const std::string& path) { return path.substr(0, path.rfind('/')); }
 
+// The position of the first `name` in `order`; order.size() (past the end)
+// when it never ran, so `index_of(o, "a") < index_of(o, "b")` is false (not
+// a false pass) when "a" never ran.
+size_t index_of(const std::vector<std::string>& order, const std::string& name) {
+  for (size_t i = 0; i < order.size(); ++i)
+    if (order[i] == name) return i;
+  return order.size();
+}
+
 std::string bundle_text() {
   const std::string t = slurp(kBundlePath);
   REQUIRE(!t.empty());
@@ -94,6 +103,8 @@ struct Fake {
   std::function<void()> on_set_pin;
   bool debug_ok = true;
   std::function<void()> on_nack;
+  std::vector<uint8_t> widths;                      // every set_width call, in order
+  std::optional<std::string> width_refusal_answer;  // width_refusal's answer
 
   GsApplyHooks hooks() {
     GsApplyHooks h;
@@ -133,6 +144,11 @@ struct Fake {
     h.pin_refusal = [this](uint8_t ch) {
       pin_refusal_calls.push_back(ch);
       return pin_refusal_answer;
+    };
+    h.width_refusal = [this](uint8_t) { return width_refusal_answer; };
+    h.set_width = [this](uint8_t want) {
+      order.push_back("set_width");
+      widths.push_back(want);
     };
     return h;
   }
@@ -219,7 +235,10 @@ TEST(applier_set_static_mcs_applies_then_publishes) {
   GsApplyResult r = drive(a);
   CHECK(r.ok);
   CHECK(r.key == "link.static_mcs");
-  CHECK(f.order == std::vector<std::string>{"set_static"});
+  // static_bw stays at the bundle's 20, so the pin's derived width is 20
+  // too: set_width still runs, just to the same width.
+  CHECK((f.order == std::vector<std::string>{"set_width", "set_static"}));
+  CHECK((f.widths == std::vector<uint8_t>{20}));
   CHECK(f.set_static_mcs == std::vector<int>{3});
   CHECK(a.live().link.static_mcs == 3);
   CHECK(slurp(sb.path()).find("static_mcs             = 3 ") != std::string::npos);
@@ -546,9 +565,82 @@ TEST(applier_ladder_refuses_a_second_ladder_block_in_the_file) {
   CHECK(slurp(sb.path()) == before);
 }
 
+TEST(applier_ladder_flip_sets_the_width_before_replacing_the_ladder) {
+  ScratchBundle sb; Fake f;  // bundle ladder is all-20
+  GsConfigApplier a(sb.path(), bundle(), f.hooks(), nullptr);
+  std::string why;
+  REQUIRE(a.submit("link.ladder", "[{mcs = 0, bw = 40, overhead_base = 0.5, overhead_enh = 0.25}]",
+                   &why));
+  GsApplyResult r = drive(a);
+  CHECK(r.ok);
+  REQUIRE(f.widths.size() == 1);
+  CHECK(f.widths[0] == 40);
+  CHECK(index_of(f.order, "set_width") < index_of(f.order, "replace_ladder"));
+}
+
+TEST(applier_static_bw_flip_sets_the_width_before_set_static) {
+  // live: static_mcs = 3, static_bw = 20, baked into the file directly (not
+  // through the applier) so the Fake's order/widths start empty.
+  std::string t = bundle_text();
+  std::string why;
+  REQUIRE(patch_live_key(&t, *gs_live_key("link.static_mcs"), "3", &why));
+  ScratchBundle sb; Fake f;
+  spit(sb.path(), t);
+  GsConfigApplier a(sb.path(), load_config(sb.path()), f.hooks(), nullptr);
+  REQUIRE(a.submit("link.static_bw", "40", &why));
+  GsApplyResult r = drive(a);
+  CHECK(r.ok);
+  CHECK((f.widths == std::vector<uint8_t>{40}));
+  CHECK(index_of(f.order, "set_width") < index_of(f.order, "set_static"));
+}
+
+TEST(applier_unpin_flips_the_width_from_the_pin_to_the_ladder) {
+  // live: static_mcs = 3, static_bw = 40, the bundle's all-20 ladder.
+  std::string t = bundle_text();
+  std::string why;
+  REQUIRE(patch_live_key(&t, *gs_live_key("link.static_mcs"), "3", &why));
+  REQUIRE(patch_live_key(&t, *gs_live_key("link.static_bw"), "40", &why));
+  ScratchBundle sb; Fake f;
+  spit(sb.path(), t);
+  GsConfigApplier a(sb.path(), load_config(sb.path()), f.hooks(), nullptr);
+  REQUIRE(a.submit("link.static_mcs", "-1", &why));
+  GsApplyResult r = drive(a);
+  CHECK(r.ok);
+  CHECK((f.widths == std::vector<uint8_t>{20}));
+}
+
+TEST(applier_ladder_set_without_a_width_change_still_calls_set_width_with_the_same_width) {
+  ScratchBundle sb; Fake f;  // bundle ladder is all-20
+  GsConfigApplier a(sb.path(), bundle(), f.hooks(), nullptr);
+  std::string why;
+  REQUIRE(a.submit("link.ladder",
+                   "[{mcs = 0, bw = 20, overhead_base = 0.5, overhead_enh = 0.25}, "
+                   "{mcs = 2, bw = 20, overhead_base = 0.5, overhead_enh = 0.25}]",
+                   &why));
+  GsApplyResult r = drive(a);
+  CHECK(r.ok);
+  CHECK((f.widths == std::vector<uint8_t>{20}));  // the core no-ops it
+}
+
+TEST(applier_width_refusal_publishes_nothing) {
+  ScratchBundle sb; Fake f; f.width_refusal_answer = "ladder refused: scan in flight";
+  const std::string before = slurp(sb.path());
+  GsConfigApplier a(sb.path(), bundle(), f.hooks(), nullptr);
+  std::string why;
+  REQUIRE(a.submit("link.ladder", "[{mcs = 0, bw = 40, overhead_base = 0.5, overhead_enh = 0.25}]",
+                   &why));
+  GsApplyResult r = drive(a);
+  CHECK(!r.ok);
+  CHECK(r.reason == "ladder refused: scan in flight");
+  CHECK(f.widths.empty());
+  CHECK(f.order.empty());
+  CHECK(slurp(sb.path()) == before);
+  CHECK(!exists(sb.path() + ".pre-live"));
+}
+
 TEST(applier_refuses_an_unset_hook) {
   ScratchBundle sb;
-  for (int missing = 0; missing < 8; ++missing) {
+  for (int missing = 0; missing < 10; ++missing) {
     Fake f;
     GsApplyHooks h = f.hooks();
     switch (missing) {
@@ -560,6 +652,8 @@ TEST(applier_refuses_an_unset_hook) {
       case 5: h.debug_log = nullptr; break;
       case 6: h.msp = nullptr; break;
       case 7: h.pin_refusal = nullptr; break;
+      case 8: h.width_refusal = nullptr; break;
+      case 9: h.set_width = nullptr; break;
     }
     bool threw = false;
     try {

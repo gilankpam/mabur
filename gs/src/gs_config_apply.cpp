@@ -324,9 +324,14 @@ bool apply_to_process(const GsApplyHooks& h, const LiveKey& k, const Config& c, 
   switch (k.type) {
     case LiveType::Int:
     case LiveType::Real:
+      // Every link.static_* key routes here, including the two overhead
+      // keys that cannot move derived_width; the flip is harmless then --
+      // the core no-ops a set_width to the width it is already at.
+      h.set_width(derived_width(c.link));
       h.set_static(c);  // link.static_*
       return true;
     case LiveType::Ladder:
+      h.set_width(derived_width(c.link));
       h.replace_ladder(c);
       return true;
     case LiveType::Bool:
@@ -357,7 +362,8 @@ mabur::LiveApplySpec<Config, LiveKey> gs_spec(GsApplyHooks hooks) {
   // An empty hook would throw bad_function_call on the core thread at the
   // first set that reaches it; refuse it here, where the wiring is.
   if (!hooks.set_pin || !hooks.set_auto || !hooks.set_static || !hooks.replace_ladder ||
-      !hooks.nack || !hooks.debug_log || !hooks.msp || !hooks.pin_refusal)
+      !hooks.nack || !hooks.debug_log || !hooks.msp || !hooks.pin_refusal ||
+      !hooks.width_refusal || !hooks.set_width)
     throw std::invalid_argument("GsConfigApplier: every GsApplyHooks hook must be set");
   const auto h = std::make_shared<const GsApplyHooks>(std::move(hooks));
   mabur::LiveApplySpec<Config, LiveKey> s;
@@ -367,7 +373,17 @@ mabur::LiveApplySpec<Config, LiveKey> gs_spec(GsApplyHooks hooks) {
   s.render = render_live_value;
   s.patch = patch_live_key;
   s.load = [](const std::string& path) { return load_config(path); };
-  s.refuse_set = refuse_dropped_rung;
+  // The dropped-rung check first; only a ladder or a static_mcs/static_bw
+  // set can move derived_width, so only those ask width_refusal.
+  s.refuse_set = [h](const LiveKey& k, const std::string& value,
+                     const Config& cand) -> std::string {
+    const std::string dropped = refuse_dropped_rung(k, value, cand);
+    if (!dropped.empty()) return dropped;
+    if (k.type == LiveType::Ladder || is(k, "link.static_mcs") || is(k, "link.static_bw")) {
+      if (std::optional<std::string> w = h->width_refusal(derived_width(cand.link))) return *w;
+    }
+    return "";
+  };
   s.copy_field = copy_live_field;
   s.precheck = [h](const LiveKey& k, const std::string& value,
                    const Config& live) -> std::optional<std::string> {

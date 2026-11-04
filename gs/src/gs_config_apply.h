@@ -10,12 +10,16 @@
 // table below, the ladder's inline form, the refusal of a ladder rung the
 // loader would drop above link.max_mcs, and the apply, which runs on the
 // thread that owns ChannelCore and the VrxController (the core loop)
-// through GsApplyHooks. radio.channel is the exception to apply-first: the
-// pin is an order to the drone, placed only once the file holds it. So a
-// pin is checked against the core's refusals at submit, before any file
-// work; an order still refused after the publish (a hop started between
-// the check and the order) publishes the previous text again. "auto" is
-// never refused.
+// through GsApplyHooks. A ladder or link.static_mcs/link.static_bw set also
+// flips the receiver width: derived_width(cand.link) is asked of
+// width_refusal before any file work (alongside the dropped-rung check),
+// and set_width runs before replace_ladder or set_static so the cards are
+// already retuned when the new ladder or pin takes effect. radio.channel is
+// the exception to apply-first: the pin is an order to the drone, placed
+// only once the file holds it. So a pin is checked against the core's
+// refusals at submit, before any file work; an order still refused after
+// the publish (a hop started between the check and the order) publishes
+// the previous text again. "auto" is never refused.
 #include <cstdint>
 #include <functional>
 #include <optional>
@@ -71,6 +75,14 @@ struct GsApplyHooks {
   // ChannelCore::pin_refusal: why a pin to this member would be refused
   // now, asked at submit so a refused pin never reaches the file.
   std::function<std::optional<std::string>(uint8_t ch)> pin_refusal;
+  // ChannelCore::width_refusal: why derived_width(cand.link) would be
+  // refused now, asked for a Ladder set and for link.static_mcs /
+  // link.static_bw, before any file work -- same shape as pin_refusal.
+  std::function<std::optional<std::string>(uint8_t want)> width_refusal;
+  // ChannelCore::set_width: flips the receiver width, run before
+  // replace_ladder (Ladder) and before set_static (the link.static_* Int
+  // and Real keys). A no-op at the current width.
+  std::function<void(uint8_t want)> set_width;
 };
 
 using GsApplyResult = mabur::LiveApplyResult;
