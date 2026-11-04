@@ -89,9 +89,12 @@ cmake -S . -B build-arm-glibc -DCMAKE_TOOLCHAIN_FILE=cmake/arm-openipc.cmake \
   -DDEVOURER_KESTREL_8852C=OFF -DDEVOURER_LOG_MAX_LEVEL=WARN
 # linkbench-tx is the drone-side half of the bench harness. It carries
 # over from the musl script unchanged; it builds none of drone/venc, but
-# it ships to the same rootfs, so one toolchain is enough.
-cmake --build build-arm-glibc -j"$(nproc)" --target maburd linkbench-tx
+# it ships to the same rootfs, so one toolchain is enough. linkbench-rx
+# rides along so the drone can play the receiver when a bench mirrors
+# the link (the GS card transmitting, the drone's radio under test).
+cmake --build build-arm-glibc -j"$(nproc)" --target maburd linkbench-tx linkbench-rx
 STRIP="$OPENIPC_HOST_BIN/arm-openipc-linux-gnueabihf-strip"
 "$STRIP" build-arm-glibc/drone/maburd                     -o out/arm/maburd
 "$STRIP" build-arm-glibc/bench/linkbench/linkbench-tx     -o out/arm/linkbench-tx
+"$STRIP" build-arm-glibc/bench/linkbench/linkbench-rx     -o out/arm/linkbench-rx
 "$OPENIPC_HOST_BIN/arm-openipc-linux-gnueabihf-readelf" -d out/arm/maburd | head -12
