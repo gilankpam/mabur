@@ -98,8 +98,9 @@ static_overhead_base   = 0.5    # FEC overhead with static_mcs only
 static_overhead_enh    = 0.5    # ...and on the enhance layer
 
 # Ladder rungs, from most robust to fastest. Each rung is an MCS, a channel
-# width (20 or 40 MHz; any 40 here makes the GS's receiver width 40, here
-# and on the drone) and the extra FEC repair data per layer (0.5 = +50 %). Keep
+# width (20 or 40 MHz; any 40 here makes the GS's receiver width 40 --
+# the drone's is not derived: it stays at its own radio.width = 40) and the
+# extra FEC repair data per layer (0.5 = +50 %). Keep
 # overhead_base >= overhead_enh on every rung: the base layer is the one
 # every frame depends on.
 

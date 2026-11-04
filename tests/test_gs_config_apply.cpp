@@ -187,7 +187,7 @@ TEST(live_table_has_the_nine_keys_in_get_order) {
   REQUIRE(kGsLiveKeys.size() == 9);
   CHECK(std::string(kGsLiveKeys[0].key) == "radio.channel");
   CHECK(std::string(kGsLiveKeys[5].key) == "link.ladder");
-  CHECK(gs_live_key("radio.width") == nullptr);
+  CHECK(gs_live_key("link.max_mcs") == nullptr);   // a config key, not a live one
 }
 
 TEST(render_live_value_renders_each_type) {
@@ -313,8 +313,8 @@ TEST(applier_not_live_key_is_refused_at_submit) {
   ScratchBundle sb; Fake f;
   GsConfigApplier a(sb.path(), bundle(), f.hooks(), nullptr);
   std::string why;
-  CHECK(!a.submit("radio.width", "20", &why));
-  CHECK(why == "not live: radio.width");
+  CHECK(!a.submit("link.max_mcs", "4", &why));
+  CHECK(why == "not live: link.max_mcs");
   CHECK(!a.busy());
 }
 
@@ -869,8 +869,8 @@ TEST(control_handle_get_set_and_errors) {
   GsConfigApplier a(sb.path(), bundle(), f.hooks(), nullptr);
   bool pending = false;
   CHECK(GsConfigControl::handle("get link.static_mcs", a, &pending) == "ok -1");
-  CHECK(GsConfigControl::handle("get radio.width", a, &pending) == "err not live: radio.width");
-  CHECK(GsConfigControl::handle("set radio.width = 20", a, &pending) == "err not live: radio.width");
+  CHECK(GsConfigControl::handle("get link.max_mcs", a, &pending) == "err not live: link.max_mcs");
+  CHECK(GsConfigControl::handle("set link.max_mcs = 4", a, &pending) == "err not live: link.max_mcs");
   CHECK(GsConfigControl::handle("bogus", a, &pending) == "err usage: set <key> = <value> | get [<key>]");
   CHECK(GsConfigControl::handle("set link.static_mcs", a, &pending) == "err usage: set <key> = <value> | get [<key>]");
   CHECK(GsConfigControl::handle("", a, &pending) == "err usage: set <key> = <value> | get [<key>]");
