@@ -255,8 +255,14 @@ fills its NHM busy, so the decoded-only figure booked the rest as foreign
 and a fade read as interference confirmed by its own loss
 (`docs/findings/2026-11-04-fade-false-hops.md`). The seq walk counts
 every frame the drone sent whether or not this card heard it, so the
-scale restores the frames it missed; a window that decoded nothing has
-no ratio and keeps the decoded figure. Below `busy_dbm` our own frames
+scale restores the frames it missed. A window that decoded nothing has
+no ratio at all, and its own airtime cannot be told from what the air
+carried (a null at mid range leaves our frames above `busy_dbm` with none
+decoded, and the RSSI EMA, which folds decoded frames only, frozen above
+the weak wall): that card gives the window **no busy reading** — the
+blocked streak holds rather than advancing, the sideport's `busy_pct` is
+null, and a window with no reading on any card is `unknown`. A relay's
+SURVEY reading needs no decode and is unaffected. Below `busy_dbm` our own frames
 leave NHM busy too, where the scale overcounts — that regime is `weak`'s.
 A busy reading is
 invalid — `blocked` can't fire off it — when the chip has no NHM, the card

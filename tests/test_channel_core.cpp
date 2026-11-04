@@ -88,6 +88,7 @@ struct Rig {
           if (on_sleep) on_sleep(ms);
         });
   }
+  std::vector<uint16_t> seq_next;   // decode_one(): per-card next mac_seq
   ChannelTickIn in(bool session, bool cal = false, int tx = 0) {
     ChannelTickIn i; i.now_ms = static_cast<double>(clk.ms); i.in_session = session;
     i.cal_running = cal; i.tx_card = tx; i.agg = &agg; return i;
@@ -458,6 +459,18 @@ struct OpJam {
 // a busy reading. The windows a blocked op needs on top of the old
 // three-window trigger shape.
 static int occ_lead(const Rig& g) { return g.cfg.hop.verdict.occupied_windows - 1; }
+// One decoded frame per card, walking its seq. A jammed window in flight
+// still decodes some of the drone's frames; the window fill gives a card
+// that decoded nothing no busy reading at all (its own airtime cannot be
+// told from what the air carried), so every jammed window below decodes.
+// The body misroutes (not SBI, not RC): no FEC loss, no recovered symbols.
+static mabur::node::RxBody junk_body(uint8_t card, uint16_t seq);
+static void decode_one(Rig& g) {
+  if (g.seq_next.size() < g.cards.size()) g.seq_next.resize(g.cards.size(), 100);
+  for (size_t i = 0; i < g.cards.size(); ++i)
+    g.agg.on_rx_body(junk_body(static_cast<uint8_t>(i), g.seq_next[i]++));
+}
+
 // Interfered verdict windows: the op jammed (OpJam: every NHM sample above
 // busy_dbm on every usable card), foreign frames added alongside as
 // context only -- the verdict does not read them. This rig's Aggregator never
@@ -472,6 +485,7 @@ static void interfere(Rig& g, int windows, int tx = 0) {
     for (auto& c : g.cards) { c->fr.foreign += 40; }
     for (int i = 0; i < g.cfg.hop.window_ms / 10 + 1; ++i) {
       g.vrx->on_video(static_cast<double>(g.clk.ms));
+      decode_one(g);
       g.core->tick(g.in(true, false, tx));
       g.clk.ms += 10;
     }
@@ -670,6 +684,7 @@ TEST(reactive_hop_onto_a_blocked_target_fails_verify_on_its_first_blocked_readin
   for (int i = 0; i < g.cfg.hop.verify_ms / 10 + 30 && !g.sink.has_hop("verify_fail") &&
                   !g.sink.has_hop("verify_pass"); ++i) {
     g.vrx->on_video(static_cast<double>(g.clk.ms));
+    decode_one(g);
     g.tick(true);
   }
   CHECK(g.sink.has_hop("verify_fail"));
@@ -1182,7 +1197,11 @@ TEST(threaded_two_card_burst_runs_off_the_core_thread) {
   };
   uint64_t max_tick_ms = 0;
   bool armed = false;   // boot pick closed: from here on the core may burst
+  uint16_t seq = 100;   // every tick decodes a frame per card: a window with none has no busy reading
   for (int i = 0; i < 800 && burst_recs() < 3; ++i) {
+    agg.on_rx_body(junk_body(0, seq));
+    agg.on_rx_body(junk_body(1, seq));
+    ++seq;
     in.now_ms = static_cast<double>(now_ms());
     const uint64_t t0 = now_ms();
     core.tick(in);
@@ -1399,6 +1418,7 @@ static std::vector<uint64_t> interfere_bursts(Rig& g, int windows) {
     for (int i = 0; i < g.cfg.hop.window_ms / 10 + 1; ++i) {
       const uint64_t t = g.clk.ms;
       g.vrx->on_video(static_cast<double>(t));
+      decode_one(g);
       g.core->tick(g.in(true));
       if (g.sink.dwells.size() > seen) { bursts.push_back(t); seen = g.sink.dwells.size(); }
       g.clk.ms += 10;
@@ -1540,6 +1560,7 @@ TEST(relay_sweep_timeout_scales_with_the_request) {
       for (auto& c : g.cards) c->fr.foreign += 40;
       for (int i = 0; i < g.cfg.hop.window_ms / 10 + 1 && g.cards[0]->sweeps.empty(); ++i) {
         g.vrx->on_video(static_cast<double>(g.clk.ms));
+        decode_one(g);
         sent_ms = g.clk.ms;
         g.core->tick(g.in(true));
         g.clk.ms += 10;
@@ -1735,15 +1756,21 @@ TEST(own_air_scaled_is_capped_at_100) {
 }
 
 // A window that decoded nothing has no delivery ratio (the seq walk only
-// advances on a decoded frame): the decoded figure stands, unscaled.
-TEST(own_air_unscaled_when_the_window_decoded_nothing) {
+// advances on a decoded frame), so its own airtime cannot be told from
+// what the air carried: a null at mid range leaves our frames above
+// busy_dbm with none of them decoded, and the RSSI EMA frozen above the
+// weak wall. That card gives the verdict no busy reading for the window
+// (the blocked streak holds instead of advancing) and the sideport shows
+// busy_pct null. Revert (busy_valid from the NHM read alone): the card
+// reads 80 % foreign off its own video.
+TEST(no_busy_reading_when_the_window_decoded_nothing) {
   Rig g(1, 0, /*pinned=*/true, 40);
+  g.cards[0]->nhm_busy_pct_on[40] = 80;
   const auto e = one_window(g,
       [&] { for (uint16_t s = 0; s < 10; ++s) g.agg.on_rx_body(junk_body(0, s)); },
       [&] { g.cards[0]->fr.own_air_us += 14000; });   // 10 % of the span, no frame decoded
   REQUIRE(e.has_value());
-  REQUIRE(e->own_air_pct.has_value());
-  CHECK(*e->own_air_pct > 9.0 && *e->own_air_pct < 11.0);
+  CHECK(!e->busy_pct.has_value());
 }
 
 // ---- calibration channel pick (CalPicker / ChannelCore) ----
@@ -1751,11 +1778,13 @@ TEST(own_air_unscaled_when_the_window_decoded_nothing) {
 // One linked tick with the TX card (card 0) on op hearing its own video and
 // `op_foreign` foreign frames: own frames feed the sideport's own-frame
 // delta (StatsEnergyIn::own), foreign frames are what op's live reading
-// scores. Card 1 is the scout card.
+// scores, and a decoded frame per card gives op's window a busy reading.
+// Card 1 is the scout card.
 static void live_tick(Rig& g, uint32_t op_foreign = 0) {
   g.cards[0]->fr.own += 5;
   g.cards[0]->fr.foreign += op_foreign;
   g.vrx->on_video(static_cast<double>(g.clk.ms));
+  decode_one(g);
   g.tick(true);
 }
 

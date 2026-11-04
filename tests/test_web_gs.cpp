@@ -1239,9 +1239,12 @@ TEST(gs_roster_builds_core_and_one_card_prelude_commits_and_stores) {
 // Detection is NHM occupancy only, so the op's air is held for the call:
 // NHM 100 % busy at the core's op-window arm period on a USB card, SURVEY
 // 97 % busy on a relay; restored afterwards. A first jam needs the
-// occupied_windows lead-in (occ_lead) before its trigger.
+// occupied_windows lead-in (occ_lead) before its trigger. Every window
+// also decodes one frame (a telemetry body walks the card's seq): the
+// window fill gives a card that decoded nothing no busy reading at all.
 static int occ_lead(const GsRig& r) { return r.c.hop.verdict.occupied_windows - 1; }
 static void interfere_one_card(GsRig& r, int windows) {
+  static uint16_t tlm_seq = 1000;
   r.card.cca_per_ms_on[r.card.ch] = 50;
   const bool arm_ok = r.card.nhm_arm_ok;
   const maburgs::NhmBusyRead read = r.card.nhm_read;
@@ -1258,6 +1261,7 @@ static void interfere_one_card(GsRig& r, int windows) {
     r.card.fr.foreign += 40;
     for (int i = 0; i < r.c.hop.window_ms / 10 + 1; ++i) {
       r.g->vrx()->on_video(static_cast<double>(r.t) / 1000.0);   // keep SESSION alive (no drone here)
+      r.g->on_rx(telem_body(tlm_seq++, r.t));
       r.ticks(1);
     }
   }

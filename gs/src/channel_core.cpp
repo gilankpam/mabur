@@ -570,10 +570,19 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
       // interference confirmed by its own loss. Scale by the window's
       // delivery (sent / decoded, from the drone's hardware seq walk,
       // which counts every frame the drone sent whether or not this card
-      // heard it), capped at the window. A window that decoded nothing
-      // has no ratio and keeps the decoded figure. Below busy_dbm our own
-      // frames leave NHM busy too, so there the scale overcounts; that
-      // regime is the weak gate's.
+      // heard it), capped at the window. Below busy_dbm our own frames
+      // leave NHM busy too, so there the scale overcounts; that regime is
+      // the weak gate's.
+      //
+      // A window that decoded nothing has no ratio at all (the seq walk
+      // advances on decoded frames only), so its own airtime cannot be
+      // told from what the air carried: a null at mid range leaves our
+      // frames above busy_dbm with none decoded, and the RSSI EMA frozen
+      // at its last decoded value, above the weak wall. Booking that busy
+      // as foreign ordered hops on dropouts whose order could not even be
+      // delivered. The card gives no busy reading for the window instead:
+      // the blocked streak holds rather than advancing, and a window with
+      // no reading on any card classifies unknown.
       const uint64_t d_exp = seq_exp - window_prev_seq_exp_[si];
       const uint64_t d_rcv = seq_rcv - window_prev_seq_rcv_[si];
       const double delivery = d_rcv > 0 ? static_cast<double>(d_exp) / static_cast<double>(d_rcv) : 1.0;
@@ -582,8 +591,12 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
                                 static_cast<double>(cs.frames.own_air_us - window_prev_[si].own_air_us) / win_us)
           : 0.0;
       // A relay reports op-channel airtime through SURVEY (busy %, rx %);
-      // rx ~ our own video on the op, so it plays own_air.
-      const auto busy_pct = cs.survey.valid ? std::optional<double>(cs.survey.busy_pct) : cs.nhm_busy_pct;
+      // rx ~ our own video on the op, so it plays own_air and needs no
+      // decode to be trusted.
+      const bool no_decode = d_rcv == 0 && !cs.survey.valid;
+      const auto busy_pct = no_decode         ? std::optional<double>()
+                            : cs.survey.valid ? std::optional<double>(cs.survey.busy_pct)
+                                              : cs.nhm_busy_pct;
       const double own_used = cs.survey.valid ? cs.survey.rx_pct : own_pct;
       vc[si].busy_valid = busy_pct.has_value();
       vc[si].nhm_busy_pct = busy_pct.value_or(0.0);
