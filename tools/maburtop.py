@@ -313,7 +313,7 @@ def render_rows_compact(model, wall, width):
             f"maburgs   {state_s}   "
             f"key {_s(link.get('key_fp'))}   {_mav_cell(link)}   "
             f"{cal_s + '   ' if cal_s else ''}"
-            f"ch {_s(chan)} scan {scan.get('state', '--')}:{_s(scan.get('rounds'))}"
+            f"ch {_s(chan)}/{_s(link.get('width'))} scan {scan.get('state', '--')}:{_s(scan.get('rounds'))}"
             f"{' pin' if scan.get('pinned') else ''} "
             f"hop {hop.get('state', '--')}/{hop.get('verdict', '--')}   "
             f"tx c{_s(tx_card)}   "

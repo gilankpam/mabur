@@ -347,11 +347,13 @@ def bw40_summary(ctllog, probation_ms=3000.0):
             "promotes": promotes, "held_past_probation": held_past}
 
 
-def print_bw40_report(ctllog, probation_ms=3000.0):
+def print_bw40_report(ctllog, probation_ms=3000.0, gs_width=None):
     b = bw40_summary(ctllog, probation_ms)
     if b is None:
         return
     print("BW40 (40 MHz rungs; per-rung width from the ctllog 12 header)")
+    if gs_width is not None:
+        print(f"  GS receiver width: {gs_width} MHz")
     print(f"  held {b['held_s']:.1f} s of {b['total_s']:.1f} s on 40 MHz rungs;"
           f" promotes onto 40 MHz: {b['promotes']},"
           f" held past {probation_ms / 1000.0:g} s: {b['held_past_probation']}")
@@ -1971,7 +1973,7 @@ def print_hop_report(scanlog, ctllog):
             print(f"  card {card}: n={s['count']} median(to+read+back)={s['median_us']:.0f}us")
 
 
-def main(path, aulog=None, probelog_path=None, scanlog_path=None):
+def main(path, aulog=None, probelog_path=None, scanlog_path=None, gs_width=None):
     if sniff_feclog(path):
         print_fec_report(load_feclog(path))
         fec_rows = load_feclog(path)
@@ -1994,7 +1996,7 @@ def main(path, aulog=None, probelog_path=None, scanlog_path=None):
         ctllog = load_ctllog(path)
         print_wall_report(ctllog)
         print_episode_report(ctllog)
-        print_bw40_report(ctllog)
+        print_bw40_report(ctllog, gs_width=gs_width)
         probelog = None
         probe_src = None
         if probelog_path:
@@ -2219,13 +2221,22 @@ if __name__ == "__main__":
         # the ctl-NNNN_ filename-glob heuristic are not consulted at all.
         probe_arg = s.probe if primary == s.ctl else None
         scan_arg = s.scan if primary == s.ctl else None
-        main(primary, s.au, probe_arg, scan_arg)
+        # The ctl/probe branches of main() never see the sideport jsonl
+        # themselves, so the BW40 report's GS receiver width line (read
+        # from the first sideport row's link.width) has to come from
+        # here, loaded once and reused below for the SALVAGE section.
+        gs_width = None
+        flight_rows = None
+        if primary != s.flight and s.flight:
+            flight_rows = load(s.flight)
+            if flight_rows:
+                gs_width = (flight_rows[0].get("link") or {}).get("width")
+        main(primary, s.au, probe_arg, scan_arg, gs_width)
         # The ctl/probe branches of main() return before the jsonl analysis,
         # so in session mode read the sibling flight.jsonl for the SALVAGE
         # section too -- it is a flight's post-flight command, not a ctl
         # viewer. Silent when the recording predates the counters.
-        if primary != s.flight and s.flight:
-            flight_rows = load(s.flight)
+        if flight_rows is not None:
             print_salvage_report(flight_rows)
             print_nack_report(flight_rows)
             print_slice_salvage_report(flight_rows)

@@ -1038,6 +1038,42 @@ def test_bw40_probation_label_follows_probation_ms():
     assert "held past 1.5 s: 1" in buf.getvalue()
 
 
+def test_bw40_report_prints_gs_width_when_given():
+    """gs_width -- read by the caller from the first sideport row's
+    link.width -- becomes the report's first body line."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        p = Path(tmp_dir) / "ctl-0001_x.log"
+        p.write_text(CTL12)
+        log = flightreport.load_ctllog(str(p))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            flightreport.print_bw40_report(log, gs_width=40)
+    assert "GS receiver width: 40 MHz" in buf.getvalue()
+
+
+def test_bw40_report_omits_gs_width_when_absent():
+    """Recordings without link.width (pre-dates the key, or no sideport
+    sibling in session mode) print the BW40 section without that line."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        p = Path(tmp_dir) / "ctl-0001_x.log"
+        p.write_text(CTL12)
+        log = flightreport.load_ctllog(str(p))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            flightreport.print_bw40_report(log)
+    assert "GS receiver width" not in buf.getvalue()
+
+
+def test_main_threads_gs_width_into_bw40_report():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        p = Path(tmp_dir) / "ctl-0001_x.log"
+        p.write_text(CTL12)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            flightreport.main(str(p), gs_width=40)
+    assert "GS receiver width: 40 MHz" in buf.getvalue()
+
+
 def test_bw40_s_lines_only_seed_the_rung_from_s():
     """No E lines: the whole span sat on the S lines' rung (a 40 rung)."""
     text = ("ctllog 12 ladder=20:0/50:25,40:3/50:25 down_util=0.35 up_util=0.15 probe_offset=1\n"

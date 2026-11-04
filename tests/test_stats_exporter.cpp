@@ -15,6 +15,7 @@ namespace {
 StatsInput base_input() {
   StatsInput in;
   in.channel = 149;
+  in.width = 40;
   in.in_session = true;
   in.tx_card = 0;
   in.op.mcs = 5; in.op.bw = 20;
@@ -74,6 +75,7 @@ TEST(first_emission_immediate_with_null_rates) {
   // The player's compact OSD names the channel the rest of its line
   // describes, and it can only get it from here.
   CHECK(j["link"]["channel"] == 149);
+  CHECK(j["link"]["width"] == 40);
   CHECK(j["link"]["state"] == "session");
   CHECK(j["link"]["op"]["mcs"] == 5);
   CHECK(j["cards"][0]["frames"] == 1000);
