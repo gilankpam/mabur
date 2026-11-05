@@ -309,7 +309,10 @@ prints it, only the fingerprint).
      the player keeps waiting on a ring of the other version.
    - Sideport keys: `tools/maburtop.py`, `tools/flightreport.py` and
      `maburplay`'s OSD from the same commit.
-   - Config keys: per device, independent of the other end.
+   - Config keys: per device, independent of the other end — e.g. the
+     build that derives the GS receiver width from `[link]` drops
+     `radio.width` from `/etc/maburgs.toml` in the same deploy as the
+     `maburgs` binary; the drone's own `radio.width` is untouched.
 2. **Order binary and config by the direction of the key change.** A new
    key with an in-code default: binary first, then the key (the old binary
    refuses the unknown key). A removed or renamed key: the new binary

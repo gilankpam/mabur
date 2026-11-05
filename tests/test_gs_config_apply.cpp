@@ -15,10 +15,14 @@
 #include <thread>
 #include <vector>
 
+#include "channel_core.h"
 #include "config.h"
+#include "fake_link_card.h"
 #include "gs_config_apply.h"
 #include "mtest.h"
+#include "recording_sink.h"
 #include "scratch.h"
+#include "vrx_cfg.h"
 
 using namespace maburgs;
 
@@ -41,6 +45,15 @@ void spit(const std::string& path, const std::string& content) {
 bool exists(const std::string& path) { return std::ifstream(path).good(); }
 
 std::string dirname_of(const std::string& path) { return path.substr(0, path.rfind('/')); }
+
+// The position of the first `name` in `order`; order.size() (past the end)
+// when it never ran, so `index_of(o, "a") < index_of(o, "b")` is false (not
+// a false pass) when "a" never ran.
+size_t index_of(const std::vector<std::string>& order, const std::string& name) {
+  for (size_t i = 0; i < order.size(); ++i)
+    if (order[i] == name) return i;
+  return order.size();
+}
 
 std::string bundle_text() {
   const std::string t = slurp(kBundlePath);
@@ -94,6 +107,13 @@ struct Fake {
   std::function<void()> on_set_pin;
   bool debug_ok = true;
   std::function<void()> on_nack;
+  std::vector<uint8_t> widths;                      // every set_width call, in order
+  std::optional<std::string> width_refusal_answer;  // width_refusal's answer
+  // When set, width_refusal's answer instead (given the asked width).
+  std::function<std::optional<std::string>(uint8_t)> width_refusal_fn;
+  std::vector<uint8_t> width_refusal_calls;
+  std::vector<std::thread::id> width_refusal_threads;   // the thread each call ran on
+  std::function<void()> on_replace_ladder;
 
   GsApplyHooks hooks() {
     GsApplyHooks h;
@@ -114,6 +134,7 @@ struct Fake {
     h.replace_ladder = [this](const Config& c) {
       order.push_back("replace_ladder");
       ladder_sizes.push_back(c.link.ladder_cfg.ladder.size());
+      if (on_replace_ladder) on_replace_ladder();
     };
     h.nack = [this](bool on) {
       order.push_back("nack");
@@ -133,6 +154,15 @@ struct Fake {
     h.pin_refusal = [this](uint8_t ch) {
       pin_refusal_calls.push_back(ch);
       return pin_refusal_answer;
+    };
+    h.width_refusal = [this](uint8_t want) {
+      width_refusal_calls.push_back(want);
+      width_refusal_threads.push_back(std::this_thread::get_id());
+      return width_refusal_fn ? width_refusal_fn(want) : width_refusal_answer;
+    };
+    h.set_width = [this](uint8_t want) {
+      order.push_back("set_width");
+      widths.push_back(want);
     };
     return h;
   }
@@ -157,7 +187,7 @@ TEST(live_table_has_the_nine_keys_in_get_order) {
   REQUIRE(kGsLiveKeys.size() == 9);
   CHECK(std::string(kGsLiveKeys[0].key) == "radio.channel");
   CHECK(std::string(kGsLiveKeys[5].key) == "link.ladder");
-  CHECK(gs_live_key("radio.width") == nullptr);
+  CHECK(gs_live_key("link.max_mcs") == nullptr);   // a config key, not a live one
 }
 
 TEST(render_live_value_renders_each_type) {
@@ -219,7 +249,10 @@ TEST(applier_set_static_mcs_applies_then_publishes) {
   GsApplyResult r = drive(a);
   CHECK(r.ok);
   CHECK(r.key == "link.static_mcs");
-  CHECK(f.order == std::vector<std::string>{"set_static"});
+  // static_bw stays at the bundle's 20, so the pin's derived width is 20
+  // too: set_width still runs, just to the same width.
+  CHECK((f.order == std::vector<std::string>{"set_width", "set_static"}));
+  CHECK((f.widths == std::vector<uint8_t>{20}));
   CHECK(f.set_static_mcs == std::vector<int>{3});
   CHECK(a.live().link.static_mcs == 3);
   CHECK(slurp(sb.path()).find("static_mcs             = 3 ") != std::string::npos);
@@ -280,8 +313,8 @@ TEST(applier_not_live_key_is_refused_at_submit) {
   ScratchBundle sb; Fake f;
   GsConfigApplier a(sb.path(), bundle(), f.hooks(), nullptr);
   std::string why;
-  CHECK(!a.submit("radio.width", "20", &why));
-  CHECK(why == "not live: radio.width");
+  CHECK(!a.submit("link.max_mcs", "4", &why));
+  CHECK(why == "not live: link.max_mcs");
   CHECK(!a.busy());
 }
 
@@ -546,9 +579,267 @@ TEST(applier_ladder_refuses_a_second_ladder_block_in_the_file) {
   CHECK(slurp(sb.path()) == before);
 }
 
+TEST(applier_ladder_flip_sets_the_width_before_replacing_the_ladder) {
+  ScratchBundle sb; Fake f;  // bundle ladder is all-20
+  GsConfigApplier a(sb.path(), bundle(), f.hooks(), nullptr);
+  std::string why;
+  REQUIRE(a.submit("link.ladder", "[{mcs = 0, bw = 40, overhead_base = 0.5, overhead_enh = 0.25}]",
+                   &why));
+  GsApplyResult r = drive(a);
+  CHECK(r.ok);
+  REQUIRE(f.widths.size() == 1);
+  CHECK(f.widths[0] == 40);
+  CHECK(index_of(f.order, "set_width") < index_of(f.order, "replace_ladder"));
+}
+
+TEST(applier_static_bw_flip_sets_the_width_before_set_static) {
+  // live: static_mcs = 3, static_bw = 20, baked into the file directly (not
+  // through the applier) so the Fake's order/widths start empty.
+  std::string t = bundle_text();
+  std::string why;
+  REQUIRE(patch_live_key(&t, *gs_live_key("link.static_mcs"), "3", &why));
+  ScratchBundle sb; Fake f;
+  spit(sb.path(), t);
+  GsConfigApplier a(sb.path(), load_config(sb.path()), f.hooks(), nullptr);
+  REQUIRE(a.submit("link.static_bw", "40", &why));
+  GsApplyResult r = drive(a);
+  CHECK(r.ok);
+  CHECK((f.widths == std::vector<uint8_t>{40}));
+  CHECK(index_of(f.order, "set_width") < index_of(f.order, "set_static"));
+}
+
+TEST(applier_unpin_flips_the_width_from_the_pin_to_the_ladder) {
+  // live: static_mcs = 3, static_bw = 40, the bundle's all-20 ladder.
+  std::string t = bundle_text();
+  std::string why;
+  REQUIRE(patch_live_key(&t, *gs_live_key("link.static_mcs"), "3", &why));
+  REQUIRE(patch_live_key(&t, *gs_live_key("link.static_bw"), "40", &why));
+  ScratchBundle sb; Fake f;
+  spit(sb.path(), t);
+  GsConfigApplier a(sb.path(), load_config(sb.path()), f.hooks(), nullptr);
+  REQUIRE(a.submit("link.static_mcs", "-1", &why));
+  GsApplyResult r = drive(a);
+  CHECK(r.ok);
+  CHECK((f.widths == std::vector<uint8_t>{20}));
+}
+
+TEST(applier_ladder_set_without_a_width_change_still_calls_set_width_with_the_same_width) {
+  ScratchBundle sb; Fake f;  // bundle ladder is all-20
+  GsConfigApplier a(sb.path(), bundle(), f.hooks(), nullptr);
+  std::string why;
+  REQUIRE(a.submit("link.ladder",
+                   "[{mcs = 0, bw = 20, overhead_base = 0.5, overhead_enh = 0.25}, "
+                   "{mcs = 2, bw = 20, overhead_base = 0.5, overhead_enh = 0.25}]",
+                   &why));
+  GsApplyResult r = drive(a);
+  CHECK(r.ok);
+  CHECK((f.widths == std::vector<uint8_t>{20}));  // the core no-ops it
+}
+
+TEST(applier_width_refusal_publishes_nothing) {
+  ScratchBundle sb; Fake f; f.width_refusal_answer = "ladder refused: scan in flight";
+  const std::string before = slurp(sb.path());
+  GsConfigApplier a(sb.path(), bundle(), f.hooks(), nullptr);
+  std::string why;
+  REQUIRE(a.submit("link.ladder", "[{mcs = 0, bw = 40, overhead_base = 0.5, overhead_enh = 0.25}]",
+                   &why));
+  GsApplyResult r = drive(a);
+  CHECK(!r.ok);
+  CHECK(r.reason == "ladder refused: scan in flight");
+  CHECK(f.widths.empty());
+  CHECK(f.order.empty());
+  CHECK(slurp(sb.path()) == before);
+  CHECK(!exists(sb.path() + ".pre-live"));
+}
+
+constexpr const char* kLadder40 = "[{mcs = 0, bw = 40, overhead_base = 0.5, overhead_enh = 0.25}]";
+
+// The core's state is the owning thread's: width_refusal is never asked
+// from the worker that reads and loads the file.
+TEST(applier_width_refusal_is_asked_on_the_owner_thread) {
+  ScratchBundle sb; Fake f;
+  GsConfigApplier a(sb.path(), bundle(), f.hooks(), nullptr);
+  std::string why;
+  REQUIRE(a.submit("link.ladder", kLadder40, &why));
+  CHECK(drive(a).ok);
+  REQUIRE(!f.width_refusal_threads.empty());
+  for (const auto& id : f.width_refusal_threads) CHECK(id == std::this_thread::get_id());
+}
+
+// Asked again right before set_width, on the owning thread: a scan, hop or
+// calibration that started after the submit-time check refuses the set
+// there, before any card or the ladder changes, and nothing is published.
+TEST(applier_width_refused_at_apply_time_publishes_nothing) {
+  ScratchBundle sb; Fake f;
+  f.width_refusal_fn = [&](uint8_t) -> std::optional<std::string> {
+    if (f.width_refusal_calls.size() == 1) return std::nullopt;   // the submit-time check passes
+    return std::string("ladder refused: scan in flight");
+  };
+  const std::string before = slurp(sb.path());
+  std::vector<std::string> lines;
+  GsConfigApplier a(sb.path(), bundle(), f.hooks(),
+                    [&](const std::string& l) { lines.push_back(l); });
+  std::string why;
+  REQUIRE(a.submit("link.ladder", kLadder40, &why));
+  GsApplyResult r = drive(a);
+  CHECK(!r.ok);
+  CHECK(r.reason == "ladder refused: scan in flight");
+  CHECK(f.width_refusal_calls.size() == 2);
+  CHECK(f.widths.empty());
+  CHECK(f.order.empty());
+  CHECK(slurp(sb.path()) == before);
+  CHECK(!exists(sb.path() + ".pre-live"));
+  CHECK(!exists(sb.path() + ".new"));
+  CHECK(a.live().link.ladder_cfg.ladder.size() == bundle().link.ladder_cfg.ladder.size());
+  REQUIRE(lines.size() == 1);
+  CHECK(lines[0].find("-> err ladder refused: scan in flight (") != std::string::npos);
+}
+
+// The same for a static pin's width.
+TEST(applier_static_bw_width_refused_at_apply_time_publishes_nothing) {
+  std::string t = bundle_text();
+  std::string why;
+  REQUIRE(patch_live_key(&t, *gs_live_key("link.static_mcs"), "3", &why));
+  ScratchBundle sb; Fake f;
+  spit(sb.path(), t);
+  f.width_refusal_fn = [&](uint8_t) -> std::optional<std::string> {
+    if (f.width_refusal_calls.size() == 1) return std::nullopt;
+    return std::string("hop in flight");
+  };
+  GsConfigApplier a(sb.path(), load_config(sb.path()), f.hooks(), nullptr);
+  REQUIRE(a.submit("link.static_bw", "40", &why));
+  GsApplyResult r = drive(a);
+  CHECK(!r.ok);
+  CHECK(r.reason == "hop in flight");
+  CHECK(f.order.empty());
+  CHECK(slurp(sb.path()) == t);
+}
+
+// The submit-time check runs before any file work: an unreadable file is
+// never reached.
+TEST(applier_width_refusal_comes_before_any_file_work) {
+  if (::geteuid() == 0) {
+    std::printf("skip applier_width_refusal_comes_before_any_file_work: root reads a 0000 file\n");
+    return;
+  }
+  ScratchBundle sb; Fake f; f.width_refusal_answer = "ladder refused: scan in flight";
+  GsConfigApplier a(sb.path(), bundle(), f.hooks(), nullptr);
+  ::chmod(sb.path().c_str(), 0);
+  std::string why;
+  REQUIRE(a.submit("link.ladder", kLadder40, &why));
+  GsApplyResult r = drive(a);
+  ::chmod(sb.path().c_str(), 0644);
+  CHECK(!r.ok);
+  CHECK(r.reason == "ladder refused: scan in flight");
+  CHECK((f.width_refusal_calls == std::vector<uint8_t>{40}));
+}
+
+// A failed publish re-applies the previous config in the same order:
+// cards first, then the ladder.
+TEST(applier_publish_failure_reverts_the_width_before_the_ladder) {
+  if (::geteuid() == 0) {
+    std::printf("skip applier_publish_failure_reverts_the_width_before_the_ladder: root ignores 0555\n");
+    return;
+  }
+  ScratchBundle sb; Fake f;
+  f.on_replace_ladder = [&] {
+    if (f.ladder_sizes.size() == 1) ::chmod(dirname_of(sb.path()).c_str(), 0555);
+  };
+  GsConfigApplier a(sb.path(), bundle(), f.hooks(), nullptr);
+  std::string why;
+  REQUIRE(a.submit("link.ladder", kLadder40, &why));
+  GsApplyResult r = drive(a);
+  ::chmod(dirname_of(sb.path()).c_str(), 0755);
+  CHECK(!r.ok);
+  CHECK(r.reason.find("publish failed") != std::string::npos);
+  CHECK((f.widths == std::vector<uint8_t>{40, 20}));
+  CHECK((f.order == std::vector<std::string>{"set_width", "replace_ladder", "set_width",
+                                             "replace_ladder"}));
+}
+
+// A revert the core refuses (a scan or hop began between the apply and
+// the failed publish) changes nothing: the cards and the ladder both stay
+// on the new set, and the log names the refusal.
+TEST(applier_refused_revert_leaves_cards_and_ladder_together_and_logs) {
+  if (::geteuid() == 0) {
+    std::printf("skip applier_refused_revert_leaves_cards_and_ladder_together_and_logs: root ignores 0555\n");
+    return;
+  }
+  ScratchBundle sb; Fake f;
+  f.on_replace_ladder = [&] {
+    if (f.ladder_sizes.size() == 1) ::chmod(dirname_of(sb.path()).c_str(), 0555);
+  };
+  f.width_refusal_fn = [&](uint8_t) -> std::optional<std::string> {
+    if (f.ladder_sizes.empty()) return std::nullopt;
+    return std::string("ladder refused: scan in flight");
+  };
+  std::vector<std::string> lines;
+  GsConfigApplier a(sb.path(), bundle(), f.hooks(),
+                    [&](const std::string& l) { lines.push_back(l); });
+  std::string why;
+  REQUIRE(a.submit("link.ladder", kLadder40, &why));
+  GsApplyResult r = drive(a);
+  ::chmod(dirname_of(sb.path()).c_str(), 0755);
+  CHECK(!r.ok);
+  CHECK((f.widths == std::vector<uint8_t>{40}));
+  CHECK((f.order == std::vector<std::string>{"set_width", "replace_ladder"}));
+  bool logged = false;
+  for (const auto& l : lines)
+    if (l == "maburgs: cfg set link.ladder: revert failed: ladder refused: scan in flight") logged = true;
+  CHECK(logged);
+}
+
+// What the operator reads for a 40 MHz ladder over a set with a member
+// that has no HT40 pair: the live core's own refusal, before any file
+// work, not the loader's channel-set message.
+TEST(applier_40_ladder_over_a_non_pair_set_reads_the_core_refusal) {
+  std::string t = bundle_text();
+  REQUIRE(mabur::patch_toml_key(&t, "radio", "channels", "[40, 165]"));
+  ScratchBundle sb;
+  spit(sb.path(), t);
+  const Config cfg = load_config(sb.path());
+  REQUIRE(derived_width(cfg.link) == 20);
+  // A real ChannelCore, pinned and linked on 40, two cards at width 20.
+  FakeClock clk;
+  std::vector<std::unique_ptr<FakeCard>> cards;
+  std::vector<LinkCard*> ptrs;
+  for (int i = 0; i < 2; ++i) {
+    auto c = std::make_unique<FakeCard>();
+    c->clk = &clk; c->ch = 40; c->width_mhz = 20;
+    ptrs.push_back(c.get());
+    cards.push_back(std::move(c));
+  }
+  Config pinned = cfg;
+  pinned.radio.pin = 40;
+  VrxController vrx(vrx_cfg_from(pinned, 40));
+  RecordingSink sink;
+  ChannelCoreCfg cc;
+  cc.radio = pinned.radio; cc.hop = pinned.hop; cc.key = pinned.link.key;
+  cc.width_mhz = 20; cc.start_ch = 40; cc.n_usb = 2; cc.threaded = false;
+  ChannelCore core(cc, ptrs, vrx, sink, [](uint8_t) { return true; },
+                   [&] { return clk.now_ms(); }, [&] { return clk.now_us(); },
+                   [&](int ms) { clk.sleep(ms); });
+  for (int i = 0; i < 10; ++i) {
+    ChannelTickIn in; in.now_ms = static_cast<double>(clk.ms); in.in_session = true;
+    core.tick(in);
+    clk.ms += 10;
+  }
+  Fake f;
+  GsApplyHooks h = f.hooks();
+  h.width_refusal = [&](uint8_t w) { return core.width_refusal(w); };
+  GsConfigApplier a(sb.path(), cfg, h, nullptr);
+  std::string why;
+  REQUIRE(a.submit("link.ladder", kLadder40, &why));
+  GsApplyResult r = drive(a);
+  CHECK(!r.ok);
+  CHECK(r.reason == "ladder refused: channel set is not 40 MHz pair-valid (member 165)");
+  CHECK(f.order.empty());
+  CHECK(slurp(sb.path()) == t);
+}
+
 TEST(applier_refuses_an_unset_hook) {
   ScratchBundle sb;
-  for (int missing = 0; missing < 8; ++missing) {
+  for (int missing = 0; missing < 10; ++missing) {
     Fake f;
     GsApplyHooks h = f.hooks();
     switch (missing) {
@@ -560,6 +851,8 @@ TEST(applier_refuses_an_unset_hook) {
       case 5: h.debug_log = nullptr; break;
       case 6: h.msp = nullptr; break;
       case 7: h.pin_refusal = nullptr; break;
+      case 8: h.width_refusal = nullptr; break;
+      case 9: h.set_width = nullptr; break;
     }
     bool threw = false;
     try {
@@ -576,8 +869,8 @@ TEST(control_handle_get_set_and_errors) {
   GsConfigApplier a(sb.path(), bundle(), f.hooks(), nullptr);
   bool pending = false;
   CHECK(GsConfigControl::handle("get link.static_mcs", a, &pending) == "ok -1");
-  CHECK(GsConfigControl::handle("get radio.width", a, &pending) == "err not live: radio.width");
-  CHECK(GsConfigControl::handle("set radio.width = 20", a, &pending) == "err not live: radio.width");
+  CHECK(GsConfigControl::handle("get link.max_mcs", a, &pending) == "err not live: link.max_mcs");
+  CHECK(GsConfigControl::handle("set link.max_mcs = 4", a, &pending) == "err not live: link.max_mcs");
   CHECK(GsConfigControl::handle("bogus", a, &pending) == "err usage: set <key> = <value> | get [<key>]");
   CHECK(GsConfigControl::handle("set link.static_mcs", a, &pending) == "err usage: set <key> = <value> | get [<key>]");
   CHECK(GsConfigControl::handle("", a, &pending) == "err usage: set <key> = <value> | get [<key>]");

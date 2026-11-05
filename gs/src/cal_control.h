@@ -20,16 +20,17 @@
 
 namespace maburgs {
 
-// Every kind for every width the GS flies: 20 always, plus 40 iff the GS
-// itself flies 40 MHz AND some rung on its ladder actually uses it -- a GS
+// Every kind for every width the GS flies: 20 always, plus 40 iff the GS's
+// receiver width (ChannelCore::width_mhz(), derived from the ladder or a
+// static pin) is 40 AND some rung on its ladder actually uses it -- a GS
 // that can fly 40 but whose ladder never picks it would be calibrating a
 // width nothing lands on.
-inline std::vector<mabur::cal::SweepSpec> default_sweeps(uint8_t radio_width,
+inline std::vector<mabur::cal::SweepSpec> default_sweeps(uint8_t rx_width,
                                                           const LadderCfg& ladder) {
   std::vector<mabur::cal::SweepSpec> out = {{mabur::cal::Kind::Power, 20},
                                              {mabur::cal::Kind::Capacity, 20}};
   const bool flies_40 =
-      radio_width == 40 &&
+      rx_width == 40 &&
       std::any_of(ladder.ladder.begin(), ladder.ladder.end(),
                   [](const Rung& r) { return r.bw == 40; });
   if (flies_40) {
@@ -84,11 +85,12 @@ class CalControl {
 
   // Drains every pending datagram, applies it, and replies to the sender.
   // `defaults` is the sweep list a bare `start` runs (default_sweeps(),
-  // computed by the caller from the live config); `radio_width` is the
-  // GS's own cfg.radio.width, which bounds what a `start power40`/`cap40`
-  // token may ask for.
+  // computed by the caller from the live config); `rx_width` is the GS's
+  // own receiver width (ChannelCore::width_mhz(), derived from the ladder
+  // or a static pin -- there is no radio.width config key on the GS any
+  // more), which bounds what a `start power40`/`cap40` token may ask for.
   void poll(CalSession& s, const std::vector<mabur::cal::SweepSpec>& defaults,
-            uint8_t radio_width) {
+            uint8_t rx_width) {
     if (fd_ < 0) return;
     char buf[256];
     for (;;) {
@@ -103,7 +105,7 @@ class CalControl {
                             // until the next tick).
       buf[n] = '\0';
       std::string reply;
-      const bool changed = apply(buf, s, &reply, defaults, radio_width);
+      const bool changed = apply(buf, s, &reply, defaults, rx_width);
       sendto(fd_, reply.data(), reply.size(), 0,
              reinterpret_cast<sockaddr*>(&from), flen);
       if (changed) {
@@ -141,7 +143,7 @@ class CalControl {
   // an unrecognized token and is refused the same way any other one is.
   static bool apply(const std::string& line, CalSession& s, std::string* reply,
                     const std::vector<mabur::cal::SweepSpec>& defaults,
-                    uint8_t radio_width) {
+                    uint8_t rx_width) {
     const std::vector<std::string> tok = split(line);
     if (tok.empty()) { *reply = "err empty"; return false; }
 
@@ -178,8 +180,10 @@ class CalControl {
             *reply = "err bad token: " + tok[i];
             return false;
           }
-          if (spec.bw == 40 && radio_width != 40) {
-            *reply = "err refused: GS radio.width is " + std::to_string(radio_width);
+          if (spec.bw == 40 && rx_width != 40) {
+            *reply = "err refused: GS receiver width is " +
+                     std::to_string(rx_width) +
+                     " (load a 40 MHz ladder to calibrate 40 MHz)";
             return false;
           }
           sweeps.push_back(spec);

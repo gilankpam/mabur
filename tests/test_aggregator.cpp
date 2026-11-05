@@ -400,6 +400,51 @@ TEST(self_rc_frames_counted_but_never_tracked) {
   CHECK(rc_routed == 1);                           // still routed to the sink
 }
 
+// The GS's other uplink types are self frames too. A T_NACK carries the
+// GS's own seq counter, so on the card that hears it point-blank it jumped
+// the walk's high-water mark ahead of the drone's whenever the GS counter
+// sat up to 2047 ahead: every drone frame after it read as "behind" and
+// expected stopped for up to ~1.2 s while received kept climbing. Revert
+// (divert T_RCF/T_DISC only): seq_expected == 2 (10 plus the NACK's +1),
+// self_frames == 0.
+TEST(gs_nack_kept_out_of_the_seq_walk) {
+  Aggregator agg(vec_layers(), 512, 1);
+  int rc_routed = 0;
+  agg.set_rc_sink([&](uint8_t, const std::vector<uint8_t>&, uint64_t) { ++rc_routed; });
+  mabur::rc::Nack n;
+  n.counter = 3; n.n = 1; n.e[0].first_seq = 40;
+  std::vector<uint8_t> junk(20, 0);
+  agg.on_rx_body(msg(0, 10, true, junk));                        // drone
+  agg.on_rx_body(msg(0, 1500, true, mabur::rc::pack_nack(n)));   // GS counter, far ahead
+  agg.on_rx_body(msg(0, 11, true, junk));                        // drone
+  agg.on_rx_body(msg(0, 12, true, junk));                        // drone
+  const CardTrack& c = agg.card(0);
+  CHECK(c.self_frames == 1);
+  CHECK(c.seq_received == 3);
+  CHECK(c.seq_expected == 3);   // 10, 11, 12: nothing lost
+  CHECK(rc_routed == 1);        // still routed to the sink
+}
+
+// T_MAV runs both ways: the GS's own (tagged) is a self frame, the drone's
+// (untagged) numbers on the drone's counter and walks like its other RC
+// frames. Revert (T_MAV not diverted): seq_expected == 3 and
+// self_frames == 0; over-broad (every T_MAV diverted): seq_received == 3.
+TEST(gs_tagged_mav_is_self_drone_mav_walks) {
+  Aggregator agg(vec_layers(), 512, 1);
+  agg.set_rc_sink([&](uint8_t, const std::vector<uint8_t>&, uint64_t) {});
+  mabur::rc::Mav m;
+  m.counter = 5; m.payload = {0xFD, 1, 2, 3};
+  std::vector<uint8_t> junk(20, 0);
+  agg.on_rx_body(msg(0, 10, true, junk));                                      // drone
+  agg.on_rx_body(msg(0, 1500, true, mabur::rc::pack_mav(m, /*tagged=*/true)));  // GS
+  agg.on_rx_body(msg(0, 11, true, mabur::rc::pack_mav(m, /*tagged=*/false))); // drone
+  agg.on_rx_body(msg(0, 12, true, junk));                                      // drone
+  const CardTrack& c = agg.card(0);
+  CHECK(c.self_frames == 1);
+  CHECK(c.seq_received == 3);
+  CHECK(c.seq_expected == 3);
+}
+
 TEST(crc_fail_stays_out_of_classes) {
   Aggregator agg(vec_layers(), 512, 1);
   std::vector<uint8_t> junk(20, 0);

@@ -162,6 +162,18 @@ Chronological; each line names the section below that carries the detail.
   of the base and enhancement layers' (`hop_verdict_link_loss`), so it and
   the `impaired` bit read higher under a jam that hurts the enhancement
   layer first; not comparable across the change (same marker, `scanlog 9`).
+- 2026-11-04 — `radio.width` is removed from the GS config: the receiver
+  width is derived from `[link]` instead (`derived_width`). New sideport
+  key `link.width` (the live derived width, 20 or 40); a recording from
+  before this date has no `link.width` key. From this build on, a
+  `scanlog 8`/`9` boot scan dwells once per pair when the derived width
+  is 40 (an all-20 ladder, the bundle default, dwells per member at bw 20),
+  and a live width flip changes the `D` rows' `bw` mid-file.
+- 2026-11-04 — `own_air` (`V` rows) / `energy.own_air_pct` become
+  delivery-scaled; no marker change.
+- 2026-11-05 — the GS's own NACK/MAV leave the per-card seq walk: before
+  it, one card's `loss_pct` could read `null` and its `own_air` 0 for up
+  to ~1.2 s after a NACK while it decoded normally; no marker change.
 
 ## 2026-09-23 — `link.pre_fec_loss` scale break, twice
 
@@ -1481,3 +1493,40 @@ A GS restart rejoins the session directory, so a deploy session can hold
 `flightreport.py` decodes each `V` row under the marker in force when it
 was written, so 0x04 reads `fading` in the first and `detected` in the
 second.
+
+## 2026-11-04 — own airtime is delivery-scaled: `V` `own_air`, `energy.own_air_pct`
+
+No marker change (`scanlog 9` stays). The per-card `own_air` field of a
+`V` row, the sideport's `cards[i].energy.own_air_pct`, and therefore every
+foreign-airtime figure derived as `busy − own_air` (the verdict's
+`blocked`/`detected` reading, maburtop's `fbusy`, both rankers' op
+reading, the calibration pick's op busy) change meaning: before this
+build own airtime was rebuilt from the frames the card decoded; from this
+build it is that figure scaled by the window's seq delivery
+(`seq_expected / seq_received`), capped at 100 %
+(`docs/inflight-channel-hop.md` §2). On a clean link with no loss the two
+agree. Under a fade the old figure under-counts and the old foreign
+reading inflates with the card's own frame loss — up to ~56 % on a card
+decoding a third of our frames — which is what made session 0344's six
+hops (`docs/findings/2026-11-04-fade-false-hops.md`). Verdict histograms
+and `fbusy` traces from lossy windows are not comparable across the
+break; a file's date against this page is the only way to tell which
+figure it holds.
+
+## 2026-11-05 — the GS's own NACK/MAV leave the per-card seq walk
+
+No marker change. Before this build the aggregator diverted only the GS's
+own RCF and DISC as self frames; its T_NACK and tagged T_MAV, heard
+point-blank by the other card, entered that card's seq walk carrying the
+GS's own seq counter. Roughly half the time that counter sat ahead of the
+drone's mark, and the card's walk then read every drone frame as "behind"
+for up to ~1.2 s: `cards[i].loss_pct` reads `null` (expected did not
+advance) or understated, and the card's delivery-scaled `own_air` (`V`
+rows, `energy.own_air_pct`) reads 0 while the card decodes normally, so
+`busy − own_air` reads the card's whole busy airtime as foreign. Session
+0347 holds 12 such stalls, each starting within one 200 ms sideport row
+of a NACK request, and one false hop from them (599.8 s). From this build
+those frames count in `self_pps` instead, and own airtime is also floored
+at the decoded airtime (`docs/inflight-channel-hop.md` §2). In older
+files, a run of `loss_pct: null` on one card while its `pps` holds marks a
+stalled walk, not lost video.

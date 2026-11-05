@@ -55,7 +55,8 @@ class ScoutRadio {
  public:
   virtual ~ScoutRadio() = default;
   // Retune to `ch` at the card's current width. The scout never changes a
-  // card's width: the card is opened at the link width.
+  // card's width: the card is opened at the receiver width, and only the
+  // core retunes it to another one (a live width flip).
   virtual bool retune(uint8_t ch) = 0;
   virtual ScoutEnergy read_energy(bool with_nhm) = 0;
   // Cheapest frame-free OFDM FA+CCA delta (devourer's GetRxEnergyScout):

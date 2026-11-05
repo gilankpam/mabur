@@ -211,6 +211,10 @@ static int run_radio(const maburgs::Config& cfg, const std::string& cfg_path) {
   // Computed once: cfg.link.key never changes over the life of this
   // process, and the sideport exports it every tick (sin.key_fp below).
   const std::string key_fp = mabur::key_fingerprint(cfg.link.key);
+  // The receiver width the link config implies (derived_width): 40 if the
+  // ladder has a 40 MHz rung (adaptive) or static_bw is 40 (fixed), else
+  // 20. There is no radio.width key any more to disagree with this.
+  const uint8_t rx_width = maburgs::derived_width(cfg.link);
 
   std::fprintf(stderr, "fec: symbol_size=[%d,%d] seq_horizon=%d\n",
                cfg.fec.symbol_size[0], cfg.fec.symbol_size[1],
@@ -323,7 +327,7 @@ static int run_radio(const maburgs::Config& cfg, const std::string& cfg_path) {
       fc.index = cfg.radio.cards[static_cast<size_t>(i)].index;
     }
     fc.channel = start_ch;
-    fc.width_mhz = cfg.radio.width;
+    fc.width_mhz = rx_width;
     fc.card_id = static_cast<uint8_t>(i);
     fronts.push_back(std::make_unique<maburgs::RadioFrontend>(fc, queue));
   }
@@ -331,11 +335,14 @@ static int run_radio(const maburgs::Config& cfg, const std::string& cfg_path) {
     maburgs::RemoteCard::Cfg rc;
     rc.addr = cfg.radio.relays[static_cast<size_t>(k)];
     rc.channel = start_ch;
-    rc.width_mhz = cfg.radio.width;
+    rc.width_mhz = rx_width;
     rc.card_id = static_cast<uint8_t>(n_usb + k);
     fronts.push_back(std::make_unique<maburgs::RemoteCard>(rc, queue));
     std::fprintf(stderr, "cards: card %d = relay %s\n", n_usb + k, rc.addr.c_str());
   }
+
+  std::fprintf(stderr, "maburgs radio: width %u MHz (%s)\n",
+               static_cast<unsigned>(rx_width), maburgs::derived_width_reason(cfg.link).c_str());
 
   // A pin that outruns the cards actually found is a missing antenna, not a
   // config error: fall back to auto-select rather than lose the uplink.
@@ -624,6 +631,7 @@ static int run_radio(const maburgs::Config& cfg, const std::string& cfg_path) {
   for (auto& fe : fronts) card_ptrs.push_back(fe.get());
   maburgs::ChannelCoreCfg ccfg;
   ccfg.radio = cfg.radio;
+  ccfg.width_mhz = rx_width;
   ccfg.hop = cfg.hop;
   ccfg.key = cfg.link.key;
   ccfg.start_ch = start_ch;
@@ -647,7 +655,7 @@ static int run_radio(const maburgs::Config& cfg, const std::string& cfg_path) {
   maburgs::ChannelCorePicker cal_picker(chan);
   maburgs::CalSession cal_session(maburgs::CalSessionCfg{}, &*cal_log, &cal_picker);
   // Recomposed also after a live ladder swap (its hook zeroes the width).
-  uint8_t cal_defaults_width = cfg.radio.width;
+  uint8_t cal_defaults_width = chan.width_mhz();
   std::vector<mabur::cal::SweepSpec> cal_defaults =
       maburgs::default_sweeps(cal_defaults_width, vrx.ladder());
   maburgs::CalNarrator cal_narrator(cal_log_dir + "/cal.log");
@@ -1205,6 +1213,11 @@ static int run_radio(const maburgs::Config& cfg, const std::string& cfg_path) {
     else stop_msp();
   };
   hooks.pin_refusal = [&](uint8_t ch) { return chan.pin_refusal(ch); };
+  hooks.width_refusal = [&](uint8_t w) { return chan.width_refusal(w); };
+  hooks.set_width = [&](uint8_t w) {
+    chan.set_width(w);
+    cal_defaults_width = 0;  // the next tick recomposes cal_defaults at the new width
+  };
   maburgs::GsConfigApplier cfg_apply(cfg_path, cfg, std::move(hooks),
                                      [](const std::string& line) {
                                        std::fprintf(stderr, "%s\n", line.c_str());
@@ -1446,7 +1459,7 @@ static int run_radio(const maburgs::Config& cfg, const std::string& cfg_path) {
         mav_linked, mav_linked && (vrx.peer_caps() & mabur::rc::CAP_CALIBRATE),
         vrx.session_ctx());
     const uint8_t cal_width =
-        maburgs::cal_effective_width(cfg.radio.width, mav_linked, peer_agreed_width);
+        maburgs::cal_effective_width(chan.width_mhz(), mav_linked, peer_agreed_width);
     if (cal_width != cal_defaults_width) {
       cal_defaults_width = cal_width;
       cal_defaults = maburgs::default_sweeps(cal_width, vrx.ladder());
@@ -1830,6 +1843,7 @@ static int run_radio(const maburgs::Config& cfg, const std::string& cfg_path) {
       // scout card while the scout owns it.
       const maburgs::ChannelSnapshot chs = chan.snapshot(sel.selected());
       sin.channel = chs.channel;
+      sin.width = chan.width_mhz();
       // scan.state / rounds / the latched pick and the in-flight hop
       // snapshot: ChannelCore::snapshot(tx) (gs/src/channel_core.cpp).
       sin.scan_state = chs.scan_state;

@@ -7,6 +7,8 @@
 
 #include "hop_blank.h"
 #include "hop_burst_gate.h"
+#include "mabur/channel_set.h"
+#include "mabur/ht40.h"
 #include "pair_pick.h"
 #include "scout_pick.h"
 #include "width_resync.h"
@@ -36,14 +38,17 @@ ChannelCore::ChannelCore(ChannelCoreCfg cfg, std::vector<LinkCard*> cards, VrxCo
                            cfg_.radio.scan.search_after_ms}),
       boot_pick_(false),
       verdict_(cfg_.hop, cfg_.radio.scan.busy),
-      ranker_(cfg_.hop, cfg_.radio.scan.busy, cfg_.radio.channels, 0, cfg_.radio.width),
+      ranker_(cfg_.hop, cfg_.radio.scan.busy, cfg_.radio.channels, 0, cfg_.width_mhz),
       hopc_(cfg_.hop),
       cur_ch_(static_cast<size_t>(n_cards_), cfg_.start_ch),
+      width_mhz_(cfg_.width_mhz),
       width_tried_(static_cast<size_t>(n_cards_), false),
       energy_last_(static_cast<size_t>(n_cards_)),
       dwell_stats_(static_cast<size_t>(n_cards_)),
       window_prev_(static_cast<size_t>(n_cards_)),
       window_prev_crc_(static_cast<size_t>(n_cards_), 0),
+      window_prev_seq_exp_(static_cast<size_t>(n_cards_), 0),
+      window_prev_seq_rcv_(static_cast<size_t>(n_cards_), 0),
       window_prev_ok_(static_cast<size_t>(n_cards_), false),
       window_prev_ms_(static_cast<size_t>(n_cards_), 0),
       dwell_gen_(static_cast<size_t>(n_cards_)),
@@ -84,7 +89,7 @@ ChannelCore::ChannelCore(ChannelCoreCfg cfg, std::vector<LinkCard*> cards, VrxCo
     sc.one_card_ms = cfg_.radio.scan.one_card_ms;
     sc.pick_margin_pct = cfg_.radio.scan.pick_margin_pct;
     sc.one_card = one_card_ || relay_search_only_;   // a sole relay interleaves op windows like a sole USB card
-    sc.link_width_mhz = cfg_.radio.width;
+    sc.link_width_mhz = cfg_.width_mhz;
     sc.busy_dbm = cfg_.radio.scan.busy.busy_dbm;
     sc.blocked_pct = cfg_.radio.scan.busy.blocked_pct;
     sc.leak_per_frame = cfg_.leak_per_frame;
@@ -107,7 +112,7 @@ ChannelCore::ChannelCore(ChannelCoreCfg cfg, std::vector<LinkCard*> cards, VrxCo
     // ever returns scout_card_ and inflight_ is never driven.
     inflight_ = std::make_unique<InflightScout>(
         InflightScoutCfg{cfg_.hop.dwell_observe_ms, cfg_.hop.dwell_period_ms,
-                         cfg_.radio.channels, cfg_.radio.width, cfg_.radio.scan.busy.busy_dbm},
+                         cfg_.radio.channels, width_mhz_, cfg_.radio.scan.busy.busy_dbm},
         *cards_[static_cast<size_t>(scout_card_)],
         [this] { return static_cast<int64_t>(now_us_()); },
         [this](int ms) { sleep_(ms); });
@@ -235,7 +240,7 @@ void ChannelCore::on_card_died(int card) {
       sink_.log(logf_("maburgs channel: scout card %d died at %llu rounds; search held "
                       "until it reopens, card rejoins at %u MHz",
                       card, static_cast<unsigned long long>(scout_->rounds()),
-                      static_cast<unsigned>(cfg_.radio.width)));
+                      static_cast<unsigned>(width_mhz_)));
     }
     scout_search_req_ = false;
     scout_->set_search(false);
@@ -310,7 +315,8 @@ void ChannelCore::freeze_pick_(double t, const char* why) {
                      : cfg_.radio.scan.min_rounds;
   const auto all = scout_->ranking();
   bool any = false;
-  if (cfg_.radio.width == 40) {
+  // The ranking's width is the scout's: its dwells ran at its card's width.
+  if (scout_->link_width_mhz() == 40) {
     any = any_pair_ranked(all, cfg_.radio.channels, mr);
   } else {
     for (const auto& e : all) any = any || e.visits >= static_cast<uint32_t>(mr);
@@ -538,7 +544,14 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
       continue;
     }
     const uint64_t crc_fail = in.agg ? in.agg->card(i).crc_fail : 0;
-    const double rssi_raw = in.agg ? in.agg->card(i).rssi_a_ema : 0.0;
+    const uint64_t seq_exp = in.agg ? in.agg->card(i).seq_expected : 0;
+    const uint64_t seq_rcv = in.agg ? in.agg->card(i).seq_received : 0;
+    // The pooled EMA is the per-frame best of the two receive chains, in
+    // the same raw unit as snr_ema beside it: a card still hearing the
+    // drone on one antenna is not weak, and a deaf chain (raw 0) must not
+    // make its card the "best" one with a signal the gate can never call
+    // weak.
+    const double rssi_raw = in.agg ? in.agg->card(i).rssi_ema : 0.0;
     const double snr_raw = in.agg ? in.agg->card(i).snr_ema : 0.0;
     if (window_prev_ok_[si]) {
       vc[si].valid = true;
@@ -550,12 +563,48 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
       vc[si].snr_db = snr_ok_[si] ? snr_raw_to_db(snr_raw) : std::nan("");
       vc[si].snr_valid = snr_ok_[si];
       const double win_us = static_cast<double>(t_ms - window_prev_ms_[si]) * 1000.0;
+      // Own airtime is what the drone transmitted, not what this card
+      // decoded: a card fading at mid range decodes a fraction of our
+      // frames while every one of them still fills its NHM busy, so the
+      // decoded-only figure books the rest as foreign and a fade reads as
+      // interference confirmed by its own loss. Scale by the window's
+      // delivery (sent / decoded, from the drone's hardware seq walk,
+      // which counts every frame the drone sent whether or not this card
+      // heard it), capped at the window. Below busy_dbm our own frames
+      // leave NHM busy too, so there the scale overcounts; that regime is
+      // the weak gate's.
+      //
+      // A window that decoded nothing has no ratio at all (the seq walk
+      // advances on decoded frames only), so its own airtime cannot be
+      // told from what the air carried: a null at mid range leaves our
+      // frames above busy_dbm with none decoded, and the RSSI EMA frozen
+      // at its last decoded value, above the weak wall. Booking that busy
+      // as foreign ordered hops on dropouts whose order could not even be
+      // delivered. The card gives no busy reading for the window instead:
+      // the blocked streak holds rather than advancing, and a window with
+      // no reading on any card classifies unknown.
+      //
+      // The ratio is floored at 1: the drone sent at least what this card
+      // decoded. Under 1 means the walk itself stalled -- a frame from
+      // another counter set its mark ahead of the drone's, and every drone
+      // frame after it reads "behind" (received climbs, expected stands).
+      // Unfloored, that zeroed the own airtime of a card decoding fine and
+      // booked its whole busy reading as foreign.
+      const uint64_t d_exp = seq_exp - window_prev_seq_exp_[si];
+      const uint64_t d_rcv = seq_rcv - window_prev_seq_rcv_[si];
+      const double delivery =
+          d_rcv > 0 ? std::max(1.0, static_cast<double>(d_exp) / static_cast<double>(d_rcv)) : 1.0;
       const double own_pct = win_us > 0
-          ? std::min(100.0, 100.0 * static_cast<double>(cs.frames.own_air_us - window_prev_[si].own_air_us) / win_us)
+          ? std::min(100.0, 100.0 * delivery *
+                                static_cast<double>(cs.frames.own_air_us - window_prev_[si].own_air_us) / win_us)
           : 0.0;
       // A relay reports op-channel airtime through SURVEY (busy %, rx %);
-      // rx ~ our own video on the op, so it plays own_air.
-      const auto busy_pct = cs.survey.valid ? std::optional<double>(cs.survey.busy_pct) : cs.nhm_busy_pct;
+      // rx ~ our own video on the op, so it plays own_air and needs no
+      // decode to be trusted.
+      const bool no_decode = d_rcv == 0 && !cs.survey.valid;
+      const auto busy_pct = no_decode         ? std::optional<double>()
+                            : cs.survey.valid ? std::optional<double>(cs.survey.busy_pct)
+                                              : cs.nhm_busy_pct;
       const double own_used = cs.survey.valid ? cs.survey.rx_pct : own_pct;
       vc[si].busy_valid = busy_pct.has_value();
       vc[si].nhm_busy_pct = busy_pct.value_or(0.0);
@@ -581,6 +630,8 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
     }
     window_prev_[si] = cs.frames;
     window_prev_crc_[si] = crc_fail;
+    window_prev_seq_exp_[si] = seq_exp;
+    window_prev_seq_rcv_[si] = seq_rcv;
     window_prev_ms_[si] = t_ms;
     window_prev_ok_[si] = true;
   }
@@ -819,23 +870,36 @@ void ChannelCore::start_inflight_if_due_() {
   }
 }
 
+bool ChannelCore::scan_holds_width_() const {
+  return !width_resync_open(scout_ != nullptr, boot_pick_.open(), scout_ && scout_->round_open());
+}
+
 void ChannelCore::step_width_resync_() {
-  if (!width_resync_open(!scout_owns_(), scout_ != nullptr, /*scout_frozen=*/!boot_pick_.open())) return;
+  if (scan_holds_width_()) return;
+  // The scout thread drives only its own card (ChannelScout's radio), so
+  // while it searches every other card is fixed here and the scout card is
+  // left to it; step_scout_inputs_ re-arms that card once the search lets go.
+  const bool scout_busy = scout_owns_();
   for (int i = 0; i < n_cards_; ++i) {
     auto& fe = *cards_[static_cast<size_t>(i)];
+    const bool scouting = scout_busy && i == scout_card_;
     const WidthCard wc{fe.ready(), fe.width(), width_tried_[static_cast<size_t>(i)],
-                       dwell_busy_.load() && dwell_card_.load() == i};
-    if (!needs_width_fix(wc, cfg_.radio.width)) continue;
-    width_tried_[static_cast<size_t>(i)] = true;
-    std::lock_guard<std::mutex> ilk(inflight_mu_);
-    const uint8_t ch = fe.channel();
-    if (fe.set_width(ch, cfg_.radio.width)) {
-      cur_ch_[static_cast<size_t>(i)] = fe.channel();
-      tune_gen_[static_cast<size_t>(i)].fetch_add(1, std::memory_order_release);
-    } else {
-      sink_.log(logf_("maburgs radio: card %d width resync to %u MHz on ch %u failed", i,
-                      static_cast<unsigned>(cfg_.radio.width), static_cast<unsigned>(ch)));
+                       dwell_busy_.load() && dwell_card_.load() == i, scouting};
+    if (needs_width_fix(wc, width_mhz_)) {
+      width_tried_[static_cast<size_t>(i)] = true;
+      std::lock_guard<std::mutex> ilk(inflight_mu_);
+      const uint8_t ch = fe.channel();
+      if (fe.set_width(ch, width_mhz_)) {
+        cur_ch_[static_cast<size_t>(i)] = fe.channel();
+        tune_gen_[static_cast<size_t>(i)].fetch_add(1, std::memory_order_release);
+      } else {
+        sink_.log(logf_("maburgs radio: card %d width resync to %u MHz on ch %u failed", i,
+                        static_cast<unsigned>(width_mhz_), static_cast<unsigned>(ch)));
+      }
     }
+    // The scout's dwells, ranks and picks are as wide as its card. Told
+    // only while the scout has no work, so no dwell is in flight.
+    if (i == scout_card_ && !scouting && fe.ready()) scout_->set_link_width_mhz(fe.width());
   }
 }
 
@@ -910,13 +974,26 @@ std::optional<uint8_t> ChannelCore::cal_measure_best() {
 
 // Something already owns where the link goes: a calibration's relocate, a
 // relocation or a hop in flight.
-std::optional<std::string> ChannelCore::move_refusal_(uint8_t ch) const {
-  if (!plan_.member(ch)) return std::string("not a member");
+std::optional<std::string> ChannelCore::link_moving_refusal_() const {
   if (cal_reloc_.s == CalReloc::Waiting || cal_reloc_.s == CalReloc::InFlight)
     return std::string("calibration running");
   if (boot_pick_.relocating()) return std::string("relocate in flight");
   if (plan_.hopping() || hopc_.state() == HopState::Ordered || hopc_.state() == HopState::Verifying)
     return std::string("hop in flight");
+  return std::nullopt;
+}
+
+std::optional<std::string> ChannelCore::move_refusal_(uint8_t ch) const {
+  if (!plan_.member(ch)) return std::string("not a member");
+  return link_moving_refusal_();
+}
+
+// The above, plus a calibration run or its pick still measuring: the run
+// calibrates where it stands, at the width it started on.
+std::optional<std::string> ChannelCore::busy_refusal_() const {
+  if (auto r = link_moving_refusal_()) return r;
+  if (cal_running_cur_ || cal_meas_.s == CalMeasure::Waiting || cal_meas_.s == CalMeasure::Running)
+    return std::string("calibration running");
   return std::nullopt;
 }
 
@@ -949,13 +1026,55 @@ bool ChannelCore::order_cal_relocate(uint8_t ch) {
 }
 
 std::optional<std::string> ChannelCore::pin_refusal(uint8_t ch) const {
-  if (auto r = move_refusal_(ch)) return r;
-  // A run, or its pick still measuring: the run calibrates where it stands.
-  if (cal_running_cur_ || cal_meas_.s == CalMeasure::Waiting || cal_meas_.s == CalMeasure::Running)
-    return std::string("calibration running");
+  if (!plan_.member(ch)) return std::string("not a member");
+  if (auto r = busy_refusal_()) return r;
   // A linked move is one more relocate order.
   if (in_session_cur_ && ch != plan_.op()) return relocate_refusal_(ch);
   return std::nullopt;
+}
+
+std::optional<std::string> ChannelCore::width_refusal(uint8_t want) const {
+  if (want == width_mhz_) return std::nullopt;
+  // The boot pick is open or a calibration measure round runs: the scan
+  // ranks at the width it started at and the width resync is closed, so no
+  // card would be retuned until it ends. An unlinked search alone is no
+  // refusal: the resync retunes every other card now and the scout card
+  // once the search lets go of it.
+  if (scan_holds_width_()) return std::string("ladder refused: scan in flight");
+  if (want == 40 && mabur::channel_set_issue(cfg_.radio.channels, 40, "radio.channels")) {
+    // Name the member with no pair; a set whose pairs disagree on the
+    // offset names its first member, the one the others are held to.
+    uint8_t n = cfg_.radio.channels.empty() ? 0 : cfg_.radio.channels.front();
+    for (uint8_t ch : cfg_.radio.channels)
+      if (mabur::ht40_offset(ch) == 0) { n = ch; break; }
+    return "ladder refused: channel set is not 40 MHz pair-valid (member " + std::to_string(n) + ")";
+  }
+  if (auto r = busy_refusal_()) return r;
+  // A relay sweep holds its card off op until it ends: no retune under it.
+  if (sweep_.on) return std::string("sweep in flight");
+  return std::nullopt;
+}
+
+void ChannelCore::set_width(uint8_t want) {
+  if (want == width_mhz_) return;
+  const uint8_t was = width_mhz_;
+  width_mhz_ = want;
+  sink_.log(logf_("maburgs link: width %u -> %u MHz (ladder set)", static_cast<unsigned>(was),
+                  static_cast<unsigned>(want)));
+  // Every card owes one fix-up at the new width. The resync runs now for
+  // the cards it can take; one off on an in-flight dwell (or down) keeps
+  // its untried flag and the per-tick resync takes it once it is free.
+  width_tried_.assign(width_tried_.size(), false);
+  step_width_resync_();
+  // At 40 the ranker orders by NHM busy % (the whole pair) before the frame
+  // terms (the primary only); at 20 by the frame terms alone.
+  ranker_.set_width_mhz(want);
+  // After the resync: inflight_mu_ is held for a whole dwell, so taking it
+  // first would wait the dwell out before any card is touched.
+  if (inflight_) {
+    std::lock_guard<std::mutex> ilk(inflight_mu_);
+    inflight_->set_width_mhz(want);
+  }
 }
 
 std::optional<std::string> ChannelCore::set_pin(uint8_t ch) {

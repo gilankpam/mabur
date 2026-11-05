@@ -71,6 +71,12 @@ class HopRanker {
   // set, the ranked tiebreak falls through to config order.
   void set_boot_pick(uint8_t ch) { boot_pick_ = ch; }
 
+  // The receiver width the ranking orders for (see the class comment); a
+  // live width flip moves it. Visits already held are kept and age out
+  // as usual (hop.rank_max_age_ms).
+  void set_width_mhz(uint8_t w) { width_mhz_ = w; }
+  uint8_t width_mhz() const { return width_mhz_; }
+
   // fa + max(cca - own, 0) + 4*foreign
   static uint32_t score(const HopVisit& v);
 

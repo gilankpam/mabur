@@ -320,13 +320,73 @@ std::optional<uint8_t> member_pin(const std::string& value, const Config& live) 
   }
 }
 
+// The receiver width a link.ladder / link.static_mcs / link.static_bw value
+// would derive, read off the value's text on the owning thread before any
+// file work: nullopt for any other key, and for a value the patch or the
+// loader will refuse with its own message. A ladder rung above
+// link.max_mcs is counted here although the loader drops it; that set is
+// refused anyway (refuse_dropped_rung).
+std::optional<uint8_t> width_of_value(const LiveKey& k, const std::string& value,
+                                      const Config& live) {
+  LinkCfg link = live.link;
+  if (k.type == LiveType::Ladder) {
+    std::vector<RungText> rungs;
+    std::string ignored;
+    if (!split_ladder(value, &rungs, &ignored)) return std::nullopt;
+    link.ladder_cfg.ladder.clear();
+    for (auto& r : rungs) {
+      Rung rung;
+      rung.mcs = std::atoi(r["mcs"].c_str());
+      rung.bw = std::atoi(r["bw"].c_str());
+      link.ladder_cfg.ladder.push_back(rung);
+    }
+    return derived_width(link);
+  }
+  if (!is(k, "link.static_mcs") && !is(k, "link.static_bw")) return std::nullopt;
+  try {
+    const mabur::toml::Value doc = mabur::toml::parse_toml_string("v = " + value, k.key);
+    const mabur::toml::Value& v = doc["v"];
+    if (!v.is_number_integer()) return std::nullopt;
+    const int64_t n = v.get<int64_t>();
+    if (is(k, "link.static_mcs")) link.static_mcs = static_cast<int>(n);
+    else link.static_bw = static_cast<uint8_t>(n);
+    return derived_width(link);
+  } catch (const std::exception&) {
+    return std::nullopt;
+  }
+}
+
+// Cards first: the width the config derives is asked of the core and set
+// before the static pin or the ladder that needs it is handed over. Asked
+// again here, on the owning thread, because the submit-time check ran
+// before the worker's file work and a scan, hop, sweep or calibration may
+// have started since; refused, nothing changes and nothing is published.
+// The revert after a failed publish comes through here too, with the
+// previous config: refused, the cards keep the new width and the process
+// the new ladder or pin -- the two stay in step, the file holds the old
+// value, and the engine logs "revert failed: <refusal>".
+bool apply_width_then(const GsApplyHooks& h, const Config& c, std::string* reason) {
+  const uint8_t want = derived_width(c.link);
+  if (std::optional<std::string> r = h.width_refusal(want)) {
+    *reason = *r;
+    return false;
+  }
+  h.set_width(want);
+  return true;
+}
+
 bool apply_to_process(const GsApplyHooks& h, const LiveKey& k, const Config& c, std::string* reason) {
   switch (k.type) {
     case LiveType::Int:
     case LiveType::Real:
+      // Every link.static_* key routes here, including the two overhead
+      // keys that cannot move derived_width; the flip is harmless then --
+      // the core neither refuses nor acts on the width it is already at.
+      if (!apply_width_then(h, c, reason)) return false;
       h.set_static(c);  // link.static_*
       return true;
     case LiveType::Ladder:
+      if (!apply_width_then(h, c, reason)) return false;
       h.replace_ladder(c);
       return true;
     case LiveType::Bool:
@@ -357,7 +417,8 @@ mabur::LiveApplySpec<Config, LiveKey> gs_spec(GsApplyHooks hooks) {
   // An empty hook would throw bad_function_call on the core thread at the
   // first set that reaches it; refuse it here, where the wiring is.
   if (!hooks.set_pin || !hooks.set_auto || !hooks.set_static || !hooks.replace_ladder ||
-      !hooks.nack || !hooks.debug_log || !hooks.msp || !hooks.pin_refusal)
+      !hooks.nack || !hooks.debug_log || !hooks.msp || !hooks.pin_refusal ||
+      !hooks.width_refusal || !hooks.set_width)
     throw std::invalid_argument("GsConfigApplier: every GsApplyHooks hook must be set");
   const auto h = std::make_shared<const GsApplyHooks>(std::move(hooks));
   mabur::LiveApplySpec<Config, LiveKey> s;
@@ -367,14 +428,25 @@ mabur::LiveApplySpec<Config, LiveKey> gs_spec(GsApplyHooks hooks) {
   s.render = render_live_value;
   s.patch = patch_live_key;
   s.load = [](const std::string& path) { return load_config(path); };
-  s.refuse_set = refuse_dropped_rung;
+  // Worker thread: only the candidate's own checks, never the core's state.
+  s.refuse_set = [](const LiveKey& k, const std::string& value,
+                    const Config& cand) -> std::string {
+    return refuse_dropped_rung(k, value, cand);
+  };
   s.copy_field = copy_live_field;
+  // Owning thread, before any file work: the core's refusals for a pin,
+  // and for a set that would flip the receiver width (a 40 MHz flip over a
+  // set with no HT40 pair is the core's "pair-valid" refusal here, ahead
+  // of the loader's channel-set message). apply_width_then asks again.
   s.precheck = [h](const LiveKey& k, const std::string& value,
                    const Config& live) -> std::optional<std::string> {
-    if (k.type != LiveType::Channel) return std::nullopt;
-    const std::optional<uint8_t> ch = member_pin(value, live);
-    if (!ch) return std::nullopt;  // "auto", or the loader's to refuse
-    return h->pin_refusal(*ch);
+    if (k.type == LiveType::Channel) {
+      const std::optional<uint8_t> ch = member_pin(value, live);
+      if (!ch) return std::nullopt;  // "auto", or the loader's to refuse
+      return h->pin_refusal(*ch);
+    }
+    if (const std::optional<uint8_t> w = width_of_value(k, value, live)) return h->width_refusal(*w);
+    return std::nullopt;
   };
   s.apply = [h](const LiveKey& k, const Config&, const Config& to, std::string* reason) {
     return apply_to_process(*h, k, to, reason);

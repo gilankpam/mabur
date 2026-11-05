@@ -469,6 +469,16 @@ Rung current_rung(const Deps& d) {
   return gs.ladder[std::min<size_t>(3, gs.ladder.size() - 1)];
 }
 
+// The receiver width maburgs would derive from `gs`'s live keys: the
+// page-side mirror of maburgs' derived_width, since this binary does not
+// link maburgs' config code.
+int receiver_width(const GsLiveView& gs) {
+  if (gs.static_mcs >= 0) return gs.static_bw;
+  for (const Rung& r : gs.ladder)
+    if (r.bw == 40) return 40;
+  return 20;
+}
+
 MenuNode width_row(const Deps& d) {
   MenuNode n;
   n.id = "link.width";
@@ -499,19 +509,25 @@ MenuNode width_row(const Deps& d) {
     return Steps{{Owner::kGs, "link.ladder", render_ladder_value(default_ladder(std::atoi(v.c_str())))}};
   };
   n.confirm = [d](const std::string& v) {
-    if (fixed(d) || is_default_ladder(d->gs->ladder)) return std::string();
-    return "Replaces your ladder with the default " + v + " MHz ladder (" +
-           std::to_string(default_ladder(std::atoi(v.c_str())).size()) + " rungs).";
+    std::string base;
+    if (!fixed(d) && !is_default_ladder(d->gs->ladder)) {
+      base = "Replaces your ladder with the default " + v + " MHz ladder (" +
+             std::to_string(default_ladder(std::atoi(v.c_str())).size()) + " rungs).";
+    }
+    if (receiver_width(*d->gs) != std::atoi(v.c_str()))
+      return join_confirm({base, "Retunes the receiver."});
+    return base;
   };
   n.help = [d] {
     if (fixed(d)) return std::string("Channel width for the fixed rate.");
     if (ladder_width(d->gs->ladder) == LadderWidth::kMixed)
       return std::string(
           "Your ladder mixes 20 and 40 MHz rungs (edit them in Ladder). Picking 20 or 40 loads "
-          "that width's default ladder.");
+          "that width's default ladder. The receiver retunes to the ladder's width.");
     return std::string(
         "40 MHz carries about twice the data; 20 MHz reaches a few dB further at the lowest "
-        "rung. Picking a width loads its default ladder.");
+        "rung. Picking a width loads its default ladder. The receiver retunes to the ladder's "
+        "width.");
   };
   return n;
 }
@@ -538,6 +554,21 @@ MenuNode rate_row(const Deps& d) {
                  {Owner::kGs, "link.static_overhead_base", real_text(r.base)},
                  {Owner::kGs, "link.static_overhead_enh", real_text(r.enh)},
                  {Owner::kGs, "link.static_mcs", std::to_string(std::min(r.mcs, kMaxMcs))}};
+  };
+  // Fixed pins the live rung's width, Adaptive goes back to the ladder's:
+  // when that moves the receiver width, the cards retune (the Width row's
+  // rule).
+  n.confirm = [d](const std::string& v) {
+    GsLiveView after = *d->gs;
+    if (v == "fixed") {
+      if (after.ladder.empty()) return std::string();   // nothing is sent
+      after.static_bw = current_rung(d).bw;
+      after.static_mcs = std::max(after.static_mcs, 0);
+    } else {
+      after.static_mcs = -1;
+    }
+    if (receiver_width(after) != receiver_width(*d->gs)) return std::string("Retunes the receiver.");
+    return std::string();
   };
   n.help = [d] {
     if (fixed(d))

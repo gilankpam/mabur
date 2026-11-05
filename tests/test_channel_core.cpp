@@ -1,5 +1,7 @@
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <functional>
 #include <cmath>
 #include <memory>
 #include <optional>
@@ -35,31 +37,45 @@ struct Rig {
   std::unique_ptr<VrxController> vrx;
   std::unique_ptr<ChannelCore> core;
   Aggregator agg;
+  // The width the rig was built at (ChannelCoreCfg::width_mhz is no longer
+  // read back off cfg.radio, which no longer carries it); rebuild_with_set
+  // reuses it unchanged.
+  uint8_t width = 40;
   // {may_send(0), may_send(1)} sampled from inside the scout's sleep
   // callback -- the synchronous equivalent of the core thread reading the
   // gate while the scout thread is mid-dwell on another thread in prod.
   std::vector<std::pair<bool, bool>> gate_obs;
 
+  // Called after every injected sleep (the scout's and the in-flight
+  // dwell's): a test acts from inside a dwell through it.
+  std::function<void(int)> on_sleep;
+
   Rig(int n_usb, int n_relays, bool pinned = false, uint8_t start = 0)
+      : Rig(n_usb, n_relays, pinned, start, {40, 64, 112, 144}, 40) {}
+  // The set and the width go into the config before the core is built.
+  Rig(int n_usb, int n_relays, bool pinned, uint8_t start, std::vector<uint8_t> channels,
+      uint8_t width)
       : agg(bundle().uep_layers(), 32, n_usb + n_relays, 0) {
-    cfg.radio.channels = {40, 64, 112, 144};
-    cfg.radio.width = 40;
+    this->width = width;
+    cfg.radio.channels = std::move(channels);
     // A 40 MHz rig flies the five-rung 40 MHz ladder; the hop-restore tests
-    // index into it (rung 2 = MCS 2).
-    cfg.link.ladder_cfg.ladder = {{0, 0.5, 0.25, 40}, {1, 0.5, 0.25, 40}, {2, 0.5, 0.25, 40},
-                                  {3, 0.5, 0.25, 40}, {4, 0.5, 0.25, 40}};
+    // index into it (rung 2 = MCS 2). A 20 MHz rig flies the same rungs at 20.
+    cfg.link.ladder_cfg.ladder = {{0, 0.5, 0.25, width}, {1, 0.5, 0.25, width},
+                                  {2, 0.5, 0.25, width}, {3, 0.5, 0.25, width},
+                                  {4, 0.5, 0.25, width}};
     if (pinned) cfg.radio.pin = start ? start : 40;
     const uint8_t start_ch = start ? start : (pinned ? *cfg.radio.pin : 40);
     for (int i = 0; i < n_usb + n_relays; ++i) {
       auto c = std::make_unique<FakeCard>();
       c->clk = &clk; c->ch = start_ch; c->relay = i >= n_usb;
-      c->width_mhz = cfg.radio.width;   // main.cpp: every card, the boot scout's included
+      c->width_mhz = width;   // main.cpp: every card, the boot scout's included
       ptrs.push_back(c.get());
       cards.push_back(std::move(c));
     }
     vrx = std::make_unique<VrxController>(vrx_cfg_from(cfg, start_ch));
     ChannelCoreCfg cc;
     cc.radio = cfg.radio; cc.hop = cfg.hop; cc.key = cfg.link.key;
+    cc.width_mhz = width;
     cc.start_ch = start_ch; cc.n_usb = n_usb; cc.threaded = false;
     cc.store_name = "the-store";
     core = std::make_unique<ChannelCore>(
@@ -69,8 +85,10 @@ struct Rig {
         [this](int ms) {
           clk.sleep(ms);
           if (core) gate_obs.emplace_back(core->may_send(0), core->may_send(1));
+          if (on_sleep) on_sleep(ms);
         });
   }
+  std::vector<uint16_t> seq_next;   // decode_one(): per-card next mac_seq
   ChannelTickIn in(bool session, bool cal = false, int tx = 0) {
     ChannelTickIn i; i.now_ms = static_cast<double>(clk.ms); i.in_session = session;
     i.cal_running = cal; i.tx_card = tx; i.agg = &agg; return i;
@@ -277,7 +295,7 @@ TEST(scout_card_death_while_working_freezes_pick) {
 TEST(reopened_scout_card_at_20_gets_width_resync) {
   Rig g(2, 0, /*pinned=*/true, 40);
   for (int i = 0; i < 10; ++i) g.tick(true, false, 0);   // linked: search off, the scout parks and owns nothing
-  REQUIRE(g.cards[1]->width_mhz == 40);                   // opened at radio.width, never switched
+  REQUIRE(g.cards[1]->width_mhz == 40);                   // opened at the derived receiver width, never switched
   g.cards[1]->is_alive = false;
   g.core->on_card_died(1);
   // a revive that comes up at the wrong width
@@ -289,6 +307,69 @@ TEST(reopened_scout_card_at_20_gets_width_resync) {
   for (auto& c : g.cards[1]->calls) if (c.rfind("set_width", 0) == 0) resynced = true;
   CHECK(resynced);                                        // the CORE's width resync: the scout never sets a width
   CHECK(g.cards[1]->width_mhz == 40);
+}
+
+// Pinned + linked: no scout work, so the flip retunes both cards at once.
+TEST(set_width_retunes_every_ready_card_before_returning) {
+  Rig g(2, 0, /*pinned=*/true, 40);
+  for (int i = 0; i < 10; ++i) g.tick(true, false, 0);
+  CHECK(g.core->width_mhz() == 40);
+  CHECK(!g.core->width_refusal(20));
+  for (auto& c : g.cards) c->calls.clear();
+  g.core->set_width(20);
+  CHECK(g.core->width_mhz() == 20);
+  for (auto& c : g.cards) {
+    bool set = false;
+    for (auto& s : c->calls) if (s.rfind("set_width", 0) == 0) set = true;
+    CHECK(set);
+    CHECK(c->width_mhz == 20);
+  }
+  CHECK(g.sink.has_line("maburgs link: width 40 -> 20 MHz (ladder set)"));
+  for (auto& c : g.cards) c->calls.clear();
+  g.core->set_width(20);                                     // same width: nothing happens
+  for (auto& c : g.cards) CHECK(c->calls.empty());
+  CHECK(g.core->width_refusal(20) == std::nullopt);
+}
+
+TEST(set_width_orders_relay_cards_too) {
+  Rig g(1, 1, /*pinned=*/true, 40);
+  for (int i = 0; i < 10; ++i) g.tick(true, false, 0);
+  g.core->set_width(20);
+  CHECK(g.cards[1]->width_mhz == 20);                        // the relay, ordered like a local card
+}
+
+TEST(width_refusal_while_the_boot_scan_owns_a_card) {
+  Rig g(2, 0);                                               // auto: the scout owns card 1
+  g.tick(false, false, 0);
+  CHECK(g.core->pick_open());
+  auto r = g.core->width_refusal(20);
+  REQUIRE(r.has_value());
+  CHECK(*r == "ladder refused: scan in flight");
+}
+
+TEST(width_refusal_names_a_non_pair_member_on_a_flip_to_40) {
+  // A 20 MHz rig on a set 165 cannot fly at 40: 165 has no HT40 pair.
+  Rig g(2, 0, /*pinned=*/true, 40, {40, 165}, 20);
+  for (int i = 0; i < 10; ++i) g.tick(true, false, 0);
+  REQUIRE(g.core->width_mhz() == 20);
+  auto r = g.core->width_refusal(40);
+  REQUIRE(r.has_value());
+  CHECK(*r == "ladder refused: channel set is not 40 MHz pair-valid (member 165)");
+  CHECK(!g.core->width_refusal(20));                         // staying at 20 is no flip
+}
+
+TEST(set_width_on_a_down_card_lands_on_revive) {
+  Rig g(2, 0, /*pinned=*/true, 40);
+  for (int i = 0; i < 10; ++i) g.tick(true, false, 0);
+  g.cards[1]->is_alive = false; g.cards[1]->is_ready = false; g.core->on_card_died(1);
+  g.core->set_width(20);
+  CHECK(g.cards[0]->width_mhz == 20);
+  CHECK(g.cards[1]->width_mhz == 40);                        // down: not touched by the flip
+  g.cards[1]->is_alive = true; g.cards[1]->is_ready = true;
+  g.cards[1]->width_mhz = 40; g.cards[1]->calls.clear();
+  g.core->on_card_reopened(1);
+  for (int i = 0; i < 50; ++i) g.tick(true, false, 0);
+  CHECK(g.cards[1]->width_mhz == 20);                        // the per-tick resync, not the flip
 }
 
 TEST(mechanical_retune_skips_scout_card_and_follows_desired) {
@@ -378,6 +459,18 @@ struct OpJam {
 // a busy reading. The windows a blocked op needs on top of the old
 // three-window trigger shape.
 static int occ_lead(const Rig& g) { return g.cfg.hop.verdict.occupied_windows - 1; }
+// One decoded frame per card, walking its seq. A jammed window in flight
+// still decodes some of the drone's frames; the window fill gives a card
+// that decoded nothing no busy reading at all (its own airtime cannot be
+// told from what the air carried), so every jammed window below decodes.
+// The body misroutes (not SBI, not RC): no FEC loss, no recovered symbols.
+static mabur::node::RxBody junk_body(uint8_t card, uint16_t seq);
+static void decode_one(Rig& g) {
+  if (g.seq_next.size() < g.cards.size()) g.seq_next.resize(g.cards.size(), 100);
+  for (size_t i = 0; i < g.cards.size(); ++i)
+    g.agg.on_rx_body(junk_body(static_cast<uint8_t>(i), g.seq_next[i]++));
+}
+
 // Interfered verdict windows: the op jammed (OpJam: every NHM sample above
 // busy_dbm on every usable card), foreign frames added alongside as
 // context only -- the verdict does not read them. This rig's Aggregator never
@@ -392,6 +485,7 @@ static void interfere(Rig& g, int windows, int tx = 0) {
     for (auto& c : g.cards) { c->fr.foreign += 40; }
     for (int i = 0; i < g.cfg.hop.window_ms / 10 + 1; ++i) {
       g.vrx->on_video(static_cast<double>(g.clk.ms));
+      decode_one(g);
       g.core->tick(g.in(true, false, tx));
       g.clk.ms += 10;
     }
@@ -590,6 +684,7 @@ TEST(reactive_hop_onto_a_blocked_target_fails_verify_on_its_first_blocked_readin
   for (int i = 0; i < g.cfg.hop.verify_ms / 10 + 30 && !g.sink.has_hop("verify_fail") &&
                   !g.sink.has_hop("verify_pass"); ++i) {
     g.vrx->on_video(static_cast<double>(g.clk.ms));
+    decode_one(g);
     g.tick(true);
   }
   CHECK(g.sink.has_hop("verify_fail"));
@@ -936,6 +1031,47 @@ TEST(inflight_dwell_feeds_ranker_and_dwell_stats) {
   CHECK(g.cards[1]->ch == 40);               // back on op after the dwell
 }
 
+// A flip while the in-flight scout has a card off on a dwell. In prod the
+// dwell runs on the in-flight thread under inflight_mu_ and the flip on the
+// core thread; here a second thread runs the dwell and parks inside its
+// observe sleep until the flip's card walk has passed the dwelling card
+// (card 0: TX is card 1) and reached card 1. The dwelling card is skipped,
+// not marked tried, so the per-tick resync retunes it once the dwell ends;
+// card 1 is retuned before set_width returns.
+TEST(set_width_retunes_a_busy_card_on_a_later_tick) {
+  Rig g(2, 0); freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 10; ++i) g.tick(true, false, /*tx=*/1);
+  REQUIRE(g.cards[0]->width_mhz == 40 && g.cards[1]->width_mhz == 40);
+  std::atomic<bool> in_dwell{false}, release{false}, armed{false}, released_in_time{false};
+  const auto wait_for = [](const std::atomic<bool>& f) {
+    const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!f.load() && std::chrono::steady_clock::now() < end) std::this_thread::yield();
+    return f.load();
+  };
+  g.on_sleep = [&](int) {
+    if (in_dwell.load()) return;
+    in_dwell.store(true);
+    released_in_time.store(wait_for(release));
+  };
+  g.cards[1]->on_ready = [&] { if (armed.load()) release.store(true); };
+  std::thread dweller([&] { g.core->run_inflight_step(); });
+  REQUIRE(wait_for(in_dwell));
+  CHECK(g.core->dwell_busy());
+  CHECK(!g.core->width_refusal(20));         // a dwell in flight is no refusal
+  armed.store(true);
+  g.core->set_width(20);
+  armed.store(false);
+  dweller.join();
+  g.on_sleep = nullptr;
+  g.cards[1]->on_ready = nullptr;
+  CHECK(released_in_time.load());            // the walk reached card 1 while card 0 still dwelt
+  CHECK(g.cards[1]->width_mhz == 20);        // idle: retuned before set_width returned
+  CHECK(g.cards[0]->width_mhz == 40);        // busy: skipped now
+  for (int i = 0; i < 3; ++i) g.tick(true, false, 1);
+  CHECK(g.cards[0]->width_mhz == 20);        // picked up once idle
+}
+
 TEST(inflight_step_skips_when_not_in_session_or_hopping_or_one_card) {
   Rig g(1, 0, true, 40);
   link_up(g);
@@ -987,7 +1123,7 @@ TEST(shutdown_joins_threads_and_is_idempotent) {
   // comfortably outlasts one period -- a thread left running would dwell
   // again well inside it.
   Config cfg = bundle();
-  cfg.radio.channels = {40, 64}; cfg.radio.width = 40;
+  cfg.radio.channels = {40, 64};
   cfg.radio.scan.max_ms = 1000;
   cfg.hop.dwell_period_ms = 200;
   FakeCard a, b; a.ch = b.ch = 40; a.width_mhz = 40; b.width_mhz = 40;
@@ -996,6 +1132,7 @@ TEST(shutdown_joins_threads_and_is_idempotent) {
   RecordingSink sink;
   Aggregator agg(cfg.uep_layers(), 32, 2, 0);
   ChannelCoreCfg cc; cc.radio = cfg.radio; cc.hop = cfg.hop; cc.key = cfg.link.key; cc.start_ch = 40; cc.n_usb = 2;
+  cc.width_mhz = 40;
   auto now_ms = [] { return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()); };
   auto now_us = [] { return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()); };
   ChannelCore core(cc, ptrs, vrx, sink, [](uint8_t) { return true; }, now_ms, now_us,
@@ -1032,7 +1169,7 @@ TEST(shutdown_joins_threads_and_is_idempotent) {
 // Revert (burst inline on the core thread): max_tick_ms reads >= 60.
 TEST(threaded_two_card_burst_runs_off_the_core_thread) {
   Config cfg = bundle();
-  cfg.radio.channels = {40, 64, 112, 144}; cfg.radio.width = 40;
+  cfg.radio.channels = {40, 64, 112, 144};
   cfg.radio.scan.max_ms = 1000;
   cfg.hop.dwell_period_ms = 60000;
   // The op window's arm period (the sampler's), so op reads 100 % busy.
@@ -1047,6 +1184,7 @@ TEST(threaded_two_card_burst_runs_off_the_core_thread) {
   RecordingSink sink;
   Aggregator agg(cfg.uep_layers(), 32, 2, 0);
   ChannelCoreCfg cc; cc.radio = cfg.radio; cc.hop = cfg.hop; cc.key = cfg.link.key; cc.start_ch = 40; cc.n_usb = 2;
+  cc.width_mhz = 40;
   auto now_ms = [] { return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()); };
   auto now_us = [] { return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()); };
   ChannelCore core(cc, ptrs, vrx, sink, [](uint8_t) { return true; }, now_ms, now_us,
@@ -1059,7 +1197,11 @@ TEST(threaded_two_card_burst_runs_off_the_core_thread) {
   };
   uint64_t max_tick_ms = 0;
   bool armed = false;   // boot pick closed: from here on the core may burst
+  uint16_t seq = 100;   // every tick decodes a frame per card: a window with none has no busy reading
   for (int i = 0; i < 800 && burst_recs() < 3; ++i) {
+    agg.on_rx_body(junk_body(0, seq));
+    agg.on_rx_body(junk_body(1, seq));
+    ++seq;
     in.now_ms = static_cast<double>(now_ms());
     const uint64_t t0 = now_ms();
     core.tick(in);
@@ -1240,6 +1382,7 @@ static void rebuild_with_set(Rig& g, std::vector<uint8_t> set, int n_usb = 0) {
   g.core.reset();
   g.vrx = std::make_unique<VrxController>(vrx_cfg_from(g.cfg, 40));
   ChannelCoreCfg cc; cc.radio = g.cfg.radio; cc.hop = g.cfg.hop; cc.key = g.cfg.link.key;
+  cc.width_mhz = g.width;
   cc.start_ch = 40; cc.n_usb = n_usb; cc.threaded = false; cc.store_name = "s";
   g.core = std::make_unique<ChannelCore>(cc, g.ptrs, *g.vrx, g.sink,
       [](uint8_t) { return true; }, [&g] { return g.clk.now_ms(); }, [&g] { return g.clk.now_us(); },
@@ -1275,6 +1418,7 @@ static std::vector<uint64_t> interfere_bursts(Rig& g, int windows) {
     for (int i = 0; i < g.cfg.hop.window_ms / 10 + 1; ++i) {
       const uint64_t t = g.clk.ms;
       g.vrx->on_video(static_cast<double>(t));
+      decode_one(g);
       g.core->tick(g.in(true));
       if (g.sink.dwells.size() > seen) { bursts.push_back(t); seen = g.sink.dwells.size(); }
       g.clk.ms += 10;
@@ -1416,6 +1560,7 @@ TEST(relay_sweep_timeout_scales_with_the_request) {
       for (auto& c : g.cards) c->fr.foreign += 40;
       for (int i = 0; i < g.cfg.hop.window_ms / 10 + 1 && g.cards[0]->sweeps.empty(); ++i) {
         g.vrx->on_video(static_cast<double>(g.clk.ms));
+        decode_one(g);
         sent_ms = g.clk.ms;
         g.core->tick(g.in(true));
         g.clk.ms += 10;
@@ -1523,16 +1668,146 @@ TEST(sampled_record_consumed_next_tick_uses_sample_span) {
   CHECK(*e->own_air_pct > 49.0 && *e->own_air_pct < 51.0);
 }
 
+// Own airtime is what the drone transmitted, not what the card decoded. A
+// card fading at mid range decodes a fraction of our frames while every one
+// of them still fills NHM busy, so an own-airtime figure rebuilt from decoded
+// frames alone books the undecoded rest as foreign -- a fade then reads as
+// interference and confirms itself with its own loss. The window fill scales
+// the decoded airtime by the card's sequence delivery (expected / received
+// over the window, from the drone's hardware seq walk), which counts every
+// frame the drone sent whether or not this card heard it.
+// Revert (own_used = own_pct unscaled): card 0 reads 40 %.
+static mabur::node::RxBody junk_body(uint8_t card, uint16_t seq) {
+  mabur::node::RxBody m;
+  m.card_id = card; m.mac_seq = seq; m.crc_ok = true;
+  m.rssi[0] = 38; m.rssi[1] = 40; m.snr[0] = 10; m.snr[1] = 25;
+  m.mono_us = 1000u * seq;
+  m.body.assign(20, 0);   // not SBI, not RC: misroutes, still walks the seq
+  return m;
+}
+
+// The weak gate reads the card's best receive chain, not chain A. Chain A
+// under weak_rssi_dbm with chain B well above it is a card still hearing
+// the drone fine on one antenna, so a jammed op reads interfered, not
+// fade. Revert (rssi_a_ema at the window fill): weak trips on chain A and
+// the window is a fade.
+TEST(weak_gate_reads_the_best_chain_not_chain_a) {
+  Rig g(2, 0, /*pinned=*/true, 40);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  for (uint8_t card = 0; card < 2; ++card) {
+    auto m = junk_body(card, 1);
+    m.phy_valid = true;
+    m.rssi[0] = 25; m.rssi[1] = 40;   // chain A -85 dBm (under the wall), chain B -70 dBm
+    m.snr[0] = 10; m.snr[1] = 10;     // 5 dB on both: under weak_snr_db, so RSSI alone decides
+    g.agg.on_rx_body(m);
+  }
+  g.cards[0]->cca_per_ms_on[40] = 50; g.cards[1]->cca_per_ms_on[40] = 50;
+  g.cards[0]->fr.foreign = 0; g.cards[1]->fr.foreign = 0;
+  interfere(g, occ_lead(g) + 6);
+  CHECK(std::string(g.core->snapshot(0).hop.verdict) == "interfered");
+  CHECK((g.core->snapshot(0).hop.evidence & kEvWeak) == 0);
+}
+// One sampled window on a one-card pinned rig: `before` runs between the
+// T1 record and its consume (the previous window), `during` inside the
+// 140 ms window that the second record closes. Returns the window's energy.
+static std::optional<StatsEnergyIn> one_window(Rig& g, const std::function<void()>& before,
+                                               const std::function<void()>& during) {
+  link_up(g);
+  for (int i = 0; i < 2 * (g.cfg.hop.window_ms / 10) + 2; ++i) g.tick(true);
+  before();
+  g.core->run_sampler_step();
+  g.clk.ms += 10;
+  g.core->tick(g.in(true));                // consumed at T1 + 10
+  for (int i = 0; i < 13; ++i) g.tick(true);   // T1 + 140
+  during();
+  g.core->run_sampler_step();              // sample at T1 + 140
+  g.clk.ms += 10;
+  g.core->tick(g.in(true));
+  return g.core->snapshot(0).energy[0];
+}
+TEST(own_air_scales_by_the_cards_seq_delivery) {
+  Rig g(1, 0, /*pinned=*/true, 40);
+  const auto e = one_window(g,
+      [&] { for (uint16_t s = 0; s < 10; ++s) g.agg.on_rx_body(junk_body(0, s)); },
+      [&] {
+        // seq 20..30 after 9: 11 decoded of 21 sent in this window
+        for (uint16_t s = 20; s <= 30; ++s) g.agg.on_rx_body(junk_body(0, s));
+        g.cards[0]->fr.own_air_us += 56000;   // 40 % of the 140 ms span, decoded frames only
+        g.cards[0]->fr.own += 11;
+      });
+  REQUIRE(e.has_value());
+  REQUIRE(e->own_air_pct.has_value());
+  // 40 % x 21/11 = 76.4 %
+  CHECK(*e->own_air_pct > 75.0 && *e->own_air_pct < 78.0);
+}
+TEST(own_air_scaled_is_capped_at_100) {
+  Rig g(1, 0, /*pinned=*/true, 40);
+  const auto e = one_window(g,
+      [&] { for (uint16_t s = 0; s < 10; ++s) g.agg.on_rx_body(junk_body(0, s)); },
+      [&] {
+        for (uint16_t s = 20; s <= 30; ++s) g.agg.on_rx_body(junk_body(0, s));
+        g.cards[0]->fr.own_air_us += 84000;   // 60 % decoded x 21/11 = 114 %
+        g.cards[0]->fr.own += 11;
+      });
+  REQUIRE(e.has_value());
+  REQUIRE(e->own_air_pct.has_value());
+  CHECK(*e->own_air_pct > 99.9 && *e->own_air_pct < 100.1);
+}
+
+// Own airtime never reads under the airtime the card decoded. A frame with
+// a seq ahead of the drone's (another counter that slipped into the walk)
+// leaves every later drone frame "behind" the mark: received climbs while
+// expected stands, and a delivery ratio under 1 zeroed the card's own
+// airtime while it decoded fine, so its whole busy reading booked as
+// foreign. Revert (delivery = expected / received unfloored): 0 %.
+TEST(own_air_never_reads_under_the_decoded_airtime) {
+  Rig g(1, 0, /*pinned=*/true, 40);
+  const auto e = one_window(g,
+      [&] {
+        for (uint16_t s = 0; s < 10; ++s) g.agg.on_rx_body(junk_body(0, s));
+        g.agg.on_rx_body(junk_body(0, 1500));   // the mark jumps ahead
+      },
+      [&] {
+        for (uint16_t s = 10; s <= 30; ++s) g.agg.on_rx_body(junk_body(0, s));   // all "behind"
+        g.cards[0]->fr.own_air_us += 56000;   // 40 % of the 140 ms span
+        g.cards[0]->fr.own += 21;
+      });
+  REQUIRE(e.has_value());
+  REQUIRE(e->own_air_pct.has_value());
+  CHECK(*e->own_air_pct > 39.0 && *e->own_air_pct < 41.0);
+}
+
+// A window that decoded nothing has no delivery ratio (the seq walk only
+// advances on a decoded frame), so its own airtime cannot be told from
+// what the air carried: a null at mid range leaves our frames above
+// busy_dbm with none of them decoded, and the RSSI EMA frozen above the
+// weak wall. That card gives the verdict no busy reading for the window
+// (the blocked streak holds instead of advancing) and the sideport shows
+// busy_pct null. Revert (busy_valid from the NHM read alone): the card
+// reads 80 % foreign off its own video.
+TEST(no_busy_reading_when_the_window_decoded_nothing) {
+  Rig g(1, 0, /*pinned=*/true, 40);
+  g.cards[0]->nhm_busy_pct_on[40] = 80;
+  const auto e = one_window(g,
+      [&] { for (uint16_t s = 0; s < 10; ++s) g.agg.on_rx_body(junk_body(0, s)); },
+      [&] { g.cards[0]->fr.own_air_us += 14000; });   // 10 % of the span, no frame decoded
+  REQUIRE(e.has_value());
+  CHECK(!e->busy_pct.has_value());
+}
+
 // ---- calibration channel pick (CalPicker / ChannelCore) ----
 
 // One linked tick with the TX card (card 0) on op hearing its own video and
 // `op_foreign` foreign frames: own frames feed the sideport's own-frame
 // delta (StatsEnergyIn::own), foreign frames are what op's live reading
-// scores. Card 1 is the scout card.
+// scores, and a decoded frame per card gives op's window a busy reading.
+// Card 1 is the scout card.
 static void live_tick(Rig& g, uint32_t op_foreign = 0) {
   g.cards[0]->fr.own += 5;
   g.cards[0]->fr.foreign += op_foreign;
   g.vrx->on_video(static_cast<double>(g.clk.ms));
+  decode_one(g);
   g.tick(true);
 }
 
@@ -2358,6 +2633,160 @@ TEST(pin_refusal_agrees_with_set_pin_while_a_calibration_picks_its_channel) {
   for (int i = 0; i < 3; ++i) live_tick(g);
   REQUIRE(p.order_relocate(112));               // the run's relocate, not yet placed
   pin_refusal_agrees(g, 144, std::string("calibration running"));
+}
+
+// ---- the width flip while the scout searches or a sweep runs ----
+
+static bool called_set_width(const FakeCard& c) {
+  for (const auto& s : c.calls) if (s.rfind("set_width", 0) == 0) return true;
+  return false;
+}
+
+// Auto, the pick frozen long ago, the drone never found: the scout card is
+// out searching and stays out for as long as the GS is unlinked. A flip is
+// taken: the link card is retuned on the spot, the searching scout card is
+// left alone until the search lets go of it, then retuned to the new width.
+TEST(width_flip_while_unlinked_after_the_pick_froze_retunes_the_free_cards) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  for (int i = 0; i < 5; ++i) g.tick();
+  REQUIRE(g.core->scout_owns_card(1));            // the unlinked search
+  CHECK(g.core->width_refusal(20) == std::nullopt);
+  for (auto& c : g.cards) c->calls.clear();
+  g.core->set_width(20);
+  CHECK(g.cards[0]->width_mhz == 20);              // retuned before set_width returned
+  CHECK(g.cards[1]->width_mhz == 40);              // the search's card: not touched
+  CHECK(!called_set_width(*g.cards[1]));
+  for (int i = 0; i < 20; ++i) g.tick();
+  CHECK(g.cards[1]->width_mhz == 40);              // still searching: still left alone
+  // Dwells taken meanwhile are as wide as the card they ran on.
+  bool saw_scout_dwell = false;
+  for (const auto& d : g.sink.dwells)
+    if (d.first == 1 && !(d.second.survey.flags & devourer::chanmig::kFlagRetuneFailed)) {
+      saw_scout_dwell = true;
+      CHECK(d.second.survey.def.width == CHANNEL_WIDTH_40);
+    }
+  CHECK(saw_scout_dwell);
+  link_up(g);
+  for (int i = 0; i < 10; ++i) g.tick(true);
+  CHECK(!g.core->scout_owns_card(1));
+  CHECK(g.cards[1]->width_mhz == 20);              // released: the resync takes it
+  CHECK(called_set_width(*g.cards[1]));
+  // The next search (link lost for radio.scan.search_after_ms) dwells at
+  // the width the card now holds.
+  g.sink.dwells.clear();
+  for (int i = 0; i < g.cfg.radio.scan.search_after_ms / 10 + 60; ++i) g.tick();
+  REQUIRE(g.core->scout_owns_card(1));
+  bool saw = false;
+  for (const auto& d : g.sink.dwells)
+    if (d.first == 1) { saw = true; CHECK(d.second.survey.def.width == CHANNEL_WIDTH_20); }
+  CHECK(saw);
+  CHECK(g.cards[1]->width_mhz == 20);
+}
+
+// Pinned and unlinked: the scout only searches (no pick to hold open), so
+// a flip is taken at once.
+TEST(width_flip_pinned_unlinked_is_accepted) {
+  Rig g(2, 0, /*pinned=*/true, 40);
+  for (int i = 0; i < 5; ++i) g.tick();
+  REQUIRE(g.core->scout_owns_card(1));
+  CHECK(g.core->width_refusal(20) == std::nullopt);
+  g.core->set_width(20);
+  CHECK(g.cards[0]->width_mhz == 20);
+  CHECK(g.cards[1]->width_mhz == 40);
+}
+
+// Pinned, linked, then the link lost for longer than search_after_ms: the
+// search is back on the scout card, and a flip is still taken.
+TEST(width_flip_after_the_link_is_lost_is_accepted) {
+  Rig g(2, 0, /*pinned=*/true, 40);
+  link_up(g);
+  for (int i = 0; i < 10; ++i) g.tick(true);
+  for (int i = 0; i < g.cfg.radio.scan.search_after_ms / 10 + 20; ++i) g.tick();
+  REQUIRE(g.core->scout_owns_card(1));
+  CHECK(g.core->width_refusal(20) == std::nullopt);
+}
+
+// While the boot pick is open no card's width is fixed up -- not even a
+// card that is not the scout's -- and a flip is refused.
+TEST(no_width_fixup_while_the_boot_pick_is_open) {
+  Rig g(2, 0);
+  g.cards[1]->retune_ok = false;                   // no dwell completes: only max_ms freezes the pick
+  g.tick();
+  REQUIRE(g.core->pick_open());
+  g.cards[0]->width_mhz = 20;                      // a revive at the wrong width
+  g.cards[0]->calls.clear();
+  g.core->on_card_reopened(0);
+  for (int i = 0; i < 20; ++i) g.tick();
+  REQUIRE(g.core->pick_open());
+  CHECK(!called_set_width(*g.cards[0]));
+  CHECK(g.core->width_refusal(20) == std::optional<std::string>("ladder refused: scan in flight"));
+  for (int i = 0; i < 4000 && g.core->pick_open(); ++i) g.tick();
+  REQUIRE(!g.core->pick_open());
+  g.tick();
+  CHECK(g.cards[0]->width_mhz == 40);              // fixed once the pick froze
+}
+
+// A calibration measure round owns the scout card: refused as a scan.
+TEST(width_refusal_while_a_measure_round_runs) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 10; ++i) live_tick(g);
+  ChannelCorePicker p(*g.core);
+  start_round(g, p);
+  CHECK(g.core->width_refusal(20) == std::optional<std::string>("ladder refused: scan in flight"));
+}
+
+// Past the scan check, width_refusal gives the busy refusals pin_refusal
+// gives: a calibration run, a hop in flight.
+TEST(width_refusal_falls_through_to_the_busy_refusals) {
+  {
+    Rig g(2, 0);
+    freeze_auto(g);
+    link_up(g);
+    for (int i = 0; i < 5; ++i) live_tick(g);
+    g.tick(true, /*cal=*/true);
+    CHECK(g.core->width_refusal(20) == std::optional<std::string>("calibration running"));
+    CHECK(g.core->width_refusal(40) == std::nullopt);   // no flip, no refusal
+  }
+  {
+    Rig g(1, 0);
+    freeze_auto(g);
+    for (int i = 0; i < 5; ++i) g.tick(true);
+    g.cards[0]->cca_per_ms_on[40] = 50;
+    interfere_until_order(g);
+    CHECK(g.core->width_refusal(20) == std::optional<std::string>("hop in flight"));
+  }
+}
+
+// A relay sweep holds a card off op: no retune under it. The pin's own
+// refusal for the same state is unchanged.
+TEST(width_refusal_while_a_relay_sweeps) {
+  Rig g(1, 1);
+  g.cards[0]->retune_ok = false;
+  freeze_auto(g);
+  g.cards[0]->retune_ok = true;
+  link_up(g);
+  for (int i = 0; i < 5; ++i) g.tick(true, false, 0);
+  g.cards[0]->cca_per_ms_on[40] = 50;
+  interfere(g, occ_lead(g) + 3);
+  REQUIRE(g.core->sweep_pending());
+  REQUIRE(!g.core->hopping());
+  CHECK(g.core->width_refusal(20) == std::optional<std::string>("sweep in flight"));
+  CHECK(g.core->pin_refusal(40) == std::nullopt);      // pinning where the link is: unchanged
+}
+
+// The hop ranker ranks at the live width: at 40 a dwell's NHM busy reading
+// (the whole pair) orders ahead of the frame terms (the primary only).
+TEST(set_width_moves_the_hop_ranker_to_the_new_width) {
+  Rig g(2, 0, /*pinned=*/true, 40, {40, 64, 112, 144}, 20);
+  for (int i = 0; i < 10; ++i) g.tick(true, false, 0);
+  CHECK(g.core->hop_ranker().width_mhz() == 20);
+  g.core->set_width(40);
+  CHECK(g.core->hop_ranker().width_mhz() == 40);
+  g.core->set_width(20);
+  CHECK(g.core->hop_ranker().width_mhz() == 20);
 }
 
 MTEST_MAIN

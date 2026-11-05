@@ -124,23 +124,39 @@ std::array<mabur::UepLayerCfg, 2> Config::uep_layers() const {
 }
 
 std::optional<ConfigIssue> radio_width_issue(uint8_t channel, int width) {
+  // Field is radio.channels, not radio.width: there is no radio.width key
+  // on the GS any more, and both callers (the loader's per-channel check
+  // at the derived width, the web GS's page-width check) are really
+  // asking whether this member of radio.channels can fly at this width.
   if (width != 20 && width != 40)
-    return ConfigIssue{"radio.width", "must be 20 or 40 (HT20 / HT40)"};
+    return ConfigIssue{"radio.channels", "width must be 20 or 40 (HT20 / HT40)"};
   if (width == 40 && mabur::ht40_offset(channel) == 0)
-    return ConfigIssue{"radio.width", "40 MHz needs a standard 5 GHz pair and channel " +
-                                          std::to_string(static_cast<int>(channel)) +
-                                          " has none (common/include/mabur/ht40.h)"};
+    return ConfigIssue{"radio.channels", "40 MHz needs a standard 5 GHz pair and channel " +
+                                             std::to_string(static_cast<int>(channel)) +
+                                             " has none (common/include/mabur/ht40.h)"};
   return std::nullopt;
 }
 
-std::optional<ConfigIssue> link_width_issue(const LinkCfg& link, int width) {
+uint8_t derived_width(const LinkCfg& link) {
+  // Fixed mode (static_mcs >= 0): use static_bw, ignore ladder.
+  if (link.static_mcs >= 0)
+    return link.static_bw == 40 ? 40 : 20;
+  // Adaptive mode (static_mcs < 0): check ladder for any 40 MHz rung.
+  for (const auto& rung : link.ladder_cfg.ladder)
+    if (rung.bw == 40)
+      return 40;
+  return 20;
+}
+
+std::string derived_width_reason(const LinkCfg& link) {
+  // Fixed mode (static_mcs >= 0): use static_bw.
+  if (link.static_mcs >= 0)
+    return std::string("static_bw ") + std::to_string(link.static_bw);
+  // Adaptive mode (static_mcs < 0): find the first 40 MHz rung or report none.
   for (std::size_t i = 0; i < link.ladder_cfg.ladder.size(); ++i)
-    if (link.ladder_cfg.ladder[i].bw == 40 && width != 40)
-      return ConfigIssue{"link.ladder[" + std::to_string(i) + "].bw",
-                         "40 MHz rung but radio.width is 20: the GS could not receive it"};
-  if (link.static_bw == 40 && width != 40)
-    return ConfigIssue{"link.static_bw", "40 MHz pin but radio.width is 20"};
-  return std::nullopt;
+    if (link.ladder_cfg.ladder[i].bw == 40)
+      return std::string("ladder: rung ") + std::to_string(i) + " bw 40";
+  return "ladder: no 40 rung";
 }
 
 Config load_config(const std::string& path, std::vector<std::string>* defaulted,
@@ -173,8 +189,7 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
   bool radio_cards_absent = false;
   if (j.contains("radio")) {
     const Value& r = j["radio"];
-    check_keys(r, "radio", {"channel", "channels", "width", "cards", "tx_card", "scan", "relays"});
-    c.radio.width = static_cast<uint8_t>(get_int(r, "width", 20, 20, 40, "radio"));
+    check_keys(r, "radio", {"channel", "channels", "cards", "tx_card", "scan", "relays"});
     if (r.contains("channels")) {
       g_line = r["channels"].line();
       if (!r["channels"].is_array()) fail("radio.channels", "not an array");
@@ -188,10 +203,11 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
     } else {
       note_default("radio", "channels", "[40, 64, 112, 144]");
     }
-    if (auto e = mabur::channel_set_issue(c.radio.channels, c.radio.width, "radio.channels"))
-      fail(e->field, e->why);
-    for (uint8_t ch : c.radio.channels)
-      if (auto e = radio_width_issue(ch, c.radio.width)) fail(e->field, e->why);
+    // The channel-set rule (channel_set_issue) and the per-channel HT40-pair
+    // check (radio_width_issue) need the receiver's width, which is derived
+    // from the link section (derived_width) -- not parsed yet here, so both
+    // run later, after [link] is read (the "Channel-set / width validation"
+    // block below).
     if (r.contains("channel")) {
       g_line = r["channel"].line();
       const Value& cv = r["channel"];
@@ -606,13 +622,20 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted,
     }
   }
 
-  // ---- Width cross-checks (40 MHz rungs) ----------------------------------
-  // A 40 MHz rung or pin needs the GS tuned 40 -- a 20-tuned receiver cannot
-  // hear HT40 at all (docs/bw40.md). Runs unconditionally, after both radio
-  // and link sections are settled, and after the max_mcs filter above: a
-  // rung filtered out by max_mcs is not checked here, which matches "what
-  // will fly".
-  if (auto e = link_width_issue(c.link, c.radio.width)) fail(e->field, e->why);
+  // ---- Channel-set / per-channel width validation -------------------------
+  // The receiver's width is no longer an independent config key: it is
+  // derived from the link section just parsed (derived_width), so the
+  // channel-set rule and the per-channel HT40-pair check run here, after
+  // both the radio and link sections are settled, and after the max_mcs
+  // filter above -- a rung filtered out by max_mcs does not affect what
+  // width the set is checked at.
+  {
+    const uint8_t rx_width = derived_width(c.link);
+    if (auto e = mabur::channel_set_issue(c.radio.channels, rx_width, "radio.channels"))
+      fail(e->field, e->why);
+    for (uint8_t ch : c.radio.channels)
+      if (auto e = radio_width_issue(ch, rx_width)) fail(e->field, e->why);
+  }
   // ---------------------------------------------------------------------
 
   if (j.contains("video")) {

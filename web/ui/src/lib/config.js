@@ -1,7 +1,7 @@
 // The page's config form model. The form edits
 // the channel set + link channel (the overlay's [radio] channels/channel, in
-// both modes; --ch carries the start member, startChannel), width (--w and
-// [radio] width) and,
+// both modes; --ch carries the start member, startChannel), width (--w,
+// derived per mode by pageWidth -- there is no radio.width key) and,
 // in GS mode, static_mcs / ladder (the overlay's [link], with max_mcs = 7 so
 // the ladder flies as listed) and the software NACK switch ([link.nack]
 // enable, fec-nack). The core merges the overlay into its embedded
@@ -125,9 +125,18 @@ export function saveConfig(storage, cfg) {
 export function rungWarnings(cfg, i) {
   const r = cfg.ladder[i];
   const out = [];
-  if (r.bw === 40 && cfg.width === 20) out.push('40 MHz needs channel width 40');
   if (Number(r.oe) > Number(r.ob)) out.push('Enh overhead above base');
   return out;
+}
+
+// The receiver width the core actually tunes to: gs/src/config.h
+// derived_width, mirrored here (no radio.width key exists any more). Gs
+// mode: pinned (staticMcs >= 0) uses the form's width field like Spotter
+// does; adaptive derives it from the ladder (any 40 MHz rung -> 40). Spotter
+// has no ladder -- its one rung flies at the page's own pick.
+export function pageWidth(cfg, mode) {
+  if (mode !== 'gs' || cfg.staticMcs >= 0) return cfg.width;
+  return cfg.ladder.some((r) => Number(r.bw) === 40) ? 40 : 20;
 }
 
 // Add or remove a set member. The set stays 1..8 (removing the last member or
@@ -168,13 +177,13 @@ export function checkChannelSet(channels, link, width) {
 }
 
 export function channelWarning(cfg) {
-  return cfg.width === 40 ? checkChannelSet(cfg.channels, cfg.link, 40) : null;
+  return pageWidth(cfg, 'gs') === 40 ? checkChannelSet(cfg.channels, cfg.link, 40) : null;
 }
 
 // Page-side mirror of what the core's loader would refuse (so Connect never
 // ends in `ERROR bad config`). null = OK, else a user-facing sentence.
 export function connectBlocker(cfg, mode, _radio = 'usb') {
-  const cs = checkChannelSet(cfg.channels, cfg.link, cfg.width);
+  const cs = checkChannelSet(cfg.channels, cfg.link, pageWidth(cfg, mode));
   if (cs) return cs;
   // No per-radio channel rule: the CPE relay tunes the whole 20 MHz grid
   // 36-177 since mabur-openwrt 2c1c51f, 144 included.
@@ -188,21 +197,17 @@ export function connectBlocker(cfg, mode, _radio = 'usb') {
     if (!ok(ob) || !ok(oe)) return `Rung ${i}: FEC overhead must be a number from ${OV_MIN} to ${OV_MAX}.`;
     if (e > b) return `Rung ${i}: enh overhead is above base — keep base ≥ enh.`;
   }
-  if (cfg.width === 20) {
-    const bad = cfg.ladder.findIndex((r) => r.bw === 40);
-    if (bad >= 0) return `Rung ${bad} is 40 MHz but channel width is 20 — set width to 40 or the rung to 20.`;
-  }
   return null;
 }
 
 const num = (v) => String(Number(v));
 
 // [radio] in both modes (the core validates --ch against this set, and the
-// set against this width -- not the bundle's); [link] + the ladder in GS
-// mode. The spotter never walks a ladder, but the loader validates the
-// bundle's against radio.width, so it gets one rung at the page width.
+// set against the receiver width derived from [link] -- there is no
+// radio.width key); [link] + the ladder in GS mode. The spotter never walks
+// a ladder, so it gets one rung at the page's width instead.
 export function toOverlayToml(cfg, keyHex = null, mode = 'gs') {
-  let t = `[radio]\nchannels = [${cfg.channels.join(', ')}]\nchannel = ${cfg.link === 'auto' ? '"auto"' : cfg.link}\nwidth = ${cfg.width}\n`;
+  let t = `[radio]\nchannels = [${cfg.channels.join(', ')}]\nchannel = ${cfg.link === 'auto' ? '"auto"' : cfg.link}\n`;
   if (mode !== 'gs') {
     return t + `\n[link]\nstatic_mcs = -1\nstatic_bw = ${cfg.width}\nmax_mcs = 7\n`
       + `\n[[link.ladder]]\nmcs = 0\nbw = ${cfg.width}\noverhead_base = 0.5\noverhead_enh = 0.25\n`;

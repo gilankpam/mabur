@@ -380,7 +380,8 @@ int run_replay(const ReplayOpts& o) {
   webgs::Opts wo;
   wo.adaptive_gap = !o.fixed_gap;
   wo.rz_nonce = 1;   // reproducible DISC nonce + RCF tags (native/WASM parity)
-  webgs::WebGs g(cfg, o.mode, cfg.radio.channels.front(), cfg.radio.width, {}, 0, std::move(io), wo);
+  webgs::WebGs g(cfg, o.mode, cfg.radio.channels.front(), maburgs::derived_width(cfg.link), {}, 0,
+                std::move(io), wo);
   // The PARAMS push (see push_params_if_changed): replay has no page to
   // drive webgs_param_refresh/webgs_param_set, but it is the only CLI
   // driver of WebGs there is, so it is what a by-hand check of the `PARAMS`
@@ -432,7 +433,7 @@ struct LiveOpts {
   std::string config = WEBGS_CONFIG_PATH;
   std::string overlay;       // optional TOML merged over config (the page's /overlay.toml)
   webgs::Mode mode = webgs::Mode::Gs;
-  int ch = -1, width = -1;   // -1 = the pin or first member / radio.width
+  int ch = -1, width = -1;   // -1 = the pin or first member / the derived width
   int secs = 0;              // 0 = until the card goes away
   std::string bad_chw;       // non-numeric --ch/--w, reported by run_live
   std::string relay;         // --relay host:port: mabur-relay v4 over UDP instead of USB
@@ -767,22 +768,14 @@ int run_live(const LiveOpts& o) {
     return 2;
   }
   const int ch_i = o.ch >= 0 ? o.ch : (cfg.radio.pin ? *cfg.radio.pin : cfg.radio.channels.front());
-  const int width = o.width >= 0 ? o.width : cfg.radio.width;
+  const int width = o.width >= 0 ? o.width : maburgs::derived_width(cfg.link);
   // maburgs's own loader checks on the override (the page picks ch/w, not
-  // the config): set membership, range, 20|40, HT40 pair, and in GS mode no
-  // 40 MHz rung while tuned 20.
+  // the config): set membership, range, 20|40, HT40 pair.
   if (auto e = webgs::channel_width_error(cfg, o.mode, ch_i, width)) {
     report_error("bad channel/width: %s", e->c_str());
     return 2;
   }
   const uint8_t ch = static_cast<uint8_t>(ch_i);
-  // The page's width is the link width: ChannelCore's ScoutCfg::link_width_mhz
-  // and the pair rules read cfg.radio.width. The page's overlay carries
-  // [radio] width too (so the loader validated the set at the page's width),
-  // making this a no-op there; it still matters for the native CLI run without
-  // an overlay, where the loader saw the bundle's width and
-  // channel_width_error just checked the set against --w.
-  cfg.radio.width = static_cast<uint8_t>(width);
   std::string set;
   for (size_t i = 0; i < cfg.radio.channels.size(); ++i)
     set += (i ? "," : "") + std::to_string(cfg.radio.channels[i]);
@@ -879,7 +872,7 @@ int usage(FILE* out, int rc) {
 #ifdef WEBGS_LIVE
                "       webgs live [-c config.toml] [--overlay file.toml] [--ch N] [--w 20|40]\n"
                "                  [--secs 0] [--mode gs|spotter] [--relay host:port]\n"
-               "                  (ch/w default to the pin or the first member / radio.width)\n"
+               "                  (ch/w default to the pin or the first member / the derived width)\n"
 #endif
                "default config: %s\n",
                WEBGS_CONFIG_PATH);

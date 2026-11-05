@@ -223,6 +223,30 @@ TEST(rate_adaptive_is_one_step) {
   CHECK(confirm(rate, "adaptive").empty());
 }
 
+// Rate flips between the ladder's width and the pin's: the confirm says so
+// when the two differ, under the Width row's rule.
+TEST(rate_confirms_a_receiver_retune_when_the_width_changes) {
+  Fx f;
+  // Adaptive over a 40 MHz ladder; Fixed pins the live rung, MCS2 at 20.
+  f.gs.ladder = {{0, 40, 0.5, 0.25}, {1, 40, 0.5, 0.25}, {2, 20, 0.5, 0.25}};
+  f.snap.mcs = 2;
+  f.snap.bw = 20;
+  CHECK(confirm(f.node("link.rate"), "fixed") == "Retunes the receiver.");
+  f.snap.bw = 40;
+  f.snap.mcs = 1;
+  CHECK(confirm(f.node("link.rate"), "fixed").empty());          // pins a 40 rung: no flip
+  // Fixed at 20 back to an adaptive ladder with a 40 rung.
+  f.gs.static_mcs = 2;
+  f.gs.static_bw = 20;
+  CHECK(confirm(f.node("link.rate"), "adaptive") == "Retunes the receiver.");
+  f.gs.static_bw = 40;
+  CHECK(confirm(f.node("link.rate"), "adaptive").empty());
+  // No ladder read: Fixed sends nothing, so nothing retunes.
+  f.gs.static_mcs = -1;
+  f.gs.ladder.clear();
+  CHECK(confirm(f.node("link.rate"), "fixed").empty());
+}
+
 TEST(width_pick_sends_the_default_ladder_and_confirms_when_the_ladder_is_custom) {
   Fx f;
   const std::string l40 = maburplay::render_ladder_value(maburplay::default_ladder(40));
@@ -230,18 +254,22 @@ TEST(width_pick_sends_the_default_ladder_and_confirms_when_the_ladder_is_custom)
   CHECK(w.value_text() == "20 MHz");
   CHECK(w.current() == "20");
   CHECK((w.steps("40") == std::vector<SetStep>{{Owner::kGs, "link.ladder", l40}}));
-  CHECK(confirm(w, "40").empty());   // the bundle ladder is the 20 MHz default
-  f.gs.ladder[0].base = 0.6;
+  // Fx: bundle ladder (all 20), adaptive -- picking 40 flips the receiver.
+  CHECK(confirm(w, "40") == "Retunes the receiver.");
+  CHECK(confirm(w, "20").empty());
+  f.gs.ladder[0].base = 0.6;         // custom ladder
   w = f.node("link.width");
   CHECK(confirm(w, "20") == "Replaces your ladder with the default 20 MHz ladder (6 rungs).");
-  CHECK(confirm(w, "40") == "Replaces your ladder with the default 40 MHz ladder (5 rungs).");
+  CHECK(confirm(w, "40") ==
+        "Replaces your ladder with the default 40 MHz ladder (5 rungs). Retunes the receiver.");
   // Under Fixed the row is the fixed rate's width: one static_bw set.
   f.gs.static_mcs = 3;
   f.gs.static_bw = 40;
   w = f.node("link.width");
   CHECK(w.value_text() == "40 MHz");
   CHECK((w.steps("20") == std::vector<SetStep>{{Owner::kGs, "link.static_bw", "20"}}));
-  CHECK(confirm(w, "20").empty());
+  CHECK(confirm(w, "20") == "Retunes the receiver.");
+  CHECK(confirm(w, "40").empty());
 }
 
 TEST(width_reads_mixed_and_offers_only_20_and_40) {

@@ -24,7 +24,7 @@ struct ScoutCfg {
   int one_card_ms = 5000;          // one card + measure: silent prelude before the first DISC
   double pick_margin_pct = 10;     // busy % points a candidate must beat the current channel by
   bool one_card = false;
-  uint8_t link_width_mhz = 20;     // radio.width: the card is opened at it; 40 = one dwell per pair, pick a pair
+  uint8_t link_width_mhz = 20;     // the card's width at construction (set_link_width_mhz moves it); 40 = one dwell per pair, pick a pair
   int busy_dbm = -83;
   double blocked_pct = 1e9;
   double leak_per_frame = 1.0;     // RankSample::leak per TX-card frame sent during an observe
@@ -61,8 +61,10 @@ struct ScoutDwell {
 //    With the search off (linked), op is skipped: its pair carries the
 //    drone's video.
 //  - no work (linked and pinned, or frozen): park on op (once), working()
-//    false. freeze() closes the pick for good. The card never changes
-//    width: it was opened at link_width_mhz.
+//    false. freeze() closes the pick for good. The scout never changes the
+//    card's width: the core retunes it (a live width flip) only while the
+//    scout has no work, and then tells it the new width
+//    (set_link_width_mhz), which every later dwell, rank and pick reads.
 //  - one round (a calibration run's channel pick, after the freeze):
 //    begin_round() measures again exactly once -- a fresh ranker, every
 //    member visited once except op (skipped as above while the search is
@@ -100,6 +102,13 @@ class ChannelScout {
   // only user), so ranks and rounds start over. Unchanged: a no-op.
   void set_measure(bool on);
   void stop() { stop_.store(true, std::memory_order_release); }
+  // The width the card is tuned to, set by the core after it retuned the
+  // card while the scout had no work: dwells record it, and at 40 the
+  // ranking, maturity and proposal go by pair. Ranks already taken keep
+  // their old meaning; a pick or a round that reads them starts from a
+  // fresh ranker anyway (unfreeze, begin_round).
+  void set_link_width_mhz(uint8_t w) { link_width_.store(w, std::memory_order_release); }
+  uint8_t link_width_mhz() const { return link_width_.load(std::memory_order_acquire); }
   // One card + measure: the core has committed the prelude pick (op = the
   // committed channel); the first op window may run. Until then, with the
   // pick still open, the scout idles after prelude_done() (no DISC window).
@@ -181,6 +190,7 @@ class ChannelScout {
   std::atomic<bool> working_{false}, beaconing_{false}, quiet_{false}, prelude_done_{true},
       prelude_ack_{true}, done_{false};
   std::atomic<uint64_t> rounds_{0};
+  std::atomic<uint8_t> link_width_{20};   // cfg_.link_width_mhz at construction
   // The one-round state: measuring -> measured (no work, not yet parked)
   // -> idle once parked. One atomic, moved by compare-exchange, so a
   // begin_round() racing the run thread's park can never be lost.

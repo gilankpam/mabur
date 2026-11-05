@@ -245,8 +245,36 @@ foreign energy, which is why both routes read it. `nhm_busy_pct` comes from the 
 (airtime above `radio.scan.busy_dbm`, which config validation requires to
 be an `nf::kNhmAbsThDbm` bucket edge), armed and read once per verdict
 window per op card; `own_air_pct` is the GS's own reconstruction of that
-card's airtime from the CRC-good frames it decoded (bytes·8 / HT rate, plus
-one preamble per PPDU from the `physt` A-MPDU boundary). A busy reading is
+card's airtime: the CRC-good frames it decoded (bytes·8 / HT rate, plus
+one preamble per PPDU from the `physt` A-MPDU boundary), scaled by the
+window's delivery ratio from the card's hardware-seq walk
+(`seq_expected / seq_received`, `CardTrack`), floored at 1 and capped at
+100 %. Own airtime
+is what the drone transmitted, not what the card decoded: a card fading at
+mid range decodes a fraction of our frames while every one of them still
+fills its NHM busy, so the decoded-only figure booked the rest as foreign
+and a fade read as interference confirmed by its own loss
+(`docs/findings/2026-11-04-fade-false-hops.md`). The seq walk counts
+every frame the drone sent whether or not this card heard it, so the
+scale restores the frames it missed. The walk numbers the drone's frames
+only: every frame the GS sends (RCF, DISC, NACK and its own T_MAV, the
+tagged one), heard point-blank by the other card, is diverted as a self
+frame before it. A self frame carries the GS's seq counter, and one landing
+ahead of the drone's mark made every drone frame after it read "behind" —
+expected stood for up to ~1.2 s while received climbed, the ratio fell to
+0 and the card's whole busy reading booked as foreign
+(`docs/data-provenance.md`, 2026-11-05). The floor at 1 keeps any other
+stall from doing the same: own airtime never reads under what the card
+decoded. A window that decoded nothing has
+no ratio at all, and its own airtime cannot be told from what the air
+carried (a null at mid range leaves our frames above `busy_dbm` with none
+decoded, and the RSSI EMA, which folds decoded frames only, frozen above
+the weak wall): that card gives the window **no busy reading** — the
+blocked streak holds rather than advancing, the sideport's `busy_pct` is
+null, and a window with no reading on any card is `unknown`. A relay's
+SURVEY reading needs no decode and is unaffected. Below `busy_dbm` our own frames
+leave NHM busy too, where the scale overcounts — that regime is `weak`'s.
+A busy reading is
 invalid — `blocked` can't fire off it — when the chip has no NHM, the card
 was mid-dwell, its channel changed mid-window, or an in-flight scout dwell
 landed inside the armed window (per-card dwell-generation counter, since
@@ -302,9 +330,9 @@ after the run ends: once a lossy run stops, the next
 majority and read `interfered`.
 
 `weak` wins outright, occupancy and detection included: at the range edge
-our own frames stop decoding, so `own_air_pct` (rebuilt from decoded frames
-only) undercounts and the subtraction can read our own video as foreign
-airtime — and a hop does not help range anyway
+our own frames fall below `busy_dbm` and out of the seq walk at once, so
+`own_air_pct` no longer tracks what the air carried and the subtraction can
+read our own video as foreign airtime — and a hop does not help range anyway
 (`weak_still_wins_over_occupied`, `weak_still_wins_over_detected`).
 
 `occupied && blocked`, not `occupied` alone: the window that first reaches
@@ -538,8 +566,9 @@ to the `K` scan.log line), and only when the scan measured something (some
 channel reached `min_rounds`); until then `boot_pick` is 0 and ties fall
 straight to config order (`no_boot_pick_falls_through_to_config_order`).
 Candidates = `radio.channels`, the same set the boot scout ranks and
-`InflightScout` dwells on. At `radio.width = 40` (`HopRanker`'s
-`width_mhz` constructor argument, from `radio.width`), within a tier
+`InflightScout` dwells on. At a receiver width of 40 (`HopRanker`'s
+`width_mhz`: `derived_width` at construction, moved by a live width flip,
+`ChannelCore::set_width` → `HopRanker::set_width_mhz`), within a tier
 entries carrying an NHM busy reading rank ahead of entries without one,
 then by lower `busy_pct`, before the score/boot-pick/config-order chain
 — see "40 MHz" below. At 20 MHz this step is skipped and score alone
@@ -557,8 +586,8 @@ score/boot-pick/config-order chain. A channel with no busy evidence ranks on
 score alone. `best()` with `require_unblocked` skips blocked entries; every
 hop target comes from that call (§5).
 
-**40 MHz.** At `radio.width = 40` dwells keep the 40 MHz tuning, so the
-`fa`/`cca`/`foreign` score terms see the primary only, and the ranker is
+**40 MHz.** At a derived receiver width of 40 dwells keep the 40 MHz
+tuning, so the `fa`/`cca`/`foreign` score terms see the primary only, and the ranker is
 built over the same primaries. Only `burst()` and in-flight dwells feed
 `HopRanker::add()`, both on primaries, and every member shares one
 `ht40_offset` (a config rule), which `FastRetune` keeps — so every ranked
@@ -864,7 +893,9 @@ H <t> <kind> <epoch> <target> <score> <elapsed_ms> <reason|->  # a hop event
   was non-healthy**. Per-card block order is
   `foreign fa cca crc rssi snr nhm_busy own_air`. `nhm_busy` is `-`
   when the card's busy reading was invalid for this window (§2); `own_air`
-  is always present, % of the window. The evidence field is the §2 bitmask
+  is always present, % of the window, delivery-scaled (§2; decoded-only in
+  files from before 2026-11-04, `docs/data-provenance.md`). The evidence
+  field is the §2 bitmask
   in hex: impaired 0x01, weak 0x02, detected 0x04, blocked 0x20, occupied
   0x80 (0x08/0x10/0x40 unassigned). `scanlog <= 8` files carry a tenth
   per-card field, `drssi` (the link-level best-card RSSI minus its

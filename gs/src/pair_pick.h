@@ -34,7 +34,7 @@ uint8_t pair_proposal(const std::vector<RankEntry>& all, uint8_t current,
 
 // True when any pair in `set` is ranked (its primary's row at min_rounds).
 // The boot-pick freeze's "did the scan measure anything" test at
-// radio.width 40.
+// the derived receiver width 40.
 bool any_pair_ranked(const std::vector<RankEntry>& all, const std::vector<uint8_t>& set,
                      int min_rounds);
 

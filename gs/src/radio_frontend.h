@@ -45,8 +45,8 @@ class RadioFrontend : public LinkCard {
     int index = 0;             // ordinal among matching devices
     uint8_t channel = 149;
     // RX width: 20, or 40 (channel is the primary 20; the secondary is the
-    // standard pairing, mabur::ht40_offset). radio.width for every card,
-    // the boot scout card included.
+    // standard pairing, mabur::ht40_offset). The derived receiver width,
+    // for every card -- the boot scout card included.
     uint8_t width_mhz = 20;
     uint8_t card_id = 0;
     // Set by the startup scan (card_scan.h): open the device at this

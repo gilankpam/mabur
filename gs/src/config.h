@@ -128,11 +128,6 @@ struct RadioCfg {
   // `channel = "auto"` -> nullopt (measure the set, boot hop); a member ->
   // pinned there, no measurement.
   std::optional<uint8_t> pin;
-  // HT20/HT40: validated to 20 or 40 in
-  // config.cpp, and 40 additionally requires `channel` to sit on a standard
-  // 5 GHz pair (mabur::ht40_offset) -- a 20-tuned receiver cannot hear a 40
-  // MHz transmission at all (docs/bw40.md).
-  uint8_t width = 20;
   // Empty + auto_scan: probe the bus and use every supported card found
   // (card_scan.h). A non-empty list pins exactly those devices and skips
   // the probe entirely -- that is the config-only way to fly one card.
@@ -197,8 +192,9 @@ struct LinkCfg {
   // applied to its own stream.
   double static_overhead_base = 0.5;
   double static_overhead_enh = 0.5;
-  // Width of the static-pin op (link.static_mcs >= 0), 20 or 40; 40 needs
-  // radio.width = 40. Lets the bench pin a 40 MHz rung.
+  // Width of the static-pin op (link.static_mcs >= 0), 20 or 40; 40 here
+  // makes the GS's derived receiver width 40 too. Lets the bench pin a
+  // 40 MHz rung.
   int static_bw = 20;
 
   // Measured-loss ladder controller config (docs/link-adaptation.md): rungs
@@ -337,17 +333,18 @@ struct ConfigIssue {
   std::string field, why;
 };
 
-/// radio.width's own checks: 20 or 40, and 40 only on a channel with a
-/// standard 5 GHz HT40 pair (mabur::ht40_offset). load_config runs it on the
-/// file's radio section; the web GS runs it on its page channel/width
-/// override. std::nullopt = OK.
+/// Per-channel width check: 20 or 40, and 40 only on a channel with a
+/// standard 5 GHz HT40 pair (mabur::ht40_offset). load_config runs it on
+/// radio.channels at the derived receiver width (derived_width below); the
+/// web GS runs it on its page channel/width override. std::nullopt = OK.
 std::optional<ConfigIssue> radio_width_issue(uint8_t channel, int width);
 
-/// Ladder/static-pin width vs the receiver's tuned width: a 40 MHz rung or
-/// static_bw pin needs width 40 (a 20-tuned receiver cannot hear HT40).
-/// load_config runs it against radio.width; the web GS (GS mode) against
-/// its override. std::nullopt = OK.
-std::optional<ConfigIssue> link_width_issue(const LinkCfg& link, int width);
+/// Receiver width derived from link settings: 40 if (static_mcs >= 0 &&
+/// static_bw == 40), or (static_mcs < 0 and) any ladder_cfg.ladder[i].bw == 40;
+/// else 20. Under adaptive static_bw is ignored; under fixed the ladder is
+/// ignored. The reason string is the parenthesised part of the boot log line.
+uint8_t derived_width(const LinkCfg& link);
+std::string derived_width_reason(const LinkCfg& link);
 
 /// Loads configuration from a TOML file (MABUR_GS_BUNDLE_DIR/maburgs.default.toml).
 /// Fail-fast: missing keys use struct defaults; unknown keys, out-of-range values,

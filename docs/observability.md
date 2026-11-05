@@ -31,6 +31,14 @@ player's GS OSD (:8302), `tools/flightreport.py` (over `flight.jsonl`).
 
 - `channel`, `state` (`session` | `beaconing` | `key_mismatch`), `key_fp`,
   `tx_card` — pairing is `docs/link-pairing.md`.
+- `width` — the live receiver width in MHz (20 or 40), `ChannelCore`'s own
+  `width_mhz()`: what the link ladder (any 40 MHz rung) or the static pin
+  (`static_bw`) derives. It is the target the cards are retuned to: a live
+  ladder/pin change that moves it orders every ready card's retune before
+  the new ladder or pin takes effect, but a card off on a dwell, out
+  searching, down, or a relay whose retune is not yet confirmed still
+  reads the old width until it catches up (`docs/gs-live-config.md`
+  "Width flip").
 - `op = {mcs, bw, sgi, vht, overhead_base, overhead_enh, snr_req}` — the
   GS-commanded op point.
 - `ctl` — the ladder controller's rung, util, probation/counters and last
@@ -251,8 +259,10 @@ draws a `refresh:` line in the LADDER panel, right after `nack:`, folding
 - `energy = {cca, fa, own, foreign, igi, busy_pct, own_air_pct}` — refilled
   from the verdict engine's ~150 ms window reads. `busy_pct` is NHM busy %
   (`null` when that window's reading was invalid or none has landed),
-  `own_air_pct` the GS's own reconstructed airtime on that card (`null` only
-  before the first window). maburtop's `busy` column tracks `energy`, and
+  `own_air_pct` the GS's own reconstructed airtime on that card — decoded
+  frames scaled by the window's seq delivery, `docs/inflight-channel-hop.md`
+  §2 (`null` only before the first window). maburtop's `busy` column tracks
+  `energy`, and
   its `fbusy` column is `max(0, busy_pct − own_air_pct)` — the same
   foreign-busy-airtime figure the verdict's `blocked` bit and both rankers
   use (`docs/findings/2026-09-25-nhm-airtime-spike.md`).

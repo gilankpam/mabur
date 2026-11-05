@@ -171,6 +171,18 @@ TEST(at_20_order_is_unchanged_by_busy_mean) {
   auto k = r.ranking(1000);
   CHECK(k[0].ch == 120 && k[1].ch == 165 && k[2].ch == 149);   // score order
 }
+// A live width flip moves the ranking's order with it, on the visits it
+// already holds.
+TEST(set_width_mhz_switches_the_busy_first_order) {
+  HopRanker r(cfg(), BusyCfg{}, {120, 149, 165}, 0, 20);
+  for (int i = 0; i < 3; ++i) { r.add(bv(120, i * 300, 0, 25)); r.add(bv(149, i * 300, 30, 5)); r.add(bv(165, i * 300, 5, 15)); }
+  CHECK(r.ranking(1000)[0].ch == 120);   // 20: score order
+  r.set_width_mhz(40);
+  CHECK(r.width_mhz() == 40);
+  CHECK(r.ranking(1000)[0].ch == 149);   // 40: busy order
+  r.set_width_mhz(20);
+  CHECK(r.ranking(1000)[0].ch == 120);
+}
 TEST(no_busy_entries_sort_after_busy_entries_within_tier_at_40) {
   HopRanker r(cfg(), BusyCfg{}, {120, 149}, 0, 40);
   for (int i = 0; i < 3; ++i) { r.add(V(120, i * 300, 0)); r.add(bv(149, i * 300, 50, 20)); }

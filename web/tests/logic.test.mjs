@@ -193,8 +193,8 @@ test('isStalePresentSample drops rAF callbacks that fired long after the draw (F
 test('errorText maps glue errors', () => {
   assert.match(errorText('ERROR claim failed rc=-6'), /Card busy/);
   assert.match(errorText('ERROR card lost'), /Card lost/);
-  assert.match(errorText('bad channel/width: radio.width: 40 MHz needs a standard 5 GHz pair'),
-    /Channel\/width refused: radio\.width: 40 MHz needs/);
+  assert.match(errorText('bad channel/width: radio.channels: 40 MHz needs a standard 5 GHz pair'),
+    /Channel\/width refused: radio\.channels: 40 MHz needs/);
   assert.equal(errorText('ERROR something new'), 'ERROR something new');
 });
 

@@ -977,19 +977,18 @@ TEST(channel_width_override_validation) {
   CHECK(channel_width_error(c, Mode::Gs, 0, 20).has_value());
   CHECK(channel_width_error(c, Mode::Gs, 201, 20).has_value());
   CHECK(channel_width_error(c, Mode::Spotter, 136, 80).has_value());
+  // Gs mode's width isn't an independent pick: c's ladder has a 40 MHz
+  // rung, so the link settings derive 40, and a page width of 20 is
+  // refused as disagreeing with it.
+  auto g = channel_width_error(c, Mode::Gs, 136, 20);      // c has a 40 rung → derives 40
+  REQUIRE(g.has_value());
+  CHECK(*g == "page width 20 but the link settings derive 40");
+
   c.radio.channels = {165};
   auto e = channel_width_error(c, Mode::Spotter, 165, 40);   // no HT40 pair: the set check says so
   REQUIRE(e.has_value());
   CHECK(e->find("radio.channels") != std::string::npos && e->find("165") != std::string::npos);
-  // GS commands the ladder: a 40 MHz rung while tuned 20 is refused...
-  bool has40 = false;
-  for (const auto& r : c.link.ladder_cfg.ladder) has40 |= r.bw == 40;
-  REQUIRE(has40);
-  auto g = channel_width_error(c, Mode::Gs, 165, 20);
-  REQUIRE(g.has_value());
-  CHECK(g->find("link.ladder[") != std::string::npos);
-  // ...a spotter only listens, so 20 is fine.
-  CHECK(!channel_width_error(c, Mode::Spotter, 165, 20));
+  CHECK(!channel_width_error(c, Mode::Spotter, 165, 20));  // spotter: the pick stands
 }
 
 TEST(relay_stats_fields_keeps_the_page_keys) {
@@ -1150,7 +1149,7 @@ namespace {
 // WebGs clock (and, through Opts::sleep_hook, the rig's clock and the fake
 // cards' energy clock with it). One card: `card` is the scout and opens at
 // 20 MHz like maburgs's boot scout card. Two cards: `card` is the link card
-// at radio.width, `card2` the scout at 20.
+// at the derived receiver width, `card2` the scout at 20.
 //
 // No threads means the scout's beacon windows open and close inside one
 // tick()'s scout step, so the send path (after the core tick) never sees
@@ -1172,7 +1171,6 @@ struct GsRig {
   std::function<void()> on_sleep;
   explicit GsRig(uint8_t start = 40, bool pinned = false, int n_usb = 1) {
     c.radio.channels = {40, 64, 112, 144};
-    c.radio.width = 40;
     if (pinned) c.radio.pin = start;
     card.ch = start; card.width_mhz = n_usb == 1 ? 20 : 40;
     card.relay = n_usb == 0;
@@ -1241,9 +1239,12 @@ TEST(gs_roster_builds_core_and_one_card_prelude_commits_and_stores) {
 // Detection is NHM occupancy only, so the op's air is held for the call:
 // NHM 100 % busy at the core's op-window arm period on a USB card, SURVEY
 // 97 % busy on a relay; restored afterwards. A first jam needs the
-// occupied_windows lead-in (occ_lead) before its trigger.
+// occupied_windows lead-in (occ_lead) before its trigger. Every window
+// also decodes one frame (a telemetry body walks the card's seq): the
+// window fill gives a card that decoded nothing no busy reading at all.
 static int occ_lead(const GsRig& r) { return r.c.hop.verdict.occupied_windows - 1; }
 static void interfere_one_card(GsRig& r, int windows) {
+  static uint16_t tlm_seq = 1000;
   r.card.cca_per_ms_on[r.card.ch] = 50;
   const bool arm_ok = r.card.nhm_arm_ok;
   const maburgs::NhmBusyRead read = r.card.nhm_read;
@@ -1260,6 +1261,7 @@ static void interfere_one_card(GsRig& r, int windows) {
     r.card.fr.foreign += 40;
     for (int i = 0; i < r.c.hop.window_ms / 10 + 1; ++i) {
       r.g->vrx()->on_video(static_cast<double>(r.t) / 1000.0);   // keep SESSION alive (no drone here)
+      r.g->on_rx(telem_body(tlm_seq++, r.t));
       r.ticks(1);
     }
   }
@@ -1375,6 +1377,7 @@ TEST(stats_json_carries_channel_fields_gs_and_spotter) {
 
 TEST(channel_width_error_checks_the_set_membership_and_pin) {
   auto c = cfg();
+  c.link.ladder_cfg.ladder = {{0, 0.5, 0.25, 20}, {3, 0.5, 0.25, 40}};   // derives 40: the Gs checks below use width 40
   c.radio.channels = {40, 64, 112, 144};
   CHECK(!channel_width_error(c, Mode::Gs, 40, 40).has_value());
   CHECK(!channel_width_error(c, Mode::Spotter, 144, 20).has_value());
@@ -1452,7 +1455,6 @@ struct SpotRig {
   int aus = 0;
   explicit SpotRig(uint8_t start = 40) {
     c.radio.channels = {40, 64, 112, 144};
-    c.radio.width = 40;
     card.ch = start; card.width_mhz = 40;
     Io io;
     io.on_au = [this](Au&&) { ++aus; };
@@ -1782,11 +1784,14 @@ TEST(nack_stats_null_in_spotter_and_with_nack_off) {
 
 // The page's overlay (web/ui/src/lib/config.js toOverlayToml, GS mode) carries
 // [link.nack] between [link] and the ladder; the loader must take the switch
-// and leave the bundle's other NACK keys alone. The string is the JS test's
-// pinned fixture (config.test.mjs "overlay TOML, pinned"), byte for byte.
+// and leave the bundle's other NACK keys alone. The string matches the JS
+// test's pinned fixture (config.test.mjs "overlay TOML, pinned"), byte for
+// byte -- neither carries a "width =" line under [radio]: the receiver
+// width is derived from [link] (static_bw / the ladder), not loaded from a
+// radio.width key.
 TEST(web_overlay_link_nack_switch_loads_over_the_bundle) {
   const std::string overlay =
-      "[radio]\nchannels = [40, 64, 112, 144]\nchannel = \"auto\"\nwidth = 20\n"
+      "[radio]\nchannels = [40, 64, 112, 144]\nchannel = \"auto\"\n"
       "\n[link]\nstatic_mcs = 3\nstatic_bw = 20\nmax_mcs = 7\n"
       "\n[link.nack]\nenable = true\n"
       "\n[[link.ladder]]\nmcs = 3\nbw = 20\noverhead_base = 0.5\noverhead_enh = 0.25\n";

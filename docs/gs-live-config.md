@@ -80,11 +80,11 @@ current value is read off `link.vtx.rows[]`.
 | Key | Type | Applies to | Notes |
 |---|---|---|---|
 | `radio.channel` | int or `"auto"` | `ChannelCore::set_pin` / `set_auto` | An order placed only *after* the file holds the new value (`order_after_publish`), not an apply before it. A pin to a member is checked at submit, before any file work, by `ChannelCore::pin_refusal` — everything `set_pin` refuses, in its words: `relocate in flight`, `hop in flight` (a one-card hop still riding its RCFs included), `calibration running` (a run, its measure round or its relocate), and, for a linked move off the current channel, `sweep in flight` or `hop cap`. A channel that isn't a member, or a value that isn't a channel, is the loader's refusal, in its message. `"auto"` is never refused (`set_auto` withdraws a pin relocate not yet placed). A set to the live value (the pinned channel, or `"auto"` while auto) is a same-value `ok` with no check and no file write. `ok` on a linked pin means the order was accepted and the file holds it, not that the link has moved: the relocate runs afterwards, and one that does not land (the drone does not follow, the link drops) leaves the GS pinned with the link on the channel it was on, while `get` and the file read the requested one. The sideport shows it as `scan.pick` (the pin) ≠ `link.channel` (the link), and stderr logs `relocation to <want> did not land; staying on <op>`. An order still refused once the file is published (a hop started between the check and the order) re-publishes the previous file text under the still-held write lock; if that restore fails too, the reply is `err <reason>; restoring the file failed: <error>`. |
-| `link.static_mcs` | int | `VrxController::set_pin` | `mcs < 0` is adaptive (the ladder drives the operating point); `mcs >= 0` bypasses the ladder with a fixed rung. Applied together with `static_bw`/`static_overhead_base`/`static_overhead_enh` as one call. Back to adaptive from a pin re-enters the ladder on the rung with the pinned `{mcs, bw}`, else rung 0 — an `E … unpin` ctl line — with the feedback timeout counted from that moment: the ladder gets no feedback while pinned, and that is not a feedback loss. |
-| `link.static_bw` | int | `VrxController::set_pin` | |
+| `link.static_mcs` | int | `VrxController::set_pin` | `mcs < 0` is adaptive (the ladder drives the operating point); `mcs >= 0` bypasses the ladder with a fixed rung. Applied together with `static_bw`/`static_overhead_base`/`static_overhead_enh` as one call. Back to adaptive from a pin re-enters the ladder on the rung with the pinned `{mcs, bw}`, else rung 0 — an `E … unpin` ctl line — with the feedback timeout counted from that moment: the ladder gets no feedback while pinned, and that is not a feedback loss. Applied together with `static_bw`, this set also flips the receiver width first — see "Width flip". |
+| `link.static_bw` | int | `VrxController::set_pin` | Flips the receiver width first — see "Width flip". |
 | `link.static_overhead_base` | real | `VrxController::set_pin` | |
 | `link.static_overhead_enh` | real | `VrxController::set_pin` | |
-| `link.ladder` | array of inline tables | `ChannelCore::replace_ladder` | Rebuilds the ladder controller inside the session (`VrxController::replace_ladder`). The old rung's `{mcs, bw}` is looked up in the new ladder: present → restored to that index; absent → rung 0. The new controller keeps the old one's last feedback time, so the feedback timeout does not fire on the swap. A hop's restore rung, frozen as a ladder index at the impairment onset, is translated the same way (by `{mcs, bw}`, else rung 0), so a hop after the swap restores the pre-onset operating point. A rung the loader would silently drop for being above `link.max_mcs` instead refuses the whole set (`rung <i> exceeds link.max_mcs`), rather than flying a ladder shorter than what was asked for. The rewrite replaces the first run of `[[link.ladder]]` blocks in the file; a second run further down (which the loader would append) refuses the set with `the config file holds more [[link.ladder]] rungs than the set`. Also re-headers `ctl.log` — see below. |
+| `link.ladder` | array of inline tables | `ChannelCore::replace_ladder` | Flips the receiver width first — see "Width flip". Rebuilds the ladder controller inside the session (`VrxController::replace_ladder`). The old rung's `{mcs, bw}` is looked up in the new ladder: present → restored to that index; absent → rung 0. The new controller keeps the old one's last feedback time, so the feedback timeout does not fire on the swap. A hop's restore rung, frozen as a ladder index at the impairment onset, is translated the same way (by `{mcs, bw}`, else rung 0), so a hop after the swap restores the pre-onset operating point. A rung the loader would silently drop for being above `link.max_mcs` instead refuses the whole set (`rung <i> exceeds link.max_mcs`), rather than flying a ladder shorter than what was asked for. The rewrite replaces the first run of `[[link.ladder]]` blocks in the file; a second run further down (which the loader would append) refuses the set with `the config file holds more [[link.ladder]] rungs than the set`. Also re-headers `ctl.log` — see below. |
 | `link.nack.enable` | bool | `NackTracker::set_enable` | Turning it off also clears the tracker's pending retransmit requests; its request counter is kept (not reset) so a later re-enable stays monotonic. |
 | `debug_log.enable` | bool | `DebugSession::enable`/`disable` + opening/closing the six per-session log files | A failing `enable` (the log root is unwritable, e.g. `/media/dvr` missing) reports `debug_log.dir <dir> unusable` and closes nothing, opens nothing — the running session, if any, is untouched. |
 | `msp.enable` | bool | build or drop the MSP OSD sink (the MSP stream's UDP feed to `maburplay`, `[msp.out]`) | |
@@ -106,6 +106,66 @@ replaced `[[link.ladder]]` region — between or inside the old rung blocks
 — are not preserved.** Only the run of blank/comment lines that leads into
 the *next* table (by position, not ownership) survives the replace, since
 it belongs to whatever follows, not to the ladder.
+
+## Width flip
+
+The GS has no `radio.width` key: the receiver width is derived from
+`[link]` (`derived_width`, `gs/src/config.h` — `static_bw` when
+`static_mcs >= 0`, else 40 iff any `[[link.ladder]]` rung has `bw = 40`,
+else 20). A live `link.ladder`, `link.static_mcs` or `link.static_bw` set
+that would move the width is checked against `ChannelCore::width_refusal`
+twice, both times on the core loop (the thread that owns `ChannelCore`):
+
+- at submit, before any file work — the same shape as `radio.channel`'s
+  `pin_refusal` precheck — with the width the value's own text derives
+  against the live `[link]`;
+- in the apply, right before the cards are retuned, with
+  `derived_width` of the loaded candidate: a scan, hop, sweep or
+  calibration that started while the worker read and loaded the file
+  refuses the set here. A refusal at either point leaves the file
+  byte-identical, writes no `.pre-live`, changes no card or ladder, and
+  the reply is the refusal's own text (`err ladder refused: scan in
+  flight`).
+
+Accepted, the apply flips every ready card to the new width before the
+ladder is replaced or the static pin is applied, so the cards are already
+retuned when the new operating point takes effect. A set that cannot move
+`derived_width` (the two overhead keys) is a no-op here: `set_width` to
+the width already live does nothing. A publish that fails after the apply
+re-applies the previous config the same way, cards first; if the core
+refuses that width now, the revert changes nothing — the cards stay at
+the new width and the process keeps the new ladder or pin, in step with
+each other but not with the file — and stderr logs `maburgs: cfg set
+<key>: revert failed: <refusal>`.
+
+Refusals, in `width_refusal`'s own words: `ladder refused: scan in
+flight` while the boot pick is open (up to `radio.scan.max_ms` after
+boot, or after a `"auto"` set while unlinked) or a calibration measure
+round runs — the scan ranks at the width it started at and the width
+resync is closed until it ends; `ladder refused: channel set is not 40
+MHz pair-valid (member <n>)` on a flip to 40 over a channel set that is
+not a standard HT40 pair set, naming the first member with no pair — the
+submit-time check catches it before the candidate is loaded, so this is
+what a 40 MHz ladder over e.g. `[40, 165]` reads, not the loader's
+`radio.channels` message; the
+existing `calibration running`, `hop in flight` / `relocate in flight`
+(the same predicates `radio.channel`'s pin uses); and `sweep in flight`
+while a relay sweep holds its card off op. An unlinked GS whose pick has
+frozen (the drone off, or lost for `radio.scan.search_after_ms`) takes a
+flip: the boot scout is out searching on its own card only, so every
+other card is retuned at once and the scout card once the search lets go
+of it.
+
+The flip itself logs `maburgs link: width <A> -> <B> MHz (ladder set)`
+(`ChannelCore::set_width`), followed by one `maburgs radio: card <N>
+width <A> -> <B> MHz on ch <C>` line per card as each retunes
+(`RadioFrontend::set_width`); a card the resync cannot reach yet (busy on
+a dwell, out searching, or down) keeps its untried flag and picks up the
+fix-up on a later tick (`gs/src/width_resync.h`). The hop ranker orders
+for the new width from the flip on (`docs/inflight-channel-hop.md`), the
+in-flight scout records its dwells at it, and the boot scout follows once
+its card is retuned. The sideport's `link.width` tracks
+the live derived width throughout (`docs/observability.md`).
 
 ## maburplay — `kPlayerLiveKeys` (`gs/player/src/player_config_apply.cpp`)
 

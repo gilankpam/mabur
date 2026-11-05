@@ -18,7 +18,7 @@
   import { sparkPoints } from '../lib/metrics.js';
   import { layoutMode, keyAction, isMobile, uiFrame } from '../lib/layout.js';
   import { connectBlocker, toOverlayToml, saveConfig, saveKey, parseKeyText,
-    startChannel, loadRememberedChannel, saveRememberedChannel } from '../lib/config.js';
+    startChannel, loadRememberedChannel, saveRememberedChannel, pageWidth } from '../lib/config.js';
   import { relayBlocker, relayTarget, relayFieldVisible, keyFingerprint, USB_FILTERS, isCardVendor } from '../lib/logic.mjs';
   import { connectRelay, lnaQuery, probeRelay } from '../lib/relay_connect.js';
   import { effectiveTarget, targetCovers, recFileName, localView, combinedRec, headroomWarning,
@@ -192,7 +192,7 @@
     // so it's read off the form every tick rather than only on Connect.
     video.phase.enabled = ui.cfg.phaseLock;
     displayHz = live && sess.mode === 'gs' ? video.phase.panelHz : null;
-    view = statsView({ connected: live, connecting: sess.state === 'connecting', mode: shownMode, ch: sess.ch, w: live ? sess.w : ui.cfg.width,
+    view = statsView({ connected: live, connecting: sess.state === 'connecting', mode: shownMode, ch: sess.ch, w: live ? sess.w : pageWidth(ui.cfg, ui.mode),
       core, page: live ? tele.page : null, sessionCfg: live ? sessionCfg : ui.cfg, cfg: ui.cfg, videoSize: video.videoSize,
       colour: live ? video.colour : null });
     const target = effectiveTarget(sessionCfg.dvr, sess.mode);
@@ -232,7 +232,7 @@
     if (isMobile(LW, LH) && usbGranted) goLandscape();
     video.reset(); tele.reset(); osd.resetAtlasFailure(); hiddenShown = false; hiddenBanner = false;
     const ch = startChannel(sessionCfg, loadRememberedChannel(localStorageSafe()));
-    const p = session.connect({ mode: ui.mode, ch, w: sessionCfg.width, overlayToml: toOverlayToml(sessionCfg, ui.key, ui.mode),
+    const p = session.connect({ mode: ui.mode, ch, w: pageWidth(sessionCfg, ui.mode), overlayToml: toOverlayToml(sessionCfg, ui.key, ui.mode),
       relay: ui.radio === 'relay' ? relayTarget(showRelayAddr ? ui.relayAddr : '') : null });
     refresh();   // the connecting tag/overlay without waiting for the next tick
     await p;

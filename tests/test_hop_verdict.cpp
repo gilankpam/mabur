@@ -411,7 +411,7 @@ TEST(weak_without_a_real_snr_fires_on_rssi_alone) {
 // moving loss or tripping foreign/fa: at zero loss a clean signal reads
 // `healthy` forever unless `blocked` holding for occupied_windows
 // consecutive windows becomes `impaired` on its own (hop.verdict.
-// occupied_windows). Width-free: HopVerdict never sees radio.width.
+// occupied_windows). Width-free: HopVerdict never sees the receiver width.
 static VerdictCardIn busy(double nhm, double own) { auto c = card(-61, 30, 0, 4); c.busy_valid = true; c.nhm_busy_pct = nhm; c.own_air_pct = own; return c; }
 TEST(occupied_fires_at_default_width_after_occupied_windows_blocked_windows_with_zero_loss) {
   HopVerdict v(cfg(), BusyCfg{}); double t = warm(v);
