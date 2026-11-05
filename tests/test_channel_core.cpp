@@ -1755,6 +1755,29 @@ TEST(own_air_scaled_is_capped_at_100) {
   CHECK(*e->own_air_pct > 99.9 && *e->own_air_pct < 100.1);
 }
 
+// Own airtime never reads under the airtime the card decoded. A frame with
+// a seq ahead of the drone's (another counter that slipped into the walk)
+// leaves every later drone frame "behind" the mark: received climbs while
+// expected stands, and a delivery ratio under 1 zeroed the card's own
+// airtime while it decoded fine, so its whole busy reading booked as
+// foreign. Revert (delivery = expected / received unfloored): 0 %.
+TEST(own_air_never_reads_under_the_decoded_airtime) {
+  Rig g(1, 0, /*pinned=*/true, 40);
+  const auto e = one_window(g,
+      [&] {
+        for (uint16_t s = 0; s < 10; ++s) g.agg.on_rx_body(junk_body(0, s));
+        g.agg.on_rx_body(junk_body(0, 1500));   // the mark jumps ahead
+      },
+      [&] {
+        for (uint16_t s = 10; s <= 30; ++s) g.agg.on_rx_body(junk_body(0, s));   // all "behind"
+        g.cards[0]->fr.own_air_us += 56000;   // 40 % of the 140 ms span
+        g.cards[0]->fr.own += 21;
+      });
+  REQUIRE(e.has_value());
+  REQUIRE(e->own_air_pct.has_value());
+  CHECK(*e->own_air_pct > 39.0 && *e->own_air_pct < 41.0);
+}
+
 // A window that decoded nothing has no delivery ratio (the seq walk only
 // advances on a decoded frame), so its own airtime cannot be told from
 // what the air carried: a null at mid range leaves our frames above

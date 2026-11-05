@@ -171,6 +171,9 @@ Chronological; each line names the section below that carries the detail.
   and a live width flip changes the `D` rows' `bw` mid-file.
 - 2026-11-04 — `own_air` (`V` rows) / `energy.own_air_pct` become
   delivery-scaled; no marker change.
+- 2026-11-05 — the GS's own NACK/MAV leave the per-card seq walk: before
+  it, one card's `loss_pct` could read `null` and its `own_air` 0 for up
+  to ~1.2 s after a NACK while it decoded normally; no marker change.
 
 ## 2026-09-23 — `link.pre_fec_loss` scale break, twice
 
@@ -1509,3 +1512,21 @@ hops (`docs/findings/2026-11-04-fade-false-hops.md`). Verdict histograms
 and `fbusy` traces from lossy windows are not comparable across the
 break; a file's date against this page is the only way to tell which
 figure it holds.
+
+## 2026-11-05 — the GS's own NACK/MAV leave the per-card seq walk
+
+No marker change. Before this build the aggregator diverted only the GS's
+own RCF and DISC as self frames; its T_NACK and tagged T_MAV, heard
+point-blank by the other card, entered that card's seq walk carrying the
+GS's own seq counter. Roughly half the time that counter sat ahead of the
+drone's mark, and the card's walk then read every drone frame as "behind"
+for up to ~1.2 s: `cards[i].loss_pct` reads `null` (expected did not
+advance) or understated, and the card's delivery-scaled `own_air` (`V`
+rows, `energy.own_air_pct`) reads 0 while the card decodes normally, so
+`busy − own_air` reads the card's whole busy airtime as foreign. Session
+0347 holds 12 such stalls, each starting within one 200 ms sideport row
+of a NACK request, and one false hop from them (599.8 s). From this build
+those frames count in `self_pps` instead, and own airtime is also floored
+at the decoded airtime (`docs/inflight-channel-hop.md` §2). In older
+files, a run of `loss_pct: null` on one card while its `pps` holds marks a
+stalled walk, not lost video.

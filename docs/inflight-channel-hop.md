@@ -248,14 +248,24 @@ window per op card; `own_air_pct` is the GS's own reconstruction of that
 card's airtime: the CRC-good frames it decoded (bytes·8 / HT rate, plus
 one preamble per PPDU from the `physt` A-MPDU boundary), scaled by the
 window's delivery ratio from the card's hardware-seq walk
-(`seq_expected / seq_received`, `CardTrack`), capped at 100 %. Own airtime
+(`seq_expected / seq_received`, `CardTrack`), floored at 1 and capped at
+100 %. Own airtime
 is what the drone transmitted, not what the card decoded: a card fading at
 mid range decodes a fraction of our frames while every one of them still
 fills its NHM busy, so the decoded-only figure booked the rest as foreign
 and a fade read as interference confirmed by its own loss
 (`docs/findings/2026-11-04-fade-false-hops.md`). The seq walk counts
 every frame the drone sent whether or not this card heard it, so the
-scale restores the frames it missed. A window that decoded nothing has
+scale restores the frames it missed. The walk numbers the drone's frames
+only: every frame the GS sends (RCF, DISC, NACK and its own T_MAV, the
+tagged one), heard point-blank by the other card, is diverted as a self
+frame before it. A self frame carries the GS's seq counter, and one landing
+ahead of the drone's mark made every drone frame after it read "behind" —
+expected stood for up to ~1.2 s while received climbed, the ratio fell to
+0 and the card's whole busy reading booked as foreign
+(`docs/data-provenance.md`, 2026-11-05). The floor at 1 keeps any other
+stall from doing the same: own airtime never reads under what the card
+decoded. A window that decoded nothing has
 no ratio at all, and its own airtime cannot be told from what the air
 carried (a null at mid range leaves our frames above `busy_dbm` with none
 decoded, and the RSSI EMA, which folds decoded frames only, frozen above

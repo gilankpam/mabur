@@ -77,16 +77,25 @@ void Aggregator::on_rx_body(const mabur::node::RxBody& m) {
   }
   CardTrack& c = cards_[m.card_id];
 
-  // Classify once: GS-self-originated RC frames (RCF/DISC) heard back on
-  // the GS's own monitor-mode capture are diverted before any accounting —
-  // they never touch frames/rx_bytes/seq/EMA, only self_frames + the rc
-  // routing. Gated on crc_ok: real self frames are point-blank captures and
-  // always CRC-clean, so a corrupt frame whose bytes happen to parse as
-  // T_RCF/T_DISC must NOT be diverted here — it still owes frames/crc_fail/
-  // rx_bytes accounting like any other received frame.
+  // Classify once: GS-self-originated RC frames heard back on the GS's own
+  // monitor-mode capture are diverted before any accounting — they never
+  // touch frames/rx_bytes/seq/EMA, only self_frames + the rc routing. That
+  // is every type the GS sends: RCF, DISC, NACK, and its own T_MAV, which
+  // is the tagged one (the drone's T_MAV is untagged and numbers on the
+  // drone's counter like its other RC frames). A self frame carries the
+  // GS's seq counter: let into the walk, one landing ahead of the drone's
+  // mark makes every drone frame after it read as "behind", stalling the
+  // card's expected count for up to 2047 frames while received climbs.
+  // Gated on crc_ok: real self frames are point-blank captures and always
+  // CRC-clean, so a corrupt frame whose bytes happen to parse as one must
+  // NOT be diverted here — it still owes frames/crc_fail/rx_bytes
+  // accounting like any other received frame.
   const int rc_t = mabur::rc::frame_type(m.body.data(), m.body.size());
   const bool is_self =
-      m.crc_ok && (rc_t == mabur::rc::T_RCF || rc_t == mabur::rc::T_DISC);
+      m.crc_ok && (rc_t == mabur::rc::T_RCF || rc_t == mabur::rc::T_DISC ||
+                   rc_t == mabur::rc::T_NACK ||
+                   (rc_t == mabur::rc::T_MAV &&
+                    mabur::rc::parse_mav(m.body.data(), m.body.size(), /*tagged=*/true)));
   if (is_self) {
     ++c.self_frames;
     static const bool gaplog_self = std::getenv("MABUR_GAPLOG") != nullptr;

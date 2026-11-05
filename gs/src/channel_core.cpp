@@ -583,9 +583,17 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
       // delivered. The card gives no busy reading for the window instead:
       // the blocked streak holds rather than advancing, and a window with
       // no reading on any card classifies unknown.
+      //
+      // The ratio is floored at 1: the drone sent at least what this card
+      // decoded. Under 1 means the walk itself stalled -- a frame from
+      // another counter set its mark ahead of the drone's, and every drone
+      // frame after it reads "behind" (received climbs, expected stands).
+      // Unfloored, that zeroed the own airtime of a card decoding fine and
+      // booked its whole busy reading as foreign.
       const uint64_t d_exp = seq_exp - window_prev_seq_exp_[si];
       const uint64_t d_rcv = seq_rcv - window_prev_seq_rcv_[si];
-      const double delivery = d_rcv > 0 ? static_cast<double>(d_exp) / static_cast<double>(d_rcv) : 1.0;
+      const double delivery =
+          d_rcv > 0 ? std::max(1.0, static_cast<double>(d_exp) / static_cast<double>(d_rcv)) : 1.0;
       const double own_pct = win_us > 0
           ? std::min(100.0, 100.0 * delivery *
                                 static_cast<double>(cs.frames.own_air_us - window_prev_[si].own_air_us) / win_us)
