@@ -2545,11 +2545,15 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
           const uint64_t build_us = g.build_us - p.build_us;
           const uint64_t joins = g.join_waits - p.join_waits;
           const uint64_t wait_us = g.join_wait_us - p.join_wait_us;
-          if (jobs > 0 || joins > 0 || g.backlog_drops != p.backlog_drops) {
+          const uint64_t frame_end = g.frame_end_repairs - p.frame_end_repairs;
+          const uint64_t frame_end_us = g.frame_end_us - p.frame_end_us;
+          if (jobs > 0 || joins > 0 || frame_end > 0 ||
+              g.backlog_drops != p.backlog_drops) {
             std::fprintf(stderr,
                 "maburd fec_worker sid=%d: jobs=%llu build_us/job=%llu "
                 "inline=%llu joins=%llu join_wait_us mean=%llu max=%llu "
-                "qdepth_max=%llu backlog_drops=%llu\n",
+                "qdepth_max=%llu backlog_drops=%llu frame_end=%llu "
+                "frame_end_us/rep=%llu\n",
                 sid,
                 (unsigned long long)jobs,
                 (unsigned long long)(jobs ? build_us / jobs : 0),
@@ -2558,7 +2562,9 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
                 (unsigned long long)(joins ? wait_us / joins : 0),
                 (unsigned long long)g.join_wait_max_us,
                 (unsigned long long)g.enq_depth_max,
-                (unsigned long long)(g.backlog_drops - p.backlog_drops));
+                (unsigned long long)(g.backlog_drops - p.backlog_drops),
+                (unsigned long long)frame_end,
+                (unsigned long long)(frame_end ? frame_end_us / frame_end : 0));
           }
           fec_gauge_prev[sid] = g;
         }

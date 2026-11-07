@@ -1286,6 +1286,17 @@ trim's own rate); `rc: low_power ENTER/EXIT` lines mark transitions,
 the phase lock's first offset, clamps and refusals) and the 5 s
 `frame_ring:` line (below).
 
+Also on that 5 s cadence, one `fec_worker sid=<n>:` line per UEP stream
+when its counters moved: `jobs=`/`build_us/job=` and `joins=`/
+`join_wait_us mean=/max=` cover the async repair worker,
+`qdepth_max=`/`backlog_drops=` its queue depth and drops, and `inline=`
+counts only queue-full inline fallbacks (the async path building a repair
+on the hot thread because the worker queue was full) — never the
+frame-end batch. `frame_end=` is the repairs a declared video frame's
+flush() built and sank inline at the frame's end (held tail credit spent
+as its own small batch, `docs/airtime-model.md` "Repairs at the frame
+end"), and `frame_end_us/rep=` their mean build-plus-sink µs.
+
 The MAVLink parameter component (T_MAV, `drone/src/mav_component.h`) logs
 to the same stderr. At boot: `maburd mav: component sys 1 comp 191,
 config <path>`. Per request, `[mav] ` lines: `list: <n> values`,
