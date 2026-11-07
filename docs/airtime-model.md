@@ -111,45 +111,58 @@ per-class air difference, which the jitter EMA shows at ~2× Δair /
 wire-rate. Measurement basis for the pairs:
 `docs/findings/2026-08-30-same-rate-uep.md`.
 
-### Repairs at the frame end (`fec.repairs_with_frame`)
+### Repairs at the frame end
 
-Sources ship as soon as they are sealed. With `fec.repairs_with_frame =
-false`, repairs are paid from
-a credit as it accrues (`overhead` per sealed source, one repair per whole
-credit) and built on the FEC worker; the frame end adds one tail repair.
-A repair covers the last `fec.window` symbols sent **before** it, so the
-repairs spread through a frame protect its early symbols well and its
-tail poorly: a lost body near the end of a frame leaves one or two
-repairs behind it, and the frame waits for the next frame of its layer
-(two display periods at 120 fps, since base and enhance alternate). It
-then completes next to that frame, and the display drops one of the
-pair.
+Sources ship as soon as they are sealed, in every stream. A repair covers
+only the symbols sealed before it, so a placement that spends credit
+continuously — one repair per whole `overhead` credit, as it accrues —
+protects a frame's early symbols well and its tail poorly: the last
+~`ceil((bpb−1)/ov)` trailing symbols of a frame (where `bpb` is the
+layer's `blocks_per_body` and `ov` its overhead) never accrue a full
+credit before the frame ends, so they ship with no repair behind them
+inside that frame. A loss there waits for the next frame of the layer
+(two display periods at 120 fps, since base and enhance alternate),
+completes next to it, and the display drops one of the pair. The
+undeclared streams (MSP, linkbench) run exactly this placement, plus one
+tail repair built at `flush()` as a burst-tail backstop.
 
-`fec.repairs_with_frame = true` (the default; the bundle pairs it with
-`fec.window = 64`) holds a frame's credit
-to the frame end. There its repairs are built inline, each covering every
-symbol of the frame, and ship in a body of their own right behind the
-frame's last source body. A frame longer than the window spends its
-credit a window at a time. The frame end rounds the credit up and
-forgives the remainder, which keeps the repair count close to the default
-mode's (whose tail repair is also on top of the credit). The repair
-header carries `seq` and `window_len`, so the wire and the GS decoders
-are unchanged.
+Every video frame declares itself instead (`UepEncoder::add_frame` calls
+`SwEncoder::begin_frame` before fragmenting it, with
+`n = Fragmenter::chunk_count(len, usable)`), and `begin_frame` holds the
+credit on that frame's trailing `frame_hold_syms(n, window, overhead,
+blocks_per_body)` seals to the frame's own `flush()` instead of spending
+it as it accrues. A frame that fits in one window (`n <= window`) holds
+its entire credit to the end — nothing to spend early. A bigger frame
+spends its front normally and holds only its tail: `T =
+ceil(blocks_per_body / overhead)` seals, clamped to the window and to the
+frame itself — enough held credit that the frame-end batch rounds up to
+about one body's worth of repair blocks. `flush()` closes the frame by
+rounding the held credit up (`ceil`) and building that many repairs
+inline on the hot thread, each covering every symbol of the frame (up to
+the window), in a body of their own right behind the frame's last source
+body; the remainder below the next whole repair is forgiven, not carried
+into another frame. A declared frame gets no separate tail repair — the
+frame-end batch replaces it.
 
-The cost is pooling. A frame its own repairs cannot save (two bodies
-lost) relies on the next frames' repairs; with those held to the next
-frame's end, their window reaches back into this frame only by
-`window − next frame's symbols`. Run the mode with a window of about two
-frames (`fec.window = 64` for frames of ~20 symbols). A config without the `repairs_with_frame` key gets the
-mode and a window raised to at least 64 (logged among the defaulted keys);
-an explicit key keeps the configured window as it is. On a recorded
-120 fps sequence (`tools/bench/frame_fec_sim.cpp`, whole-body loss),
-window 64: lossy frames waiting longer than one display period fall from
-~30 % to ~10 % at 4 % body loss, and frames never completed rise from 0
-to 0.04 % (0.03 % to 0.33 % at 8 %). The NACK (`docs/fec-nack.md`) is
-not in that model; it fills base-layer holes the FEC leaves, and with the
-frame's repairs right behind it a single lost body is repaired before the
-NACK settle time, so fewer requests race the FEC.
+**Why not a fixed block count.** An earlier frame-end design held a
+frame's credit in fixed 64-symbol blocks, independent of the layer's
+`overhead` or `blocks_per_body`. A frame longer than the window left a
+tail whose own rounded repair share was often less than one body, with no
+reach-back from the next frame — that frame's own repairs are held to
+*its* end too, so there was nothing to borrow across the boundary. Sizing
+the hold from `blocks_per_body` and `overhead` instead ties the frame-end
+batch to the layer's actual repair economics, so the held tail is never
+narrower than about one body's worth of repair blocks.
+
+`window = 64` (the bundle's `fec.window`) is the burst budget — how many
+trailing symbols a single repair, or a frame-end batch, can reach back
+across — not a frame-end-specific knob, and there is no separate config
+key for the frame-end rule: it applies to every declared frame
+unconditionally. The repair header carries `seq` and `window_len`
+unchanged, so the wire and the GS decoders need no changes for either
+placement.
+
+Measurements: `docs/findings/2026-11-08-frame-tail-repairs.md`.
 
 ## 3. Encoder-side size shaping — what works on this SoC
 
