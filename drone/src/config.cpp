@@ -233,7 +233,22 @@ void parse_fec(const Value& j, FecCfg& f) {
   assign_if_present(j, "base_overhead", f.base_overhead, "fec");
   assign_if_present(j, "flush_ms", f.flush_ms, "fec");
   assign_if_present(j, "feed_batch", f.feed_batch, "fec");
-  assign_if_present(j, "repairs_with_frame", f.repairs_with_frame, "fec");
+  if (j.contains("repairs_with_frame")) {
+    assign_if_present(j, "repairs_with_frame", f.repairs_with_frame, "fec");
+  } else {
+    // A config without the key predates the mode. It gets the mode, and a
+    // window of at least kRepairsWithFrameWindow: the mode is measured only
+    // there, and an older config's window of 32 leaves a frame's repairs
+    // too little room to reach back into the frame before it.
+    f.repairs_with_frame = true;
+    note_default("fec", "repairs_with_frame", "true");
+    if (f.window < kRepairsWithFrameWindow) {
+      note_default("fec", "window",
+                   std::to_string(kRepairsWithFrameWindow) + " (raised from " +
+                       std::to_string(f.window) + " for repairs_with_frame)");
+      f.window = kRepairsWithFrameWindow;
+    }
+  }
   if (f.feed_batch < 0 || f.feed_batch > 8)
     fail("fec.feed_batch", "must be in [0,8] (0 = streaming push)");
 

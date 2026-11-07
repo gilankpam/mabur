@@ -113,7 +113,8 @@ wire-rate. Measurement basis for the pairs:
 
 ### Repairs at the frame end (`fec.repairs_with_frame`)
 
-Sources ship as soon as they are sealed. By default repairs are paid from
+Sources ship as soon as they are sealed. With `fec.repairs_with_frame =
+false`, repairs are paid from
 a credit as it accrues (`overhead` per sealed source, one repair per whole
 credit) and built on the FEC worker; the frame end adds one tail repair.
 A repair covers the last `fec.window` symbols sent **before** it, so the
@@ -124,7 +125,8 @@ repairs behind it, and the frame waits for the next frame of its layer
 then completes next to that frame, and the display drops one of the
 pair.
 
-`fec.repairs_with_frame = true` (default `false`) holds a frame's credit
+`fec.repairs_with_frame = true` (the default; the bundle pairs it with
+`fec.window = 64`) holds a frame's credit
 to the frame end. There its repairs are built inline, each covering every
 symbol of the frame, and ship in a body of their own right behind the
 frame's last source body. A frame longer than the window spends its
@@ -138,7 +140,9 @@ The cost is pooling. A frame its own repairs cannot save (two bodies
 lost) relies on the next frames' repairs; with those held to the next
 frame's end, their window reaches back into this frame only by
 `window − next frame's symbols`. Run the mode with a window of about two
-frames (`fec.window = 64` for frames of ~20 symbols). On a recorded
+frames (`fec.window = 64` for frames of ~20 symbols). A config without the `repairs_with_frame` key gets the
+mode and a window raised to at least 64 (logged among the defaulted keys);
+an explicit key keeps the configured window as it is. On a recorded
 120 fps sequence (`tools/bench/frame_fec_sim.cpp`, whole-body loss),
 window 64: lossy frames waiting longer than one display period fall from
 ~30 % to ~10 % at 4 % body loss, and frames never completed rise from 0

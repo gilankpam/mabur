@@ -34,12 +34,12 @@ wall_margin_db    = 1.0    # safety margin below the walls; raise it to lower TX
 [fec]
 # Forward error correction. symbol_size must match the ground station.
 symbol_size     = 332
-window          = 32       # repair window in symbols: larger survives longer loss bursts
+window          = 64       # repair window in symbols: larger survives longer loss bursts; repairs_with_frame wants about two frames
 blocks_per_body = [4, 4]   # base layer, enhance layer
 base_overhead   = 0.5      # extra repair data on the base layer (0.5 = +50 %)
 feed_batch      = 1        # blocks handed to the radio together (1 = send each as soon as it is ready)
 flush_ms        = 25       # send out a partly filled block after this many ms without new video
-repairs_with_frame = false # true: hold a frame's repairs to its end so each covers the whole frame (a late loss does not wait for the next frame); use window = 64
+repairs_with_frame = true  # hold a frame's repairs to its end so each covers the whole frame (a late loss does not wait for the next frame)
 
 [encoder]
 bitrate_min_kbps   = 1000
