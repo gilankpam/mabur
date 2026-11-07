@@ -285,9 +285,10 @@ export function copyStatsPayload(statsRing, segSnapshot) {
 }
 
 // WebUSB chooser filters: Realtek's own VID plus TP-Link, whose Archer
-// T2U Plus / T4U-class sticks are RTL8821AU (Jaguar1) under 2357:011e/0120/
-// 0122. The WASM core (web_main.cpp kCards) picks the exact VID:PID; this
-// list only decides what the browser offers and what counts as granted.
+// T2U Plus sticks are RTL8821AU (Jaguar1) under 2357:011e/0120/0122 and
+// Archer T4U v3 / T3U sticks RTL8812BU (Jaguar2) under 2357:0115/012d.
+// The WASM core (web_main.cpp kCards) picks the exact VID:PID; this list
+// only decides what the browser offers and what counts as granted.
 export const USB_FILTERS = [{ vendorId: 0x0bda }, { vendorId: 0x2357 }];
 export function isCardVendor(vendorId) {
   return USB_FILTERS.some((f) => f.vendorId === vendorId);
@@ -373,7 +374,7 @@ export function errorText(line) {
     return 'CPE relay connection lost. Press Connect to restart.';
   }
   if (line.includes('no RTL card')) {
-    return 'No RTL8812EU/8812AU/8812CU/8821AU card found — plug it in and press Connect.';
+    return 'No RTL8812EU/8812AU/8812CU/8812BU/8821AU card found — plug it in and press Connect.';
   }
   if (line.includes('claim failed')) {
     return 'Card busy — maburgs or another tab has it. Close that and press Connect.';
