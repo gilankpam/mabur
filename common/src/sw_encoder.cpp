@@ -120,15 +120,10 @@ void SwEncoder::seal_current(const SwEnvSink& sink) {
   if (frame_active_) {
     // Hold this seal's credit if it falls in the frame's tail (frame_hold_syms
     // sized frame_front_ so the tail's accrued credit rounds up to about one
-    // window's worth of repairs, built inline when flush() closes the
+    // body's worth of repair blocks, built inline when flush() closes the
     // frame). Credit before the tail spends as usual, same as an undeclared
     // stream, so a frame bigger than the window stays protected throughout.
     if (++frame_seals_ > frame_front_) return;
-  } else if (cfg_.repairs_with_frame) {
-    // Legacy whole-frame hold (no begin_frame call): every seal's credit
-    // waits for flush() instead of spending here.
-    if (++held_syms_ < static_cast<size_t>(cfg_.window)) return;
-    held_syms_ = 0;
   }
   while (credit_ >= 1.0) {
     emit_or_enqueue_repair(sink);
@@ -320,19 +315,6 @@ void SwEncoder::flush(const SwEnvSink& sink) {
     credit_ = 0.0;
     tail_repair_pending_ = false;
     frame_active_ = false;
-  } else if (cfg_.repairs_with_frame) {
-    // Legacy whole-frame hold: spend the frame's held credit now, rounded
-    // up, built inline so the repairs leave with the frame instead of at a
-    // later harvest. The remainder is forgiven, not carried: each frame
-    // gets its own share.
-    if (tail_repair_pending_ && count_ > 0) {
-      do {
-        emit_or_enqueue_repair(sink, /*inline_build=*/true);
-        credit_ -= 1.0;
-      } while (credit_ > 0.0);
-      credit_ = std::max(credit_, 0.0);
-    }
-    held_syms_ = 0;
   } else if (tail_repair_pending_ && count_ > 0) {
     emit_or_enqueue_repair(sink);
   }

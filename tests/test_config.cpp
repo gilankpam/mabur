@@ -1359,7 +1359,7 @@ TEST(air_clock_unknown_key_throws) {
 // ---- TOML config --------------------------------------------------------
 
 TEST(load_config_reports_defaulted_keys) {
-  auto path = write_temp_toml("[fec]\nwindow = 16\nrepairs_with_frame = false\n");
+  auto path = write_temp_toml("[fec]\nwindow = 16\n");
   std::vector<std::string> defaulted;
   Config cfg = load_config(path.string(), &defaulted);
   CHECK(cfg.fec.window == 16);
@@ -1830,33 +1830,17 @@ TEST(bundle_default_sets_every_known_key) {
   CHECK(defaulted.empty());
 }
 
-TEST(fec_config_without_repairs_with_frame_gets_the_mode_and_window_64) {
-  auto path = write_temp_toml("[fec]\nwindow = 32\n");
-  auto cfg = load_config(path.string());
-  CHECK(cfg.fec.repairs_with_frame);
-  CHECK(cfg.fec.window == 64);
-  std::filesystem::remove(path);
+TEST(fec_repairs_with_frame_key_is_rejected) {
+  auto p = write_temp_toml("[fec]\nrepairs_with_frame = true\n");
+  std::string w = what_of([&] { load_config(p.string()); });
+  CHECK(w.find("repairs_with_frame") != std::string::npos);
+  std::filesystem::remove(p);
 }
 
-TEST(fec_config_without_repairs_with_frame_keeps_a_larger_window) {
-  auto path = write_temp_toml("[fec]\nwindow = 96\n");
-  auto cfg = load_config(path.string());
-  CHECK(cfg.fec.repairs_with_frame);
-  CHECK(cfg.fec.window == 96);
-  std::filesystem::remove(path);
-}
-
-TEST(fec_config_with_explicit_repairs_with_frame_keeps_its_window) {
-  auto on = write_temp_toml("[fec]\nwindow = 32\nrepairs_with_frame = true\n");
-  auto c1 = load_config(on.string());
-  CHECK(c1.fec.repairs_with_frame);
-  CHECK(c1.fec.window == 32);
-  std::filesystem::remove(on);
-  auto off = write_temp_toml("[fec]\nwindow = 32\nrepairs_with_frame = false\n");
-  auto c2 = load_config(off.string());
-  CHECK(!c2.fec.repairs_with_frame);
-  CHECK(c2.fec.window == 32);
-  std::filesystem::remove(off);
+TEST(fec_window_is_not_raised_any_more) {
+  auto p = write_temp_toml("[fec]\nwindow = 32\n");
+  CHECK(load_config(p.string()).fec.window == 32);
+  std::filesystem::remove(p);
 }
 
 MTEST_MAIN

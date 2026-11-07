@@ -140,12 +140,13 @@ class UepEncoder {
 
  private:
   struct Layer {
-    SwConfig fec;
     Fragmenter frag;
     SwEncoder sw;
     SbiPacker packer;
     uint8_t sid;  // this layer's SBI stream id (so env_sink captures two pointers: fits std::function's inline buffer, no heap per frame)
     int usable;
+    int bpb;  // UepLayerCfg::blocks_per_body, for sizing frame_hold_syms's
+              // one-body-of-repairs target
     bool shed = false;
     uint64_t dropped_count = 0;
     uint64_t last_activity_ms = 0;
@@ -154,13 +155,13 @@ class UepEncoder {
 
     Layer(const UepLayerCfg& cfg, uint8_t sid, uint32_t initial_seq,
           FecWorker* worker)
-        : fec(cfg.fec),
-          sw(cfg.fec, initial_seq, worker),
+        : sw(cfg.fec, initial_seq, worker),
           packer(static_cast<int>(sw::kSwHeaderLen) + cfg.fec.symbol_size,
                  cfg.blocks_per_body, sid),
           sid(sid),
           usable(cfg.fec.max_packet_size() -
-                 static_cast<int>(Fragmenter::kHdrLen)) {}
+                 static_cast<int>(Fragmenter::kHdrLen)),
+          bpb(cfg.blocks_per_body) {}
   };
 
   // The hot-path envelope sink: one envelope in, at most one body out to
