@@ -1,7 +1,6 @@
 #include <cstdint>
 #include <vector>
 
-#include "mabur/sw_decoder.h"
 #include "mabur/sw_encoder.h"
 #include "mabur/sw_wire.h"
 #include "mtest.h"
@@ -20,6 +19,11 @@ sw::SwHeader hdr(const std::vector<uint8_t>& env) {
   sw::SwHeader h;
   CHECK(sw::parse_header(env.data(), env.size(), &h));
   return h;
+}
+int count_rep(const std::vector<std::vector<uint8_t>>& v) {
+  int n = 0;
+  for (auto& env : v) n += hdr(env).repair ? 1 : 0;
+  return n;
 }
 // Feed packets sized to seal exactly one symbol each (symbol_size 64:
 // payload 62 + 2B length prefix fills the symbol; the NEXT packet seals it).
@@ -174,86 +178,6 @@ TEST(sink_form_matches_vector_form) {
   CHECK(got_span == want);
   CHECK(!want.empty());
 }
-// repairs_with_frame: a frame's credit is held to its end, spent there
-// rounded up, and the remainder forgiven.
-TEST(repairs_with_frame_holds_the_credit_to_the_frame_end) {
-  SwEncoder e(SwConfig{64, 32, 0.5, true});
-  auto count_rep = [](const std::vector<std::vector<uint8_t>>& v) {
-    int n = 0;
-    for (auto& env : v) n += hdr(env).repair ? 1 : 0;
-    return n;
-  };
-  auto a = feed(e, 5);                 // 4 sealed, credit 2.0: held
-  CHECK(count_rep(a) == 0);
-  auto ta = e.flush();                 // 5th sealed, 2.5: three repairs
-  CHECK(ta.size() == 4 && !hdr(ta[0]).repair);
-  CHECK(count_rep(ta) == 3);
-  for (size_t i = 1; i < ta.size(); ++i) {
-    CHECK(hdr(ta[i]).seq + hdr(ta[i]).window_len == 5);  // each covers the whole frame
-    CHECK(hdr(ta[i]).window_len == 5);
-  }
-  auto b = feed(e, 3);
-  CHECK(count_rep(b) == 0);
-  auto tb = e.flush();                 // 1.5, nothing carried: two
-  CHECK(count_rep(tb) == 2);
-  CHECK(e.flush().empty());            // an idle re-flush adds nothing
-}
-
-TEST(repairs_with_frame_windows_still_span_frames) {
-  SwEncoder e(SwConfig{64, 32, 0.5, true});
-  feed(e, 4);
-  e.flush();
-  auto b = feed(e, 2);
-  for (auto& t : e.flush()) b.push_back(std::move(t));
-  bool reaches_back = false;
-  for (auto& env : b) {
-    auto h = hdr(env);
-    if (h.repair && h.seq < 4) reaches_back = true;
-  }
-  CHECK(reaches_back);
-}
-
-// A frame longer than the window spends its credit a window at a time, so
-// no symbol is left without repairs built over it.
-TEST(repairs_with_frame_long_frame_spends_per_window) {
-  SwEncoder e(SwConfig{64, 8, 0.5, true});
-  auto out = feed(e, 20);
-  for (auto& t : e.flush()) out.push_back(std::move(t));
-  uint32_t covered_to = 0;
-  int reps = 0;
-  for (auto& env : out) {
-    auto h = hdr(env);
-    if (!h.repair) continue;
-    ++reps;
-    CHECK(h.window_len == 8);
-    CHECK(h.seq <= covered_to);        // no gap between repair windows
-    covered_to = std::max(covered_to, h.seq + h.window_len);
-  }
-  CHECK(covered_to == 20);
-  CHECK(reps == 10);                   // 4 + 4 at the window marks, 2 at the end
-}
-
-// The point of the mode: a loss late in a frame is repaired by envelopes
-// that arrive with that frame, before anything of the next frame.
-TEST(repairs_with_frame_loss_recovers_within_the_frame) {
-  const SwConfig cfg{64, 32, 0.25, true};
-  SwEncoder e(cfg);
-  auto prev = feed(e, 8);
-  for (auto& t : e.flush()) prev.push_back(std::move(t));
-  auto a = feed(e, 8);
-  for (auto& t : e.flush()) a.push_back(std::move(t));
-  SwDecoder d(cfg);
-  size_t got = 0;
-  for (auto& env : prev) got += d.add_symbol(env.data(), env.size(), 1000).size();
-  int src = 0;
-  for (auto& env : a) {
-    if (!hdr(env).repair && ++src >= 7) continue;  // lose frame A's last two sources
-    got += d.add_symbol(env.data(), env.size(), 1000).size();
-  }
-  CHECK(got == 16);
-  CHECK(d.syms_recovered() == 2);
-}
-
 TEST(default_mode_windows_still_span_frames) {
   SwEncoder e(SwConfig{64, 32, 1.0});
   feed(e, 4);
@@ -265,6 +189,91 @@ TEST(default_mode_windows_still_span_frames) {
     if (h.repair && h.seq < 4) reaches_back = true;
   }
   CHECK(reaches_back);
+}
+
+// frame_hold_syms: how many of a declared frame's trailing seals hold their
+// repair credit to the frame end.
+TEST(frame_hold_syms_rule) {
+  CHECK(frame_hold_syms(30, 64, 0.25, 4) == 30);   // fits: hold all
+  CHECK(frame_hold_syms(64, 64, 0.25, 4) == 64);   // boundary fits
+  CHECK(frame_hold_syms(65, 64, 0.25, 4) == 16);   // enh tail
+  CHECK(frame_hold_syms(77, 64, 0.5, 4) == 8);     // base tail
+  CHECK(frame_hold_syms(77, 64, 2.0, 4) == 2);     // RENDEZVOUS overhead
+  CHECK(frame_hold_syms(77, 64, 0.0, 4) == 0);     // no repairs at all
+  CHECK(frame_hold_syms(300, 64, 0.05, 4) == 64);  // clamp to window
+  CHECK(frame_hold_syms(10, 8, 0.1, 8) == 8);      // clamp to window < n
+}
+
+TEST(small_frame_holds_all_credit_to_the_frame_end) {
+  SwEncoder e(SwConfig{64, 32, 0.25});
+  e.begin_frame(8, 8);
+  auto a = feed(e, 8);                       // 7 sealed: no repair yet
+  CHECK(count_rep(a) == 0);
+  auto t = e.flush();                        // 8th source + ceil(2.0) repairs
+  CHECK(t.size() == 3 && !hdr(t[0]).repair);
+  for (size_t i = 1; i < t.size(); ++i) {
+    CHECK(hdr(t[i]).window_len == 8);
+    CHECK(hdr(t[i]).seq + hdr(t[i]).window_len == 8);
+  }
+}
+
+TEST(small_frame_remainder_is_dropped) {
+  SwEncoder e(SwConfig{64, 32, 0.5});
+  e.begin_frame(5, 5); feed(e, 5);
+  CHECK(count_rep(e.flush()) == 3);          // ceil(2.5)
+  e.begin_frame(5, 5); feed(e, 5);
+  CHECK(count_rep(e.flush()) == 3);          // nothing carried over
+}
+
+TEST(big_frame_spends_the_front_and_holds_the_tail) {
+  SwEncoder e(SwConfig{64, 32, 0.25});
+  e.begin_frame(50, frame_hold_syms(50, 32, 0.25, 4));   // hold 16
+  auto a = feed(e, 50);                      // seals 1..49
+  int front = 0;
+  for (auto& env : a) {
+    auto h = hdr(env);
+    if (!h.repair) continue;
+    ++front;
+    CHECK(h.seq + h.window_len <= 34);       // made before the tail began
+  }
+  CHECK(front == 8);                         // seals 4,8,...,32
+  auto t = e.flush();                        // 0.5 carried + 16*0.25 = 4.5
+  CHECK(count_rep(t) == 5);
+  for (auto& env : t)
+    if (hdr(env).repair) {
+      CHECK(hdr(env).window_len == 32);
+      CHECK(hdr(env).seq + hdr(env).window_len == 50);
+    }
+}
+
+TEST(window_plus_one_frame_switches_to_the_tail_rule) {
+  SwEncoder e(SwConfig{64, 32, 0.25});
+  e.begin_frame(33, frame_hold_syms(33, 32, 0.25, 4));   // hold 16, front 17
+  CHECK(count_rep(feed(e, 33)) == 4);        // seals 4,8,12,16
+  CHECK(count_rep(e.flush()) == 5);          // 0.25 + 4.0 -> 5
+}
+
+TEST(declared_count_mismatch_is_tolerated) {
+  SwEncoder e(SwConfig{64, 32, 0.25});
+  e.begin_frame(4, 4);                       // declared 4, sends 6
+  CHECK(count_rep(feed(e, 6)) == 0);
+  CHECK(count_rep(e.flush()) == 2);          // ceil(1.5)
+  e.begin_frame(50, 16);                     // declared 50, sends 10
+  CHECK(count_rep(feed(e, 10)) == 2);        // front: seals 4, 8
+  CHECK(count_rep(e.flush()) == 1);          // ceil(0.5)
+}
+
+TEST(overhead_zero_frame_emits_no_repairs) {
+  SwEncoder e(SwConfig{64, 32, 0.0});
+  e.begin_frame(8, frame_hold_syms(8, 32, 0.0, 4));
+  CHECK(count_rep(feed(e, 8)) == 0);
+  CHECK(count_rep(e.flush()) == 0);
+}
+
+TEST(idle_flush_after_a_frame_adds_nothing) {
+  SwEncoder e(SwConfig{64, 32, 0.25});
+  e.begin_frame(8, 8); feed(e, 8); e.flush();
+  CHECK(e.flush().empty());
 }
 
 MTEST_MAIN

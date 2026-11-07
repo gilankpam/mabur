@@ -20,6 +20,17 @@ uint64_t gauge_now_us() {
 }
 }  // namespace
 
+size_t frame_hold_syms(size_t n_syms, int window, double overhead, int blocks_per_body) {
+  if (overhead <= 0.0) return 0;
+  const size_t w = static_cast<size_t>(window);
+  if (n_syms <= w) return n_syms;
+  const double want = static_cast<double>(blocks_per_body) / overhead;
+  size_t hold = want > 1e-9 ? static_cast<size_t>(std::ceil(want - 1e-9)) : 0;
+  hold = std::min(hold, w);
+  hold = std::min(hold, n_syms);
+  return hold;
+}
+
 SwEncoder::SwEncoder(const SwConfig& cfg, uint32_t initial_seq, FecWorker* worker)
     : cfg_(cfg), worker_(worker), next_seq_(initial_seq) {
   if (cfg_.window < 2) cfg_.window = 2;
@@ -71,6 +82,12 @@ void SwEncoder::add_packet(const uint8_t* a, size_t alen, const uint8_t* b, size
   append_to_current(a, alen, b, blen);
 }
 
+void SwEncoder::begin_frame(size_t n_syms, size_t hold_syms) {
+  frame_active_ = true;
+  frame_front_ = n_syms - std::min(hold_syms, n_syms);
+  frame_seals_ = 0;
+}
+
 void SwEncoder::seal_current(const SwEnvSink& sink) {
   if (cur_len_ == 0) return;
   const size_t ss = static_cast<size_t>(cfg_.symbol_size);
@@ -100,11 +117,16 @@ void SwEncoder::seal_current(const SwEnvSink& sink) {
   tail_repair_pending_ = true;
 
   credit_ += cfg_.overhead;
-  if (cfg_.repairs_with_frame) {
-    // Hold the frame's repairs for its end, where each one covers every
-    // symbol sent before it: a repair spent mid-frame cannot help a loss
-    // later in the same frame. A frame longer than the window spends them
-    // a window at a time, so every symbol still has repairs built over it.
+  if (frame_active_) {
+    // Hold this seal's credit if it falls in the frame's tail (frame_hold_syms
+    // sized frame_front_ so the tail's accrued credit rounds up to about one
+    // window's worth of repairs, built inline when flush() closes the
+    // frame). Credit before the tail spends as usual, same as an undeclared
+    // stream, so a frame bigger than the window stays protected throughout.
+    if (++frame_seals_ > frame_front_) return;
+  } else if (cfg_.repairs_with_frame) {
+    // Legacy whole-frame hold (no begin_frame call): every seal's credit
+    // waits for flush() instead of spending here.
     if (++held_syms_ < static_cast<size_t>(cfg_.window)) return;
     held_syms_ = 0;
   }
@@ -244,6 +266,8 @@ SwEncoder::SwFecGauge SwEncoder::take_fec_gauge() {
   g.join_wait_max_us = gauge_join_wait_max_us_;
   g.enq_depth_max = gauge_enq_depth_max_;
   g.backlog_drops = gauge_backlog_drops_;
+  g.frame_end_repairs = gauge_frame_end_repairs_;
+  g.frame_end_us = gauge_frame_end_us_;
   gauge_join_wait_max_us_ = 0;
   gauge_enq_depth_max_ = 0;
   return g;
@@ -283,10 +307,24 @@ std::vector<std::vector<uint8_t>> SwEncoder::flush() {
 
 void SwEncoder::flush(const SwEnvSink& sink) {
   seal_current(sink);
-  if (cfg_.repairs_with_frame) {
-    // Spend the frame's held credit now, rounded up, built inline so the
-    // repairs leave with the frame instead of at a later harvest. The
-    // remainder is forgiven, not carried: each frame gets its own share.
+  if (frame_active_) {
+    // Close the frame: spend whatever credit its tail held, rounded up and
+    // built inline so the repairs leave with the frame instead of waiting
+    // on a later harvest. The remainder is forgiven, not carried — each
+    // frame gets its own share.
+    const uint64_t t0 = gauge_now_us();
+    const size_t k = credit_ > 1e-9 ? static_cast<size_t>(std::ceil(credit_ - 1e-9)) : 0;
+    for (size_t i = 0; i < k; ++i) emit_or_enqueue_repair(sink, /*inline_build=*/true);
+    gauge_frame_end_repairs_ += k;
+    gauge_frame_end_us_ += gauge_now_us() - t0;
+    credit_ = 0.0;
+    tail_repair_pending_ = false;
+    frame_active_ = false;
+  } else if (cfg_.repairs_with_frame) {
+    // Legacy whole-frame hold: spend the frame's held credit now, rounded
+    // up, built inline so the repairs leave with the frame instead of at a
+    // later harvest. The remainder is forgiven, not carried: each frame
+    // gets its own share.
     if (tail_repair_pending_ && count_ > 0) {
       do {
         emit_or_enqueue_repair(sink, /*inline_build=*/true);

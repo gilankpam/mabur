@@ -17,6 +17,7 @@
 
 #include "mabur/fec_worker.h"
 #include "mabur/sw_encoder.h"
+#include "mabur/sw_wire.h"
 #include "mtest.h"
 
 using namespace mabur;
@@ -287,6 +288,33 @@ TEST(repairs_with_frame_tail_repair_is_built_inline) {
   e.flush(sink);
   CHECK(out.size() == 2);              // the source and its repair, now
   CHECK(!e.repairs_outstanding());
+  (void)e.finish();
+}
+
+// begin_frame's frame-end batch is built inline even with a worker
+// attached, so it ships in the SAME flush() call rather than waiting on a
+// harvest — unlike the front repairs credited earlier in the frame, which
+// are enqueued and may or may not have finished by the time flush() runs.
+TEST(async_frame_end_batch_is_built_inline_and_counted) {
+  FecWorker worker(-1, 256);
+  SwConfig cfg{64, 32, 0.25};
+  SwEncoder e(cfg, 0, &worker);
+  e.begin_frame(50, 16);
+  std::mt19937 rng(1);
+  for (int i = 0; i < 50; ++i) {
+    auto p = full_packet(cfg, rng);
+    e.add_packet(p.data(), p.size());
+  }
+  std::vector<std::vector<uint8_t>> during_flush;
+  e.flush([&](const uint8_t* p, size_t n) { during_flush.emplace_back(p, p + n); });
+  int frame_end = 0;
+  for (auto& env : during_flush) {
+    sw::SwHeader h;
+    REQUIRE(sw::parse_header(env.data(), env.size(), &h));
+    if (h.repair && h.seq + h.window_len == 50) ++frame_end;
+  }
+  CHECK(frame_end == 5);
+  CHECK(e.take_fec_gauge().frame_end_repairs == 5);
   (void)e.finish();
 }
 

@@ -72,4 +72,21 @@ TEST(fragment_sink_matches_vector_form) {
     CHECK(got == want);
   }
 }
+
+// chunk_count must be the exact count fragment() emits — a caller sizes a
+// frame's repair hold on chunk_count before ever calling fragment().
+TEST(chunk_count_matches_fragment) {
+  Fragmenter frag;
+  std::vector<uint8_t> pkt(15600, 0x11);
+  for (size_t len : {size_t{1}, size_t{155}, size_t{156}, size_t{157}, size_t{15600}}) {
+    size_t calls = 0;
+    frag.fragment(pkt.data(), len, 156,
+                  [&](const uint8_t*, const uint8_t*, size_t) { ++calls; });
+    CHECK(Fragmenter::chunk_count(len, 156) == calls);
+  }
+}
+
+TEST(chunk_count_of_zero_is_one) {
+  CHECK(Fragmenter::chunk_count(0, 156) == 1);
+}
 MTEST_MAIN

@@ -4,9 +4,13 @@
 
 namespace mabur {
 
+size_t Fragmenter::chunk_count(size_t len, int usable) {
+  const size_t span = len > 0 ? len : 1;  // a zero-length unit still emits one chunk
+  return (span + static_cast<size_t>(usable) - 1) / static_cast<size_t>(usable);
+}
+
 void Fragmenter::fragment(const uint8_t* pkt, size_t len, int usable, const Sink& sink) {
-  size_t span = len > 0 ? len : 1;  // a zero-length unit still emits one chunk
-  size_t n_chunks = (span + static_cast<size_t>(usable) - 1) / static_cast<size_t>(usable);
+  size_t n_chunks = chunk_count(len, usable);
 
   uint16_t seq = seq_;
   seq_ = static_cast<uint16_t>(seq_ + 1);  // wraps at u16 automatically
