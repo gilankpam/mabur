@@ -13,8 +13,10 @@
 //                 (the real UepEncoder draws random seqs, so it can only be
 //                 perf-compared, not byte-compared)
 #pragma once
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <condition_variable>
 #include <cstring>
 #include <mutex>
@@ -167,7 +169,35 @@ class SwEncoderMt {
   std::vector<std::vector<uint8_t>> flush() {
     std::vector<std::vector<uint8_t>> out;
     seal_current(out);
-    if (tail_repair_pending_ && count_ > 0) out.push_back(make_repair());
+    if (frame_active_) {
+      // Mirrors SwEncoder::flush's frame-end close: spend whatever credit
+      // the held tail accrued, rounded up, then drop it — no carry to the
+      // next frame.
+      const size_t k = credit_ > 1e-9 ? (size_t)std::ceil(credit_ - 1e-9) : 0;
+      for (size_t i = 0; i < k; ++i) out.push_back(make_repair());
+      credit_ = 0.0;
+      tail_repair_pending_ = false;
+      frame_active_ = false;
+    } else if (tail_repair_pending_ && count_ > 0) {
+      out.push_back(make_repair());
+    }
+    return out;
+  }
+
+  // Mirrors SwEncoder::begin_frame: n_syms is the caller's seal-count guess,
+  // hold_syms (frame_hold_syms's return) is how many trailing seals hold
+  // their credit until flush() closes the frame.
+  void begin_frame(size_t n_syms, size_t hold_syms) {
+    frame_active_ = true;
+    frame_front_ = n_syms - std::min(hold_syms, n_syms);
+    frame_seals_ = 0;
+  }
+
+  // Seals a partially-filled symbol with its credited repairs and nothing
+  // more (vector form of SwEncoder::seal).
+  std::vector<std::vector<uint8_t>> seal() {
+    std::vector<std::vector<uint8_t>> out;
+    seal_current(out);
     return out;
   }
 
@@ -207,6 +237,11 @@ class SwEncoderMt {
     tail_repair_pending_ = true;
 
     credit_ += cfg_.overhead;
+    if (frame_active_) {
+      // Hold this seal's credit if it falls in the frame's tail (mirrors
+      // SwEncoder::seal_current); credit before the tail spends as usual.
+      if (++frame_seals_ > frame_front_) return;
+    }
     while (credit_ >= 1.0) {
       out.push_back(make_repair());
       credit_ -= 1.0;
@@ -277,6 +312,11 @@ class SwEncoderMt {
   double credit_ = 0.0;
   bool tail_repair_pending_ = false;
   size_t oversize_drops_ = 0;
+  // begin_frame state (mirrors SwEncoder's frame_active_/frame_front_/
+  // frame_seals_).
+  bool frame_active_ = false;
+  size_t frame_front_ = 0;
+  size_t frame_seals_ = 0;
 };
 
 // ------------------------------------------------------------- async mt ---
@@ -384,9 +424,35 @@ class SwEncoderMtAsync {
   std::vector<std::vector<uint8_t>> flush() {
     std::vector<std::vector<uint8_t>> out;
     seal_current(out);
-    if (tail_repair_pending_ && count_ > 0) enqueue_repair();
+    if (frame_active_) {
+      // Mirrors SwEncoder::flush's frame-end close. join() below waits for
+      // these the same as any other enqueued repair, so the envelope bytes
+      // match the sync engine's inline frame-end build; only the emission
+      // path (queue vs inline) differs.
+      const size_t k = credit_ > 1e-9 ? (size_t)std::ceil(credit_ - 1e-9) : 0;
+      for (size_t i = 0; i < k; ++i) enqueue_repair();
+      credit_ = 0.0;
+      tail_repair_pending_ = false;
+      frame_active_ = false;
+    } else if (tail_repair_pending_ && count_ > 0) {
+      enqueue_repair();
+    }
     join();
     drain_done(out);
+    return out;
+  }
+
+  // Mirrors SwEncoder::begin_frame.
+  void begin_frame(size_t n_syms, size_t hold_syms) {
+    frame_active_ = true;
+    frame_front_ = n_syms - std::min(hold_syms, n_syms);
+    frame_seals_ = 0;
+  }
+
+  // Vector form of SwEncoder::seal.
+  std::vector<std::vector<uint8_t>> seal() {
+    std::vector<std::vector<uint8_t>> out;
+    seal_current(out);
     return out;
   }
 
@@ -449,6 +515,11 @@ class SwEncoderMtAsync {
     tail_repair_pending_ = true;
 
     credit_ += cfg_.overhead;
+    if (frame_active_) {
+      // Hold this seal's credit if it falls in the frame's tail (mirrors
+      // SwEncoder::seal_current).
+      if (++frame_seals_ > frame_front_) return;
+    }
     while (credit_ >= 1.0) {
       enqueue_repair();
       credit_ -= 1.0;
@@ -493,6 +564,11 @@ class SwEncoderMtAsync {
   uint32_t next_seq_ = 0, repair_key_ = 0;
   double credit_ = 0.0;
   bool tail_repair_pending_ = false;
+  // begin_frame state (mirrors SwEncoder's frame_active_/frame_front_/
+  // frame_seals_).
+  bool frame_active_ = false;
+  size_t frame_front_ = 0;
+  size_t frame_seals_ = 0;
   std::atomic<int> outstanding_{0};
   std::mutex done_m_;
   std::vector<std::vector<uint8_t>> done_;
@@ -536,6 +612,14 @@ class SwStock {
   }
   std::vector<std::vector<uint8_t>> flush() { return e_.flush(); }
   void set_overhead(double ov) { e_.set_overhead(ov); }
+  void begin_frame(size_t n_syms, size_t hold_syms) {
+    e_.begin_frame(n_syms, hold_syms);
+  }
+  std::vector<std::vector<uint8_t>> seal() {
+    std::vector<std::vector<uint8_t>> out;
+    e_.seal([&](const uint8_t* env, size_t n) { out.emplace_back(env, env + n); });
+    return out;
+  }
 
  private:
   mabur::SwEncoder e_;
@@ -554,17 +638,26 @@ class UepEncoderT {
                 Layer(layers[1], 1, seqs[1], worker)},
         flush_ms_(flush_ms) {}
 
-  // Mirrors mabur UepEncoder::add_frame, including the frame-end seal (window
-  // flush + SBI group flush) — the shape that decides how much repair work the
-  // engine under test has to do per frame.
+  // Mirrors mabur UepEncoder::add_frame's new declared-frame sequence:
+  // declare (begin_frame sized by frame_hold_syms) -> fragment -> seal (the
+  // partial tail symbol, no credit spent) -> packer flush -> flush (spends
+  // the frame's held credit, rounded up, as the frame-end repairs) -> packer
+  // flush. The sources' body closes before the frame-end repairs' body, so a
+  // lost body takes either the sources or their repairs, never both.
   std::vector<mabur::UepBody> add_frame(int stream_id, const uint8_t* data,
                                         size_t len, uint64_t now_ms) {
     std::vector<mabur::UepBody> out;
     const int sid = stream_id < 0 ? 0 : (stream_id > kNumStreams - 1 ? kNumStreams - 1 : stream_id);
     Layer& layer = layers_[(size_t)sid];
+    const size_t n = mabur::Fragmenter::chunk_count(len, layer.usable);
+    layer.sw.begin_frame(
+        n, mabur::frame_hold_syms(n, layer.fec.window, layer.fec.overhead, layer.bpb));
     auto frags = layer.frag.fragment(data, len, layer.usable);
     for (auto& f : frags)
       pack_envs(layer, (uint8_t)sid, layer.sw.add_packet(f.data(), f.size()), out);
+    pack_envs(layer, (uint8_t)sid, layer.sw.seal(), out);
+    for (auto& b : layer.packer.flush())
+      out.push_back(mabur::UepBody{(uint8_t)sid, std::move(b)});
     pack_envs(layer, (uint8_t)sid, layer.sw.flush(), out);
     for (auto& b : layer.packer.flush())
       out.push_back(mabur::UepBody{(uint8_t)sid, std::move(b)});
@@ -591,6 +684,8 @@ class UepEncoderT {
     Sw sw;
     mabur::SbiPacker packer;
     int usable;
+    int bpb;  // UepLayerCfg::blocks_per_body, for sizing frame_hold_syms's
+              // one-body-of-repairs target (mirrors UepEncoder::Layer::bpb)
     uint64_t last_activity_ms = 0;
     bool has_activity = false;
     Layer(const mabur::UepLayerCfg& cfg, uint8_t sid, uint32_t initial_seq,
@@ -600,7 +695,8 @@ class UepEncoderT {
           packer((int)mabur::sw::kSwHeaderLen + cfg.fec.symbol_size,
                  cfg.blocks_per_body, sid),
           usable(cfg.fec.max_packet_size() -
-                 (int)mabur::Fragmenter::kHdrLen) {}
+                 (int)mabur::Fragmenter::kHdrLen),
+          bpb(cfg.blocks_per_body) {}
   };
 
   void pack_envs(Layer& layer, uint8_t sid,
