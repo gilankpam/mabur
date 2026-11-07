@@ -231,8 +231,9 @@ class SwEncoder {
   // Sync mode: builds and returns the repair inline (today's exact
   // behavior). Async mode: enqueues (or builds inline on queue-full) and
   // returns nothing now. Both allocate key/counters identically.
-  // inline_build: build and sink now even in async mode (the
-  // repairs_with_frame frame-end repairs, so they never wait for a harvest).
+  // inline_build: build and sink now even in async mode (a frame-end
+  // batch — begin_frame's or the legacy repairs_with_frame's — so it
+  // never waits for a harvest).
   void emit_or_enqueue_repair(const SwEnvSink& sink, bool inline_build = false);
   void drain_done(const SwEnvSink& sink);
   // Spins (relaxed + one acquire load) until no jobs are outstanding.
