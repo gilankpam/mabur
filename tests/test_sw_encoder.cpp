@@ -217,6 +217,26 @@ TEST(small_frame_holds_all_credit_to_the_frame_end) {
   }
 }
 
+// A frame exactly as long as the window still fits (frame_hold_syms's
+// n_syms <= window branch), but now count_ clamps to the full window
+// instead of trailing it the way the 8-of-32 case above does: every
+// frame-end repair's window_len is the full 32, not just the frame's size.
+TEST(exact_window_frame_holds_everything) {
+  SwEncoder e(SwConfig{64, 32, 0.25});
+  e.begin_frame(32, frame_hold_syms(32, 32, 0.25, 4));  // = 32: fits exactly
+  auto a = feed(e, 32);                      // 31 sealed (feed's own doc
+                                              // comment): all held, no
+                                              // repair yet
+  CHECK(count_rep(a) == 0);
+  auto t = e.flush();                        // 32nd source + ceil(8.0) repairs
+  CHECK(t.size() == 9 && !hdr(t[0]).repair);
+  for (size_t i = 1; i < t.size(); ++i) {
+    CHECK(hdr(t[i]).repair);
+    CHECK(hdr(t[i]).window_len == 32);
+    CHECK(hdr(t[i]).seq + hdr(t[i]).window_len == 32);
+  }
+}
+
 TEST(small_frame_remainder_is_dropped) {
   SwEncoder e(SwConfig{64, 32, 0.5});
   e.begin_frame(5, 5); feed(e, 5);

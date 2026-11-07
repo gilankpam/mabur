@@ -78,12 +78,15 @@ class UepEncoder {
              FecWorker* worker = nullptr);
 
   // Frame-unit ingest: data = FrameHdr + Annex-B frame, stream_id already
-  // chosen by the caller (classify_frame + the producer's IDR flag). Drops the
-  // frame if that stream is shed (counted in dropped()), otherwise fragments
-  // (usable = fec.max_packet_size() - Fragmenter::kHdrLen), feeds each
-  // fragment through that layer's sliding-window encoder and SBI packer, and
-  // seals the window at frame end (SwEncoder::flush) so tail symbols + their
-  // repair ship now instead of at next-frame arrival.
+  // chosen by the caller (classify_frame + the producer's IDR flag). Drops
+  // the frame if that stream is shed (counted in dropped()), otherwise
+  // declares the frame to that layer's SwEncoder (begin_frame, sized from
+  // Fragmenter::chunk_count and frame_hold_syms) before fragmenting
+  // (usable = fec.max_packet_size() - Fragmenter::kHdrLen) and feeding each
+  // fragment through the sliding-window encoder and SBI packer; seal() then
+  // flush() close the frame, spending its held tail credit as the
+  // frame-end repair batch (docs/airtime-model.md "Repairs at the frame
+  // end") instead of a separate tail repair.
   std::vector<UepBody> add_frame(int stream_id, const uint8_t* data, size_t len,
                                  uint64_t now_ms);
 

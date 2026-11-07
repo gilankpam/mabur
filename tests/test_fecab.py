@@ -21,7 +21,10 @@ known ground truth:
     stamps go backwards (the signature of an ssh-retried `cat
     /tmp/sched.log` duplicating the schedule into the log), is reported
     FAILED on stderr and excluded from the rows entirely, instead of
-    being windowed on the doubled-up data.
+    being windowed on the doubled-up data;
+  - a synthetic .dlog (run.sh's captured /tmp/mabur.log) sums
+    `backlog_drops=` across every `fec_worker sid=` line (both sids) and
+    weights `frame_end_us/rep=` by each line's own `frame_end=` count.
 """
 import contextlib
 import io
@@ -39,7 +42,7 @@ T0 = 103_000_000  # earliest AU row (2 s before the window opens)
 T1 = 129_500_000  # latest AU row (after the window closes)
 
 # The scheduler's own stamps for one step: t0 = first non-status command,
-# t1 = the 'status' command. Window = [t0+5e6, t1-1e6) per the brief.
+# t1 = the 'status' command. Window = [t0+5e6, t1-1e6).
 STEP_T0 = 100_000_000
 STEP_T1 = 130_000_000
 WIN_A = STEP_T0 + 5_000_000
@@ -119,6 +122,22 @@ def write_bad_backwards_mono(path):
         f.write("session /media/dvr/log/0100\n")
 
 
+def write_dlog(path, lines):
+    """lines: list of (sid, backlog_drops, frame_end, us_per_rep) --
+    written as run.sh's drone log would hold them (drone/src/main.cpp's
+    `maburd fec_worker sid=%d: ...` line), plus unrelated noise lines
+    analyze.py's regex must skip."""
+    with open(path, 'w') as f:
+        f.write("maburd stats: fps=60 lp=0 armed=1\n")
+        for sid, drops, frame_end, us in lines:
+            f.write(
+                f"maburd fec_worker sid={sid}: jobs=10 build_us/job=5 "
+                f"inline=0 joins=1 join_wait_us mean=2 max=3 qdepth_max=4 "
+                f"backlog_drops={drops} frame_end={frame_end} "
+                f"frame_end_us/rep={us}\n")
+        f.write("maburd dq_split: n=1 ring_us mean=1 max=1 cpu_us mean=1 max=1 sink_us mean=1\n")
+
+
 def write_snap(path, uptime, cpu_line, threads):
     with open(path, 'w') as f:
         f.write(f"SNAP {uptime:.6f} pid=1234\n")
@@ -180,6 +199,22 @@ def main():
 
     # Per-thread CPU: +50 ticks over a 1 s uptime delta is 50.0.
     assert row['cpu'].get('hot') == 50.0, row['cpu']
+
+    # .dlog: backlog_drops sums across lines AND sids; frame_end_us/rep is
+    # the frame_end-weighted mean, not a plain average of the per-line means.
+    dlog_lines = [
+        (0, 3, 10, 100),   # sid 0: 3 drops, 10 frame-end reps @ 100 us
+        (1, 2, 30, 200),   # sid 1: 2 drops, 30 reps @ 200 us
+        (0, 1, 20, 50),    # sid 0 again (a later 5 s tick): 1 drop, 20 reps @ 50 us
+    ]
+    dlog_path = os.path.join(outdir, 'A.dlog')
+    write_dlog(dlog_path, dlog_lines)
+    drops, mean_us = analyze.parse_dlog(dlog_path)
+    expected_drops = sum(d for _, d, _, _ in dlog_lines)
+    expected_mean_us = (sum(fe * us for _, _, fe, us in dlog_lines) /
+                         sum(fe for _, _, fe, _ in dlog_lines))
+    assert drops == expected_drops, (drops, expected_drops)
+    assert abs(mean_us - expected_mean_us) < 1e-6, (mean_us, expected_mean_us)
 
     print('✓ fecab test passed!')
 

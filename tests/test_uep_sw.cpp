@@ -490,29 +490,43 @@ TEST(big_frame_tail_has_one_body_of_repairs_behind_it) {
   expect_hundred_sym_frame_tail(bodies, bp);
 }
 
+// frame_hold_syms re-sizes the hold from the layer's CURRENT overhead each
+// time add_frame declares a new frame, not just at UepEncoder construction:
+// one encoder runs a 0.5-overhead frame, then a 0.25-overhead one right
+// after set_layer_overhead, and the tail-run length tracks the change.
 TEST(overhead_change_moves_the_tail_start) {
   auto layers = layers_for(164, 4, 64);
   UepEncoder enc(layers, 15);
-  enc.set_layer_overhead(1, 0.25);
   std::mt19937 rng(42);
-  auto unit = make_unit(/*stream=*/1, 0, 100 * 156 - 8, rng);  // 100 symbols exactly
-  auto bodies = enc.add_frame(1, unit.data(), unit.size(), 1000);
   const int bp = static_cast<int>(sw::kSwHeaderLen) + 164;
 
-  std::vector<sw::SwHeader> flat;
-  for (auto& b : bodies) {
-    auto hs = headers_of(b, bp);
-    flat.insert(flat.end(), hs.begin(), hs.end());
-  }
-  const auto tail_hdrs = headers_of(bodies.back(), bp);
-  REQUIRE(tail_hdrs.size() == 8);  // ceil(32 * 0.25) = 8, same frame-end body size
-  for (auto& h : tail_hdrs) CHECK(h.repair);
+  auto tail_run = [&](const std::vector<UepBody>& bodies) {
+    std::vector<sw::SwHeader> flat;
+    for (auto& b : bodies) {
+      auto hs = headers_of(b, bp);
+      flat.insert(flat.end(), hs.begin(), hs.end());
+    }
+    const auto tail_hdrs = headers_of(bodies.back(), bp);
+    REQUIRE(tail_hdrs.size() == 8);  // ceil(32 * 0.25) == ceil(16 * 0.5) == 8
+    for (auto& h : tail_hdrs) CHECK(h.repair);
+    const size_t tail = flat.size() - 8;
+    size_t run = 0;
+    while (run < tail && !flat[tail - 1 - run].repair) ++run;
+    return run;
+  };
 
-  // T = ceil(8/0.25) = 32 sources follow the last mid-frame repair.
-  const size_t tail = flat.size() - 8;
-  size_t run = 0;
-  while (run < tail && !flat[tail - 1 - run].repair) ++run;
-  CHECK(run == 32);
+  // layers_for's default overhead (0.5): T = ceil(8/0.5) = 16.
+  auto unit1 = make_unit(/*stream=*/1, 0, 100 * 156 - 8, rng);  // 100 symbols exactly
+  auto bodies1 = enc.add_frame(1, unit1.data(), unit1.size(), 1000);
+  CHECK(tail_run(bodies1) == 16);
+
+  // Same encoder, next frame: set_layer_overhead takes effect immediately
+  // (sw_encoder.h), so frame_hold_syms sizes THIS frame's hold from the new
+  // 0.25 -- T = ceil(8/0.25) = 32.
+  enc.set_layer_overhead(1, 0.25);
+  auto unit2 = make_unit(/*stream=*/1, 1, 100 * 156 - 8, rng);  // 100 symbols exactly
+  auto bodies2 = enc.add_frame(1, unit2.data(), unit2.size(), 2000);
+  CHECK(tail_run(bodies2) == 32);
 }
 
 TEST(shed_frame_leaves_no_frame_state) {
@@ -549,6 +563,45 @@ TEST(late_loss_recovered_by_the_frame_end_batch) {
     auto hs = headers_of(bodies[i], bp);
     REQUIRE(!hs.empty());
     if (!hs.front().repair) drop_idx = i;
+  }
+  REQUIRE(drop_idx < bodies.size());
+
+  mtest::FragCollector got;
+  for (size_t i = 0; i < bodies.size(); ++i) {
+    if (i == drop_idx) continue;  // one whole body dropped
+    for (auto& d : dec.add_body(bodies[i].body.data(), bodies[i].body.size(), 1000))
+      got.add(d);
+  }
+  CHECK(got.completed().size() == 1);
+}
+
+// Same guarantee, for a frame bigger than the window: the lost body sits in
+// the held tail (the frame's last 16 sources — frame_hold_syms(100, 64,
+// 0.5, 8) == 16), which the frame-end batch is sized to reach back across
+// and cover, not any front repair.
+TEST(big_frame_late_loss_recovered_by_the_tail_batch) {
+  auto layers = layers_for(164, 4, 64);
+  UepEncoder enc(layers, 15);
+  UepDecoder dec(layers);
+  std::mt19937 rng(42);
+  auto unit = make_unit(/*stream=*/1, 0, 100 * 156 - 8, rng);  // 100 symbols exactly
+  auto bodies = enc.add_frame(1, unit.data(), unit.size(), 1000);
+  const int bp = static_cast<int>(sw::kSwHeaderLen) + 164;
+
+  std::vector<sw::SwHeader> flat;
+  std::vector<size_t> flat_body;  // which bodies[] index each flat header came from
+  for (size_t i = 0; i < bodies.size(); ++i) {
+    auto hs = headers_of(bodies[i], bp);
+    for (auto& h : hs) { flat.push_back(h); flat_body.push_back(i); }
+  }
+  uint32_t last_src_seq = 0;
+  for (auto& h : flat) if (!h.repair) last_src_seq = h.seq;
+  const uint32_t tail_start = last_src_seq - 15;  // the held tail's 16 seqs
+
+  // The first body carrying one of the held tail's sources.
+  size_t drop_idx = bodies.size();
+  for (size_t i = 0; i < flat.size(); ++i) {
+    if (!flat[i].repair && flat[i].seq >= tail_start) { drop_idx = flat_body[i]; break; }
   }
   REQUIRE(drop_idx < bodies.size());
 

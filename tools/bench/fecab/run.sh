@@ -3,12 +3,22 @@
 # swaps the drone's maburd binary (a bind mount, not a reflash) and pushes
 # a fixed host config with one knob (bitrate_max_kbps) overridden, then
 # drives the GS loss-sim rig through three steps via sched.py (clean,
-# l2b1, l5b3) while snapshotting the drone's per-thread CPU. Analysis is
+# l2b1, l5b3) while snapshotting the drone's per-thread CPU and, once
+# sched.py finishes, capturing the drone's own stderr log for the arm
+# (/tmp/mabur.log -- the init wrapper truncates it on every maburd
+# respawn, so it has to be read before the NEXT arm's swap). Analysis is
 # tools/bench/fecab/analyze.py OUTDIR SESSROOT, against the GS session(s)
-# this run produced. On exit -- normal completion OR an abort anywhere in
-# the run -- a trap unmounts the bind and kills maburd one last time so
-# the drone comes back up on its installed /usr/bin/maburd rather than
-# being left on whichever arm's binary was bound last.
+# this run produced. The run saves the drone's live /etc/mabur.toml once,
+# before the first arm overwrites it, and restore_drone puts it back. On
+# exit -- normal completion OR an abort anywhere in the run -- that same
+# restore_drone trap also unmounts the bind and kills maburd one last time
+# so the drone comes back up on its installed /usr/bin/maburd and its own
+# config rather than being left on whichever arm's binary/config was
+# applied last.
+#
+# An aborted run can leave the GS's maburgs.losssim and sched.py running
+# under setsid (killed only by the NEXT run's first arm, or by hand with
+# `killall maburgs.losssim` on the GS).
 #
 # Env (no defaults -- every bench run names its own targets):
 #   DRONE  drone ssh target (e.g. root@<drone-ip>)
@@ -31,6 +41,12 @@ mkdir -p "$OUT"
 # never a remote command's exit status) rather than fail the whole arm.
 R() { local i rc; for i in $(seq 1 30); do $SSH "$@"; rc=$?; [ $rc -ne 255 ] && return $rc; echo "(ssh retry $i)" >&2; sleep 5; done; return 255; }
 
+# Save the drone's live config once, before the first arm's scp overwrites
+# it -- only if a previous aborted run hasn't already left one there (a
+# re-run after an abort must not save over the ORIGINAL config with some
+# arm's modified one). restore_drone puts this back on every exit path.
+R "$D" "[ -f /tmp/mabur.toml.fecab-orig ] || cp /etc/mabur.toml /tmp/mabur.toml.fecab-orig"
+
 scp_retry() {
   local i rc
   for i in $(seq 1 30); do
@@ -47,8 +63,8 @@ scp_retry() {
 # -- normal completion, an aborted arm, or Ctrl-C -- so the drone is never
 # left running a bench binary after this script has stopped driving it.
 restore_drone() {
-  echo "restoring drone: unmounting /usr/bin/maburd bind, killing maburd to respawn the installed binary" >&2
-  R "$D" "umount /usr/bin/maburd 2>/dev/null; killall maburd 2>/dev/null; true"
+  echo "restoring drone: config from /tmp/mabur.toml.fecab-orig, unmounting /usr/bin/maburd bind, killing maburd to respawn the installed binary" >&2
+  R "$D" "[ -f /tmp/mabur.toml.fecab-orig ] && cp /tmp/mabur.toml.fecab-orig /etc/mabur.toml; umount /usr/bin/maburd 2>/dev/null; killall maburd 2>/dev/null; true"
 }
 trap restore_drone EXIT
 
@@ -67,13 +83,12 @@ arm() {
     return 1
   fi
 
-  local tmpcfg; tmpcfg=$(mktemp)
-  if grep -q '^bitrate_max_kbps' "$config"; then
-    sed -E "s/^bitrate_max_kbps[[:space:]]*=.*/bitrate_max_kbps = $KBPS/" "$config" > "$tmpcfg"
-  else
-    cat "$config" > "$tmpcfg"
-    printf '\nbitrate_max_kbps = %s\n' "$KBPS" >> "$tmpcfg"
+  if ! grep -q '^bitrate_max_kbps' "$config"; then
+    echo "FAILED: $config has no bitrate_max_kbps key -- appending one blind could land it in whatever TOML table is last and make maburd respawn-loop; add the key to the config instead" | tee -a "$log" >&2
+    return 1
   fi
+  local tmpcfg; tmpcfg=$(mktemp)
+  sed -E "s/^bitrate_max_kbps[[:space:]]*=.*/bitrate_max_kbps = $KBPS/" "$config" > "$tmpcfg"
   if ! scp_retry "$tmpcfg" "$D:/etc/mabur.toml"; then
     echo "FAILED scp: $config -> $D:/etc/mabur.toml" | tee -a "$log" >&2
     rm -f "$tmpcfg"
@@ -84,10 +99,18 @@ arm() {
   R "$D" "grep -E '^bitrate_max_kbps' /etc/mabur.toml; killall maburd" | tee -a "$log"
   sleep 15
 
-  # Confirm the respawned maburd really is the bound file, not a stale
-  # process that outlived the mount swap or the previous arm's binary.
-  local md5out h1 h2
-  md5out=$(R "$D" "md5sum /usr/bin/maburd '$binary'")
+  # Confirm the respawned maburd really is running the bound file, not a
+  # stale process that outlived the mount swap or the previous arm's
+  # binary -- hash the RUNNING process (/proc/<pid>/exe) rather than the
+  # path /usr/bin/maburd, which only proves what's mounted there, not what
+  # any already-running process has open.
+  local pid md5out h1 h2
+  pid=$(R "$D" "pidof maburd" | awk '{print $1}')
+  if [ -z "$pid" ]; then
+    echo "FAILED bind: no running maburd pid on $D after respawn" | tee -a "$log" >&2
+    return 1
+  fi
+  md5out=$(R "$D" "md5sum /proc/$pid/exe '$binary'")
   if [ $? -ne 0 ] || [ -z "$md5out" ]; then
     echo "FAILED bind: md5sum check on $D failed after respawn" | tee -a "$log" >&2
     return 1
@@ -96,7 +119,7 @@ arm() {
   h1=$(awk 'NR==1{print $1}' <<< "$md5out")
   h2=$(awk 'NR==2{print $1}' <<< "$md5out")
   if [ -z "$h1" ] || [ "$h1" != "$h2" ]; then
-    echo "FAILED bind: running /usr/bin/maburd md5 ($h1) != $binary md5 ($h2)" | tee -a "$log" >&2
+    echo "FAILED bind: running maburd (pid $pid) md5 ($h1) != $binary md5 ($h2)" | tee -a "$log" >&2
     return 1
   fi
 
@@ -122,6 +145,13 @@ arm() {
   done
 
   R "$G" "until grep -q SCHED_DONE /tmp/sched.log; do sleep 1; done; cat /tmp/sched.log; SD=\$(cat /tmp/mabur-session); cp /tmp/maburgs.log \$SD/maburgs.log; cp /tmp/sched.log \$SD/sched.log; echo session \$SD" | tee -a "$log"
+
+  # The drone's own stderr log for this arm, read now -- the init wrapper
+  # truncates /tmp/mabur.log on every maburd respawn, so it must be read
+  # before the NEXT arm's bind swap and killall, not after this script
+  # exits. analyze.py parses this for the fec_worker backlog_drops/
+  # frame_end_us gauges (tools/bench/fecab/analyze.py).
+  R "$D" "cat /tmp/mabur.log" > "$OUT/$name.dlog"
 }
 
 for spec in $ARMS; do

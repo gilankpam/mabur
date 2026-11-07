@@ -131,12 +131,15 @@ class SwEncoder {
   // flush() emits the frame-end repairs into a body of their own.
   void seal(const SwEnvSink& sink) { seal_current(sink); }
 
-  // Seals a partially-filled symbol (if any) and emits one tail repair so a
-  // burst tail is recoverable without waiting for the next source. The tail
-  // repair fires at most once per sealed source (idle re-flushes are no-ops,
-  // so UepEncoder's repeated poll cannot spam repairs). Async mode: does
-  // NOT wait for the worker (fec-join-delete) — returns whatever
-  // repairs are already built; the rest surface at a later
+  // Seals a partially-filled symbol (if any), then either closes a
+  // begin_frame'd frame -- spending its held tail credit as the frame-end
+  // batch (ceil(credit) repairs, built inline so they leave with the
+  // frame) -- or, for an undeclared stream, emits one tail repair so a
+  // burst tail is recoverable without waiting for the next source. The
+  // tail repair fires at most once per sealed source (idle re-flushes are
+  // no-ops, so UepEncoder's repeated poll cannot spam repairs). Async
+  // mode: does NOT wait for the worker (fec-join-delete) — returns
+  // whatever repairs are already built; the rest surface at a later
   // add_packet/flush/collect drain, or at finish().
   std::vector<std::vector<uint8_t>> flush();
 
@@ -195,9 +198,11 @@ class SwEncoder {
     uint64_t enq_depth_max = 0;    // window max worker-queue depth at enqueue
     uint64_t backlog_drops = 0;    // repairs skipped at kMaxBacklogJobs
     uint64_t frame_end_repairs = 0; // repairs built in a begin_frame'd flush()
-    uint64_t frame_end_us = 0;      // wall µs spent building them and handing
-                                     // them to the sink (UepEncoder's SBI
-                                     // pack + CRC)
+    uint64_t frame_end_us = 0;      // wall µs spent building them AND
+                                     // running the whole downstream sink
+                                     // call on each one (UepEncoder's SBI
+                                     // pack, CRC, and the TX push of any
+                                     // body that completes)
   };
   // Producer-thread-only, like add_packet/flush (it resets the window-max
   // fields in place).

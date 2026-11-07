@@ -116,15 +116,18 @@ wire-rate. Measurement basis for the pairs:
 Sources ship as soon as they are sealed, in every stream. A repair covers
 only the symbols sealed before it, so a placement that spends credit
 continuously — one repair per whole `overhead` credit, as it accrues —
-protects a frame's early symbols well and its tail poorly: the last
-~`ceil((bpb−1)/ov)` trailing symbols of a frame (where `bpb` is the
-layer's `blocks_per_body` and `ov` its overhead) never accrue a full
-credit before the frame ends, so they ship with no repair behind them
-inside that frame. A loss there waits for the next frame of the layer
-(two display periods at 120 fps, since base and enhance alternate),
-completes next to it, and the display drops one of the pair. The
-undeclared streams (MSP, linkbench) run exactly this placement, plus one
-tail repair built at `flush()` as a burst-tail backstop.
+does not leave a frame's tail with no repair at all: a repair still
+fires every `1/ov` seals, and the undeclared streams add a frame-end
+tail repair of their own as a backstop. The weakness is depth, not
+absence: a frame's last ~`bpb/ov` trailing symbols (where `bpb` is the
+layer's `blocks_per_body` and `ov` its overhead) have fewer than one
+body's worth (`bpb`) of repairs behind them inside the frame, so a loss
+there draws on a thinner repair set and often waits for the next frame
+of the layer (two display periods at 120 fps, since base and enhance
+alternate), completes next to it, and the display drops one of the
+pair. The undeclared streams (MSP, linkbench) run exactly this
+continuous placement, plus one tail repair built at `flush()` as a
+burst-tail backstop.
 
 Every video frame declares itself instead (`UepEncoder::add_frame` calls
 `SwEncoder::begin_frame` before fragmenting it, with
@@ -144,15 +147,17 @@ body; the remainder below the next whole repair is forgiven, not carried
 into another frame. A declared frame gets no separate tail repair — the
 frame-end batch replaces it.
 
-**Why not a fixed block count.** An earlier frame-end design held a
-frame's credit in fixed 64-symbol blocks, independent of the layer's
-`overhead` or `blocks_per_body`. A frame longer than the window left a
-tail whose own rounded repair share was often less than one body, with no
-reach-back from the next frame — that frame's own repairs are held to
-*its* end too, so there was nothing to borrow across the boundary. Sizing
-the hold from `blocks_per_body` and `overhead` instead ties the frame-end
-batch to the layer's actual repair economics, so the held tail is never
-narrower than about one body's worth of repair blocks.
+**Why not a fixed block count.** A fixed-size hold is blind to the
+layer's own repair economics: at low overhead it leaves a tail share
+thinner than one body with no reach-back from the next frame to cover
+it (that frame's own repairs are held to *its* end too), and at high
+overhead it holds more than it needs to. Sizing the hold from
+`blocks_per_body` and `overhead` instead ties the frame-end batch
+directly to that economics. With the bundle's window and overheads, the
+held tail is never narrower than about one body's worth of repair
+blocks; the clamp to `window` only binds when `overhead <
+blocks_per_body / window` — a repair rate thin enough that one body's
+credit takes longer than a whole window of seals to accrue.
 
 `window = 64` (the bundle's `fec.window`) is the burst budget — how many
 trailing symbols a single repair, or a frame-end batch, can reach back
