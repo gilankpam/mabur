@@ -12,6 +12,8 @@
 
 #include "frame_fixture.h"
 #include "mabur/fec_worker.h"
+#include "mabur/sbi.h"
+#include "mabur/sw_wire.h"
 #include "mabur/frame_wire.h"
 #include "mabur/uep_decoder.h"
 #include "mabur/uep_encoder.h"
@@ -390,6 +392,36 @@ TEST(uep_collect_harvests_repairs_the_frame_left_behind) {
   // Repairs did ship: the harvested bodies carry the frame's whole repair
   // budget (ov 0.5 over the frame's symbols + the tail repair), never zero.
   CHECK(enc.take_fec_gauge(1).jobs > 0);
+}
+
+// repairs_with_frame: the frame's sources close their body and the
+// frame-end repairs ship in the next one, so one lost body cannot take a
+// frame's tail sources together with the repairs that protect them.
+TEST(repairs_with_frame_ship_the_frame_end_repairs_in_their_own_body) {
+  auto layers = layers_for(164, 4, 64);
+  for (auto& l : layers) l.fec.repairs_with_frame = true;
+  UepEncoder enc(layers, 15);
+  UepDecoder dec(layers);
+  std::mt19937 rng(42);
+  auto unit = make_unit(/*stream=*/1, 0, 1388, rng);
+  auto bodies = enc.add_frame(1, unit.data(), unit.size(), 1000);
+  REQUIRE(bodies.size() >= 2);
+  const int bp = static_cast<int>(sw::kSwHeaderLen) + 164;
+  auto kinds = [&](const UepBody& b) {
+    std::vector<bool> rep;
+    for (auto& env : sbi_unpack(b.body.data(), b.body.size(), bp).survivors) {
+      sw::SwHeader h;
+      REQUIRE(sw::parse_header(env.data(), env.size(), &h));
+      rep.push_back(h.repair);
+    }
+    return rep;
+  };
+  const auto last = kinds(bodies.back());
+  REQUIRE(!last.empty());
+  for (bool r : last) CHECK(r);                        // repairs only
+  const auto prev = kinds(bodies[bodies.size() - 2]);
+  REQUIRE(!prev.empty());
+  CHECK(!prev.back());                                 // ends on the tail source
 }
 
 MTEST_MAIN

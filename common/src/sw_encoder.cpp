@@ -1,7 +1,9 @@
 #include "mabur/sw_encoder.h"
 
 #include <cassert>
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 
 #include "mabur/gf256.h"
@@ -98,6 +100,14 @@ void SwEncoder::seal_current(const SwEnvSink& sink) {
   tail_repair_pending_ = true;
 
   credit_ += cfg_.overhead;
+  if (cfg_.repairs_with_frame) {
+    // Hold the frame's repairs for its end, where each one covers every
+    // symbol sent before it: a repair spent mid-frame cannot help a loss
+    // later in the same frame. A frame longer than the window spends them
+    // a window at a time, so every symbol still has repairs built over it.
+    if (++held_syms_ < static_cast<size_t>(cfg_.window)) return;
+    held_syms_ = 0;
+  }
   while (credit_ >= 1.0) {
     emit_or_enqueue_repair(sink);
     credit_ -= 1.0;
@@ -136,7 +146,7 @@ std::vector<uint8_t> SwEncoder::build_repair(uint32_t repair_key,
   return env;
 }
 
-void SwEncoder::emit_or_enqueue_repair(const SwEnvSink& sink) {
+void SwEncoder::emit_or_enqueue_repair(const SwEnvSink& sink, bool inline_build) {
   // Backlog bound (async only): the worker is more than kMaxBacklogJobs
   // repairs behind, so this credit is forfeited rather than queued. The
   // producer never waits and the ring never pins; the GS sees a lower
@@ -144,13 +154,14 @@ void SwEncoder::emit_or_enqueue_repair(const SwEnvSink& sink) {
   // still consumes its repair_key so every repair that IS built stays
   // byte-identical to the sync encoder's (the key seeds the coefficients);
   // repairs_out counts built repairs only.
-  if (async_ && worker_->depth() >= kMaxBacklogJobs) {
+  if (async_ && !inline_build && worker_->depth() >= kMaxBacklogJobs) {
     ++gauge_backlog_drops_;
     ++repair_key_;
     tail_repair_pending_ = false;
     return;
   }
   const int wl = static_cast<int>(count_);
+  if (wl == 0) return;
   FecRepairJob j;
   j.eng = this;
   j.repair_key = repair_key_++;
@@ -159,7 +170,7 @@ void SwEncoder::emit_or_enqueue_repair(const SwEnvSink& sink) {
   j.start_slot = (next_slot_ + cap_ - static_cast<size_t>(wl)) % cap_;
   ++repairs_out_;
   tail_repair_pending_ = false;
-  if (!async_) {
+  if (!async_ || inline_build) {
     const auto env = build_repair(j.repair_key, j.header_seq, j.window_len, j.start_slot);
     sink(env.data(), env.size());
     return;
@@ -272,7 +283,21 @@ std::vector<std::vector<uint8_t>> SwEncoder::flush() {
 
 void SwEncoder::flush(const SwEnvSink& sink) {
   seal_current(sink);
-  if (tail_repair_pending_ && count_ > 0) emit_or_enqueue_repair(sink);
+  if (cfg_.repairs_with_frame) {
+    // Spend the frame's held credit now, rounded up, built inline so the
+    // repairs leave with the frame instead of at a later harvest. The
+    // remainder is forgiven, not carried: each frame gets its own share.
+    if (tail_repair_pending_ && count_ > 0) {
+      do {
+        emit_or_enqueue_repair(sink, /*inline_build=*/true);
+        credit_ -= 1.0;
+      } while (credit_ > 0.0);
+      credit_ = std::max(credit_, 0.0);
+    }
+    held_syms_ = 0;
+  } else if (tail_repair_pending_ && count_ > 0) {
+    emit_or_enqueue_repair(sink);
+  }
   // No join here (fec-join-delete): the frame-end spin-wait for
   // the worker was 64 % of the hot thread's samples at 18 Mb/s. Repairs
   // still building surface at the next add_packet/flush/collect drain;

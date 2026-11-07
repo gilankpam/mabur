@@ -24,6 +24,19 @@ struct SwConfig {
   int symbol_size = 64;
   int window = 128;
   double overhead = 0.25;  // repair symbols per source symbol
+  // Repairs leave with their frame: the frame's repair credit is held to
+  // flush() (the frame end), where its repairs are built inline and each
+  // covers every symbol of the frame. Spent as it accrues, a repair covers
+  // only the symbols sent before it, so a loss late in a frame had to wait
+  // for the next frame of its layer. A frame longer than the window spends
+  // its credit a window at a time. The frame end rounds the credit up and
+  // forgives the remainder, about the repair count of the default mode's
+  // tail repair. UepEncoder ships the frame-end repairs in a body of their
+  // own. Windows still span frames; with repairs at the frame end, the
+  // next frame's repairs reach back into this one only as far as the
+  // window allows, so this mode wants a window of about two frames (64).
+  // Wire format unchanged.
+  bool repairs_with_frame = false;
   int max_packet_size() const { return symbol_size - 2; }
 };
 
@@ -83,6 +96,10 @@ class SwEncoder {
                   const SwEnvSink& sink);
   void flush(const SwEnvSink& sink);
   void collect(const SwEnvSink& sink);
+  // Seals a partially-filled symbol (if any) with its credited repairs and
+  // nothing more: lets UepEncoder close the frame's source body before
+  // flush() emits the frame-end repairs into a body of their own.
+  void seal(const SwEnvSink& sink) { seal_current(sink); }
 
   // Seals a partially-filled symbol (if any) and emits one tail repair so a
   // burst tail is recoverable without waiting for the next source. The tail
@@ -182,7 +199,9 @@ class SwEncoder {
   // Sync mode: builds and returns the repair inline (today's exact
   // behavior). Async mode: enqueues (or builds inline on queue-full) and
   // returns nothing now. Both allocate key/counters identically.
-  void emit_or_enqueue_repair(const SwEnvSink& sink);
+  // inline_build: build and sink now even in async mode (the
+  // repairs_with_frame frame-end repairs, so they never wait for a harvest).
+  void emit_or_enqueue_repair(const SwEnvSink& sink, bool inline_build = false);
   void drain_done(const SwEnvSink& sink);
   // Spins (relaxed + one acquire load) until no jobs are outstanding.
   // Reached only from finish() (shutdown/tests), the destructor, and the
@@ -204,6 +223,7 @@ class SwEncoder {
   uint32_t repair_key_ = 0;
   double credit_ = 0.0;
   bool tail_repair_pending_ = false;
+  size_t held_syms_ = 0;  // repairs_with_frame: seals since repairs were last spent
   uint64_t sources_out_ = 0, repairs_out_ = 0;
   size_t oversize_drops_ = 0;
 

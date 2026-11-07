@@ -274,4 +274,20 @@ TEST(sync_mode_never_books_backlog_drops) {
   CHECK(enc.repairs_out() == 600);
 }
 
+// repairs_with_frame with a worker attached: the frame-end repairs are
+// built inline, so a frame too small to earn a credited repair still ships
+// its repair from flush() itself, not at a later harvest.
+TEST(repairs_with_frame_tail_repair_is_built_inline) {
+  FecWorker worker(-1, 64);
+  SwEncoder e(SwConfig{64, 32, 0.5, true}, 0, &worker);
+  std::vector<std::vector<uint8_t>> out;
+  auto sink = [&](const uint8_t* p, size_t n) { out.emplace_back(p, p + n); };
+  const std::vector<uint8_t> pkt(20, 0x5a);
+  e.add_packet(pkt.data(), pkt.size(), sink);
+  e.flush(sink);
+  CHECK(out.size() == 2);              // the source and its repair, now
+  CHECK(!e.repairs_outstanding());
+  (void)e.finish();
+}
+
 MTEST_MAIN

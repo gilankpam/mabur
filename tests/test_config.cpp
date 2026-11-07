@@ -1359,7 +1359,7 @@ TEST(air_clock_unknown_key_throws) {
 // ---- TOML config --------------------------------------------------------
 
 TEST(load_config_reports_defaulted_keys) {
-  auto path = write_temp_toml("[fec]\nwindow = 16\n");
+  auto path = write_temp_toml("[fec]\nwindow = 16\nrepairs_with_frame = false\n");
   std::vector<std::string> defaulted;
   Config cfg = load_config(path.string(), &defaulted);
   CHECK(cfg.fec.window == 16);
@@ -1817,8 +1817,6 @@ TEST(venc_slices_parses_and_rejects_unachievable_counts) {
   CHECK(bad("17").empty());
 }
 
-MTEST_MAIN
-
 // "Every knob is in the bundle": the loader reports each known key the file
 // did not set, so an empty report IS the completeness gate. Adding a config
 // key without writing it into bundle/mabur.default.toml fails here, which is
@@ -1831,3 +1829,34 @@ TEST(bundle_default_sets_every_known_key) {
     std::fprintf(stderr, "  bundle leaves defaulted: %s\n", d.c_str());
   CHECK(defaulted.empty());
 }
+
+TEST(fec_config_without_repairs_with_frame_gets_the_mode_and_window_64) {
+  auto path = write_temp_toml("[fec]\nwindow = 32\n");
+  auto cfg = load_config(path.string());
+  CHECK(cfg.fec.repairs_with_frame);
+  CHECK(cfg.fec.window == 64);
+  std::filesystem::remove(path);
+}
+
+TEST(fec_config_without_repairs_with_frame_keeps_a_larger_window) {
+  auto path = write_temp_toml("[fec]\nwindow = 96\n");
+  auto cfg = load_config(path.string());
+  CHECK(cfg.fec.repairs_with_frame);
+  CHECK(cfg.fec.window == 96);
+  std::filesystem::remove(path);
+}
+
+TEST(fec_config_with_explicit_repairs_with_frame_keeps_its_window) {
+  auto on = write_temp_toml("[fec]\nwindow = 32\nrepairs_with_frame = true\n");
+  auto c1 = load_config(on.string());
+  CHECK(c1.fec.repairs_with_frame);
+  CHECK(c1.fec.window == 32);
+  std::filesystem::remove(on);
+  auto off = write_temp_toml("[fec]\nwindow = 32\nrepairs_with_frame = false\n");
+  auto c2 = load_config(off.string());
+  CHECK(!c2.fec.repairs_with_frame);
+  CHECK(c2.fec.window == 32);
+  std::filesystem::remove(off);
+}
+
+MTEST_MAIN

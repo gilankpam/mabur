@@ -79,6 +79,10 @@ add_mtest(test_link_key test_link_key.cpp)
 # Not a test; --target crc_bench.
 add_executable(crc_bench ${CMAKE_SOURCE_DIR}/tools/bench/crc_bench.cpp)
 target_link_libraries(crc_bench PRIVATE mabur_common)
+# Frame-end repair placement A/B on a recorded frame sequence
+# (tools/bench/frame_fec_sim.cpp). Not a test; --target frame_fec_sim.
+add_executable(frame_fec_sim ${CMAKE_SOURCE_DIR}/tools/bench/frame_fec_sim.cpp)
+target_link_libraries(frame_fec_sim PRIVATE mabur_common)
 add_mtest(test_gf256 test_gf256.cpp)
 add_mtest(test_sw_wire test_sw_wire.cpp)
 add_mtest(test_sw_encoder test_sw_encoder.cpp)
