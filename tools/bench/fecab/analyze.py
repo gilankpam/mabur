@@ -34,34 +34,66 @@ def pct(values, p):
     return v[min(len(v) - 1, int(p * len(v)))]
 
 
+class BadRunLog(RuntimeError):
+    """Raised by _parse_run_file when a .run file's step/mono_us stamps
+    are corrupt: a repeated `--- step` name, or a mono_us stamp that goes
+    backwards. The usual cause is an ssh-retried final `cat
+    /tmp/sched.log` (run.sh) duplicating the whole schedule into the log
+    -- the second copy's first stamp lands before the first copy's last
+    one, and every step name repeats. find_runs() catches this per file
+    and reports the arm as failed instead of windowing the doubled-up
+    data."""
+
+
+def _parse_run_file(path):
+    """Parse one OUTDIR/*.run file: `tag` is its basename minus .run (the
+    arm name); `sess` is the basename of the GS's "session <dir>" line;
+    `steps` is a list of {"name", "t0", "t1"} -- t0 the mono_us of the
+    step's first scheduler command, t1 the mono_us of its 'status'
+    command. Raises BadRunLog on a repeated step name or a non-monotonic
+    mono_us stamp (see BadRunLog's docstring)."""
+    tag = os.path.basename(path)[:-len(".run")]
+    sess, steps, cur = None, [], None
+    seen_names, prev_mono = set(), None
+    with open(path) as f:
+        for line in f:
+            m = re.match(r"session (\S+)", line)
+            if m and sess is None:
+                sess = os.path.basename(m.group(1).rstrip('/'))
+                continue
+            m = re.match(r"--- step (\S+)", line)
+            if m:
+                name = m.group(1)
+                if name in seen_names:
+                    raise BadRunLog(f"{path}: repeated step name {name!r}")
+                seen_names.add(name)
+                cur = {"name": name, "t0": None, "t1": None}
+                steps.append(cur)
+                continue
+            m = re.match(r"mono_us=(\d+) cmd='(.*?)'", line)
+            if m and cur is not None:
+                t = int(m.group(1))
+                if prev_mono is not None and t < prev_mono:
+                    raise BadRunLog(f"{path}: mono_us went backwards ({t} < {prev_mono})")
+                prev_mono = t
+                if m.group(2) == "status":
+                    cur["t1"] = t
+                elif cur["t0"] is None:
+                    cur["t0"] = t
+    return tag, sess, steps
+
+
 def find_runs(outdir):
-    """Yield (tag, session, steps) for every OUTDIR/*.run file. `tag` is
-    the file's basename minus .run (the arm name); `session` is the
-    basename of the GS's "session <dir>" line; `steps` is a list of
-    {"name", "t0", "t1"} -- t0 the mono_us of the step's first scheduler
-    command, t1 the mono_us of its 'status' command."""
+    """Yield (tag, session, steps) for every OUTDIR/*.run file that parses
+    cleanly (see _parse_run_file); a file that fails BadRunLog's checks is
+    reported to stderr and skipped -- that arm is left out of build_rows'
+    output entirely rather than windowed on doubled-up data."""
     for path in sorted(glob.glob(os.path.join(outdir, "*.run"))):
-        tag = os.path.basename(path)[:-len(".run")]
-        sess, steps, cur = None, [], None
-        with open(path) as f:
-            for line in f:
-                m = re.match(r"session (\S+)", line)
-                if m and sess is None:
-                    sess = os.path.basename(m.group(1).rstrip('/'))
-                    continue
-                m = re.match(r"--- step (\S+)", line)
-                if m:
-                    cur = {"name": m.group(1), "t0": None, "t1": None}
-                    steps.append(cur)
-                    continue
-                m = re.match(r"mono_us=(\d+) cmd='(.*?)'", line)
-                if m and cur is not None:
-                    t = int(m.group(1))
-                    if m.group(2) == "status":
-                        cur["t1"] = t
-                    elif cur["t0"] is None:
-                        cur["t0"] = t
-        yield tag, sess, steps
+        try:
+            yield _parse_run_file(path)
+        except BadRunLog as e:
+            print(f"FAILED: {e}", file=sys.stderr)
+            continue
 
 
 def load_au(session_dir):
@@ -129,6 +161,8 @@ def step_row(window, frame_map, span_us):
     """Metrics for one arm x step's AU window (non-empty)."""
     n = len(window)
     trunc = sum(1 for x in window if not x["fl"] & 0x80)
+    # fid is shared by a frame's base+enh AUs, so this counts frame ids
+    # missing from the window across BOTH layers combined.
     fids = sorted(x["fid"] for x in window)
     gap = sum(max(0, b - a - 1) for a, b in zip(fids, fids[1:]))
     ex = [x["ex"] for x in window]

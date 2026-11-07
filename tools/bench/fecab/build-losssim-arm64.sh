@@ -48,6 +48,13 @@ PKG_CONFIG_BINDIR="$(readlink -f toolchain/pkg-config)/bin"
 export PATH="$PKG_CONFIG_BINDIR:$PATH"
 
 # --- 2. Static libusb for the same target ----------------------------------
+# NB: `nix-build -o toolchain/libusb-arm64-out` on a multi-output
+# derivation's `.dev` output always *appends* "-dev" to whatever symlink
+# name is given (so "-o toolchain/libusb-arm64-out" for the .dev output
+# actually creates toolchain/libusb-arm64-out-dev, not
+# toolchain/libusb-arm64-out) -- hence reading back
+# "toolchain/libusb-arm64-out-dev" below rather than the name passed to -o
+# (same quirk tools/build-arm64.sh works around).
 if [ ! -e toolchain/libusb-arm64-out ]; then
   nix-build -E \
     'with import <nixpkgs> {}; pkgsCross.aarch64-multiplatform.pkgsStatic.libusb1' \

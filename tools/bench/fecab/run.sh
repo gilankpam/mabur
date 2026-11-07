@@ -5,7 +5,10 @@
 # drives the GS loss-sim rig through three steps via sched.py (clean,
 # l2b1, l5b3) while snapshotting the drone's per-thread CPU. Analysis is
 # tools/bench/fecab/analyze.py OUTDIR SESSROOT, against the GS session(s)
-# this run produced.
+# this run produced. On exit -- normal completion OR an abort anywhere in
+# the run -- a trap unmounts the bind and kills maburd one last time so
+# the drone comes back up on its installed /usr/bin/maburd rather than
+# being left on whichever arm's binary was bound last.
 #
 # Env (no defaults -- every bench run names its own targets):
 #   DRONE  drone ssh target (e.g. root@<drone-ip>)
@@ -38,13 +41,31 @@ scp_retry() {
   return 255
 }
 
+# Restores the drone to its installed maburd: unmount the bind (a no-op,
+# ignored, if nothing is bound) and killall so the init loop respawns the
+# now-unbound /usr/bin/maburd. Runs on every exit path via the trap below
+# -- normal completion, an aborted arm, or Ctrl-C -- so the drone is never
+# left running a bench binary after this script has stopped driving it.
+restore_drone() {
+  echo "restoring drone: unmounting /usr/bin/maburd bind, killing maburd to respawn the installed binary" >&2
+  R "$D" "umount /usr/bin/maburd 2>/dev/null; killall maburd 2>/dev/null; true"
+}
+trap restore_drone EXIT
+
 arm() {
   local name=$1 binary=$2 config=$3 log=$OUT/$name.run
   echo "=== $name binary=$binary config=$config $(date +%T)" | tee "$log"
 
-  R "$G" 'killall maburgs.losssim 2>/dev/null; sleep 2; rm -f /tmp/mabur-session /tmp/sched.log; pidof maburgs.losssim; true'
+  R "$G" 'killall maburgs.losssim 2>/dev/null; sleep 2; rm -f /tmp/mabur-session /tmp/sched.log /tmp/sched.pid; pidof maburgs.losssim; true'
 
-  R "$D" "umount /usr/bin/maburd 2>/dev/null; mount --bind $binary /usr/bin/maburd && mount | grep maburd"
+  if ! R "$D" "[ -x '$binary' ]"; then
+    echo "FAILED bind: $binary not found or not executable on $D" | tee -a "$log" >&2
+    return 1
+  fi
+  if ! R "$D" "umount /usr/bin/maburd 2>/dev/null; mount --bind '$binary' /usr/bin/maburd"; then
+    echo "FAILED bind: mount --bind $binary -> /usr/bin/maburd failed on $D" | tee -a "$log" >&2
+    return 1
+  fi
 
   local tmpcfg; tmpcfg=$(mktemp)
   if grep -q '^bitrate_max_kbps' "$config"; then
@@ -54,7 +75,7 @@ arm() {
     printf '\nbitrate_max_kbps = %s\n' "$KBPS" >> "$tmpcfg"
   fi
   if ! scp_retry "$tmpcfg" "$D:/etc/mabur.toml"; then
-    echo "scp of $config to $D failed" >&2
+    echo "FAILED scp: $config -> $D:/etc/mabur.toml" | tee -a "$log" >&2
     rm -f "$tmpcfg"
     return 1
   fi
@@ -63,9 +84,36 @@ arm() {
   R "$D" "grep -E '^bitrate_max_kbps' /etc/mabur.toml; killall maburd" | tee -a "$log"
   sleep 15
 
+  # Confirm the respawned maburd really is the bound file, not a stale
+  # process that outlived the mount swap or the previous arm's binary.
+  local md5out h1 h2
+  md5out=$(R "$D" "md5sum /usr/bin/maburd '$binary'")
+  if [ $? -ne 0 ] || [ -z "$md5out" ]; then
+    echo "FAILED bind: md5sum check on $D failed after respawn" | tee -a "$log" >&2
+    return 1
+  fi
+  echo "$md5out" | tee -a "$log"
+  h1=$(awk 'NR==1{print $1}' <<< "$md5out")
+  h2=$(awk 'NR==2{print $1}' <<< "$md5out")
+  if [ -z "$h1" ] || [ "$h1" != "$h2" ]; then
+    echo "FAILED bind: running /usr/bin/maburd md5 ($h1) != $binary md5 ($h2)" | tee -a "$log" >&2
+    return 1
+  fi
+
   R "$G" "pidof maburgs.losssim >/dev/null || setsid /tmp/maburgs.losssim -c /tmp/cfg/bench.toml --loss-sim 8303 </dev/null >/tmp/maburgs.log 2>&1 &"
   sleep 25
-  R "$G" "setsid python3 /tmp/sched.py $STEP </dev/null >/tmp/sched.log 2>&1 &"
+  # Idempotent start: an ssh retry here (R retries only on ssh's own exit
+  # 255, which fires on a dropped connection whether or not the remote
+  # command already ran) must not launch a second sched.py writing the
+  # same /tmp/sched.log. BusyBox has no pgrep, and a `ps | grep sched.py`
+  # run via the same `sh -c` would match its own command line -- so a pid
+  # file written by the launching shell is the robust check instead.
+  # The pid is written from INSIDE the backgrounded shell (echo $$), then
+  # that same shell execs python3 in place: the pidfile always names the
+  # actual sched.py process, never an intermediate setsid fork whose own
+  # pid could already be gone by the time something checks it.
+  local inner="echo \$\$ > /tmp/sched.pid; exec python3 /tmp/sched.py $STEP </dev/null >/tmp/sched.log 2>&1"
+  R "$G" "if [ -f /tmp/sched.pid ] && kill -0 \$(cat /tmp/sched.pid) 2>/dev/null; then echo \"sched.py already running pid=\$(cat /tmp/sched.pid)\"; else rm -f /tmp/sched.pid /tmp/sched.log; setsid sh -c '$inner' </dev/null >/dev/null 2>&1 & sleep 1; echo \"sched.py started pid=\$(cat /tmp/sched.pid)\"; fi" | tee -a "$log"
 
   for sname in clean l2b1 l5b3; do
     sleep 5;              R "$D" "sh -s" < "$SNAP" > "$OUT/$name.$sname.snap0"
@@ -78,6 +126,9 @@ arm() {
 
 for spec in $ARMS; do
   IFS=: read -r name binary config <<< "$spec"
-  arm "$name" "$binary" "$config"
+  if ! arm "$name" "$binary" "$config"; then
+    echo "ABORT: arm $name failed -- stopping the run" >&2
+    exit 1
+  fi
 done
 echo ALL_DONE

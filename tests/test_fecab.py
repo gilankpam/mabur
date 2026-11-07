@@ -16,8 +16,15 @@ known ground truth:
     per-sid median of t_complete - pts) shows up in >10ms% but not >20ms%;
   - nodisp% counts a pts missing from frame.log;
   - per-thread CPU of a thread with +50 ticks over a 1 s uptime delta is
-    50.0 (the (utime+stime) delta / (uptime delta x 100) x 100 formula).
+    50.0 (the (utime+stime) delta / (uptime delta x 100) x 100 formula);
+  - a .run file with a repeated `--- step` name, or one whose mono_us
+    stamps go backwards (the signature of an ssh-retried `cat
+    /tmp/sched.log` duplicating the schedule into the log), is reported
+    FAILED on stderr and excluded from the rows entirely, instead of
+    being windowed on the doubled-up data.
 """
+import contextlib
+import io
 import os
 import sys
 import tempfile
@@ -87,6 +94,31 @@ def write_run_file(path):
         f.write("session /media/dvr/log/0100\n")
 
 
+def write_bad_repeated_step(path):
+    """A .run file whose step name repeats -- the signature of an
+    ssh-retried final `cat /tmp/sched.log` appending the same schedule
+    twice."""
+    with open(path, 'w') as f:
+        f.write("=== B binary=/x config=/y 00:00:00\n")
+        f.write("--- step l2b1\n")
+        f.write("mono_us=200000000 cmd='off' reply=ok\n")
+        f.write("mono_us=230000000 cmd='status' reply=ok\n")
+        f.write("--- step l2b1\n")
+        f.write("mono_us=200000000 cmd='off' reply=ok\n")
+        f.write("mono_us=230000000 cmd='status' reply=ok\n")
+        f.write("session /media/dvr/log/0100\n")
+
+
+def write_bad_backwards_mono(path):
+    """A .run file whose mono_us stamps go backwards within one step."""
+    with open(path, 'w') as f:
+        f.write("=== C binary=/x config=/y 00:00:00\n")
+        f.write("--- step l2b1\n")
+        f.write("mono_us=300000000 cmd='off' reply=ok\n")
+        f.write("mono_us=299000000 cmd='status' reply=ok\n")
+        f.write("session /media/dvr/log/0100\n")
+
+
 def write_snap(path, uptime, cpu_line, threads):
     with open(path, 'w') as f:
         f.write(f"SNAP {uptime:.6f} pid=1234\n")
@@ -107,11 +139,20 @@ def main():
     write_snap(os.path.join(outdir, 'A.l2b1.snap1'), 1001.0,
                "1010 0 1010 8070 10 0 0 0 0 0",
                [('100', 'mbr-hot', 1025, 25)])
+    write_bad_repeated_step(os.path.join(outdir, 'B.run'))
+    write_bad_backwards_mono(os.path.join(outdir, 'C.run'))
 
-    built = analyze.build_rows(outdir, sessroot)
+    errbuf = io.StringIO()
+    with contextlib.redirect_stderr(errbuf):
+        built = analyze.build_rows(outdir, sessroot)
+    err = errbuf.getvalue()
+    # B (repeated step) and C (backwards mono_us) are reported FAILED and
+    # excluded entirely -- only A's row comes back.
     assert len(built) == 1, built
     row = built[0]
     assert row['arm'] == 'A' and row['step'] == 'l2b1' and row['sess'] == '0100', row
+    assert 'FAILED' in err and 'repeated step name' in err, err
+    assert 'FAILED' in err and 'mono_us went backwards' in err, err
 
     in_window = [r for r in rows if WIN_A <= r[0] < WIN_B]
     out_window_trunc = [r for r in rows if not (WIN_A <= r[0] < WIN_B) and r[3]]
