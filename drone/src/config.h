@@ -71,6 +71,11 @@ struct RadioCfg {
   bool ldpc = true;
 };
 
+// The smallest window repairs_with_frame is measured with: about two
+// frames at 120 fps, so the next frame's repairs still reach back into a
+// frame its own repairs could not save.
+inline constexpr int kRepairsWithFrameWindow = 64;
+
 struct FecCfg {
   // Per-layer symbol size (stream 0..1). JSON accepts a scalar (fans out)
   // or a 2-array. Big symbols suit the bulk enhance layer (1): fewer
@@ -89,6 +94,11 @@ struct FecCfg {
   // ladder translation. Default 0.5 matches the flattened reference ladder.
   double base_overhead = 0.5;
   int flush_ms = 15;
+  // Hold a frame's repairs to its end, built inline, each covering the
+  // whole frame (SwConfig::repairs_with_frame); false = repairs spent as
+  // credit accrues, tail repair on the FEC worker. A config that omits the
+  // key gets true and a window of at least kRepairsWithFrameWindow.
+  bool repairs_with_frame = true;
   // Feed grouping: release sealed bodies to the TX writer in groups of N
   // (TxQueue wakeup batching + grouped pool submit) so URBs fill their
   // 3-descriptor cap and A-MPDU aggregates can form, instead of the
