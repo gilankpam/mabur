@@ -475,6 +475,9 @@ if(Python3_EXECUTABLE)
   add_test(NAME test_airdrain
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_airdrain.py
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+  add_test(NAME test_fecab
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_fecab.py
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
   add_test(NAME test_latchgate
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_latchgate.py)
   add_test(NAME test_flightjitter

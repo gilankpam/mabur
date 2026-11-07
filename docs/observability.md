@@ -1212,6 +1212,16 @@ all.
   inject, expect `Lossy`/`probe_holds`, no promote). Host build: `cmake -S .
   -B build-losssim -DDEVOURER_DIR=$PWD/../devourer -DMABUR_LOSS_SIM=ON`
   (gitignored dir, separate from the normal `build/`).
+- **FEC placement A/B → `tools/bench/fecab/`.** `run.sh` (env `DRONE` /
+  `GS` / `OUT` / `KBPS`, `ARMS="name:binary:config ..."`) swaps the
+  drone's `maburd` binary per arm via a bind mount, pushes a host config
+  with `bitrate_max_kbps` set, and drives the GS loss-sim rig above
+  through three steps (`sched.py`: `clean`, `l2b1`, `l5b3`) while
+  snapshotting the drone's per-thread CPU (`snap.sh`); `analyze.py OUTDIR
+  SESSROOT` reads `au.log`/`frame.log` per arm x step and prints
+  completion-excess percentiles, truncation, display e2e and per-thread
+  CPU. `build-losssim-arm64.sh` cross-builds the musl-static
+  `maburgs-losssim` these runs need.
 - **Rebuild failure ladder → `MABUR_VENC_FAIL_RESTARTS=N`** in
   `maburd`'s environment (start it by hand, not from the init wrapper):
   the next `N` in-process pipeline restarts fail after the old pipeline
