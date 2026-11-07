@@ -638,10 +638,10 @@ class UepEncoderT {
                 Layer(layers[1], 1, seqs[1], worker)},
         flush_ms_(flush_ms) {}
 
-  // Mirrors mabur UepEncoder::add_frame's new declared-frame sequence:
-  // declare (begin_frame sized by frame_hold_syms) -> fragment -> seal (the
-  // partial tail symbol, no credit spent) -> packer flush -> flush (spends
-  // the frame's held credit, rounded up, as the frame-end repairs) -> packer
+  // Mirrors mabur UepEncoder::add_frame's declared-frame sequence: declare
+  // (begin_frame sized by frame_hold_syms) -> fragment -> seal (the partial
+  // tail symbol, no credit spent) -> packer flush -> flush (spends the
+  // frame's held credit, rounded up, as the frame-end repairs) -> packer
   // flush. The sources' body closes before the frame-end repairs' body, so a
   // lost body takes either the sources or their repairs, never both.
   std::vector<mabur::UepBody> add_frame(int stream_id, const uint8_t* data,
@@ -650,6 +650,11 @@ class UepEncoderT {
     const int sid = stream_id < 0 ? 0 : (stream_id > kNumStreams - 1 ? kNumStreams - 1 : stream_id);
     Layer& layer = layers_[(size_t)sid];
     const size_t n = mabur::Fragmenter::chunk_count(len, layer.usable);
+    // layer.fec is the construction-time SwConfig (window/overhead), not a
+    // live accessor on sw: UepEncoderT never changes a layer's overhead
+    // after construction (unlike production, which feeds frame_hold_syms
+    // SwEncoder's own live window()/overhead() because set_overhead can
+    // change it mid-stream), so the two sources agree here.
     layer.sw.begin_frame(
         n, mabur::frame_hold_syms(n, layer.fec.window, layer.fec.overhead, layer.bpb));
     auto frags = layer.frag.fragment(data, len, layer.usable);
