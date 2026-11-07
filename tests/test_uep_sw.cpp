@@ -3,6 +3,7 @@
 // block-FEC time-diversity buffer matrix: time diversity now comes from
 // overlapping repair windows, so sources never wait — the checks here pin
 // delivery under the same random/burst loss the old scheme was built for.
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -575,10 +576,15 @@ TEST(late_loss_recovered_by_the_frame_end_batch) {
   CHECK(got.completed().size() == 1);
 }
 
-// Same guarantee, for a frame bigger than the window: the lost body sits in
-// the held tail (the frame's last 16 sources — frame_hold_syms(100, 64,
-// 0.5, 8) == 16), which the frame-end batch is sized to reach back across
-// and cover, not any front repair.
+// Same guarantee, for a frame bigger than the window: drop a body that sits
+// entirely inside the held tail (the frame's last 16 sources —
+// frame_hold_syms(100, 64, 0.5, 8) == 16) with no repair envelope riding
+// along in it -- e.g. the body holding S87..S94. The held tail carries no
+// repairs among its own sources (those ship only in the frame-end batch),
+// so a body that straddles the front/tail boundary (mixing a front-window
+// repair in with some tail sources) would recover on its own; only an
+// all-tail-sources body isolates the frame-end batch as the sole recovery
+// path.
 TEST(big_frame_late_loss_recovered_by_the_tail_batch) {
   auto layers = layers_for(164, 4, 64);
   UepEncoder enc(layers, 15);
@@ -589,29 +595,66 @@ TEST(big_frame_late_loss_recovered_by_the_tail_batch) {
   const int bp = static_cast<int>(sw::kSwHeaderLen) + 164;
 
   std::vector<sw::SwHeader> flat;
-  std::vector<size_t> flat_body;  // which bodies[] index each flat header came from
-  for (size_t i = 0; i < bodies.size(); ++i) {
-    auto hs = headers_of(bodies[i], bp);
-    for (auto& h : hs) { flat.push_back(h); flat_body.push_back(i); }
+  for (auto& b : bodies) {
+    auto hs = headers_of(b, bp);
+    flat.insert(flat.end(), hs.begin(), hs.end());
   }
   uint32_t last_src_seq = 0;
   for (auto& h : flat) if (!h.repair) last_src_seq = h.seq;
   const uint32_t tail_start = last_src_seq - 15;  // the held tail's 16 seqs
 
-  // The first body carrying one of the held tail's sources.
+  // The body whose envelopes are ALL held-tail sources: no repair, and
+  // every seq >= tail_start.
   size_t drop_idx = bodies.size();
-  for (size_t i = 0; i < flat.size(); ++i) {
-    if (!flat[i].repair && flat[i].seq >= tail_start) { drop_idx = flat_body[i]; break; }
+  for (size_t i = 0; i < bodies.size(); ++i) {
+    auto hs = headers_of(bodies[i], bp);
+    if (hs.empty()) continue;
+    const bool all_tail_src = std::all_of(hs.begin(), hs.end(), [&](const sw::SwHeader& h) {
+      return !h.repair && h.seq >= tail_start;
+    });
+    if (all_tail_src) { drop_idx = i; break; }
   }
   REQUIRE(drop_idx < bodies.size());
 
-  mtest::FragCollector got;
+  // The frame-end repair batch: the body/bodies whose envelopes are all
+  // repairs. UepEncoder closes a frame's tail sources before shipping the
+  // repairs that protect them, so these never mix with source envelopes.
+  std::vector<size_t> repair_bodies;
   for (size_t i = 0; i < bodies.size(); ++i) {
-    if (i == drop_idx) continue;  // one whole body dropped
-    for (auto& d : dec.add_body(bodies[i].body.data(), bodies[i].body.size(), 1000))
-      got.add(d);
+    auto hs = headers_of(bodies[i], bp);
+    if (!hs.empty() &&
+        std::all_of(hs.begin(), hs.end(), [](const sw::SwHeader& h) { return h.repair; }))
+      repair_bodies.push_back(i);
   }
-  CHECK(got.completed().size() == 1);
+  REQUIRE(!repair_bodies.empty());
+
+  {
+    mtest::FragCollector got;
+    for (size_t i = 0; i < bodies.size(); ++i) {
+      if (i == drop_idx) continue;  // one whole all-tail-sources body dropped
+      for (auto& d : dec.add_body(bodies[i].body.data(), bodies[i].body.size(), 1000))
+        got.add(d);
+    }
+    CHECK(got.completed().size() == 1);
+  }
+
+  // Negative control: drop the same body AND the frame-end batch that
+  // would otherwise recover it. The held tail has no repairs of its own
+  // and the next frame's repairs don't exist in this single-frame test, so
+  // with the batch gone too the unit must NOT be delivered -- proving the
+  // batch, not something else, is what recovered it above.
+  {
+    UepDecoder dec2(layers);
+    mtest::FragCollector got2;
+    for (size_t i = 0; i < bodies.size(); ++i) {
+      if (i == drop_idx) continue;
+      if (std::find(repair_bodies.begin(), repair_bodies.end(), i) != repair_bodies.end())
+        continue;
+      for (auto& d : dec2.add_body(bodies[i].body.data(), bodies[i].body.size(), 1000))
+        got2.add(d);
+    }
+    CHECK(got2.completed().size() == 0);
+  }
 }
 
 MTEST_MAIN

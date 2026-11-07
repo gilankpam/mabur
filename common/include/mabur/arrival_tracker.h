@@ -21,8 +21,9 @@ namespace mabur {
 class ArrivalTracker {
  public:
   // Fallback when a caller's guard arg is 0, not the flown value — the GS
-  // runs `gs/src/config.h`'s arrival_guard_syms (struct default 192, not
-  // set by any bundle config) instead.
+  // runs the bundle's `link.arrival_guard_syms` (192, also
+  // `gs/src/config.cpp`'s own default) instead; kDefaultGuard is only this
+  // class's fallback, never what flies.
   static constexpr uint32_t kDefaultGuard = 32;
 
   explicit ArrivalTracker(uint32_t guard = kDefaultGuard, uint32_t ring_bits = 1024)
