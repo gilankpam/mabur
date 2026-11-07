@@ -85,12 +85,12 @@ void UepEncoder::add_frame(int stream_id, const uint8_t* data, size_t len,
   // the next one, so a lost body takes either the sources or their repairs,
   // never both. seal() closes the partial tail symbol without spending its
   // credit — begin_frame already arranged for the held tail to cover it;
-  // flush() then spends whatever the frame held, built inline, plus the
-  // usual tail repair for whatever front credit is still due. Also flush
-  // the SBI packer's pending group after each step as a short body —
-  // otherwise envelopes just sealed above sit buffered until a future
-  // frame's envelopes happen to fill the group, defeating the "ship now"
-  // point of the frame-end seal.
+  // flush() then spends the frame's remaining credit (the held tail plus
+  // any front fraction), rounded up and built inline; a declared frame gets
+  // no separate tail repair. Also flush the SBI packer's pending group
+  // after each step as a short body — otherwise envelopes just sealed
+  // above sit buffered until a future frame's envelopes happen to fill the
+  // group, defeating the "ship now" point of the frame-end seal.
   layer.sw.seal(es);
   emit_flush(layer, sink);
   layer.sw.flush(es);

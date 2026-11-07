@@ -434,8 +434,8 @@ TEST(uep_collect_harvests_repairs_the_frame_left_behind) {
   for (auto& b : harvested)
     for (auto& d : dec.add_body(b.body.data(), b.body.size(), now)) got.add(d);
   CHECK(got.completed().size() == 1);
-  // Repairs did ship: the harvested bodies carry the frame's whole repair
-  // budget (ov 0.5 over the frame's symbols + the tail repair), never zero.
+  // Repairs did ship: the harvested bodies carry the front's worker-built
+  // repairs (the frame-end batch ships inline, already in frame_bodies).
   CHECK(enc.take_fec_gauge(1).jobs > 0);
 }
 
