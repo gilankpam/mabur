@@ -125,7 +125,14 @@ other way, so the step never moves against it. It starts moving once the
 vblank is more than 3 lines away (counted the way lines move it; more
 than a quarter refresh the wrong way goes round) and stops within half a
 line. It needs the refresh within 1 % of the camera's frame rate
-(otherwise wait: "the refresh is not the camera's frame rate").
+(otherwise wait: "the refresh is not the camera's frame rate"), and it
+waits for the camera's measured period before its first step ("measuring
+the camera's frame rate", ~20 s: two 10 s readings) with the register at
+the mode's own: the one direction is the sign of Pc − Pm, a few ppm
+either way, which the nominal rate cannot give -- a wrong guess walks the
+vblank away from the frames until the measurement lands. The drone sits
+on its trim meanwhile, so the period measured is the one NUDGE goes on
+to follow.
 
 Its reach is one line a frame: the vblank moves a line a frame against a
 drift of |Pc − Pm| a frame, so it pulls in at (line − drift) a frame and
@@ -280,6 +287,9 @@ page: finish the deploy on both devices (and republish the web page) before
 judging the link, per `docs/deploy.md`. On the GS, the `maburplay` binary
 goes in before its config -- an older binary exits on the new
 `[display]` keys (`phase_lock`, `phase_margin_ms`, `refresh_sync`).
+A live `set display.refresh_sync` (8403 or the menu) only rewrites a line
+the file already has (`docs/gs-live-config.md`, "File rules"): a GS whose
+TOML predates the key needs the bundle's `refresh_sync` line first.
 A `maburd` from before the ±500 mfps range clamps `snr_off` at ±200 mfps,
 so a panel that needs more (phone-class refresh rates) cannot lock until
 the drone is redeployed.

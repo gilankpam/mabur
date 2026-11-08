@@ -28,6 +28,7 @@ constexpr double kSec = 1e6;
 const char* const kWhyFaster = "the camera is faster than the display's mode";
 const char* const kWhyNotRate = "the refresh is not the camera's frame rate";
 const char* const kWhyReach = "the camera drifts more than a line a frame";
+const char* const kWhyMeasuring = "measuring the camera's frame rate";
 
 // A 1080p60 mode against a camera of period Pc, vblank by vblank. Each
 // frame is captured at c_j = c0 + j*Pc and wants out at c_j + floor; at the
@@ -105,6 +106,15 @@ struct Sim {
   void run_for(double us) {
     run_until(us, [] { return false; });
   }
+  // NUDGE holds still until the camera's period is measured (two 10 s
+  // readings): runs through that, so a test's bound counts from when NUDGE
+  // can first move. True once it is past it.
+  bool measure() {
+    return run_until(25 * kSec, [&] {
+      const char* why = core.why();
+      return why == nullptr || std::strcmp(why, "measuring the camera's frame rate") != 0;
+    });
+  }
 
   double median_margin() const {
     std::vector<double> v;
@@ -138,6 +148,7 @@ TEST(parse_refresh_sync_names) {
 // so NUDGE makes frames longer only, and holds the margin at the target.
 TEST(core_nudge_faster_screen_locks_and_holds) {
   Sim s(16670.0, RefreshSync::Nudge, 60);
+  REQUIRE(s.measure());
   REQUIRE(s.run_until(20 * kSec, [&] { return s.core.locked(); }));
   CHECK(!s.core.nudge_shorter());
   const double end = s.t() + 20 * kSec;
@@ -162,16 +173,20 @@ TEST(core_nudge_faster_screen_locks_and_holds) {
 }
 
 // A 60.000 Hz mode against a 60.04 fps camera: the screen is the slower.
-// Until the camera's period is measured the core steps longer on the
-// nominal one; from then on, shorter only, and it holds.
+// Once the camera's period is measured: shorter only, and it holds. The
+// pull-in is one line against the drift, (14.81 - 8.57) us a frame = 0.37
+// ms/s, and the vblank may start up to 3/4 of a refresh the wrong side of
+// the target (one way only): 12.5 ms / 0.37 ms/s = 34 s, plus the window
+// and three judgements: within 45 s of the measurement.
 TEST(core_nudge_slower_screen_steps_shorter) {
   Sim s(16658.1, RefreshSync::Nudge, 60);
-  REQUIRE(s.run_until(30 * kSec, [&] { return s.core.nudge_shorter(); }));
+  REQUIRE(s.measure());
+  CHECK(s.core.nudge_shorter());
   CHECK(std::fabs(s.core.camera_period_us() - 16658.1) < 1.0);
   int min_l = 0, max_l = 0;
   bool locked = false;
   const double t_dir = s.t();
-  while (s.t() < t_dir + 20 * kSec) {
+  while (s.t() < t_dir + 45 * kSec) {
     s.tick();
     CHECK(s.core.nudge_shorter());
     min_l = std::min(min_l, s.d);
@@ -182,13 +197,35 @@ TEST(core_nudge_slower_screen_steps_shorter) {
   CHECK(min_l == -1 && max_l == 0);
 }
 
-// Before the camera's period is measured it is taken as the nominal one --
-// the mode's own here -- so the screen is not the slower: longer.
-TEST(core_nudge_direction_before_period_is_longer) {
+// Until the camera's period is measured NUDGE does not know which way to
+// step: against a nominal rate a few ppm off the mode's it would guess, and
+// a wrong guess walks the vblank away from the frames. It waits with the
+// register at the mode's own, then steps the measured way only.
+TEST(core_nudge_waits_for_the_camera_period) {
   Sim s(16658.1, RefreshSync::Nudge, 60);
-  s.run_for(5 * kSec);  // ~300 stamps, fewer than kCamMinStamps
-  CHECK(s.core.camera_period_us() == 0);
-  CHECK(!s.core.nudge_shorter());
+  bool measured = false;
+  while (s.t() < 30 * kSec) {
+    s.tick();
+    if (s.core.why() != nullptr && std::strcmp(s.core.why(), kWhyMeasuring) == 0) {
+      CHECK(s.core.state() == DisplayLockCore::State::Waiting);
+      CHECK(s.last.lines == 0);
+      CHECK(s.d == 0);
+      continue;
+    }
+    measured = true;
+    break;
+  }
+  REQUIRE(measured);
+  CHECK(s.t() > 10 * kSec);  // two 10 s readings, at the earliest the second
+  CHECK(s.core.nudge_shorter());
+  int min_l = 0, max_l = 0;
+  const double t0 = s.t();
+  while (s.t() < t0 + 20 * kSec) {
+    s.tick();
+    min_l = std::min(min_l, s.d);
+    max_l = std::max(max_l, s.d);
+  }
+  CHECK(min_l == -1 && max_l == 0);
 }
 
 // A camera 0.3 % slower than the mode: FOLLOW adds lines to each frame to
@@ -290,7 +327,7 @@ TEST(core_skipped_write_leaves_g_alone) {
   Sim s(16670.0, RefreshSync::Nudge, 60);
   s.apply = false;
   bool asked = false;
-  while (!asked && s.t() < 20 * kSec) {
+  while (!asked && s.t() < 45 * kSec) {
     const DisplayLockCore::Step st = s.tick();
     asked = st.lines == 1 && s.core.lines() == 0 && s.core.error_ms() != 0;
     if (!asked) {
@@ -332,6 +369,7 @@ TEST(core_discontinuity_clears_window_keeps_lines) {
 // Paused (the display rate does not match the camera's): let go at once.
 TEST(core_paused_releases) {
   Sim s(16670.0, RefreshSync::Nudge, 60);
+  REQUIRE(s.measure());
   REQUIRE(s.run_until(20 * kSec, [&] { return s.core.locked(); }));
   REQUIRE(s.run_until(5 * kSec, [&] { return s.core.lines() == 1; }));
   s.core.set_paused(true);
@@ -409,6 +447,7 @@ TEST(core_camera_fps_change_forgets_period_and_stamps) {
 // then the core cannot hold: it asks for the release.
 TEST(core_unusable_releases_an_override_of_zero) {
   Sim s(16670.0, RefreshSync::Nudge, 60);
+  REQUIRE(s.measure());
   REQUIRE(s.run_until(20 * kSec, [&] { return s.core.locked(); }));
   int prev = s.core.lines();
   REQUIRE(s.run_until(5 * kSec, [&] {
@@ -432,6 +471,7 @@ TEST(core_unusable_releases_an_override_of_zero) {
 // release, and once released, no more asks.
 TEST(core_usable_zero_releases_once) {
   Sim s(16670.0, RefreshSync::Nudge, 60);
+  REQUIRE(s.measure());
   REQUIRE(s.run_until(20 * kSec, [&] { return s.core.locked(); }));
   int prev = s.core.lines();
   REQUIRE(s.run_until(5 * kSec, [&] {
@@ -473,6 +513,7 @@ TEST(core_set_mode_resets) {
 // to arrive after its capture -- 3.5 s with slack.
 TEST(core_lock_out_after_two_bad_judgements) {
   Sim s(16670.0, RefreshSync::Nudge, 60);
+  REQUIRE(s.measure());
   REQUIRE(s.run_until(20 * kSec, [&] { return s.core.locked(); }));
   s.run_for(2 * kSec);
   REQUIRE(s.core.locked());
@@ -514,31 +555,31 @@ TEST(core_found_held_register_released) {
 
 // A 100 Hz mode (1125 lines, 8.9 us a line) against a camera on the drone's
 // trim, 0.111 Hz under: it drifts 11.1 us = 1.25 lines a frame, faster than
-// one line a frame pulls back. Once the period is measured NUDGE waits, says
-// why, and leaves the register at the mode's own: no writes past bringing
-// it back.
+// one line a frame pulls back. NUDGE holds still while the period is
+// measured, then waits beyond reach and says why: the register is never
+// touched.
 TEST(core_nudge_beyond_reach_waits) {
   const ModeTiming m100{kVtotal, 5, 10000.0 / kVtotal, 10000.0};
   Sim s(1e6 / (100.0 - 0.111), RefreshSync::Nudge, 100, 10000.0 / 3, m100);
   bool said = false;
-  int writes_after = 0, releases_after = 0, ticks_after = 0;
+  int writes = 0, releases = 0, ticks_after = 0;
   while (s.t() < 60 * kSec) {
     const int before = s.core.lines();
     const DisplayLockCore::Step st = s.tick();
+    if (st.lines != before) ++writes;
+    if (st.release) ++releases;
     const char* why = s.core.why();
     if (!said && why && std::strcmp(why, kWhyReach) == 0) said = true;
     if (!said) continue;
     ++ticks_after;
-    if (st.lines != before) ++writes_after;
-    if (st.release) ++releases_after;
     CHECK(st.lines == 0);
     CHECK(s.core.state() == DisplayLockCore::State::Waiting);
     CHECK(s.core.beyond_reach());
   }
   REQUIRE(said);
   CHECK(ticks_after > 100 * 30);  // said within the first 30 s
-  CHECK(writes_after <= 1);       // the register brought back to 0 lines, at most once
-  CHECK(releases_after == 1);
+  CHECK(writes == 0);
+  CHECK(releases == 0);
   CHECK(s.core.lines() == 0);
   REQUIRE(s.core.why() != nullptr);
   CHECK(std::strcmp(s.core.why(), kWhyReach) == 0);
@@ -569,10 +610,11 @@ TEST(core_nudge_three_quarter_line_drift_holds) {
 
 // A vblank the thread slept through (seq up by 2): the register's lines ran
 // both frames, so G moves by both. Margins anchored at the first vblank's
-// G = 0 put the error at -G.
+// G = 0 put the error at -G. FOLLOW, since it steps on the nominal period
+// (NUDGE waits for a measured one); its grid here is ~0 lines.
 TEST(core_seq_gap_integrates_each_frame) {
   DisplayLockCore core(kM / 1000.0);
-  core.set_mode(RefreshSync::Nudge);
+  core.set_mode(RefreshSync::Follow);
   core.set_camera_fps(60);  // the nominal: the mode's own period, no drift
   const ModeTiming m{kVtotal, 5, kLine, kPm};
   const uint64_t t0 = 1'000'000'000;

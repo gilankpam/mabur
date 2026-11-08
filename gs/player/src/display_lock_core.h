@@ -76,6 +76,7 @@ class DisplayLockCore {
   static constexpr double kCamSteadyPpm = 100, kCamReplacePpm = 20, kCamNominalTol = 0.01;
   // NUDGE's Waiting reason when the camera drifts past its reach.
   static constexpr const char* kWhyBeyondReach = "the camera drifts more than a line a frame";
+  static constexpr const char* kWhyMeasuring = "measuring the camera's frame rate";
 
   explicit DisplayLockCore(double target_margin_ms);
 
@@ -120,7 +121,8 @@ class DisplayLockCore {
   bool nudge_shorter() const;        // NUDGE's one direction
   // Waiting's reason, a string literal: "off", "rate mismatch", "waiting
   // for frames", "the refresh is not the camera's frame rate",
-  // kWhyBeyondReach, "the camera is faster than the display's mode";
+  // kWhyMeasuring, kWhyBeyondReach, "the camera is faster than the
+  // display's mode";
   // nullptr otherwise.
   const char* why() const;
   // Waiting with kWhyBeyondReach: NUDGE cannot follow the camera's drift.

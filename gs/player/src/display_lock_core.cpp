@@ -216,13 +216,17 @@ void DisplayLockCore::measure_camera(uint64_t now_us) {
 // off the camera's frame rate is another rate, and a drift past
 // kNudgeReachLines of a line (on the period in use) leaves too little to
 // pull in with: a line or more never comes back, just under one takes
-// minutes. FOLLOW can take frames at most kFreeShorter shorter than the
-// mode's.
+// minutes. NUDGE also waits for the camera's measured period: its one
+// direction is the sign of Pc - Pm, a few ppm either way, and the nominal
+// rate cannot give that sign -- a wrong guess walks the vblank away from
+// the frames until the measurement lands. FOLLOW can take frames at most
+// kFreeShorter shorter than the mode's.
 const char* DisplayLockCore::unusable(double Pm, double Pc, double line) const {
   if (mode_ == RefreshSync::Off) return "off";
   if (paused_) return "rate mismatch";
   if (mode_ == RefreshSync::Nudge && std::fabs(Pc - Pm) > kNudgeRateTol * Pc)
     return "the refresh is not the camera's frame rate";
+  if (mode_ == RefreshSync::Nudge && cam_use_ <= 0) return kWhyMeasuring;
   if (mode_ == RefreshSync::Nudge && std::fabs(Pc - Pm) > kNudgeReachLines * line)
     return kWhyBeyondReach;
   if (mode_ == RefreshSync::Follow && Pc < Pm * (1 - kFreeShorter))
@@ -298,8 +302,8 @@ DisplayLockCore::Step DisplayLockCore::step(uint32_t seq, uint64_t vb_us, uint64
   // Pm every sample drifts by Pc - Pm a frame and the window's median lags
   // that drift by half the window (200 us at 59.988 fps on 60 Hz). Counted
   // against Bref lines a frame (the camera's frame over the mode's), the
-  // samples stand still. Until the period is adopted Pc is the nominal and
-  // the lag remains.
+  // samples stand still. NUDGE only steps once the period is adopted (see
+  // unusable()), so this Pc is always a measured one.
   const double Bref = follow ? B : Pc / line - vt;
   const double Pt = (vt + Bref) * line;
   const bool shorter = Pm > Pc * (1 + 1e-6);
