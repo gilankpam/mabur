@@ -85,6 +85,10 @@ class DisplayLock {
   void set_mode(RefreshSync m) { core_.set_mode(m); }
   void set_paused(bool paused) { core_.set_paused(paused); }
   void set_camera_fps(int fps) { core_.set_camera_fps(fps); }
+  // The camera's period as this lock adopted it, for the next presenter's
+  // lock at the same camera rate (seed_camera_period); 0 = none.
+  double camera_period_in_use() const { return core_.camera_period_in_use(); }
+  bool seed_camera_period(double pc) { return core_.seed_camera_period(pc); }
   void note_margin(double margin_us, uint64_t t_us) { core_.on_margin(margin_us, t_us); }
   void note_pts(uint32_t pts_us) { core_.on_pts(pts_us); }
   void on_discontinuity() { core_.on_discontinuity(); }

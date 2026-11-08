@@ -63,12 +63,33 @@ DisplayLockCore::DisplayLockCore(double target_margin_ms) : target_us_(target_ma
 
 void DisplayLockCore::set_mode(RefreshSync m) {
   std::lock_guard<PiMutex> lk(mu_);
+  // While the camera holds the lock the GS steers the drone's sensor onto
+  // the display's rate: a period measured then is not the one the camera
+  // keeps once the display takes over and the drone goes back to its trim.
+  if (mode_ == RefreshSync::Off && m != RefreshSync::Off) {
+    clear_camera();
+    cam_reading_ = cam_cand_ = cam_use_ = 0;
+    cam_timer_ = false;
+  }
   mode_ = m;
   trim_ = 0;
   moving_ = false;
   clear_window();
   enter(State::Waiting);
   why_ = m == RefreshSync::Off ? "off" : "waiting for frames";
+}
+
+bool DisplayLockCore::seed_camera_period(double pc) {
+  std::lock_guard<PiMutex> lk(mu_);
+  if (mode_ == RefreshSync::Off || fps_ <= 0 || pc <= 0) return false;
+  if (std::fabs(pc * fps_ - 1e6) > kCamNominalTol * 1e6) return false;
+  cam_use_ = pc;
+  return true;
+}
+
+double DisplayLockCore::camera_period_in_use() const {
+  std::lock_guard<PiMutex> lk(mu_);
+  return cam_use_;
 }
 
 void DisplayLockCore::set_paused(bool paused) {

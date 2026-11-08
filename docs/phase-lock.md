@@ -146,9 +146,15 @@ So NUDGE's time to lock is that wait plus the pull-in: some 20 s plus up
 to 18.75 s at 1080p60, and ~5 s more to fill the window and judge it in
 step. Neither actuator holds the phase meanwhile (the
 sensor steer was dropped when the display took over), so the picture
-runs unlocked, a few ms later, until NUDGE is in step. It starts over
-with each presenter (a display rebuild or hotplug builds a fresh lock)
-and with a change of the camera's rate.
+runs unlocked, a few ms later, until NUDGE is in step. Each presenter
+gets a fresh lock (a display rebuild or a hotplug), which pulls in and
+judges afresh, but the measurement carries over: the period the last lock
+adopted under a display mode is handed to the next one at the same camera
+rate (`maburplay: refresh sync: the camera's period carried over from the
+last display (… us)`), which steps at once, and the measurement goes on
+behind it as usual. A change of the camera's rate measures afresh, and so
+does a switch from the camera to a display mode: under the sensor steer
+the camera runs at the display's rate, not the trim it goes back to.
 
 Its reach is one line a frame: the vblank moves a line a frame against a
 drift of |Pc − Pm| a frame, so it pulls in at (line − drift) a frame and

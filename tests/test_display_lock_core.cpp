@@ -647,4 +647,58 @@ TEST(core_nudge_pull_in_takes_the_quicker_way_round) {
   CHECK(worst < 25 * kSec);
 }
 
+// A camera steered by the sensor lock runs at the display's rate, not its
+// own: switching from the camera (Off) to the display forgets a period
+// measured meanwhile and measures again, on the trim the drone goes back
+// to. Between the two display modes the drone stays on its trim: kept.
+TEST(core_camera_to_display_measures_again) {
+  Sim s(16658.1, RefreshSync::Off, 60);
+  s.run_for(25 * kSec);
+  REQUIRE(s.core.camera_period_in_use() > 0);
+  s.core.set_mode(RefreshSync::Nudge);
+  CHECK(s.core.camera_period_in_use() == 0);
+  s.tick();
+  REQUIRE(s.core.why() != nullptr);
+  CHECK(std::strcmp(s.core.why(), kWhyMeasuring) == 0);
+  REQUIRE(s.measure());
+  REQUIRE(s.core.camera_period_in_use() > 0);
+  s.core.set_mode(RefreshSync::Follow);
+  CHECK(s.core.camera_period_in_use() > 0);
+  s.core.set_mode(RefreshSync::Nudge);
+  CHECK(s.core.camera_period_in_use() > 0);
+}
+
+// A period carried over from the lock before (a display rebuild at the same
+// camera rate) is the one in use at once: no measuring wait, the measured
+// direction from the first step.
+TEST(core_seeded_period_skips_measuring) {
+  Sim s(16658.1, RefreshSync::Nudge, 60);
+  REQUIRE(s.core.seed_camera_period(16658.1));
+  CHECK(s.core.camera_period_in_use() == 16658.1);
+  int min_l = 0, max_l = 0;
+  bool locked = false;
+  while (s.t() < 25 * kSec) {
+    s.tick();
+    const char* why = s.core.why();
+    CHECK(why == nullptr || std::strcmp(why, kWhyMeasuring) != 0);
+    min_l = std::min(min_l, s.d);
+    max_l = std::max(max_l, s.d);
+    locked = locked || s.core.locked();
+  }
+  CHECK(s.core.nudge_shorter());
+  CHECK(min_l == -1 && max_l == 0);
+  CHECK(locked);  // 18.75 s pull-in at most, plus the window and judgements
+}
+
+// Only a period this camera rate could have, and only for the display.
+TEST(core_seed_refused_off_nominal_or_on_the_camera) {
+  Sim s(16658.1, RefreshSync::Nudge, 60);
+  CHECK(!s.core.seed_camera_period(kPm * 1.02));
+  CHECK(!s.core.seed_camera_period(0));
+  CHECK(s.core.camera_period_in_use() == 0);
+  Sim off(16658.1, RefreshSync::Off, 60);
+  CHECK(!off.core.seed_camera_period(16658.1));
+  CHECK(off.core.camera_period_in_use() == 0);
+}
+
 MTEST_MAIN

@@ -873,6 +873,12 @@ int main(int argc, char** argv) {
   // pts sink reads it: it changes only while the pump is parked or joined.
   std::unique_ptr<maburplay::DisplayLock> display_lock;
   uint64_t display_lock_t0_us = 0;  // when it started
+  // The camera's period the last lock adopted under a display mode, and
+  // the camera rate it was measured at: handed to the next lock at the same
+  // rate (a hotplug or a rebuild does not change the camera), which then
+  // skips the ~20 s measurement. Taken when a lock is dropped, used once.
+  double carried_cam_period_us = 0;
+  int carried_cam_fps = 0;
   if (!decode_only) {
     presenter = std::make_unique<maburplay::DrmPresenter>();
     // Frames the presenter is done with go to the release queue, never
@@ -1132,10 +1138,17 @@ int main(int argc, char** argv) {
     if (!cfg.display.phase_lock || !presenter) return;
     maburplay::RefreshSync mode = maburplay::RefreshSync::Off;
     maburplay::parse_refresh_sync(cfg.display.refresh_sync, &mode);  // the loader checked it
+    const int fps = static_cast<int>(std::lround(camera_hz_now()));
     display_lock = std::make_unique<maburplay::DisplayLock>(
-        *presenter, maburplay::DisplayLock::Cfg{mode, cfg.display.phase_margin_ms,
-                                                static_cast<int>(std::lround(camera_hz_now())),
+        *presenter, maburplay::DisplayLock::Cfg{mode, cfg.display.phase_margin_ms, fps,
                                                 cfg.display.rt_priority});
+    if (carried_cam_period_us > 0 && carried_cam_fps == fps &&
+        display_lock->seed_camera_period(carried_cam_period_us))
+      std::fprintf(stderr,
+                   "maburplay: refresh sync: the camera's period carried over from the last "
+                   "display (%.3f us)\n",
+                   carried_cam_period_us);
+    carried_cam_period_us = 0;
     display_lock->start();
     display_lock_t0_us = mono_us();
     refresh_latched = false;
@@ -2084,6 +2097,11 @@ int main(int argc, char** argv) {
       if (burn) stop_burn();
       park_output("display rebuild");
       release.set_sink(nullptr);
+      if (display_lock && display_lock->mode() != maburplay::RefreshSync::Off &&
+          display_lock->camera_period_in_use() > 0) {
+        carried_cam_period_us = display_lock->camera_period_in_use();
+        carried_cam_fps = static_cast<int>(std::lround(camera_hz_now()));
+      }
       display_lock.reset();  // stops it; the pump's pts sink is parked
       device_fd = maburplay::DrmPresenter::retire(std::move(presenter));
     }

@@ -80,9 +80,18 @@ class DisplayLockCore {
 
   explicit DisplayLockCore(double target_margin_ms);
 
-  void set_mode(RefreshSync m);  // window, trim, moving, judgements cleared; state Waiting
+  // Window, trim, moving, judgements cleared; state Waiting. From Off to a
+  // display mode the camera's period is measured afresh as well.
+  void set_mode(RefreshSync m);
   void set_paused(bool paused);  // rate mismatch: release and wait
   void set_camera_fps(int fps);  // the nominal rate; a change forgets the measured period
+  // A period measured by the lock before this one (a display rebuild at the
+  // same camera rate), put in use at once: within kCamNominalTol of the
+  // nominal rate, and only with a display mode on (under the camera the
+  // drone is steered off its own rate). False, and nothing changed,
+  // otherwise. The measurement goes on and replaces it as usual.
+  bool seed_camera_period(double pc);
+  double camera_period_in_use() const;  // the adopted (or seeded) period; 0 = none
   // One frame's release margin (µs) from the regulator, taken at t_us.
   void on_margin(double margin_us, uint64_t t_us);
   void on_pts(uint32_t pts_us);  // every decoded frame's capture stamp, µs mod 2^32
