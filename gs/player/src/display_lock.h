@@ -23,11 +23,16 @@ class DrmPresenter;
 // set while the scan-out is already past it runs the frame to the counter's
 // end, one very long frame. A late wake skips the write and leaves the core
 // believing the register unchanged. A release goes back to the mode's own
-// value with the immediate bit clear, so it latches at a frame boundary.
+// value with the immediate bit clear, so it latches at a frame boundary;
+// the core asks for one only once 0 lines hold.
 //
 // The mode's own register value is read once, at the first vblank: a total
 // that is not this mode's (another program's, or a mode the driver set
-// otherwise) leaves the lock disengaged for this presenter's life.
+// otherwise) leaves the lock disengaged for this presenter's life. One a
+// little off, or an immediate write still held, is a run's that did not put
+// it back: the core takes it as the register's lines and brings it back as
+// any (0 lines early in a frame, the release a vblank later), even when
+// refresh sync is off.
 //
 // Threads: the setters and note_* come from any thread and go straight to
 // the core, which is thread-safe; the snapshot getters read the core.
@@ -70,13 +75,13 @@ class DisplayLock {
     return available() && !took_mode_.load(std::memory_order_relaxed) &&
            !take_failed_.load(std::memory_order_relaxed);
   }
+  // The first vblank found a total that is not the mode's: off for this
+  // presenter's life.
+  bool refused() const { return take_failed_.load(std::memory_order_relaxed); }
 
   void set_mode(RefreshSync m) { core_.set_mode(m); }
   void set_paused(bool paused) { core_.set_paused(paused); }
-  void set_camera_fps(int fps) {
-    fps_.store(fps, std::memory_order_relaxed);
-    core_.set_camera_fps(fps);
-  }
+  void set_camera_fps(int fps) { core_.set_camera_fps(fps); }
   void note_margin(double margin_us, uint64_t t_us) { core_.on_margin(margin_us, t_us); }
   void note_pts(uint32_t pts_us) { core_.on_pts(pts_us); }
   void on_discontinuity() { core_.on_discontinuity(); }
@@ -88,11 +93,15 @@ class DisplayLock {
   double error_ms() const { return core_.error_ms(); }
   int lines() const { return core_.lines(); }
   double grid_lines() const { return core_.grid_lines(); }
+  double trim_lines() const { return core_.trim_lines(); }
   double camera_period_us() const { return core_.camera_period_us(); }
+  // NUDGE waiting because the camera drifts past its reach
+  // (DisplayLockCore::kWhyBeyondReach).
+  bool beyond_reach() const { return core_.beyond_reach(); }
 
  private:
   void run_();
-  void log_(const ModeTiming& t, uint64_t now_us);
+  void log_(uint64_t now_us);
   void exit_restore_(const ModeTiming& t);
 
   DrmPresenter& presenter_;
@@ -104,16 +113,15 @@ class DisplayLock {
   std::atomic<bool> running_{false};
   std::atomic<bool> took_mode_{false};
   std::atomic<bool> take_failed_{false};
-  std::atomic<int> fps_;
 
   // The thread's own state.
   bool dirty_ = false;  // written off the mode's own value since the last restore
   double moved_us_ = 0;  // the vblank's shift over the grid since the last 5 s line
   bool engaged_said_ = false;
   RefreshSync mode_said_ = RefreshSync::Off;
-  // The reason last said, "" for none; starts as one the core never gives,
-  // so the first is said.
-  std::string why_said_ = "-";
+  // The reason last said (a core literal), nullptr for none; starts as one
+  // the core never gives, so the first is said.
+  const char* why_said_ = "-";
   int dir_said_ = 0;  // NUDGE: 1 longer, -1 shorter, 0 not said
   bool locked_said_ = false;
   uint64_t log_t_us_ = 0;

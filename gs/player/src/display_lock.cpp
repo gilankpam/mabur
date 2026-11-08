@@ -42,7 +42,7 @@ bool early_in_frame(uint64_t vb_us, double period_us) {
 }  // namespace
 
 DisplayLock::DisplayLock(DrmPresenter& presenter, Cfg cfg)
-    : presenter_(presenter), cfg_(cfg), core_(cfg.target_margin_ms), fps_(cfg.camera_fps) {
+    : presenter_(presenter), cfg_(cfg), core_(cfg.target_margin_ms) {
   core_.set_mode(cfg.mode);
   core_.set_camera_fps(cfg.camera_fps);
   fl_ = map_frame_length(presenter_.crtc_index(), &map_why_);
@@ -101,6 +101,10 @@ void DisplayLock::run_() {
     uint32_t seq = 0;
     uint64_t vb = 0;
     if (!presenter_.wait_vblank(&seq, &vb)) {
+      // The core's last seq is left as it was: the immediate total in force
+      // holds through the gap, so the next step counting the frames missed
+      // at the register's lines (when fewer than 100) is what the display
+      // ran.
       ::usleep(100'000);
       have_prev = false;
       continue;
@@ -118,8 +122,16 @@ void DisplayLock::run_() {
         continue;
       }
       // A total a little off, or an immediate write still held, is ours,
-      // left by a run that did not get to put it back.
-      if (seen.held || seen.total != t.vtotal) fl_->restore();
+      // left by a run that did not get to put it back: the core brings it
+      // back (0 lines early in a frame, the release a vblank later). A mode
+      // it cannot count in is put back at once.
+      if (seen.held || seen.total != t.vtotal) {
+        dirty_ = true;
+        if (!core_.found_register(seen.total - t.vtotal, seen.held, t)) {
+          fl_->restore();
+          dirty_ = false;
+        }
+      }
       took_mode_.store(true);
     }
 
@@ -147,12 +159,12 @@ void DisplayLock::run_() {
     // A late wake writes nothing and tells the core nothing: it keeps the
     // register's lines as they were and asks again at the next vblank.
 
-    log_(t, mono_us());
+    log_(mono_us());
   }
   exit_restore_(t);
 }
 
-void DisplayLock::log_(const ModeTiming& t, uint64_t now_us) {
+void DisplayLock::log_(uint64_t now_us) {
   const RefreshSync mode = core_.mode();
   const bool on = mode != RefreshSync::Off;
   if (on && (!engaged_said_ || mode != mode_said_)) {
@@ -167,11 +179,12 @@ void DisplayLock::log_(const ModeTiming& t, uint64_t now_us) {
   engaged_said_ = on;
   mode_said_ = mode;
 
+  // Compared by text, not pointer: no allocation on this SCHED_FIFO thread.
   const char* why = core_.why();
-  const std::string cur = why ? why : "";
-  if (cur != why_said_) {
+  const bool same = why == why_said_ || (why && why_said_ && std::strcmp(why, why_said_) == 0);
+  if (!same) {
     if (why) std::fprintf(stderr, "refresh-sync: %s\n", why);
-    why_said_ = cur;
+    why_said_ = why;
   }
   if (!on) return;
 
@@ -191,22 +204,11 @@ void DisplayLock::log_(const ModeTiming& t, uint64_t now_us) {
   }
 
   if (now_us - log_t_us_ >= kLogEveryUs) {
-    const double grid = core_.grid_lines();
-    const double cam = core_.camera_period_us();
-    // The core keeps its learnt trim to itself; here it is the grid over
-    // the camera's frame in lines, taken from the latest reading (the
-    // nominal before one). It reads off when the period in use is not yet
-    // that reading, and when the grid sits at its clamp.
-    double trim = 0;
-    if (mode == RefreshSync::Follow && t.line_us > 0) {
-      const int fps = fps_.load(std::memory_order_relaxed);
-      const double pc = cam > 0 ? cam : fps > 0 ? 1e6 / fps : 0;
-      if (pc > 0) trim = grid - (pc / t.line_us - t.vtotal);
-    }
     std::fprintf(stderr,
                  "refresh-sync: err=%.2fms lines=%+d (grid %.1f, trim %+.2f) moved=%+.0fus/5s "
                  "cam=%.3fus\n",
-                 core_.error_ms(), core_.lines(), grid, trim, moved_us_, cam);
+                 core_.error_ms(), core_.lines(), core_.grid_lines(), core_.trim_lines(),
+                 moved_us_, core_.camera_period_us());
     log_t_us_ = now_us;
     moved_us_ = 0;
   }
