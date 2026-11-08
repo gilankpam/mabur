@@ -8,18 +8,24 @@
 #include <string>
 #include <vector>
 
+#include "pi_mutex.h"
+
 namespace maburplay {
 
 // display.refresh_sync: how the GS bends the display's own frame length to
 // hold its vblank at the camera's frames.
-//  Off    -- never touches the frame length.
-//  Nudge  -- one line at a time, one way only, with the refresh the camera's
-//            frame rate (within 1 %): the drift brings the vblank back the
-//            other way. For panels that blank on larger changes.
-//  Follow -- each frame as long as one camera frame (lines added to the
-//            mode, or taken off one up to 0.5 % slower than the camera), the
-//            phase moved up to 2 % of a frame per frame. For panels that take
-//            any frame length.
+//  Off    -- the mode's own frame length: nothing written, except to bring
+//            back a register found off the mode's own value.
+//  Nudge  -- one line a frame, one way only; the drift between refresh and
+//            camera brings the vblank back the other way. Holds only while
+//            the camera drifts less than a line a frame against the refresh
+//            (kNudgeReachLines of one). For panels that blank on larger
+//            changes.
+//  Follow -- each frame as long as one camera frame: lines added to the
+//            mode's total for a slower camera, taken off it (up to 0.5 %)
+//            for a faster one, and the phase brought back with up to 2 % of
+//            a frame more or less on top. For panels that take any frame
+//            length.
 enum class RefreshSync : uint8_t { Off, Nudge, Follow };
 bool parse_refresh_sync(const std::string& s, RefreshSync* out);  // "off"/"nudge"/"follow"
 const char* refresh_sync_name(RefreshSync m);
@@ -64,10 +70,12 @@ class DisplayLockCore {
   static constexpr size_t kMinSamples = 50, kCamMinStamps = 500;
   static constexpr double kLockInMs = 1.0, kLockOutMs = 3.0;
   static constexpr int kLockInJudgements = 3, kLockOutJudgements = 2;
-  static constexpr double kNudgeRateTol = 0.01, kFreeShorter = 0.005, kFreeLonger = 0.01,
-                          kFollowCap = 0.02;
+  static constexpr double kNudgeRateTol = 0.01, kNudgeReachLines = 0.8, kFreeShorter = 0.005,
+                          kFreeLonger = 0.01, kFollowCap = 0.02;
   static constexpr double kTrimGain = 0.002, kTrimStepMax = 2.0, kTrimMax = 3.0;
   static constexpr double kCamSteadyPpm = 100, kCamReplacePpm = 20, kCamNominalTol = 0.01;
+  // NUDGE's Waiting reason when the camera drifts past its reach.
+  static constexpr const char* kWhyBeyondReach = "the camera drifts more than a line a frame";
 
   explicit DisplayLockCore(double target_margin_ms);
 
@@ -85,11 +93,21 @@ class DisplayLockCore {
   };
   // One vblank: seq/vb_us from the display, now_us the caller's clock.
   // lines: what the register should hold from this frame on (0 = the
-  // mode's own); release: lines is 0 and the register should go back to the
-  // mode's own value.
+  // mode's own); a lines other than lines() is a write of it, the same is
+  // none. release: the register holds 0 lines already and should go back
+  // to the mode's own value, immediate bit clear -- a register off 0 lines
+  // is first asked for 0 (a write early in a frame), the release a step
+  // later.
   Step step(uint32_t seq, uint64_t vb_us, uint64_t now_us, const ModeTiming& m);
   // The register now holds `lines` (the write landed). Not called = unchanged.
+  // applied(0) after a release asked is the release; after a write of 0, the
+  // register holds 0 lines as an immediate write, still to be released.
   void applied(int lines);
+  // The register as the display thread found it before the first step:
+  // `lines` over m's total, `held` an immediate write still in force (a
+  // run that did not put it back). The core counts it as the register's
+  // and brings it back as it leaves any. False when m cannot be counted in.
+  bool found_register(int lines, bool held, const ModeTiming& m);
 
   State state() const;
   bool locked() const;
@@ -97,12 +115,16 @@ class DisplayLockCore {
   double error_ms() const;           // wrap(target - G), ms; 0 without a target
   int lines() const;                 // in the register now
   double grid_lines() const;         // FOLLOW: B + trim; NUDGE: 0
+  double trim_lines() const;         // FOLLOW: the learnt trim in B; NUDGE: 0
   double camera_period_us() const;   // the latest 10 s reading; 0 until measured
   bool nudge_shorter() const;        // NUDGE's one direction
-  // Waiting's reason: "off", "rate mismatch", "waiting for frames",
-  // "the refresh is not the camera's frame rate", "the camera is faster
-  // than the display's mode"; nullptr otherwise.
+  // Waiting's reason, a string literal: "off", "rate mismatch", "waiting
+  // for frames", "the refresh is not the camera's frame rate",
+  // kWhyBeyondReach, "the camera is faster than the display's mode";
+  // nullptr otherwise.
   const char* why() const;
+  // Waiting with kWhyBeyondReach: NUDGE cannot follow the camera's drift.
+  bool beyond_reach() const;
 
  private:
   struct Mark {  // a vblank and the shift G as of it
@@ -118,16 +140,19 @@ class DisplayLockCore {
     double u;
   };
 
+  void start_mode(const ModeTiming& m);
   void enter(State s);
   void clear_window();
   void clear_camera();
   void measure_camera(uint64_t now_us);
-  const char* unusable(double Pm, double Pc) const;
+  const char* unusable(double Pm, double Pc, double line) const;
   double g_at(uint64_t t_us) const;
-  double circular_median(double P) const;
+  double circular_median(double P);
   void judge(uint64_t now_us);
 
-  mutable std::mutex mu_;
+  // Priority-inheriting: the SCHED_FIFO display thread steps under it while
+  // the decode output and housekeeping feed it at normal priority.
+  mutable PiMutex mu_;
   const double target_us_;
   RefreshSync mode_ = RefreshSync::Off;
   bool paused_ = false;
@@ -148,6 +173,7 @@ class DisplayLockCore {
 
   std::vector<Pending> pending_;  // margins not yet turned into samples
   std::deque<Sample> win_;
+  std::vector<double> med_buf_;  // circular_median's scratch, kept to spare the step an allocation
   uint64_t last_sample_us_ = 0;
   bool have_target_ = false;
   double err_us_ = 0;
@@ -171,6 +197,7 @@ class DisplayLockCore {
   double cam_reading_ = 0;  // the latest reading
   double cam_cand_ = 0;     // the last reading, if it was a candidate
   double cam_use_ = 0;      // the period in use; 0 = the nominal
+  std::vector<uint64_t> gaps_;  // measure_camera's scratch
 };
 
 const char* display_lock_state_name(DisplayLockCore::State s);

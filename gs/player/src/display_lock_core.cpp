@@ -56,10 +56,13 @@ const char* display_lock_state_name(DisplayLockCore::State s) {
   return "?";
 }
 
-DisplayLockCore::DisplayLockCore(double target_margin_ms) : target_us_(target_margin_ms * 1000.0) {}
+DisplayLockCore::DisplayLockCore(double target_margin_ms) : target_us_(target_margin_ms * 1000.0) {
+  med_buf_.reserve(kPendingCap);
+  gaps_.reserve(kCapsCap);
+}
 
 void DisplayLockCore::set_mode(RefreshSync m) {
-  std::lock_guard<std::mutex> lk(mu_);
+  std::lock_guard<PiMutex> lk(mu_);
   mode_ = m;
   trim_ = 0;
   moving_ = false;
@@ -69,12 +72,12 @@ void DisplayLockCore::set_mode(RefreshSync m) {
 }
 
 void DisplayLockCore::set_paused(bool paused) {
-  std::lock_guard<std::mutex> lk(mu_);
+  std::lock_guard<PiMutex> lk(mu_);
   paused_ = paused;
 }
 
 void DisplayLockCore::set_camera_fps(int fps) {
-  std::lock_guard<std::mutex> lk(mu_);
+  std::lock_guard<PiMutex> lk(mu_);
   if (fps == fps_) return;
   fps_ = fps;
   clear_camera();
@@ -90,13 +93,13 @@ void DisplayLockCore::set_camera_fps(int fps) {
 }
 
 void DisplayLockCore::on_margin(double margin_us, uint64_t t_us) {
-  std::lock_guard<std::mutex> lk(mu_);
+  std::lock_guard<PiMutex> lk(mu_);
   if (pending_.size() >= kPendingCap) pending_.erase(pending_.begin());
   pending_.push_back({margin_us, t_us});
 }
 
 void DisplayLockCore::on_pts(uint32_t pts_us) {
-  std::lock_guard<std::mutex> lk(mu_);
+  std::lock_guard<PiMutex> lk(mu_);
   uint64_t v = pts_hi_ + pts_us;
   // A step back of more than half the range is the 32-bit stamp wrapping.
   if (have_pts_ && v < pts_last_ && pts_last_ - v > kHalfWrap) {
@@ -116,7 +119,7 @@ void DisplayLockCore::on_pts(uint32_t pts_us) {
 }
 
 void DisplayLockCore::on_discontinuity() {
-  std::lock_guard<std::mutex> lk(mu_);
+  std::lock_guard<PiMutex> lk(mu_);
   clear_window();
   clear_camera();  // the stamps are of the old timeline; the period still holds
   enter(State::Waiting);
@@ -124,9 +127,34 @@ void DisplayLockCore::on_discontinuity() {
 }
 
 void DisplayLockCore::applied(int lines) {
-  std::lock_guard<std::mutex> lk(mu_);
+  std::lock_guard<PiMutex> lk(mu_);
   released_ = lines == 0 && asked_release_;
   lines_ = lines;
+}
+
+bool DisplayLockCore::found_register(int lines, bool held, const ModeTiming& m) {
+  std::lock_guard<PiMutex> lk(mu_);
+  if (m.period_us <= 0 || m.line_us <= 0 || m.vtotal <= 0) return false;
+  if (m.vtotal != mode_vtotal_ || m.line_us != mode_line_) start_mode(m);
+  lines_ = lines;
+  released_ = lines == 0 && !held;
+  asked_release_ = false;
+  return true;
+}
+
+// A new display mode: the modeset wrote the register's own value, and the
+// shift is counted in other lines. Start over.
+void DisplayLockCore::start_mode(const ModeTiming& m) {
+  mode_vtotal_ = m.vtotal;
+  mode_line_ = m.line_us;
+  G_ = 0;
+  have_seq_ = false;
+  marks_.clear();
+  lines_ = 0;
+  released_ = true;
+  moving_ = false;
+  clear_window();
+  enter(State::Waiting);
 }
 
 void DisplayLockCore::enter(State s) {
@@ -163,8 +191,8 @@ void DisplayLockCore::measure_camera(uint64_t now_us) {
   cam_t_us_ = now_us;
   double pc = 0;
   if (caps_.size() >= kCamMinStamps) {
-    std::vector<uint64_t> g;
-    g.reserve(caps_.size());
+    std::vector<uint64_t>& g = gaps_;
+    g.clear();
     for (size_t i = 1; i < caps_.size(); ++i) g.push_back(caps_[i] - caps_[i - 1]);
     std::nth_element(g.begin(), g.begin() + g.size() / 2, g.end());
     const double med = static_cast<double>(g[g.size() / 2]);
@@ -182,15 +210,21 @@ void DisplayLockCore::measure_camera(uint64_t now_us) {
   cam_cand_ = cand ? pc : 0;
 }
 
-// Why the lock cannot hold the vblank now; nullptr when it can. NUDGE needs
-// the refresh within kNudgeRateTol of the camera's frame rate, or the
-// frames sweep through the refresh faster than a line a frame follows;
-// FOLLOW can take frames at most kFreeShorter shorter than the mode's.
-const char* DisplayLockCore::unusable(double Pm, double Pc) const {
+// Why the lock cannot hold the vblank now; nullptr when it can. NUDGE
+// moves the vblank one line a frame against a drift of Pc - Pm a frame, so
+// it pulls in at (line - drift) a frame: a refresh more than kNudgeRateTol
+// off the camera's frame rate is another rate, and a drift past
+// kNudgeReachLines of a line (on the period in use) leaves too little to
+// pull in with: a line or more never comes back, just under one takes
+// minutes. FOLLOW can take frames at most kFreeShorter shorter than the
+// mode's.
+const char* DisplayLockCore::unusable(double Pm, double Pc, double line) const {
   if (mode_ == RefreshSync::Off) return "off";
   if (paused_) return "rate mismatch";
   if (mode_ == RefreshSync::Nudge && std::fabs(Pc - Pm) > kNudgeRateTol * Pc)
     return "the refresh is not the camera's frame rate";
+  if (mode_ == RefreshSync::Nudge && std::fabs(Pc - Pm) > kNudgeReachLines * line)
+    return kWhyBeyondReach;
   if (mode_ == RefreshSync::Follow && Pc < Pm * (1 - kFreeShorter))
     return "the camera is faster than the display's mode";
   return nullptr;
@@ -206,7 +240,7 @@ double DisplayLockCore::g_at(uint64_t t_us) const {
 
 // The median of the samples on the circle of period P: pivoted on their mean
 // angle, so a window straddling the 0/P seam is one continuous run.
-double DisplayLockCore::circular_median(double P) const {
+double DisplayLockCore::circular_median(double P) {
   double sx = 0, sy = 0;
   for (const Sample& s : win_) {
     const double a = 2 * kPi * s.u / P;
@@ -214,8 +248,8 @@ double DisplayLockCore::circular_median(double P) const {
     sy += std::sin(a);
   }
   const double pivot = std::atan2(sy, sx) * P / (2 * kPi);
-  std::vector<double> d;
-  d.reserve(win_.size());
+  std::vector<double>& d = med_buf_;
+  d.clear();
   for (const Sample& s : win_) d.push_back(wrap(s.u - pivot, P));
   std::nth_element(d.begin(), d.begin() + d.size() / 2, d.end());
   return mod(pivot + d[d.size() / 2], P);
@@ -242,24 +276,11 @@ void DisplayLockCore::judge(uint64_t now_us) {
 
 DisplayLockCore::Step DisplayLockCore::step(uint32_t seq, uint64_t vb_us, uint64_t now_us,
                                             const ModeTiming& m) {
-  std::lock_guard<std::mutex> lk(mu_);
+  std::lock_guard<PiMutex> lk(mu_);
   const double Pm = m.period_us, line = m.line_us;
   if (Pm <= 0 || line <= 0 || m.vtotal <= 0) return {lines_, false};
 
-  // A new display mode: the modeset wrote the register's own value, and
-  // the shift is counted in other lines. Start over.
-  if (m.vtotal != mode_vtotal_ || line != mode_line_) {
-    mode_vtotal_ = m.vtotal;
-    mode_line_ = line;
-    G_ = 0;
-    have_seq_ = false;
-    marks_.clear();
-    lines_ = 0;
-    released_ = true;
-    moving_ = false;
-    clear_window();
-    enter(State::Waiting);
-  }
+  if (m.vtotal != mode_vtotal_ || line != mode_line_) start_mode(m);
 
   measure_camera(now_us);
   const double Pc = cam_use_ > 0 ? cam_use_ : fps_ > 0 ? 1e6 / fps_ : Pm;
@@ -276,7 +297,7 @@ DisplayLockCore::Step DisplayLockCore::step(uint32_t seq, uint64_t vb_us, uint64
   // camera's period: the frames arrive every Pc, so against a reference at
   // Pm every sample drifts by Pc - Pm a frame and the window's median lags
   // that drift by half the window (200 us at 59.988 fps on 60 Hz). Counted
-  // against Bc lines a frame (the camera's frame over the mode's), the
+  // against Bref lines a frame (the camera's frame over the mode's), the
   // samples stand still. Until the period is adopted Pc is the nominal and
   // the lag remains.
   const double Bref = follow ? B : Pc / line - vt;
@@ -296,12 +317,16 @@ DisplayLockCore::Step DisplayLockCore::step(uint32_t seq, uint64_t vb_us, uint64
   marks_.push_back({vb_us, G_});
   if (marks_.size() > kMarks) marks_.pop_front();
 
-  if (const char* why = unusable(Pm, Pc)) {
+  if (const char* why = unusable(Pm, Pc, line)) {
     clear_window();
     enter(State::Waiting);
     why_ = why;
     moving_ = false;
-    asked_release_ = lines_ != 0 || !released_;
+    // Off the mode's own: 0 lines first, an immediate write early in a
+    // frame like any other, and the release only once that landed. The
+    // release clears the immediate bit wherever in the frame the thread
+    // is, so it must find the frame already at the mode's total.
+    asked_release_ = lines_ == 0 && !released_;
     return {0, asked_release_};
   }
 
@@ -357,48 +382,58 @@ DisplayLockCore::Step DisplayLockCore::step(uint32_t seq, uint64_t vb_us, uint64
 }
 
 DisplayLockCore::State DisplayLockCore::state() const {
-  std::lock_guard<std::mutex> lk(mu_);
+  std::lock_guard<PiMutex> lk(mu_);
   return state_;
 }
 
 bool DisplayLockCore::locked() const {
-  std::lock_guard<std::mutex> lk(mu_);
+  std::lock_guard<PiMutex> lk(mu_);
   return state_ == State::Locked;
 }
 
 RefreshSync DisplayLockCore::mode() const {
-  std::lock_guard<std::mutex> lk(mu_);
+  std::lock_guard<PiMutex> lk(mu_);
   return mode_;
 }
 
 double DisplayLockCore::error_ms() const {
-  std::lock_guard<std::mutex> lk(mu_);
+  std::lock_guard<PiMutex> lk(mu_);
   return have_target_ ? err_us_ / 1000.0 : 0.0;
 }
 
 int DisplayLockCore::lines() const {
-  std::lock_guard<std::mutex> lk(mu_);
+  std::lock_guard<PiMutex> lk(mu_);
   return lines_;
 }
 
 double DisplayLockCore::grid_lines() const {
-  std::lock_guard<std::mutex> lk(mu_);
+  std::lock_guard<PiMutex> lk(mu_);
   return mode_ == RefreshSync::Follow ? B_ : 0.0;
 }
 
+double DisplayLockCore::trim_lines() const {
+  std::lock_guard<PiMutex> lk(mu_);
+  return mode_ == RefreshSync::Follow ? trim_ : 0.0;
+}
+
 double DisplayLockCore::camera_period_us() const {
-  std::lock_guard<std::mutex> lk(mu_);
+  std::lock_guard<PiMutex> lk(mu_);
   return cam_reading_;
 }
 
 bool DisplayLockCore::nudge_shorter() const {
-  std::lock_guard<std::mutex> lk(mu_);
+  std::lock_guard<PiMutex> lk(mu_);
   return shorter_;
 }
 
 const char* DisplayLockCore::why() const {
-  std::lock_guard<std::mutex> lk(mu_);
+  std::lock_guard<PiMutex> lk(mu_);
   return state_ == State::Waiting ? why_ : nullptr;
+}
+
+bool DisplayLockCore::beyond_reach() const {
+  std::lock_guard<PiMutex> lk(mu_);
+  return state_ == State::Waiting && why_ == kWhyBeyondReach;
 }
 
 }  // namespace maburplay

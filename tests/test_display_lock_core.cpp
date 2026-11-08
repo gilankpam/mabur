@@ -27,12 +27,15 @@ constexpr double kSec = 1e6;
 
 const char* const kWhyFaster = "the camera is faster than the display's mode";
 const char* const kWhyNotRate = "the refresh is not the camera's frame rate";
+const char* const kWhyReach = "the camera drifts more than a line a frame";
 
 // A 1080p60 mode against a camera of period Pc, vblank by vblank. Each
 // frame is captured at c_j = c0 + j*Pc and wants out at c_j + floor; at the
 // first vblank whose release point (vb - lead) is at or after that, the
 // regulator's margin is (vb - lead) - want, in [0, P). The vblank moves by
-// the lines the core asked for and the test applied.
+// the lines the core asked for and the test applied -- as the display
+// thread does: a release puts the mode's own back, a step asking other
+// lines than the register's writes them, and nothing else is a write.
 struct Sim {
   ModeTiming m{kVtotal, 5, kLine, kPm};
   DisplayLockCore core{kM / 1000.0};
@@ -49,8 +52,9 @@ struct Sim {
   DisplayLockCore::Step last{0, false};
   std::deque<std::pair<double, double>> margins;  // (vb, margin) of the last 2 s
 
-  Sim(double pc, RefreshSync mode, int fps, double c0_off = kPm / 3)
-      : Pc(pc), vb(1e9), c0(1e9 + c0_off) {
+  Sim(double pc, RefreshSync mode, int fps, double c0_off = kPm / 3,
+      ModeTiming mt = ModeTiming{kVtotal, 5, kLine, kPm})
+      : m(mt), Pc(pc), vb(1e9), c0(1e9 + c0_off) {
     core.set_mode(mode);
     core.set_camera_fps(fps);
   }
@@ -59,7 +63,7 @@ struct Sim {
 
   DisplayLockCore::Step tick() {
     ++seq;
-    vb += (kVtotal + d) * kLine;
+    vb += (m.vtotal + d) * m.line_us;
     for (;;) {
       const double c = c0 + static_cast<double>(j) * Pc;
       const double want = c + kFloorUs;
@@ -77,8 +81,13 @@ struct Sim {
     const uint64_t vbu = static_cast<uint64_t>(std::llround(vb));
     last = core.step(seq, vbu, vbu + 300, m);
     if (apply) {
-      core.applied(last.lines);
-      d = last.lines;
+      if (last.release) {
+        core.applied(0);
+        d = 0;
+      } else if (last.lines != core.lines()) {
+        core.applied(last.lines);
+        d = last.lines;
+      }
     }
     return last;
   }
@@ -227,14 +236,21 @@ TEST(core_follow_faster_camera_within_half_percent) {
 TEST(core_follow_camera_too_fast_waits) {
   Sim s(kPm * 0.993, RefreshSync::Follow, 60);
   bool ever_locked = false, said = false, released = false;
+  int after = 0;
   while (s.t() < 40 * kSec) {
     const DisplayLockCore::Step st = s.tick();
     ever_locked = ever_locked || s.core.locked();
     const char* why = s.core.why();
     if (!said && why && std::strcmp(why, kWhyFaster) == 0) {
       said = true;
-      // The step the measurement landed on lets go of the register.
+      // The step the measurement landed on writes 0 lines over the grid's
+      // (the register off the mode's own), the next lets go of it.
+      CHECK(st.lines == 0);
+      CHECK(!st.release);
+      after = 1;
+    } else if (after == 1) {
       released = st.lines == 0 && st.release;
+      after = 2;
     }
   }
   CHECK(!ever_locked);
@@ -319,12 +335,21 @@ TEST(core_paused_releases) {
   REQUIRE(s.run_until(20 * kSec, [&] { return s.core.locked(); }));
   REQUIRE(s.run_until(5 * kSec, [&] { return s.core.lines() == 1; }));
   s.core.set_paused(true);
-  const DisplayLockCore::Step st = s.tick();
+  // The register at +1: first an immediate 0 lines (written early in a
+  // frame, as every write is), and only then the release.
+  DisplayLockCore::Step st = s.tick();
   CHECK(st.lines == 0);
-  CHECK(st.release);
+  CHECK(!st.release);
+  CHECK(s.core.lines() == 0);
   CHECK(s.core.state() == DisplayLockCore::State::Waiting);
   REQUIRE(s.core.why() != nullptr);
   CHECK(std::strcmp(s.core.why(), "rate mismatch") == 0);
+  st = s.tick();
+  CHECK(st.lines == 0);
+  CHECK(st.release);
+  st = s.tick();
+  CHECK(st.lines == 0);
+  CHECK(!st.release);
 }
 
 // Capture stamps are µs mod 2^32: the period is measured across the wrap,
@@ -393,9 +418,14 @@ TEST(core_unusable_releases_an_override_of_zero) {
   }));
   REQUIRE(s.core.lines() == 0);
   s.core.set_paused(true);
-  const DisplayLockCore::Step st = s.tick();
+  // The 0 already holds: no second write of it, the release at once, and
+  // once released no more asks.
+  DisplayLockCore::Step st = s.tick();
   CHECK(st.lines == 0);
   CHECK(st.release);
+  st = s.tick();
+  CHECK(st.lines == 0);
+  CHECK(!st.release);
 }
 
 // Usable, the register holding an override of 0 and the step wanting 0:
@@ -449,6 +479,109 @@ TEST(core_lock_out_after_two_bad_judgements) {
   s.margin_off = 5000.0;
   CHECK(s.run_until(3.5 * kSec, [&] { return !s.core.locked(); }));
   CHECK(s.core.state() == DisplayLockCore::State::Acquiring);
+}
+
+// A register the lock found bent (left by a run that did not put it back)
+// is brought back as any other: an immediate 0 lines, then the release.
+// Even with refresh sync off.
+TEST(core_found_bent_register_written_back_then_released) {
+  Sim s(16670.0, RefreshSync::Off, 60);
+  REQUIRE(s.core.found_register(4, true, s.m));
+  s.d = 4;
+  CHECK(s.core.lines() == 4);
+  DisplayLockCore::Step st = s.tick();
+  CHECK(st.lines == 0);
+  CHECK(!st.release);
+  CHECK(s.core.lines() == 0);
+  st = s.tick();
+  CHECK(st.lines == 0);
+  CHECK(st.release);
+  st = s.tick();
+  CHECK(!st.release);
+}
+
+// A held immediate write of the mode's own total: nothing to write, the
+// release only.
+TEST(core_found_held_register_released) {
+  Sim s(16670.0, RefreshSync::Nudge, 60);
+  REQUIRE(s.core.found_register(0, true, s.m));
+  DisplayLockCore::Step st = s.tick();
+  CHECK(st.lines == 0);
+  CHECK(st.release);
+  st = s.tick();
+  CHECK(!st.release);
+}
+
+// A 100 Hz mode (1125 lines, 8.9 us a line) against a camera on the drone's
+// trim, 0.111 Hz under: it drifts 11.1 us = 1.25 lines a frame, faster than
+// one line a frame pulls back. Once the period is measured NUDGE waits, says
+// why, and leaves the register at the mode's own: no writes past bringing
+// it back.
+TEST(core_nudge_beyond_reach_waits) {
+  const ModeTiming m100{kVtotal, 5, 10000.0 / kVtotal, 10000.0};
+  Sim s(1e6 / (100.0 - 0.111), RefreshSync::Nudge, 100, 10000.0 / 3, m100);
+  bool said = false;
+  int writes_after = 0, releases_after = 0, ticks_after = 0;
+  while (s.t() < 60 * kSec) {
+    const int before = s.core.lines();
+    const DisplayLockCore::Step st = s.tick();
+    const char* why = s.core.why();
+    if (!said && why && std::strcmp(why, kWhyReach) == 0) said = true;
+    if (!said) continue;
+    ++ticks_after;
+    if (st.lines != before) ++writes_after;
+    if (st.release) ++releases_after;
+    CHECK(st.lines == 0);
+    CHECK(s.core.state() == DisplayLockCore::State::Waiting);
+    CHECK(s.core.beyond_reach());
+  }
+  REQUIRE(said);
+  CHECK(ticks_after > 100 * 30);  // said within the first 30 s
+  CHECK(writes_after <= 1);       // the register brought back to 0 lines, at most once
+  CHECK(releases_after == 1);
+  CHECK(s.core.lines() == 0);
+  REQUIRE(s.core.why() != nullptr);
+  CHECK(std::strcmp(s.core.why(), kWhyReach) == 0);
+}
+
+// The same trim at 60 Hz is 0.04 Hz under: 11.1 us = 0.75 line a frame,
+// inside the reach. NUDGE pulls in at a quarter line a frame (the long way
+// round is at most three quarters of a refresh, ~56 s) and holds.
+TEST(core_nudge_three_quarter_line_drift_holds) {
+  Sim s(kPm + 0.75 * kLine, RefreshSync::Nudge, 60);
+  bool ever_reach = false;
+  REQUIRE(s.run_until(90 * kSec, [&] {
+    ever_reach = ever_reach || s.core.beyond_reach();
+    return s.core.locked();
+  }));
+  CHECK(!ever_reach);
+  int min_l = 0, max_l = 0;
+  const double end = s.t() + 20 * kSec;
+  while (s.t() < end) {
+    s.tick();
+    min_l = std::min(min_l, s.d);
+    max_l = std::max(max_l, s.d);
+    CHECK(s.core.locked());
+    CHECK(!s.core.beyond_reach());
+  }
+  CHECK(min_l == 0 && max_l == 1);
+}
+
+// A vblank the thread slept through (seq up by 2): the register's lines ran
+// both frames, so G moves by both. Margins anchored at the first vblank's
+// G = 0 put the error at -G.
+TEST(core_seq_gap_integrates_each_frame) {
+  DisplayLockCore core(kM / 1000.0);
+  core.set_mode(RefreshSync::Nudge);
+  core.set_camera_fps(60);  // the nominal: the mode's own period, no drift
+  const ModeTiming m{kVtotal, 5, kLine, kPm};
+  const uint64_t t0 = 1'000'000'000;
+  core.step(1, t0, t0 + 300, m);
+  core.applied(4);
+  for (int i = 0; i < 60; ++i) core.on_margin(kM, t0 + 1 + static_cast<uint64_t>(i));
+  const uint64_t t1 = t0 + static_cast<uint64_t>(std::llround(2 * (kVtotal + 4) * kLine));
+  core.step(3, t1, t1 + 300, m);
+  CHECK(std::fabs(core.error_ms() + 8 * kLine / 1000.0) < 0.01 * kLine / 1000.0);
 }
 
 MTEST_MAIN
