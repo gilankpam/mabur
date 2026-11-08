@@ -577,17 +577,26 @@ TEST(display_and_colour_confirm_the_split_only_during_a_burned_recording) {
   CHECK(confirm(f.node("osd.fc"), "false").empty());
 }
 
-TEST(refresh_sync_row_offers_off_nudge_follow_and_warns_when_unavailable) {
+TEST(phase_lock_by_row_offers_camera_or_display_and_warns_when_display_cannot_act) {
   Fx f;
   f.cfg.display.refresh_sync = "nudge";
   f.refresh_sync_available = [] { return false; };
   MenuNode n = f.node("video.refresh_sync");
+  CHECK(n.label == "Phase lock by");
   CHECK(n.advanced);
   CHECK((values(n.choices()) == std::vector<std::string>{"off", "nudge", "follow"}));
-  CHECK((labels(n.choices()) == std::vector<std::string>{"Off", "Nudge", "Follow"}));
+  CHECK((labels(n.choices()) ==
+         std::vector<std::string>{"Camera", "Display (nudge)", "Display (follow)"}));
   CHECK(n.current() == "nudge");
   CHECK(n.warn() == "n/a");
+  f.cfg.display.refresh_sync = "follow";
+  CHECK(f.node("video.refresh_sync").warn() == "n/a");
 
+  // The camera steer works without the display's frame-length control.
+  f.cfg.display.refresh_sync = "off";
+  CHECK(f.node("video.refresh_sync").warn().empty());
+
+  f.cfg.display.refresh_sync = "nudge";
   f.refresh_sync_available = [] { return true; };
   CHECK(f.node("video.refresh_sync").warn().empty());
 

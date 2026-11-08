@@ -222,9 +222,10 @@ to the mode's own value and the next iteration brings the sensor steer
 back, nudge/follow from off engages the display and drops it. The host
 build has no lock and always steers the sensor.
 
-The goggles settings menu's `video.refresh_sync` row (advanced,
-`docs/gs-menu.md`) sends the same set; it warns `n/a` when refresh sync
-cannot act on this GS: `display.phase_lock` is off (no lock is built),
+The goggles settings menu's "Phase lock by" row (`video.refresh_sync`,
+advanced, `docs/gs-menu.md`) sends the same set, labelled Camera (`off`),
+Display (nudge) and Display (follow); it warns `n/a` when a Display choice
+is selected but cannot act on this GS: `display.phase_lock` is off (no lock is built),
 the display's register is not mapped (not an RK356x -- the Orange Pi has
 none -- or `/dev/mem` refused), or the lock refused the controller's
 total at its first vblank. The value still saves either way. No warning
