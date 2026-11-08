@@ -33,7 +33,7 @@ struct MenuTreeDeps {
   // null = unknown (no warning; the host build); otherwise whether refresh
   // sync can act on this GS now: a lock built (display.phase_lock on and a
   // presenter), its frame-length register mapped (an RK356x) and not
-  // refused at its first vblank (the controller's total not the mode's).
+  // refused in its first second of vblanks (the controller's total not the mode's).
   std::function<bool()> refresh_sync_available;
 };
 

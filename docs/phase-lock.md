@@ -89,8 +89,12 @@ mode's own total first (early in a frame, like every write), and the
 release a vblank later, so clearing the immediate bit never lands on a
 bent frame.
 
-At its first vblank the lock reads the register: a value that is not this
-mode's total and sync width leaves the lock off for that presenter's life
+From its first vblank the lock reads the register: a value that is not
+this mode's total and sync width is read again every vblank for up to a
+second (right after a modeset -- a hotplug bringing the display up from
+the console's mode -- the first vblanks can still carry the previous
+mode's total), and one still there after that leaves the lock off for that
+presenter's life
 (`maburplay: refresh sync: the display controller's total (0x…) is not
 the mode's (N lines) -- off`). A total within one line short of it up to
 twice it, or an immediate write still held, counts as ours, left by a
@@ -190,7 +194,8 @@ mode's own value.
 **Choosing the actuator** (housekeeping, every iteration, with
 `display.phase_lock` on): the display while the presenter's lock is
 engaged (refresh sync not off, the register mapped and the mode's total
-taken at its first vblank); otherwise the sensor steer, created then.
+taken in its first second of vblanks); otherwise the sensor steer,
+created then.
 While the sensor steer runs with `refresh_sync` not off, the reason is
 logged once each time it changes -- also when the steer was already
 running before refresh sync was set:
@@ -228,7 +233,7 @@ Display (nudge) and Display (follow); it warns `n/a` when a Display choice
 is selected but cannot act on this GS: `display.phase_lock` is off (no lock is built),
 the display's register is not mapped (not an RK356x -- the Orange Pi has
 none -- or `/dev/mem` refused), or the lock refused the controller's
-total at its first vblank. The value still saves either way. No warning
+total within its first second of vblanks. The value still saves either way. No warning
 while the lock waits for its first vblank, and none for NUDGE handing
 over past its reach (that is logged).
 

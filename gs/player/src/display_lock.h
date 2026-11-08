@@ -26,9 +26,11 @@ class DrmPresenter;
 // value with the immediate bit clear, so it latches at a frame boundary;
 // the core asks for one only once 0 lines hold.
 //
-// The mode's own register value is read once, at the first vblank: a total
-// that is not this mode's (another program's, or a mode the driver set
-// otherwise) leaves the lock disengaged for this presenter's life. One a
+// The mode's own register value is read from the first vblank: a total
+// that is not this mode's is read again each vblank for up to a second (a
+// modeset can land a vblank or two late), and one still there after that
+// (another program's, or a mode the driver set otherwise) leaves the lock
+// disengaged for this presenter's life. One a
 // little off, or an immediate write still held, is a run's that did not put
 // it back: the core takes it as the register's lines and brings it back as
 // any (0 lines early in a frame, the release a vblank later), even when
@@ -67,16 +69,17 @@ class DisplayLock {
   void stop();
 
   // The register is ours and refresh sync is on: available, the mode's
-  // total taken at the first vblank, and the mode not Off.
+  // total taken, and the mode not Off.
   bool engaged() const;
-  // Mapped, and the first vblank has not yet decided whether the mode's
-  // total is ours: neither engaged nor refused so far.
+  // Mapped, and the vblanks have not yet decided whether the mode's total
+  // is ours (read every vblank for up to a second after the first one
+  // showing another): neither engaged nor refused so far.
   bool deciding() const {
     return available() && !took_mode_.load(std::memory_order_relaxed) &&
            !take_failed_.load(std::memory_order_relaxed);
   }
-  // The first vblank found a total that is not the mode's: off for this
-  // presenter's life.
+  // The register kept a total that is not the mode's for a second of
+  // vblanks: off for this presenter's life.
   bool refused() const { return take_failed_.load(std::memory_order_relaxed); }
 
   void set_mode(RefreshSync m) { core_.set_mode(m); }

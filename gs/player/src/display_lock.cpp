@@ -23,6 +23,13 @@ namespace {
 constexpr uint64_t kLogEveryUs = 5'000'000;
 constexpr int kExitZeroVblanks = 5;
 constexpr const char* kTakeModeWhy = "the display controller's total is not the mode's";
+// How long the register may keep showing another total before it counts as
+// not ours. Right after a modeset -- a hotplug bringing a display up from
+// the console's mode, say -- the first vblanks can still carry the previous
+// mode's total; it is read again every vblank meanwhile. Inside the
+// player's 2 s grace for a lock to decide, so a late register swaps no
+// actuator.
+constexpr uint64_t kTakeWindowUs = 1'000'000;
 
 uint64_t mono_us() {
   timespec ts;
@@ -96,6 +103,7 @@ void DisplayLock::run_() {
   const ModeTiming t = presenter_.mode_timing();
   bool have_prev = false;
   uint32_t seq_prev = 0;
+  uint64_t take_first_us = 0;  // the first vblank whose total was not the mode's
 
   while (running_.load(std::memory_order_relaxed)) {
     uint32_t seq = 0;
@@ -114,6 +122,8 @@ void DisplayLock::run_() {
     if (!took_mode_.load(std::memory_order_relaxed)) {
       FrameLength::Seen seen;
       if (!fl_->take_mode(t.vtotal, t.vsync_lines, &seen)) {
+        if (take_first_us == 0) take_first_us = vb;
+        if (vb - take_first_us < kTakeWindowUs) continue;  // the modeset may not have landed yet
         std::fprintf(stderr,
                      "maburplay: refresh sync: the display controller's total (0x%08x) is not "
                      "the mode's (%u lines) -- off\n",
