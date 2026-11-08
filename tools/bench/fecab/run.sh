@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # tools/bench/fecab/run.sh -- bench A/B rig for FEC placement. Each arm
-# swaps the drone's maburd binary (a bind mount, not a reflash) and pushes
-# a fixed host config with one knob (bitrate_max_kbps) overridden, then
+# swaps the drone's maburd binary (a bind mount, not a reflash) -- unmounted
+# lazily (umount -l, looped) since a plain umount fails while the running
+# maburd still holds the bind open, which would otherwise leave it stacking
+# a fresh bind on top every arm -- and pushes a fixed host config with one
+# knob (bitrate_max_kbps) overridden, then
 # drives the GS loss-sim rig through three steps via sched.py (clean,
 # l2b1, l5b3) while snapshotting the drone's per-thread CPU and, once
 # sched.py finishes, capturing the drone's own stderr log for the arm
@@ -11,10 +14,10 @@
 # this run produced. The run saves the drone's live /etc/mabur.toml once,
 # before the first arm overwrites it, and restore_drone puts it back. On
 # exit -- normal completion OR an abort anywhere in the run -- that same
-# restore_drone trap also unmounts the bind and kills maburd one last time
-# so the drone comes back up on its installed /usr/bin/maburd and its own
-# config rather than being left on whichever arm's binary/config was
-# applied last.
+# restore_drone trap also unmounts any stacked binds and kills maburd one
+# last time so the drone comes back up on its installed /usr/bin/maburd
+# and its own config rather than being left on whichever arm's
+# binary/config was applied last.
 #
 # An aborted run can leave the GS's maburgs.losssim and sched.py running
 # under setsid (killed only by the NEXT run's first arm, or by hand with
@@ -57,14 +60,21 @@ scp_retry() {
   return 255
 }
 
-# Restores the drone to its installed maburd: unmount the bind (a no-op,
-# ignored, if nothing is bound) and killall so the init loop respawns the
-# now-unbound /usr/bin/maburd. Runs on every exit path via the trap below
-# -- normal completion, an aborted arm, or Ctrl-C -- so the drone is never
-# left running a bench binary after this script has stopped driving it.
+# Restores the drone to its installed maburd: lazily unmount every stacked
+# bind (umount -l, looped -- a plain umount fails ("target busy") while
+# maburd still has the bind open, and looped because each arm that ran may
+# have stacked another bind on top of the last) and killall so the init
+# loop respawns the now-unbound /usr/bin/maburd. Runs on every exit path
+# via the trap below -- normal completion, an aborted arm, or Ctrl-C -- so
+# the drone is never left running a bench binary after this script has
+# stopped driving it.
 restore_drone() {
-  echo "restoring drone: config from /tmp/mabur.toml.fecab-orig, unmounting /usr/bin/maburd bind, killing maburd to respawn the installed binary" >&2
-  R "$D" "[ -f /tmp/mabur.toml.fecab-orig ] && cp /tmp/mabur.toml.fecab-orig /etc/mabur.toml; umount /usr/bin/maburd 2>/dev/null; killall maburd 2>/dev/null; true"
+  echo "restoring drone: config from /tmp/mabur.toml.fecab-orig, unmounting /usr/bin/maburd bind(s), killing maburd to respawn the installed binary" >&2
+  local remaining
+  remaining=$(R "$D" "[ -f /tmp/mabur.toml.fecab-orig ] && cp /tmp/mabur.toml.fecab-orig /etc/mabur.toml; n=0; while mount | grep -q ' /usr/bin/maburd '; do umount -l /usr/bin/maburd || break; n=\$((n+1)); [ \$n -ge 20 ] && break; done; killall maburd 2>/dev/null; mount | grep -c ' /usr/bin/maburd '; true")
+  if [ "$remaining" != "0" ]; then
+    echo "WARNING: $remaining bind(s) still mounted at /usr/bin/maburd on $D after restore -- drone may still be running a bench binary" >&2
+  fi
 }
 trap restore_drone EXIT
 
@@ -78,8 +88,18 @@ arm() {
     echo "FAILED bind: $binary not found or not executable on $D" | tee -a "$log" >&2
     return 1
   fi
-  if ! R "$D" "umount /usr/bin/maburd 2>/dev/null; mount --bind '$binary' /usr/bin/maburd"; then
+  # A plain umount fails ("target busy") while the previous arm's maburd
+  # still holds the bind open, so it has to be lazy (umount -l) and looped
+  # -- one unmount per existing bind -- or a failed umount leaves the old
+  # bind in place and the new mount --bind just stacks another one on top.
+  if ! R "$D" "n=0; while mount | grep -q ' /usr/bin/maburd '; do umount -l /usr/bin/maburd || break; n=\$((n+1)); [ \$n -ge 20 ] && break; done; mount --bind '$binary' /usr/bin/maburd"; then
     echo "FAILED bind: mount --bind $binary -> /usr/bin/maburd failed on $D" | tee -a "$log" >&2
+    return 1
+  fi
+  local nbinds
+  nbinds=$(R "$D" "mount | grep -c ' /usr/bin/maburd '")
+  if [ "$nbinds" != "1" ]; then
+    echo "FAILED bind: expected exactly one bind at /usr/bin/maburd on $D after mount --bind, found $nbinds -- a stale bind from a previous arm likely failed to unmount" | tee -a "$log" >&2
     return 1
   fi
 
