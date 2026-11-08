@@ -64,6 +64,12 @@ class DisplayLock {
   // The register is ours and refresh sync is on: available, the mode's
   // total taken at the first vblank, and the mode not Off.
   bool engaged() const;
+  // Mapped, and the first vblank has not yet decided whether the mode's
+  // total is ours: neither engaged nor refused so far.
+  bool deciding() const {
+    return available() && !took_mode_.load(std::memory_order_relaxed) &&
+           !take_failed_.load(std::memory_order_relaxed);
+  }
 
   void set_mode(RefreshSync m) { core_.set_mode(m); }
   void set_paused(bool paused) { core_.set_paused(paused); }

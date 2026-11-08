@@ -47,6 +47,8 @@ void DecodePump::set_backend(VideoBackend* b) {
 
 void DecodePump::set_prime(std::function<void(const DmaFrame&)> fn) { prime_ = std::move(fn); }
 
+void DecodePump::set_pts_sink(std::function<void(uint32_t)> fn) { pts_sink_ = std::move(fn); }
+
 double DecodePump::source_hz() const {
   std::lock_guard<std::mutex> lk(src_mu_);
   return source_rate_.hz();
@@ -82,6 +84,7 @@ void DecodePump::on_frame_(const DmaFrame& f) {
   frames_.fetch_add(1);  // last: a reader that sees the count sees the rest
   out_.push(HandedFrame{f, now});
   if (prime_) prime_(f);
+  if (pts_sink_) pts_sink_(f.pts_us);
 }
 
 void DecodePump::drain_releases_() {

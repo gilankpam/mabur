@@ -61,6 +61,7 @@
 #include "burn_recorder.h"  // dvr.mode "burned": re-encode with the OSD burnt in
 #include "decode_pump.h"    // the decode-output thread: drives backend->poll(), hands frames over
 #include "display_follow.h"  // the display follows the camera's rate (screen_mode auto / WxH)
+#include "display_lock.h"  // DisplayLock, refresh sync: the display's frame length as the actuator
 #include "display_watch.h"  // rebuild the presenter when its display is replugged
 #include "drm_presenter.h"  // KMS atomic NV12 presenter, the default display path
 #include "frame_regulator.h"  // phase-aware pts+D display release
@@ -735,15 +736,19 @@ int main(int argc, char** argv) {
   // nothing; housekeeping installs one after the recorder starts and clears
   // it before the recorder stops.
   maburplay::RecorderTap tap;
-  // Phase lock (display.phase_lock; phase_lock.h): steers the drone's
-  // sensor rate through maburgs and the RCF, and owns capture-time placement
-  // while it holds.
+  // Phase lock (display.phase_lock): holds every frame's capture slot
+  // phase_margin_ms ahead of its vblank release, and owns capture-time
+  // placement while it holds. Two actuators, one at a time (housekeeping
+  // picks): the display's own frame length (refresh sync, `display_lock`
+  // below, built per presenter) when display.refresh_sync is on and the
+  // display controller takes it, else the drone's sensor rate through
+  // maburgs and the RCF (PhaseLock, phase_lock.h), created when needed.
   std::unique_ptr<maburplay::PhaseLock> phase_lock;
-  if (cfg.display.phase_lock) {
-    phase_lock = std::make_unique<maburplay::PhaseLock>(cfg.display.phase_margin_ms);
-    regulator.set_phase_lock_mode(true);
-  }
+  if (cfg.display.phase_lock) regulator.set_phase_lock_mode(true);
   uint64_t phase_disconts_seen = 0;
+  // The fallback's reason last said ("" none yet): one line per reason.
+  std::string refresh_unavail_said;
+  maburplay::DisplayLockCore::State display_state_seen = maburplay::DisplayLockCore::State::Waiting;
   // The drone's measured frame rate (the decode pump's) against the
   // panel's: a pair too far apart for the phase lock pauses it and warns on
   // the OSD fps cell.
@@ -855,6 +860,14 @@ int main(int argc, char** argv) {
     return i >= 0 ? maburplay::mode_string(modes[static_cast<size_t>(i)]) : screen_mode;
   };
   std::unique_ptr<maburplay::DrmPresenter> presenter;
+  // Refresh sync's lock thread for `presenter` (display_lock.h): built after
+  // each successful init() while display.phase_lock is on, stopped and
+  // dropped before that presenter is retired, never carried to the next.
+  // Declared after `presenter` so an unwind stops its thread (which waits
+  // on the presenter's vblanks) before the presenter goes. The decode pump's
+  // pts sink reads it: it changes only while the pump is parked or joined.
+  std::unique_ptr<maburplay::DisplayLock> display_lock;
+  uint64_t display_lock_t0_us = 0;  // when it started
   if (!decode_only) {
     presenter = std::make_unique<maburplay::DrmPresenter>();
     // Frames the presenter is done with go to the release queue, never
@@ -1107,6 +1120,20 @@ int main(int argc, char** argv) {
     return maburplay::follow_camera_hz(
         gs_src && !gs_src->stale(mono_ms()) ? &gs_src->snapshot() : nullptr, pump.source_hz());
   };
+  // Builds and starts `presenter`'s refresh-sync lock (display.phase_lock
+  // only). Housekeeping only, with the decode pump parked or not yet
+  // started: its pts sink reads `display_lock`.
+  auto start_display_lock = [&]() {
+    if (!cfg.display.phase_lock || !presenter) return;
+    maburplay::RefreshSync mode = maburplay::RefreshSync::Off;
+    maburplay::parse_refresh_sync(cfg.display.refresh_sync, &mode);  // the loader checked it
+    display_lock = std::make_unique<maburplay::DisplayLock>(
+        *presenter, maburplay::DisplayLock::Cfg{mode, cfg.display.phase_margin_ms,
+                                                static_cast<int>(std::lround(camera_hz_now())),
+                                                cfg.display.rt_priority});
+    display_lock->start();
+    display_lock_t0_us = mono_us();
+  };
   // burn_in/burn_enc/burn_drop on the regulator line: the burned recorder's
   // cumulative frames_in/frames_encoded/frames_dropped (burn_recorder.h),
   // zero while `burn` holds no recorder -- no burned recording running, or
@@ -1128,7 +1155,7 @@ int main(int argc, char** argv) {
   // there is no presenter (decode-only, or init failed). Every call closes
   // the release thread's stats window (rlate=, hand=, present_jitter=).
   auto log_regulator_line = [&regulator, &presenter, &release, &reg_log, &phase_lock,
-                             &output_parks, &rec_starts, &burn_counts]() {
+                             &display_lock, &output_parks, &rec_starts, &burn_counts]() {
     char line[768];
     const maburplay::ReleaseLoop::Stats st = release.take_stats();
     if (regulator.enabled()) {
@@ -1159,16 +1186,26 @@ int main(int argc, char** argv) {
                    regulator.allowance_ms(),
                    static_cast<unsigned long long>(regulator.late_slot_count()));
       {
+        // The phase lock's fields from whichever actuator runs (lact=):
+        // the sensor steer's offset and centre in mfps, or refresh sync's
+        // lines in the frame-length register and the grid's lines.
         const size_t used = std::strlen(line);
         if (phase_lock) {
           std::snprintf(line + used, sizeof(line) - used,
-                        " lock=%s lerr=%.2fms loff=%d lctr=%.1f",
+                        " lock=%s lerr=%.2fms loff=%d lctr=%.1f lact=sensor",
                         maburplay::phase_lock_state_name(phase_lock->state()),
                         phase_lock->error_ms(), static_cast<int>(phase_lock->offset_mfps()),
                         phase_lock->centre_mfps());
+        } else if (display_lock && display_lock->engaged()) {
+          std::snprintf(line + used, sizeof(line) - used,
+                        " lock=%s lerr=%.2fms loff=%d lctr=%.1f lact=%s",
+                        maburplay::display_lock_state_name(display_lock->state()),
+                        display_lock->error_ms(), display_lock->lines(),
+                        display_lock->grid_lines(),
+                        maburplay::refresh_sync_name(display_lock->mode()));
         } else {
           std::snprintf(line + used, sizeof(line) - used,
-                        " lock=off lerr=0.00ms loff=0 lctr=0.0");
+                        " lock=off lerr=0.00ms loff=0 lctr=0.0 lact=sensor");
         }
       }
       if (presenter) {
@@ -1887,6 +1924,15 @@ int main(int argc, char** argv) {
   pump.set_prime([&presenter](const maburplay::DmaFrame& f) {
     if (presenter) presenter->prime(f);
   });
+  // The camera's capture stamps for refresh sync's period. Reads
+  // `display_lock` under the same rule as the prime hook's `presenter`:
+  // housekeeping replaces it only while the pump is parked (the display
+  // rebuild) or joined (shutdown).
+  pump.set_pts_sink([&display_lock](uint32_t pts_us) {
+    if (display_lock) display_lock->note_pts(pts_us);
+  });
+  // The startup presenter's lock, before the pump starts reading it.
+  start_display_lock();
   pump.start();
   release.start();
 #endif
@@ -2016,7 +2062,10 @@ int main(int argc, char** argv) {
   //  - A live presenter: it is torn down first -- the burned recorder (it
   //    samples the old display's vblank grid) is stopped, both output
   //    threads park so nothing is held on the old presenter, the release
-  //    thread drops its sink, and only then is the presenter retired. Its
+  //    thread drops its sink, the refresh-sync lock stops (its thread waits
+  //    on the old presenter's vblanks, and its exit puts the old mode's
+  //    frame length back, which must land before the new modeset), and
+  //    only then is the presenter retired. Its
   //    DRM descriptor passes to the new one still open, so the sink sees
   //    one mode change, not the fbdev console's mode in between
   //    (DrmPresenter::retire). If the new one then fails, output resumes
@@ -2029,6 +2078,7 @@ int main(int argc, char** argv) {
       if (burn) stop_burn();
       park_output("display rebuild");
       release.set_sink(nullptr);
+      display_lock.reset();  // stops it; the pump's pts sink is parked
       device_fd = maburplay::DrmPresenter::retire(std::move(presenter));
     }
     auto p = std::make_unique<maburplay::DrmPresenter>();
@@ -2075,6 +2125,8 @@ int main(int argc, char** argv) {
           regulator.on_flip(t, ex);
           tap.on_flip(f, t);
         });
+    // A fresh refresh-sync lock for the new presenter, still parked.
+    start_display_lock();
     // The GS bar and the menu re-lay out on the new surface, whose size may
     // differ, and every layer redraws whole on the fresh, blank OSD buffers.
     gs_laid_out = false;
@@ -2244,10 +2296,18 @@ int main(int argc, char** argv) {
   live_hooks.osd_layers = apply_display;
   live_hooks.next_start = apply_dvr;
   live_hooks.menu = [&](const maburplay::Config& c) { cfg.menu = c.menu; };
-  // Takes the new actuator selection onto the running config; swapping the
-  // actuator itself is wired in later.
-  live_hooks.refresh_sync =
-      [&](const maburplay::Config& c) { cfg.display.refresh_sync = c.display.refresh_sync; };
+  // display.refresh_sync: the running lock takes the new mode (nudge <->
+  // follow restarts its window; off releases the register to the mode's
+  // own value). Housekeeping's actuator choice swaps to or from the sensor
+  // steer on its next iteration.
+  live_hooks.refresh_sync = [&](const maburplay::Config& c) {
+    cfg.display.refresh_sync = c.display.refresh_sync;
+#ifdef MABUR_PLAYER_HW
+    maburplay::RefreshSync mode = maburplay::RefreshSync::Off;
+    if (display_lock && maburplay::parse_refresh_sync(cfg.display.refresh_sync, &mode))
+      display_lock->set_mode(mode);
+#endif
+  };
   maburplay::PlayerConfigApplier cfg_apply(
       config_path, cfg, caps, std::move(live_hooks),
       [](const std::string& line) { std::fprintf(stderr, "%s\n", line.c_str()); });
@@ -2427,6 +2487,40 @@ int main(int argc, char** argv) {
       burn_deferred = false;
       start_burn_if_needed();
     }
+    // The phase lock's actuator. The display's frame length while this
+    // presenter's refresh-sync lock is engaged (refresh_sync on, the
+    // register mapped and holding the mode's total); otherwise the sensor
+    // steer, created here and said once per reason. A lock still waiting
+    // for its first vblank (at most kDecideUs) keeps whichever runs, so a
+    // start or a display rebuild does not swap back and forth. A live
+    // refresh_sync set swaps here on the next iteration: the display lock
+    // leaving Off engages it, entering Off disengages it.
+    constexpr uint64_t kDecideUs = 2'000'000;
+    const bool display_actuator = display_lock && display_lock->engaged();
+    const bool deciding = display_lock && display_lock->deciding() &&
+                          display_lock->mode() != maburplay::RefreshSync::Off &&
+                          mono_us() - display_lock_t0_us < kDecideUs;
+    if (cfg.display.phase_lock && !display_actuator && !deciding && !phase_lock) {
+      phase_lock = std::make_unique<maburplay::PhaseLock>(cfg.display.phase_margin_ms);
+      if (cfg.display.refresh_sync != "off") {
+        const char* why = !display_lock              ? "no display"
+                          : display_lock->deciding() ? "no vblank from the display"
+                                                     : display_lock->why();
+        const std::string reason = why ? why : "not engaged";
+        if (reason != refresh_unavail_said) {
+          refresh_unavail_said = reason;
+          std::fprintf(stderr,
+                       "maburplay: refresh sync %s unavailable (%s) -- steering the sensor\n",
+                       cfg.display.refresh_sync.c_str(), reason.c_str());
+        }
+      }
+    } else if (display_actuator && phase_lock) {
+      // One last zero offset now, rather than maburgs' 3 s timeout.
+      core_ctl.tick_phase(0, mono_ms());
+      phase_lock.reset();
+      std::fprintf(stderr, "maburplay: refresh sync %s -- the drone's sensor runs on its trim\n",
+                   cfg.display.refresh_sync.c_str());
+    }
     // The phase margin of every offer the release thread made since the
     // last iteration, oldest first. The lock takes them only while it
     // runs: with the source and panel rates out of its reach (rate
@@ -2436,6 +2530,9 @@ int main(int argc, char** argv) {
     if (phase_lock && !rate_match.mismatch())
       for (const maburplay::ReleaseLoop::MarginSample& m : margins)
         phase_lock->on_margin(m.margin_us, m.period_us, m.t_us);
+    if (display_lock && !phase_lock && !rate_match.mismatch())
+      for (const maburplay::ReleaseLoop::MarginSample& m : margins)
+        display_lock->note_margin(m.margin_us, m.t_us);
     // The DECODED picture size, which is what the OSD's res: field means --
     // not screen_mode (the panel) and not bcfg (the backend's configured
     // size), both of which stay at 1080p while the drone streams 720p.
@@ -2464,7 +2561,8 @@ int main(int argc, char** argv) {
                          ? "maburplay: rate mismatch: source %.2f Hz, panel %.3f Hz%s\n"
                          : "maburplay: rate mismatch cleared: source %.2f Hz, panel %.3f Hz%s\n",
                      src_hz, panel_hz,
-                     rate_match.mismatch() && phase_lock ? " -- phase lock paused" : "");
+                     rate_match.mismatch() && (phase_lock || display_lock) ? " -- phase lock paused"
+                                                                           : "");
       // The display following the camera: a rebuild runs synchronously, so
       // the next window already sees the new presenter's mode as running.
       // Judged on the drone's reported mode, not src_hz (the measured
@@ -2472,6 +2570,10 @@ int main(int argc, char** argv) {
       // low under loss -- rate_match above keeps the measured rate, since
       // it exists to catch exactly that kind of drift from the panel.
       const double judged_hz = camera_hz_now();
+      // Refresh sync's nominal camera rate, until it measures the period
+      // itself (a change restarts its measurement). 0 = not known yet.
+      if (display_lock && judged_hz > 0)
+        display_lock->set_camera_fps(static_cast<int>(std::lround(judged_hz)));
       static const std::vector<maburplay::ModeCand> kNoModes;
       const maburplay::FollowOut follow = display_follower.on_window(
           maburplay::parse_screen_want(cfg.screen_mode), judged_hz, lp,
@@ -2494,13 +2596,13 @@ int main(int argc, char** argv) {
         g_display_banner = line;
       }
     }
+    // A regulator discontinuity restarts whichever lock runs.
+    const bool phase_discont = regulator.discont_count() != phase_disconts_seen;
+    phase_disconts_seen = regulator.discont_count();
     if (phase_lock) {
       const uint64_t now = mono_us();
       const auto before = phase_lock->state();
-      if (regulator.discont_count() != phase_disconts_seen) {
-        phase_disconts_seen = regulator.discont_count();
-        phase_lock->on_discontinuity(now);
-      }
+      if (phase_discont) phase_lock->on_discontinuity(now);
       if (rate_match.mismatch()) {
         // Out of the steer's reach: no offsets at all, so maburgs' RCF
         // snr_off falls back to 0 and the drone runs on its trim. Reset to
@@ -2519,6 +2621,25 @@ int main(int argc, char** argv) {
                      maburplay::phase_lock_state_name(phase_lock->state()),
                      phase_lock->error_ms(), static_cast<int>(phase_lock->offset_mfps()),
                      phase_lock->centre_mfps());
+      }
+    } else if (display_lock) {
+      // Refresh sync as the actuator (or, until its first vblank, about to
+      // be): the lock thread moves the vblank, this side feeds it and
+      // takes its verdict for capture placement. A rate mismatch pauses it,
+      // which puts the register back at the mode's own value. Nothing goes
+      // to maburgs: its timeout zeroes the RCF snr_off, and the drone runs
+      // on its trim. Never out of range: the display is always within
+      // reach once the rates match.
+      if (phase_discont) display_lock->on_discontinuity();
+      display_lock->set_paused(rate_match.mismatch());
+      regulator.set_capture_placement(display_lock->locked());
+      gs_ps.phase_oor = false;
+      const maburplay::DisplayLockCore::State st = display_lock->state();
+      if (st != display_state_seen) {
+        display_state_seen = st;
+        std::fprintf(stderr, "refresh-sync: %s err=%.2fms lines=%d\n",
+                     maburplay::display_lock_state_name(st), display_lock->error_ms(),
+                     display_lock->lines());
       }
     }
 #endif
@@ -3167,6 +3288,9 @@ int main(int argc, char** argv) {
   // Final tally -- same line the 1 Hz stats block above already printed all
   // session long (log_regulator_line(), declared next to the threads).
   log_regulator_line();
+  // The refresh-sync lock puts the mode's own frame length back while the
+  // presenter is still up; the pump that fed it is joined.
+  display_lock.reset();
   {
     const auto L = lat.flush_line();
     if (L.n > 0)

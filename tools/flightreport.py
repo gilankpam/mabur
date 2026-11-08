@@ -960,11 +960,16 @@ def refresh_span_ms(rr, ctl=None, fec_rows=None):
 
 def load_reglog_lock(path):
     """reg.log phase-lock fields per 1 Hz regulator line (`# reglog 2` and
-    later): `lock=<off|wait|acq|lock|oor> lerr=<ms>ms loff=<mfps>
-    lctr=<mfps>`. Other key=value tokens (reglog 3's `rlate= hand= rt=` and
-    reglog 4's `burn_in= burn_enc= burn_drop=` among them) are ignored. Rows
-    without the lock fields (reglog 1, before the phase lock) are skipped,
-    so an empty list means the recording has no lock data."""
+    later): `lock=<off|wait|acq|lock|oor> lerr=<ms>ms loff=<n> lctr=<f>`,
+    plus reglog 5's `lact=<sensor|nudge|follow>`, the actuator the fields
+    come from. Under `sensor` loff/lctr are the sensor-rate offset and centre
+    in mfps; under `nudge`/`follow` (the display's refresh sync) they are
+    the frame-length lines in the register and the grid's lines. Rows before
+    reglog 5 read as `sensor`, the only actuator then. Other key=value
+    tokens (reglog 3's `rlate= hand= rt=` and reglog 4's `burn_in= burn_enc=
+    burn_drop=` among them) are ignored. Rows without the lock fields
+    (reglog 1, before the phase lock) are skipped, so an empty list means
+    the recording has no lock data."""
     rows = []
     with open(path) as f:
         for line in f:
@@ -976,7 +981,8 @@ def load_reglog_lock(path):
                 continue
             rows.append({"t_us": int(tok[0]), "lock": kv["lock"],
                          "lerr": float(kv["lerr"].rstrip("ms")),
-                         "loff": int(kv["loff"]), "lctr": float(kv["lctr"])})
+                         "loff": int(kv["loff"]), "lctr": float(kv["lctr"]),
+                         "lact": kv.get("lact", "sensor")})
     return rows
 
 
@@ -1076,7 +1082,10 @@ def print_release_report(rows):
 
 def print_lock_report(rows):
     """PHASE LOCK section from load_reglog_lock rows. Silent when the
-    recording has no lock fields or the lock was off throughout."""
+    recording has no lock fields or the lock was off throughout. The
+    actuator is the last row's; the offset range and the centre are read
+    over that actuator's rows only, in its unit (mfps for the sensor steer,
+    lines for the display's refresh sync)."""
     rows = [r for r in rows if r["lock"] != "off"]
     if not rows:
         return
@@ -1087,14 +1096,17 @@ def print_lock_report(rows):
     acq = (f"{(first_lock - first_run) / 1e6:.0f} s"
            if first_lock is not None and first_run is not None else "never")
     oor = sum(1 for r in rows if r["lock"] == "oor")
+    act = rows[-1]["lact"]
+    unit, centre = ("mfps", "centre") if act == "sensor" else ("lines", "grid")
     print("PHASE LOCK (reg.log)")
-    print(f"  rows={n} locked={100.0 * locked / n:.0f}% acquire={acq} oor_rows={oor}")
+    print(f"  rows={n} locked={100.0 * locked / n:.0f}% acquire={acq} oor_rows={oor}"
+          f" actuator={act}")
     span_min = (rows[-1]["t_us"] - rows[0]["t_us"]) / 60e6
     changes = sum(1 for a, b in zip(rows, rows[1:]) if a["loff"] != b["loff"])
-    offs = [r["loff"] for r in rows]
+    offs = [r["loff"] for r in rows if r["lact"] == act]
     rate = f" ({changes / span_min:.1f}/min)" if span_min > 0 else ""
-    print(f"  offset changes={changes}{rate} offset range={min(offs)}..{max(offs)} mfps"
-          f" centre last={rows[-1]['lctr']:.1f}")
+    print(f"  offset changes={changes}{rate} offset range={min(offs)}..{max(offs)} {unit}"
+          f" {centre} last={rows[-1]['lctr']:.1f}")
     errs = [abs(r["lerr"]) for r in rows if r["lock"] == "lock"]
     if errs:
         print(f"  |lerr| while locked p50/p90/max={_pct(errs, 0.5):.2f}/"

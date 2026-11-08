@@ -33,7 +33,9 @@ namespace maburplay {
 //     they never pile up in the feed while the decoder emits nothing;
 //  2. lat.on_decoded, the source-rate sample and the stats atomics;
 //  3. the hand-over: out.push({f, t_decoded});
-//  4. the prime hook, after the hand-over so it never delays it.
+//  4. the prime hook, after the hand-over so it never delays it;
+//  5. the pts sink (the display lock's camera stamps), last for the same
+//     reason.
 //
 // Loop: checkpoint (park) -> releases into the backend -> poll() -> submit
 // notes. A backend that implements PollWait blocks in poll() up to
@@ -43,8 +45,8 @@ namespace maburplay {
 // until poll() returns: one poll timeout after the burst's last frame, and a
 // burst cannot outlast the decoder's buffer pool, which those releases refill.
 //
-// Threads: set_feed/set_prime before start(); set_backend before start() or
-// while parked; the reads below from anywhere.
+// Threads: set_feed/set_prime/set_pts_sink before start(); set_backend
+// before start() or while parked; the reads below from anywhere.
 class DecodePump {
  public:
   static constexpr int kPollTimeoutMs = 4;
@@ -72,6 +74,8 @@ class DecodePump {
   void set_backend(VideoBackend* b);
   // Before start(): runs after the hand-over.
   void set_prime(std::function<void(const DmaFrame&)> fn);
+  // Before start(): every decoded frame's pts, after the prime hook.
+  void set_pts_sink(std::function<void(uint32_t pts_us)> fn);
 
   void start();
   // true = the thread sits outside every backend call (or has ended), and
@@ -110,6 +114,7 @@ class DecodePump {
   VideoBackend* backend_ = nullptr;
   bool blocking_poll_ = false;
   std::function<void(const DmaFrame&)> prime_;
+  std::function<void(uint32_t)> pts_sink_;
   std::vector<FeedNote> notes_;
   std::vector<DmaFrame> rel_;
 
