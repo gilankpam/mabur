@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
@@ -23,6 +24,12 @@ namespace mabur {
 // (config air_clock.*): nominal PHY rate ignores preamble/SIFS, the
 // half-duplex RCF/telemetry slots, aggregation and USB pacing.
 //
+// The backlog is bounded by what the TxQueue can hold (queue_bodies, 0 = no
+// bound): the queue drops its oldest body when full and never tells the
+// clock, so a dropped body stays booked. Without the bound a long overload
+// books hours of air that never happen, and with the backlog above
+// air_clock.shed_ms the enh layer stays shed long after the air is free.
+//
 // No clock of its own: every call takes the caller's steady-clock µs, like
 // RcAgent's now_ms contract, so tests drive it synthetically.
 //
@@ -35,6 +42,8 @@ namespace mabur {
 class AirClock {
  public:
   static constexpr int kProbeSid = 2;   // sid 0 = base, 1 = enh, 2 = probe body
+
+  explicit AirClock(size_t queue_bodies = 0) : queue_bodies_(queue_bodies) {}
 
   void set_rates(double base_mbps, double enh_mbps, double probe_mbps,
                  uint32_t body_us) {
@@ -57,6 +66,16 @@ class AirClock {
     const double cost = static_cast<double>(bytes) * upb +
                         static_cast<double>(body_us_);
     free_at_us_ = start + static_cast<uint64_t>(cost + 0.5);
+    largest_body_ = std::max(largest_body_, bytes);
+    if (queue_bodies_ > 0) {
+      // Priced at the slower of this body's and the base layer's rate, so a
+      // small probe body flying a rung up cannot pull the bound in.
+      const double body_cost =
+          static_cast<double>(largest_body_) * std::max(upb, us_per_byte_[0]) +
+          static_cast<double>(body_us_);
+      const double full_us = static_cast<double>(queue_bodies_) * body_cost;
+      free_at_us_ = std::min(free_at_us_, now_us + static_cast<uint64_t>(full_us + 0.5));
+    }
   }
 
   uint32_t backlog_us(uint64_t now_us) const {
@@ -71,6 +90,8 @@ class AirClock {
   double us_per_byte_[3] = {0.0, 0.0, 0.0};
   uint32_t body_us_ = 0;
   uint64_t free_at_us_ = 0;
+  const size_t queue_bodies_;
+  size_t largest_body_ = 0;
   mutable std::mutex m_;   // guards every member above
 };
 

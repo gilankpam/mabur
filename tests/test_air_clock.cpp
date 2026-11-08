@@ -128,4 +128,48 @@ TEST(air_clock_book_is_safe_from_two_threads) {
   CHECK(seen < 0xFFFFFFFFull * 10000);
 }
 
+// MCS0 at 20 MHz with the bench efficiency, 256 bodies of 1328 B: the queue
+// holds 475 ms of air. The numbers below follow from that.
+TEST(air_clock_backlog_is_bounded_by_what_the_queue_holds) {
+  constexpr size_t kBody = 1328;
+  AirClock bounded(256);
+  AirClock unbounded;
+  bounded.set_rates(5.72, 5.72, 0.0, 0);
+  unbounded.set_rates(5.72, 5.72, 0.0, 0);
+  // Overload: 100 000 bodies pushed at once, most of them dropped by the queue.
+  for (int i = 0; i < 100000; ++i) {
+    bounded.book(0, kBody, 0);
+    unbounded.book(0, kBody, 0);
+  }
+  CHECK(unbounded.backlog_us(0) > 100000000u);
+  const uint32_t b = bounded.backlog_us(0);
+  CHECK(b >= 475000 && b <= 476000);
+  // The air is really free once the queue has drained: the enh gate reopens.
+  CHECK(bounded.backlog_us(476000) == 0);
+  CHECK(unbounded.backlog_us(476000) > 100000000u);
+}
+
+TEST(air_clock_bound_leaves_a_backlog_under_it_alone) {
+  constexpr size_t kBody = 1328;
+  AirClock bounded(256);
+  AirClock unbounded;
+  bounded.set_rates(5.72, 5.72, 0.0, 0);
+  unbounded.set_rates(5.72, 5.72, 0.0, 0);
+  for (int i = 0; i < 200; ++i) {
+    bounded.book(0, kBody, 0);
+    unbounded.book(0, kBody, 0);
+  }
+  CHECK(bounded.backlog_us(0) == unbounded.backlog_us(0));
+}
+
+TEST(air_clock_a_probe_body_does_not_pull_the_bound_in) {
+  constexpr size_t kBody = 1328;
+  AirClock c(256);
+  c.set_rates(5.72, 5.72, 65.0, 0);
+  for (int i = 0; i < 1000; ++i) c.book(0, kBody, 0);
+  const uint32_t full = c.backlog_us(0);
+  c.book(0, 64, AirClock::kProbeSid);
+  CHECK(c.backlog_us(0) >= full);
+}
+
 MTEST_MAIN

@@ -257,6 +257,10 @@ on a virtual air clock.
 - The clock is priced at the APPLIED op's per-layer rate and re-priced on
   every AppliedOp (`apply_op_to_clock`). It drops to the new rate the
   instant a demote lands, and it is leaky at zero.
+- The backlog never exceeds what the TxQueue can hold (256 bodies of the
+  largest size booked, at the applied rate). The queue drops its oldest
+  body when full without telling the clock, so without this bound a long
+  overload would keep the enh gate closed long after the air is free.
 
 **Backlog and gate.** `backlog = free_at − now` is read at every frame's
 arrival and stamped on the AU's bodies (SBI `air_ms`, carried into

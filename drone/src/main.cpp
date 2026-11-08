@@ -2163,7 +2163,7 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
   // video/probe body and reads the backlog; the RX thread's T_NACK handler
   // below books every retransmit body. AirClock's own mutex guards it; both
   // sides lock per BODY, never per symbol.
-  AirClock air_clock;
+  AirClock air_clock(kTxQueueCap);
   // Software NACK answer (fec-nack), RX thread. Verified request -> ring
   // lookups -> fresh SBI bodies marked retx -> TxQueue head, under a token
   // bucket of nack.air_pct of the base layer's delivered capacity,
