@@ -35,6 +35,7 @@ add_library(mabur_player_core STATIC
   src/in_formats.cpp
   src/frame_regulator.cpp
   src/phase_lock.cpp
+  src/display_lock_core.cpp
   src/lat_tracker.cpp
   src/lat_log.cpp
   src/splash_image.cpp
