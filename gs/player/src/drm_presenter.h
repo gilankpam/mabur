@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "colortrans.h"  // CubicLut
+#include "display_lock_core.h"  // ModeTiming (host-buildable; pulls in no DRM headers)
 #include "mode_pick.h"   // ModeCand
 #include "osd_raster.h"  // Surface (host-buildable; pulls in no DRM headers)
 #include "present_sink.h"
@@ -292,6 +293,33 @@ class DrmPresenter : public PresentSink {
   // init() succeeds; main.cpp seeds the FrameRegulator's vblank estimator
   // with it so the servo can lock non-60 Hz panels.
   double mode_period_us() const;
+
+  // The CRTC index init() picked (its bit position in possible_crtcs), -1
+  // before init(). What wait_vblank() below targets, and what a frame-length
+  // register write needs to find the right VOP2 instance.
+  int crtc_index() const;
+
+  // The committed mode's timing, for the display-lock thread's register
+  // math: vtotal and the vsync width (vsync_end - vsync_start) in lines,
+  // one line's time, and the mode's own period (mode_period_us() above).
+  ModeTiming mode_timing() const;
+
+  // Blocks for the CRTC's next vblank (drmWaitVBlank, DRM_VBLANK_RELATIVE
+  // +1, DRM_VBLANK_HIGH_CRTC_SHIFT for crtc_index() > 0) and reports its
+  // sequence and time. Needs no DRM master, so it is safe to call from a
+  // thread that never commits. ts_us is CLOCK_MONOTONIC when
+  // vsync_ts_exact() is true; otherwise the kernel's reply timestamp is
+  // not known to share that clock, so ts_us is a mono_us()-at-return
+  // approximation instead, same fallback as on_flip's. False on error or
+  // with no display (fd/crtc_index not set).
+  //
+  // Thread note: this is the one call the display-lock thread makes on
+  // the presenter. It touches no KMS state -- no plane, no commit, no
+  // Impl field but the fd and crtc_index set once at init() -- so it is
+  // safe to call from that thread alongside the release thread's own
+  // calls. It must not be called after retire(): the fd it reads may by
+  // then be owned by a different presenter, or closed.
+  bool wait_vblank(uint32_t* seq, uint64_t* ts_us);
 
   // Whether the connector this presenter drives lists a mode matching
   // `screen_mode` by pick_mode()'s rule (the wanted size, the exact rate
