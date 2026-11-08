@@ -463,8 +463,9 @@ MenuNode refresh_sync_row(const Deps& d) {
         {"off", "Off", "", true}, {"nudge", "Nudge", "", true}, {"follow", "Follow", "", true}};
   };
   n.current = [d] { return d->cfg->display.refresh_sync; };
-  // This GS has no mapped frame-length control (e.g. the Orange Pi): the set
-  // still saves, but there is nothing here to hold the display's refresh.
+  // Refresh sync cannot act here (no phase lock, no frame-length control as
+  // on the Orange Pi, or the controller's total refused): the set still
+  // saves, but nothing holds the display's refresh.
   n.warn = [d] {
     return d->refresh_sync_available && !d->refresh_sync_available() ? std::string("n/a") : std::string();
   };

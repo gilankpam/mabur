@@ -746,8 +746,13 @@ int main(int argc, char** argv) {
   std::unique_ptr<maburplay::PhaseLock> phase_lock;
   if (cfg.display.phase_lock) regulator.set_phase_lock_mode(true);
   uint64_t phase_disconts_seen = 0;
-  // The fallback's reason last said ("" none yet): one line per reason.
+  // The fallback's reason last said ("" none yet): one line per reason,
+  // forgotten when the display engages or refresh_sync goes off.
   std::string refresh_unavail_said;
+  // NUDGE found past its reach on this presenter: the sensor steer keeps
+  // the lock for the presenter's life (housekeeping below). Cleared by a
+  // live refresh_sync set and by a new presenter's lock.
+  bool refresh_latched = false;
   maburplay::DisplayLockCore::State display_state_seen = maburplay::DisplayLockCore::State::Waiting;
   // The drone's measured frame rate (the decode pump's) against the
   // panel's: a pair too far apart for the phase lock pauses it and warns on
@@ -1133,6 +1138,7 @@ int main(int argc, char** argv) {
                                                 cfg.display.rt_priority});
     display_lock->start();
     display_lock_t0_us = mono_us();
+    refresh_latched = false;
   };
   // burn_in/burn_enc/burn_drop on the regulator line: the burned recorder's
   // cumulative frames_in/frames_encoded/frames_dropped (burn_recorder.h),
@@ -2298,11 +2304,13 @@ int main(int argc, char** argv) {
   live_hooks.menu = [&](const maburplay::Config& c) { cfg.menu = c.menu; };
   // display.refresh_sync: the running lock takes the new mode (nudge <->
   // follow restarts its window; off releases the register to the mode's
-  // own value). Housekeeping's actuator choice swaps to or from the sensor
-  // steer on its next iteration.
+  // own value) and a NUDGE reach latch is dropped. Housekeeping's actuator
+  // choice swaps to or from the sensor steer on its next iteration.
   live_hooks.refresh_sync = [&](const maburplay::Config& c) {
     cfg.display.refresh_sync = c.display.refresh_sync;
 #ifdef MABUR_PLAYER_HW
+    // A set is the operator's retry: NUDGE gets its reach judged afresh.
+    refresh_latched = false;
     maburplay::RefreshSync mode = maburplay::RefreshSync::Off;
     if (display_lock && maburplay::parse_refresh_sync(cfg.display.refresh_sync, &mode))
       display_lock->set_mode(mode);
@@ -2355,7 +2363,9 @@ int main(int argc, char** argv) {
     if (!presenter || presenter->mode_index() < 0) return std::string();
     return maburplay::mode_string(presenter->modes()[static_cast<size_t>(presenter->mode_index())]);
   };
-  menu_deps.refresh_sync_available = [&] { return display_lock && display_lock->available(); };
+  menu_deps.refresh_sync_available = [&] {
+    return display_lock && display_lock->available() && !display_lock->refused();
+  };
 #endif
   // The tree is rebuilt on every model call, so its snapshot pointer follows
   // gs_src as it is now.
@@ -2491,36 +2501,55 @@ int main(int argc, char** argv) {
     // The phase lock's actuator. The display's frame length while this
     // presenter's refresh-sync lock is engaged (refresh_sync on, the
     // register mapped and holding the mode's total); otherwise the sensor
-    // steer, created here and said once per reason. A lock still waiting
-    // for its first vblank (at most kDecideUs) keeps whichever runs, so a
-    // start or a display rebuild does not swap back and forth. A live
-    // refresh_sync set swaps here on the next iteration: the display lock
-    // leaving Off engages it, entering Off disengages it.
+    // steer, created here. A lock still waiting for its first vblank (at
+    // most kDecideUs) keeps whichever runs, so a start or a display rebuild
+    // does not swap back and forth. A live refresh_sync set swaps here on
+    // the next iteration: the display lock leaving Off engages it, entering
+    // Off disengages it.
+    //
+    // NUDGE past its reach (the camera drifting a line a frame or more
+    // against the refresh, as the drone's trim alone does at 100 fps) hands
+    // over to the sensor steer and latches there for this presenter's
+    // life, the lock set Off so the register goes back to the mode's own.
+    // Left in nudge, the lock would see the steered camera on the display's
+    // rate, engage, drop the steer, and the drone return to its trim: the
+    // pair would swap back and forth every few tens of seconds.
     constexpr uint64_t kDecideUs = 2'000'000;
+    if (display_lock && !refresh_latched && display_lock->beyond_reach()) {
+      refresh_latched = true;
+      display_lock->set_mode(maburplay::RefreshSync::Off);
+    }
     const bool display_actuator = display_lock && display_lock->engaged();
     const bool deciding = display_lock && display_lock->deciding() &&
                           display_lock->mode() != maburplay::RefreshSync::Off &&
                           mono_us() - display_lock_t0_us < kDecideUs;
     if (cfg.display.phase_lock && !display_actuator && !deciding && !phase_lock) {
       phase_lock = std::make_unique<maburplay::PhaseLock>(cfg.display.phase_margin_ms);
-      if (cfg.display.refresh_sync != "off") {
-        const char* why = !display_lock              ? "no display"
-                          : display_lock->deciding() ? "no vblank from the display"
-                                                     : display_lock->why();
-        const std::string reason = why ? why : "not engaged";
-        if (reason != refresh_unavail_said) {
-          refresh_unavail_said = reason;
-          std::fprintf(stderr,
-                       "maburplay: refresh sync %s unavailable (%s) -- steering the sensor\n",
-                       cfg.display.refresh_sync.c_str(), reason.c_str());
-        }
-      }
     } else if (display_actuator && phase_lock) {
       // One last zero offset now, rather than maburgs' 3 s timeout.
       core_ctl.tick_phase(0, mono_ms());
       phase_lock.reset();
       std::fprintf(stderr, "maburplay: refresh sync %s -- the drone's sensor runs on its trim\n",
                    cfg.display.refresh_sync.c_str());
+    }
+    // Why refresh sync is not the actuator, said once per reason while the
+    // sensor steer runs in its place -- also when it already ran before
+    // refresh_sync was set. Forgotten when the display engages or
+    // refresh_sync goes off, so a later fallback says its reason again.
+    if (display_actuator || cfg.display.refresh_sync == "off") {
+      refresh_unavail_said.clear();
+    } else if (phase_lock) {
+      const char* why = refresh_latched            ? maburplay::DisplayLockCore::kWhyBeyondReach
+                        : !display_lock              ? "no display"
+                        : display_lock->deciding() ? "no vblank from the display"
+                                                   : display_lock->why();
+      const std::string reason = why ? why : "not engaged";
+      if (reason != refresh_unavail_said) {
+        refresh_unavail_said = reason;
+        std::fprintf(stderr,
+                     "maburplay: refresh sync %s unavailable (%s) -- steering the sensor\n",
+                     cfg.display.refresh_sync.c_str(), reason.c_str());
+      }
     }
     // The phase margin of every offer the release thread made since the
     // last iteration, oldest first. The lock takes them only while it
@@ -2629,8 +2658,9 @@ int main(int argc, char** argv) {
       // takes its verdict for capture placement. A rate mismatch pauses it,
       // which puts the register back at the mode's own value. Nothing goes
       // to maburgs: its timeout zeroes the RCF snr_off, and the drone runs
-      // on its trim. Never out of range: the display is always within
-      // reach once the rates match.
+      // on its trim. No out-of-range state here: FOLLOW reaches any camera
+      // up to 0.5 % faster than the mode, and NUDGE past its line a frame
+      // hands over to the sensor steer above.
       if (phase_discont) display_lock->on_discontinuity();
       display_lock->set_paused(rate_match.mismatch());
       regulator.set_capture_placement(display_lock->locked());
