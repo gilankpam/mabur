@@ -30,6 +30,11 @@ class Fragmenter {
                                   size_t chunk_len)>;
   void fragment(const uint8_t* pkt, size_t len, int usable, const Sink& sink);
 
+  // How many chunks fragment() will emit for a unit this size — the same
+  // arithmetic fragment() uses, exposed so a caller can size a frame's
+  // repair hold (frame_hold_syms) before fragmenting it.
+  static size_t chunk_count(size_t len, int usable);
+
   // Bytes every fragment spends on its header; callers size `usable` as
   // max_packet_size() - kHdrLen.
   static constexpr size_t kHdrLen = 6;

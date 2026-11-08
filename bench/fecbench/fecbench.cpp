@@ -30,6 +30,7 @@
 #include "mabur/fec_worker.h"
 #include "mabur/frame_wire.h"
 #include "mabur/gf256.h"
+#include "mabur/sbi.h"
 #include "mabur/uep_encoder.h"
 #include "mt_encoder.h"
 
@@ -353,6 +354,72 @@ static int verify_async_engine() {
   return failures;
 }
 
+// Closes the gap neither check above covers: verify_encoder() only runs
+// SwStock vs SwEncoderMt (both synchronous — body order never shifts
+// between them), and verify_async_engine() drives SwEncoderMtAsync
+// directly, without ever calling begin_frame. Neither exercises the
+// declared-frame path (begin_frame/seal/flush) through UepEncoderT with the
+// async engine. This runs that combination, same frame sequence and
+// ov/perlayer combos as verify_encoder, SwStock vs SwEncoderMtAsync.
+//
+// It DOES reorder: the async engine enqueues a front (pre-tail) repair
+// instead of building it inline, so it can drain into a LATER
+// add_packet/seal/flush call than the one whose seal credited it — the
+// sync engine always has that repair ready in the SAME call, right after
+// the triggering seal. That shifts which envelopes land in the same SBI
+// group between the two engines, so even the BODY bytes can legitimately
+// differ (a different grouping, not a bug). The check therefore unpacks
+// every body back into its envelopes (sbi_unpack) and compares the per-
+// frame envelope SET, order-insensitive, same as verify_async_engine does
+// for the plain engine.
+static int verify_async_frame_encoder() {
+  static const std::array<uint32_t, 2> kSeqs = {11, 2222};
+  int failures = 0;
+  for (int perlayer = 0; perlayer < 2; ++perlayer) {
+    for (double ov : {0.10, 0.375}) {
+      auto layers = make_layers(perlayer != 0, ov);
+      const int block_payload[2] = {
+          static_cast<int>(sw::kSwHeaderLen) + layers[0].fec.symbol_size,
+          static_cast<int>(sw::kSwHeaderLen) + layers[1].fec.symbol_size};
+      UepEncoderT<SwStock> stock(layers, 25, kSeqs, nullptr);
+      AsyncFecWorker worker(1);
+      UepEncoderT<SwEncoderMtAsync> async(layers, 25, kSeqs, &worker);
+
+      const auto unpack_set = [&](std::vector<UepBody>& bodies) {
+        std::vector<std::vector<uint8_t>> envs;
+        for (auto& b : bodies) {
+          auto r = sbi_unpack(b.body.data(), b.body.size(),
+                              block_payload[b.stream_id]);
+          for (auto& sv : r.survivors) envs.push_back(std::move(sv));
+        }
+        std::sort(envs.begin(), envs.end());
+        return envs;
+      };
+
+      bool ok = true;
+      uint64_t now = 1;
+      uint16_t id = 0;
+      for (int f = 0; f < 60 && ok; ++f) {  // 1 sim second, as verify_encoder
+        const int nal = (f == 0) ? 19 : 1;
+        const int sid = (f == 0) ? 0 : 1;
+        const auto p = make_frame(nal, (size_t)13 * 1400, id++);
+        auto bs = stock.add_frame(sid, p.data(), p.size(), now);
+        auto ba = async.add_frame(sid, p.data(), p.size(), now);
+        now += 16;
+        auto ps = stock.poll(now);
+        auto pa = async.poll(now);
+        bs.insert(bs.end(), ps.begin(), ps.end());
+        ba.insert(ba.end(), pa.begin(), pa.end());
+        ok = unpack_set(bs) == unpack_set(ba);
+      }
+      failures += !ok;
+      std::printf("verify async-frame-encoder %s ov=%.3f  %s\n",
+                  perlayer ? "perlayer" : "scalar  ", ov, ok ? "OK" : "FAIL");
+    }
+  }
+  return failures;
+}
+
 static void print_enc_row(const char* eng, const char* mode, double ov,
                           double wall, int sim, uint64_t air_bytes,
                           uint64_t in_bytes) {
@@ -426,7 +493,8 @@ int main(int argc, char** argv) {
 
   int failures = 0;
   if (mode == "all" || mode == "verify")
-    failures = run_verify() + verify_encoder() + verify_async_engine();
+    failures = run_verify() + verify_encoder() + verify_async_engine() +
+               verify_async_frame_encoder();
   if (failures) {
     std::printf("verification FAILED — benchmarks of wrong code are noise\n");
     return 1;

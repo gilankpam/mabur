@@ -20,7 +20,11 @@ namespace mabur {
 // heard after its seq was booked missing counts `late` and is NOT un-booked.
 class ArrivalTracker {
  public:
-  static constexpr uint32_t kDefaultGuard = 32;  // one FEC window as flown
+  // Fallback when a caller's guard arg is 0, not the flown value — the GS
+  // runs the bundle's `link.arrival_guard_syms` (192, also
+  // `gs/src/config.cpp`'s own default) instead; kDefaultGuard is only this
+  // class's fallback, never what flies.
+  static constexpr uint32_t kDefaultGuard = 32;
 
   explicit ArrivalTracker(uint32_t guard = kDefaultGuard, uint32_t ring_bits = 1024)
       : guard_(guard), bits_(ring_bits, 0), mask_(ring_bits - 1) {}

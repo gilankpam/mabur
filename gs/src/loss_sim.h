@@ -11,8 +11,8 @@ namespace maburgs {
 // Injected per-stream packet loss for eyeballing SVC-T degradation: dial loss
 // on s3 (the enhance layer) and watch the video while the rest of the link
 // runs for real. Two-state Gilbert-Elliott per (card, stream), so loss can be
-// bursty rather than an independent coin flip — the w32 sliding window is far
-// more sensitive to bursts, and Bernoulli loss flatters it.
+// bursty rather than an independent coin flip — the window-64 sliding
+// window is far more sensitive to bursts, and Bernoulli loss flatters it.
 //
 // Given target steady-state loss L and mean burst length B (consecutive lost
 // bodies):

@@ -3,6 +3,7 @@
 // block-FEC time-diversity buffer matrix: time diversity now comes from
 // overlapping repair windows, so sources never wait — the checks here pin
 // delivery under the same random/burst loss the old scheme was built for.
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -194,6 +195,48 @@ MixedResult run_mixed_sim(int n_pkts, uint64_t drop_start, uint64_t drop_count) 
   return r;
 }
 
+// Every SW envelope of one body, in wire order — a thin wrapper over
+// sbi_unpack so the frame-declaration tests below can walk a frame's
+// bodies and classify each envelope as a source or a frame-end repair.
+std::vector<sw::SwHeader> headers_of(const UepBody& b, int block_payload) {
+  std::vector<sw::SwHeader> out;
+  for (auto& env : sbi_unpack(b.body.data(), b.body.size(), block_payload).survivors) {
+    sw::SwHeader h;
+    if (sw::parse_header(env.data(), env.size(), &h)) out.push_back(h);
+  }
+  return out;
+}
+
+// Shared shape check for a 100-source-symbol enh frame (layers_for(164, 4,
+// 64)): the frame-end batch is one body of 8 repairs, each spanning the
+// full window and ending at the frame's last source, with exactly 16
+// sources (the held tail) between the last mid-frame repair and that body.
+void expect_hundred_sym_frame_tail(const std::vector<UepBody>& bodies, int block_payload) {
+  std::vector<sw::SwHeader> flat;
+  for (auto& b : bodies) {
+    auto hs = headers_of(b, block_payload);
+    flat.insert(flat.end(), hs.begin(), hs.end());
+  }
+  uint32_t last_src_seq = 0;
+  for (auto& h : flat) if (!h.repair) last_src_seq = h.seq;
+
+  REQUIRE(flat.size() >= 8);
+  const auto tail_hdrs = headers_of(bodies.back(), block_payload);
+  REQUIRE(tail_hdrs.size() == 8);
+  for (auto& h : tail_hdrs) {
+    CHECK(h.repair);
+    CHECK(h.window_len == 64);
+    CHECK(h.seq + h.window_len == last_src_seq + 1);
+  }
+
+  const size_t tail = flat.size() - 8;
+  size_t run = 0;
+  while (run < tail && !flat[tail - 1 - run].repair) ++run;
+  CHECK(run == 16);
+  REQUIRE(tail > run);
+  CHECK(flat[tail - 1 - run].repair);  // the last mid-frame repair
+}
+
 }  // namespace
 
 TEST(lossless_delivers_everything) {
@@ -354,7 +397,10 @@ TEST(uep_async_recovers_under_loss_like_sync) {
 // the worker, so add_frame ships sources (plus whatever repairs are already
 // built) and collect() harvests the rest once the worker finishes — as
 // bodies of the right stream, with the packer's partial group flushed so
-// nothing lingers until the next frame.
+// nothing lingers until the next frame. 77 source symbols (> the window 64)
+// so the frame's front still spends credit through the worker as usual —
+// frame_hold_syms only holds its last 16 syms, built inline at flush() —
+// leaving something for collect() to harvest.
 TEST(uep_collect_harvests_repairs_the_frame_left_behind) {
   auto layers = layers_for(164, 4, 64);
   FecWorker worker;
@@ -363,7 +409,7 @@ TEST(uep_collect_harvests_repairs_the_frame_left_behind) {
   UepDecoder dec(layers);
   std::mt19937 rng(42);
   const uint64_t now = 1000;
-  auto unit = make_unit(/*stream=*/1, 0, 1388, rng);
+  auto unit = make_unit(/*stream=*/1, 0, 77 * 156 - 8, rng);  // 77 symbols exactly
   auto frame_bodies = enc.add_frame(1, unit.data(), unit.size(), now);
   CHECK(!frame_bodies.empty());
   std::vector<UepBody> harvested;
@@ -389,39 +435,226 @@ TEST(uep_collect_harvests_repairs_the_frame_left_behind) {
   for (auto& b : harvested)
     for (auto& d : dec.add_body(b.body.data(), b.body.size(), now)) got.add(d);
   CHECK(got.completed().size() == 1);
-  // Repairs did ship: the harvested bodies carry the frame's whole repair
-  // budget (ov 0.5 over the frame's symbols + the tail repair), never zero.
+  // Repairs did ship: the harvested bodies carry the front's worker-built
+  // repairs (the frame-end batch ships inline, already in frame_bodies).
   CHECK(enc.take_fec_gauge(1).jobs > 0);
 }
 
-// repairs_with_frame: the frame's sources close their body and the
-// frame-end repairs ship in the next one, so one lost body cannot take a
-// frame's tail sources together with the repairs that protect them.
-TEST(repairs_with_frame_ship_the_frame_end_repairs_in_their_own_body) {
+// UepEncoder declares every frame (begin_frame/frame_hold_syms), so the
+// frame's sources always close their body before the frame-end repairs
+// ship in one of their own: one lost body cannot take a frame's tail
+// sources together with the repairs that protect them.
+TEST(small_frame_end_repairs_cover_the_whole_frame_in_their_own_body) {
   auto layers = layers_for(164, 4, 64);
-  for (auto& l : layers) l.fec.repairs_with_frame = true;
+  UepEncoder enc(layers, 15);
+  std::mt19937 rng(42);
+  auto unit = make_unit(/*stream=*/1, 0, 30 * 156 - 8, rng);  // 30 symbols exactly
+  auto bodies = enc.add_frame(1, unit.data(), unit.size(), 1000);
+  const int bp = static_cast<int>(sw::kSwHeaderLen) + 164;
+
+  size_t n_src = 0, n_rep = 0;
+  bool seen_repair = false;
+  uint32_t last_src_seq = 0;
+  std::vector<size_t> repair_body_sizes;
+  for (auto& b : bodies) {
+    auto hs = headers_of(b, bp);
+    REQUIRE(!hs.empty());
+    const bool is_repair = hs.front().repair;
+    for (auto& h : hs) CHECK(h.repair == is_repair);  // no body mixes kinds
+    if (is_repair) {
+      seen_repair = true;
+      repair_body_sizes.push_back(hs.size());
+      for (auto& h : hs) {
+        CHECK(h.window_len == 30);
+        CHECK(h.seq + h.window_len == last_src_seq + 1);
+        ++n_rep;
+      }
+    } else {
+      CHECK(!seen_repair);  // every source body precedes every repair body
+      for (auto& h : hs) { last_src_seq = h.seq; ++n_src; }
+    }
+  }
+  CHECK(n_src == 30);
+  CHECK(n_rep == 15);  // ceil(30 * 0.5), all held: nothing spent mid-frame
+  REQUIRE(repair_body_sizes.size() == 2);
+  CHECK(repair_body_sizes[0] == 8);
+  CHECK(repair_body_sizes[1] == 7);
+}
+
+TEST(big_frame_tail_has_one_body_of_repairs_behind_it) {
+  auto layers = layers_for(164, 4, 64);
+  UepEncoder enc(layers, 15);
+  std::mt19937 rng(42);
+  auto unit = make_unit(/*stream=*/1, 0, 100 * 156 - 8, rng);  // 100 symbols exactly
+  auto bodies = enc.add_frame(1, unit.data(), unit.size(), 1000);
+  const int bp = static_cast<int>(sw::kSwHeaderLen) + 164;
+  expect_hundred_sym_frame_tail(bodies, bp);
+}
+
+// frame_hold_syms re-sizes the hold from the layer's CURRENT overhead each
+// time add_frame declares a new frame, not just at UepEncoder construction:
+// one encoder runs a 0.5-overhead frame, then a 0.25-overhead one right
+// after set_layer_overhead, and the tail-run length tracks the change.
+TEST(overhead_change_moves_the_tail_start) {
+  auto layers = layers_for(164, 4, 64);
+  UepEncoder enc(layers, 15);
+  std::mt19937 rng(42);
+  const int bp = static_cast<int>(sw::kSwHeaderLen) + 164;
+
+  auto tail_run = [&](const std::vector<UepBody>& bodies) {
+    std::vector<sw::SwHeader> flat;
+    for (auto& b : bodies) {
+      auto hs = headers_of(b, bp);
+      flat.insert(flat.end(), hs.begin(), hs.end());
+    }
+    const auto tail_hdrs = headers_of(bodies.back(), bp);
+    REQUIRE(tail_hdrs.size() == 8);  // ceil(32 * 0.25) == ceil(16 * 0.5) == 8
+    for (auto& h : tail_hdrs) CHECK(h.repair);
+    const size_t tail = flat.size() - 8;
+    size_t run = 0;
+    while (run < tail && !flat[tail - 1 - run].repair) ++run;
+    return run;
+  };
+
+  // layers_for's default overhead (0.5): T = ceil(8/0.5) = 16.
+  auto unit1 = make_unit(/*stream=*/1, 0, 100 * 156 - 8, rng);  // 100 symbols exactly
+  auto bodies1 = enc.add_frame(1, unit1.data(), unit1.size(), 1000);
+  CHECK(tail_run(bodies1) == 16);
+
+  // Same encoder, next frame: set_layer_overhead takes effect immediately
+  // (sw_encoder.h), so frame_hold_syms sizes THIS frame's hold from the new
+  // 0.25 -- T = ceil(8/0.25) = 32.
+  enc.set_layer_overhead(1, 0.25);
+  auto unit2 = make_unit(/*stream=*/1, 1, 100 * 156 - 8, rng);  // 100 symbols exactly
+  auto bodies2 = enc.add_frame(1, unit2.data(), unit2.size(), 2000);
+  CHECK(tail_run(bodies2) == 32);
+}
+
+TEST(shed_frame_leaves_no_frame_state) {
+  auto layers = layers_for(164, 4, 64);
+  UepEncoder enc(layers, 15);
+  std::mt19937 rng(42);
+  enc.set_shed(1, true);
+  auto shed_unit = make_unit(/*stream=*/1, 0, 30 * 156 - 8, rng);
+  CHECK(enc.add_frame(1, shed_unit.data(), shed_unit.size(), 1000).empty());
+  enc.set_shed(1, false);
+
+  auto unit = make_unit(/*stream=*/1, 1, 100 * 156 - 8, rng);
+  auto bodies = enc.add_frame(1, unit.data(), unit.size(), 1000);
+  const int bp = static_cast<int>(sw::kSwHeaderLen) + 164;
+  expect_hundred_sym_frame_tail(bodies, bp);
+}
+
+// The whole point of a frame-end batch in its own body: losing the body
+// carrying a frame's LAST sources must not lose the frame, because its
+// repairs ship in a body of their own, never bundled with those sources.
+TEST(late_loss_recovered_by_the_frame_end_batch) {
+  auto layers = layers_for(164, 4, 64);
   UepEncoder enc(layers, 15);
   UepDecoder dec(layers);
   std::mt19937 rng(42);
-  auto unit = make_unit(/*stream=*/1, 0, 1388, rng);
+  auto unit = make_unit(/*stream=*/1, 0, 30 * 156 - 8, rng);  // 30 symbols exactly
   auto bodies = enc.add_frame(1, unit.data(), unit.size(), 1000);
-  REQUIRE(bodies.size() >= 2);
   const int bp = static_cast<int>(sw::kSwHeaderLen) + 164;
-  auto kinds = [&](const UepBody& b) {
-    std::vector<bool> rep;
-    for (auto& env : sbi_unpack(b.body.data(), b.body.size(), bp).survivors) {
-      sw::SwHeader h;
-      REQUIRE(sw::parse_header(env.data(), env.size(), &h));
-      rep.push_back(h.repair);
+
+  // The last body whose envelopes are sources carries the frame's last
+  // source(s).
+  size_t drop_idx = bodies.size();
+  for (size_t i = 0; i < bodies.size(); ++i) {
+    auto hs = headers_of(bodies[i], bp);
+    REQUIRE(!hs.empty());
+    if (!hs.front().repair) drop_idx = i;
+  }
+  REQUIRE(drop_idx < bodies.size());
+
+  mtest::FragCollector got;
+  for (size_t i = 0; i < bodies.size(); ++i) {
+    if (i == drop_idx) continue;  // one whole body dropped
+    for (auto& d : dec.add_body(bodies[i].body.data(), bodies[i].body.size(), 1000))
+      got.add(d);
+  }
+  CHECK(got.completed().size() == 1);
+}
+
+// Same guarantee, for a frame bigger than the window: drop a body that sits
+// entirely inside the held tail (the frame's last 16 sources —
+// frame_hold_syms(100, 64, 0.5, 8) == 16) with no repair envelope riding
+// along in it -- e.g. the body holding S87..S94. The held tail carries no
+// repairs among its own sources (those ship only in the frame-end batch),
+// so a body that straddles the front/tail boundary (mixing a front-window
+// repair in with some tail sources) would recover on its own; only an
+// all-tail-sources body isolates the frame-end batch as the sole recovery
+// path.
+TEST(big_frame_late_loss_recovered_by_the_tail_batch) {
+  auto layers = layers_for(164, 4, 64);
+  UepEncoder enc(layers, 15);
+  UepDecoder dec(layers);
+  std::mt19937 rng(42);
+  auto unit = make_unit(/*stream=*/1, 0, 100 * 156 - 8, rng);  // 100 symbols exactly
+  auto bodies = enc.add_frame(1, unit.data(), unit.size(), 1000);
+  const int bp = static_cast<int>(sw::kSwHeaderLen) + 164;
+
+  std::vector<sw::SwHeader> flat;
+  for (auto& b : bodies) {
+    auto hs = headers_of(b, bp);
+    flat.insert(flat.end(), hs.begin(), hs.end());
+  }
+  uint32_t last_src_seq = 0;
+  for (auto& h : flat) if (!h.repair) last_src_seq = h.seq;
+  const uint32_t tail_start = last_src_seq - 15;  // the held tail's 16 seqs
+
+  // The body whose envelopes are ALL held-tail sources: no repair, and
+  // every seq >= tail_start.
+  size_t drop_idx = bodies.size();
+  for (size_t i = 0; i < bodies.size(); ++i) {
+    auto hs = headers_of(bodies[i], bp);
+    if (hs.empty()) continue;
+    const bool all_tail_src = std::all_of(hs.begin(), hs.end(), [&](const sw::SwHeader& h) {
+      return !h.repair && h.seq >= tail_start;
+    });
+    if (all_tail_src) { drop_idx = i; break; }
+  }
+  REQUIRE(drop_idx < bodies.size());
+
+  // The frame-end repair batch: the body/bodies whose envelopes are all
+  // repairs. UepEncoder closes a frame's tail sources before shipping the
+  // repairs that protect them, so these never mix with source envelopes.
+  std::vector<size_t> repair_bodies;
+  for (size_t i = 0; i < bodies.size(); ++i) {
+    auto hs = headers_of(bodies[i], bp);
+    if (!hs.empty() &&
+        std::all_of(hs.begin(), hs.end(), [](const sw::SwHeader& h) { return h.repair; }))
+      repair_bodies.push_back(i);
+  }
+  REQUIRE(!repair_bodies.empty());
+
+  {
+    mtest::FragCollector got;
+    for (size_t i = 0; i < bodies.size(); ++i) {
+      if (i == drop_idx) continue;  // one whole all-tail-sources body dropped
+      for (auto& d : dec.add_body(bodies[i].body.data(), bodies[i].body.size(), 1000))
+        got.add(d);
     }
-    return rep;
-  };
-  const auto last = kinds(bodies.back());
-  REQUIRE(!last.empty());
-  for (bool r : last) CHECK(r);                        // repairs only
-  const auto prev = kinds(bodies[bodies.size() - 2]);
-  REQUIRE(!prev.empty());
-  CHECK(!prev.back());                                 // ends on the tail source
+    CHECK(got.completed().size() == 1);
+  }
+
+  // Negative control: drop the same body AND the frame-end batch that
+  // would otherwise recover it. The held tail has no repairs of its own
+  // and the next frame's repairs don't exist in this single-frame test, so
+  // with the batch gone too the unit must NOT be delivered -- proving the
+  // batch, not something else, is what recovered it above.
+  {
+    UepDecoder dec2(layers);
+    mtest::FragCollector got2;
+    for (size_t i = 0; i < bodies.size(); ++i) {
+      if (i == drop_idx) continue;
+      if (std::find(repair_bodies.begin(), repair_bodies.end(), i) != repair_bodies.end())
+        continue;
+      for (auto& d : dec2.add_body(bodies[i].body.data(), bodies[i].body.size(), 1000))
+        got2.add(d);
+    }
+    CHECK(got2.completed().size() == 0);
+  }
 }
 
 MTEST_MAIN

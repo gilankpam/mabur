@@ -32,8 +32,13 @@ inline std::array<mabur::UepLayerCfg, 2> gen_layers() {
 // carry mono_us = i * dt_ms * 1000). crc_ok, phy_valid, snr {40,40}, rssi
 // {60,60}; mac_seq advances per body INCLUDING dropped ones, so a drop reads
 // as a per-card seq gap too. drop_every = k > 0 drops each k-th body.
+// payload_bytes sizes the Annex-B payload (default 2400, several bodies'
+// worth); a caller that wants every AU bigger than gen_layers()'s window
+// (128 symbols, so the frame's front still spends repair credit
+// continuously instead of holding it all to the frame end) raises it.
 inline std::vector<mabur::node::RxBody> gen_bodies(int n_aus, double dt_ms,
-                                                   int drop_every) {
+                                                   int drop_every,
+                                                   int payload_bytes = 2400) {
   mabur::UepEncoder enc(gen_layers(), 15);
   std::vector<mabur::node::RxBody> out;
   uint16_t mac_seq = 0;
@@ -41,12 +46,11 @@ inline std::vector<mabur::node::RxBody> gen_bodies(int n_aus, double dt_ms,
   for (int i = 0; i < n_aus; ++i) {
     const double t_ms = i * dt_ms;
     const int sid = i % 2;  // base / enh alternation (SVC-T cadence)
-    // Annex-B: one slice NAL (IDR for AU 0, TRAIL otherwise), 2400 B
-    // payload so every AU spans several bodies.
+    // Annex-B: one slice NAL (IDR for AU 0, TRAIL otherwise).
     std::vector<uint8_t> ab = {0, 0, 0, 1,
                                static_cast<uint8_t>((i == 0 ? 19 : 1) << 1),
                                static_cast<uint8_t>(sid + 1)};
-    for (int b = 0; b < 2400; ++b)
+    for (int b = 0; b < payload_bytes; ++b)
       ab.push_back(static_cast<uint8_t>((b * 131 + i * 7) & 0xFF));
     std::vector<uint8_t> unit(mabur::framewire::kFrameHdrLen + ab.size());
     mabur::framewire::FrameHdr h;

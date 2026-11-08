@@ -8,10 +8,9 @@ namespace maburgs {
 // Rate-aware FrameStream gap timeout (docs/findings/2026-08-30-dejitter.md
 // §follow-up). A lost symbol can only be repaired while the TX sliding
 // window still references it — a lifetime of w/send_rate SECONDS, which at
-// low rungs exceeds the fixed 50 ms gap timeout (w=32 spans ~85 ms at
-// 1 Mb/s/stream), so the GS was truncating frames whose repairs were still
-// inbound. The policy stretches the per-stream timeout to the window's
-// time-span:
+// low rungs exceeds the fixed 50 ms gap timeout, so the GS was truncating
+// frames whose repairs were still inbound. The policy stretches the
+// per-stream timeout to the window's time-span:
 //
 //   timeout(sid) = clamp( w / seq_rate(sid) + margin,  floor,  cap )
 //
@@ -70,7 +69,10 @@ class GapTimeoutPolicy {
   static constexpr double kHalfLifeS = 2.0;
   static constexpr double kMinRate = 0.5;  // syms/s below which span ~= inf
   static constexpr double kMarginMs = 15.0;  // repair serialization + jitter
-  static constexpr int kDefaultWindow = 32;  // prod fec.window, pre-calib
+  static constexpr int kDefaultWindow = 32;  // pre-calibration starting
+                                              // estimate, before a repair
+                                              // sets window from the
+                                              // observed high-water mark
 
   struct S {
     bool seeded = false;

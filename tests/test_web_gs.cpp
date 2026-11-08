@@ -239,7 +239,14 @@ TEST(trunc_base_counts_sid0_truncations) {
   };
   WebGs g(cfg(), Mode::Spotter, 136, 40, {}, 0, io);
   uint64_t t = 0;
-  for (auto& b : gen_bodies(/*aus=*/600, /*dt_ms=*/16.0, /*drop_every=*/3)) {
+  // A payload bigger than gen_layers()'s window (128 symbols) so most of the
+  // frame spends repair credit continuously (frame_hold_syms only holds the
+  // last few symbols to the frame end) -- a default-size AU fits the window
+  // whole, so every drop_every lands on either an all-source or an
+  // all-repair body, which a frame-end batch sized for exactly the frame it
+  // covers always survives alone.
+  for (auto& b : gen_bodies(/*aus=*/600, /*dt_ms=*/16.0, /*drop_every=*/3,
+                            /*payload_bytes=*/45000)) {
     t = b.mono_us;
     g.on_rx(b);
     g.tick(t);

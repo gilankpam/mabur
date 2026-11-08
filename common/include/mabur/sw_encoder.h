@@ -11,6 +11,17 @@ namespace mabur {
 class FecWorker;
 struct FecRepairJob;
 
+// How many of a declared frame's trailing seals hold their repair credit to
+// the frame end (SwEncoder::begin_frame's hold_syms argument): 0 if overhead
+// disables repairs; the whole frame if it fits in one window (nothing to
+// spend early, the frame end covers it all); otherwise the number of seals
+// whose combined credit rounds up to one body's worth of repair blocks,
+// capped at the window (a repair can't cover more than that) and at the
+// frame itself. UepEncoder computes this per frame so a frame that fits the
+// window holds every repair to its end, while a bigger one spends the
+// front as usual and only holds its tail.
+size_t frame_hold_syms(size_t n_syms, int window, double overhead, int blocks_per_body);
+
 // Receives one complete envelope (header + symbol) the moment it is
 // sealed or drained. The pointer is valid only for the call: sources
 // point into the encoder's reusable envelope buffer, repairs into the
@@ -24,19 +35,6 @@ struct SwConfig {
   int symbol_size = 64;
   int window = 128;
   double overhead = 0.25;  // repair symbols per source symbol
-  // Repairs leave with their frame: the frame's repair credit is held to
-  // flush() (the frame end), where its repairs are built inline and each
-  // covers every symbol of the frame. Spent as it accrues, a repair covers
-  // only the symbols sent before it, so a loss late in a frame had to wait
-  // for the next frame of its layer. A frame longer than the window spends
-  // its credit a window at a time. The frame end rounds the credit up and
-  // forgives the remainder, about the repair count of the default mode's
-  // tail repair. UepEncoder ships the frame-end repairs in a body of their
-  // own. Windows still span frames; with repairs at the frame end, the
-  // next frame's repairs reach back into this one only as far as the
-  // window allows, so this mode wants a window of about two frames (64).
-  // Wire format unchanged.
-  bool repairs_with_frame = false;
   int max_packet_size() const { return symbol_size - 2; }
 };
 
@@ -48,6 +46,16 @@ struct SwConfig {
 // emitted by a credit system: credit += overhead per seal, one repair per
 // whole credit. Overlapping repair windows spread protection across
 // subsequent air frames, buying time diversity without delaying sources.
+//
+// A caller that declares its frame boundaries with begin_frame holds the
+// tail of each frame's repair credit to that frame's flush() instead of
+// spending it as it accrues: a repair spent mid-frame only covers symbols
+// sent before it, so a loss late in a frame would otherwise have to wait
+// for the next frame of its layer to be repaired. Only the tail is held —
+// frame_hold_syms picks how much — so a frame that fits in one window
+// holds everything, while a bigger one still spends its front normally and
+// holds just enough for the frame end to cover with one more body's worth
+// of repair blocks.
 class SwEncoder {
  public:
   // initial_seq seeds next_seq_ (default 0, which is what every existing
@@ -79,6 +87,28 @@ class SwEncoder {
   // Not user API.
   void execute_repair_job(const FecRepairJob& job);
 
+  // Declares the next frame: n_syms is the caller's best guess at how many
+  // symbols it will seal (the actual count sent before the next flush() may
+  // differ — the hold is sized on the guess, nothing more), and hold_syms
+  // (frame_hold_syms's return) is how many of its trailing seals hold their
+  // credit until that flush() closes the frame. Repairs credited before the
+  // held tail still spend as usual, so a frame bigger than the window is
+  // protected throughout, not just at its end. The caller is expected to
+  // follow with exactly that frame's add_packet calls and one flush(), but a
+  // declared count the actual seals over- or undershoot is tolerated: the
+  // hold boundary just lands wherever frame_seals_ crosses frame_front_,
+  // right-sized guess or not.
+  void begin_frame(size_t n_syms, size_t hold_syms);
+
+  // The configured repair-symbols-per-source-symbol ratio (SwConfig::overhead),
+  // for a caller sizing frame_hold_syms's hold from this encoder's own config.
+  double overhead() const { return cfg_.overhead; }
+
+  // The window actually in effect (SwConfig::window clamped to [2,
+  // sw::kMaxWindow] at construction), for the same frame_hold_syms sizing —
+  // the caller's raw config value may sit outside that range.
+  int window() const { return cfg_.window; }
+
   // Feeds one packet. Returns any envelopes that became due: at most one
   // source (a symbol sealed to make room) plus credited repairs. A packet
   // larger than max_packet_size() returns empty and counts oversize_drops().
@@ -101,12 +131,15 @@ class SwEncoder {
   // flush() emits the frame-end repairs into a body of their own.
   void seal(const SwEnvSink& sink) { seal_current(sink); }
 
-  // Seals a partially-filled symbol (if any) and emits one tail repair so a
-  // burst tail is recoverable without waiting for the next source. The tail
-  // repair fires at most once per sealed source (idle re-flushes are no-ops,
-  // so UepEncoder's repeated poll cannot spam repairs). Async mode: does
-  // NOT wait for the worker (fec-join-delete) — returns whatever
-  // repairs are already built; the rest surface at a later
+  // Seals a partially-filled symbol (if any), then either closes a
+  // begin_frame'd frame -- spending its held tail credit as the frame-end
+  // batch (ceil(credit) repairs, built inline so they leave with the
+  // frame) -- or, for an undeclared stream, emits one tail repair so a
+  // burst tail is recoverable without waiting for the next source. The
+  // tail repair fires at most once per sealed source (idle re-flushes are
+  // no-ops, so UepEncoder's repeated poll cannot spam repairs). Async
+  // mode: does NOT wait for the worker (fec-join-delete) — returns
+  // whatever repairs are already built; the rest surface at a later
   // add_packet/flush/collect drain, or at finish().
   std::vector<std::vector<uint8_t>> flush();
 
@@ -152,8 +185,9 @@ class SwEncoder {
   // thread's per-AU wall into wait-on-worker vs its own work, and exposes
   // the worker's per-repair build cost + queue depth. Sums/counts are
   // cumulative — the reader diffs across report windows; the *_max fields
-  // are window maxima, reset by take_fec_gauge(). All fields are zero in
-  // sync mode (no worker).
+  // are window maxima, reset by take_fec_gauge(). Every field but the last
+  // two is zero in sync mode (no worker); frame_end_repairs/frame_end_us
+  // are built inline by the hot thread itself, so they count in both modes.
   struct SwFecGauge {
     uint64_t jobs = 0;             // repairs built via execute_repair_job
     uint64_t build_us = 0;         // wall µs inside those builds
@@ -163,6 +197,12 @@ class SwEncoder {
     uint64_t join_wait_max_us = 0; // window max (reset on take)
     uint64_t enq_depth_max = 0;    // window max worker-queue depth at enqueue
     uint64_t backlog_drops = 0;    // repairs skipped at kMaxBacklogJobs
+    uint64_t frame_end_repairs = 0; // repairs built in a begin_frame'd flush()
+    uint64_t frame_end_us = 0;      // wall µs spent building them AND
+                                     // running the whole downstream sink
+                                     // call on each one (UepEncoder's SBI
+                                     // pack, CRC, and the TX push of any
+                                     // body that completes)
   };
   // Producer-thread-only, like add_packet/flush (it resets the window-max
   // fields in place).
@@ -199,8 +239,8 @@ class SwEncoder {
   // Sync mode: builds and returns the repair inline (today's exact
   // behavior). Async mode: enqueues (or builds inline on queue-full) and
   // returns nothing now. Both allocate key/counters identically.
-  // inline_build: build and sink now even in async mode (the
-  // repairs_with_frame frame-end repairs, so they never wait for a harvest).
+  // inline_build: build and sink now even in async mode (begin_frame's
+  // frame-end batch, so it never waits for a harvest).
   void emit_or_enqueue_repair(const SwEnvSink& sink, bool inline_build = false);
   void drain_done(const SwEnvSink& sink);
   // Spins (relaxed + one acquire load) until no jobs are outstanding.
@@ -223,7 +263,13 @@ class SwEncoder {
   uint32_t repair_key_ = 0;
   double credit_ = 0.0;
   bool tail_repair_pending_ = false;
-  size_t held_syms_ = 0;  // repairs_with_frame: seals since repairs were last spent
+  // begin_frame state: while frame_active_, seal_current holds a seal's
+  // credit (instead of spending it) once frame_seals_ exceeds frame_front_
+  // (n_syms minus the hold); flush() closes the frame and spends what's
+  // held.
+  bool frame_active_ = false;
+  size_t frame_front_ = 0;
+  size_t frame_seals_ = 0;
   uint64_t sources_out_ = 0, repairs_out_ = 0;
   size_t oversize_drops_ = 0;
 
@@ -237,6 +283,7 @@ class SwEncoder {
   uint64_t gauge_join_wait_max_us_ = 0;  // window max
   uint64_t gauge_enq_depth_max_ = 0;     // window max
   uint64_t gauge_backlog_drops_ = 0;
+  uint64_t gauge_frame_end_repairs_ = 0, gauge_frame_end_us_ = 0;
 };
 
 }  // namespace mabur
