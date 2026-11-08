@@ -242,7 +242,7 @@ tab group.
 page: finish the deploy on both devices (and republish the web page) before
 judging the link, per `docs/deploy.md`. On the GS, the `maburplay` binary
 goes in before its config -- an older binary exits on the new
-`[display]` keys (`phase_lock`, `phase_margin_ms`).
+`[display]` keys (`phase_lock`, `phase_margin_ms`, `refresh_sync`).
 A `maburd` from before the ±500 mfps range clamps `snr_off` at ±200 mfps,
 so a panel that needs more (phone-class refresh rates) cannot lock until
 the drone is redeployed.
