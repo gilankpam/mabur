@@ -134,6 +134,13 @@ vblank away from the frames until the measurement lands. The drone sits
 on its trim meanwhile, so the period measured is the one NUDGE goes on
 to follow.
 
+So NUDGE's time to lock is that wait plus the pull-in below: some 20 s
+plus 10–60 s at 1080p60. Neither actuator holds the phase meanwhile (the
+sensor steer was dropped when the display took over), so the picture
+runs unlocked, a few ms later, until NUDGE is in step. It starts over
+with each presenter (a display rebuild or hotplug builds a fresh lock)
+and with a change of the camera's rate.
+
 Its reach is one line a frame: the vblank moves a line a frame against a
 drift of |Pc − Pm| a frame, so it pulls in at (line − drift) a frame and
 holds only while the drift is under a line. NUDGE waits once the drift on
