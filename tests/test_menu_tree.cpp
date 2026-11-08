@@ -947,6 +947,7 @@ TEST(the_string_values_pass_maburplays_setter) {
   h.osd_layers = [](const maburplay::Config&, std::string*) { return true; };
   h.next_start = [](const maburplay::Config&) {};
   h.menu = [](const maburplay::Config&) {};
+  h.refresh_sync = [](const maburplay::Config&) {};
   maburplay::PlayerConfigApplier a(d.file, f.cfg, maburplay::BuildCaps{true, false}, h, nullptr);
   auto set = [&](const SetStep& s) {
     std::string why;

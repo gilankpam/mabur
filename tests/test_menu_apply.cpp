@@ -461,6 +461,7 @@ struct PFake {
     h.osd_layers = [](const maburplay::Config&, std::string*) { return true; };
     h.next_start = [](const maburplay::Config&) {};
     h.menu = [](const maburplay::Config&) {};
+    h.refresh_sync = [](const maburplay::Config&) {};
     return h;
   }
 };

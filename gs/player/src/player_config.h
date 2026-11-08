@@ -146,6 +146,11 @@ struct DisplayCfg {
   // refused request (no CAP_SYS_NICE) is logged and the thread runs at
   // normal priority.
   int rt_priority = 10;
+  // Which actuator steers the camera/display phase: "off" leaves the drone's
+  // sensor rate as the actuator (phase_lock above); "nudge" and "follow"
+  // move the display's own refresh instead (display_lock_core.h). "off" in
+  // code; the bundle ships "nudge".
+  std::string refresh_sync = "off";
 };
 
 // GS-side reverse of the drone's ColorTrans sensor tuning (docs/colortrans.md).

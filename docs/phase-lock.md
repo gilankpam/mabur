@@ -134,6 +134,14 @@ runs it at ordinary priority. A refused request (the process lacks
 `phase_lock` needs `vsync_lock = true`, `sched_cap_ms > 0` and
 `regulate_ms > 0`, or the player refuses to start.
 
+`refresh_sync` (code `"off"`, bundle `"nudge"`) picks which actuator holds
+the phase: `"nudge"` moves the display's refresh one line a frame, one way
+only, for a panel that blanks on a larger change; `"follow"` bends every
+frame's length to the camera's, for a panel that takes any frame length;
+`"off"` steers the drone's sensor rate instead. On a GS that is not an
+RK356x (no VOP2 frame-length register) the set still applies and writes
+the value, but the player keeps steering the sensor and logs it.
+
 `screen_mode` takes three forms (`gs/player/src/mode_pick.h`); the
 bundle ships `"auto"`:
 
