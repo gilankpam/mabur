@@ -102,9 +102,10 @@ class DisplayLock {
   double grid_lines() const { return core_.grid_lines(); }
   double trim_lines() const { return core_.trim_lines(); }
   double camera_period_us() const { return core_.camera_period_us(); }
-  // NUDGE waiting because the camera drifts past its reach
-  // (DisplayLockCore::kWhyBeyondReach).
-  bool beyond_reach() const { return core_.beyond_reach(); }
+  // Why the display cannot hold the phase at this camera rate, or nullptr
+  // (DisplayLockCore::cannot_hold): the player hands over to the sensor
+  // steer for any of them.
+  const char* cannot_hold() const { return core_.cannot_hold(); }
 
  private:
   void run_();

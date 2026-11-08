@@ -701,4 +701,41 @@ TEST(core_seed_refused_off_nominal_or_on_the_camera) {
   CHECK(off.core.camera_period_in_use() == 0);
 }
 
+// The reasons the display cannot hold the phase at this camera rate --
+// the ones the player hands over to the sensor steer for -- are named by
+// cannot_hold(); waiting to measure, a rate-mismatch pause and Off are not.
+TEST(core_cannot_hold_names_the_rate_reasons_only) {
+  {  // NUDGE: the refresh is another rate than the camera's
+    Sim s(kPm * 1.02, RefreshSync::Nudge, 59);
+    s.run_for(1 * kSec);
+    REQUIRE(s.core.cannot_hold() != nullptr);
+    CHECK(std::strcmp(s.core.cannot_hold(), kWhyNotRate) == 0);
+  }
+  {  // FOLLOW: the camera faster than the mode by more than it can shorten
+    Sim s(kPm * 0.993, RefreshSync::Follow, 60);
+    REQUIRE(s.run_until(30 * kSec, [&] { return s.core.cannot_hold() != nullptr; }));
+    CHECK(std::strcmp(s.core.cannot_hold(), kWhyFaster) == 0);
+  }
+  {  // NUDGE: past its one-line-a-frame reach
+    const ModeTiming m100{kVtotal, 5, 10000.0 / kVtotal, 10000.0};
+    Sim s(1e6 / (100.0 - 0.111), RefreshSync::Nudge, 100, 10000.0 / 3, m100);
+    REQUIRE(s.run_until(30 * kSec, [&] { return s.core.cannot_hold() != nullptr; }));
+    CHECK(std::strcmp(s.core.cannot_hold(), kWhyReach) == 0);
+  }
+  {  // measuring, paused, off: not a reason to hand over
+    Sim s(16670.0, RefreshSync::Nudge, 60);
+    s.run_for(5 * kSec);
+    REQUIRE(s.core.why() != nullptr);
+    CHECK(std::strcmp(s.core.why(), kWhyMeasuring) == 0);
+    CHECK(s.core.cannot_hold() == nullptr);
+    s.core.set_paused(true);
+    s.tick();
+    CHECK(s.core.cannot_hold() == nullptr);
+    s.core.set_paused(false);
+    s.core.set_mode(RefreshSync::Off);
+    s.tick();
+    CHECK(s.core.cannot_hold() == nullptr);
+  }
+}
+
 MTEST_MAIN

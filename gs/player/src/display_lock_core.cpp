@@ -246,12 +246,12 @@ const char* DisplayLockCore::unusable(double Pm, double Pc, double line) const {
   if (mode_ == RefreshSync::Off) return "off";
   if (paused_) return "rate mismatch";
   if (mode_ == RefreshSync::Nudge && std::fabs(Pc - Pm) > kNudgeRateTol * Pc)
-    return "the refresh is not the camera's frame rate";
+    return kWhyNotRate;
   if (mode_ == RefreshSync::Nudge && cam_use_ <= 0) return kWhyMeasuring;
   if (mode_ == RefreshSync::Nudge && std::fabs(Pc - Pm) > kNudgeReachLines * line)
     return kWhyBeyondReach;
   if (mode_ == RefreshSync::Follow && Pc < Pm * (1 - kFreeShorter))
-    return "the camera is faster than the display's mode";
+    return kWhyFaster;
   return nullptr;
 }
 
@@ -460,6 +460,12 @@ const char* DisplayLockCore::why() const {
 bool DisplayLockCore::beyond_reach() const {
   std::lock_guard<PiMutex> lk(mu_);
   return state_ == State::Waiting && why_ == kWhyBeyondReach;
+}
+
+const char* DisplayLockCore::cannot_hold() const {
+  std::lock_guard<PiMutex> lk(mu_);
+  if (state_ != State::Waiting) return nullptr;
+  return why_ == kWhyNotRate || why_ == kWhyBeyondReach || why_ == kWhyFaster ? why_ : nullptr;
 }
 
 }  // namespace maburplay

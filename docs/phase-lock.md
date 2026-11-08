@@ -133,7 +133,7 @@ the vblank round at the drift's own rate, so a target x ahead is stepped
 to while x < P·(1 − drift/line) and waited for past that. Either way the
 pull-in takes at most one frame per line of the mode (1125 frames,
 18.75 s, at 1080p60), whatever the drift. It needs the refresh within 1 % of the camera's frame rate
-(otherwise wait: "the refresh is not the camera's frame rate"), and it
+(otherwise it cannot hold: "the refresh is not the camera's frame rate"), and it
 waits for the camera's measured period before its first step ("measuring
 the camera's frame rate", ~20 s: two 10 s readings) with the register at
 the mode's own: the one direction is the sign of Pc − Pm, a few ppm
@@ -179,16 +179,16 @@ accepts a flip delta within 2 % of its period) and is never below the
 smaller of 0 and floor(B) (a pull-in goes the long way round instead).
 Once locked, frames that keep coming out longer or shorter than the grid
 are learnt into it: trim += 0.002 × clamp(want − B, ±2), |trim| ≤ 3. It
-needs a camera no faster than the mode by more than 0.5 % (otherwise
-wait: "the camera is faster than the display's mode").
+needs a camera no faster than the mode by more than 0.5 % (otherwise it
+cannot hold: "the camera is faster than the display's mode").
 
 **States.** wait (off, a rate mismatch, unusable as above, 2 s without
 margins, a pts discontinuity, a camera rate change, a mode set), acq (the
 first margins after wait), lock (|e| < 1 ms for 3 consecutive 1 s
 judgements; capture placement on), lock → acq after 2 judgements with
-|e| > 3 ms. There is no oor state: FOLLOW reaches any camera from 0.5 %
-faster than the mode up, and NUDGE past its reach hands over to the
-sensor steer. Off, a rate mismatch and the unusable cases put the
+|e| > 3 ms. There is no oor state: a display that cannot hold the phase
+at this camera rate (NUDGE past its reach or on another rate, FOLLOW with
+the camera too fast) hands over to the sensor steer. Off, a rate mismatch and the unusable cases put the
 register back at the mode's own value; waiting for margins, FOLLOW holds
 its grid and NUDGE the mode's total.
 
@@ -216,22 +216,28 @@ sensor` -- `not an RK356x`, `/dev/mem: …`, the display controller's total
 not the mode's, `no display`, `no vblank from the display` (a lock
 that has not seen its first vblank within 2 s; until then whichever
 actuator ran keeps running, so a start or a rebuild does not swap back
-and forth), or `the camera drifts more than a line a frame`. The last
+and forth), or a reason the display cannot hold the phase at this camera
+rate: `the camera drifts more than a line a frame`, `the refresh is not
+the camera's frame rate`, `the camera is faster than the display's
+mode`. The last
 said is forgotten when the display engages or `refresh_sync` goes off, so
 a later fallback for the same reason is said again. When the display
 engages with the sensor steer running, the player sends one `phase 0`
 and drops it: `maburplay: refresh sync nudge -- the drone's sensor runs
 on its trim`.
 
-NUDGE waiting past its reach hands over to the sensor steer and latches
-there for the presenter's life: the lock is set off, which brings the
-register back to the mode's own value. Without the latch the pair would
-swap back and forth -- the sensor steer pulls the camera onto the
-display's rate, NUDGE sees it within reach, engages and drops the steer,
-the drone returns to its trim, and NUDGE is past its reach again. A live
-set of `display.refresh_sync` and a new presenter (a display rebuild, a
-hotplug, a follow) clear the latch; NUDGE then hands over again if the
-camera, back on its trim, still drifts past its reach.
+A display that cannot hold the phase at this camera rate -- NUDGE past
+its reach, NUDGE on a refresh that is another rate than the camera's,
+FOLLOW with the camera faster than the mode by more than 0.5 % -- hands
+over to the sensor steer and latches there for the presenter's life: the
+lock is set off, which brings the register back to the mode's own value.
+Without the latch the pair would swap back and forth -- the sensor steer
+pulls the camera onto the display's rate, the display sees it within
+reach, engages and drops the steer, the drone returns to its trim, and
+the display cannot hold it again. A live set of `display.refresh_sync`
+(a changed value) and a new presenter (a display rebuild, a hotplug, a
+follow) clear the latch; the display then hands over again if the
+camera, back on its trim, is still out of its hold.
 
 A live set of `display.refresh_sync` (8403) goes to the running lock:
 nudge ↔ follow restarts its window and trim, off releases the register
@@ -246,8 +252,8 @@ is selected but cannot act on this GS: `display.phase_lock` is off (no lock is b
 the display's register is not mapped (not an RK356x -- the Orange Pi has
 none -- or `/dev/mem` refused), or the lock refused the controller's
 total within its first second of vblanks. The value still saves either way. No warning
-while the lock waits for its first vblank, and none for NUDGE handing
-over past its reach (that is logged).
+while the lock waits for its first vblank, and none for a display
+handing over because it cannot hold the camera's rate (that is logged).
 
 **What the drone sees.** Nothing new: under the display actuator the
 player sends no `phase` lines, maburgs' RCF `snr_off` is 0 (after the
