@@ -95,4 +95,24 @@ TEST(step_direction) {
   CHECK(s.lines == 0 && !s.moving && s.arrived);
 }
 
+// Where waiting for the drift beats stepping against it: a target x ahead
+// the way lines move takes x / (line - d) frames stepping, (P - x) / d
+// waiting for the drift (d lines a frame) to bring it round. So step only
+// while x < P * (1 - d); the default drift, a quarter line, is the fixed
+// three-quarters-of-a-refresh boundary.
+TEST(drift_sets_where_waiting_beats_stepping) {
+  const double P = 16666.667, line = P / 1125;
+  // Drift 0.59 line: 0.45 P ahead steps 1235 frames, waits 1144: wait.
+  CHECK(maburplay::line_step(0.45 * P, P, line, false, false, 0.59).lines == 0);
+  CHECK(maburplay::line_step(0.45 * P, P, line, false, false).lines == 1);  // the fixed boundary steps
+  // ... 0.3 P ahead steps 1779 frames against 2014 waiting: step.
+  CHECK(maburplay::line_step(0.3 * P, P, line, false, false, 0.59).lines == 1);
+  // Drift 0.1 line: 0.2 P behind waits 2 P of frames, steps round in 0.89 P: step.
+  CHECK(maburplay::line_step(-0.2 * P, P, line, false, false, 0.1).lines == 1);
+  CHECK(maburplay::line_step(-0.2 * P, P, line, false, false).lines == 0);  // the fixed boundary waits
+  // Shorter: the same, mirrored.
+  CHECK(maburplay::line_step(-0.45 * P, P, line, true, false, 0.59).lines == 0);
+  CHECK(maburplay::line_step(-0.3 * P, P, line, true, false, 0.59).lines == -1);
+}
+
 MTEST_MAIN

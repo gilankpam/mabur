@@ -126,9 +126,13 @@ restarts the measurement and the lock.
 frames when the display is the slower (its period over the camera's),
 longer otherwise; the drift between the two brings the vblank back the
 other way, so the step never moves against it. It starts moving once the
-vblank is more than 3 lines away (counted the way lines move it; more
-than a quarter refresh the wrong way goes round) and stops within half a
-line. It needs the refresh within 1 % of the camera's frame rate
+vblank is more than 3 lines away (counted the way lines move it) and
+stops within half a line. Which way round it goes is whichever is the
+quicker: stepping gains (line − drift) a frame, the drift alone carries
+the vblank round at the drift's own rate, so a target x ahead is stepped
+to while x < P·(1 − drift/line) and waited for past that. Either way the
+pull-in takes at most one frame per line of the mode (1125 frames,
+18.75 s, at 1080p60), whatever the drift. It needs the refresh within 1 % of the camera's frame rate
 (otherwise wait: "the refresh is not the camera's frame rate"), and it
 waits for the camera's measured period before its first step ("measuring
 the camera's frame rate", ~20 s: two 10 s readings) with the register at
@@ -138,8 +142,9 @@ vblank away from the frames until the measurement lands. The drone sits
 on its trim meanwhile, so the period measured is the one NUDGE goes on
 to follow.
 
-So NUDGE's time to lock is that wait plus the pull-in below: some 20 s
-plus 10–60 s at 1080p60. Neither actuator holds the phase meanwhile (the
+So NUDGE's time to lock is that wait plus the pull-in: some 20 s plus up
+to 18.75 s at 1080p60, and ~5 s more to fill the window and judge it in
+step. Neither actuator holds the phase meanwhile (the
 sensor steer was dropped when the display took over), so the picture
 runs unlocked, a few ms later, until NUDGE is in step. It starts over
 with each presenter (a display rebuild or hotplug builds a fresh lock)
@@ -153,8 +158,9 @@ line a frame"). Under the display actuator the drone runs on its sensor
 trim, which sits ~0.040·k Hz under the nominal rate (`docs/airtime-model.md`
 §3; k = (fps/60)² above 60): 11.1 µs a frame at both rates, 0.75 of a line at
 1080p60 (14.8 µs a line) and 1.25 lines at 1125-line 100 Hz (8.9 µs a
-line). At 60 Hz NUDGE holds, but pulls in at a quarter line a frame: up
-to three quarters of a refresh the long way round, ~56 s. At 100 Hz it
+line). At 60 Hz NUDGE holds: stepping gains only a quarter line a frame
+there, so it steps only to a target within a quarter of a refresh and
+lets the drift bring the rest round. At 100 Hz it
 cannot hold, and the actuator choice hands over to the sensor steer
 (below).
 

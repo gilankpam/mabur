@@ -377,7 +377,8 @@ DisplayLockCore::Step DisplayLockCore::step(uint32_t seq, uint64_t vb_us, uint64
       trim_ = std::clamp(trim_ + kTrimGain * std::clamp(want - B, -kTrimStepMax, kTrimStepMax),
                          -kTrimMax, kTrimMax);
   } else {
-    const LineStep s = line_step(err_us_, Pt, line, shorter, moving_);
+    // The drift, Bref lines a frame, always runs against the one direction.
+    const LineStep s = line_step(err_us_, Pt, line, shorter, moving_, std::fabs(Bref));
     moving_ = s.moving;
     want = s.lines;
   }

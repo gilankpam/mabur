@@ -586,12 +586,15 @@ TEST(core_nudge_beyond_reach_waits) {
 }
 
 // The same trim at 60 Hz is 0.04 Hz under: 11.1 us = 0.75 line a frame,
-// inside the reach. NUDGE pulls in at a quarter line a frame (the long way
-// round is at most three quarters of a refresh, ~56 s) and holds.
+// inside the reach. Stepping gains a quarter line a frame, the drift alone
+// three quarters, so NUDGE steps only for a target within a quarter of a
+// refresh and otherwise waits: in step within 1125 frames (18.75 s) of the
+// measurement, plus the window and three judgements -- 45 s from the start
+// with the ~20 s measurement. Then it holds.
 TEST(core_nudge_three_quarter_line_drift_holds) {
   Sim s(kPm + 0.75 * kLine, RefreshSync::Nudge, 60);
   bool ever_reach = false;
-  REQUIRE(s.run_until(90 * kSec, [&] {
+  REQUIRE(s.run_until(50 * kSec, [&] {
     ever_reach = ever_reach || s.core.beyond_reach();
     return s.core.locked();
   }));
@@ -624,6 +627,24 @@ TEST(core_seq_gap_integrates_each_frame) {
   const uint64_t t1 = t0 + static_cast<uint64_t>(std::llround(2 * (kVtotal + 4) * kLine));
   core.step(3, t1, t1 + 300, m);
   CHECK(std::fabs(core.error_ms() + 8 * kLine / 1000.0) < 0.01 * kLine / 1000.0);
+}
+
+// NUDGE steps against the drift only while that is the quicker way round,
+// and otherwise waits for the drift: from any phase, the vblank is in step
+// within one frame per line of the mode (1125 frames, 18.75 s), plus the
+// 2 s window and three 1 s judgements. Swept over eight starting phases at
+// this bench's drift, 0.59 line a frame (a fixed three-quarters boundary
+// takes up to 0.75 P / 0.41 line = 2058 frames, 34 s, from the worst one).
+TEST(core_nudge_pull_in_takes_the_quicker_way_round) {
+  double worst = 0;
+  for (int k = 0; k < 8; ++k) {
+    Sim s(kPm + 0.59 * kLine, RefreshSync::Nudge, 60, k * kPm / 8);
+    REQUIRE(s.measure());
+    const double t0 = s.t();
+    REQUIRE(s.run_until(60 * kSec, [&] { return s.core.locked(); }));
+    worst = std::max(worst, s.t() - t0);
+  }
+  CHECK(worst < 25 * kSec);
 }
 
 MTEST_MAIN
