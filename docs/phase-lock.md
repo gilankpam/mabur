@@ -174,6 +174,12 @@ to the mode's own value and the next iteration brings the sensor steer
 back, nudge/follow from off engages the display and drops it. The host
 build has no lock and always steers the sensor.
 
+The goggles settings menu's `video.refresh_sync` row (advanced,
+`docs/gs-menu.md`) sends the same set; it warns `n/a` when
+`refresh_sync_available` reads false (the display's register is not
+mapped -- the Orange Pi has none), though the value still saves and
+applies on the next build that maps one.
+
 **What the drone sees.** Nothing new: under the display actuator the
 player sends no `phase` lines, maburgs' RCF `snr_off` is 0 (after the
 one `phase 0`, or its 3 s timeout), and the drone runs on its trim.

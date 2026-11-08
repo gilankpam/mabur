@@ -89,6 +89,7 @@ struct Fx {
   std::vector<ModeCand> modes;
   double cam = 0;
   std::string running;
+  std::function<bool()> refresh_sync_available;
 
   // Fills snap.vtx (creating it linked, list "complete") with one row,
   // updating it in place when `id` is already there.
@@ -122,6 +123,7 @@ struct Fx {
     d.modes = [this] { return modes; };
     d.camera_hz = [this] { return cam; };
     d.running_mode = [this] { return running; };
+    d.refresh_sync_available = refresh_sync_available;
     return d;
   }
   std::vector<MenuNode> tree() { return build_menu_tree(deps()); }
@@ -575,6 +577,24 @@ TEST(display_and_colour_confirm_the_split_only_during_a_burned_recording) {
   CHECK(confirm(f.node("osd.fc"), "false").empty());
 }
 
+TEST(refresh_sync_row_offers_off_nudge_follow_and_warns_when_unavailable) {
+  Fx f;
+  f.cfg.display.refresh_sync = "nudge";
+  f.refresh_sync_available = [] { return false; };
+  MenuNode n = f.node("video.refresh_sync");
+  CHECK(n.advanced);
+  CHECK((values(n.choices()) == std::vector<std::string>{"off", "nudge", "follow"}));
+  CHECK((labels(n.choices()) == std::vector<std::string>{"Off", "Nudge", "Follow"}));
+  CHECK(n.current() == "nudge");
+  CHECK(n.warn() == "n/a");
+
+  f.refresh_sync_available = [] { return true; };
+  CHECK(f.node("video.refresh_sync").warn().empty());
+
+  f.refresh_sync_available = nullptr;
+  CHECK(f.node("video.refresh_sync").warn().empty());
+}
+
 TEST(display_choices_are_auto_plus_sizes_at_the_camera_rate) {
   Fx f;
   f.modes = kAvatar;
@@ -859,8 +879,8 @@ TEST(video_group_order_has_the_drone_rows_in_place) {
   std::vector<std::string> ids;
   for (const MenuNode& n : t[0].children()) ids.push_back(n.id);
   CHECK((ids == std::vector<std::string>{"video.camera", "video.fix", "video.display",
-                                         "video.colour", "video.mirror", "video.flip",
-                                         "video.slices"}));
+                                         "video.colour", "video.refresh_sync", "video.mirror",
+                                         "video.flip", "video.slices"}));
 }
 
 TEST(fec_enh_max_follows_base) {

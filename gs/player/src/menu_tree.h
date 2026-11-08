@@ -30,6 +30,9 @@ struct MenuTreeDeps {
   // follow_camera_hz: the drone's reported mode else the measured rate, 0 = unknown
   std::function<double()> camera_hz;
   std::function<std::string()> running_mode;      // "WxH@R" the presenter runs, "" = none
+  // null = unknown yet (no warning); otherwise whether this GS can map the
+  // display's frame-length register (an RK356x presenter with a lock built).
+  std::function<bool()> refresh_sync_available;
 };
 
 std::vector<MenuNode> build_menu_tree(const MenuTreeDeps& d);

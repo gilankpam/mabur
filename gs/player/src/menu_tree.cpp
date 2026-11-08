@@ -455,6 +455,26 @@ MenuNode colour_row(const Deps& d) {
   return n;
 }
 
+MenuNode refresh_sync_row(const Deps& d) {
+  MenuNode n = choice_row("video.refresh_sync", "Refresh sync", Owner::kPlayer, "display.refresh_sync", quoted);
+  n.advanced = true;
+  n.choices = [] {
+    return std::vector<Choice>{
+        {"off", "Off", "", true}, {"nudge", "Nudge", "", true}, {"follow", "Follow", "", true}};
+  };
+  n.current = [d] { return d->cfg->display.refresh_sync; };
+  // This GS has no mapped frame-length control (e.g. the Orange Pi): the set
+  // still saves, but there is nothing here to hold the display's refresh.
+  n.warn = [d] {
+    return d->refresh_sync_available && !d->refresh_sync_available() ? std::string("n/a") : std::string();
+  };
+  n.help = text(
+      "Holds the display's refresh in step with the camera from the GS alone. Nudge moves a "
+      "line a frame — most displays take it. Follow bends each frame to the camera's — some "
+      "displays blank; turn it back off if yours does.");
+  return n;
+}
+
 // --- Link --------------------------------------------------------------
 
 // The rung Fixed pins: the live rung off the sideport (the first ladder
@@ -1168,9 +1188,9 @@ std::vector<MenuNode> build_menu_tree(const MenuTreeDeps& deps) {
   return guarded(d, {
       group("video", "Video", "Camera, display and picture.",
             [d] {
-              return std::vector<MenuNode>{camera_row(d), fix_row(d),    display_row(d),
-                                           colour_row(d), mirror_row(d), flip_row(d),
-                                           slices_row(d)};
+              return std::vector<MenuNode>{camera_row(d),       fix_row(d),   display_row(d),
+                                           colour_row(d),        refresh_sync_row(d),
+                                           mirror_row(d),        flip_row(d), slices_row(d)};
             }),
       group("link", "Link", "How the video crosses the air.",
             [d] {

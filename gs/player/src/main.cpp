@@ -2355,6 +2355,7 @@ int main(int argc, char** argv) {
     if (!presenter || presenter->mode_index() < 0) return std::string();
     return maburplay::mode_string(presenter->modes()[static_cast<size_t>(presenter->mode_index())]);
   };
+  menu_deps.refresh_sync_available = [&] { return display_lock && display_lock->available(); };
 #endif
   // The tree is rebuilt on every model call, so its snapshot pointer follows
   // gs_src as it is now.
