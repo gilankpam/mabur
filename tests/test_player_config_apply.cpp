@@ -415,6 +415,37 @@ TEST(rec_plan_latches_the_burned_settings) {
   CHECK(!(rec_plan(d) == p));
 }
 
+// A string key typed bare on the wire (`set display.refresh_sync = follow`)
+// is the quoted string: the file gets `"follow"`, the hook the value.
+TEST(a_bare_string_value_is_taken_as_the_quoted_string) {
+  ScratchPlayerBundle sb;
+  PFake f;
+  PlayerConfigApplier a(sb.path(), bundle(), BuildCaps{true, false}, f.hooks(), nullptr);
+  std::string why;
+  REQUIRE(a.submit("display.refresh_sync", "follow", &why));
+  PlayerApplyResult r = drive(a);
+  CHECK(r.ok);
+  REQUIRE(f.refresh_sync_calls.size() == 1);
+  CHECK(f.refresh_sync_calls[0].display.refresh_sync == "follow");
+  CHECK(slurp(sb.path()).find("refresh_sync = \"follow\"") != std::string::npos);
+}
+
+// ... and a bare value equal to the live one is a same-value set: ok,
+// nothing applied or written.
+TEST(a_bare_string_equal_to_the_live_value_writes_nothing) {
+  ScratchPlayerBundle sb;
+  PFake f;
+  const std::string before = slurp(sb.path());
+  PlayerConfigApplier a(sb.path(), bundle(), BuildCaps{true, false}, f.hooks(), nullptr);
+  REQUIRE(a.live().display.refresh_sync == "nudge");  // the bundle's
+  std::string why;
+  REQUIRE(a.submit("display.refresh_sync", "nudge", &why));
+  PlayerApplyResult r = drive(a);
+  CHECK(r.ok);
+  CHECK(f.refresh_sync_calls.empty());
+  CHECK(slurp(sb.path()) == before);
+}
+
 TEST(player_applier_same_value_spelled_differently_writes_nothing) {
   ScratchPlayerBundle sb;
   PFake f;

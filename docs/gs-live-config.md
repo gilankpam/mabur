@@ -46,6 +46,12 @@ get [<key>]
   keeps a second `set` from queueing, and `LiveConfigControl` keeps only
   one pending sender address.
 
+**String values.** `<value>` is TOML text, so a string key's value is
+quoted (`set display.refresh_sync = "nudge"`). On `maburplay`, whose live
+strings are all bare words in their own grammars, a value sent without
+quotes is taken as that word quoted (`set display.refresh_sync = nudge`);
+`maburgs` has no string keys.
+
 **Same-value sets.** A `set` whose value text already equals the live
 value's own rendering answers `ok` and writes nothing — caught either at
 submit (the raw text matches) or, for a value spelled differently

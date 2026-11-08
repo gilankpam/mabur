@@ -104,6 +104,13 @@ mabur::LiveApplySpec<Config, PlayerLiveKey> player_spec(BuildCaps caps, PlayerAp
   s.thread_name = "mbr-plcfgset";
   s.table = &kPlayerLiveKeys;
   s.render = render_player_live_value;
+  // Every live string is a bare word in its own grammar (a mode name, a
+  // path, a size), so a value sent without quotes is that word quoted; one
+  // that already starts with a quote is taken as written.
+  s.spell = [](const PlayerLiveKey& k, const std::string& v) {
+    if (k.type != PlayerLiveType::Str || v[0] == '"' || v[0] == '\'') return v;
+    return quoted(v);
+  };
   s.patch = patch_live_key;
   s.load = [](const std::string& path) { return load_config(path); };
   s.refuse_config = [caps](const Config& c) { return unsupported_on_build(c, caps); };
