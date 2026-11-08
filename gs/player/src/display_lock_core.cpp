@@ -81,6 +81,12 @@ void DisplayLockCore::set_camera_fps(int fps) {
   cam_reading_ = cam_cand_ = cam_use_ = 0;
   cam_timer_ = false;  // the next reading a whole window of the new rate on
   trim_ = 0;
+  // The samples were taken modulo the old camera frame and the judgements
+  // made on them: acquire afresh. G and the register are physical and stay.
+  moving_ = false;
+  clear_window();
+  enter(State::Waiting);
+  why_ = mode_ == RefreshSync::Off ? "off" : "waiting for frames";
 }
 
 void DisplayLockCore::on_margin(double margin_us, uint64_t t_us) {

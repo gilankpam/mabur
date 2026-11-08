@@ -234,7 +234,7 @@ TEST(core_follow_camera_too_fast_waits) {
     if (!said && why && std::strcmp(why, kWhyFaster) == 0) {
       said = true;
       // The step the measurement landed on lets go of the register.
-      released = st.lines == 0 && (st.release || s.d == 0);
+      released = st.lines == 0 && st.release;
     }
   }
   CHECK(!ever_locked);
@@ -327,10 +327,12 @@ TEST(core_paused_releases) {
   CHECK(std::strcmp(s.core.why(), "rate mismatch") == 0);
 }
 
-// Capture stamps are µs mod 2^32: the period is measured across the wrap.
+// Capture stamps are µs mod 2^32: the period is measured across the wrap,
+// here 5 s into the 10 s window (a wrap early on would be outlived by a
+// window refilled after it).
 TEST(core_camera_period_survives_pts_wrap) {
   Sim s(16670.0, RefreshSync::Nudge, 60);
-  s.pts0 = 0xFFFF0000u;
+  s.pts0 = 0xFFFFFFFFu - 5000000u;
   s.run_for(10.2 * kSec);
   CHECK(std::fabs(s.core.camera_period_us() - 16670.0) < 1.0);
 }
@@ -342,9 +344,78 @@ TEST(core_camera_fps_change_clears_period) {
   REQUIRE(s.core.camera_period_us() > 0);
   s.core.set_camera_fps(100);
   CHECK(s.core.camera_period_us() == 0);
-  // The stamps went with it: 9 s of new ones are still too few to measure.
-  s.run_for(9 * kSec);
+}
+
+// A rate change carries nothing of the old camera into the new lock: the
+// samples, the state, FOLLOW's learnt trim. (60 -> 59 -> 60: two changes,
+// back to a nominal this mode can hold.)
+TEST(core_camera_fps_change_restarts_lock) {
+  Sim s(kPm * 1.003, RefreshSync::Follow, 60);
+  REQUIRE(s.run_until(15 * kSec, [&] { return s.core.locked(); }));
+  s.run_for(15 * kSec - s.t());  // trim learnt, the period not yet adopted
+  REQUIRE(s.core.grid_lines() > 1.0);
+  s.core.set_camera_fps(59);
+  CHECK(s.core.state() == DisplayLockCore::State::Waiting);
+  CHECK(s.core.error_ms() == 0);
+  s.core.set_camera_fps(60);
+  s.feed = false;
+  s.tick();
+  CHECK(std::fabs(s.core.grid_lines() - ((1e6 / 60) / kLine - kVtotal)) < 1e-6);
+  CHECK(s.core.state() == DisplayLockCore::State::Waiting);
+  CHECK(s.core.error_ms() == 0);
+}
+
+// ... nor the period in use or its stamps: NUDGE's direction goes back to
+// the nominal's, and with no new frames no reading comes from the old ones.
+TEST(core_camera_fps_change_forgets_period_and_stamps) {
+  Sim s(16658.1, RefreshSync::Nudge, 60);
+  REQUIRE(s.run_until(30 * kSec, [&] { return s.core.nudge_shorter(); }));
+  s.core.set_camera_fps(59);
+  s.core.set_camera_fps(60);
+  s.feed = false;
+  s.tick();
+  CHECK(!s.core.nudge_shorter());
   CHECK(s.core.camera_period_us() == 0);
+  s.run_for(10.5 * kSec);  // past the restarted reading's 10 s
+  CHECK(s.core.camera_period_us() == 0);
+}
+
+// The register at +1, a step writes 0 (an override, not the mode's own),
+// then the core cannot hold: it asks for the release.
+TEST(core_unusable_releases_an_override_of_zero) {
+  Sim s(16670.0, RefreshSync::Nudge, 60);
+  REQUIRE(s.run_until(20 * kSec, [&] { return s.core.locked(); }));
+  int prev = s.core.lines();
+  REQUIRE(s.run_until(5 * kSec, [&] {
+    const bool hit = prev == 1 && s.last.lines == 0 && !s.last.release;
+    prev = s.core.lines();
+    return hit;
+  }));
+  REQUIRE(s.core.lines() == 0);
+  s.core.set_paused(true);
+  const DisplayLockCore::Step st = s.tick();
+  CHECK(st.lines == 0);
+  CHECK(st.release);
+}
+
+// Usable, the register holding an override of 0 and the step wanting 0:
+// release, and once released, no more asks.
+TEST(core_usable_zero_releases_once) {
+  Sim s(16670.0, RefreshSync::Nudge, 60);
+  REQUIRE(s.run_until(20 * kSec, [&] { return s.core.locked(); }));
+  int prev = s.core.lines();
+  REQUIRE(s.run_until(5 * kSec, [&] {
+    const bool hit = prev == 1 && s.last.lines == 0 && !s.last.release;
+    prev = s.core.lines();
+    return hit;
+  }));
+  // line_step just arrived: it holds 0 until the vblank drifts 3 lines off.
+  DisplayLockCore::Step st = s.tick();
+  CHECK(st.lines == 0);
+  CHECK(st.release);
+  st = s.tick();
+  CHECK(st.lines == 0);
+  CHECK(!st.release);
 }
 
 // A mode change starts over: Waiting, and FOLLOW's grid without the trim
