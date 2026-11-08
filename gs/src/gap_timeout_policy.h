@@ -21,9 +21,9 @@ namespace maburgs {
 // post-fade repair burst can still heal the gap. cap == 0 disables the
 // stretch entirely (fixed floor, the pre-policy behavior).
 //
-// w is self-calibrating: callers pass the decoder's observed repair
-// window_len high-water mark (the GS config does not know the drone's
-// fec.window, and this stays correct if per-rung TX windows ever exist).
+// w is self-calibrating: callers pass the largest repair window_len the
+// decoder saw in the last seconds (the GS config does not know the drone's
+// fec.window, and a declared frame picks its own span).
 // Until a repair has been seen (w == 0) a conservative default applies.
 class GapTimeoutPolicy {
  public:
@@ -55,6 +55,18 @@ class GapTimeoutPolicy {
     s.last_ms = now_ms;
   }
 
+  // Microseconds one symbol takes at the estimated send rate; 0 while the
+  // rate is unknown or near silence, or with the stretch disabled, where
+  // timeout_ms() already decides alone.
+  uint32_t us_per_symbol(int sid) const {
+    if (cap_ms_ <= 0 || sid < 0 || sid > 1) return 0;
+    const S& s = s_[sid];
+    if (!s.have_rate || s.rate < kMinRate) return 0;
+    return static_cast<uint32_t>(1e6 / s.rate);
+  }
+  uint64_t cap_ms() const { return cap_ms_ > 0 ? static_cast<uint64_t>(cap_ms_) : 0; }
+  static constexpr uint32_t margin_ms() { return static_cast<uint32_t>(kMarginMs); }
+
   int timeout_ms(int sid) const {
     if (cap_ms_ <= 0 || sid < 0 || sid > 1) return floor_ms_;
     const S& s = s_[sid];
@@ -72,7 +84,7 @@ class GapTimeoutPolicy {
   static constexpr int kDefaultWindow = 32;  // pre-calibration starting
                                               // estimate, before a repair
                                               // sets window from the
-                                              // observed high-water mark
+                                              // observed recent repair window
 
   struct S {
     bool seeded = false;
@@ -80,7 +92,7 @@ class GapTimeoutPolicy {
     uint64_t last_seq = 0;
     uint64_t last_ms = 0;
     double rate = 0.0;      // syms/s EWMA
-    int window = kDefaultWindow;  // observed TX window (repair hwm)
+    int window = kDefaultWindow;  // observed recent TX window
   };
 
   const int floor_ms_;

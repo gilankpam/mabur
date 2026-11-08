@@ -113,6 +113,9 @@ class UepEncoder {
   // riding with the next frame. Never waits. The hot loop calls it on
   // every venc-ring read timeout (≤5 ms apart).
   void collect(const UepBodySink& sink);
+  bool repairs_outstanding(int sid) const {
+    return layers_[static_cast<size_t>(sid)].sw.repairs_outstanding();
+  }
 
   // Sets both layers' FEC overhead to ov, literal — no scaling, no clamp
   // beyond SwEncoder's own.

@@ -91,6 +91,20 @@ class FrameStream {
   void set_gap_timeout(int sid, uint64_t ms) {
     if (sid >= 0 && sid <= 1) gap_ms_[sid] = ms;
   }
+  // A frame's repairs can all leave after its last symbol, so a hole near
+  // its head waits for the rest of the frame to serialize, and the
+  // window-based timeout only knows frames already seen. This stretches the
+  // wait for a hole in one frame to (count - emitted_upto) * us_per_sym +
+  // margin_ms, at most cap_ms, and never shortens it. A slot still missing
+  // its header (the hole is chunk 0) counts the whole frame. us_per_sym == 0
+  // turns it off.
+  void set_gap_frame_span(int sid, uint32_t us_per_sym, uint32_t margin_ms,
+                          uint64_t cap_ms) {
+    if (sid < 0 || sid > 1) return;
+    us_per_sym_[sid] = us_per_sym;
+    span_margin_ms_ = margin_ms;
+    span_cap_ms_ = cap_ms;
+  }
   // The gap timeout in force for `sid` (out-of-range sids read sid 0's).
   // Also the NACK tracker's per-symbol deadline (main.cpp).
   uint64_t gap_ms(uint8_t sid) const {
@@ -158,9 +172,20 @@ class FrameStream {
   void feed_params(Slot& s);
 
   uint64_t gap_ms_max() const { return std::max(gap_ms_[0], gap_ms_[1]); }
+  uint64_t frame_gap_ms(const Slot& s) const {
+    const uint8_t sid = s.sid <= 1 ? s.sid : 0;
+    if (us_per_sym_[sid] == 0) return gap_ms_[sid];
+    const uint64_t span =
+        static_cast<uint64_t>(s.count - s.emitted_upto) * us_per_sym_[sid] / 1000 +
+        span_margin_ms_;
+    return std::max(gap_ms_[sid], std::min(span, span_cap_ms_));
+  }
 
   FrameStreamCfg cfg_;
   uint64_t gap_ms_[2] = {0, 0};  // seeded from cfg in the ctor
+  uint32_t us_per_sym_[2] = {0, 0};
+  uint32_t span_margin_ms_ = 0;
+  uint64_t span_cap_ms_ = 0;
   Callbacks cb_;
   std::map<uint32_t, Slot> slots_;   // key = (sid << 16) | fseq
   bool have_id_base_ = false;

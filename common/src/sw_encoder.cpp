@@ -31,12 +31,21 @@ size_t frame_hold_syms(size_t n_syms, int window, double overhead, int blocks_pe
   return hold;
 }
 
+int frame_window(size_t n_syms, int window) {
+  const int cap = std::max(window, kFrameWindowCap);
+  const size_t want = n_syms + static_cast<size_t>(kFrameWindowMargin);
+  if (want >= static_cast<size_t>(cap)) return cap;
+  return std::max(window, static_cast<int>(want));
+}
+
 SwEncoder::SwEncoder(const SwConfig& cfg, uint32_t initial_seq, FecWorker* worker)
     : cfg_(cfg), worker_(worker), next_seq_(initial_seq) {
   if (cfg_.window < 2) cfg_.window = 2;
   if (cfg_.window > sw::kMaxWindow) cfg_.window = sw::kMaxWindow;
   stride_ = (static_cast<size_t>(cfg_.symbol_size) + 15) & ~static_cast<size_t>(15);
-  cap_ = static_cast<size_t>(cfg_.window) + kSlackRows;
+  max_window_ = std::max(cfg_.window, std::min(kFrameWindowCap, sw::kMaxWindow));
+  frame_window_ = cfg_.window;
+  cap_ = static_cast<size_t>(max_window_) + kSlackRows;
   ring_raw_.resize(stride_ * cap_ + 15);
   ring_ = ring_raw_.data();
   ring_ += (16 - (reinterpret_cast<uintptr_t>(ring_) & 15)) & 15;
@@ -82,7 +91,8 @@ void SwEncoder::add_packet(const uint8_t* a, size_t alen, const uint8_t* b, size
   append_to_current(a, alen, b, blen);
 }
 
-void SwEncoder::begin_frame(size_t n_syms, size_t hold_syms) {
+void SwEncoder::begin_frame(size_t n_syms, size_t hold_syms, int window) {
+  frame_window_ = window > 0 ? std::clamp(window, 2, max_window_) : cfg_.window;
   frame_active_ = true;
   frame_front_ = n_syms - std::min(hold_syms, n_syms);
   frame_seals_ = 0;
@@ -110,7 +120,7 @@ void SwEncoder::seal_current(const SwEnvSink& sink) {
     join();
   std::memcpy(ring_ + next_slot_ * stride_, sym, ss);
   next_slot_ = (next_slot_ + 1) % cap_;
-  if (count_ < static_cast<size_t>(cfg_.window)) ++count_;
+  if (count_ < static_cast<size_t>(max_window_)) ++count_;
   cur_len_ = 0;
   ++next_seq_;
   ++sources_out_;
@@ -177,7 +187,7 @@ void SwEncoder::emit_or_enqueue_repair(const SwEnvSink& sink, bool inline_build)
     tail_repair_pending_ = false;
     return;
   }
-  const int wl = static_cast<int>(count_);
+  const int wl = static_cast<int>(std::min(count_, static_cast<size_t>(frame_window_)));
   if (wl == 0) return;
   FecRepairJob j;
   j.eng = this;
@@ -315,6 +325,7 @@ void SwEncoder::flush(const SwEnvSink& sink) {
     credit_ = 0.0;
     tail_repair_pending_ = false;
     frame_active_ = false;
+    frame_window_ = cfg_.window;
   } else if (tail_repair_pending_ && count_ > 0) {
     emit_or_enqueue_repair(sink);
   }

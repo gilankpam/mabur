@@ -710,6 +710,51 @@ TEST(producer_rebase_forgets_params) {             // Review Focus 5
 
 // --- Part 2: begin_frame tells the ring how many slices the picture has ---
 
+TEST(gap_frame_span_waits_for_a_big_frames_own_send_time) {
+  const auto run = [](uint32_t us_per_sym, uint64_t cap_ms, uint64_t& wait_ms) {
+    Capture cap;
+    FrameStream fs({50, 8}, cap.cbs());
+    fs.set_gap_frame_span(0, us_per_sym, 15, cap_ms);
+    mabur::Fragmenter frag;
+    auto ps = frag_frame(frag, 0, std::vector<uint8_t>(15800, 0x11));
+    REQUIRE(ps.size() >= 90);
+    for (size_t i = 0; i < ps.size(); ++i)
+      if (i != 1) fs.push_fragment(0, ps[i].data(), ps[i].size(), 10);
+    wait_ms = 0;
+    for (uint64_t t = 11; t < 400 && fs.frames_truncated() == 0; ++t) {
+      fs.poll(t);
+      if (fs.frames_truncated() != 0) wait_ms = t - 10;
+    }
+    return ps.size();
+  };
+  uint64_t wait = 0;
+  const size_t n = run(1000, 1000, wait);
+  CHECK(wait == n - 1 + 15); // the time left to send the frame
+  run(1000, 80, wait);
+  CHECK(wait == 80);         // capped
+  run(100, 1000, wait);
+  CHECK(wait == 50);         // never below the window-based timeout
+  run(0, 1000, wait);
+  CHECK(wait == 50);         // off
+}
+
+TEST(gap_frame_span_covers_a_lost_first_chunk) {
+  Capture cap;
+  FrameStream fs({50, 8}, cap.cbs());
+  fs.set_gap_frame_span(0, 1000, 15, 1000);
+  mabur::Fragmenter frag;
+  auto ps = frag_frame(frag, 0, std::vector<uint8_t>(15800, 0x11));
+  REQUIRE(ps.size() >= 90);
+  for (size_t i = 1; i < ps.size(); ++i)
+    fs.push_fragment(0, ps[i].data(), ps[i].size(), 10);
+  fs.poll(10 + ps.size() + 14);   // past the 50 ms timeout, inside the frame's span
+  CHECK(fs.frames_dropped() == 0);
+  fs.push_fragment(0, ps[0].data(), ps[0].size(), 10 + ps.size() + 14);  // repaired late
+  fs.poll(10 + ps.size() + 14);
+  CHECK(fs.frames_clean() == 1);
+  CHECK(fs.frames_truncated() == 0);
+}
+
 TEST(begin_frame_carries_the_slice_count) {
   const auto aus = mtest::load_slice_fixture();
   Capture cap;

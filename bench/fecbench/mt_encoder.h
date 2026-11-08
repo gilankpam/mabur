@@ -144,7 +144,9 @@ class SwEncoderMt {
     if (cfg_.window < 2) cfg_.window = 2;
     if (cfg_.window > mabur::sw::kMaxWindow) cfg_.window = mabur::sw::kMaxWindow;
     stride_ = ((size_t)cfg_.symbol_size + 15) & ~(size_t)15;
-    ring_raw_.resize(stride_ * (size_t)cfg_.window + 15);
+    max_window_ = std::max(cfg_.window, std::min(mabur::kFrameWindowCap, mabur::sw::kMaxWindow));
+    frame_window_ = cfg_.window;
+    ring_raw_.resize(stride_ * (size_t)max_window_ + 15);
     ring_ = align16(ring_raw_.data());
     scratch_raw_.resize(stride_ + 15);
     scratch_ = align16(scratch_raw_.data());
@@ -178,6 +180,7 @@ class SwEncoderMt {
       credit_ = 0.0;
       tail_repair_pending_ = false;
       frame_active_ = false;
+      frame_window_ = cfg_.window;
     } else if (tail_repair_pending_ && count_ > 0) {
       out.push_back(make_repair());
     }
@@ -186,8 +189,9 @@ class SwEncoderMt {
 
   // Mirrors SwEncoder::begin_frame: n_syms is the caller's seal-count guess,
   // hold_syms (frame_hold_syms's return) is how many trailing seals hold
-  // their credit until flush() closes the frame.
-  void begin_frame(size_t n_syms, size_t hold_syms) {
+  // their credit until flush() closes the frame, window the frame's span.
+  void begin_frame(size_t n_syms, size_t hold_syms, int window = 0) {
+    frame_window_ = window > 0 ? std::clamp(window, 2, max_window_) : cfg_.window;
     frame_active_ = true;
     frame_front_ = n_syms - std::min(hold_syms, n_syms);
     frame_seals_ = 0;
@@ -208,10 +212,11 @@ class SwEncoderMt {
   static uint8_t* align16(uint8_t* p) {
     return p + ((16 - ((uintptr_t)p & 15)) & 15);
   }
-  const uint8_t* row(size_t oldest_i) const {  // 0 = oldest held symbol
-    const size_t start = (next_slot_ + (size_t)cfg_.window - count_) %
-                         (size_t)cfg_.window;
-    return ring_ + ((start + oldest_i) % (size_t)cfg_.window) * stride_;
+  const uint8_t* row(size_t oldest_i) const {  // 0 = oldest symbol of the span
+    const size_t span = std::min(count_, (size_t)frame_window_);
+    const size_t start = (next_slot_ + (size_t)max_window_ - span) %
+                         (size_t)max_window_;
+    return ring_ + ((start + oldest_i) % (size_t)max_window_) * stride_;
   }
 
   void seal_current(std::vector<std::vector<uint8_t>>& out) {
@@ -230,8 +235,8 @@ class SwEncoderMt {
     out.push_back(std::move(env));
 
     std::memcpy(ring_ + next_slot_ * stride_, current_symbol_.data(), ss);
-    next_slot_ = (next_slot_ + 1) % (size_t)cfg_.window;
-    if (count_ < (size_t)cfg_.window) ++count_;
+    next_slot_ = (next_slot_ + 1) % (size_t)max_window_;
+    if (count_ < (size_t)max_window_) ++count_;
     current_symbol_.clear();
     ++next_seq_;
     tail_repair_pending_ = true;
@@ -267,7 +272,7 @@ class SwEncoderMt {
 
   std::vector<uint8_t> make_repair() {
     const size_t ss = (size_t)cfg_.symbol_size;
-    const int wl = (int)count_;
+    const int wl = (int)std::min(count_, (size_t)frame_window_);
     mabur::sw::SwHeader h;
     h.repair = true;
     h.symbol_size = (uint16_t)cfg_.symbol_size;
@@ -303,6 +308,7 @@ class SwEncoderMt {
 
   mabur::SwConfig cfg_;
   SpinWorker* worker_;
+  int max_window_ = 0, frame_window_ = 0;  // mirror SwEncoder's
   size_t stride_ = 0, count_ = 0, next_slot_ = 0;
   std::vector<uint8_t> ring_raw_, scratch_raw_;
   uint8_t* ring_ = nullptr;
@@ -400,7 +406,9 @@ class SwEncoderMtAsync {
     if (cfg_.window < 2) cfg_.window = 2;
     if (cfg_.window > mabur::sw::kMaxWindow) cfg_.window = mabur::sw::kMaxWindow;
     stride_ = ((size_t)cfg_.symbol_size + 15) & ~(size_t)15;
-    cap_ = (size_t)cfg_.window + kSlackRows;
+    max_window_ = std::max(cfg_.window, std::min(mabur::kFrameWindowCap, mabur::sw::kMaxWindow));
+    frame_window_ = cfg_.window;
+    cap_ = (size_t)max_window_ + kSlackRows;
     ring_raw_.resize(stride_ * cap_ + 15);
     ring_ = ring_raw_.data();
     ring_ += (16 - ((uintptr_t)ring_ & 15)) & 15;
@@ -434,6 +442,7 @@ class SwEncoderMtAsync {
       credit_ = 0.0;
       tail_repair_pending_ = false;
       frame_active_ = false;
+      frame_window_ = cfg_.window;
     } else if (tail_repair_pending_ && count_ > 0) {
       enqueue_repair();
     }
@@ -443,7 +452,8 @@ class SwEncoderMtAsync {
   }
 
   // Mirrors SwEncoder::begin_frame.
-  void begin_frame(size_t n_syms, size_t hold_syms) {
+  void begin_frame(size_t n_syms, size_t hold_syms, int window = 0) {
+    frame_window_ = window > 0 ? std::clamp(window, 2, max_window_) : cfg_.window;
     frame_active_ = true;
     frame_front_ = n_syms - std::min(hold_syms, n_syms);
     frame_seals_ = 0;
@@ -509,7 +519,7 @@ class SwEncoderMtAsync {
       join();
     std::memcpy(ring_ + next_slot_ * stride_, current_symbol_.data(), ss);
     next_slot_ = (next_slot_ + 1) % cap_;
-    if (count_ < (size_t)cfg_.window) ++count_;
+    if (count_ < (size_t)max_window_) ++count_;
     current_symbol_.clear();
     ++next_seq_;
     tail_repair_pending_ = true;
@@ -527,7 +537,7 @@ class SwEncoderMtAsync {
   }
 
   void enqueue_repair() {
-    const int wl = (int)count_;
+    const int wl = (int)std::min(count_, (size_t)frame_window_);
     AsyncFecWorker::Job j;
     j.eng = this;
     j.repair_key = repair_key_++;
@@ -556,6 +566,7 @@ class SwEncoderMtAsync {
 
   mabur::SwConfig cfg_;
   AsyncFecWorker* worker_;
+  int max_window_ = 0, frame_window_ = 0;  // mirror SwEncoder's
   size_t stride_ = 0, cap_ = 0, count_ = 0, next_slot_ = 0;
   long seals_since_oldest_job_ = 0;
   std::vector<uint8_t> ring_raw_;
@@ -612,8 +623,8 @@ class SwStock {
   }
   std::vector<std::vector<uint8_t>> flush() { return e_.flush(); }
   void set_overhead(double ov) { e_.set_overhead(ov); }
-  void begin_frame(size_t n_syms, size_t hold_syms) {
-    e_.begin_frame(n_syms, hold_syms);
+  void begin_frame(size_t n_syms, size_t hold_syms, int window = 0) {
+    e_.begin_frame(n_syms, hold_syms, window);
   }
   std::vector<std::vector<uint8_t>> seal() {
     std::vector<std::vector<uint8_t>> out;
@@ -655,8 +666,9 @@ class UepEncoderT {
     // after construction (unlike production, which feeds frame_hold_syms
     // SwEncoder's own live window()/overhead() because set_overhead can
     // change it mid-stream), so the two sources agree here.
+    const int window = mabur::frame_window(n, layer.fec.window);
     layer.sw.begin_frame(
-        n, mabur::frame_hold_syms(n, layer.fec.window, layer.fec.overhead, layer.bpb));
+        n, mabur::frame_hold_syms(n, window, layer.fec.overhead, layer.bpb), window);
     auto frags = layer.frag.fragment(data, len, layer.usable);
     for (auto& f : frags)
       pack_envs(layer, (uint8_t)sid, layer.sw.add_packet(f.data(), f.size()), out);

@@ -82,6 +82,10 @@ class UepDecoder {
   // Layer sid's observed TX window (SwDecoder::repair_window). 0 on bad sid
   // or before the first repair.
   int repair_window(int sid) const;
+  // Layer sid's recent TX window (SwDecoder::repair_window_recent), what
+  // GapTimeoutPolicy sizes its wait from. 0 on bad sid or before the first
+  // repair.
+  int repair_window_recent(int sid) const;
   // Layer sid's ArrivalTracker guard. 0 on bad sid.
   uint32_t arrival_guard(int sid) const;
 

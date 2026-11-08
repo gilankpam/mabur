@@ -131,10 +131,12 @@ burst-tail backstop.
 
 Every video frame declares itself instead (`UepEncoder::add_frame` calls
 `SwEncoder::begin_frame` before fragmenting it, with
-`n = Fragmenter::chunk_count(len, usable)`), and `begin_frame` holds the
-credit on that frame's trailing `frame_hold_syms(n, window, overhead,
-blocks_per_body)` seals to the frame's own `flush()` instead of spending
-it as it accrues. A frame that fits in one window (`n <= window`) holds
+`n = Fragmenter::chunk_count(len, usable)`). The frame first picks its own
+repair span, `window = frame_window(n, fec.window)`: `n + 32`, never below
+`fec.window` and never above 128 (a `fec.window` above 128 wins). `begin_frame`
+then holds the credit on that frame's trailing `frame_hold_syms(n, window,
+overhead, blocks_per_body)` seals to the frame's own `flush()` instead of
+spending it as it accrues. A frame that fits in one window (`n <= window`) holds
 its entire credit to the end — nothing to spend early. A bigger frame
 spends its front normally and holds only its tail: `T =
 ceil(blocks_per_body / overhead)` seals, clamped to the window and to the
@@ -159,13 +161,25 @@ blocks; the clamp to `window` only binds when `overhead <
 blocks_per_body / window` — a repair rate thin enough that one body's
 credit takes longer than a whole window of seals to accrue.
 
-`window = 64` (the bundle's `fec.window`) is the burst budget — how many
-trailing symbols a single repair, or a frame-end batch, can reach back
-across — not a frame-end-specific knob, and there is no separate config
-key for the frame-end rule: it applies to every declared frame
-unconditionally. The repair header carries `seq` and `window_len`
+**Why the span follows the frame.** Up to `n = 128` every repair of the
+frame-end batch covers the whole frame, so any loss in it can use any repair,
+and from `n <= 96` the batch also reaches 32 symbols of the frame before it.
+`fec.window` stays the floor because the burst budget is absolute: a 30-symbol
+frame needs the reach as much as a 90-symbol one. The cap is there for the
+drone's CPU, repairs x span grows with the square of the frame size and the
+frame-end batch is built inline on the hot thread; a frame past 128 falls under
+the tail rule above with a span of 128.
+
+`fec.window = 64` is the burst budget — how many trailing symbols a single
+repair, or a frame-end batch, can reach back across at the least — not a
+frame-end-specific knob, and there is no separate config key for the
+frame-end rule: it applies to every declared frame unconditionally. Undeclared
+streams repair over `fec.window`. The repair header carries `seq` and `window_len`
 unchanged, so the wire and the GS decoders need no changes for either
-placement.
+placement. Because the span now varies per frame, the GS gap timeout sizes its
+wait from `SwDecoder::repair_window_recent` (the largest span of the last one
+to two seconds), not from the session's high-water mark, which one big frame
+would otherwise raise for good.
 
 Measurements: `docs/findings/2026-11-08-frame-tail-repairs.md`.
 

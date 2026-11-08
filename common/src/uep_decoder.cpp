@@ -95,6 +95,11 @@ uint64_t UepDecoder::newest_seq(int sid) const {
   return layers_[static_cast<size_t>(sid)].sw.newest_seq();
 }
 
+int UepDecoder::repair_window_recent(int sid) const {
+  if (sid < 0 || sid > 1) return 0;
+  return layers_[static_cast<size_t>(sid)].sw.repair_window_recent();
+}
+
 int UepDecoder::repair_window(int sid) const {
   if (sid < 0 || sid > 1) return 0;
   return layers_[static_cast<size_t>(sid)].sw.repair_window();
