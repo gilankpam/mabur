@@ -2347,6 +2347,45 @@ class PhaseLockReportTest(unittest.TestCase):
         self.assertIn("offset range=-60..16 mfps", text)
         self.assertIn("|lerr| while locked p50/p90/max=0.30/0.50/0.50 ms", text)
 
+    def test_reglog_2_reads_as_the_sensor_actuator(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "reg.log")
+            with open(p, "w") as f:
+                f.write(self.REG)
+            rows = flightreport.load_reglog_lock(p)
+        self.assertEqual(rows[0]["lact"], "sensor")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            flightreport.print_lock_report(rows)
+        self.assertIn("actuator=sensor", out.getvalue())
+
+    # reglog 5: lact= names the actuator; under the display modes loff/lctr
+    # are lines (the register's and the grid's), not mfps.
+    REG5 = (
+        "# reglog 5\n"
+        "1000000 regulator: held=1 alw=2.0ms lslot=0 lock=wait lerr=0.00ms loff=0 lctr=0.0 "
+        "lact=sensor present=60 acq=1/2 req=1/2 ioctl=1/2 rlate=1/2 hand=1/2 rt=1\n"
+        "2000000 regulator: held=2 alw=2.0ms lslot=0 lock=acq lerr=4.10ms loff=3 lctr=2.5 "
+        "lact=follow present=60 acq=1/2 req=1/2 ioctl=1/2 rlate=1/2 hand=1/2 rt=1\n"
+        "3000000 regulator: held=3 alw=2.0ms lslot=0 lock=lock lerr=0.20ms loff=2 lctr=2.5 "
+        "lact=follow present=60 acq=1/2 req=1/2 ioctl=1/2 rlate=1/2 hand=1/2 rt=1\n"
+    )
+
+    def test_reglog_5_display_actuator_reads_in_lines(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "reg.log")
+            with open(p, "w") as f:
+                f.write(self.REG5)
+            rows = flightreport.load_reglog_lock(p)
+        self.assertEqual([r["lact"] for r in rows], ["sensor", "follow", "follow"])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            flightreport.print_lock_report(rows)
+        text = out.getvalue()
+        self.assertIn("actuator=follow", text)
+        self.assertIn("offset range=2..3 lines grid last=2.5", text)  # the follow rows only
+        self.assertNotIn("mfps", text)
+
     def test_reglog_1_prints_nothing(self):
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "reg.log")

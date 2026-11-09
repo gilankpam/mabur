@@ -94,6 +94,7 @@ capture comes from `tools/bench/ausniff.py --oneshot --dump-annexb`.
 |---|---|---|
 | Burned DVR | no hardware encoder in mainline | `dvr.mode = "burned"` exits 2 at startup; a live `set dvr.mode = "burned"` (`127.0.0.1:8403` — `docs/gs-live-config.md`) is refused the same way (`unsupported_on_build`), applying and publishing nothing |
 | Record button | the H618's GPIO lines carry no names, so `[input.rec]` cannot resolve | stripped from the image's default |
+| Refresh sync | the H618 has no mapped frame-length control | `display.refresh_sync` loads and is settable; the player logs `maburplay: refresh sync <mode> unavailable (not an RK356x) -- steering the sensor` and the phase lock steers the drone's sensor (docs/phase-lock.md "Display actuator: refresh sync") |
 
 **Raw DVR is the only DVR here, and it starts on a real IRAP.** `RawDvr`
 opens a file only at an IRAP (`docs/observability.md`), which the drone

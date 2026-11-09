@@ -85,6 +85,8 @@ sched_cap_ms  = 16         # a frame may arrive up to this many ms late and keep
 phase_lock    = true       # steer the drone camera's frame rate so frames land a fixed margin before the screen refresh (flat latency, no judder)
 phase_margin_ms = 4        # that margin, ms: smaller is lower latency but less room for late frames
 rt_priority = 10  # SCHED_FIFO priority of the release thread; 0 = ordinary scheduling
+refresh_sync = "nudge"     # hold the display's refresh to the camera from the GS itself: "nudge" moves a line a frame (most displays take it),
+                           # "follow" bends each frame to the camera's (some displays blank); "off" steers the drone's camera instead
 
 # Undo the drone camera's colour tuning (the "colortrans" sensor file in the
 # drone's venc.sensor_bin) on the screen, the OSD and the recording.

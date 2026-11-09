@@ -85,6 +85,7 @@ struct PFake {
   std::vector<Config> reacquire_calls;
   std::vector<Config> osd_calls;
   std::vector<Config> menu_calls;
+  std::vector<Config> refresh_sync_calls;
   int next_start_calls = 0;
   bool reacquire_ok = true;
   std::string reacquire_err;
@@ -102,6 +103,7 @@ struct PFake {
     };
     h.next_start = [this](const Config&) { ++next_start_calls; };
     h.menu = [this](const Config& c) { menu_calls.push_back(c); };
+    h.refresh_sync = [this](const Config& c) { refresh_sync_calls.push_back(c); };
     return h;
   }
 };
@@ -121,12 +123,13 @@ PlayerApplyResult drive(PlayerConfigApplier& a) {
 
 }  // namespace
 
-TEST(player_live_table_has_eleven_keys) {
-  REQUIRE(kPlayerLiveKeys.size() == 11);
+TEST(player_live_table_has_twelve_keys) {
+  REQUIRE(kPlayerLiveKeys.size() == 12);
   CHECK(std::string(kPlayerLiveKeys[0].key) == "screen_mode");
   CHECK(std::string(kPlayerLiveKeys[8].key) == "dvr.burned.size");
   CHECK(std::string(kPlayerLiveKeys[9].key) == "menu.show_advanced");
   CHECK(std::string(kPlayerLiveKeys[10].key) == "menu.scale");
+  CHECK(std::string(kPlayerLiveKeys[11].key) == "display.refresh_sync");
   CHECK(player_live_key("backend") == nullptr);
 }
 
@@ -143,6 +146,7 @@ TEST(render_player_live_value_renders_each_type) {
   c.menu.show_advanced = true;
   CHECK(render_player_live_value(c, *player_live_key("menu.show_advanced")) == "true");
   CHECK(render_player_live_value(c, *player_live_key("menu.scale")) == "\"normal\"");
+  CHECK(render_player_live_value(c, *player_live_key("display.refresh_sync")) == "\"nudge\"");
 }
 
 TEST(player_apply_rule_presenter_only_when_the_osd_plane_want_changes) {
@@ -165,6 +169,14 @@ TEST(player_apply_rule_menu_for_show_advanced) {
   CHECK(player_apply_rule(*player_live_key("menu.show_advanced"), b, a) == PlayerApplyRule::Menu);
   a.menu.scale = "large";
   CHECK(player_apply_rule(*player_live_key("menu.scale"), b, a) == PlayerApplyRule::Menu);
+}
+
+TEST(player_apply_rule_refresh_sync) {
+  Config b = bundle();
+  Config a = b;
+  a.display.refresh_sync = "follow";
+  CHECK(player_apply_rule(*player_live_key("display.refresh_sync"), b, a) ==
+        PlayerApplyRule::RefreshSync);
 }
 
 TEST(player_applier_screen_mode_reacquires_then_publishes) {
@@ -310,6 +322,24 @@ TEST(a_menu_scale_set_calls_the_menu_hook_and_publishes) {
   CHECK(slurp(sb.path()).find("scale = \"larger\"") != std::string::npos);
 }
 
+TEST(a_refresh_sync_set_calls_the_refresh_sync_hook_and_publishes) {
+  ScratchPlayerBundle sb;
+  PFake f;
+  PlayerConfigApplier a(sb.path(), bundle(), BuildCaps{true, false}, f.hooks(), nullptr);
+  std::string why;
+  REQUIRE(a.submit("display.refresh_sync", "\"follow\"", &why));
+  PlayerApplyResult r = drive(a);
+  CHECK(r.ok);
+  CHECK(f.reacquire_calls.empty());
+  CHECK(f.osd_calls.empty());
+  CHECK(f.next_start_calls == 0);
+  CHECK(f.menu_calls.empty());
+  REQUIRE(f.refresh_sync_calls.size() == 1);
+  CHECK(f.refresh_sync_calls[0].display.refresh_sync == "follow");
+  CHECK(a.live().display.refresh_sync == "follow");
+  CHECK(slurp(sb.path()).find("refresh_sync = \"follow\"") != std::string::npos);
+}
+
 TEST(player_applier_osd_switch_keeping_the_plane_opens_layers_in_place) {
   ScratchPlayerBundle sb;
   PFake f;
@@ -333,12 +363,13 @@ TEST(player_applier_refuses_an_unset_hook) {
   // thread at the first set that reaches it; the constructor says so first.
   ScratchPlayerBundle sb;
   PFake f;
-  for (int missing = 0; missing < 4; ++missing) {
+  for (int missing = 0; missing < 5; ++missing) {
     PlayerApplyHooks h = f.hooks();
     if (missing == 0) h.reacquire_display = nullptr;
     if (missing == 1) h.osd_layers = nullptr;
     if (missing == 2) h.next_start = nullptr;
     if (missing == 3) h.menu = nullptr;
+    if (missing == 4) h.refresh_sync = nullptr;
     bool threw = false;
     try {
       PlayerConfigApplier a(sb.path(), bundle(), BuildCaps{true, false}, h, nullptr);
@@ -382,6 +413,37 @@ TEST(rec_plan_latches_the_burned_settings) {
   CHECK(p.burn.size_w == 1280 && p.burn.size_h == 720);
   d.burned.bitrate_kbps = 9000;
   CHECK(!(rec_plan(d) == p));
+}
+
+// A string key typed bare on the wire (`set display.refresh_sync = follow`)
+// is the quoted string: the file gets `"follow"`, the hook the value.
+TEST(a_bare_string_value_is_taken_as_the_quoted_string) {
+  ScratchPlayerBundle sb;
+  PFake f;
+  PlayerConfigApplier a(sb.path(), bundle(), BuildCaps{true, false}, f.hooks(), nullptr);
+  std::string why;
+  REQUIRE(a.submit("display.refresh_sync", "follow", &why));
+  PlayerApplyResult r = drive(a);
+  CHECK(r.ok);
+  REQUIRE(f.refresh_sync_calls.size() == 1);
+  CHECK(f.refresh_sync_calls[0].display.refresh_sync == "follow");
+  CHECK(slurp(sb.path()).find("refresh_sync = \"follow\"") != std::string::npos);
+}
+
+// ... and a bare value equal to the live one is a same-value set: ok,
+// nothing applied or written.
+TEST(a_bare_string_equal_to_the_live_value_writes_nothing) {
+  ScratchPlayerBundle sb;
+  PFake f;
+  const std::string before = slurp(sb.path());
+  PlayerConfigApplier a(sb.path(), bundle(), BuildCaps{true, false}, f.hooks(), nullptr);
+  REQUIRE(a.live().display.refresh_sync == "nudge");  // the bundle's
+  std::string why;
+  REQUIRE(a.submit("display.refresh_sync", "nudge", &why));
+  PlayerApplyResult r = drive(a);
+  CHECK(r.ok);
+  CHECK(f.refresh_sync_calls.empty());
+  CHECK(slurp(sb.path()) == before);
 }
 
 TEST(player_applier_same_value_spelled_differently_writes_nothing) {

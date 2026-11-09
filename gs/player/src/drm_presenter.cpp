@@ -2112,6 +2112,33 @@ double DrmPresenter::mode_period_us() const {
                                    impl_->mode.vtotal);
 }
 
+int DrmPresenter::crtc_index() const { return impl_->crtc_index; }
+
+ModeTiming DrmPresenter::mode_timing() const {
+  ModeTiming t;
+  const drmModeModeInfo& m = impl_->mode;
+  t.vtotal = m.vtotal;
+  t.vsync_lines = static_cast<int>(m.vsync_end) - static_cast<int>(m.vsync_start);
+  t.line_us = m.clock > 0 ? static_cast<double>(m.htotal) * 1000.0 / m.clock : 0;
+  t.period_us = mode_period_us();
+  return t;
+}
+
+bool DrmPresenter::wait_vblank(uint32_t* seq, uint64_t* ts_us) {
+  if (impl_->fd < 0 || impl_->crtc_index < 0) return false;
+  drmVBlank vbl{};
+  vbl.request.type = static_cast<drmVBlankSeqType>(
+      DRM_VBLANK_RELATIVE |
+      ((impl_->crtc_index << DRM_VBLANK_HIGH_CRTC_SHIFT) & DRM_VBLANK_HIGH_CRTC_MASK));
+  vbl.request.sequence = 1;
+  if (drmWaitVBlank(impl_->fd, &vbl) != 0) return false;
+  *seq = vbl.reply.sequence;
+  *ts_us = impl_->ts_exact
+               ? static_cast<uint64_t>(vbl.reply.tval_sec) * 1000000ULL + vbl.reply.tval_usec
+               : mono_us();
+  return true;
+}
+
 bool DrmPresenter::offers_mode(const std::string& screen_mode) const {
   if (impl_->fd < 0 || impl_->connector_id == 0) return false;
   drmModeConnectorPtr c = drmModeGetConnectorCurrent(impl_->fd, impl_->connector_id);

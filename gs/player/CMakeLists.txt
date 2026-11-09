@@ -35,6 +35,7 @@ add_library(mabur_player_core STATIC
   src/in_formats.cpp
   src/frame_regulator.cpp
   src/phase_lock.cpp
+  src/display_lock_core.cpp
   src/lat_tracker.cpp
   src/lat_log.cpp
   src/splash_image.cpp
@@ -74,7 +75,9 @@ target_link_libraries(maburplay PRIVATE mabur_player_core)
 if(MABUR_PLAYER_HW)
   target_sources(maburplay PRIVATE
     src/drm_presenter.cpp
-    src/osd_surface.cpp)
+    src/osd_surface.cpp
+    src/vop2_frame_length.cpp
+    src/display_lock.cpp)
   target_compile_definitions(maburplay PRIVATE MABUR_PLAYER_HW=1)
 
   if(MABUR_PLAYER_DECODER STREQUAL "mpp")

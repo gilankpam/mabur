@@ -209,6 +209,28 @@ TEST(a_decoded_frame_is_stamped_and_handed_over_then_primed) {
   CHECK(fake.released_snapshot().empty());  // the pump never releases on its own
 }
 
+TEST(every_decoded_frames_pts_reaches_the_pts_sink_after_the_handover) {
+  PumpFake fake;
+  Pump p;
+  std::mutex om;
+  std::vector<uint32_t> pts;
+  bool handed_first = true;
+  p.pump.set_pts_sink([&](uint32_t v) {
+    std::lock_guard<std::mutex> lk(om);
+    if (p.out.size() < pts.size() + 1) handed_first = false;
+    pts.push_back(v);
+  });
+  fake.init({}, p.pump.sink());
+  p.pump.set_backend(&fake);
+  p.pump.start();
+  fake.emit(frame(100));
+  fake.emit(frame(16767));
+  REQUIRE(wait_until([&] { std::lock_guard<std::mutex> lk(om); return pts.size() >= 2; }));
+  p.pump.stop_and_join();
+  CHECK(pts == (std::vector<uint32_t>{100, 16767}));
+  CHECK(handed_first);  // the sink never delays the hand-over
+}
+
 TEST(releases_queued_by_another_thread_reach_the_backend) {
   PumpFake fake;
   Pump p;

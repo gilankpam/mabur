@@ -112,6 +112,10 @@ struct LiveApplySpec {
 
   // The live value as the file would write it (strings quoted).
   std::function<std::string(const Config&, const Key&)> render;
+  // Optional: the value as the file spells it, from the text the operator
+  // sent -- a string key typed bare quoted, say. Applied before anything
+  // else looks at the value, the same-value check included.
+  std::function<std::string(const Key&, const std::string& value)> spell;
 
   // Worker thread.
   // Patches `text` for one key; false with *why, `*text` unchanged.
@@ -369,9 +373,10 @@ bool LiveApplyEngine<Config, Key>::submit(const std::string& key, const std::str
   const Key* k = find(key);
   if (!k) return refuse("not live: " + key);
   if (in_flight_) return refuse("busy");
-  const std::string v = live_apply_detail::trim(value);
+  std::string v = live_apply_detail::trim(value);
   if (v.empty()) return refuse("empty value");
   if (v.find_first_of("\r\n") != std::string::npos) return refuse("value spans lines");
+  if (spec_.spell) v = spec_.spell(*k, v);
 
   cur_key_ = k;
   cur_value_ = v;

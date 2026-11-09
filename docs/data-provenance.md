@@ -174,6 +174,12 @@ Chronological; each line names the section below that carries the detail.
 - 2026-11-05 — the GS's own NACK/MAV leave the per-card seq walk: before
   it, one card's `loss_pct` could read `null` and its `own_air` 0 for up
   to ~1.2 s after a NACK while it decoded normally; no marker change.
+- 2026-11-08 — refresh sync (docs/phase-lock.md "Display actuator: refresh
+  sync"): `# reglog 5` appends `lact=<sensor|nudge|follow>` after `lctr=`.
+  Under `lact=sensor` `loff`/`lctr` are mfps as before; under `nudge`/
+  `follow` they are display lines (the frame-length register's and the
+  grid's), and the drone's sensor runs on its trim (RCF `snr_off` 0).
+  Reglog ≤ 4 rows carry no `lact=` and are all the sensor steer.
 
 ## 2026-09-23 — `link.pre_fec_loss` scale break, twice
 

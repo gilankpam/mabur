@@ -674,7 +674,7 @@ vsync-paced two-plane commit), `0x02` `PAGE_FLIP_ASYNC` was set, `0x04`
 parked, `0x08` the commit failed, `0x10` a blocking modeset commit.
 `framelog 2` and earlier rows end at `exact`.
 
-### `reg.log` (`# reglog 4`)
+### `reg.log` (`# reglog 5`)
 
 The 1 Hz `regulator:` line ("Regulator line" below), written by the same
 follow-the-marker writer as `lat.log`: `<mono_us> regulator: held= ...`.
@@ -684,13 +684,15 @@ instead, and zero with none running); difference adjacent rows for the
 per-second rate (the `present=`, `rlate=` and `hand=` windows are per line
 already). It exists because `pend`/`pdrop`/`heals` are the presenter's
 side of a missed latch, and `/tmp/maburplay.log` does not outlive a
-power-off. reglog 4 appends the burned recorder's counters `burn_in=
-burn_enc= burn_drop=`; reglog 3 rows end at `recstarts=` and carry the
-release thread's fields `rlate= hand= rt=` and the event counters
-`flushes= recstarts=`; reglog 2 rows end at `ioctl=` and carry the
-phase-lock fields
-`lock= lerr= loff= lctr=` (docs/phase-lock.md); reglog 1 rows end at
-`lslot=` before `present=`.
+power-off. reglog 5 appends `lact=` after `lctr=`: the phase lock's
+actuator, and with it the unit of `loff=`/`lctr=` (mfps under `sensor`,
+display lines under `nudge`/`follow`); reglog 4 rows have no `lact=` and
+are all the sensor steer. reglog 4 appends the burned recorder's counters
+`burn_in= burn_enc= burn_drop=`; reglog 3 rows end at `recstarts=` and
+carry the release thread's fields `rlate= hand= rt=` and the event
+counters `flushes= recstarts=`; reglog 2 rows end at `ioctl=` and carry
+the phase-lock fields `lock= lerr= loff= lctr=` (docs/phase-lock.md);
+reglog 1 rows end at `lslot=` before `present=`.
 
 ### `cal.log` (`callog 5`)
 
@@ -752,8 +754,8 @@ submits=… parks=… notes_dropped=…` (the feed thread's tally for the run).
 The 1 Hz `regulator:` line (stderr, and `reg.log` in the session
 directory): `held= late= replaced= disconts= hold_ema=
 present_jitter= vsync= skips= fallback= pend= heals= pdrop= chained= chain=
-chain_max= chains= cuts= alw= lslot= lock= lerr= loff= lctr= present= acq=
-req= ioctl= rlate= hand= rt= flushes= recstarts= burn_in= burn_enc=
+chain_max= chains= cuts= alw= lslot= lock= lerr= loff= lctr= lact= present=
+acq= req= ioctl= rlate= hand= rt= flushes= recstarts= burn_in= burn_enc=
 burn_drop=` (`regulator: off present_jitter= rlate= hand= rt= flushes=
 recstarts= burn_in= burn_enc= burn_drop=` with `display.regulate_ms = 0`;
 `present=` through `ioctl=` only with a display).
@@ -886,9 +888,15 @@ against it, not against the housekeeping loop that prints the line.
   cap); they are placed by the arrival rule above, and the next on-time
   frame that claims the same vblank wins it, so a stall costs a local
   freeze and catch-up with no trailing chain.
-- `lock=`/`lerr=`/`loff=`/`lctr=` — the phase lock's state (`off` when
-  `display.phase_lock` is false), last window's error, the offset it sends
-  and its centre, mfps (docs/phase-lock.md).
+- `lock=`/`lerr=`/`loff=`/`lctr=`/`lact=` — the phase lock
+  (docs/phase-lock.md) from whichever actuator runs, named by `lact=`.
+  `lact=sensor`: the state (`wait`/`acq`/`lock`/`oor`; `off` when
+  `display.phase_lock` is false or no actuator runs yet), the last
+  window's error, the offset it sends and its centre, mfps.
+  `lact=nudge`/`follow` (refresh sync): the state (`wait`/`acq`/`lock`),
+  the error between the margins' target and the vblank, the lines over
+  the mode's total in the frame-length register now, and the grid's lines
+  (FOLLOW's camera-frame length plus its trim; 0 under NUDGE).
 
 ### fps-log, display bring-up, MSP OSD
 

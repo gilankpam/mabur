@@ -1,11 +1,17 @@
 # Phase lock
 
-The GS steers the drone's sensor frame rate so that every frame's
-capture-time slot sits a fixed margin before the vblank release it lands
-on. Locked, glass latency is flat (no sensor/panel beat sawtooth) and the
-regulator places frames by capture time, so late-tail frames keep their
-slot. The evidence is `docs/findings/2026-10-17-phase-lock-spike.md` and
+The GS holds every frame's capture-time slot a fixed margin before the
+vblank release it lands on. Locked, glass latency is flat (no
+sensor/panel beat sawtooth) and the regulator places frames by capture
+time, so late-tail frames keep their slot. The evidence is
+`docs/findings/2026-10-17-phase-lock-spike.md` and
 `docs/findings/2026-10-17-phase-lock-spike-2.md`.
+
+Two actuators hold it, one at a time: the drone's sensor frame rate,
+steered through the RCF ("The loop" below), or, with
+`display.refresh_sync` on and an RK356x display controller, the GS
+display's own frame length ("Display actuator: refresh sync"), which moves
+the vblank to the frames instead and leaves the drone on its trim.
 
 ## The loop
 
@@ -56,6 +62,203 @@ lock → acq after 2 windows with \|e\| > 3 ms or incoherent. oor → wait
 after 60 s. An unreachable panel (50 Hz, 59 Hz) never produces a coherent
 window and ends in oor.
 
+## Display actuator: refresh sync
+
+With `display.refresh_sync = "nudge"` or `"follow"` the player bends the
+display controller's frame length so the vblank moves to the camera's
+frames; the measurement (the regulator's margins), the target margin
+(`phase_margin_ms`), the states and capture placement are the sensor
+steer's. Code: `gs/player/src/display_lock_core.h` (the controller, pure
+logic), `display_lock.h` (its thread), `line_step.h` (NUDGE's step),
+`vop2_frame_length.h` (the register).
+
+**The register.** The RK3568/RK3566 VOP2's `DSP_VTOTAL_VS_END` for the
+presenter's video port (`0xfe040000 + 0x0c50 + 0x100 × crtc_index`,
+mapped through `/dev/mem` once the device tree's `compatible` names
+`rockchip,rk3568` or `rockchip,rk3566`): the frame's total lines in bits
+28:16, the sync width in 12:0, and an undocumented immediate bit (15): a
+write with it set applies to the frame being scanned out now and holds
+until the next write. A write of `vtotal + lines` goes in only in the
+first half of the frame that started at the vblank the thread woke for --
+a total set once the scan-out has passed it runs the frame to the
+counter's end, one very long frame. A late wake writes nothing. A release
+writes the mode's own value with the immediate bit clear, so it latches at
+a frame boundary. The controller asks for a release only once 0 lines
+hold: a register off the mode's total gets an immediate write of the
+mode's own total first (early in a frame, like every write), and the
+release a vblank later, so clearing the immediate bit never lands on a
+bent frame.
+
+From its first vblank the lock reads the register: a value that is not
+this mode's total and sync width is read again every vblank for up to a
+second (right after a modeset -- a hotplug bringing the display up from
+the console's mode -- the first vblanks can still carry the previous
+mode's total), and one still there after that leaves the lock off for that
+presenter's life
+(`maburplay: refresh sync: the display controller's total (0x…) is not
+the mode's (N lines) -- off`). A total within one line short of it up to
+twice it, or an immediate write still held, counts as ours, left by a
+run that did not put it back: the controller takes it as the register's
+lines and brings it back the same way (0 lines, then the release), with
+refresh sync off too.
+
+**The target.** G is the vblank shift the written lines have applied so
+far, counted modulo one camera frame Pt on a reference that turns once per
+camera frame, so the frames' samples stand still on it. Each margin m
+(taken at time t) becomes a sample u = G(t) + wrap(M − m), M =
+`phase_margin_ms`: where G should have been for that frame to leave M
+(positive: release later, longer frames). The target is the circular
+median of the last 2 s of samples (at least 50), the error e =
+wrap(target − G). The thread reports each write that landed (`applied`),
+and G integrates only those: a skipped or capped write never winds it up.
+
+**The camera's period** (Pc) comes from the decoded frames' capture stamps
+(the decode pump's pts sink): every 10 s, a reading over the last 10 s
+(at least 500 stamps) of span / round(span / median gap). A reading
+within 1 % of the nominal rate is a candidate; two in a row within
+100 ppm that differ from the period in use by more than 20 ppm replace
+it. Until then the nominal 1e6 / fps names it, fps being the camera rate
+the display follow judges by (the drone's reported mode, else the
+measured cadence), rounded, passed once a second; a change of it
+restarts the measurement and the lock.
+
+**NUDGE** writes the mode's total ± one line, one way only: shorter
+frames when the display is the slower (its period over the camera's),
+longer otherwise; the drift between the two brings the vblank back the
+other way, so the step never moves against it. It starts moving once the
+vblank is more than 3 lines away (counted the way lines move it) and
+stops within half a line. Which way round it goes is whichever is the
+quicker: stepping gains (line − drift) a frame, the drift alone carries
+the vblank round at the drift's own rate, so a target x ahead is stepped
+to while x < P·(1 − drift/line) and waited for past that. Either way the
+pull-in takes at most one frame per line of the mode (1125 frames,
+18.75 s, at 1080p60), whatever the drift. It needs the refresh within 1 % of the camera's frame rate
+(otherwise it cannot hold: "the refresh is not the camera's frame rate"), and it
+waits for the camera's measured period before its first step ("measuring
+the camera's frame rate", ~20 s: two 10 s readings) with the register at
+the mode's own: the one direction is the sign of Pc − Pm, a few ppm
+either way, which the nominal rate cannot give -- a wrong guess walks the
+vblank away from the frames until the measurement lands. The drone sits
+on its trim meanwhile, so the period measured is the one NUDGE goes on
+to follow.
+
+So NUDGE's time to lock is that wait plus the pull-in: some 20 s plus up
+to 18.75 s at 1080p60, and ~5 s more to fill the window and judge it in
+step. Neither actuator holds the phase meanwhile (the
+sensor steer was dropped when the display took over), so the picture
+runs unlocked, a few ms later, until NUDGE is in step. Each presenter
+gets a fresh lock (a display rebuild or a hotplug), which pulls in and
+judges afresh, but the measurement carries over: the period the last lock
+adopted under a display mode is handed to the next one at the same camera
+rate (`maburplay: refresh sync: the camera's period carried over from the
+last display (… us)`), which steps at once, and the measurement goes on
+behind it as usual. A change of the camera's rate measures afresh, and so
+does a switch from the camera to a display mode: under the sensor steer
+the camera runs at the display's rate, not the trim it goes back to.
+
+Its reach is one line a frame: the vblank moves a line a frame against a
+drift of |Pc − Pm| a frame, so it pulls in at (line − drift) a frame and
+holds only while the drift is under a line. NUDGE waits once the drift on
+the period in use passes 0.8 of a line ("the camera drifts more than a
+line a frame"). Under the display actuator the drone runs on its sensor
+trim, which sits ~0.040·k Hz under the nominal rate (`docs/airtime-model.md`
+§3; k = (fps/60)² above 60): 11.1 µs a frame at both rates, 0.75 of a line at
+1080p60 (14.8 µs a line) and 1.25 lines at 1125-line 100 Hz (8.9 µs a
+line). At 60 Hz NUDGE holds: stepping gains only a quarter line a frame
+there, so it steps only to a target within a quarter of a refresh and
+lets the drift bring the rest round. At 100 Hz it
+cannot hold, and the actuator choice hands over to the sensor steer
+(below).
+
+**FOLLOW** holds each frame as long as one camera frame: B = Pc / line −
+vtotal + trim lines over the mode's total, clamped to −0.5 % … +1 % of
+vtotal, written every frame, with the error brought back in whole lines on
+top (c = round(e / line), 0 inside half a line). The total B + c is capped
+at ±2 % of vtotal (22 lines at 1125; the regulator's vblank estimator
+accepts a flip delta within 2 % of its period) and is never below the
+smaller of 0 and floor(B) (a pull-in goes the long way round instead).
+Once locked, frames that keep coming out longer or shorter than the grid
+are learnt into it: trim += 0.002 × clamp(want − B, ±2), |trim| ≤ 3. It
+needs a camera no faster than the mode by more than 0.5 % (otherwise it
+cannot hold: "the camera is faster than the display's mode").
+
+**States.** wait (off, a rate mismatch, unusable as above, 2 s without
+margins, a pts discontinuity, a camera rate change, a mode set), acq (the
+first margins after wait), lock (|e| < 1 ms for 3 consecutive 1 s
+judgements; capture placement on), lock → acq after 2 judgements with
+|e| > 3 ms. There is no oor state: a display that cannot hold the phase
+at this camera rate (NUDGE past its reach or on another rate, FOLLOW with
+the camera too fast) hands over to the sensor steer. Off, a rate mismatch and the unusable cases put the
+register back at the mode's own value; waiting for margins, FOLLOW holds
+its grid and NUDGE the mode's total.
+
+**The thread.** One per presenter, built after its `init()` while
+`display.phase_lock` is on, stopped before it is retired (a display
+rebuild, a hotplug, a follow) and at shutdown, never carried to the next
+presenter. It wakes on each of the presenter's vblanks (`drmWaitVBlank`
+on its CRTC; no DRM master needed), steps the controller and writes the
+register; it never touches DRM state. `SCHED_FIFO` at `rt_priority − 1`
+(at least 1), below the release thread it must never delay; 0 runs it at
+ordinary priority. Stopping it brings a register it left off the mode's
+own back: 0 lines written for up to 5 vblanks, one more waited, then the
+mode's own value.
+
+**Choosing the actuator** (housekeeping, every iteration, with
+`display.phase_lock` on): the display while the presenter's lock is
+engaged (refresh sync not off, the register mapped and the mode's total
+taken in its first second of vblanks); otherwise the sensor steer,
+created then.
+While the sensor steer runs with `refresh_sync` not off, the reason is
+logged once each time it changes -- also when the steer was already
+running before refresh sync was set:
+`maburplay: refresh sync nudge unavailable (<why>) -- steering the
+sensor` -- `not an RK356x`, `/dev/mem: …`, the display controller's total
+not the mode's, `no display`, `no vblank from the display` (a lock
+that has not seen its first vblank within 2 s; until then whichever
+actuator ran keeps running, so a start or a rebuild does not swap back
+and forth), or a reason the display cannot hold the phase at this camera
+rate: `the camera drifts more than a line a frame`, `the refresh is not
+the camera's frame rate`, `the camera is faster than the display's
+mode`. The last
+said is forgotten when the display engages or `refresh_sync` goes off, so
+a later fallback for the same reason is said again. When the display
+engages with the sensor steer running, the player sends one `phase 0`
+and drops it: `maburplay: refresh sync nudge -- the drone's sensor runs
+on its trim`.
+
+A display that cannot hold the phase at this camera rate -- NUDGE past
+its reach, NUDGE on a refresh that is another rate than the camera's,
+FOLLOW with the camera faster than the mode by more than 0.5 % -- hands
+over to the sensor steer and latches there for the presenter's life: the
+lock is set off, which brings the register back to the mode's own value.
+Without the latch the pair would swap back and forth -- the sensor steer
+pulls the camera onto the display's rate, the display sees it within
+reach, engages and drops the steer, the drone returns to its trim, and
+the display cannot hold it again. A live set of `display.refresh_sync`
+(a changed value) and a new presenter (a display rebuild, a hotplug, a
+follow) clear the latch; the display then hands over again if the
+camera, back on its trim, is still out of its hold.
+
+A live set of `display.refresh_sync` (8403) goes to the running lock:
+nudge ↔ follow restarts its window and trim, off releases the register
+to the mode's own value and the next iteration brings the sensor steer
+back, nudge/follow from off engages the display and drops it. The host
+build has no lock and always steers the sensor.
+
+The goggles settings menu's "Phase lock by" row (`video.refresh_sync`,
+advanced, `docs/gs-menu.md`) sends the same set, labelled Camera (`off`),
+Display (nudge) and Display (follow); it warns `n/a` when a Display choice
+is selected but cannot act on this GS: `display.phase_lock` is off (no lock is built),
+the display's register is not mapped (not an RK356x -- the Orange Pi has
+none -- or `/dev/mem` refused), or the lock refused the controller's
+total within its first second of vblanks. The value still saves either way. No warning
+while the lock waits for its first vblank, and none for a display
+handing over because it cannot hold the camera's rate (that is logged).
+
+**What the drone sees.** Nothing new: under the display actuator the
+player sends no `phase` lines, maburgs' RCF `snr_off` is 0 (after the
+one `phase 0`, or its 3 s timeout), and the drone runs on its trim.
+
 ## Rate mismatch
 
 The player measures the drone's frame rate (median pts step over 1 s,
@@ -67,7 +270,8 @@ followed yet, or a display that fell back to another mode because the sink
 does not offer the requested one (or offers no mode at the camera's rate).
 While it lasts the lock is held in wait and sends nothing (maburgs' RCF
 `snr_off` falls to 0 after its 3 s timeout, so the drone runs on its
-trim), capture-time placement is off, the OSD fps cell reads
+trim; under refresh sync the register goes back to the mode's own
+value), capture-time placement is off, the OSD fps cell reads
 `src/panel` in caution, and the player logs
 `maburplay: rate mismatch: source X Hz, panel Y Hz -- phase lock paused`
 (and `... cleared` once 3 matched seconds follow). A drone reporting
@@ -113,7 +317,10 @@ tab group.
 page: finish the deploy on both devices (and republish the web page) before
 judging the link, per `docs/deploy.md`. On the GS, the `maburplay` binary
 goes in before its config -- an older binary exits on the new
-`[display]` keys (`phase_lock`, `phase_margin_ms`).
+`[display]` keys (`phase_lock`, `phase_margin_ms`, `refresh_sync`).
+A live `set display.refresh_sync` (8403 or the menu) only rewrites a line
+the file already has (`docs/gs-live-config.md`, "File rules"): a GS whose
+TOML predates the key needs the bundle's `refresh_sync` line first.
 A `maburd` from before the ±500 mfps range clamps `snr_off` at ±200 mfps,
 so a panel that needs more (phone-class refresh rates) cannot lock until
 the drone is redeployed.
@@ -133,6 +340,17 @@ runs it at ordinary priority. A refused request (the process lacks
 (`rt=0`).
 `phase_lock` needs `vsync_lock = true`, `sched_cap_ms > 0` and
 `regulate_ms > 0`, or the player refuses to start.
+
+`refresh_sync` (code `"off"`, bundle `"nudge"`) picks which actuator holds
+the phase: `"nudge"` moves the display's refresh one line a frame, one way
+only, for a panel that blanks on a larger change -- it reaches a camera
+drifting under a line a frame against the refresh, and past that (the
+drone's trim at 100 fps) the player steers the sensor instead;
+`"follow"` bends every frame's length to the camera's, for a panel that
+takes any frame length; `"off"` steers the drone's sensor rate instead.
+On a GS that is not an
+RK356x (no VOP2 frame-length register) the set still applies and writes
+the value, but the player keeps steering the sensor and logs it.
 
 `screen_mode` takes three forms (`gs/player/src/mode_pick.h`); the
 bundle ships `"auto"`:
@@ -198,8 +416,8 @@ The drone has no phase-lock config.
 
 ## Threads
 
-maburplay runs four loops, so the release deadline never waits on
-anything slower than itself:
+maburplay runs four loops, plus refresh sync's display-lock thread, so
+the release deadline never waits on anything slower than itself:
 
 - **Feed thread** (`FeedLoop`, `feed_loop.h`): blocks on the AU doorbell,
   reads the ring, and makes every decoder *input* call (`AuRouter`,
@@ -210,8 +428,9 @@ anything slower than itself:
   side. Per decoded frame, in order: the frame's submit notes (`lat`
   submit stamps, incomplete-AU flags for the lateness window),
   `lat.on_decoded`, the source-rate sample, the hand-over to the release
-  thread, and then the framebuffer prime, so the release thread's
-  present() finds the frame's framebuffer cached. It also takes the submit
+  thread, then the framebuffer prime, so the release thread's present()
+  finds the frame's framebuffer cached, and last the frame's capture stamp
+  to the display-lock thread's camera period. It also takes the submit
   notes after every poll round, frame or not, so they never queue up in
   the feed while the decoder emits nothing.
 - **Release thread** (`ReleaseLoop`, `release_loop.h`, `SCHED_FIFO` at
@@ -228,10 +447,17 @@ anything slower than itself:
   post). It never calls the decoder: displaced frames and frames the
   display is done with go back through a release queue the decode-output
   thread drains. Each offer's phase margin is queued for housekeeping.
+- **Display-lock thread** (`DisplayLock`, `display_lock.h`, `SCHED_FIFO`
+  at `rt_priority − 1`; RK356x with `display.phase_lock` and
+  `refresh_sync` available): one per presenter, waking on its vblanks to
+  write the frame-length register ("Display actuator: refresh sync"). It
+  takes margins and stamps from the other threads through the
+  controller's mutex and never calls into the presenter's DRM state.
 - **Housekeeping** (the main loop, 2 ms): delivery notes (raw DVR, OSD
-  figures), the record button, the phase lock itself (it takes the release
-  thread's margins while the source and panel rates match, ticks and sends
-  the offset), the rate match, OSD composition, the 1 Hz stats,
+  figures), the record button, the phase lock itself (it picks the
+  actuator, takes the release thread's margins while the source and panel
+  rates match, and ticks and sends the sensor offset or feeds the display
+  lock), the rate match, OSD composition, the 1 Hz stats,
   `lat.log`/`frame.log`/`reg.log`, the decode watchdog and the display
   hotplug retry. It composes the screen's OSD only while no publish is
   pending, so it never draws into a buffer that is on screen or about to
@@ -252,15 +478,30 @@ each frame on the spot.
 
 ## Observability
 
-- `reg.log` (`# reglog 4`) regulator line: `lock=<off|wait|acq|lock|oor>
-  lerr=<ms>ms loff=<mfps> lctr=<mfps>`, and the release thread's
+- `reg.log` (`# reglog 5`) regulator line: `lock=<off|wait|acq|lock|oor>
+  lerr=<ms>ms loff=<n> lctr=<f> lact=<sensor|nudge|follow>` -- under
+  `sensor` the offset and centre in mfps, under `nudge`/`follow` the
+  lines in the frame-length register and the grid's lines -- and the
+  release thread's
   `rlate= hand= rt= flushes= recstarts=` plus the burned recorder's
   `burn_in= burn_enc= burn_drop=` (docs/observability.md
   "Regulator line").
 - maburplay stderr: `phase-lock: <state> err= off= centre=` on each state
-  change.
+  change of the sensor steer; `refresh-sync: <state> err= lines=` on each
+  of the display lock's. The display-lock thread's own lines:
+  `refresh-sync: on (nudge: one line at a time)` /
+  `on (follow: each frame as long as the camera's)`, every wait reason as
+  it changes (`refresh-sync: rate mismatch`, `waiting for frames`, …),
+  NUDGE's direction (`refresh-sync: frames made only longer (the display
+  no slower than the camera)` / `shorter (the display slower)`),
+  `refresh-sync: in step` at the first lock, and every 5 s
+  `refresh-sync: err=<ms>ms lines=<+n> (grid <f>, trim <+f>)
+  moved=<+us>/5s cam=<us>us` (trim: FOLLOW's learnt lines in the grid, 0
+  under NUDGE). The actuator choice logs the two
+  `maburplay: refresh sync …` lines above.
 - Drone stats line: `snr_off=` (the offset on the sensor); `/tmp/mabur.log`
   `[sensor] steer:` lines for the first steer, clamps and refusals.
 - `tools/flightreport.py` (session mode): PHASE LOCK — share of rows
-  locked, acquire time, offset changes per minute, offset range, |lerr|
-  while locked.
+  locked, acquire time, the actuator (the last row's `lact=`), offset
+  changes per minute, the offset range in that actuator's unit (mfps or
+  lines, over its rows), |lerr| while locked.

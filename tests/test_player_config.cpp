@@ -665,6 +665,31 @@ TEST(display_phase_lock_keys) {
   CHECK(load_throws("[display]\nphase_lock = true\nsched_cap_ms = 16\nregulate_ms = 0\n"));
 }
 
+TEST(display_refresh_sync_key) {
+  // display.refresh_sync: "off" in code, picks the lock's actuator ("off" /
+  // "nudge" / "follow").
+  const auto bare = maburplay::load_config(write_tmp_play(""));
+  CHECK(bare.display.refresh_sync == "off");
+  CHECK(maburplay::load_config(write_tmp_play("[display]\nrefresh_sync = \"nudge\"\n"))
+            .display.refresh_sync == "nudge");
+  CHECK(maburplay::load_config(write_tmp_play("[display]\nrefresh_sync = \"follow\"\n"))
+            .display.refresh_sync == "follow");
+  std::string msg;
+  try { maburplay::load_config(write_tmp_play("[display]\nrefresh_sync = \"free\"\n")); }
+  catch (const std::exception& e) { msg = e.what(); }
+  CHECK(msg.find("display.refresh_sync") != std::string::npos);
+}
+
+TEST(display_refresh_sync_key_without_phase_lock) {
+  // The sensor-steer actuator (phase_lock) and the display actuator
+  // (refresh_sync) are independent knobs: either may be set without the
+  // other.
+  const auto c = maburplay::load_config(
+      write_tmp_play("[display]\nrefresh_sync = \"nudge\"\n"));
+  CHECK(c.display.refresh_sync == "nudge");
+  CHECK(!c.display.phase_lock);
+}
+
 TEST(display_rt_priority_key) {
   // display.rt_priority: the release thread's SCHED_FIFO priority, 10 in
   // code and bundle, 0 = ordinary scheduling, at most 50.
@@ -716,4 +741,5 @@ TEST(bundle_ships_the_phase_lock_on) {
   CHECK(b.display.phase_lock);
   CHECK(b.display.phase_margin_ms == 4);
   CHECK(b.display.sched_cap_ms == 16);
+  CHECK(b.display.refresh_sync == "nudge");
 }

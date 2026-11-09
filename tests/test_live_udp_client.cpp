@@ -70,6 +70,7 @@ struct PFake {
     h.osd_layers = [](const Config&, std::string*) { return true; };
     h.next_start = [](const Config&) {};
     h.menu = [](const Config&) {};
+    h.refresh_sync = [](const Config&) {};
     return h;
   }
 };

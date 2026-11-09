@@ -36,7 +36,8 @@ struct PlayerLiveKey {
 
 // The closed live table, in `get` order: screen_mode, colortrans.enable,
 // osd.enable, osd.gs.enable, dvr.target, dvr.mode, dvr.burned.bitrate_kbps,
-// dvr.burned.every, dvr.burned.size, menu.show_advanced, menu.scale.
+// dvr.burned.every, dvr.burned.size, menu.show_advanced, menu.scale,
+// display.refresh_sync.
 extern const std::vector<PlayerLiveKey> kPlayerLiveKeys;
 const PlayerLiveKey* player_live_key(const std::string& dotted);  // nullptr = not live
 
@@ -61,6 +62,8 @@ enum class PlayerApplyRule : uint8_t {
   // re-lays the menu out there). No presenter rebuild, nothing latched for
   // a later recording start.
   Menu,
+  // display.refresh_sync: swaps the phase lock's actuator in process.
+  RefreshSync,
 };
 PlayerApplyRule player_apply_rule(const PlayerLiveKey& k, const Config& before,
                                   const Config& after);
@@ -86,13 +89,14 @@ RecPlan rec_plan(const DvrCfg& d);
 
 // What an apply does to the running player. Every hook runs on the owning
 // (housekeeping) thread and is handed the live config with only the set
-// key changed. All four must be set (the applier's constructor throws
+// key changed. All five must be set (the applier's constructor throws
 // std::invalid_argument otherwise).
 struct PlayerApplyHooks {
   std::function<bool(const Config&, std::string* err)> reacquire_display;  // Presenter
   std::function<bool(const Config&, std::string* err)> osd_layers;         // OsdLayers
   std::function<void(const Config&)> next_start;                           // NextStart
   std::function<void(const Config&)> menu;                                 // Menu
+  std::function<void(const Config&)> refresh_sync;                        // RefreshSync
 };
 
 using PlayerApplyResult = mabur::LiveApplyResult;

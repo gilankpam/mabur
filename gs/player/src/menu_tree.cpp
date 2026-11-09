@@ -455,6 +455,34 @@ MenuNode colour_row(const Deps& d) {
   return n;
 }
 
+// Who moves to hold the phase lock: the drone's camera (the GS steers its
+// sensor rate), or the GS's own display (refresh sync, nudge or follow).
+MenuNode refresh_sync_row(const Deps& d) {
+  MenuNode n = choice_row("video.refresh_sync", "Phase lock by", Owner::kPlayer, "display.refresh_sync", quoted);
+  n.advanced = true;
+  n.choices = [] {
+    return std::vector<Choice>{{"off", "Camera", "", true},
+                               {"nudge", "Display (nudge)", "", true},
+                               {"follow", "Display (follow)", "", true}};
+  };
+  n.current = [d] { return d->cfg->display.refresh_sync; };
+  // A display choice that cannot act here (no phase lock, no frame-length
+  // control as on the Orange Pi, or the controller's total refused): the set
+  // still saves, and the camera holds the lock instead. Camera itself always
+  // can.
+  n.warn = [d] {
+    const bool display = d->cfg->display.refresh_sync != "off";
+    return display && d->refresh_sync_available && !d->refresh_sync_available() ? std::string("n/a")
+                                                                                : std::string();
+  };
+  n.help = text(
+      "Camera: the drone shifts its camera to the screen; works everywhere. Display: the GS "
+      "bends the screen's timing to the camera instead — nudge is gentle but takes about half "
+      "a minute to lock; follow locks in seconds but more screens flicker. Go back to Camera "
+      "if yours blanks.");
+  return n;
+}
+
 // --- Link --------------------------------------------------------------
 
 // The rung Fixed pins: the live rung off the sideport (the first ladder
@@ -1168,9 +1196,9 @@ std::vector<MenuNode> build_menu_tree(const MenuTreeDeps& deps) {
   return guarded(d, {
       group("video", "Video", "Camera, display and picture.",
             [d] {
-              return std::vector<MenuNode>{camera_row(d), fix_row(d),    display_row(d),
-                                           colour_row(d), mirror_row(d), flip_row(d),
-                                           slices_row(d)};
+              return std::vector<MenuNode>{camera_row(d),       fix_row(d),   display_row(d),
+                                           colour_row(d),        refresh_sync_row(d),
+                                           mirror_row(d),        flip_row(d), slices_row(d)};
             }),
       group("link", "Link", "How the video crosses the air.",
             [d] {

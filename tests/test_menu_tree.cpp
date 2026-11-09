@@ -89,6 +89,7 @@ struct Fx {
   std::vector<ModeCand> modes;
   double cam = 0;
   std::string running;
+  std::function<bool()> refresh_sync_available;
 
   // Fills snap.vtx (creating it linked, list "complete") with one row,
   // updating it in place when `id` is already there.
@@ -122,6 +123,7 @@ struct Fx {
     d.modes = [this] { return modes; };
     d.camera_hz = [this] { return cam; };
     d.running_mode = [this] { return running; };
+    d.refresh_sync_available = refresh_sync_available;
     return d;
   }
   std::vector<MenuNode> tree() { return build_menu_tree(deps()); }
@@ -575,6 +577,33 @@ TEST(display_and_colour_confirm_the_split_only_during_a_burned_recording) {
   CHECK(confirm(f.node("osd.fc"), "false").empty());
 }
 
+TEST(phase_lock_by_row_offers_camera_or_display_and_warns_when_display_cannot_act) {
+  Fx f;
+  f.cfg.display.refresh_sync = "nudge";
+  f.refresh_sync_available = [] { return false; };
+  MenuNode n = f.node("video.refresh_sync");
+  CHECK(n.label == "Phase lock by");
+  CHECK(n.advanced);
+  CHECK((values(n.choices()) == std::vector<std::string>{"off", "nudge", "follow"}));
+  CHECK((labels(n.choices()) ==
+         std::vector<std::string>{"Camera", "Display (nudge)", "Display (follow)"}));
+  CHECK(n.current() == "nudge");
+  CHECK(n.warn() == "n/a");
+  f.cfg.display.refresh_sync = "follow";
+  CHECK(f.node("video.refresh_sync").warn() == "n/a");
+
+  // The camera steer works without the display's frame-length control.
+  f.cfg.display.refresh_sync = "off";
+  CHECK(f.node("video.refresh_sync").warn().empty());
+
+  f.cfg.display.refresh_sync = "nudge";
+  f.refresh_sync_available = [] { return true; };
+  CHECK(f.node("video.refresh_sync").warn().empty());
+
+  f.refresh_sync_available = nullptr;
+  CHECK(f.node("video.refresh_sync").warn().empty());
+}
+
 TEST(display_choices_are_auto_plus_sizes_at_the_camera_rate) {
   Fx f;
   f.modes = kAvatar;
@@ -859,8 +888,8 @@ TEST(video_group_order_has_the_drone_rows_in_place) {
   std::vector<std::string> ids;
   for (const MenuNode& n : t[0].children()) ids.push_back(n.id);
   CHECK((ids == std::vector<std::string>{"video.camera", "video.fix", "video.display",
-                                         "video.colour", "video.mirror", "video.flip",
-                                         "video.slices"}));
+                                         "video.colour", "video.refresh_sync", "video.mirror",
+                                         "video.flip", "video.slices"}));
 }
 
 TEST(fec_enh_max_follows_base) {
@@ -947,6 +976,7 @@ TEST(the_string_values_pass_maburplays_setter) {
   h.osd_layers = [](const maburplay::Config&, std::string*) { return true; };
   h.next_start = [](const maburplay::Config&) {};
   h.menu = [](const maburplay::Config&) {};
+  h.refresh_sync = [](const maburplay::Config&) {};
   maburplay::PlayerConfigApplier a(d.file, f.cfg, maburplay::BuildCaps{true, false}, h, nullptr);
   auto set = [&](const SetStep& s) {
     std::string why;

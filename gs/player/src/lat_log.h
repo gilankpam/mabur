@@ -19,7 +19,7 @@ namespace maburplay {
 inline constexpr const char* kSessionMarker = "/tmp/mabur-session";
 
 // reg.log's format marker (docs/observability.md "reg.log").
-inline constexpr const char* kRegLogHeader = "# reglog 4";
+inline constexpr const char* kRegLogHeader = "# reglog 5";
 
 // Persists a player record into the CURRENT debug session, so it survives
 // power-off (/tmp is tmpfs; the flight-0035 tail was lost exactly that
