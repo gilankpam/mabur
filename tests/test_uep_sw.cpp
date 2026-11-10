@@ -207,11 +207,12 @@ std::vector<sw::SwHeader> headers_of(const UepBody& b, int block_payload) {
   return out;
 }
 
-// Shared shape check for a 100-source-symbol enh frame (layers_for(164, 4,
-// 64)): the frame-end batch is one body of 8 repairs, each spanning the
-// full window and ending at the frame's last source, with exactly 16
-// sources (the held tail) between the last mid-frame repair and that body.
-void expect_hundred_sym_frame_tail(const std::vector<UepBody>& bodies, int block_payload) {
+// Shared shape check for a 150-source-symbol enh frame (layers_for(164, 4,
+// 64), past frame_window's cap): the frame-end batch is one body of 8
+// repairs, each spanning the capped window and ending at the frame's last
+// source, with exactly 16 sources (the held tail) between the last mid-frame
+// repair and that body.
+void expect_capped_frame_tail(const std::vector<UepBody>& bodies, int block_payload) {
   std::vector<sw::SwHeader> flat;
   for (auto& b : bodies) {
     auto hs = headers_of(b, block_payload);
@@ -225,7 +226,7 @@ void expect_hundred_sym_frame_tail(const std::vector<UepBody>& bodies, int block
   REQUIRE(tail_hdrs.size() == 8);
   for (auto& h : tail_hdrs) {
     CHECK(h.repair);
-    CHECK(h.window_len == 64);
+    CHECK(h.window_len == kFrameWindowCap);
     CHECK(h.seq + h.window_len == last_src_seq + 1);
   }
 
@@ -397,10 +398,10 @@ TEST(uep_async_recovers_under_loss_like_sync) {
 // the worker, so add_frame ships sources (plus whatever repairs are already
 // built) and collect() harvests the rest once the worker finishes — as
 // bodies of the right stream, with the packer's partial group flushed so
-// nothing lingers until the next frame. 77 source symbols (> the window 64)
-// so the frame's front still spends credit through the worker as usual —
-// frame_hold_syms only holds its last 16 syms, built inline at flush() —
-// leaving something for collect() to harvest.
+// nothing lingers until the next frame. 150 source symbols (> the 128 cap of
+// frame_window) so the frame's front still spends credit through the worker
+// as usual — frame_hold_syms only holds its last 16 syms, built inline at
+// flush() — leaving something for collect() to harvest.
 TEST(uep_collect_harvests_repairs_the_frame_left_behind) {
   auto layers = layers_for(164, 4, 64);
   FecWorker worker;
@@ -409,7 +410,7 @@ TEST(uep_collect_harvests_repairs_the_frame_left_behind) {
   UepDecoder dec(layers);
   std::mt19937 rng(42);
   const uint64_t now = 1000;
-  auto unit = make_unit(/*stream=*/1, 0, 77 * 156 - 8, rng);  // 77 symbols exactly
+  auto unit = make_unit(/*stream=*/1, 0, 150 * 156 - 8, rng);  // 150 symbols exactly
   auto frame_bodies = enc.add_frame(1, unit.data(), unit.size(), now);
   CHECK(!frame_bodies.empty());
   std::vector<UepBody> harvested;
@@ -417,11 +418,14 @@ TEST(uep_collect_harvests_repairs_the_frame_left_behind) {
   enc.collect(sink);
   CHECK(harvested.empty());  // worker held: nothing finished yet
   worker.set_held(false);
-  // Wait for the worker to finish the frame's repairs, then harvest.
-  for (int i = 0; i < 3000 && harvested.empty(); ++i) {
+  // Wait for the worker to finish all the frame's repairs: a job can finish
+  // after the first harvest, and between the last harvest and the check.
+  for (int i = 0; i < 3000 && enc.repairs_outstanding(1); ++i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
     enc.collect(sink);
   }
+  CHECK(!enc.repairs_outstanding(1));
+  enc.collect(sink);
   REQUIRE(!harvested.empty());
   for (auto& b : harvested) CHECK(b.stream_id == 1);
   // Once idle, a second harvest finds nothing pending anywhere.
@@ -485,10 +489,50 @@ TEST(big_frame_tail_has_one_body_of_repairs_behind_it) {
   auto layers = layers_for(164, 4, 64);
   UepEncoder enc(layers, 15);
   std::mt19937 rng(42);
-  auto unit = make_unit(/*stream=*/1, 0, 100 * 156 - 8, rng);  // 100 symbols exactly
+  auto unit = make_unit(/*stream=*/1, 0, 150 * 156 - 8, rng);  // 150 symbols exactly
   auto bodies = enc.add_frame(1, unit.data(), unit.size(), 1000);
   const int bp = static_cast<int>(sw::kSwHeaderLen) + 164;
-  expect_hundred_sym_frame_tail(bodies, bp);
+  expect_capped_frame_tail(bodies, bp);
+}
+
+// A frame past the bundle window but inside frame_window's cap holds every
+// repair to its end, each repair reaches the whole frame, and the next
+// frame's reach the margin of the one before it. A loss at the frame's HEAD
+// is what this buys: the tail rule's end batch would not reach it.
+TEST(frame_inside_the_cap_is_covered_whole_by_its_end_batch) {
+  auto layers = layers_for(164, 4, 64);
+  UepEncoder enc(layers, 15);
+  UepDecoder dec(layers);
+  std::mt19937 rng(42);
+  const int bp = static_cast<int>(sw::kSwHeaderLen) + 164;
+
+  auto unit = make_unit(/*stream=*/1, 0, 90 * 156 - 8, rng);  // 90 symbols exactly
+  auto bodies = enc.add_frame(1, unit.data(), unit.size(), 1000);
+  size_t n_rep = 0;
+  bool seen_repair = false;
+  for (auto& b : bodies) {
+    auto hs = headers_of(b, bp);
+    REQUIRE(!hs.empty());
+    if (hs.front().repair) {
+      seen_repair = true;
+      for (auto& h : hs) { CHECK(h.window_len == 90); ++n_rep; }
+    } else {
+      CHECK(!seen_repair);  // nothing spent mid-frame
+    }
+  }
+  CHECK(n_rep == 45);  // ceil(90 * 0.5)
+
+  mtest::FragCollector got;
+  for (size_t i = 1; i < bodies.size(); ++i)  // the first source body is lost
+    for (auto& d : dec.add_body(bodies[i].body.data(), bodies[i].body.size(), 1000))
+      got.add(d);
+  CHECK(got.completed().size() == 1);
+
+  auto unit2 = make_unit(/*stream=*/1, 1, 90 * 156 - 8, rng);
+  auto bodies2 = enc.add_frame(1, unit2.data(), unit2.size(), 2000);
+  auto last = headers_of(bodies2.back(), bp);
+  REQUIRE(!last.empty());
+  for (auto& h : last) { CHECK(h.repair); CHECK(h.window_len == 90 + kFrameWindowMargin); }
 }
 
 // frame_hold_syms re-sizes the hold from the layer's CURRENT overhead each
@@ -517,7 +561,7 @@ TEST(overhead_change_moves_the_tail_start) {
   };
 
   // layers_for's default overhead (0.5): T = ceil(8/0.5) = 16.
-  auto unit1 = make_unit(/*stream=*/1, 0, 100 * 156 - 8, rng);  // 100 symbols exactly
+  auto unit1 = make_unit(/*stream=*/1, 0, 150 * 156 - 8, rng);  // 150 symbols exactly
   auto bodies1 = enc.add_frame(1, unit1.data(), unit1.size(), 1000);
   CHECK(tail_run(bodies1) == 16);
 
@@ -525,7 +569,8 @@ TEST(overhead_change_moves_the_tail_start) {
   // (sw_encoder.h), so frame_hold_syms sizes THIS frame's hold from the new
   // 0.25 -- T = ceil(8/0.25) = 32.
   enc.set_layer_overhead(1, 0.25);
-  auto unit2 = make_unit(/*stream=*/1, 1, 100 * 156 - 8, rng);  // 100 symbols exactly
+  // 152 symbols: a front of 120 leaves no credit over, so the batch is 8.
+  auto unit2 = make_unit(/*stream=*/1, 1, 152 * 156 - 8, rng);  // 152 symbols exactly
   auto bodies2 = enc.add_frame(1, unit2.data(), unit2.size(), 2000);
   CHECK(tail_run(bodies2) == 32);
 }
@@ -539,10 +584,10 @@ TEST(shed_frame_leaves_no_frame_state) {
   CHECK(enc.add_frame(1, shed_unit.data(), shed_unit.size(), 1000).empty());
   enc.set_shed(1, false);
 
-  auto unit = make_unit(/*stream=*/1, 1, 100 * 156 - 8, rng);
+  auto unit = make_unit(/*stream=*/1, 1, 150 * 156 - 8, rng);
   auto bodies = enc.add_frame(1, unit.data(), unit.size(), 1000);
   const int bp = static_cast<int>(sw::kSwHeaderLen) + 164;
-  expect_hundred_sym_frame_tail(bodies, bp);
+  expect_capped_frame_tail(bodies, bp);
 }
 
 // The whole point of a frame-end batch in its own body: losing the body
@@ -576,9 +621,9 @@ TEST(late_loss_recovered_by_the_frame_end_batch) {
   CHECK(got.completed().size() == 1);
 }
 
-// Same guarantee, for a frame bigger than the window: drop a body that sits
+// Same guarantee, for a frame past the window cap: drop a body that sits
 // entirely inside the held tail (the frame's last 16 sources —
-// frame_hold_syms(100, 64, 0.5, 8) == 16) with no repair envelope riding
+// frame_hold_syms(150, 128, 0.5, 8) == 16) with no repair envelope riding
 // along in it -- e.g. the body holding S87..S94. The held tail carries no
 // repairs among its own sources (those ship only in the frame-end batch),
 // so a body that straddles the front/tail boundary (mixing a front-window
@@ -590,7 +635,7 @@ TEST(big_frame_late_loss_recovered_by_the_tail_batch) {
   UepEncoder enc(layers, 15);
   UepDecoder dec(layers);
   std::mt19937 rng(42);
-  auto unit = make_unit(/*stream=*/1, 0, 100 * 156 - 8, rng);  // 100 symbols exactly
+  auto unit = make_unit(/*stream=*/1, 0, 150 * 156 - 8, rng);  // 150 symbols exactly
   auto bodies = enc.add_frame(1, unit.data(), unit.size(), 1000);
   const int bp = static_cast<int>(sw::kSwHeaderLen) + 164;
 

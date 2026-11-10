@@ -615,6 +615,39 @@ TEST(retx_cascade_solve_inherits_retx_class) {
   CHECK(eps[0].missing == 2 && eps[0].retx == 2 && eps[0].recovered == 0 && eps[0].abandoned == 0);
 }
 
+// One wide frame must not set the window GapTimeoutPolicy sees for the rest
+// of the session; the high-water mark, which the loss episodes use, keeps it.
+TEST(recent_repair_window_forgets_a_wide_frame) {
+  SwConfig cfg{64, 16, 0.5};
+  SwEncoder e(cfg);
+  SwDecoder d(cfg);
+  int pkt = 0;
+  auto send = [&](int n, int window, uint64_t now) {
+    e.begin_frame(static_cast<size_t>(n), static_cast<size_t>(n), window);
+    std::vector<std::vector<uint8_t>> envs;
+    for (int i = 0; i < n; ++i) {
+      auto p = pat(62, pkt++);
+      for (auto& env : e.add_packet(p.data(), p.size())) envs.push_back(std::move(env));
+    }
+    for (auto& env : e.flush()) envs.push_back(std::move(env));
+    for (auto& env : envs) d.add_symbol(env.data(), env.size(), now);
+  };
+  CHECK(d.repair_window_recent() == 0);
+  send(100, 128, 1000);
+  CHECK(d.repair_window_recent() == 100);
+  send(10, 16, 999);                       // a stamp from behind wipes nothing
+  CHECK(d.repair_window_recent() == 100);
+  send(10, 16, 1500);
+  CHECK(d.repair_window_recent() == 100);  // same epoch
+  send(10, 16, 2100);
+  CHECK(d.repair_window_recent() == 100);  // the last epoch still counts
+  send(10, 16, 3200);
+  CHECK(d.repair_window_recent() == 16);
+  CHECK(d.repair_window() == 100);
+  send(10, 16, 20000);
+  CHECK(d.repair_window_recent() == 16);   // long silence: stale epoch dropped
+}
+
 MTEST_MAIN
 
 TEST(arrival_salvage_only_from_corrupt_body_copies) {

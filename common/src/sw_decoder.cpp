@@ -11,6 +11,7 @@ namespace {
 // (wrap-adjacent seqs land near 0 after int32 casting; a reboot lands
 // ~2^32 away). ~1 minute of symbols at video rates.
 constexpr int64_t kResetSpan = 1 << 20;
+constexpr uint64_t kRecentWindowEpochMs = 1000;  // repair_window_recent
 constexpr uint64_t kAnchor = 1ull << 32;  // headroom below the first vseq
 uint16_t rd16(const uint8_t* p) { return static_cast<uint16_t>(p[0] | (p[1] << 8)); }
 }  // namespace
@@ -316,6 +317,17 @@ std::vector<std::vector<uint8_t>> SwDecoder::add_symbol(const uint8_t* env, size
   const uint64_t ws = unwrap(h.seq);
   const int wl = h.window_len;
   if (wl > repair_window_hwm_) repair_window_hwm_ = wl;
+  // Stamps come per card through one queue and can step back a little; an
+  // older one simply belongs to the current epoch.
+  if (!rw_started_ || (now_ms >= rw_epoch_ms_ && now_ms - rw_epoch_ms_ >= kRecentWindowEpochMs)) {
+    // Two epochs of silence: the last epoch's window no longer describes
+    // the stream either.
+    rw_prev_ = (rw_started_ && now_ms - rw_epoch_ms_ < 2 * kRecentWindowEpochMs) ? rw_cur_ : 0;
+    rw_cur_ = 0;
+    rw_epoch_ms_ = now_ms;
+    rw_started_ = true;
+  }
+  if (wl > rw_cur_) rw_cur_ = wl;
   const uint64_t wend = ws + static_cast<uint64_t>(wl);  // one past last covered
   if (wend > newest_v_ + static_cast<uint64_t>(kResetSpan) ||
       wend + static_cast<uint64_t>(kResetSpan) < newest_v_) {

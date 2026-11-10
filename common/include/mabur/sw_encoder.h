@@ -22,6 +22,18 @@ struct FecRepairJob;
 // front as usual and only holds its tail.
 size_t frame_hold_syms(size_t n_syms, int window, double overhead, int blocks_per_body);
 
+// The repair window of one declared frame. A frame's repairs should reach
+// its whole body plus a margin of the symbols before it, so the frame-end
+// batch can repair any loss in the frame and a loss at the previous frame's
+// tail still has one more chance. window (fec.window) is the floor: it is
+// the absolute burst budget, which a small frame needs as much as a big one.
+// kFrameWindowCap bounds the build cost, repairs x window grows with the
+// square of the frame size; a frame past the cap gets the cap and falls
+// under frame_hold_syms's tail rule. A window configured above the cap wins.
+constexpr int kFrameWindowMargin = 32;
+constexpr int kFrameWindowCap = 128;
+int frame_window(size_t n_syms, int window);
+
 // Receives one complete envelope (header + symbol) the moment it is
 // sealed or drained. The pointer is valid only for the call: sources
 // point into the encoder's reusable envelope buffer, repairs into the
@@ -30,7 +42,8 @@ using SwEnvSink = std::function<void(const uint8_t* env, size_t len)>;
 
 // Config for the systematic sliding-window RLC FEC scheme (the sole FEC
 // scheme; block RS is retired).
-// window is the encoder ring / repair span in symbols, [2, 255] (wire u8).
+// window is the encoder ring / repair span in symbols, [2, 255] (wire u8);
+// a declared frame may widen its own span (frame_window).
 struct SwConfig {
   int symbol_size = 64;
   int window = 128;
@@ -91,14 +104,16 @@ class SwEncoder {
   // symbols it will seal (the actual count sent before the next flush() may
   // differ — the hold is sized on the guess, nothing more), and hold_syms
   // (frame_hold_syms's return) is how many of its trailing seals hold their
-  // credit until that flush() closes the frame. Repairs credited before the
+  // credit until that flush() closes the frame. window (frame_window's
+  // return, 0 = the configured one) is the repair span for this frame only;
+  // flush() puts the configured span back. Repairs credited before the
   // held tail still spend as usual, so a frame bigger than the window is
   // protected throughout, not just at its end. The caller is expected to
   // follow with exactly that frame's add_packet calls and one flush(), but a
   // declared count the actual seals over- or undershoot is tolerated: the
   // hold boundary just lands wherever frame_seals_ crosses frame_front_,
   // right-sized guess or not.
-  void begin_frame(size_t n_syms, size_t hold_syms);
+  void begin_frame(size_t n_syms, size_t hold_syms, int window = 0);
 
   // The configured repair-symbols-per-source-symbol ratio (SwConfig::overhead),
   // for a caller sizing frame_hold_syms's hold from this encoder's own config.
@@ -210,7 +225,7 @@ class SwEncoder {
 
  private:
   // Sealed symbols live in one contiguous 16 B-aligned fixed-stride ring of
-  // window + kSlackRows rows (not a deque of vectors). The slack keeps a
+  // max_window_ + kSlackRows rows (not a deque of vectors). The slack keeps a
   // row readable for kSlackRows further seals after it leaves the window —
   // the async repair path queues jobs that reference ring
   // rows by slot instead of copying the window. 512 (was 64): with no
@@ -270,6 +285,8 @@ class SwEncoder {
   bool frame_active_ = false;
   size_t frame_front_ = 0;
   size_t frame_seals_ = 0;
+  int max_window_ = 0;     // widest span any frame can ask for: sizes the ring
+  int frame_window_ = 0;   // the span repairs use right now
   uint64_t sources_out_ = 0, repairs_out_ = 0;
   size_t oversize_drops_ = 0;
 

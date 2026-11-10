@@ -435,8 +435,9 @@ void WebGs::tick(uint64_t now_us) {
   if (opts_.adaptive_gap && now_ms_u >= gap_update_ms_ + 1000) {
     gap_update_ms_ = now_ms_u;
     for (int s = 0; s < 2; ++s) {
-      gap_.update(s, agg_.decoder().newest_seq(s), agg_.decoder().repair_window(s), now_ms_u);
+      gap_.update(s, agg_.decoder().newest_seq(s), agg_.decoder().repair_window_recent(s), now_ms_u);
       fs_.set_gap_timeout(s, static_cast<uint64_t>(gap_.timeout_ms(s)));
+      fs_.set_gap_frame_span(s, gap_.us_per_symbol(s), gap_.margin_ms(), gap_.cap_ms());
     }
   }
   if (msp_ && now_ms_u >= msp_tick_ms_ + 1000) {

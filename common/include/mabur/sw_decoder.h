@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -138,8 +139,13 @@ class SwDecoder {
   uint64_t newest_seq() const { return have_seq_ ? newest_v_ : 0; }
   // Largest repair window_len observed — the TX sliding window as actually
   // flown, self-calibrating (the GS config does not know the drone's
-  // fec.window). 0 until the first repair. Feeds GapTimeoutPolicy.
+  // fec.window). 0 until the first repair. Sizes the loss episodes.
   int repair_window() const { return repair_window_hwm_; }
+  // Largest repair window_len seen in the last one to two seconds. The span
+  // changes per frame, so one big frame must not stretch GapTimeoutPolicy's
+  // wait for the rest of the session the way the high-water mark would. 0
+  // until the first repair; holds its value while no repair arrives.
+  int repair_window_recent() const { return std::max(rw_cur_, rw_prev_); }
   uint64_t symbols_dropped_bad_cfg() const { return symbols_dropped_bad_cfg_; }
   uint64_t symbols_dropped_stale() const { return symbols_dropped_stale_; }
   // Repairs that could solve nothing -- a second-card copy of one already
@@ -202,6 +208,9 @@ class SwDecoder {
   uint64_t symbols_in_ = 0, symbols_dropped_bad_cfg_ = 0;
   uint64_t symbols_dropped_stale_ = 0, packets_out_ = 0, resets_ = 0, repairs_skipped_ = 0;
   int repair_window_hwm_ = 0;
+  int rw_cur_ = 0, rw_prev_ = 0;   // repair_window_recent: this epoch, the last
+  uint64_t rw_epoch_ms_ = 0;
+  bool rw_started_ = false;
 
   bool wm_open_ = false, wm_valid_ = false;
   uint64_t wm_ = 0;

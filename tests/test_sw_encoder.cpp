@@ -290,6 +290,42 @@ TEST(overhead_zero_frame_emits_no_repairs) {
   CHECK(count_rep(e.flush()) == 0);
 }
 
+TEST(frame_window_rule) {
+  CHECK(frame_window(30, 64) == 64);    // floor: the burst budget stays
+  CHECK(frame_window(32, 64) == 64);    // n + margin == floor
+  CHECK(frame_window(33, 64) == 65);    // first frame to widen
+  CHECK(frame_window(90, 64) == 122);
+  CHECK(frame_window(95, 64) == 127);
+  CHECK(frame_window(96, 64) == 128);   // n + margin == cap
+  CHECK(frame_window(300, 64) == 128);  // past the cap
+  CHECK(frame_window(10, 16) == 42);    // a narrow floor still gets the margin
+  CHECK(frame_window(30, 200) == 200);  // a configured window above the cap wins
+  CHECK(frame_window(300, 200) == 200);
+}
+
+// The span is per frame: the first frame's repairs have only 40 symbols to
+// cover, the next one's reach the declared 72, and the undeclared traffic
+// after them is back on the configured window.
+TEST(declared_window_applies_to_its_frame_only) {
+  SwEncoder e(SwConfig{64, 32, 0.25});
+  e.begin_frame(40, 40, 72);
+  CHECK(count_rep(feed(e, 40)) == 0);
+  auto a = e.flush();
+  CHECK(count_rep(a) == 10);
+  for (auto& env : a) if (hdr(env).repair) { CHECK(hdr(env).window_len == 40); CHECK(hdr(env).seq == 0); }
+
+  e.begin_frame(40, 40, 72);
+  CHECK(count_rep(feed(e, 40)) == 0);
+  auto b = e.flush();
+  CHECK(count_rep(b) == 10);
+  for (auto& env : b) if (hdr(env).repair) { CHECK(hdr(env).window_len == 72); CHECK(hdr(env).seq == 8); }
+
+  feed(e, 3);
+  auto c = e.flush();
+  REQUIRE(count_rep(c) == 1);
+  for (auto& env : c) if (hdr(env).repair) CHECK(hdr(env).window_len == 32);
+}
+
 TEST(idle_flush_after_a_frame_adds_nothing) {
   SwEncoder e(SwConfig{64, 32, 0.25});
   e.begin_frame(8, 8); feed(e, 8); e.flush();

@@ -165,9 +165,9 @@ void FrameStream::try_emit(uint64_t now_ms) {
     }
     if (head->sa) head->sa->drain(head->chunks, cb_.frame_data);
     if (head->emitted_upto == head->count) { finish(*head, true); continue; }
-    // Mid-frame gap: give repairs gap_timeout_ms to fill it; force-advance
-    // if the stream has run lookahead frames ahead.
-    bool stale = now_ms >= head->last_progress_ms + gap_ms(head->sid);
+    // Mid-frame gap: give repairs the frame's gap timeout to fill it;
+    // force-advance if the stream has run lookahead frames ahead.
+    bool stale = now_ms >= head->last_progress_ms + frame_gap_ms(*head);
     bool ahead = max_known >= head->id64 + static_cast<uint64_t>(cfg_.lookahead);
     if (stale || ahead) { finish(*head, false); continue; }
     return;
@@ -235,7 +235,7 @@ void FrameStream::poll(uint64_t now_ms) {
   // Age out slots that never got fragment 0 (can't be ordered or begun).
   for (auto it = slots_.begin(); it != slots_.end();) {
     if (!it->second.have_hdr &&
-        now_ms >= it->second.first_ms + gap_ms(it->second.sid)) {
+        now_ms >= it->second.first_ms + frame_gap_ms(it->second)) {
       ++dropped_;
       it = slots_.erase(it);
     } else {

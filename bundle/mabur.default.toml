@@ -34,7 +34,7 @@ wall_margin_db    = 1.0    # safety margin below the walls; raise it to lower TX
 [fec]
 # Forward error correction. symbol_size must match the ground station.
 symbol_size     = 332
-window          = 64       # repair window in symbols: larger survives longer loss bursts; a frame that fits holds all its repairs to the frame end
+window          = 64       # smallest repair window in symbols: larger survives longer loss bursts; each frame widens its own to frame + 32, up to 128, and holds its repairs to the frame end
 blocks_per_body = [4, 4]   # base layer, enhance layer
 base_overhead   = 0.5      # extra repair data on the base layer (0.5 = +50 %)
 feed_batch      = 1        # blocks handed to the radio together (1 = send each as soon as it is ready)

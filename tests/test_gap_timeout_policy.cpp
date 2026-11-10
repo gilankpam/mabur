@@ -85,4 +85,20 @@ TEST(sids_are_independent) {
   CHECK(p.timeout_ms(1) == 50);
 }
 
+TEST(us_per_symbol_follows_the_send_rate) {
+  GapTimeoutPolicy p(50, 150);
+  CHECK(p.us_per_symbol(0) == 0);           // no rate yet
+  p.update(0, 1'000'000, 64, 0);
+  feed(p, 0, 1000.0, 30, 1'000'000, 0);
+  CHECK(p.us_per_symbol(0) > 900 && p.us_per_symbol(0) < 1100);
+  CHECK(p.us_per_symbol(1) == 0);           // sids are independent
+  CHECK(p.us_per_symbol(2) == 0);           // out of range
+
+  GapTimeoutPolicy off(50, 0);
+  off.update(0, 1'000'000, 64, 0);
+  feed(off, 0, 1000.0, 30, 1'000'000, 0);
+  CHECK(off.us_per_symbol(0) == 0);         // stretch disabled
+  CHECK(off.cap_ms() == 0);
+}
+
 MTEST_MAIN

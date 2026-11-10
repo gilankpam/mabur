@@ -67,13 +67,15 @@ void UepEncoder::add_frame(int stream_id, const uint8_t* data, size_t len,
     ++layer.dropped_count;
     return;
   }
-  // Declares the frame before fragmenting it so SwEncoder knows how much of
-  // its tail to hold (frame_hold_syms): n is Fragmenter::chunk_count's exact
-  // chunk count, which fragment() below will also produce, one SwEncoder
-  // seal per chunk (modulo the usual concatenation packing).
+  // Declares the frame before fragmenting it so SwEncoder knows its repair
+  // span (frame_window) and how much of its tail to hold (frame_hold_syms):
+  // n is Fragmenter::chunk_count's exact chunk count, which fragment() below
+  // will also produce, one SwEncoder seal per chunk (modulo the usual
+  // concatenation packing).
   const size_t n = Fragmenter::chunk_count(len, layer.usable);
+  const int window = frame_window(n, layer.sw.window());
   layer.sw.begin_frame(
-      n, frame_hold_syms(n, layer.sw.window(), layer.sw.overhead(), layer.bpb));
+      n, frame_hold_syms(n, window, layer.sw.overhead(), layer.bpb), window);
   const SwEnvSink es = env_sink(layer, sink);
   // Fragment header + frame bytes go straight into the envelope buffer as
   // two spans: no fragment vector, no envelope vector, no packer copies.
