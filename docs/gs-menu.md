@@ -154,19 +154,25 @@ answered `err` or timed out.
   only says maburgs accepted the pin, never whether the link actually
   moved there. `GsLiveSetter` arms `PinSettleWatch` (`menu_apply.h`) on
   the `ok`, from the sideport snapshot taken right before the submit, and
-  the row settles once a later snapshot answers it — its
-  `scan.relocate_seq` differs from the one seen at submit, or the pin
-  already reads landed there (`scan.pinned` and `scan.pick` equal to the
-  member, the case for a same-value set, which never bumps the seq).
-  Once answered: `scan.relocate` null, or naming a different channel,
-  settles ok at once (the link was already on the pin, or there was
-  nothing left to watch land); `landed` settles ok; `failed` settles with
-  "pinned here, link still on `<link>` — `<why>`" (`<link>` is
-  `link.channel`, or "—" when that is null); `pending` settles ok once
-  the session is unlinked (nothing left to watch the relocate land on)
-  and otherwise keeps waiting. A stale or missing sideport mid-wait ends
-  it at "link lost", same wording as a drone step's own. Every other GS
-  key is unchanged.
+  the row settles once a later snapshot's `scan.relocate_seq` differs
+  from the one seen at submit — maburgs bumps the seq on every accepted
+  `set_pin`, including a same-value no-op, so the seq alone is the
+  signal: whether the pin already reads where it was asked
+  (`scan.pinned` and `scan.pick` equal to the member) is NOT, since a pin
+  that failed leaves exactly that reading true, which would otherwise
+  settle a re-pin on the stale failure instead of waiting for the new
+  relocate. (When neither snapshot ever carries a seq — an older maburgs
+  that exports no `scan.relocate_seq` at all — there is nothing to
+  compare, so the row settles ok on the first snapshot instead of
+  waiting forever.) Once a fresh seq lands: `scan.relocate` null, or
+  naming a different channel, settles ok at once (the link was already
+  on the pin, or there was nothing left to watch land); `landed` settles
+  ok; `failed` settles with "pinned here, link still on `<link>` —
+  `<why>`" (`<link>` is `link.channel`, or "—" when that is null);
+  `pending` settles ok once the session is unlinked (nothing left to
+  watch the relocate land on) and otherwise keeps waiting. A stale or
+  missing sideport mid-wait ends it at "link lost", same wording as a
+  drone step's own. Every other GS key is unchanged.
 - A drone-owned step goes through `DroneLiveSetter`, over its own
   `LiveUdpClient` to the same 8402 (so its reply never collides with a
   GS step's or the view refresh's own exchange). Its `vtx set <PARAM_ID>

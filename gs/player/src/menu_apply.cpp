@@ -43,9 +43,13 @@ std::optional<LiveReply> PinSettleWatch::check(const DroneSnapshotView& v) {
     return LiveReply{false, "link lost"};
   }
   const GsSnapshot& s = *v.snap;
-  const bool new_seq = s.scan_relocate_seq != before_seq_;
-  const bool already_there = s.pinned && s.scan_pick && *s.scan_pick == ch_;
-  if (!new_seq && !already_there) return std::nullopt;  // the old outcome, not this submit's
+  if (!before_seq_ && !s.scan_relocate_seq) {
+    // An old maburgs exports no scan.relocate_seq at all: nothing to
+    // compare, so the first snapshot after the submit is the answer.
+    active_ = false;
+    return LiveReply{true, ""};
+  }
+  if (s.scan_relocate_seq == before_seq_) return std::nullopt;  // the old outcome, not this submit's
 
   if (!s.scan_relocate || s.scan_relocate->ch != ch_) {
     active_ = false;

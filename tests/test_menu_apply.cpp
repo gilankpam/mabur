@@ -509,16 +509,29 @@ TEST(pin_watch_pending_linked_waits) {
   CHECK(!w.check(DroneSnapshotView{&after, false}).has_value());
 }
 
-TEST(pin_watch_same_value_settles_on_the_current_state) {
-  GsSnapshot before = scan_snap(true, 100, true, 100, std::nullopt, uint64_t{5});
+TEST(pin_watch_ignores_an_old_outcome_for_the_same_channel) {
+  // The pin already reads at 112 (a prior relocate there failed) when a
+  // re-pin of 112 begins: `pinned && scan_pick == ch` is true from the
+  // very first check, so only the seq -- not that reading -- can tell
+  // the new attempt's answer from the stale one.
+  GsSnapshot before =
+      scan_snap(true, 40, true, 112, reloc("failed", 112, "withdrawn"), uint64_t{5});
   PinSettleWatch w;
-  w.begin(100, &before);
+  w.begin(112, &before);
 
-  // The seq never moved -- a same-value pin is a no-op on maburgs -- but
-  // the sideport already shows the pin where it was asked, so the row
-  // settles on that current state at once.
-  GsSnapshot after = scan_snap(true, 100, true, 100, std::nullopt, uint64_t{5});
-  std::optional<LiveReply> r = w.check(DroneSnapshotView{&after, false});
+  // Same seq, same stale failure: still waiting, not settled on the
+  // previous attempt.
+  GsSnapshot still_old =
+      scan_snap(true, 40, true, 112, reloc("failed", 112, "withdrawn"), uint64_t{5});
+  CHECK(!w.check(DroneSnapshotView{&still_old, false}).has_value());
+
+  // A fresh seq: the new relocate is under way, still pending.
+  GsSnapshot pending = scan_snap(true, 40, true, 112, reloc("pending", 112), uint64_t{6});
+  CHECK(!w.check(DroneSnapshotView{&pending, false}).has_value());
+
+  // It lands.
+  GsSnapshot landed = scan_snap(true, 112, true, 112, reloc("landed", 112), uint64_t{6});
+  std::optional<LiveReply> r = w.check(DroneSnapshotView{&landed, false});
   REQUIRE(r.has_value());
   CHECK(r->ok);
 }
