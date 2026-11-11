@@ -109,6 +109,10 @@ bool ChannelScout::measuring_() const {
           round_.load(std::memory_order_acquire) == kRoundMeasuring);
 }
 
+bool ChannelScout::search_observe_on_() const {
+  return search_observe_.load(std::memory_order_acquire) && search_.load(std::memory_order_acquire);
+}
+
 void ChannelScout::begin_round() {
   {
     std::lock_guard<std::mutex> lk(mu_);
@@ -241,7 +245,9 @@ bool ChannelScout::run_once() {
     if (!prelude_done_.load(std::memory_order_acquire)) {
       if (reprelude_.exchange(false, std::memory_order_acq_rel)) t0_ = now_();
       if (measuring_() && now_() - t0_ < cfg_.one_card_ms)
-        return step_dwell_(/*burst_ok=*/false, /*observe=*/true);   // silent prelude
+        // Silent prelude: always observing (measuring_() is already true
+        // above), written as the general formula for one shape.
+        return step_dwell_(/*burst_ok=*/false, measuring_() || search_observe_on_());
       prelude_done_.store(true, std::memory_order_release);          // re-armed only by unfreeze()
       publish_();
       return true;   // the core reads the ranking, commits, then ack_prelude()s
@@ -261,7 +267,7 @@ bool ChannelScout::run_once() {
     sleep_(cfg_.beacon_period_ms);
     if (!has_work_()) return true;
   }
-  return step_dwell_(/*burst_ok=*/true, measuring_());
+  return step_dwell_(/*burst_ok=*/true, measuring_() || search_observe_on_());
 }
 
 bool ChannelScout::dwell(uint8_t ch, uint64_t round, bool burst, bool observe) {

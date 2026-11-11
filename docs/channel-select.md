@@ -77,7 +77,7 @@ width    = 40
 | **relocate** — the link forms where the drone is, one order moves it to `want` (pin or pick) | each link-up with `op ≠ want`, both modes | `[hop] confirm_ms`, `confirm_extend_ms`, `verify_ms`, `max_hops_per_min`, `one_card_repeats` (shared with the reactive hop) |
 | **verdict** — is `op` bad right now | always (OSD / sideport `hop.verdict`) | `[hop] window_ms`, `persist`, `[hop.verdict] *` |
 | **reactive hop** — in-flight scout, freshness burst, order/verify/withdraw | `channel = "auto"` only, after the freeze | everything else in `[hop]` |
-| **picker lease** — measure the set while the goggles' channel picker is open (below, "Measuring for the picker") | linked, a lease held, both modes | two cards: `radio.scan.dwell_ms`, `settle_ms`; one card: `[hop] lease_sweep_period_ms`, `dwell_observe_ms` |
+| **picker lease** — measure the set while the goggles' channel picker is open (below, "Measuring for the picker") | a lease held, both modes, linked or unlinked | two cards: `radio.scan.dwell_ms`, `settle_ms`; one card: `[hop] lease_sweep_period_ms`, `dwell_observe_ms`; relay-only: `[hop] relay_burst_period_ms`; unlinked search: `radio.scan.dwell_ms`, `busy_dbm` |
 | **calibration pick** — one measure round, then a relocate to the quietest member (`CalPicker`) | each `maburcal start`, auto mode with two or more cards | `radio.scan.dwell_ms`, `settle_ms`, `pick_margin_pct`, `busy_dbm`, `blocked_pct`; the relocate's `[hop] confirm_ms`, `max_hops_per_min` |
 | **one-card mode** | exactly one USB card in the roster (one `[[radio.cards]]` entry, or auto-scan finding one card) | no in-flight scout; `one_card_ms`, `op_window_ms`, `one_card_repeats` apply |
 
@@ -554,11 +554,11 @@ answers with it):
 |---|---|---|
 | `none` | calibration owns the scout: a run (`cal_running`), its measure round waiting or running, or its relocate waiting or in flight | nothing |
 | `none` | the boot pick is open | nothing; the boot scout is measuring anyway |
-| `search` | unlinked and the scout is searching (not relay-only) | named only; nothing extra is measured |
+| `search` | unlinked and the scout is searching (not relay-only) | each search dwell also observes (below) |
 | `none` | unlinked otherwise (a relay-only GS: the sole relay searches) | nothing |
 | `two_card` | linked, two or more USB cards, not relay-only | scout rounds back to back (below) |
 | `one_card` | linked, one USB card (relays in the roster or not) | the in-flight burst on the USB card, once per `hop.lease_sweep_period_ms` (below) |
-| `relay` | linked, no USB card, a ready sweep-capable relay | named only; nothing extra is measured |
+| `relay` | linked, no USB card, a ready sweep-capable relay | one SCAN sweep of the relay, once a period (below) |
 | `none` | otherwise | nothing |
 
 **Two cards: scout rounds, back to back.** While the lease holds and no
@@ -628,6 +628,31 @@ once the burst releases the card); the verdict's own loss windows are blanked to
 same instant. So neither the blocked streak, the detect ring nor the
 persistence learns the gap, the rung store is not blanked by it, and
 `hop.verdict` holds its last value across the burst.
+
+**Search: observe on the search dwells.** Unlinked, with the scout
+searching (not relay-only), the lease turns on
+`ChannelScout::set_search_observe`: every member dwell that already bursts
+DISC for `search_ms` also reads NHM busy for `dwell_ms` right after it, the
+same observe any measuring dwell takes -- `quiet()` holds the TX card's
+own DISC for that span, as any unlinked observe does. Each dwell's reading
+lands in `scan.members` as it drains, same as any other dwell; it is never
+ranked or picked from (the scout's own ranker is reset fresh on the next
+`unfreeze()` regardless of anything it saw meanwhile). The pin,
+`reactive_`, the plan and the boot pick are untouched, and there is no
+burst to pace -- the search job already visits every member once a round
+on its own.
+
+**Relay-only: sweep the relay, once a period.** Linked, with no USB card
+and a ready sweep-capable relay, the lease sends one SCAN on the relay
+every `[hop] relay_burst_period_ms` (members minus `op`, the same
+passes/observe/timeout as the hop's own freshness burst) -- regardless of
+`reactive_` or a live trigger: the lease measures for the player, not for
+a hop decision, so it never needs to stand aside for one being decided. It
+does wait while a hop or relocate is in flight or due, or a sweep (the
+hop's own or an earlier lease sweep) is already out, so the two never
+race for the one relay. The result lands in `scan.members` through the
+same drain as the hop's own sweep; its visits are never added to
+`HopRanker`.
 
 ## In-flight hop after the freeze
 

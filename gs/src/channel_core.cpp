@@ -1057,11 +1057,12 @@ void ChannelCore::poll_sweep_(double now_ms) {
     return;
   }
   if (auto r = fe.take_sweep_result()) {
+    const bool lease = sweep_.lease;
     sweep_.on = false;
     ++sweep_round_;
     for (const auto& e : r->entries) {
       if (!e.valid) continue;
-      ranker_.add(sweep_visit(e, now_ms));
+      if (!lease) ranker_.add(sweep_visit(e, now_ms));   // a lease sweep never ranks
       emit_dwell_(now_ms, sweep_.card, sweep_dwell(e, sweep_round_));
     }
     if (r->status != 0)
@@ -1461,6 +1462,11 @@ void ChannelCore::end_lease_() {
 
 void ChannelCore::step_lease_(const ChannelTickIn& in) {
   if (!scout_) return;
+  // Unlinked with the scout searching, a held lease turns the search
+  // dwells' own NHM read on; unconditional so it also turns off the tick
+  // the lease lapses or the state moves off Search (linking, a boot pick
+  // reopening, calibration taking the scout).
+  scout_->set_search_observe(observing() && lease_state() == LeaseState::Search);
   // A calibration run pre-empts the lease. A pinned or one-card GS starts
   // its run without a measure round (no begin_cal_measure), so the run's
   // first tick is where an open lease round is cancelled: left to finish
@@ -1478,6 +1484,10 @@ void ChannelCore::step_lease_(const ChannelTickIn& in) {
   const LeaseState st = lease_state();
   if (st == LeaseState::OneCard) {
     step_lease_one_card_(in);
+    return;
+  }
+  if (st == LeaseState::Relay) {
+    step_lease_relay_(in);
     return;
   }
   if (st != LeaseState::TwoCard || lease_round_) return;
@@ -1548,6 +1558,39 @@ void ChannelCore::step_lease_one_card_(const ChannelTickIn& in) {
   lease_mask_until_ms_ = end_ms + static_cast<double>(cfg_.hop.window_ms);
   cur_ch_[static_cast<size_t>(scout_card_)] = cards_[static_cast<size_t>(scout_card_)]->channel();
   for (const auto& d : recs) emit_dwell_(now_ms, scout_card_, d);
+}
+
+// The relay-only lease: one SCAN on the sole sweepable card at most once
+// per relay_burst_period_ms. Unlike the one-card burst this never waits on
+// reactive_ or a live trigger -- the lease measures for the player, not for
+// a hop decision -- it only waits out a hop or relocate already in flight
+// or due, or a sweep (the hop's own freshness burst or an earlier lease
+// sweep) already out, so the two never race for the one relay.
+void ChannelCore::step_lease_relay_(const ChannelTickIn& in) {
+  const double now_ms = in.now_ms;
+  if (sweep_.on || now_ms - last_lease_sweep_ms_ < static_cast<double>(cfg_.hop.relay_burst_period_ms))
+    return;
+  if (plan_.hopping() || !(hopc_.state() == HopState::Idle || hopc_.state() == HopState::Hold) ||
+      pending_relocate_ || boot_pick_.relocation_pending(last_bi_) || boot_pick_.relocating() ||
+      scout_owns_())
+    return;
+  std::vector<bool> sweepable(static_cast<size_t>(n_cards_));
+  for (int i = 0; i < n_cards_; ++i)
+    sweepable[static_cast<size_t>(i)] = can_sweep_[static_cast<size_t>(i)] && cards_[static_cast<size_t>(i)]->ready();
+  const int burst_card = pick_burst_card(can_scout_, sweepable, in.tx_card);
+  if (burst_card < 0 || !sweepable[static_cast<size_t>(burst_card)]) return;
+  std::vector<uint8_t> chans;
+  for (uint8_t c : cfg_.radio.channels) if (c != plan_.op()) chans.push_back(c);
+  if (chans.empty()) return;
+  const double prev_sweep_ms = last_lease_sweep_ms_;
+  last_lease_sweep_ms_ = now_ms;
+  if (!cards_[static_cast<size_t>(burst_card)]->start_sweep(chans, kSweepPasses, kSweepObserveMs)) {
+    last_lease_sweep_ms_ = prev_sweep_ms;   // a ready->down race: retry next tick, not spent
+    return;
+  }
+  const double need = static_cast<double>(kSweepPasses) * static_cast<double>(chans.size()) *
+                          (kSweepObserveMs + kSweepPerChannelMs) + kSweepSlackMs;
+  sweep_ = PendingSweep{true, burst_card, now_ms, std::max(kSweepTimeoutMinMs, need), /*lease=*/true};
 }
 
 void ChannelCore::finish_cal_measure_(double now_ms) {

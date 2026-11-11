@@ -511,4 +511,36 @@ TEST(one_card_unfreeze_reruns_the_prelude_from_the_reopen) {
   for (auto& p : g.phases) CHECK(p.first.find('B') == std::string::npos);
 }
 
+// An observe lease while unlinked (the pick frozen, the scout still
+// searching) turns each search dwell's own NHM read on too, same as a
+// measuring dwell, without the scout ranking or picking from it -- off
+// again, dwells go back to burst-only.
+TEST(search_observe_observes_on_frozen_search_dwells) {
+  Rig g(two());                            // auto; frozen below, as a closed boot pick leaves it
+  g.s.set_op(136); g.s.set_search(true);
+  g.s.freeze();
+  g.r.busy_pct_on[144] = 40;
+  g.s.run_once();                          // 136: burst only, frozen and not observing
+  auto d0 = g.s.take_dwells();
+  REQUIRE(d0.size() == 1);
+  CHECK(d0[0].survey.def.primary == 136);
+  CHECK(d0[0].survey.observe_ms == 0);
+  CHECK(!d0[0].busy_valid);
+  g.s.set_search_observe(true);
+  g.s.run_once();                          // 144: burst, then an observe too
+  auto d1 = g.s.take_dwells();
+  REQUIRE(d1.size() == 1);
+  CHECK(d1[0].survey.def.primary == 144);
+  CHECK(d1[0].survey.observe_ms == 250);   // dwell_ms
+  CHECK(d1[0].busy_valid);
+  CHECK(std::abs(d1[0].busy_pct - 40.0) < 1.0);
+  g.s.set_search_observe(false);
+  g.s.run_once();                          // 136 again: observe off
+  auto d2 = g.s.take_dwells();
+  REQUIRE(d2.size() == 1);
+  CHECK(d2[0].survey.def.primary == 136);
+  CHECK(d2[0].survey.observe_ms == 0);
+  CHECK(!d2[0].busy_valid);
+}
+
 MTEST_MAIN

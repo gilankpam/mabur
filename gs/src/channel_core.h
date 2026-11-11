@@ -67,7 +67,17 @@
 // per-card baselines (the next span starting no earlier than the burst's
 // end) instead of being classified, and the verdict's loss windows are
 // blanked to the same instant, so the gap reads as neither interference
-// nor loss.
+// nor loss. Unlinked with the boot scout searching, the lease instead
+// turns on ChannelScout::set_search_observe: each search dwell's own NHM
+// read lands in scan.members too, without ranking or picking from it. On a
+// relay-only GS it is one SCAN sweep of the relay (members minus op, the
+// hop's own passes/observe/timeout) at most once per
+// hop.relay_burst_period_ms, regardless of reactive_ or a live trigger --
+// it only waits out a hop or relocate in flight or due, or a sweep (the
+// hop's or the lease's own) already out, so it never races the hop's own
+// burst for the one relay. Its result lands in scan.members through the
+// same drain as the hop's sweep, and its visits are never added to
+// HopRanker.
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -341,8 +351,10 @@ class ChannelCore {
   // None; unlinked -> Search while the scout searches (not a relay-only
   // GS), else None; linked: two or more USB cards -> TwoCard, one USB card
   // -> OneCard, relays only with a ready sweep-capable one -> Relay; else
-  // None. TwoCard runs scout rounds and OneCard the in-flight burst;
-  // Relay and Search are reported to the player and measure nothing extra.
+  // None. TwoCard runs scout rounds, OneCard the in-flight burst, Search
+  // turns on observing on the scout's own search dwells, and Relay sweeps
+  // the relay on its own schedule (step_lease_relay_); all four feed
+  // scan.members, and Search and Relay never rank.
   LeaseState lease_state() const;
   // The whole `observe <rest>` verb: "ok observe <state>", or
   // "err usage: observe <ms>" unless rest is a bare non-negative integer.
@@ -452,7 +464,11 @@ class ChannelCore {
   // max(1000, passes * n * (observe_ms + 40) + 300) -- 40 ms per channel
   // covers the relay's retune + settle, 300 ms the round trip and slack. A
   // 4-member set (3 swept) sits on the 1000 ms floor; 8 members -> 1140 ms.
-  struct PendingSweep { bool on = false; int card = -1; double sent_ms = 0; double timeout_ms = 1000; } sweep_;
+  // lease: the observe lease sent this one, not the hop -- poll_sweep_
+  // skips ranker_.add for it but still emits every dwell.
+  struct PendingSweep {
+    bool on = false; int card = -1; double sent_ms = 0; double timeout_ms = 1000; bool lease = false;
+  } sweep_;
   uint64_t sweep_round_ = 0, sweep_timeouts_ = 0;
   static constexpr double kSweepTimeoutMinMs = 1000, kSweepPerChannelMs = 40, kSweepSlackMs = 300;
   static constexpr uint8_t kSweepPasses = 2, kSweepObserveMs = 20;
@@ -564,6 +580,16 @@ class ChannelCore {
   void step_lease_one_card_(const ChannelTickIn& in);
   // The last one-card lease burst's start (tick time).
   double last_lease_burst_ms_ = -1e18;
+  // The relay-only lease: one SCAN on the sole sweepable card when
+  // relay_burst_period_ms has passed since the last one and no hop or
+  // relocate is in flight or due and no sweep (the hop's or the lease's
+  // own) is already out. Runs regardless of reactive_ or a live trigger --
+  // the lease never decides anything, so it never needs to stand aside for
+  // a decision in progress, only for a move or a sweep already claiming
+  // the one relay.
+  void step_lease_relay_(const ChannelTickIn& in);
+  // The last relay-only lease sweep's send (tick time).
+  double last_lease_sweep_ms_ = -1e18;
   // Sampler records stamped in (from, until] are masked from the hop
   // verdict: from = the burst's start, until = its end plus window_ms (the
   // window that straddles the burst's end). until < from = none yet.

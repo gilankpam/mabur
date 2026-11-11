@@ -3870,6 +3870,95 @@ TEST(lease_one_card_with_relay_tx_bursts_synchronously) {
   CHECK(!any_call_starts(*g.cards[1], "retune"));
 }
 
+// ---- the search and relay-only leases ----
+
+// Unlinked and frozen (a pinned rig starts there, never having linked), the
+// scout searches: a held lease turns its search dwells into observes too,
+// filling scan.members with no link at all. The same ticks with no lease
+// held leave every member unmeasured -- the search dwells still burst and
+// run, they just never read NHM busy.
+TEST(lease_search_observes_while_unlinked_and_frozen) {
+  auto jam_members = [](Rig& g) {
+    for (auto& c : g.cards) {
+      c->nhm_busy_pct_on[64] = 8;
+      c->nhm_busy_pct_on[112] = 40;
+      c->nhm_busy_pct_on[144] = 2;
+    }
+  };
+  {
+    Rig g(2, 0, /*pinned=*/true, 40);
+    jam_members(g);
+    REQUIRE(!g.core->pick_open());
+    REQUIRE(g.core->lease_state() == LeaseState::Search);
+    for (int i = 0; i < 400; ++i) g.tick(false);   // no lease held
+    for (const auto& m : g.core->snapshot(0).members)
+      if (!m.is_op) CHECK(!m.busy_pct.has_value());
+  }
+  {
+    Rig g(2, 0, /*pinned=*/true, 40);
+    jam_members(g);
+    REQUIRE(g.core->observe(3000) == LeaseState::Search);
+    CHECK(g.sink.has_line("maburgs channel: observe lease 3000 (search)"));
+    uint64_t last = g.clk.ms;
+    for (int i = 0; i < 400; ++i) {
+      if (g.clk.ms - last >= 2000) { g.core->observe(3000); last = g.clk.ms; }
+      g.tick(false);
+    }
+    const auto m = g.core->snapshot(0).members;
+    REQUIRE(m.size() == 4);
+    CHECK(m[1].src == "scan" && m[1].busy_pct && std::abs(*m[1].busy_pct - 8.0) < 1.0 && !m[1].blocked);
+    CHECK(m[2].src == "scan" && m[2].busy_pct && std::abs(*m[2].busy_pct - 40.0) < 1.0 && m[2].blocked);
+    CHECK(m[3].src == "scan" && m[3].busy_pct && std::abs(*m[3].busy_pct - 2.0) < 1.0);
+  }
+}
+
+// Relay-only, linked, pinned (reactive_ off): the lease sweeps the relay on
+// its own schedule -- a SCAN goes out, its result fills scan.members --
+// but never touches HopRanker, and no hop decision is made (reactive_
+// off, as any pinned GS).
+TEST(lease_relay_only_sweeps_with_the_trigger_off) {
+  Rig g(0, 1, /*pinned=*/true, 40);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  REQUIRE(g.core->pinned());
+  const auto before = g.core->hop_ranker().ranking(static_cast<double>(g.clk.ms));
+  REQUIRE(g.core->observe(3000) == LeaseState::Relay);
+  CHECK(g.sink.has_line("maburgs channel: observe lease 3000 (relay)"));
+  for (int i = 0; i < 10 && g.cards[0]->sweeps.empty(); ++i) g.tick(true);
+  REQUIRE(g.cards[0]->sweeps.size() == 1);
+  CHECK((g.cards[0]->sweeps[0] == std::vector<uint8_t>{64, 112, 144}));   // set minus op 40
+  CHECK(g.core->sweep_pending());
+  g.cards[0]->pending_result = sweep_of({{64, 20}, {112, 1}, {144, 4}});
+  for (int i = 0; i < 20 && g.core->sweep_pending(); ++i) g.tick(true);
+  CHECK(!g.core->sweep_pending());
+  const auto after = g.core->hop_ranker().ranking(static_cast<double>(g.clk.ms));
+  REQUIRE(after.size() == before.size());
+  for (size_t i = 0; i < after.size(); ++i) {
+    CHECK(after[i].ch == before[i].ch);
+    CHECK(after[i].visits == before[i].visits);   // the lease never ranks
+  }
+  const auto m = g.core->snapshot(0).members;
+  REQUIRE(m.size() == 4);
+  CHECK(m[1].src == "scan" && m[1].busy_pct && std::abs(*m[1].busy_pct - 100.0) < 1.0 && m[1].blocked);
+  CHECK(m[2].src == "scan" && m[2].busy_pct && std::abs(*m[2].busy_pct - 5.0) < 1.0 && !m[2].blocked);
+  CHECK(m[3].src == "scan" && m[3].busy_pct && std::abs(*m[3].busy_pct - 20.0) < 1.0 && !m[3].blocked);
+  CHECK(!g.sink.has_hop("order"));          // pinned: no reactive hop ever decides
+}
+
+// Relay-only, unlinked: the sole relay searches instead of being swept
+// (lease_state_follows_the_roster), and a held lease engages nothing --
+// no SCAN ever goes out while the lease sits unused.
+TEST(lease_relay_only_unlinked_is_none) {
+  Rig g(0, 1);
+  for (int i = 0; i < 10; ++i) g.tick(false);
+  CHECK(g.core->lease_state() == LeaseState::None);
+  CHECK(g.core->observe(3000) == LeaseState::None);
+  CHECK(g.core->observing());               // held, but nothing to engage
+  const size_t s0 = g.cards[0]->sweeps.size();
+  for (int i = 0; i < 300; ++i) g.tick(false);
+  CHECK(g.cards[0]->sweeps.size() == s0);   // no SCAN while unlinked
+}
+
 TEST(observe_verb_replies) {
   Rig g(2, 0);
   freeze_auto(g);
