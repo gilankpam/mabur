@@ -2831,6 +2831,54 @@ TEST(pin_reloc_null_when_unlinked_or_already_there) {
   CHECK(!h.core->set_pin(64).has_value());          // already there: a pure no-op
   CHECK(!h.core->snapshot(0).relocate.has_value());
   CHECK(h.core->snapshot(0).relocate_seq == seq0 + 1);
+
+  // A failed relocate's outcome ("withdrawn") must not survive a pin back
+  // onto the channel the link is already on: ch == op is Off either way.
+  Rig j(2, 0);
+  freeze_auto(j);
+  link_up(j);
+  for (int i = 0; i < 5; ++i) live_tick(j);
+  REQUIRE(!j.core->set_pin(112).has_value());
+  for (int i = 0; i < 20 && !j.sink.has_line("relocate 40 -> 112 placed"); ++i) live_tick(j);
+  REQUIRE(j.sink.has_line("maburgs channel: relocate 40 -> 112 placed (pin)"));
+  for (int i = 0; i < j.cfg.hop.confirm_ms / 10 + 20 && !j.sink.has_hop("withdraw"); ++i) live_tick(j);
+  REQUIRE(j.sink.has_hop("withdraw"));
+  REQUIRE(j.core->snapshot(0).relocate.has_value());
+  CHECK(j.core->snapshot(0).relocate->why == "withdrawn");
+  const uint64_t seq_failed = j.core->snapshot(0).relocate_seq;
+  // BootPick's own relocating_ latch clears a tick after the withdraw
+  // (its own "did not land" bookkeeping); until then it still refuses a
+  // new pin as "relocate in flight".
+  for (int i = 0; i < 20 && j.core->pin_refusal(40).has_value(); ++i) live_tick(j);
+  REQUIRE(!j.core->pin_refusal(40).has_value());
+  CHECK(!j.core->set_pin(40).has_value());           // pin back onto op: drops the stale outcome
+  CHECK(!j.core->snapshot(0).relocate.has_value());
+  CHECK(j.core->snapshot(0).relocate_seq == seq_failed + 1);
+
+  // A landed relocate's outcome ("landed") must not survive a re-pin to the
+  // same, already-reached channel either.
+  Rig k(2, 0);
+  freeze_auto(k);
+  link_up(k);
+  for (int i = 0; i < 5; ++i) live_tick(k);
+  REQUIRE(!k.core->set_pin(112).has_value());
+  for (int i = 0; i < 20 && !k.sink.has_line("relocate 40 -> 112 placed"); ++i) live_tick(k);
+  REQUIRE(k.sink.has_line("maburgs channel: relocate 40 -> 112 placed (pin)"));
+  const auto rcf = pump_rcf(k);
+  REQUIRE(rcf.has_value() && rcf->hop_ch == 112);
+  k.core->note_video(112);
+  for (int i = 0; i < 5 && !k.sink.has_hop("verify_pass"); ++i) k.tick(true);
+  REQUIRE(k.sink.has_hop("verify_pass"));
+  REQUIRE(k.core->snapshot(0).relocate.has_value());
+  CHECK(k.core->snapshot(0).relocate->state == "landed");
+  CHECK(k.core->op() == 112);
+  const uint64_t seq_landed = k.core->snapshot(0).relocate_seq;
+  // Same latch, quietly cleared on success (no bookkeeping line to wait on).
+  for (int i = 0; i < 20 && k.core->pin_refusal(112).has_value(); ++i) live_tick(k);
+  REQUIRE(!k.core->pin_refusal(112).has_value());
+  CHECK(!k.core->set_pin(112).has_value());          // re-pin onto the channel already reached
+  CHECK(!k.core->snapshot(0).relocate.has_value());
+  CHECK(k.core->snapshot(0).relocate_seq == seq_landed + 1);
 }
 
 TEST(pin_reloc_cleared_by_set_auto_and_replaced_by_set_pin) {

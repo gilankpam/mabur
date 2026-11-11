@@ -1169,12 +1169,18 @@ std::optional<std::string> ChannelCore::set_pin(uint8_t ch) {
   if (auto r = pin_refusal(ch)) return r;
   const bool linked = in_session_cur_;
   const uint8_t op = plan_.op();
-  // Every call that gets this far changes the channel row's relocate (even
-  // the no-op below, which still answers "I heard you, nothing moved") --
-  // scan.relocate_seq lets the goggles menu tell that apart from a fresh
-  // relocate landing on the one it was already watching.
+  // Every call that gets this far bumps scan.relocate_seq, even the no-op
+  // below: the goggles menu needs its own fresh seq to tell "I heard you,
+  // nothing moved" apart from a stale one it was already watching.
   ++pin_seq_;
-  if (pinned_ && ch == op && plan_.want() == ch) return std::nullopt;
+  if (pinned_ && ch == op && plan_.want() == ch) {
+    // Pinning where the link already is drops whatever outcome was still
+    // sitting here (a prior pin's withdrawn/landed/failed) -- ch == op is
+    // Off per the table below, same as the ch == op arm just under this.
+    // Can only be Off or Settled here: Waiting/InFlight imply want != op.
+    pin_reloc_ = PinReloc{};
+    return std::nullopt;
+  }
   if (linked) {
     // The boot pick's relocate, as a pinned boot relocates a drone found
     // off the pin: want moves, BootPick places the order once the scout
