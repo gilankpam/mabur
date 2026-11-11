@@ -3709,6 +3709,86 @@ TEST(lease_one_card_masks_the_verdict_around_the_burst) {
   }
 }
 
+// Threaded, the sampler stamps a pass before it takes the card's lock, so
+// a pass that starts mid-burst is stamped inside the burst but reads its
+// counters only once the burst lets the card go. That masked record
+// re-seeds the baselines with post-burst counters: the next window's span
+// must start at the burst's end, or its own airtime is spread over the
+// burst too -- own % under-read, foreign over-read, in the verdict and in
+// op's scan.members figure. Half the air is ours here: 50 %.
+TEST(lease_one_card_record_stamped_mid_burst_reseeds_from_the_burst_end) {
+  Rig g(1, 0);
+  freeze_auto(g);
+  auto own_tick = [&] { g.cards[0]->fr.own_air_us += 5000; live_tick(g); };   // 5 of every 10 ms
+  for (int i = 0; i < 30; ++i) own_tick();
+  REQUIRE(g.core->observe(3000) == LeaseState::OneCard);
+  const size_t d0 = g.sink.dwells.size();
+  const uint64_t t_burst = g.clk.ms;
+  own_tick();                                            // the burst runs inside this tick
+  REQUIRE(g.sink.dwells.size() == d0 + 3);
+  const uint64_t end = g.clk.ms - 10;                    // the rig steps 10 ms after the core tick
+  REQUIRE(end >= t_burst + 30);
+  const uint64_t r = g.clk.ms;
+  g.core->run_sampler_step_stamped(t_burst + 1);         // stamped inside the burst, read after it
+  while (g.clk.ms <= r + 160) own_tick();                // the masked record, then the next window
+  const auto e = g.core->snapshot(0).energy[0];
+  REQUIRE(e.has_value() && e->own_air_pct.has_value());
+  CHECK(std::abs(*e->own_air_pct - 50.0) < 0.5);       // stamped-span re-seed: 50 * 160 / (159 + burst)
+}
+
+// A one-card GS in an all-blocked Hold with the hop trigger live (see
+// one_card_burst_in_a_fully_ranked_all_blocked_hold_paces_on_dwell_period):
+// the controller's freshness burst is what runs, and its dwells land in
+// scan.members anyway. A lease opened once the trigger is live adds no
+// burst of its own -- every burst lands exactly where it lands with no
+// lease at all -- including on the window after each freshness burst,
+// where the trigger drops (no NHM reading) and Hold ends for a tick.
+static std::vector<uint64_t> one_card_all_blocked_hold_bursts(bool lease) {
+  Rig g(1, 0);
+  g.cfg.hop.dwell_period_ms = 1000;
+  g.cfg.hop.burst_period_ms = 333;
+  rebuild_with_set(g, g.cfg.radio.channels, 1);
+  freeze_auto(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  NhmBusyRead full; full.valid = true; full.period = nhm_period_4us(g.cfg.hop.dwell_observe_ms);
+  full.buckets[11] = 100;
+  g.cards[0]->nhm_arm_ok = true; g.cards[0]->nhm_read = full;
+  g.cards[0]->nhm_any_period = true;
+  std::vector<uint64_t> bursts;
+  size_t seen = g.sink.dwells.size();
+  for (int w = 0; w < occ_lead(g) + 22; ++w) {
+    for (auto& c : g.cards) c->fr.foreign += 40;
+    for (int i = 0; i < g.cfg.hop.window_ms / 10 + 1; ++i) {
+      const uint64_t t = g.clk.ms;
+      if (lease && !bursts.empty()) CHECK(g.core->observe(3000) == LeaseState::OneCard);
+      g.vrx->on_video(static_cast<double>(t));
+      decode_one(g);
+      g.core->tick(g.in(true));
+      if (g.sink.dwells.size() > seen) {
+        CHECK(g.sink.dwells.size() == seen + 3);         // one burst per tick, never two
+        bursts.push_back(t);
+        seen = g.sink.dwells.size();
+      }
+      g.clk.ms += 10;
+    }
+  }
+  CHECK(g.sink.has_hop("hold_exhausted"));
+  CHECK(std::string(g.core->snapshot(0).hop.state) == "hold");
+  return bursts;
+}
+
+TEST(lease_one_card_never_bursts_while_the_hop_trigger_is_live) {
+  const auto plain = one_card_all_blocked_hold_bursts(false);
+  const auto leased = one_card_all_blocked_hold_bursts(true);
+  REQUIRE(plain.size() >= 4);
+  CHECK(leased == plain);
+  CHECK(leased[1] - leased[0] < 1000);                   // burst 2 ranks the set: burst_period_ms
+  for (size_t i = 2; i < leased.size(); ++i) {
+    CHECK(leased[i] - leased[i - 1] >= 1000);            // fully ranked Hold: dwell_period_ms
+    CHECK(leased[i] - leased[i - 1] < 1000 + 333);
+  }
+}
+
 // A relocate due, placed, riding its RCFs or retuning: no burst until it
 // has landed; then the lease bursts on the new op.
 TEST(lease_one_card_never_bursts_with_a_hop_or_relocate_in_flight) {

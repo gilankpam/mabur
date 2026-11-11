@@ -90,6 +90,10 @@ class WindowSampler {
   // Sample and publish now, whatever the cadence, and restart it from now
   // (ChannelCore's test seam).
   void step_now(uint64_t now_ms);
+  // A pass stamped stamp_ms whose reads land now, with the cadence
+  // restarted from now_ms: the threaded pass that stamps, then waits on a
+  // card's device-use lock held by a dwell burst (ChannelCore's test seam).
+  void step_stamped(uint64_t stamp_ms, uint64_t now_ms);
   // Threaded mode: one thread, sleep_ms(window_ms) between passes.
   void start(NowMsFn now_ms, SleepFn sleep_ms);
   // Idempotent; joins. Returns after up to one sleep_ms(window_ms) plus a

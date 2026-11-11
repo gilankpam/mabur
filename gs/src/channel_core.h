@@ -59,12 +59,15 @@
 // end the lease and cancel its open round first. On a one-USB-card GS it
 // is the in-flight burst on that card, once per hop.lease_sweep_period_ms,
 // run synchronously on the core thread (a relay carrying TX included) and
-// only while no hop or relocate is in flight or due and no relay sweep or
-// posted burst is out. The burst takes the sole card off op for ~75 ms, so the hop verdict
-// skips every sampler window from the burst's start to one window_ms past
-// its end: those windows re-seed the per-card baselines instead of being
-// classified, and the verdict's loss windows are blanked to the same
-// instant, so the gap reads as neither interference nor loss.
+// only while no hop or relocate is in flight or due -- in auto mode that
+// includes the verdict's trigger live or its references frozen -- and no
+// relay sweep or posted burst is out. The burst takes the sole card off op
+// for ~75 ms, so the hop verdict skips every sampler window from the
+// burst's start to one window_ms past its end: those windows re-seed the
+// per-card baselines (the next span starting no earlier than the burst's
+// end) instead of being classified, and the verdict's loss windows are
+// blanked to the same instant, so the gap reads as neither interference
+// nor loss.
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -349,6 +352,10 @@ class ChannelCore {
   void run_scout_step();      // one ChannelScout::run_once()
   void run_inflight_step();   // one body of the in-flight loop (no sleep)
   void run_sampler_step();    // WindowSampler::step_now() at the tick's time: sample, publish, restart the cadence
+  // A sampler pass stamped stamp_ms whose reads land now (the clock), the
+  // cadence restarted from now: the threaded pass that stamps before it
+  // waits out a burst holding the card's lock.
+  void run_sampler_step_stamped(uint64_t stamp_ms);
   const HopRanker& hop_ranker() const { return ranker_; }
 
  private:
@@ -551,7 +558,9 @@ class ChannelCore {
   void step_lease_(const ChannelTickIn& in);
   // The one-card lease: one in-flight burst on the sole USB card when
   // lease_sweep_period_ms has passed since the last one and nothing else
-  // holds the card, the controller or a burst.
+  // holds the card, the controller or a burst, and no reactive hop is
+  // being decided (the trigger live or the verdict's references frozen:
+  // the freshness burst measures then).
   void step_lease_one_card_(const ChannelTickIn& in);
   // The last one-card lease burst's start (tick time).
   double last_lease_burst_ms_ = -1e18;
@@ -559,6 +568,11 @@ class ChannelCore {
   // verdict: from = the burst's start, until = its end plus window_ms (the
   // window that straddles the burst's end). until < from = none yet.
   double lease_mask_from_ms_ = 0, lease_mask_until_ms_ = -1;
+  // The last one-card lease burst's end. A masked record stamped before it
+  // was stamped by a pass that then waited out the burst on the card's
+  // lock, so its counters were read after this instant: the re-seeded span
+  // starts here, not at the stamp.
+  double lease_burst_end_ms_ = -1;
   // The latest verdict window's reading of op: the worst valid card on op,
   // foreign frames scaled to radio.scan.dwell_ms.
   std::optional<CalReading> op_live_;

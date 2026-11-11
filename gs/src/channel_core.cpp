@@ -286,6 +286,9 @@ void ChannelCore::step_gates_() {
 }
 
 void ChannelCore::run_sampler_step() { sampler_->step_now(now_ms_u_cur_); }
+void ChannelCore::run_sampler_step_stamped(uint64_t stamp_ms) {
+  sampler_->step_stamped(stamp_ms, now_ms_());
+}
 
 void ChannelCore::on_card_died(int card) {
   if (sweep_.on && sweep_.card == card) sweep_ = PendingSweep{};   // no result coming; not a timeout
@@ -625,7 +628,9 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
     // streak, the detect ring and the persistence never see it and
     // hop.verdict keeps its last value -- and not read for op's figure. Its
     // counters become the baselines, so the next window measures only
-    // itself, and the loss windows swallow the gap's arrivals.
+    // itself, and the loss windows swallow the gap's arrivals. A record
+    // stamped inside the burst read its counters once the burst released
+    // the card's lock, so its span starts at the burst's end.
     for (int i = 0; i < n_cards_; ++i) {
       const size_t si = static_cast<size_t>(i);
       const CardSample& cs = rec->cards[si];
@@ -635,7 +640,7 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
       window_prev_crc_[si] = in.agg ? in.agg->card(i).crc_fail : 0;
       window_prev_seq_exp_[si] = in.agg ? in.agg->card(i).seq_expected : 0;
       window_prev_seq_rcv_[si] = in.agg ? in.agg->card(i).seq_received : 0;
-      window_prev_ms_[si] = t_ms;
+      window_prev_ms_[si] = std::max(t_ms, static_cast<uint64_t>(std::max(lease_burst_end_ms_, 0.0)));
     }
     recovered_prev_window_ = in.agg ? in.agg->decoder().stats(0).syms_recovered +
                                           in.agg->decoder().stats(1).syms_recovered
@@ -1512,8 +1517,15 @@ void ChannelCore::step_lease_one_card_(const ChannelTickIn& in) {
   // The in-flight burst's own conditions: never while a hop or relocate is
   // in flight or due (the controller past Idle/Hold, the plan hopping, a
   // relocate handed out, or the one BootPick is about to hand out), a relay
-  // sweep or a posted burst is out, or the scout owns the card.
+  // sweep or a posted burst is out, or the scout owns the card. In auto
+  // mode a live trigger, or the verdict's frozen episode around it, is a
+  // hop being decided: step_controller_ runs its own freshness burst and
+  // orders on the windows a lease burst would mask, and that burst's dwells
+  // reach scan.members as well. The trigger alone is not enough: the window
+  // after each freshness burst has no NHM reading (the arm went stale), so
+  // it drops for a window while the episode -- and a Hold -- goes on.
   if (!inflight_ || !hop_active(in.in_session, in.cal_running) || plan_.hopping() ||
+      (reactive_ && (last_verdict_out_.trigger || last_verdict_out_.ref_frozen)) ||
       !(hopc_.state() == HopState::Idle || hopc_.state() == HopState::Hold) || pending_relocate_ ||
       boot_pick_.relocation_pending(last_bi_) || sweep_.on || scout_owns_() || burst_inflight_ ||
       dwell_busy_.load() || !cards_[static_cast<size_t>(scout_card_)]->ready())
@@ -1531,6 +1543,7 @@ void ChannelCore::step_lease_one_card_(const ChannelTickIn& in) {
     burst_on_card_(scout_card_, plan_.op(), recs);   // its visits are dropped: the lease never ranks
   }
   const double end_ms = static_cast<double>(now_ms_());
+  lease_burst_end_ms_ = end_ms;
   lease_mask_from_ms_ = start_ms;
   lease_mask_until_ms_ = end_ms + static_cast<double>(cfg_.hop.window_ms);
   cur_ch_[static_cast<size_t>(scout_card_)] = cards_[static_cast<size_t>(scout_card_)]->channel();

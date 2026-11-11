@@ -84,6 +84,11 @@ void WindowSampler::step_now(uint64_t now_ms) {
   publish(sample_once(now_ms));
 }
 
+void WindowSampler::step_stamped(uint64_t stamp_ms, uint64_t now_ms) {
+  last_ms_ = now_ms;
+  publish(sample_once(stamp_ms));
+}
+
 void WindowSampler::start(NowMsFn now_ms, SleepFn sleep_ms) {
   if (run_.exchange(true, std::memory_order_acq_rel)) return;
   th_ = std::thread([this, now_ms = std::move(now_ms), sleep_ms = std::move(sleep_ms)] {

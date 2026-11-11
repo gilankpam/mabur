@@ -605,9 +605,12 @@ first at once. It runs synchronously on the core thread (`burst_on_card_`:
 the card's device-use lock held, `tune_gen` bumped both sides), also when a
 relay carries TX and the USB card is the spare; it never runs on a relay.
 It waits while a hop or relocate is in flight or due (the controller not
-`Idle`/`Hold`, the plan hopping, a relocate handed out or about to be), a
-relay sweep or a posted spare-card burst is out, the scout owns the card,
-or the card is not ready. Its dwells land in `scan.members` and `scan.log`
+`Idle`/`Hold`, the plan hopping, a relocate handed out or about to be; in
+auto mode also the hop verdict's trigger live or its references frozen —
+an interference episode the hop is deciding on, measured then by the
+controller's own freshness burst, whose dwells reach `scan.members` too),
+a relay sweep or a posted spare-card burst is out, the scout owns the
+card, or the card is not ready. Its dwells land in `scan.members` and `scan.log`
 (`D` lines); its visits are dropped, never ranked. Pinned or auto alike:
 the lease never touches the pin, `reactive_` or the plan.
 
@@ -619,7 +622,9 @@ demote on the loss and re-promote after the picker closes. The hop
 verdict does not see the gap: every sampler window stamped after the
 burst's start and up to one `hop.window_ms` past its end is skipped —
 not classified, not read for `op`'s figure — and its counters become the
-next window's baselines; the verdict's own loss windows are blanked to the
+next window's baselines, the next window's span starting no earlier than
+the burst's end (a sampler pass stamped mid-burst reads its counters only
+once the burst releases the card); the verdict's own loss windows are blanked to the
 same instant. So neither the blocked streak, the detect ring nor the
 persistence learns the gap, the rung store is not blanked by it, and
 `hop.verdict` holds its last value across the burst.
