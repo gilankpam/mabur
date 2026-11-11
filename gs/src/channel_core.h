@@ -634,6 +634,14 @@ class ChannelCore {
   void step_width_resync_();
   void step_mechanical_retune_();
   void poll_sweep_(double now_ms);
+  // One SCAN on `card` for the set minus op: builds the channel list,
+  // starts it and assigns sweep_ (poll_sweep_ ranks or discards the
+  // result later), tagging it as the lease's own or not. false = nothing
+  // sent (a one-member set, or a ready->down race) -- sweep_ untouched.
+  // Shared by the hop's own relay burst (step_controller_) and the
+  // lease's (step_lease_relay_); each caller keeps its own guards, card
+  // pick and last-burst-ms rollback.
+  bool send_relay_sweep_(int card, double now_ms, bool lease);
   void step_cal_(const ChannelTickIn& in);
   void finish_cal_measure_(double now_ms);
   void settle_cal_reloc_(bool ok, const char* why);

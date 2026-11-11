@@ -838,14 +838,7 @@ void ChannelCore::step_controller_(const ChannelTickIn& in) {
     last_burst_ms_ = now_ms;
     if (relay_burst) {
       // Async: one SCAN for the set minus op; poll_sweep_ ranks the result.
-      std::vector<uint8_t> chans;
-      for (uint8_t c : cfg_.radio.channels) if (c != plan_.op()) chans.push_back(c);
-      if (!chans.empty() &&
-          cards_[static_cast<size_t>(burst_card)]->start_sweep(chans, kSweepPasses, kSweepObserveMs)) {
-        const double need = static_cast<double>(kSweepPasses) * static_cast<double>(chans.size()) *
-                                (kSweepObserveMs + kSweepPerChannelMs) + kSweepSlackMs;
-        sweep_ = PendingSweep{true, burst_card, now_ms, std::max(kSweepTimeoutMinMs, need)};
-      } else {
+      if (!send_relay_sweep_(burst_card, now_ms, /*lease=*/false)) {
         // Nothing ran (a ready->down race, or a one-member set): the burst
         // is not spent. ready() gates sweepable, so this is rare; retrying
         // next tick is cheaper than a fall-through second pick.
@@ -1041,6 +1034,20 @@ void ChannelCore::step_mechanical_retune_() {
       tune_gen_[static_cast<size_t>(i)].fetch_add(1, std::memory_order_release);
     }
   }
+}
+
+// One SCAN for the set minus op, if there is a channel to sweep and the
+// card takes it. Shared by the hop's own relay burst and the lease's, so
+// the channel filter and the timeout formula live in exactly one place.
+bool ChannelCore::send_relay_sweep_(int card, double now_ms, bool lease) {
+  std::vector<uint8_t> chans;
+  for (uint8_t c : cfg_.radio.channels) if (c != plan_.op()) chans.push_back(c);
+  if (chans.empty() || !cards_[static_cast<size_t>(card)]->start_sweep(chans, kSweepPasses, kSweepObserveMs))
+    return false;
+  const double need = static_cast<double>(kSweepPasses) * static_cast<double>(chans.size()) *
+                          (kSweepObserveMs + kSweepPerChannelMs) + kSweepSlackMs;
+  sweep_ = PendingSweep{true, card, now_ms, std::max(kSweepTimeoutMinMs, need), lease};
+  return true;
 }
 
 void ChannelCore::poll_sweep_(double now_ms) {
@@ -1579,18 +1586,10 @@ void ChannelCore::step_lease_relay_(const ChannelTickIn& in) {
     sweepable[static_cast<size_t>(i)] = can_sweep_[static_cast<size_t>(i)] && cards_[static_cast<size_t>(i)]->ready();
   const int burst_card = pick_burst_card(can_scout_, sweepable, in.tx_card);
   if (burst_card < 0 || !sweepable[static_cast<size_t>(burst_card)]) return;
-  std::vector<uint8_t> chans;
-  for (uint8_t c : cfg_.radio.channels) if (c != plan_.op()) chans.push_back(c);
-  if (chans.empty()) return;
   const double prev_sweep_ms = last_lease_sweep_ms_;
   last_lease_sweep_ms_ = now_ms;
-  if (!cards_[static_cast<size_t>(burst_card)]->start_sweep(chans, kSweepPasses, kSweepObserveMs)) {
-    last_lease_sweep_ms_ = prev_sweep_ms;   // a ready->down race: retry next tick, not spent
-    return;
-  }
-  const double need = static_cast<double>(kSweepPasses) * static_cast<double>(chans.size()) *
-                          (kSweepObserveMs + kSweepPerChannelMs) + kSweepSlackMs;
-  sweep_ = PendingSweep{true, burst_card, now_ms, std::max(kSweepTimeoutMinMs, need), /*lease=*/true};
+  if (!send_relay_sweep_(burst_card, now_ms, /*lease=*/true))
+    last_lease_sweep_ms_ = prev_sweep_ms;   // a ready->down race, or a one-member set: retry next tick
 }
 
 void ChannelCore::finish_cal_measure_(double now_ms) {
