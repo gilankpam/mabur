@@ -582,7 +582,9 @@ calibration pick (`begin_cal_measure`) end the lease at once and cancel
 the open round (the scout parks on its next step, within one dwell), so a
 pin's relocate is placed as soon as the card is back and a calibration
 round starts on the card the picker was using: calibration pre-empts the
-picker. The scout card dying mid-round ends the round on the spot; the
+picker. A run starting (`cal_running`) ends the lease the same way on
+its first tick: a pinned or one-card GS runs no calibration pick, and its
+first sweep must not go out with the scout card off `op`. The scout card dying mid-round ends the round on the spot; the
 lease stays, but no round starts on a dead card.
 
 **What a two-card round suspends** (accepted: the drone is on the

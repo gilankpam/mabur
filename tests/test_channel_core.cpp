@@ -3488,6 +3488,33 @@ TEST(lease_set_auto_keeps_auto_measuring) {
   CHECK(g.sink.picks.size() == picks0 + 1);
 }
 
+// Pinned: a calibration run starts without a measure round (no
+// begin_cal_measure), so its first tick cancels the open lease round --
+// the run's first sweep must not go out with the scout card off op -- and
+// no round starts while it runs, renewals or not.
+TEST(lease_round_cancelled_when_a_pinned_calibration_run_starts) {
+  Rig g(2, 0, /*pinned=*/true, 40);
+  link_up(g);
+  for (int i = 0; i < 10; ++i) live_tick(g);
+  REQUIRE(g.core->observe(3000) == LeaseState::TwoCard);
+  for (int i = 0; i < 2; ++i) live_tick(g);              // the round opens, one dwell in
+  REQUIRE(g.core->scout_owns_card(1));
+  const size_t d1 = g.sink.dwells.size();
+  g.tick(true, /*cal=*/true);                             // a second dwell, then the cancel
+  CHECK(!g.core->observing());
+  g.tick(true, /*cal=*/true);
+  CHECK(!g.core->scout_owns_card(1));
+  CHECK(g.cards[1]->ch == 40);
+  CHECK(g.sink.dwells.size() <= d1 + 1);                  // the round's third member never dwelt on
+  const size_t d = g.sink.dwells.size();
+  for (int i = 0; i < 100; ++i) {
+    if (i % 50 == 0) CHECK(g.core->observe(3000) == LeaseState::None);
+    g.tick(true, /*cal=*/true);
+    CHECK(!g.core->scout_owns_card(1));
+  }
+  CHECK(g.sink.dwells.size() == d);
+}
+
 TEST(lease_round_released_when_scout_card_dies) {
   Rig g(2, 0);
   freeze_auto(g);

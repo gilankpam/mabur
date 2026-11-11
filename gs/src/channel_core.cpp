@@ -1429,6 +1429,11 @@ void ChannelCore::end_lease_() {
 
 void ChannelCore::step_lease_(const ChannelTickIn& in) {
   if (!scout_) return;
+  // A calibration run pre-empts the lease. A pinned or one-card GS starts
+  // its run without a measure round (no begin_cal_measure), so the run's
+  // first tick is where an open lease round is cancelled: left to finish
+  // it would hold an RX card off op into the first sweep.
+  if (in.cal_running && lease_round_) end_lease_();
   if (lease_until_ > 0 && !observing()) lapse_lease_();   // ran out: the open round runs to its end
   if (lease_round_ && !scout_->round_open()) lease_round_ = false;
   if (!observing()) {
@@ -1442,7 +1447,10 @@ void ChannelCore::step_lease_(const ChannelTickIn& in) {
   // step_cal_'s round-start conditions, plus no relocate handed out or due
   // this tick: a round starting on the tick BootPick hands out a Relocate
   // would hide it from the controller, and BootPick has already spent its
-  // once-per-link-up try.
+  // once-per-link-up try. relocation_pending covers the relocate BootPick
+  // is about to hand out: the threaded scout can park between
+  // step_boot_pick_ (which saw it owning the card, so handed nothing out)
+  // and here, and a round started now would hide that relocate next tick.
   if (!hop_active(in.in_session, in.cal_running) || !scout_started_ || scout_card_down_ ||
       scout_owns_() || boot_pick_.open() || boot_pick_.relocating() || plan_.hopping() || sweep_.on ||
       dwell_busy_.load() || !(hopc_.state() == HopState::Idle || hopc_.state() == HopState::Hold) ||
