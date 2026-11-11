@@ -446,8 +446,9 @@ exit covered by `tests/test_boot_pick.cpp`); `ChannelCore` only feeds it a
 - **Proposal == op**: freeze in place (`"in place"`).
 
 **Freeze** closes the pick for the GS process's lifetime: the scout stops
-measuring and rejoins the link at full width. The one later round is a
-calibration run's own ("Calibration pick", below), which reuses the scout
+measuring and rejoins the link at full width. Later rounds are a
+calibration run's own ("Calibration pick", below) and the goggles
+picker's ("Measuring for the picker", below), which reuse the scout
 without reopening the pick. Logged
 `maburgs channel: pick frozen on <pick> (<why>) after <rounds> rounds`
 plus a `K` line (`K <t> <picked|none> <rounds>
@@ -531,6 +532,68 @@ From the run's first SWEEP to its end `cal_running` freezes every channel
 change (`hop_active()` false, the scout idle); the pick happens before
 that, which is why `CalSession`'s `picking` state is outside `running()`.
 
+## Measuring for the picker (the lease)
+
+While the goggles' `Link › Channel` picker is open the player holds a
+lease on `maburgs`: `observe 3000` on open, again every 1000 ms, `observe
+0` on close (the verb: `docs/gs-live-config.md`). The lease is a deadline
+on the core thread (`ChannelCore::observe`), clamped to 500–5000 ms, so a
+player that dies leaves one that lapses within 3 s. While it holds,
+`ChannelCore` measures the set for the picker: every member except `op`,
+at the link width (one dwell on the primary reads the whole pair at 40
+MHz), one dwell per member — the boot scan's dwell set and figure, never a
+width switch. Each dwell lands in `scan.members` (`docs/observability.md`)
+as it drains; none feeds the hop ranker. `op` is never dwelt on while
+linked: its figure is the verdict window's.
+
+**Which measurer** (`ChannelCore::lease_state()`, first match; the verb
+answers with it):
+
+| State | When | What it does |
+|---|---|---|
+| `none` | calibration owns the scout: a run (`cal_running`), its measure round waiting or running, or its relocate waiting or in flight | nothing |
+| `none` | the boot pick is open | nothing; the boot scout is measuring anyway |
+| `search` | unlinked and the scout is searching (not relay-only) | named only; no extra measuring yet |
+| `none` | unlinked otherwise (a relay-only GS: the sole relay searches) | nothing |
+| `two_card` | linked, two or more USB cards, not relay-only | scout rounds back to back (below) |
+| `one_card` | linked, one USB card | named only; no extra measuring yet |
+| `relay` | linked, no USB card, a ready sweep-capable relay | named only; no extra measuring yet |
+| `none` | otherwise | nothing |
+
+**Two cards: scout rounds, back to back.** While the lease holds and no
+round is open, the core starts `ChannelScout::begin_round()` — the
+calibration pick's round — under the same start conditions (the link
+live, the scout thread up with its card alive, the scout owning nothing,
+the boot pick closed and not relocating, no hop in flight, no relay sweep,
+no in-flight dwell, the controller `Idle`/`Hold`) plus no relocate handed
+out or due this tick: a round starting on the tick `BootPick` hands out a
+relocate would hide it from the controller after `BootPick` has spent its
+once-per-link-up try. A round dwells every member but `op` at `dwell_ms`
++ `settle_ms`, parks on `op`, and the next starts a tick later (~0.85 s
+per round for a four-member set at the defaults). Pinned, the scout is
+frozen and measuring turned on when the lease engages, and measuring goes
+off again once the lease has lapsed **and** the round is idle (turned off
+mid-round, the round would never close). The pin, `reactive_`, the plan
+and the boot pick are never touched.
+
+The lease lapsing lets the open round finish, then no new round starts.
+`observe 0`, a live pin (`set_pin`), back to auto (`set_auto`) and a
+calibration pick (`begin_cal_measure`) end the lease at once and cancel
+the open round (the scout parks on its next step, within one dwell), so a
+pin's relocate is placed as soon as the card is back and a calibration
+round starts on the card the picker was using: calibration pre-empts the
+picker. The scout card dying mid-round ends the round on the spot; the
+lease stays, but no round starts on a dead card.
+
+**What a two-card round suspends** (accepted: the drone is on the
+ground while the operator picks). The scout owns the spare card while a
+round is open, so the in-flight periodic dwell and the freshness burst
+stop, the controller's hop targets are cleared (a live trigger in auto
+mode goes to `Hold`), the scout card leaves the TX candidates and its
+diversity is lost, and a width or ladder set is refused `ladder refused:
+scan in flight`. With rounds back to back the auto hop is effectively off
+while the picker is open and for up to one round after it closes.
+
 ## In-flight hop after the freeze
 
 After the freeze two things can move the link: the per-link-up relocation
@@ -586,6 +649,10 @@ the in-flight thread picks the reactive hop back up on its next tick.
   ignored`; `maburgs channel: <reason> card <n> <from> -> <to>` (every `M`
   line, echoed to stderr); the calibration pick's `maburgs channel:
   calibration …` lines (above) and a relocate line ending `(cal)`;
+  `maburgs channel: observe lease <ms> (<state>)` (a lease engaging a
+  different measurer than the last one logged) and `maburgs channel:
+  observe lease lapsed` (once per lease: it ran out, was released, or a
+  pin, auto or calibration ended it);
   `maburgs channel: could not write
   /etc/maburgs.channel`; `maburd: retune <a> -> <b> (<reason>)`.
 - **`tools/maburtop.py`**: shows `scan.state` (including `moving`) and

@@ -307,8 +307,8 @@ class LiveConfigControl {
 
   // Offered every verb `handle` does not itself know, on the owning
   // thread, inside `poll()`. unset (the default) leaves every such verb at
-  // the usage error -- maburgs never sets it; maburplay does under
-  // MABUR_MENU_DEBUG.
+  // the usage error. maburgs sets it for `vtx set` and `observe`;
+  // maburplay does under MABUR_MENU_DEBUG.
   ExtraVerb extra_verb;
 
   // Owning thread's own set, bypassing the socket: the same a.submit()

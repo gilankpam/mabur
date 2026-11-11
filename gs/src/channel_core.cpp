@@ -242,6 +242,7 @@ ChannelTickOut ChannelCore::tick(const ChannelTickIn& in) {
   step_gates_();
   step_hop_edge_and_window_(in);
   step_cal_(in);
+  step_lease_(in);
   step_pin_reloc_(in);
   step_controller_(in);
   step_move_edge_(in);
@@ -299,6 +300,12 @@ void ChannelCore::on_card_died(int card) {
     }
     scout_search_req_ = false;
     scout_->set_search(false);
+    // A lease round on the dead card ends now, straight to idle: left
+    // Measuring it would keep dwelling on a card that is gone.
+    if (lease_round_ && scout_->round_open()) {
+      scout_->cancel_round(/*force_idle=*/true);
+      lease_round_ = false;
+    }
   }
 }
 
@@ -1036,6 +1043,8 @@ bool ChannelCore::cal_can_measure() const {
 }
 
 void ChannelCore::begin_cal_measure(double now_ms) {
+  // Calibration is the operator's explicit action: it pre-empts the picker.
+  end_lease_();
   if (cal_reloc_.s != CalReloc::Waiting && cal_reloc_.s != CalReloc::InFlight) cal_reloc_ = CalReloc{};
   if (!cal_can_measure()) return;
   if (cal_meas_.s == CalMeasure::Waiting || cal_meas_.s == CalMeasure::Running) return;
@@ -1167,6 +1176,10 @@ void ChannelCore::set_width(uint8_t want) {
 std::optional<std::string> ChannelCore::set_pin(uint8_t ch) {
   const double now_ms = now_ms_cur_;
   if (auto r = pin_refusal(ch)) return r;
+  // Before the set_measure(false) below: the lease round is cancelled
+  // (Measuring -> Measured) first, so the scout parks on its next step and
+  // the pin's relocate is placed once the card is back.
+  end_lease_();
   const bool linked = in_session_cur_;
   const uint8_t op = plan_.op();
   // Every call that gets this far bumps scan.relocate_seq, even the no-op
@@ -1206,6 +1219,7 @@ std::optional<std::string> ChannelCore::set_pin(uint8_t ch) {
   if (scout_) {
     scout_->freeze();
     scout_->set_measure(false);   // a pinned scout searches the members only, as at boot
+    lease_forced_measure_ = false;
   }
   if (boot_pick_.open()) boot_pick_ = BootPick(false);
   if (linked && ch != op)
@@ -1231,7 +1245,10 @@ void ChannelCore::replace_ladder(const LadderCfg& ladder, double now_ms) {
 
 void ChannelCore::set_auto() {
   ++pin_seq_;   // every call, even the no-op below: auto stops watching either way
+  end_lease_();
   if (!pinned_) return;
+  // Auto measures for good: the lease must not turn it off once it lapses.
+  lease_forced_measure_ = false;
   pinned_ = false;
   reactive_ = true;
   // A pin relocate not yet handed to the controller is withdrawn (auto
@@ -1347,6 +1364,106 @@ void ChannelCore::step_cal_(const ChannelTickIn& in) {
 void ChannelCore::step_pin_reloc_(const ChannelTickIn&) {
   if (pin_reloc_.s == PinReloc::InFlight && pin_reloc_.confirmed && hopc_.state() == HopState::Idle)
     settle_pin_reloc_(true, "landed");
+}
+
+bool ChannelCore::observing() const {
+  return static_cast<double>(now_ms_()) < lease_until_;
+}
+
+LeaseState ChannelCore::lease_state() const {
+  // Calibration's measure round and relocate run before cal_running is
+  // set: gating on cal_running alone would let back-to-back lease rounds
+  // starve its round start, which needs the scout card free.
+  if (cal_running_cur_ || cal_meas_.s == CalMeasure::Waiting || cal_meas_.s == CalMeasure::Running ||
+      cal_reloc_.s == CalReloc::Waiting || cal_reloc_.s == CalReloc::InFlight)
+    return LeaseState::None;
+  if (boot_pick_.open()) return LeaseState::None;   // the boot scout measures anyway
+  if (!in_session_cur_)
+    return (scout_ && scout_search_req_ && !relay_search_only_) ? LeaseState::Search : LeaseState::None;
+  if (cfg_.n_usb >= 2 && scout_ && !relay_search_only_) return LeaseState::TwoCard;
+  if (cfg_.n_usb == 1 && scout_) return LeaseState::OneCard;
+  if (cfg_.n_usb == 0)
+    for (int i = 0; i < n_cards_; ++i)
+      if (can_sweep_[static_cast<size_t>(i)] && cards_[static_cast<size_t>(i)]->ready())
+        return LeaseState::Relay;
+  return LeaseState::None;
+}
+
+LeaseState ChannelCore::observe(int ms) {
+  if (ms <= 0) {
+    end_lease_();
+    return LeaseState::None;
+  }
+  ms = std::clamp(ms, 500, 5000);
+  lease_until_ = static_cast<double>(now_ms_()) + ms;
+  const LeaseState st = lease_state();
+  if (st != lease_logged_) {
+    lease_logged_ = st;
+    sink_.log(logf_("maburgs channel: observe lease %d (%s)", ms, lease_state_name(st)));
+  }
+  return st;
+}
+
+std::string ChannelCore::observe_verb(const std::string& rest) {
+  static const std::string kUsage = "err usage: observe <ms>";
+  if (rest.empty()) return kUsage;
+  for (char c : rest)
+    if (c < '0' || c > '9') return kUsage;
+  // Anything past nine digits is far over the clamp anyway.
+  const int ms = rest.size() > 9 ? 5000 : std::stoi(rest);
+  return std::string("ok observe ") + lease_state_name(observe(ms));
+}
+
+void ChannelCore::lapse_lease_() {
+  if (lease_until_ <= 0) return;
+  lease_until_ = 0;
+  lease_logged_ = LeaseState::None;
+  sink_.log("maburgs channel: observe lease lapsed");
+}
+
+void ChannelCore::end_lease_() {
+  lapse_lease_();
+  if (lease_round_ && scout_ && scout_->round_open()) scout_->cancel_round(/*force_idle=*/!scout_started_);
+  lease_round_ = false;
+}
+
+void ChannelCore::step_lease_(const ChannelTickIn& in) {
+  if (!scout_) return;
+  if (lease_until_ > 0 && !observing()) lapse_lease_();   // ran out: the open round runs to its end
+  if (lease_round_ && !scout_->round_open()) lease_round_ = false;
+  if (!observing()) {
+    if (lease_forced_measure_ && !scout_->round_open()) {
+      scout_->set_measure(false);
+      lease_forced_measure_ = false;
+    }
+    return;
+  }
+  if (lease_state() != LeaseState::TwoCard || lease_round_) return;
+  // step_cal_'s round-start conditions, plus no relocate handed out or due
+  // this tick: a round starting on the tick BootPick hands out a Relocate
+  // would hide it from the controller, and BootPick has already spent its
+  // once-per-link-up try.
+  if (!hop_active(in.in_session, in.cal_running) || !scout_started_ || scout_card_down_ ||
+      scout_owns_() || boot_pick_.open() || boot_pick_.relocating() || plan_.hopping() || sweep_.on ||
+      dwell_busy_.load() || !(hopc_.state() == HopState::Idle || hopc_.state() == HopState::Hold) ||
+      pending_relocate_ || boot_pick_.relocation_pending(last_bi_))
+    return;
+  if (pinned_ && !lease_forced_measure_) {
+    // A GS that booted pinned never froze its scout, and a pinned scout
+    // does not measure: freeze first, or measuring would reopen the pick.
+    scout_->freeze();
+    scout_->set_measure(true);
+    lease_forced_measure_ = true;
+  }
+  {
+    // As step_cal_: inflight_mu_ then the card's device-use lock.
+    std::lock_guard<std::mutex> ilk(inflight_mu_);
+    auto hold = sampler_->hold_card(static_cast<size_t>(scout_card_));
+    scout_->begin_round();
+    scout_working_atomic_.store(true, std::memory_order_relaxed);
+    step_gates_();
+  }
+  lease_round_ = true;
 }
 
 void ChannelCore::finish_cal_measure_(double now_ms) {

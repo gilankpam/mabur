@@ -3185,4 +3185,343 @@ TEST(set_width_moves_the_hop_ranker_to_the_new_width) {
   CHECK(g.core->hop_ranker().width_mhz() == 20);
 }
 
+// ---- the observe lease (the goggles' channel picker; `observe <ms>`) ----
+
+// Live ticks for `ms` of rig time, renewing the lease with observe(3000)
+// every 1000 ms the way the player does while its picker stays open.
+static void lease_ticks(Rig& g, uint64_t ms, bool renew = true) {
+  const uint64_t end = g.clk.ms + ms;
+  uint64_t last = g.clk.ms;
+  while (g.clk.ms < end) {
+    if (renew && g.clk.ms - last >= 1000) { g.core->observe(3000); last = g.clk.ms; }
+    live_tick(g);
+  }
+}
+
+// How many lease dwells on the scout card landed on each member since `from`.
+static std::vector<int> dwell_counts(const Rig& g, size_t from, const std::vector<uint8_t>& chs) {
+  std::vector<int> n(chs.size(), 0);
+  for (size_t i = from; i < g.sink.dwells.size(); ++i) {
+    if (g.sink.dwells[i].first != 1) continue;
+    for (size_t k = 0; k < chs.size(); ++k)
+      if (g.sink.dwells[i].second.survey.def.primary == chs[k]) ++n[k];
+  }
+  return n;
+}
+
+// Auto, two cards, linked, pick closed: rounds run back to back, every
+// member but op once per round at the link width, and nothing moves.
+TEST(lease_two_card_rounds_run_back_to_back_auto) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 10; ++i) live_tick(g);
+  const size_t d0 = g.sink.dwells.size();
+  CHECK(g.core->observe(3000) == LeaseState::TwoCard);
+  CHECK(g.core->observing());
+  lease_ticks(g, 2000);
+  const auto n = dwell_counts(g, d0, {40, 64, 112, 144});
+  CHECK(n[0] == 0);                                  // op never dwelt on
+  CHECK(n[1] >= 2 && n[2] >= 2 && n[3] >= 2);        // two rounds inside 2 s
+  for (size_t i = d0; i < g.sink.dwells.size(); ++i) {
+    CHECK(g.sink.dwells[i].first == 1);
+    CHECK(g.sink.dwells[i].second.survey.def.width == CHANNEL_WIDTH_40);
+    CHECK(g.sink.dwells[i].second.survey.observe_ms > 0);
+  }
+  CHECK(!g.sink.has_hop("relocate"));
+  CHECK(!g.sink.has_hop("order"));
+  CHECK(g.core->op() == 40);
+  CHECK(g.sink.has_line("maburgs channel: observe lease 3000 (two_card)"));
+}
+
+// Pinned: the lease freezes the scout and turns measuring on for its
+// rounds, never unpins, and hands the card back once it lapses.
+TEST(lease_two_card_rounds_run_pinned) {
+  Rig g(2, 0, /*pinned=*/true, 40);
+  link_up(g);
+  for (int i = 0; i < 10; ++i) live_tick(g);
+  const size_t d0 = g.sink.dwells.size();
+  CHECK(g.core->observe(3000) == LeaseState::TwoCard);
+  lease_ticks(g, 2000);
+  const auto n = dwell_counts(g, d0, {40, 64, 112, 144});
+  CHECK(n[0] == 0);
+  CHECK(n[1] >= 1 && n[2] >= 1 && n[3] >= 1);
+  for (size_t i = d0; i < g.sink.dwells.size(); ++i) {
+    CHECK(g.sink.dwells[i].first == 1);
+    CHECK(g.sink.dwells[i].second.survey.def.width == CHANNEL_WIDTH_40);
+  }
+  CHECK(g.core->pinned());
+  CHECK(g.core->op() == 40);
+  // No more renewals: the lease lapses, the open round ends, the card parks.
+  lease_ticks(g, 4000, /*renew=*/false);
+  CHECK(!g.core->observing());
+  CHECK(!g.core->scout_owns_card(1));
+  CHECK(g.cards[1]->ch == 40);
+  // A link loss later: the pinned search dwells on the members, no observe.
+  const size_t d1 = g.sink.dwells.size();
+  for (int i = 0; i < 1200 && g.sink.dwells.size() < d1 + 4; ++i) g.tick(false);
+  REQUIRE(g.sink.dwells.size() >= d1 + 4);
+  for (size_t i = d1; i < g.sink.dwells.size(); ++i)
+    CHECK(g.sink.dwells[i].second.survey.observe_ms == 0);
+}
+
+TEST(lease_lapses_without_renewal) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 10; ++i) live_tick(g);
+  REQUIRE(g.core->observe(3000) == LeaseState::TwoCard);
+  lease_ticks(g, 3500, /*renew=*/false);
+  CHECK(!g.core->observing());
+  CHECK(g.sink.has_line("maburgs channel: observe lease lapsed"));
+  for (int i = 0; i < 20 && g.core->scout_owns_card(1); ++i) live_tick(g);
+  CHECK(!g.core->scout_owns_card(1));                 // the open round finished
+  const size_t d = g.sink.dwells.size();
+  lease_ticks(g, 2000, /*renew=*/false);
+  CHECK(g.sink.dwells.size() == d);                    // no new round
+  CHECK(!g.core->scout_owns_card(1));
+  size_t lapsed = 0;
+  for (const auto& l : g.sink.lines) if (l.find("observe lease lapsed") != std::string::npos) ++lapsed;
+  CHECK(lapsed == 1);
+}
+
+// A lease that runs out mid-round lets that round finish: every member
+// but op still gets its dwell. (Only a release -- observe 0, a pin, auto,
+// a calibration pick -- cancels the round.)
+TEST(lease_lapse_mid_round_lets_the_round_finish) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 10; ++i) live_tick(g);
+  const size_t d0 = g.sink.dwells.size();
+  REQUIRE(g.core->observe(500) == LeaseState::TwoCard);   // lapses after the round's first dwell
+  live_tick(g);
+  REQUIRE(g.core->scout_owns_card(1));
+  for (int i = 0; i < 20 && g.core->scout_owns_card(1); ++i) live_tick(g);
+  CHECK(!g.core->observing());
+  CHECK(!g.core->scout_owns_card(1));
+  const auto n = dwell_counts(g, d0, {40, 64, 112, 144});
+  CHECK(n[0] == 0);
+  CHECK(n[1] == 1 && n[2] == 1 && n[3] == 1);
+}
+
+TEST(lease_observe_zero_releases_on_the_next_tick) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 10; ++i) live_tick(g);
+  REQUIRE(g.core->observe(3000) == LeaseState::TwoCard);
+  for (int i = 0; i < 3; ++i) live_tick(g);
+  REQUIRE(g.core->scout_owns_card(1));
+  CHECK(g.core->observe(0) == LeaseState::None);
+  CHECK(!g.core->observing());
+  live_tick(g);
+  CHECK(!g.core->scout_owns_card(1));
+  const size_t d = g.sink.dwells.size();
+  for (int i = 0; i < 50; ++i) live_tick(g);
+  CHECK(g.sink.dwells.size() == d);
+}
+
+TEST(lease_clamps_to_500_and_5000) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  g.core->observe(100);
+  g.clk.ms += 499;
+  CHECK(g.core->observing());
+  g.clk.ms += 2;
+  CHECK(!g.core->observing());
+  g.core->observe(60000);
+  g.clk.ms += 4999;
+  CHECK(g.core->observing());
+  g.clk.ms += 2;
+  CHECK(!g.core->observing());
+}
+
+// A round starting on the tick BootPick hands out a relocate would hide
+// that relocate from the controller (BootPick has spent its one try).
+TEST(lease_round_never_starts_with_a_relocate_due) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 10; ++i) live_tick(g);
+  REQUIRE(!g.core->set_pin(112).has_value());
+  REQUIRE(g.core->observe(3000) == LeaseState::TwoCard);
+  for (int i = 0; i < 20 && !g.sink.has_line("relocate 40 -> 112 placed"); ++i) {
+    live_tick(g);
+    CHECK(!g.core->scout_owns_card(1));
+  }
+  REQUIRE(g.sink.has_line("maburgs channel: relocate 40 -> 112 placed (pin)"));
+  CHECK(!g.core->scout_owns_card(1));
+  const auto rcf = pump_rcf(g);
+  CHECK(!g.core->scout_owns_card(1));
+  REQUIRE(rcf.has_value() && rcf->hop_ch == 112);
+  g.core->note_video(112);
+  for (int i = 0; i < 5 && !g.sink.has_line("pin relocate to 112 landed"); ++i) {
+    g.core->observe(3000);
+    g.tick(true);
+    if (!g.sink.has_line("pin relocate to 112 landed")) CHECK(!g.core->scout_owns_card(1));
+  }
+  REQUIRE(g.sink.has_line("maburgs channel: pin relocate to 112 landed"));
+  CHECK(g.core->op() == 112);
+}
+
+TEST(lease_set_pin_cancels_the_round_and_the_pin_relocates) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 10; ++i) live_tick(g);
+  REQUIRE(g.core->observe(3000) == LeaseState::TwoCard);
+  for (int i = 0; i < 3; ++i) live_tick(g);
+  REQUIRE(g.core->scout_owns_card(1));
+  REQUIRE(!g.core->set_pin(112).has_value());
+  CHECK(!g.core->observing());
+  CHECK(g.core->snapshot(0).relocate->state == "pending");
+  live_tick(g);                                          // the scout parks on its next step
+  CHECK(!g.core->scout_owns_card(1));
+  for (int i = 0; i < 20 && !g.sink.has_line("relocate 40 -> 112 placed"); ++i) live_tick(g);
+  REQUIRE(g.sink.has_line("maburgs channel: relocate 40 -> 112 placed (pin)"));
+  CHECK(g.core->snapshot(0).relocate->state == "pending");
+  CHECK(g.core->pinned());
+}
+
+TEST(lease_none_while_calibration_owns_the_scout) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 10; ++i) live_tick(g);
+  g.tick(true, /*cal=*/true);
+  CHECK(g.core->lease_state() == LeaseState::None);
+  CHECK(g.core->observe(3000) == LeaseState::None);
+  g.core->observe(0);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  // A calibration pick arriving while a lease round runs ends the lease.
+  REQUIRE(g.core->observe(3000) == LeaseState::TwoCard);
+  for (int i = 0; i < 3; ++i) live_tick(g);
+  REQUIRE(g.core->scout_owns_card(1));
+  ChannelCorePicker p(*g.core);
+  p.begin_measure(g.clk.ms);
+  CHECK(!g.core->observing());
+  CHECK(g.core->lease_state() == LeaseState::None);   // its round is waiting
+  for (int i = 0; i < 50 && !p.measured_best(); ++i) {
+    g.core->observe(3000);                             // the picker still renewing: no effect
+    live_tick(g);
+  }
+  CHECK(g.sink.has_line("calibration measure round on card 1"));
+  CHECK(p.measured_best().has_value());
+  p.cancel();
+}
+
+TEST(lease_none_while_boot_pick_open) {
+  Rig g(2, 0);
+  g.tick();
+  REQUIRE(g.core->pick_open());
+  CHECK(g.core->observe(3000) == LeaseState::None);
+  const size_t d = g.sink.dwells.size();
+  for (int i = 0; i < 5; ++i) g.tick();
+  REQUIRE(g.core->pick_open());
+  CHECK(g.core->observing());
+  CHECK(!g.sink.has_line("observe lease 3000"));
+  CHECK(g.sink.dwells.size() > d);                     // the boot scout measures anyway
+}
+
+// The measurer the rule names per roster and link state (only TwoCard
+// runs rounds; the others are named for the player).
+TEST(lease_state_follows_the_roster) {
+  {
+    Rig g(2, 0);
+    freeze_auto(g);                                     // unlinked, pick frozen, scout searching
+    CHECK(g.core->lease_state() == LeaseState::Search);
+    link_up(g);
+    live_tick(g);
+    CHECK(g.core->lease_state() == LeaseState::TwoCard);
+  }
+  {
+    Rig g(1, 0);
+    freeze_auto(g);                                     // links too
+    live_tick(g);
+    CHECK(g.core->lease_state() == LeaseState::OneCard);
+  }
+  {
+    Rig g(0, 1);
+    freeze_auto(g);
+    link_up(g);
+    g.cards[0]->is_ready = true;
+    live_tick(g);
+    CHECK(g.core->lease_state() == LeaseState::Relay);
+    g.cards[0]->is_ready = false;
+    CHECK(g.core->lease_state() == LeaseState::None);
+    g.cards[0]->is_ready = true;
+    g.tick(false);
+    CHECK(g.core->lease_state() == LeaseState::None);  // unlinked relay-only: the relay searches
+  }
+  CHECK(std::string(lease_state_name(LeaseState::None)) == "none");
+  CHECK(std::string(lease_state_name(LeaseState::TwoCard)) == "two_card");
+  CHECK(std::string(lease_state_name(LeaseState::OneCard)) == "one_card");
+  CHECK(std::string(lease_state_name(LeaseState::Relay)) == "relay");
+  CHECK(std::string(lease_state_name(LeaseState::Search)) == "search");
+}
+
+// Pinned, a lease round open, then back to auto: auto measures for good,
+// so the lease's own measure switch must not turn it off once the lease
+// is gone -- a calibration round afterwards still measures the set and
+// picks instead of overrunning on a scout that cannot measure.
+TEST(lease_set_auto_keeps_auto_measuring) {
+  Rig g(2, 0, /*pinned=*/true, 40);
+  link_up(g);
+  for (int i = 0; i < 10; ++i) live_tick(g, 200);
+  REQUIRE(g.core->observe(3000) == LeaseState::TwoCard);
+  for (int i = 0; i < 3; ++i) live_tick(g, 200);
+  REQUIRE(g.core->scout_owns_card(1));
+  g.core->set_auto();
+  CHECK(!g.core->observing());
+  for (int i = 0; i < 10; ++i) live_tick(g, 200);
+  REQUIRE(!g.core->scout_owns_card(1));
+  ChannelCorePicker p(*g.core);
+  REQUIRE(p.mode() == CalPicker::Mode::Auto);
+  const size_t picks0 = g.sink.picks.size();
+  p.begin_measure(g.clk.ms);
+  for (int i = 0; i < 50 && !p.measured_best(); ++i) live_tick(g, 200);
+  REQUIRE(p.measured_best().has_value());
+  CHECK(!g.sink.has_line("calibration measure round overran"));
+  CHECK(g.sink.picks.size() == picks0 + 1);
+}
+
+TEST(lease_round_released_when_scout_card_dies) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 10; ++i) live_tick(g);
+  REQUIRE(g.core->observe(3000) == LeaseState::TwoCard);
+  for (int i = 0; i < 3; ++i) live_tick(g);
+  REQUIRE(g.core->scout_owns_card(1));
+  g.cards[1]->is_alive = false;
+  g.core->on_card_died(1);
+  live_tick(g);
+  CHECK(!g.core->scout_owns_card(1));
+  const size_t d = g.sink.dwells.size();
+  lease_ticks(g, 2000);                                 // renewed: no round on a dead card
+  CHECK(g.sink.dwells.size() == d);
+  CHECK(!g.core->scout_owns_card(1));
+}
+
+TEST(observe_verb_replies) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  CHECK(g.core->observe_verb("3000") == "ok observe two_card");
+  CHECK(g.core->observing());
+  CHECK(g.core->observe_verb("0") == "ok observe none");
+  CHECK(!g.core->observing());
+  CHECK(g.core->observe_verb("x") == "err usage: observe <ms>");
+  CHECK(g.core->observe_verb("") == "err usage: observe <ms>");
+  CHECK(g.core->observe_verb("-5") == "err usage: observe <ms>");
+  CHECK(g.core->observe_verb("3000 1") == "err usage: observe <ms>");
+  CHECK(g.core->observe_verb("99999999999999999999") == "ok observe two_card");   // clamps
+  g.clk.ms += 5001;
+  CHECK(!g.core->observing());
+}
+
 MTEST_MAIN

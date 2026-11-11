@@ -46,6 +46,17 @@
 // linked, only the reactive hop re-arms from op (no pick, no relocate);
 // unlinked, the boot pick reopens over a fresh ranking from op, its max_ms
 // counted from the reopen.
+//
+// The observe lease (observe(ms), the 8402 `observe` verb): while the
+// goggles' channel picker is open the player keeps a deadline renewed and
+// the core measures the set for it. On a two-card GS that is scout rounds
+// back to back (the calibration round's begin_round, under the same start
+// conditions plus no relocate due): every member but op, at the link
+// width, feeding scan.members and never the hop ranker. A pinned scout is
+// frozen and has measuring turned on for the lease, off again once the
+// lease has lapsed and the round is idle. A lease that runs out lets its
+// open round finish; observe(0), set_pin, set_auto and begin_cal_measure
+// end the lease and cancel its open round first.
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -87,6 +98,20 @@ inline const char* hop_state_name(HopState s) {
     case HopState::Hold:      return "hold";
   }
   return "idle";
+}
+
+// Which measurer an observe lease engages (ChannelCore::lease_state).
+enum class LeaseState { None, TwoCard, OneCard, Relay, Search };
+// The `observe` verb's reply word: "none" "two_card" "one_card" "relay" "search".
+inline const char* lease_state_name(LeaseState s) {
+  switch (s) {
+    case LeaseState::None:    return "none";
+    case LeaseState::TwoCard: return "two_card";
+    case LeaseState::OneCard: return "one_card";
+    case LeaseState::Relay:   return "relay";
+    case LeaseState::Search:  return "search";
+  }
+  return "none";
 }
 
 struct ChannelCoreCfg {
@@ -293,6 +318,24 @@ class ChannelCore {
   // the same index in another ladder is another operating point.
   void replace_ladder(const LadderCfg& ladder, double now_ms);
 
+  // ---- the observe lease (core thread) ----
+  // Keep measuring for ms more (clamped to [500, 5000]) and return
+  // lease_state() as of now. ms <= 0 releases the lease at once (its open
+  // round is cancelled; the scout parks on its next step) and returns None.
+  LeaseState observe(int ms);
+  bool observing() const;   // a lease is held: now is before its deadline
+  // The measurer a lease engages, ignoring whether one is held; first
+  // match: calibration owns the scout (a run, its measure round Waiting/
+  // Running, its relocate Waiting/InFlight) -> None; the boot pick open ->
+  // None; unlinked -> Search while the scout searches (not a relay-only
+  // GS), else None; linked: two or more USB cards -> TwoCard, one USB card
+  // -> OneCard, relays only with a ready sweep-capable one -> Relay; else
+  // None. Only TwoCard measures yet.
+  LeaseState lease_state() const;
+  // The whole `observe <rest>` verb: "ok observe <state>", or
+  // "err usage: observe <ms>" unless rest is a bare non-negative integer.
+  std::string observe_verb(const std::string& rest);
+
   // ---- test seam (threaded = false) ----
   void run_scout_step();      // one ChannelScout::run_once()
   void run_inflight_step();   // one body of the in-flight loop (no sleep)
@@ -477,6 +520,26 @@ class ChannelCore {
   // fresh relocate that landed on the channel it was already watching.
   uint64_t pin_seq_ = 0;
   bool pin_reloc_tick_ = false;      // this tick's Relocate is the pin's
+  // ---- the observe lease ----
+  // The lease's deadline on the now_ms_ clock; 0 = none held.
+  double lease_until_ = 0;
+  // A scout round the lease began is open (cleared once round_open() reads
+  // false). The lease keeps its own flag, never cal_meas_: pin_refusal
+  // answers "calibration running" while cal_meas_ is live.
+  bool lease_round_ = false;
+  // The lease turned the pinned scout's measuring on; it goes off once the
+  // lease has lapsed and no round is open (set_measure(false) on a round
+  // still Measuring would leave round_open() true for good).
+  bool lease_forced_measure_ = false;
+  // The engaged state last logged ("observe lease <ms> (<state>)").
+  LeaseState lease_logged_ = LeaseState::None;
+  // Drops the lease's deadline, logging the lapse once; an open round is
+  // left to finish.
+  void lapse_lease_();
+  // lapse_lease_, and the open lease round is cancelled (the scout parks
+  // on its next step): a release, a pin, auto, a calibration pick.
+  void end_lease_();
+  void step_lease_(const ChannelTickIn& in);
   // The latest verdict window's reading of op: the worst valid card on op,
   // foreign frames scaled to radio.scan.dwell_ms.
   std::optional<CalReading> op_live_;
