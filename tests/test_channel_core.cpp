@@ -2770,7 +2770,7 @@ TEST(pin_refused_at_the_hop_cap_changes_nothing) {
 // withdraw above has already settled pin_reloc_ to Settled, and the
 // AcceptOp guard ("while Waiting/InFlight") must leave that outcome alone
 // rather than re-stamp it "did not land".
-TEST(pin_reloc_did_not_land_on_accept_op) {
+TEST(pin_reloc_outcome_not_restamped_by_accept_op) {
   Rig g(2, 0);
   freeze_auto(g);
   link_up(g);

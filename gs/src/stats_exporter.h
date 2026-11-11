@@ -334,9 +334,11 @@ struct StatsScanMemberIn {
   bool blocked = false, is_op = false, is_pin = false;
 };
 
-// The in-flight channel hop's pending relocation (the live channel-row
-// move), straight from ChannelCore. nullopt -> JSON null (no relocation in
-// flight); state is "pending" | "landed" | "failed".
+// A live pin's relocate (the channel row's move), straight from
+// ChannelCore's PinReloc: "pending" while it waits or flies, then "landed"
+// or "failed" (with why) until the next set_pin or set_auto. nullopt ->
+// JSON null outside a tracked pin relocate (auto, or a pin that needed no
+// move).
 struct StatsRelocateIn {
   std::string state;
   int ch = 0;

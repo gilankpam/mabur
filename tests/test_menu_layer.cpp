@@ -582,17 +582,4 @@ TEST(choice_note_drawn_in_its_tone) {
   CHECK(colors[i] == tok::kStatusCritical);
 }
 
-TEST(clean_air_bars_follow_the_bands) {
-  CHECK(MenuLayer::clean_air_bars(0.0) == 5);
-  CHECK(MenuLayer::clean_air_bars(4.9) == 5);
-  CHECK(MenuLayer::clean_air_bars(5.0) == 4);
-  CHECK(MenuLayer::clean_air_bars(11.9) == 4);
-  CHECK(MenuLayer::clean_air_bars(12.0) == 3);
-  CHECK(MenuLayer::clean_air_bars(24.9) == 3);
-  CHECK(MenuLayer::clean_air_bars(25.0) == 2);
-  CHECK(MenuLayer::clean_air_bars(49.9) == 2);
-  CHECK(MenuLayer::clean_air_bars(50.0) == 1);
-  CHECK(MenuLayer::clean_air_bars(100.0) == 1);
-}
-
 MTEST_MAIN

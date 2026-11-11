@@ -304,6 +304,7 @@ TEST(width_reads_mixed_and_offers_only_20_and_40) {
 // --- Channel -------------------------------------------------------------
 
 TEST(clean_air_level_bands_at_each_boundary) {
+  CHECK(clean_air_level(0) == 5);
   CHECK(clean_air_level(4.99) == 5);
   CHECK(clean_air_level(5) == 4);
   CHECK(clean_air_level(11.99) == 4);
@@ -312,6 +313,7 @@ TEST(clean_air_level_bands_at_each_boundary) {
   CHECK(clean_air_level(25) == 2);
   CHECK(clean_air_level(49.99) == 2);
   CHECK(clean_air_level(50) == 1);
+  CHECK(clean_air_level(100) == 1);
 }
 
 TEST(clean_air_bars_draws_filled_then_empty) {

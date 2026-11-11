@@ -158,14 +158,6 @@ int MenuLayer::sc_(double design_px) const {
   return (int)std::lround(design_px * scale_ * screen_h_ / 1080.0);
 }
 
-int MenuLayer::clean_air_bars(double busy_pct) {
-  if (busy_pct < 5) return 5;
-  if (busy_pct < 12) return 4;
-  if (busy_pct < 25) return 3;
-  if (busy_pct < 50) return 2;
-  return 1;
-}
-
 bool MenuLayer::layout(int screen_w, int screen_h, std::string* err) {
   screen_w_ = screen_w;
   screen_h_ = screen_h;

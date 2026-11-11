@@ -53,9 +53,11 @@ struct ScoutDwell {
 //    it is. Bursts happen only when search && the dwell channel is a member.
 //    set_search_observe(true) (an observe lease while unlinked) also turns
 //    the dwell's own NHM read on for these search dwells, same as a
-//    measuring dwell, without ranking or picking from it -- quiet() still
-//    holds the TX card's own DISC for the read, as any unlinked observe
-//    does.
+//    measuring dwell -- quiet() still holds the TX card's own DISC for the
+//    read, as any unlinked observe does. Such a dwell lands in this scout's
+//    own ranker like any observe, but nothing picks from it while the pick
+//    is closed, and unfreeze(), set_measure() and begin_round() each
+//    rebuild that ranker, so these readings never decide a later pick.
 //  - measure (auto mode, pick open): observe every member at the link
 //    width (at 40 one dwell on the primary reads the whole pair) and rank
 //    it. An observe while unlinked is quiet(): the TX card holds its DISC
@@ -96,8 +98,9 @@ class ChannelScout {
   void set_search(bool on) { search_.store(on, std::memory_order_release); }
   // An observe lease while unlinked: each search dwell also reads NHM busy
   // (run_once's step_dwell_ calls), feeding scan.members through the usual
-  // dwell record without ranking or picking from it. A no-op while search
-  // is off.
+  // dwell record. The dwell also lands in this scout's own ranker, which
+  // nothing picks from while the pick is closed and which unfreeze(),
+  // set_measure() and begin_round() rebuild. A no-op while search is off.
   void set_search_observe(bool on) { search_observe_.store(on, std::memory_order_release); }
   void set_tx_frames(uint64_t cumulative) { tx_frames_.store(cumulative, std::memory_order_release); }
   void freeze() { frozen_.store(true, std::memory_order_release); }  // pick closed: measuring stops
