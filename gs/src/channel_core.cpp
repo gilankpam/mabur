@@ -204,8 +204,19 @@ ChannelSnapshot ChannelCore::snapshot(int tx_card) const {
     }
     s.members.push_back(m);
   }
-  s.relocate = relocate_;
-  s.relocate_seq = relocate_seq_;
+  switch (pin_reloc_.s) {
+    case PinReloc::Off:
+      break;
+    case PinReloc::Waiting:
+    case PinReloc::InFlight:
+      s.relocate = StatsRelocateIn{"pending", pin_reloc_.ch, ""};
+      break;
+    case PinReloc::Settled:
+      s.relocate = StatsRelocateIn{pin_reloc_.ok ? "landed" : "failed", pin_reloc_.ch,
+                                   pin_reloc_.ok ? "" : pin_reloc_.why};
+      break;
+  }
+  s.relocate_seq = pin_seq_;
   return s;
 }
 
@@ -231,6 +242,7 @@ ChannelTickOut ChannelCore::tick(const ChannelTickIn& in) {
   step_gates_();
   step_hop_edge_and_window_(in);
   step_cal_(in);
+  step_pin_reloc_(in);
   step_controller_(in);
   step_move_edge_(in);
   step_drains_();
@@ -408,8 +420,6 @@ void ChannelCore::dispatch_hop_action_(const HopAction& act, bool relocate_tick,
   boot_pick_.note_hop_action(act.kind, relocate_tick);
   const bool cal_order = relocate_tick && cal_reloc_tick_;
   const bool pin_order = relocate_tick && pin_reloc_tick_;
-  // Taken or refused at the cap: either way BootPick owns the outcome now.
-  if (pin_order) pin_reloc_.reset();
   if (cal_order) {
     if (act.kind == HopAction::Order) cal_reloc_.s = CalReloc::InFlight;
     else settle_cal_reloc_(false, "refused (hop cap)");
@@ -419,6 +429,23 @@ void ChannelCore::dispatch_hop_action_(const HopAction& act, bool relocate_tick,
       case HopAction::VerifyPass: settle_cal_reloc_(true, "landed"); break;
       case HopAction::Withdraw:   settle_cal_reloc_(false, "withdrawn"); break;
       case HopAction::Hold:       settle_cal_reloc_(false, "held"); break;
+      default: break;
+    }
+  }
+  // The pin's own relocate, same shape as the calibration one above: the
+  // tick that places the order moves it in flight (or settles it false on
+  // the spot, at the hop cap -- pin_refusal already keeps a pin off the
+  // cap, so the rig never takes this branch); every later action on an
+  // in-flight pin order is read here regardless of which tick's relocate
+  // this is.
+  if (pin_order) {
+    if (act.kind == HopAction::Order) pin_reloc_.s = PinReloc::InFlight;
+    else settle_pin_reloc_(false, "refused (hop cap)");
+  } else if (pin_reloc_.s == PinReloc::InFlight) {
+    switch (act.kind) {
+      case HopAction::Confirm:    pin_reloc_.confirmed = true; break;
+      case HopAction::VerifyPass: settle_pin_reloc_(true, "landed"); break;
+      case HopAction::Withdraw:   settle_pin_reloc_(false, "withdrawn"); break;
       default: break;
     }
   }
@@ -519,7 +546,7 @@ void ChannelCore::step_boot_pick_(const ChannelTickIn& in) {
     case BootPickOut::Relocate:
       pending_relocate_ = bo.ch;
       cal_reloc_tick_ = cal_reloc_.s == CalReloc::Waiting && bo.ch == cal_reloc_.ch;
-      pin_reloc_tick_ = pin_reloc_ && bo.ch == *pin_reloc_;
+      pin_reloc_tick_ = pin_reloc_.s == PinReloc::Waiting && bo.ch == pin_reloc_.ch;
       break;
     case BootPickOut::Freeze:
       if (bo.accept_op) plan_.set_want(now_ms, plan_.op());
@@ -530,6 +557,11 @@ void ChannelCore::step_boot_pick_(const ChannelTickIn& in) {
       sink_.log(logf_("maburgs channel: relocation to %u did not land; staying on %u",
                       static_cast<unsigned>(plan_.want()), static_cast<unsigned>(plan_.op())));
       plan_.set_want(now_ms, plan_.op());
+      // Usually a no-op: Confirm/VerifyPass/Withdraw already settled the pin's
+      // own outcome, straight off the controller's action, a tick ago. This
+      // only still finds Waiting/InFlight when nothing else did.
+      if (pin_reloc_.s == PinReloc::Waiting || pin_reloc_.s == PinReloc::InFlight)
+        settle_pin_reloc_(false, "did not land");
       break;
     case BootPickOut::None:
       break;
@@ -1137,6 +1169,11 @@ std::optional<std::string> ChannelCore::set_pin(uint8_t ch) {
   if (auto r = pin_refusal(ch)) return r;
   const bool linked = in_session_cur_;
   const uint8_t op = plan_.op();
+  // Every call that gets this far changes the channel row's relocate (even
+  // the no-op below, which still answers "I heard you, nothing moved") --
+  // scan.relocate_seq lets the goggles menu tell that apart from a fresh
+  // relocate landing on the one it was already watching.
+  ++pin_seq_;
   if (pinned_ && ch == op && plan_.want() == ch) return std::nullopt;
   if (linked) {
     // The boot pick's relocate, as a pinned boot relocates a drone found
@@ -1146,15 +1183,15 @@ std::optional<std::string> ChannelCore::set_pin(uint8_t ch) {
     plan_.set_want(now_ms, ch);
     if (ch != op) {
       boot_pick_.rearm_relocation();
-      pin_reloc_ = ch;
+      pin_reloc_ = PinReloc{PinReloc::Waiting, ch, false, false, ""};
     } else {
-      pin_reloc_.reset();
+      pin_reloc_ = PinReloc{};
     }
   } else {
     // No link to carry: op moves now, the cards follow on the next tick
     // and the search runs from there.
     plan_.commit(now_ms, ch);
-    pin_reloc_.reset();
+    pin_reloc_ = PinReloc{};
     if (scout_) scout_->set_op(ch);
   }
   pinned_ = true;
@@ -1187,13 +1224,15 @@ void ChannelCore::replace_ladder(const LadderCfg& ladder, double now_ms) {
 }
 
 void ChannelCore::set_auto() {
+  ++pin_seq_;   // every call, even the no-op below: auto stops watching either way
   if (!pinned_) return;
   pinned_ = false;
   reactive_ = true;
   // A pin relocate not yet handed to the controller is withdrawn (auto
-  // places no relocate); one already placed lands or fails as it would have.
-  if (pin_reloc_ && !plan_.hopping()) plan_.set_want(now_ms_cur_, plan_.op());
-  pin_reloc_.reset();
+  // places no relocate); one already placed lands or fails as it would
+  // have -- it just stops being the channel row's tracked relocate.
+  if (pin_reloc_.s == PinReloc::Waiting && !plan_.hopping()) plan_.set_want(now_ms_cur_, plan_.op());
+  pin_reloc_ = PinReloc{};
   const bool linked = in_session_cur_ || cal_running_cur_;
   const bool can_pick = scout_ != nullptr && !relay_search_only_;
   if (linked) {
@@ -1230,6 +1269,13 @@ void ChannelCore::settle_cal_reloc_(bool ok, const char* why) {
   cal_reloc_.ok = ok;
   sink_.log(logf_("maburgs channel: calibration relocate to %u %s", static_cast<unsigned>(cal_reloc_.ch),
                   why));
+}
+
+void ChannelCore::settle_pin_reloc_(bool ok, const char* why) {
+  pin_reloc_.s = PinReloc::Settled;
+  pin_reloc_.ok = ok;
+  pin_reloc_.why = why;
+  sink_.log(logf_("maburgs channel: pin relocate to %u %s", static_cast<unsigned>(pin_reloc_.ch), why));
 }
 
 void ChannelCore::step_cal_(const ChannelTickIn& in) {
@@ -1290,6 +1336,11 @@ void ChannelCore::step_cal_(const ChannelTickIn& in) {
     sink_.log(logf_("maburgs channel: calibration measure round overran %.0f ms; staying on %u",
                     cal_meas_.bound_ms, static_cast<unsigned>(plan_.op())));
   }
+}
+
+void ChannelCore::step_pin_reloc_(const ChannelTickIn&) {
+  if (pin_reloc_.s == PinReloc::InFlight && pin_reloc_.confirmed && hopc_.state() == HopState::Idle)
+    settle_pin_reloc_(true, "landed");
 }
 
 void ChannelCore::finish_cal_measure_(double now_ms) {

@@ -2628,6 +2628,230 @@ TEST(set_auto_while_unlinked_one_card_reruns_the_prelude_and_commits) {
   CHECK(g.core->pick_open());                   // the one-card pick stays open after the prelude
 }
 
+// ---- scan.relocate / scan.relocate_seq: the live pin's own outcome
+// (ChannelCore's PinReloc, exported through ChannelSnapshot::relocate) ----
+
+TEST(pin_reloc_lands_on_verify_pass) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  CHECK(!g.core->snapshot(0).relocate.has_value());
+  CHECK(g.core->snapshot(0).relocate_seq == 0);
+  REQUIRE(!g.core->set_pin(112).has_value());
+  {
+    const auto r = g.core->snapshot(0).relocate;
+    REQUIRE(r.has_value());
+    CHECK(r->state == "pending");
+    CHECK(r->ch == 112);
+    CHECK(r->why.empty());
+  }
+  CHECK(g.core->snapshot(0).relocate_seq == 1);
+  for (int i = 0; i < 20 && !g.sink.has_line("relocate 40 -> 112 placed"); ++i) live_tick(g);
+  REQUIRE(g.sink.has_line("maburgs channel: relocate 40 -> 112 placed (pin)"));
+  CHECK(g.core->snapshot(0).relocate->state == "pending");   // ordered, not yet confirmed
+  const auto rcf = pump_rcf(g);
+  REQUIRE(rcf.has_value() && rcf->hop_ch == 112);
+  g.core->note_video(112);
+  for (int i = 0; i < 5 && !g.sink.has_hop("verify_pass"); ++i) g.tick(true);
+  REQUIRE(g.sink.has_hop("verify_pass"));
+  const auto r = g.core->snapshot(0).relocate;
+  REQUIRE(r.has_value());
+  CHECK(r->state == "landed");
+  CHECK(r->ch == 112);
+  CHECK(r->why.empty());
+  CHECK(g.core->snapshot(0).relocate_seq == 1);   // bumped once, by set_pin only
+  CHECK(g.sink.has_line("maburgs channel: pin relocate to 112 landed"));
+}
+
+// A session lost between the Confirm and its VerifyPass leaves
+// HopController idle without ever handing back the VerifyPass action
+// (step_cal_'s comment on the calibration sibling); the pin's own
+// confirmed-then-Idle check (step_pin_reloc_) still calls it landed.
+TEST(pin_reloc_lands_when_confirmed_then_idle) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  REQUIRE(!g.core->set_pin(112).has_value());
+  for (int i = 0; i < 20 && !g.sink.has_line("relocate 40 -> 112 placed"); ++i) live_tick(g);
+  REQUIRE(g.sink.has_line("maburgs channel: relocate 40 -> 112 placed (pin)"));
+  const auto rcf = pump_rcf(g);
+  REQUIRE(rcf.has_value() && rcf->hop_ch == 112);
+  g.core->note_video(112);
+  g.tick(true);
+  REQUIRE(g.sink.has_hop("lead_confirm"));
+  CHECK(!g.sink.has_hop("verify_pass"));
+  g.tick(false);                 // session lost between the confirm and its verify_pass
+  const auto r = g.core->snapshot(0).relocate;
+  REQUIRE(r.has_value());
+  CHECK(r->state == "landed");
+  CHECK(r->ch == 112);
+  CHECK(g.core->op() == 112);
+}
+
+TEST(pin_reloc_withdrawn_when_the_drone_does_not_follow) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  REQUIRE(!g.core->set_pin(112).has_value());
+  for (int i = 0; i < 20 && !g.sink.has_line("relocate 40 -> 112 placed"); ++i) live_tick(g);
+  REQUIRE(g.sink.has_line("maburgs channel: relocate 40 -> 112 placed (pin)"));
+  for (int i = 0; i < g.cfg.hop.confirm_ms / 10 + 20 && !g.sink.has_hop("withdraw"); ++i) live_tick(g);
+  REQUIRE(g.sink.has_hop("withdraw"));
+  const auto r = g.core->snapshot(0).relocate;
+  REQUIRE(r.has_value());
+  CHECK(r->state == "failed");
+  CHECK(r->why == "withdrawn");
+  CHECK(r->ch == 112);
+  CHECK(g.core->op() == 40);
+  CHECK(g.core->snapshot(0).relocate_seq == 1);
+}
+
+// Session lost while the order is still Ordered (before its Confirm):
+// HopController::on_session_lost returns Withdraw, which the InFlight
+// branch in dispatch_hop_action_ settles on the spot -- the trailing
+// "did not land" BootPick line (checked in
+// set_pin_relocate_lost_with_the_session_stays_on_op) is bookkeeping after
+// the fact, not what settles this.
+TEST(pin_reloc_fails_on_session_lost_after_the_order) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  REQUIRE(!g.core->set_pin(112).has_value());
+  for (int i = 0; i < 20 && !g.sink.has_line("relocate 40 -> 112 placed"); ++i) live_tick(g);
+  REQUIRE(g.sink.has_line("maburgs channel: relocate 40 -> 112 placed (pin)"));
+  g.tick(false);                              // session lost before the confirm
+  REQUIRE(g.sink.has_hop("session_lost"));
+  const auto r = g.core->snapshot(0).relocate;
+  REQUIRE(r.has_value());
+  CHECK(r->state == "failed");
+  CHECK(r->why == "withdrawn");
+  CHECK(g.core->op() == 40);
+  CHECK(g.core->snapshot(0).relocate_seq == 1);
+  const auto placed_count = [&] {
+    return std::count_if(g.sink.lines.begin(), g.sink.lines.end(), [](const std::string& l) {
+      return l.find("relocate 40 -> 112 placed") != std::string::npos;
+    });
+  };
+  REQUIRE(placed_count() == 1);
+  for (int i = 0; i < 20; ++i) g.tick(false);
+  // relink: want already follows op (BootPick's own accept_op), so
+  // relocate_due finds nothing left to do.
+  for (int i = 0; i < 20; ++i) g.tick(true);
+  CHECK(placed_count() == 1);   // no retry behind it
+  CHECK(g.core->op() == 40);
+}
+
+TEST(pin_refused_at_the_hop_cap_changes_nothing) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  ChannelCorePicker p(*g.core);
+  REQUIRE(g.cfg.hop.max_hops_per_min == 4);
+  cal_move(g, p, 112);
+  cal_move(g, p, 144);
+  cal_move(g, p, 64);
+  cal_move(g, p, 40);
+  CHECK(!g.core->snapshot(0).relocate.has_value());
+  const uint64_t seq0 = g.core->snapshot(0).relocate_seq;
+  CHECK(g.core->set_pin(112) == std::optional<std::string>("hop cap"));
+  CHECK(!g.core->snapshot(0).relocate.has_value());
+  CHECK(g.core->snapshot(0).relocate_seq == seq0);
+}
+
+// BootPick's own "did not land" bookkeeping line follows a failed relocate
+// one tick late (its internal relocating_/landed_ resolve against
+// HopController's state, not against pin_reloc_); by the time it logs, the
+// withdraw above has already settled pin_reloc_ to Settled, and the
+// AcceptOp guard ("while Waiting/InFlight") must leave that outcome alone
+// rather than re-stamp it "did not land".
+TEST(pin_reloc_did_not_land_on_accept_op) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  REQUIRE(!g.core->set_pin(112).has_value());
+  for (int i = 0; i < 20 && !g.sink.has_line("relocate 40 -> 112 placed"); ++i) live_tick(g);
+  REQUIRE(g.sink.has_line("maburgs channel: relocate 40 -> 112 placed (pin)"));
+  for (int i = 0; i < g.cfg.hop.confirm_ms / 10 + 20 && !g.sink.has_hop("withdraw"); ++i) live_tick(g);
+  REQUIRE(g.sink.has_hop("withdraw"));
+  REQUIRE(g.core->snapshot(0).relocate.has_value());
+  CHECK(g.core->snapshot(0).relocate->why == "withdrawn");
+  const uint64_t seq_after_withdraw = g.core->snapshot(0).relocate_seq;
+  for (int i = 0; i < 20 && !g.sink.has_line("did not land"); ++i) live_tick(g);
+  REQUIRE(g.sink.has_line("relocation to 112 did not land; staying on 40"));
+  const auto r = g.core->snapshot(0).relocate;
+  REQUIRE(r.has_value());
+  CHECK(r->state == "failed");
+  CHECK(r->why == "withdrawn");           // not re-stamped "did not land"
+  CHECK(g.core->snapshot(0).relocate_seq == seq_after_withdraw);
+}
+
+TEST(pin_reloc_stays_pending_across_a_link_loss_before_the_order) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  REQUIRE(!g.core->set_pin(112).has_value());
+  for (int i = 0; i < 50; ++i) g.tick(false);   // the link drops before BootPick places the order
+  const auto r = g.core->snapshot(0).relocate;
+  REQUIRE(r.has_value());
+  CHECK(r->state == "pending");
+  CHECK(r->ch == 112);
+  for (int i = 0; i < 20 && !g.sink.has_line("relocate 40 -> 112 placed"); ++i) live_tick(g);
+  REQUIRE(g.sink.has_line("maburgs channel: relocate 40 -> 112 placed (pin)"));
+  CHECK(g.core->snapshot(0).relocate->state == "pending");
+  const auto rcf = pump_rcf(g);
+  REQUIRE(rcf.has_value() && rcf->hop_ch == 112);
+  g.core->note_video(112);
+  for (int i = 0; i < 5 && !g.sink.has_hop("verify_pass"); ++i) g.tick(true);
+  REQUIRE(g.sink.has_hop("verify_pass"));
+  CHECK(g.core->snapshot(0).relocate->state == "landed");
+  CHECK(g.core->snapshot(0).relocate_seq == 1);
+}
+
+TEST(pin_reloc_null_when_unlinked_or_already_there) {
+  Rig g(2, 0);
+  CHECK(!g.core->snapshot(0).relocate.has_value());
+  CHECK(g.core->snapshot(0).relocate_seq == 0);
+  CHECK(!g.core->set_pin(112).has_value());         // unlinked: op moves at once, no relocate
+  CHECK(!g.core->snapshot(0).relocate.has_value());
+  CHECK(g.core->snapshot(0).relocate_seq == 1);
+  CHECK(g.core->op() == 112);
+
+  Rig h(2, 0, /*pinned=*/true, 64);                 // already pinned there
+  link_up(h);
+  for (int i = 0; i < 5; ++i) live_tick(h);
+  CHECK(!h.core->snapshot(0).relocate.has_value());
+  const uint64_t seq0 = h.core->snapshot(0).relocate_seq;
+  CHECK(!h.core->set_pin(64).has_value());          // already there: a pure no-op
+  CHECK(!h.core->snapshot(0).relocate.has_value());
+  CHECK(h.core->snapshot(0).relocate_seq == seq0 + 1);
+}
+
+TEST(pin_reloc_cleared_by_set_auto_and_replaced_by_set_pin) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  REQUIRE(!g.core->set_pin(112).has_value());
+  const uint64_t seq_after_pin = g.core->snapshot(0).relocate_seq;
+  REQUIRE(g.core->snapshot(0).relocate.has_value());
+  g.core->set_auto();
+  CHECK(!g.core->snapshot(0).relocate.has_value());
+  CHECK(g.core->snapshot(0).relocate_seq == seq_after_pin + 1);
+  REQUIRE(!g.core->set_pin(144).has_value());
+  const auto r = g.core->snapshot(0).relocate;
+  REQUIRE(r.has_value());
+  CHECK(r->state == "pending");
+  CHECK(r->ch == 144);
+  CHECK(g.core->snapshot(0).relocate_seq == seq_after_pin + 2);
+}
+
 // ---- pin_refusal: set_pin's answer, asked without placing anything ----
 
 // pin_refusal(ch) answers what set_pin(ch) would, and changes nothing; the

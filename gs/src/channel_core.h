@@ -153,8 +153,9 @@ struct ChannelSnapshot {
   // config order: built fresh each snapshot() call from member_figs_/
   // op_fig_ -- see ChannelCore::snapshot.
   std::vector<StatsScanMemberIn> members;
-  // The channel row's pending relocation and its sequence counter: null
-  // and 0 while no such relocation is tracked.
+  // The live pin's relocate and its sequence counter, derived from
+  // pin_reloc_/pin_seq_ (ChannelCore::snapshot): null while the pin needs
+  // no move or none is tracked yet.
   std::optional<StatsRelocateIn> relocate;
   uint64_t relocate_seq = 0;
 };
@@ -374,11 +375,6 @@ class ChannelCore {
   std::optional<uint8_t> pending_relocate_;
   std::optional<uint8_t> frozen_pick_;
   BootPickIn last_bi_;
-  // scan.relocate / scan.relocate_seq (the channel row's own relocation,
-  // distinct from pending_relocate_'s boot-pick plumbing): null and 0
-  // while no such relocation is tracked.
-  std::optional<StatsRelocateIn> relocate_;
-  uint64_t relocate_seq_ = 0;
 
   // ---- hop state ----
   int hop_lead_latched_ = -1;
@@ -463,10 +459,23 @@ class ChannelCore {
     bool ok = false;
   } cal_reloc_;
   bool cal_reloc_tick_ = false;      // this tick's Relocate is the calibration's
-  // A live pin's relocate, until the controller takes or refuses it: only
-  // the order's H record and log line carry the reason; after that it is
-  // the boot pick's relocation like any other.
-  std::optional<uint8_t> pin_reloc_;
+  // A live pin's relocate: the channel row's own view of it
+  // (scan.relocate/scan.relocate_seq, ChannelCore::snapshot derives them
+  // from this -- no parallel field). Off outside a linked pin move; Waiting
+  // until BootPick hands the order to the controller; InFlight from Order to
+  // Confirm/VerifyPass/Withdraw; Settled holds the outcome (ok/why) for the
+  // rest of the pin's life, until set_pin or set_auto move it again.
+  struct PinReloc {
+    enum S { Off, Waiting, InFlight, Settled } s = Off;
+    uint8_t ch = 0;
+    bool confirmed = false, ok = false;
+    std::string why;
+  } pin_reloc_;
+  // scan.relocate_seq: bumped by every set_pin call that is not refused
+  // (the no-op onto the channel already pinned to included) and by every
+  // set_auto call, so a watcher can tell a still-pending outcome from a
+  // fresh relocate that landed on the channel it was already watching.
+  uint64_t pin_seq_ = 0;
   bool pin_reloc_tick_ = false;      // this tick's Relocate is the pin's
   // The latest verdict window's reading of op: the worst valid card on op,
   // foreign frames scaled to radio.scan.dwell_ms.
@@ -506,6 +515,11 @@ class ChannelCore {
   void step_cal_(const ChannelTickIn& in);
   void finish_cal_measure_(double now_ms);
   void settle_cal_reloc_(bool ok, const char* why);
+  // The live pin's own relocate, mirroring step_cal_'s confirmed-then-Idle
+  // check: a session lost between the Confirm and its VerifyPass leaves
+  // HopController idle without ever handing back the VerifyPass action.
+  void step_pin_reloc_(const ChannelTickIn& in);
+  void settle_pin_reloc_(bool ok, const char* why);
   std::optional<std::string> move_refusal_(uint8_t ch) const;
   std::optional<std::string> link_moving_refusal_() const;
   std::optional<std::string> busy_refusal_() const;

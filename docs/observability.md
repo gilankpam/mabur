@@ -64,9 +64,19 @@ player's GS OSD (:8302), `tools/flightreport.py` (over `flight.jsonl`).
   reads differently while linked: its row's `busy_pct` is the verdict
   window's own figure (the min across every card with a reading of NHM
   busy minus that card's own airtime, floored at 0), not a dwell, since
-  the scout never dwells on op while linked. `relocate` is the channel
-  row's own pending move (`null` | `{state: "pending"|"landed"|"failed",
-  ch, why}`) and `relocate_seq` a counter bumped alongside it.
+  the scout never dwells on op while linked. `relocate` is the live pin's
+  own move (`ChannelCore`'s `PinReloc`, `docs/channel-select.md` "Live
+  pin/auto"): `null` outside a linked pin move onto another channel;
+  `{state: "pending", ch, why: ""}` from `set_pin` until it settles;
+  `{state: "landed", ch, why: ""}` once the confirm (or a session dropped
+  right after it) lands it; `{state: "failed", ch, why}` otherwise, `why`
+  one of `withdrawn`, `refused (hop cap)`, `did not land`. No timer —
+  `pending` can hold indefinitely across a link loss before the order
+  ever leaves. `relocate_seq` bumps on every `set_pin` call that is not
+  refused (the no-op onto the channel already pinned included) and on
+  every `set_auto` call; a refused `set_pin` changes nothing and does not
+  bump it. The bump lets a watcher tell a still-pending outcome from a
+  fresh relocate that landed on the same channel it was already watching.
 
 #### Pre-FEC loss is late, not lost
 

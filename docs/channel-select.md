@@ -371,6 +371,25 @@ reach it.
   (M commit). `set_auto` withdraws a pin relocate not yet handed to the
   controller, and reopens the pick only when unlinked — its
   `radio.scan.max_ms` clock counts from the reopen, not from GS start.
+- **The live pin's own outcome** (`ChannelCore`'s `PinReloc`, exported as
+  `scan.relocate`/`scan.relocate_seq` — `docs/observability.md`): `Off`
+  outside a linked pin move onto a different channel. `set_pin` onto a
+  different channel while linked arms `Waiting{ch}`; once BootPick hands
+  the order to the controller it is `InFlight`; `Confirm`, `VerifyPass`
+  and `Withdraw` move or settle it exactly as the boot relocate above —
+  `VerifyPass` settles it `landed`, `Withdraw` settles it `failed` with
+  `withdrawn`, and a session dropped between the `Confirm` and its
+  `VerifyPass` still reads `landed` (the same confirmed-then-`Idle` check
+  as the calibration relocate). A relocate refused on the spot at the hop
+  cap settles `failed` with `refused (hop cap)`, though `set_pin` already
+  refuses a pin at the cap before anything is armed. If none of those
+  caught it, BootPick's own `AcceptOp` bookkeeping settles a leftover
+  `Waiting`/`InFlight` outcome `failed` with `did not land`. **No timer:
+  a link lost before the order ever leaves holds `Waiting`** — there is
+  nothing to withdraw yet, and the next link-up tries again. Every
+  `set_pin` call that is not refused (even the no-op onto the channel it
+  is already pinned to) and every `set_auto` call bumps `relocate_seq`;
+  `set_auto` always drops the outcome back to `Off`.
 - A confirmed hop of either kind moves `want` with `op`: a reactive hop's
   destination is where the link should live from then on, so a later
   link-up does not relocate back onto the channel it fled.
