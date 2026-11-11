@@ -799,6 +799,7 @@ dwell_observe_ms     = 20
 dwell_period_ms      = 1000
 burst_period_ms      = 333
 relay_burst_period_ms = 1000
+lease_sweep_period_ms = 1000
 rank_visits          = 5
 rank_max_age_ms      = 10000
 confirm_ms           = 1000   # code default 500
@@ -855,6 +856,7 @@ Validation (`gs/src/config.cpp`) — unknown keys fail boot:
 | `dwell_period_ms` | 20–60000 |
 | `burst_period_ms` | 100–60000 |
 | `relay_burst_period_ms` | 500–60000 |
+| `lease_sweep_period_ms` | 500–60000 (the one-card observe lease's burst pace, `docs/channel-select.md`) |
 | `rank_visits` | 1–100 |
 | `rank_max_age_ms` | 1000–600000 |
 | `confirm_ms` | 100–5000 |

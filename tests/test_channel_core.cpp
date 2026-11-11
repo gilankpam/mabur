@@ -15,6 +15,7 @@
 #include "fake_link_card.h"
 #include "hop_blank.h"
 #include "mabur/rc_proto.h"
+#include "mabur/uep_encoder.h"
 #include "nhm_busy.h"
 #include "recording_sink.h"
 #include "vrx_cfg.h"
@@ -3531,6 +3532,262 @@ TEST(lease_round_released_when_scout_card_dies) {
   lease_ticks(g, 2000);                                 // renewed: no round on a dead card
   CHECK(g.sink.dwells.size() == d);
   CHECK(!g.core->scout_owns_card(1));
+}
+
+// ---- the one-card lease: the in-flight burst on the sole USB card ----
+
+// Dwells on `card` since `from`, per member.
+static std::vector<int> card_dwell_counts(const Rig& g, int card, size_t from,
+                                          const std::vector<uint8_t>& chs) {
+  std::vector<int> n(chs.size(), 0);
+  for (size_t i = from; i < g.sink.dwells.size(); ++i) {
+    if (g.sink.dwells[i].first != card) continue;
+    for (size_t k = 0; k < chs.size(); ++k)
+      if (g.sink.dwells[i].second.survey.def.primary == chs[k]) ++n[k];
+  }
+  return n;
+}
+static bool any_call_starts(const FakeCard& c, const std::string& prefix) {
+  for (const auto& s : c.calls) if (s.rfind(prefix, 0) == 0) return true;
+  return false;
+}
+
+// 2500 ms of lease with the player's renewals: exactly three bursts (one
+// per lease_sweep_period_ms, the first at once), each one dwell on every
+// member but op at the link width, the card back on op after every tick,
+// and never a width switch. Auto and pinned alike: the lease never reads
+// reactive_.
+static void one_card_lease_bursts_three_times_in_2500_ms(Rig& g) {
+  for (int i = 0; i < 10; ++i) live_tick(g);
+  for (auto& c : g.cards) c->calls.clear();
+  const size_t d0 = g.sink.dwells.size();
+  REQUIRE(g.core->observe(3000) == LeaseState::OneCard);
+  const uint64_t t0 = g.clk.ms;
+  uint64_t last = t0;
+  while (g.clk.ms < t0 + 2500) {
+    if (g.clk.ms - last >= 1000) { g.core->observe(3000); last = g.clk.ms; }
+    live_tick(g);
+    CHECK(g.cards[0]->ch == 40);
+  }
+  const auto n = card_dwell_counts(g, 0, d0, {40, 64, 112, 144});
+  CHECK(n[0] == 0);                                   // op never dwelt on
+  CHECK(n[1] == 3 && n[2] == 3 && n[3] == 3);
+  for (size_t i = d0; i < g.sink.dwells.size(); ++i) {
+    CHECK(g.sink.dwells[i].first == 0);
+    CHECK(g.sink.dwells[i].second.survey.def.width == CHANNEL_WIDTH_40);
+    CHECK(g.sink.dwells[i].second.survey.observe_ms > 0);
+  }
+  CHECK(!any_call_starts(*g.cards[0], "set_width"));
+  CHECK(g.cards[0]->width_mhz == 40);
+  CHECK(g.core->width_mhz() == 40);
+  CHECK(g.core->op() == 40);
+  CHECK(!g.sink.has_hop("order"));
+  CHECK(g.sink.has_line("maburgs channel: observe lease 3000 (one_card)"));
+}
+
+TEST(lease_one_card_bursts_once_per_period_auto_and_pinned) {
+  {
+    Rig g(1, 0);
+    freeze_auto(g);
+    one_card_lease_bursts_three_times_in_2500_ms(g);
+  }
+  {
+    Rig g(1, 0, /*pinned=*/true, 40);
+    link_up(g);
+    one_card_lease_bursts_three_times_in_2500_ms(g);
+    CHECK(g.core->pinned());
+  }
+}
+
+// A lease burst's visits never reach HopRanker (the ranking a hop reads is
+// untouched), while its dwells land in scan.members.
+TEST(lease_one_card_feeds_no_hop_ranker_visit) {
+  Rig g(1, 0);
+  freeze_auto(g);
+  g.cards[0]->nhm_busy_pct_on[64] = 8;
+  g.cards[0]->nhm_busy_pct_on[112] = 40;
+  g.cards[0]->nhm_busy_pct_on[144] = 2;
+  for (int i = 0; i < 10; ++i) live_tick(g);
+  const auto before = g.core->hop_ranker().ranking(static_cast<double>(g.clk.ms));
+  const size_t d0 = g.sink.dwells.size();
+  REQUIRE(g.core->observe(3000) == LeaseState::OneCard);
+  live_tick(g);
+  const auto n = card_dwell_counts(g, 0, d0, {40, 64, 112, 144});
+  REQUIRE(n[1] == 1 && n[2] == 1 && n[3] == 1);
+  const auto after = g.core->hop_ranker().ranking(static_cast<double>(g.clk.ms));
+  REQUIRE(after.size() == before.size());
+  for (size_t i = 0; i < after.size(); ++i) {
+    CHECK(after[i].ch == before[i].ch);
+    CHECK(after[i].visits == before[i].visits);
+    CHECK(after[i].ranked == before[i].ranked);
+  }
+  const auto m = g.core->snapshot(0).members;
+  REQUIRE(m.size() == 4);
+  CHECK(m[0].is_op && m[0].src != "scan");
+  CHECK(m[1].src == "scan" && m[1].busy_pct && std::abs(*m[1].busy_pct - 8.0) < 1.0 && !m[1].blocked);
+  CHECK(m[2].src == "scan" && m[2].busy_pct && std::abs(*m[2].busy_pct - 40.0) < 1.0 && m[2].blocked);
+  CHECK(m[3].src == "scan" && m[3].busy_pct && std::abs(*m[3].busy_pct - 2.0) < 1.0);
+}
+
+// The drone's video on card 0 through a real UepEncoder, one frame per
+// 10 ms tick, so the decoder's arrival counters -- the hop verdict's own
+// loss windows -- see what the air delivered.
+struct VideoAir {
+  mabur::UepEncoder enc{bundle().uep_layers(), 1'000'000'000};
+  std::vector<uint8_t> unit = std::vector<uint8_t>(3000, 0x5A);
+  uint64_t t = 0;
+  // One frame; its bodies reach card 0 when `deliver`, else the air lost them.
+  void frame(Rig& g, bool deliver) {
+    if (g.seq_next.size() < g.cards.size()) g.seq_next.resize(g.cards.size(), 100);
+    for (auto& b : enc.add_frame(0, unit.data(), unit.size(), t)) {
+      const uint16_t s = g.seq_next[0]++;
+      if (!deliver) continue;
+      auto m = junk_body(0, s);
+      m.body = std::move(b.body);
+      g.agg.on_rx_body(m);
+    }
+    t += 10;
+  }
+};
+static void video_tick(Rig& g, VideoAir& air) {
+  g.cards[0]->fr.own += 5;
+  g.vrx->on_video(static_cast<double>(g.clk.ms));
+  air.frame(g, true);
+  g.tick(true);
+}
+
+// The burst's air gap (the drone's frames sent while the sole card was off
+// op) never reaches the hop verdict: no window overlapping the burst, nor
+// the one after it, is classified, and the loss windows are blanked past
+// it -- so the verdict, its evidence and the rung-store blank stay where
+// they were. A control rig losing the same frames with no burst shows the
+// verdict does see that much loss.
+TEST(lease_one_card_masks_the_verdict_around_the_burst) {
+  uint64_t lost = 0;
+  {
+    Rig g(1, 0);
+    freeze_auto(g);
+    VideoAir air;
+    for (int i = 0; i < 100; ++i) video_tick(g, air);
+    const auto s0 = g.core->snapshot(0);
+    REQUIRE(s0.hop.verdict == "healthy");
+    REQUIRE(s0.hop.evidence == 0);
+    const int v0 = g.sink.verdicts;
+    const size_t d0 = g.sink.dwells.size();
+    REQUIRE(g.core->observe(3000) == LeaseState::OneCard);
+    const uint64_t t_burst = g.clk.ms;
+    video_tick(g, air);                                  // the burst runs inside this tick
+    REQUIRE(g.sink.dwells.size() == d0 + 3);
+    lost = (g.clk.ms - t_burst - 10) / 10;               // the frames sent during the burst
+    REQUIRE(lost >= 5);
+    for (uint64_t k = 0; k < lost; ++k) air.frame(g, false);
+    g.core->observe(0);                                  // one burst only
+    for (int i = 0; i < 100; ++i) {
+      video_tick(g, air);
+      const auto s = g.core->snapshot(0);
+      CHECK(s.hop.verdict == s0.hop.verdict);
+      CHECK(s.hop.evidence == s0.hop.evidence);
+      CHECK(!s.hop.ref_rung.has_value());
+    }
+    CHECK(g.sink.verdicts == v0);
+    CHECK(g.sink.dwells.size() == d0 + 3);
+  }
+  {
+    Rig g(1, 0);
+    freeze_auto(g);
+    VideoAir air;
+    for (int i = 0; i < 100; ++i) video_tick(g, air);
+    const int v0 = g.sink.verdicts;
+    for (uint64_t k = 0; k < lost; ++k) air.frame(g, false);
+    bool impaired = false;
+    for (int i = 0; i < 100; ++i) {
+      video_tick(g, air);
+      if (g.core->snapshot(0).hop.evidence & kEvImpaired) impaired = true;
+    }
+    CHECK(impaired);
+    CHECK(g.sink.verdicts > v0);
+  }
+}
+
+// A relocate due, placed, riding its RCFs or retuning: no burst until it
+// has landed; then the lease bursts on the new op.
+TEST(lease_one_card_never_bursts_with_a_hop_or_relocate_in_flight) {
+  Rig g(1, 0);
+  freeze_auto(g);
+  for (int i = 0; i < 10; ++i) live_tick(g);
+  REQUIRE(!g.core->set_pin(112).has_value());
+  REQUIRE(g.core->observe(3000) == LeaseState::OneCard);
+  const size_t d0 = g.sink.dwells.size();
+  for (int i = 0; i < 50 && !g.sink.has_line("relocate 40 -> 112 placed"); ++i) {
+    live_tick(g);
+    CHECK(g.sink.dwells.size() == d0);
+  }
+  REQUIRE(g.sink.has_line("maburgs channel: relocate 40 -> 112 placed (pin)"));
+  REQUIRE(std::string(g.core->snapshot(0).hop.state) == "ordered");
+  for (int i = 0; i < 20 && !g.sink.has_hop("one_card_retune"); ++i) {
+    g.core->observe(3000);
+    pump_rcf(g);
+    CHECK(g.sink.dwells.size() == d0);
+  }
+  REQUIRE(g.sink.has_hop("one_card_retune"));
+  for (int i = 0; i < 10; ++i) {
+    g.core->observe(3000);
+    g.tick(true);
+    CHECK(g.sink.dwells.size() == d0);
+  }
+  REQUIRE(g.core->hopping());
+  g.core->note_video(112);
+  for (int i = 0; i < 5 && !g.sink.has_line("pin relocate to 112 landed"); ++i) {
+    g.core->observe(3000);
+    g.tick(true);
+  }
+  REQUIRE(g.sink.has_line("maburgs channel: pin relocate to 112 landed"));
+  REQUIRE(g.core->op() == 112);
+  g.core->observe(3000);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  const auto n = card_dwell_counts(g, 0, d0, {40, 64, 112, 144});
+  CHECK(n[0] == 1 && n[1] == 1 && n[2] == 0 && n[3] == 1);   // landed: one burst, around 112
+  CHECK(g.cards[0]->ch == 112);
+}
+
+TEST(lease_one_card_at_width_20_bursts_without_a_width_switch) {
+  Rig g(1, 0, /*pinned=*/false, 0, {40, 64, 112, 144}, 20);
+  freeze_auto(g);
+  for (int i = 0; i < 10; ++i) live_tick(g);
+  for (auto& c : g.cards) c->calls.clear();
+  const size_t d0 = g.sink.dwells.size();
+  REQUIRE(g.core->observe(3000) == LeaseState::OneCard);
+  live_tick(g);
+  const auto n = card_dwell_counts(g, 0, d0, {40, 64, 112, 144});
+  CHECK(n[0] == 0 && n[1] == 1 && n[2] == 1 && n[3] == 1);
+  for (size_t i = d0; i < g.sink.dwells.size(); ++i)
+    CHECK(g.sink.dwells[i].second.survey.def.width == CHANNEL_WIDTH_20);
+  CHECK(!any_call_starts(*g.cards[0], "set_width"));
+  CHECK(g.cards[0]->width_mhz == 20);
+  CHECK(g.cards[0]->ch == 40);
+}
+
+// USB + relay with the relay carrying TX: the USB card is the spare, whose
+// hop bursts are posted to the in-flight thread; the lease's burst still
+// runs on the core thread, inside tick(), and never on the relay.
+TEST(lease_one_card_with_relay_tx_bursts_synchronously) {
+  Rig g(1, 1);
+  g.cards[0]->retune_ok = false;
+  freeze_auto(g);
+  g.cards[0]->retune_ok = true;
+  link_up(g);
+  for (int i = 0; i < 10; ++i) g.tick(true, false, /*tx=*/1);
+  for (auto& c : g.cards) c->calls.clear();
+  REQUIRE(g.core->observe(3000) == LeaseState::OneCard);
+  const size_t d0 = g.sink.dwells.size();
+  g.core->tick(g.in(true, false, /*tx=*/1));               // one core tick, no in-flight step
+  const auto n = card_dwell_counts(g, 0, d0, {40, 64, 112, 144});
+  CHECK(n[0] == 0 && n[1] == 1 && n[2] == 1 && n[3] == 1);
+  CHECK(g.sink.dwells.size() == d0 + 3);
+  CHECK(!g.core->dwell_busy());
+  CHECK(g.cards[0]->ch == 40);
+  CHECK(g.cards[1]->sweeps.empty());
+  CHECK(!any_call_starts(*g.cards[1], "retune"));
 }
 
 TEST(observe_verb_replies) {

@@ -49,14 +49,22 @@
 //
 // The observe lease (observe(ms), the 8402 `observe` verb): while the
 // goggles' channel picker is open the player keeps a deadline renewed and
-// the core measures the set for it. On a two-card GS that is scout rounds
-// back to back (the calibration round's begin_round, under the same start
-// conditions plus no relocate due): every member but op, at the link
-// width, feeding scan.members and never the hop ranker. A pinned scout is
+// the core measures the set for it -- every member but op, at the link
+// width, feeding scan.members and never the hop ranker. On a two-card GS
+// that is scout rounds back to back (the calibration round's begin_round,
+// under the same start conditions plus no relocate due). A pinned scout is
 // frozen and has measuring turned on for the lease, off again once the
 // lease has lapsed and the round is idle. A lease that runs out lets its
 // open round finish; observe(0), set_pin, set_auto and begin_cal_measure
-// end the lease and cancel its open round first.
+// end the lease and cancel its open round first. On a one-USB-card GS it
+// is the in-flight burst on that card, once per hop.lease_sweep_period_ms,
+// run synchronously on the core thread (a relay carrying TX included) and
+// only while no hop or relocate is in flight or due and no relay sweep or
+// posted burst is out. The burst takes the sole card off op for ~75 ms, so the hop verdict
+// skips every sampler window from the burst's start to one window_ms past
+// its end: those windows re-seed the per-card baselines instead of being
+// classified, and the verdict's loss windows are blanked to the same
+// instant, so the gap reads as neither interference nor loss.
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -330,7 +338,8 @@ class ChannelCore {
   // None; unlinked -> Search while the scout searches (not a relay-only
   // GS), else None; linked: two or more USB cards -> TwoCard, one USB card
   // -> OneCard, relays only with a ready sweep-capable one -> Relay; else
-  // None. Only TwoCard measures yet.
+  // None. TwoCard runs scout rounds and OneCard the in-flight burst;
+  // Relay and Search are reported to the player and measure nothing extra.
   LeaseState lease_state() const;
   // The whole `observe <rest>` verb: "ok observe <state>", or
   // "err usage: observe <ms>" unless rest is a bare non-negative integer.
@@ -540,6 +549,16 @@ class ChannelCore {
   // on its next step): a release, a pin, auto, a calibration pick.
   void end_lease_();
   void step_lease_(const ChannelTickIn& in);
+  // The one-card lease: one in-flight burst on the sole USB card when
+  // lease_sweep_period_ms has passed since the last one and nothing else
+  // holds the card, the controller or a burst.
+  void step_lease_one_card_(const ChannelTickIn& in);
+  // The last one-card lease burst's start (tick time).
+  double last_lease_burst_ms_ = -1e18;
+  // Sampler records stamped in (from, until] are masked from the hop
+  // verdict: from = the burst's start, until = its end plus window_ms (the
+  // window that straddles the burst's end). until < from = none yet.
+  double lease_mask_from_ms_ = 0, lease_mask_until_ms_ = -1;
   // The latest verdict window's reading of op: the worst valid card on op,
   // foreign frames scaled to radio.scan.dwell_ms.
   std::optional<CalReading> op_live_;

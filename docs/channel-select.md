@@ -77,6 +77,7 @@ width    = 40
 | **relocate** — the link forms where the drone is, one order moves it to `want` (pin or pick) | each link-up with `op ≠ want`, both modes | `[hop] confirm_ms`, `confirm_extend_ms`, `verify_ms`, `max_hops_per_min`, `one_card_repeats` (shared with the reactive hop) |
 | **verdict** — is `op` bad right now | always (OSD / sideport `hop.verdict`) | `[hop] window_ms`, `persist`, `[hop.verdict] *` |
 | **reactive hop** — in-flight scout, freshness burst, order/verify/withdraw | `channel = "auto"` only, after the freeze | everything else in `[hop]` |
+| **picker lease** — measure the set while the goggles' channel picker is open (below, "Measuring for the picker") | linked, a lease held, both modes | two cards: `radio.scan.dwell_ms`, `settle_ms`; one card: `[hop] lease_sweep_period_ms`, `dwell_observe_ms` |
 | **calibration pick** — one measure round, then a relocate to the quietest member (`CalPicker`) | each `maburcal start`, auto mode with two or more cards | `radio.scan.dwell_ms`, `settle_ms`, `pick_margin_pct`, `busy_dbm`, `blocked_pct`; the relocate's `[hop] confirm_ms`, `max_hops_per_min` |
 | **one-card mode** | exactly one USB card in the roster (one `[[radio.cards]]` entry, or auto-scan finding one card) | no in-flight scout; `one_card_ms`, `op_window_ms`, `one_card_repeats` apply |
 
@@ -553,11 +554,11 @@ answers with it):
 |---|---|---|
 | `none` | calibration owns the scout: a run (`cal_running`), its measure round waiting or running, or its relocate waiting or in flight | nothing |
 | `none` | the boot pick is open | nothing; the boot scout is measuring anyway |
-| `search` | unlinked and the scout is searching (not relay-only) | named only; no extra measuring yet |
+| `search` | unlinked and the scout is searching (not relay-only) | named only; nothing extra is measured |
 | `none` | unlinked otherwise (a relay-only GS: the sole relay searches) | nothing |
 | `two_card` | linked, two or more USB cards, not relay-only | scout rounds back to back (below) |
-| `one_card` | linked, one USB card | named only; no extra measuring yet |
-| `relay` | linked, no USB card, a ready sweep-capable relay | named only; no extra measuring yet |
+| `one_card` | linked, one USB card (relays in the roster or not) | the in-flight burst on the USB card, once per `hop.lease_sweep_period_ms` (below) |
+| `relay` | linked, no USB card, a ready sweep-capable relay | named only; nothing extra is measured |
 | `none` | otherwise | nothing |
 
 **Two cards: scout rounds, back to back.** While the lease holds and no
@@ -595,6 +596,33 @@ mode goes to `Hold`), the scout card leaves the TX candidates and its
 diversity is lost, and a width or ladder set is refused `ladder refused:
 scan in flight`. With rounds back to back the auto hop is effectively off
 while the picker is open and for up to one round after it closes.
+
+**One card: the in-flight burst, once a period.** While the lease holds,
+the core runs `InflightScout::burst` on the USB card — every member but
+`op`, one `hop.dwell_observe_ms` observe each, at the link width, back to
+`op` after each — at most once per `hop.lease_sweep_period_ms` (1000), the
+first at once. It runs synchronously on the core thread (`burst_on_card_`:
+the card's device-use lock held, `tune_gen` bumped both sides), also when a
+relay carries TX and the USB card is the spare; it never runs on a relay.
+It waits while a hop or relocate is in flight or due (the controller not
+`Idle`/`Hold`, the plan hopping, a relocate handed out or about to be), a
+relay sweep or a posted spare-card burst is out, the scout owns the card,
+or the card is not ready. Its dwells land in `scan.members` and `scan.log`
+(`D` lines); its visits are dropped, never ranked. Pinned or auto alike:
+the lease never touches the pin, `reactive_` or the plan.
+
+**What a one-card burst costs the link** (accepted: the drone is on the
+ground). About 75 ms off `op` per burst for a four-member set at either
+width — no video and no RCF on the sole card — once a second while the
+picker is open: a few frames lost per second, and the GS ladder may
+demote on the loss and re-promote after the picker closes. The hop
+verdict does not see the gap: every sampler window stamped after the
+burst's start and up to one `hop.window_ms` past its end is skipped —
+not classified, not read for `op`'s figure — and its counters become the
+next window's baselines; the verdict's own loss windows are blanked to the
+same instant. So neither the blocked streak, the detect ring nor the
+persistence learns the gap, the rung store is not blanked by it, and
+`hop.verdict` holds its last value across the burst.
 
 ## In-flight hop after the freeze
 

@@ -241,6 +241,7 @@ dwell_observe_ms     = 20     # scout: time listening per candidate visit...
 dwell_period_ms      = 1000   # ...and time between visits -- background spare-card dwell only
 burst_period_ms      = 333    # USB freshness burst: sweep of every candidate while a hop trigger is live, at most one per this (dwell_period_ms once a hold has every candidate ranked; skipped on a two-card GS once every candidate is ranked)
 relay_burst_period_ms = 1000  # relay sweep (~280 ms deaf): at most one per this, while hop-free
+lease_sweep_period_ms = 1000  # channel picker open, one USB card: one measuring sweep (~75 ms off op) per this
 rank_visits          = 5      # visits remembered per candidate
 rank_max_age_ms      = 10000  # visits older than this are ignored
 confirm_ms           = 1000   # drone video must appear on the new channel within this, else cancel

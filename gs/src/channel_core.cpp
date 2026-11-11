@@ -617,6 +617,33 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
   const auto rec = sampler_->take();
   if (!rec) return;
   const uint64_t t_ms = rec->t_ms;   // the sample instant: every per-window span is measured to it
+  if (lease_mask_from_ms_ < static_cast<double>(t_ms) &&
+      static_cast<double>(t_ms) <= lease_mask_until_ms_) {
+    // A window overlapping a one-card lease burst, or the one after it:
+    // the sole card was off op, so its own airtime, delivery and loss
+    // describe the burst, not the channel. Not classified -- the blocked
+    // streak, the detect ring and the persistence never see it and
+    // hop.verdict keeps its last value -- and not read for op's figure. Its
+    // counters become the baselines, so the next window measures only
+    // itself, and the loss windows swallow the gap's arrivals.
+    for (int i = 0; i < n_cards_; ++i) {
+      const size_t si = static_cast<size_t>(i);
+      const CardSample& cs = rec->cards[si];
+      window_prev_ok_[si] = cs.valid && cs.channel == plan_.op();
+      if (!window_prev_ok_[si]) continue;
+      window_prev_[si] = cs.frames;
+      window_prev_crc_[si] = in.agg ? in.agg->card(i).crc_fail : 0;
+      window_prev_seq_exp_[si] = in.agg ? in.agg->card(i).seq_expected : 0;
+      window_prev_seq_rcv_[si] = in.agg ? in.agg->card(i).seq_received : 0;
+      window_prev_ms_[si] = t_ms;
+    }
+    recovered_prev_window_ = in.agg ? in.agg->decoder().stats(0).syms_recovered +
+                                          in.agg->decoder().stats(1).syms_recovered
+                                    : 0;
+    s1_hop_loss_.blank_until(lease_mask_until_ms_);
+    enh_hop_loss_.blank_until(lease_mask_until_ms_);
+    return;
+  }
   std::vector<VerdictCardIn> vc(static_cast<size_t>(n_cards_));
   std::optional<CalReading> op_read;   // the worst valid card's reading of op this window
   for (int i = 0; i < n_cards_; ++i) {
@@ -1443,7 +1470,12 @@ void ChannelCore::step_lease_(const ChannelTickIn& in) {
     }
     return;
   }
-  if (lease_state() != LeaseState::TwoCard || lease_round_) return;
+  const LeaseState st = lease_state();
+  if (st == LeaseState::OneCard) {
+    step_lease_one_card_(in);
+    return;
+  }
+  if (st != LeaseState::TwoCard || lease_round_) return;
   // step_cal_'s round-start conditions, plus no relocate handed out or due
   // this tick: a round starting on the tick BootPick hands out a Relocate
   // would hide it from the controller, and BootPick has already spent its
@@ -1472,6 +1504,37 @@ void ChannelCore::step_lease_(const ChannelTickIn& in) {
     step_gates_();
   }
   lease_round_ = true;
+}
+
+void ChannelCore::step_lease_one_card_(const ChannelTickIn& in) {
+  const double now_ms = in.now_ms;
+  if (now_ms - last_lease_burst_ms_ < static_cast<double>(cfg_.hop.lease_sweep_period_ms)) return;
+  // The in-flight burst's own conditions: never while a hop or relocate is
+  // in flight or due (the controller past Idle/Hold, the plan hopping, a
+  // relocate handed out, or the one BootPick is about to hand out), a relay
+  // sweep or a posted burst is out, or the scout owns the card.
+  if (!inflight_ || !hop_active(in.in_session, in.cal_running) || plan_.hopping() ||
+      !(hopc_.state() == HopState::Idle || hopc_.state() == HopState::Hold) || pending_relocate_ ||
+      boot_pick_.relocation_pending(last_bi_) || sweep_.on || scout_owns_() || burst_inflight_ ||
+      dwell_busy_.load() || !cards_[static_cast<size_t>(scout_card_)]->ready())
+    return;
+  last_lease_burst_ms_ = now_ms;
+  std::vector<ScoutDwell> recs;
+  const double start_ms = static_cast<double>(now_ms_());
+  {
+    // Synchronous, on the core thread, even when a relay carries TX and the
+    // USB card is the spare: a burst posted to the in-flight thread comes
+    // back through step_drains_, which ranks its visits and holds the hop
+    // trigger. inflight_mu_ then the card's device-use lock (inside
+    // burst_on_card_), as step_controller_'s synchronous burst.
+    std::lock_guard<std::mutex> ilk(inflight_mu_);
+    burst_on_card_(scout_card_, plan_.op(), recs);   // its visits are dropped: the lease never ranks
+  }
+  const double end_ms = static_cast<double>(now_ms_());
+  lease_mask_from_ms_ = start_ms;
+  lease_mask_until_ms_ = end_ms + static_cast<double>(cfg_.hop.window_ms);
+  cur_ch_[static_cast<size_t>(scout_card_)] = cards_[static_cast<size_t>(scout_card_)]->channel();
+  for (const auto& d : recs) emit_dwell_(now_ms, scout_card_, d);
 }
 
 void ChannelCore::finish_cal_measure_(double now_ms) {

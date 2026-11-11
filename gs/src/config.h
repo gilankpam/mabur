@@ -116,6 +116,10 @@ struct HopCfg {
   // Freshness-burst pacing when the burst card is a relay: its sweep blanks
   // it for ~280 ms, so 333 ms (burst_period_ms) would leave it ~85 % deaf.
   int relay_burst_period_ms = 1000;
+  // An observe lease on a one-USB-card GS (the goggles' channel picker
+  // open): one in-flight burst over every member but op, at most one per
+  // this. Each takes the sole card off op for ~75 ms on a 4-member set.
+  int lease_sweep_period_ms = 1000;
   HopVerdictCfg verdict;
 };
 
