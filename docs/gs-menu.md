@@ -480,7 +480,12 @@ drone: `DroneLiveSetter` is the drone side of that, and `DroneSetWatch`
 inside it is the sideport settle rule ("Applying a row" above).
 `menu_session.h`/`.cpp` — ties button events, the applier and the GS view
 refresh together, and owns the `maburplay: menu: open` / `close` log
-lines. `button_bank.h`/`.cpp` and `key_timer.h`/`.cpp` — the five GPIO
+lines. `channel_observe.h`/`.cpp` — `ChannelObserve`, the Channel picker's
+own client against maburgs' measuring lease (`docs/gs-live-config.md`
+"`observe <ms>`"): `observe 3000` on open, a renewal every second while
+it stays open, `observe 0` on close, each over its own `LiveUdpClient` so
+it never collides with a row's own set or the view refresh.
+`button_bank.h`/`.cpp` and `key_timer.h`/`.cpp` — the five GPIO
 lines and their gesture timing. `gs_live_view.h`/`.cpp` — parses maburgs'
 `get` dump. `display_follow.h` — the display-follows-camera rule,
 including `follow_camera_hz`'s reported-mode-first pick. `menu_view_feed.h`

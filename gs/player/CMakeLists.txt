@@ -7,6 +7,7 @@ add_library(mabur_player_core STATIC
   src/menu_model.cpp
   src/menu_apply.cpp
   src/menu_session.cpp
+  src/channel_observe.cpp
   src/menu_layer.cpp
   src/menu_tree.cpp
   src/menu_debug.cpp

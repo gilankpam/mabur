@@ -39,6 +39,7 @@
 #include "player_config.h"
 #include "player_config_apply.h"  // the live set/get control on 127.0.0.1:8403
 #include "button_bank.h"      // the settings menu's five-way pad
+#include "channel_observe.h"  // the Channel picker's own measuring-lease renewal
 #include "gs_config_apply.h"  // maburgs::kGsConfigControlPort, where the menu's GS sets go
 #include "gs_live_view.h"     // maburgs' live keys as the menu reads them
 #include "live_udp_client.h"
@@ -2359,6 +2360,10 @@ int main(int argc, char** argv) {
   // would otherwise let it collide with gs_client's own pending refresh
   // get.
   maburplay::LiveUdpClient vtx_client;
+  // The Channel picker's measuring lease (`observe`, docs/gs-live-config.md)
+  // is a third socket for the same reason: it is renewed on its own
+  // schedule, independent of any row's set or the view refresh.
+  maburplay::LiveUdpClient obs_client;
   if (menu_on) {
     std::string err;
     if (!gs_client.open(maburgs::kGsConfigControlPort, &err))
@@ -2368,7 +2373,14 @@ int main(int argc, char** argv) {
       std::fprintf(stderr,
                    "maburplay: menu: maburgs live config: %s -- drone rows will not apply\n",
                    err.c_str());
+    if (!obs_client.open(maburgs::kGsConfigControlPort, &err))
+      std::fprintf(stderr,
+                   "maburplay: menu: maburgs live config: %s -- the Channel picker's lease will "
+                   "not renew\n",
+                   err.c_str());
   }
+  maburplay::UdpObserveLink obs_link(obs_client);
+  maburplay::ChannelObserve channel_observe(obs_link);
   maburplay::MenuTreeDeps menu_deps;
   menu_deps.cfg = &cfg;
   menu_deps.gs = &gs_view;
@@ -2476,6 +2488,10 @@ int main(int argc, char** argv) {
       for (const maburplay::KeyEvent& e : events)
         if (const std::optional<bool> repeat = menu.key(e, now_ms)) bank.set_repeat(*repeat);
       menu.tick(now_ms);
+      // Holds maburgs' measuring lease for exactly as long as the Channel
+      // picker is open on the model, including a whole-menu close with
+      // the picker still open underneath it.
+      channel_observe.tick(menu_model.open_choices_row() == "link.channel", now_ms);
       menu_model.set_linked(gs_src && !gs_src->stale(now_ms) && gs_src->snapshot().session);
       {
         const maburplay::GsSnapshot* snap = gs_src ? &gs_src->snapshot() : nullptr;
