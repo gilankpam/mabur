@@ -529,11 +529,16 @@ int receiver_width(const GsLiveView& gs) {
   return 20;
 }
 
+// Whether the sideport snapshot is current (MenuTreeDeps::snap_stale; no
+// staleness input reads fresh).
+bool snap_fresh(const Deps& d) { return !d->snap_stale || !d->snap_stale(); }
+
 // The link's own channel right now: the sideport's link.channel while the
-// session holds (unlinked, a stale link.channel from before the drop is not
-// "the link", and the row has nothing to point two sources at).
+// session holds on a fresh snapshot (unlinked, a stale link.channel from
+// before the drop is not "the link", and the row has nothing to point two
+// sources at; a stale sideport says nothing about the link at all).
 std::optional<int> link_channel(const Deps& d) {
-  if (d->snap && d->snap->session && d->snap->channel) return d->snap->channel;
+  if (d->snap && snap_fresh(d) && d->snap->session && d->snap->channel) return d->snap->channel;
   return std::nullopt;
 }
 
@@ -573,6 +578,9 @@ MenuNode channel_row(const Deps& d) {
     const std::string current = channel_current(d);
     std::vector<Choice> out;
     out.push_back({"auto", "Auto", "on " + (link ? std::to_string(*link) : std::string("—")), true});
+    // A stale sideport's figures are not the air now: every member draws
+    // unmeasured.
+    const bool fresh = snap_fresh(d);
     if (d->snap && !d->snap->scan_members.empty()) {
       for (const ScanMember& m : d->snap->scan_members) {
         const std::string value = std::to_string(m.ch);
@@ -581,7 +589,7 @@ MenuNode channel_row(const Deps& d) {
           label += " · " + std::to_string(*m.pair_lo) + "+" + std::to_string(*m.pair_hi);
         std::string note;
         ChoiceTone tone;
-        if (!m.busy_pct) {
+        if (!m.busy_pct || !fresh) {
           note = clean_air_bars(std::nullopt) + " · not measured";
           tone = ChoiceTone::kDim;
         } else if (m.age_ms && *m.age_ms > kFreshMs) {
@@ -596,9 +604,8 @@ MenuNode channel_row(const Deps& d) {
         out.push_back({value, label, note, true, tone});
       }
     } else if (d->gs->pinned_channel) {
-      // No scan.members (an older maburgs, or none exported yet): the pin
-      // still needs a choice of its own so the current value stays
-      // visible, unmeasured.
+      // No scan.members (none exported yet): the pin still needs a choice
+      // of its own so the current value stays visible, unmeasured.
       const std::string value = std::to_string(*d->gs->pinned_channel);
       out.push_back({value, value, clean_air_bars(std::nullopt) + " · not measured", true, ChoiceTone::kDim});
     }
@@ -614,13 +621,20 @@ MenuNode channel_row(const Deps& d) {
     return Steps{{Owner::kGs, "radio.channel", v == "auto" ? "\"auto\"" : v}};
   };
   n.help = [d] {
-    const std::string state = d->observe_state ? d->observe_state() : std::string();
+    const std::string state = d->observe_state && snap_fresh(d) ? d->observe_state() : std::string();
     if (state == "one_card") return std::string("Measuring — video pauses each second.");
     if (state == "two_card" || state == "relay" || state == "search") return std::string("Measuring.");
     const std::optional<int> link = link_channel(d);
     if (d->gs->pinned_channel) {
       const int pin = *d->gs->pinned_channel;
-      if (link && *link != pin) return "Pinned here, link still on " + std::to_string(*link) + ".";
+      if (link && *link != pin) {
+        // The pin's own relocate failed: its reason stays here for as long
+        // as the link is still elsewhere (the reply's error is timed).
+        const std::optional<ScanRelocate>& r = d->snap->scan_relocate;
+        if (r && r->state == "failed" && r->ch == pin)
+          return "Pinned here, link still on " + std::to_string(*link) + " — " + r->why + ".";
+        return "Pinned here, link still on " + std::to_string(*link) + ".";
+      }
       if (!link)
         return "Pinned to " + std::to_string(pin) + " — the link moves here when it comes back.";
     }

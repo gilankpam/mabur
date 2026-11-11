@@ -2385,6 +2385,7 @@ int main(int argc, char** argv) {
   menu_deps.cfg = &cfg;
   menu_deps.gs = &gs_view;
   menu_deps.observe_state = [&] { return channel_observe.state(); };
+  menu_deps.snap_stale = [&] { return !gs_src || gs_src->stale(mono_ms()); };
   menu_deps.rec_running = [&] { return rec_on; };
   menu_deps.burned_rec_running = [&] { return rec_on && rec_gs && burned_mode; };
 #ifdef MABUR_PLAYER_HW

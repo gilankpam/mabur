@@ -44,6 +44,7 @@ using maburplay::NodeKind;
 using maburplay::Owner;
 using maburplay::Rung;
 using maburplay::ScanMember;
+using maburplay::ScanRelocate;
 using maburplay::SetStep;
 using maburplay::VtxRow;
 using maburplay::VtxState;
@@ -98,6 +99,7 @@ struct Fx {
   std::string running;
   std::function<bool()> refresh_sync_available;
   std::string observe;   // ChannelObserve::state(): "" while the picker is closed
+  bool stale = false;    // the sideport's staleness read (MenuTreeDeps::snap_stale)
 
   // Fills snap.vtx (creating it linked, list "complete") with one row,
   // updating it in place when `id` is already there.
@@ -133,6 +135,7 @@ struct Fx {
     d.running_mode = [this] { return running; };
     d.refresh_sync_available = refresh_sync_available;
     d.observe_state = [this] { return observe; };
+    d.snap_stale = [this] { return stale; };
     return d;
   }
   std::vector<MenuNode> tree() { return build_menu_tree(deps()); }
@@ -474,6 +477,70 @@ TEST(channel_row_help_pinned_unlinked) {
   CHECK(f.node("link.channel").help() == "Pinned here, link still on 112.");
   f.snap.channel = 144;
   CHECK(f.node("link.channel").help().find("Auto picks the cleanest") == 0);
+}
+
+// A failed pin keeps its reason on the help line for as long as it holds
+// (the reply's red error lasts only kErrorMs): pinned, linked elsewhere,
+// and scan.relocate failed for this very pin.
+TEST(channel_row_help_pinned_relocate_failed) {
+  Fx f;
+  f.gs.pinned_channel = 144;
+  f.snap.session = true;
+  f.snap.channel = 112;
+  f.snap.scan_relocate = ScanRelocate{"failed", 144, "withdrawn"};
+  CHECK(f.node("link.channel").help() == "Pinned here, link still on 112 — withdrawn.");
+  CHECK(f.node("link.channel").warn() == "link on 112");
+  f.snap.scan_relocate = ScanRelocate{"failed", 64, "withdrawn"};   // another pin's outcome
+  CHECK(f.node("link.channel").help() == "Pinned here, link still on 112.");
+  f.snap.scan_relocate = ScanRelocate{"pending", 144, ""};
+  CHECK(f.node("link.channel").help() == "Pinned here, link still on 112.");
+  f.snap.scan_relocate = ScanRelocate{"failed", 144, "withdrawn"};
+  f.snap.channel = 144;                                              // the link got there after all
+  CHECK(f.node("link.channel").help().find("Auto picks the cleanest") == 0);
+  f.snap.session = false;
+  CHECK(f.node("link.channel").help() ==
+        "Pinned to 144 — the link moves here when it comes back.");
+}
+
+// A stale sideport is no link and no measurement: every member unmeasured,
+// no link mark, the value and help as if unlinked, no "Measuring".
+TEST(channel_row_stale_sideport_shows_nothing_live) {
+  Fx f;
+  f.snap.session = true;
+  f.snap.channel = 112;
+  f.snap.scan_members = {member(144, 3.0, 1000), member(112, 3.0, 1000)};
+  f.snap.scan_relocate = ScanRelocate{"failed", 144, "withdrawn"};
+  f.observe = "one_card";
+  f.stale = true;
+  MenuNode n = f.node("link.channel");
+  CHECK(n.value_text() == "Auto (on —)");
+  auto cs = n.choices();
+  REQUIRE(cs.size() == 3);
+  CHECK(cs[0].note == "on —");
+  for (size_t i = 1; i < cs.size(); ++i) {
+    CHECK(cs[i].note == "○○○○○ · not measured");
+    CHECK(cs[i].tone == ChoiceTone::kDim);
+  }
+  CHECK(n.help().find("Measuring") == std::string::npos);
+  CHECK(n.help().find("Auto picks the cleanest") == 0);
+  f.gs.pinned_channel = 144;
+  n = f.node("link.channel");
+  CHECK(n.value_text() == "144");
+  CHECK(n.warn().empty());
+  CHECK(n.help() == "Pinned to 144 — the link moves here when it comes back.");
+  // Fresh again: the same snapshot draws live.
+  f.stale = false;
+  n = f.node("link.channel");
+  CHECK(n.value_text() == "144");
+  CHECK(choice_with(n.choices(), "144")->note == "●●●●●");
+  CHECK(choice_with(n.choices(), "112")->note == "●●●●● · link");
+  // No staleness input at all reads fresh.
+  MenuTreeDeps d = f.deps();
+  d.snap_stale = nullptr;
+  const auto t = build_menu_tree(d);
+  const auto nn = f.find(t, "link.channel");
+  REQUIRE(nn.has_value());
+  CHECK(choice_with(nn->choices(), "144")->note == "●●●●●");
 }
 
 TEST(a_rung_edit_sends_the_whole_ladder_with_one_change) {

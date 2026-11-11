@@ -473,7 +473,7 @@ TEST(pin_watch_failed_names_the_link_and_why) {
   std::optional<LiveReply> r = w.check(DroneSnapshotView{&after, false});
   REQUIRE(r.has_value());
   CHECK(!r->ok);
-  CHECK(r->text == "pinned here, link still on 144 — withdrawn");
+  CHECK(r->text == "Pinned here, link still on 144 — withdrawn");
 }
 
 TEST(pin_watch_null_after_ok_is_ok_at_once) {
@@ -532,6 +532,25 @@ TEST(pin_watch_ignores_an_old_outcome_for_the_same_channel) {
   // It lands.
   GsSnapshot landed = scan_snap(true, 112, true, 112, reloc("landed", 112), uint64_t{6});
   std::optional<LiveReply> r = w.check(DroneSnapshotView{&landed, false});
+  REQUIRE(r.has_value());
+  CHECK(r->ok);
+}
+
+// maburgs always exports scan.relocate_seq: a snapshot without one is not
+// this submit's answer, however many arrive -- only the backstop ends it.
+TEST(pin_watch_without_a_seq_keeps_waiting) {
+  GsSnapshot before = scan_snap(true, 64, false, std::nullopt, std::nullopt, std::nullopt);
+  PinSettleWatch w;
+  w.begin(100, &before);
+  GsSnapshot after = scan_snap(true, 64, false, std::nullopt, std::nullopt, std::nullopt);
+  CHECK(!w.check(DroneSnapshotView{&after, false}).has_value());
+  CHECK(w.active());
+
+  // No snapshot at submit: the first one carrying a seq is the answer.
+  PinSettleWatch w2;
+  w2.begin(100, nullptr);
+  GsSnapshot landed = scan_snap(true, 100, true, 100, reloc("landed", 100), uint64_t{1});
+  std::optional<LiveReply> r = w2.check(DroneSnapshotView{&landed, false});
   REQUIRE(r.has_value());
   CHECK(r->ok);
 }

@@ -42,6 +42,10 @@ struct MenuTreeDeps {
   // "relay"/"search"/"none"), "" while it is closed. Null = "" (the host
   // build without a menu session running).
   std::function<std::string()> observe_state;
+  // Whether `snap` is stale (the player's own staleness read on the
+  // sideport). Null = fresh. The Channel row draws a stale snapshot as no
+  // link and no measurement.
+  std::function<bool()> snap_stale;
 };
 
 // Five-bar clean-air level for a foreign-busy percentage: 5 under 5%, 4

@@ -67,16 +67,12 @@ struct DroneSnapshotView {
 class PinSettleWatch {
  public:
   // Remembers, from `before` (null if there is none), the relocate_seq
-  // seen at submit -- nullopt when it was never exported. check() waits
-  // for a snapshot whose own seq differs from this one: maburgs bumps
-  // the seq on every accepted set_pin, including a same-value no-op, so
-  // the seq alone (never "is the pin already there") is what tells this
-  // submit's answer from an old one -- a pin that failed still leaves
-  // `pinned && scan_pick == ch` true, so that reading would settle a
-  // re-pin on the previous failure. When neither side ever carries a
-  // seq (an old maburgs, exporting no scan.relocate_seq at all) there is
-  // nothing to compare, so it settles ok on the first snapshot instead
-  // of waiting forever.
+  // seen at submit. check() waits for a snapshot carrying a seq that
+  // differs from this one: maburgs bumps the seq on every accepted
+  // set_pin, including a same-value no-op, so the seq alone (never "is
+  // the pin already there") is what tells this submit's answer from an
+  // old one -- a pin that failed still leaves `pinned && scan_pick == ch`
+  // true, so that reading would settle a re-pin on the previous failure.
   void begin(int ch, const GsSnapshot* before);
   // nullopt while waiting; else the reply the row settles on. A stale
   // or missing snapshot ends the wait at "link lost".

@@ -43,13 +43,9 @@ std::optional<LiveReply> PinSettleWatch::check(const DroneSnapshotView& v) {
     return LiveReply{false, "link lost"};
   }
   const GsSnapshot& s = *v.snap;
-  if (!before_seq_ && !s.scan_relocate_seq) {
-    // An old maburgs exports no scan.relocate_seq at all: nothing to
-    // compare, so the first snapshot after the submit is the answer.
-    active_ = false;
-    return LiveReply{true, ""};
-  }
-  if (s.scan_relocate_seq == before_seq_) return std::nullopt;  // the old outcome, not this submit's
+  // The old outcome, not this submit's (a snapshot with no seq at all
+  // carries no outcome either).
+  if (!s.scan_relocate_seq || s.scan_relocate_seq == before_seq_) return std::nullopt;
 
   if (!s.scan_relocate || s.scan_relocate->ch != ch_) {
     active_ = false;
@@ -63,7 +59,7 @@ std::optional<LiveReply> PinSettleWatch::check(const DroneSnapshotView& v) {
   if (r.state == "failed") {
     active_ = false;
     const std::string link = s.channel ? std::to_string(*s.channel) : "—";
-    return LiveReply{false, "pinned here, link still on " + link + " — " + r.why};
+    return LiveReply{false, "Pinned here, link still on " + link + " — " + r.why};
   }
   // state == "pending": settled ok once the link isn't there to watch
   // the relocate land on; still in flight while session holds.
