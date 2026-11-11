@@ -193,7 +193,7 @@ ChannelSnapshot ChannelCore::snapshot(int tx_card) const {
     std::optional<double> busy_pct;
     std::optional<uint64_t> t_ms;
     if (linked && m.is_op) {
-      if (op_fig_) { m.src = "op"; busy_pct = op_fig_->first; t_ms = op_fig_->second; }
+      if (op_fig_ && op_fig_->ch == ch) { m.src = "op"; busy_pct = op_fig_->pct; t_ms = op_fig_->t_ms; }
     } else if (member_figs_[i]) {
       m.src = "scan"; busy_pct = member_figs_[i]->busy_pct; t_ms = member_figs_[i]->t_ms;
     }
@@ -764,7 +764,7 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
     const double fig = std::max(vc[si].nhm_busy_pct - vc[si].own_air_pct, 0.0);
     op_fig_this_window = op_fig_this_window ? std::min(*op_fig_this_window, fig) : fig;
   }
-  if (op_fig_this_window) op_fig_ = std::make_pair(*op_fig_this_window, t_ms);
+  if (op_fig_this_window) op_fig_ = OpFig{*op_fig_this_window, t_ms, plan_.op()};
   VerdictLinkIn vl;
   vl.pre_fec_loss = hop_verdict_link_loss(s1_hop_loss_.sample(now_ms), enh_hop_loss_.sample(now_ms));
   const uint64_t recovered_now = in.agg ? in.agg->decoder().stats(0).syms_recovered +
@@ -1401,8 +1401,15 @@ void ChannelCore::step_cal_(const ChannelTickIn& in) {
   }
 }
 
-void ChannelCore::step_pin_reloc_(const ChannelTickIn&) {
+void ChannelCore::step_pin_reloc_(const ChannelTickIn& in) {
   if (pin_reloc_.s == PinReloc::InFlight && pin_reloc_.confirmed && hopc_.state() == HopState::Idle)
+    settle_pin_reloc_(true, "landed");
+  // Linked on the pin without the order ever leaving: a link lost before
+  // it, then found again on the pinned channel (link_found), leaves want
+  // == op, so BootPick never places a relocate and nothing else would
+  // settle this.
+  if (pin_reloc_.s == PinReloc::Waiting && hop_active(in.in_session, in.cal_running) &&
+      !plan_.hopping() && plan_.op() == pin_reloc_.ch)
     settle_pin_reloc_(true, "landed");
 }
 
@@ -1458,6 +1465,10 @@ void ChannelCore::lapse_lease_() {
   if (lease_until_ <= 0) return;
   lease_until_ = 0;
   lease_logged_ = LeaseState::None;
+  // The burst/sweep pacing is per lease: the next lease's first one goes
+  // at once, even when it is taken again inside one period.
+  last_lease_burst_ms_ = -1e18;
+  last_lease_sweep_ms_ = -1e18;
   sink_.log("maburgs channel: observe lease lapsed");
 }
 

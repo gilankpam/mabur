@@ -1930,6 +1930,45 @@ TEST(members_op_reads_the_verdict_window_min_across_cards) {
   CHECK(it->busy_pct == std::optional<double>(25.0));
 }
 
+// Op's figure belongs to the channel it was read on: once the link moves,
+// the new op's row is unmeasured until a window on it lands, never the old
+// channel's figure passed off as fresh.
+TEST(members_op_figure_is_not_carried_onto_a_new_op) {
+  Rig g(2, 0); freeze_auto(g);
+  link_up(g);
+  g.cards[0]->nhm_busy_pct_on[40] = 25;
+  g.cards[1]->nhm_busy_pct_on[40] = 25;
+  for (int i = 0; i < 2 * (g.cfg.hop.window_ms / 10) + 30; ++i) live_tick(g);
+  const auto member = [&](uint8_t ch) {
+    const auto m = g.core->snapshot(0).members;
+    const auto it = std::find_if(m.begin(), m.end(), [ch](const auto& e) { return e.ch == ch; });
+    REQUIRE(it != m.end());
+    return *it;
+  };
+  REQUIRE(member(40).busy_pct == std::optional<double>(25.0));
+  REQUIRE(!g.core->set_pin(112).has_value());
+  for (int i = 0; i < 20 && !g.sink.has_line("relocate 40 -> 112 placed"); ++i) live_tick(g);
+  REQUIRE(g.sink.has_line("maburgs channel: relocate 40 -> 112 placed (pin)"));
+  const auto rcf = pump_rcf(g);
+  REQUIRE(rcf.has_value() && rcf->hop_ch == 112);
+  g.core->note_video(112);
+  for (int i = 0; i < 5 && !g.sink.has_hop("lead_confirm"); ++i) g.tick(true);
+  REQUIRE(g.sink.has_hop("lead_confirm"));
+  REQUIRE(g.core->op() == 112);
+  {
+    const auto m112 = member(112);
+    CHECK(m112.is_op);
+    CHECK(!m112.busy_pct.has_value());   // 40's figure is not 112's
+    CHECK(m112.src.empty());
+  }
+  g.cards[0]->nhm_busy_pct_on[112] = 10;
+  g.cards[1]->nhm_busy_pct_on[112] = 10;
+  for (int i = 0; i < 2 * (g.cfg.hop.window_ms / 10) + 30; ++i) live_tick(g);
+  const auto m112 = member(112);
+  CHECK(m112.src == "op");
+  CHECK(m112.busy_pct == std::optional<double>(10.0));
+}
+
 // The in-flight dwells and a relay sweep feed the table too.
 TEST(members_take_inflight_and_relay_dwells) {
   Rig g(2, 0); freeze_auto(g);
@@ -2815,6 +2854,39 @@ TEST(pin_reloc_stays_pending_across_a_link_loss_before_the_order) {
   CHECK(g.core->snapshot(0).relocate_seq == 1);
 }
 
+// A pin whose relocate never left (the link lost first) settles landed
+// when the link comes back already on the pinned channel: the drone is
+// found there (link_found), so there is no relocate left to place and
+// nothing else would ever settle it.
+TEST(pin_reloc_lands_when_the_link_comes_back_on_the_pin) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  REQUIRE(!g.core->set_pin(112).has_value());
+  for (int i = 0; i < 50; ++i) g.tick(false);   // the link drops before BootPick places the order
+  REQUIRE(g.core->snapshot(0).relocate.has_value());
+  REQUIRE(g.core->snapshot(0).relocate->state == "pending");
+  REQUIRE(g.core->op() == 40);
+  g.core->on_rc_body(112);                      // the drone answers on the pin
+  mabur::rc::DiscAck ack; ack.vrx_nonce = g.vrx->rz_nonce(); ack.vtx_nonce = 1;
+  ack.chip_caps = mabur::rc::CAP_FRAME_WIRE; ack.agreed_channel = 112; ack.seq = 1;
+  g.core->on_session_opened(ack, static_cast<double>(g.clk.ms));
+  REQUIRE(g.core->op() == 112);
+  link_up(g);
+  for (int i = 0; i < 20; ++i) live_tick(g);
+  const auto r = g.core->snapshot(0).relocate;
+  REQUIRE(r.has_value());
+  CHECK(r->state == "landed");
+  CHECK(r->ch == 112);
+  CHECK(r->why.empty());
+  CHECK(g.core->snapshot(0).relocate_seq == 1);
+  CHECK(!g.sink.has_line("placed (pin)"));
+  CHECK(!g.sink.has_hop("relocate"));
+  CHECK(g.core->op() == 112);
+  CHECK(g.sink.has_line("maburgs channel: pin relocate to 112 landed"));
+}
+
 TEST(pin_reloc_null_when_unlinked_or_already_there) {
   Rig g(2, 0);
   CHECK(!g.core->snapshot(0).relocate.has_value());
@@ -3599,6 +3671,27 @@ TEST(lease_one_card_bursts_once_per_period_auto_and_pinned) {
   }
 }
 
+// The burst pacing belongs to one lease: a lease that lapses and is taken
+// again inside one period bursts on the reopening tick, as the first burst
+// of any lease does.
+TEST(lease_one_card_reopened_within_a_period_bursts_at_once) {
+  Rig g(1, 0);
+  freeze_auto(g);
+  for (int i = 0; i < 10; ++i) live_tick(g);
+  const size_t d0 = g.sink.dwells.size();
+  REQUIRE(g.core->observe(500) == LeaseState::OneCard);
+  const uint64_t t0 = g.clk.ms;
+  live_tick(g);
+  REQUIRE(g.sink.dwells.size() > d0);                      // the first burst, at once
+  for (int i = 0; i < 100 && !g.sink.has_line("observe lease lapsed"); ++i) live_tick(g);
+  REQUIRE(g.sink.has_line("maburgs channel: observe lease lapsed"));
+  REQUIRE(g.clk.ms - t0 < static_cast<uint64_t>(g.cfg.hop.lease_sweep_period_ms));
+  const size_t d1 = g.sink.dwells.size();
+  REQUIRE(g.core->observe(3000) == LeaseState::OneCard);
+  live_tick(g);
+  CHECK(g.sink.dwells.size() > d1);                        // the reopen bursts at once too
+}
+
 // A lease burst's visits never reach HopRanker (the ranking a hop reads is
 // untouched), while its dwells land in scan.members.
 TEST(lease_one_card_feeds_no_hop_ranker_visit) {
@@ -3943,6 +4036,29 @@ TEST(lease_relay_only_sweeps_with_the_trigger_off) {
   CHECK(m[2].src == "scan" && m[2].busy_pct && std::abs(*m[2].busy_pct - 5.0) < 1.0 && !m[2].blocked);
   CHECK(m[3].src == "scan" && m[3].busy_pct && std::abs(*m[3].busy_pct - 20.0) < 1.0 && !m[3].blocked);
   CHECK(!g.sink.has_hop("order"));          // pinned: no reactive hop ever decides
+}
+
+// The relay lease's sweep pacing, like the one-card burst's, starts over
+// with each lease: released and taken again inside one period, it sweeps
+// on the reopening tick.
+TEST(lease_relay_only_reopened_within_a_period_sweeps_at_once) {
+  Rig g(0, 1, /*pinned=*/true, 40);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  const uint64_t t0 = g.clk.ms;
+  REQUIRE(g.core->observe(3000) == LeaseState::Relay);
+  for (int i = 0; i < 10 && g.cards[0]->sweeps.empty(); ++i) g.tick(true);
+  REQUIRE(g.cards[0]->sweeps.size() == 1);
+  g.cards[0]->pending_result = sweep_of({{64, 20}, {112, 1}, {144, 4}});
+  for (int i = 0; i < 20 && g.core->sweep_pending(); ++i) g.tick(true);
+  REQUIRE(!g.core->sweep_pending());
+  REQUIRE(g.core->observe(0) == LeaseState::None);
+  g.tick(true);
+  REQUIRE(g.cards[0]->sweeps.size() == 1);
+  REQUIRE(g.clk.ms - t0 < static_cast<uint64_t>(g.cfg.hop.relay_burst_period_ms));
+  REQUIRE(g.core->observe(3000) == LeaseState::Relay);
+  g.tick(true);
+  CHECK(g.cards[0]->sweeps.size() == 2);
 }
 
 // Relay-only, unlinked: the sole relay searches instead of being swept

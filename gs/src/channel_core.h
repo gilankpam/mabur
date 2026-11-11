@@ -565,8 +565,9 @@ class ChannelCore {
   bool lease_forced_measure_ = false;
   // The engaged state last logged ("observe lease <ms> (<state>)").
   LeaseState lease_logged_ = LeaseState::None;
-  // Drops the lease's deadline, logging the lapse once; an open round is
-  // left to finish.
+  // Drops the lease's deadline, logging the lapse once, and clears the
+  // one-card burst and relay sweep pacing so the next lease's first one
+  // goes at once; an open round is left to finish.
   void lapse_lease_();
   // lapse_lease_, and the open lease round is cancelled (the scout parks
   // on its next step): a release, a pin, auto, a calibration pick.
@@ -578,7 +579,8 @@ class ChannelCore {
   // being decided (the trigger live or the verdict's references frozen:
   // the freshness burst measures then).
   void step_lease_one_card_(const ChannelTickIn& in);
-  // The last one-card lease burst's start (tick time).
+  // The last one-card lease burst's start (tick time); cleared when the
+  // lease ends (lapse_lease_).
   double last_lease_burst_ms_ = -1e18;
   // The relay-only lease: one SCAN on the sole sweepable card when
   // relay_burst_period_ms has passed since the last one and no hop or
@@ -588,7 +590,8 @@ class ChannelCore {
   // a decision in progress, only for a move or a sweep already claiming
   // the one relay.
   void step_lease_relay_(const ChannelTickIn& in);
-  // The last relay-only lease sweep's send (tick time).
+  // The last relay-only lease sweep's send (tick time); cleared when the
+  // lease ends (lapse_lease_).
   double last_lease_sweep_ms_ = -1e18;
   // Sampler records stamped in (from, until] are masked from the hop
   // verdict: from = the burst's start, until = its end plus window_ms (the
@@ -608,8 +611,16 @@ class ChannelCore {
   // floored at 0 -- the best-case reading, unlike op_live_'s worst-case
   // (the calibration pick wants the worst card; the channel row wants
   // what a hop would actually buy). Stamped with the window's sample
-  // time; reset to nullopt on every hop_active edge (step_hop_edge_and_window_).
-  std::optional<std::pair<double, uint64_t>> op_fig_;
+  // time and the op it was read on: snapshot() shows it only while that
+  // is still op, so a move (hop or relocate) leaves the new op unmeasured
+  // until a window on it lands. Reset to nullopt on every hop_active edge
+  // (step_hop_edge_and_window_).
+  struct OpFig {
+    double pct = 0;
+    uint64_t t_ms = 0;
+    uint8_t ch = 0;
+  };
+  std::optional<OpFig> op_fig_;
   bool in_session_cur_ = false, cal_running_cur_ = false;
   // the tick's current inputs, for helpers
   double now_ms_cur_ = 0;

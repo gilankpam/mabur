@@ -387,7 +387,10 @@ reach it.
   caught it, BootPick's own `AcceptOp` bookkeeping settles a leftover
   `Waiting`/`InFlight` outcome `failed` with `did not land`. **No timer:
   a link lost before the order ever leaves holds `Waiting`** — there is
-  nothing to withdraw yet, and the next link-up tries again. Every
+  nothing to withdraw yet, and the next link-up tries again. A `Waiting`
+  outcome settles `landed` once the link is up, no hop is in flight and
+  `op` already is the pin — the drone found on the pinned channel at the
+  next link-up (`link_found`) leaves BootPick no relocate to place. Every
   `set_pin` call that is not refused (even the no-op onto the channel it
   is already pinned to) and every `set_auto` call bumps `relocate_seq`;
   `set_auto` always drops the outcome back to `Off`.
@@ -601,7 +604,8 @@ while the picker is open and for up to one round after it closes.
 the core runs `InflightScout::burst` on the USB card — every member but
 `op`, one `hop.dwell_observe_ms` observe each, at the link width, back to
 `op` after each — at most once per `hop.lease_sweep_period_ms` (1000), the
-first at once. It runs synchronously on the core thread (`burst_on_card_`:
+first of each lease at once (the pacing clears when a lease lapses or is
+released, so a picker reopened inside one period bursts on its first tick). It runs synchronously on the core thread (`burst_on_card_`:
 the card's device-use lock held, `tune_gen` bumped both sides), also when a
 relay carries TX and the USB card is the spare; it never runs on a relay.
 It waits while a hop or relocate is in flight or due (the controller not
@@ -635,16 +639,18 @@ searching (not relay-only), the lease turns on
 DISC for `search_ms` also reads NHM busy for `dwell_ms` right after it, the
 same observe any measuring dwell takes -- `quiet()` holds the TX card's
 own DISC for that span, as any unlinked observe does. Each dwell's reading
-lands in `scan.members` as it drains, same as any other dwell; it is never
-ranked or picked from (the scout's own ranker is reset fresh on the next
-`unfreeze()` regardless of anything it saw meanwhile). The pin,
+lands in `scan.members` as it drains, same as any other dwell. It also
+lands in the frozen scout's own ranker, which nothing picks from while the
+pick is closed and which `unfreeze()`, `set_measure()` and `begin_round()`
+rebuild, so it never decides a later pick; `HopRanker` never sees it. The pin,
 `reactive_`, the plan and the boot pick are untouched, and there is no
 burst to pace -- the search job already visits every member once a round
 on its own.
 
 **Relay-only: sweep the relay, once a period.** Linked, with no USB card
 and a ready sweep-capable relay, the lease sends one SCAN on the relay
-every `[hop] relay_burst_period_ms` (members minus `op`, the same
+every `[hop] relay_burst_period_ms`, the first of each lease at once
+(members minus `op`, the same
 passes/observe/timeout as the hop's own freshness burst) -- regardless of
 `reactive_` or a live trigger: the lease measures for the player, not for
 a hop decision, so it never needs to stand aside for one being decided. It
