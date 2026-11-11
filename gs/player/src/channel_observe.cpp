@@ -24,7 +24,13 @@ void ChannelObserve::tick(bool picker_open, uint64_t now_ms) {
   // send below go out in the same tick instead of waiting a full
   // iteration.
   if (const std::optional<LiveReply> reply = link_.poll(now_ms)) {
-    if (reply->ok && reply->text.rfind(kObservePrefix, 0) == 0)
+    // Still polled while closed (it owns the link's own flight/timeout
+    // bookkeeping either way), but never applied: a reply landing after
+    // the close edge belongs to the close's own "observe 0" or to a
+    // renewal sent just before it, and state() must read "" from the
+    // close edge until the first reply to a new open, not a late
+    // straggler's measurer name.
+    if (open_level_ && reply->ok && reply->text.rfind(kObservePrefix, 0) == 0)
       state_ = reply->text.substr(sizeof(kObservePrefix) - 1);
     // An "err ..." or an unrecognized shape leaves state() as it was.
   }

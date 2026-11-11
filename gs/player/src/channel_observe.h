@@ -54,8 +54,11 @@ class ChannelObserve {
   // open right now.
   void tick(bool picker_open, uint64_t now_ms);
 
-  // The measurer named by the last "ok observe <state>" reply; "" while
-  // closed, or before the first reply lands.
+  // The measurer named by the last "ok observe <state>" reply received
+  // while the picker was open; "" from the close edge until the first
+  // reply to a new open lands -- a reply to the close's own "observe 0"
+  // (or to a renewal sent just before the close) that only arrives after
+  // the picker has shut never counts.
   const std::string& state() const { return state_; }
 
  private:

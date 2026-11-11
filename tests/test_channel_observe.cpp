@@ -143,4 +143,36 @@ TEST(reopen_while_release_in_flight_ends_observing) {
   CHECK(link.sent[2] == "observe 3000");
 }
 
+TEST(close_reply_is_never_applied_to_state) {
+  FakeLink link;
+  ChannelObserve obs(link);
+  obs.tick(true, 0);
+  link.answer(true, "observe two_card");
+  obs.tick(true, 10);
+  CHECK(obs.state() == "two_card");
+  obs.tick(false, 20);  // "observe 0" goes out, state cleared at once
+  REQUIRE(link.sent.size() == 2);
+  CHECK(link.sent[1] == "observe 0");
+  CHECK(obs.state().empty());
+  link.answer(true, "observe none");  // the close's own reply, landing late
+  obs.tick(false, 30);
+  CHECK(obs.state().empty());  // never re-applied while closed
+}
+
+TEST(stale_renewal_reply_after_close_is_ignored) {
+  FakeLink link;
+  ChannelObserve obs(link);
+  obs.tick(true, 0);
+  link.answer(true, "observe none");
+  obs.tick(true, 100);  // consumes the open reply
+  obs.tick(true, 1000);  // renewal due: sent, now in flight with no reply yet
+  REQUIRE(link.sent.size() == 2);
+  CHECK(link.sent[1] == "observe 3000");
+  obs.tick(false, 1050);  // the picker closes before the renewal's reply lands
+  CHECK(obs.state().empty());
+  link.answer(true, "observe two_card");  // the stale renewal's own reply
+  obs.tick(false, 1100);
+  CHECK(obs.state().empty());  // ignored: it landed after the close
+}
+
 MTEST_MAIN
