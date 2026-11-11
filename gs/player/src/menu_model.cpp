@@ -72,6 +72,25 @@ int index_of(const std::vector<Choice>& cs, const std::string& value) {
 
 int wrap(int i, int delta, int n) { return n <= 0 ? 0 : ((i + delta) % n + n) % n; }
 
+// A kChoice row's picker list: every pickable choice, plus the current one
+// even when it isn't pickable if the row asks to keep it listed.
+std::vector<Choice> choices_of(const MenuNode& n) {
+  std::string cur = n.current ? n.current() : "";
+  std::vector<Choice> out;
+  for (auto& c : n.choices ? n.choices() : std::vector<Choice>{})
+    if (c.pickable || (n.keep_current_if_unpickable && c.value == cur)) out.push_back(c);
+  return out;
+}
+
+// Where a kChoices cursor held by value sits in a (possibly changed) list:
+// the value's own index, or the old index clamped into the new list when
+// the value isn't there any more.
+int cursor_index(const std::vector<Choice>& cs, const std::string& value, int old_index) {
+  int i = index_of(cs, value);
+  if (i >= 0) return i;
+  return cs.empty() ? 0 : std::clamp(old_index, 0, static_cast<int>(cs.size()) - 1);
+}
+
 }  // namespace
 
 bool MenuView::operator==(const MenuView& o) const {
@@ -150,6 +169,15 @@ std::optional<MenuNode> MenuModel::find(const std::string& id) const {
     return std::nullopt;
   };
   return root_ ? walk(root_()) : std::nullopt;
+}
+
+std::vector<Choice> MenuModel::live_choices(const Edit& ed) const {
+  auto n = find(ed.node.id);
+  return choices_of(n ? *n : ed.node);
+}
+
+std::string MenuModel::open_choices_row() const {
+  return edit_ && edit_->kind == EditKind::kChoices ? edit_->node.id : "";
 }
 
 void MenuModel::sync_stack() {
@@ -284,10 +312,10 @@ MenuModel::Effect MenuModel::press_right(const MenuNode& n, uint64_t now_ms) {
   }
   if (n.kind == NodeKind::kChoice) {
     std::string cur = n.current ? n.current() : "";
-    for (auto& c : n.choices ? n.choices() : std::vector<Choice>{})
-      if (c.pickable || (n.keep_current_if_unpickable && c.value == cur)) ed.choices.push_back(c);
+    auto cs = choices_of(n);
     ed.kind = EditKind::kChoices;
-    ed.cursor = std::max(0, index_of(ed.choices, cur));
+    ed.cursor = std::max(0, index_of(cs, cur));
+    ed.cursor_value = cs.empty() ? "" : cs[static_cast<size_t>(ed.cursor)].value;
     edit_ = std::move(ed);
     return {};
   }
@@ -323,7 +351,12 @@ MenuModel::Effect MenuModel::press_in_edit(Act act, uint64_t now_ms) {
       double step = ed.node.number.step;
       ed.value = snap(ed.value + (act == Act::kUp ? step : -step), ed.min, ed.max, step);
     } else {
-      ed.cursor = wrap(ed.cursor, act == Act::kUp ? -1 : 1, static_cast<int>(ed.choices.size()));
+      // Re-read the live list before moving: a choice that appeared or
+      // vanished since the last read shifts where the cursor's value sits.
+      auto cs = live_choices(ed);
+      int i = cursor_index(cs, ed.cursor_value, ed.cursor);
+      ed.cursor = wrap(i, act == Act::kUp ? -1 : 1, static_cast<int>(cs.size()));
+      ed.cursor_value = cs.empty() ? "" : cs[static_cast<size_t>(ed.cursor)].value;
     }
     return {};
   }
@@ -345,11 +378,13 @@ MenuModel::Effect MenuModel::press_in_edit(Act act, uint64_t now_ms) {
     }
     v = shortest(ed.value);
   } else {
-    if (ed.choices.empty() || ed.choices[ed.cursor].value == (ed.node.current ? ed.node.current() : "")) {
+    auto cs = live_choices(ed);
+    int i = cursor_index(cs, ed.cursor_value, ed.cursor);
+    if (cs.empty() || cs[static_cast<size_t>(i)].value == (ed.node.current ? ed.node.current() : "")) {
       edit_.reset();
       return off;
     }
-    v = ed.choices[ed.cursor].value;
+    v = cs[static_cast<size_t>(i)].value;
   }
   MenuNode n = ed.node;
   auto steps = n.steps ? n.steps(v) : std::vector<SetStep>{};
@@ -481,9 +516,11 @@ void MenuModel::apply_done(const std::string& row_id, bool ok, const std::string
 }
 
 std::string MenuModel::preview(const std::string& row_id) const {
-  if (edit_ && edit_->kind == EditKind::kChoices && edit_->node.id == row_id &&
-      !edit_->choices.empty())
-    return edit_->choices[static_cast<size_t>(edit_->cursor)].value;
+  if (edit_ && edit_->kind == EditKind::kChoices && edit_->node.id == row_id) {
+    auto cs = live_choices(*edit_);
+    if (!cs.empty())
+      return cs[static_cast<size_t>(cursor_index(cs, edit_->cursor_value, edit_->cursor))].value;
+  }
   // Only while its apply runs: a pick the applier never started (another
   // row was running) has nothing that would ever settle it.
   auto p = picked_.find(row_id);
@@ -594,12 +631,14 @@ MenuView MenuModel::view(uint64_t now_ms) const {
   if (edit_) {
     const Edit& ed = *edit_;
     switch (ed.kind) {
-      case EditKind::kChoices:
+      case EditKind::kChoices: {
+        auto cs = live_choices(ed);
         v.picker = MenuView::Picker::kChoices;
-        v.choices = ed.choices;
-        v.picker_cursor = ed.choices.empty() ? -1 : ed.cursor;
-        v.picker_current = index_of(ed.choices, ed.node.current ? ed.node.current() : "");
+        v.choices = cs;
+        v.picker_cursor = cs.empty() ? -1 : cursor_index(cs, ed.cursor_value, ed.cursor);
+        v.picker_current = index_of(cs, ed.node.current ? ed.node.current() : "");
         break;
+      }
       case EditKind::kNumber:
         v.picker = MenuView::Picker::kNumber;
         v.number_text = num_text(ed.node.number, ed.value);

@@ -9,6 +9,7 @@
 
 using maburplay::Button;
 using maburplay::Choice;
+using maburplay::ChoiceTone;
 using maburplay::KeyEvent;
 using maburplay::KeyKind;
 using maburplay::MenuModel;
@@ -1068,6 +1069,118 @@ TEST(views_compare_field_wise) {
   m.close();
   CHECK(m.view(0).banner == "⚠ Camera 100 fps");   // shown with the menu closed too
   CHECK(!(b == m.view(0)));
+}
+
+// A choice picker left open re-reads its row's choices() on every view(),
+// rather than the list copied when it opened.
+TEST(picker_rereads_choices_while_open) {
+  std::vector<Choice> cs{{"a", "A", "note1", true}, {"b", "B", "note2", true}};
+  MenuNode n;
+  n.id = "r";
+  n.kind = NodeKind::kChoice;
+  n.choices = [&cs] { return cs; };
+  n.current = [] { return std::string("a"); };
+  MenuModel m([n] { return std::vector<MenuNode>{n}; });
+  m.open();
+  tap(m, Button::kRight);
+  CHECK(m.view(0).choices[0].note == "note1");
+  cs[0].note = "changed";
+  CHECK(m.view(0).choices[0].note == "changed");
+}
+
+TEST(picker_cursor_follows_its_value_when_the_list_changes) {
+  std::vector<Choice> cs{{"100", "100", "", true}, {"112", "112", "", true},
+                         {"144", "144", "", true}};
+  MenuNode n;
+  n.id = "r";
+  n.kind = NodeKind::kChoice;
+  n.choices = [&cs] { return cs; };
+  n.current = [] { return std::string("100"); };
+  MenuModel m([n] { return std::vector<MenuNode>{n}; });
+  m.open();
+  tap(m, Button::kRight);          // cursor on "100", index 0
+  tap(m, Button::kDown);           // cursor on "112", index 1
+  CHECK(m.view(0).picker_cursor == 1);
+  cs.insert(cs.begin(), Choice{"80", "80", "", true});   // "112" is now index 2
+  MenuView v = m.view(0);
+  CHECK(v.picker_cursor == 2);
+  CHECK(v.choices[2].value == "112");
+}
+
+TEST(picker_cursor_clamps_when_its_value_vanishes) {
+  std::vector<Choice> cs{{"100", "100", "", true}, {"112", "112", "", true},
+                         {"144", "144", "", true}};
+  MenuNode n;
+  n.id = "r";
+  n.kind = NodeKind::kChoice;
+  n.choices = [&cs] { return cs; };
+  n.current = [] { return std::string("100"); };
+  MenuModel m([n] { return std::vector<MenuNode>{n}; });
+  m.open();
+  tap(m, Button::kRight);
+  tap(m, Button::kDown);           // cursor on "112", index 1
+  cs.erase(cs.begin() + 1);        // "112" is gone: {"100", "144"}
+  MenuView v = m.view(0);
+  CHECK(v.picker_cursor == 1);     // the old index, clamped into the shorter list
+  CHECK(v.choices[(size_t)v.picker_cursor].value == "144");
+}
+
+TEST(picker_pick_applies_the_live_entry) {
+  std::vector<Choice> cs{{"100", "100", "", true}, {"112", "112", "", true}};
+  MenuNode n;
+  n.id = "r";
+  n.kind = NodeKind::kChoice;
+  n.owner = Owner::kPlayer;
+  n.choices = [&cs] { return cs; };
+  n.current = [] { return std::string("100"); };
+  n.steps = [](const std::string& v) {
+    return std::vector<SetStep>{{Owner::kPlayer, "k", v}};
+  };
+  MenuModel m([n] { return std::vector<MenuNode>{n}; });
+  m.open();
+  tap(m, Button::kRight);
+  tap(m, Button::kDown);           // cursor on "112"
+  cs.insert(cs.begin(), Choice{"80", "80", "", true});   // "112" shifts to index 2
+  auto e = tap(m, Button::kRight);                       // pick: still follows "112"
+  CHECK((e.steps == std::vector<SetStep>{{Owner::kPlayer, "k", "112"}}));
+}
+
+TEST(open_choices_row_names_the_open_picker) {
+  World w;
+  MenuModel m(tree(&w));
+  CHECK(m.open_choices_row().empty());
+  into_video(m);
+  CHECK(m.open_choices_row().empty());
+  tap(m, Button::kRight);          // opens v.colour's picker
+  CHECK(m.open_choices_row() == "v.colour");
+  tap(m, Button::kLeft);           // cancel
+  CHECK(m.open_choices_row().empty());
+  tap(m, Button::kRight);
+  CHECK(m.open_choices_row() == "v.colour");
+  tap(m, Button::kDown);
+  tap(m, Button::kRight);          // pick: closes
+  CHECK(m.open_choices_row().empty());
+  tap(m, Button::kRight);
+  m.close();
+  CHECK(m.open_choices_row().empty());
+}
+
+TEST(choice_tone_passes_through_to_the_view) {
+  MenuNode n;
+  n.id = "r";
+  n.kind = NodeKind::kChoice;
+  n.choices = [] {
+    return std::vector<Choice>{{"a", "A", "bad note", true, ChoiceTone::kBad},
+                               {"b", "B", "", true}};
+  };
+  n.current = [] { return std::string("a"); };
+  MenuModel m([n] { return std::vector<MenuNode>{n}; });
+  m.open();
+  tap(m, Button::kRight);
+  MenuView v = m.view(0);
+  REQUIRE(v.choices.size() == 2);
+  CHECK(v.choices[0].tone == ChoiceTone::kBad);
+  CHECK(v.choices[1].tone == ChoiceTone::kNormal);
 }
 
 MTEST_MAIN

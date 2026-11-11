@@ -123,6 +123,20 @@ std::vector<std::string> wrap(const MaskAtlas* a, const std::string& s, int max_
   return lines;
 }
 
+// A choice's note colour: the same ok/caution/error tokens a row's own
+// status takes, plus the dim token for a disabled-looking note; kNormal
+// keeps the note's plain label colour.
+uint32_t tone_rgb(ChoiceTone tone) {
+  switch (tone) {
+    case ChoiceTone::kGood: return tok::kStatusOk;
+    case ChoiceTone::kWarn: return tok::kStatusCaution;
+    case ChoiceTone::kBad: return tok::kStatusCritical;
+    case ChoiceTone::kDim: return tok::kTextLabel;
+    case ChoiceTone::kNormal: return tok::kTextLabel;
+  }
+  return tok::kTextLabel;
+}
+
 }  // namespace
 
 DirtyRect MenuLayer::Box::rect() const {
@@ -235,6 +249,22 @@ std::vector<std::string> MenuLayer::debug_texts() const {
       return std::tie(a->baseline, a->x) < std::tie(c->baseline, c->x);
     });
     for (const Run* r : runs) out.push_back(r->text);
+  }
+  return out;
+}
+
+// One colour per debug_texts() entry, same box/run order, so a test can
+// pair a run's text with the colour it was painted in.
+std::vector<uint32_t> MenuLayer::debug_colors() const {
+  std::vector<uint32_t> out;
+  for (const Box& b : drawn_) {
+    std::vector<const Run*> runs;
+    for (const Block& bl : b.blocks)
+      for (const Run& r : bl.runs) runs.push_back(&r);
+    std::stable_sort(runs.begin(), runs.end(), [](const Run* a, const Run* c) {
+      return std::tie(a->baseline, a->x) < std::tie(c->baseline, c->x);
+    });
+    for (const Run* r : runs) out.push_back(r->rgb);
   }
   return out;
 }
@@ -467,7 +497,8 @@ void MenuLayer::build_picker_(int x, int y, Box* box) const {
         b.runs.push_back({row_, x + pad, base, fit(row_, choice_label(i), right - (x + pad)),
                           c.pickable ? tok::kTextPrimary : tok::kTextLabel});
         if (!note.empty())
-          b.runs.push_back({small_, x + w - pad - tw(small_, note), base, note, tok::kTextLabel});
+          b.runs.push_back(
+              {small_, x + w - pad - tw(small_, note), base, note, tone_rgb(c.tone)});
         y += line_h;
         box->blocks.push_back(std::move(b));
       }
