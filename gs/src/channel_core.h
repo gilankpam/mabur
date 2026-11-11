@@ -153,8 +153,8 @@ struct ChannelSnapshot {
   // config order: built fresh each snapshot() call from member_figs_/
   // op_fig_ -- see ChannelCore::snapshot.
   std::vector<StatsScanMemberIn> members;
-  // The channel row's pending relocation and its sequence counter; unset/0
-  // until a later task drives them (relocate_/relocate_seq_).
+  // The channel row's pending relocation and its sequence counter: null
+  // and 0 while no such relocation is tracked.
   std::optional<StatsRelocateIn> relocate;
   uint64_t relocate_seq = 0;
 };
@@ -375,8 +375,8 @@ class ChannelCore {
   std::optional<uint8_t> frozen_pick_;
   BootPickIn last_bi_;
   // scan.relocate / scan.relocate_seq (the channel row's own relocation,
-  // distinct from pending_relocate_'s boot-pick plumbing): unset until a
-  // later task drives it through here.
+  // distinct from pending_relocate_'s boot-pick plumbing): null and 0
+  // while no such relocation is tracked.
   std::optional<StatsRelocateIn> relocate_;
   uint64_t relocate_seq_ = 0;
 
