@@ -2384,6 +2384,7 @@ int main(int argc, char** argv) {
   maburplay::MenuTreeDeps menu_deps;
   menu_deps.cfg = &cfg;
   menu_deps.gs = &gs_view;
+  menu_deps.observe_state = [&] { return channel_observe.state(); };
   menu_deps.rec_running = [&] { return rec_on; };
   menu_deps.burned_rec_running = [&] { return rec_on && rec_gs && burned_mode; };
 #ifdef MABUR_PLAYER_HW
@@ -2491,7 +2492,7 @@ int main(int argc, char** argv) {
       // Holds maburgs' measuring lease for exactly as long as the Channel
       // picker is open on the model, including a whole-menu close with
       // the picker still open underneath it.
-      channel_observe.tick(menu_model.open_choices_row() == "link.channel", now_ms);
+      channel_observe.tick(menu_model.open_choices_row() == maburplay::kChannelRow, now_ms);
       menu_model.set_linked(gs_src && !gs_src->stale(now_ms) && gs_src->snapshot().session);
       {
         const maburplay::GsSnapshot* snap = gs_src ? &gs_src->snapshot() : nullptr;

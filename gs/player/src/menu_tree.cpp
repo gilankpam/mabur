@@ -12,6 +12,28 @@
 #include "mabur/config_params.h"
 
 namespace maburplay {
+
+int clean_air_level(double busy_pct) {
+  if (busy_pct < 5) return 5;
+  if (busy_pct < 12) return 4;
+  if (busy_pct < 25) return 3;
+  if (busy_pct < 50) return 2;
+  return 1;
+}
+
+std::string clean_air_bars(std::optional<double> busy_pct) {
+  const int level = busy_pct ? clean_air_level(*busy_pct) : 0;
+  std::string out;
+  for (int i = 0; i < 5; ++i) out += i < level ? "●" : "○";
+  return out;
+}
+
+std::string age_text(int64_t age_ms) {
+  const int64_t s = age_ms / 1000;
+  if (s < 60) return std::to_string(s) + " s ago";
+  return std::to_string(s / 60) + " min ago";
+}
+
 namespace {
 
 using Deps = std::shared_ptr<const MenuTreeDeps>;
@@ -505,6 +527,108 @@ int receiver_width(const GsLiveView& gs) {
   for (const Rung& r : gs.ladder)
     if (r.bw == 40) return 40;
   return 20;
+}
+
+// The link's own channel right now: the sideport's link.channel while the
+// session holds (unlinked, a stale link.channel from before the drop is not
+// "the link", and the row has nothing to point two sources at).
+std::optional<int> link_channel(const Deps& d) {
+  if (d->snap && d->snap->session && d->snap->channel) return d->snap->channel;
+  return std::nullopt;
+}
+
+// "auto" or the pinned channel's number -- the row's own value key, read
+// off maburgs' live radio.channel (GsLiveView::pinned_channel), never the
+// sideport (the two sources, docs/gs-menu.md "link.channel").
+std::string channel_current(const Deps& d) {
+  return d->gs->pinned_channel ? std::to_string(*d->gs->pinned_channel) : std::string("auto");
+}
+
+// The Channel row: pins or unpins radio.channel, reading the live-air bars
+// from scan.members while the picker holds maburgs' measuring lease open
+// (ChannelObserve, main.cpp). See docs/gs-menu.md "link.channel".
+MenuNode channel_row(const Deps& d) {
+  MenuNode n;
+  n.id = kChannelRow;
+  n.label = "Channel";
+  n.kind = NodeKind::kChoice;
+  n.owner = Owner::kGs;
+  n.current = [d] { return channel_current(d); };
+  n.value_text = [d] {
+    const std::optional<int> link = link_channel(d);
+    if (!d->gs->pinned_channel)
+      return "Auto (on " + (link ? std::to_string(*link) : std::string("—")) + ")";
+    const int pin = *d->gs->pinned_channel;
+    if (link && *link == pin) return std::to_string(pin) + " ● link";
+    return std::to_string(pin);
+  };
+  n.warn = [d] {
+    if (!d->gs->pinned_channel) return std::string();
+    const std::optional<int> link = link_channel(d);
+    if (link && *link != *d->gs->pinned_channel) return "link on " + std::to_string(*link);
+    return std::string();
+  };
+  n.choices = [d] {
+    const std::optional<int> link = link_channel(d);
+    const std::string current = channel_current(d);
+    std::vector<Choice> out;
+    out.push_back({"auto", "Auto", "on " + (link ? std::to_string(*link) : std::string("—")), true});
+    if (d->snap && !d->snap->scan_members.empty()) {
+      for (const ScanMember& m : d->snap->scan_members) {
+        const std::string value = std::to_string(m.ch);
+        std::string label = value;
+        if (m.pair_lo && m.pair_hi)
+          label += " · " + std::to_string(*m.pair_lo) + "+" + std::to_string(*m.pair_hi);
+        std::string note;
+        ChoiceTone tone;
+        if (!m.busy_pct) {
+          note = clean_air_bars(std::nullopt) + " · not measured";
+          tone = ChoiceTone::kDim;
+        } else if (m.age_ms && *m.age_ms > kFreshMs) {
+          note = clean_air_bars(m.busy_pct) + " · " + age_text(*m.age_ms);
+          tone = ChoiceTone::kDim;
+        } else {
+          note = clean_air_bars(m.busy_pct);
+          const int level = clean_air_level(*m.busy_pct);
+          tone = level >= 4 ? ChoiceTone::kGood : (level >= 2 ? ChoiceTone::kWarn : ChoiceTone::kBad);
+        }
+        if (link && *link == m.ch && value != current) note += " · link";
+        out.push_back({value, label, note, true, tone});
+      }
+    } else if (d->gs->pinned_channel) {
+      // No scan.members (an older maburgs, or none exported yet): the pin
+      // still needs a choice of its own so the current value stays
+      // visible, unmeasured.
+      const std::string value = std::to_string(*d->gs->pinned_channel);
+      out.push_back({value, value, clean_air_bars(std::nullopt) + " · not measured", true, ChoiceTone::kDim});
+    }
+    return out;
+  };
+  n.confirm = [d](const std::string& v) {
+    if (v == "auto") return std::string();
+    const std::optional<int> link = link_channel(d);
+    if (link && std::to_string(*link) == v) return std::string("Auto stops choosing for you.");
+    return "The link moves to " + v + " and stays there: Auto stops choosing for you.";
+  };
+  n.steps = [](const std::string& v) {
+    return Steps{{Owner::kGs, "radio.channel", v == "auto" ? "\"auto\"" : v}};
+  };
+  n.help = [d] {
+    const std::string state = d->observe_state ? d->observe_state() : std::string();
+    if (state == "one_card") return std::string("Measuring — video pauses each second.");
+    if (state == "two_card" || state == "relay" || state == "search") return std::string("Measuring.");
+    const std::optional<int> link = link_channel(d);
+    if (d->gs->pinned_channel) {
+      const int pin = *d->gs->pinned_channel;
+      if (link && *link != pin) return "Pinned here, link still on " + std::to_string(*link) + ".";
+      if (!link)
+        return "Pinned to " + std::to_string(pin) + " — the link moves here when it comes back.";
+    }
+    return std::string(
+        "Auto picks the cleanest channel and moves the link off a busy one. Pick a channel to "
+        "pin the link there.");
+  };
+  return n;
 }
 
 MenuNode width_row(const Deps& d) {
@@ -1202,7 +1326,7 @@ std::vector<MenuNode> build_menu_tree(const MenuTreeDeps& deps) {
             }),
       group("link", "Link", "How the video crosses the air.",
             [d] {
-              std::vector<MenuNode> rows{width_row(d), rate_row(d)};
+              std::vector<MenuNode> rows{channel_row(d), width_row(d), rate_row(d)};
               for (MenuNode& n : fixed_rows(d)) rows.push_back(std::move(n));
               rows.push_back(ladder_group(d));
               rows.push_back(nack_row(d));
