@@ -319,6 +319,30 @@ struct StatsHopIn {
   uint64_t sampler_dropped = 0;
 };
 
+// One channel-set member's row on the sideport's scan.members[] -- every
+// member, config order, straight from ChannelCore::snapshot (plain values,
+// same no-controller-reference pattern as StatsHopIn). pair_lo/pair_hi are
+// null at width 20 or when the member has no standard HT40 pair; busy_pct/
+// src/age_ms are null when the member has never been measured ("" src ->
+// JSON null, the third state alongside "scan" and "op").
+struct StatsScanMemberIn {
+  int ch = 0;
+  std::optional<int> pair_lo, pair_hi;
+  std::optional<double> busy_pct;
+  std::string src;  // "scan" | "op" | "" (-> JSON null)
+  std::optional<uint64_t> age_ms;
+  bool blocked = false, is_op = false, is_pin = false;
+};
+
+// The in-flight channel hop's pending relocation (the live channel-row
+// move), straight from ChannelCore. nullopt -> JSON null (no relocation in
+// flight); state is "pending" | "landed" | "failed".
+struct StatsRelocateIn {
+  std::string state;
+  int ch = 0;
+  std::string why;
+};
+
 struct StatsInput {
   // radio.channel, straight from the GS config. Exported because the
   // player's compact OSD names the channel the rest of the line describes,
@@ -336,6 +360,12 @@ struct StatsInput {
   // The live channel pin (ChannelCore::pinned()): a `set radio.channel`
   // moves it, so it is not the boot config's radio.channel.
   bool pinned = false;
+  // scan.members[] -- ChannelSnapshot::members, config order.
+  std::vector<StatsScanMemberIn> scan_members;
+  // The channel row's pending relocation and its sequence counter --
+  // ChannelSnapshot::relocate/relocate_seq, exported as-is.
+  std::optional<StatsRelocateIn> scan_relocate;
+  uint64_t scan_relocate_seq = 0;
   StatsRcfSlotIn rcf_slot;
   StatsNackIn nack;
   StatsRefreshIn refresh;

@@ -1854,6 +1854,9 @@ static int run_radio(const maburgs::Config& cfg, const std::string& cfg_path) {
       sin.scan_pick = chs.scan_pick;
       sin.pinned = chs.pinned;
       sin.hop = chs.hop;
+      sin.scan_members = chs.members;
+      sin.scan_relocate = chs.relocate;
+      sin.scan_relocate_seq = chs.relocate_seq;
       sin.in_session = in_session;
       sin.key_mismatch = vrx.key_mismatch();
       sin.key_fp = key_fp;

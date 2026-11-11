@@ -149,6 +149,14 @@ struct ChannelSnapshot {
   std::vector<std::optional<StatsDwellIn>> dwell;     // per card
   uint64_t scout_gated_sends = 0;
   bool pinned = false;                    // ChannelCore::pinned(): the live pin, not the boot one
+  // Every channel-set member's row (the goggles Link > Channel row),
+  // config order: built fresh each snapshot() call from member_figs_/
+  // op_fig_ -- see ChannelCore::snapshot.
+  std::vector<StatsScanMemberIn> members;
+  // The channel row's pending relocation and its sequence counter; unset/0
+  // until a later task drives them (relocate_/relocate_seq_).
+  std::optional<StatsRelocateIn> relocate;
+  uint64_t relocate_seq = 0;
 };
 
 class ChannelCore {
@@ -335,6 +343,15 @@ class ChannelCore {
   std::vector<bool> width_tried_;
   std::vector<std::optional<StatsEnergyIn>> energy_last_;
   std::vector<std::optional<StatsDwellIn>> dwell_stats_;
+  // Newest NHM busy reading landed on each channel-set member (index
+  // matches cfg_.radio.channels) from any dwell -- boot scout, a
+  // calibration measure round, the in-flight scout or a relay sweep.
+  // nullopt = never measured; overwritten by emit_dwell_, never merged, so
+  // the table always shows the most recent reading, not an average. Op's
+  // own figure lives separately in op_fig_: a linked op is read from the
+  // verdict window instead, never dwelt on.
+  struct MemberFig { double busy_pct = 0; uint64_t t_ms = 0; };
+  std::vector<std::optional<MemberFig>> member_figs_;
   std::vector<ScoutFrames> window_prev_;
   std::vector<uint64_t> window_prev_crc_;
   // The card's seq walk at the previous sample (CardTrack::seq_expected /
@@ -357,6 +374,11 @@ class ChannelCore {
   std::optional<uint8_t> pending_relocate_;
   std::optional<uint8_t> frozen_pick_;
   BootPickIn last_bi_;
+  // scan.relocate / scan.relocate_seq (the channel row's own relocation,
+  // distinct from pending_relocate_'s boot-pick plumbing): unset until a
+  // later task drives it through here.
+  std::optional<StatsRelocateIn> relocate_;
+  uint64_t relocate_seq_ = 0;
 
   // ---- hop state ----
   int hop_lead_latched_ = -1;
@@ -450,12 +472,23 @@ class ChannelCore {
   // foreign frames scaled to radio.scan.dwell_ms.
   std::optional<CalReading> op_live_;
   double op_live_ms_ = -1;
+  // scan.members[]'s own figure for op while linked: the MIN across every
+  // card with a busy reading this window of (busy_pct - own airtime),
+  // floored at 0 -- the best-case reading, unlike op_live_'s worst-case
+  // (the calibration pick wants the worst card; the channel row wants
+  // what a hop would actually buy). Stamped with the window's sample
+  // time; reset to nullopt on every hop_active edge (step_hop_edge_and_window_).
+  std::optional<std::pair<double, uint64_t>> op_fig_;
   bool in_session_cur_ = false, cal_running_cur_ = false;
   // the tick's current inputs, for helpers
   double now_ms_cur_ = 0;
   uint64_t now_ms_u_cur_ = 0;
 
   // ---- steps ----
+  // Every dwell record's one entrypoint to the sink: logs it (sink_.dwell)
+  // then, when it is usable (busy_valid and the retune did not fail), lands
+  // its busy reading in member_figs_ against the member it was dwelt on.
+  void emit_dwell_(double now_ms, int card, const ScoutDwell& d);
   void freeze_pick_(double t, const char* why);
   void dispatch_hop_action_(const HopAction& act, bool relocate_tick, double now_ms);
   void apply_hop_action_(const HopAction& act, double now_ms);

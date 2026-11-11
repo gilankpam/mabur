@@ -47,8 +47,26 @@ player's GS OSD (:8302), `tools/flightreport.py` (over `flight.jsonl`).
   Semantics: `docs/link-adaptation.md`.
 - `residual_loss`, `pre_fec_loss`, `attrib.{residual_cur, close_ms}`,
   `layer_delivery_pct`.
-- `scan = {state, rounds, pick}` (top level, not under `link`) — the boot
-  channel scan, `docs/channel-select.md`.
+- `scan = {state, rounds, pick, pinned, members[], relocate, relocate_seq}`
+  (top level, not under `link`) — the boot channel scan, `docs/channel-select.md`.
+  `members[]` is one row per channel-set member, config order
+  (`ChannelCore::snapshot`, the goggles Link > Channel row's data):
+  `ch`, `pair_lo`/`pair_hi` (the standard HT40 pair either side of `ch`,
+  null at width 20 or when `ch` has no pair), `busy_pct` (the latest NHM
+  busy reading, null if never measured), `src` (`"scan"` the member
+  table below, `"op"` the verdict window, or null for never measured),
+  `age_ms` (null alongside `busy_pct`), `blocked` (`busy_pct >=
+  radio.scan.blocked_pct`, false when unmeasured), `is_op`
+  (`ch == ` the live op), `is_pin` (the frozen pick, pinned mode only).
+  The member table keeps each member's newest dwell reading only — boot
+  scout, in-flight scout, a calibration measure round or a relay sweep,
+  whichever landed last; a failed retune never lands one. The live op
+  reads differently while linked: its row's `busy_pct` is the verdict
+  window's own figure (the min across every card with a reading of NHM
+  busy minus that card's own airtime, floored at 0), not a dwell, since
+  the scout never dwells on op while linked. `relocate` is the channel
+  row's own pending move (`null` | `{state: "pending"|"landed"|"failed",
+  ch, why}`) and `relocate_seq` a counter bumped alongside it.
 
 #### Pre-FEC loss is late, not lost
 

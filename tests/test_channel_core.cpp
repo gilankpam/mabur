@@ -1864,6 +1864,130 @@ TEST(cal_measure_round_ranks_the_set_once) {
   CHECK(*p.measured_best() == 112);
 }
 
+// ---- scan.members[]: the per-member export table (ChannelCore::snapshot) ----
+
+TEST(members_export_every_member_in_config_order) {
+  Rig g(2, 0);
+  const auto m = g.core->snapshot(0).members;
+  REQUIRE(m.size() == 4);
+  CHECK(m[0].ch == 40 && m[3].ch == 144);
+  CHECK(m[3].pair_lo == std::optional<int>(140) && m[3].pair_hi == std::optional<int>(144));
+  CHECK(!m[1].busy_pct.has_value() && m[1].src.empty() && !m[1].age_ms.has_value());
+  CHECK(m[0].is_op && !m[0].is_pin);
+}
+
+TEST(members_have_no_pair_at_width_20) {
+  Rig g(2, 0, false, 0, {36, 40, 44, 48}, 20);
+  for (const auto& e : g.core->snapshot(0).members) CHECK(!e.pair_lo && !e.pair_hi);
+}
+
+// A boot-scout dwell with an NHM reading lands in the table; newest wins.
+// (Unlinked: the scout dwells on every member, round after round, until the
+// pick freezes a few rounds in -- plenty of room for two dwells on 112.)
+TEST(members_take_the_newest_dwell_reading) {
+  Rig g(2, 0);
+  g.cards[1]->nhm_busy_pct_on[112] = 40;
+  const auto count_112 = [&] {
+    size_t n = 0;
+    for (const auto& [card, d] : g.sink.dwells)
+      if (card == 1 && d.survey.def.primary == 112 && d.busy_valid) ++n;
+    return n;
+  };
+  for (int i = 0; i < 40 && count_112() == 0; ++i) g.tick();
+  REQUIRE(count_112() > 0);
+  {
+    const auto m = g.core->snapshot(0).members;
+    const auto it = std::find_if(m.begin(), m.end(), [](const auto& e) { return e.ch == 112; });
+    REQUIRE(it != m.end());
+    CHECK(it->src == "scan");
+    CHECK(it->busy_pct == std::optional<double>(40.0));
+    CHECK(it->blocked);   // 40 >= radio.scan.busy.blocked_pct (30)
+  }
+  g.cards[1]->nhm_busy_pct_on[112] = 5;
+  const size_t had = count_112();
+  for (int i = 0; i < 40 && count_112() == had; ++i) g.tick();
+  REQUIRE(count_112() > had);
+  const auto m = g.core->snapshot(0).members;
+  const auto it = std::find_if(m.begin(), m.end(), [](const auto& e) { return e.ch == 112; });
+  REQUIRE(it != m.end());
+  CHECK(it->busy_pct == std::optional<double>(5.0));
+  CHECK(!it->blocked);
+}
+
+// Linked: op's figure is the window's foreign busy, min across cards (own
+// airtime is 0 here -- live_tick never books any).
+TEST(members_op_reads_the_verdict_window_min_across_cards) {
+  Rig g(2, 0); freeze_auto(g);
+  link_up(g);
+  g.cards[0]->nhm_busy_pct_on[40] = 25;
+  g.cards[1]->nhm_busy_pct_on[40] = 60;
+  for (int i = 0; i < 2 * (g.cfg.hop.window_ms / 10) + 30; ++i) live_tick(g);
+  const auto m = g.core->snapshot(0).members;
+  const auto it = std::find_if(m.begin(), m.end(), [](const auto& e) { return e.ch == 40; });
+  REQUIRE(it != m.end());
+  CHECK(it->src == "op");
+  CHECK(it->busy_pct == std::optional<double>(25.0));
+}
+
+// The in-flight dwells and a relay sweep feed the table too.
+TEST(members_take_inflight_and_relay_dwells) {
+  Rig g(2, 0); freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 10; ++i) g.tick(true, false, 0);
+  g.cards[1]->nhm_busy_pct_on[64] = 45;   // the in-flight scout's next candidate (op=40 skipped)
+  g.core->run_inflight_step();
+  g.tick(true, false, 0);                 // drain
+  {
+    const auto m = g.core->snapshot(0).members;
+    const auto it = std::find_if(m.begin(), m.end(), [](const auto& e) { return e.ch == 64; });
+    REQUIRE(it != m.end());
+    CHECK(it->src == "scan");
+    CHECK(it->busy_pct == std::optional<double>(45.0));
+  }
+  Rig h(0, 1); freeze_auto(h);
+  for (int i = 0; i < 5; ++i) h.tick(true);
+  interfere(h, occ_lead(h) + 3);
+  REQUIRE(h.cards[0]->sweeps.size() == 1);
+  h.cards[0]->pending_result = sweep_of({{64, 20}, {112, 1}, {144, 4}});
+  interfere(h, occ_lead(h) + 3);
+  REQUIRE(!h.core->sweep_pending());
+  const auto hm = h.core->snapshot(0).members;
+  const auto it112 = std::find_if(hm.begin(), hm.end(), [](const auto& e) { return e.ch == 112; });
+  REQUIRE(it112 != hm.end());
+  CHECK(it112->src == "scan");
+  CHECK(it112->busy_pct == std::optional<double>(5.0));   // 1 ms busy / 20 ms active
+}
+
+// A retune that fails never lands a reading, even with a busy % programmed
+// for it -- the table keeps that member null.
+TEST(members_skip_a_failed_retune_dwell) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  g.cards[0]->nhm_arm_ok = true;
+  g.cards[0]->nhm_any_period = true;
+  g.cards[0]->nhm_read.valid = true;
+  g.cards[0]->nhm_read.buckets[11] = 25;   // op's NHM busy: 25 % (below blocked_pct)
+  g.cards[0]->nhm_read.buckets[0] = 75;
+  g.cards[1]->refuse_ch = 112;
+  g.cards[1]->nhm_busy_pct_on[112] = 40;   // would land here if the retune hadn't failed
+  g.cards[1]->nhm_busy_pct_on[64] = 25;
+  g.cards[1]->nhm_busy_pct_on[144] = 5;
+  for (int i = 0; i < 30; ++i) live_tick(g, 200);
+  ChannelCorePicker p(*g.core);
+  p.begin_measure(g.clk.ms);
+  for (int i = 0; i < 50 && !p.measured_best(); ++i) live_tick(g, 200);
+  REQUIRE(p.measured_best().has_value());
+  const auto m = g.core->snapshot(0).members;
+  const auto it112 = std::find_if(m.begin(), m.end(), [](const auto& e) { return e.ch == 112; });
+  REQUIRE(it112 != m.end());
+  CHECK(!it112->busy_pct.has_value());
+  CHECK(it112->src.empty());
+  const auto it64 = std::find_if(m.begin(), m.end(), [](const auto& e) { return e.ch == 64; });
+  REQUIRE(it64 != m.end());
+  CHECK(it64->busy_pct == std::optional<double>(25.0));
+}
+
 // The same round over a quiet-ish op: a candidate must beat op by
 // pick_margin_pct busy points, so a close-but-not-clear op stays the
 // target.

@@ -1144,6 +1144,47 @@ TEST(exports_scan_block_and_card_energy) {
   CHECK(j["scan"]["state"] == "moving");
 }
 
+// scan.members[]: config order, every field straight through, src ""
+// collapsing to JSON null alongside "scan" and "op". relocate/relocate_seq
+// null/0 until a relocation is set.
+TEST(scan_members_relocate_and_seq_are_exported) {
+  StatsInput in = base_input();
+  in.scan_members = {{144, 140, 144, 31.0, "scan", 1200, true, false, false},
+                     {40, std::nullopt, std::nullopt, std::nullopt, "", std::nullopt, false, true, true}};
+  Capture cap;
+  StatsExporter ex(1, 500, cap.fn());
+  CHECK(ex.poll(1000, in));
+  const json j = cap.last();
+  REQUIRE(j["scan"]["members"].size() == 2);
+  CHECK(j["scan"]["members"][0]["ch"] == 144);
+  CHECK(j["scan"]["members"][0]["pair_lo"] == 140);
+  CHECK(j["scan"]["members"][0]["pair_hi"] == 144);
+  CHECK(j["scan"]["members"][0]["busy_pct"] == 31.0);
+  CHECK(j["scan"]["members"][0]["src"] == "scan");
+  CHECK(j["scan"]["members"][0]["age_ms"] == 1200);
+  CHECK(j["scan"]["members"][0]["blocked"] == true);
+  CHECK(j["scan"]["members"][0]["is_op"] == false);
+  CHECK(j["scan"]["members"][0]["is_pin"] == false);
+  CHECK(j["scan"]["members"][1]["ch"] == 40);
+  CHECK(j["scan"]["members"][1]["pair_lo"].is_null());
+  CHECK(j["scan"]["members"][1]["pair_hi"].is_null());
+  CHECK(j["scan"]["members"][1]["busy_pct"].is_null() && j["scan"]["members"][1]["src"].is_null());
+  CHECK(j["scan"]["members"][1]["age_ms"].is_null());
+  CHECK(j["scan"]["members"][1]["blocked"] == false);
+  CHECK(j["scan"]["members"][1]["is_op"] == true);
+  CHECK(j["scan"]["members"][1]["is_pin"] == true);
+  CHECK(j["scan"]["relocate"].is_null());
+  CHECK(j["scan"]["relocate_seq"] == 0);
+  in.scan_relocate = StatsRelocateIn{"failed", 112, "withdrawn"};
+  in.scan_relocate_seq = 3;
+  CHECK(ex.poll(2000, in));
+  const json j2 = cap.last();
+  CHECK(j2["scan"]["relocate"]["state"] == "failed");
+  CHECK(j2["scan"]["relocate"]["ch"] == 112);
+  CHECK(j2["scan"]["relocate"]["why"] == "withdrawn");
+  CHECK(j2["scan"]["relocate_seq"] == 3);
+}
+
 TEST(scan_block_carries_pinned) {
   // scan.pinned is the live pin (a `set radio.channel` moves it), not the
   // boot config's.

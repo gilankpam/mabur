@@ -45,6 +45,7 @@ ChannelCore::ChannelCore(ChannelCoreCfg cfg, std::vector<LinkCard*> cards, VrxCo
       width_tried_(static_cast<size_t>(n_cards_), false),
       energy_last_(static_cast<size_t>(n_cards_)),
       dwell_stats_(static_cast<size_t>(n_cards_)),
+      member_figs_(cfg_.radio.channels.size()),
       window_prev_(static_cast<size_t>(n_cards_)),
       window_prev_crc_(static_cast<size_t>(n_cards_), 0),
       window_prev_seq_exp_(static_cast<size_t>(n_cards_), 0),
@@ -139,6 +140,17 @@ bool ChannelCore::scout_owns_() const {
                     scout_->round_open());
 }
 
+void ChannelCore::emit_dwell_(double now_ms, int card, const ScoutDwell& d) {
+  sink_.dwell(now_ms, card, d);
+  if (!d.busy_valid || (d.survey.flags & devourer::chanmig::kFlagRetuneFailed)) return;
+  for (size_t i = 0; i < cfg_.radio.channels.size(); ++i) {
+    if (cfg_.radio.channels[i] == d.survey.def.primary) {
+      member_figs_[i] = MemberFig{d.busy_pct, static_cast<uint64_t>(now_ms)};
+      break;
+    }
+  }
+}
+
 ChannelSnapshot ChannelCore::snapshot(int tx_card) const {
   ChannelSnapshot s;
   s.channel = cards_[static_cast<size_t>(tx_card)]->channel();
@@ -163,6 +175,37 @@ ChannelSnapshot ChannelCore::snapshot(int tx_card) const {
   s.dwell = dwell_stats_;
   s.scout_gated_sends = scout_gated_sends_;
   s.pinned = pinned_;
+  const bool linked = hop_active(in_session_cur_, cal_running_cur_);
+  const uint64_t now = now_ms_();
+  s.members.reserve(cfg_.radio.channels.size());
+  for (size_t i = 0; i < cfg_.radio.channels.size(); ++i) {
+    const uint8_t ch = cfg_.radio.channels[i];
+    StatsScanMemberIn m;
+    m.ch = ch;
+    if (width_mhz_ == 40) {
+      if (const uint8_t other = mabur::ht40_pair_other(ch); other != 0) {
+        m.pair_lo = std::min(ch, other);
+        m.pair_hi = std::max(ch, other);
+      }
+    }
+    m.is_op = ch == plan_.op();
+    m.is_pin = pinned_ && frozen_pick_ == ch;
+    std::optional<double> busy_pct;
+    std::optional<uint64_t> t_ms;
+    if (linked && m.is_op) {
+      if (op_fig_) { m.src = "op"; busy_pct = op_fig_->first; t_ms = op_fig_->second; }
+    } else if (member_figs_[i]) {
+      m.src = "scan"; busy_pct = member_figs_[i]->busy_pct; t_ms = member_figs_[i]->t_ms;
+    }
+    if (busy_pct) {
+      m.busy_pct = busy_pct;
+      m.age_ms = now >= *t_ms ? now - *t_ms : 0;
+      m.blocked = *busy_pct >= cfg_.radio.scan.busy.blocked_pct;
+    }
+    s.members.push_back(m);
+  }
+  s.relocate = relocate_;
+  s.relocate_seq = relocate_seq_;
   return s;
 }
 
@@ -510,6 +553,7 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
   if (active != hop_was_active_) {
     hop_was_active_ = active;
     if (!active) dispatch_hop_action_(hopc_.on_session_lost(now_ms, plan_.op()), false, now_ms);
+    op_fig_.reset();
     verdict_.reset();
     last_verdict_ = Verdict::Healthy;
     last_verdict_out_ = VerdictOut{};
@@ -639,6 +683,17 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
     op_live_ = op_read;
     op_live_ms_ = now_ms;
   }
+  // scan.members[]'s own figure for op: the MIN across every card with a
+  // busy reading this window, unlike op_read's worst-case (above), which
+  // the calibration pick wants instead.
+  std::optional<double> op_fig_this_window;
+  for (int i = 0; i < n_cards_; ++i) {
+    const size_t si = static_cast<size_t>(i);
+    if (!vc[si].valid || !vc[si].busy_valid) continue;
+    const double fig = std::max(vc[si].nhm_busy_pct - vc[si].own_air_pct, 0.0);
+    op_fig_this_window = op_fig_this_window ? std::min(*op_fig_this_window, fig) : fig;
+  }
+  if (op_fig_this_window) op_fig_ = std::make_pair(*op_fig_this_window, t_ms);
   VerdictLinkIn vl;
   vl.pre_fec_loss = hop_verdict_link_loss(s1_hop_loss_.sample(now_ms), enh_hop_loss_.sample(now_ms));
   const uint64_t recovered_now = in.agg ? in.agg->decoder().stats(0).syms_recovered +
@@ -746,7 +801,7 @@ void ChannelCore::step_controller_(const ChannelTickIn& in) {
         for (const auto& v : burst_on_card_(burst_card, plan_.op(), recs)) ranker_.add(v);
       }
       cur_ch_[static_cast<size_t>(burst_card)] = cards_[static_cast<size_t>(burst_card)]->channel();
-      for (const auto& d : recs) sink_.dwell(now_ms, burst_card, d);
+      for (const auto& d : recs) emit_dwell_(now_ms, burst_card, d);
       fill_hop_targets(ht);
     }
   }
@@ -827,7 +882,7 @@ void ChannelCore::step_move_edge_(const ChannelTickIn& in) {
 
 void ChannelCore::step_drains_() {
   if (scout_)
-    for (const auto& d : scout_->take_dwells()) sink_.dwell(now_ms_cur_, scout_card_, d);
+    for (const auto& d : scout_->take_dwells()) emit_dwell_(now_ms_cur_, scout_card_, d);
   start_inflight_if_due_();
   std::vector<std::pair<int, ScoutDwell>> drained;
   std::vector<HopVisit> visits;
@@ -843,7 +898,7 @@ void ChannelCore::step_drains_() {
   for (auto& rec : drained) {
     const int card = rec.first;
     cur_ch_[static_cast<size_t>(card)] = cards_[static_cast<size_t>(card)]->channel();
-    sink_.dwell(now_ms_cur_, card, rec.second);
+    emit_dwell_(now_ms_cur_, card, rec.second);
     const bool ok = !(rec.second.survey.flags & devourer::chanmig::kFlagRetuneFailed);
     StatsDwellIn ds = dwell_stats_[static_cast<size_t>(card)].value_or(StatsDwellIn{});
     ++ds.visits;
@@ -936,7 +991,7 @@ void ChannelCore::poll_sweep_(double now_ms) {
     for (const auto& e : r->entries) {
       if (!e.valid) continue;
       ranker_.add(sweep_visit(e, now_ms));
-      sink_.dwell(now_ms, sweep_.card, sweep_dwell(e, sweep_round_));
+      emit_dwell_(now_ms, sweep_.card, sweep_dwell(e, sweep_round_));
     }
     if (r->status != 0)
       sink_.log(logf_("maburgs hop: relay sweep status %u, radio back on %u",
