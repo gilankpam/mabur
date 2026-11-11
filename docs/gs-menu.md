@@ -149,7 +149,24 @@ answered `err` or timed out.
   fights an operator's own 8403 client for the daemon's one pending slot
   (`docs/gs-live-config.md` "Protocol").
 - A GS-owned step goes through `GsLiveSetter`, an ordinary
-  `LiveUdpClient` exchange to maburgs' 8402.
+  `LiveUdpClient` exchange to maburgs' 8402 — except a `radio.channel`
+  pin (a non-`auto` value), which does not settle on that `ok`: the reply
+  only says maburgs accepted the pin, never whether the link actually
+  moved there. `GsLiveSetter` arms `PinSettleWatch` (`menu_apply.h`) on
+  the `ok`, from the sideport snapshot taken right before the submit, and
+  the row settles once a later snapshot answers it — its
+  `scan.relocate_seq` differs from the one seen at submit, or the pin
+  already reads landed there (`scan.pinned` and `scan.pick` equal to the
+  member, the case for a same-value set, which never bumps the seq).
+  Once answered: `scan.relocate` null, or naming a different channel,
+  settles ok at once (the link was already on the pin, or there was
+  nothing left to watch land); `landed` settles ok; `failed` settles with
+  "pinned here, link still on `<link>` — `<why>`" (`<link>` is
+  `link.channel`, or "—" when that is null); `pending` settles ok once
+  the session is unlinked (nothing left to watch the relocate land on)
+  and otherwise keeps waiting. A stale or missing sideport mid-wait ends
+  it at "link lost", same wording as a drone step's own. Every other GS
+  key is unchanged.
 - A drone-owned step goes through `DroneLiveSetter`, over its own
   `LiveUdpClient` to the same 8402 (so its reply never collides with a
   GS step's or the view refresh's own exchange). Its `vtx set <PARAM_ID>
@@ -178,7 +195,8 @@ answered `err` or timed out.
   `MenuModel::kErrorMs` (6000 ms), and releases every owner the row's
   steps had locked — the next set on that owner can start at once. A
   drone step's own wait on the sideport is capped separately, at
-  `DroneLiveSetter::kDroneSettleMs` (30 s) — a backstop only, since the
+  `DroneLiveSetter::kDroneSettleMs` (30 s), and a channel pin's at
+  `GsLiveSetter::kPinSettleMs` (30 s) — backstops only, since the
   client's own reply deadline above always ends the "was it sent" half
   first.
 - A row's lock covers every owner its own steps touch, not only its own

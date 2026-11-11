@@ -2396,11 +2396,12 @@ int main(int argc, char** argv) {
   menu_model.set_has_sel(bank.has_sel());
   menu_model.set_show_advanced(cfg.menu.show_advanced);
   maburplay::PlayerLiveSetter player_setter(cfg_ctl, cfg_apply);
-  maburplay::GsLiveSetter gs_setter(gs_client);
-  maburplay::DroneLiveSetter drone_setter(vtx_client, [&] {
+  auto gs_snapshot_view = [&] {
     return maburplay::DroneSnapshotView{gs_src ? &gs_src->snapshot() : nullptr,
                                         !gs_src || gs_src->stale(mono_ms())};
-  });
+  };
+  maburplay::GsLiveSetter gs_setter(gs_client, gs_snapshot_view);
+  maburplay::DroneLiveSetter drone_setter(vtx_client, gs_snapshot_view);
   maburplay::MenuApplier menu_applier(menu_model, player_setter, gs_setter, drone_setter);
   maburplay::UdpGsViewSource gs_view_source(gs_client);
   maburplay::MenuSession menu(menu_model, menu_applier, gs_view_source, gs_view);

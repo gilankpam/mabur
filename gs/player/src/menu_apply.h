@@ -50,26 +50,62 @@ class PlayerLiveSetter final : public LiveSetter {
   PlayerConfigApplier& applier_;
 };
 
+// The sideport as the player holds it right now: what a drone step's
+// watch, and a GS channel pin's, read back. `snap` is null before the
+// first datagram ever arrives; `stale` mirrors the player's own
+// staleness read on that snapshot (gs_source.h's stale()), taken at the
+// same instant.
+struct DroneSnapshotView {
+  const GsSnapshot* snap = nullptr;
+  bool stale = true;
+};
+
+// Settles a `radio.channel = <member>` set on the sideport: the `set`
+// reply only says maburgs accepted the pin, never whether the link
+// actually moved there, which is `scan.relocate` (ChannelCore's
+// PinReloc, docs/channel-select.md "The live pin's own outcome").
+class PinSettleWatch {
+ public:
+  // Remembers, from `before` (null if there is none), the relocate_seq
+  // seen at submit -- nullopt when it was never exported. check() waits
+  // for a snapshot whose own seq differs from this one, or that already
+  // shows the pin landed (a same-value set never bumps the seq).
+  void begin(int ch, const GsSnapshot* before);
+  // nullopt while waiting; else the reply the row settles on. A stale
+  // or missing snapshot ends the wait at "link lost".
+  std::optional<LiveReply> check(const DroneSnapshotView& v);
+  bool active() const { return active_; }
+
+ private:
+  bool active_ = false;
+  int ch_ = 0;
+  std::optional<uint64_t> before_seq_;
+};
+
 // maburgs over its loopback live-config port (8402), one UDP exchange
-// per step.
+// per step. A `radio.channel` pin additionally settles on `scan.relocate`
+// (PinSettleWatch above) rather than the bare `ok`, which only says the
+// line reached maburgs; every other key is unchanged.
 class GsLiveSetter final : public LiveSetter {
  public:
-  explicit GsLiveSetter(LiveUdpClient& client) : client_(client) {}
+  // Backstop only, same role as DroneLiveSetter::kDroneSettleMs: how long
+  // the watch waits on the sideport for a pending that never settles.
+  static constexpr uint64_t kPinSettleMs = 30000;
+
+  explicit GsLiveSetter(LiveUdpClient& client, std::function<DroneSnapshotView()> view = {})
+      : client_(client), view_(std::move(view)) {}
   bool submit(const std::string& key, const std::string& value, uint64_t now_ms,
              std::string* why) override;
   std::optional<LiveReply> poll(uint64_t now_ms) override;
 
  private:
   LiveUdpClient& client_;
-};
-
-// What the drone setter watches: the sideport as the player holds it
-// right now. `snap` is null before the first datagram ever arrives;
-// `stale` mirrors the player's own staleness read on that snapshot
-// (gs_source.h's stale()), taken at the same instant.
-struct DroneSnapshotView {
-  const GsSnapshot* snap = nullptr;
-  bool stale = true;
+  std::function<DroneSnapshotView()> view_;
+  bool pin_pending_ = false;  // this submit is a radio.channel pin with a view
+  int pin_ch_ = 0;
+  PinSettleWatch watch_;
+  std::optional<GsSnapshot> before_;
+  uint64_t armed_ms_ = 0;
 };
 
 // The settle rule on its own, testable without a socket: a drone set's
