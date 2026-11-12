@@ -718,6 +718,85 @@ TEST(an_unknown_row_id_and_a_missing_rows_array_never_throw) {
   CHECK(*s.channel == 136);  // no "vtx" key at all: the rest still lands
 }
 
+// scan.members (the goggles Link > Channel row's data), scan.relocate and
+// scan.relocate_seq: all land verbatim, including a member with every
+// optional figure null; a datagram without the keys leaves them at their
+// empty defaults without disturbing the rest of the snapshot.
+TEST(scan_members_relocate_and_seq_parse) {
+  GsSnapshot s;
+  REQUIRE(parse(R"({"link": {"channel": 112}, "scan": {"pick": 112,
+    "members": [
+      {"ch": 100, "pair_lo": 96, "pair_hi": 104, "busy_pct": 8.5,
+       "src": "scan", "age_ms": 1200, "blocked": false, "is_op": false, "is_pin": false},
+      {"ch": 112, "pair_lo": null, "pair_hi": null, "busy_pct": null,
+       "src": null, "age_ms": null, "blocked": false, "is_op": true, "is_pin": true}
+    ],
+    "relocate": {"state": "failed", "ch": 112, "why": "withdrawn"},
+    "relocate_seq": 7}})",
+                &s));
+  REQUIRE(s.scan_pick.has_value());
+  CHECK(*s.scan_pick == 112);
+  REQUIRE(s.scan_members.size() == 2);
+
+  const ScanMember& m0 = s.scan_members[0];
+  CHECK(m0.ch == 100);
+  REQUIRE(m0.pair_lo.has_value());
+  CHECK(*m0.pair_lo == 96);
+  REQUIRE(m0.pair_hi.has_value());
+  CHECK(*m0.pair_hi == 104);
+  REQUIRE(m0.busy_pct.has_value());
+  CHECK(*m0.busy_pct > 8.4 && *m0.busy_pct < 8.6);
+  CHECK(m0.src == "scan");
+  REQUIRE(m0.age_ms.has_value());
+  CHECK(*m0.age_ms == 1200);
+  CHECK(!m0.blocked);
+  CHECK(!m0.is_op);
+  CHECK(!m0.is_pin);
+
+  const ScanMember& m1 = s.scan_members[1];
+  CHECK(m1.ch == 112);
+  CHECK(!m1.pair_lo.has_value());
+  CHECK(!m1.pair_hi.has_value());
+  CHECK(!m1.busy_pct.has_value());
+  CHECK(m1.src.empty());
+  CHECK(!m1.age_ms.has_value());
+  CHECK(m1.is_op);
+  CHECK(m1.is_pin);
+
+  REQUIRE(s.scan_relocate.has_value());
+  CHECK(s.scan_relocate->state == "failed");
+  CHECK(s.scan_relocate->ch == 112);
+  CHECK(s.scan_relocate->why == "withdrawn");
+
+  REQUIRE(s.scan_relocate_seq.has_value());
+  CHECK(*s.scan_relocate_seq == 7);
+
+  // A datagram with none of the new keys: empty vector, both nullopts,
+  // other fields unaffected.
+  REQUIRE(parse(R"({"link": {"channel": 136}, "scan": {"pick": 136}})", &s));
+  CHECK(s.scan_members.empty());
+  CHECK(!s.scan_relocate.has_value());
+  CHECK(!s.scan_relocate_seq.has_value());
+  REQUIRE(s.scan_pick.has_value());
+  CHECK(*s.scan_pick == 136);
+  REQUIRE(s.channel.has_value());
+  CHECK(*s.channel == 136);
+}
+
+// A malformed member entry (non-numeric ch) is skipped, not fatal; the rest
+// of the array and the snapshot still parse.
+TEST(scan_member_with_bad_ch_is_skipped) {
+  GsSnapshot s;
+  REQUIRE(parse(R"({"scan": {"members": [
+      {"ch": "nope", "src": "scan"},
+      {"ch": 40, "src": "op"}
+    ]}})",
+                &s));
+  REQUIRE(s.scan_members.size() == 1);
+  CHECK(s.scan_members[0].ch == 40);
+  CHECK(s.scan_members[0].src == "op");
+}
+
 TEST(vtx_terminal_names) {
   CHECK(vtx_terminal("accepted"));
   CHECK(vtx_terminal("failed"));

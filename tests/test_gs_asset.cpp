@@ -211,6 +211,8 @@ TEST(asset_carries_every_menu_glyph_at_every_size) {
       0x2717,  // ✗  failed
       0x2026,  // …  drawn by the "Reading GS settings…" toast
       0x2260,  // ≠  Display row's "≠ camera" warning
+      0x25CF,  // ●  clean-air bar
+      0x25CB,  // ○  clean-air bar not lit
   };
   for (int px : scaled_sizes()) {
     const MaskAtlas* a = f.atlas(px);

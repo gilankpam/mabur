@@ -102,6 +102,7 @@ real values.
 | `video.flip` "Flip" | drone | `VENC_FLIP` | On/off. Flips the picture upside down, for a camera mounted upside down. |
 | `video.slices` "Row slices" (advanced) | drone | `VENC_SLICES` | On (4) / Off (1); any stored value above 1 reads On. |
 | **Link** | | | |
+| `link.channel` "Channel" | gs | `radio.channel` | Reads `Auto (on 144)` (`—` for the channel while unlinked) or, pinned, `144 ● link` when the link is on the pin, else bare `144` warned `link on 112`. The picker lists Auto (note `on 144`/`on —`) then every `scan.members` entry — label `144 · 140+144` with a 40 MHz pair, bare `144` without — noted with a five-bar clean-air icon (`●`/`○`, bands `< 5 %` 5 bars, `< 12 %` 4, `< 25 %` 3, `< 50 %` 2, `≥ 50 %` 1; green 4–5, amber 2–3, red 1) off its `busy_pct`; a reading older than 5 s (`kFreshMs`) draws dim with its age appended (`· 40 s ago`, `· 3 min ago`); `null` draws `○○○○○ · not measured`, dim; the member carrying the link adds `· link` when it is not the picked value. No `scan.members` (none exported yet): Auto offers only itself, a pin keeps its own channel as an unmeasured choice so the current value stays visible. A stale sideport (the player's own staleness read, `MenuTreeDeps::snap_stale`) is read as no link and no measurement: every member draws `○○○○○ · not measured`, dim, with no `· link` mark; the value reads `Auto (on —)` or the bare pin, and the help line never says "Measuring". Opening the picker holds maburgs' measuring lease open (`observe`, `docs/gs-live-config.md`) over its own `ChannelObserve` client — on a one-card GS this is the in-flight burst, ~75 ms off air once a second, so the help line reads "Measuring — video pauses each second." (other engaged measurers: "Measuring."); closing releases it. Picking a member confirms "The link moves to 112 and stays there: Auto stops choosing for you." (or, already on it, "Auto stops choosing for you."); picking Auto sends `"auto"` with no confirm. Pinned and the link has not landed there: help reads "Pinned here, link still on 112." — or, while `scan.relocate` is `failed` for this pin, "Pinned here, link still on 112 — `<why>`." (amber with the row's warning, for as long as it holds); pinned while unlinked: "Pinned to 112 — the link moves here when it comes back."; otherwise: "Auto picks the cleanest channel and moves the link off a busy one. Pick a channel to pin the link there." A pin's apply settles on `scan.relocate`, not the reply alone ("Applying a row" above). |
 | `link.width` "Width" | gs | `link.static_bw` (fixed) or `link.ladder` (adaptive) | 40/20 MHz. Under a fixed rate this only re-pins the width. Under adaptive it loads that width's default ladder (MCS 0,1,2,3,4 at 0.50/0.25 bw 40; MCS 0,1,2,3,4,5 at 0.50/0.25 bw 20, the bundle default) unless the live ladder is already one of those two tables, with a confirm naming the rung count, plus "Retunes the receiver." when the receiver width changes (the cards retune to the ladder's width, `docs/bw40.md`); refused with `ladder refused: scan in flight` while the boot pick is open (or a calibration measure round runs) — retry once it has frozen; an unlinked search after the pick froze is no refusal. A flip to 40 over a channel set with a member that has no HT40 pair is refused with `ladder refused: channel set is not 40 MHz pair-valid (member <n>)`; the other width refusals are in `docs/gs-live-config.md` "Width flip". |
 | `link.rate` "Rate" | gs | `link.static_mcs` (+ `static_bw`/`static_overhead_base`/`static_overhead_enh` into fixed) | Adaptive/Fixed. Switching to fixed sends the current rung's width and FEC overhead, then MCS last (capped at 5), so the link moves once; switching to adaptive is one set, `static_mcs = -1`, re-entering the ladder on that rung. When the switch moves the receiver width (the pinned rung's width against the ladder's, `docs/gs-live-config.md` "Width flip") a confirm says "Retunes the receiver."; the width refusals apply as for Width. |
 | `link.mcs` "MCS" (fixed only) | gs | `link.static_mcs` | 0–5. |
@@ -133,7 +134,7 @@ real values.
 | `sys.size` "Menu size" | player | `menu.scale` | Normal / Large / Larger (×1, ×1.25, ×1.5). Previews live: while its picker is open the whole menu is drawn at the size under the cursor (`MenuModel::preview`), nothing written; ◀ or a held ◀ drops back to the saved size, ▶ saves it — and the menu stays at the picked size while that set runs, so it never flicks back to the old size before the save lands. |
 | `sys.debug` "Debug log" | gs | `debug_log.enable` | On/off. |
 
-**Not covered yet:** a `Channel` group and a `Calibration` group.
+**Not covered yet:** a `Calibration` group.
 
 ## Applying a row
 
@@ -149,7 +150,29 @@ answered `err` or timed out.
   fights an operator's own 8403 client for the daemon's one pending slot
   (`docs/gs-live-config.md` "Protocol").
 - A GS-owned step goes through `GsLiveSetter`, an ordinary
-  `LiveUdpClient` exchange to maburgs' 8402.
+  `LiveUdpClient` exchange to maburgs' 8402 — except a `radio.channel`
+  pin (a non-`auto` value), which does not settle on that `ok`: the reply
+  only says maburgs accepted the pin, never whether the link actually
+  moved there. `GsLiveSetter` arms `PinSettleWatch` (`menu_apply.h`) on
+  the `ok`, from the sideport snapshot taken right before the submit, and
+  the row settles once a later snapshot's `scan.relocate_seq` differs
+  from the one seen at submit — maburgs bumps the seq on every accepted
+  `set_pin`, including a same-value no-op, so the seq alone is the
+  signal: whether the pin already reads where it was asked
+  (`scan.pinned` and `scan.pick` equal to the member) is NOT, since a pin
+  that failed leaves exactly that reading true, which would otherwise
+  settle a re-pin on the stale failure instead of waiting for the new
+  relocate. A snapshot with no seq at all is never the answer. Once a
+  fresh seq lands: `scan.relocate` null, or
+  naming a different channel, settles ok at once (the link was already
+  on the pin, or there was nothing left to watch land); `landed` settles
+  ok; `failed` settles with "Pinned here, link still on `<link>` —
+  `<why>`" (`<link>` is `link.channel`, or "—" when that is null), and
+  the row's help line keeps that reason for as long as it holds;
+  `pending` settles ok once the session is unlinked (nothing left to
+  watch the relocate land on) and otherwise keeps waiting. A stale or
+  missing sideport mid-wait ends it at "link lost", same wording as a
+  drone step's own. Every other GS key is unchanged.
 - A drone-owned step goes through `DroneLiveSetter`, over its own
   `LiveUdpClient` to the same 8402 (so its reply never collides with a
   GS step's or the view refresh's own exchange). Its `vtx set <PARAM_ID>
@@ -178,7 +201,8 @@ answered `err` or timed out.
   `MenuModel::kErrorMs` (6000 ms), and releases every owner the row's
   steps had locked — the next set on that owner can start at once. A
   drone step's own wait on the sideport is capped separately, at
-  `DroneLiveSetter::kDroneSettleMs` (30 s) — a backstop only, since the
+  `DroneLiveSetter::kDroneSettleMs` (30 s), and a channel pin's at
+  `GsLiveSetter::kPinSettleMs` (30 s) — backstops only, since the
   client's own reply deadline above always ends the "was it sent" half
   first.
 - A row's lock covers every owner its own steps touch, not only its own
@@ -456,7 +480,12 @@ drone: `DroneLiveSetter` is the drone side of that, and `DroneSetWatch`
 inside it is the sideport settle rule ("Applying a row" above).
 `menu_session.h`/`.cpp` — ties button events, the applier and the GS view
 refresh together, and owns the `maburplay: menu: open` / `close` log
-lines. `button_bank.h`/`.cpp` and `key_timer.h`/`.cpp` — the five GPIO
+lines. `channel_observe.h`/`.cpp` — `ChannelObserve`, the Channel picker's
+own client against maburgs' measuring lease (`docs/gs-live-config.md`
+"`observe <ms>`"): `observe 3000` on open, a renewal every second while
+it stays open, `observe 0` on close, each over its own `LiveUdpClient` so
+it never collides with a row's own set or the view refresh.
+`button_bank.h`/`.cpp` and `key_timer.h`/`.cpp` — the five GPIO
 lines and their gesture timing. `gs_live_view.h`/`.cpp` — parses maburgs'
 `get` dump. `display_follow.h` — the display-follows-camera rule,
 including `follow_camera_hz`'s reported-mode-first pick. `menu_view_feed.h`

@@ -8,7 +8,9 @@
 // to maburplay's own setter, Owner::kGs steps to maburgs' (8402).
 // maburgs' rows read "—" until GsLiveView::have: the view's defaults are not
 // maburgs' values.
+#include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -35,7 +37,36 @@ struct MenuTreeDeps {
   // presenter), its frame-length register mapped (an RK356x) and not
   // refused in its first second of vblanks (the controller's total not the mode's).
   std::function<bool()> refresh_sync_available;
+  // ChannelObserve::state(): the measuring lease's last-known engaged
+  // measurer while the Channel picker is open ("two_card"/"one_card"/
+  // "relay"/"search"/"none"), "" while it is closed. Null = "" (the host
+  // build without a menu session running).
+  std::function<std::string()> observe_state;
+  // Whether `snap` is stale (the player's own staleness read on the
+  // sideport). Null = fresh. The Channel row draws a stale snapshot as no
+  // link and no measurement.
+  std::function<bool()> snap_stale;
 };
+
+// Five-bar clean-air level for a foreign-busy percentage: 5 under 5%, 4
+// under 12%, 3 under 25%, 2 under 50%, 1 at 50% and above.
+int clean_air_level(double busy_pct);
+
+// The five-bar glyph string for a clean-air reading: "●" for every bar up
+// to clean_air_level(*busy_pct), "○" for the rest; "○○○○○" for nullopt
+// (never measured).
+std::string clean_air_bars(std::optional<double> busy_pct);
+
+// "40 s ago" under a minute, "3 min ago" at or after it.
+std::string age_text(int64_t age_ms);
+
+// A scan.members reading older than this draws dim with its age beside the
+// bars, rather than as a live figure.
+inline constexpr int64_t kFreshMs = 5000;
+
+// The Link > Channel row's id, shared with main.cpp's ChannelObserve::tick
+// (the picker-open signal) so the two never drift apart.
+inline constexpr const char* kChannelRow = "link.channel";
 
 std::vector<MenuNode> build_menu_tree(const MenuTreeDeps& d);
 

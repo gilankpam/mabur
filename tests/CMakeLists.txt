@@ -237,6 +237,7 @@ if(MABUR_BUILD_GS)
   target_compile_definitions(test_menu_apply PRIVATE
     MABUR_PLAY_BUNDLE_DIR="${CMAKE_SOURCE_DIR}/gs/player/bundle")
   add_mtest(test_menu_session test_menu_session.cpp LIBS mabur_player_core)
+  add_mtest(test_channel_observe test_channel_observe.cpp LIBS mabur_player_core)
   add_mtest(test_menu_view_feed test_menu_view_feed.cpp LIBS mabur_player_core)
   add_mtest(test_menu_debug test_menu_debug.cpp LIBS mabur_player_core)
   add_mtest(test_menu_layer test_menu_layer.cpp LIBS mabur_player_core)

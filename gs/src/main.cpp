@@ -1047,7 +1047,10 @@ static int run_radio(const maburgs::Config& cfg, const std::string& cfg_path) {
   // config port.
   maburgs::ParamHost params([&](const uint8_t* p, size_t n) { mav_tunnel.push_outbound(p, n); });
   param_host = &params;
-  cfg_ctl.extra_verb = [&](const std::string& v, const std::string& r) {
+  // `observe <ms>`: the goggles' channel picker holding its measure lease
+  // on the channel core; every other verb is the parameter client's.
+  cfg_ctl.extra_verb = [&](const std::string& v, const std::string& r) -> std::optional<std::string> {
+    if (v == "observe") return chan.observe_verb(r);
     return params.handle_verb(v, r, mono_ms());
   };
   agg.set_rc_sink([&](uint8_t, const std::vector<uint8_t>& f, uint64_t us) {
@@ -1854,6 +1857,9 @@ static int run_radio(const maburgs::Config& cfg, const std::string& cfg_path) {
       sin.scan_pick = chs.scan_pick;
       sin.pinned = chs.pinned;
       sin.hop = chs.hop;
+      sin.scan_members = chs.members;
+      sin.scan_relocate = chs.relocate;
+      sin.scan_relocate_seq = chs.relocate_seq;
       sin.in_session = in_session;
       sin.key_mismatch = vrx.key_mismatch();
       sin.key_fp = key_fp;

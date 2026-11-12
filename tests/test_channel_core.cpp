@@ -15,6 +15,7 @@
 #include "fake_link_card.h"
 #include "hop_blank.h"
 #include "mabur/rc_proto.h"
+#include "mabur/uep_encoder.h"
 #include "nhm_busy.h"
 #include "recording_sink.h"
 #include "vrx_cfg.h"
@@ -1864,6 +1865,169 @@ TEST(cal_measure_round_ranks_the_set_once) {
   CHECK(*p.measured_best() == 112);
 }
 
+// ---- scan.members[]: the per-member export table (ChannelCore::snapshot) ----
+
+TEST(members_export_every_member_in_config_order) {
+  Rig g(2, 0);
+  const auto m = g.core->snapshot(0).members;
+  REQUIRE(m.size() == 4);
+  CHECK(m[0].ch == 40 && m[3].ch == 144);
+  CHECK(m[3].pair_lo == std::optional<int>(140) && m[3].pair_hi == std::optional<int>(144));
+  CHECK(!m[1].busy_pct.has_value() && m[1].src.empty() && !m[1].age_ms.has_value());
+  CHECK(m[0].is_op && !m[0].is_pin);
+}
+
+TEST(members_have_no_pair_at_width_20) {
+  Rig g(2, 0, false, 0, {36, 40, 44, 48}, 20);
+  for (const auto& e : g.core->snapshot(0).members) CHECK(!e.pair_lo && !e.pair_hi);
+}
+
+// A boot-scout dwell with an NHM reading lands in the table; newest wins.
+// (Unlinked: the scout dwells on every member, round after round, until the
+// pick freezes a few rounds in -- plenty of room for two dwells on 112.)
+TEST(members_take_the_newest_dwell_reading) {
+  Rig g(2, 0);
+  g.cards[1]->nhm_busy_pct_on[112] = 40;
+  const auto count_112 = [&] {
+    size_t n = 0;
+    for (const auto& [card, d] : g.sink.dwells)
+      if (card == 1 && d.survey.def.primary == 112 && d.busy_valid) ++n;
+    return n;
+  };
+  for (int i = 0; i < 40 && count_112() == 0; ++i) g.tick();
+  REQUIRE(count_112() > 0);
+  {
+    const auto m = g.core->snapshot(0).members;
+    const auto it = std::find_if(m.begin(), m.end(), [](const auto& e) { return e.ch == 112; });
+    REQUIRE(it != m.end());
+    CHECK(it->src == "scan");
+    CHECK(it->busy_pct == std::optional<double>(40.0));
+    CHECK(it->blocked);   // 40 >= radio.scan.busy.blocked_pct (30)
+  }
+  g.cards[1]->nhm_busy_pct_on[112] = 5;
+  const size_t had = count_112();
+  for (int i = 0; i < 40 && count_112() == had; ++i) g.tick();
+  REQUIRE(count_112() > had);
+  const auto m = g.core->snapshot(0).members;
+  const auto it = std::find_if(m.begin(), m.end(), [](const auto& e) { return e.ch == 112; });
+  REQUIRE(it != m.end());
+  CHECK(it->busy_pct == std::optional<double>(5.0));
+  CHECK(!it->blocked);
+}
+
+// Linked: op's figure is the window's foreign busy, min across cards (own
+// airtime is 0 here -- live_tick never books any).
+TEST(members_op_reads_the_verdict_window_min_across_cards) {
+  Rig g(2, 0); freeze_auto(g);
+  link_up(g);
+  g.cards[0]->nhm_busy_pct_on[40] = 25;
+  g.cards[1]->nhm_busy_pct_on[40] = 60;
+  for (int i = 0; i < 2 * (g.cfg.hop.window_ms / 10) + 30; ++i) live_tick(g);
+  const auto m = g.core->snapshot(0).members;
+  const auto it = std::find_if(m.begin(), m.end(), [](const auto& e) { return e.ch == 40; });
+  REQUIRE(it != m.end());
+  CHECK(it->src == "op");
+  CHECK(it->busy_pct == std::optional<double>(25.0));
+}
+
+// Op's figure belongs to the channel it was read on: once the link moves,
+// the new op's row is unmeasured until a window on it lands, never the old
+// channel's figure passed off as fresh.
+TEST(members_op_figure_is_not_carried_onto_a_new_op) {
+  Rig g(2, 0); freeze_auto(g);
+  link_up(g);
+  g.cards[0]->nhm_busy_pct_on[40] = 25;
+  g.cards[1]->nhm_busy_pct_on[40] = 25;
+  for (int i = 0; i < 2 * (g.cfg.hop.window_ms / 10) + 30; ++i) live_tick(g);
+  const auto member = [&](uint8_t ch) {
+    const auto m = g.core->snapshot(0).members;
+    const auto it = std::find_if(m.begin(), m.end(), [ch](const auto& e) { return e.ch == ch; });
+    REQUIRE(it != m.end());
+    return *it;
+  };
+  REQUIRE(member(40).busy_pct == std::optional<double>(25.0));
+  REQUIRE(!g.core->set_pin(112).has_value());
+  for (int i = 0; i < 20 && !g.sink.has_line("relocate 40 -> 112 placed"); ++i) live_tick(g);
+  REQUIRE(g.sink.has_line("maburgs channel: relocate 40 -> 112 placed (pin)"));
+  const auto rcf = pump_rcf(g);
+  REQUIRE(rcf.has_value() && rcf->hop_ch == 112);
+  g.core->note_video(112);
+  for (int i = 0; i < 5 && !g.sink.has_hop("lead_confirm"); ++i) g.tick(true);
+  REQUIRE(g.sink.has_hop("lead_confirm"));
+  REQUIRE(g.core->op() == 112);
+  {
+    const auto m112 = member(112);
+    CHECK(m112.is_op);
+    CHECK(!m112.busy_pct.has_value());   // 40's figure is not 112's
+    CHECK(m112.src.empty());
+  }
+  g.cards[0]->nhm_busy_pct_on[112] = 10;
+  g.cards[1]->nhm_busy_pct_on[112] = 10;
+  for (int i = 0; i < 2 * (g.cfg.hop.window_ms / 10) + 30; ++i) live_tick(g);
+  const auto m112 = member(112);
+  CHECK(m112.src == "op");
+  CHECK(m112.busy_pct == std::optional<double>(10.0));
+}
+
+// The in-flight dwells and a relay sweep feed the table too.
+TEST(members_take_inflight_and_relay_dwells) {
+  Rig g(2, 0); freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 10; ++i) g.tick(true, false, 0);
+  g.cards[1]->nhm_busy_pct_on[64] = 45;   // the in-flight scout's next candidate (op=40 skipped)
+  g.core->run_inflight_step();
+  g.tick(true, false, 0);                 // drain
+  {
+    const auto m = g.core->snapshot(0).members;
+    const auto it = std::find_if(m.begin(), m.end(), [](const auto& e) { return e.ch == 64; });
+    REQUIRE(it != m.end());
+    CHECK(it->src == "scan");
+    CHECK(it->busy_pct == std::optional<double>(45.0));
+  }
+  Rig h(0, 1); freeze_auto(h);
+  for (int i = 0; i < 5; ++i) h.tick(true);
+  interfere(h, occ_lead(h) + 3);
+  REQUIRE(h.cards[0]->sweeps.size() == 1);
+  h.cards[0]->pending_result = sweep_of({{64, 20}, {112, 1}, {144, 4}});
+  interfere(h, occ_lead(h) + 3);
+  REQUIRE(!h.core->sweep_pending());
+  const auto hm = h.core->snapshot(0).members;
+  const auto it112 = std::find_if(hm.begin(), hm.end(), [](const auto& e) { return e.ch == 112; });
+  REQUIRE(it112 != hm.end());
+  CHECK(it112->src == "scan");
+  CHECK(it112->busy_pct == std::optional<double>(5.0));   // 1 ms busy / 20 ms active
+}
+
+// A retune that fails never lands a reading, even with a busy % programmed
+// for it -- the table keeps that member null.
+TEST(members_skip_a_failed_retune_dwell) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  g.cards[0]->nhm_arm_ok = true;
+  g.cards[0]->nhm_any_period = true;
+  g.cards[0]->nhm_read.valid = true;
+  g.cards[0]->nhm_read.buckets[11] = 25;   // op's NHM busy: 25 % (below blocked_pct)
+  g.cards[0]->nhm_read.buckets[0] = 75;
+  g.cards[1]->refuse_ch = 112;
+  g.cards[1]->nhm_busy_pct_on[112] = 40;   // would land here if the retune hadn't failed
+  g.cards[1]->nhm_busy_pct_on[64] = 25;
+  g.cards[1]->nhm_busy_pct_on[144] = 5;
+  for (int i = 0; i < 30; ++i) live_tick(g, 200);
+  ChannelCorePicker p(*g.core);
+  p.begin_measure(g.clk.ms);
+  for (int i = 0; i < 50 && !p.measured_best(); ++i) live_tick(g, 200);
+  REQUIRE(p.measured_best().has_value());
+  const auto m = g.core->snapshot(0).members;
+  const auto it112 = std::find_if(m.begin(), m.end(), [](const auto& e) { return e.ch == 112; });
+  REQUIRE(it112 != m.end());
+  CHECK(!it112->busy_pct.has_value());
+  CHECK(it112->src.empty());
+  const auto it64 = std::find_if(m.begin(), m.end(), [](const auto& e) { return e.ch == 64; });
+  REQUIRE(it64 != m.end());
+  CHECK(it64->busy_pct == std::optional<double>(25.0));
+}
+
 // The same round over a quiet-ish op: a candidate must beat op by
 // pick_margin_pct busy points, so a close-but-not-clear op stays the
 // target.
@@ -2504,6 +2668,311 @@ TEST(set_auto_while_unlinked_one_card_reruns_the_prelude_and_commits) {
   CHECK(g.core->pick_open());                   // the one-card pick stays open after the prelude
 }
 
+// ---- scan.relocate / scan.relocate_seq: the live pin's own outcome
+// (ChannelCore's PinReloc, exported through ChannelSnapshot::relocate) ----
+
+TEST(pin_reloc_lands_on_verify_pass) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  CHECK(!g.core->snapshot(0).relocate.has_value());
+  CHECK(g.core->snapshot(0).relocate_seq == 0);
+  REQUIRE(!g.core->set_pin(112).has_value());
+  {
+    const auto r = g.core->snapshot(0).relocate;
+    REQUIRE(r.has_value());
+    CHECK(r->state == "pending");
+    CHECK(r->ch == 112);
+    CHECK(r->why.empty());
+  }
+  CHECK(g.core->snapshot(0).relocate_seq == 1);
+  for (int i = 0; i < 20 && !g.sink.has_line("relocate 40 -> 112 placed"); ++i) live_tick(g);
+  REQUIRE(g.sink.has_line("maburgs channel: relocate 40 -> 112 placed (pin)"));
+  CHECK(g.core->snapshot(0).relocate->state == "pending");   // ordered, not yet confirmed
+  const auto rcf = pump_rcf(g);
+  REQUIRE(rcf.has_value() && rcf->hop_ch == 112);
+  g.core->note_video(112);
+  for (int i = 0; i < 5 && !g.sink.has_hop("verify_pass"); ++i) g.tick(true);
+  REQUIRE(g.sink.has_hop("verify_pass"));
+  const auto r = g.core->snapshot(0).relocate;
+  REQUIRE(r.has_value());
+  CHECK(r->state == "landed");
+  CHECK(r->ch == 112);
+  CHECK(r->why.empty());
+  CHECK(g.core->snapshot(0).relocate_seq == 1);   // bumped once, by set_pin only
+  CHECK(g.sink.has_line("maburgs channel: pin relocate to 112 landed"));
+}
+
+// A session lost between the Confirm and its VerifyPass leaves
+// HopController idle without ever handing back the VerifyPass action
+// (step_cal_'s comment on the calibration sibling); the pin's own
+// confirmed-then-Idle check (step_pin_reloc_) still calls it landed.
+TEST(pin_reloc_lands_when_confirmed_then_idle) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  REQUIRE(!g.core->set_pin(112).has_value());
+  for (int i = 0; i < 20 && !g.sink.has_line("relocate 40 -> 112 placed"); ++i) live_tick(g);
+  REQUIRE(g.sink.has_line("maburgs channel: relocate 40 -> 112 placed (pin)"));
+  const auto rcf = pump_rcf(g);
+  REQUIRE(rcf.has_value() && rcf->hop_ch == 112);
+  g.core->note_video(112);
+  g.tick(true);
+  REQUIRE(g.sink.has_hop("lead_confirm"));
+  CHECK(!g.sink.has_hop("verify_pass"));
+  g.tick(false);                 // session lost between the confirm and its verify_pass
+  const auto r = g.core->snapshot(0).relocate;
+  REQUIRE(r.has_value());
+  CHECK(r->state == "landed");
+  CHECK(r->ch == 112);
+  CHECK(g.core->op() == 112);
+}
+
+TEST(pin_reloc_withdrawn_when_the_drone_does_not_follow) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  REQUIRE(!g.core->set_pin(112).has_value());
+  for (int i = 0; i < 20 && !g.sink.has_line("relocate 40 -> 112 placed"); ++i) live_tick(g);
+  REQUIRE(g.sink.has_line("maburgs channel: relocate 40 -> 112 placed (pin)"));
+  for (int i = 0; i < g.cfg.hop.confirm_ms / 10 + 20 && !g.sink.has_hop("withdraw"); ++i) live_tick(g);
+  REQUIRE(g.sink.has_hop("withdraw"));
+  const auto r = g.core->snapshot(0).relocate;
+  REQUIRE(r.has_value());
+  CHECK(r->state == "failed");
+  CHECK(r->why == "withdrawn");
+  CHECK(r->ch == 112);
+  CHECK(g.core->op() == 40);
+  CHECK(g.core->snapshot(0).relocate_seq == 1);
+}
+
+// Session lost while the order is still Ordered (before its Confirm):
+// HopController::on_session_lost returns Withdraw, which the InFlight
+// branch in dispatch_hop_action_ settles on the spot -- the trailing
+// "did not land" BootPick line (checked in
+// set_pin_relocate_lost_with_the_session_stays_on_op) is bookkeeping after
+// the fact, not what settles this.
+TEST(pin_reloc_fails_on_session_lost_after_the_order) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  REQUIRE(!g.core->set_pin(112).has_value());
+  for (int i = 0; i < 20 && !g.sink.has_line("relocate 40 -> 112 placed"); ++i) live_tick(g);
+  REQUIRE(g.sink.has_line("maburgs channel: relocate 40 -> 112 placed (pin)"));
+  g.tick(false);                              // session lost before the confirm
+  REQUIRE(g.sink.has_hop("session_lost"));
+  const auto r = g.core->snapshot(0).relocate;
+  REQUIRE(r.has_value());
+  CHECK(r->state == "failed");
+  CHECK(r->why == "withdrawn");
+  CHECK(g.core->op() == 40);
+  CHECK(g.core->snapshot(0).relocate_seq == 1);
+  const auto placed_count = [&] {
+    return std::count_if(g.sink.lines.begin(), g.sink.lines.end(), [](const std::string& l) {
+      return l.find("relocate 40 -> 112 placed") != std::string::npos;
+    });
+  };
+  REQUIRE(placed_count() == 1);
+  for (int i = 0; i < 20; ++i) g.tick(false);
+  // relink: want already follows op (BootPick's own accept_op), so
+  // relocate_due finds nothing left to do.
+  for (int i = 0; i < 20; ++i) g.tick(true);
+  CHECK(placed_count() == 1);   // no retry behind it
+  CHECK(g.core->op() == 40);
+}
+
+TEST(pin_refused_at_the_hop_cap_changes_nothing) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  ChannelCorePicker p(*g.core);
+  REQUIRE(g.cfg.hop.max_hops_per_min == 4);
+  cal_move(g, p, 112);
+  cal_move(g, p, 144);
+  cal_move(g, p, 64);
+  cal_move(g, p, 40);
+  CHECK(!g.core->snapshot(0).relocate.has_value());
+  const uint64_t seq0 = g.core->snapshot(0).relocate_seq;
+  CHECK(g.core->set_pin(112) == std::optional<std::string>("hop cap"));
+  CHECK(!g.core->snapshot(0).relocate.has_value());
+  CHECK(g.core->snapshot(0).relocate_seq == seq0);
+}
+
+// BootPick's own "did not land" bookkeeping line follows a failed relocate
+// one tick late (its internal relocating_/landed_ resolve against
+// HopController's state, not against pin_reloc_); by the time it logs, the
+// withdraw above has already settled pin_reloc_ to Settled, and the
+// AcceptOp guard ("while Waiting/InFlight") must leave that outcome alone
+// rather than re-stamp it "did not land".
+TEST(pin_reloc_outcome_not_restamped_by_accept_op) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  REQUIRE(!g.core->set_pin(112).has_value());
+  for (int i = 0; i < 20 && !g.sink.has_line("relocate 40 -> 112 placed"); ++i) live_tick(g);
+  REQUIRE(g.sink.has_line("maburgs channel: relocate 40 -> 112 placed (pin)"));
+  for (int i = 0; i < g.cfg.hop.confirm_ms / 10 + 20 && !g.sink.has_hop("withdraw"); ++i) live_tick(g);
+  REQUIRE(g.sink.has_hop("withdraw"));
+  REQUIRE(g.core->snapshot(0).relocate.has_value());
+  CHECK(g.core->snapshot(0).relocate->why == "withdrawn");
+  const uint64_t seq_after_withdraw = g.core->snapshot(0).relocate_seq;
+  for (int i = 0; i < 20 && !g.sink.has_line("did not land"); ++i) live_tick(g);
+  REQUIRE(g.sink.has_line("relocation to 112 did not land; staying on 40"));
+  const auto r = g.core->snapshot(0).relocate;
+  REQUIRE(r.has_value());
+  CHECK(r->state == "failed");
+  CHECK(r->why == "withdrawn");           // not re-stamped "did not land"
+  CHECK(g.core->snapshot(0).relocate_seq == seq_after_withdraw);
+}
+
+TEST(pin_reloc_stays_pending_across_a_link_loss_before_the_order) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  REQUIRE(!g.core->set_pin(112).has_value());
+  for (int i = 0; i < 50; ++i) g.tick(false);   // the link drops before BootPick places the order
+  const auto r = g.core->snapshot(0).relocate;
+  REQUIRE(r.has_value());
+  CHECK(r->state == "pending");
+  CHECK(r->ch == 112);
+  for (int i = 0; i < 20 && !g.sink.has_line("relocate 40 -> 112 placed"); ++i) live_tick(g);
+  REQUIRE(g.sink.has_line("maburgs channel: relocate 40 -> 112 placed (pin)"));
+  CHECK(g.core->snapshot(0).relocate->state == "pending");
+  const auto rcf = pump_rcf(g);
+  REQUIRE(rcf.has_value() && rcf->hop_ch == 112);
+  g.core->note_video(112);
+  for (int i = 0; i < 5 && !g.sink.has_hop("verify_pass"); ++i) g.tick(true);
+  REQUIRE(g.sink.has_hop("verify_pass"));
+  CHECK(g.core->snapshot(0).relocate->state == "landed");
+  CHECK(g.core->snapshot(0).relocate_seq == 1);
+}
+
+// A pin whose relocate never left (the link lost first) settles landed
+// when the link comes back already on the pinned channel: the drone is
+// found there (link_found), so there is no relocate left to place and
+// nothing else would ever settle it.
+TEST(pin_reloc_lands_when_the_link_comes_back_on_the_pin) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  REQUIRE(!g.core->set_pin(112).has_value());
+  for (int i = 0; i < 50; ++i) g.tick(false);   // the link drops before BootPick places the order
+  REQUIRE(g.core->snapshot(0).relocate.has_value());
+  REQUIRE(g.core->snapshot(0).relocate->state == "pending");
+  REQUIRE(g.core->op() == 40);
+  g.core->on_rc_body(112);                      // the drone answers on the pin
+  mabur::rc::DiscAck ack; ack.vrx_nonce = g.vrx->rz_nonce(); ack.vtx_nonce = 1;
+  ack.chip_caps = mabur::rc::CAP_FRAME_WIRE; ack.agreed_channel = 112; ack.seq = 1;
+  g.core->on_session_opened(ack, static_cast<double>(g.clk.ms));
+  REQUIRE(g.core->op() == 112);
+  link_up(g);
+  for (int i = 0; i < 20; ++i) live_tick(g);
+  const auto r = g.core->snapshot(0).relocate;
+  REQUIRE(r.has_value());
+  CHECK(r->state == "landed");
+  CHECK(r->ch == 112);
+  CHECK(r->why.empty());
+  CHECK(g.core->snapshot(0).relocate_seq == 1);
+  CHECK(!g.sink.has_line("placed (pin)"));
+  CHECK(!g.sink.has_hop("relocate"));
+  CHECK(g.core->op() == 112);
+  CHECK(g.sink.has_line("maburgs channel: pin relocate to 112 landed"));
+}
+
+TEST(pin_reloc_null_when_unlinked_or_already_there) {
+  Rig g(2, 0);
+  CHECK(!g.core->snapshot(0).relocate.has_value());
+  CHECK(g.core->snapshot(0).relocate_seq == 0);
+  CHECK(!g.core->set_pin(112).has_value());         // unlinked: op moves at once, no relocate
+  CHECK(!g.core->snapshot(0).relocate.has_value());
+  CHECK(g.core->snapshot(0).relocate_seq == 1);
+  CHECK(g.core->op() == 112);
+
+  Rig h(2, 0, /*pinned=*/true, 64);                 // already pinned there
+  link_up(h);
+  for (int i = 0; i < 5; ++i) live_tick(h);
+  CHECK(!h.core->snapshot(0).relocate.has_value());
+  const uint64_t seq0 = h.core->snapshot(0).relocate_seq;
+  CHECK(!h.core->set_pin(64).has_value());          // already there: a pure no-op
+  CHECK(!h.core->snapshot(0).relocate.has_value());
+  CHECK(h.core->snapshot(0).relocate_seq == seq0 + 1);
+
+  // A failed relocate's outcome ("withdrawn") must not survive a pin back
+  // onto the channel the link is already on: ch == op is Off either way.
+  Rig j(2, 0);
+  freeze_auto(j);
+  link_up(j);
+  for (int i = 0; i < 5; ++i) live_tick(j);
+  REQUIRE(!j.core->set_pin(112).has_value());
+  for (int i = 0; i < 20 && !j.sink.has_line("relocate 40 -> 112 placed"); ++i) live_tick(j);
+  REQUIRE(j.sink.has_line("maburgs channel: relocate 40 -> 112 placed (pin)"));
+  for (int i = 0; i < j.cfg.hop.confirm_ms / 10 + 20 && !j.sink.has_hop("withdraw"); ++i) live_tick(j);
+  REQUIRE(j.sink.has_hop("withdraw"));
+  REQUIRE(j.core->snapshot(0).relocate.has_value());
+  CHECK(j.core->snapshot(0).relocate->why == "withdrawn");
+  const uint64_t seq_failed = j.core->snapshot(0).relocate_seq;
+  // BootPick's own relocating_ latch clears a tick after the withdraw
+  // (its own "did not land" bookkeeping); until then it still refuses a
+  // new pin as "relocate in flight".
+  for (int i = 0; i < 20 && j.core->pin_refusal(40).has_value(); ++i) live_tick(j);
+  REQUIRE(!j.core->pin_refusal(40).has_value());
+  CHECK(!j.core->set_pin(40).has_value());           // pin back onto op: drops the stale outcome
+  CHECK(!j.core->snapshot(0).relocate.has_value());
+  CHECK(j.core->snapshot(0).relocate_seq == seq_failed + 1);
+
+  // A landed relocate's outcome ("landed") must not survive a re-pin to the
+  // same, already-reached channel either.
+  Rig k(2, 0);
+  freeze_auto(k);
+  link_up(k);
+  for (int i = 0; i < 5; ++i) live_tick(k);
+  REQUIRE(!k.core->set_pin(112).has_value());
+  for (int i = 0; i < 20 && !k.sink.has_line("relocate 40 -> 112 placed"); ++i) live_tick(k);
+  REQUIRE(k.sink.has_line("maburgs channel: relocate 40 -> 112 placed (pin)"));
+  const auto rcf = pump_rcf(k);
+  REQUIRE(rcf.has_value() && rcf->hop_ch == 112);
+  k.core->note_video(112);
+  for (int i = 0; i < 5 && !k.sink.has_hop("verify_pass"); ++i) k.tick(true);
+  REQUIRE(k.sink.has_hop("verify_pass"));
+  REQUIRE(k.core->snapshot(0).relocate.has_value());
+  CHECK(k.core->snapshot(0).relocate->state == "landed");
+  CHECK(k.core->op() == 112);
+  const uint64_t seq_landed = k.core->snapshot(0).relocate_seq;
+  // Same latch, quietly cleared on success (no bookkeeping line to wait on).
+  for (int i = 0; i < 20 && k.core->pin_refusal(112).has_value(); ++i) live_tick(k);
+  REQUIRE(!k.core->pin_refusal(112).has_value());
+  CHECK(!k.core->set_pin(112).has_value());          // re-pin onto the channel already reached
+  CHECK(!k.core->snapshot(0).relocate.has_value());
+  CHECK(k.core->snapshot(0).relocate_seq == seq_landed + 1);
+}
+
+TEST(pin_reloc_cleared_by_set_auto_and_replaced_by_set_pin) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  REQUIRE(!g.core->set_pin(112).has_value());
+  const uint64_t seq_after_pin = g.core->snapshot(0).relocate_seq;
+  REQUIRE(g.core->snapshot(0).relocate.has_value());
+  g.core->set_auto();
+  CHECK(!g.core->snapshot(0).relocate.has_value());
+  CHECK(g.core->snapshot(0).relocate_seq == seq_after_pin + 1);
+  REQUIRE(!g.core->set_pin(144).has_value());
+  const auto r = g.core->snapshot(0).relocate;
+  REQUIRE(r.has_value());
+  CHECK(r->state == "pending");
+  CHECK(r->ch == 144);
+  CHECK(g.core->snapshot(0).relocate_seq == seq_after_pin + 2);
+}
+
 // ---- pin_refusal: set_pin's answer, asked without placing anything ----
 
 // pin_refusal(ch) answers what set_pin(ch) would, and changes nothing; the
@@ -2787,6 +3256,841 @@ TEST(set_width_moves_the_hop_ranker_to_the_new_width) {
   CHECK(g.core->hop_ranker().width_mhz() == 40);
   g.core->set_width(20);
   CHECK(g.core->hop_ranker().width_mhz() == 20);
+}
+
+// ---- the observe lease (the goggles' channel picker; `observe <ms>`) ----
+
+// Live ticks for `ms` of rig time, renewing the lease with observe(3000)
+// every 1000 ms the way the player does while its picker stays open.
+static void lease_ticks(Rig& g, uint64_t ms, bool renew = true) {
+  const uint64_t end = g.clk.ms + ms;
+  uint64_t last = g.clk.ms;
+  while (g.clk.ms < end) {
+    if (renew && g.clk.ms - last >= 1000) { g.core->observe(3000); last = g.clk.ms; }
+    live_tick(g);
+  }
+}
+
+// How many lease dwells on the scout card landed on each member since `from`.
+static std::vector<int> dwell_counts(const Rig& g, size_t from, const std::vector<uint8_t>& chs) {
+  std::vector<int> n(chs.size(), 0);
+  for (size_t i = from; i < g.sink.dwells.size(); ++i) {
+    if (g.sink.dwells[i].first != 1) continue;
+    for (size_t k = 0; k < chs.size(); ++k)
+      if (g.sink.dwells[i].second.survey.def.primary == chs[k]) ++n[k];
+  }
+  return n;
+}
+
+// Auto, two cards, linked, pick closed: rounds run back to back, every
+// member but op once per round at the link width, and nothing moves.
+TEST(lease_two_card_rounds_run_back_to_back_auto) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 10; ++i) live_tick(g);
+  const size_t d0 = g.sink.dwells.size();
+  CHECK(g.core->observe(3000) == LeaseState::TwoCard);
+  CHECK(g.core->observing());
+  lease_ticks(g, 2000);
+  const auto n = dwell_counts(g, d0, {40, 64, 112, 144});
+  CHECK(n[0] == 0);                                  // op never dwelt on
+  CHECK(n[1] >= 2 && n[2] >= 2 && n[3] >= 2);        // two rounds inside 2 s
+  for (size_t i = d0; i < g.sink.dwells.size(); ++i) {
+    CHECK(g.sink.dwells[i].first == 1);
+    CHECK(g.sink.dwells[i].second.survey.def.width == CHANNEL_WIDTH_40);
+    CHECK(g.sink.dwells[i].second.survey.observe_ms > 0);
+  }
+  CHECK(!g.sink.has_hop("relocate"));
+  CHECK(!g.sink.has_hop("order"));
+  CHECK(g.core->op() == 40);
+  CHECK(g.sink.has_line("maburgs channel: observe lease 3000 (two_card)"));
+}
+
+// Pinned: the lease freezes the scout and turns measuring on for its
+// rounds, never unpins, and hands the card back once it lapses.
+TEST(lease_two_card_rounds_run_pinned) {
+  Rig g(2, 0, /*pinned=*/true, 40);
+  link_up(g);
+  for (int i = 0; i < 10; ++i) live_tick(g);
+  const size_t d0 = g.sink.dwells.size();
+  CHECK(g.core->observe(3000) == LeaseState::TwoCard);
+  lease_ticks(g, 2000);
+  const auto n = dwell_counts(g, d0, {40, 64, 112, 144});
+  CHECK(n[0] == 0);
+  CHECK(n[1] >= 1 && n[2] >= 1 && n[3] >= 1);
+  for (size_t i = d0; i < g.sink.dwells.size(); ++i) {
+    CHECK(g.sink.dwells[i].first == 1);
+    CHECK(g.sink.dwells[i].second.survey.def.width == CHANNEL_WIDTH_40);
+  }
+  CHECK(g.core->pinned());
+  CHECK(g.core->op() == 40);
+  // No more renewals: the lease lapses, the open round ends, the card parks.
+  lease_ticks(g, 4000, /*renew=*/false);
+  CHECK(!g.core->observing());
+  CHECK(!g.core->scout_owns_card(1));
+  CHECK(g.cards[1]->ch == 40);
+  // A link loss later: the pinned search dwells on the members, no observe.
+  const size_t d1 = g.sink.dwells.size();
+  for (int i = 0; i < 1200 && g.sink.dwells.size() < d1 + 4; ++i) g.tick(false);
+  REQUIRE(g.sink.dwells.size() >= d1 + 4);
+  for (size_t i = d1; i < g.sink.dwells.size(); ++i)
+    CHECK(g.sink.dwells[i].second.survey.observe_ms == 0);
+}
+
+TEST(lease_lapses_without_renewal) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 10; ++i) live_tick(g);
+  REQUIRE(g.core->observe(3000) == LeaseState::TwoCard);
+  lease_ticks(g, 3500, /*renew=*/false);
+  CHECK(!g.core->observing());
+  CHECK(g.sink.has_line("maburgs channel: observe lease lapsed"));
+  for (int i = 0; i < 20 && g.core->scout_owns_card(1); ++i) live_tick(g);
+  CHECK(!g.core->scout_owns_card(1));                 // the open round finished
+  const size_t d = g.sink.dwells.size();
+  lease_ticks(g, 2000, /*renew=*/false);
+  CHECK(g.sink.dwells.size() == d);                    // no new round
+  CHECK(!g.core->scout_owns_card(1));
+  size_t lapsed = 0;
+  for (const auto& l : g.sink.lines) if (l.find("observe lease lapsed") != std::string::npos) ++lapsed;
+  CHECK(lapsed == 1);
+}
+
+// A lease that runs out mid-round lets that round finish: every member
+// but op still gets its dwell. (Only a release -- observe 0, a pin, auto,
+// a calibration pick -- cancels the round.)
+TEST(lease_lapse_mid_round_lets_the_round_finish) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 10; ++i) live_tick(g);
+  const size_t d0 = g.sink.dwells.size();
+  REQUIRE(g.core->observe(500) == LeaseState::TwoCard);   // lapses after the round's first dwell
+  live_tick(g);
+  REQUIRE(g.core->scout_owns_card(1));
+  for (int i = 0; i < 20 && g.core->scout_owns_card(1); ++i) live_tick(g);
+  CHECK(!g.core->observing());
+  CHECK(!g.core->scout_owns_card(1));
+  const auto n = dwell_counts(g, d0, {40, 64, 112, 144});
+  CHECK(n[0] == 0);
+  CHECK(n[1] == 1 && n[2] == 1 && n[3] == 1);
+}
+
+TEST(lease_observe_zero_releases_on_the_next_tick) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 10; ++i) live_tick(g);
+  REQUIRE(g.core->observe(3000) == LeaseState::TwoCard);
+  for (int i = 0; i < 3; ++i) live_tick(g);
+  REQUIRE(g.core->scout_owns_card(1));
+  CHECK(g.core->observe(0) == LeaseState::None);
+  CHECK(!g.core->observing());
+  live_tick(g);
+  CHECK(!g.core->scout_owns_card(1));
+  const size_t d = g.sink.dwells.size();
+  for (int i = 0; i < 50; ++i) live_tick(g);
+  CHECK(g.sink.dwells.size() == d);
+}
+
+TEST(lease_clamps_to_500_and_5000) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  g.core->observe(100);
+  g.clk.ms += 499;
+  CHECK(g.core->observing());
+  g.clk.ms += 2;
+  CHECK(!g.core->observing());
+  g.core->observe(60000);
+  g.clk.ms += 4999;
+  CHECK(g.core->observing());
+  g.clk.ms += 2;
+  CHECK(!g.core->observing());
+}
+
+// A round starting on the tick BootPick hands out a relocate would hide
+// that relocate from the controller (BootPick has spent its one try).
+TEST(lease_round_never_starts_with_a_relocate_due) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 10; ++i) live_tick(g);
+  REQUIRE(!g.core->set_pin(112).has_value());
+  REQUIRE(g.core->observe(3000) == LeaseState::TwoCard);
+  for (int i = 0; i < 20 && !g.sink.has_line("relocate 40 -> 112 placed"); ++i) {
+    live_tick(g);
+    CHECK(!g.core->scout_owns_card(1));
+  }
+  REQUIRE(g.sink.has_line("maburgs channel: relocate 40 -> 112 placed (pin)"));
+  CHECK(!g.core->scout_owns_card(1));
+  const auto rcf = pump_rcf(g);
+  CHECK(!g.core->scout_owns_card(1));
+  REQUIRE(rcf.has_value() && rcf->hop_ch == 112);
+  g.core->note_video(112);
+  for (int i = 0; i < 5 && !g.sink.has_line("pin relocate to 112 landed"); ++i) {
+    g.core->observe(3000);
+    g.tick(true);
+    if (!g.sink.has_line("pin relocate to 112 landed")) CHECK(!g.core->scout_owns_card(1));
+  }
+  REQUIRE(g.sink.has_line("maburgs channel: pin relocate to 112 landed"));
+  CHECK(g.core->op() == 112);
+}
+
+TEST(lease_set_pin_cancels_the_round_and_the_pin_relocates) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 10; ++i) live_tick(g);
+  REQUIRE(g.core->observe(3000) == LeaseState::TwoCard);
+  for (int i = 0; i < 3; ++i) live_tick(g);
+  REQUIRE(g.core->scout_owns_card(1));
+  REQUIRE(!g.core->set_pin(112).has_value());
+  CHECK(!g.core->observing());
+  CHECK(g.core->snapshot(0).relocate->state == "pending");
+  live_tick(g);                                          // the scout parks on its next step
+  CHECK(!g.core->scout_owns_card(1));
+  for (int i = 0; i < 20 && !g.sink.has_line("relocate 40 -> 112 placed"); ++i) live_tick(g);
+  REQUIRE(g.sink.has_line("maburgs channel: relocate 40 -> 112 placed (pin)"));
+  CHECK(g.core->snapshot(0).relocate->state == "pending");
+  CHECK(g.core->pinned());
+}
+
+TEST(lease_none_while_calibration_owns_the_scout) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 10; ++i) live_tick(g);
+  g.tick(true, /*cal=*/true);
+  CHECK(g.core->lease_state() == LeaseState::None);
+  CHECK(g.core->observe(3000) == LeaseState::None);
+  g.core->observe(0);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  // A calibration pick arriving while a lease round runs ends the lease.
+  REQUIRE(g.core->observe(3000) == LeaseState::TwoCard);
+  for (int i = 0; i < 3; ++i) live_tick(g);
+  REQUIRE(g.core->scout_owns_card(1));
+  ChannelCorePicker p(*g.core);
+  p.begin_measure(g.clk.ms);
+  CHECK(!g.core->observing());
+  CHECK(g.core->lease_state() == LeaseState::None);   // its round is waiting
+  for (int i = 0; i < 50 && !p.measured_best(); ++i) {
+    g.core->observe(3000);                             // the picker still renewing: no effect
+    live_tick(g);
+  }
+  CHECK(g.sink.has_line("calibration measure round on card 1"));
+  CHECK(p.measured_best().has_value());
+  p.cancel();
+}
+
+TEST(lease_none_while_boot_pick_open) {
+  Rig g(2, 0);
+  g.tick();
+  REQUIRE(g.core->pick_open());
+  CHECK(g.core->observe(3000) == LeaseState::None);
+  const size_t d = g.sink.dwells.size();
+  for (int i = 0; i < 5; ++i) g.tick();
+  REQUIRE(g.core->pick_open());
+  CHECK(g.core->observing());
+  CHECK(!g.sink.has_line("observe lease 3000"));
+  CHECK(g.sink.dwells.size() > d);                     // the boot scout measures anyway
+}
+
+// The measurer the rule names per roster and link state (only TwoCard
+// runs rounds; the others are named for the player).
+TEST(lease_state_follows_the_roster) {
+  {
+    Rig g(2, 0);
+    freeze_auto(g);                                     // unlinked, pick frozen, scout searching
+    CHECK(g.core->lease_state() == LeaseState::Search);
+    link_up(g);
+    live_tick(g);
+    CHECK(g.core->lease_state() == LeaseState::TwoCard);
+  }
+  {
+    Rig g(1, 0);
+    freeze_auto(g);                                     // links too
+    live_tick(g);
+    CHECK(g.core->lease_state() == LeaseState::OneCard);
+  }
+  {
+    Rig g(0, 1);
+    freeze_auto(g);
+    link_up(g);
+    g.cards[0]->is_ready = true;
+    live_tick(g);
+    CHECK(g.core->lease_state() == LeaseState::Relay);
+    g.cards[0]->is_ready = false;
+    CHECK(g.core->lease_state() == LeaseState::None);
+    g.cards[0]->is_ready = true;
+    g.tick(false);
+    CHECK(g.core->lease_state() == LeaseState::None);  // unlinked relay-only: the relay searches
+  }
+  CHECK(std::string(lease_state_name(LeaseState::None)) == "none");
+  CHECK(std::string(lease_state_name(LeaseState::TwoCard)) == "two_card");
+  CHECK(std::string(lease_state_name(LeaseState::OneCard)) == "one_card");
+  CHECK(std::string(lease_state_name(LeaseState::Relay)) == "relay");
+  CHECK(std::string(lease_state_name(LeaseState::Search)) == "search");
+}
+
+// Pinned, a lease round open, then back to auto: auto measures for good,
+// so the lease's own measure switch must not turn it off once the lease
+// is gone -- a calibration round afterwards still measures the set and
+// picks instead of overrunning on a scout that cannot measure.
+TEST(lease_set_auto_keeps_auto_measuring) {
+  Rig g(2, 0, /*pinned=*/true, 40);
+  link_up(g);
+  for (int i = 0; i < 10; ++i) live_tick(g, 200);
+  REQUIRE(g.core->observe(3000) == LeaseState::TwoCard);
+  for (int i = 0; i < 3; ++i) live_tick(g, 200);
+  REQUIRE(g.core->scout_owns_card(1));
+  g.core->set_auto();
+  CHECK(!g.core->observing());
+  for (int i = 0; i < 10; ++i) live_tick(g, 200);
+  REQUIRE(!g.core->scout_owns_card(1));
+  ChannelCorePicker p(*g.core);
+  REQUIRE(p.mode() == CalPicker::Mode::Auto);
+  const size_t picks0 = g.sink.picks.size();
+  p.begin_measure(g.clk.ms);
+  for (int i = 0; i < 50 && !p.measured_best(); ++i) live_tick(g, 200);
+  REQUIRE(p.measured_best().has_value());
+  CHECK(!g.sink.has_line("calibration measure round overran"));
+  CHECK(g.sink.picks.size() == picks0 + 1);
+}
+
+// Pinned: a calibration run starts without a measure round (no
+// begin_cal_measure), so its first tick cancels the open lease round --
+// the run's first sweep must not go out with the scout card off op -- and
+// no round starts while it runs, renewals or not.
+TEST(lease_round_cancelled_when_a_pinned_calibration_run_starts) {
+  Rig g(2, 0, /*pinned=*/true, 40);
+  link_up(g);
+  for (int i = 0; i < 10; ++i) live_tick(g);
+  REQUIRE(g.core->observe(3000) == LeaseState::TwoCard);
+  for (int i = 0; i < 2; ++i) live_tick(g);              // the round opens, one dwell in
+  REQUIRE(g.core->scout_owns_card(1));
+  const size_t d1 = g.sink.dwells.size();
+  g.tick(true, /*cal=*/true);                             // a second dwell, then the cancel
+  CHECK(!g.core->observing());
+  g.tick(true, /*cal=*/true);
+  CHECK(!g.core->scout_owns_card(1));
+  CHECK(g.cards[1]->ch == 40);
+  CHECK(g.sink.dwells.size() <= d1 + 1);                  // the round's third member never dwelt on
+  const size_t d = g.sink.dwells.size();
+  for (int i = 0; i < 100; ++i) {
+    if (i % 50 == 0) CHECK(g.core->observe(3000) == LeaseState::None);
+    g.tick(true, /*cal=*/true);
+    CHECK(!g.core->scout_owns_card(1));
+  }
+  CHECK(g.sink.dwells.size() == d);
+}
+
+TEST(lease_round_released_when_scout_card_dies) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 10; ++i) live_tick(g);
+  REQUIRE(g.core->observe(3000) == LeaseState::TwoCard);
+  for (int i = 0; i < 3; ++i) live_tick(g);
+  REQUIRE(g.core->scout_owns_card(1));
+  g.cards[1]->is_alive = false;
+  g.core->on_card_died(1);
+  live_tick(g);
+  CHECK(!g.core->scout_owns_card(1));
+  const size_t d = g.sink.dwells.size();
+  lease_ticks(g, 2000);                                 // renewed: no round on a dead card
+  CHECK(g.sink.dwells.size() == d);
+  CHECK(!g.core->scout_owns_card(1));
+}
+
+// ---- the one-card lease: the in-flight burst on the sole USB card ----
+
+// Dwells on `card` since `from`, per member.
+static std::vector<int> card_dwell_counts(const Rig& g, int card, size_t from,
+                                          const std::vector<uint8_t>& chs) {
+  std::vector<int> n(chs.size(), 0);
+  for (size_t i = from; i < g.sink.dwells.size(); ++i) {
+    if (g.sink.dwells[i].first != card) continue;
+    for (size_t k = 0; k < chs.size(); ++k)
+      if (g.sink.dwells[i].second.survey.def.primary == chs[k]) ++n[k];
+  }
+  return n;
+}
+static bool any_call_starts(const FakeCard& c, const std::string& prefix) {
+  for (const auto& s : c.calls) if (s.rfind(prefix, 0) == 0) return true;
+  return false;
+}
+
+// 2500 ms of lease with the player's renewals: exactly three bursts (one
+// per lease_sweep_period_ms, the first at once), each one dwell on every
+// member but op at the link width, the card back on op after every tick,
+// and never a width switch. Auto and pinned alike: the lease never reads
+// reactive_.
+static void one_card_lease_bursts_three_times_in_2500_ms(Rig& g) {
+  for (int i = 0; i < 10; ++i) live_tick(g);
+  for (auto& c : g.cards) c->calls.clear();
+  const size_t d0 = g.sink.dwells.size();
+  REQUIRE(g.core->observe(3000) == LeaseState::OneCard);
+  const uint64_t t0 = g.clk.ms;
+  uint64_t last = t0;
+  while (g.clk.ms < t0 + 2500) {
+    if (g.clk.ms - last >= 1000) { g.core->observe(3000); last = g.clk.ms; }
+    live_tick(g);
+    CHECK(g.cards[0]->ch == 40);
+  }
+  const auto n = card_dwell_counts(g, 0, d0, {40, 64, 112, 144});
+  CHECK(n[0] == 0);                                   // op never dwelt on
+  CHECK(n[1] == 3 && n[2] == 3 && n[3] == 3);
+  for (size_t i = d0; i < g.sink.dwells.size(); ++i) {
+    CHECK(g.sink.dwells[i].first == 0);
+    CHECK(g.sink.dwells[i].second.survey.def.width == CHANNEL_WIDTH_40);
+    CHECK(g.sink.dwells[i].second.survey.observe_ms > 0);
+  }
+  CHECK(!any_call_starts(*g.cards[0], "set_width"));
+  CHECK(g.cards[0]->width_mhz == 40);
+  CHECK(g.core->width_mhz() == 40);
+  CHECK(g.core->op() == 40);
+  CHECK(!g.sink.has_hop("order"));
+  CHECK(g.sink.has_line("maburgs channel: observe lease 3000 (one_card)"));
+}
+
+TEST(lease_one_card_bursts_once_per_period_auto_and_pinned) {
+  {
+    Rig g(1, 0);
+    freeze_auto(g);
+    one_card_lease_bursts_three_times_in_2500_ms(g);
+  }
+  {
+    Rig g(1, 0, /*pinned=*/true, 40);
+    link_up(g);
+    one_card_lease_bursts_three_times_in_2500_ms(g);
+    CHECK(g.core->pinned());
+  }
+}
+
+// The burst pacing belongs to one lease: a lease that lapses and is taken
+// again inside one period bursts on the reopening tick, as the first burst
+// of any lease does.
+TEST(lease_one_card_reopened_within_a_period_bursts_at_once) {
+  Rig g(1, 0);
+  freeze_auto(g);
+  for (int i = 0; i < 10; ++i) live_tick(g);
+  const size_t d0 = g.sink.dwells.size();
+  REQUIRE(g.core->observe(500) == LeaseState::OneCard);
+  const uint64_t t0 = g.clk.ms;
+  live_tick(g);
+  REQUIRE(g.sink.dwells.size() > d0);                      // the first burst, at once
+  for (int i = 0; i < 100 && !g.sink.has_line("observe lease lapsed"); ++i) live_tick(g);
+  REQUIRE(g.sink.has_line("maburgs channel: observe lease lapsed"));
+  REQUIRE(g.clk.ms - t0 < static_cast<uint64_t>(g.cfg.hop.lease_sweep_period_ms));
+  const size_t d1 = g.sink.dwells.size();
+  REQUIRE(g.core->observe(3000) == LeaseState::OneCard);
+  live_tick(g);
+  CHECK(g.sink.dwells.size() > d1);                        // the reopen bursts at once too
+}
+
+// A lease burst's visits never reach HopRanker (the ranking a hop reads is
+// untouched), while its dwells land in scan.members.
+TEST(lease_one_card_feeds_no_hop_ranker_visit) {
+  Rig g(1, 0);
+  freeze_auto(g);
+  g.cards[0]->nhm_busy_pct_on[64] = 8;
+  g.cards[0]->nhm_busy_pct_on[112] = 40;
+  g.cards[0]->nhm_busy_pct_on[144] = 2;
+  for (int i = 0; i < 10; ++i) live_tick(g);
+  const auto before = g.core->hop_ranker().ranking(static_cast<double>(g.clk.ms));
+  const size_t d0 = g.sink.dwells.size();
+  REQUIRE(g.core->observe(3000) == LeaseState::OneCard);
+  live_tick(g);
+  const auto n = card_dwell_counts(g, 0, d0, {40, 64, 112, 144});
+  REQUIRE(n[1] == 1 && n[2] == 1 && n[3] == 1);
+  const auto after = g.core->hop_ranker().ranking(static_cast<double>(g.clk.ms));
+  REQUIRE(after.size() == before.size());
+  for (size_t i = 0; i < after.size(); ++i) {
+    CHECK(after[i].ch == before[i].ch);
+    CHECK(after[i].visits == before[i].visits);
+    CHECK(after[i].ranked == before[i].ranked);
+  }
+  const auto m = g.core->snapshot(0).members;
+  REQUIRE(m.size() == 4);
+  CHECK(m[0].is_op && m[0].src != "scan");
+  CHECK(m[1].src == "scan" && m[1].busy_pct && std::abs(*m[1].busy_pct - 8.0) < 1.0 && !m[1].blocked);
+  CHECK(m[2].src == "scan" && m[2].busy_pct && std::abs(*m[2].busy_pct - 40.0) < 1.0 && m[2].blocked);
+  CHECK(m[3].src == "scan" && m[3].busy_pct && std::abs(*m[3].busy_pct - 2.0) < 1.0);
+}
+
+// The drone's video on card 0 through a real UepEncoder, one frame per
+// 10 ms tick, so the decoder's arrival counters -- the hop verdict's own
+// loss windows -- see what the air delivered.
+struct VideoAir {
+  mabur::UepEncoder enc{bundle().uep_layers(), 1'000'000'000};
+  std::vector<uint8_t> unit = std::vector<uint8_t>(3000, 0x5A);
+  uint64_t t = 0;
+  // One frame; its bodies reach card 0 when `deliver`, else the air lost them.
+  void frame(Rig& g, bool deliver) {
+    if (g.seq_next.size() < g.cards.size()) g.seq_next.resize(g.cards.size(), 100);
+    for (auto& b : enc.add_frame(0, unit.data(), unit.size(), t)) {
+      const uint16_t s = g.seq_next[0]++;
+      if (!deliver) continue;
+      auto m = junk_body(0, s);
+      m.body = std::move(b.body);
+      g.agg.on_rx_body(m);
+    }
+    t += 10;
+  }
+};
+static void video_tick(Rig& g, VideoAir& air) {
+  g.cards[0]->fr.own += 5;
+  g.vrx->on_video(static_cast<double>(g.clk.ms));
+  air.frame(g, true);
+  g.tick(true);
+}
+
+// The burst's air gap (the drone's frames sent while the sole card was off
+// op) never reaches the hop verdict: no window overlapping the burst, nor
+// the one after it, is classified, and the loss windows are blanked past
+// it -- so the verdict, its evidence and the rung-store blank stay where
+// they were. A control rig losing the same frames with no burst shows the
+// verdict does see that much loss.
+TEST(lease_one_card_masks_the_verdict_around_the_burst) {
+  uint64_t lost = 0;
+  {
+    Rig g(1, 0);
+    freeze_auto(g);
+    VideoAir air;
+    for (int i = 0; i < 100; ++i) video_tick(g, air);
+    const auto s0 = g.core->snapshot(0);
+    REQUIRE(s0.hop.verdict == "healthy");
+    REQUIRE(s0.hop.evidence == 0);
+    const int v0 = g.sink.verdicts;
+    const size_t d0 = g.sink.dwells.size();
+    REQUIRE(g.core->observe(3000) == LeaseState::OneCard);
+    const uint64_t t_burst = g.clk.ms;
+    video_tick(g, air);                                  // the burst runs inside this tick
+    REQUIRE(g.sink.dwells.size() == d0 + 3);
+    lost = (g.clk.ms - t_burst - 10) / 10;               // the frames sent during the burst
+    REQUIRE(lost >= 5);
+    for (uint64_t k = 0; k < lost; ++k) air.frame(g, false);
+    g.core->observe(0);                                  // one burst only
+    for (int i = 0; i < 100; ++i) {
+      video_tick(g, air);
+      const auto s = g.core->snapshot(0);
+      CHECK(s.hop.verdict == s0.hop.verdict);
+      CHECK(s.hop.evidence == s0.hop.evidence);
+      CHECK(!s.hop.ref_rung.has_value());
+    }
+    CHECK(g.sink.verdicts == v0);
+    CHECK(g.sink.dwells.size() == d0 + 3);
+  }
+  {
+    Rig g(1, 0);
+    freeze_auto(g);
+    VideoAir air;
+    for (int i = 0; i < 100; ++i) video_tick(g, air);
+    const int v0 = g.sink.verdicts;
+    for (uint64_t k = 0; k < lost; ++k) air.frame(g, false);
+    bool impaired = false;
+    for (int i = 0; i < 100; ++i) {
+      video_tick(g, air);
+      if (g.core->snapshot(0).hop.evidence & kEvImpaired) impaired = true;
+    }
+    CHECK(impaired);
+    CHECK(g.sink.verdicts > v0);
+  }
+}
+
+// Threaded, the sampler stamps a pass before it takes the card's lock, so
+// a pass that starts mid-burst is stamped inside the burst but reads its
+// counters only once the burst lets the card go. That masked record
+// re-seeds the baselines with post-burst counters: the next window's span
+// must start at the burst's end, or its own airtime is spread over the
+// burst too -- own % under-read, foreign over-read, in the verdict and in
+// op's scan.members figure. Half the air is ours here: 50 %.
+TEST(lease_one_card_record_stamped_mid_burst_reseeds_from_the_burst_end) {
+  Rig g(1, 0);
+  freeze_auto(g);
+  auto own_tick = [&] { g.cards[0]->fr.own_air_us += 5000; live_tick(g); };   // 5 of every 10 ms
+  for (int i = 0; i < 30; ++i) own_tick();
+  REQUIRE(g.core->observe(3000) == LeaseState::OneCard);
+  const size_t d0 = g.sink.dwells.size();
+  const uint64_t t_burst = g.clk.ms;
+  own_tick();                                            // the burst runs inside this tick
+  REQUIRE(g.sink.dwells.size() == d0 + 3);
+  const uint64_t end = g.clk.ms - 10;                    // the rig steps 10 ms after the core tick
+  REQUIRE(end >= t_burst + 30);
+  const uint64_t r = g.clk.ms;
+  g.core->run_sampler_step_stamped(t_burst + 1);         // stamped inside the burst, read after it
+  while (g.clk.ms <= r + 160) own_tick();                // the masked record, then the next window
+  const auto e = g.core->snapshot(0).energy[0];
+  REQUIRE(e.has_value() && e->own_air_pct.has_value());
+  CHECK(std::abs(*e->own_air_pct - 50.0) < 0.5);       // stamped-span re-seed: 50 * 160 / (159 + burst)
+}
+
+// A one-card GS in an all-blocked Hold with the hop trigger live (see
+// one_card_burst_in_a_fully_ranked_all_blocked_hold_paces_on_dwell_period):
+// the controller's freshness burst is what runs, and its dwells land in
+// scan.members anyway. A lease opened once the trigger is live adds no
+// burst of its own -- every burst lands exactly where it lands with no
+// lease at all -- including on the window after each freshness burst,
+// where the trigger drops (no NHM reading) and Hold ends for a tick.
+static std::vector<uint64_t> one_card_all_blocked_hold_bursts(bool lease) {
+  Rig g(1, 0);
+  g.cfg.hop.dwell_period_ms = 1000;
+  g.cfg.hop.burst_period_ms = 333;
+  rebuild_with_set(g, g.cfg.radio.channels, 1);
+  freeze_auto(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  NhmBusyRead full; full.valid = true; full.period = nhm_period_4us(g.cfg.hop.dwell_observe_ms);
+  full.buckets[11] = 100;
+  g.cards[0]->nhm_arm_ok = true; g.cards[0]->nhm_read = full;
+  g.cards[0]->nhm_any_period = true;
+  std::vector<uint64_t> bursts;
+  size_t seen = g.sink.dwells.size();
+  for (int w = 0; w < occ_lead(g) + 22; ++w) {
+    for (auto& c : g.cards) c->fr.foreign += 40;
+    for (int i = 0; i < g.cfg.hop.window_ms / 10 + 1; ++i) {
+      const uint64_t t = g.clk.ms;
+      if (lease && !bursts.empty()) CHECK(g.core->observe(3000) == LeaseState::OneCard);
+      g.vrx->on_video(static_cast<double>(t));
+      decode_one(g);
+      g.core->tick(g.in(true));
+      if (g.sink.dwells.size() > seen) {
+        CHECK(g.sink.dwells.size() == seen + 3);         // one burst per tick, never two
+        bursts.push_back(t);
+        seen = g.sink.dwells.size();
+      }
+      g.clk.ms += 10;
+    }
+  }
+  CHECK(g.sink.has_hop("hold_exhausted"));
+  CHECK(std::string(g.core->snapshot(0).hop.state) == "hold");
+  return bursts;
+}
+
+TEST(lease_one_card_never_bursts_while_the_hop_trigger_is_live) {
+  const auto plain = one_card_all_blocked_hold_bursts(false);
+  const auto leased = one_card_all_blocked_hold_bursts(true);
+  REQUIRE(plain.size() >= 4);
+  CHECK(leased == plain);
+  CHECK(leased[1] - leased[0] < 1000);                   // burst 2 ranks the set: burst_period_ms
+  for (size_t i = 2; i < leased.size(); ++i) {
+    CHECK(leased[i] - leased[i - 1] >= 1000);            // fully ranked Hold: dwell_period_ms
+    CHECK(leased[i] - leased[i - 1] < 1000 + 333);
+  }
+}
+
+// A relocate due, placed, riding its RCFs or retuning: no burst until it
+// has landed; then the lease bursts on the new op.
+TEST(lease_one_card_never_bursts_with_a_hop_or_relocate_in_flight) {
+  Rig g(1, 0);
+  freeze_auto(g);
+  for (int i = 0; i < 10; ++i) live_tick(g);
+  REQUIRE(!g.core->set_pin(112).has_value());
+  REQUIRE(g.core->observe(3000) == LeaseState::OneCard);
+  const size_t d0 = g.sink.dwells.size();
+  for (int i = 0; i < 50 && !g.sink.has_line("relocate 40 -> 112 placed"); ++i) {
+    live_tick(g);
+    CHECK(g.sink.dwells.size() == d0);
+  }
+  REQUIRE(g.sink.has_line("maburgs channel: relocate 40 -> 112 placed (pin)"));
+  REQUIRE(std::string(g.core->snapshot(0).hop.state) == "ordered");
+  for (int i = 0; i < 20 && !g.sink.has_hop("one_card_retune"); ++i) {
+    g.core->observe(3000);
+    pump_rcf(g);
+    CHECK(g.sink.dwells.size() == d0);
+  }
+  REQUIRE(g.sink.has_hop("one_card_retune"));
+  for (int i = 0; i < 10; ++i) {
+    g.core->observe(3000);
+    g.tick(true);
+    CHECK(g.sink.dwells.size() == d0);
+  }
+  REQUIRE(g.core->hopping());
+  g.core->note_video(112);
+  for (int i = 0; i < 5 && !g.sink.has_line("pin relocate to 112 landed"); ++i) {
+    g.core->observe(3000);
+    g.tick(true);
+  }
+  REQUIRE(g.sink.has_line("maburgs channel: pin relocate to 112 landed"));
+  REQUIRE(g.core->op() == 112);
+  g.core->observe(3000);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  const auto n = card_dwell_counts(g, 0, d0, {40, 64, 112, 144});
+  CHECK(n[0] == 1 && n[1] == 1 && n[2] == 0 && n[3] == 1);   // landed: one burst, around 112
+  CHECK(g.cards[0]->ch == 112);
+}
+
+TEST(lease_one_card_at_width_20_bursts_without_a_width_switch) {
+  Rig g(1, 0, /*pinned=*/false, 0, {40, 64, 112, 144}, 20);
+  freeze_auto(g);
+  for (int i = 0; i < 10; ++i) live_tick(g);
+  for (auto& c : g.cards) c->calls.clear();
+  const size_t d0 = g.sink.dwells.size();
+  REQUIRE(g.core->observe(3000) == LeaseState::OneCard);
+  live_tick(g);
+  const auto n = card_dwell_counts(g, 0, d0, {40, 64, 112, 144});
+  CHECK(n[0] == 0 && n[1] == 1 && n[2] == 1 && n[3] == 1);
+  for (size_t i = d0; i < g.sink.dwells.size(); ++i)
+    CHECK(g.sink.dwells[i].second.survey.def.width == CHANNEL_WIDTH_20);
+  CHECK(!any_call_starts(*g.cards[0], "set_width"));
+  CHECK(g.cards[0]->width_mhz == 20);
+  CHECK(g.cards[0]->ch == 40);
+}
+
+// USB + relay with the relay carrying TX: the USB card is the spare, whose
+// hop bursts are posted to the in-flight thread; the lease's burst still
+// runs on the core thread, inside tick(), and never on the relay.
+TEST(lease_one_card_with_relay_tx_bursts_synchronously) {
+  Rig g(1, 1);
+  g.cards[0]->retune_ok = false;
+  freeze_auto(g);
+  g.cards[0]->retune_ok = true;
+  link_up(g);
+  for (int i = 0; i < 10; ++i) g.tick(true, false, /*tx=*/1);
+  for (auto& c : g.cards) c->calls.clear();
+  REQUIRE(g.core->observe(3000) == LeaseState::OneCard);
+  const size_t d0 = g.sink.dwells.size();
+  g.core->tick(g.in(true, false, /*tx=*/1));               // one core tick, no in-flight step
+  const auto n = card_dwell_counts(g, 0, d0, {40, 64, 112, 144});
+  CHECK(n[0] == 0 && n[1] == 1 && n[2] == 1 && n[3] == 1);
+  CHECK(g.sink.dwells.size() == d0 + 3);
+  CHECK(!g.core->dwell_busy());
+  CHECK(g.cards[0]->ch == 40);
+  CHECK(g.cards[1]->sweeps.empty());
+  CHECK(!any_call_starts(*g.cards[1], "retune"));
+}
+
+// ---- the search and relay-only leases ----
+
+// Unlinked and frozen (a pinned rig starts there, never having linked), the
+// scout searches: a held lease turns its search dwells into observes too,
+// filling scan.members with no link at all. The same ticks with no lease
+// held leave every member unmeasured -- the search dwells still burst and
+// run, they just never read NHM busy.
+TEST(lease_search_observes_while_unlinked_and_frozen) {
+  auto jam_members = [](Rig& g) {
+    for (auto& c : g.cards) {
+      c->nhm_busy_pct_on[64] = 8;
+      c->nhm_busy_pct_on[112] = 40;
+      c->nhm_busy_pct_on[144] = 2;
+    }
+  };
+  {
+    Rig g(2, 0, /*pinned=*/true, 40);
+    jam_members(g);
+    REQUIRE(!g.core->pick_open());
+    REQUIRE(g.core->lease_state() == LeaseState::Search);
+    for (int i = 0; i < 400; ++i) g.tick(false);   // no lease held
+    for (const auto& m : g.core->snapshot(0).members)
+      if (!m.is_op) CHECK(!m.busy_pct.has_value());
+  }
+  {
+    Rig g(2, 0, /*pinned=*/true, 40);
+    jam_members(g);
+    REQUIRE(g.core->observe(3000) == LeaseState::Search);
+    CHECK(g.sink.has_line("maburgs channel: observe lease 3000 (search)"));
+    uint64_t last = g.clk.ms;
+    for (int i = 0; i < 400; ++i) {
+      if (g.clk.ms - last >= 2000) { g.core->observe(3000); last = g.clk.ms; }
+      g.tick(false);
+    }
+    const auto m = g.core->snapshot(0).members;
+    REQUIRE(m.size() == 4);
+    CHECK(m[1].src == "scan" && m[1].busy_pct && std::abs(*m[1].busy_pct - 8.0) < 1.0 && !m[1].blocked);
+    CHECK(m[2].src == "scan" && m[2].busy_pct && std::abs(*m[2].busy_pct - 40.0) < 1.0 && m[2].blocked);
+    CHECK(m[3].src == "scan" && m[3].busy_pct && std::abs(*m[3].busy_pct - 2.0) < 1.0);
+  }
+}
+
+// Relay-only, linked, pinned (reactive_ off): the lease sweeps the relay on
+// its own schedule -- a SCAN goes out, its result fills scan.members --
+// but never touches HopRanker, and no hop decision is made (reactive_
+// off, as any pinned GS).
+TEST(lease_relay_only_sweeps_with_the_trigger_off) {
+  Rig g(0, 1, /*pinned=*/true, 40);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  REQUIRE(g.core->pinned());
+  const auto before = g.core->hop_ranker().ranking(static_cast<double>(g.clk.ms));
+  REQUIRE(g.core->observe(3000) == LeaseState::Relay);
+  CHECK(g.sink.has_line("maburgs channel: observe lease 3000 (relay)"));
+  for (int i = 0; i < 10 && g.cards[0]->sweeps.empty(); ++i) g.tick(true);
+  REQUIRE(g.cards[0]->sweeps.size() == 1);
+  CHECK((g.cards[0]->sweeps[0] == std::vector<uint8_t>{64, 112, 144}));   // set minus op 40
+  CHECK(g.core->sweep_pending());
+  g.cards[0]->pending_result = sweep_of({{64, 20}, {112, 1}, {144, 4}});
+  for (int i = 0; i < 20 && g.core->sweep_pending(); ++i) g.tick(true);
+  CHECK(!g.core->sweep_pending());
+  const auto after = g.core->hop_ranker().ranking(static_cast<double>(g.clk.ms));
+  REQUIRE(after.size() == before.size());
+  for (size_t i = 0; i < after.size(); ++i) {
+    CHECK(after[i].ch == before[i].ch);
+    CHECK(after[i].visits == before[i].visits);   // the lease never ranks
+  }
+  const auto m = g.core->snapshot(0).members;
+  REQUIRE(m.size() == 4);
+  CHECK(m[1].src == "scan" && m[1].busy_pct && std::abs(*m[1].busy_pct - 100.0) < 1.0 && m[1].blocked);
+  CHECK(m[2].src == "scan" && m[2].busy_pct && std::abs(*m[2].busy_pct - 5.0) < 1.0 && !m[2].blocked);
+  CHECK(m[3].src == "scan" && m[3].busy_pct && std::abs(*m[3].busy_pct - 20.0) < 1.0 && !m[3].blocked);
+  CHECK(!g.sink.has_hop("order"));          // pinned: no reactive hop ever decides
+}
+
+// The relay lease's sweep pacing, like the one-card burst's, starts over
+// with each lease: released and taken again inside one period, it sweeps
+// on the reopening tick.
+TEST(lease_relay_only_reopened_within_a_period_sweeps_at_once) {
+  Rig g(0, 1, /*pinned=*/true, 40);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) g.tick(true);
+  const uint64_t t0 = g.clk.ms;
+  REQUIRE(g.core->observe(3000) == LeaseState::Relay);
+  for (int i = 0; i < 10 && g.cards[0]->sweeps.empty(); ++i) g.tick(true);
+  REQUIRE(g.cards[0]->sweeps.size() == 1);
+  g.cards[0]->pending_result = sweep_of({{64, 20}, {112, 1}, {144, 4}});
+  for (int i = 0; i < 20 && g.core->sweep_pending(); ++i) g.tick(true);
+  REQUIRE(!g.core->sweep_pending());
+  REQUIRE(g.core->observe(0) == LeaseState::None);
+  g.tick(true);
+  REQUIRE(g.cards[0]->sweeps.size() == 1);
+  REQUIRE(g.clk.ms - t0 < static_cast<uint64_t>(g.cfg.hop.relay_burst_period_ms));
+  REQUIRE(g.core->observe(3000) == LeaseState::Relay);
+  g.tick(true);
+  CHECK(g.cards[0]->sweeps.size() == 2);
+}
+
+// Relay-only, unlinked: the sole relay searches instead of being swept
+// (lease_state_follows_the_roster), and a held lease engages nothing --
+// no SCAN ever goes out while the lease sits unused.
+TEST(lease_relay_only_unlinked_is_none) {
+  Rig g(0, 1);
+  for (int i = 0; i < 10; ++i) g.tick(false);
+  CHECK(g.core->lease_state() == LeaseState::None);
+  CHECK(g.core->observe(3000) == LeaseState::None);
+  CHECK(g.core->observing());               // held, but nothing to engage
+  const size_t s0 = g.cards[0]->sweeps.size();
+  for (int i = 0; i < 300; ++i) g.tick(false);
+  CHECK(g.cards[0]->sweeps.size() == s0);   // no SCAN while unlinked
+}
+
+TEST(observe_verb_replies) {
+  Rig g(2, 0);
+  freeze_auto(g);
+  link_up(g);
+  for (int i = 0; i < 5; ++i) live_tick(g);
+  CHECK(g.core->observe_verb("3000") == "ok observe two_card");
+  CHECK(g.core->observing());
+  CHECK(g.core->observe_verb("0") == "ok observe none");
+  CHECK(!g.core->observing());
+  CHECK(g.core->observe_verb("x") == "err usage: observe <ms>");
+  CHECK(g.core->observe_verb("") == "err usage: observe <ms>");
+  CHECK(g.core->observe_verb("-5") == "err usage: observe <ms>");
+  CHECK(g.core->observe_verb("3000 1") == "err usage: observe <ms>");
+  CHECK(g.core->observe_verb("99999999999999999999") == "ok observe two_card");   // clamps
+  g.clk.ms += 5001;
+  CHECK(!g.core->observing());
 }
 
 MTEST_MAIN

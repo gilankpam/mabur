@@ -67,6 +67,29 @@ struct VtxState {
   std::vector<VtxRow> rows;
 };
 
+// One row of scan.members (ChannelCore::snapshot, the goggles Link > Channel
+// row's data): config order, one entry per channel-set member. `pair_lo`/
+// `pair_hi` are null at width 20 or when `ch` has no standard HT40 pair.
+// `busy_pct`/`age_ms` are null together, never measured; `src` is "" for
+// the same reason ("scan" the member table, "op" the live verdict window).
+struct ScanMember {
+  int ch = 0;
+  std::optional<int> pair_lo, pair_hi;
+  std::optional<double> busy_pct;
+  std::string src;  // "" = null
+  std::optional<int64_t> age_ms;
+  bool blocked = false, is_op = false, is_pin = false;
+};
+
+// scan.relocate: the live pin's own move (ChannelCore's PinReloc). `why` is
+// one of "withdrawn", "refused (hop cap)", "did not land" while
+// state == "failed", empty otherwise.
+struct ScanRelocate {
+  std::string state;
+  int ch = 0;
+  std::string why;
+};
+
 struct GsSnapshot {
   // Top-level t_ms: maburgs' own monotonic clock reading when this
   // datagram was built. DroneSetWatch (menu_apply.cpp) uses it, paired
@@ -86,6 +109,19 @@ struct GsSnapshot {
   // docs/channel-select.md), so the link never hops on its own. False when
   // the block is absent or the key is not a bool.
   bool pinned = false;
+  // scan.pick: the GS's frozen boot pick, or the pin in pinned mode. Empty
+  // while the boot scan is still open, the block is absent (older
+  // maburgs), or the key is null/mistyped.
+  std::optional<int> scan_pick;
+  // scan.members: one row per channel-set member, config order. Empty when
+  // the block or key is absent, not an array, or every entry was malformed.
+  std::vector<ScanMember> scan_members;
+  // scan.relocate: null/absent -> empty, same as every other optional block
+  // here.
+  std::optional<ScanRelocate> scan_relocate;
+  // scan.relocate_seq: absent or mistyped -> empty, never defaulted to 0 --
+  // a watcher needs to tell "never exported" from "seq 0".
+  std::optional<uint64_t> scan_relocate_seq;
   // In-flight channel hop (keyed on scan.pick; there is no link.home):
   // true only while `channel` equals hop.target AND
   // scan.pick is present (non-null -- the GS has frozen its boot pick, or

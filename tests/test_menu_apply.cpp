@@ -1,11 +1,13 @@
 // MenuApplier: runs one row's SetSteps against a FakeSetter per owner,
 // driving the MenuModel the same way main will drive it with the real
-// PlayerLiveSetter/GsLiveSetter/DroneLiveSetter. DroneSetWatch is tested
-// separately, directly against GsSnapshot fixtures, since it never
-// touches a socket; DroneLiveSetter's own test drives a real loopback
-// listener, reusing test_live_udp_client.cpp's fixture shape.
+// PlayerLiveSetter/GsLiveSetter/DroneLiveSetter. DroneSetWatch and
+// PinSettleWatch are tested separately, directly against GsSnapshot
+// fixtures, since neither touches a socket; DroneLiveSetter's and
+// GsLiveSetter's own tests drive a real loopback listener, reusing
+// test_live_udp_client.cpp's fixture shape.
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -31,6 +33,7 @@
 using maburplay::DroneLiveSetter;
 using maburplay::DroneSetWatch;
 using maburplay::DroneSnapshotView;
+using maburplay::GsLiveSetter;
 using maburplay::GsSnapshot;
 using maburplay::LiveReply;
 using maburplay::LiveSetter;
@@ -40,6 +43,8 @@ using maburplay::MenuModel;
 using maburplay::MenuNode;
 using maburplay::NodeKind;
 using maburplay::Owner;
+using maburplay::PinSettleWatch;
+using maburplay::ScanRelocate;
 using maburplay::SetStep;
 using maburplay::VtxRow;
 using maburplay::VtxState;
@@ -121,6 +126,29 @@ GsSnapshot vtx_snap(bool linked, const std::string& id, const std::string& st,
   vs.rows.push_back(r);
   s.vtx = vs;
   return s;
+}
+
+// A snapshot carrying the scan.* fields PinSettleWatch and GsLiveSetter
+// read: the live link state plus one relocate_seq/relocate reading.
+GsSnapshot scan_snap(bool session, std::optional<int> channel, bool pinned,
+                     std::optional<int> scan_pick, std::optional<ScanRelocate> relocate,
+                     std::optional<uint64_t> seq) {
+  GsSnapshot s;
+  s.session = session;
+  s.channel = channel;
+  s.pinned = pinned;
+  s.scan_pick = scan_pick;
+  s.scan_relocate = std::move(relocate);
+  s.scan_relocate_seq = seq;
+  return s;
+}
+
+ScanRelocate reloc(const std::string& state, int ch, std::string why = "") {
+  ScanRelocate r;
+  r.state = state;
+  r.ch = ch;
+  r.why = std::move(why);
+  return r;
 }
 
 }  // namespace
@@ -410,6 +438,141 @@ TEST(a_terminal_after_seeing_in_flight_settles) {
   CHECK(r->ok);
 }
 
+// --- PinSettleWatch: the settle rule on its own, no socket involved ------
+
+TEST(pin_watch_waits_for_a_new_seq) {
+  GsSnapshot before = scan_snap(true, 64, false, std::nullopt, std::nullopt, uint64_t{5});
+  PinSettleWatch w;
+  w.begin(100, &before);
+
+  // Same seq as at submit, and a failed outcome left over for a
+  // different channel: not this submit's answer yet.
+  GsSnapshot after =
+      scan_snap(true, 64, false, std::nullopt, reloc("failed", 64, "withdrawn"), uint64_t{5});
+  CHECK(!w.check(DroneSnapshotView{&after, false}).has_value());
+}
+
+TEST(pin_watch_landed_is_ok) {
+  GsSnapshot before = scan_snap(true, 64, false, std::nullopt, std::nullopt, uint64_t{5});
+  PinSettleWatch w;
+  w.begin(100, &before);
+
+  GsSnapshot after = scan_snap(true, 100, false, std::nullopt, reloc("landed", 100), uint64_t{6});
+  std::optional<LiveReply> r = w.check(DroneSnapshotView{&after, false});
+  REQUIRE(r.has_value());
+  CHECK(r->ok);
+}
+
+TEST(pin_watch_failed_names_the_link_and_why) {
+  GsSnapshot before = scan_snap(true, 64, false, std::nullopt, std::nullopt, uint64_t{5});
+  PinSettleWatch w;
+  w.begin(100, &before);
+
+  GsSnapshot after =
+      scan_snap(true, 144, false, std::nullopt, reloc("failed", 100, "withdrawn"), uint64_t{6});
+  std::optional<LiveReply> r = w.check(DroneSnapshotView{&after, false});
+  REQUIRE(r.has_value());
+  CHECK(!r->ok);
+  CHECK(r->text == "Pinned here, link still on 144 — withdrawn");
+}
+
+TEST(pin_watch_null_after_ok_is_ok_at_once) {
+  GsSnapshot before = scan_snap(true, 64, false, std::nullopt, std::nullopt, uint64_t{5});
+  PinSettleWatch w;
+  w.begin(100, &before);
+
+  // A fresh seq, but no relocate left to watch -- the link was already
+  // there once the set landed.
+  GsSnapshot after = scan_snap(true, 100, true, 100, std::nullopt, uint64_t{6});
+  std::optional<LiveReply> r = w.check(DroneSnapshotView{&after, false});
+  REQUIRE(r.has_value());
+  CHECK(r->ok);
+}
+
+TEST(pin_watch_pending_unlinked_is_ok) {
+  GsSnapshot before = scan_snap(true, 64, false, std::nullopt, std::nullopt, uint64_t{5});
+  PinSettleWatch w;
+  w.begin(100, &before);
+
+  GsSnapshot after = scan_snap(false, 64, false, std::nullopt, reloc("pending", 100), uint64_t{6});
+  std::optional<LiveReply> r = w.check(DroneSnapshotView{&after, false});
+  REQUIRE(r.has_value());
+  CHECK(r->ok);
+}
+
+TEST(pin_watch_pending_linked_waits) {
+  GsSnapshot before = scan_snap(true, 64, false, std::nullopt, std::nullopt, uint64_t{5});
+  PinSettleWatch w;
+  w.begin(100, &before);
+
+  GsSnapshot after = scan_snap(true, 64, false, std::nullopt, reloc("pending", 100), uint64_t{6});
+  CHECK(!w.check(DroneSnapshotView{&after, false}).has_value());
+}
+
+TEST(pin_watch_ignores_an_old_outcome_for_the_same_channel) {
+  // The pin already reads at 112 (a prior relocate there failed) when a
+  // re-pin of 112 begins: `pinned && scan_pick == ch` is true from the
+  // very first check, so only the seq -- not that reading -- can tell
+  // the new attempt's answer from the stale one.
+  GsSnapshot before =
+      scan_snap(true, 40, true, 112, reloc("failed", 112, "withdrawn"), uint64_t{5});
+  PinSettleWatch w;
+  w.begin(112, &before);
+
+  // Same seq, same stale failure: still waiting, not settled on the
+  // previous attempt.
+  GsSnapshot still_old =
+      scan_snap(true, 40, true, 112, reloc("failed", 112, "withdrawn"), uint64_t{5});
+  CHECK(!w.check(DroneSnapshotView{&still_old, false}).has_value());
+
+  // A fresh seq: the new relocate is under way, still pending.
+  GsSnapshot pending = scan_snap(true, 40, true, 112, reloc("pending", 112), uint64_t{6});
+  CHECK(!w.check(DroneSnapshotView{&pending, false}).has_value());
+
+  // It lands.
+  GsSnapshot landed = scan_snap(true, 112, true, 112, reloc("landed", 112), uint64_t{6});
+  std::optional<LiveReply> r = w.check(DroneSnapshotView{&landed, false});
+  REQUIRE(r.has_value());
+  CHECK(r->ok);
+}
+
+// maburgs always exports scan.relocate_seq: a snapshot without one is not
+// this submit's answer, however many arrive -- only the backstop ends it.
+TEST(pin_watch_without_a_seq_keeps_waiting) {
+  GsSnapshot before = scan_snap(true, 64, false, std::nullopt, std::nullopt, std::nullopt);
+  PinSettleWatch w;
+  w.begin(100, &before);
+  GsSnapshot after = scan_snap(true, 64, false, std::nullopt, std::nullopt, std::nullopt);
+  CHECK(!w.check(DroneSnapshotView{&after, false}).has_value());
+  CHECK(w.active());
+
+  // No snapshot at submit: the first one carrying a seq is the answer.
+  PinSettleWatch w2;
+  w2.begin(100, nullptr);
+  GsSnapshot landed = scan_snap(true, 100, true, 100, reloc("landed", 100), uint64_t{1});
+  std::optional<LiveReply> r = w2.check(DroneSnapshotView{&landed, false});
+  REQUIRE(r.has_value());
+  CHECK(r->ok);
+}
+
+TEST(pin_watch_stale_sideport_is_link_lost) {
+  GsSnapshot before = scan_snap(true, 64, false, std::nullopt, std::nullopt, uint64_t{5});
+  PinSettleWatch w;
+  w.begin(100, &before);
+  std::optional<LiveReply> r1 = w.check(DroneSnapshotView{&before, /*stale=*/true});
+  REQUIRE(r1.has_value());
+  CHECK(!r1->ok);
+  CHECK(r1->text == "link lost");
+  CHECK(!w.active());
+
+  PinSettleWatch w2;
+  w2.begin(100, &before);
+  std::optional<LiveReply> r2 = w2.check(DroneSnapshotView{nullptr, false});
+  REQUIRE(r2.has_value());
+  CHECK(!r2->ok);
+  CHECK(r2->text == "link lost");
+}
+
 // --- DroneLiveSetter: a real loopback listener ----------------------------
 // Minimal fixture copied from tests/test_live_udp_client.cpp: a real
 // PlayerConfigControl/PlayerConfigApplier pair stands in for maburgs'
@@ -537,6 +700,144 @@ TEST(drone_live_setter_submits_the_vtx_set_line) {
   REQUIRE(refused.has_value());
   CHECK(!refused->ok);
   CHECK(refused->text == "not linked");
+}
+
+// --- GsLiveSetter: a real loopback listener -------------------------------
+// GsLiveSetter has no applier of its own to stand a real maburgs listener
+// in for (unlike DroneLiveSetter's "vtx" extra_verb, "set radio.channel"
+// would hit the player's own config schema, which does not own that key);
+// a bare UDP responder standing in for 8402 is enough to drive the "ok"
+// half -- the settle half is PinSettleWatch, already covered above.
+namespace {
+
+struct FakeGsListener {
+  int fd = -1;
+  explicit FakeGsListener(int port) {
+    fd = ::socket(AF_INET, SOCK_DGRAM, 0);
+    REQUIRE(fd >= 0);
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(static_cast<uint16_t>(port));
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    REQUIRE(::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
+  }
+  ~FakeGsListener() {
+    if (fd >= 0) ::close(fd);
+  }
+
+  // Waits for the next datagram and answers it with `reply`.
+  void answer(const std::string& reply) {
+    pollfd p{fd, POLLIN, 0};
+    REQUIRE(::poll(&p, 1, 2000) == 1);
+    char buf[256];
+    sockaddr_in from{};
+    socklen_t fromlen = sizeof(from);
+    const ssize_t n =
+        ::recvfrom(fd, buf, sizeof(buf), 0, reinterpret_cast<sockaddr*>(&from), &fromlen);
+    REQUIRE(n >= 0);
+    REQUIRE(::sendto(fd, reply.data(), reply.size(), 0, reinterpret_cast<sockaddr*>(&from),
+                     fromlen) == static_cast<ssize_t>(reply.size()));
+  }
+};
+
+}  // namespace
+
+TEST(gs_setter_pin_waits_for_the_sideport_after_ok) {
+  constexpr int kPort = 18441;
+  FakeGsListener gsd(kPort);
+  LiveUdpClient client;
+  std::string err;
+  REQUIRE(client.open(kPort, &err));
+
+  GsSnapshot snap = scan_snap(true, 64, false, std::nullopt, std::nullopt, uint64_t{5});
+  GsLiveSetter setter(client, [&] { return DroneSnapshotView{&snap, false}; });
+
+  std::string why;
+  REQUIRE(setter.submit("radio.channel", "100", 0, &why));
+  gsd.answer("ok");
+
+  // Drive until the client has consumed the "ok" datagram: the row does
+  // not settle on it, only on a later sideport reading.
+  std::optional<LiveReply> r;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (client.in_flight() && std::chrono::steady_clock::now() < deadline) {
+    r = setter.poll(1);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  REQUIRE(!client.in_flight());
+  CHECK(!r.has_value());
+
+  // The sideport later shows the pin landed, under a fresh relocate_seq.
+  snap.scan_relocate_seq = 6;
+  snap.scan_relocate = reloc("landed", 100);
+  snap.channel = 100;
+  std::optional<LiveReply> settled = setter.poll(2);
+  REQUIRE(settled.has_value());
+  CHECK(settled->ok);
+}
+
+TEST(gs_setter_auto_and_other_keys_settle_on_the_reply) {
+  constexpr int kPort = 18442;
+  FakeGsListener gsd(kPort);
+  LiveUdpClient client;
+  std::string err;
+  REQUIRE(client.open(kPort, &err));
+
+  GsSnapshot snap = scan_snap(true, 64, false, std::nullopt, std::nullopt, uint64_t{5});
+  GsLiveSetter setter(client, [&] { return DroneSnapshotView{&snap, false}; });
+
+  // "auto" is not a pin: the bare reply is the answer, no sideport wait.
+  std::string why;
+  REQUIRE(setter.submit("radio.channel", "auto", 0, &why));
+  gsd.answer("ok");
+  std::optional<LiveReply> r;
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!r && std::chrono::steady_clock::now() < deadline) {
+    r = setter.poll(1);
+    if (!r) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  REQUIRE(r.has_value());
+  CHECK(r->ok);
+
+  // Any other key is unchanged too, even with a view available.
+  REQUIRE(setter.submit("osd.fc.enable", "true", 10, &why));
+  gsd.answer("ok");
+  r.reset();
+  deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!r && std::chrono::steady_clock::now() < deadline) {
+    r = setter.poll(11);
+    if (!r) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  REQUIRE(r.has_value());
+  CHECK(r->ok);
+}
+
+TEST(gs_setter_pin_backstop_is_no_answer) {
+  constexpr int kPort = 18443;
+  FakeGsListener gsd(kPort);
+  LiveUdpClient client;
+  std::string err;
+  REQUIRE(client.open(kPort, &err));
+
+  GsSnapshot snap = scan_snap(true, 64, false, std::nullopt, std::nullopt, uint64_t{5});
+  GsLiveSetter setter(client, [&] { return DroneSnapshotView{&snap, false}; });
+
+  std::string why;
+  REQUIRE(setter.submit("radio.channel", "100", 0, &why));
+  gsd.answer("ok");
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (client.in_flight() && std::chrono::steady_clock::now() < deadline) {
+    setter.poll(1);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  REQUIRE(!client.in_flight());
+
+  // The sideport never shows a landed/failed pin: the backstop fires.
+  std::optional<LiveReply> r = setter.poll(GsLiveSetter::kPinSettleMs + 1);
+  REQUIRE(r.has_value());
+  CHECK(!r->ok);
+  CHECK(r->text == "no answer");
 }
 
 MTEST_MAIN

@@ -1,6 +1,23 @@
+#include <cstdlib>
+
 #include "menu_apply.h"
 
 namespace maburplay {
+
+namespace {
+
+// strtol with no leftover text, same rule gs_live_view.cpp's parse_int
+// uses to read a sideport value back.
+bool parse_int(const std::string& s, int* out) {
+  if (s.empty()) return false;
+  char* end = nullptr;
+  const long v = std::strtol(s.c_str(), &end, 10);
+  if (end != s.c_str() + s.size()) return false;
+  *out = static_cast<int>(v);
+  return true;
+}
+
+}  // namespace
 
 bool PlayerLiveSetter::submit(const std::string& key, const std::string& value, uint64_t,
                               std::string* why) {
@@ -13,12 +30,74 @@ std::optional<LiveReply> PlayerLiveSetter::poll(uint64_t) {
   return LiveReply{r->ok, r->reason};
 }
 
-bool GsLiveSetter::submit(const std::string& key, const std::string& value, uint64_t now_ms,
-                          std::string* why) {
-  return client_.send_set(key, value, now_ms, why);
+void PinSettleWatch::begin(int ch, const GsSnapshot* before) {
+  active_ = true;
+  ch_ = ch;
+  before_seq_ = before ? before->scan_relocate_seq : std::nullopt;
 }
 
-std::optional<LiveReply> GsLiveSetter::poll(uint64_t now_ms) { return client_.poll(now_ms); }
+std::optional<LiveReply> PinSettleWatch::check(const DroneSnapshotView& v) {
+  if (!active_) return std::nullopt;
+  if (v.stale || !v.snap) {
+    active_ = false;
+    return LiveReply{false, "link lost"};
+  }
+  const GsSnapshot& s = *v.snap;
+  // The old outcome, not this submit's (a snapshot with no seq at all
+  // carries no outcome either).
+  if (!s.scan_relocate_seq || s.scan_relocate_seq == before_seq_) return std::nullopt;
+
+  if (!s.scan_relocate || s.scan_relocate->ch != ch_) {
+    active_ = false;
+    return LiveReply{true, ""};
+  }
+  const ScanRelocate& r = *s.scan_relocate;
+  if (r.state == "landed") {
+    active_ = false;
+    return LiveReply{true, ""};
+  }
+  if (r.state == "failed") {
+    active_ = false;
+    const std::string link = s.channel ? std::to_string(*s.channel) : "—";
+    return LiveReply{false, "Pinned here, link still on " + link + " — " + r.why};
+  }
+  // state == "pending": settled ok once the link isn't there to watch
+  // the relocate land on; still in flight while session holds.
+  if (!s.session) {
+    active_ = false;
+    return LiveReply{true, ""};
+  }
+  return std::nullopt;
+}
+
+bool GsLiveSetter::submit(const std::string& key, const std::string& value, uint64_t now_ms,
+                          std::string* why) {
+  if (!client_.send_set(key, value, now_ms, why)) return false;
+  pin_pending_ = false;
+  before_.reset();
+  int ch = 0;
+  if (view_ && key == "radio.channel" && value != "auto" && parse_int(value, &ch)) {
+    pin_ch_ = ch;
+    pin_pending_ = true;
+    const DroneSnapshotView view = view_();
+    before_ = view.snap ? std::optional<GsSnapshot>(*view.snap) : std::nullopt;
+  }
+  return true;
+}
+
+std::optional<LiveReply> GsLiveSetter::poll(uint64_t now_ms) {
+  if (std::optional<LiveReply> r = client_.poll(now_ms)) {
+    if (!r->ok || !pin_pending_) return r;
+    watch_.begin(pin_ch_, before_ ? &*before_ : nullptr);
+    armed_ms_ = now_ms;
+  }
+  if (!watch_.active()) return std::nullopt;
+  if (now_ms - armed_ms_ >= kPinSettleMs) {
+    watch_ = PinSettleWatch{};
+    return LiveReply{false, "no answer"};
+  }
+  return watch_.check(view_ ? view_() : DroneSnapshotView{});
+}
 
 void DroneSetWatch::begin(const std::string& param_id, const GsSnapshot* before) {
   active_ = true;

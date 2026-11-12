@@ -77,6 +77,7 @@ width    = 40
 | **relocate** — the link forms where the drone is, one order moves it to `want` (pin or pick) | each link-up with `op ≠ want`, both modes | `[hop] confirm_ms`, `confirm_extend_ms`, `verify_ms`, `max_hops_per_min`, `one_card_repeats` (shared with the reactive hop) |
 | **verdict** — is `op` bad right now | always (OSD / sideport `hop.verdict`) | `[hop] window_ms`, `persist`, `[hop.verdict] *` |
 | **reactive hop** — in-flight scout, freshness burst, order/verify/withdraw | `channel = "auto"` only, after the freeze | everything else in `[hop]` |
+| **picker lease** — measure the set while the goggles' channel picker is open (below, "Measuring for the picker") | a lease held, both modes, linked or unlinked | two cards: `radio.scan.dwell_ms`, `settle_ms`; one card: `[hop] lease_sweep_period_ms`, `dwell_observe_ms`; relay-only: `[hop] relay_burst_period_ms`; unlinked search: `radio.scan.dwell_ms`, `busy_dbm` |
 | **calibration pick** — one measure round, then a relocate to the quietest member (`CalPicker`) | each `maburcal start`, auto mode with two or more cards | `radio.scan.dwell_ms`, `settle_ms`, `pick_margin_pct`, `busy_dbm`, `blocked_pct`; the relocate's `[hop] confirm_ms`, `max_hops_per_min` |
 | **one-card mode** | exactly one USB card in the roster (one `[[radio.cards]]` entry, or auto-scan finding one card) | no in-flight scout; `one_card_ms`, `op_window_ms`, `one_card_repeats` apply |
 
@@ -371,6 +372,28 @@ reach it.
   (M commit). `set_auto` withdraws a pin relocate not yet handed to the
   controller, and reopens the pick only when unlinked — its
   `radio.scan.max_ms` clock counts from the reopen, not from GS start.
+- **The live pin's own outcome** (`ChannelCore`'s `PinReloc`, exported as
+  `scan.relocate`/`scan.relocate_seq` — `docs/observability.md`): `Off`
+  outside a linked pin move onto a different channel. `set_pin` onto a
+  different channel while linked arms `Waiting{ch}`; once BootPick hands
+  the order to the controller it is `InFlight`; `Confirm`, `VerifyPass`
+  and `Withdraw` move or settle it exactly as the boot relocate above —
+  `VerifyPass` settles it `landed`, `Withdraw` settles it `failed` with
+  `withdrawn`, and a session dropped between the `Confirm` and its
+  `VerifyPass` still reads `landed` (the same confirmed-then-`Idle` check
+  as the calibration relocate). A relocate refused on the spot at the hop
+  cap settles `failed` with `refused (hop cap)`, though `set_pin` already
+  refuses a pin at the cap before anything is armed. If none of those
+  caught it, BootPick's own `AcceptOp` bookkeeping settles a leftover
+  `Waiting`/`InFlight` outcome `failed` with `did not land`. **No timer:
+  a link lost before the order ever leaves holds `Waiting`** — there is
+  nothing to withdraw yet, and the next link-up tries again. A `Waiting`
+  outcome settles `landed` once the link is up, no hop is in flight and
+  `op` already is the pin — the drone found on the pinned channel at the
+  next link-up (`link_found`) leaves BootPick no relocate to place. Every
+  `set_pin` call that is not refused (even the no-op onto the channel it
+  is already pinned to) and every `set_auto` call bumps `relocate_seq`;
+  `set_auto` always drops the outcome back to `Off`.
 - A confirmed hop of either kind moves `want` with `op`: a reactive hop's
   destination is where the link should live from then on, so a later
   link-up does not relocate back onto the channel it fled.
@@ -427,8 +450,9 @@ exit covered by `tests/test_boot_pick.cpp`); `ChannelCore` only feeds it a
 - **Proposal == op**: freeze in place (`"in place"`).
 
 **Freeze** closes the pick for the GS process's lifetime: the scout stops
-measuring and rejoins the link at full width. The one later round is a
-calibration run's own ("Calibration pick", below), which reuses the scout
+measuring and rejoins the link at full width. Later rounds are a
+calibration run's own ("Calibration pick", below) and the goggles
+picker's ("Measuring for the picker", below), which reuse the scout
 without reopening the pick. Logged
 `maburgs channel: pick frozen on <pick> (<why>) after <rounds> rounds`
 plus a `K` line (`K <t> <picked|none> <rounds>
@@ -512,6 +536,130 @@ From the run's first SWEEP to its end `cal_running` freezes every channel
 change (`hop_active()` false, the scout idle); the pick happens before
 that, which is why `CalSession`'s `picking` state is outside `running()`.
 
+## Measuring for the picker (the lease)
+
+While the goggles' `Link › Channel` picker is open the player holds a
+lease on `maburgs`: `observe 3000` on open, again every 1000 ms, `observe
+0` on close (the verb: `docs/gs-live-config.md`). The lease is a deadline
+on the core thread (`ChannelCore::observe`), clamped to 500–5000 ms, so a
+player that dies leaves one that lapses within 3 s. While it holds,
+`ChannelCore` measures the set for the picker: every member except `op`,
+at the link width (one dwell on the primary reads the whole pair at 40
+MHz), one dwell per member — the boot scan's dwell set and figure, never a
+width switch. Each dwell lands in `scan.members` (`docs/observability.md`)
+as it drains; none feeds the hop ranker. `op` is never dwelt on while
+linked: its figure is the verdict window's.
+
+**Which measurer** (`ChannelCore::lease_state()`, first match; the verb
+answers with it):
+
+| State | When | What it does |
+|---|---|---|
+| `none` | calibration owns the scout: a run (`cal_running`), its measure round waiting or running, or its relocate waiting or in flight | nothing |
+| `none` | the boot pick is open | nothing; the boot scout is measuring anyway |
+| `search` | unlinked and the scout is searching (not relay-only) | each search dwell also observes (below) |
+| `none` | unlinked otherwise (a relay-only GS: the sole relay searches) | nothing |
+| `two_card` | linked, two or more USB cards, not relay-only | scout rounds back to back (below) |
+| `one_card` | linked, one USB card (relays in the roster or not) | the in-flight burst on the USB card, once per `hop.lease_sweep_period_ms` (below) |
+| `relay` | linked, no USB card, a ready sweep-capable relay | one SCAN sweep of the relay, once a period (below) |
+| `none` | otherwise | nothing |
+
+**Two cards: scout rounds, back to back.** While the lease holds and no
+round is open, the core starts `ChannelScout::begin_round()` — the
+calibration pick's round — under the same start conditions (the link
+live, the scout thread up with its card alive, the scout owning nothing,
+the boot pick closed and not relocating, no hop in flight, no relay sweep,
+no in-flight dwell, the controller `Idle`/`Hold`) plus no relocate handed
+out or due this tick: a round starting on the tick `BootPick` hands out a
+relocate would hide it from the controller after `BootPick` has spent its
+once-per-link-up try. A round dwells every member but `op` at `dwell_ms`
++ `settle_ms`, parks on `op`, and the next starts a tick later (~0.85 s
+per round for a four-member set at the defaults). Pinned, the scout is
+frozen and measuring turned on when the lease engages, and measuring goes
+off again once the lease has lapsed **and** the round is idle (turned off
+mid-round, the round would never close). The pin, `reactive_`, the plan
+and the boot pick are never touched.
+
+The lease lapsing lets the open round finish, then no new round starts.
+`observe 0`, a live pin (`set_pin`), back to auto (`set_auto`) and a
+calibration pick (`begin_cal_measure`) end the lease at once and cancel
+the open round (the scout parks on its next step, within one dwell), so a
+pin's relocate is placed as soon as the card is back and a calibration
+round starts on the card the picker was using: calibration pre-empts the
+picker. A run starting (`cal_running`) ends the lease the same way on
+its first tick: a pinned or one-card GS runs no calibration pick, and its
+first sweep must not go out with the scout card off `op`. The scout card dying mid-round ends the round on the spot; the
+lease stays, but no round starts on a dead card.
+
+**What a two-card round suspends** (accepted: the drone is on the
+ground while the operator picks). The scout owns the spare card while a
+round is open, so the in-flight periodic dwell and the freshness burst
+stop, the controller's hop targets are cleared (a live trigger in auto
+mode goes to `Hold`), the scout card leaves the TX candidates and its
+diversity is lost, and a width or ladder set is refused `ladder refused:
+scan in flight`. With rounds back to back the auto hop is effectively off
+while the picker is open and for up to one round after it closes.
+
+**One card: the in-flight burst, once a period.** While the lease holds,
+the core runs `InflightScout::burst` on the USB card — every member but
+`op`, one `hop.dwell_observe_ms` observe each, at the link width, back to
+`op` after each — at most once per `hop.lease_sweep_period_ms` (1000), the
+first of each lease at once (the pacing clears when a lease lapses or is
+released, so a picker reopened inside one period bursts on its first tick). It runs synchronously on the core thread (`burst_on_card_`:
+the card's device-use lock held, `tune_gen` bumped both sides), also when a
+relay carries TX and the USB card is the spare; it never runs on a relay.
+It waits while a hop or relocate is in flight or due (the controller not
+`Idle`/`Hold`, the plan hopping, a relocate handed out or about to be; in
+auto mode also the hop verdict's trigger live or its references frozen —
+an interference episode the hop is deciding on, measured then by the
+controller's own freshness burst, whose dwells reach `scan.members` too),
+a relay sweep or a posted spare-card burst is out, the scout owns the
+card, or the card is not ready. Its dwells land in `scan.members` and `scan.log`
+(`D` lines); its visits are dropped, never ranked. Pinned or auto alike:
+the lease never touches the pin, `reactive_` or the plan.
+
+**What a one-card burst costs the link** (accepted: the drone is on the
+ground). About 75 ms off `op` per burst for a four-member set at either
+width — no video and no RCF on the sole card — once a second while the
+picker is open: a few frames lost per second, and the GS ladder may
+demote on the loss and re-promote after the picker closes. The hop
+verdict does not see the gap: every sampler window stamped after the
+burst's start and up to one `hop.window_ms` past its end is skipped —
+not classified, not read for `op`'s figure — and its counters become the
+next window's baselines, the next window's span starting no earlier than
+the burst's end (a sampler pass stamped mid-burst reads its counters only
+once the burst releases the card); the verdict's own loss windows are blanked to the
+same instant. So neither the blocked streak, the detect ring nor the
+persistence learns the gap, the rung store is not blanked by it, and
+`hop.verdict` holds its last value across the burst.
+
+**Search: observe on the search dwells.** Unlinked, with the scout
+searching (not relay-only), the lease turns on
+`ChannelScout::set_search_observe`: every member dwell that already bursts
+DISC for `search_ms` also reads NHM busy for `dwell_ms` right after it, the
+same observe any measuring dwell takes -- `quiet()` holds the TX card's
+own DISC for that span, as any unlinked observe does. Each dwell's reading
+lands in `scan.members` as it drains, same as any other dwell. It also
+lands in the frozen scout's own ranker, which nothing picks from while the
+pick is closed and which `unfreeze()`, `set_measure()` and `begin_round()`
+rebuild, so it never decides a later pick; `HopRanker` never sees it. The pin,
+`reactive_`, the plan and the boot pick are untouched, and there is no
+burst to pace -- the search job already visits every member once a round
+on its own.
+
+**Relay-only: sweep the relay, once a period.** Linked, with no USB card
+and a ready sweep-capable relay, the lease sends one SCAN on the relay
+every `[hop] relay_burst_period_ms`, the first of each lease at once
+(members minus `op`, the same
+passes/observe/timeout as the hop's own freshness burst) -- regardless of
+`reactive_` or a live trigger: the lease measures for the player, not for
+a hop decision, so it never needs to stand aside for one being decided. It
+does wait while a hop or relocate is in flight or due, or a sweep (the
+hop's own or an earlier lease sweep) is already out, so the two never
+race for the one relay. The result lands in `scan.members` through the
+same drain as the hop's own sweep; its visits are never added to
+`HopRanker`.
+
 ## In-flight hop after the freeze
 
 After the freeze two things can move the link: the per-link-up relocation
@@ -567,6 +715,10 @@ the in-flight thread picks the reactive hop back up on its next tick.
   ignored`; `maburgs channel: <reason> card <n> <from> -> <to>` (every `M`
   line, echoed to stderr); the calibration pick's `maburgs channel:
   calibration …` lines (above) and a relocate line ending `(cal)`;
+  `maburgs channel: observe lease <ms> (<state>)` (a lease engaging a
+  different measurer than the last one logged) and `maburgs channel:
+  observe lease lapsed` (once per lease: it ran out, was released, or a
+  pin, auto or calibration ended it);
   `maburgs channel: could not write
   /etc/maburgs.channel`; `maburd: retune <a> -> <b> (<reason>)`.
 - **`tools/maburtop.py`**: shows `scan.state` (including `moving`) and

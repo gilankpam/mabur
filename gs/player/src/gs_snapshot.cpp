@@ -102,8 +102,43 @@ bool parse_gs_snapshot(const char* data, size_t n, GsSnapshot* out) {
     auto it = scan->find("state");
     out->scan_auto = it != scan->end() && it->is_string() && it->get<std::string>() != "off";
     scan_pick = integer(*scan, "pick");
+    out->scan_pick = scan_pick;
     auto pin = scan->find("pinned");
     out->pinned = pin != scan->end() && pin->is_boolean() && pin->get<bool>();
+    // scan.members (Link > Channel row's data): config order. A member
+    // entry with a non-numeric ch names nothing on the channel set and is
+    // skipped rather than kept half-blank.
+    if (const auto mit = scan->find("members"); mit != scan->end() && mit->is_array()) {
+      for (const json& m : *mit) {
+        if (!m.is_object()) continue;
+        const std::optional<int> ch = integer(m, "ch");
+        if (!ch) continue;
+        ScanMember sm;
+        sm.ch = *ch;
+        sm.pair_lo = integer(m, "pair_lo");
+        sm.pair_hi = integer(m, "pair_hi");
+        sm.busy_pct = num(m, "busy_pct");
+        if (const std::optional<std::string> src = str(m, "src")) sm.src = *src;
+        sm.age_ms = integer64(m, "age_ms");
+        sm.blocked = boolean(m, "blocked");
+        sm.is_op = boolean(m, "is_op");
+        sm.is_pin = boolean(m, "is_pin");
+        out->scan_members.push_back(std::move(sm));
+      }
+    }
+    // scan.relocate: null/absent -> empty; a well-formed object fills every
+    // field (the exporter always writes all three together).
+    if (const json* reloc = obj(*scan, "relocate")) {
+      ScanRelocate r;
+      if (const std::optional<std::string> state = str(*reloc, "state")) r.state = *state;
+      if (const std::optional<int> ch = integer(*reloc, "ch")) r.ch = *ch;
+      if (const std::optional<std::string> why = str(*reloc, "why")) r.why = *why;
+      out->scan_relocate = std::move(r);
+    }
+    // scan.relocate_seq is a non-negative counter; reject a negative or
+    // out-of-range number rather than hand back a wrapped uint64_t.
+    if (const std::optional<int64_t> seq = integer64(*scan, "relocate_seq"); seq && *seq >= 0)
+      out->scan_relocate_seq = static_cast<uint64_t>(*seq);
   }
   if (const json* drone = obj(j, "drone")) {
     auto it = drone->find("low_power");

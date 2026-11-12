@@ -595,6 +595,31 @@ bool StatsExporter::poll(uint64_t now_ms, const StatsInput& in) {
   scan["rounds"] = in.scan_rounds;
   if (in.scan_pick) scan["pick"] = *in.scan_pick; else scan["pick"] = nullptr;
   scan["pinned"] = in.pinned;
+  // Per-member table (Link > Channel row): config order, one entry per
+  // channel-set member. src "" -> JSON null (never measured), distinct
+  // from "scan" (the member table) and "op" (the verdict window's own
+  // figure for the live channel while linked).
+  json& members = scan["members"];
+  members = json::array();
+  for (const auto& m : in.scan_members) {
+    json jm;
+    jm["ch"] = m.ch;
+    if (m.pair_lo) jm["pair_lo"] = *m.pair_lo; else jm["pair_lo"] = nullptr;
+    if (m.pair_hi) jm["pair_hi"] = *m.pair_hi; else jm["pair_hi"] = nullptr;
+    if (m.busy_pct) jm["busy_pct"] = *m.busy_pct; else jm["busy_pct"] = nullptr;
+    if (m.src.empty()) jm["src"] = nullptr; else jm["src"] = m.src;
+    if (m.age_ms) jm["age_ms"] = *m.age_ms; else jm["age_ms"] = nullptr;
+    jm["blocked"] = m.blocked;
+    jm["is_op"] = m.is_op;
+    jm["is_pin"] = m.is_pin;
+    members.push_back(std::move(jm));
+  }
+  if (in.scan_relocate)
+    scan["relocate"] = {{"state", in.scan_relocate->state}, {"ch", in.scan_relocate->ch},
+                        {"why", in.scan_relocate->why}};
+  else
+    scan["relocate"] = nullptr;
+  scan["relocate_seq"] = in.scan_relocate_seq;
 
   // In-flight channel hop snapshot,
   // top-level like `scan`: it describes the hop feature's own state

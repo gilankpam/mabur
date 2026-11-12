@@ -67,10 +67,10 @@ reach. When `debug_log.enable = true` failed to open its session at boot
 live value reads the pin, the link sits elsewhere), set the key away and
 back: `false` then `true`, or `"auto"` then the channel.
 
-**`vtx set <PARAM_ID> <value>` (maburgs only).** The one verb besides
-`set`/`get` on 8402: `GsConfigControl.extra_verb` hands anything that
-isn't `set`/`get` to `ParamHost::handle_verb` (`gs/src/param_host.h`),
-which forwards a `vtx set` straight to the hosted MAVLink parameter
+**`vtx set <PARAM_ID> <value>` (maburgs only).** One of the two verbs
+besides `set`/`get` on 8402: `GsConfigControl.extra_verb` hands anything
+that isn't `set`/`get`/`observe` to `ParamHost::handle_verb`
+(`gs/src/param_host.h`), which forwards a `vtx set` straight to the hosted MAVLink parameter
 client against the drone. The reply is immediate, not a `pending` wait
 for the drone's own ack — `ok` means the `PARAM_EXT_SET` is on its way,
 not that the drone accepted it; the outcome lands on the stats sideport's
@@ -80,6 +80,21 @@ not that the drone accepted it; the outcome lands on the stats sideport's
 <type>` (`bool`, `int32`, …, lowercase), or `err usage: vtx set
 <PARAM_ID> <value>` for a malformed line. There is no `vtx get`: a row's
 current value is read off `link.vtx.rows[]`.
+
+**`observe <ms>` (maburgs only).** The goggles' channel picker's measure
+lease (`docs/channel-select.md` "Measuring for the picker"): keep
+measuring the channel set for `<ms>` more milliseconds, clamped to
+500–5000; `observe 0` releases it at once. The player sends `observe
+3000` when the picker opens, every 1000 ms while it stays open, and
+`observe 0` when it closes, so a player that dies leaves a lease that
+lapses within 3 s. The reply is immediate: `ok observe <state>`, where
+`<state>` names the measurer the lease engages now — `two_card`,
+`one_card`, `relay`, `search` or `none` (nothing to engage: the picker
+shows what `scan.members` already holds, aged); `observe 0` answers `ok
+observe none`. `<ms>` must be a bare non-negative integer (a value past
+the clamp is clamped); anything else answers `err usage: observe <ms>`.
+Handled by `ChannelCore::observe_verb` on the core thread; nothing is
+written to a file.
 
 ## maburgs — `kGsLiveKeys` (`gs/src/gs_config_apply.cpp`)
 

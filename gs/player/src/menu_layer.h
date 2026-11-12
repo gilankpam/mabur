@@ -81,12 +81,11 @@ class MenuLayer {
   // Test hooks: every text run the last paint left on the surface, box by
   // box (panel, picker, toast, banner), each top-to-bottom, left-to-right.
   std::vector<std::string> debug_texts() const;
+  // One rgb per debug_texts() entry, same order: the colour each run was
+  // last painted in.
+  std::vector<uint32_t> debug_colors() const;
   DirtyRect debug_panel_box() const;
   DirtyRect debug_picker_box() const;
-  // Bars of the channel picker's clean-air icon (5 = clean) from the
-  // channel's busy share in percent: < 5 -> 5, < 12 -> 4, < 25 -> 3,
-  // < 50 -> 2, else 1.
-  static int clean_air_bars(double busy_pct);
 
  private:
   struct Fill {

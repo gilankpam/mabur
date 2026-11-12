@@ -552,17 +552,34 @@ TEST(a_pill_mark_takes_room_from_the_crumb_rather_than_overlapping) {
   CHECK(crumb_with_mark.size() < crumb_no_mark.size());
 }
 
-TEST(clean_air_bars_follow_the_bands) {
-  CHECK(MenuLayer::clean_air_bars(0.0) == 5);
-  CHECK(MenuLayer::clean_air_bars(4.9) == 5);
-  CHECK(MenuLayer::clean_air_bars(5.0) == 4);
-  CHECK(MenuLayer::clean_air_bars(11.9) == 4);
-  CHECK(MenuLayer::clean_air_bars(12.0) == 3);
-  CHECK(MenuLayer::clean_air_bars(24.9) == 3);
-  CHECK(MenuLayer::clean_air_bars(25.0) == 2);
-  CHECK(MenuLayer::clean_air_bars(49.9) == 2);
-  CHECK(MenuLayer::clean_air_bars(50.0) == 1);
-  CHECK(MenuLayer::clean_air_bars(100.0) == 1);
+// A choice's note is drawn in the colour its tone maps to, by the same
+// token a row's own status would use.
+TEST(choice_note_drawn_in_its_tone) {
+  Canvas c(1920, 1080);
+  MenuLayer m(font());
+  std::string err;
+  REQUIRE(m.layout(1920, 1080, &err));
+
+  MenuView v = sample();
+  m.set_view(v);
+  m.paint(c.s, nullptr);
+  const size_t panel_n = m.debug_texts().size();
+
+  v.picker = MenuView::Picker::kChoices;
+  v.choices = {{"60", "60 fps", "", true},
+               {"90", "90 fps", "bad note", true, ChoiceTone::kBad}};
+  v.picker_cursor = 0;
+  v.picker_current = 0;
+  m.set_view(v);
+  m.paint(c.s, nullptr);
+
+  const auto texts = m.debug_texts();
+  const auto colors = m.debug_colors();
+  REQUIRE(texts.size() == colors.size());
+  auto it = std::find(texts.begin() + (long)panel_n, texts.end(), std::string("bad note"));
+  REQUIRE(it != texts.end());
+  const size_t i = (size_t)(it - texts.begin());
+  CHECK(colors[i] == tok::kStatusCritical);
 }
 
 MTEST_MAIN

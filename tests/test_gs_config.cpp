@@ -641,6 +641,19 @@ TEST(hop_relay_burst_period_ms_default_and_range) {
   CHECK(what_of([] { maburgs::load_config(write_tmp("[hop]\nrelay_burst_period_ms = 400\n")); })
             .find("relay_burst_period_ms") != std::string::npos);
 }
+// The one-card observe lease's sweep pace: absent = 1000, the bundle ships
+// 1000, [500, 60000] with the [hop] range error outside.
+TEST(hop_lease_sweep_period_ms_default_and_range) {
+  CHECK(maburgs::load_config(write_tmp("")).hop.lease_sweep_period_ms == 1000);
+  CHECK(maburgs::load_config(std::string(MABUR_GS_BUNDLE_DIR) + "/maburgs.default.toml")
+            .hop.lease_sweep_period_ms == 1000);
+  CHECK(maburgs::load_config(write_tmp("[hop]\nlease_sweep_period_ms = 500\n")).hop.lease_sweep_period_ms == 500);
+  CHECK(maburgs::load_config(write_tmp("[hop]\nlease_sweep_period_ms = 60000\n")).hop.lease_sweep_period_ms == 60000);
+  CHECK(what_of([] { maburgs::load_config(write_tmp("[hop]\nlease_sweep_period_ms = 499\n")); })
+            .find("lease_sweep_period_ms") != std::string::npos);
+  CHECK(what_of([] { maburgs::load_config(write_tmp("[hop]\nlease_sweep_period_ms = 60001\n")); })
+            .find("lease_sweep_period_ms") != std::string::npos);
+}
 // hop.dwell_observe_ms/dwell_period_ms slowed down for the 40 MHz pair
 // dwell (background dwell only); hop.burst_period_ms is the USB
 // freshness-burst pace, split off from dwell_period_ms. occupied_windows is

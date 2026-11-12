@@ -39,6 +39,7 @@
 #include "player_config.h"
 #include "player_config_apply.h"  // the live set/get control on 127.0.0.1:8403
 #include "button_bank.h"      // the settings menu's five-way pad
+#include "channel_observe.h"  // the Channel picker's own measuring-lease renewal
 #include "gs_config_apply.h"  // maburgs::kGsConfigControlPort, where the menu's GS sets go
 #include "gs_live_view.h"     // maburgs' live keys as the menu reads them
 #include "live_udp_client.h"
@@ -2359,6 +2360,10 @@ int main(int argc, char** argv) {
   // would otherwise let it collide with gs_client's own pending refresh
   // get.
   maburplay::LiveUdpClient vtx_client;
+  // The Channel picker's measuring lease (`observe`, docs/gs-live-config.md)
+  // is a third socket for the same reason: it is renewed on its own
+  // schedule, independent of any row's set or the view refresh.
+  maburplay::LiveUdpClient obs_client;
   if (menu_on) {
     std::string err;
     if (!gs_client.open(maburgs::kGsConfigControlPort, &err))
@@ -2368,10 +2373,19 @@ int main(int argc, char** argv) {
       std::fprintf(stderr,
                    "maburplay: menu: maburgs live config: %s -- drone rows will not apply\n",
                    err.c_str());
+    if (!obs_client.open(maburgs::kGsConfigControlPort, &err))
+      std::fprintf(stderr,
+                   "maburplay: menu: maburgs live config: %s -- the Channel picker's lease will "
+                   "not renew\n",
+                   err.c_str());
   }
+  maburplay::UdpObserveLink obs_link(obs_client);
+  maburplay::ChannelObserve channel_observe(obs_link);
   maburplay::MenuTreeDeps menu_deps;
   menu_deps.cfg = &cfg;
   menu_deps.gs = &gs_view;
+  menu_deps.observe_state = [&] { return channel_observe.state(); };
+  menu_deps.snap_stale = [&] { return !gs_src || gs_src->stale(mono_ms()); };
   menu_deps.rec_running = [&] { return rec_on; };
   menu_deps.burned_rec_running = [&] { return rec_on && rec_gs && burned_mode; };
 #ifdef MABUR_PLAYER_HW
@@ -2396,11 +2410,12 @@ int main(int argc, char** argv) {
   menu_model.set_has_sel(bank.has_sel());
   menu_model.set_show_advanced(cfg.menu.show_advanced);
   maburplay::PlayerLiveSetter player_setter(cfg_ctl, cfg_apply);
-  maburplay::GsLiveSetter gs_setter(gs_client);
-  maburplay::DroneLiveSetter drone_setter(vtx_client, [&] {
+  auto gs_snapshot_view = [&] {
     return maburplay::DroneSnapshotView{gs_src ? &gs_src->snapshot() : nullptr,
                                         !gs_src || gs_src->stale(mono_ms())};
-  });
+  };
+  maburplay::GsLiveSetter gs_setter(gs_client, gs_snapshot_view);
+  maburplay::DroneLiveSetter drone_setter(vtx_client, gs_snapshot_view);
   maburplay::MenuApplier menu_applier(menu_model, player_setter, gs_setter, drone_setter);
   maburplay::UdpGsViewSource gs_view_source(gs_client);
   maburplay::MenuSession menu(menu_model, menu_applier, gs_view_source, gs_view);
@@ -2475,6 +2490,10 @@ int main(int argc, char** argv) {
       for (const maburplay::KeyEvent& e : events)
         if (const std::optional<bool> repeat = menu.key(e, now_ms)) bank.set_repeat(*repeat);
       menu.tick(now_ms);
+      // Holds maburgs' measuring lease for exactly as long as the Channel
+      // picker is open on the model, including a whole-menu close with
+      // the picker still open underneath it.
+      channel_observe.tick(menu_model.open_choices_row() == maburplay::kChannelRow, now_ms);
       menu_model.set_linked(gs_src && !gs_src->stale(now_ms) && gs_src->snapshot().session);
       {
         const maburplay::GsSnapshot* snap = gs_src ? &gs_src->snapshot() : nullptr;

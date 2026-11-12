@@ -64,12 +64,13 @@ SHADOW_ALPHA = 0.92
 SHADOW_DY = 1
 DEFAULT_SIZES = [19, 21, 22, 24, 26, 34, 38, 56]
 
-# Printable ASCII plus five non-ASCII glyphs: U+25CF BLACK CIRCLE (the
-# recording dot, gs_layer.h's kDotFilled) is the only one the OSD draws.
-# U+2014 EM DASH, U+2212 MINUS SIGN, U+2192 RIGHTWARDS ARROW and U+25CB
-# WHITE CIRCLE are drawn by nothing -- the plain-ASCII compact bar renders
-# "--" and "-" instead -- but stay baked so the committed asset needn't be
-# regenerated for glyphs that cost a few hundred bytes each.
+# Printable ASCII plus three non-ASCII glyphs: U+2014 EM DASH, U+2212 MINUS
+# SIGN and U+2192 RIGHTWARDS ARROW are drawn by nothing -- the plain-ASCII
+# compact bar renders "--" and "-" instead -- but stay baked so the
+# committed asset needn't be regenerated for glyphs that cost a few hundred
+# bytes each. The OSD's one non-ASCII glyph, U+25CF BLACK CIRCLE (the
+# recording dot, gs_layer.h's kDotFilled), is in MENU_GLYPHS below, since
+# the menu draws it too.
 #
 # U+2014 was once missing from this list and the omission was invisible: draw_text advances the pen for a codepoint the atlas lacks, so
 # "——" rendered as correctly-sized EMPTY SPACE. Every test passed, because
@@ -84,6 +85,10 @@ DEFAULT_SIZES = [19, 21, 22, 24, 26, 34, 38, 56]
 # picker-choice separators, the number-range dash, the saved/failed marks
 # and the row warning triangle. test_gs_asset checks the shipped asset has
 # every one of these too.
+#
+# U+25CF and U+25CB are the Channel picker's five-bar clean-air icon
+# (menu_tree.cpp's clean_air_bars: one filled circle per bar, an outline
+# for the rest).
 #
 # U+00D7 and U+2260 are drawn by the settings menu: × by size_label()
 # ("1920×1080 @ 100 Hz" on the Display row's resolution picker, and the
@@ -105,6 +110,8 @@ MENU_GLYPHS = [
     0x2717,  # ✗  BALLOT X, failed
     0x2026,  # …  HORIZONTAL ELLIPSIS, drawn by the "Reading GS settings…" toast
     0x2260,  # ≠  NOT EQUAL TO, Display row's "≠ camera" warning
+    0x25CF,  # ●  BLACK CIRCLE, clean-air bar (and the OSD's recording dot)
+    0x25CB,  # ○  WHITE CIRCLE, clean-air bar not lit
 ]
 
 # BAR_ICONS are the compact bar's item icons (gs_compact.h, namespace
@@ -127,7 +134,7 @@ BAR_ICONS = [
     0xF033A,  # loss     link-variant-off
     0xF005D,  # uplink   arrow-up
 ]
-SUBSET = ([c for c in range(0x20, 0x7F)] + [0x2014, 0x2212, 0x2192, 0x25CF, 0x25CB]
+SUBSET = ([c for c in range(0x20, 0x7F)] + [0x2014, 0x2212, 0x2192]
           + sorted(MENU_GLYPHS) + sorted(BAR_ICONS))
 
 

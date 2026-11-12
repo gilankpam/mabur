@@ -47,8 +47,39 @@ player's GS OSD (:8302), `tools/flightreport.py` (over `flight.jsonl`).
   Semantics: `docs/link-adaptation.md`.
 - `residual_loss`, `pre_fec_loss`, `attrib.{residual_cur, close_ms}`,
   `layer_delivery_pct`.
-- `scan = {state, rounds, pick}` (top level, not under `link`) — the boot
-  channel scan, `docs/channel-select.md`.
+- `scan = {state, rounds, pick, pinned, members[], relocate, relocate_seq}`
+  (top level, not under `link`) — the boot channel scan, `docs/channel-select.md`.
+  `members[]` is one row per channel-set member, config order
+  (`ChannelCore::snapshot`, the goggles Link > Channel row's data):
+  `ch`, `pair_lo`/`pair_hi` (the standard HT40 pair either side of `ch`,
+  null at width 20 or when `ch` has no pair), `busy_pct` (the latest NHM
+  busy reading, null if never measured), `src` (`"scan"` the member
+  table below, `"op"` the verdict window, or null for never measured),
+  `age_ms` (null alongside `busy_pct`), `blocked` (`busy_pct >=
+  radio.scan.blocked_pct`, false when unmeasured), `is_op`
+  (`ch == ` the live op), `is_pin` (the frozen pick, pinned mode only).
+  The member table keeps each member's newest dwell reading only — boot
+  scout, in-flight scout, a calibration measure round or a relay sweep,
+  whichever landed last; a failed retune never lands one. The live op
+  reads differently while linked: its row's `busy_pct` is the verdict
+  window's own figure (the min across every card with a reading of NHM
+  busy minus that card's own airtime, floored at 0), not a dwell, since
+  the scout never dwells on op while linked — and only a window read on
+  that op: right after a hop or relocate the new op's row is null until
+  its first window lands. `relocate` is the live pin's
+  own move (`ChannelCore`'s `PinReloc`, `docs/channel-select.md` "Live
+  pin/auto"): `null` outside a linked pin move onto another channel;
+  `{state: "pending", ch, why: ""}` from `set_pin` until it settles;
+  `{state: "landed", ch, why: ""}` once the confirm (or a session dropped
+  right after it) lands it, or once the link comes back already on the
+  pin before the order ever left; `{state: "failed", ch, why}` otherwise, `why`
+  one of `withdrawn`, `refused (hop cap)`, `did not land`. No timer —
+  `pending` can hold indefinitely across a link loss before the order
+  ever leaves. `relocate_seq` bumps on every `set_pin` call that is not
+  refused (the no-op onto the channel already pinned included) and on
+  every `set_auto` call; a refused `set_pin` changes nothing and does not
+  bump it. The bump lets a watcher tell a still-pending outcome from a
+  fresh relocate that landed on the same channel it was already watching.
 
 #### Pre-FEC loss is late, not lost
 

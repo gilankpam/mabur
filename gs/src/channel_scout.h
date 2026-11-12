@@ -51,6 +51,13 @@ struct ScoutDwell {
 //  - search (link down): sweep the set, bursting DISC (beaconing() true for
 //    search_ms) on every member dwell so the drone can be FOUND wherever
 //    it is. Bursts happen only when search && the dwell channel is a member.
+//    set_search_observe(true) (an observe lease while unlinked) also turns
+//    the dwell's own NHM read on for these search dwells, same as a
+//    measuring dwell -- quiet() still holds the TX card's own DISC for the
+//    read, as any unlinked observe does. Such a dwell lands in this scout's
+//    own ranker like any observe, but nothing picks from it while the pick
+//    is closed, and unfreeze(), set_measure() and begin_round() each
+//    rebuild that ranker, so these readings never decide a later pick.
 //  - measure (auto mode, pick open): observe every member at the link
 //    width (at 40 one dwell on the primary reads the whole pair) and rank
 //    it. An observe while unlinked is quiet(): the TX card holds its DISC
@@ -89,6 +96,12 @@ class ChannelScout {
   // core -> scout (any thread)
   void set_op(uint8_t ch);
   void set_search(bool on) { search_.store(on, std::memory_order_release); }
+  // An observe lease while unlinked: each search dwell also reads NHM busy
+  // (run_once's step_dwell_ calls), feeding scan.members through the usual
+  // dwell record. The dwell also lands in this scout's own ranker, which
+  // nothing picks from while the pick is closed and which unfreeze(),
+  // set_measure() and begin_round() rebuild. A no-op while search is off.
+  void set_search_observe(bool on) { search_observe_.store(on, std::memory_order_release); }
   void set_tx_frames(uint64_t cumulative) { tx_frames_.store(cumulative, std::memory_order_release); }
   void freeze() { frozen_.store(true, std::memory_order_release); }  // pick closed: measuring stops
   // The pick open again (the GS went back to auto with no link): a fresh
@@ -158,6 +171,9 @@ class ChannelScout {
  private:
   bool has_work_() const;
   bool measuring_() const;
+  // search_observe_, gated on search_ itself being on: set_search_observe
+  // held from a stale lease (search just turned off) must not observe.
+  bool search_observe_on_() const;
   bool member_(uint8_t ch) const;
   int eff_min_rounds_() const;
   void park_();
@@ -184,6 +200,7 @@ class ChannelScout {
   std::atomic<uint8_t> op_;
   std::atomic<uint64_t> tx_frames_{0};
   std::atomic<bool> search_{false}, frozen_{false}, stop_{false};
+  std::atomic<bool> search_observe_{false};
   std::atomic<bool> measure_{true};
   std::atomic<bool> resched_{false};   // set_measure()/unfreeze(): rebuild sched_
   std::atomic<bool> reprelude_{false}; // unfreeze() re-armed the prelude: the run thread restarts t0_

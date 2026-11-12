@@ -45,6 +45,7 @@ ChannelCore::ChannelCore(ChannelCoreCfg cfg, std::vector<LinkCard*> cards, VrxCo
       width_tried_(static_cast<size_t>(n_cards_), false),
       energy_last_(static_cast<size_t>(n_cards_)),
       dwell_stats_(static_cast<size_t>(n_cards_)),
+      member_figs_(cfg_.radio.channels.size()),
       window_prev_(static_cast<size_t>(n_cards_)),
       window_prev_crc_(static_cast<size_t>(n_cards_), 0),
       window_prev_seq_exp_(static_cast<size_t>(n_cards_), 0),
@@ -139,6 +140,17 @@ bool ChannelCore::scout_owns_() const {
                     scout_->round_open());
 }
 
+void ChannelCore::emit_dwell_(double now_ms, int card, const ScoutDwell& d) {
+  sink_.dwell(now_ms, card, d);
+  if (!d.busy_valid || (d.survey.flags & devourer::chanmig::kFlagRetuneFailed)) return;
+  for (size_t i = 0; i < cfg_.radio.channels.size(); ++i) {
+    if (cfg_.radio.channels[i] == d.survey.def.primary) {
+      member_figs_[i] = MemberFig{d.busy_pct, static_cast<uint64_t>(now_ms)};
+      break;
+    }
+  }
+}
+
 ChannelSnapshot ChannelCore::snapshot(int tx_card) const {
   ChannelSnapshot s;
   s.channel = cards_[static_cast<size_t>(tx_card)]->channel();
@@ -163,6 +175,48 @@ ChannelSnapshot ChannelCore::snapshot(int tx_card) const {
   s.dwell = dwell_stats_;
   s.scout_gated_sends = scout_gated_sends_;
   s.pinned = pinned_;
+  const bool linked = hop_active(in_session_cur_, cal_running_cur_);
+  const uint64_t now = now_ms_();
+  s.members.reserve(cfg_.radio.channels.size());
+  for (size_t i = 0; i < cfg_.radio.channels.size(); ++i) {
+    const uint8_t ch = cfg_.radio.channels[i];
+    StatsScanMemberIn m;
+    m.ch = ch;
+    if (width_mhz_ == 40) {
+      if (const uint8_t other = mabur::ht40_pair_other(ch); other != 0) {
+        m.pair_lo = std::min(ch, other);
+        m.pair_hi = std::max(ch, other);
+      }
+    }
+    m.is_op = ch == plan_.op();
+    m.is_pin = pinned_ && frozen_pick_ == ch;
+    std::optional<double> busy_pct;
+    std::optional<uint64_t> t_ms;
+    if (linked && m.is_op) {
+      if (op_fig_ && op_fig_->ch == ch) { m.src = "op"; busy_pct = op_fig_->pct; t_ms = op_fig_->t_ms; }
+    } else if (member_figs_[i]) {
+      m.src = "scan"; busy_pct = member_figs_[i]->busy_pct; t_ms = member_figs_[i]->t_ms;
+    }
+    if (busy_pct) {
+      m.busy_pct = busy_pct;
+      m.age_ms = now >= *t_ms ? now - *t_ms : 0;
+      m.blocked = *busy_pct >= cfg_.radio.scan.busy.blocked_pct;
+    }
+    s.members.push_back(m);
+  }
+  switch (pin_reloc_.s) {
+    case PinReloc::Off:
+      break;
+    case PinReloc::Waiting:
+    case PinReloc::InFlight:
+      s.relocate = StatsRelocateIn{"pending", pin_reloc_.ch, ""};
+      break;
+    case PinReloc::Settled:
+      s.relocate = StatsRelocateIn{pin_reloc_.ok ? "landed" : "failed", pin_reloc_.ch,
+                                   pin_reloc_.ok ? "" : pin_reloc_.why};
+      break;
+  }
+  s.relocate_seq = pin_seq_;
   return s;
 }
 
@@ -188,6 +242,8 @@ ChannelTickOut ChannelCore::tick(const ChannelTickIn& in) {
   step_gates_();
   step_hop_edge_and_window_(in);
   step_cal_(in);
+  step_lease_(in);
+  step_pin_reloc_(in);
   step_controller_(in);
   step_move_edge_(in);
   step_drains_();
@@ -230,6 +286,9 @@ void ChannelCore::step_gates_() {
 }
 
 void ChannelCore::run_sampler_step() { sampler_->step_now(now_ms_u_cur_); }
+void ChannelCore::run_sampler_step_stamped(uint64_t stamp_ms) {
+  sampler_->step_stamped(stamp_ms, now_ms_());
+}
 
 void ChannelCore::on_card_died(int card) {
   if (sweep_.on && sweep_.card == card) sweep_ = PendingSweep{};   // no result coming; not a timeout
@@ -244,6 +303,12 @@ void ChannelCore::on_card_died(int card) {
     }
     scout_search_req_ = false;
     scout_->set_search(false);
+    // A lease round on the dead card ends now, straight to idle: left
+    // Measuring it would keep dwelling on a card that is gone.
+    if (lease_round_ && scout_->round_open()) {
+      scout_->cancel_round(/*force_idle=*/true);
+      lease_round_ = false;
+    }
   }
 }
 
@@ -365,8 +430,6 @@ void ChannelCore::dispatch_hop_action_(const HopAction& act, bool relocate_tick,
   boot_pick_.note_hop_action(act.kind, relocate_tick);
   const bool cal_order = relocate_tick && cal_reloc_tick_;
   const bool pin_order = relocate_tick && pin_reloc_tick_;
-  // Taken or refused at the cap: either way BootPick owns the outcome now.
-  if (pin_order) pin_reloc_.reset();
   if (cal_order) {
     if (act.kind == HopAction::Order) cal_reloc_.s = CalReloc::InFlight;
     else settle_cal_reloc_(false, "refused (hop cap)");
@@ -376,6 +439,23 @@ void ChannelCore::dispatch_hop_action_(const HopAction& act, bool relocate_tick,
       case HopAction::VerifyPass: settle_cal_reloc_(true, "landed"); break;
       case HopAction::Withdraw:   settle_cal_reloc_(false, "withdrawn"); break;
       case HopAction::Hold:       settle_cal_reloc_(false, "held"); break;
+      default: break;
+    }
+  }
+  // The pin's own relocate, same shape as the calibration one above: the
+  // tick that places the order moves it in flight (or settles it false on
+  // the spot, at the hop cap -- pin_refusal already keeps a pin off the
+  // cap, so the rig never takes this branch); every later action on an
+  // in-flight pin order is read here regardless of which tick's relocate
+  // this is.
+  if (pin_order) {
+    if (act.kind == HopAction::Order) pin_reloc_.s = PinReloc::InFlight;
+    else settle_pin_reloc_(false, "refused (hop cap)");
+  } else if (pin_reloc_.s == PinReloc::InFlight) {
+    switch (act.kind) {
+      case HopAction::Confirm:    pin_reloc_.confirmed = true; break;
+      case HopAction::VerifyPass: settle_pin_reloc_(true, "landed"); break;
+      case HopAction::Withdraw:   settle_pin_reloc_(false, "withdrawn"); break;
       default: break;
     }
   }
@@ -476,7 +556,7 @@ void ChannelCore::step_boot_pick_(const ChannelTickIn& in) {
     case BootPickOut::Relocate:
       pending_relocate_ = bo.ch;
       cal_reloc_tick_ = cal_reloc_.s == CalReloc::Waiting && bo.ch == cal_reloc_.ch;
-      pin_reloc_tick_ = pin_reloc_ && bo.ch == *pin_reloc_;
+      pin_reloc_tick_ = pin_reloc_.s == PinReloc::Waiting && bo.ch == pin_reloc_.ch;
       break;
     case BootPickOut::Freeze:
       if (bo.accept_op) plan_.set_want(now_ms, plan_.op());
@@ -487,6 +567,11 @@ void ChannelCore::step_boot_pick_(const ChannelTickIn& in) {
       sink_.log(logf_("maburgs channel: relocation to %u did not land; staying on %u",
                       static_cast<unsigned>(plan_.want()), static_cast<unsigned>(plan_.op())));
       plan_.set_want(now_ms, plan_.op());
+      // Usually a no-op: Confirm/VerifyPass/Withdraw already settled the pin's
+      // own outcome, straight off the controller's action, a tick ago. This
+      // only still finds Waiting/InFlight when nothing else did.
+      if (pin_reloc_.s == PinReloc::Waiting || pin_reloc_.s == PinReloc::InFlight)
+        settle_pin_reloc_(false, "did not land");
       break;
     case BootPickOut::None:
       break;
@@ -510,6 +595,7 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
   if (active != hop_was_active_) {
     hop_was_active_ = active;
     if (!active) dispatch_hop_action_(hopc_.on_session_lost(now_ms, plan_.op()), false, now_ms);
+    op_fig_.reset();
     verdict_.reset();
     last_verdict_ = Verdict::Healthy;
     last_verdict_out_ = VerdictOut{};
@@ -534,6 +620,35 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
   const auto rec = sampler_->take();
   if (!rec) return;
   const uint64_t t_ms = rec->t_ms;   // the sample instant: every per-window span is measured to it
+  if (lease_mask_from_ms_ < static_cast<double>(t_ms) &&
+      static_cast<double>(t_ms) <= lease_mask_until_ms_) {
+    // A window overlapping a one-card lease burst, or the one after it:
+    // the sole card was off op, so its own airtime, delivery and loss
+    // describe the burst, not the channel. Not classified -- the blocked
+    // streak, the detect ring and the persistence never see it and
+    // hop.verdict keeps its last value -- and not read for op's figure. Its
+    // counters become the baselines, so the next window measures only
+    // itself, and the loss windows swallow the gap's arrivals. A record
+    // stamped inside the burst read its counters once the burst released
+    // the card's lock, so its span starts at the burst's end.
+    for (int i = 0; i < n_cards_; ++i) {
+      const size_t si = static_cast<size_t>(i);
+      const CardSample& cs = rec->cards[si];
+      window_prev_ok_[si] = cs.valid && cs.channel == plan_.op();
+      if (!window_prev_ok_[si]) continue;
+      window_prev_[si] = cs.frames;
+      window_prev_crc_[si] = in.agg ? in.agg->card(i).crc_fail : 0;
+      window_prev_seq_exp_[si] = in.agg ? in.agg->card(i).seq_expected : 0;
+      window_prev_seq_rcv_[si] = in.agg ? in.agg->card(i).seq_received : 0;
+      window_prev_ms_[si] = std::max(t_ms, static_cast<uint64_t>(std::max(lease_burst_end_ms_, 0.0)));
+    }
+    recovered_prev_window_ = in.agg ? in.agg->decoder().stats(0).syms_recovered +
+                                          in.agg->decoder().stats(1).syms_recovered
+                                    : 0;
+    s1_hop_loss_.blank_until(lease_mask_until_ms_);
+    enh_hop_loss_.blank_until(lease_mask_until_ms_);
+    return;
+  }
   std::vector<VerdictCardIn> vc(static_cast<size_t>(n_cards_));
   std::optional<CalReading> op_read;   // the worst valid card's reading of op this window
   for (int i = 0; i < n_cards_; ++i) {
@@ -639,6 +754,17 @@ void ChannelCore::step_hop_edge_and_window_(const ChannelTickIn& in) {
     op_live_ = op_read;
     op_live_ms_ = now_ms;
   }
+  // scan.members[]'s own figure for op: the MIN across every card with a
+  // busy reading this window, unlike op_read's worst-case (above), which
+  // the calibration pick wants instead.
+  std::optional<double> op_fig_this_window;
+  for (int i = 0; i < n_cards_; ++i) {
+    const size_t si = static_cast<size_t>(i);
+    if (!vc[si].valid || !vc[si].busy_valid) continue;
+    const double fig = std::max(vc[si].nhm_busy_pct - vc[si].own_air_pct, 0.0);
+    op_fig_this_window = op_fig_this_window ? std::min(*op_fig_this_window, fig) : fig;
+  }
+  if (op_fig_this_window) op_fig_ = OpFig{*op_fig_this_window, t_ms, plan_.op()};
   VerdictLinkIn vl;
   vl.pre_fec_loss = hop_verdict_link_loss(s1_hop_loss_.sample(now_ms), enh_hop_loss_.sample(now_ms));
   const uint64_t recovered_now = in.agg ? in.agg->decoder().stats(0).syms_recovered +
@@ -712,14 +838,7 @@ void ChannelCore::step_controller_(const ChannelTickIn& in) {
     last_burst_ms_ = now_ms;
     if (relay_burst) {
       // Async: one SCAN for the set minus op; poll_sweep_ ranks the result.
-      std::vector<uint8_t> chans;
-      for (uint8_t c : cfg_.radio.channels) if (c != plan_.op()) chans.push_back(c);
-      if (!chans.empty() &&
-          cards_[static_cast<size_t>(burst_card)]->start_sweep(chans, kSweepPasses, kSweepObserveMs)) {
-        const double need = static_cast<double>(kSweepPasses) * static_cast<double>(chans.size()) *
-                                (kSweepObserveMs + kSweepPerChannelMs) + kSweepSlackMs;
-        sweep_ = PendingSweep{true, burst_card, now_ms, std::max(kSweepTimeoutMinMs, need)};
-      } else {
+      if (!send_relay_sweep_(burst_card, now_ms, /*lease=*/false)) {
         // Nothing ran (a ready->down race, or a one-member set): the burst
         // is not spent. ready() gates sweepable, so this is rare; retrying
         // next tick is cheaper than a fall-through second pick.
@@ -746,7 +865,7 @@ void ChannelCore::step_controller_(const ChannelTickIn& in) {
         for (const auto& v : burst_on_card_(burst_card, plan_.op(), recs)) ranker_.add(v);
       }
       cur_ch_[static_cast<size_t>(burst_card)] = cards_[static_cast<size_t>(burst_card)]->channel();
-      for (const auto& d : recs) sink_.dwell(now_ms, burst_card, d);
+      for (const auto& d : recs) emit_dwell_(now_ms, burst_card, d);
       fill_hop_targets(ht);
     }
   }
@@ -827,7 +946,7 @@ void ChannelCore::step_move_edge_(const ChannelTickIn& in) {
 
 void ChannelCore::step_drains_() {
   if (scout_)
-    for (const auto& d : scout_->take_dwells()) sink_.dwell(now_ms_cur_, scout_card_, d);
+    for (const auto& d : scout_->take_dwells()) emit_dwell_(now_ms_cur_, scout_card_, d);
   start_inflight_if_due_();
   std::vector<std::pair<int, ScoutDwell>> drained;
   std::vector<HopVisit> visits;
@@ -843,7 +962,7 @@ void ChannelCore::step_drains_() {
   for (auto& rec : drained) {
     const int card = rec.first;
     cur_ch_[static_cast<size_t>(card)] = cards_[static_cast<size_t>(card)]->channel();
-    sink_.dwell(now_ms_cur_, card, rec.second);
+    emit_dwell_(now_ms_cur_, card, rec.second);
     const bool ok = !(rec.second.survey.flags & devourer::chanmig::kFlagRetuneFailed);
     StatsDwellIn ds = dwell_stats_[static_cast<size_t>(card)].value_or(StatsDwellIn{});
     ++ds.visits;
@@ -917,6 +1036,20 @@ void ChannelCore::step_mechanical_retune_() {
   }
 }
 
+// One SCAN for the set minus op, if there is a channel to sweep and the
+// card takes it. Shared by the hop's own relay burst and the lease's, so
+// the channel filter and the timeout formula live in exactly one place.
+bool ChannelCore::send_relay_sweep_(int card, double now_ms, bool lease) {
+  std::vector<uint8_t> chans;
+  for (uint8_t c : cfg_.radio.channels) if (c != plan_.op()) chans.push_back(c);
+  if (chans.empty() || !cards_[static_cast<size_t>(card)]->start_sweep(chans, kSweepPasses, kSweepObserveMs))
+    return false;
+  const double need = static_cast<double>(kSweepPasses) * static_cast<double>(chans.size()) *
+                          (kSweepObserveMs + kSweepPerChannelMs) + kSweepSlackMs;
+  sweep_ = PendingSweep{true, card, now_ms, std::max(kSweepTimeoutMinMs, need), lease};
+  return true;
+}
+
 void ChannelCore::poll_sweep_(double now_ms) {
   if (!sweep_.on) return;
   auto& fe = *cards_[static_cast<size_t>(sweep_.card)];
@@ -931,12 +1064,13 @@ void ChannelCore::poll_sweep_(double now_ms) {
     return;
   }
   if (auto r = fe.take_sweep_result()) {
+    const bool lease = sweep_.lease;
     sweep_.on = false;
     ++sweep_round_;
     for (const auto& e : r->entries) {
       if (!e.valid) continue;
-      ranker_.add(sweep_visit(e, now_ms));
-      sink_.dwell(now_ms, sweep_.card, sweep_dwell(e, sweep_round_));
+      if (!lease) ranker_.add(sweep_visit(e, now_ms));   // a lease sweep never ranks
+      emit_dwell_(now_ms, sweep_.card, sweep_dwell(e, sweep_round_));
     }
     if (r->status != 0)
       sink_.log(logf_("maburgs hop: relay sweep status %u, radio back on %u",
@@ -949,6 +1083,8 @@ bool ChannelCore::cal_can_measure() const {
 }
 
 void ChannelCore::begin_cal_measure(double now_ms) {
+  // Calibration is the operator's explicit action: it pre-empts the picker.
+  end_lease_();
   if (cal_reloc_.s != CalReloc::Waiting && cal_reloc_.s != CalReloc::InFlight) cal_reloc_ = CalReloc{};
   if (!cal_can_measure()) return;
   if (cal_meas_.s == CalMeasure::Waiting || cal_meas_.s == CalMeasure::Running) return;
@@ -1080,9 +1216,24 @@ void ChannelCore::set_width(uint8_t want) {
 std::optional<std::string> ChannelCore::set_pin(uint8_t ch) {
   const double now_ms = now_ms_cur_;
   if (auto r = pin_refusal(ch)) return r;
+  // Before the set_measure(false) below: the lease round is cancelled
+  // (Measuring -> Measured) first, so the scout parks on its next step and
+  // the pin's relocate is placed once the card is back.
+  end_lease_();
   const bool linked = in_session_cur_;
   const uint8_t op = plan_.op();
-  if (pinned_ && ch == op && plan_.want() == ch) return std::nullopt;
+  // Every call that gets this far bumps scan.relocate_seq, even the no-op
+  // below: the goggles menu needs its own fresh seq to tell "I heard you,
+  // nothing moved" apart from a stale one it was already watching.
+  ++pin_seq_;
+  if (pinned_ && ch == op && plan_.want() == ch) {
+    // Pinning where the link already is drops whatever outcome was still
+    // sitting here (a prior pin's withdrawn/landed/failed) -- ch == op is
+    // Off per the table below, same as the ch == op arm just under this.
+    // Can only be Off or Settled here: Waiting/InFlight imply want != op.
+    pin_reloc_ = PinReloc{};
+    return std::nullopt;
+  }
   if (linked) {
     // The boot pick's relocate, as a pinned boot relocates a drone found
     // off the pin: want moves, BootPick places the order once the scout
@@ -1091,15 +1242,15 @@ std::optional<std::string> ChannelCore::set_pin(uint8_t ch) {
     plan_.set_want(now_ms, ch);
     if (ch != op) {
       boot_pick_.rearm_relocation();
-      pin_reloc_ = ch;
+      pin_reloc_ = PinReloc{PinReloc::Waiting, ch, false, false, ""};
     } else {
-      pin_reloc_.reset();
+      pin_reloc_ = PinReloc{};
     }
   } else {
     // No link to carry: op moves now, the cards follow on the next tick
     // and the search runs from there.
     plan_.commit(now_ms, ch);
-    pin_reloc_.reset();
+    pin_reloc_ = PinReloc{};
     if (scout_) scout_->set_op(ch);
   }
   pinned_ = true;
@@ -1108,6 +1259,7 @@ std::optional<std::string> ChannelCore::set_pin(uint8_t ch) {
   if (scout_) {
     scout_->freeze();
     scout_->set_measure(false);   // a pinned scout searches the members only, as at boot
+    lease_forced_measure_ = false;
   }
   if (boot_pick_.open()) boot_pick_ = BootPick(false);
   if (linked && ch != op)
@@ -1132,13 +1284,18 @@ void ChannelCore::replace_ladder(const LadderCfg& ladder, double now_ms) {
 }
 
 void ChannelCore::set_auto() {
+  ++pin_seq_;   // every call, even the no-op below: auto stops watching either way
+  end_lease_();
   if (!pinned_) return;
+  // Auto measures for good: the lease must not turn it off once it lapses.
+  lease_forced_measure_ = false;
   pinned_ = false;
   reactive_ = true;
   // A pin relocate not yet handed to the controller is withdrawn (auto
-  // places no relocate); one already placed lands or fails as it would have.
-  if (pin_reloc_ && !plan_.hopping()) plan_.set_want(now_ms_cur_, plan_.op());
-  pin_reloc_.reset();
+  // places no relocate); one already placed lands or fails as it would
+  // have -- it just stops being the channel row's tracked relocate.
+  if (pin_reloc_.s == PinReloc::Waiting && !plan_.hopping()) plan_.set_want(now_ms_cur_, plan_.op());
+  pin_reloc_ = PinReloc{};
   const bool linked = in_session_cur_ || cal_running_cur_;
   const bool can_pick = scout_ != nullptr && !relay_search_only_;
   if (linked) {
@@ -1175,6 +1332,13 @@ void ChannelCore::settle_cal_reloc_(bool ok, const char* why) {
   cal_reloc_.ok = ok;
   sink_.log(logf_("maburgs channel: calibration relocate to %u %s", static_cast<unsigned>(cal_reloc_.ch),
                   why));
+}
+
+void ChannelCore::settle_pin_reloc_(bool ok, const char* why) {
+  pin_reloc_.s = PinReloc::Settled;
+  pin_reloc_.ok = ok;
+  pin_reloc_.why = why;
+  sink_.log(logf_("maburgs channel: pin relocate to %u %s", static_cast<unsigned>(pin_reloc_.ch), why));
 }
 
 void ChannelCore::step_cal_(const ChannelTickIn& in) {
@@ -1235,6 +1399,208 @@ void ChannelCore::step_cal_(const ChannelTickIn& in) {
     sink_.log(logf_("maburgs channel: calibration measure round overran %.0f ms; staying on %u",
                     cal_meas_.bound_ms, static_cast<unsigned>(plan_.op())));
   }
+}
+
+void ChannelCore::step_pin_reloc_(const ChannelTickIn& in) {
+  if (pin_reloc_.s == PinReloc::InFlight && pin_reloc_.confirmed && hopc_.state() == HopState::Idle)
+    settle_pin_reloc_(true, "landed");
+  // Linked on the pin without the order ever leaving: a link lost before
+  // it, then found again on the pinned channel (link_found), leaves want
+  // == op, so BootPick never places a relocate and nothing else would
+  // settle this.
+  if (pin_reloc_.s == PinReloc::Waiting && hop_active(in.in_session, in.cal_running) &&
+      !plan_.hopping() && plan_.op() == pin_reloc_.ch)
+    settle_pin_reloc_(true, "landed");
+}
+
+bool ChannelCore::observing() const {
+  return static_cast<double>(now_ms_()) < lease_until_;
+}
+
+LeaseState ChannelCore::lease_state() const {
+  // Calibration's measure round and relocate run before cal_running is
+  // set: gating on cal_running alone would let back-to-back lease rounds
+  // starve its round start, which needs the scout card free.
+  if (cal_running_cur_ || cal_meas_.s == CalMeasure::Waiting || cal_meas_.s == CalMeasure::Running ||
+      cal_reloc_.s == CalReloc::Waiting || cal_reloc_.s == CalReloc::InFlight)
+    return LeaseState::None;
+  if (boot_pick_.open()) return LeaseState::None;   // the boot scout measures anyway
+  if (!in_session_cur_)
+    return (scout_ && scout_search_req_ && !relay_search_only_) ? LeaseState::Search : LeaseState::None;
+  if (cfg_.n_usb >= 2 && scout_ && !relay_search_only_) return LeaseState::TwoCard;
+  if (cfg_.n_usb == 1 && scout_) return LeaseState::OneCard;
+  if (cfg_.n_usb == 0)
+    for (int i = 0; i < n_cards_; ++i)
+      if (can_sweep_[static_cast<size_t>(i)] && cards_[static_cast<size_t>(i)]->ready())
+        return LeaseState::Relay;
+  return LeaseState::None;
+}
+
+LeaseState ChannelCore::observe(int ms) {
+  if (ms <= 0) {
+    end_lease_();
+    return LeaseState::None;
+  }
+  ms = std::clamp(ms, 500, 5000);
+  lease_until_ = static_cast<double>(now_ms_()) + ms;
+  const LeaseState st = lease_state();
+  if (st != lease_logged_) {
+    lease_logged_ = st;
+    sink_.log(logf_("maburgs channel: observe lease %d (%s)", ms, lease_state_name(st)));
+  }
+  return st;
+}
+
+std::string ChannelCore::observe_verb(const std::string& rest) {
+  static const std::string kUsage = "err usage: observe <ms>";
+  if (rest.empty()) return kUsage;
+  for (char c : rest)
+    if (c < '0' || c > '9') return kUsage;
+  // Anything past nine digits is far over the clamp anyway.
+  const int ms = rest.size() > 9 ? 5000 : std::stoi(rest);
+  return std::string("ok observe ") + lease_state_name(observe(ms));
+}
+
+void ChannelCore::lapse_lease_() {
+  if (lease_until_ <= 0) return;
+  lease_until_ = 0;
+  lease_logged_ = LeaseState::None;
+  // The burst/sweep pacing is per lease: the next lease's first one goes
+  // at once, even when it is taken again inside one period.
+  last_lease_burst_ms_ = -1e18;
+  last_lease_sweep_ms_ = -1e18;
+  sink_.log("maburgs channel: observe lease lapsed");
+}
+
+void ChannelCore::end_lease_() {
+  lapse_lease_();
+  if (lease_round_ && scout_ && scout_->round_open()) scout_->cancel_round(/*force_idle=*/!scout_started_);
+  lease_round_ = false;
+}
+
+void ChannelCore::step_lease_(const ChannelTickIn& in) {
+  if (!scout_) return;
+  // Unlinked with the scout searching, a held lease turns the search
+  // dwells' own NHM read on; unconditional so it also turns off the tick
+  // the lease lapses or the state moves off Search (linking, a boot pick
+  // reopening, calibration taking the scout).
+  scout_->set_search_observe(observing() && lease_state() == LeaseState::Search);
+  // A calibration run pre-empts the lease. A pinned or one-card GS starts
+  // its run without a measure round (no begin_cal_measure), so the run's
+  // first tick is where an open lease round is cancelled: left to finish
+  // it would hold an RX card off op into the first sweep.
+  if (in.cal_running && lease_round_) end_lease_();
+  if (lease_until_ > 0 && !observing()) lapse_lease_();   // ran out: the open round runs to its end
+  if (lease_round_ && !scout_->round_open()) lease_round_ = false;
+  if (!observing()) {
+    if (lease_forced_measure_ && !scout_->round_open()) {
+      scout_->set_measure(false);
+      lease_forced_measure_ = false;
+    }
+    return;
+  }
+  const LeaseState st = lease_state();
+  if (st == LeaseState::OneCard) {
+    step_lease_one_card_(in);
+    return;
+  }
+  if (st == LeaseState::Relay) {
+    step_lease_relay_(in);
+    return;
+  }
+  if (st != LeaseState::TwoCard || lease_round_) return;
+  // step_cal_'s round-start conditions, plus no relocate handed out or due
+  // this tick: a round starting on the tick BootPick hands out a Relocate
+  // would hide it from the controller, and BootPick has already spent its
+  // once-per-link-up try. relocation_pending covers the relocate BootPick
+  // is about to hand out: the threaded scout can park between
+  // step_boot_pick_ (which saw it owning the card, so handed nothing out)
+  // and here, and a round started now would hide that relocate next tick.
+  if (!hop_active(in.in_session, in.cal_running) || !scout_started_ || scout_card_down_ ||
+      scout_owns_() || boot_pick_.open() || boot_pick_.relocating() || plan_.hopping() || sweep_.on ||
+      dwell_busy_.load() || !(hopc_.state() == HopState::Idle || hopc_.state() == HopState::Hold) ||
+      pending_relocate_ || boot_pick_.relocation_pending(last_bi_))
+    return;
+  if (pinned_ && !lease_forced_measure_) {
+    // A GS that booted pinned never froze its scout, and a pinned scout
+    // does not measure: freeze first, or measuring would reopen the pick.
+    scout_->freeze();
+    scout_->set_measure(true);
+    lease_forced_measure_ = true;
+  }
+  {
+    // As step_cal_: inflight_mu_ then the card's device-use lock.
+    std::lock_guard<std::mutex> ilk(inflight_mu_);
+    auto hold = sampler_->hold_card(static_cast<size_t>(scout_card_));
+    scout_->begin_round();
+    scout_working_atomic_.store(true, std::memory_order_relaxed);
+    step_gates_();
+  }
+  lease_round_ = true;
+}
+
+void ChannelCore::step_lease_one_card_(const ChannelTickIn& in) {
+  const double now_ms = in.now_ms;
+  if (now_ms - last_lease_burst_ms_ < static_cast<double>(cfg_.hop.lease_sweep_period_ms)) return;
+  // The in-flight burst's own conditions: never while a hop or relocate is
+  // in flight or due (the controller past Idle/Hold, the plan hopping, a
+  // relocate handed out, or the one BootPick is about to hand out), a relay
+  // sweep or a posted burst is out, or the scout owns the card. In auto
+  // mode a live trigger, or the verdict's frozen episode around it, is a
+  // hop being decided: step_controller_ runs its own freshness burst and
+  // orders on the windows a lease burst would mask, and that burst's dwells
+  // reach scan.members as well. The trigger alone is not enough: the window
+  // after each freshness burst has no NHM reading (the arm went stale), so
+  // it drops for a window while the episode -- and a Hold -- goes on.
+  if (!inflight_ || !hop_active(in.in_session, in.cal_running) || plan_.hopping() ||
+      (reactive_ && (last_verdict_out_.trigger || last_verdict_out_.ref_frozen)) ||
+      !(hopc_.state() == HopState::Idle || hopc_.state() == HopState::Hold) || pending_relocate_ ||
+      boot_pick_.relocation_pending(last_bi_) || sweep_.on || scout_owns_() || burst_inflight_ ||
+      dwell_busy_.load() || !cards_[static_cast<size_t>(scout_card_)]->ready())
+    return;
+  last_lease_burst_ms_ = now_ms;
+  std::vector<ScoutDwell> recs;
+  const double start_ms = static_cast<double>(now_ms_());
+  {
+    // Synchronous, on the core thread, even when a relay carries TX and the
+    // USB card is the spare: a burst posted to the in-flight thread comes
+    // back through step_drains_, which ranks its visits and holds the hop
+    // trigger. inflight_mu_ then the card's device-use lock (inside
+    // burst_on_card_), as step_controller_'s synchronous burst.
+    std::lock_guard<std::mutex> ilk(inflight_mu_);
+    burst_on_card_(scout_card_, plan_.op(), recs);   // its visits are dropped: the lease never ranks
+  }
+  const double end_ms = static_cast<double>(now_ms_());
+  lease_burst_end_ms_ = end_ms;
+  lease_mask_from_ms_ = start_ms;
+  lease_mask_until_ms_ = end_ms + static_cast<double>(cfg_.hop.window_ms);
+  cur_ch_[static_cast<size_t>(scout_card_)] = cards_[static_cast<size_t>(scout_card_)]->channel();
+  for (const auto& d : recs) emit_dwell_(now_ms, scout_card_, d);
+}
+
+// The relay-only lease: one SCAN on the sole sweepable card at most once
+// per relay_burst_period_ms. Unlike the one-card burst this never waits on
+// reactive_ or a live trigger -- the lease measures for the player, not for
+// a hop decision -- it only waits out a hop or relocate already in flight
+// or due, or a sweep (the hop's own freshness burst or an earlier lease
+// sweep) already out, so the two never race for the one relay.
+void ChannelCore::step_lease_relay_(const ChannelTickIn& in) {
+  const double now_ms = in.now_ms;
+  if (sweep_.on || now_ms - last_lease_sweep_ms_ < static_cast<double>(cfg_.hop.relay_burst_period_ms))
+    return;
+  if (plan_.hopping() || !(hopc_.state() == HopState::Idle || hopc_.state() == HopState::Hold) ||
+      pending_relocate_ || boot_pick_.relocation_pending(last_bi_) || boot_pick_.relocating() ||
+      scout_owns_())
+    return;
+  std::vector<bool> sweepable(static_cast<size_t>(n_cards_));
+  for (int i = 0; i < n_cards_; ++i)
+    sweepable[static_cast<size_t>(i)] = can_sweep_[static_cast<size_t>(i)] && cards_[static_cast<size_t>(i)]->ready();
+  const int burst_card = pick_burst_card(can_scout_, sweepable, in.tx_card);
+  if (burst_card < 0 || !sweepable[static_cast<size_t>(burst_card)]) return;
+  const double prev_sweep_ms = last_lease_sweep_ms_;
+  last_lease_sweep_ms_ = now_ms;
+  if (!send_relay_sweep_(burst_card, now_ms, /*lease=*/true))
+    last_lease_sweep_ms_ = prev_sweep_ms;   // a ready->down race, or a one-member set: retry next tick
 }
 
 void ChannelCore::finish_cal_measure_(double now_ms) {

@@ -25,18 +25,26 @@
 #include "player_config_apply.h"
 #include "scratch.h"
 
+using maburplay::age_text;
 using maburplay::build_menu_tree;
 using maburplay::Choice;
+using maburplay::ChoiceTone;
+using maburplay::clean_air_bars;
+using maburplay::clean_air_level;
 using maburplay::drone_header;
 using maburplay::drone_pill_mark;
 using maburplay::GsLiveView;
 using maburplay::GsSnapshot;
+using maburplay::kChannelRow;
+using maburplay::kFreshMs;
 using maburplay::MenuNode;
 using maburplay::MenuTreeDeps;
 using maburplay::ModeCand;
 using maburplay::NodeKind;
 using maburplay::Owner;
 using maburplay::Rung;
+using maburplay::ScanMember;
+using maburplay::ScanRelocate;
 using maburplay::SetStep;
 using maburplay::VtxRow;
 using maburplay::VtxState;
@@ -90,6 +98,8 @@ struct Fx {
   double cam = 0;
   std::string running;
   std::function<bool()> refresh_sync_available;
+  std::string observe;   // ChannelObserve::state(): "" while the picker is closed
+  bool stale = false;    // the sideport's staleness read (MenuTreeDeps::snap_stale)
 
   // Fills snap.vtx (creating it linked, list "complete") with one row,
   // updating it in place when `id` is already there.
@@ -124,6 +134,8 @@ struct Fx {
     d.camera_hz = [this] { return cam; };
     d.running_mode = [this] { return running; };
     d.refresh_sync_available = refresh_sync_available;
+    d.observe_state = [this] { return observe; };
+    d.snap_stale = [this] { return stale; };
     return d;
   }
   std::vector<MenuNode> tree() { return build_menu_tree(deps()); }
@@ -155,6 +167,16 @@ std::vector<std::string> labels(const std::vector<Choice>& cs) {
   for (const Choice& c : cs) v.push_back(c.label);
   return v;
 }
+std::vector<std::string> notes(const std::vector<Choice>& cs) {
+  std::vector<std::string> v;
+  for (const Choice& c : cs) v.push_back(c.note);
+  return v;
+}
+const Choice* choice_with(const std::vector<Choice>& cs, const std::string& value) {
+  for (const Choice& c : cs)
+    if (c.value == value) return &c;
+  return nullptr;
+}
 bool vis(const MenuNode& n) { return !n.visible || n.visible(); }
 // What the model asks before sending `v`: a null confirm asks nothing.
 std::string confirm(const MenuNode& n, const std::string& v) { return n.confirm ? n.confirm(v) : ""; }
@@ -173,11 +195,8 @@ TEST(the_top_level_groups_are_video_link_recording_osd_system) {
   }
   REQUIRE((got ==
            std::vector<std::string>{"Video", "Link", "Recording", "OSD", "Power & FC", "System"}));
-  // No Channel row and no Calibration group yet.
-  for (const MenuNode& n : t[1].children()) {
-    CHECK(n.label != "Channel");
-    CHECK(n.label != "Calibration");
-  }
+  // No Calibration group yet.
+  for (const MenuNode& n : t[1].children()) CHECK(n.label != "Calibration");
 }
 
 TEST(top_level_groups_include_power_and_fc) {
@@ -283,6 +302,245 @@ TEST(width_reads_mixed_and_offers_only_20_and_40) {
   CHECK((labels(w.choices()) == std::vector<std::string>{"40 MHz", "20 MHz"}));
   CHECK(w.current() != "40" && w.current() != "20");   // the picker opens unmarked
   CHECK(w.help().find("mixes 20 and 40 MHz") != std::string::npos);
+}
+
+// --- Channel -------------------------------------------------------------
+
+TEST(clean_air_level_bands_at_each_boundary) {
+  CHECK(clean_air_level(0) == 5);
+  CHECK(clean_air_level(4.99) == 5);
+  CHECK(clean_air_level(5) == 4);
+  CHECK(clean_air_level(11.99) == 4);
+  CHECK(clean_air_level(12) == 3);
+  CHECK(clean_air_level(24.99) == 3);
+  CHECK(clean_air_level(25) == 2);
+  CHECK(clean_air_level(49.99) == 2);
+  CHECK(clean_air_level(50) == 1);
+  CHECK(clean_air_level(100) == 1);
+}
+
+TEST(clean_air_bars_draws_filled_then_empty) {
+  CHECK(clean_air_bars(3.0) == "●●●●●");   // busy 3% -> level 5
+  CHECK(clean_air_bars(20.0) == "●●●○○");  // busy 20% -> level 3
+  CHECK(clean_air_bars(std::nullopt) == "○○○○○");
+}
+
+TEST(age_text_seconds_then_minutes) {
+  CHECK(age_text(40000) == "40 s ago");
+  CHECK(age_text(180000) == "3 min ago");
+}
+
+ScanMember member(int ch, std::optional<double> busy, std::optional<int64_t> age_ms = std::nullopt,
+                   std::optional<int> pair_lo = std::nullopt, std::optional<int> pair_hi = std::nullopt,
+                   bool is_op = false, bool is_pin = false) {
+  ScanMember m;
+  m.ch = ch;
+  m.busy_pct = busy;
+  m.age_ms = age_ms;
+  m.pair_lo = pair_lo;
+  m.pair_hi = pair_hi;
+  m.is_op = is_op;
+  m.is_pin = is_pin;
+  m.src = busy ? "scan" : "";
+  return m;
+}
+
+TEST(channel_row_value_auto_linked_and_unlinked) {
+  Fx f;
+  f.snap.session = true;
+  f.snap.channel = 144;
+  CHECK(f.node("link.channel").value_text() == "Auto (on 144)");
+  f.snap.session = false;
+  CHECK(f.node("link.channel").value_text() == "Auto (on —)");
+}
+
+TEST(channel_row_value_pinned_landed_and_not) {
+  Fx f;
+  f.gs.pinned_channel = 144;
+  f.snap.session = true;
+  f.snap.channel = 144;
+  MenuNode n = f.node("link.channel");
+  CHECK(n.value_text() == "144 ● link");
+  CHECK(n.warn().empty());
+  f.snap.channel = 112;
+  n = f.node("link.channel");
+  CHECK(n.value_text() == "144");
+  CHECK(n.warn() == "link on 112");
+}
+
+TEST(channel_row_choices_label_bars_and_tone) {
+  Fx f;
+  f.snap.scan_members = {member(144, 20.0, 1000, 140, 144)};
+  const MenuNode n = f.node("link.channel");
+  const auto cs = n.choices();
+  REQUIRE(cs.size() == 2);
+  CHECK(cs[1].value == "144");
+  CHECK(cs[1].label == "144 · 140+144");
+  CHECK(cs[1].note == "●●●○○");
+  CHECK(cs[1].tone == ChoiceTone::kWarn);
+}
+
+TEST(channel_row_aged_figure_is_dim_with_its_age) {
+  Fx f;
+  f.snap.scan_members = {member(144, 3.0, 40000)};
+  const auto cs = f.node("link.channel").choices();
+  const Choice* c = choice_with(cs, "144");
+  REQUIRE(c != nullptr);
+  CHECK(c->note == "●●●●● · 40 s ago");
+  CHECK(c->tone == ChoiceTone::kDim);
+}
+
+TEST(channel_row_unmeasured_member) {
+  Fx f;
+  f.snap.scan_members = {member(144, std::nullopt)};
+  const auto cs = f.node("link.channel").choices();
+  const Choice* c = choice_with(cs, "144");
+  REQUIRE(c != nullptr);
+  CHECK(c->note == "○○○○○ · not measured");
+  CHECK(c->tone == ChoiceTone::kDim);
+}
+
+TEST(channel_row_marks_the_link_member) {
+  Fx f;
+  f.snap.session = true;
+  f.snap.channel = 112;
+  f.snap.scan_members = {member(144, 3.0), member(112, 3.0)};
+  const auto cs = f.node("link.channel").choices();
+  CHECK(choice_with(cs, "144")->note.find(" · link") == std::string::npos);
+  CHECK(choice_with(cs, "112")->note.find(" · link") != std::string::npos);
+  // Pinned on the link member itself: it is the current value, no mark.
+  f.gs.pinned_channel = 112;
+  const auto cs2 = f.node("link.channel").choices();
+  CHECK(choice_with(cs2, "112")->note.find(" · link") == std::string::npos);
+}
+
+TEST(channel_row_labels_without_pair) {
+  Fx f;
+  f.snap.scan_members = {member(40, 3.0)};
+  const auto cs = f.node("link.channel").choices();
+  CHECK(choice_with(cs, "40")->label == "40");
+}
+
+TEST(channel_row_without_members_lists_auto_only) {
+  Fx f;
+  CHECK(values(f.node("link.channel").choices()) == std::vector<std::string>{"auto"});
+  f.snap.scan_members.clear();
+  CHECK(values(f.node("link.channel").choices()) == std::vector<std::string>{"auto"});
+  f.gs.pinned_channel = 144;
+  const auto cs = f.node("link.channel").choices();
+  REQUIRE(cs.size() == 2);
+  CHECK(cs[1].value == "144");
+  CHECK(cs[1].label == "144");
+  CHECK(cs[1].note == "○○○○○ · not measured");
+  CHECK(cs[1].tone == ChoiceTone::kDim);
+}
+
+TEST(channel_row_confirm_texts) {
+  Fx f;
+  f.snap.session = true;
+  f.snap.channel = 144;
+  const MenuNode n = f.node("link.channel");
+  CHECK(confirm(n, "auto").empty());
+  CHECK(confirm(n, "144") == "Auto stops choosing for you.");
+  CHECK(confirm(n, "112") ==
+        "The link moves to 112 and stays there: Auto stops choosing for you.");
+}
+
+TEST(channel_row_steps_quote_auto) {
+  Fx f;
+  const MenuNode n = f.node("link.channel");
+  CHECK((n.steps("auto") == std::vector<SetStep>{{Owner::kGs, "radio.channel", "\"auto\""}}));
+  CHECK((n.steps("144") == std::vector<SetStep>{{Owner::kGs, "radio.channel", "144"}}));
+}
+
+TEST(channel_row_help_while_measuring) {
+  Fx f;
+  f.observe = "one_card";
+  CHECK(f.node("link.channel").help() == "Measuring — video pauses each second.");
+  for (const char* st : {"two_card", "relay", "search"}) {
+    f.observe = st;
+    CHECK(f.node("link.channel").help() == "Measuring.");
+  }
+  f.observe = "none";
+  CHECK(f.node("link.channel").help().find("Measuring") == std::string::npos);
+  f.observe = "";
+  CHECK(f.node("link.channel").help().find("Measuring") == std::string::npos);
+}
+
+TEST(channel_row_help_pinned_unlinked) {
+  Fx f;
+  f.gs.pinned_channel = 144;
+  CHECK(f.node("link.channel").help() ==
+        "Pinned to 144 — the link moves here when it comes back.");
+  f.snap.session = true;
+  f.snap.channel = 112;
+  CHECK(f.node("link.channel").help() == "Pinned here, link still on 112.");
+  f.snap.channel = 144;
+  CHECK(f.node("link.channel").help().find("Auto picks the cleanest") == 0);
+}
+
+// A failed pin keeps its reason on the help line for as long as it holds
+// (the reply's red error lasts only kErrorMs): pinned, linked elsewhere,
+// and scan.relocate failed for this very pin.
+TEST(channel_row_help_pinned_relocate_failed) {
+  Fx f;
+  f.gs.pinned_channel = 144;
+  f.snap.session = true;
+  f.snap.channel = 112;
+  f.snap.scan_relocate = ScanRelocate{"failed", 144, "withdrawn"};
+  CHECK(f.node("link.channel").help() == "Pinned here, link still on 112 — withdrawn.");
+  CHECK(f.node("link.channel").warn() == "link on 112");
+  f.snap.scan_relocate = ScanRelocate{"failed", 64, "withdrawn"};   // another pin's outcome
+  CHECK(f.node("link.channel").help() == "Pinned here, link still on 112.");
+  f.snap.scan_relocate = ScanRelocate{"pending", 144, ""};
+  CHECK(f.node("link.channel").help() == "Pinned here, link still on 112.");
+  f.snap.scan_relocate = ScanRelocate{"failed", 144, "withdrawn"};
+  f.snap.channel = 144;                                              // the link got there after all
+  CHECK(f.node("link.channel").help().find("Auto picks the cleanest") == 0);
+  f.snap.session = false;
+  CHECK(f.node("link.channel").help() ==
+        "Pinned to 144 — the link moves here when it comes back.");
+}
+
+// A stale sideport is no link and no measurement: every member unmeasured,
+// no link mark, the value and help as if unlinked, no "Measuring".
+TEST(channel_row_stale_sideport_shows_nothing_live) {
+  Fx f;
+  f.snap.session = true;
+  f.snap.channel = 112;
+  f.snap.scan_members = {member(144, 3.0, 1000), member(112, 3.0, 1000)};
+  f.snap.scan_relocate = ScanRelocate{"failed", 144, "withdrawn"};
+  f.observe = "one_card";
+  f.stale = true;
+  MenuNode n = f.node("link.channel");
+  CHECK(n.value_text() == "Auto (on —)");
+  auto cs = n.choices();
+  REQUIRE(cs.size() == 3);
+  CHECK(cs[0].note == "on —");
+  for (size_t i = 1; i < cs.size(); ++i) {
+    CHECK(cs[i].note == "○○○○○ · not measured");
+    CHECK(cs[i].tone == ChoiceTone::kDim);
+  }
+  CHECK(n.help().find("Measuring") == std::string::npos);
+  CHECK(n.help().find("Auto picks the cleanest") == 0);
+  f.gs.pinned_channel = 144;
+  n = f.node("link.channel");
+  CHECK(n.value_text() == "144");
+  CHECK(n.warn().empty());
+  CHECK(n.help() == "Pinned to 144 — the link moves here when it comes back.");
+  // Fresh again: the same snapshot draws live.
+  f.stale = false;
+  n = f.node("link.channel");
+  CHECK(n.value_text() == "144");
+  CHECK(choice_with(n.choices(), "144")->note == "●●●●●");
+  CHECK(choice_with(n.choices(), "112")->note == "●●●●● · link");
+  // No staleness input at all reads fresh.
+  MenuTreeDeps d = f.deps();
+  d.snap_stale = nullptr;
+  const auto t = build_menu_tree(d);
+  const auto nn = f.find(t, "link.channel");
+  REQUIRE(nn.has_value());
+  CHECK(choice_with(nn->choices(), "144")->note == "●●●●●");
 }
 
 TEST(a_rung_edit_sends_the_whole_ladder_with_one_change) {
@@ -1032,7 +1290,7 @@ TEST(gs_rows_read_a_dash_until_the_first_get_lands) {
   Fx f;
   f.gs = GsLiveView{};
   REQUIRE(!f.gs.have);
-  for (const char* id : {"link.width", "link.rate", "link.nack", "osd.fc", "sys.debug"})
+  for (const char* id : {"link.channel", "link.width", "link.rate", "link.nack", "osd.fc", "sys.debug"})
     CHECK(f.node(id).value_text() == "—");
   CHECK(f.node("link.ladder").group_value() == "—");
   // The player's own rows read the player's config regardless.
@@ -1040,6 +1298,7 @@ TEST(gs_rows_read_a_dash_until_the_first_get_lands) {
         f.node("video.colour").value_text() != "—");
   CHECK(f.node("sys.adv").value_text == nullptr);
   f.gs = bundle_gs();
+  CHECK(f.node("link.channel").value_text() == "Auto (on —)");
   CHECK(f.node("link.width").value_text() == "20 MHz");
   CHECK(f.node("link.rate").value_text() == "Adaptive");
   CHECK(f.node("link.nack").value_text() == (f.gs.nack ? "On" : "Off"));

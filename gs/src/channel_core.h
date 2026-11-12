@@ -46,6 +46,38 @@
 // linked, only the reactive hop re-arms from op (no pick, no relocate);
 // unlinked, the boot pick reopens over a fresh ranking from op, its max_ms
 // counted from the reopen.
+//
+// The observe lease (observe(ms), the 8402 `observe` verb): while the
+// goggles' channel picker is open the player keeps a deadline renewed and
+// the core measures the set for it -- every member but op, at the link
+// width, feeding scan.members and never the hop ranker. On a two-card GS
+// that is scout rounds back to back (the calibration round's begin_round,
+// under the same start conditions plus no relocate due). A pinned scout is
+// frozen and has measuring turned on for the lease, off again once the
+// lease has lapsed and the round is idle. A lease that runs out lets its
+// open round finish; observe(0), set_pin, set_auto and begin_cal_measure
+// end the lease and cancel its open round first. On a one-USB-card GS it
+// is the in-flight burst on that card, once per hop.lease_sweep_period_ms,
+// run synchronously on the core thread (a relay carrying TX included) and
+// only while no hop or relocate is in flight or due -- in auto mode that
+// includes the verdict's trigger live or its references frozen -- and no
+// relay sweep or posted burst is out. The burst takes the sole card off op
+// for ~75 ms, so the hop verdict skips every sampler window from the
+// burst's start to one window_ms past its end: those windows re-seed the
+// per-card baselines (the next span starting no earlier than the burst's
+// end) instead of being classified, and the verdict's loss windows are
+// blanked to the same instant, so the gap reads as neither interference
+// nor loss. Unlinked with the boot scout searching, the lease instead
+// turns on ChannelScout::set_search_observe: each search dwell's own NHM
+// read lands in scan.members too, without ranking or picking from it. On a
+// relay-only GS it is one SCAN sweep of the relay (members minus op, the
+// hop's own passes/observe/timeout) at most once per
+// hop.relay_burst_period_ms, regardless of reactive_ or a live trigger --
+// it only waits out a hop or relocate in flight or due, or a sweep (the
+// hop's or the lease's own) already out, so it never races the hop's own
+// burst for the one relay. Its result lands in scan.members through the
+// same drain as the hop's sweep, and its visits are never added to
+// HopRanker.
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -87,6 +119,20 @@ inline const char* hop_state_name(HopState s) {
     case HopState::Hold:      return "hold";
   }
   return "idle";
+}
+
+// Which measurer an observe lease engages (ChannelCore::lease_state).
+enum class LeaseState { None, TwoCard, OneCard, Relay, Search };
+// The `observe` verb's reply word: "none" "two_card" "one_card" "relay" "search".
+inline const char* lease_state_name(LeaseState s) {
+  switch (s) {
+    case LeaseState::None:    return "none";
+    case LeaseState::TwoCard: return "two_card";
+    case LeaseState::OneCard: return "one_card";
+    case LeaseState::Relay:   return "relay";
+    case LeaseState::Search:  return "search";
+  }
+  return "none";
 }
 
 struct ChannelCoreCfg {
@@ -149,6 +195,15 @@ struct ChannelSnapshot {
   std::vector<std::optional<StatsDwellIn>> dwell;     // per card
   uint64_t scout_gated_sends = 0;
   bool pinned = false;                    // ChannelCore::pinned(): the live pin, not the boot one
+  // Every channel-set member's row (the goggles Link > Channel row),
+  // config order: built fresh each snapshot() call from member_figs_/
+  // op_fig_ -- see ChannelCore::snapshot.
+  std::vector<StatsScanMemberIn> members;
+  // The live pin's relocate and its sequence counter, derived from
+  // pin_reloc_/pin_seq_ (ChannelCore::snapshot): null while the pin needs
+  // no move or none is tracked yet.
+  std::optional<StatsRelocateIn> relocate;
+  uint64_t relocate_seq = 0;
 };
 
 class ChannelCore {
@@ -284,10 +339,35 @@ class ChannelCore {
   // the same index in another ladder is another operating point.
   void replace_ladder(const LadderCfg& ladder, double now_ms);
 
+  // ---- the observe lease (core thread) ----
+  // Keep measuring for ms more (clamped to [500, 5000]) and return
+  // lease_state() as of now. ms <= 0 releases the lease at once (its open
+  // round is cancelled; the scout parks on its next step) and returns None.
+  LeaseState observe(int ms);
+  bool observing() const;   // a lease is held: now is before its deadline
+  // The measurer a lease engages, ignoring whether one is held; first
+  // match: calibration owns the scout (a run, its measure round Waiting/
+  // Running, its relocate Waiting/InFlight) -> None; the boot pick open ->
+  // None; unlinked -> Search while the scout searches (not a relay-only
+  // GS), else None; linked: two or more USB cards -> TwoCard, one USB card
+  // -> OneCard, relays only with a ready sweep-capable one -> Relay; else
+  // None. TwoCard runs scout rounds, OneCard the in-flight burst, Search
+  // turns on observing on the scout's own search dwells, and Relay sweeps
+  // the relay on its own schedule (step_lease_relay_); all four feed
+  // scan.members, and Search and Relay never rank.
+  LeaseState lease_state() const;
+  // The whole `observe <rest>` verb: "ok observe <state>", or
+  // "err usage: observe <ms>" unless rest is a bare non-negative integer.
+  std::string observe_verb(const std::string& rest);
+
   // ---- test seam (threaded = false) ----
   void run_scout_step();      // one ChannelScout::run_once()
   void run_inflight_step();   // one body of the in-flight loop (no sleep)
   void run_sampler_step();    // WindowSampler::step_now() at the tick's time: sample, publish, restart the cadence
+  // A sampler pass stamped stamp_ms whose reads land now (the clock), the
+  // cadence restarted from now: the threaded pass that stamps before it
+  // waits out a burst holding the card's lock.
+  void run_sampler_step_stamped(uint64_t stamp_ms);
   const HopRanker& hop_ranker() const { return ranker_; }
 
  private:
@@ -335,6 +415,15 @@ class ChannelCore {
   std::vector<bool> width_tried_;
   std::vector<std::optional<StatsEnergyIn>> energy_last_;
   std::vector<std::optional<StatsDwellIn>> dwell_stats_;
+  // Newest NHM busy reading landed on each channel-set member (index
+  // matches cfg_.radio.channels) from any dwell -- boot scout, a
+  // calibration measure round, the in-flight scout or a relay sweep.
+  // nullopt = never measured; overwritten by emit_dwell_, never merged, so
+  // the table always shows the most recent reading, not an average. Op's
+  // own figure lives separately in op_fig_: a linked op is read from the
+  // verdict window instead, never dwelt on.
+  struct MemberFig { double busy_pct = 0; uint64_t t_ms = 0; };
+  std::vector<std::optional<MemberFig>> member_figs_;
   std::vector<ScoutFrames> window_prev_;
   std::vector<uint64_t> window_prev_crc_;
   // The card's seq walk at the previous sample (CardTrack::seq_expected /
@@ -375,7 +464,11 @@ class ChannelCore {
   // max(1000, passes * n * (observe_ms + 40) + 300) -- 40 ms per channel
   // covers the relay's retune + settle, 300 ms the round trip and slack. A
   // 4-member set (3 swept) sits on the 1000 ms floor; 8 members -> 1140 ms.
-  struct PendingSweep { bool on = false; int card = -1; double sent_ms = 0; double timeout_ms = 1000; } sweep_;
+  // lease: the observe lease sent this one, not the hop -- poll_sweep_
+  // skips ranker_.add for it but still emits every dwell.
+  struct PendingSweep {
+    bool on = false; int card = -1; double sent_ms = 0; double timeout_ms = 1000; bool lease = false;
+  } sweep_;
   uint64_t sweep_round_ = 0, sweep_timeouts_ = 0;
   static constexpr double kSweepTimeoutMinMs = 1000, kSweepPerChannelMs = 40, kSweepSlackMs = 300;
   static constexpr uint8_t kSweepPasses = 2, kSweepObserveMs = 20;
@@ -441,21 +534,103 @@ class ChannelCore {
     bool ok = false;
   } cal_reloc_;
   bool cal_reloc_tick_ = false;      // this tick's Relocate is the calibration's
-  // A live pin's relocate, until the controller takes or refuses it: only
-  // the order's H record and log line carry the reason; after that it is
-  // the boot pick's relocation like any other.
-  std::optional<uint8_t> pin_reloc_;
+  // A live pin's relocate: the channel row's own view of it
+  // (scan.relocate/scan.relocate_seq, ChannelCore::snapshot derives them
+  // from this -- no parallel field). Off outside a linked pin move; Waiting
+  // until BootPick hands the order to the controller; InFlight from Order to
+  // Confirm/VerifyPass/Withdraw; Settled holds the outcome (ok/why) for the
+  // rest of the pin's life, until set_pin or set_auto move it again.
+  struct PinReloc {
+    enum S { Off, Waiting, InFlight, Settled } s = Off;
+    uint8_t ch = 0;
+    bool confirmed = false, ok = false;
+    std::string why;
+  } pin_reloc_;
+  // scan.relocate_seq: bumped by every set_pin call that is not refused
+  // (the no-op onto the channel already pinned to included) and by every
+  // set_auto call, so a watcher can tell a still-pending outcome from a
+  // fresh relocate that landed on the channel it was already watching.
+  uint64_t pin_seq_ = 0;
   bool pin_reloc_tick_ = false;      // this tick's Relocate is the pin's
+  // ---- the observe lease ----
+  // The lease's deadline on the now_ms_ clock; 0 = none held.
+  double lease_until_ = 0;
+  // A scout round the lease began is open (cleared once round_open() reads
+  // false). The lease keeps its own flag, never cal_meas_: pin_refusal
+  // answers "calibration running" while cal_meas_ is live.
+  bool lease_round_ = false;
+  // The lease turned the pinned scout's measuring on; it goes off once the
+  // lease has lapsed and no round is open (set_measure(false) on a round
+  // still Measuring would leave round_open() true for good).
+  bool lease_forced_measure_ = false;
+  // The engaged state last logged ("observe lease <ms> (<state>)").
+  LeaseState lease_logged_ = LeaseState::None;
+  // Drops the lease's deadline, logging the lapse once, and clears the
+  // one-card burst and relay sweep pacing so the next lease's first one
+  // goes at once; an open round is left to finish.
+  void lapse_lease_();
+  // lapse_lease_, and the open lease round is cancelled (the scout parks
+  // on its next step): a release, a pin, auto, a calibration pick.
+  void end_lease_();
+  void step_lease_(const ChannelTickIn& in);
+  // The one-card lease: one in-flight burst on the sole USB card when
+  // lease_sweep_period_ms has passed since the last one and nothing else
+  // holds the card, the controller or a burst, and no reactive hop is
+  // being decided (the trigger live or the verdict's references frozen:
+  // the freshness burst measures then).
+  void step_lease_one_card_(const ChannelTickIn& in);
+  // The last one-card lease burst's start (tick time); cleared when the
+  // lease ends (lapse_lease_).
+  double last_lease_burst_ms_ = -1e18;
+  // The relay-only lease: one SCAN on the sole sweepable card when
+  // relay_burst_period_ms has passed since the last one and no hop or
+  // relocate is in flight or due and no sweep (the hop's or the lease's
+  // own) is already out. Runs regardless of reactive_ or a live trigger --
+  // the lease never decides anything, so it never needs to stand aside for
+  // a decision in progress, only for a move or a sweep already claiming
+  // the one relay.
+  void step_lease_relay_(const ChannelTickIn& in);
+  // The last relay-only lease sweep's send (tick time); cleared when the
+  // lease ends (lapse_lease_).
+  double last_lease_sweep_ms_ = -1e18;
+  // Sampler records stamped in (from, until] are masked from the hop
+  // verdict: from = the burst's start, until = its end plus window_ms (the
+  // window that straddles the burst's end). until < from = none yet.
+  double lease_mask_from_ms_ = 0, lease_mask_until_ms_ = -1;
+  // The last one-card lease burst's end. A masked record stamped before it
+  // was stamped by a pass that then waited out the burst on the card's
+  // lock, so its counters were read after this instant: the re-seeded span
+  // starts here, not at the stamp.
+  double lease_burst_end_ms_ = -1;
   // The latest verdict window's reading of op: the worst valid card on op,
   // foreign frames scaled to radio.scan.dwell_ms.
   std::optional<CalReading> op_live_;
   double op_live_ms_ = -1;
+  // scan.members[]'s own figure for op while linked: the MIN across every
+  // card with a busy reading this window of (busy_pct - own airtime),
+  // floored at 0 -- the best-case reading, unlike op_live_'s worst-case
+  // (the calibration pick wants the worst card; the channel row wants
+  // what a hop would actually buy). Stamped with the window's sample
+  // time and the op it was read on: snapshot() shows it only while that
+  // is still op, so a move (hop or relocate) leaves the new op unmeasured
+  // until a window on it lands. Reset to nullopt on every hop_active edge
+  // (step_hop_edge_and_window_).
+  struct OpFig {
+    double pct = 0;
+    uint64_t t_ms = 0;
+    uint8_t ch = 0;
+  };
+  std::optional<OpFig> op_fig_;
   bool in_session_cur_ = false, cal_running_cur_ = false;
   // the tick's current inputs, for helpers
   double now_ms_cur_ = 0;
   uint64_t now_ms_u_cur_ = 0;
 
   // ---- steps ----
+  // Every dwell record's one entrypoint to the sink: logs it (sink_.dwell)
+  // then, when it is usable (busy_valid and the retune did not fail), lands
+  // its busy reading in member_figs_ against the member it was dwelt on.
+  void emit_dwell_(double now_ms, int card, const ScoutDwell& d);
   void freeze_pick_(double t, const char* why);
   void dispatch_hop_action_(const HopAction& act, bool relocate_tick, double now_ms);
   void apply_hop_action_(const HopAction& act, double now_ms);
@@ -470,9 +645,22 @@ class ChannelCore {
   void step_width_resync_();
   void step_mechanical_retune_();
   void poll_sweep_(double now_ms);
+  // One SCAN on `card` for the set minus op: builds the channel list,
+  // starts it and assigns sweep_ (poll_sweep_ ranks or discards the
+  // result later), tagging it as the lease's own or not. false = nothing
+  // sent (a one-member set, or a ready->down race) -- sweep_ untouched.
+  // Shared by the hop's own relay burst (step_controller_) and the
+  // lease's (step_lease_relay_); each caller keeps its own guards, card
+  // pick and last-burst-ms rollback.
+  bool send_relay_sweep_(int card, double now_ms, bool lease);
   void step_cal_(const ChannelTickIn& in);
   void finish_cal_measure_(double now_ms);
   void settle_cal_reloc_(bool ok, const char* why);
+  // The live pin's own relocate, mirroring step_cal_'s confirmed-then-Idle
+  // check: a session lost between the Confirm and its VerifyPass leaves
+  // HopController idle without ever handing back the VerifyPass action.
+  void step_pin_reloc_(const ChannelTickIn& in);
+  void settle_pin_reloc_(bool ok, const char* why);
   std::optional<std::string> move_refusal_(uint8_t ch) const;
   std::optional<std::string> link_moving_refusal_() const;
   std::optional<std::string> busy_refusal_() const;

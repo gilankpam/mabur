@@ -17,12 +17,17 @@ namespace maburplay {
 // port) or the drone. One set is in flight per owner at a time.
 enum class Owner : uint8_t { kPlayer, kGs, kDrone };
 enum class NodeKind : uint8_t { kGroup, kChoice, kNumber, kAction, kInfo };
+// Colours a choice's note in the picker: kGood/kWarn/kBad are the layer's
+// ok/caution/error tokens, kDim its disabled token, kNormal the plain label
+// token (today's colour, and the default for a Choice that doesn't set one).
+enum class ChoiceTone : uint8_t { kNormal, kGood, kWarn, kBad, kDim };
 
 struct Choice {
   std::string value;
   std::string label;
   std::string note;
   bool pickable = true;
+  ChoiceTone tone = ChoiceTone::kNormal;
   bool operator==(const Choice&) const = default;
 };
 
@@ -160,6 +165,8 @@ class MenuModel {
   // Cancelling the picker, closing the menu, or the apply settling (either
   // way) ends it, and the caller falls back to the saved value.
   std::string preview(const std::string& row_id) const;
+  // The id of the row whose kChoices picker is open, "" otherwise.
+  std::string open_choices_row() const;
 
  private:
   // A level is a group id (the root is "") and the cursor's index into
@@ -174,7 +181,13 @@ class MenuModel {
   struct Edit {
     EditKind kind = EditKind::kChoices;
     MenuNode node;                 // the row being changed
-    std::vector<Choice> choices;   // kChoices: what the picker lists
+    // kChoices: the cursor is held by value, not index, so the picker can
+    // re-read the row's live choices() on every call (view(), press_in_edit,
+    // preview) and still find where the cursor sits in the new list.
+    std::string cursor_value;
+    // kChoices: the cursor's index the last time cursor_value resolved; the
+    // fallback (clamped to the live list) when that value has vanished from
+    // it. kNumber/kConfirm don't use this field.
     int cursor = 0;
     double value = 0, orig = 0;    // kNumber
     double min = 0, max = 0;
@@ -212,6 +225,11 @@ class MenuModel {
   // (or is hidden now) ends the path there.
   std::vector<Resolved> resolve() const;
   std::optional<MenuNode> find(const std::string& id) const;
+  // A kChoices edit's current list: the row re-read live through find(),
+  // filtered the same way press_right seeds the picker (pickable, plus the
+  // current value when the row keeps it); the row's own snapshot if it has
+  // dropped out of the tree entirely.
+  std::vector<Choice> live_choices(const Edit& ed) const;
   bool dim(const MenuNode& n) const;
   std::string row_value(const MenuNode& n) const;
   std::string status_help(const Status& st) const;
