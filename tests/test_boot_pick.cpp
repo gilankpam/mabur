@@ -23,6 +23,7 @@ static BootPickIn base() {
 }
 static BootPickIn linked(BootPickIn in) {
   in.in_session = true;
+  in.video = true;
   in.hop_active = true;
   return in;
 }
@@ -77,6 +78,22 @@ TEST(calibration_running_at_maturity_freezes_in_place) {
 
 // The boot hop is the relocation: WantPick sets want, the scout parks, one
 // relocate order goes out, VerifyPass freezes "relocated".
+// A session opened by a DISC_ACK alone (a freshly booted drone, encoder
+// not up) lapses within link_lost_ms: the relocation waits for video, and
+// waiting is not trying -- it is placed once video flows. Revert (no
+// in.video term): Relocate on the first tick.
+TEST(relocation_waits_for_video) {
+  BootPick b(false);
+  BootPickIn in = linked(base());
+  in.scout_owns = false; in.op = 112; in.want = 40; in.relocate_due = true;
+  in.video = false;
+  for (int i = 0; i < 5; ++i) CHECK(is(b.tick(in), BootPickOut::None));
+  CHECK(b.relocation_pending(in));
+  in.video = true;
+  const auto o = b.tick(in);
+  CHECK(is(o, BootPickOut::Relocate) && o.ch == 40);
+}
+
 TEST(linked_maturity_on_another_pair_relocates_and_freezes_relocated) {
   BootPick b(true);
   BootPickIn in = linked(base());

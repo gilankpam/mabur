@@ -78,6 +78,8 @@ class VrxController {
   // mode (constructed unconditionally) but is never ticked/updated there.
   const LadderController& ctl() const { return ctrl_; }
   VrxState link_state() const;
+  // VrxRendezvous::video_flowing: link video is flowing, not just a session.
+  bool video_flowing(double now_ms) const { return rz_.video_flowing(now_ms); }
   // Low 16 bits of rcf_seq32(): the wire seq of the last built RCF.
   uint16_t rcf_seq() const;
   // The RCF tag counter: tag ctx = {vrx_nonce, vtx_nonce, seq32}. Restarts at

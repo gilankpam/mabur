@@ -16,6 +16,8 @@ VrxRendezvous::VrxRendezvous(VrxRzConfig cfg)
 
 void VrxRendezvous::feed_video(double now_ms) {
   last_video_ms_ = now_ms;
+  if (now_ms - last_real_video_ms_ > kVideoGapMs) video_run_start_ms_ = now_ms;
+  last_real_video_ms_ = now_ms;
   // Video proves the drone is there, not that we hold its session nonce.
   if (state_ == VrxState::BEACONING && vtx_nonce_) state_ = VrxState::SESSION;
 }

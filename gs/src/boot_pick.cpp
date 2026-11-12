@@ -82,8 +82,9 @@ BootPickOut BootPick::tick(const BootPickIn& in) {
   }
 
   // 3. The relocation: once per link-up, when the link is not where it
-  // should be and nothing else holds the cards or the controller.
-  if (in.in_session && in.relocate_due && !tried_ && !relocating_ && !resolve_now_ &&
+  // should be, video flows, and nothing else holds the cards or the
+  // controller.
+  if (in.in_session && in.video && in.relocate_due && !tried_ && !relocating_ && !resolve_now_ &&
       in.hop_active && !in.scout_owns && !in.plan_hopping && in.hop_idle_or_hold) {
     tried_ = true;
     BootPickOut o;
