@@ -306,4 +306,198 @@ TEST(async_frame_end_batch_is_built_inline_and_counted) {
   CHECK(e.take_fec_gauge().jobs == 8);
 }
 
+// ---- ring-row backstop -------------------------------------------------
+// The one wait left on the feed path: the producer waits for the worker
+// only when the seal it is about to write could overwrite a row an
+// unfinished queued job still reads, and only until that job is built.
+
+namespace {
+// Releases a held worker after delay_ms unless disarmed first, so a
+// producer that waits when it must not fails its test instead of hanging.
+struct ReleaseAfter {
+  ReleaseAfter(FecWorker& w, int delay_ms) : t([this, &w, delay_ms] {
+    for (int i = 0; i < delay_ms && !done.load(); ++i)
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    if (!done.exchange(true)) { fired.store(true); w.set_held(false); }
+  }) {}
+  // True when the producer got here before the release.
+  bool disarm() {
+    const bool in_time = !done.exchange(true);
+    t.join();
+    return in_time && !fired.load();
+  }
+  std::atomic<bool> done{false}, fired{false};
+  std::thread t;
+};
+bool wait_depth_at_most(FecWorker& w, uint32_t depth, int timeout_ms) {
+  const auto t0 = std::chrono::steady_clock::now();
+  while (w.depth() > depth) {
+    if (std::chrono::steady_clock::now() - t0 > std::chrono::milliseconds(timeout_ms))
+      return false;
+    std::this_thread::sleep_for(std::chrono::microseconds(100));
+  }
+  return true;
+}
+}  // namespace
+
+// A worker that always has something queued, but is never further behind
+// than a few hundred seals, is not waited for however long the feed runs:
+// rounds of 200 seals, the worker let through about half its queue between
+// rounds, so a job is outstanding at every enqueue for more seals than the
+// reach while the oldest unfinished one stays far inside it.
+TEST(busy_worker_inside_the_slack_is_not_joined) {
+  SwConfig cfg{164, 16, 1.0};
+  SwEncoder sync_enc(cfg, 11);
+  FecWorker worker(-1, 512);
+  worker.set_held(true);
+  SwEncoder enc(cfg, 11, &worker);
+  REQUIRE(enc.job_row_reach() > 500);
+  const int rounds = static_cast<int>(enc.job_row_reach() / 200) + 2;
+  std::mt19937 rng(4);
+  std::vector<std::vector<uint8_t>> ea, eb;
+  bool never_waited = true;
+  for (int round = 0; round < rounds; ++round) {
+    if (round > 0) {
+      worker.set_held(false);
+      REQUIRE(wait_depth_at_most(worker, 100, 3000));
+      worker.set_held(true);
+      // Parked before its next dequeue: let the build in flight finish.
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      REQUIRE(enc.repairs_outstanding());
+    }
+    ReleaseAfter guard(worker, 3000);
+    for (int i = 0; i < 200; ++i) {
+      auto p = full_packet(cfg, rng);
+      for (auto& e : sync_enc.add_packet(p.data(), p.size())) ea.push_back(std::move(e));
+      for (auto& e : enc.add_packet(p.data(), p.size())) eb.push_back(std::move(e));
+    }
+    never_waited = guard.disarm() && never_waited;
+  }
+  CHECK(never_waited);
+  const auto g = enc.take_fec_gauge();
+  CHECK(g.join_waits == 0);
+  worker.set_held(false);
+  for (auto& e : sync_enc.flush()) ea.push_back(std::move(e));
+  for (auto& e : enc.flush()) eb.push_back(std::move(e));
+  for (auto& e : enc.finish()) eb.push_back(std::move(e));
+  CHECK(eb.size() == enc.sources_out() + enc.repairs_out());
+  std::sort(ea.begin(), ea.end());
+  std::sort(eb.begin(), eb.end());
+  CHECK(std::includes(ea.begin(), ea.end(), eb.begin(), eb.end()));
+}
+
+// The backstop itself: one job queued behind a held worker reads the first
+// row. The producer seals for job_row_reach() seals past that row without
+// waiting, waits at the next seal until the worker has built the job, and
+// the repair is still the sync encoder's, byte for byte.
+TEST(backstop_waits_exactly_at_the_reach) {
+  SwConfig cfg{164, 16, 1.0};
+  SwEncoder sync_enc(cfg, 21);
+  FecWorker worker(-1, 256);
+  worker.set_held(true);
+  SwEncoder enc(cfg, 21, &worker);
+  std::mt19937 rng(5);
+  std::vector<std::vector<uint8_t>> ea, eb;
+  auto feed = [&] {
+    auto p = full_packet(cfg, rng);
+    for (auto& e : sync_enc.add_packet(p.data(), p.size())) ea.push_back(std::move(e));
+    for (auto& e : enc.add_packet(p.data(), p.size())) eb.push_back(std::move(e));
+  };
+  // A full packet seals when the next one needs the room: the second feed
+  // seals row 0, whose credit is one repair over that row: queued, not built.
+  feed();
+  feed();
+  REQUIRE(worker.depth() == 1);
+  sync_enc.set_overhead(0.0);
+  enc.set_overhead(0.0);
+  const size_t reach = enc.job_row_reach();
+  {
+    ReleaseAfter guard(worker, 3000);
+    for (size_t k = 1; k < reach; ++k) feed();
+    CHECK(guard.disarm());
+  }
+  CHECK(enc.take_fec_gauge().join_waits == 0);
+  CHECK(worker.depth() == 1);
+  {
+    ReleaseAfter guard(worker, 50);
+    feed();  // the seal at age == reach: waits for the release
+    CHECK(!guard.disarm());
+  }
+  worker.set_held(false);  // a producer that did not wait must not hang below
+  CHECK(enc.take_fec_gauge().join_waits == 1);
+  for (int k = 0; k < 140; ++k) feed();  // past the row the job read
+  for (auto& e : sync_enc.flush()) ea.push_back(std::move(e));
+  for (auto& e : enc.flush()) eb.push_back(std::move(e));
+  for (auto& e : enc.finish()) eb.push_back(std::move(e));
+  std::sort(ea.begin(), ea.end());
+  std::sort(eb.begin(), eb.end());
+  CHECK(ea == eb);
+}
+
+// Windows differ in length, so a job queued later can read rows from before
+// the oldest unfinished job's first row: here a 16-row job, then a 128-row
+// job whose window starts 111 rows earlier. The producer has to wait before
+// the longer job's first row is overwritten, which is 18 seals after the
+// reach measured from the older job and 109 before that job's own row.
+TEST(backstop_covers_a_later_job_with_a_longer_window) {
+  SwConfig cfg{164, 16, 1.0};
+  SwEncoder sync_enc(cfg, 31);
+  FecWorker worker(-1, 256);
+  worker.set_held(true);
+  SwEncoder enc(cfg, 31, &worker);
+  std::mt19937 rng(6);
+  std::vector<std::vector<uint8_t>> ea, eb;
+  auto feed = [&] {
+    auto p = full_packet(cfg, rng);
+    for (auto& e : sync_enc.add_packet(p.data(), p.size())) ea.push_back(std::move(e));
+    for (auto& e : enc.add_packet(p.data(), p.size())) eb.push_back(std::move(e));
+  };
+  auto overhead = [&](double o) {
+    sync_enc.set_overhead(o);
+    enc.set_overhead(o);
+  };
+  // 200 rows with no repairs, so a 128-row window has its rows.
+  overhead(0.0);
+  for (int k = 0; k < 200; ++k) feed();
+  REQUIRE(worker.depth() == 0);
+  overhead(1.0);
+  feed();  // seals a row: one repair over the configured 16 rows
+  REQUIRE(worker.depth() == 1);
+  sync_enc.begin_frame(size_t{1} << 30, 0, 128);
+  enc.begin_frame(size_t{1} << 30, 0, 128);
+  feed();  // seals the next row: one repair over 128 rows
+  REQUIRE(worker.depth() == 2);
+  overhead(0.0);
+  const size_t reach = enc.job_row_reach();
+  {
+    // The 16-row job's first row is 15 back from its seal and one more seal
+    // went in since: the feed that seals at age == reach is number reach - 16.
+    ReleaseAfter guard(worker, 3000);
+    for (size_t k = 1; k < reach - 16; ++k) feed();
+    CHECK(guard.disarm());
+  }
+  CHECK(enc.take_fec_gauge().join_waits == 0);
+  CHECK(worker.depth() == 2);
+  {
+    ReleaseAfter guard(worker, 50);
+    feed();  // waits for the release
+    CHECK(!guard.disarm());
+  }
+  {
+    // 30 more seals run over the 128-row job's first rows. A producer that
+    // did not wait above still has the worker held here, and its repair
+    // comes out of overwritten rows.
+    ReleaseAfter guard(worker, 3000);
+    for (int k = 0; k < 30; ++k) feed();
+    (void)guard.disarm();
+  }
+  worker.set_held(false);
+  for (auto& e : sync_enc.flush()) ea.push_back(std::move(e));
+  for (auto& e : enc.flush()) eb.push_back(std::move(e));
+  for (auto& e : enc.finish()) eb.push_back(std::move(e));
+  std::sort(ea.begin(), ea.end());
+  std::sort(eb.begin(), eb.end());
+  CHECK(ea == eb);
+}
+
 MTEST_MAIN

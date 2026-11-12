@@ -183,10 +183,20 @@ class SwEncoder {
   // tx/usb wakeups the feed itself triggers, so the peak is deeper than
   // feed-time arithmetic says. Below FecWorker's 512-slot queue. A slow
   // core degrades to fewer repairs, never to a blocked producer or a
-  // pinned venc ring. Row safety is time-bound: at 116 µs/job and the
-  // ~11 seals/ms a 30 Mb/s stream would produce, the oldest queued job's
-  // rows age <= ~330 seals, inside kSlackRows.
+  // pinned venc ring. Row safety does not rest on this bound or on a
+  // build time: the producer checks the oldest queued job's first row
+  // before every seal (oldest_job_row_at_risk).
   static constexpr uint32_t kMaxBacklogJobs = 256;
+
+  // How many seals after the oldest unfinished queued job's first row the
+  // producer goes on without waiting for the worker (the ring-row backstop
+  // trips at the seal that reaches this age, never before). A job queued
+  // later may read up to max_window_ - 1 rows before that row (windows
+  // differ in length), so the reach stops that far short of the ring.
+  // Test surface.
+  size_t job_row_reach() const {
+    return cap_ - static_cast<size_t>(max_window_) + 1 - kRowMargin;
+  }
 
   // Takes effect immediately (no block boundary to wait for).
   void set_overhead(double overhead) { cfg_.overhead = overhead; }
@@ -207,8 +217,8 @@ class SwEncoder {
     uint64_t jobs = 0;             // repairs built via execute_repair_job
     uint64_t build_us = 0;         // wall µs inside those builds
     uint64_t inline_full = 0;      // queue-full inline fallbacks (hot thread)
-    uint64_t join_waits = 0;       // join() calls that actually spun
-    uint64_t join_wait_us = 0;     // hot-thread µs spent spinning in join()
+    uint64_t join_waits = 0;       // waits for the worker that actually spun
+    uint64_t join_wait_us = 0;     // hot-thread µs spent spinning in them
     uint64_t join_wait_max_us = 0; // window max (reset on take)
     uint64_t enq_depth_max = 0;    // window max worker-queue depth at enqueue
     uint64_t backlog_drops = 0;    // repairs skipped at kMaxBacklogJobs
@@ -228,12 +238,21 @@ class SwEncoder {
   // max_window_ + kSlackRows rows (not a deque of vectors). The slack keeps a
   // row readable for kSlackRows further seals after it leaves the window —
   // the async repair path queues jobs that reference ring
-  // rows by slot instead of copying the window. 512 (was 64): with no
-  // frame-end join the worker may legitimately trail the producer by up to
-  // kMaxBacklogJobs repairs, i.e. several frames of seals at 332 B symbols,
-  // and the row backstop join must stay a backstop, not a per-frame event.
-  // ~170 kB per layer at 332 B.
-  static constexpr size_t kSlackRows = 512;
+  // rows by slot instead of copying the window. With no frame-end join the
+  // worker may legitimately trail the producer by a full backlog
+  // (kMaxBacklogJobs repairs), and the row backstop must stay a backstop:
+  // a full backlog takes the worker up to ~160 ms of wall time on the
+  // SSC338Q (a 128-row build is 0.35-0.9 ms and the worker shares its core),
+  // in which a layer of a 20 Mb/s stream seals ~600 symbols. 4096 rows is
+  // over a second of seals there. ~1.4 MB per layer at 332 B.
+  static constexpr size_t kSlackRows = 4096;
+  // The backstop trips this many seals before a queued job's row would be
+  // overwritten.
+  static constexpr uint32_t kRowMargin = 2;
+  // Queued jobs whose first row the producer remembers (job_start_). A power
+  // of two above FecWorker's default queue, so it is never the bound in
+  // production; a queue with more slots than this builds the excess inline.
+  static constexpr uint32_t kTrackJobs = 1024;
 
   void append_to_current(const uint8_t* a, size_t alen, const uint8_t* b, size_t blen);
   void seal_current(const SwEnvSink& sink);
@@ -249,6 +268,9 @@ class SwEncoder {
     // Gauge sums the WORKER thread increments (the hot thread only reads);
     // heap-held with the rest so the encoder stays movable.
     std::atomic<uint64_t> gauge_jobs{0}, gauge_build_us{0};
+    // Queued jobs the worker has finished. The queue is FIFO with one
+    // consumer, so job number done_n is this encoder's oldest unfinished one.
+    std::atomic<uint32_t> done_n{0};
   };
 
   // Sync mode: builds and returns the repair inline (today's exact
@@ -257,13 +279,23 @@ class SwEncoder {
   // inline_build: build and sink now even in async mode (begin_frame's
   // frame-end batch, so it never waits for a harvest).
   void emit_or_enqueue_repair(const SwEnvSink& sink, bool inline_build = false);
+  // Builds one job's envelope and parks it for the next drain. queued: the
+  // job came through the worker's queue and counts in done_n.
+  void run_job(const FecRepairJob& job, bool queued);
   void drain_done(const SwEnvSink& sink);
   // Spins (relaxed + one acquire load) until no jobs are outstanding.
-  // Reached only from finish() (shutdown/tests), the destructor, and the
-  // ring-row backstop in seal_current — never per frame. Worst wait = the
-  // whole backlog (≤ kMaxBacklogJobs builds); the hot-thread watchdog
-  // (hot_beat) covers a wedged worker.
+  // Reached only from finish() (shutdown/tests) and the destructor — never
+  // per frame. Worst wait = the whole backlog (≤ kMaxBacklogJobs builds);
+  // the hot-thread watchdog (hot_beat) covers a wedged worker.
   void join();
+  // Ring-row backstop: true when the seal about to be written could land
+  // on a row an unfinished queued job still reads (job_row_reach). A worker
+  // that is busy but not that far behind never trips it: a slow core costs
+  // repairs (kMaxBacklogJobs), not a waiting producer.
+  bool oldest_job_row_at_risk() const;
+  // Spins until the backstop no longer trips: as long as the jobs that
+  // need the row take, not the whole backlog.
+  void wait_rows_free();
 
   SwConfig cfg_;
   size_t stride_ = 0, cap_ = 0, count_ = 0, next_slot_ = 0;
@@ -292,7 +324,10 @@ class SwEncoder {
 
   FecWorker* worker_ = nullptr;
   std::unique_ptr<AsyncState> async_;  // null in sync mode
-  long seals_since_join_ = 0;          // slack-bound backstop counter
+  // Producer-owned: seq of the first row each queued job reads, by job
+  // number modulo kTrackJobs, and how many jobs went into the queue.
+  std::vector<uint32_t> job_start_;
+  uint32_t enq_n_ = 0;
 
   // Hot-thread-owned halves of SwFecGauge (see above for field semantics).
   uint64_t gauge_inline_full_ = 0;
