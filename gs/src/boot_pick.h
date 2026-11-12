@@ -13,6 +13,7 @@ struct BootPickIn {
   uint64_t since_start_ms = 0;   // since GS start
   int max_ms = 30000;            // radio.scan.max_ms
   bool in_session = false;
+  bool video = false;            // link video is flowing (VrxController::video_flowing)
   bool cal_running = false;      // a calibration run counts as linked
   bool one_card = false;
   // ChannelScout
@@ -65,8 +66,12 @@ struct BootPickOut {
 //
 // The relocation runs for the whole process: on every link-up (and when
 // the pick wants another pair) where the link is not where it should be
-// (relocate_due), one relocate order toward want, placed only once the
-// scout owns no card, no hop is in flight and the controller is Idle/Hold.
+// (relocate_due), one relocate order toward want, placed only once video
+// flows, the scout owns no card, no hop is in flight and the controller is
+// Idle/Hold. Video, not the session: a freshly booted drone acks DISC
+// before its encoder runs, and that session lapses within link_lost_ms, so
+// an order placed on it rides RCFs that stop -- the drone never gets it,
+// or moves with no video to confirm on.
 // VerifyPass: done. Anything else (verify fail, withdraw, a session lost
 // before or after the confirm, the hop cap): accept the channel the link is
 // on (set_want(op)) -- no retry until the next link-up.

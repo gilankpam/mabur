@@ -339,12 +339,23 @@ reach it.
   *should* live: the pin in pinned mode, else the start channel, later the
   committed pick. While linked with `op ≠ want` (`relocate_due()`), the
   boot-pick state machine (`gs/src/boot_pick.h`) hands out one **relocate**
-  order per link-up — once the scout owns no card, no hop is in flight and
-  the controller is `Idle`/`Hold` — through the ordinary hop machinery
+  order per link-up — once video flows, the scout owns no card, no hop is
+  in flight and the controller is `Idle`/`Hold` — through the ordinary hop
+  machinery
   (two cards: the non-TX card leads; one card: the one-card path).
   `HopTick::relocate`: H kind `relocate`; the channel left is not backed
   off as fled; exempt from `cooldown_ms`, counted against
   `max_hops_per_min`; and it is the one hop a pinned GS ever places.
+  **Video, not the session, opens the gate**
+  (`VrxRendezvous::video_flowing`: link video with no gap above 100 ms
+  for 200 ms). A freshly booted drone answers DISC before its encoder
+  produces video; that ack alone opens SESSION, which lapses back to
+  BEACONING after `link_lost_ms` with no video, and the RCFs stop with it.
+  An order placed on such a session either never reaches the drone or
+  moves it with no video to confirm on (`move_unconfirmed`), and the
+  failed attempt accepts `op` (below). Waiting is not trying: the order is
+  placed on the first link-up tick with video flowing, and a pin waiting
+  for it reads `pending`.
   **Onto the pin the confirm lands it** (`HopTick::no_verify`): there is
   no verify window, because its question — is the channel we landed on
   better than the one we left — has no answer when the target is the only

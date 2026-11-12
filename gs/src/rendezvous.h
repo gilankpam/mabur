@@ -32,12 +32,26 @@ class VrxRendezvous {
  public:
   static constexpr double kKeyMismatchMs = 1000;
   static constexpr int kKeyMismatchBeacons = 3;
+  // video_flowing(): link video bodies with no gap above kVideoGapMs for at
+  // least kVideoRunMs. The lowest encoder rate (low-power 30 fps) spaces
+  // frames 33 ms apart; the first frames of a booting encoder (~1.5 fps)
+  // never qualify.
+  static constexpr double kVideoGapMs = 100;
+  static constexpr double kVideoRunMs = 200;
   explicit VrxRendezvous(VrxRzConfig cfg);
   void feed_video(double now_ms);
   VrxAction tick(double now_ms);
   mabur::rc::Disc beacon();
   bool feed_disc_ack(const mabur::rc::DiscAck& ack, double now_ms, bool* adopted_new);
   VrxState state() const { return state_; }
+  // Real link video is flowing (feed_video only). SESSION alone is not:
+  // a DISC_ACK opens it and refreshes the silence timer with no video, so
+  // a freshly booted drone whose encoder is not up yet holds SESSION for
+  // link_lost_ms and then drops back to BEACONING, taking the RCFs with it.
+  bool video_flowing(double now_ms) const {
+    return now_ms - last_real_video_ms_ <= kVideoGapMs &&
+           last_real_video_ms_ - video_run_start_ms_ >= kVideoRunMs;
+  }
   uint32_t nonce() const { return nonce_; }
   std::optional<uint32_t> vtx_nonce() const { return vtx_nonce_; }
   void set_proposal(uint8_t ch) { proposal_ = ch; }
@@ -47,6 +61,9 @@ class VrxRendezvous {
   VrxRzConfig cfg_;
   VrxState state_ = VrxState::BEACONING;
   double last_video_ms_ = 0;
+  // The current run of link video for video_flowing(): never touched by an ack.
+  double last_real_video_ms_ = -1e18;
+  double video_run_start_ms_ = 0;
   double last_beacon_ms_ = -1e18;
   uint16_t seq_ = 0;
   uint32_t nonce_;

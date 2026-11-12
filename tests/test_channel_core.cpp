@@ -94,7 +94,12 @@ struct Rig {
     ChannelTickIn i; i.now_ms = static_cast<double>(clk.ms); i.in_session = session;
     i.cal_running = cal; i.tx_card = tx; i.agg = &agg; return i;
   }
+  // A linked tick carries link video, as on the air: the drone's encoder
+  // runs while the GS holds a session. false = a session opened by a
+  // DISC_ACK alone (a freshly booted drone whose encoder is not up yet).
+  bool video = true;
   ChannelTickOut tick(bool session = false, bool cal = false, int tx = 0, int step_ms = 10) {
+    if (session && video) vrx->on_video(static_cast<double>(clk.ms));
     const auto out = core->tick(in(session, cal, tx));
     clk.ms += static_cast<uint64_t>(step_ms);
     return out;
@@ -947,6 +952,34 @@ TEST(relocate_lands_on_verify_pass_and_freezes_relocated) {
   CHECK(g.sink.has_hop("verify_pass"));
   CHECK(g.core->op() == 40);
   CHECK(std::string(g.core->snapshot(0).scan_state) != "moving");
+}
+
+// Bench: a freshly booted drone answers DISC before its encoder produces
+// video. The ack alone opens the session, which falls back to BEACONING
+// within link_lost_ms with no video, so RCFs stop: a relocate placed on
+// that first in-session tick either never reaches the drone, or moves it
+// with no video to confirm on (move_unconfirmed), and the failed attempt
+// accepts op for good. The relocate waits for video to flow; a trickle
+// (the encoder's first frames at ~1.5 fps) is not flowing video. Revert
+// (BootPick ignores BootPickIn::video): placed on the first linked tick.
+TEST(boot_relocate_waits_for_video_on_a_disc_only_session) {
+  Rig g(2, 0, /*pinned=*/true, 40);
+  g.video = false;
+  g.core->on_rc_body(64);
+  mabur::rc::DiscAck ack; ack.vrx_nonce = g.vrx->rz_nonce(); ack.vtx_nonce = 1; ack.agreed_channel = 64; ack.seq = 1;
+  g.core->on_session_opened(ack, static_cast<double>(g.clk.ms));
+  REQUIRE(g.core->op() == 64);
+  for (int i = 0; i < 90; ++i) g.tick(true);        // DISC-only session, no video
+  CHECK(!g.sink.has_line("relocate 64 -> 40 placed"));
+  for (int i = 0; i < 200; ++i) {                    // trickle: one body every 660 ms
+    if (i % 66 == 0) g.vrx->on_video(static_cast<double>(g.clk.ms));
+    g.tick(true);
+  }
+  CHECK(!g.sink.has_line("relocate 64 -> 40 placed"));
+  CHECK(!g.sink.has_line("did not land"));
+  g.video = true;                                    // the encoder is up
+  for (int i = 0; i < 100 && !g.sink.has_line("relocate 64 -> 40 placed"); ++i) g.tick(true);
+  CHECK(g.sink.has_line("relocate 64 -> 40 placed"));
 }
 
 // The AUTO boot hop. The scout measures op's pair to
@@ -2842,7 +2875,8 @@ TEST(pin_reloc_stays_pending_across_a_link_loss_before_the_order) {
   REQUIRE(r.has_value());
   CHECK(r->state == "pending");
   CHECK(r->ch == 112);
-  for (int i = 0; i < 20 && !g.sink.has_line("relocate 40 -> 112 placed"); ++i) live_tick(g);
+  // Back in session, the order waits for a video run (kVideoRunMs) first.
+  for (int i = 0; i < 40 && !g.sink.has_line("relocate 40 -> 112 placed"); ++i) live_tick(g);
   REQUIRE(g.sink.has_line("maburgs channel: relocate 40 -> 112 placed (pin)"));
   CHECK(g.core->snapshot(0).relocate->state == "pending");
   const auto rcf = pump_rcf(g);

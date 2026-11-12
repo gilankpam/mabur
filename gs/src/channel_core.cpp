@@ -510,6 +510,7 @@ void ChannelCore::step_boot_pick_(const ChannelTickIn& in) {
   bi.since_start_ms = now_ms_u_cur_ - pick_start_ms_;
   bi.max_ms = cfg_.radio.scan.max_ms;
   bi.in_session = in.in_session;
+  bi.video = vrx_.video_flowing(now_ms);
   bi.cal_running = in.cal_running;
   bi.one_card = one_card_;
   if (scout_) {

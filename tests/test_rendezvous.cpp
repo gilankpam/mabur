@@ -153,6 +153,32 @@ TEST(stranger_drone_flagged_acks_never_trigger_while_ours_answers) {
   }
 }
 
+// A DISC_ACK opens SESSION and refreshes the silence timer, but it is
+// not video: video_flowing() reads feed_video() only, and only a run of
+// it with no gap above kVideoGapMs for kVideoRunMs.
+TEST(video_flowing_needs_a_run_of_video_not_an_ack) {
+  VrxRendezvous rz(cfg());
+  bool adopted = false;
+  rz.feed_disc_ack(ack_for(rz, 42), 1000, &adopted);
+  CHECK(rz.state() == VrxState::SESSION);
+  CHECK(!rz.video_flowing(1000));
+  for (double t = 1000; t < 2500; t += 660) {          // ~1.5 fps trickle
+    rz.feed_video(t);
+    CHECK(!rz.video_flowing(t));
+  }
+  double t = 3000;
+  for (; t < 3000 + VrxRendezvous::kVideoRunMs; t += 33) {   // 30 fps
+    rz.feed_video(t);
+    CHECK(!rz.video_flowing(t));
+  }
+  rz.feed_video(t);
+  CHECK(rz.video_flowing(t));
+  CHECK(rz.video_flowing(t + VrxRendezvous::kVideoGapMs));
+  CHECK(!rz.video_flowing(t + VrxRendezvous::kVideoGapMs + 1));   // video stopped
+  rz.feed_video(t + 500);                                          // a new run starts over
+  CHECK(!rz.video_flowing(t + 500));
+}
+
 TEST(beacon_carries_settable_proposal) {
   VrxRendezvous rz(VrxRzConfig{1000, 20, 136});
   CHECK(rz.beacon().op_channel == 136);
