@@ -255,7 +255,11 @@ their variance into jitter. Knobs, in order of proven usefulness:
   sensor readout (~4-6 ms of the `enc` segment); on this SDK encode start
   stays gated on the last readout line. FRAMEBASE is the only accepted
   mode for this hop (comment at the bind site,
-  `drone/venc/star6e_pipeline.c`).
+  `drone/venc/star6e_pipeline.c`): the kernel reports the VENC input's
+  bind mask as `00000001`. `MI_SYS_EnableChnOutputPortLowLatency` on the
+  VPE port is accepted but changes nothing (`LowLatencyIsrCnt` stays 0),
+  and per-band strip channels (`MI_VENC_SetCrop`) run one after another on
+  the one engine (`docs/findings/2026-11-12-venc-strips.md`).
 - **GOP length is not a rate-control window.** A bitrate step emits its
   own keyframe and the rate control settles within a second whatever the
   GOP (`statTime` 1 s); the bundle ships `venc.gop_s = 0`, no periodic
