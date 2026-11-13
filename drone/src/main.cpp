@@ -1374,7 +1374,7 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
   // never stalled; the 8822C is the die the stall was found on (one CU unit
   // only clears at 0x35), so it keeps the default. The choice is per image,
   // not per card: each drone build compiles exactly one Jaguar3 die
-  // (tools/build-arm.sh and the openipc-builder mabur package), and a binary
+  // (tools/build-arm.sh and firmware/package/mabur), and a binary
   // refuses the other die at CreateRadio. An 8812EU that does stall loses the
   // downlink at its first 40 MHz frame with the chip's TX FIFO full; give it
   // a floor then (devourer measured one EU unit that clears at 0x2c, not

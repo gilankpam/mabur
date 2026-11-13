@@ -77,7 +77,7 @@ verify with `ps`, then swap in the next.
 ## Drone init script
 
 The OpenIPC image installs the wrapper as **`/etc/init.d/S00mabur`**
-(openipc-builder `package/mabur/mabur.mk`), so BusyBox rcS starts `maburd`
+(`firmware/package/mabur/mabur.mk`), so BusyBox rcS starts `maburd`
 first (`docs/findings/2026-09-07-boot-time.md`). The source file in this
 repo is still called `bundle/S96mabur`. `bundle/install.sh` stops whichever
 of `S00mabur` / `S96mabur` exists, installs the wrapper as `S00mabur`,
@@ -97,8 +97,8 @@ the cards), logging to `/tmp/maburgs.log`; `S97maburplay` logs to
 
 `tools/build-arm.sh` builds maburd for the **RTL8812EU** only (devourer
 rtl8822e) — the bench drone's card. The **RTL8812CU** (rtl8822c) is
-supported through a separate firmware image, the openipc-builder board
-`ssc338q_fpv_emax-wyvern-link-alpha`, whose `mabur.mk` builds devourer with
+supported through a separate firmware image, the board
+`ssc338q_fpv_emax-wyvern-link-alpha` (`firmware/devices/`), whose `mabur.mk` builds devourer with
 the 8822C alone (`BR2_PACKAGE_MABUR_RADIO_8812CU`). One image, one chip: a
 binary on the wrong card fails at `CreateRtlDevice` ("unsupported chip").
 The shipped `usb_pid = 0` scan tries `a81a`, then `c812`/`c82c`, then the
@@ -346,9 +346,9 @@ prints it, only the fingerprint).
   (`venc.debug_port`) shows the encoder's status.
 - The remembered channel is `/etc/mabur.channel` ([`docs/channel-select.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/channel-select.md)).
 - The image loads waybeam_venc's IMX415 driver, `sensor_imx415_star6e.ko`,
-  not the stock `sensor_imx415_mipi.ko` (`openipc-builder`'s
+  not the stock `sensor_imx415_mipi.ko` (the image's
   `load_sigmastar`; `docs/camera-modes.md`). It is a prebuilt module
-  committed into `openipc-builder`'s mabur overlay, not built with the
+  committed into `firmware/devices/_mabur-common`'s overlay, not built with the
   image: rebuild it in `../waybeam_venc` (`make drivers-star6e`, strip
   with `--strip-debug`, vermagic `4.9.84 SMP preempt mod_unload ARMv7
   thumb2 p2v8`) and replace that file. It has to be the six-mode build

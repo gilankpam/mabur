@@ -24,7 +24,7 @@ BIN=${2:-out/arm/maburd}
 [ -f "$BIN" ] || { echo "error: $BIN not built (run tools/build-arm.sh)" >&2; exit 1; }
 
 # The wrapper is installed as /etc/init.d/S00mabur -- the name the OpenIPC
-# image uses (openipc-builder package/mabur/mabur.mk), so busybox rcS starts
+# image uses (firmware/package/mabur/mabur.mk), so busybox rcS starts
 # maburd first. The repo file keeps its historical name, bundle/S96mabur.
 # A camera with an old /etc/init.d/S96mabur gets it stopped and removed
 # below, so one name owns the service. (Both copies share one pidfile, so
