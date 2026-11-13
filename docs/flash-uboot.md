@@ -2,8 +2,9 @@
 
 `u-boot-<soc>-nor-padded.bin` is the entire 256k `boot` partition, padded
 with `0xFF` (the erased state of NOR), so writing it leaves no stale tail
-behind. It is built from the fork this repo pins, not taken from an OpenIPC
-release.
+behind. It is built by `firmware/builder.sh` from our U-Boot fork
+(`gilankpam/u-boot-sigmastar`), not taken from an OpenIPC release, and every
+mabur release carries it with its md5.
 
 **Attach a serial console first.** If the new U-Boot does not boot, there is
 no recovery short of an SPI programmer, and with no console you will not
@@ -12,7 +13,7 @@ readback in step 4 is the only safety net you have — do not skip it.
 
 ```sh
 HOST=root@192.168.1.10          # your camera
-IMG=u-boot-<soc>-nor-padded.bin # downloaded from this release
+IMG=u-boot-<soc>-nor-padded.bin # from a mabur release
 ```
 
 **1 — Back up mtd0 and the environment.** This is the only rollback, and it

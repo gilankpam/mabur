@@ -3,13 +3,14 @@
 # Run once by S30customizer, guarded by /etc/custom.ok in the overlay -- so
 # it re-runs whenever the overlay is wiped, which `sysupgrade -n` does.
 
-# Set custom upgrade url -- THIS fork's release, not upstream OpenIPC's: the
+# Set custom upgrade url -- mabur's release, not upstream OpenIPC's: the
 # upstream ssc338q_fpv_emax-wyvern-link image is stock majestic + wfb-ng, so a
 # sysupgrade pulling it would silently replace maburd.
-# releases/latest is whichever release GitHub marks Latest: the newest
-# mabur-<sha8> build. Flash the ground station from the release of the same
-# name, or the pair has no link.
-fw_setenv upgrade 'https://github.com/gilankpam/openipc-builder/releases/latest/download/ssc338q_fpv_emax-wyvern-link-alpha-nor.tgz'
+# releases/latest is the newest v* release (snapshots are pre-releases and
+# never Latest); each release carries this unversioned file name next to the
+# versioned one. A minor-version release changes the drone<->GS contract:
+# update the ground station with it (docs/releases.md).
+fw_setenv upgrade 'https://github.com/gilankpam/mabur/releases/latest/download/ssc338q_fpv_emax-wyvern-link-alpha-nor.tgz'
 
 # Boot-time settings, shipped in the image so a device does not need them
 # typed in by hand.  Measured in docs/boot-time-findings-2026-09-07.md

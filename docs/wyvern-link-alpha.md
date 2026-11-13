@@ -1,7 +1,7 @@
 # EMAX Wyvern Link Alpha — first flash
 
 Board `ssc338q_fpv_emax-wyvern-link-alpha`: the URLLC AIO image
-(SSC338Q / IMX415 / NOR 16M, everything in `devices/_mabur-common`) with
+(SSC338Q / IMX415 / NOR 16M, everything in `firmware/devices/_mabur-common`) with
 maburd built for the **RTL8812CU** (devourer rtl8822c) instead of the
 8812EU. The ground station is unchanged — RK3566 + 8812EU cards running
 current mabur `maburgs`/`maburplay`.
@@ -59,8 +59,9 @@ ssh $HOST "fw_setenv bootargs '<bootargs with 8192k(rootfs)>'" && ssh $HOST rebo
 ssh $HOST 'cat /proc/mtd'                 # mtd3 "rootfs" must be 00800000
 ```
 
-Then flash from this fork's release (the board's `upgrade` URL is set to it
-by `customizer.sh` after the first boot, not before):
+Then flash the image from a mabur release (`docs/releases.md`; the board's
+`upgrade` URL is set to mabur's latest release by `customizer.sh` after the
+first boot, not before):
 
 ```sh
 scp -O ssc338q_fpv_emax-wyvern-link-alpha-nor.tgz $HOST:/tmp/

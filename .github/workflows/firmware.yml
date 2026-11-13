@@ -173,8 +173,15 @@ jobs:
           gh release delete snapshot --cleanup-tag -y || true
           gh release create snapshot dist/*.tgz dist/*.bin --prerelease \
             --title "snapshot (${SHA:0:8})" --notes-file notes.md
+      # Each image also goes up under its unversioned name: the drones'
+      # `upgrade` URL (customizer.sh) is releases/latest/download/<board>-nor.tgz.
       - name: Release
         if: needs.version.outputs.kind == 'release'
         run: |
-          gh release create "$VERSION" dist/*.tgz dist/*.bin --verify-tag \
+          mkdir -p latest
+          for f in dist/mabur-"$VERSION"-*; do
+            cp "$f" "latest/${f#dist/mabur-"$VERSION"-}"
+          done
+          ls -l latest
+          gh release create "$VERSION" dist/*.tgz dist/*.bin latest/* --verify-tag \
             --title "$VERSION" --notes-file notes.md --latest
