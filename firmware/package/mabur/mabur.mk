@@ -6,9 +6,10 @@
 
 # Built from the mabur tree this package sits in (firmware/builder.sh exports
 # MABUR_SRC_DIR), so an image is always the maburd of the commit it was built
-# from. Buildroot rsyncs that tree into its build dir: the exclusions keep the
-# OpenIPC tree this build itself runs in, U-Boot, and local build outputs out
-# of the copy.
+# from. Buildroot rsyncs that tree into its build dir: the exclusions keep out
+# the OpenIPC tree this build itself runs in, U-Boot, local build outputs, the
+# docs, the unused third_party/devourer submodule (devourer is its own
+# package), machine-local agent state and link keys.
 ifeq ($(MABUR_SRC_DIR),)
 $(error mabur: MABUR_SRC_DIR is not set (build through firmware/builder.sh))
 endif
@@ -17,7 +18,9 @@ MABUR_SITE_METHOD = local
 MABUR_VERSION = local
 MABUR_OVERRIDE_SRCDIR_RSYNC_EXCLUSIONS = \
 	--exclude /firmware/openipc --exclude /firmware/u-boot-sigmastar \
-	--exclude '/build*' --exclude /out --exclude /toolchain --exclude /logs
+	--exclude '/build*' --exclude /out --exclude /toolchain --exclude /logs \
+	--exclude /docs --exclude /third_party/devourer \
+	--exclude /.claude --exclude /.superpowers --exclude '/*.key'
 MABUR_LICENSE = MIT
 MABUR_SUPPORTS_IN_SOURCE_BUILD = NO
 
