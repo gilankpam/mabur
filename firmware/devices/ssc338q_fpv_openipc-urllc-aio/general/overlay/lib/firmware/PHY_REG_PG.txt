@@ -1,0 +1,57 @@
+// RTL8822EU per-rate TX power (dBm, whole numbers only — parser fraction math truncates)
+// Values on each row are ordered HIGHEST rate first, e.g. C30 = MCS7 MCS6 MCS5 MCS4.
+// HT 1SS = fpvd txPowerCurve: MCS0..7 = 29 28 25 23 19 19 19 19
+// OFDM mapped by constellation: 6/9M=29, 12M=28, 18M=25, 24M=23, 36/48/54M=19
+// 2SS kept at 19 (unused); VHT1SS mirrors HT curve, MCS8/9=19. CCK left at default 18.
+#[v1][Exact]#
+#[2.4G] A
+[1Tx] C20 ffffffff 18 18 18 18
+[1Tx] C24 ffffffff 25 28 29 29
+[1Tx] C28 ffffffff 19 19 19 23
+[1Tx] C2C ffffffff 23 25 28 29
+[1Tx] C30 ffffffff 19 19 19 19
+[2Tx] C34 ffffffff 19 19 19 19
+[2Tx] C38 ffffffff 19 19 19 19
+[1Tx] C3C ffffffff 23 25 28 29
+[1Tx] C40 ffffffff 19 19 19 19
+[1Tx] C44 ffffffff 19 19 19 19
+[2Tx] C48 ffffffff 19 19 19 19
+[2Tx] C4C ffffffff 19 19 19 19
+#[2.4G] B
+[1Tx] E20 ffffffff 18 18 18 18
+[1Tx] E24 ffffffff 25 28 29 29
+[1Tx] E28 ffffffff 19 19 19 23
+[1Tx] E2C ffffffff 23 25 28 29
+[1Tx] E30 ffffffff 19 19 19 19
+[2Tx] E34 ffffffff 19 19 19 19
+[2Tx] E38 ffffffff 19 19 19 19
+[1Tx] E3C ffffffff 23 25 28 29
+[1Tx] E40 ffffffff 19 19 19 19
+[1Tx] E44 ffffffff 19 19 19 19
+[2Tx] E48 ffffffff 19 19 19 19
+[2Tx] E4C ffffffff 19 19 19 19
+#[5G] A
+[1Tx] C24 ffffffff 25 28 29 29
+[1Tx] C28 ffffffff 19 19 19 23
+[1Tx] C2C ffffffff 23 25 28 29
+[1Tx] C30 ffffffff 19 19 19 19
+[2Tx] C34 ffffffff 19 19 19 19
+[2Tx] C38 ffffffff 19 19 19 19
+[1Tx] C3C ffffffff 23 25 28 29
+[1Tx] C40 ffffffff 19 19 19 19
+[1Tx] C44 ffffffff 19 19 19 19
+[2Tx] C48 ffffffff 19 19 19 19
+[2Tx] C4C ffffffff 19 19 19 19
+#[5G] B
+[1Tx] E24 ffffffff 25 28 29 29
+[1Tx] E28 ffffffff 19 19 19 23
+[1Tx] E2C ffffffff 23 25 28 29
+[1Tx] E30 ffffffff 19 19 19 19
+[2Tx] E34 ffffffff 19 19 19 19
+[2Tx] E38 ffffffff 19 19 19 19
+[1Tx] E3C ffffffff 23 25 28 29
+[1Tx] E40 ffffffff 19 19 19 19
+[1Tx] E44 ffffffff 19 19 19 19
+[2Tx] E48 ffffffff 19 19 19 19
+[2Tx] E4C ffffffff 19 19 19 19
+#[END]#

@@ -1,0 +1,21 @@
+#!/bin/sh
+# Boot-only CPU boost. The vendor cpufreq driver (drivers/sstar/cpufreq/
+# infinity6e/cpufreq.c, ms_cpufreq_init) pins policy min and max to 800 MHz
+# although the OPP table goes to 1.2 GHz. Raising the cap for the rcS window
+# only is worth 0.15-0.25 s to first video on the ssc338q (measured
+# 2026-09-09, mabur docs/boot-time-findings-2026-09-07.md); S99cpurestore
+# puts the 800 MHz cap back, so the in-flight thermal envelope is unchanged.
+C=/sys/devices/system/cpu/cpu0/cpufreq
+case "$1" in
+	start)
+		[ -w $C/scaling_max_freq ] || exit 0
+		echo performance > $C/scaling_governor
+		echo 1200000 > $C/scaling_max_freq
+		;;
+	stop)
+		;;
+	*)
+		echo "Usage: $0 {start}"
+		exit 1
+		;;
+esac

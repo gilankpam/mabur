@@ -1,0 +1,110 @@
+#!/bin/sh
+#
+# OpenIPC.org | 2024
+#
+
+MODULE=/lib/modules/4.9.84/sigmastar
+
+detect_sensor() {
+	# The sensor_config/srcfg dance stays: it powers and clocks the sensor,
+	# and the real sensor driver is insmod'd later expecting that.
+	insmod $MODULE/sensor_config.ko
+	if [ -e /dev/srcfg ]; then
+		echo srcfg 0 1 0 0 0 0 > /dev/srcfg
+		rmmod sensor_config
+	fi
+	# Take the sensor from the U-Boot environment, where it is pinned, rather
+	# than probing for it.  `ipcinfo -s` reads the sensor ID over I2C and is
+	# RACY: with the trimmed module list it returned empty on 5 of 8 boots,
+	# and an empty SENSOR means set_sensor never runs, so no sensor driver is
+	# loaded and maburd exits(3) in a 2 s respawn loop forever.  It never
+	# failed with the full 14-module list -- dropping ~0.1 s of insmod moved
+	# this probe earlier and exposed the race.  Probing remains the fallback
+	# for a board whose env does not pin one.
+	SENSOR=$(fw_printenv -n sensor 2>/dev/null)
+	if [ -z "$SENSOR" ]; then
+		SENSOR=$(ipcinfo -s)
+	fi
+}
+
+set_sensor() {
+	case $SENSOR in
+		imx415)
+			# waybeam_venc's star6e IMX415 driver: maburd picks its sensor
+			# modes by geometry -- binned 1920x1080@90 full view,
+			# 1728x972@100, 1728x816@120; native 2944x1656@60 and
+			# 2304x1296@100; 3840x2160@33 -- which the stock module lacks.
+			insmod $MODULE/sensor_imx415_star6e.ko chmap=1
+			;;
+		gc2053|gc4653|imx274|imx307|imx335|imx347|sc501ai|sc8235)
+			insmod $MODULE/sensor_${SENSOR}_mipi.ko chmap=1
+			;;
+		*)
+			echo -e "\n\e[1;31mUNSUPPORTED sensor - $SENSOR\e[0m\n" | logger -s -t OpenIPC
+			;;
+	esac
+}
+
+# mabur profile: load only what maburd opens, minus what the vendor drivers
+# link against internally.  maburd dlopens exactly libcam_os_wrapper,
+# libmi_ipu, libmi_isp, libmi_sensor, libmi_sys, libmi_venc, libmi_vif and
+# libmi_vpe; ISP and IPU are served through mhal/mi_sys and have no .ko.
+#
+# Dropped (verified with `nm -u` over every kept module: none of these
+# exports any symbol the kept set leaves undefined):
+#
+#   mi_ai      229k   audio in     -- no audio path
+#   mi_ao       97k   audio out    -- no audio path
+#   mi_divp     66k   unused; scaling is done by VPE
+#   mi_shadow   49k   unused
+#   mi_mipitx   25k   MIPI transmit (panel output) -- unused
+#
+# KEPT despite maburd never calling them -- mi_vpe links against both, and
+# removing them makes insmod fail with "unknown symbol in module", after
+# which maburd segfaults and the S39mabur wrapper respawns it forever:
+#
+#   mi_ldc     624k   mi_vpe needs 27 symbols from it
+#   mi_rgn      98k   mi_vpe needs 2 symbols from it
+#
+# Load order matters: mi_rgn and mi_ldc must precede mi_vpe.  Before removing
+# anything else, check it the same way:
+#   nm -u <kept>.ko | awk '{print $2}' | sort -u > keep.txt
+#   nm -g --defined-only <candidate>.ko | awk '{print $3}' | sort -u \
+#       | comm -12 - keep.txt      # must be empty
+insert_ko() {
+	insmod $MODULE/mhal.ko
+	insmod $MODULE/mi_common.ko
+	insmod $MODULE/mi_sys.ko cmdQBufSize=768 logBufSize=256
+	insmod $MODULE/mi_rgn.ko
+	insmod $MODULE/mi_ldc.ko
+	insmod $MODULE/mi_sensor.ko
+	insmod $MODULE/mi_vif.ko
+	insmod $MODULE/mi_vpe.ko
+	insmod $MODULE/mi_venc.ko fw_path=/etc/firmware/chagall.bin
+
+	MAJOR=$(awk '$2=="mi_poll" {print $1}' /proc/devices)
+	mknod /dev/mi_poll c "$MAJOR" 0
+	echo isproot /etc/firmware > /dev/ispmid
+}
+
+if [ ! -e /sys/module/mi_common ]; then
+	insert_ko
+fi
+
+echo -e "\n\e[1;33mAutodetect sensor\e[0m\n" | logger -s -t OpenIPC
+detect_sensor
+
+if [ -z "$SENSOR" ]; then
+	echo -e "\n\e[1;31mSensor parameter MISSING\e[0m\n" | logger -s -t OpenIPC
+	exit 1
+fi
+
+DRIVER=$(ls /sys/module | grep $SENSOR)
+if [ -n "$DRIVER" ]; then
+	rmmod $DRIVER
+fi
+
+echo -e "\n\e[1;32mSensor assigned - $SENSOR\e[0m\n" | logger -s -t OpenIPC
+set_sensor
+
+exit 0

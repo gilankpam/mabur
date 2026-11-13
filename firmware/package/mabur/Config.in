@@ -1,0 +1,44 @@
+config BR2_PACKAGE_MABUR
+	bool "mabur"
+	default n
+	select BR2_PACKAGE_LIBUSB
+	select BR2_PACKAGE_DEVOURER
+	help
+	  RTP-free FPV video link, drone side. maburd drives the SigmaStar
+	  MI encoder in-process, applies per-layer RS UEP FEC + SBI framing,
+	  and injects over a Realtek 8812EU or 8812CU via the devourer userspace
+	  driver, with adaptive-link (RCF/DISC) feedback, air-clock pacing
+	  and MAX_RANGE failsafe. One daemon: the separate encoder process
+	  was folded into maburd, which drives the SigmaStar MI encoder
+	  in-process.
+
+	  https://github.com/gilankpam/mabur
+
+if BR2_PACKAGE_MABUR
+
+choice
+	prompt "Radio card"
+	default BR2_PACKAGE_MABUR_RADIO_8812EU
+	help
+	  The one Realtek chip maburd's devourer is built for. Exactly one:
+	  each chip carries its own firmware + PHY/halrf tables (stripped
+	  maburd, 2026-09-26: 8822E 1.08 MB, 8822C 1.27 MB, both 1.70 MB)
+	  and the board carries one card. maburd on the wrong card fails
+	  at CreateRtlDevice ("unsupported chip"). The choice also sets
+	  maburd's wide-TX IGI floor at build time: off on the 8812EU,
+	  devourer's default (0x35) on the 8812CU, whose 40 MHz inject
+	  stalls on a silent channel without it.
+
+config BR2_PACKAGE_MABUR_RADIO_8812EU
+	bool "RTL8812EU (devourer rtl8822e)"
+	help
+	  OpenIPC URLLC AIO, RunCam WiFiLink 2 and clones.
+
+config BR2_PACKAGE_MABUR_RADIO_8812CU
+	bool "RTL8812CU (devourer rtl8822c)"
+	help
+	  EMAX Wyvern Link Alpha.
+
+endchoice
+
+endif

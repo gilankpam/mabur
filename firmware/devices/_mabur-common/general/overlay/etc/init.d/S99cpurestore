@@ -1,0 +1,17 @@
+#!/bin/sh
+# Undo S00cpuboost once rcS is through: back to the vendor default of a
+# fixed 800 MHz (policy min == max, so the governor choice is moot).
+C=/sys/devices/system/cpu/cpu0/cpufreq
+case "$1" in
+	start)
+		[ -w $C/scaling_max_freq ] || exit 0
+		echo 800000 > $C/scaling_max_freq
+		echo ondemand > $C/scaling_governor
+		;;
+	stop)
+		;;
+	*)
+		echo "Usage: $0 {start}"
+		exit 1
+		;;
+esac

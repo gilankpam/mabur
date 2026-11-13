@@ -1,0 +1,99 @@
+# Architecture
+BR2_arm=y
+BR2_cortex_a7=y
+BR2_ARM_FPU_NEON_VFPV4=y
+BR2_ARM_INSTRUCTIONS_THUMB2=y
+
+# Toolchain
+BR2_TOOLCHAIN_EXTERNAL=y
+BR2_TOOLCHAIN_EXTERNAL_CUSTOM=y
+BR2_TOOLCHAIN_EXTERNAL_DOWNLOAD=y
+BR2_TOOLCHAIN_EXTERNAL_URL="https://github.com/openipc/firmware/releases/download/$(OPENIPC_TOOLCHAIN).tgz"
+BR2_TOOLCHAIN_EXTERNAL_CUSTOM_PREFIX="arm-openipc-linux-gnueabihf"
+BR2_TOOLCHAIN_EXTERNAL_HEADERS_4_9=y
+BR2_TOOLCHAIN_EXTERNAL_CUSTOM_GLIBC=y
+# BR2_TOOLCHAIN_EXTERNAL_INET_RPC is not set
+BR2_TOOLCHAIN_EXTERNAL_CXX=y
+
+# Kernel
+BR2_LINUX_KERNEL=y
+BR2_LINUX_KERNEL_CUSTOM_TARBALL=y
+BR2_LINUX_KERNEL_CUSTOM_TARBALL_LOCATION="https://github.com/openipc/linux/archive/$(OPENIPC_KERNEL).tar.gz"
+BR2_LINUX_KERNEL_USE_CUSTOM_CONFIG=y
+BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE="$(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/infinity6e-ssc012b.config"
+BR2_LINUX_KERNEL_UIMAGE=y
+BR2_LINUX_KERNEL_XZ=y
+
+# Filesystem
+BR2_PACKAGE_BUSYBOX_CONFIG="$(BR2_EXTERNAL)/package/busybox/busybox.config"
+BR2_PACKAGE_UBOOT_TOOLS=y
+BR2_PACKAGE_ZLIB=y
+# BR2_PACKAGE_IFUPDOWN_SCRIPTS is not set
+BR2_TARGET_ROOTFS_SQUASHFS=y
+# LZO, not XZ. squashfs decompresses lazily on every file read, so the
+# compressor is paid throughout userspace startup, not once. Measured on
+# ssc338q: rootfs-mounted -> "Starting network" 1.716 s -> 1.13 s, a 0.58 s
+# saving reproducible to 35 ms across runs. Pre-kernel and the mount itself
+# are unchanged, as expected.
+#
+# It costs 4.26 MB -> 5.42 MB of flash, and that crosses a threshold worth
+# knowing about: U-Boot sizes the rootfs partition from the squashfs
+# superblock on every `sf probe` (common/cmd_sf.c, `bytes + 0x1000 <
+# 0x500000` -> rootmtd=5120k else 8192k). So this image moves the partition
+# from 5120k to 8192k automatically. A *fresh* flash is fine, but an
+# incremental sysupgrade from an XZ image cannot bootstrap it: the partition
+# is still 5 MB at that moment and flashcp refuses with "bigger than
+# /dev/mtd3" -- which sysupgrade then reports as success, because it does
+# not check flashcp's exit status. Pin mtdparts to 8192k literally for one
+# boot to break the cycle.
+#
+# LZ4 would be faster still but the kernel is built without
+# CONFIG_SQUASHFS_LZ4 (CONFIG_SQUASHFS_LZO=y is already there), so it would
+# need a kernel config change and an unmountable rootfs is the failure mode.
+BR2_TARGET_ROOTFS_SQUASHFS4_LZO=y
+
+# OpenIPC
+BR2_OPENIPC_SOC_VENDOR="sigmastar"
+BR2_OPENIPC_SOC_MODEL="ssc338q"
+BR2_OPENIPC_SOC_FAMILY="infinity6e"
+BR2_OPENIPC_VARIANT="fpv"
+BR2_OPENIPC_FLASH_SIZE="16"
+
+# Packages -- kept deliberately minimal: maburd, the vendor MI stack it
+# dlopens, and the handful of tools the OpenIPC init chain calls by name.
+# Anything added here costs boot time (see docs/boot-time-findings-2026-09-07.md
+# in the mabur repo) as well as flash.
+BR2_PACKAGE_MABUR=y
+# EMAX Wyvern Link Alpha: same SSC338Q / IMX415 / NOR 16M as the URLLC AIO,
+# but an RTL8812CU radio (0bda:c812) -- maburd is built with devourer's
+# 8822C alone. Everything else is devices/_mabur-common.
+BR2_PACKAGE_MABUR_RADIO_8812CU=y
+BR2_PACKAGE_SIGMASTAR_OSDRV_INFINITY6E=y
+# ipcinfo: called by /etc/init.d/S70vendor and by load_sigmastar.
+BR2_PACKAGE_IPCTOOL=y
+# Remote access (ssh).
+BR2_PACKAGE_DROPBEAR_OPENIPC=y
+# curl + its TLS: /usr/sbin/sysupgrade (the only remote recovery route after a
+# bad flash) and the documented `curl 127.0.0.1:8301/venc` post-boot gate.
+BR2_PACKAGE_LIBCURL_OPENIPC=y
+BR2_PACKAGE_LIBCURL_OPENIPC_CURL=y
+# BR2_PACKAGE_LIBCURL_OPENIPC_PROXY_SUPPORT is not set
+# BR2_PACKAGE_LIBCURL_OPENIPC_COOKIES_SUPPORT is not set
+# BR2_PACKAGE_LIBCURL_OPENIPC_EXTRA_PROTOCOLS_FEATURES is not set
+BR2_PACKAGE_MBEDTLS_OPENIPC=y
+
+# Deliberately off. The RTL kernel modules must never load on the radio this
+# board uses -- it is driven from userspace by devourer inside maburd.
+# MAJESTIC in particular must stay off for a second reason: the MI libraries
+# in /usr/lib are installed by sigmastar-osdrv-infinity6e only under
+# `ifneq ($(BR2_PACKAGE_MAJESTIC),y)`, because majestic otherwise ships its
+# own. Enabling it silently removes every libmi_*.so and maburd's dlopens all
+# fail at startup.
+BR2_PACKAGE_MAJESTIC=n
+BR2_PACKAGE_MAJESTIC_FONTS=n
+BR2_PACKAGE_MAJESTIC_WEBUI=n
+BR2_PACKAGE_ADAPTIVE_LINK=n
+BR2_PACKAGE_FPVD=n
+BR2_PACKAGE_WIFIBROADCAST_NG=n
+BR2_PACKAGE_RTL88X2EU_OPENIPC=n
+BR2_PACKAGE_RTL8812AU_OPENIPC=n
