@@ -12,7 +12,7 @@
 #   - txdemo cross-built for the drone:  cmake --build build-arm-glibc
 #     --target txdemo   (env per tools/build-arm.sh), scp -O to drone /tmp
 #   - rxdemo cross-built for the GS:     cmake --build build-arm64
-#     --target rxdemo   (env per tools/build-arm64.sh), scp to GS /tmp
+#     --target rxdemo   (env per mabur-ground tools/build-arm64.sh), scp to GS /tmp
 #   - BOTH daemons stopped (S96mabur on the drone, S96maburgs on the GS);
 #     restart + ausniff gate afterwards.
 # GS busybox has no pkill — killall only.
