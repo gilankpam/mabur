@@ -12,7 +12,8 @@
 // silently reinterpreted.
 
 #include <cstdint>
-#include <deque>
+#include <iterator>
+#include <list>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -95,31 +96,34 @@ class Value {
   void set_float(double v) { flt_ = v; }
   void set_bool(bool v) { bool_ = v; }
 
-  using TableStore = std::deque<std::pair<std::string, Value>>;
-  using ArrayStore = std::deque<Value>;
+  // list, not deque: these are members of Value itself, so the element type
+  // is incomplete where they are declared. The standard allows that for list
+  // (and vector) only; libc++ refuses it for deque (the Android NDK build).
+  // vector is out: see table_ below.
+  using TableStore = std::list<std::pair<std::string, Value>>;
+  using ArrayStore = std::list<Value>;
 
   // Iteration is nlohmann-shaped: *it is the VALUE, it.key() is the key.
   class const_iterator {
    public:
-    const_iterator(const TableStore* t, const ArrayStore* a, std::size_t i)
-        : tab_(t), arr_(a), i_(i) {}
-    const Value& operator*() const {
-      return tab_ ? (*tab_)[i_].second : (*arr_)[i_];
-    }
+    explicit const_iterator(TableStore::const_iterator t) : on_table_(true), t_(t) {}
+    explicit const_iterator(ArrayStore::const_iterator a) : on_table_(false), a_(a) {}
+    const Value& operator*() const { return on_table_ ? t_->second : *a_; }
     const Value* operator->() const { return &**this; }
     const Value& value() const { return **this; }
     const std::string& key() const;
     const_iterator& operator++() {
-      ++i_;
+      if (on_table_) ++t_;
+      else ++a_;
       return *this;
     }
-    bool operator==(const const_iterator& o) const { return i_ == o.i_; }
-    bool operator!=(const const_iterator& o) const { return i_ != o.i_; }
+    bool operator==(const const_iterator& o) const { return on_table_ ? t_ == o.t_ : a_ == o.a_; }
+    bool operator!=(const const_iterator& o) const { return !(*this == o); }
 
    private:
-    const TableStore* tab_;
-    const ArrayStore* arr_;
-    std::size_t i_;
+    bool on_table_;
+    TableStore::const_iterator t_{};
+    ArrayStore::const_iterator a_{};
   };
 
   const_iterator begin() const;
@@ -142,8 +146,8 @@ class Value {
 
   Kind kind_ = Kind::Table;
   int line_ = 0;
-  // deque, not vector: the parser holds pointers into these while appending
-  // to the same container, which vector would invalidate.
+  // Not vector: the parser holds pointers into these while appending to the
+  // same container, which vector would invalidate.
   TableStore table_;
   ArrayStore array_;
   std::string str_;
