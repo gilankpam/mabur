@@ -285,7 +285,7 @@ never closes there.
 Ladder-side, this is the same contract as the congestion shed: enh silence
 is NoInfo to `s3_usable()` and the probe gate, never loss. It ORs with, and
 never touches, `failsafe_shed_` / `shed_level_`. `efficiency` and `body_us`
-are calibration knobs, fitted with `tools/bench/airdrain.py --model`.
+are calibration knobs, fitted with mabur-ground's [`tools/bench/airdrain.py`](https://github.com/gilankpam/mabur-ground/blob/master/tools/bench/airdrain.py) `--model`.
 Flight record and the budget/efficiency fit:
 `docs/findings/2026-09-06-air-clock-flight.md`.
 

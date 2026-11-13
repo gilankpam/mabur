@@ -778,7 +778,7 @@ findings page.
 
 | gate | command | expected |
 |---|---|---|
-| ausniff before/after | `python3 tools/bench/ausniff.py` on the GS (scp the repo copy to `/tmp` first) | ~fps of the mode, 0 gaps, both runs |
+| ausniff before/after | mabur-ground's [`tools/bench/ausniff.py`](https://github.com/gilankpam/mabur-ground/blob/master/tools/bench/ausniff.py) on the GS (scp the repo copy to `/tmp` first) | ~fps of the mode, 0 gaps, both runs |
 | full run | `maburcal start` on a 40 MHz GS | four sweeps, `done`, wall-clock < 120 s; both width blocks in the table |
 | walls | the table vs the spike's reference at the same geometry | within ±2 on mcs4–7, mcs0–3 `no_dip` |
 | capacity | `eff` per width vs the spike's low-MCS points | within ±0.03 at mcs0–4; high points plausible, or flagged `tx_bound` and left at the existing value |

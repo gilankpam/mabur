@@ -10,11 +10,11 @@ function(add_mtest name)
   add_executable(${name} ${MT_UNPARSED_ARGUMENTS})
   target_link_libraries(${name} PRIVATE mabur_common ${MT_LIBS})
   target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_SOURCE_DIR}/third_party)
+    ${PROJECT_SOURCE_DIR}/third_party)
   target_compile_definitions(${name} PRIVATE
     MABUR_VECTOR_DIR="${CMAKE_CURRENT_SOURCE_DIR}/vectors"
     MABUR_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
-    MABUR_BUNDLE_DIR="${CMAKE_SOURCE_DIR}/bundle"
+    MABUR_BUNDLE_DIR="${PROJECT_SOURCE_DIR}/bundle"
     MABUR_TEST_SCRATCH_DIR="${MABUR_TEST_SCRATCH_DIR}")
   add_test(NAME ${name} COMMAND ${name})
 endfunction()
@@ -27,7 +27,7 @@ add_mtest(test_siphash test_siphash.cpp)
 add_mtest(test_link_key test_link_key.cpp)
 # CRC-16 microbench (tools/bench/crc_bench.cpp): table vs bit-serial, ns/B.
 # Not a test; --target crc_bench.
-add_executable(crc_bench ${CMAKE_SOURCE_DIR}/tools/bench/crc_bench.cpp)
+add_executable(crc_bench ${PROJECT_SOURCE_DIR}/tools/bench/crc_bench.cpp)
 target_link_libraries(crc_bench PRIVATE mabur_common)
 add_mtest(test_gf256 test_gf256.cpp)
 add_mtest(test_sw_wire test_sw_wire.cpp)
@@ -110,7 +110,7 @@ if(MABUR_BUILD_DRONE)
   # already compiled into mabur_drone_core unconditionally (host+ARM) —
   # test_venc_cfg links that instead of recompiling it, to avoid defining
   # venc_cfg_defaults() twice in one link.
-  set(MABUR_VENC_DIR ${CMAKE_SOURCE_DIR}/drone/venc)
+  set(MABUR_VENC_DIR ${PROJECT_SOURCE_DIR}/drone/venc)
   add_mtest(test_venc_idr_rate_limit test_venc_idr_rate_limit.cpp
     ${MABUR_VENC_DIR}/idr_rate_limit.c ${MABUR_VENC_DIR}/timing.c)
   target_include_directories(test_venc_idr_rate_limit PRIVATE ${MABUR_VENC_DIR})
@@ -127,34 +127,34 @@ if(MABUR_BUILD_DRONE)
   target_include_directories(test_sensor_cal PRIVATE ${MABUR_VENC_DIR})
   add_mtest(test_sensor_steer test_sensor_steer.cpp ${MABUR_VENC_DIR}/sensor_steer.c)
   target_include_directories(test_sensor_steer PRIVATE ${MABUR_VENC_DIR}
-    ${CMAKE_SOURCE_DIR}/common/include)
+    ${PROJECT_SOURCE_DIR}/common/include)
   # The real venc_core.c facade over a fake star6e runtime: its lifecycle
   # guards are what the rebuild failure ladder stands on.
   add_mtest(test_venc_core test_venc_core.cpp venc_core_fake.c
     ${MABUR_VENC_DIR}/venc_core.c)
   target_include_directories(test_venc_core PRIVATE ${MABUR_VENC_DIR}
-    ${CMAKE_SOURCE_DIR}/drone/vendor)
+    ${PROJECT_SOURCE_DIR}/drone/vendor)
   target_compile_definitions(test_venc_core PRIVATE
     PLATFORM_STAR6E HAVE_BACKEND_STAR6E=1 _GNU_SOURCE)
   target_link_libraries(test_venc_core PRIVATE pthread)
 
-  add_test(NAME host_e2e COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/run_host_e2e.sh)
+  add_test(NAME host_e2e COMMAND bash ${PROJECT_SOURCE_DIR}/tests/integration/run_host_e2e.sh)
   set_tests_properties(host_e2e PROPERTIES
-    ENVIRONMENT "BUILD=${CMAKE_BINARY_DIR}")
+    ENVIRONMENT "BUILD=${PROJECT_BINARY_DIR}")
 endif()
 # Host-only burst-loss simulator (spec 2026-07-15-per-layer-symbol-size).
 # Not a benchmark of real time — fake clock — so safe as a ctest.
-add_executable(burst_sim ${CMAKE_SOURCE_DIR}/tools/bench/burst_sim.cpp)
+add_executable(burst_sim ${PROJECT_SOURCE_DIR}/tools/bench/burst_sim.cpp)
 target_link_libraries(burst_sim PRIVATE mabur_common)
 add_test(NAME burst_sim_selfcheck COMMAND burst_sim --self-check)
 
 # Python tool tests (requires Python 3; found at the top of this file)
 if(Python3_EXECUTABLE)
   add_test(NAME test_mavparam
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_mavparam.py)
+    COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/test_mavparam.py)
   add_test(NAME test_vencburst
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_vencburst.py
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+    COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/test_vencburst.py
+    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
 endif()
 
 if(MABUR_BUILD_LINKBENCH)
