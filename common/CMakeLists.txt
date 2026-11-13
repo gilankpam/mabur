@@ -10,7 +10,7 @@ add_library(mabur_common STATIC src/crc16.cpp src/gf256.cpp src/sbi.cpp src/nal.
 if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
   target_compile_options(mabur_common PRIVATE -O3)
 endif()
-target_include_directories(mabur_common PUBLIC include ${CMAKE_SOURCE_DIR}/third_party)
+target_include_directories(mabur_common PUBLIC include ${PROJECT_SOURCE_DIR}/third_party)
 find_package(Threads REQUIRED)
 target_link_libraries(mabur_common PUBLIC Threads::Threads)
 
