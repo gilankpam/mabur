@@ -33,9 +33,10 @@ and builds it as a CMake subproject (`MABUR_DIR`); keep mabur buildable
 that way (`PROJECT_SOURCE_DIR`, never `CMAKE_SOURCE_DIR`, in `common/` and
 `drone/`). Other GS implementations (palianytsia) also build against this
 repo. CI's `ground-downstream` job builds mabur-ground master against every
-PR here and runs the drone↔GS glue tests (`test_cal_e2e`,
-`test_link_auth_e2e`, `test_frame_e2e`, `gs_e2e`, `gs_au_e2e`,
-`player_e2e`, `web_au_parity`), which live there with the GS code.
+PR here and runs its host suite, including the drone↔GS glue tests
+(`test_cal_e2e`, `test_link_auth_e2e`, `test_frame_e2e`, `gs_e2e`,
+`gs_au_e2e`, `player_e2e`, `web_au_parity`), which live there with the GS
+code.
 
 **A change that needs both sides** (a wire field, `RC_VERSION`, a caps bit,
 a drone parameter row) is a PR here that links its mabur-ground PR. Write
@@ -164,13 +165,13 @@ deployment just as hard as a fleet:
 NixOS host: wrap every cmake/ctest invocation in
 `nix-shell -p pkg-config libusb1 --run "..."`. Configure with
 `-DDEVOURER_DIR=$PWD/../devourer` when the default `../devourer` doesn't
-resolve. Host suite: `ctest --test-dir build -R 'test_|host_e2e'`.
+resolve. Host suite: `ctest --test-dir build -R 'test_|sim_|host_e2e'`.
 Cross-build: `tools/build-arm.sh` (maburd + the bench TX tools, OpenIPC
 glibc toolchain at `../openipc-builder`). The GS cross-build
 (`build-arm64.sh`) is in mabur-ground.
 
 **The gate for a change here** is this suite plus `ground-downstream`
-(mabur-ground's glue tests against this branch). Any change touching venc,
+(mabur-ground's host suite against this branch). Any change touching venc,
 UEP overhead, or the bitrate policy additionally gates on mabur-ground's
 `tools/bench/aucadence.py` (base−enh completion offset vs the recorded
 per-rung baseline); a change the GS sees on the air gates on its
