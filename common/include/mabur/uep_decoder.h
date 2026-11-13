@@ -1,3 +1,4 @@
+#error downstream-proof
 #pragma once
 #include <array>
 #include <cstddef>
