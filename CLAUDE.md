@@ -15,24 +15,51 @@ does NOT cover the superpowers workflows: `subagent-driven-development`'s
 per-task implementer + spec/quality reviewer subagents are wanted and
 should be used when a plan is executed that way.
 
-mabur is an RTP-free FPV video link: `maburd` (drone, OpenIPC/SigmaStar,
-armv7) drives the SigmaStar MI encoder in-process and injects — one daemon,
-no waybeam, since the 2026-08-29 venc fold-in (`drone/venc/`, ported from
-`../waybeam_venc` f956a52; the binary is glibc-dynamic now, not musl-static);
-`maburgs` (ground station, aarch64) receives,
-FEC-decodes, and publishes whole access units to a shm AU ring; `maburplay`
-(gs/player/, same GS binary family) consumes the ring — MPP hardware decode
-straight to DRM/KMS, plus the fMP4 DVR on /media/dvr. `web/` is the same
-receive + control core in the browser (WebUSB + WASM): a single-card GS or
-a passive spotter. `common/` holds the
-shared wire formats and FEC; `third_party/devourer` (plus the sibling
-checkout `../devourer`) is the userspace radio driver. PixelPilot and the
-RTP output were deleted in PR C.
+mabur is an RTP-free FPV video link. This repo is the drone and the
+protocol: `maburd` (drone, OpenIPC/SigmaStar, armv7) drives the SigmaStar
+MI encoder in-process and injects — one daemon, no waybeam, since the
+2026-08-29 venc fold-in (`drone/venc/`, ported from `../waybeam_venc`
+f956a52; the binary is glibc-dynamic now, not musl-static). `common/` holds
+the shared wire formats and FEC (encoder and decoder both — the decoder is
+half of the protocol's definition); `third_party/devourer` (plus the
+sibling checkout `../devourer`) is the userspace radio driver. PixelPilot
+and the RTP output were deleted in PR C.
+
+**The ground station lives in `gilankpam/mabur-ground`** (sibling checkout
+`../mabur-ground`, its own CLAUDE.md): `maburgs`, `maburplay`, the web GS,
+and their tools (maburtop, flightreport, ausniff, aucadence, gsparam,
+`build-arm64.sh`). It pins this repo as the submodule `third_party/mabur`
+and builds it as a CMake subproject (`MABUR_DIR`); keep mabur buildable
+that way (`PROJECT_SOURCE_DIR`, never `CMAKE_SOURCE_DIR`, in `common/` and
+`drone/`). Other GS implementations (palianytsia) also build against this
+repo. CI's `ground-downstream` job builds mabur-ground master against every
+PR here and runs its host suite, including the drone↔GS glue tests
+(`test_cal_e2e`, `test_link_auth_e2e`, `test_frame_e2e`, `gs_e2e`,
+`gs_au_e2e`, `player_e2e`, `web_au_parity`), which live there with the GS
+code.
+
+**A change that needs both sides** (a wire field, `RC_VERSION`, a caps bit,
+a drone parameter row) is a PR here that links its mabur-ground PR. Write
+the GS side against this branch with `-DMABUR_DIR=$PWD/../mabur`. Merge
+here first; mabur-ground then bumps its submodule and merges. Until it
+does, `ground-downstream` on master is red, which is the signal that the
+pair is mid-flight.
 
 ## Where to look — read the doc, don't guess
 
 This file is deliberately short. The detail lives in `docs/`; load the one
-page the task needs rather than carrying all of it.
+page the task needs rather than carrying all of it. The GS-only pages
+(observability, colortrans, channel selection and hops, live config, the
+goggles menu, the web GS, the OPi board, the CPE510 relay) are in
+mabur-ground's `docs/` (`../mabur-ground/docs/`).
+
+The pages here that describe link behaviour — `link-adaptation`,
+`calibration`, `fec-nack`, `phase-lock`, `slices`, `bw40`, `link-pairing`,
+`tx-rx-timing`, `airtime-model`, `deploy` — stay here even where much of the
+code is in mabur-ground (ladder, cal session, NACK tracker, PhaseLock, slice
+salvage): they are what any GS implementation reads. A mabur-ground PR that
+changes behaviour one of them describes comes with a docs PR here, and
+each links the other. Their GS code paths are mabur-ground GitHub links.
 
 Two kinds of doc, two rules:
 
@@ -67,15 +94,9 @@ Two kinds of doc, two rules:
 |---|---|
 | ladder rungs, promote/demote, s3 probes, fade, attribution, RCF drain, RcAgent's encoder verbs + IDR pacing | `docs/link-adaptation.md` |
 | the disarmed low-power mode, arm state over MSP, the live fps verb | `docs/link-adaptation.md` ("Low-power (disarmed) mode") |
-| the stats sideport, maburtop, the debug-log session directory (ctl/probe/au/flight/lat), ausniff, capture tools, player OSD/DVR/record button | `docs/observability.md` |
-| colortrans (CRTC 3D LUT, OSD inverse, burned-DVR GPU stage), the Buildroot glibc build of maburplay | `docs/colortrans.md` |
-| auto channel selection over a shared channel set, remembered channel, boot hop, pinned mode (static: never hops), which knob drives which piece (search/measure/relocate/verdict/hop), scan.log | `docs/channel-select.md` |
-| in-flight channel hop, verdict, dwells, hop_restore | `docs/inflight-channel-hop.md` |
-| the shared channel/hop wiring (`ChannelCore`), its seams into maburgs (maburgs and the web GS both drive it), the test fakes | `gs/src/channel_core.h` (header comment) + `docs/channel-select.md` "Where the code lives" |
+| the GS itself: sideport, maburtop, session logs, ausniff, player OSD/DVR, colortrans, channel selection and in-flight hops, `ChannelCore`, live GS config, the goggles menu, the web GS / spotter, the OPi Zero 2W, the CPE510 relay | mabur-ground's `CLAUDE.md` and `docs/` (`../mabur-ground/`) |
 | comparing recordings, metric scales, removed sideport keys, "why do these two flights disagree" | `docs/data-provenance.md` |
-| shipping a binary or config to a device | `docs/deploy.md` |
-| live GS settings (set/get on 8402/8403), writing the GS TOMLs from a running daemon, gsparam.py | `docs/gs-live-config.md` |
-| the goggles settings menu (buttons, rows, what each row sets, `[input.<button>]`, `[menu]`) | `docs/gs-menu.md` |
+| shipping a binary or config to a device, flag days, pairing | `docs/deploy.md`; the GS side (install script, Radxa/OPi/CPE510 facts, GS image flash) → mabur-ground's `docs/deploy.md` |
 | calibrating a VTX's TX-power walls and capacity / efficiency tables (per width), maburcal, cal.log, the mabur MAVLink dialect and its cal lane | `docs/calibration.md`; the dialect and the run-pair latch → `docs/mavlink.md` |
 | a specific past investigation, or why something is the way it is | `docs/findings/README.md` (dated index) |
 | camera modes and field of view per `venc.fps` (1920x1080@90 full view, 1728x972@100, 1728x816@120), allowed `venc.size`, binning, the waybeam IMX415 driver the image ships, matching the GS `screen_mode` / the fps mismatch warning / letterboxing, SD-recorder risks above 90 fps, the GS burned recorder at 100 fps | `docs/camera-modes.md` |
@@ -85,15 +106,12 @@ Two kinds of doc, two rules:
 | carrier sense (CCA) on/off, the GS-send self-collision, the drone's RX channel view (`drone.radio.rx`), why the OSD LOSS row reads what it reads, the pending cca-on flight gate | `docs/findings/2026-09-23-cca-on.md` |
 | 40 MHz (HT40): which rungs fly 40, per-width tables, pair candidates, the boot scan's pair pick, no_agg, scanlog 6 / ctllog 12, the derived receiver width | `docs/bw40.md` (as built: per-rung width, pairs, scan, no_agg) + `docs/findings/2026-09-23-bw40-sweep.md` ("Start here") |
 | the VTX onboard SD recorder ([record], dvr.target, the RCF rec byte, OSD REC field), VENC bind-peer order, the MI /proc/mi_modules/mi_venc per-stage delay instrument, the startup vanish-counter ratchet | docs/vtx-recorder.md (as built) + docs/findings/2026-09-26-sd-record.md (spike) |
-| the browser GS / spotter (web/), WebUSB+WASM build, LinkHealthAssembler sharing, channel set form, CHANNEL line, spotter follower | docs/web-gs.md |
-| the Orange Pi Zero 2W GS (H618): the v4l2req decoder (V4l2ReqBackend, libav v4l2request → Cedrus), MABUR_PLAYER_DECODER, build stage 7, what the board cannot do | docs/opi-zero2w.md |
-| the CPE510 relay card (mabur-relay protocol v4, maburgs RemoteCard + radio.relays, web GS relay mode, relay TX, interference sweep/hop on a relay) | docs/cpe510-relay.md |
 | pairing / the link key file, SipHash tag, session nonces, KEY MISMATCH, auth_reject | docs/link-pairing.md |
 | the software NACK (base-layer selective repeat): T_NACK, the retx ring, the air bucket, the retx accounting class, feclog 3 | docs/fec-nack.md (as built) + docs/findings/2026-10-05-fec-nack-spike.md (spike) |
-| H.265 row slices: slice salvage (SliceAssembler, skip-slice fills, `[venc] slices`, FrameHdr `slice_rows`, `kRecFlagSliceSalvaged`, aulog 5) and streamed decode (AU ring v4 open slots, StreamFeeder, the decoder-input thread (FeedLoop), `[decoder] stream`, the MPP patches in `gs/player/mpp-patches/`, the stream-mode GS image and its p1 flash) | docs/slices.md (as built) + docs/findings/2026-10-09-venc-slice.md; flashing: docs/deploy.md |
+| H.265 row slices: slice salvage (SliceAssembler, skip-slice fills, `[venc] slices`, FrameHdr `slice_rows`, `kRecFlagSliceSalvaged`, aulog 5) and streamed decode (AU ring v4 open slots, StreamFeeder, the decoder-input thread (FeedLoop), `[decoder] stream`, the MPP patches in [`gs/player/mpp-patches/`](https://github.com/gilankpam/mabur-ground/blob/master/gs/player/mpp-patches/), the stream-mode GS image and its p1 flash) | docs/slices.md (as built) + docs/findings/2026-10-09-venc-slice.md; flashing: mabur-ground's docs/deploy.md |
 | the phase lock (sensor-rate servo against the GS vblank: PhaseLock, the regulator's margin and placement switch, RCF `snr_off`, `display.phase_lock`/`phase_margin_ms`, `screen_mode` exact-rate pick, reg.log `lock=` fields, drone `[sensor] steer`) | docs/phase-lock.md + docs/findings/2026-10-17-phase-lock-spike-2.md |
 | MAVLink tunnel (`T_MAV`, ids, the drone component's routing/heartbeat), the GS MAVLink UDP endpoint and its trust boundary | docs/mavlink.md |
-| drone config parameters over MAVLink (`PARAM_EXT_*` table, applying a set, `.pre-param`, ordering rules, `ParamClient`, mavparam.py) | docs/vtx-config-mavlink.md; the web GS VTX tab → `docs/web-gs.md` |
+| drone config parameters over MAVLink (`PARAM_EXT_*` table, applying a set, `.pre-param`, ordering rules, `ParamClient`, mavparam.py) | docs/vtx-config-mavlink.md; the web GS VTX tab → mabur-ground's [`docs/web-gs.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/web-gs.md) |
 | radio/PHY below mabur | `third_party/devourer/CLAUDE.md` |
 
 Design specs and plans live in `docs/superpowers/` — **gitignored**, so
@@ -115,10 +133,11 @@ build. mabur owes nothing to old peers, old configs, or old consumers.
   files (`ctl.log`, `probe.log`, `au.log`, `flight.jsonl`, `lat.log`) are
   under the same rule — their own format-marker lines (`ctllog N`,
   `aulog N`, `probelog N`, `latlog N`) carry the version instead. The
-  obligation is to fix the in-repo consumers — `tools/maburtop.py`,
+  obligation is to fix the consumers — `tools/maburtop.py`,
   `tools/flightreport.py` (which reads both the sideport jsonl and the
-  session directory's log files), `gs/player`'s OSD — **in the same
-  commit**, not to keep the old shape alive.
+  session directory's log files), `gs/player`'s OSD, all in mabur-ground —
+  **in the same mabur-ground commit** that changes the format, not to keep
+  the old shape alive.
 - **Config keys are free to change.** A removed key failing boot is the
   intended forcing function, not a regression. No migration shims.
 - **There is no rollback contract.** An old binary needs its old config
@@ -146,19 +165,15 @@ deployment just as hard as a fleet:
 NixOS host: wrap every cmake/ctest invocation in
 `nix-shell -p pkg-config libusb1 --run "..."`. Configure with
 `-DDEVOURER_DIR=$PWD/../devourer` when the default `../devourer` doesn't
-resolve. Host suite: `ctest --test-dir build -R 'test_|host_e2e'`.
-Cross-builds: `tools/build-arm64.sh` (maburgs), `tools/build-arm.sh`
-(maburd + the bench TX tools, OpenIPC glibc toolchain at
-`../openipc-builder`). Carve-out: `tools/build-arm64.sh` must run bare, never
-inside that `nix-shell` wrapper — Nix's pkg-config wrapper overrides
-`PKG_CONFIG_LIBDIR` and breaks its stage 6 glibc build.
-Never load the 8812eu kernel module on the GS cards.
+resolve. Host suite: `ctest --test-dir build -R 'test_|sim_|host_e2e'`.
+Cross-build: `tools/build-arm.sh` (maburd + the bench TX tools, OpenIPC
+glibc toolchain at `../openipc-builder`). The GS cross-build
+(`build-arm64.sh`) is in mabur-ground.
 
-**The standing regression gate for any maburgs change is
-`tools/bench/ausniff.py`**, which reads the AU ring from outside the
-daemon — the sideport is maburgs self-reporting, so gating a maburgs
-change on the sideport is circular. Host-side the equivalent is
-`ctest -R 'gs_e2e|gs_au_e2e|player_e2e'`. Any change touching the
-AirBalancer, venc, UEP overhead, or the bitrate policy additionally
-gates on `tools/bench/aucadence.py` (base−enh completion offset vs the
-recorded per-rung baseline). Details in `docs/observability.md`.
+**The gate for a change here** is this suite plus `ground-downstream`
+(mabur-ground's host suite against this branch). Any change touching venc,
+UEP overhead, or the bitrate policy additionally gates on mabur-ground's
+`tools/bench/aucadence.py` (base−enh completion offset vs the recorded
+per-rung baseline); a change the GS sees on the air gates on its
+`tools/bench/ausniff.py` against a deployed pair. Details in mabur-ground's
+[`docs/observability.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/observability.md).

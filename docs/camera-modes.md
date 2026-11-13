@@ -163,14 +163,14 @@ caution without the `/`.
 A picture whose aspect differs from the panel (mode 5 on 16:9) is
 letterboxed with black bars on the screen, and in the burned DVR when its
 size (`dvr.burned.size`) has another aspect, never stretched
-(`gs/player/src/fit_rect.h`). The burned DVR's default size is the
+([`gs/player/src/fit_rect.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/player/src/fit_rect.h)). The burned DVR's default size is the
 decoded picture's own, which needs no letterbox.
 
 ## The GS burned recorder at 100 fps
 
 At a 100 Hz panel the GS's burned DVR cannot encode every vblank and
 costs live view ~4 ms while it records; run it at `dvr.burned.every = 2`.
-Details: `docs/colortrans.md` ("Known limitations").
+Details: [`docs/colortrans.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/colortrans.md) ("Known limitations").
 
 ## The GS burned recorder at native sizes above 1920x1080
 

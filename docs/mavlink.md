@@ -30,8 +30,8 @@ page.
 | calibration messages: plain structs and their MAVLink codec | `common/include/mabur/cal_proto.h`, `common/include/mabur/cal_mav.h` |
 | drone: the component (routing, heartbeat; the parameter protocol in `docs/vtx-config-mavlink.md`) | `drone/src/mav_component.h` |
 | drone: MAV thread, tag and counter check | `drone/src/main.cpp` (`mbr-mav`), `RcAgent::check_mav` |
-| GS: the tunnel and its cal lane (shared GS core) | `gs/src/mav_tunnel.h` |
-| GS: the UDP endpoint | `gs/src/mav_endpoint.h` |
+| GS: the tunnel and its cal lane (shared GS core) | [`gs/src/mav_tunnel.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/mav_tunnel.h) |
+| GS: the UDP endpoint | [`gs/src/mav_endpoint.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/mav_endpoint.h) |
 
 ## The wire: `T_MAV`
 
@@ -127,7 +127,7 @@ agent and TX threads.
 - **Outbound queue.** At most 64 packets wait for the uplink; the cap
   applies to every reply and the heartbeat alike. A packet that would
   exceed it is dropped and counted in the `stats:` line's `drop`
-  (`docs/observability.md`), never one already queued; the ground app's
+  ([`docs/observability.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/observability.md)), never one already queued; the ground app's
   retry recovers it.
 
 ## The GS endpoint
@@ -159,7 +159,7 @@ Boot log: `maburgs: mavlink endpoint udp <bind>:<port>` or
   whose answer was lost is the ground app's job.
 - Polled from the core loop next to the calibration control socket; at
   most 64 datagrams per tick, so a flooding client cannot hold the loop.
-- Sideport: `link.mav{tx, rx, reject, peer}` (`docs/observability.md`);
+- Sideport: `link.mav{tx, rx, reject, peer}` ([`docs/observability.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/observability.md));
   maburtop shows `mav <tx>/<rx>` on its top bar.
 
 ## Trust boundary

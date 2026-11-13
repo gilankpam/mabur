@@ -12,11 +12,11 @@ Each claim points at the code or at the bench record that measured it.
 
 - **Every card is half-duplex.** A card cannot receive while it transmits.
   The drone has one card. The GS has one or more receiving video, and one
-  of them (the `TxSelector`'s pick, `gs/src/tx_selector.h`) also sends the
+  of them (the `TxSelector`'s pick, [`gs/src/tx_selector.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/tx_selector.h)) also sends the
   uplink.
 - **Carrier sense is ON on both daemons.**
   `dev_cfg.tuning.disable_cca = false` in `drone/src/main.cpp` and
-  `gs/src/radio_frontend.cpp`. Each radio defers to any decodable 802.11
+  [`gs/src/radio_frontend.cpp`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/radio_frontend.cpp). Each radio defers to any decodable 802.11
   preamble (the other end's and anyone else's), then waits AIFS + backoff.
   The two ends only ever flip CCA together: CCA on the GS alone keys the
   drone up into an RCF already on air, which is worse than neither.
@@ -118,7 +118,7 @@ that is already on air.
 
 ### 3.2 GS: slot the uplink into the drone's idle (`RcfSlotter`)
 
-`gs/src/rcf_slot.h`, wired in `gs/src/main.cpp` and `web/src/web_gs.cpp`.
+[`gs/src/rcf_slot.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/rcf_slot.h), wired in [`gs/src/main.cpp`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/main.cpp) and [`web/src/web_gs.cpp`](https://github.com/gilankpam/mabur-ground/blob/master/web/src/web_gs.cpp).
 Every RCF and DISC keepalive is offered to the slotter and held until the
 GS believes the drone is between bursts:
 
@@ -262,12 +262,12 @@ clock are what break it.
 - **Open-loop error.** Compare `link.air_pct` against
   `encoder.airtime_budget × air_clock.efficiency_<bw>[mcs]`, not against
   the budget alone. `link.air_pct` is injected rate over NOMINAL PHY rate
-  for streams 0/1 (`gs/src/stats_exporter.cpp`), while the budget is a
+  for streams 0/1 ([`gs/src/stats_exporter.cpp`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/stats_exporter.cpp)), while the budget is a
   fraction of DELIVERED rate. `link.air_pct` does not include the probe.
 - **Uplink delivery.** Compare `drone.rcf.rx_pps` against the TX card's
   `cards[].tx_pps`. At or above 90 %, sends are landing in gaps.
 - **Every send against every burst.** Run the GS with `MABUR_GAPLOG=1`
-  plus `tools/bench/probesend.py`; that places each send against each
-  burst end. Use `tools/bench/ausniff.py` for the video cost.
+  plus [`tools/bench/probesend.py`](https://github.com/gilankpam/mabur-ground/blob/master/tools/bench/probesend.py); that places each send against each
+  burst end. Use [`tools/bench/ausniff.py`](https://github.com/gilankpam/mabur-ground/blob/master/tools/bench/ausniff.py) for the video cost.
 - **How late the burst really ends.** `flightreport.py <session-dir>` (or
   its `probe.log`) gives the completion→probe offsets.

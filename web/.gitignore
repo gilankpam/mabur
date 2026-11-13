@@ -1,5 +1,0 @@
-dist/
-build-wasm/
-.deps/
-tls/
-ui/node_modules/
