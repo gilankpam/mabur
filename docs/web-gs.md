@@ -2,8 +2,8 @@
 
 `web/` is a browser page (WebUSB + WebAssembly) that runs the same receive
 and ladder-control core as `maburgs` on one USB card (RTL8812EU, RTL8812AU,
-RTL8812CU or TP-Link RTL8821AU) or on the CPE510 relay, with no native daemon
-involved. The design spec (`docs/superpowers/specs/2026-09-27-web-gs-design.md`
+RTL8812CU, RTL8812BU or TP-Link RTL8821AU) or on the CPE510 relay, with no
+native daemon involved. The design spec (`docs/superpowers/specs/2026-09-27-web-gs-design.md`
 and its follow-ups) is gitignored and machine-local; this page stands on its
 own. Bench records: `docs/findings/2026-09-27-web-gs-validation.md`,
 `docs/findings/2026-10-07-web-gs-nack-bench.md`,
@@ -295,13 +295,15 @@ opens exact VID:PIDs (`web_main.cpp`'s `kCards`, handed to
 - 0bda:8812: RTL8812AU or EU.
 - 0bda:c812: RTL8812CU (Jaguar3 8822C; tested on a Comfast CF-924AC V3,
   sold as "RTL8812BU" — chip-id 0x13 says 8822C).
+- 0bda:b812 / 2357:0115 / 2357:012d: RTL8812BU (Jaguar2 8822B, 2T2R; tested
+  on a TP-Link Archer T4U v3, 2357:0115; the Archer T3U is 012d).
 - 2357:011e / 0120 / 0122: TP-Link RTL8821AU (Jaguar1 1T1R; the Archer T2U
   Plus is 0120).
 
 devourer's chip-id read picks the driver; the WASM core builds the Jaguar1
-driver and both Jaguar3 variants (8822E and 8822C; the 8822C adds ~620 KB to
-`webgs.wasm`). WebUSB's device grant is per origin:
-pick the card once and later `getDevices()` calls see it without asking
+driver, both Jaguar3 variants (8822E and 8822C; the 8822C adds ~620 KB to
+`webgs.wasm`) and the Jaguar2 8822B (adds ~540 KB). WebUSB's device grant
+is per origin: pick the card once and later `getDevices()` calls see it without asking
 again on the same origin. A screen wake lock (`web/ui/src/lib/wakelock.js`)
 is held while connecting or live and re-requested when the tab becomes
 visible again.
@@ -325,6 +327,12 @@ false` in the drone's `/etc/mabur.toml` (config before binary,
 set it back to `true` when flying an 8812EU/AU GS. The 8821AU's own uplink,
 LDPC included, decodes fine. devourer drops the STBC flag on the 8821AU's TX
 (one chain) and logs a one-time warning.
+
+**The RTL8812BU has no channel-busy (NHM) reading.** devourer arms the
+NHM busy window on Jaguar3 only, so on a BU (as on the 8812AU and 8821AU) the
+in-flight hop never reads the op as `blocked` and the boot pick ranks
+members without busy airtime (`docs/inflight-channel-hop.md`). A BU GS
+moves off an interfered channel only through the loss routes.
 
 What the status overlay shows (`statusText()`, `web/ui/src/lib/view.js`):
 
@@ -352,7 +360,7 @@ What the status overlay shows (`statusText()`, `web/ui/src/lib/view.js`):
 - Errors, mapped from the core's `ERROR <reason>` lines by `errorText()`
   (`web/ui/src/lib/logic.mjs`):
   - `Card busy — maburgs or another tab has it. Close that and press Connect.`
-  - `No RTL8812EU/8812AU/8812CU/8821AU card found — plug it in and press
+  - `No RTL8812EU/8812AU/8812CU/8812BU/8821AU card found — plug it in and press
     Connect.`
   - `Card lost (unplugged?). Press Connect to restart.`
   - `WebUSB unavailable in this browser.`
@@ -1464,7 +1472,8 @@ constants are pinned by `web/tests/colortrans.test.mjs` (see
   (holds until a replug or reboot; a reset keeps the device number, so
   nothing reloads it), or blacklist it (NixOS:
   `boot.blacklistedKernelModules = [ "rtw88_8812au" ];`). The TP-Link
-  RTL8821AU has the same problem with `rtw88_8821au`; unload that one.
+  RTL8821AU has the same problem with `rtw88_8821au` and the RTL8812BU with
+  `rtw88_8822bu`; unload that one.
   The RTL8812CU has `rtw88_8822cu`, and worse: right after the eject its
   bring-up holds the kernel's network lock for 30 s+ and freezes a GNOME
   desktop (NetworkManager, rfkill and the shell's net widgets all wait on
