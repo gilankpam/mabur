@@ -4,22 +4,20 @@
 #
 ################################################################################
 
-# Tracks master HEAD rather than a fixed SHA. Same reasoning and same
-# mechanics as devourer.mk: buildroot's git backend cannot check out a branch
-# literally named "master" (it refuses to fetch into the branch `git init`
-# already has checked out), so resolve it to a commit id here.
-MABUR_SITE = https://github.com/gilankpam/mabur
-MABUR_BRANCH = master
-# A MABUR_VERSION already in the environment wins: the release workflow
-# resolves the commit once and passes it in, so the release it names is
-# the commit that was built even if the branch moves mid-build.
-ifeq ($(MABUR_VERSION),)
-MABUR_VERSION := $(shell git ls-remote $(MABUR_SITE) refs/heads/$(MABUR_BRANCH) | cut -f1)
+# Built from the mabur tree this package sits in (firmware/builder.sh exports
+# MABUR_SRC_DIR), so an image is always the maburd of the commit it was built
+# from. Buildroot rsyncs that tree into its build dir: the exclusions keep the
+# OpenIPC tree this build itself runs in, U-Boot, and local build outputs out
+# of the copy.
+ifeq ($(MABUR_SRC_DIR),)
+$(error mabur: MABUR_SRC_DIR is not set (build through firmware/builder.sh))
 endif
-ifeq ($(MABUR_VERSION),)
-$(error mabur: cannot resolve $(MABUR_BRANCH) at $(MABUR_SITE) (no network?))
-endif
-MABUR_SITE_METHOD = git
+MABUR_SITE = $(MABUR_SRC_DIR)
+MABUR_SITE_METHOD = local
+MABUR_VERSION = local
+MABUR_OVERRIDE_SRCDIR_RSYNC_EXCLUSIONS = \
+	--exclude /firmware/openipc --exclude /firmware/u-boot-sigmastar \
+	--exclude '/build*' --exclude /out --exclude /toolchain --exclude /logs
 MABUR_LICENSE = MIT
 MABUR_SUPPORTS_IN_SOURCE_BUILD = NO
 
@@ -55,13 +53,12 @@ MABUR_DEPENDENCIES = libusb host-pkgconf devourer
 # 8822E-only build, devourer's default 0x35 otherwise). With both ON an
 # 8812EU would fly the CU's floor and lose uplink sensitivity at range.
 #
-# MABUR_BUILD_GS/LINKBENCH=OFF: this is the drone image. maburgs and the bench
+# MABUR_BUILD_LINKBENCH=OFF: this is the drone image. The bench
 # harnesses are neither installed nor useful on the SSC338Q.
 MABUR_CONF_OPTS = \
 	-DDEVOURER_DIR=$(DEVOURER_DIR) \
 	-DMABUR_BUILD_TESTS=OFF \
 	-DMABUR_BUILD_DRONE=ON \
-	-DMABUR_BUILD_GS=OFF \
 	-DMABUR_BUILD_LINKBENCH=OFF \
 	-DBUILD_SHARED_LIBS=OFF \
 	-DDEVOURER_LOG_MAX_LEVEL=WARN \

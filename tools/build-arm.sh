@@ -28,10 +28,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-OPENIPC_HOST_BIN="${OPENIPC_HOST_BIN:-$PWD/../openipc-builder/openipc/output/host/bin}"
+# The toolchain a firmware build leaves behind (firmware/builder.sh <board>).
+OPENIPC_HOST_BIN="${OPENIPC_HOST_BIN:-$PWD/firmware/openipc/output/host/bin}"
 export OPENIPC_HOST_BIN
 [ -x "$OPENIPC_HOST_BIN/arm-openipc-linux-gnueabihf-gcc" ] || {
-  echo "error: OpenIPC toolchain not found at $OPENIPC_HOST_BIN" >&2; exit 1; }
+  echo "error: OpenIPC toolchain not found at $OPENIPC_HOST_BIN: build a board" >&2
+  echo "first (firmware/builder.sh <board>) or set OPENIPC_HOST_BIN" >&2; exit 1; }
 
 mkdir -p toolchain/glibc-staging out/arm
 export MABUR_GLIBC_STAGING="$PWD/toolchain/glibc-staging"

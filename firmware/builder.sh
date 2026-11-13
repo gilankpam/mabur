@@ -1,19 +1,28 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
-# OpenIPC | version 2023.11.30
-
-# Autoupdate BUILDER repo
-# Remove old building folder (for full rebuild)
-# Download OpenIPC repo
-# Copy files from Device Overlay
-# Build Firmware
-# Copy Kernel and Rootfs to Archive
+# Builds the mabur drone firmware for one board:
+#   firmware/builder.sh <board>        e.g. ssc338q_fpv_openipc-urllc-aio
+#
+# Fetches OpenIPC/firmware at the commit in firmware/openipc.ref, copies this
+# directory's packages and device overlay into it, builds the image (maburd
+# from the mabur tree this script sits in, not a fetched master), builds
+# U-Boot from our fork, and writes output/images/build-info.txt naming what
+# went in. Non-interactive; any failure exits non-zero.
+#
+# Environment:
+#   FIRMWARE_DIR      the OpenIPC tree (default: firmware/openipc)
+#   MABUR_SRC_DIR     the mabur tree maburd is built from (default: repo root)
+#   DEVOURER_VERSION  devourer commit (default: devourer master, resolved once)
+#   SKIP_UBOOT=1      leave U-Boot alone
+set -eo pipefail
 
 DEVICE="$1"
-BUILDER_DIR=$(pwd)
-FIRMWARE_DIR="${BUILDER_DIR}/openipc"
-TIMESTAMP=$(date +"%Y%m%d%H%M")
-VERSION=$(stat -c"%Y" $0)
+BUILDER_DIR=$(cd "$(dirname "$0")" && pwd)
+FIRMWARE_DIR="${FIRMWARE_DIR:-${BUILDER_DIR}/openipc}"
+MABUR_SRC_DIR="${MABUR_SRC_DIR:-$(cd "${BUILDER_DIR}/.." && pwd)}"
+export MABUR_SRC_DIR
+OPENIPC_REPO="https://github.com/OpenIPC/firmware.git"
+OPENIPC_REF=$(tr -d '[:space:]' < "${BUILDER_DIR}/openipc.ref")
 
 # U-Boot is built from our fork rather than pulled prebuilt from OpenIPC
 # releases: the fork carries the boot-time fixes for the mabur FPV link
@@ -96,35 +105,6 @@ build_uboot() {
     echo_c 33 " the U-Boot environment, including ethaddr, with it.)"
 }
 
-copy_to_archive() {
-    echo_c 32 "Copying files to local archive"
-    mkdir -p "${BUILDER_DIR}/archive/${DEVICE}/${TIMESTAMP}"
-    cp -a \
-        ${FIRMWARE_DIR}/output/images/rootfs.squashfs.* \
-        ${FIRMWARE_DIR}/output/images/uImage.* \
-        ${FIRMWARE_DIR}/output/images/*.tar \
-        ${FIRMWARE_DIR}/output/images/openipc.*.tgz \
-        ${BUILDER_DIR}/archive/${DEVICE}/${TIMESTAMP}
-
-    if ls ${FIRMWARE_DIR}/output/images/u-boot-*-nor.bin >/dev/null 2>&1; then
-        cp -a ${FIRMWARE_DIR}/output/images/u-boot-*.bin ${BUILDER_DIR}/archive/${DEVICE}/${TIMESTAMP}
-    fi
-
-    echo_c 35 "\nAssembled firmware available in:"
-    tree -C "${BUILDER_DIR}/archive/${DEVICE}/${TIMESTAMP}"
-}
-
-select_device() {
-    AVAILABLE_DEVICES=$(find devices -name *_defconfig | sort | cut -d/ -f5)
-    cmd="whiptail --title \"Available devices\" --menu \"Please select a device from the list below:\" 20 70 12"
-    for p in ${AVAILABLE_DEVICES//_defconfig}; do cmd="${cmd} \"$p\" \"\""; done
-    DEVICE=$(eval "${cmd} 3>&1 1>&2 2>&3")
-    if [ $? != 0 ]; then
-        echo_c 31 "Cancelled."
-        exit 1
-    fi
-}
-
 copy_extra_packages() {
     extra_package=${BUILDER_DIR}/package
     firmware_package=${FIRMWARE_DIR}/general/package
@@ -140,50 +120,75 @@ copy_extra_packages() {
     done
 }
 
-echo_c 37 "Experimental system for building OpenIPC firmware for known devices"
-echo_c 30 "https://openipc.org/"
-echo_c 30 "Version: ${VERSION}"
+fetch_openipc() {
+    if [ "$(git -C "${FIRMWARE_DIR}" rev-parse HEAD 2>/dev/null)" = "${OPENIPC_REF}" ]; then
+        echo_c 33 "\nOpenIPC firmware tree already at ${OPENIPC_REF}"
+        return 0
+    fi
+    echo_c 33 "\nFetching OpenIPC firmware ${OPENIPC_REF}"
+    mkdir -p "${FIRMWARE_DIR}"
+    git -C "${FIRMWARE_DIR}" init -q
+    git -C "${FIRMWARE_DIR}" fetch -q --depth 1 "${OPENIPC_REPO}" "${OPENIPC_REF}"
+    git -C "${FIRMWARE_DIR}" checkout -q --force FETCH_HEAD
+}
 
-while [ -z "${DEVICE}" ]; do select_device; done
+sha256_of() {
+    # The first file matching the glob, or "none" when the build did not
+    # download one.
+    local f
+    for f in $1; do
+        [ -f "$f" ] && { sha256sum "$f" | cut -d' ' -f1; return; }
+    done
+    echo none
+}
 
-echo_c 31 "\nStarting a device for ${DEVICE}"
-ITEM=$(find devices -name ${DEVICE}_defconfig | cut -d/ -f1,2)
-tree -C "${ITEM}"
+write_build_info() {
+    local dl out
+    dl=$(ls -d "${FIRMWARE_DIR}"/output/buildroot-*/dl | head -1)
+    out="${FIRMWARE_DIR}/output/images/build-info.txt"
+    {
+        echo "board=${DEVICE}"
+        echo "openipc=${OPENIPC_REF}"
+        echo "devourer=${DEVOURER_VERSION}"
+        echo "uboot=$(git -C "${UBOOT_DIR}" rev-parse HEAD 2>/dev/null || echo none)"
+        echo "kernel_sha256=$(sha256_of "${dl}/linux/*.tar.gz")"
+        echo "toolchain_sha256=$(sha256_of "${dl}/toolchain-external-custom/*.tgz")"
+        echo "ipctool_sha256=$(sha256_of "${dl}/ipctool/*.tar.gz")"
+    } > "${out}"
+    cat "${out}"
+}
 
-sleep 3
-
-echo_c 33 "\nUpdating Builder"
-git pull
-
-rm -rf openipc
-if [ ! -d "$FIRMWARE_DIR" ]; then
-    echo_c 33 "\nDownloading Firmware"
-    git clone --depth=1 https://github.com/OpenIPC/firmware.git "$FIRMWARE_DIR"
-    cd "$FIRMWARE_DIR"
-else
-    echo_c 33 "\nUpdating Firmware"
-    cd "$FIRMWARE_DIR"
-    # git reset HEAD --hard
-    # git pull --rebase
+if [ -z "${DEVICE}" ]; then
+    echo "usage: $0 <board>   (one of: $(cd "${BUILDER_DIR}/devices" && ls -d ssc*_fpv_* | tr '\n' ' '))" >&2
+    exit 2
 fi
+ITEM=$(cd "${BUILDER_DIR}" && find devices -name "${DEVICE}_defconfig" | cut -d/ -f1,2)
+if [ -z "${ITEM}" ]; then
+    echo "error: no board ${DEVICE} under ${BUILDER_DIR}/devices" >&2
+    exit 2
+fi
+if [ -z "${DEVOURER_VERSION}" ]; then
+    DEVOURER_VERSION=$(git ls-remote https://github.com/gilankpam/devourer refs/heads/master | cut -f1)
+fi
+[ -n "${DEVOURER_VERSION}" ] || { echo "error: cannot resolve devourer master" >&2; exit 1; }
+export DEVOURER_VERSION
+
+echo_c 31 "\nBuilding ${DEVICE} (mabur from ${MABUR_SRC_DIR})"
+fetch_openipc
+cd "${FIRMWARE_DIR}"
 
 echo_c 33 "\nCopying extra packages"
 copy_extra_packages
-
 echo_c 33 "\nCopying device files"
 # Every board here is a mabur drone on the same SSC338Q boot chain, so the
 # shared overlay (rcS, load_sigmastar, sensor bins, ...) lives once in
 # devices/_mabur-common and the board dir, copied on top, holds only what
-# differs (defconfig, customizer.sh). _mabur-common has no *_defconfig, so
-# select_device never offers it as a board.
-cp -afv ${BUILDER_DIR}/devices/_mabur-common/* ${FIRMWARE_DIR}
-cp -afv ${BUILDER_DIR}/${ITEM}/* ${FIRMWARE_DIR}
+# differs (defconfig, customizer.sh).
+cp -af "${BUILDER_DIR}"/devices/_mabur-common/* "${FIRMWARE_DIR}"
+cp -af "${BUILDER_DIR}/${ITEM}"/* "${FIRMWARE_DIR}"
 
 echo_c 33 "\nBuilding the device"
-make BOARD=${DEVICE}
-
+make BOARD="${DEVICE}"
 build_uboot
-
-copy_to_archive
-echo_c 35 "\nDone"
-cd "$BUILDER_DIR"
+write_build_info
+echo_c 35 "\nDone: ${FIRMWARE_DIR}/output/images"
