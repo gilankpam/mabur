@@ -25,7 +25,7 @@ add_library(mabur_drone_core STATIC
   venc/camera_modes.c)
 target_include_directories(mabur_drone_core
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/vendor
-  PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
+  PRIVATE ${PROJECT_SOURCE_DIR}/third_party)
 target_link_libraries(mabur_drone_core PUBLIC mabur_common rt devourer)
 # Unconditional (not just ARM cross-builds): a later task's config header
 # includes a drone/venc header on host builds too. drone/vendor is already
