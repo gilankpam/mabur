@@ -130,7 +130,7 @@ Bench record: `docs/findings/2026-10-10-slice-salvage.md`.
   [`gs/player/mpp-patches/`](https://github.com/gilankpam/mabur-ground/blob/master/gs/player/mpp-patches/); the image's `package/rockchip-mpp/` carries
   byte-identical copies; `build-arm64.sh` applies them and keys its MPP cache
   on `MPP_REF` + their sha256. `14729dd5` has no `libmpp_ext.so`. Flashing:
-  `docs/deploy.md` "GS image: p1 squashfs swap".
+  mabur-ground's [`docs/deploy.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/deploy.md) "GS image: p1 squashfs swap".
 - **AU ring v4.** maburgs claims a slot at the AU's first byte (`begin()`:
   odd seqlock for the whole AU, `state` open, RingHdr `open_rec`), copies
   every emitted piece into it and store-releases `valid_len`; `finish()`
