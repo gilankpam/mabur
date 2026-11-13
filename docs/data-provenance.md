@@ -61,7 +61,7 @@ Chronological; each line names the section below that carries the detail.
   `link.ladder[].bw` (`docs/bw40.md`).
 - 2026-09-25 — NHM airtime evidence: `scanlog 4`, sideport
   `cards[i].energy.busy_pct`/`.own_air_pct`
-  (`docs/inflight-channel-hop.md`, `docs/findings/2026-09-25-nhm-airtime-spike.md`).
+  ([`docs/inflight-channel-hop.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/inflight-channel-hop.md), `docs/findings/2026-09-25-nhm-airtime-spike.md`).
 - 2026-09-28 → 2026-09-29 — raw DVR sync point: BASE AUs before, any
   VPS+SPS+PPS AU for a day, IRAP-only after.
 - 2026-09-30 — telem diet: RC_VERSION 13, Telem 98 → 48 bytes, many
@@ -71,12 +71,12 @@ Chronological; each line names the section below that carries the detail.
 - 2026-10-02 — relay cards: `cards[i].kind`, null SNR on relays, TX selector
   on RSSI.
 - 2026-10-03 — channel set replaces home + candidates: `scanlog 5`,
-  `link.home` removed (`docs/channel-select.md`); 2026-10-04, same marker:
+  `link.home` removed ([`docs/channel-select.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/channel-select.md)); 2026-10-04, same marker:
   H `boot_order` → `relocate`, M gains `link_found`, `scan.pick` latched.
 - 2026-10-04 — pin is static: `hop.enable` deleted, no more `would_` rows.
 - 2026-10-05 — CPE relay interference sweep/hop: `scanlog 6`, sideport
   `cards[i].relay.tx_scan_drop`/`.sweeps`, `hop.sweep_timeouts`
-  (`docs/cpe510-relay.md`).
+  ([`docs/cpe510-relay.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/cpe510-relay.md)).
 - 2026-10-06 — software NACK: RC_VERSION 15, `T_NACK`, `feclog 3` (`rtx`
   column after `rec`; feclog 1/2 rows read as rtx 0), sideport `link.nack`
   and `drone.nack` (`docs/fec-nack.md`).
@@ -190,7 +190,7 @@ guard behind `link.pre_fec_loss` (and the OSD LOSS row, `ctl.pre_fec_loss`,
 pools base + enh where it was base-only before (`ctl.pre_fec_loss` is
 still base-only). Recordings before this date
 carry ~1 % of "loss" that was late arrival from the drone's USB TX pool
-reordering, not air loss (`docs/observability.md` "pre-FEC loss is late,
+reordering, not air loss ([`docs/observability.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/observability.md) "pre-FEC loss is late,
 not lost"); after it the same channel reads ~0.02 %. Compare
 `streams[*].recovered` per second across the break, never
 `pre_fec_loss`.
@@ -306,7 +306,7 @@ Schema/design references (local, gitignored):
 `docs/superpowers/specs/2026-07-26-drone-telemetry-design.md`. The schema
 is NOT additive-only — per the compatibility policy in CLAUDE.md, keys get
 removed and re-typed under `v: 1` without bumping `v`, and the rule is to
-update `tools/maburtop.py` and `tools/flightreport.py` in the same commit.
+update [`tools/maburtop.py`](https://github.com/gilankpam/mabur-ground/blob/master/tools/maburtop.py) and [`tools/flightreport.py`](https://github.com/gilankpam/mabur-ground/blob/master/tools/flightreport.py) in the same commit.
 Removed keys are absent, not null. Keep appending to this list — not to
 protect consumers, but because a recording made before a removal still
 carries the key and `flightreport.py` still reads old recordings. The
@@ -440,7 +440,7 @@ the *same* repair-symbol count on the FEC's quantization grid, so their
 actual on-air overhead was identically ~0.125 in every pre-break
 recording (**0.10 ≡ 0.15 ≡ 0.125 on air**). The 2026-08-29 config bump
 that doubled the nominal values (0.15→0.3, 0.10→0.2 — see
-`gs/bundle/maburgs.default.toml`) was not "just x2": it also resolved
+[`gs/bundle/maburgs.default.toml`](https://github.com/gilankpam/mabur-ground/blob/master/gs/bundle/maburgs.default.toml)) was not "just x2": it also resolved
 that collision, so mcs6 and mcs7 now carry genuinely different overhead.
 Do not back-compute a pre-break "real" overhead by simply halving a
 post-break number for mcs6/mcs7 specifically — the halved figure lands
@@ -452,7 +452,7 @@ clean ×0.5.
 Bench record: `docs/findings/2026-08-30-same-rate-uep.md`. Every overhead-shaped sideport key
 that used to carry ONE value per rung/op now carries a base/enh PAIR,
 mirroring the RCF wire and per-rung config split landed the same day
-(RC_VERSION 5, `gs/src/op_point.h`, `Rung::overhead_base/overhead_enh`):
+(RC_VERSION 5, [`gs/src/op_point.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/op_point.h), `Rung::overhead_base/overhead_enh`):
 `link.op.overhead` → `link.op.overhead_base`/`link.op.overhead_enh`;
 `link.ctl.rung.ov` → `link.ctl.rung.ov_base`/`link.ctl.rung.ov_enh`;
 `link.ctl.ladder[].ov` → `link.ctl.ladder[].ov_base`/
@@ -469,7 +469,7 @@ silently masked as the base value until telemetry arrived, on any
 recording from before this date with a gap at session start).
 
 The maburgs ctl log's header line bumped `ctllog 7` → `ctllog 8` the
-same day (`gs/src/ctl_log.h`): a HEADER-ONLY change — no S/E/P/N/R
+same day ([`gs/src/ctl_log.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/ctl_log.h)): a HEADER-ONLY change — no S/E/P/N/R
 per-tick line carries an overhead field at all, so nothing about a
 recording's per-tick rows moved. Only the header's `ladder=` token
 changed shape, from `<mcs>/<ov>,...` (one value per rung, ×100) to
@@ -482,7 +482,7 @@ NOTE on any log older than v8 saying so.
 
 Offsets recorded before this date fold in reader poll
 latency (~0–0.5 ms one-sided). Context:
-`docs/findings/2026-08-31-latency-budget.md`. `tools/bench/aucadence.py`'s per-AU
+`docs/findings/2026-08-31-latency-budget.md`. [`tools/bench/aucadence.py`](https://github.com/gilankpam/mabur-ground/blob/master/tools/bench/aucadence.py)'s per-AU
 completion delay used to be `arrival_mono_us − pts`, where `arrival_mono_us`
 was stamped by the ~0.5 ms poll loop that reads the ring's write index —
 not the writer's own completion time, which SlotHdr v2 (2026-08-30) now
@@ -491,7 +491,7 @@ same day the latency-accounting tools landed; the JSON output's `"clock"`
 key records which basis produced a given capture (`"t_complete"` post-
 switch, and a slot whose `t_complete_us` is 0 — pre-epoch writer, or a
 caller that never passed `AuLatMeta` — still falls back to the old poll-time
-basis, counted in `fallback_rows`). `tools/flightjitter.py`'s jitter-EMA
+basis, counted in `fallback_rows`). [`tools/flightjitter.py`](https://github.com/gilankpam/mabur-ground/blob/master/tools/flightjitter.py)'s jitter-EMA
 reproduction made the same switch: it now uses a row's `t_complete` (when
 nonzero) as the inter-AU arrival basis instead of `au-NNNN.log`'s `t_us`
 column, which was the (since retired) external `flightrec.py` reader's
@@ -563,7 +563,7 @@ after cannot be compared segment-by-segment, only as a sum, and only when
 both recordings agree on `vsync_lock`. `lat-NNNN.log` (`# latlog 1`,
 under the then `display.lat_log_dir`, default `/media/dvr/log`; the key
 was retired when lat.log moved into the session directory on 2026-09-06)
-starts existing at this date — see `docs/observability.md` for its format. `lat:` lines from
+starts existing at this date — see [`docs/observability.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/observability.md) for its format. `lat:` lines from
 before this date lived only in tmpfs (`/tmp/maburplay.log`) and are gone;
 there is no way to recover the player tail segments for any flight
 recorded before 2026-08-31.
@@ -604,7 +604,7 @@ expectation. In a 50 ms window holding 3–6 units that reads as exactly
 After: `abandoned/expected` from the FEC decoder's own counters
 (`SwDecoder::syms_abandoned`), which is seq arithmetic over a span and is
 immune to arrival order. One formula for every consumer, in
-`gs/src/ladder_residual.cpp`.
+[`gs/src/ladder_residual.cpp`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/ladder_residual.cpp).
 
 **Why recordings must be dated against this.** The old number was not a
 noisy version of the new one — on a clean bench it was pure artifact. A
@@ -725,7 +725,7 @@ and neither replaces the other.
 
 - `link.ctl.pre_fec_loss` is the last s1 sample the **ladder controller
   acted on**. `LadderController::update()` returns early on a starved or
-  `!sample_valid` window (`gs/src/ladder_controller.cpp`), so through
+  `!sample_valid` window ([`gs/src/ladder_controller.cpp`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/ladder_controller.cpp)), so through
   those windows this key **holds its previous value**. It is null in
   static-pin mode, where the controller is never ticked at all.
 - `link.pre_fec_loss` is that poll's **raw measured** s1 window loss,
@@ -816,7 +816,7 @@ Sideport (schema `v: 1`, unchanged): REMOVED `link.ctl.last_probe`,
 2026-08-29 UEP flatten — no data lost). ADDED `counters.promotes_probed`,
 `counters.probe_holds`, `classes.probe`, and the `link.probe` block
 (gate state, rung/mcs, streak, union + per-card loss and counts — see
-`docs/observability.md`).
+[`docs/observability.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/observability.md)).
 
 **Scale break: `link.rungs[].probe_u`/`probe_n` change from a discrete
 per-attempt sample to a continuous EWMA.** Before this date a rung's
@@ -893,7 +893,7 @@ as a re-statement, not as the start of a new file.
 ## 2026-09-08 — per-card `crc_fail` goes live; corrupt-body salvage
 
 The GS asks devourer to keep FCS-failed frames (`rx.keep_corrupted`, set
-unconditionally in `gs/src/radio_frontend.cpp`), so a corrupt frame now
+unconditionally in [`gs/src/radio_frontend.cpp`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/radio_frontend.cpp)), so a corrupt frame now
 reaches the aggregator, bumps that card's `cards[i].crc_fail`, and hands
 its body to the UEP decoder, which keeps the SBI sub-blocks whose own
 CRC16 still passes. **Before this date the chip dropped those frames and
@@ -968,7 +968,7 @@ What differs across the arm boundary, in the same recording:
 `drone.low_power` (sideport, Telem flags bit7) is true for exactly this
 segment and is the marker to split on; the drone `stats:` line carries
 `lp=`/`armed=` and `rc: low_power ENTER/EXIT` brackets it in stderr.
-**`tools/flightreport.py` does not know about any of this** — it neither
+**[`tools/flightreport.py`](https://github.com/gilankpam/mabur-ground/blob/master/tools/flightreport.py) does not know about any of this** — it neither
 excludes nor annotates the segment, so a whole-file mean of bitrate, fps,
 AU size or rung silently mixes the two operating points. The exclusion is
 **manual** for now: find the `drone.low_power` false-edge in the jsonl (or
@@ -984,7 +984,7 @@ Full detail: `docs/bw40.md`.
 
 - **`ctllog 12`.** The ctl.log header's `ladder=` token gains a `bw:` prefix
   per rung (`ladder=bw:mcs/ovb:ove,...`); `ctllog 11` and earlier have no
-  prefix and every rung is implicitly 20 MHz. `tools/bench/switchloss.py`
+  prefix and every rung is implicitly 20 MHz. [`tools/bench/switchloss.py`](https://github.com/gilankpam/mabur-ground/blob/master/tools/bench/switchloss.py)
   parses the prefix but still keys rungs by MCS only.
 - **`scanlog 3`.** Bumped from `scanlog 2`: the `D` dwell line gains a
   trailing `bw` column (the dwell's tuned width — 20 during a boot scan,
@@ -1001,8 +1001,8 @@ Full detail: `docs/bw40.md`.
 
 ## 2026-09-25 — NHM airtime evidence: scanlog 4
 
-Full detail: `docs/inflight-channel-hop.md` §2/§3/§8,
-`docs/channel-select.md` ("`scan.log`"), `docs/bw40.md`,
+Full detail: [`docs/inflight-channel-hop.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/inflight-channel-hop.md) §2/§3/§8,
+[`docs/channel-select.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/channel-select.md) ("`scan.log`"), `docs/bw40.md`,
 `docs/findings/2026-09-25-nhm-airtime-spike.md` (the measured defaults).
 
 - **`scanlog 4`.** Bumped from `scanlog 3`:
@@ -1019,7 +1019,7 @@ Full detail: `docs/inflight-channel-hop.md` §2/§3/§8,
     `ch:worst_busy:floor:busy`, with `floor` now always present (a number or
     `nan`) and `busy` appended (`-` when invalid) — a `scanlog 3` parser
     that assumed a variable 2-or-3-field entry will misparse a `scanlog 4`
-    line. `tools/flightreport.py` reads `scanlog 3` and `4`.
+    line. [`tools/flightreport.py`](https://github.com/gilankpam/mabur-ground/blob/master/tools/flightreport.py) reads `scanlog 3` and `4`.
 - **New GS config keys:** `[hop.verdict] busy_dbm = -83` (must sit on an
   `nf::kNhmAbsThDbm` bucket edge — config validation rejects any other
   value) and `blocked_pct = 50` (the design spec's own draft carried a
@@ -1036,9 +1036,9 @@ Full detail: `docs/inflight-channel-hop.md` §2/§3/§8,
   (`flightreport.py`'s HOP section) are not comparable across the break.
 - **Sideport:** `cards[i].energy` gains `busy_pct`/`own_air_pct` (both
   `null` on an older maburgs or before the first verdict window lands);
-  `tools/maburtop.py` gains a per-card `fbusy` column (renamed from `air%`
+  [`tools/maburtop.py`](https://github.com/gilankpam/mabur-ground/blob/master/tools/maburtop.py) gains a per-card `fbusy` column (renamed from `air%`
   in the final-review fix wave: it was always foreign busy, never own
-  airtime) (`max(0, busy_pct − own_air_pct)`). See `docs/observability.md`.
+  airtime) (`max(0, busy_pct − own_air_pct)`). See [`docs/observability.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/observability.md).
 
 ## 2026-09-28 / 2026-09-29 — raw DVR sync points
 
@@ -1121,10 +1121,10 @@ SipHash-2-4 tag before its CRC; DISC_ACK carries `vtx_nonce` + a flags byte.
 ## 2026-10-02 — relay cards: `cards[i].kind`, null SNR, TX selector on RSSI
 
 `maburgs` can run a CPE510 `mabur-relay` unit as a card (`[radio] relays`,
-`docs/cpe510-relay.md`). No wire change, no flag day, no new log marker.
+[`docs/cpe510-relay.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/cpe510-relay.md)). No wire change, no flag day, no new log marker.
 
 - **New sideport keys:** `cards[i].kind` (`"usb"` | `"relay"`) on every
-  card, and `cards[i].relay` (eleven keys, `docs/observability.md`) on
+  card, and `cards[i].relay` (eleven keys, [`docs/observability.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/observability.md)) on
   relay cards only. A recording before this date has no `kind`: every card
   in it is USB.
 - **Null SNR/EVM on a relay card.** From this build on a recording may
@@ -1132,7 +1132,7 @@ SipHash-2-4 tag before its CRC; DISC_ACK carries `vtx_nonce` + a flags byte.
   `evm*` are always `null` while its `rssi*` are real — the relay's "SNR"
   is RSSI above a calibrated floor, so it is not exported. Card ids are
   roster order (USB first, relays after), so a relay's id is
-  `n_usb + k`. `tools/flightreport.py` already tolerates null per-card SNR
+  `n_usb + k`. [`tools/flightreport.py`](https://github.com/gilankpam/mabur-ground/blob/master/tools/flightreport.py) already tolerates null per-card SNR
   (its sideport SNR readers take numbers only or print nothing; a relay's
   `probe.log` rows carry `nan` SNR, which the probe stats already exclude);
   it ignores `relay`.
@@ -1143,7 +1143,7 @@ SipHash-2-4 tag before its CRC; DISC_ACK carries `vtx_nonce` + a flags byte.
   margin was **1.5 dB** of SNR. A flight's `link.tx_card` switches (and
   which card held the uplink) are not comparable across this line.
 - **Boot-scan DISC beacons leave the first non-scout card** (`boot_home_card`
-  in `gs/src/main.cpp` at the time; renamed `boot_scout_card` by the
+  in [`gs/src/main.cpp`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/main.cpp) at the time; renamed `boot_scout_card` by the
   2026-10-03 channel set below — same variable, same rule), not a
   hard-coded card 0. On an all-USB GS that is still card 0; with one USB
   card plus a relay the relay beacons on home while the USB card scans.
@@ -1155,7 +1155,7 @@ Home channel + candidates is replaced by one shared channel set,
 concept: the drone parks on its remembered member (or the first) and only
 ever moves on a GS proposal, a GS order, or an unconfirmed move back to
 where it came from — never to a privileged fallback channel. Full detail:
-`docs/channel-select.md`.
+[`docs/channel-select.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/channel-select.md).
 
 - **`scanlog 5`.** Bumped from `scanlog 4`. The header line reshapes from
   `home=<n> candidates=<c1,c2,...> dwell_ms=<n> min_rounds=<n>
@@ -1180,7 +1180,7 @@ where it came from — never to a privileged fallback channel. Full detail:
   drone's ack was heard on), and the sideport's `scan.pick` is latched at
   the freeze instead of following the live op (before, it moved with
   every hop).
-  `tools/flightreport.py` reads `scanlog 5` and still parses `split_home`
+  [`tools/flightreport.py`](https://github.com/gilankpam/mabur-ground/blob/master/tools/flightreport.py) reads `scanlog 5` and still parses `split_home`
   out of an older-marker file.
 - **Removed sideport key:** `link.home` (the configured home channel —
   there is no home to report). `link.channel` is unchanged: the live
@@ -1199,7 +1199,7 @@ where it came from — never to a privileged fallback channel. Full detail:
   (GS) — the remembered member, decimal text. Neither existed before this
   date; their absence on an older recording's device is simply "older
   build," not a fault.
-- **`tools/maburtop.py`:** drops the `h{home}` field; shows `scan.state`
+- **[`tools/maburtop.py`](https://github.com/gilankpam/mabur-ground/blob/master/tools/maburtop.py):** drops the `h{home}` field; shows `scan.state`
   (now including `moving`, the boot pick's relocation in flight) and
   `scan.rounds`.
 
@@ -1219,15 +1219,15 @@ where it came from — never to a privileged fallback channel. Full detail:
 - **Behaviour break for comparisons:** a pinned flight before this date
   could hop (and its `scan.pick` then disagreed with `link.channel`); after
   it a pinned flight never hops, and its `cards[i].dwell` stays `null`
-  (no in-flight dwells). `docs/channel-select.md` "Which knob drives which
+  (no in-flight dwells). [`docs/channel-select.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/channel-select.md) "Which knob drives which
   piece".
 
 ## 2026-10-05 — CPE relay interference sweep/hop: scanlog 6
 
 Relay protocol v4 (`../mabur-openwrt`) adds `SURVEY`/`SCAN`/`SCAN_RESULT`,
 which lets a CPE510 relay card feed the in-flight hop verdict and the hop
-ranker; full detail: `docs/cpe510-relay.md` "Interference + hop on a
-relay", `docs/inflight-channel-hop.md` §2/§3/§8.
+ranker; full detail: [`docs/cpe510-relay.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/cpe510-relay.md) "Interference + hop on a
+relay", [`docs/inflight-channel-hop.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/inflight-channel-hop.md) §2/§3/§8.
 
 - **`scanlog 6`.** Bumped from `scanlog 5`: `D` gains a further trailing
   `<rx|->` (a relay sweep entry's rx % of the observe span; `-` for a USB
@@ -1237,7 +1237,7 @@ relay", `docs/inflight-channel-hop.md` §2/§3/§8.
   bump. A relay sweep's `D` records come from the relay card (its `C`
   record's positional `chip` field reads `ath9k`), carry `in_session=1`
   and an `observe_ms` around 20 (the sweep's requested `observe_ms`,
-  `kSweepObserveMs`) rather than the USB dwell's 5. `tools/flightreport.py`
+  `kSweepObserveMs`) rather than the USB dwell's 5. [`tools/flightreport.py`](https://github.com/gilankpam/mabur-ground/blob/master/tools/flightreport.py)
   reads the new field
   (`load_scanlog`'s `D` branch); a `scanlog 5` or earlier file has no `rx`
   column and the parser reads it as `None` rather than misparsing the
@@ -1247,7 +1247,7 @@ relay", `docs/inflight-channel-hop.md` §2/§3/§8.
   sent); `hop` gains `sweep_timeouts` (relay `SCAN`s that got no
   `SCAN_RESULT` before their request-derived timeout, cumulative per
   maburgs process; added in the final-review fix wave, same date) —
-  `docs/observability.md`. A recording before 2026-10-05 has none of the
+  [`docs/observability.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/observability.md). A recording before 2026-10-05 has none of the
   three; absent means "not recorded", not 0.
 
 ## 2026-10-06 — software NACK: RC_VERSION 15, T_NACK, feclog 3
@@ -1259,7 +1259,7 @@ Full detail: `docs/fec-nack.md`; bench records
 
 - **`feclog 3`.** Episode rows gain an `rtx` column after `rec` (symbols the
   episode received via retransmit). `feclog 1`/`2` rows read as `rtx` 0
-  (`tools/flightreport.py` pads them).
+  ([`tools/flightreport.py`](https://github.com/gilankpam/mabur-ground/blob/master/tools/flightreport.py) pads them).
 - **New sideport keys:** `link.nack` (cumulative `requests`, `repeats`,
   `syms_requested`, `tail_requests`, `filled`, `late_fill`, `wasted`,
   `dropped_deadline`, `suppressed`, `lead_skipped`, plus per-window
@@ -1288,7 +1288,7 @@ split by `au.log`'s salvage columns (`# aulog 5`) where it matters.
 
 ## 2026-10-10 — AU ring v4: slots published while they fill
 
-`kAuRingVersion` 3 → 4 (`gs/src/au_ring.h`, spec 2026-10-10-h265-slices
+`kAuRingVersion` 3 → 4 ([`gs/src/au_ring.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/au_ring.h), spec 2026-10-10-h265-slices
 §6.2). SlotHdr byte 30 (`codec`, a constant 0x01 since 2026-10-10) is gone;
 bytes 54/55/56 carry `state` (0 closed, 1 open, 2 aborted), `nslices` (0/1 =
 whole AU) and `valid_len`; RingHdr offset 40 is `open_rec`. maburgs claims a
@@ -1307,7 +1307,7 @@ is the AU's last body arrival, the stamp the `maburgs au_tail:` stderr gauge
 averaged over 5 s windows (the gauge is removed the same day); `t_drain`/`t_push` are core-thread stamps of the AU's
 last-pushed fragment. Together they split each frame's
 `t_complete − t_first` into the arrival span and the GS tail's queue wait,
-batch + FEC work, and emit (`docs/observability.md`). Recordings up to
+batch + FEC work, and emit ([`docs/observability.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/observability.md)). Recordings up to
 `aulog 5` carry only the combined figure, so a per-frame split is possible
 from this date only. Every in-repo reader indexes the first columns
 positionally and ignores the extra ones.
@@ -1380,10 +1380,10 @@ reused), and the drone config loses a key.
   capacity sweep. A `callog 4` file is renamed `cal.log.callog4`.
 - **`scanlog 7`.** `H` gains a trailing `<reason|->` (`cal` on the
   relocate a calibration run orders); `K` also closes a calibration
-  measure round, with that round's scores. `tools/flightreport.py` reads
+  measure round, with that round's scores. [`tools/flightreport.py`](https://github.com/gilankpam/mabur-ground/blob/master/tools/flightreport.py) reads
   the reason (as `None` on older lines).
 - **New sideport key:** `link.cal{state, sweep, kind, bw, cell}`, present
-  only while a calibration run owns the air (`docs/observability.md`).
+  only while a calibration run owns the air ([`docs/observability.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/observability.md)).
   Absent before this date.
 - **Drone stderr:** `cal_auth_rej=` on `maburd tx_send:` is gone; its
   successor is `cal_latch_drop=`, and a calibration frame failing its tag
@@ -1395,7 +1395,7 @@ reused), and the drone config loses a key.
 ## 2026-10-31 — GS live config: ctllog 13, sideport `scan.pinned`
 
 `maburgs` takes `set`/`get` on loopback UDP 8402 for a closed set of keys
-(`gs/src/gs_config_apply.h`), so the link's ladder, static pin, channel
+([`gs/src/gs_config_apply.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/gs_config_apply.h)), so the link's ladder, static pin, channel
 pin, NACK, MSP and debug-log switches can change without a restart.
 
 - **`ctllog 13`.** No column change. A `set link.ladder` rebuilds the
@@ -1404,9 +1404,9 @@ pin, NACK, MSP and debug-log switches can change without a restart.
   the new ladder, and a drone-restart rotation opens the next session's
   file on it. Read every row against the most recent header line above
   it — a `ctllog 12` file has exactly one ladder (a rejoined session's
-  restated marker aside). `tools/flightreport.py` stamps each row with the
+  restated marker aside). [`tools/flightreport.py`](https://github.com/gilankpam/mabur-ground/blob/master/tools/flightreport.py) stamps each row with the
   ladder of the header above it (its DWELL rung labels and BW40 time read
-  a pre-swap row on the old ladder); `tools/bench/switchloss.py` already
+  a pre-swap row on the old ladder); [`tools/bench/switchloss.py`](https://github.com/gilankpam/mabur-ground/blob/master/tools/bench/switchloss.py) already
   replaced its ladder on every `ctllog` line.
 - **`E` reason `ladder_swap`.** The swap's rung re-entry is an
   `E <t_ms> 0 <idx> ladder_swap` line after the new header: from the new
@@ -1440,7 +1440,7 @@ pin, NACK, MSP and debug-log switches can change without a restart.
 
 `HopVerdict` classifies a window `interfered` only when `occupied` (the op
 blocked for `hop.verdict.occupied_windows` consecutive windows with a busy
-reading) and `blocked` in that window (`docs/inflight-channel-hop.md` §2).
+reading) and `blocked` in that window ([`docs/inflight-channel-hop.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/inflight-channel-hop.md) §2).
 Before, `blocked` plus loss-type impairment, or loss plus `contended` /
 `raised` without `fading`, also read `interfered`. No format marker moved:
 `V` lines keep their columns, but the verdict column changes meaning — a
@@ -1468,7 +1468,7 @@ go unassigned. `VerdictCardIn::foreign`/`fa` are unchanged and still reach
 the sideport's per-card `foreign_pps` and the in-flight ranker — only the
 hop verdict's own use of them is gone. `scanlog <= 8` files still decode
 under the old 10-field blocks and the old bit names
-(`tools/flightreport.py`'s `evidence_bit_tally`); a session's `blocked`/
+([`tools/flightreport.py`](https://github.com/gilankpam/mabur-ground/blob/master/tools/flightreport.py)'s `evidence_bit_tally`); a session's `blocked`/
 `starved`/`occupied` counts are comparable across the break, `fading`/
 `contended`/`raised` obviously are not.
 
@@ -1480,11 +1480,11 @@ without also filling NHM airtime for `occupied_windows` consecutive
 windows reads `healthy` indefinitely. No further `scan.log` field or
 marker change: `scanlog` stays at 9 and 0x40 is unassigned in it.
 `starved_frac` and `VerdictLinkIn::au_count`/`starved` are gone;
-`tools/flightreport.py` prints the `starved windows` tally only for
+[`tools/flightreport.py`](https://github.com/gilankpam/mabur-ground/blob/master/tools/flightreport.py) prints the `starved windows` tally only for
 `scanlog < 9` rows.
 
 A second same-day follow-up reuses 0x04 for `detected` — the detect route
-(`docs/inflight-channel-hop.md` §2): a ring of `hop.verdict.detect_windows`
+([`docs/inflight-channel-hop.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/inflight-channel-hop.md) §2): a ring of `hop.verdict.detect_windows`
 windows whose median foreign busy % is at least `detect_pct`, confirmed by
 a loss-impaired window inside it, reads `interfered` well under
 `blocked_pct`. Again no marker change: a `scanlog 9` file written before
@@ -1510,7 +1510,7 @@ reading, the calibration pick's op busy) change meaning: before this
 build own airtime was rebuilt from the frames the card decoded; from this
 build it is that figure scaled by the window's seq delivery
 (`seq_expected / seq_received`), capped at 100 %
-(`docs/inflight-channel-hop.md` §2). On a clean link with no loss the two
+([`docs/inflight-channel-hop.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/inflight-channel-hop.md) §2). On a clean link with no loss the two
 agree. Under a fade the old figure under-counts and the old foreign
 reading inflates with the card's own frame loss — up to ~56 % on a card
 decoding a third of our frames — which is what made session 0344's six
@@ -1533,6 +1533,6 @@ rows, `energy.own_air_pct`) reads 0 while the card decodes normally, so
 0347 holds 12 such stalls, each starting within one 200 ms sideport row
 of a NACK request, and one false hop from them (599.8 s). From this build
 those frames count in `self_pps` instead, and own airtime is also floored
-at the decoded airtime (`docs/inflight-channel-hop.md` §2). In older
+at the decoded airtime ([`docs/inflight-channel-hop.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/inflight-channel-hop.md) §2). In older
 files, a run of `loss_pct: null` on one card while its `pps` holds marks a
 stalled walk, not lost video.

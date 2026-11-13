@@ -40,12 +40,12 @@ recorder (CPU, memory, power cut, restarts, error states, `record.size`):
   `vtx_rec off`. The player sends on every toggle and repeats its current
   wish every 1 s. `RecControl` in maburgs keeps the last command it
   received and never lets it decay. The same socket (`CoreControlClient`,
-  `gs/player/src/core_control_client.h`) also carries one-shot
+  [`gs/player/src/core_control_client.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/player/src/core_control_client.h)) also carries one-shot
   `refresh <reason>` reports -- `start` on ring open, `resync` when the
   ring reader skips AUs, `decoder` from the decode watchdog's reset path,
   and `dvr` when the raw DVR starts -- asking maburgs for a fresh key
   frame; `docs/fec-nack.md` covers the demand-refresh mechanism itself.
-- **Sideport:** `drone.rec = {state, err}` (`docs/observability.md`). The
+- **Sideport:** `drone.rec = {state, err}` ([`docs/observability.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/observability.md)). The
   maburtop drone line shows `VREC` while recording, or `VREC!<why>` on an
   error.
 

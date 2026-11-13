@@ -34,14 +34,14 @@ the transfer curve, channel-to-channel repeatability:
 
 ## Running it
 
-`maburcal` (`gs/bundle/maburcal`, installed to `/usr/bin` by
-`gs/bundle/install.sh`) speaks one UDP datagram at a time to `maburgs`'
+`maburcal` ([`gs/bundle/maburcal`](https://github.com/gilankpam/mabur-ground/blob/master/gs/bundle/maburcal), installed to `/usr/bin` by
+[`gs/bundle/install.sh`](https://github.com/gilankpam/mabur-ground/blob/master/gs/bundle/install.sh)) speaks one UDP datagram at a time to `maburgs`'
 `CalControl` listener on `127.0.0.1:8400`, loopback only: you have to be
 logged into the GS to start a run.
 
 **What a run measures.** A run is a list of sweeps, each a kind (`power`
 or `cap`) at a width (20 or 40). `maburcal start` with no arguments runs
-the GS's own composition (`default_sweeps`, `gs/src/cal_control.h`):
+the GS's own composition (`default_sweeps`, [`gs/src/cal_control.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/cal_control.h)):
 `power20, cap20`, plus `power40, cap40` when the GS receiver width
 (derived from the ladder, `docs/bw40.md`) is 40
 **and** some `[[link.ladder]]` rung has `bw = 40`. The width is the
@@ -101,7 +101,7 @@ fix that first — calibration cannot bring it up.
 ### 1. Channel pick
 
 Before the first sweep the GS puts the pair on the quietest member of
-`radio.channels` (`CalPicker`, `gs/src/cal_picker.h`, over `ChannelCore`):
+`radio.channels` (`CalPicker`, [`gs/src/cal_picker.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/cal_picker.h), over `ChannelCore`):
 
 - **Auto, two or more cards** (`channel = "auto"`): one fresh measure
   round by the boot scout — every member once (one dwell per pair at
@@ -118,7 +118,7 @@ Before the first sweep the GS puts the pair on the quietest member of
   best member is not op, the GS orders the
   boot pick's relocate (scan.log `H relocate … cal`, no verify window —
   the confirm lands it) and waits for it to settle. Detail:
-  `docs/channel-select.md` "Calibration pick".
+  [`docs/channel-select.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/channel-select.md) "Calibration pick".
 - **Pinned, or one card** (no spare card, or a relay-only roster): no
   measurement; the run uses op.
 
@@ -141,7 +141,7 @@ store follows a calibration relocate like any hop.
    re-acks without touching the sweep, an older seq is ignored, a newer
    one starts the next sweep. One hold: a SWEEP is not sent while a scout
    dwell begun just before the start still has a card off-channel
-   (`cal_cmd_clear`, `gs/src/hop_burst_gate.h`).
+   (`cal_cmd_clear`, [`gs/src/hop_burst_gate.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/hop_burst_gate.h)).
 2. **Ack.** `MABUR_CAL_ACK{nonce, seq, result, start_in_ms, flags}`. The
    drone starts the sweep 200 ms after accepting it, so the ack can land
    first; `flags` is the stamp mask the sweep flies (`ldpc`, `stbc`), and
@@ -187,7 +187,7 @@ usual while it waits for an ack or an APPLIED.
 
 One full-resolution pass per width: every relative index −41..+63 for
 each of the eight MCS rows, 840 cells, **20 frames per cell, 5 ms settle,
-1 ms gap** — 21 s (`gs/src/cal_plan.h`). The low end is −41, not −40, so
+1 ms gap** — 21 s ([`gs/src/cal_plan.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/cal_plan.h)). The low end is −41, not −40, so
 the grid lands on **+63 exactly**: a no-dip row parks at that rail, and
 the rail has to be a cell the run measured. Each frame is the 64-byte
 stamp (below), sent alone (`no_agg`) at the cell's (MCS, width), LDPC per
@@ -205,7 +205,7 @@ reading past a bad one would land inside the comb and overdrive the PA.
 Scoring uses the **best single card**, never the union of both:
 diversity protects against fading, not against PA compression (both cards
 receive the same degraded waveform), and a union would push the wall up
-(`gs/src/cal_analysis.cpp`). Every shortcut errs low, never high.
+([`gs/src/cal_analysis.cpp`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/cal_analysis.cpp)). Every shortcut errs low, never high.
 
 ### 4. The capacity sweep
 
@@ -588,7 +588,7 @@ written: this run produced no apply attempt`.
 | `lost` | Capacity: the best card got < 50 % of the frames offered (always with `lossy`). | Not written; the config keeps its value and `maburcal report` prints `-`. Re-run on a quieter channel or closer. |
 | `short_span` | Capacity: the best card heard < 20 clean frames, or over < 500 ms, too few to time the point by its receive span; `eff` is bits over the commanded dwell, which reads high by the drone's TX-queue drain. | Written. Nearly always comes with `lost` (then not written); alone, re-run closer or on a quieter channel. |
 
-Thresholds are `CalThresholds` in `gs/src/cal_analysis.h`. The bit values
+Thresholds are `CalThresholds` in [`gs/src/cal_analysis.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/cal_analysis.h). The bit values
 are in "`cal.log`" below; `drift` (the old coarse/fine disagreement) is
 retired.
 
@@ -679,7 +679,7 @@ and raise nothing.
 
 ## Observability
 
-**`maburgs` log** (`/tmp/maburgs.log`, `gs/src/cal_wiring.h`):
+**`maburgs` log** (`/tmp/maburgs.log`, [`gs/src/cal_wiring.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/cal_wiring.h)):
 
 ```
 maburgs: CAL start -> ok started power20,cap20,power40,cap40
@@ -694,7 +694,7 @@ An adopted apply with a note prints it in place of `ok` (`calibration
 apply 3/4 power40: ok; mcs6 kept from the 20 MHz table`). Then
 `calibration failed: <why>` / `calibration aborted: <why>`, and the
 channel pick's own `maburgs channel: calibration …` lines
-(`docs/channel-select.md`). The start line is printed when the run first
+([`docs/channel-select.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/channel-select.md)). The start line is printed when the run first
 commands the drone, after the pick.
 
 **`maburd` log** (`/tmp/mabur.log`): `maburd cal: applied …` (with
@@ -708,7 +708,7 @@ air (`await_ack` through `verify`; absent while picking and after the
 end): `sweep` and `cell` are `"k/n"` strings as on the status line, `kind`
 `power|capacity|verify`. maburtop shows `CAL <kind><bw> <i>/<n>` (e.g.
 `CAL power40 312/840`) on its top bar and in the compact header
-(`docs/observability.md`).
+([`docs/observability.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/observability.md)).
 
 ### `cal.log`
 
@@ -719,7 +719,7 @@ debug logging on it goes in the session directory
 `<debug_log.dir>/cal/cal.log`, i.e. `/media/dvr/log/cal/cal.log`. The
 start line names the resolved path, and `maburcal start` finds it there.
 
-Format `callog 5` (`gs/src/cal_log.h`; `gs/bundle/maburcal` is the
+Format `callog 5` ([`gs/src/cal_log.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/cal_log.h); [`gs/bundle/maburcal`](https://github.com/gilankpam/mabur-ground/blob/master/gs/bundle/maburcal) is the
 in-repo reader and changes with it):
 
 ```

@@ -22,7 +22,7 @@ the vblank to the frames instead and leaves the drone on its trim.
    [0, P). It depends only on the capture clock, the window and the vblank
    grid, not on the frame's own arrival. It is measured in both placement
    modes.
-2. **maburplay decides** (`gs/player/src/phase_lock.h`). Each 1 s window:
+2. **maburplay decides** ([`gs/player/src/phase_lock.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/player/src/phase_lock.h)). Each 1 s window:
    - error = median of (margin − `display.phase_margin_ms`), wrapped into
      ±P/2;
    - a window with fewer than 10 margins is empty; one whose error spread
@@ -68,7 +68,7 @@ With `display.refresh_sync = "nudge"` or `"follow"` the player bends the
 display controller's frame length so the vblank moves to the camera's
 frames; the measurement (the regulator's margins), the target margin
 (`phase_margin_ms`), the states and capture placement are the sensor
-steer's. Code: `gs/player/src/display_lock_core.h` (the controller, pure
+steer's. Code: [`gs/player/src/display_lock_core.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/player/src/display_lock_core.h) (the controller, pure
 logic), `display_lock.h` (its thread), `line_step.h` (NUDGE's step),
 `vop2_frame_length.h` (the register).
 
@@ -246,7 +246,7 @@ back, nudge/follow from off engages the display and drops it. The host
 build has no lock and always steers the sensor.
 
 The goggles settings menu's "Phase lock by" row (`video.refresh_sync`,
-advanced, `docs/gs-menu.md`) sends the same set, labelled Camera (`off`),
+advanced, [`docs/gs-menu.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/gs-menu.md)) sends the same set, labelled Camera (`off`),
 Display (nudge) and Display (follow); it warns `n/a` when a Display choice
 is selected but cannot act on this GS: `display.phase_lock` is off (no lock is built),
 the display's register is not mapped (not an RK356x -- the Orange Pi has
@@ -263,7 +263,7 @@ one `phase 0`, or its 3 s timeout), and the drone runs on its trim.
 
 The player measures the drone's frame rate (median pts step over 1 s,
 `SourceRate`) and compares it with the panel's refresh (`RateMatch`,
-`gs/player/src/rate_match.h`). More than 0.55 Hz apart (the steer reaches
+[`gs/player/src/rate_match.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/player/src/rate_match.h)). More than 0.55 Hz apart (the steer reaches
 ±0.5 fps) for 3 consecutive seconds is a mismatch: a drone `venc.fps` that
 does not match `screen_mode`, a camera rate change the display has not
 followed yet, or a display that fell back to another mode because the sink
@@ -300,15 +300,15 @@ too, in GS mode; spotters send no RCFs at all and so always send 0.
 
 `web/` (GS mode) runs the same loop in the browser instead of against a
 display's vblank: the page measures its own refresh from rAF timestamps
-(`VsyncGrid`, `web/ui/src/lib/phase.js`: the period is a ratio estimate,
+(`VsyncGrid`, [`web/ui/src/lib/phase.js`](https://github.com/gilankpam/mabur-ground/blob/master/web/ui/src/lib/phase.js): the period is a ratio estimate,
 the summed steps over the summed whole periods they span, taken over the
 steps near the median), feeds the
 same `PhaseLock`/`RateMatch` C++ sources through WASM exports
-(`web/src/web_phase.cpp`), and holds a decoded frame to its release tick
+([`web/src/web_phase.cpp`](https://github.com/gilankpam/mabur-ground/blob/master/web/src/web_phase.cpp)), and holds a decoded frame to its release tick
 instead of drawing it on arrival (`HoldQueue`). The offset reaches the
 drone the same way as from `maburplay`: through the core's RCF `snr_off`.
 Spotter mode sends no RCFs and runs no phase-lock calls at all. See
-`docs/web-gs.md` ("Phase lock") for the toggle, the hold, and the Debug
+[`docs/web-gs.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/web-gs.md) ("Phase lock") for the toggle, the hold, and the Debug
 tab group.
 
 ## Deploy
@@ -319,7 +319,7 @@ judging the link, per `docs/deploy.md`. On the GS, the `maburplay` binary
 goes in before its config -- an older binary exits on the new
 `[display]` keys (`phase_lock`, `phase_margin_ms`, `refresh_sync`).
 A live `set display.refresh_sync` (8403 or the menu) only rewrites a line
-the file already has (`docs/gs-live-config.md`, "File rules"): a GS whose
+the file already has ([`docs/gs-live-config.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/gs-live-config.md), "File rules"): a GS whose
 TOML predates the key needs the bundle's `refresh_sync` line first.
 A `maburd` from before the ±500 mfps range clamps `snr_off` at ±200 mfps,
 so a panel that needs more (phone-class refresh rates) cannot lock until
@@ -352,7 +352,7 @@ On a GS that is not an
 RK356x (no VOP2 frame-length register) the set still applies and writes
 the value, but the player keeps steering the sensor and logs it.
 
-`screen_mode` takes three forms (`gs/player/src/mode_pick.h`); the
+`screen_mode` takes three forms ([`gs/player/src/mode_pick.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/player/src/mode_pick.h)); the
 bundle ships `"auto"`:
 
 - `"auto"`: the display follows the camera. Among the display's
@@ -376,7 +376,7 @@ does not move the display to the low-power rate. Before the first frame
 the rate is not known, so `"auto"` takes the sink's preferred mode and
 `WxH` that size at the preferred mode's rate.
 
-Once a second (`DisplayFollower`, `gs/player/src/display_follow.h`), with
+Once a second (`DisplayFollower`, [`gs/player/src/display_follow.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/player/src/display_follow.h)), with
 the camera's rate measured and the drone reporting it is out of low power,
 the player re-picks the mode for the camera's rate and, when 3 consecutive
 windows pick the same mode other than the running one, rebuilds the
@@ -484,7 +484,7 @@ each frame on the spot.
   lines in the frame-length register and the grid's lines -- and the
   release thread's
   `rlate= hand= rt= flushes= recstarts=` plus the burned recorder's
-  `burn_in= burn_enc= burn_drop=` (docs/observability.md
+  `burn_in= burn_enc= burn_drop=` (mabur-ground docs/observability.md
   "Regulator line").
 - maburplay stderr: `phase-lock: <state> err= off= centre=` on each state
   change of the sensor steer; `refresh-sync: <state> err= lines=` on each
@@ -501,7 +501,7 @@ each frame on the spot.
   `maburplay: refresh sync …` lines above.
 - Drone stats line: `snr_off=` (the offset on the sensor); `/tmp/mabur.log`
   `[sensor] steer:` lines for the first steer, clamps and refusals.
-- `tools/flightreport.py` (session mode): PHASE LOCK — share of rows
+- [`tools/flightreport.py`](https://github.com/gilankpam/mabur-ground/blob/master/tools/flightreport.py) (session mode): PHASE LOCK — share of rows
   locked, acquire time, the actuator (the last row's `lact=`), offset
   changes per minute, the offset range in that actuator's unit (mfps or
   lines, over its rows), |lerr| while locked.

@@ -7,7 +7,7 @@ sheds, the RCF drain, and RcAgent's encoder verbs.
 
 Before comparing two recordings from different dates, read
 `docs/data-provenance.md`. To record one in the first place, see
-`docs/observability.md`. Specs are local and gitignored, under
+[`docs/observability.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/observability.md). Specs are local and gitignored, under
 `docs/superpowers/specs/`: `2026-08-05-s3-probe-promote-design.md`,
 `2026-08-15-pooled-rf-and-instant-s3-design.md`,
 `2026-09-04-probe-stream-design.md` and
@@ -25,7 +25,7 @@ operator rule `overhead_base >= overhead_enh` is enforced at config load.
 A rung is `(bw, mcs)`. `[[link.ladder]] bw` is required on every rung
 (`docs/bw40.md`).
 
-`LadderController` (`gs/src/ladder_controller.h`) scores each sid against
+`LadderController` ([`gs/src/ladder_controller.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/ladder_controller.h)) scores each sid against
 its own budget:
 - sid 0 (base): `budget_base()` / `budget_base_for(rung)`.
 - sid 1 (enh) and the probe: `budget_enh_for(rung)`.
@@ -37,7 +37,7 @@ Measurements behind the same-rate decision:
 `docs/findings/2026-08-30-same-rate-uep.md`.
 
 **Both the static pin and the ladder itself are live-settable**
-(`127.0.0.1:8402` — `docs/gs-live-config.md`). `link.static_mcs` (with
+(`127.0.0.1:8402` — [`docs/gs-live-config.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/gs-live-config.md)). `link.static_mcs` (with
 `static_bw`/`static_overhead_base`/`static_overhead_enh`) bypasses the
 ladder with a fixed rung the same way live as at boot
 (`VrxController::set_pin`); `mcs < 0` goes back to adaptive, re-entering
@@ -56,7 +56,7 @@ feedback timeout on the next tick. A hop verdict frozen at the swap has
 its restore rung translated by `{mcs, bw}` into the new ladder, else rung
 0 (`ChannelCore::replace_ladder`). The swap also writes a fresh
 `ctllog 13` header into `ctl.log` so every later row is read against the
-new ladder (`docs/observability.md`).
+new ladder ([`docs/observability.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/observability.md)).
 
 `run_bitrate_policy` is a pure function of the operating point: a held rung
 commands a held bitrate. That includes a rung held *under probe*: the probe
@@ -73,13 +73,13 @@ pair only.
 Vocabulary: "s1" and "s3" in config keys, demote-input names and ctl-log
 reason strings (`s3_settle_ms`, `s3_residual`, `s3_util`) mean sid 0 (BASE)
 and sid 1 (ENH). The names were kept rather than renamed (see
-`gs/src/ctl_log.h`'s ctllog 7 note). The enh layer always rides the op MCS.
+[`gs/src/ctl_log.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/ctl_log.h)'s ctllog 7 note). The enh layer always rides the op MCS.
 The candidate-MCS canary is the separate probe stream (sid 5, below).
 
 ## RCF slotting
 
 The GS holds every RCF and DISC keepalive send until the drone is between
-bursts (`RcfSlotter`, `gs/src/rcf_slot.h`, `link.rcf_slot_hold_ms`). The
+bursts (`RcfSlotter`, [`gs/src/rcf_slot.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/rcf_slot.h), `link.rcf_slot_hold_ms`). The
 mechanism, its constants and its limits are documented once, in
 `docs/tx-rx-timing.md` §3.2.
 
@@ -91,7 +91,7 @@ Two things matter for the ladder:
   probe is the one PPDU the GS uplink blast can never hit.
 
 Sideport: `link.rcf_slot.{au,probe,timeout,passthru,tail_ub_ms}`
-(`docs/observability.md`).
+([`docs/observability.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/observability.md)).
 
 ## Probe stream — the promote gate
 
@@ -120,7 +120,7 @@ decoder does. Gating the probe sink on `crc_ok` would book every FCS-failing
 PPDU as a full `bpb`-block loss and bias the gate toward Lossy.
 
 **Scoring rule: union across cards, AU count for expected, never seq gaps.**
-`ProbeTrack` (`gs/src/probe_track.h`, `on_au(sid, fid)`) books one
+`ProbeTrack` ([`gs/src/probe_track.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/probe_track.h), `on_au(sid, fid)`) books one
 expectation of `bpb` blocks per video AU that begins. It does NOT book from
 probe sequence numbers. A wholly-lost probe stream carries its `seq` inside
 the lost bodies. Scoring from seq gaps would therefore read a 100 %-lost
@@ -187,7 +187,7 @@ always win. There is no probe state machine to abort.
   `r − rung_offset + 1` instead; that is the extra margin the knob buys.
 - **Bench pin.** `link.probe.pin_mcs` (bench only) forces the probe MCS.
 
-Shipped values (`gs/bundle/maburgs.default.toml`):
+Shipped values ([`gs/bundle/maburgs.default.toml`](https://github.com/gilankpam/mabur-ground/blob/master/gs/bundle/maburgs.default.toml)):
 
 | key | value |
 |---|---|
@@ -209,7 +209,7 @@ Probe air cost:
   lever: an SNR floor at the candidate rung, or `rung_offset 2`.
 
 The gate does not drive demotes (spec §10). `flightreport.py`'s probe-lead
-report (`docs/observability.md`) is the input a v2 threshold would be tuned
+report ([`docs/observability.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/observability.md)) is the input a v2 threshold would be tuned
 against.
 
 Bench and flight records:
@@ -310,7 +310,7 @@ case.
 
 **Inputs.**
 - **Residual inputs** are post-FEC abandonment (`syms_abandoned`, via
-  `gs/src/ladder_residual.cpp`): base only for s1, enh for s3. A symbol
+  [`gs/src/ladder_residual.cpp`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/ladder_residual.cpp)): base only for s1, enh for s3. A symbol
   filled by a NACK retransmit still counts as abandoned, so the ladder sees
   the loss even when the video does not (`docs/fec-nack.md`).
 - **Util inputs** are pre-FEC source-symbol loss booked at ARRIVAL by
@@ -338,9 +338,9 @@ follow-up demote. This is unconditional; there is no config switch.
 - On the ctl-log S line, `resid` is the total and `resid_cur` the
   attributed value.
 
-**The edge (`gs/src/transition_edge.h`).** On every COMMANDED op change
+**The edge ([`gs/src/transition_edge.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/transition_edge.h)).** On every COMMANDED op change
 (mcs, bw, or base overhead), `TransitionEdge::on_tick` does three things
-(pinned by `tests/test_transition_edge.cpp`):
+(pinned by [`tests/test_transition_edge.cpp`](https://github.com/gilankpam/mabur-ground/blob/master/tests/test_transition_edge.cpp)):
 1. Marks the decoder's per-sid watermark.
 2. **Settle-blanks both residual decision windows** (`s1_resid_cur`,
    `s3_resid_cur`) for `kResidSettleMs` = 150 ms. Abandonment books about
@@ -369,7 +369,7 @@ the drone's real switch latency.
   post-transition. The boundary then stays open until `kBoundaryExpiryMs`
   (1000 ms, `common/src/uep_decoder.cpp`).
 - **What the ladder sees meanwhile.** The 500 ms util window empties and
-  `s1_cur_sample.valid` goes false. `gs/src/link_health.cpp` defaults
+  `s1_cur_sample.valid` goes false. [`gs/src/link_health.cpp`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/link_health.cpp) defaults
   `health.pre_fec_loss` to 0.0 (promote-permissive), and `link.pre_fec_loss`
   reads null. The ladder sees `u` = 0 for as long as this lasts, so
   `clean_start` accrues through it.
@@ -421,7 +421,7 @@ It also respects `min_between_changes_ms`.
 `snr_db = 6.0`.**
 
 The deltas are slow − fast of a dual-timescale EWMA in
-`gs/src/ladder_controller.h` `FadeEwma`. These are structural constants,
+[`gs/src/ladder_controller.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/ladder_controller.h) `FadeEwma`. These are structural constants,
 not config:
 - fast tau 300 ms;
 - slow tau 2 s rising, 20 s falling.
@@ -459,7 +459,7 @@ Three properties to know before reading a recording:
 **RF labels.** `rf_snr_db`, `rf_evm_db` and `rf_rssi_dbm` come from ONE
 card, as a coherent snapshot. That card's per-card pooled sid0+sid1 track
 supplies all three. The card is chosen by `select_label_card()`
-(`gs/src/rf_labels.h`, `tests/test_rf_labels.cpp`): the SNR argmax over
+([`gs/src/rf_labels.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/rf_labels.h), [`tests/test_rf_labels.cpp`](https://github.com/gilankpam/mabur-ground/blob/master/tests/test_rf_labels.cpp)): the SNR argmax over
 cards whose pooled frame count advanced in the current feedback window.
 With no fresh card, all three read NaN (`nan` in the ctl log), which is
 inert for the trigger.
@@ -550,7 +550,7 @@ See `docs/airtime-model.md` §1 and §7.
     the web GS page both drive `idr_epoch`; each retries every 300 ms.
     Only the web page actually freezes waiting on it — maburplay/MPP
     conceals and keeps decoding instead (`docs/slices.md`,
-    `docs/web-gs.md` "Known limits"). See `docs/fec-nack.md` "Demand
+    [`docs/web-gs.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/web-gs.md) "Known limits"). See `docs/fec-nack.md` "Demand
     refresh".
   - Session edges (DISC, unconfirmed move, FAILSAFE) clear the pending
     request. The entering-LINKED IDR on a return from FAILSAFE/RENDEZVOUS

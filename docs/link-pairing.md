@@ -38,9 +38,9 @@ key_file = "/etc/mabur.key"   # the pairing key; same file on the ground station
 ```
 
 on both the drone (`bundle/mabur.default.toml`) and the GS
-(`gs/bundle/maburgs.default.toml`). The GS alone also accepts an inline `[link] key = "<32 hex>"` — the web page's
-overlay path (`web/ui/src/lib/config.js` builds it, `web/src/web_main.cpp`
-`load_cfg` merges it into `link.key`). That parser is `gs/src/config.cpp`,
+([`gs/bundle/maburgs.default.toml`](https://github.com/gilankpam/mabur-ground/blob/master/gs/bundle/maburgs.default.toml)). The GS alone also accepts an inline `[link] key = "<32 hex>"` — the web page's
+overlay path ([`web/ui/src/lib/config.js`](https://github.com/gilankpam/mabur-ground/blob/master/web/ui/src/lib/config.js) builds it, [`web/src/web_main.cpp`](https://github.com/gilankpam/mabur-ground/blob/master/web/src/web_main.cpp)
+`load_cfg` merges it into `link.key`). That parser is [`gs/src/config.cpp`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/config.cpp),
 shared by the web core and `maburgs`, so `maburgs` itself also accepts
 `[link] key` in its TOML (it overrides `key_file`); the daemons are meant
 to use `key_file` and keep the key out of the config. `maburd` accepts
@@ -62,7 +62,7 @@ as 4 lowercase hex characters. Never the key itself. Shown:
 - in each daemon's boot log: `link: key <fp> (<source>)`, `<source>` the
   file path, `"default"`, or `"link.key"` (the GS's inline overlay);
 - on the sideport as `link.key_fp`;
-- in `tools/maburtop.py`'s link panel (`key <fp>` / `KEY MISMATCH`);
+- in [`tools/maburtop.py`](https://github.com/gilankpam/mabur-ground/blob/master/tools/maburtop.py)'s link panel (`key <fp>` / `KEY MISMATCH`);
 - beside the web page's Load/Clear buttons, with a `Key mismatch` status
   tag and `Drone rejects our link key (<fp>) — load the same mabur.key on
   both ends` when the drone is rejecting it.
@@ -205,7 +205,7 @@ Cold start:
    arms `take_move_edge()`; GS main follows to the agreed channel on that
    edge. If the GS never follows, the drone hears no accepted RCF on the
    new channel within `link.move_confirm_ms` and returns to the channel
-   it came from (`docs/channel-select.md`).
+   it came from ([`docs/channel-select.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/channel-select.md)).
 
 Keep-alive DISC while LINKED: verified like any DISC, acked with the
 *same* `vtx_nonce` already issued for that `vrx_nonce` — nothing else
@@ -307,13 +307,13 @@ All self-healing.
   foreign-key GS in range — its DISCs fail the tag and set the bit every
   period while it beacons on our channel, even though our own link is
   fine.
-- `tools/maburtop.py`: `key <fp>` in the link panel; `KEY MISMATCH` in
+- [`tools/maburtop.py`](https://github.com/gilankpam/mabur-ground/blob/master/tools/maburtop.py): `key <fp>` in the link panel; `KEY MISMATCH` in
   place of the link state when flagged; `AUTH!` beside the drone panel
   on `drone.auth_reject`.
-- `tools/flightreport.py`: `auth reject: N periods` — one period around
+- [`tools/flightreport.py`](https://github.com/gilankpam/mabur-ground/blob/master/tools/flightreport.py): `auth reject: N periods` — one period around
   a drone/GS restart is the expected transient; sustained means a bug,
   two controllers fighting over the session, or a foreign-key GS in range.
-- Player OSD (`gs/player/src/gs_compact.cpp`): `KEY?` in the `ch:` slot
+- Player OSD ([`gs/player/src/gs_compact.cpp`](https://github.com/gilankpam/mabur-ground/blob/master/gs/player/src/gs_compact.cpp)): `KEY?` in the `ch:` slot
   that otherwise shows the stale/searching channel state — the one
   failure that would otherwise look exactly like the stale-caps restart
   deadlock and send the operator to `restart maburd`.
@@ -342,7 +342,7 @@ implementation pinned against the reference test vectors
 
 ## In-process pair test
 
-`tests/test_link_auth_e2e.cpp` is the only place both ends of the
+[`tests/test_link_auth_e2e.cpp`](https://github.com/gilankpam/mabur-ground/blob/master/tests/test_link_auth_e2e.cpp) is the only place both ends of the
 rendezvous — a real `RcAgent` and a real `VrxController` — run against
 each other on the host, stepped in 10 ms increments with a perfect air
 link (no loss, no reorder, except where a case drops frames on purpose).

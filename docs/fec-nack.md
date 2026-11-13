@@ -18,7 +18,7 @@ without the NACK. Base layer only; the wire carries a `sid` byte so enh can
 follow, but the drone refuses any `sid != 0` today.
 
 **Scope: `maburgs` and the web GS in GS mode.** The
-browser GS (`web/`, `docs/web-gs.md` "Software NACK") runs the same
+browser GS (`web/`, [`docs/web-gs.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/web-gs.md) "Software NACK") runs the same
 `NackTracker` over the same decoder, FrameStream and ladder, sent directly
 through its one card; its Config form's "Retransmit (NACK)" switch is the
 `[link.nack] enable` overlay (default on). A spotter never sends one: it
@@ -69,7 +69,7 @@ below).
 
 `common/include/mabur/nack_tracker.h` + `common/src/nack_tracker.cpp`; the
 header comment is the contract. Core-thread only, like the decoder it
-reads; `gs/src/main.cpp` polls it once per core-loop iteration right after
+reads; [`gs/src/main.cpp`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/main.cpp) polls it once per core-loop iteration right after
 the radio drain, sid 0 only, and only while `[link.nack] enable`.
 
 **Inputs** (`NackInputs`): the decoder's erasure set
@@ -122,7 +122,7 @@ on the spot and counts `lead_skipped` (per seq); it books
 never requested again. `gap_ms(0)` is the rate-aware sid-0 frame gap
 timeout (`GapTimeoutPolicy`: `clamp(w / seq_rate + 15 ms,
 video.frame_gap_timeout_ms, video.frame_gap_timeout_max_ms)`, 50..100 ms
-as shipped in `gs/bundle/maburgs.default.toml`; the code default for the
+as shipped in [`gs/bundle/maburgs.default.toml`](https://github.com/gilankpam/mabur-ground/blob/master/gs/bundle/maburgs.default.toml); the code default for the
 max is 150). A dead entry stays tracked until the decoder's state for it is
 terminal, so the erasure set cannot re-admit it.
 
@@ -149,10 +149,10 @@ BEACONING after `link_lost_ms` of video silence re-enters SESSION on the
 first video body under that same nonce (`VrxRendezvous::feed_video`, no
 DISC). The counter restarts (`NackTracker::restart_counter`, next NACK is
 counter 1) only when `session_ctx().vtx_nonce` turns non-zero and differs
-from the last one seen (`nack_vtx_seen` in `gs/src/main.cpp`) — the same
+from the last one seen (`nack_vtx_seen` in [`gs/src/main.cpp`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/main.cpp)) — the same
 point the drone starts its own count over.
 
-**Config** (`gs/src/config.cpp`, `gs/bundle/maburgs.default.toml`):
+**Config** ([`gs/src/config.cpp`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/config.cpp), [`gs/bundle/maburgs.default.toml`](https://github.com/gilankpam/mabur-ground/blob/master/gs/bundle/maburgs.default.toml)):
 
 ```toml
 [link.nack]          # absent = off
@@ -256,7 +256,7 @@ burst_ms = 20   # bucket depth, ms of air at the current op; 1..200
   (`SwDecoder::ingest`): without the retx the row could not have yielded
   them.
 - **Residual inputs** use `abandoned + syms_retx` on both paths
-  (`gs/src/ladder_residual.cpp`, the s3 path in `gs/src/link_health.cpp`).
+  ([`gs/src/ladder_residual.cpp`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/ladder_residual.cpp), the s3 path in [`gs/src/link_health.cpp`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/link_health.cpp)).
   A retx-filled symbol counts as loss even if its direct copy arrives
   later, symmetric with `recovered`.
 - **Latency anchor.** When fragment 0 of an AU arrived in a retx body
@@ -273,7 +273,7 @@ burst_ms = 20   # bucket depth, ms of air at the current op; 1..200
 
 ## Observability
 
-- **Sideport `link.nack`** (only while enabled; `gs/src/stats_exporter.cpp`):
+- **Sideport `link.nack`** (only while enabled; [`gs/src/stats_exporter.cpp`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/stats_exporter.cpp)):
   cumulative `requests, repeats, syms_requested, tail_requests, filled,
   late_fill, wasted, dropped_deadline, suppressed, lead_skipped`; per export window
   `fill_pps`, `fill_ms{p50,p90,max}` (first request → retx-filled,
@@ -281,14 +281,14 @@ burst_ms = 20   # bucket depth, ms of air at the current op; 1..200
 - **Sideport `drone.nack{rx, retx_syms, retx_refused}`**: the Telem fields,
   per Telem period and repeated on every record until the next Telem, so
   count once per `drone.tlm_seq`.
-- **fec.log `feclog 3`** (`gs/src/fec_log.h`):
+- **fec.log `feclog 3`** ([`gs/src/fec_log.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/fec_log.h)):
   `<t_ms> <sid> <mcs> <bw> <ov> <first_seq> <span> <m> <rec> <rtx> <aband>
   <stale> <r> <w>`; `rtx` = symbols of the episode a retransmit filled.
   feclog 1/2 rows read as `rtx` 0 (`docs/data-provenance.md`).
 - **maburtop**: a `nack:` line (`req fill waste sup p50/p90/max ms settle |
   drone rx syms refused`) in the LADDER panel. That panel is hidden in
   static-pin mode, so on a pinned bench read `flight.jsonl` or
-  `tools/bench/nack/arm_report.py` instead.
+  [`tools/bench/nack/arm_report.py`](https://github.com/gilankpam/mabur-ground/blob/master/tools/bench/nack/arm_report.py) instead.
 - **flightreport.py**: a NACK section (`print_nack_report`: requests/min,
   counter-reset tolerant; repeats, outcomes; drone `rx`/`retx_syms`/
   `refused` summed once per `tlm_seq`; fill p50/p90/max, settle) and a
@@ -297,7 +297,7 @@ burst_ms = 20   # bucket depth, ms of air at the current op; 1..200
 
 ## Bench
 
-**Rig: `tools/bench/benchjam.sh`** (primary), a spare 8822EU on the host
+**Rig: [`tools/bench/benchjam.sh`](https://github.com/gilankpam/mabur-ground/blob/master/tools/bench/benchjam.sh)** (primary), a spare 8822EU on the host
 flooding 1000 B QoS-Data at 6 Mbit/s on the op channel:
 `tools/bench/benchjam.sh --channel <op> --pps 180`. Losses are whole PPDUs
 on both GS cards, the drone's carrier sense defers to the jammer, and the
@@ -307,7 +307,7 @@ uplink NACK goes through the same air.
 per step, until the control shows ~30 base abandoned symbols/min (spec §8);
 the calibration runs so far are in the findings records below.
 
-**Arms** (`tools/bench/nack/`): `cfg/A0_control.toml` (`[link.nack]
+**Arms** ([`tools/bench/nack/`](https://github.com/gilankpam/mabur-ground/blob/master/tools/bench/nack/)): `cfg/A0_control.toml` (`[link.nack]
 enable = false`) and `cfg/A1_nack.toml` (`enable = true`, lookback 256,
 repeat_ms 16, max_tries 2), both the GS's live config pinned at
 `static_mcs 2` / `static_bw 40` / `static_overhead_base 0.5` /
@@ -340,7 +340,7 @@ as-built gate against these criteria
 
 ## Known limitations
 
-- The tail-trigger geometry guard in `gs/src/main.cpp` is a tautology:
+- The tail-trigger geometry guard in [`gs/src/main.cpp`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/main.cpp) is a tautology:
   one fragment == one symbol holds today by construction. A fragmenter
   change needs a test, not that guard.
 - `NackWindow::fill_ms` is drained only by the sideport export. It is
@@ -378,7 +378,7 @@ The bundle runs the drone with no periodic refresh at all
 (`venc.gop_s = 0` → the SigmaStar SDK's largest GOP, `VENC_GOP_NONE` =
 65535 frames; `venc.intra_refresh_frames = 0`, since the GDR sweep only
 fires at a GOP start and there is none). Healing a damaged base picture is
-therefore on demand: `RefreshRequester` (`gs/src/refresh_requester.h`) in
+therefore on demand: `RefreshRequester` ([`gs/src/refresh_requester.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/refresh_requester.h)) in
 `maburgs` decides when the RCF's `idr_epoch` byte changes, and
 `RcAgent` on the drone serves one paced IDR per change
 (`docs/link-adaptation.md` "RcAgent is the only IDR authority").
@@ -398,7 +398,7 @@ it incomplete with the salvaged flag set, and it books as `salvaged`, not
 unknown, so they count as base); or one of four one-shot reports from
 `maburplay` over
 the same loopback control socket that carries the record button's VTX
-wish (`gs/player/src/core_control_client.h`, `docs/vtx-recorder.md`
+wish ([`gs/player/src/core_control_client.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/player/src/core_control_client.h), `docs/vtx-recorder.md`
 "Wire"): `start` (ring open, nothing to arm on yet), `resync` (the ring
 reader skipped AUs), `decoder` (the decode watchdog reset or recreated
 the backend — not raised on an ordinary decode error), and `dvr` (the
@@ -449,7 +449,7 @@ matters on a flight with none of those for that long.
 
 **Observability:** `fec.log`'s `I <t_ms> <reason> <epoch>` / `H <t_ms>
 <heal_ms> <retries>` rows (`feclog 4`) and the sideport's `link.refresh`
-block (`docs/observability.md`) carry the same counters;
+block ([`docs/observability.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/observability.md)) carry the same counters;
 `flightreport.py`'s REFRESH section and maburtop's `refresh:` line read
 them.
 

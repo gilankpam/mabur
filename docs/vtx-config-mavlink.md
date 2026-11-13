@@ -12,7 +12,7 @@ both: in effect on the drone and on disk. See "Applying a set" below.
 A ground app or `tools/bench/mavparam.py` reaches the component through
 `maburgs`' MAVLink UDP endpoint (`docs/mavlink.md` "The GS endpoint"). The
 web GS runs its own ground client on the tunnel, and its VTX tab is the
-operator screen onto the table (`docs/web-gs.md` "VTX tab").
+operator screen onto the table ([`docs/web-gs.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/web-gs.md) "VTX tab").
 
 ## Where the code lives
 
@@ -24,7 +24,7 @@ operator screen onto the table (`docs/web-gs.md` "VTX tab").
 | drone: per-row accessors, TOML rendering, the row patcher | `drone/src/mav_params.h` |
 | drone: applying a set (`ConfigApplier`, `mbr-apply`) | `drone/src/config_apply.h` |
 | line patcher and verified publish | `common/include/mabur/config_write.h` |
-| GS: the ground client (list/read/set, link and heartbeat state) | `gs/src/param_client.h` |
+| GS: the ground client (list/read/set, link and heartbeat state) | [`gs/src/param_client.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/param_client.h) |
 | bench tool | `tools/bench/mavparam.py` |
 
 ## The drone side
@@ -92,7 +92,7 @@ outbound queue and the tunnel's uplink pacing.
     "apply in progress". A set is refused `FAILED` "calibration in
     progress" while a calibration session is running.
   - Each set is one or two `[mav] set ...` lines in `maburd`'s log
-    (`docs/observability.md`).
+    ([`docs/observability.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/observability.md)).
 
 `ACCEPTED` always means both: the value is in effect on the running
 `maburd` and published to disk. The applier publishes a candidate only
@@ -133,7 +133,7 @@ column below:
   `mavparam.py` prints the chunks as they come; the web GS's
   `ParamClient` reassembles them and attaches the whole text to the
   `RADIO_LDPC` row, which the VTX tab shows under it as a warning
-  (`docs/web-gs.md`).
+  ([`docs/web-gs.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/web-gs.md)).
 - **Rebuild** (`VENC_MODE`, `VENC_SLICES`, `REC_ENABLE`,
   `REC_BITRATE`, `REC_FPS`, `REC_SIZE`, `VENC_MIRROR`, `VENC_FLIP`): the
   encoder pipeline is rebuilt in-process (`docs/link-adaptation.md`
@@ -176,7 +176,7 @@ calibration owns the TX-power table, and its file publish takes the
 same config-write lock. A host build of `maburd` (no encoder) refuses
 the rebuild keys at submit, "no encoder in this build". Logging and the
 `stats:` line's `mav_apply=`/`mav_rebuild=` counters:
-`docs/observability.md`. The undo, `.pre-param`: below.
+[`docs/observability.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/observability.md). The undo, `.pre-param`: below.
 
 ### `.pre-param`
 
@@ -254,13 +254,13 @@ Two loader rules involve keys the table does not expose:
 
 ## Ground client
 
-`ParamClient` (`gs/src/param_client.h`) is the ground-side PARAM_EXT_*
+`ParamClient` ([`gs/src/param_client.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/param_client.h)) is the ground-side PARAM_EXT_*
 protocol client: list, read, set and link/heartbeat state, driven only by
 a send callback and `on_packet`/`tick(now)` -- pure data handling, no
-socket or clock of its own. The web GS core owns one (`docs/web-gs.md`
+socket or clock of its own. The web GS core owns one ([`docs/web-gs.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/web-gs.md)
 "MAVLink seam"), fed by the tunnel's `deliver` callback, and its VTX tab
 is the operator screen onto it. `maburgs` hosts its own, wrapped as
-`ParamHost` (`gs/src/param_host.h`): the daemon's MAVLink tunnel is one
+`ParamHost` ([`gs/src/param_host.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/param_host.h)): the daemon's MAVLink tunnel is one
 endpoint with one peer, so the session state a client needs -- linked or
 not, which `vtx_nonce` -- already lives in the same process, and a
 ground-station UI only ever reaches the drone's parameters through
@@ -268,9 +268,9 @@ ground-station UI only ever reaches the drone's parameters through
 `set_linked`/`refresh` calls (a `vtx_nonce` change while still linked
 re-lists, the same re-rendezvous rule as a session edge), publishes
 `client().state()` on the stats sideport as `link.vtx`
-(`docs/observability.md` "`link.vtx`"), and answers the loopback live-
+([`docs/observability.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/observability.md) "`link.vtx`"), and answers the loopback live-
 config port's one extra verb, `vtx set <PARAM_ID> <value>`
-(`docs/gs-live-config.md` "Protocol") -- immediately with `ok`/`err
+([`docs/gs-live-config.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/gs-live-config.md) "Protocol") -- immediately with `ok`/`err
 <reason>`, the set's own outcome following later on `link.vtx.rows[]` as
 the client's ack lands. It adds nothing to the wire: every rule above is
 `ParamClient`'s own.
@@ -388,10 +388,10 @@ edit it, restart `S96maburgs` (`docs/deploy.md`).
 
 ## Operator UIs
 
-The web GS's VTX tab (`docs/web-gs.md` "VTX tab") renders the parameter
+The web GS's VTX tab ([`docs/web-gs.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/web-gs.md) "VTX tab") renders the parameter
 table and drives it live, against its own `ParamClient`. The goggles
-settings menu (`docs/gs-menu.md`) is the screen onto `maburgs`'s hosted
+settings menu ([`docs/gs-menu.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/gs-menu.md)) is the screen onto `maburgs`'s hosted
 one, reading `link.vtx` off the sideport and driving `vtx set` on 8402
 through `maburplay`'s `DroneLiveSetter`, which settles a row against
 `link.vtx.rows[]` rather than against the verb's own (merely "sent")
-reply (`docs/gs-menu.md`).
+reply ([`docs/gs-menu.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/gs-menu.md)).
