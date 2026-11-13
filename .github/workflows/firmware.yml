@@ -1,0 +1,180 @@
+name: Firmware
+
+# Builds the drone firmware for both boards (firmware/builder.sh) from the
+# commit that triggered it. What happens to the images depends on the trigger
+# (docs/releases.md):
+#   pull request  -> run artifacts kept 14 days + one PR comment listing them
+#   master push   -> replaces the `snapshot` pre-release
+#   v* tag        -> tools/release.py check, then a permanent release
+on:
+  pull_request:
+    paths:
+      - 'drone/**'
+      - 'common/**'
+      - 'bundle/**'
+      - 'firmware/**'
+      - 'tools/release.py'
+      - '.github/workflows/firmware.yml'
+  # GitHub does not evaluate path filters for tag pushes, so every v* tag
+  # builds; on master a docs-only push leaves the snapshot as it is.
+  push:
+    branches: [master]
+    tags: ['v*']
+    paths:
+      - 'drone/**'
+      - 'common/**'
+      - 'bundle/**'
+      - 'firmware/**'
+      - 'tools/release.py'
+      - '.github/workflows/firmware.yml'
+  workflow_dispatch:
+
+# A newer push to a PR or master makes the older build worthless; a tag run
+# is never cancelled, because a half-published release is worse than a
+# duplicate build.
+concurrency:
+  group: firmware-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      kind: ${{ steps.v.outputs.kind }}
+      sha: ${{ steps.v.outputs.sha }}
+      prev_tag: ${{ steps.v.outputs.prev_tag }}
+      devourer: ${{ steps.v.outputs.devourer }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - id: v
+        env:
+          PR: ${{ github.event.pull_request.number }}
+          PR_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          prev_below() {
+            python3 -c "import sys; sys.path.insert(0, 'tools'); import release; print(release.previous_tag(sys.argv[1]) or '')" "$1"
+          }
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            # The rule: a patch bump over a drone<->GS contract change fails
+            # here, before anything is built or published.
+            python3 tools/release.py check "$GITHUB_REF_NAME"
+            kind=release version=$GITHUB_REF_NAME sha=$GITHUB_SHA
+            prev=$(prev_below "$GITHUB_REF_NAME")
+          elif [ -n "$PR" ]; then
+            kind=pr sha=$PR_SHA version=pr$PR-${PR_SHA:0:8} prev=
+          else
+            kind=snapshot sha=$GITHUB_SHA version=snapshot-${GITHUB_SHA:0:8}
+            prev=$(prev_below v999999.0.0)
+          fi
+          devourer=$(git ls-remote https://github.com/gilankpam/devourer refs/heads/master | cut -f1)
+          [ -n "$devourer" ] || { echo "cannot resolve devourer master"; exit 1; }
+          {
+            echo "kind=$kind"; echo "version=$version"; echo "sha=$sha"
+            echo "prev_tag=$prev"; echo "devourer=$devourer"
+          } | tee -a "$GITHUB_OUTPUT"
+
+  build:
+    needs: version
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        board:
+          - ssc338q_fpv_openipc-urllc-aio
+          - ssc338q_fpv_emax-wyvern-link-alpha
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      DEVOURER_VERSION: ${{ needs.version.outputs.devourer }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prepare
+        run: |
+          echo "nameserver 8.8.8.8" | sudo tee /etc/resolv.conf
+          echo "CACHE_MONTH=$(date +%Y%m)" >> "$GITHUB_ENV"
+      - uses: actions/cache@v4
+        with:
+          path: /tmp/ccache
+          key: ${{ matrix.board }}-${{ env.CACHE_MONTH }}
+      - name: Build
+        run: |
+          mkdir -p /tmp/ccache && ln -sfn /tmp/ccache "$HOME/.ccache"
+          bash firmware/builder.sh "${{ matrix.board }}"
+      - name: Collect
+        run: |
+          img=firmware/openipc/output/images
+          mkdir -p dist
+          nor=$(find "$img" -maxdepth 1 -name 'openipc.*nor*.tgz' | head -1)
+          [ -f "$nor" ] || { echo "no NOR image"; exit 1; }
+          cp "$nor" "dist/mabur-$VERSION-${{ matrix.board }}-nor.tgz"
+          cp $img/u-boot-ssc338q-nor-padded.bin "dist/mabur-$VERSION-u-boot-ssc338q-nor-padded.bin"
+          cp $img/build-info.txt "dist/build-info-${{ matrix.board }}.txt"
+          ls -l dist
+      - uses: actions/upload-artifact@v5
+        with:
+          name: fw-${{ matrix.board }}
+          path: dist/
+          retention-days: 14
+          if-no-files-found: error
+
+  publish:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.version.outputs.version }}
+      KIND: ${{ needs.version.outputs.kind }}
+      SHA: ${{ needs.version.outputs.sha }}
+      PREV: ${{ needs.version.outputs.prev_tag }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: fw-*
+          path: dist
+          merge-multiple: true
+      - name: Notes
+        if: needs.version.outputs.kind != 'pr'
+        run: |
+          python3 tools/release.py notes --version "$VERSION" --sha "$SHA" \
+            --build-info dist/build-info-ssc338q_fpv_openipc-urllc-aio.txt \
+            --files dist ${PREV:+--prev-tag "$PREV"} > notes.md
+          cat notes.md
+      - name: PR comment text
+        if: needs.version.outputs.kind == 'pr'
+        run: |
+          {
+            echo "**Firmware test build** for \`${SHA:0:8}\` (\`$VERSION\`)"
+            echo
+            for f in dist/*.tgz dist/*.bin; do echo "- \`$(basename "$f")\`"; done
+            echo
+            echo "Download from the run page (GitHub login needed), kept 14 days:"
+            echo "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          } > comment.md
+      # A fork PR's token cannot comment; its images are still on the run page.
+      - uses: marocchino/sticky-pull-request-comment@v2
+        if: needs.version.outputs.kind == 'pr' && github.event.pull_request.head.repo.full_name == github.repository
+        with:
+          header: firmware
+          path: comment.md
+      # One rolling pre-release. No target: the tag lands on master's head,
+      # which is this commit unless master moved during the build (the notes
+      # name the commit that was built either way).
+      - name: Snapshot
+        if: needs.version.outputs.kind == 'snapshot'
+        run: |
+          gh release delete snapshot --cleanup-tag -y || true
+          gh release create snapshot dist/*.tgz dist/*.bin --prerelease \
+            --title "snapshot (${SHA:0:8})" --notes-file notes.md
+      - name: Release
+        if: needs.version.outputs.kind == 'release'
+        run: |
+          gh release create "$VERSION" dist/*.tgz dist/*.bin --verify-tag \
+            --title "$VERSION" --notes-file notes.md --latest
