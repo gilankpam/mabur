@@ -61,7 +61,11 @@ Bench record: `docs/findings/2026-10-10-slice-salvage.md`.
   header from, or slice addresses that don't match `slice_rows`. A
   contiguous-prefix fragment shorter than the first fragment's size, or
   losing fragment 0 itself (the fragment size is unknown), both fall under
-  this geometry fallback. Each reason is a counter.
+  this geometry fallback, as does an SPS so wide that the slice span in
+  CTBs wraps a uint32 to 0, and an SPS whose picture no HEVC level allows
+  (over 16 888 px a side or 35 651 584 luma samples): `make_skip_slice()`
+  sizes its work grid by the SPS and refuses those before allocating. Each
+  reason is a counter.
 
 ## Consumers
 
