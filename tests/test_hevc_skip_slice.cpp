@@ -131,6 +131,26 @@ TEST(i_slices_are_refused) {
   CHECK(!make_skip_slice(e.t.sps(), e.t.pps(), e.tmpl, 150, 300).has_value());
 }
 
+// The fill's work grid is sized by the SPS, and the SPS is whatever the
+// stream delivered: a picture no HEVC level allows is refused before
+// anything is allocated by it (1 048 576 x 1 044 480 would ask for three
+// vectors of 17 GB).
+TEST(a_picture_no_level_allows_is_refused) {
+  Env e = env(5, 1);
+  auto forged = e.t.sps();
+  forged.width = 1u << 20;
+  forged.height = 64 * 255 * 64;
+  CHECK(!make_skip_slice(forged, e.t.pps(), e.tmpl, 0, 1).has_value());
+  auto wide = e.t.sps();  // one side over the limit is enough
+  wide.width = 16896;
+  wide.height = 64;
+  CHECK(!make_skip_slice(wide, e.t.pps(), e.tmpl, 0, 1).has_value());
+  auto big = e.t.sps();  // the largest common picture still gets its fill
+  big.width = 8192;
+  big.height = 4320;
+  CHECK(make_skip_slice(big, e.t.pps(), e.tmpl, 0, 1).has_value());
+}
+
 TEST(bad_ranges_are_refused) {
   Env e = env(5, 1);
   CHECK(!make_skip_slice(e.t.sps(), e.t.pps(), e.tmpl, 300, 300).has_value());

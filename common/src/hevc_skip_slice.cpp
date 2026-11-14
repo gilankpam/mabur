@@ -5,6 +5,11 @@
 namespace mabur::hevc {
 namespace {
 
+// Level 6.2 of H.265 (Table A.8): MaxLumaPs, and the longest side it
+// permits, sqrt(8 * MaxLumaPs).
+constexpr uint64_t kMaxLumaPs = 35'651'584;
+constexpr uint32_t kMaxPicSide = 16'888;
+
 // Per-min-CB state of the coding units the fill has coded so far.
 class Grid {
  public:
@@ -91,6 +96,14 @@ std::optional<std::vector<uint8_t>> make_skip_slice(const Sps& sps, const Pps& p
                                                     const SliceHeader& tmpl, uint32_t first_ctb,
                                                     uint32_t end_ctb) {
   if (tmpl.slice_type == 2) return std::nullopt;
+  // The grid below is sized by the SPS, and the SPS is whatever the stream
+  // delivered (video bodies carry no key tag): a forged 2^20 x 2^20 picture
+  // asks for three vectors of 17 GB and the failed allocation ends the
+  // process. Nothing above the largest picture an HEVC level allows gets a
+  // fill.
+  if (sps.width > kMaxPicSide || sps.height > kMaxPicSide ||
+      static_cast<uint64_t>(sps.width) * sps.height > kMaxLumaPs)
+    return std::nullopt;
   const uint32_t total = sps.pic_w_ctbs() * sps.pic_h_ctbs();
   if (first_ctb >= end_ctb || end_ctb > total) return std::nullopt;
 
