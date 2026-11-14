@@ -113,23 +113,24 @@ Bench record: `docs/findings/2026-10-10-slice-salvage.md`.
   truncations from that path but not the drops.
 - Fill bitstreams are checked by [`tools/slices/slicefill_check.py`](https://github.com/gilankpam/mabur-ground/blob/master/tools/slices/slicefill_check.py)
   (ffmpeg oracle) against the bench drone's `cap4` capture
-  ([`tools/slices/make_slice_fixture.py`](https://github.com/gilankpam/mabur-ground/blob/master/tools/slices/make_slice_fixture.py)'s docstring:
-  `sbc-groundstations-gilankpam/output/gs-p1-backup-2026-10-09/cap4.h265`),
+  (kept outside the repo; [`tools/slices/make_slice_fixture.py`](https://github.com/gilankpam/mabur-ground/blob/master/tools/slices/make_slice_fixture.py)
+  cuts the test fixture from it),
   3 pictures × 4 fill modes = 12 cases; rerun it after touching
   `common/src/hevc_*`.
 
 ## Part 2 (as built): streamed decode
 
-- **Platform.** GS image branch `slice-stream` (sbc-groundstations-gilankpam):
+- **Platform.** The GS image (mabur-ground's `firmware/`) carries
   the fpvOS rkvdec2 stream-mode kernel patch
-  (`board/radxa/zero3/linux-patches/0102-…`; `rk_vcodec.rkvdec2_stream`,
+  (`firmware/board/radxa/zero3/linux-patches/0102-…`; `rk_vcodec.rkvdec2_stream`,
   default on, turns rkvdec2 link mode off for every decode) and MPP pinned to
   rockchip-linux/mpp `14729dd5` (develop 2026-09-17, chosen for upstream's
   h265d PS/RPS first-task fix) — the commit [`tools/build-arm64.sh`](https://github.com/gilankpam/mabur-ground/blob/master/tools/build-arm64.sh) builds —
   with the fpvOS MPP patches ported to it. The canonical patches are
-  [`gs/player/mpp-patches/`](https://github.com/gilankpam/mabur-ground/blob/master/gs/player/mpp-patches/); the image's `package/rockchip-mpp/` carries
-  byte-identical copies; `build-arm64.sh` applies them and keys its MPP cache
-  on `MPP_REF` + their sha256. `14729dd5` has no `libmpp_ext.so`. Flashing:
+  [`gs/player/mpp-patches/`](https://github.com/gilankpam/mabur-ground/blob/master/gs/player/mpp-patches/), the one copy: the image's
+  `firmware/package/rockchip-mpp/` applies them at the same ref, and
+  `build-arm64.sh` applies them and keys its MPP cache on `MPP_REF` + their
+  sha256. `14729dd5` has no `libmpp_ext.so`. Flashing:
   mabur-ground's [`docs/deploy.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/deploy.md) "GS image: p1 squashfs swap".
 - **AU ring v4.** maburgs claims a slot at the AU's first byte (`begin()`:
   odd seqlock for the whole AU, `state` open, RingHdr `open_rec`), copies
