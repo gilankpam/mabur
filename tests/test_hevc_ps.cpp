@@ -69,6 +69,46 @@ TEST(tracker_becomes_usable_from_a_parameter_set_au) {
   CHECK(!t.usable());
 }
 
+// A minimal SPS RBSP (one sub-layer, 4:2:0, 8x8 min CB, 64x64 CTB),
+// escaped behind a type-33 NAL header.
+static std::vector<uint8_t> sps_nal(uint32_t width, uint32_t height) {
+  mabur::hevc::BitWriter w;
+  w.u(0, 4); w.u(0, 3); w.u(1, 1);         // vps id, max_sub_layers_minus1, nesting
+  w.u(0, 32); w.u(0, 32); w.u(0, 32);      // profile_tier_level, general only
+  w.ue(0); w.ue(1);                        // sps id, chroma_format_idc
+  w.ue(width); w.ue(height);
+  w.u(0, 1);                               // no conformance window
+  w.ue(0); w.ue(0); w.ue(4);               // bit depths, log2_max_poc_lsb_minus4
+  w.u(1, 1); w.ue(0); w.ue(0); w.ue(0);    // sub-layer ordering info
+  w.ue(0); w.ue(3);                        // min CB 8, CTB 64
+  w.ue(0); w.ue(0); w.ue(0); w.ue(0);      // transform sizes and depths
+  w.u(0, 1); w.u(0, 1); w.u(1, 1); w.u(0, 1);  // scaling list, amp, sao, pcm
+  w.ue(0); w.u(0, 1); w.u(1, 1);           // no st_rps, no long-term, tmvp
+  w.put(1); w.align_zero();
+  std::vector<uint8_t> nal = {0x42, 0x01};
+  const auto esc = mabur::hevc::escape(w.bytes().data(), w.bytes().size());
+  nal.insert(nal.end(), esc.begin(), esc.end());
+  return nal;
+}
+
+// The SPS is whatever the stream delivered; its users size buffers and
+// multiply by its dimensions. A picture no HEVC level allows (level 6.2:
+// 16 888 px a side, 35 651 584 luma samples) is unsupported at the parse.
+TEST(sps_of_a_picture_no_level_allows_is_unsupported) {
+  Sps sps;
+  auto ok = sps_nal(1920, 1080);
+  REQUIRE(parse_sps(ok.data(), ok.size(), &sps) == PsStatus::kOk);
+  CHECK(sps.width == 1920 && sps.height == 1080 && sps.log2_ctb == 6);
+  auto big = sps_nal(8192, 4320);       // the largest common picture still parses
+  CHECK(parse_sps(big.data(), big.size(), &sps) == PsStatus::kOk);
+  auto wide = sps_nal(16896, 64);       // one side over the limit is enough
+  CHECK(parse_sps(wide.data(), wide.size(), &sps) == PsStatus::kUnsupported);
+  auto area = sps_nal(8192, 8192);      // both sides fit, the area does not
+  CHECK(parse_sps(area.data(), area.size(), &sps) == PsStatus::kUnsupported);
+  auto huge = sps_nal(1u << 31, 1080);  // slice span would wrap a uint32
+  CHECK(parse_sps(huge.data(), huge.size(), &sps) == PsStatus::kUnsupported);
+}
+
 TEST(tracker_reports_unsupported_streams) {
   // A PPS with tiles_enabled_flag set: hand-built RBSP, escaped.
   // pps_id ue(0)=1, sps_id ue(0)=1, dep 0, out 0, extra 000, sdh 0, cabac_init 0,
