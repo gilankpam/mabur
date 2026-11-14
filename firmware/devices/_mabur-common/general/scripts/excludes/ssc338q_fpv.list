@@ -1,0 +1,34 @@
+/etc/sensors/imx307.bin
+/etc/sensors/gc2053.bin
+/etc/sensors/gc4653.bin
+/etc/sensors/sc501ai.bin
+#
+/lib/modules/4.9.84/kernel/fs/lockd/lockd.ko
+/lib/modules/4.9.84/kernel/fs/nfs/nfs.ko
+/lib/modules/4.9.84/kernel/fs/nfs/nfsv3.ko
+/lib/modules/4.9.84/kernel/fs/nfs_common/grace.ko
+/lib/modules/4.9.84/kernel/net/sunrpc/sunrpc.ko
+/lib/modules/4.9.84/sigmastar/sensor_gc2053_mipi.ko
+/lib/modules/4.9.84/sigmastar/sensor_gc4653_mipi.ko
+/lib/modules/4.9.84/sigmastar/sensor_imx307_mipi.ko
+/lib/modules/4.9.84/sigmastar/sensor_imx347_mipi.ko
+/lib/modules/4.9.84/sigmastar/sensor_imx415_mipi.ko
+/lib/modules/4.9.84/sigmastar/sensor_os04c10_mipi.ko
+/lib/modules/4.9.84/sigmastar/sensor_sc501ai_mipi.ko
+/lib/modules/4.9.84/sigmastar/sensor_sc8235_mipi.ko
+#
+/usr/lib/libMD_LINUX.so
+/usr/lib/libmi_ai.so
+/usr/lib/libmi_ao.so
+/usr/lib/libmi_divp.so
+/usr/lib/libmi_iqserver.so
+/usr/lib/libmi_ive.so
+/usr/lib/libmi_rgn.so
+/usr/lib/libmi_shadow.so
+/usr/lib/libmi_vdf.so
+#
+# The MI stack is no longer loaded by an init script: maburd runs
+# load_sigmastar itself (S00mabur runs first, a constant in maburd). S70vendor
+# was renamed to S38vendor on 2026-09-08 and dropped on 2026-09-09; the stock
+# S70vendor must still not ship, or the chain runs twice.
+/etc/init.d/S70vendor

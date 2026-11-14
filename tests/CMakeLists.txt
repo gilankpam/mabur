@@ -155,6 +155,8 @@ if(Python3_EXECUTABLE)
   add_test(NAME test_vencburst
     COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/test_vencburst.py
     WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
+  add_test(NAME test_release
+    COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/test_release.py)
 endif()
 
 if(MABUR_BUILD_LINKBENCH)

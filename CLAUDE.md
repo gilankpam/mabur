@@ -96,6 +96,7 @@ Two kinds of doc, two rules:
 | the disarmed low-power mode, arm state over MSP, the live fps verb | `docs/link-adaptation.md` ("Low-power (disarmed) mode") |
 | the GS itself: sideport, maburtop, session logs, ausniff, player OSD/DVR, colortrans, channel selection and in-flight hops, `ChannelCore`, live GS config, the goggles menu, the web GS / spotter, the OPi Zero 2W, the CPE510 relay | mabur-ground's `CLAUDE.md` and `docs/` (`../mabur-ground/`) |
 | comparing recordings, metric scales, removed sideport keys, "why do these two flights disagree" | `docs/data-provenance.md` |
+| firmware images, releases, the `snapshot`, PR test builds, the version rule, `firmware/` (builder, `openipc.ref`, the kernel pin in the board defconfigs, board overlays), the drones' `upgrade` URL | `docs/releases.md`; flashing U-Boot → `docs/flash-uboot.md`; a board that no longer boots → `docs/sd-recovery.md`; the Wyvern's first flash → `docs/wyvern-link-alpha.md` |
 | shipping a binary or config to a device, flag days, pairing | `docs/deploy.md`; the GS side (install script, Radxa/OPi/CPE510 facts, GS image flash) → mabur-ground's `docs/deploy.md` |
 | calibrating a VTX's TX-power walls and capacity / efficiency tables (per width), maburcal, cal.log, the mabur MAVLink dialect and its cal lane | `docs/calibration.md`; the dialect and the run-pair latch → `docs/mavlink.md` |
 | a specific past investigation, or why something is the way it is | `docs/findings/README.md` (dated index) |
@@ -143,6 +144,23 @@ build. mabur owes nothing to old peers, old configs, or old consumers.
 - **There is no rollback contract.** An old binary needs its old config
   restored alongside it, always. Prefer rolling forward.
 
+**Release versions — a rule, not advice.** Releases are `v0.MINOR.PATCH`
+(`docs/releases.md`). Free-to-change does not mean silent: every other GS
+reads the version number to know whether it must update.
+
+- **MINOR** when the drone↔GS contract changes: `RC_VERSION`, any `CAP_*`
+  bit, the drone parameter table (rows added, removed, renamed, reordered),
+  or a removed or renamed drone config key. **PATCH** otherwise.
+- A PR that changes the contract says so in its body: "contract change:
+  the next release is a minor bump", naming what changed. A config key
+  removal must be named there explicitly — it is the one change
+  `tools/release.py check` cannot see.
+- Before proposing or pushing any `v*` tag, tag locally, run
+  `python3 tools/release.py check <tag>`, read the PRs merged since the
+  previous tag for config key removals, and state both results.
+- Never re-tag or delete a published release; a mistake is fixed by the
+  next number.
+
 Three things this does NOT excuse, because they bite a single-operator
 deployment just as hard as a fleet:
 
@@ -166,8 +184,10 @@ NixOS host: wrap every cmake/ctest invocation in
 `nix-shell -p pkg-config libusb1 --run "..."`. Configure with
 `-DDEVOURER_DIR=$PWD/../devourer` when the default `../devourer` doesn't
 resolve. Host suite: `ctest --test-dir build -R 'test_|sim_|host_e2e'`.
-Cross-build: `tools/build-arm.sh` (maburd + the bench TX tools, OpenIPC
-glibc toolchain at `../openipc-builder`). The GS cross-build
+Cross-build: `tools/build-arm.sh` (maburd + the bench TX tools), with the
+OpenIPC glibc toolchain a firmware build leaves in `firmware/openipc/`.
+Firmware image: `firmware/builder.sh <board>` (on NixOS through
+`nix-shell firmware/shell.nix`; `docs/releases.md`). The GS cross-build
 (`build-arm64.sh`) is in mabur-ground.
 
 **The gate for a change here** is this suite plus `ground-downstream`

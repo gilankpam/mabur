@@ -16,7 +16,7 @@
  * the poll period, so what it reads is what was committed.
  *
  * Build (OpenIPC glibc toolchain, no cmake needed):
- *   ../openipc-builder/openipc/output/host/bin/arm-openipc-linux-gnueabihf-gcc \
+ *   firmware/openipc/output/host/bin/arm-openipc-linux-gnueabihf-gcc \
  *       -O2 -Idrone/vendor -o out/arm/vencprobe tools/bench/vencprobe.c
  *
  * Run on the drone (stdout is CSV; see tools/bench/vencprobe_analyze.py):

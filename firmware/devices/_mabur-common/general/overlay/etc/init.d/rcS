@@ -1,0 +1,18 @@
+#!/bin/sh
+export SENSOR=$(fw_printenv -n sensor)
+export UPGRADE=$(fw_printenv -n upgrade)
+# Guarded: an empty TZ pins UTC on musl and skips the /etc/localtime fallback
+# that an unset TZ would use, so a missing /etc/TZ must leave TZ alone.
+[ -r /etc/TZ ] && export TZ=$(cat /etc/TZ)
+
+# mabur: one kernel-stamped line per entry, so every boot leaves its rcS
+# timeline in dmesg (`dmesg | grep 'rcS:'`) on a board with no console.
+# /dev/kmsg lands in the ring buffer regardless of the console loglevel;
+# each stamp costs ~1 ms. docs/boot-time-findings-2026-09-07.md (mabur).
+echo "rcS: begin uptime=$(cut -d' ' -f1 /proc/uptime)" > /dev/kmsg
+for i in /etc/init.d/S??*; do
+	[ ! -f "$i" ] && continue
+	echo "rcS: $i" > /dev/kmsg
+	$i start
+done
+echo "rcS: end uptime=$(cut -d' ' -f1 /proc/uptime)" > /dev/kmsg

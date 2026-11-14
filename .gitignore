@@ -10,3 +10,5 @@ logs/
 
 # secrets: link keys (mabur.key) and any other private key, never commit
 *.key
+firmware/openipc/
+firmware/u-boot-sigmastar/

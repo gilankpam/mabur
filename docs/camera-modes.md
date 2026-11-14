@@ -9,13 +9,13 @@ station has to do to show it smoothly.
 
 ## The driver
 
-`openipc-builder`'s `load_sigmastar` insmods waybeam_venc's star6e IMX415
+The image's `load_sigmastar` (`firmware/devices/_mabur-common`) insmods waybeam_venc's star6e IMX415
 driver, `sensor_imx415_star6e.ko`, for `imx415`; OpenIPC's own stock
 `sensor_imx415_mipi.ko` is left out of the image. The image build does not
 compile the driver or fetch waybeam: the module is a prebuilt binary,
 built in `../waybeam_venc` (`make drivers-star6e`, `sensors/star6e/`) and
-committed into `openipc-builder`'s mabur overlay
-(`lib/modules/4.9.84/sigmastar/`). Changing the modes means rebuilding it
+committed into the image overlay
+(`firmware/devices/_mabur-common/general/overlay/lib/modules/4.9.84/sigmastar/`). Changing the modes means rebuilding it
 there and replacing that file. The module the image carries is built from
 waybeam_venc 581804a: six modes, `imx415_linear_visible = { 1, 2, 4, 5, 6,
 8 }` of a 9-row table. An older build (waybeam_venc 0c880d8, five modes,

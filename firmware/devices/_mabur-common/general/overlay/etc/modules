@@ -1,0 +1,7 @@
+# Modules to load at boot (/etc/init.d/S35modules).
+#
+# Deliberately empty. The generic OpenIPC overlay lists vfat and exfat for
+# SD-card recording; mabur records nothing on the drone (the DVR lives on
+# the ground station) and the exfat package is not built into this image, so modprobing
+# it would only print an error at every boot. The vendor MI modules are not
+# listed here either -- /etc/init.d/S70vendor insmods them via load_sigmastar.

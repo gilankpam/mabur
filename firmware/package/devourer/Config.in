@@ -1,0 +1,11 @@
+config BR2_PACKAGE_DEVOURER
+	bool "devourer"
+	default n
+	help
+	  Userspace Realtek USB Wi-Fi driver (Jaguar3 RTL8812EU/8822EU on
+	  this board). Source-only: nothing is installed on target. mabur's
+	  CMake pulls it in with add_subdirectory() and links it statically
+	  into maburd, so this package exists purely to place the tree where
+	  mabur.mk can point -DDEVOURER_DIR at it.
+
+	  https://github.com/gilankpam/devourer

@@ -78,7 +78,8 @@ bash tools/build-arm.sh
 ```
 
 Prerequisite: the OpenIPC Buildroot toolchain at
-`../openipc-builder/openipc/output/host/bin` (override with
+`firmware/openipc/output/host/bin`, left there by a firmware build
+(`firmware/builder.sh <board>`; override with
 `OPENIPC_HOST_BIN`). The script stages `pkg-config` and a static ARM
 `libusb` itself, caching them under `toolchain/` (gitignored, pinned as a
 Nix GC root so they survive `nix-collect-garbage`); subsequent runs are
