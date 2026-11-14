@@ -13,6 +13,17 @@ namespace mabur::hevc {
 // switch salvage off rather than risk a wrong header.
 enum class PsStatus { kNone, kOk, kMalformed, kUnsupported };
 
+// Level 6.2 of H.265 (Table A.8): MaxLumaPs, and the longest side it
+// permits, sqrt(8 * MaxLumaPs). No HEVC level allows a larger picture.
+constexpr uint64_t kMaxLumaPs = 35'651'584;
+constexpr uint32_t kMaxPicSide = 16'888;
+
+// True when some HEVC level allows a width x height picture.
+constexpr bool level_allows(uint32_t width, uint32_t height) {
+  return width <= kMaxPicSide && height <= kMaxPicSide &&
+         static_cast<uint64_t>(width) * height <= kMaxLumaPs;
+}
+
 struct Sps {
   uint32_t sps_id = 0;
   uint32_t chroma_format_idc = 1;

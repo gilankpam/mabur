@@ -101,6 +101,11 @@ PsStatus parse_sps(const uint8_t* nal, size_t n, Sps* out) {
   if (r.bad() || s.width == 0 || s.height == 0 || s.log2_ctb < 4 || s.log2_ctb > 6 ||
       (s.width & ((1u << s.log2_min_cb) - 1)) || (s.height & ((1u << s.log2_min_cb) - 1)))
     return PsStatus::kMalformed;
+  // The SPS is whatever the stream delivered (video bodies carry no key
+  // tag), and every user sizes buffers or multiplies by its dimensions: the
+  // CTB count, the slice-address width, a slice span, a skip fill's grid.
+  // A picture no HEVC level allows is refused here, before any of them.
+  if (!level_allows(s.width, s.height)) return PsStatus::kUnsupported;
   *out = s;
   return PsStatus::kOk;
 }
