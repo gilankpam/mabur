@@ -149,9 +149,10 @@ write_build_info() {
     {
         echo "board=${DEVICE}"
         echo "openipc=${OPENIPC_REF}"
+        echo "kernel=${KERNEL_REF}"
         echo "devourer=${DEVOURER_VERSION}"
         echo "uboot=$(git -C "${UBOOT_DIR}" rev-parse HEAD 2>/dev/null || echo none)"
-        echo "kernel_sha256=$(sha256_of "${dl}/linux/*.tar.gz")"
+        echo "kernel_sha256=$(sha256_of "${dl}/linux/${KERNEL_REF}.tar.gz")"
         echo "toolchain_sha256=$(sha256_of "${dl}/toolchain-external-custom/*.tgz")"
         echo "ipctool_sha256=$(sha256_of "${dl}/ipctool/*.tar.gz")"
     } > "${out}"
@@ -172,6 +173,10 @@ if [ -z "${DEVOURER_VERSION}" ]; then
 fi
 [ -n "${DEVOURER_VERSION}" ] || { echo "error: cannot resolve devourer master" >&2; exit 1; }
 export DEVOURER_VERSION
+# The kernel commit the board's defconfig pins (its tarball URL ends in it).
+KERNEL_REF=$(sed -n 's|^BR2_LINUX_KERNEL_CUSTOM_TARBALL_LOCATION=".*/archive/\([0-9a-f]\{40\}\)\.tar\.gz"$|\1|p' \
+    "${BUILDER_DIR}/${ITEM}/br-ext-chip-sigmastar/configs/${DEVICE}_defconfig")
+[ -n "${KERNEL_REF}" ] || { echo "error: ${DEVICE}_defconfig does not pin a kernel commit" >&2; exit 1; }
 
 echo_c 31 "\nBuilding ${DEVICE} (mabur from ${MABUR_SRC_DIR})"
 fetch_openipc

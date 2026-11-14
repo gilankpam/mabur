@@ -111,7 +111,7 @@ def notes(version, sha, info, cur, prev_tag, changes, files):
     else:
         lines.append(f"Contract unchanged since {prev_tag}: drop-in for any GS that flew {prev_tag}.")
     lines += ["", "**Built from**", f"- mabur `{sha}`"]
-    for key in ("openipc", "devourer", "uboot"):
+    for key in ("openipc", "kernel", "devourer", "uboot"):
         lines.append(f"- {key} `{info.get(key, 'unknown')}`")
     for key in ("kernel_sha256", "toolchain_sha256", "ipctool_sha256"):
         lines.append(f"- {key.replace('_sha256', '')} sha256 `{info.get(key, 'unknown')}`")

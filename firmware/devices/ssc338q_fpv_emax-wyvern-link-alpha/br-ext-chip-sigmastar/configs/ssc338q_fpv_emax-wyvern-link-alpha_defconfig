@@ -18,7 +18,11 @@ BR2_TOOLCHAIN_EXTERNAL_CXX=y
 # Kernel
 BR2_LINUX_KERNEL=y
 BR2_LINUX_KERNEL_CUSTOM_TARBALL=y
-BR2_LINUX_KERNEL_CUSTOM_TARBALL_LOCATION="https://github.com/openipc/linux/archive/$(OPENIPC_KERNEL).tar.gz"
+# Pinned to an openipc/linux commit, not OpenIPC's moving sigmastar-infinity6e
+# branch: the branch's next commit (9abbbd92, i2c2 padmux 1 -> 4 in the
+# infinity6e dtsi) stalls VPE on about a third of boots on this board (no
+# video). Moving the pin is a PR, flown on the bench (docs/releases.md).
+BR2_LINUX_KERNEL_CUSTOM_TARBALL_LOCATION="https://github.com/openipc/linux/archive/97b7fc4e5e5ae628e9b1f81a84efebc4657278b2.tar.gz"
 BR2_LINUX_KERNEL_USE_CUSTOM_CONFIG=y
 BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE="$(EXTERNAL_VENDOR)/board/$(OPENIPC_SOC_FAMILY)/infinity6e-ssc012b.config"
 BR2_LINUX_KERNEL_UIMAGE=y

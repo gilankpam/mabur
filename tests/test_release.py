@@ -81,7 +81,7 @@ class CheckTag(unittest.TestCase):
 
 
 class Notes(unittest.TestCase):
-    INFO = {"board": "x", "openipc": "o" * 40, "devourer": "d" * 40, "uboot": "u" * 40,
+    INFO = {"board": "x", "openipc": "o" * 40, "kernel": "l" * 40, "devourer": "d" * 40, "uboot": "u" * 40,
             "kernel_sha256": "k" * 64, "toolchain_sha256": "t" * 64,
             "ipctool_sha256": "i" * 64}
     FILES = {"mabur-v0.2.0-a-nor.tgz": "aa" * 16, "mabur-v0.2.0-u-boot.bin": "bb" * 16}
@@ -101,7 +101,7 @@ class Notes(unittest.TestCase):
         for name, md5 in self.FILES.items():
             self.assertIn(name, text)
             self.assertIn(md5, text)
-        for key in ("openipc", "devourer", "uboot", "kernel_sha256",
+        for key in ("openipc", "kernel", "devourer", "uboot", "kernel_sha256",
                     "toolchain_sha256", "ipctool_sha256"):
             self.assertIn(self.INFO[key], text)
 
