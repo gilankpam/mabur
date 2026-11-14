@@ -45,6 +45,11 @@ mislabelled tag publishes nothing. A removed config key leaves no constant
 behind, so the check cannot see it: the PR that removes one says so, and
 whoever tags reads the PRs since the last tag.
 
+GS images are released from mabur-ground with the same minor: GS `v0.M.x`
+pairs with drone `v0.M.x`, and a GS tag is refused until this repo has a
+`v0.M.*` release with the same contract
+([mabur-ground `docs/releases.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/releases.md)).
+
 ## Cutting a release
 
 ```sh

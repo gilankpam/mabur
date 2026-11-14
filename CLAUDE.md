@@ -160,6 +160,9 @@ reads the version number to know whether it must update.
   previous tag for config key removals, and state both results.
 - Never re-tag or delete a published release; a mistake is fixed by the
   next number.
+- A contract change is tagged here first. mabur-ground's GS release of the
+  same minor follows: its `tools/release.py check` refuses a GS tag whose
+  pinned contract matches no mabur `v0.MINOR.*` release.
 
 Three things this does NOT excuse, because they bite a single-operator
 deployment just as hard as a fleet:
