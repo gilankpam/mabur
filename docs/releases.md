@@ -38,17 +38,17 @@ Releases are `v0.MINOR.PATCH`, starting at `v0.1.0`.
   means "update the ground station with this drone".
 - **PATCH** otherwise. It means "drop-in, no GS change".
 
-GS images are released from mabur-ground with the same minor: GS `v0.M.x`
-pairs with drone `v0.M.x`, and a GS tag is refused until this repo has a
-`v0.M.*` release with the same contract
-([mabur-ground `docs/releases.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/releases.md)).
-
 `tools/release.py check <tag>` enforces the first three: it reads them at
 the tag and at the previous `v*` tag and fails when only the patch number
 moved over a change. The tag's workflow run runs it before building, so a
 mislabelled tag publishes nothing. A removed config key leaves no constant
 behind, so the check cannot see it: the PR that removes one says so, and
 whoever tags reads the PRs since the last tag.
+
+GS images are released from mabur-ground with the same minor: GS `v0.M.x`
+pairs with drone `v0.M.x`, and a GS tag is refused until this repo has a
+`v0.M.*` release with the same contract
+([mabur-ground `docs/releases.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/releases.md)).
 
 ## Cutting a release
 
