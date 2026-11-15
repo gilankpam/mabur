@@ -123,7 +123,7 @@ void parse_radio(const Value& j, RadioCfg& r) {
   check_known_keys(j, {"usb_vid", "usb_pid", "channels", "width",
                         "power_mode", "tx_threads", "rate_walls_rel_20",
                         "rate_walls_rel_40", "cal_flags_20", "cal_flags_40",
-                        "legacy_wall_rel", "wall_margin_db", "ldpc"},
+                        "legacy_wall_rel", "wall_margin_db", "ldpc", "cca"},
                    "radio");
   assign_if_present(j, "usb_vid", r.usb_vid, "radio");
   assign_if_present(j, "usb_pid", r.usb_pid, "radio");
@@ -146,6 +146,7 @@ void parse_radio(const Value& j, RadioCfg& r) {
   if (auto e = mabur::channel_set_issue(r.channels, r.width, "radio.channels"))
     fail(e->field, e->why);
   assign_if_present(j, "ldpc", r.ldpc, "radio");
+  assign_if_present(j, "cca", r.cca, "radio");
   assign_if_present(j, "power_mode", r.power_mode, "radio");
   assign_if_present(j, "tx_threads", r.tx_threads, "radio");
 

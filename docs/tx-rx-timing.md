@@ -14,14 +14,19 @@ Each claim points at the code or at the bench record that measured it.
   The drone has one card. The GS has one or more receiving video, and one
   of them (the `TxSelector`'s pick, [`gs/src/tx_selector.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/tx_selector.h)) also sends the
   uplink.
-- **Carrier sense is ON on both daemons.**
-  `dev_cfg.tuning.disable_cca = false` in `drone/src/main.cpp` and
-  [`gs/src/radio_frontend.cpp`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/radio_frontend.cpp). Each radio defers to any decodable 802.11
-  preamble (the other end's and anyone else's), then waits AIFS + backoff.
-  The two ends only ever flip CCA together: CCA on the GS alone keys the
-  drone up into an RCF already on air, which is worse than neither.
-  Record: `docs/findings/2026-09-23-cca-on.md` (mechanism of the CCA-off
-  era: `docs/findings/2026-09-02-gs-uplink-self-blanking.md`).
+- **Carrier sense is ON on both daemons by default.** The GS's is fixed
+  on (`dev_cfg.tuning.disable_cca = false` in
+  [`gs/src/radio_frontend.cpp`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/radio_frontend.cpp)); the drone's is the config key
+  `radio.cca` (`drone/src/config.h`, bundle `true`, read at start).
+  A radio with carrier sense on defers to any decodable 802.11 preamble
+  (the other end's and anyone else's), then waits AIFS + backoff.
+  `radio.cca = false` makes the drone's transmitter stop deferring: other
+  networks on the channel no longer hold the video back, and the drone no
+  longer waits for a GS frame that is already on air, so the slotter
+  (§3.2) is then the only thing keeping uplink sends out of its bursts.
+  Record of both ends on against both ends off:
+  `docs/findings/2026-09-23-cca-on.md` (mechanism of the CCA-off era:
+  `docs/findings/2026-09-02-gs-uplink-self-blanking.md`).
 - **A GS send blinds the GS cards** for about 180 µs. The transmitting card
   is deaf by definition, and a sibling card is saturated at about −4 dBm.
   A drone PPDU whose preamble starts inside that window is lost on every
@@ -113,8 +118,8 @@ timing mechanism; they bound the damage when the open-loop budget is wrong.
   `air_clock.shed_ms` (bundle 25) (`docs/link-adaptation.md` "Drone air
   clock").
 
-With carrier sense on, the drone's MAC also defers its TX start to an RCF
-that is already on air.
+With carrier sense on (`radio.cca`), the drone's MAC also defers its TX
+start to an RCF that is already on air.
 
 ### 3.2 GS: slot the uplink into the drone's idle (`RcfSlotter`)
 
@@ -181,7 +186,7 @@ resulting uplink loss:
 
 1. **The GS slotter (3.2).** Sends land in the drone's gaps.
 2. **Carrier sense on both ends.** Neither end keys up into the other's
-   PPDU.
+   PPDU. With `radio.cca = false` only the GS still defers.
 3. **Failsafe timing.** After `link.failsafe_ms` with no RCF (code default
    1000, bundle 3000), the drone drops to the max-range op. After
    `link.rendezvous_ms` (30000) it re-rendezvouses. These are the only

@@ -14,6 +14,7 @@ width      = 40        # HT40 on each member's standard pair; per-rung width com
 power_mode = "none"      # "none" = card's default TX power; "offset" = use the calibrated walls below
 tx_threads = 4           # parallel USB senders; 4 is needed to reach full link speed
 ldpc       = true        # LDPC coding on every frame. false only for an RTL8821AU ground card (it can't decode LDPC); costs ~2-3 dB of range
+cca        = true        # carrier sense: wait for other Wi-Fi on the channel before sending. false = never wait (other networks cannot stall the video); needs a restart
 
 # TX-power calibration ("walls"). These numbers, and air_clock's
 # efficiency_20/_40 below, belong to ONE card: the reference unit, measured
