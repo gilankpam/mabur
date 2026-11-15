@@ -1342,26 +1342,28 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
   // descriptor limit) into one bulk-OUT URB via send_packets — amortizes
   // the per-URB tax that capped inline per-frame injection at ~2500 fps.
   dev_cfg.tx.usb_agg_max = 3;
-  // MAC carrier sense ON (the chip default; devourer leaves 0x520[14]/[15]
-  // alone and lets phydm track the EDCCA thresholds). The argument for OFF is
-  // that the downlink owns its channel and CSMA only stutters it (devourer
-  // measured injection deferring 41-45% to a co-channel 802.11 transmitter,
-  // tests/dis_cca_tx_onair.sh). Two things overturn that: with both ends
-  // blind, the GS's own uplink send kills ~1.5 drone PPDUs/s on BOTH ground
-  // cards (2-3 % of the enh layer repaired from parity, +2 ms fec p99), which
-  // carrier sense on both ends removes outright -- 0 repairs, RCF delivery 90
-  // -> 97 % -- and every recorded session on the DVR showed a 0/s
-  // foreign-preamble channel, so the deferral being avoided was never there
-  // (docs/tx-rx-timing.md §3, docs/findings/2026-09-23-cca-on.md). The
-  // altitude view the ground cards cannot see rides Telem
-  // rx_foreign/rx_crcfail; both of the hop verdict's routes to interfered
-  // (sustained NHM occupancy, and a lower NHM floor confirmed by loss) read
-  // the ground cards' airtime and never react to this counter, so if a
-  // flight shows the drone deferring to neighbours, this is the only place
-  // it shows up. GS-only carrier sense is NOT a fallback: it defers to the
-  // burst edge where a blind drone restarts
-  // (docs/findings/2026-08-14-rcf-uplink-loss.md §6).
-  dev_cfg.tuning.disable_cca = false;
+  // MAC carrier sense follows radio.cca. On (the default, the chip default
+  // too: devourer leaves 0x520[14]/[15] alone and lets phydm track the EDCCA
+  // thresholds), the transmitter defers to any decodable 802.11 preamble.
+  // The argument for off is that the downlink owns its channel and CSMA only
+  // stutters it (devourer measured injection deferring 41-45% to a
+  // co-channel 802.11 transmitter, tests/dis_cca_tx_onair.sh). The argument
+  // for on: with both ends blind, the GS's own uplink send kills ~1.5 drone
+  // PPDUs/s on BOTH ground cards (2-3 % of the enh layer repaired from
+  // parity, +2 ms fec p99), which carrier sense on both ends removes
+  // outright -- 0 repairs, RCF delivery 90 -> 97 % -- and every recorded
+  // session on the DVR showed a 0/s foreign-preamble channel, so the
+  // deferral being avoided was never there (docs/tx-rx-timing.md §3,
+  // docs/findings/2026-09-23-cca-on.md). The altitude view the ground cards
+  // cannot see rides Telem rx_foreign/rx_crcfail; both of the hop verdict's
+  // routes to interfered (sustained NHM occupancy, and a lower NHM floor
+  // confirmed by loss) read the ground cards' airtime and never react to
+  // this counter, so if a flight shows the drone deferring to neighbours,
+  // this is the only place it shows up. With the key off and the GS's
+  // carrier sense on, the GS defers to the drone's bursts but the drone no
+  // longer defers to a GS frame already on air: the GS's RcfSlotter is then
+  // the only thing keeping uplink sends out of the bursts.
+  dev_cfg.tuning.disable_cca = !cfg.radio.cca;
   // devourer's wide-TX IGI floor: off on an 8812EU image, devourer's default
   // on an 8812CU one. The floor raises the DIG lower bound for the rest of
   // the session once the first >= 40 MHz frame goes out, because on a silent

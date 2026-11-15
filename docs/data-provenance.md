@@ -180,6 +180,9 @@ Chronological; each line names the section below that carries the detail.
   `follow` they are display lines (the frame-length register's and the
   grid's), and the drone's sensor runs on its trim (RCF `snr_off` 0).
   Reglog ≤ 4 rows carry no `lact=` and are all the sensor steer.
+- 2026-11-15 — the drone's carrier sense is the config key `radio.cca`
+  (default on); a recording does not carry its state (see "2026-09-23 —
+  carrier sense back ON").
 
 ## 2026-09-23 — `link.pre_fec_loss` scale break, twice
 
@@ -205,6 +208,12 @@ says what the drone deferred to. Recordings from the OFF era below
 are the blind-injection era; the GS-send self-collision they carry
 (~1.5 lost drone PPDUs/s on both cards, visible as `streams[*].recovered`
 and fec.log episodes) does not exist after it.
+
+From 2026-11-15 the drone's side is the config key `radio.cca` (default
+`true`); the GS's stays on. Neither the sideport nor Telem reports the
+key, so a recording flown with `radio.cca = false` is told apart only by
+the drone's bring-up line below or by its config file: note it with the
+recording.
 
 ## 2026-08-05 → 2026-09-23 — carrier sense OFF
 

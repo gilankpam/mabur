@@ -69,6 +69,13 @@ struct RadioCfg {
   // that cannot decode HT-LDPC (RTL8821AU, bench: 1/1000 LDPC vs
   // 900+/1000 BCC). Costs every GS the LDPC coding gain while off.
   bool ldpc = true;
+  // MAC carrier sense on the drone's transmitter. true = the chip default:
+  // a transmission waits for any decodable 802.11 preamble on the channel
+  // to end, the GS's uplink frames and other networks' alike. false = the
+  // transmitter never defers, so co-channel traffic the drone hears cannot
+  // hold the video back, and a drone burst can start on top of a GS frame
+  // that is already on air. The GS's own carrier sense is not this key.
+  bool cca = true;
 };
 
 struct FecCfg {

@@ -1446,6 +1446,17 @@ TEST(radio_ldpc_defaults_on_and_parses_off) {
   CHECK(c.radio.ldpc == false);
 }
 
+TEST(radio_cca_defaults_on_and_parses_off) {
+  auto e = write_temp_toml("");
+  Config def = load_config(e.string());
+  std::filesystem::remove(e);
+  CHECK(def.radio.cca == true);
+  auto p = write_temp_toml("[radio]\ncca = false\n");
+  Config c = load_config(p.string());
+  std::filesystem::remove(p);
+  CHECK(c.radio.cca == false);
+}
+
 TEST(radio_channels_default_and_parse) {
   Config def = load_config(write_temp_toml("[venc]\nsensor_bin = \"x\"\n").string());
   REQUIRE(def.radio.channels.size() == 4);
