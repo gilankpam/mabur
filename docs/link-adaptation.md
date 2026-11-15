@@ -538,8 +538,11 @@ See `docs/airtime-model.md` §1 and §7.
   encoder's own chain-break signal.
   - The pacer enforces a 100 ms floor between any two IDRs, plus a 1 s
     holdoff between chain-break IDRs.
-  - The chain-break path is an atomic flag set from the venc callback and
-    consumed at the top of `tick()`. It is evaluated against the state as
+  - The chain-break path is an atomic flag set from the venc callback, and
+    from the hot thread when it joins a rebuilt encoder's ring (a parameter
+    set that restarts the encoder: the reattach skips the ring's backlog,
+    the new encoder's first IDR with it). It is consumed at the top of
+    `tick()`. It is evaluated against the state as
     of tick entry, so a break arriving on the same tick as a missed
     feedback deadline still heals.
   - A refused chain-break request is deferred, not dropped: with no

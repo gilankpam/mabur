@@ -2390,10 +2390,15 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
         if (geometry_changed.exchange(false, std::memory_order_acquire)) {
           pipe.set_slice_geometry(live_ctb_rows.load(), live_slice_rows.load());
           pipe.mark_discontinuity();
+          agent.note_chain_break();
         }
         if (fsrc.reattach_count() != last_reattach) {
           last_reattach = fsrc.reattach_count();
           pipe.mark_discontinuity();  // joined a new ring mid-GOP
+          // The reattach skips the new ring's backlog, and with it the
+          // rebuilt encoder's first IDR: without a fresh one the GS gets P
+          // frames it cannot decode until something else asks.
+          agent.note_chain_break();
         }
         if (link_up_discont.exchange(false, std::memory_order_relaxed)) {
           pipe.mark_discontinuity();  // link just came up: pre-link frames died
