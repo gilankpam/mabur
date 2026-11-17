@@ -342,9 +342,9 @@ bool wait_depth_at_most(FecWorker& w, uint32_t depth, int timeout_ms) {
 
 // A worker that always has something queued, but is never further behind
 // than a few hundred seals, is not waited for however long the feed runs:
-// rounds of 200 seals, the worker let through about half its queue between
-// rounds, so a job is outstanding at every enqueue for more seals than the
-// reach while the oldest unfinished one stays far inside it.
+// rounds of 200 seals, the worker let through all but 100 of its queue
+// between rounds, so a job is outstanding at every enqueue for more seals
+// than the reach while the oldest unfinished one stays far inside it.
 TEST(busy_worker_inside_the_slack_is_not_joined) {
   SwConfig cfg{164, 16, 1.0};
   SwEncoder sync_enc(cfg, 11);
@@ -358,11 +358,13 @@ TEST(busy_worker_inside_the_slack_is_not_joined) {
   bool never_waited = true;
   for (int round = 0; round < rounds; ++round) {
     if (round > 0) {
-      worker.set_held(false);
+      // The worker stays held and builds exactly depth - 100 jobs: an
+      // un-held worker drains the whole queue between two depth polls on a
+      // fast host.
+      REQUIRE(worker.depth() > 100);
+      worker.pass_held(worker.depth() - 100);
       REQUIRE(wait_depth_at_most(worker, 100, 3000));
-      worker.set_held(true);
-      // Parked before its next dequeue: let the build in flight finish.
-      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      REQUIRE(worker.depth() == 100);
       REQUIRE(enc.repairs_outstanding());
     }
     ReleaseAfter guard(worker, 3000);

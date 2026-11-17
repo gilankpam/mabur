@@ -83,6 +83,9 @@ void FecWorker::loop() {
     (void)tail_.load(std::memory_order_acquire);
     while (held_.load(std::memory_order_relaxed)) {  // test surface only
       if (quit_.load(std::memory_order_relaxed)) return;
+      uint32_t p = pass_.load(std::memory_order_relaxed);
+      if (p != 0 && pass_.compare_exchange_strong(p, p - 1, std::memory_order_relaxed))
+        break;
       std::this_thread::sleep_for(std::chrono::microseconds(100));
     }
     FecRepairJob j = q_[seen % q_.size()];
