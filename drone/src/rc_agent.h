@@ -156,9 +156,10 @@ class RcAgent {
 
   // The encoder lost a reference frame (a ring-full drop ate it), so the
   // decode chain downstream is broken until an IDR re-seeds it. Called from
-  // the venc encoder thread (venc_core.h's on_chain_break) — the ONLY
-  // cross-thread entry point on RcAgent, which is why it is a bare atomic
-  // set and nothing else. The request is consumed on the next tick(), on the
+  // the venc encoder thread (venc_core.h's on_chain_break), and from the hot
+  // thread when it joins a rebuilt encoder's ring (its backlog, first IDR
+  // included, is skipped). A cross-thread entry point, which is why it is a
+  // bare atomic set and nothing else. The request is consumed on the next tick(), on the
   // agent thread, where it goes through the same IDR pacer as every other
   // producer.
   void note_chain_break();

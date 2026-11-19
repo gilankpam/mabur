@@ -53,7 +53,11 @@ void FecWorker::loop() {
     cpu_set_t set;
     CPU_ZERO(&set);
     CPU_SET(cpu_, &set);
+#if defined(__ANDROID__)
+    sched_setaffinity(0, sizeof set, &set);   // bionic: no pthread_setaffinity_np; 0 = this thread
+#else
     pthread_setaffinity_np(pthread_self(), sizeof set, &set);
+#endif
   }
 #endif
   uint32_t seen = 0;
