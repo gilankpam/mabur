@@ -32,18 +32,18 @@ and their tools (maburtop, flightreport, ausniff, aucadence, gsparam,
 and builds it as a CMake subproject (`MABUR_DIR`); keep mabur buildable
 that way (`PROJECT_SOURCE_DIR`, never `CMAKE_SOURCE_DIR`, in `common/` and
 `drone/`). Other GS implementations (palianytsia) also build against this
-repo. CI's `ground-downstream` job builds mabur-ground master against every
-PR here and runs its host suite, including the drone↔GS glue tests
-(`test_cal_e2e`, `test_link_auth_e2e`, `test_frame_e2e`, `gs_e2e`,
-`gs_au_e2e`, `player_e2e`, `web_au_parity`), which live there with the GS
-code.
+repo. The drone↔GS glue tests (`test_cal_e2e`, `test_link_auth_e2e`,
+`test_frame_e2e`, `gs_e2e`, `gs_au_e2e`, `player_e2e`, `web_au_parity`)
+live there with the GS code and run only in mabur-ground's CI, against its
+`third_party/mabur` pin. This repo's CI does not build the GS: run
+mabur-ground's suite locally with `-DMABUR_DIR=$PWD/../mabur` before
+merging a change the GS consumes.
 
 **A change that needs both sides** (a wire field, `RC_VERSION`, a caps bit,
 a drone parameter row) is a PR here that links its mabur-ground PR. Write
 the GS side against this branch with `-DMABUR_DIR=$PWD/../mabur`. Merge
-here first; mabur-ground then bumps its submodule and merges. Until it
-does, `ground-downstream` on master is red, which is the signal that the
-pair is mid-flight.
+here first; mabur-ground then bumps its submodule and merges; that bump
+PR's CI is where the pair is tested together.
 
 ## Where to look — read the doc, don't guess
 
@@ -193,8 +193,9 @@ Firmware image: `firmware/builder.sh <board>` (on NixOS through
 `nix-shell firmware/shell.nix`; `docs/releases.md`). The GS cross-build
 (`build-arm64.sh`) is in mabur-ground.
 
-**The gate for a change here** is this suite plus `ground-downstream`
-(mabur-ground's host suite against this branch). Any change touching venc,
+**The gate for a change here** is this suite plus, for anything the GS
+consumes (`common/`, the wire), mabur-ground's host suite run locally against
+this branch (`-DMABUR_DIR`). Any change touching venc,
 UEP overhead, or the bitrate policy additionally gates on mabur-ground's
 `tools/bench/aucadence.py` (base−enh completion offset vs the recorded
 per-rung baseline); a change the GS sees on the air gates on its

@@ -3,18 +3,16 @@ name: Firmware
 # Builds the drone firmware for both boards (firmware/builder.sh) from the
 # commit that triggered it. What happens to the images depends on the trigger
 # (docs/releases.md):
-#   pull request  -> run artifacts kept 14 days + one PR comment listing them
+#   `build-images` label on a PR
+#                 -> run artifacts kept 14 days + one PR comment listing them
 #   master push   -> replaces the `snapshot` pre-release
 #   v* tag        -> tools/release.py check, then a permanent release
+# PRs do not build images on their own: label the PR `build-images` (each
+# labelling is one build) when it needs images. A manual run builds master
+# only.
 on:
   pull_request:
-    paths:
-      - 'drone/**'
-      - 'common/**'
-      - 'bundle/**'
-      - 'firmware/**'
-      - 'tools/release.py'
-      - '.github/workflows/firmware.yml'
+    types: [labeled]
   # GitHub does not evaluate path filters for tag pushes, so every v* tag
   # builds; on master a docs-only push leaves the snapshot as it is.
   push:
@@ -38,6 +36,7 @@ concurrency:
 
 jobs:
   version:
+    if: github.event_name != 'pull_request' || github.event.label.name == 'build-images'
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.v.outputs.version }}
@@ -65,6 +64,9 @@ jobs:
             prev=$(prev_below "$GITHUB_REF_NAME")
           elif [ -n "$PR" ]; then
             kind=pr sha=$PR_SHA version=pr$PR-${PR_SHA:0:8} prev=
+          elif [ "$GITHUB_REF_NAME" != master ]; then
+            # A manual run on a branch would otherwise replace the snapshot.
+            echo "manual runs build master only; label the PR build-images"; exit 1
           else
             kind=snapshot sha=$GITHUB_SHA version=snapshot-${GITHUB_SHA:0:8}
             prev=$(prev_below v999999.0.0)
