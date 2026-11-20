@@ -260,16 +260,21 @@ the defaulted-keys report). The original per-device runbook is in
 
 ## Pairing
 
-The link key (`docs/link-pairing.md`) lives in `/etc/mabur.key` on both
-ends (`[link] key_file`). Generate one key and put the same file on both
-ends:
+The link key (`docs/link-pairing.md`) is the file `[link] key_file`
+names: `/etc/mabur.key` on the drone, `/config/mabur.key` on a GS running
+the mabur-ground image (its CONFIG partition, beside the configs), and
+`/etc/mabur.key` on a GS installed by `install.sh`. Generate one key and
+put the same file on both ends:
 
 ```sh
 (echo "# mabur link key, generated $(date -I)"; openssl rand -hex 16) > mabur.key
 chmod 600 mabur.key
 scp -O mabur.key root@<drone>:/etc/mabur.key
-scp -O mabur.key root@<gs>:/etc/mabur.key
+scp -O mabur.key root@<gs>:/config/mabur.key && ssh root@<gs> sync
 ```
+
+A GS whose `maburgs.toml` was seeded by an older image still names
+`/etc/mabur.key`; check its `key_file` line before copying.
 
 Then **Load** the same `mabur.key` file in the web page (the Link key
 row's Load button) — the page keeps it in its own browser storage
