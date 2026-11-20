@@ -180,3 +180,20 @@ TEST(count_au_nals_counts_slices_and_sees_parameter_sets) {
 }
 
 MTEST_MAIN
+
+TEST(scan_au_agrees_with_the_three_scans) {
+  // Random bytes biased to 0/1 so start codes (and near-misses, runs of
+  // zeros, codes at the very end) occur often; every length from 0 up.
+  uint32_t x = 12345;
+  auto rnd = [&] { x = x * 1664525u + 1013904223u; return x >> 24; };
+  for (int it = 0; it < 20000; ++it) {
+    std::vector<uint8_t> f(static_cast<size_t>(it % 97));
+    for (auto& b : f) { uint32_t r = rnd(); b = r < 110 ? 0 : r < 170 ? 1 : static_cast<uint8_t>(rnd()); }
+    const AuScan s = scan_au(f.data(), f.size());
+    const AuNalCount c = count_au_nals(f.data(), f.size());
+    CHECK(s.sid == classify_frame(f.data(), f.size()));
+    CHECK(s.trail_n == frame_is_trail_n(f.data(), f.size()));
+    CHECK(s.count.vcl == c.vcl);
+    CHECK(s.count.param_set == c.param_set);
+  }
+}

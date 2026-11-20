@@ -55,4 +55,15 @@ struct AuNalCount {
 };
 AuNalCount count_au_nals(const uint8_t* annexb, size_t len);
 
+// classify_frame, frame_is_trail_n and count_au_nals in ONE start-code walk
+// that tests every third byte (a byte above 1 rules out a start code at
+// three positions at once). Same results as the three functions above, for
+// the drone's per-frame path, which needs all of them.
+struct AuScan {
+  int sid = 0;
+  bool trail_n = false;
+  AuNalCount count;
+};
+AuScan scan_au(const uint8_t* annexb, size_t len);
+
 }  // namespace mabur

@@ -25,7 +25,8 @@ void FramePipeline::encode(UepEncoder& uep, uint8_t* buf, size_t payload_len,
   const uint8_t* payload = buf + VENC_FRAME_META_SIZE;
   const bool meta_idr = (meta.flags & VENC_FRAME_FLAG_IDR) != 0;
 
-  int sid = classify_frame(payload, payload_len);
+  const AuScan scan = scan_au(payload, payload_len);
+  int sid = scan.sid;
   if (meta_idr && sid != 0) {
     sid = 0;          // trust the union of scan and producer flag (protect up)
     ++idr_disagree_;  // disagreement is a bug signal, not a silent choice
@@ -37,12 +38,13 @@ void FramePipeline::encode(UepEncoder& uep, uint8_t* buf, size_t payload_len,
   // like an upstream hole (read-side pts stays continuous across sheds).
   track_vanish(meta, meta_idr, meta_enhance, now_ms);
 
-  const bool scan_enhance = frame_is_trail_n(payload, payload_len);
+  const bool scan_enhance = scan.trail_n;
   // SVC-T enhance (sid 1, droppable): producer flag and TRAIL_N scan must
   // AGREE. Shedding a referenced frame corrupts decode, so a single signal
   // protects up to base (critical stays 0) and is surfaced, never silent.
-  // Uses frame_is_trail_n rather than sid == 1: the scan side pinpoints
-  // real TRAIL_N frames only and feeds the agreement check directly.
+  // Uses the scan's trail_n (frame_is_trail_n's rule) rather than sid == 1:
+  // it pinpoints real TRAIL_N frames only and feeds the agreement check
+  // directly.
   if (scan_enhance != meta_enhance) {
     sid = 0;
     ++enhance_disagree_;
@@ -81,7 +83,7 @@ void FramePipeline::encode(UepEncoder& uep, uint8_t* buf, size_t payload_len,
     // A one-slice AU is expected only with parameter sets (refresh start,
     // IDR). Without them the SDK has dropped the split (e.g. after a runtime
     // SetChnAttr): unsplit, and counted -- salvage must never go off silently.
-    const AuNalCount c = count_au_nals(payload, payload_len);
+    const AuNalCount c = scan.count;
     if (c.vcl == expected_slices_) h.slice_rows = slice_rows_;
     else if (c.vcl != 1 || !c.param_set) ++slice_mismatch_;
   }
