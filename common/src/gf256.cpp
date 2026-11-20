@@ -202,19 +202,72 @@ void lincomb(uint8_t* acc, const uint8_t* sym, uint8_t coeff, size_t len) {
 void lincomb_rows(uint8_t* out, const uint8_t* const* rows,
                   const uint8_t* coeffs, int n, size_t len) {
   size_t i = 0;
-#if defined(__aarch64__) || defined(__ARM_NEON) || defined(__ARM_NEON__)
+#if (defined(__ARM_NEON) || defined(__ARM_NEON__)) && !defined(__aarch64__)
+  // ARMv7 (Cortex-A7): carry-less multiply with the reduction deferred.
+  // vmull_p8 gives the unreduced 15-bit product c*s per byte, and XOR is
+  // linear, so every row's products accumulate in 16-bit lanes and ONE
+  // reduction mod 0x11D per block replaces the per-row nibble-table lookups:
+  // per row per 64 B that is 4 loads + 8 vmull + 8 veor, against 6 loads +
+  // 16 vtbl.8 + 20 ALU ops for the table kernel (52.9 vs 92.1 us for a
+  // 128-row x 336 B repair on the SSC338Q), and no tables in L1.
+  const poly8x8_t red = vdup_n_p8(0x1D);
+  // a = lo + hi*x^8 and x^8 = 0x1D mod 0x11D; hi has degree <= 6, so two
+  // folds bring the product below x^8.
+  auto reduce = [&](uint16x8_t a) {
+    uint8x8_t lo = vmovn_u16(a);
+    const uint16x8_t t = vreinterpretq_u16_p16(
+        vmull_p8(vreinterpret_p8_u8(vshrn_n_u16(a, 8)), red));
+    lo = veor_u8(lo, vmovn_u16(t));
+    const uint16x8_t t2 = vreinterpretq_u16_p16(
+        vmull_p8(vreinterpret_p8_u8(vshrn_n_u16(t, 8)), red));
+    return veor_u8(lo, vmovn_u16(t2));
+  };
+#define MABUR_PM(x) vreinterpretq_u16_p16(vmull_p8(vreinterpret_p8_u8(x), c))
+  for (; i + 64 <= len; i += 64) {
+    uint16x8_t a0 = vdupq_n_u16(0), a1 = a0, a2 = a0, a3 = a0,
+               a4 = a0, a5 = a0, a6 = a0, a7 = a0;
+    for (int k = 0; k < n; ++k) {
+      const poly8x8_t c = vreinterpret_p8_u8(vld1_dup_u8(coeffs + k));
+      const uint8_t* r = rows[k] + i;
+      const uint8x16_t s0 = vld1q_u8(r), s1 = vld1q_u8(r + 16),
+                       s2 = vld1q_u8(r + 32), s3 = vld1q_u8(r + 48);
+      a0 = veorq_u16(a0, MABUR_PM(vget_low_u8(s0)));
+      a1 = veorq_u16(a1, MABUR_PM(vget_high_u8(s0)));
+      a2 = veorq_u16(a2, MABUR_PM(vget_low_u8(s1)));
+      a3 = veorq_u16(a3, MABUR_PM(vget_high_u8(s1)));
+      a4 = veorq_u16(a4, MABUR_PM(vget_low_u8(s2)));
+      a5 = veorq_u16(a5, MABUR_PM(vget_high_u8(s2)));
+      a6 = veorq_u16(a6, MABUR_PM(vget_low_u8(s3)));
+      a7 = veorq_u16(a7, MABUR_PM(vget_high_u8(s3)));
+    }
+    vst1_u8(out + i, reduce(a0));
+    vst1_u8(out + i + 8, reduce(a1));
+    vst1_u8(out + i + 16, reduce(a2));
+    vst1_u8(out + i + 24, reduce(a3));
+    vst1_u8(out + i + 32, reduce(a4));
+    vst1_u8(out + i + 40, reduce(a5));
+    vst1_u8(out + i + 48, reduce(a6));
+    vst1_u8(out + i + 56, reduce(a7));
+  }
+  for (; i + 16 <= len; i += 16) {
+    uint16x8_t a0 = vdupq_n_u16(0), a1 = a0;
+    for (int k = 0; k < n; ++k) {
+      const poly8x8_t c = vreinterpret_p8_u8(vld1_dup_u8(coeffs + k));
+      const uint8x16_t s0 = vld1q_u8(rows[k] + i);
+      a0 = veorq_u16(a0, MABUR_PM(vget_low_u8(s0)));
+      a1 = veorq_u16(a1, MABUR_PM(vget_high_u8(s0)));
+    }
+    vst1_u8(out + i, reduce(a0));
+    vst1_u8(out + i + 8, reduce(a1));
+  }
+#undef MABUR_PM
+#elif defined(__aarch64__)
   const NibbleTables& nt = nibble_tables();
   const uint8x16_t mask = vdupq_n_u8(0x0F);
-#if defined(__aarch64__)
   auto mul = [&](uint8x16_t s, uint8x16_t tlo, uint8x16_t thi) {
     return veorq_u8(vqtbl1q_u8(tlo, vandq_u8(s, mask)),
                     vqtbl1q_u8(thi, vshrq_n_u8(s, 4)));
   };
-#else
-  auto mul = [&](uint8x16_t s, uint8x16_t tlo, uint8x16_t thi) {
-    return mul16(s, tlo, thi, mask);
-  };
-#endif
   // 64 B blocks: four accumulators stay in registers across every row;
   // per row per block that is one table-pair load + four source loads and
   // no stores (the per-row lincomb did 8 loads + 4 stores for the same).
