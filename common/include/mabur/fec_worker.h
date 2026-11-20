@@ -60,6 +60,10 @@ class FecWorker {
   // arbitrarily slow worker deterministically. Never set in production;
   // the hot-loop check is one relaxed load per job.
   void set_held(bool held) { held_.store(held, std::memory_order_relaxed); }
+  // Test surface: a held worker builds n more jobs, then parks again. A
+  // test that un-holds and polls depth() races a worker that drains at
+  // full speed; this leaves an exact number of jobs queued instead.
+  void pass_held(uint32_t n) { pass_.fetch_add(n, std::memory_order_relaxed); }
 
  private:
   static constexpr long kSpinIters = 16384;  // ~50-100 us @ 800 MHz A7
@@ -68,7 +72,7 @@ class FecWorker {
 
   const int cpu_;
   std::vector<FecRepairJob> q_;
-  std::atomic<uint32_t> head_{0}, tail_{0};
+  std::atomic<uint32_t> head_{0}, tail_{0}, pass_{0};
   std::atomic<bool> quit_{false}, sleeping_{false}, held_{false};
   std::mutex m_;
   std::condition_variable cv_;

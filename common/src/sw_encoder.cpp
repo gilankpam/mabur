@@ -50,7 +50,10 @@ SwEncoder::SwEncoder(const SwConfig& cfg, uint32_t initial_seq, FecWorker* worke
   ring_ = ring_raw_.data();
   ring_ += (16 - (reinterpret_cast<uintptr_t>(ring_) & 15)) & 15;
   env_buf_.assign(sw::kSwHeaderLen + stride_, 0);
-  if (worker_) async_ = std::make_unique<AsyncState>();
+  if (worker_) {
+    async_ = std::make_unique<AsyncState>();
+    job_start_.assign(kTrackJobs, 0);
+  }
 }
 
 SwEncoder::~SwEncoder() {
@@ -112,12 +115,9 @@ void SwEncoder::seal_current(const SwEnvSink& sink) {
   sink(env_buf_.data(), sw::kSwHeaderLen + ss);
 
   // A ring row stays readable for kSlackRows seals after leaving the
-  // window; join if a queued job might still reference the row this seal
-  // overwrites (backstop — not reached at production rates, where the
-  // worker drains jobs in well under 62 seals).
-  if (async_ && async_->outstanding.load(std::memory_order_acquire) != 0 &&
-      ++seals_since_join_ >= static_cast<long>(kSlackRows) - 2)
-    join();
+  // window; wait only while an unfinished queued job may still read the
+  // row this seal is about to overwrite.
+  if (async_ && oldest_job_row_at_risk()) wait_rows_free();
   std::memcpy(ring_ + next_slot_ * stride_, sym, ss);
   next_slot_ = (next_slot_ + 1) % cap_;
   if (count_ < static_cast<size_t>(max_window_)) ++count_;
@@ -202,21 +202,53 @@ void SwEncoder::emit_or_enqueue_repair(const SwEnvSink& sink, bool inline_build)
     sink(env.data(), env.size());
     return;
   }
-  if (async_->outstanding.load(std::memory_order_relaxed) == 0)
-    seals_since_join_ = 0;
   async_->outstanding.fetch_add(1, std::memory_order_relaxed);
-  if (!worker_->try_enqueue(j)) {  // full: inline
+  // The slot is written before the job becomes visible to the worker and
+  // counted only once it is queued, so job number done_n always has its
+  // start recorded.
+  const bool tracked =
+      enq_n_ - async_->done_n.load(std::memory_order_relaxed) < kTrackJobs;
+  if (tracked) job_start_[enq_n_ % kTrackJobs] = j.header_seq;
+  if (!tracked || !worker_->try_enqueue(j)) {  // full: inline
     ++gauge_inline_full_;
-    execute_repair_job(j);
+    run_job(j, /*queued=*/false);
     return;
   }
+  ++enq_n_;
   const uint64_t d = worker_->depth();
   if (d > gauge_enq_depth_max_) gauge_enq_depth_max_ = d;
 }
 
 void SwEncoder::execute_repair_job(const FecRepairJob& j) {
-  // Precondition: async mode. Only FecWorker::loop and the inline
-  // queue-full fallback call this; both exist only when async_ is set.
+  run_job(j, /*queued=*/true);
+}
+
+bool SwEncoder::oldest_job_row_at_risk() const {
+  // A stale (lower) done_n only names an older job, which errs towards a
+  // join. Seq arithmetic is modulo 2^32, like the wire seq.
+  const uint32_t done = async_->done_n.load(std::memory_order_relaxed);
+  if (done == enq_n_) return false;
+  const uint32_t age = next_seq_ - job_start_[done % kTrackJobs];
+  return age >= static_cast<uint32_t>(job_row_reach());
+}
+
+void SwEncoder::wait_rows_free() {
+  const uint64_t t0 = gauge_now_us();
+  while (oldest_job_row_at_risk()) { /* spin */ }
+  const uint64_t us = gauge_now_us() - t0;
+  ++gauge_join_waits_;
+  gauge_join_wait_us_ += us;
+  if (us > gauge_join_wait_max_us_) gauge_join_wait_max_us_ = us;
+  // One acquire load pairs with run_job's release increment: every job
+  // counted in done_n has finished reading its rows before the row is
+  // written. The loop itself reads relaxed (join() has the reason).
+  (void)async_->done_n.load(std::memory_order_acquire);
+}
+
+void SwEncoder::run_job(const FecRepairJob& j, bool queued) {
+  // Precondition: async mode. Only FecWorker::loop (through
+  // execute_repair_job) and the inline queue-full fallback get here; both
+  // exist only when async_ is set.
   assert(async_);
   const uint64_t t0 = gauge_now_us();
   auto env = build_repair(j.repair_key, j.header_seq, j.window_len, j.start_slot);
@@ -227,6 +259,7 @@ void SwEncoder::execute_repair_job(const FecRepairJob& j) {
     std::lock_guard<std::mutex> l(async_->done_m);
     async_->done.push_back(std::move(env));
   }
+  if (queued) async_->done_n.fetch_add(1, std::memory_order_release);
   async_->outstanding.fetch_sub(1, std::memory_order_release);
 }
 
@@ -256,7 +289,6 @@ void SwEncoder::join() {
   // bytes). A fence would be equivalent per the standard, but TSAN cannot
   // model fence-based synchronization — a load keeps this verifiable.
   (void)async_->outstanding.load(std::memory_order_acquire);
-  seals_since_join_ = 0;
 }
 
 SwEncoder::SwFecGauge SwEncoder::take_fec_gauge() {
