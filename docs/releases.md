@@ -10,11 +10,11 @@ both images; each image's `maburd` is built from that commit.
 
 | | built on | lands in | who can download | kept |
 |---|---|---|---|---|
-| **PR build** | a push to a PR that touches `drone/`, `common/`, `bundle/`, `firmware/`, `tools/release.py` or the workflow | the run's artifacts, listed by one bot comment on the PR (edited per push; same-repo PRs only, a fork PR's token cannot comment) | anyone logged in to GitHub | 14 days |
-| **Snapshot** | a push to master touching the same paths | the `snapshot` pre-release, replaced each time | anyone | until the next build |
+| **PR build** | labelling the PR `build-images` (each labelling is one build; a push does not rebuild) | the run's artifacts, listed by one bot comment on the PR (edited per build; same-repo PRs only, a fork PR's token cannot comment) | anyone logged in to GitHub | 14 days |
+| **Snapshot** | a push to master that touches `drone/`, `common/`, `bundle/`, `firmware/`, `tools/release.py` or the workflow | the `snapshot` pre-release, replaced each time | anyone | until the next build |
 | **Release** | a pushed `v*` tag | a permanent GitHub release, marked Latest | anyone | forever |
 
-A newer push cancels the older build of the same PR or of master; a tag
+A newer labelling cancels the older build of the same PR, and a newer push the older build of master; a tag
 build is never cancelled.
 
 Files: `mabur-<version>-<board>-nor.tgz` (the sysupgrade image) and
