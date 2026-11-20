@@ -235,10 +235,10 @@ class SwEncoder {
 
  private:
   // Sealed symbols live in one contiguous 16 B-aligned fixed-stride ring of
-  // max_window_ + kSlackRows rows (not a deque of vectors). The slack keeps a
-  // row readable for kSlackRows further seals after it leaves the window —
-  // the async repair path queues jobs that reference ring
-  // rows by slot instead of copying the window. With no frame-end join the
+  // max_window_ rows, plus kSlackRows when async (not a deque of vectors).
+  // The slack keeps a row readable for kSlackRows further seals after it
+  // leaves the window — the async repair path queues jobs that reference
+  // ring rows by slot instead of copying the window. With no frame-end join the
   // worker may legitimately trail the producer by a full backlog
   // (kMaxBacklogJobs repairs), and the row backstop must stay a backstop:
   // a full backlog takes the worker up to ~160 ms of wall time on the
@@ -291,8 +291,9 @@ class SwEncoder {
   // Ring-row backstop: true when the seal about to be written could land
   // on a row an unfinished queued job still reads (job_row_reach). A worker
   // that is busy but not that far behind never trips it: a slow core costs
-  // repairs (kMaxBacklogJobs), not a waiting producer.
-  bool oldest_job_row_at_risk() const;
+  // repairs (kMaxBacklogJobs), not a waiting producer. The wait loop reads
+  // relaxed (no barrier per spin); the per-seal check reads acquire.
+  bool oldest_job_row_at_risk(std::memory_order mo = std::memory_order_relaxed) const;
   // Spins until the backstop no longer trips: as long as the jobs that
   // need the row take, not the whole backlog.
   void wait_rows_free();

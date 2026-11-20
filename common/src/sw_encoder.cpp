@@ -45,7 +45,9 @@ SwEncoder::SwEncoder(const SwConfig& cfg, uint32_t initial_seq, FecWorker* worke
   stride_ = (static_cast<size_t>(cfg_.symbol_size) + 15) & ~static_cast<size_t>(15);
   max_window_ = std::max(cfg_.window, std::min(kFrameWindowCap, sw::kMaxWindow));
   frame_window_ = cfg_.window;
-  cap_ = static_cast<size_t>(max_window_) + kSlackRows;
+  // Only queued jobs read rows after later seals; a sync encoder builds each
+  // repair at its seal from the newest window and needs no slack.
+  cap_ = static_cast<size_t>(max_window_) + (worker_ ? kSlackRows : 0);
   ring_raw_.resize(stride_ * cap_ + 15);
   ring_ = ring_raw_.data();
   ring_ += (16 - (reinterpret_cast<uintptr_t>(ring_) & 15)) & 15;
@@ -117,7 +119,9 @@ void SwEncoder::seal_current(const SwEnvSink& sink) {
   // A ring row stays readable for kSlackRows seals after leaving the
   // window; wait only while an unfinished queued job may still read the
   // row this seal is about to overwrite.
-  if (async_ && oldest_job_row_at_risk()) wait_rows_free();
+  // Acquire: pairs with run_job's release increment, so a job seen
+  // finished here has finished reading the rows this seal overwrites.
+  if (async_ && oldest_job_row_at_risk(std::memory_order_acquire)) wait_rows_free();
   std::memcpy(ring_ + next_slot_ * stride_, sym, ss);
   next_slot_ = (next_slot_ + 1) % cap_;
   if (count_ < static_cast<size_t>(max_window_)) ++count_;
@@ -223,10 +227,10 @@ void SwEncoder::execute_repair_job(const FecRepairJob& j) {
   run_job(j, /*queued=*/true);
 }
 
-bool SwEncoder::oldest_job_row_at_risk() const {
+bool SwEncoder::oldest_job_row_at_risk(std::memory_order mo) const {
   // A stale (lower) done_n only names an older job, which errs towards a
   // join. Seq arithmetic is modulo 2^32, like the wire seq.
-  const uint32_t done = async_->done_n.load(std::memory_order_relaxed);
+  const uint32_t done = async_->done_n.load(mo);
   if (done == enq_n_) return false;
   const uint32_t age = next_seq_ - job_start_[done % kTrackJobs];
   return age >= static_cast<uint32_t>(job_row_reach());
