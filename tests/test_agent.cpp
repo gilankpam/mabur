@@ -316,8 +316,11 @@ TEST(foreign_version_disc_is_answered_but_never_links) {
   const uint16_t crc = crc16_ccitt(rcf.data(), rcf.size() - 2);
   rcf[rcf.size() - 2] = crc & 0xFF; rcf[rcf.size() - 1] = crc >> 8;
   agent.on_rc_frame(rcf.data(), rcf.size(), 110);
-  agent.tick(110 + cfg.link.failsafe_ms + 1, RadioHealth{});
+  // Checked at once: a later tick past failsafe_ms would leave LINKED
+  // anyway and hide a promotion.
   CHECK(agent.state() != RcAgent::State::LINKED);
+  CHECK(agent.rcf_accepted() == 0);
+  CHECK(act.controls[0][2] == RC_VERSION);   // the ack carries the drone's own version
 }
 
 TEST(disc_never_moves_the_drone) {
@@ -3251,6 +3254,46 @@ TEST(hop_order_to_a_non_member_is_ignored_and_not_reevaluated) {
   t = send_rcf_with_hop(agent, act, t + 20, 161, 2);                        // a member
   REQUIRE(act.retunes.size() == n + 1);
   CHECK(act.retunes.back() == 161 && act.retune_reasons.back() == "hop");
+}
+
+// A hop is the one way a linked drone moves: the move is remembered once the
+// GS is heard on the new channel, and only once.
+TEST(confirmed_move_is_remembered_once) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  uint64_t t = 100;
+  link_agent(agent, act, cfg, 136, t);
+  t = send_rcf_with_hop(agent, act, t + 20, /*hop_ch=*/161, /*epoch=*/1);
+  REQUIRE(agent.channel() == 161);
+  CHECK(act.remembered.empty());            // not before the GS is heard on 161
+  t = send_rcf(agent, act, t + 20);
+  REQUIRE(act.remembered.size() == 1);
+  CHECK(act.remembered[0] == 161);
+  send_rcf(agent, act, t + 20);
+  CHECK(act.remembered.size() == 1);        // once per move, not per RCF
+}
+
+// Failsafe and the rendezvous timer never retune: a drone that loses its GS
+// after a confirmed hop stays on the channel it moved to.
+TEST(failsafe_and_rendezvous_timers_never_retune) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  uint64_t t = 100;
+  link_agent(agent, act, cfg, 136, t);
+  t = send_rcf_with_hop(agent, act, t + 20, /*hop_ch=*/161, /*epoch=*/1);
+  t = send_rcf(agent, act, t + 20);         // confirms the hop
+  const size_t n = act.retunes.size();
+  REQUIRE(agent.channel() == 161);
+  agent.tick(t + static_cast<uint64_t>(cfg.link.failsafe_ms) + 1, RadioHealth{});
+  CHECK(agent.state() == RcAgent::State::FAILSAFE);
+  agent.tick(t + static_cast<uint64_t>(cfg.link.failsafe_ms) +
+                 static_cast<uint64_t>(cfg.link.rendezvous_ms) + 2,
+             RadioHealth{});
+  CHECK(agent.state() == RcAgent::State::RENDEZVOUS);
+  CHECK(act.retunes.size() == n);           // still on 161
+  CHECK(agent.channel() == 161);
 }
 
 // ---- MAVLink hot-reload: RcAgent's live knobs and the two notifications --
