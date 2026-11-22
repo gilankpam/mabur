@@ -576,8 +576,10 @@ TEST(mav_len_overrun_is_refused_without_reading_past_the_buffer) {
 
 // ---- Frozen handshake (docs/link-pairing.md "Frozen handshake") ----------
 // DISC, DISC_ACK and the T_MAV / T_MAV_UP envelope parse the same way under
-// every RC_VERSION; the cases below pin their bytes independently of the
-// packers.
+// every RC_VERSION. The layout and golden cases build their frames at the
+// fixed version byte 19 (at_version), never at RC_VERSION, so a version bump
+// leaves them untouched; frozen_disc_layout alone checks that the packer
+// writes RC_VERSION.
 
 static uint16_t le16(const std::vector<uint8_t>& b, size_t o) {
   return static_cast<uint16_t>(b[o] | (b[o + 1] << 8));
@@ -585,14 +587,17 @@ static uint16_t le16(const std::vector<uint8_t>& b, size_t o) {
 
 // Rewrites the version byte, re-tags (the version byte is inside the tagged
 // bytes) and re-CRCs, so the frame is exactly what a peer at `ver` sends.
+// retag = false keeps the tag as packed (the key-mismatch ack's zero tag).
 static std::vector<uint8_t> at_version(std::vector<uint8_t> w, uint8_t ver, size_t tag_at,
-                                       const LinkKey& key, const TagCtx& ctx) {
+                                       const LinkKey& key, const TagCtx& ctx, bool retag = true) {
   w[2] = ver;
-  std::vector<uint8_t> m(w.begin(), w.begin() + static_cast<long>(tag_at));
-  for (uint32_t v : {ctx.vrx_nonce, ctx.vtx_nonce, ctx.seq32})
-    for (int i = 0; i < 4; ++i) m.push_back(static_cast<uint8_t>(v >> (8 * i)));
-  const uint64_t t = siphash24(key, m.data(), m.size());
-  for (int i = 0; i < 8; ++i) w[tag_at + i] = static_cast<uint8_t>(t >> (8 * i));
+  if (retag) {
+    std::vector<uint8_t> m(w.begin(), w.begin() + static_cast<long>(tag_at));
+    for (uint32_t v : {ctx.vrx_nonce, ctx.vtx_nonce, ctx.seq32})
+      for (int i = 0; i < 4; ++i) m.push_back(static_cast<uint8_t>(v >> (8 * i)));
+    const uint64_t t = siphash24(key, m.data(), m.size());
+    for (int i = 0; i < 8; ++i) w[tag_at + i] = static_cast<uint8_t>(t >> (8 * i));
+  }
   const uint16_t crc = crc16_ccitt(w.data(), w.size() - 2);
   w[w.size() - 2] = crc & 0xFF; w[w.size() - 1] = crc >> 8;
   return w;
@@ -610,8 +615,24 @@ static Mav sample_mav(uint8_t type) {
 }
 static const TagCtx kMavCtx{0xCAFEF00D, 0x12345678, 0x0A0B0C0D};
 
+// The sample frames as a version-19 peer sends them, whatever RC_VERSION is.
+constexpr uint8_t kFrozenVer = 19;
+static std::vector<uint8_t> v19_disc() {
+  return at_version(pack_disc(Disc{0x11223344, 0xBEEF}, test_key()), kFrozenVer, 10, test_key(), {});
+}
+static std::vector<uint8_t> v19_ack(const DiscAck& a) {
+  return at_version(pack_disc_ack(a, test_key()), kFrozenVer, 16, test_key(), {},
+                    !(a.flags & kAckKeyMismatch));
+}
+static std::vector<uint8_t> v19_mav(uint8_t type) {
+  return at_version(pack_mav(sample_mav(type), test_key(), kMavCtx), kFrozenVer, kMavFixedLen + 4,
+                    test_key(), kMavCtx);
+}
+
 TEST(frozen_disc_layout) {
-  const auto b = pack_disc(Disc{0x11223344, 0xBEEF}, test_key());
+  // The one packer-version check: pack_* writes our own RC_VERSION.
+  CHECK(pack_disc(Disc{}, test_key())[2] == RC_VERSION);
+  const auto b = v19_disc();
   REQUIRE(b.size() == 20);
   CHECK(b[0] == 0x43 && b[1] == 0x52);
   CHECK(b[2] == 19);
@@ -626,7 +647,7 @@ TEST(frozen_disc_layout) {
 }
 
 TEST(frozen_disc_ack_layout) {
-  const auto b = pack_disc_ack(sample_ack(), test_key());
+  const auto b = v19_ack(sample_ack());
   REQUIRE(b.size() == 26);
   CHECK(b[0] == 0x43 && b[1] == 0x52 && b[2] == 19 && b[3] == 3);
   CHECK(b[4] == 0x44 && b[5] == 0x33 && b[6] == 0x22 && b[7] == 0x11);
@@ -641,7 +662,7 @@ TEST(frozen_disc_ack_layout) {
   // Key-mismatch flagged: the drone has no key the GS would accept, so the
   // tag is all zero and never verifies.
   DiscAck f = sample_ack(); f.vtx_nonce = 0; f.flags = kAckKeyMismatch;
-  const auto fb = pack_disc_ack(f, test_key());
+  const auto fb = v19_ack(f);
   REQUIRE(fb.size() == 26);
   CHECK(fb[12] == kAckKeyMismatch);
   for (size_t i = 16; i < 24; ++i) CHECK(fb[i] == 0);
@@ -664,7 +685,7 @@ TEST(frozen_frames_parse_at_any_version) {
     REQUIRE(pd.has_value());
     CHECK(pd->vrx_nonce == 0x11223344 && pd->seq == 0xBEEF);
     CHECK(frozen_type(d.data(), d.size()) == T_DISC);
-    CHECK(frame_type(d.data(), d.size()) == (ver == 19 ? T_DISC : -1));
+    CHECK(frame_type(d.data(), d.size()) == (ver == RC_VERSION ? T_DISC : -1));
     CHECK(verify_control(d.data(), d.size(), test_key(), TagCtx{}));
 
     const auto a = at_version(ack, ver, 16, test_key(), TagCtx{});
@@ -674,7 +695,7 @@ TEST(frozen_frames_parse_at_any_version) {
     CHECK(pa->vrx_nonce == 0x11223344 && pa->vtx_nonce == 0x55667788);
     CHECK(pa->flags == 0 && pa->channel == 149 && pa->seq == 0xBEEF);
     CHECK(frozen_type(a.data(), a.size()) == T_DISC_ACK);
-    CHECK(frame_type(a.data(), a.size()) == (ver == 19 ? T_DISC_ACK : -1));
+    CHECK(frame_type(a.data(), a.size()) == (ver == RC_VERSION ? T_DISC_ACK : -1));
     CHECK(verify_control(a.data(), a.size(), test_key(), TagCtx{}));
 
     for (const auto* w : {&mav, &up}) {
@@ -685,7 +706,7 @@ TEST(frozen_frames_parse_at_any_version) {
       CHECK(pm->type == type && pm->counter == 0x0A0B0C0D);
       CHECK(pm->payload == sample_mav(type).payload);
       CHECK(frozen_type(f.data(), f.size()) == type);
-      CHECK(frame_type(f.data(), f.size()) == (ver == 19 ? type : -1));
+      CHECK(frame_type(f.data(), f.size()) == (ver == RC_VERSION ? type : -1));
       CHECK(verify_control(f.data(), f.size(), test_key(), kMavCtx));
     }
   }
@@ -730,11 +751,11 @@ TEST(frozen_goldens) {
   const std::string MAV = "435213080d0c0b0a0400fd010203e2ff495ea2cfab611a2e";
   const std::string MAV_UP = "435213090d0c0b0a0400fd010203397e25b4601f946e92f5";
   DiscAck flagged = sample_ack(); flagged.vtx_nonce = 0; flagged.flags = kAckKeyMismatch;
-  CHECK(mtest::hex(pack_disc(Disc{0x11223344, 0xBEEF}, test_key())) == DISC);
-  CHECK(mtest::hex(pack_disc_ack(sample_ack(), test_key())) == DISC_ACK);
-  CHECK(mtest::hex(pack_disc_ack(flagged, test_key())) == DISC_ACK_FLAGGED);
-  CHECK(mtest::hex(pack_mav(sample_mav(T_MAV), test_key(), kMavCtx)) == MAV);
-  CHECK(mtest::hex(pack_mav(sample_mav(T_MAV_UP), test_key(), kMavCtx)) == MAV_UP);
+  CHECK(mtest::hex(v19_disc()) == DISC);
+  CHECK(mtest::hex(v19_ack(sample_ack())) == DISC_ACK);
+  CHECK(mtest::hex(v19_ack(flagged)) == DISC_ACK_FLAGGED);
+  CHECK(mtest::hex(v19_mav(T_MAV)) == MAV);
+  CHECK(mtest::hex(v19_mav(T_MAV_UP)) == MAV_UP);
 }
 
 TEST(telem_carries_caps_and_width) {
