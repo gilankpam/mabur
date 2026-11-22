@@ -248,7 +248,7 @@ TEST(patch_row_leaves_absent_record_size_alone) {
   REQUIRE(text.find("size         = \"1920x1080\"") == std::string::npos);
 
   Config cur = load_config(bundle_path());
-  cur.record.width = 0;   // 0x0: "same as venc.size", the Config this absent line loads as
+  cur.record.width = 0;   // 0x0: "same as venc.size"
   cur.record.height = 0;
   std::string patched = text, followed, err;
   REQUIRE(patch_row(&patched, cfgparam::kVencModeRow,
@@ -327,22 +327,6 @@ TEST(patch_row_venc_mode_leaves_a_legal_upscale_alone) {
   CHECK(changed_lines(text, patched) == 2);      // venc.fps, venc.size
 }
 
-TEST(patch_row_reports_missing_key) {
-  std::string text;
-  REQUIRE(read_text_file(bundle_path(), &text));
-  const std::string venc_size_line = "size       = \"1920x1080\"\n";
-  const size_t at = text.find(venc_size_line);
-  REQUIRE(at != std::string::npos);
-  text.insert(at, "# ");
-  const Config cur = load_config(bundle_path());  // the unedited file
-  const std::string before = text;
-  std::string patched = text, followed, err;
-  CHECK(!patch_row(&patched, cfgparam::kVencModeRow,
-                   Value{Type::Str, false, 0, 0, "90@1280x720/binned"}, cur, &followed, &err));
-  CHECK(err == "venc.size: key not found");
-  CHECK(patched == before);
-}
-
 TEST(patch_row_single_key_rows_unchanged) {
   std::string text;
   REQUIRE(read_text_file(bundle_path(), &text));
@@ -353,6 +337,45 @@ TEST(patch_row_single_key_rows_unchanged) {
   std::string want = text;
   REQUIRE(patch_toml_key(&want, "encoder", "bitrate_max_kbps", "30000"));
   CHECK(patched == want);
+}
+
+namespace {
+const char* const kMinimal =
+    "[radio]\nchannels = [40, 64, 112, 144]\nrate_walls_rel_20 = []\nrate_walls_rel_40 = []\n\n"
+    "[link]\nkey_file = \"/etc/mabur.key\"\n\n[venc]\nsensor_bin = \"/x.bin\"\n";
+
+Config load_text(const std::string& text) {
+  ScratchFile f{"test_mav_params_min", ".toml"};
+  REQUIRE(write_file_fsync(f.path, text));
+  return load_config(f.path);
+}
+}  // namespace
+
+TEST(param_set_of_pruned_key_persists) {
+  std::string text = kMinimal, followed, err;
+  const Config cur = load_text(text);
+  REQUIRE(patch_row(&text, 4, Value{Type::Int32, false, 16000}, cur, &followed, &err));
+  CHECK(load_text(text).encoder.bitrate_max_kbps == 16000);
+}
+
+TEST(venc_mode_set_on_minimal_file) {
+  std::string text = kMinimal, followed, err;
+  const Config cur = load_text(text);
+  REQUIRE(patch_row(&text, cfgparam::kVencModeRow,
+                    Value{Type::Str, false, 0, 0, "100@1728x972/binned"}, cur, &followed, &err));
+  const Config c = load_text(text);
+  CHECK(c.venc.core.fps == 100 && c.venc.core.width == 1728 && c.venc.core.height == 972);
+  CHECK(c.venc.core.binning == true);
+}
+
+TEST(record_size_follow_creates_record_table) {
+  std::string text = kMinimal, followed, err;
+  const Config cur = load_text(text);
+  REQUIRE(patch_row(&text, cfgparam::kVencModeRow,
+                    Value{Type::Str, false, 0, 0, "120@1728x816/binned"}, cur, &followed, &err));
+  CHECK(followed == "record.size");
+  const Config c = load_text(text);
+  CHECK(c.record.width == 1728 && c.record.height == 816);
 }
 
 MTEST_MAIN

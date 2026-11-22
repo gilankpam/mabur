@@ -38,11 +38,11 @@ bool render_toml(const Value& v, std::string* out);
 
 // Patches `text` for row `idx`'s own config line(s), leaving `text`
 // unchanged on failure. Every row but kVencModeRow owns one line:
-// render_toml(v) must succeed and that line must exist in [section], or
-// *err is "value unsupported" or "<section.key>: key not found".
-// kVencModeRow's Str value "<fps>@<WxH>/binned|native" patches venc.fps,
+// render_toml(v) must succeed (else *err is "value unsupported"); a key
+// with no line is inserted (set_toml_key), so a minimal config takes any
+// row. kVencModeRow's Str value "<fps>@<WxH>/binned|native" sets venc.fps,
 // venc.size and venc.binning together (a value that doesn't parse to that
-// shape is "value unsupported", never a report of a missing key); when
+// shape is "value unsupported"); when
 // `current.record.enable`, `current.record.width > 0` (an explicit
 // record.size, not the "same as venc.size" default) and either the new
 // WxH's aspect ratio differs from the current recording size's (compared

@@ -706,7 +706,9 @@ TEST(calibration_and_parameter_sets_on_two_threads_lose_nothing) {
   std::remove((b.path() + ".pre-cal.tmp").c_str());
 }
 
-TEST(commented_out_key_is_failed_with_statustext_naming_it) {
+// A key with no live line (commented out, or pruned from a minimal config)
+// is no reason to refuse: the set goes to the applier, which inserts it.
+TEST(commented_out_key_is_still_applied) {
   ScratchBundle b;
   std::string t = slurp(b.path());
   const size_t msp = t.find("[msp]");
@@ -715,15 +717,12 @@ TEST(commented_out_key_is_failed_with_statustext_naming_it) {
   REQUIRE(en != std::string::npos);
   t.insert(en, "# ");
   spit(b.path(), t);
+  fake.submits.clear();
   auto c = make(b.path());
   auto r = do_set(c, set_bool("MSP_ENABLE", false));
-  CHECK(r.ack.param_result == PARAM_ACK_FAILED);
-  CHECK(r.ack.param_value[0] == 1);   // what the live file loads as: the loader default, on
-  REQUIRE(r.rest.size() == 1);
-  const std::string text = statustext(r.rest[0], nullptr);
-  CHECK(text.find("msp.enable") != std::string::npos);
-  CHECK(slurp(b.path()) == t);
-  CHECK(c.stats().sets_refused == 1);
+  CHECK(r.ack.param_result == PARAM_ACK_IN_PROGRESS);
+  REQUIRE(fake.submits.size() == 1);
+  CHECK(fake.submits[0].value.b == false);
 }
 
 TEST(custom_value_with_quote_or_no_nul_never_reaches_the_file) {

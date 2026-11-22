@@ -92,15 +92,9 @@ shed_ms = 25
 body_us = 0
 )";
 
-// Same as kSample but with the rate_walls_rel_20 line removed and nothing
-// else changed -- stands in for "unexpected file structure" (missing,
-// hand-edited, reformatted): patch_toml can't find the line to rewrite, and
-// with no anchor to insert against either (rate_walls_rel_40 is present, so
-// this fixture is for a 20 MHz write, whose own anchor -- the other
-// width's line -- is absent) it must be refused loudly rather than
-// silently produce a config that never actually picked up the new walls.
-// (Used only for the bw==20 KeyNotFound case below; power_mode is removed
-// too so there is no fallback anchor at all.)
+// A [radio] with no wall line, no power_mode and no other-width line: a
+// 20 MHz write has no anchor line for any key it needs, so every one of
+// them goes in through set_toml_key.
 const char* kSampleNoAnchorAtAll = R"(# a comment that must survive
 [radio]
 usb_vid    = 3034
@@ -374,23 +368,22 @@ TEST(apply_refuses_out_of_range_without_touching_the_file) {
   CHECK(s.str() == kSample);   // untouched
 }
 
-TEST(apply_refuses_when_a_required_key_is_missing) {
-  // patch_toml has no error channel: a key it can neither find nor insert
-  // (no anchor at all here) is silently left alone, and load_config()
-  // alone can't tell that apart from "found and rewritten" -- an
-  // unmodified original value is still a valid one. apply_calibration
-  // must catch this itself (KeyNotFound) rather than report Ok on a
-  // calibration that never actually applied.
+TEST(apply_inserts_keys_with_no_anchor_line) {
+  // No wall line, no power_mode, no anchor at all (a hand-trimmed or
+  // minimal config): every key the write needs is inserted into [radio],
+  // and the rest of the file survives.
   const std::string path = std::string(MABUR_TEST_SCRATCH_DIR) + "/cal6.toml";
   { std::ofstream f(path); f << kSampleNoAnchorAtAll; }
   std::string err;
-  CHECK(apply_calibration(path, walls_write(20), 1.0, true, &err) == ApplyResult::KeyNotFound);
-  CHECK(err.find("rate_walls_rel_20") != std::string::npos);
+  CHECK(apply_calibration(path, walls_write(20), 1.0, false, &err) == ApplyResult::Ok);
   std::ifstream f(path);
   std::stringstream s; s << f.rdbuf();
-  CHECK(s.str() == kSampleNoAnchorAtAll);   // untouched
-  std::ifstream tmp(path + ".new");
-  CHECK(!tmp.good());   // never even got as far as writing a scratch file
+  CHECK(s.str().rfind("# a comment that must survive\n", 0) == 0);
+  CHECK(s.str().find("symbol_size = 332") != std::string::npos);
+  const Config c = load_config(path);
+  CHECK(c.radio.rate_walls_rel_20 == walls_write(20).walls);
+  CHECK(c.radio.power_mode == "offset");
+  CHECK(c.radio.cal_flags_20 == "ldpc+stbc");
 }
 
 TEST(apply_never_publishes_a_file_that_will_not_parse) {
@@ -567,6 +560,61 @@ TEST(an_efficiency_of_exactly_one_still_loads) {
   CHECK(apply_calibration(path, w, 1.0, false, &err) == ApplyResult::Ok);
   CHECK(slurp(path).find("efficiency_20 = [1.0, 0.88, 0.85,") != std::string::npos);
   CHECK(load_config(path, nullptr).air_clock.efficiency_20[0] == 1.0);
+}
+
+namespace {
+const char* const kMinimal =
+    "[radio]\nchannels = [40, 64, 112, 144]\nrate_walls_rel_20 = []\nrate_walls_rel_40 = []\n\n"
+    "[link]\nkey_file = \"/etc/mabur.key\"\n\n[venc]\nsensor_bin = \"/x.bin\"\n";
+
+std::string minimal_file(const char* name) {
+  const std::string path = std::string(MABUR_TEST_SCRATCH_DIR) + "/" + name;
+  std::ofstream f(path);
+  f << kMinimal;
+  return path;
+}
+}  // namespace
+
+TEST(cal20_on_minimal_file_writes_everything) {
+  const std::string path = minimal_file("calmin1.toml");
+  CalWrite w = walls_write(20);
+  w.has_eff = true;
+  w.eff = {0.9, 0.85, 0.8, 0.8, 0.75, 0.75, 0.7, 0.7};
+  std::string err;
+  REQUIRE(apply_calibration(path, w, 1.0, false, &err) == ApplyResult::Ok);
+  const Config c = load_config(path);
+  CHECK(c.radio.rate_walls_rel_20 == w.walls);
+  CHECK(!c.radio.rate_walls_rel_40);
+  CHECK(c.radio.cal_flags_20 == "ldpc+stbc");
+  CHECK(c.radio.legacy_wall_rel == 60);
+  CHECK(c.radio.power_mode == "offset");
+  CHECK(c.air_clock.efficiency_20 == w.eff);
+  std::ifstream f(path);
+  std::stringstream s; s << f.rdbuf();
+  CHECK(s.str().find("rate_walls_rel_40 = []") != std::string::npos);
+}
+
+TEST(cal_on_empty_line_replaces_in_place) {
+  const std::string path = minimal_file("calmin2.toml");
+  std::string err;
+  REQUIRE(apply_calibration(path, walls_write(20), 1.0, false, &err) == ApplyResult::Ok);
+  std::ifstream f(path);
+  std::stringstream s; s << f.rdbuf();
+  const std::string out = s.str();
+  CHECK(out.find("rate_walls_rel_20 = []") == std::string::npos);
+  // Still the second line of [radio], where [] was.
+  CHECK(out.rfind("[radio]\nchannels = [40, 64, 112, 144]\nrate_walls_rel_20 = [60, 60, 60, 45, 22, 6, 9, 5]\n", 0) == 0);
+}
+
+TEST(cal40_never_borrows_from_empty_20) {
+  const std::string path = minimal_file("calmin3.toml");
+  CalWrite w = walls_write(40);
+  w.walls[7] = mabur::rc::kWallUndetermined;
+  std::string err, note;
+  CHECK(apply_calibration(path, w, 1.0, false, &err, &note) == ApplyResult::NoTableToKeep);
+  std::ifstream f(path);
+  std::stringstream s; s << f.rdbuf();
+  CHECK(s.str() == kMinimal);
 }
 
 MTEST_MAIN
