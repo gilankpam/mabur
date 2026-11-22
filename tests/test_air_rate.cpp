@@ -26,8 +26,10 @@ TEST(delivered_rate_picks_the_40_table_by_spec_width) {
   CHECK(std::abs(delivered_mbps(l3_20[0], c) - 26.0 * 0.80) < 1e-9);
 }
 
-TEST(delivered_rate_default_tables_are_nominal) {
+TEST(delivered_rate_ones_tables_are_nominal) {
   AirClockCfg c;
+  c.efficiency_20.fill(1.0);
+  c.efficiency_40.fill(1.0);
   for (uint8_t m = 0; m <= 7; ++m) {
     const auto l20 = rc::ladder_from(rc::PhyMode::HT, m, 20);
     const auto l40 = rc::ladder_from(rc::PhyMode::HT, m, 40);

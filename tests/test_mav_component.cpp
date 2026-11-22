@@ -718,7 +718,7 @@ TEST(commented_out_key_is_failed_with_statustext_naming_it) {
   auto c = make(b.path());
   auto r = do_set(c, set_bool("MSP_ENABLE", false));
   CHECK(r.ack.param_result == PARAM_ACK_FAILED);
-  CHECK(r.ack.param_value[0] == 0);   // what the live file loads as: the loader default, off
+  CHECK(r.ack.param_value[0] == 1);   // what the live file loads as: the loader default, on
   REQUIRE(r.rest.size() == 1);
   const std::string text = statustext(r.rest[0], nullptr);
   CHECK(text.find("msp.enable") != std::string::npos);

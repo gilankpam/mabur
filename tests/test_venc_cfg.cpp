@@ -9,21 +9,27 @@
 #include "venc_cfg.h"
 
 // venc_cfg_defaults() is the one table of truth for "key absent from the
-// config". The intra-refresh + SVC-T defaults reproduce, at 1080p60,
-// exactly what the deleted "rally" preset expanded to: a 150 ms sweep is
-// 9 frames = ceil(34 CTU rows / 9) = 4 rows per P-frame, its stripe QP was 36,
-// and rally ran 1:1 SVC-T with enhance->base prediction on. Deploying this
-// change therefore does not move the encoder.
-TEST(defaults_reproduce_the_old_rally_preset) {
+// config", and it is the flight tuning: no periodic refresh (gop_s 0, the GS
+// asks for an IDR), so no intra-refresh sweep; its QP and 1:1 SVC-T with
+// enhance->base prediction stay set for a config that turns a GOP on.
+TEST(defaults_are_the_flight_tuning) {
   VencCfg c{};
   venc_cfg_defaults(&c);
-  CHECK(c.intra_refresh_frames == 9);
-  CHECK(venc_cfg_intra_rows(1080, c.intra_refresh_frames) == 4);
+  CHECK(c.gop_s == 0);
+  CHECK(c.intra_refresh_frames == 0);
   CHECK(c.intra_refresh_qp == 36);
   CHECK(c.ref_base == 1);
   CHECK(c.ref_enhance == 1);
   CHECK(c.ref_pred == true);
-  CHECK(c.gop_s == 2.0);
+  CHECK(c.qp_delta == 4);
+  CHECK(c.max_ipprop == 2);
+  CHECK(c.min_iqp == 34);
+  CHECK(c.superframe_p_pct == 200);
+  CHECK(c.roi_enabled == false);
+}
+
+TEST(intra_rows_of_a_nine_frame_sweep_at_1080) {
+  CHECK(venc_cfg_intra_rows(1080, 9) == 4);
 }
 
 // venc_cfg_ctu_rows(): H.265 CTU is 32x32, so a picture is ceil(height/32)
@@ -89,10 +95,10 @@ TEST(slice_rows_follow_the_sdk_row_geometry) {
   CHECK(venc_cfg_slice_rows(1080, 0) == 0);
 }
 
-TEST(slices_default_off) {
+TEST(slices_default_four) {
   VencCfg c{};
   venc_cfg_defaults(&c);
-  CHECK(c.slices == 1);
+  CHECK(c.slices == 4);
 }
 
 TEST(gop_frames_zero_seconds_is_the_no_refresh_sentinel) {

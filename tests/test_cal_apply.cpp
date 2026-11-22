@@ -188,7 +188,7 @@ TEST(patch_inserts_a_missing_efficiency_table_after_efficiency_other) {
   const auto out = patch_toml(kSampleOnly20, eff_write(40), &status);
   CHECK(status.eff);
   const size_t eff20 = out.find("efficiency_20 = [0.93, 0.88, 0.84, 0.8, 0.76, 0.76, 0.78, 0.76]");
-  const size_t eff40 = out.find("efficiency_40 = [0.9, 1.0, 0.85, 1.0, 1.0, 1.0, 1.0, 1.0]");
+  const size_t eff40 = out.find("efficiency_40 = [0.9, 0.75, 0.85, 0.75, 0.74, 0.77, 0.76, 0.75]");
   REQUIRE(eff20 != std::string::npos);
   REQUIRE(eff40 != std::string::npos);
   CHECK(eff20 < eff40);
@@ -204,7 +204,7 @@ TEST(patch_inserts_efficiency_after_shed_ms_when_no_other_width_eff) {
   const auto out = patch_toml(kSampleNoEff, eff_write(20), &status);
   CHECK(status.eff);
   const size_t shed = out.find("shed_ms = 25");
-  const size_t eff20 = out.find("efficiency_20 = [0.9, 1.0, 0.85, 1.0, 1.0, 1.0, 1.0, 1.0]");
+  const size_t eff20 = out.find("efficiency_20 = [0.9, 0.88, 0.85, 0.8, 0.76, 0.76, 0.78, 0.76]");
   REQUIRE(shed != std::string::npos);
   REQUIRE(eff20 != std::string::npos);
   CHECK(shed < eff20);
