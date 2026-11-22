@@ -546,7 +546,7 @@ See `docs/airtime-model.md` §1 and §7.
     of tick entry, so a break arriving on the same tick as a missed
     feedback deadline still heals.
   - A refused chain-break request is deferred, not dropped: with no
-    periodic refresh (`venc.gop_s` 0, the bundle default) there is no GOP
+    periodic refresh (`venc.gop_s` 0, the default) there is no GOP
     to self-clear an unhealed break. It is served on the first tick past
     the floor and the holdoff; session edges clear it, the link-up IDR
     covers whatever broke while unlinked. Served count:
@@ -732,7 +732,7 @@ observability only and does not gate the mode.
   1000 kbps is under `encoder.roi_threshold_kbps` (3000). RcAgent therefore
   issues `set_roi_qp(-24)` on the way in and `set_roi_qp(0)` on the way
   out.
-  - This is harmless only because the bundle's `[venc.roi] enabled = false`
+  - This is harmless only because the default `[venc.roi] enabled = false`
     makes the ROI apply a no-op.
   - Re-enable ROI and the low-power transition inherits the
     rung-0-demote-IDR hazard: an IDR encoded at `roi_qp_low`.

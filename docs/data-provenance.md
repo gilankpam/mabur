@@ -956,8 +956,8 @@ Detail: `docs/link-adaptation.md` "Probe stream — the promote gate"; bench rec
 ## 2026-09-20 — every recording now opens with a low-power segment
 
 Low-power (disarmed) mode (`docs/link-adaptation.md`) runs the encoder at
-`low_power.bitrate_kbps` / `low_power.fps` — the bundle ships 1 Mb/s and
-15 fps — from boot until the FC's first ARMED report. On a normal flight
+`low_power.bitrate_kbps` / `low_power.fps` — 1 Mb/s and 30 fps by
+default — from boot until the FC's first ARMED report. On a normal flight
 that is the whole ground phase: power-on, radio link-up, taxi/hover checks,
 every second before the arm. So from this date **every recording begins
 with a leading segment that is not flight data**, and it is usually the

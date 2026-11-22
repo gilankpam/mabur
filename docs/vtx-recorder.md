@@ -75,7 +75,7 @@ with the link's demand refresh running no periodic refresh of its own
 The recorder records at `venc.size` unless `record.size` names another
 size. The SigmaStar encoder cannot scale, so the sizes decide the port:
 
-- **`record.size` = `venc.size`** (the bundle's 1920x1080 for both): ch1
+- **`record.size` = `venc.size`** (the default 1920x1080 for both): ch1
   shares the link's VPE port 0.
 - **Any other size** enables the same VPE channel's second scaler, port 1,
   at `record.size` and binds ch1 there (`venc_record_attach`; at the
@@ -107,7 +107,7 @@ Above 90 fps the link runs a crop mode — binned (1728x972 to 100 fps,
 1728x816 above) or, under `venc.binning = false`, the native 2272x1278
 crop (no mode above 100 fps; `docs/camera-modes.md`) — and the recorder's
 rules stay as they are, which carries three risks: a `record.size` larger
-than the mode (the bundle's 1920x1080 against 1728x972) is an upscale on
+than the mode (the default 1920x1080 against 1728x972) is an upscale on
 port 1; a `record.fps` that does not divide `venc.fps` (60 from 100)
 records uneven frame spacing, since the bind's frame-rate limiter passes
 60 of every 100; and the live crop-mode encode alone is past the engine's
@@ -229,7 +229,7 @@ writer-side reading is superseded).
 - **One missing frame every ~10.15 s**, in the recording and in the link's
   own `au.log` alike: a VPE/sensor frame-rate effect, not the recorder.
 - **At `bitrate_kbps = 80000` the file carries less than at 40000** (about
-  21–25 Mb/s against ~32 Mb/s). Not investigated; the bundle ships 40000.
+  21–25 Mb/s against ~32 Mb/s). Not investigated; the default is 40000.
 - **Writer drops after a long-lived restart**: one `maburd` instance
   dropped AU bursts every recording until a power cycle. Cause unknown;
   each drop costs the frames up to the next requested IDR.

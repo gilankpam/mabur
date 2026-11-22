@@ -46,7 +46,7 @@ void spit(const std::string& path, const std::string& content) {
 bool exists(const std::string& path) { return std::ifstream(path).good(); }
 
 std::string bundle_text() {
-  const std::string t = slurp(std::string(MABUR_BUNDLE_DIR) + "/mabur.default.toml");
+  const std::string t = slurp(std::string(MABUR_FIXTURE_DIR) + "/mabur.full.toml");
   REQUIRE(!t.empty());
   return t;
 }
@@ -64,7 +64,7 @@ bool verify_with_load_config(const std::string& candidate_path, std::string* err
   }
 }
 
-// A scratch copy of bundle/mabur.default.toml; removes the publisher's
+// A scratch copy of the full-config fixture (tests/fixtures/mabur.full.toml); removes the publisher's
 // siblings (backup, scratch candidate) with it.
 struct ScratchBundle {
   ScratchFile f{"test_config_apply", ".toml"};

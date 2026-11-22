@@ -191,7 +191,7 @@ the drop falls to under 1 %. Bench record:
 runs a crop mode — binned 1728x972, or under `venc.binning = false` the
 native 2272x1278 crop — and the same three risks apply:
 
-- A `record.size` larger than the mode (the bundle's 1920x1080 against
+- A `record.size` larger than the mode (the default 1920x1080 against
   1728x972) is an upscale on VPE port 1.
 - A `record.fps` that does not divide `venc.fps` (60 from 100) gives the
   recording uneven frame spacing: the bind's frame-rate limiter passes 60

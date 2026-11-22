@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -11,6 +12,7 @@
 #include "mtest.h"
 #include "config.h"
 #include "mabur/link_key.h"
+#include "mabur/toml.h"
 using namespace mabur;
 
 namespace {
@@ -46,9 +48,9 @@ std::string what_of(const std::function<void()>& fn) {
 
 // The shipped bundle is baked into the drone image as /etc/mabur.toml, so it
 // must load through the real loader: a typo or out-of-range value there
-// would put a freshly flashed drone into maburd's restart loop. Its VALUES
-// are tuning and deliberately not pinned here -- retuning must not fail a
-// test. (bundle_default_sets_every_known_key keeps it complete.)
+// would put a freshly flashed drone into maburd's restart loop. It holds
+// only the per-drone keys (bundle_is_the_per_drone_keys_only); the tuning
+// is the built-in defaults.
 TEST(bundle_config_loads) {
   Config cfg = load_config(default_config_path());
   // Loader behaviour, not a bundle value: every layer's overhead is
@@ -1833,14 +1835,6 @@ TEST(venc_slices_parses_and_rejects_unachievable_counts) {
 // key without writing it into bundle/mabur.default.toml fails here, which is
 // the point -- a knob that only exists in a struct default is a knob nobody
 // knows about, and this bundle is also the drone's verbatim /etc/mabur.toml.
-TEST(bundle_default_sets_every_known_key) {
-  std::vector<std::string> defaulted;
-  load_config(default_config_path(), &defaulted);
-  for (const std::string& d : defaulted)
-    std::fprintf(stderr, "  bundle leaves defaulted: %s\n", d.c_str());
-  CHECK(defaulted.empty());
-}
-
 TEST(fec_repairs_with_frame_key_is_rejected) {
   auto p = write_temp_toml("[fec]\nrepairs_with_frame = true\n");
   std::string w = what_of([&] { load_config(p.string()); });
@@ -1890,6 +1884,27 @@ TEST(empty_wall_tables_with_offset_still_fail) {
                            "rate_walls_rel_40 = []\n[venc]\nsensor_bin = \"/x.bin\"\n");
   CHECK(what_of([&] { load_config(p.string()); }).find("radio.rate_walls_rel_20") != std::string::npos);
   std::filesystem::remove(p);
+}
+
+namespace {
+void collect_paths(const mabur::toml::Value& t, const std::string& prefix,
+                   std::set<std::string>* out) {
+  for (auto it = t.begin(); it != t.end(); ++it) {
+    const std::string path = prefix.empty() ? it.key() : prefix + "." + it.key();
+    if ((*it).is_object())
+      collect_paths(*it, path, out);
+    else
+      out->insert(path);
+  }
+}
+}  // namespace
+
+TEST(bundle_is_the_per_drone_keys_only) {
+  std::set<std::string> keys;
+  collect_paths(mabur::toml::parse_toml_file(default_config_path()), "", &keys);
+  CHECK(keys == (std::set<std::string>{"radio.channels", "radio.rate_walls_rel_20",
+                                       "radio.rate_walls_rel_40", "link.key_file",
+                                       "venc.sensor_bin"}));
 }
 
 MTEST_MAIN

@@ -2,148 +2,18 @@
 #
 # maburd refuses to start on an unknown or misspelled key, and restarts
 # every 2 s until the file is fixed: check /tmp/mabur.log after editing.
+#
+# Only what belongs to this drone. Every other key flies maburd's built-in
+# default, which is the flight tuning; the boot log lists them
+# ("config: N key(s) defaulted"), docs/deploy.md "Config format".
 
 [radio]
-usb_vid    = 3034        # Realtek USB vendor ID (0x0bda) in decimal
-usb_pid    = 0           # 0 = find the card automatically (8812EU or 8812CU)
-channels   = [40, 64, 112, 144]   # the channel set, same as the ground station's (a superset is fine);
-                                  # the drone parks on the remembered member and follows the GS to any member.
-                                  # PROVISIONAL until bench row 8 (maburcal on 64 and 112; swap 64 for 128
-                                  # if it fails), mabur-ground docs/channel-select.md "Config".
-width      = 40        # HT40 on each member's standard pair; per-rung width comes from the GS ladder (docs/bw40.md)
-power_mode = "none"      # "none" = card's default TX power; "offset" = use the calibrated walls below
-tx_threads = 4           # parallel USB senders; 4 is needed to reach full link speed
-ldpc       = true        # LDPC coding on every frame. false only for an RTL8821AU ground card (it can't decode LDPC); costs ~2-3 dB of range
-cca        = true        # carrier sense: wait for other Wi-Fi on the channel before sending. false = never wait (other networks cannot stall the video); needs a restart
-
-# TX-power calibration ("walls"). These numbers, and air_clock's
-# efficiency_20/_40 below, belong to ONE card: the reference unit, measured
-# with LDPC+STBC on (cal_flags_20/_40). They do nothing while
-# power_mode = "none". To calibrate your own card, run `maburcal start` on
-# the ground station: it re-measures them, writes them here, records what
-# it measured with in cal_flags_20/_40 and switches power_mode to "offset"
-# for you -- never hand-restore these four from git, they describe a card,
-# not a software default. On an 8812CU, calibrate on the channel you fly
-# most.
-rate_walls_rel_20 = [63, 63, 63, 63, 45, 23, 22, 21]   # per MCS 0..7 at 20 MHz
-rate_walls_rel_40 = [63, 63, 63, 63, 45, 28, 28, 23]   # per MCS 0..7 at 40 MHz
-cal_flags_20      = "ldpc+stbc"
-cal_flags_40      = "ldpc+stbc"
-legacy_wall_rel   = 63
-wall_margin_db    = 1.0    # safety margin below the walls; raise it to lower TX power
-
-[fec]
-# Forward error correction. symbol_size must match the ground station.
-symbol_size     = 332
-window          = 64       # smallest repair window in symbols: larger survives longer loss bursts; each frame widens its own to frame + 32, up to 128, and holds its repairs to the frame end
-blocks_per_body = [4, 4]   # base layer, enhance layer
-base_overhead   = 0.5      # extra repair data on the base layer (0.5 = +50 %)
-feed_batch      = 1        # blocks handed to the radio together (1 = send each as soon as it is ready)
-flush_ms        = 25       # send out a partly filled block after this many ms without new video
-
-[encoder]
-bitrate_min_kbps   = 1000
-bitrate_max_kbps   = 24000
-airtime_budget     = 0.65  # share of the link's real capacity the video may use
-roi_threshold_kbps = 3000  # below this bitrate, apply roi_qp_low (only when [venc.roi] is enabled)
-roi_qp_low         = -24
-roi_qp_normal      = 0
-
-[venc]
-sensor_bin = "/etc/sensors/imx415_greg_fpvXIX_colortrans.bin"  # camera sensor tuning file
-size       = "1920x1080"
-fps        = 60            # 1..120 binned: up to 90 the full-view 1920x1080 mode, 91-100 1728x972, 101-120 1728x816. 1..100 non-binned: up to 60 2944x1656, 61-100 2272x1278;
-                           # size must keep that mode's aspect ratio and fit inside it (docs/camera-modes.md)
-binning    = true          # true: full view, 2x2 binned. false: 1:1 pixels, a zoomed non-binned window, 1..100 fps only (docs/camera-modes.md)
-gop_s      = 0             # seconds between refresh starts; 0 = none: the GS asks for an IDR when its picture is damaged
-qp_delta   = 4             # quality offset between keyframes and P-frames
-max_ipprop = 2             # keyframe may be at most this many times a P-frame's size
-min_iqp    = 34            # keyframe quality floor: higher = smaller keyframes
-intra_refresh_frames = 0   # rolling-refresh sweep length; 0 = off (it only runs at a GOP start, so 0 whenever gop_s is 0)
-intra_refresh_qp   = 36    # requested QP of the refreshed areas; star6e CBR ignores it (coded at the RC's QP)
-ref_base    = 1            # temporal layering: a base layer every frame can decode from...
-ref_enhance = 1            # ...plus droppable enhance frames between them
-ref_pred    = true         # enhance frames may also predict from the base layer
-mirror      = false        # flip the picture left-right (a camera mounted mirrored)
-flip        = false        # flip the picture upside down (a camera mounted upside down)
-slices      = 4            # H.265 row slices on the link channel (1 = off); salvage of truncated AUs needs >1 (docs/slices.md)
-ae_fps      = 15           # auto-exposure update rate
-awb_fps     = 15           # auto-white-balance update rate
-snapshot_quality = 80      # JPEG quality of camera snapshots
-debug_port  = 8301         # local HTTP status port (curl 127.0.0.1:8301/venc)
-superframe_p_pct = 200     # cap a P-frame at this % of the per-frame bitrate budget
-
-[venc.roi]
-# Region of interest: sharper centre, softer edges at low bitrate. Off by
-# default: it made the keyframe after a link drop much larger.
-enabled = false
-steps   = 2
-center  = 0.4
+channels = [40, 64, 112, 144]   # the channel set; same as the ground station's
+rate_walls_rel_20 = []           # not calibrated; maburcal writes the walls here
+rate_walls_rel_40 = []
 
 [link]
-failsafe_ms     = 3000     # no word from the ground station this long = drop to the most robust link setting
-rc_drain_ms     = 5        # how often commands from the ground station are applied
-rendezvous_ms   = 30000    # still silent this long after failsafe = back to RENDEZVOUS (the drone stays on its channel)
-move_confirm_ms = 2000     # after a channel move, hear the ground station within this or return to the channel we came from
-tick_ms         = 100      # housekeeping interval (health checks, stats)
-key_file        = "/etc/mabur.key"   # pairing key; same file on the ground station (docs/deploy.md "Pairing"). Missing = built-in default
+key_file = "/etc/mabur.key"     # pairing key; same file on the ground station
 
-[msp]
-# Flight-controller link for the OSD and arm state.
-enable         = true
-serial         = "/dev/ttyS2"   # UART the flight controller is wired to
-baud           = 115200
-update_rate_hz = 3              # OSD updates per second sent to the ground station
-symbol_size    = 1312           # bytes per OSD packet
-window         = 16             # error-correction window, in packets
-overhead       = 1.0            # extra repair data (1.0 = +100 %)
-
-[low_power]
-# While disarmed: lower bitrate and frame rate to keep the VTX cool.
-# Needs the flight controller's arm state over [msp].
-enable       = false
-bitrate_kbps = 1000
-fps          = 30
-stale_ms     = 2000        # no arm-state report for this long = assume armed, full power
-
-[ampdu]
-# Frame aggregation: packs several frames into one transmission at the
-# faster link rates, raising throughput.
-max_num    = 6             # frames per aggregate (0 = off)
-max_time   = 32            # how long the radio waits to fill an aggregate (32 = about 0.8 ms; 1..8 turns it off)
-min_mcs_20 = 4             # aggregate only from this MCS up at 20 MHz
-min_mcs_40 = 2             # ...and at 40 MHz
-
-[air_clock]
-# How much of the nominal link rate is really delivered, per MCS 0..7.
-# Measured on the bench, same reference unit as radio's walls above; keeps
-# the bitrate from outrunning the air. Re-measured by maburcal (read at
-# maburd start, so a new table flies after a restart), never hand-restored
-# from git -- these describe a card, not a software default.
-shed_ms       = 25         # skip droppable enhance frames while the air backlog exceeds this
-efficiency_20 = [0.93, 0.88, 0.84, 0.80, 0.76, 0.76, 0.78, 0.76]  # at 20 MHz
-efficiency_40 = [0.77, 0.75, 0.75, 0.75, 0.74, 0.77, 0.76, 0.75]  # at 40 MHz
-body_us       = 0          # fixed extra airtime per transmission, in microseconds
-
-[record]
-# Onboard microSD recorder: a constant-bitrate copy of the camera on the
-# drone's own card, started and stopped by the ground station's record
-# button when its dvr.target is "vtx" or "both". A missing card is not an
-# error: the OSD shows why nothing is being recorded.
-enable       = true
-dir          = "/mnt/mmcblk0p1"   # where the card is auto-mounted
-bitrate_kbps = 40000              # constant bitrate of the recording
-fps          = 60                 # at most venc.fps
-min_free_mb  = 512                # stop (or refuse to start) below this much free space
-size         = "1920x1080"        # recording resolution, same aspect ratio as venc.size. It may differ
-                                  # from venc.size (e.g. fly 1280x720, record 1920x1080). Larger than
-                                  # 1920x1080 AND larger than the sensor mode needs the 30 fps 4K mode
-                                  # (set venc.fps <= 30) and the live video lags badly; under the
-                                  # native 60 fps readout, up to 2944x1656 fits without it
-
-# Software NACK answers (base layer): how much sent video the drone keeps for
-# re-sending, and the air it may spend on re-sends.
-[nack]
-ring_ms = 150     # history of base-layer symbols kept, at encoder.bitrate_max_kbps
-air_pct = 5       # re-send budget, % of the rung's delivered capacity
-burst_ms = 20     # first-answer burst: this much air of re-sends at the current rung
+[venc]
+sensor_bin = "/etc/sensors/imx415_greg_fpvXIX_colortrans.bin"   # camera sensor tuning file

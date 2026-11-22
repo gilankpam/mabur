@@ -194,33 +194,34 @@ other line, comments included, is kept as written. Each removal is one
 the result loads; any other loader refusal (a bad value, a line the parser
 rejects) exits 1 with `migrate: <reason>` and writes nothing. `<in>` is
 never written. It opens no radio, MI or USB, so it is safe beside a running
-`maburd`. The over-the-air update runs the new binary's migration on the
-drone's file before that build first starts; outside an update, an unknown
-key still fails boot.
+`maburd`. It is a command you run; `maburd` itself never migrates, so an
+unknown key still fails boot.
 
-**The bundles set every knob.** All three shipped defaults —
-`bundle/mabur.default.toml`, [`gs/bundle/maburgs.default.toml`](https://github.com/gilankpam/mabur-ground/blob/master/gs/bundle/maburgs.default.toml),
-[`gs/player/bundle/maburplay.default.toml`](https://github.com/gilankpam/mabur-ground/blob/master/gs/player/bundle/maburplay.default.toml) — are the flight configs, with
-every key the loader knows written out explicitly. On a stock bundle the
-startup defaulted-key list is therefore **empty**, and anything in it is a
-real gap. Three tests hold that line (`bundle_default_sets_every_known_key`
-in `test_config` and `test_player_config`,
-`bundle_default_sets_every_known_key_but_radio_cards` in `test_gs_config`),
-so **a new config key must be written into its bundle in the same commit**
-or the host suite fails.
+**The drone's tuning is built into `maburd`; its file holds only what
+belongs to that drone.** `bundle/mabur.default.toml` sets five keys —
+`radio.channels`, `radio.rate_walls_rel_20 = []` and `_40 = []` (not
+calibrated), `link.key_file`, `venc.sensor_bin` — and every other key flies
+`maburd`'s built-in default, which is the flight tuning; retuning means
+changing that default in code. The drone's startup defaulted-key list is
+therefore long and expected. A value set on purpose is a line in the file;
+a test pins the bundle to those five keys
+(`bundle_is_the_per_drone_keys_only` in `test_config`).
 
-The one deliberate divergence from a calibrated drone is
-`radio.power_mode`, which ships `"none"`. `rate_walls_rel_20`/`_40` and
-`air_clock.efficiency_20`/`_40` are per-UNIT calibrations
-(`docs/calibration.md`) and the shipped file cannot know the board it
-lands on, so it carries the reference 8812EU unit's numbers. The walls are
-inert under `"none"` — parsed and range-checked, never programmed; the
-efficiency tables are not (they price every rung). Measure your own vtx:
-ssh to the GS and run `maburcal start`, which measures both per width,
-writes them to the drone's `/etc/mabur.toml` (backing the old file up to
-`.pre-cal`) and flips `power_mode` to `"offset"` itself — the walls fly
-when the run ends, the efficiency tables from the next `maburd` start; no
-laptop-side step.
+The GS bundles — [`gs/bundle/maburgs.default.toml`](https://github.com/gilankpam/mabur-ground/blob/master/gs/bundle/maburgs.default.toml),
+[`gs/player/bundle/maburplay.default.toml`](https://github.com/gilankpam/mabur-ground/blob/master/gs/player/bundle/maburplay.default.toml) — still write every key
+the loader knows, so their defaulted-key lists are **empty** and anything
+in them is a real gap (`bundle_default_sets_every_known_key` in
+`test_player_config`, `bundle_default_sets_every_known_key_but_radio_cards`
+in `test_gs_config`): a new GS key goes into its bundle in the same commit.
+
+`rate_walls_rel_20`/`_40` and `air_clock.efficiency_20`/`_40` are per-UNIT
+calibrations (`docs/calibration.md`). A drone that never calibrated flies
+`power_mode = "none"` (the card's own power) and the built-in efficiency
+tables, the reference 8812EU unit's. Measure your own vtx: ssh to the GS
+and run `maburcal start`, which measures both per width, writes them to
+the drone's `/etc/mabur.toml` (backing the old file up to `.pre-cal`) and
+sets `power_mode = "offset"` itself — the walls fly when the run ends, the
+efficiency tables from the next `maburd` start; no laptop-side step.
 ⚠ `"none"` also skips the `SetTxPowerOffsetQdb(0)` beside the plan, so a
 global offset left in the chip by a bench tool survives a `maburd` restart;
 power-cycle if you need a known baseline.

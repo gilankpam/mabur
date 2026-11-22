@@ -16,10 +16,10 @@ using namespace mabur::mavparam;
 
 namespace {
 
-// Path to the committed default bundle config, resolved the same way
-// tests/test_config_write.cpp's bundle_text() does.
+// A drone config with every key's line written out (the pre-minimal bundle
+// shape drones in the field carry), so row patches rewrite existing lines.
 std::string bundle_path() {
-  return std::string(MABUR_BUNDLE_DIR) + "/mabur.default.toml";
+  return std::string(MABUR_FIXTURE_DIR) + "/mabur.full.toml";
 }
 
 // read() now returns bool (false for idx out of range); tests want the

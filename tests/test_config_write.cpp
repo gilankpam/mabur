@@ -27,7 +27,7 @@ std::string slurp(const std::string& path) {
 bool exists(const std::string& path) { return std::ifstream(path).good(); }
 
 std::string bundle_text() {
-  const std::string t = slurp(std::string(MABUR_BUNDLE_DIR) + "/mabur.default.toml");
+  const std::string t = slurp(std::string(MABUR_FIXTURE_DIR) + "/mabur.full.toml");
   REQUIRE(!t.empty());
   return t;
 }

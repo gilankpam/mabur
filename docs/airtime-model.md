@@ -155,7 +155,7 @@ thinner than one body with no reach-back from the next frame to cover
 it (that frame's own repairs are held to *its* end too), and at high
 overhead it holds more than it needs to. Sizing the hold from
 `blocks_per_body` and `overhead` instead ties the frame-end batch
-directly to that economics. With the bundle's window and overheads, the
+directly to that economics. With the default window and overheads, the
 held tail is never narrower than about one body's worth of repair
 blocks; the clamp to `window` only binds when `overhead <
 blocks_per_body / window` — a repair rate thin enough that one body's
@@ -196,7 +196,7 @@ their variance into jitter. Knobs, in order of proven usefulness:
   (windowed CBR won't equalize it) — don't run it if jitter matters.
   The rolling refresh (`venc.intra_refresh_frames` / `intra_refresh_qp`,
   `MI_VENC_IntraRefresh_t`) would spread intra cost across P frames, but
-  it only runs at a GOP start and the bundle has no periodic refresh
+  it only runs at a GOP start and the defaults have no periodic refresh
   (`venc.gop_s` 0), so the sweep ships off too (`intra_refresh_frames`
   0). The QP field is a no-op on star6e CBR regardless — the stripe is
   coded at the RC's P QP and the I-frame knobs below do not catch it;
@@ -207,7 +207,7 @@ their variance into jitter. Knobs, in order of proven usefulness:
 - **`venc.max_ipprop`** (config, 0=off; also volatile via
   `:8301 POST /venc/set?max_ipprop=N`) programs `u32MaxIPProp` — the ONE
   RC size cap star6e actually enforces (dose-response measured). It bounds
-  the I:P *ratio*: the bundle runs 2, which clips the IDR size
+  the I:P *ratio*: the default is 2, which clips the IDR size
   distribution flat at 2× the P average. Achieved-ratio floor ≈ 1.4 (I-QP
   rails); below that the encoder refuses. It's worst-case insurance —
   inert while the natural ratio is under the cap.
@@ -262,7 +262,7 @@ their variance into jitter. Knobs, in order of proven usefulness:
   the one engine (`docs/findings/2026-11-12-venc-strips.md`).
 - **GOP length is not a rate-control window.** A bitrate step emits its
   own keyframe and the rate control settles within a second whatever the
-  GOP (`statTime` 1 s); the bundle ships `venc.gop_s = 0`, no periodic
+  GOP (`statTime` 1 s); the default is `venc.gop_s = 0`, no periodic
   refresh, and heals on demand (`docs/fec-nack.md`). Measured:
   `docs/findings/2026-10-17-long-gop-spike.md`,
   `docs/findings/2026-10-17-sdk-gop-ceiling.md`.
@@ -373,7 +373,7 @@ their variance into jitter. Knobs, in order of proven usefulness:
 ## 6. Probe stream air share
 
 The always-on probe stream (`docs/link-adaptation.md` "Probe stream")
-adds one video-body-sized SBI body (1405 B at the bundle geometry,
+adds one video-body-sized SBI body (1405 B at the default geometry,
 `13 + bpb·(16 + symbol_size)` with bpb 4, symbol 332) after **every**
 video AU that went on air, base or enh — 60 bodies/s at 60 fps — at the
 MCS of rung `current + link.probe.rung_offset`, capped at the top rung
@@ -393,7 +393,7 @@ the cost is zero.
   per width (`docs/bw40.md`); absent = all ones = nominal.
   `encoder.airtime_budget` is therefore a fraction of measured capacity.
   Real time-occupancy ≈ budget × ~1.16 (SBI/fragment framing ~1.09-1.14
-  plus probe and MSP, none of them in the formula), so the bundle's 0.65 ≈
+  plus probe and MSP, none of them in the formula), so the default 0.65 ≈
   75 % of the air at every rung. The gap between a bench table (no GS
   uplink) and the flight-fitted value is the RCF/telemetry slot share; it
   sits inside that ~1.16, not in the table.
@@ -406,7 +406,7 @@ the cost is zero.
   commanded dwell. A point the drone's own TX path limited (its sender
   rarely blocked on the device) is flagged `tx_bound` and keeps the
   existing value. A new table takes effect at the next `maburd` start.
-  The bundle's tables are the reference unit's bench numbers:
+  The default tables are the reference unit's bench numbers:
   `docs/findings/2026-09-17-bandwidth-sweep.md` measured 0.87 / 0.78 /
   0.71 / 0.76 / 0.76 / 0.76 / 0.78 / 0.76 of nominal at mcs0-7 with agg6
   and 0.93 / 0.88 / 0.84 / 0.80 with singles at mcs0-3 at 20 MHz (linkbench,
