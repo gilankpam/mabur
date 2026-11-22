@@ -61,7 +61,7 @@ Refusals come back at once, before anything airs:
 | `err refused: GS receiver width is 20 (load a 40 MHz ladder to calibrate 40 MHz)` | a `*40` token while the effective width (above) is 20 |
 | `err a calibration session is already running` | a run, or its channel pick, is in progress |
 | `err refused: link is down` | `maburgs` is not in `SESSION` |
-| `err refused: peer does not advertise CAP_CALIBRATE` | the drone's DISC_ACK lacks the bit (a build without the mabur-dialect calibration) |
+| `err refused: peer does not advertise CAP_CALIBRATE` | the drone's Telem `chip_caps` lacks the bit (a build without the mabur-dialect calibration) |
 
 The "GS receiver width is 20" wording is also what a 40 MHz GS says when it
 is the linked drone that flies 20.

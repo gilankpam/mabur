@@ -66,8 +66,9 @@ u16 crc16
   1 when the session's `vtx_nonce` changes. The one exception is a frame
   made entirely of calibration messages: its own counter domain, and a
   latch onto the calibration run's pair (below).
-- **Drone to GS** is untagged, like `T_TELEM`, and goes out on the Telem
-  path (control radiotap, the shared Telem 802.11 sequence) at most one
+- **Drone to GS** is `T_MAV_UP` (type 9), same layout as `T_MAV` and tagged
+  the same way, under the published session's `{vrx, vtx, counter}`. It goes
+  out on the Telem path (control radiotap, the shared Telem 802.11 sequence) at most one
   frame every `kMavUplinkMinMs` (50 ms), which caps the tunnel near
   12 kB/s on the drone's uplink. Nothing from the component goes up while
   a calibration sweep airs (the periodic Telem's rule); replies wait
@@ -76,10 +77,9 @@ u16 crc16
   per card: the tunnel drops a frame whose counter equals the last one it
   took, and forgets that counter when the session's `vtx_nonce` changes
   (a restarted drone counts from 0 again).
-- The GS's other card also hears the GS's own tagged `T_MAV`. The tunnel
-  tries the tagged layout first and counts a match apart, never as a
-  reject and never delivered: an untagged frame is too short to parse as
-  tagged, even with the trailing 4-byte FCS.
+- The GS's other card also hears the GS's own `T_MAV` (type 8). The GS
+  tells it from the drone's `T_MAV_UP` (type 9) by type, counts it apart,
+  and never delivers it or takes it as a reject.
 - **GS to drone** frames are offered to the RCF slotter like an RCF, so
   they land in the drone's inter-AU idle, and are never sent while a
   calibration sweep holds the GS radio-silent. A frame goes out only when
@@ -282,11 +282,13 @@ consumed. A non-cal frame under the old pair, or a frame that verifies
 under no known pair, is still a reject.
 
 The drone's replies (ACK, SWEEP_DONE, APPLIED) are packed by the TX
-writer thread as untagged `T_MAV` frames, one message each, on the
-control path with the shared Telem 802.11 sequence, whatever the session
-state and outside the MAV thread's 50 ms pacing and sweep suppression.
+writer thread as tagged `T_MAV_UP` frames, one message each, on the
+control path with the shared Telem 802.11 sequence, outside the MAV thread's 50 ms pacing and sweep suppression.
 The MAV thread and the TX writer share one atomic uplink counter, so the
-GS's duplicate filter sees one monotonic sequence. They count in the
+GS's duplicate filter sees one monotonic sequence. They are tagged under
+the calibration run's pair while one is latched (a sweep outlasts the live
+session), else the published pair; with neither the frame is not sent and
+counts in `drop=`. They count in the
 `stats:` line's `mav tx=`.
 
 ## Later tenants

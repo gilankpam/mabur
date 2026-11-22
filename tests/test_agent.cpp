@@ -1839,6 +1839,37 @@ TEST(latched_counter_is_monotonic_per_run_pair) {
   CHECK(!agent.take_auth_reject());
 }
 
+TEST(uplink_ctx_follows_the_published_session) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  CHECK(!agent.uplink_ctx(false).has_value());
+  const uint32_t vtx = link_agent(agent, act, cfg);
+  const auto c = agent.uplink_ctx(false);
+  REQUIRE(c.has_value());
+  CHECK(c->vrx_nonce == kVrx);
+  CHECK(c->vtx_nonce == vtx);
+  CHECK(c->seq32 == 0);
+  // No run open: the cal flavour is the published pair too.
+  CHECK(agent.uplink_ctx(true).has_value());
+}
+
+// The calibration replies outlive the live session: the sweep outlasts the
+// failsafe, and the GS still verifies them under the run's pair.
+TEST(cal_replies_use_the_run_pair_across_a_session_lapse) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  const uint32_t vtx = link_agent(agent, act, cfg);
+  CHECK(mav_check(agent, mav_wire(cal_packet(7), 1, vtx), true) == RcAgent::MavCheck::kOk);
+  drive_failsafe(agent, cfg, 110);
+  CHECK(!agent.uplink_ctx(false).has_value());
+  const auto c = agent.uplink_ctx(true);
+  REQUIRE(c.has_value());
+  CHECK(c->vrx_nonce == kVrx);
+  CHECK(c->vtx_nonce == vtx);
+}
+
 // Once the run has closed the latch is not honoured, but a cal-only frame
 // that still verifies under the run pair is the GS's own run trailing off
 // -- the copies of its closing Abort, sent after the first one closed the

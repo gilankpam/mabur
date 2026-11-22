@@ -275,6 +275,11 @@ class RcAgent {
   bool has_published_session() const {
     return published_session_.load(std::memory_order_acquire) != 0;
   }
+  // Tag context for a drone -> GS T_MAV_UP frame, seq32 left 0 for the caller
+  // (the shared uplink counter). cal_reply false: the published pair, nullopt
+  // when none. true: the calibration run's pair when one is latched (a sweep
+  // outlasts the live session), else the published pair. Any thread.
+  std::optional<rc::TagCtx> uplink_ctx(bool cal_reply) const;
   // T_MAV replay guard: accept_nack_counter's rule and CAS shape on its own
   // state (mav_last_), so the GS's MAV and NACK counters never refuse each
   // other. Any thread.
@@ -443,8 +448,9 @@ class RcAgent {
   // read by check_nack (RX thread) and check_mav (MAV thread).
   std::atomic<uint64_t> published_session_{0};
   // check_mav's run pair: (vrx << 32 | vtx) of the last accepted cal-only
-  // T_MAV, 0 = none. MAV thread only.
-  uint64_t cal_run_session_ = 0;
+  // T_MAV, 0 = none. Written on the MAV thread, read by uplink_ctx from the
+  // TX writer thread.
+  std::atomic<uint64_t> cal_run_session_{0};
   std::atomic<uint64_t> cal_late_{0};  // check_mav's kLateCal count
   std::atomic<bool> auth_reject_{false};
   // accept_nack_counter's state: (vtx_nonce << 32) | last accepted counter.

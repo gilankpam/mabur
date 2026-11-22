@@ -210,7 +210,7 @@ RcAgent::MavCheck RcAgent::check_mav(const uint8_t* body, size_t len, rc::Mav* o
   } else {
     // Latched path: cal-only frames of an open run, under the run pair
     // when it is not the published one (that pair just failed above).
-    const uint64_t run = cal_run_session_;
+    const uint64_t run = cal_run_session_.load(std::memory_order_acquire);
     if (cal_run_open && cal_only && run != 0 &&
         run != published_session_.load(std::memory_order_acquire) &&
         verifies_under_(body, len, run, m->counter) &&
@@ -232,9 +232,19 @@ RcAgent::MavCheck RcAgent::check_mav(const uint8_t* body, size_t len, rc::Mav* o
     note_auth_reject();
     return verdict;
   }
-  if (cal_only) cal_run_session_ = session;
+  if (cal_only) cal_run_session_.store(session, std::memory_order_release);
   *out = std::move(*m);
   return verdict;
+}
+
+std::optional<rc::TagCtx> RcAgent::uplink_ctx(bool cal_reply) const {
+  uint64_t p = published_session_.load(std::memory_order_acquire);
+  if (cal_reply) {
+    const uint64_t run = cal_run_session_.load(std::memory_order_acquire);
+    if (run != 0) p = run;
+  }
+  if (p == 0) return std::nullopt;
+  return rc::TagCtx{static_cast<uint32_t>(p >> 32), static_cast<uint32_t>(p & 0xFFFFFFFFu), 0};
 }
 
 void RcAgent::install_session_for_replay(uint32_t vrx_nonce, uint32_t vtx_nonce) {

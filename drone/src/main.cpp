@@ -608,8 +608,8 @@ struct RealActuator : mabur::Actuator {
   // threading contract forbids one concurrent with ANY other device call —
   // not just a bulk-OUT. A calibration sweep runs the three TX-power knobs
   // (DevicePowerCtl, below) from the TX writer thread for up to 180 s, and
-  // nothing stops a retune being requested in that time: a hop order or a
-  // promoted session's DISC move in an RCF that was already queued, or
+  // nothing stops a retune being requested in that time: a hop order in an
+  // RCF that was already queued, or
   // move_unconfirmed's return when the GS goes radio-silent for the sweep
   // (move_confirm_ms is 2 s). Two rules keep that safe without ever blocking
   // the agent thread on a sweep:
@@ -1657,6 +1657,9 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
   // MAVLink); reject = frames that parsed but failed the tag or the counter.
   std::atomic<uint64_t> mav_rx_frames{0}, mav_rx_packets{0}, mav_tx_frames{0},
       mav_tx_packets{0}, mav_drop{0}, mav_reject{0};
+  // Calibration replies not sent for want of a pair to tag under; folded into
+  // mav_drop's count.
+  std::atomic<uint64_t> mav_up_nopair{0};
   std::atomic<uint64_t> rx_beat{0};
   // RX callback -> agent thread, per telemetry period (exchange(0) at each
   // Telem build): frames that were ours (CRC-clean RC from the GS), CRC-clean
@@ -2046,7 +2049,7 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
   // (RcAgent::check_mav), feeds the payload to the component -- or, for a
   // frame of calibration packets only, decodes them onto cal_queue for the
   // TX writer thread -- and sends its
-  // queued replies back as untagged T_MAV frames on the Telem path (control
+  // queued replies back as tagged T_MAV_UP frames on the Telem path (control
   // radiotap, the shared telem dot11 seq, the mutex-guarded dev_sink.send()),
   // at most one frame per kMavUplinkMinMs so the tunnel never crowds Telem
   // or the OSD stream. Uplink and the 1 Hz HEARTBEAT need a published
@@ -2121,14 +2124,15 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
         comp.queue_heartbeat();
         last_hb = now;
       }
-      if (linked && !cal_sweeping.load(std::memory_order_relaxed) &&
+      auto ctx = agent.uplink_ctx(false);  // replies wait queued without a pair
+      if (linked && ctx && !cal_sweeping.load(std::memory_order_relaxed) &&
           comp.outbound_packets() > 0 && now - last_up >= kMavUplinkMinMs) {
         rc::Mav m;
         m.type = rc::T_MAV_UP;
         m.counter = mav_up_counter.fetch_add(1, std::memory_order_relaxed);
         const int packets = comp.take_outbound(&m.payload);
-        // shortcut: zero tag context; the session pair is not wired to the uplink yet.
-        const auto mav = rc::pack_mav(m, cfg.link.key, rc::TagCtx{});
+        ctx->seq32 = m.counter;
+        const auto mav = rc::pack_mav(m, cfg.link.key, *ctx);
         const std::vector<uint8_t>& telem_radiotap = mav_radiotap.get();
         std::vector<uint8_t> frame;
         frame.reserve(telem_radiotap.size() + kDot11HeaderLen + mav.size());
@@ -2143,7 +2147,8 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
       }
       const MavComponentStats& cs = comp.stats();
       mav_rx_packets.store(cs.rx_packets, std::memory_order_relaxed);
-      mav_drop.store(bad_parse + cs.drop_not_for_us + cs.drop_bad_packet + cs.drop_queue_full,
+      mav_drop.store(bad_parse + cs.drop_not_for_us + cs.drop_bad_packet + cs.drop_queue_full +
+                         mav_up_nopair.load(std::memory_order_relaxed),
                      std::memory_order_relaxed);
       mav_reject.store(rejected, std::memory_order_relaxed);
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -2609,7 +2614,7 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
   // writer thread, and devourer's IRtlRadio.h contract forbids any of them
   // concurrent with a channel set. RealActuator::retune takes tx_gate
   // exclusive around FastRetune, so each call here takes it SHARED -- a cal
-  // session lasts up to 180 s, long enough for a hop, DISC or
+  // session lasts up to 180 s, long enough for a hop or
   // move_unconfirmed retune to be requested mid-sweep, so that is the normal
   // case, not a corner. retune's side of this defers the move entirely while
   // cal_active, and the deferred replay fires on the agent thread's falling
@@ -2772,7 +2777,7 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
     cap.ampdu = cfg.ampdu;
     cap.ldpc = cal_ldpc;
     // One drone->GS calibration message (ack, done, applied) as its own
-    // untagged T_MAV frame on the control path: the shared uplink counter
+    // tagged T_MAV_UP frame on the control path: the shared uplink counter
     // and dot11 sequence, the mutex-guarded dev_sink.send(). Sent whatever
     // the session state -- every sweep outlasts the link failsafe and the GS
     // is listening for exactly these -- and outside the MAV thread's pacing
@@ -2780,13 +2785,18 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
     // SweepDone take_done() yields (it repeats until the GS moves on).
     ControlRadiotap cal_radiotap = make_control_radiotap();
     auto send_cal = [&](const cal::CalMsg& msg) {
+      auto ctx = agent.uplink_ctx(/*cal_reply=*/true);
+      if (!ctx) {
+        mav_up_nopair.fetch_add(1, std::memory_order_relaxed);
+        return;
+      }
       rc::Mav m;
       m.type = rc::T_MAV_UP;
       m.counter = mav_up_counter.fetch_add(1, std::memory_order_relaxed);
       m.payload = cal::encode(msg, MavComponent::sys_id(), MavComponent::comp_id(),
                               mav::kChanDroneRx);
-      // shortcut: zero tag context; the cal run pair is not wired to the uplink yet.
-      const auto mav = rc::pack_mav(m, cfg.link.key, rc::TagCtx{});
+      ctx->seq32 = m.counter;
+      const auto mav = rc::pack_mav(m, cfg.link.key, *ctx);
       const std::vector<uint8_t>& rt = cal_radiotap.get();
       std::vector<uint8_t> frame;
       frame.reserve(rt.size() + kDot11HeaderLen + mav.size());
@@ -3136,6 +3146,8 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
       ti.low_power = agent.low_power();
       ti.auth_reject = agent.take_auth_reject();
       ti.rec_status = vtx_rec.status_byte();
+      ti.chip_caps = rc::CAP_FRAME_WIRE | rc::CAP_TELEMETRY | rc::CAP_CALIBRATE | rc::CAP_MAVLINK;
+      ti.width = static_cast<uint8_t>(cfg.radio.width);
       // have_feedback() false means no RCF has EVER been accepted (still
       // BOOT/RENDEZVOUS) — 0 would read as maximally fresh, the opposite of
       // the truth. Pass a value make_telem's saturate<uint16_t> clamps to
