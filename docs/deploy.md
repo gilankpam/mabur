@@ -176,12 +176,27 @@ the value they fell back to (`config: N key(s) defaulted:`). After
 hand-editing a config, read that list: anything unexpected in it is a knob
 you dropped.
 
-**A defaulted key still needs its own line before MAVLink can touch it.**
-`/etc/mabur.toml` written before `venc.binning` existed loads fine — the
-key defaults to `true` — but `PARAM_EXT_SET`'s row patcher only edits a
-line already in the file, so a `VENC_MODE` set, binned or native, fails
-with `venc.binning: key not found` until a `binning = true` line is added
-under `[venc]` by hand (`docs/vtx-config-mavlink.md`).
+**A defaulted key needs no line for MAVLink or `maburcal` to set it.** A
+parameter set (`PARAM_EXT_SET`) or a calibration patches the key's line
+when there is one and inserts it at the end of its table otherwise,
+creating the `[table]` when that is missing too
+(`set_toml_key`, `common/include/mabur/config_write.h`).
+
+**`maburd --migrate-config <in> <out>`** trims a drone config to what that
+binary needs, judging every line with its own loader: a key it rejects as
+unknown is removed (its whole table when the name is a table), and a line
+whose removal leaves the loaded config equal is removed as a default. The
+per-drone keys — `radio.channels`, `radio.rate_walls_rel_20`/`_40` (`[]`
+included), `link.key_file`, `venc.sensor_bin` — are never removed. Every
+other line, comments included, is kept as written. Each removal is one
+`migrate: removed unknown <key>` or `migrate: removed default <key> =
+<value>` line on stderr. `<out>` is written (`<out>.new` + rename) only when
+the result loads; any other loader refusal (a bad value, a line the parser
+rejects) exits 1 with `migrate: <reason>` and writes nothing. `<in>` is
+never written. It opens no radio, MI or USB, so it is safe beside a running
+`maburd`. The over-the-air update runs the new binary's migration on the
+drone's file before that build first starts; outside an update, an unknown
+key still fails boot.
 
 **The bundles set every knob.** All three shipped defaults —
 `bundle/mabur.default.toml`, [`gs/bundle/maburgs.default.toml`](https://github.com/gilankpam/mabur-ground/blob/master/gs/bundle/maburgs.default.toml),

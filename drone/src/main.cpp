@@ -50,6 +50,7 @@
 #include "cal_link.h"
 #include "cal_sweep.h"
 #include "config.h"
+#include "config_migrate.h"
 #include "config_apply.h"
 #include "mabur/config_write.h"
 #include "control_tx_mode.h"
@@ -3520,13 +3521,18 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
 
 void print_usage(const char* argv0) {
   std::fprintf(stderr,
-               "usage: %s -c <config.toml> [--dry-run --in <file> --out <file> [--rc-in <file>]]\n",
-               argv0);
+               "usage: %s -c <config.toml> [--dry-run --in <file> --out <file> [--rc-in <file>]]\n"
+               "       %s --migrate-config <in.toml> <out.toml>\n",
+               argv0, argv0);
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
+  // Runs and exits before anything else: no radio, MI or USB is touched.
+  if (argc == 4 && std::string(argv[1]) == "--migrate-config")
+    return mabur::migrate_config_cli(argv[2], argv[3]);
+
   std::string cfg_path;
   bool dry_run = false;
   std::string in_path, out_path, rc_in_path;
