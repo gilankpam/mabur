@@ -238,7 +238,7 @@ RcAgent::MavCheck RcAgent::check_mav(const uint8_t* body, size_t len, rc::Mav* o
 }
 
 void RcAgent::install_session_for_replay(uint32_t vrx_nonce, uint32_t vtx_nonce) {
-  pending_ = Session{vrx_nonce, vtx_nonce, true, 0, false, channel_};
+  pending_ = Session{vrx_nonce, vtx_nonce, true, 0, false};
 }
 
 void RcAgent::note_chain_break() {
@@ -660,17 +660,17 @@ void RcAgent::run_congestion_guard(uint64_t now_ms, const RadioHealth& health) {
 
 void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
   int type = rc::frame_type(body, len);
-  if (type == rc::T_DISC) {
+  // DISC is a frozen type: answered at any version so a GS of another
+  // version can still find us and learn our version from the ack.
+  if (rc::frozen_type(body, len) == rc::T_DISC) {
     auto d = rc::parse_disc(body, len);
     if (!d.has_value()) return;
-    // The frozen DISC proposes no channel: the ack names the current one.
-    const uint8_t agreed = channel_;
     if (!rc::verify_control(body, len, cfg_.link.key, rc::TagCtx{})) {
       // Wrong key on the GS. Answer so the GS can SHOW it instead of
       // looking like the stale-caps deadlock; change nothing else.
       auth_reject_.store(true, std::memory_order_relaxed);
       act_.send_control(rc::pack_disc_ack(
-          make_disc_ack(d->vrx_nonce, 0, rc::kAckKeyMismatch, d->seq, agreed)));
+          make_disc_ack(d->vrx_nonce, 0, rc::kAckKeyMismatch, d->seq), cfg_.link.key));
       return;
     }
     // A DISC only elicits an ack: no op, no retune, no LINKED
@@ -683,16 +683,16 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
       vtx = current_.vtx_nonce;                       // keep-alive: same answer
     } else if (pending_.valid && d->vrx_nonce == pending_.vrx_nonce) {
       vtx = pending_.vtx_nonce;                       // lost-ack retry: same answer
-      pending_.agreed_ch = agreed;
     } else {
       // New GS process, or our own GS heard again while we are NOT linked
       // (failsafe/rendezvous): a fresh pair, so its seq32 restarts on both
       // ends (the GS resets on a NEW vtx_nonce; a > 1 h gap would otherwise
       // desync the wrap count).
       vtx = fresh_vtx_nonce_();
-      pending_ = Session{d->vrx_nonce, vtx, true, 0, false, agreed};
+      pending_ = Session{d->vrx_nonce, vtx, true, 0, false};
     }
-    act_.send_control(rc::pack_disc_ack(make_disc_ack(d->vrx_nonce, vtx, 0, d->seq, agreed)));
+    act_.send_control(
+        rc::pack_disc_ack(make_disc_ack(d->vrx_nonce, vtx, 0, d->seq), cfg_.link.key));
     return;
   }
 
@@ -720,8 +720,6 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
       idr_epoch_seen_ = 0;
       idr_gs_pending_ = false;
       chain_idr_pending_ = false;
-      if (current_.agreed_ch != 0 && current_.agreed_ch != channel_)
-        deferred_move_ch_ = current_.agreed_ch;          // after main's promote Telem
     } else {
       // Wrong key, wrong pair, stale or replayed seq: drop, flag for the
       // next Telem, never move the seq tracker. No log.
@@ -833,18 +831,6 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
 }
 
 void RcAgent::tick(uint64_t now_ms, const RadioHealth& health) {
-  // A promoted session's agreed channel. Run
-  // here, not on the promoting RCF, so main has sent one Telem saying
-  // LINKED on the CURRENT channel first -- the GS follows on it.
-  if (deferred_move_ch_ != 0) {
-    const uint8_t ch = deferred_move_ch_;
-    deferred_move_ch_ = 0;
-    act_.retune(ch, "disc");
-    move_from_ch_ = channel_;
-    channel_ = ch;
-    move_pending_ = true;
-    move_at_ms_ = now_ms;
-  }
   if (state_ == State::BOOT) {
     apply_max_range(now_ms);
     state_ = State::RENDEZVOUS;
@@ -1020,12 +1006,12 @@ void RcAgent::tick(uint64_t now_ms, const RadioHealth& health) {
 }
 
 rc::DiscAck RcAgent::make_disc_ack(uint32_t vrx_nonce, uint32_t vtx_nonce, uint8_t flags,
-                                   uint16_t seq, uint8_t agreed) const {
+                                   uint16_t seq) const {
   DiscAck ack;
   ack.vrx_nonce = vrx_nonce;
   ack.vtx_nonce = vtx_nonce;
   ack.flags = flags;
-  ack.channel = agreed;
+  ack.channel = channel_;
   ack.seq = seq;
   return ack;
 }

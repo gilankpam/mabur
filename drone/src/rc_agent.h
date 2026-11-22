@@ -98,8 +98,7 @@ class Actuator {
   // as "nothing heard on the new channel" and recovers from on its own.
   //
   // `reason` is a stable, short literal naming WHY the move is happening --
-  // "disc" (a DISC proposed a channel we agreed to), "hop" (an RCF carried
-  // a new hop order), "move_unconfirmed" (the post-move confirm window
+  // "hop" (an RCF carried a new hop order), "move_unconfirmed" (the post-move confirm window
   // expired, so the drone returned to the channel it came from). It is
   // observability only: the real actuator prints it on the retune line so a
   // stderr/serial capture says which of the three fired. Never null, never
@@ -218,7 +217,6 @@ class RcAgent {
     bool valid = false;
     uint32_t last_seq32 = 0;
     bool have_seq = false;
-    uint8_t agreed_ch = 0;     // the DISC proposal this session was acked with
   };
   const Session& current_session() const { return current_; }
 
@@ -406,16 +404,15 @@ class RcAgent {
   // channel_ is the start channel (the remembered member, else
   // channels.front()) at construction and tracks the channel the agent
   // last commanded. The drone is always on a member and moves only on a GS
-  // proposal, a GS order, or an unconfirmed move back to move_from_ch_.
-  // move_pending_/move_at_ms_ track an unconfirmed move: set when tick()
-  // runs a promoted session's deferred move (or an RCF hop order) and
-  // act_.retune() is called, cleared by the first subsequent accepted RCF
+  // hop order, or an unconfirmed move back to move_from_ch_.
+  // move_pending_/move_at_ms_ track an unconfirmed move: set when an RCF
+  // hop order calls act_.retune(), cleared by the first subsequent accepted RCF
   // that is not itself a new move (confirms the move) or by the
   // move-confirm fallback in tick() (which returns to move_from_ch_).
   uint8_t channel_;
   bool move_pending_ = false;
   uint64_t move_at_ms_ = 0;
-  // The channel a move (a DISC move OR a hop order) moved us FROM, while
+  // The channel a move (a hop order) moved us FROM, while
   // that move is unconfirmed (0 = none: the revert already spent). The
   // move-confirm fallback returns here and stays -- there is no home to
   // fall through to. This is also where a withdrawing GS goes. Bench: with
@@ -470,7 +467,6 @@ class RcAgent {
   // True iff the tagged frame verifies under `session` (nonzero) with seq32.
   bool verifies_under_(const uint8_t* body, size_t len, uint64_t session, uint32_t seq32) const;
   bool session_promoted_ = false;
-  uint8_t deferred_move_ch_ = 0;   // executed in tick() after main sent the promote Telem
   uint32_t fresh_vtx_nonce_();
   // true + fills *seq32 if the RCF bytes verify under s with a fresh seq.
   bool verify_rcf_(const uint8_t* body, size_t len, const rc::Rcf& r, const Session& s,
@@ -632,8 +628,7 @@ class RcAgent {
   void reapply_with_shed();
   void run_bitrate_policy(uint64_t now_ms, bool force);
   void run_congestion_guard(uint64_t now_ms, const RadioHealth& health);
-  rc::DiscAck make_disc_ack(uint32_t vrx_nonce, uint32_t vtx_nonce, uint8_t flags, uint16_t seq,
-                            uint8_t agreed) const;
+  rc::DiscAck make_disc_ack(uint32_t vrx_nonce, uint32_t vtx_nonce, uint8_t flags, uint16_t seq) const;
 
   bool member_(uint8_t ch) const { return mabur::channel_set_member(cfg_.radio.channels, ch); }
 };

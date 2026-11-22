@@ -8,7 +8,9 @@
 #include "mtest.h"
 #include "config.h"
 #include "mabur/cal_mav.h"
+#include "mabur/crc16.h"
 #include "mabur/link_key.h"
+#include "mabur/siphash.h"
 #include "mabur/mav.h"
 #include "mabur/profile.h"
 #include "mabur/rc_proto.h"
@@ -17,11 +19,6 @@
 
 using namespace mabur;
 using namespace mabur::rc;
-
-// Pins the drone's move-on-DISC path. The frozen DISC proposes no channel,
-// so that path can no longer fire: compiled, not registered, until the path
-// itself is deleted.
-#define MOVE_ON_DISC_TEST(name) [[maybe_unused]] static void name()
 
 namespace {
 
@@ -270,29 +267,73 @@ TEST(disc_replies_disc_ack_and_does_not_link) {
   CHECK(ack3->vtx_nonce != ack->vtx_nonce);
 }
 
-MOVE_ON_DISC_TEST(first_verified_rcf_links_and_defers_the_move_to_tick) {
+// A DISC of another RC_VERSION: byte 2 rewritten, re-tagged (the version is
+// inside the tagged bytes) and re-CRC'd so it verifies. DISC tag at 10.
+static std::vector<uint8_t> disc_at_version(const mabur::LinkKey& key, uint8_t ver) {
+  auto w = pack_disc(Disc{kVrx, 7}, key);
+  w[2] = ver;
+  std::vector<uint8_t> m(w.begin(), w.begin() + 10);
+  for (int i = 0; i < 12; ++i) m.push_back(0);   // ctx {0,0,0}
+  const uint64_t t = siphash24(key, m.data(), m.size());
+  for (int i = 0; i < 8; ++i) w[10 + i] = static_cast<uint8_t>(t >> (8 * i));
+  const uint16_t crc = crc16_ccitt(w.data(), w.size() - 2);
+  w[w.size() - 2] = crc & 0xFF; w[w.size() - 1] = crc >> 8;
+  return w;
+}
+
+TEST(disc_ack_is_tagged_under_the_link_key_and_names_the_current_channel) {
+  Config cfg = make_cfg();
+  cfg.link.key[3] ^= 0x5A;                 // not the default key
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});
+  auto disc = pack_disc(Disc{kVrx, 5}, cfg.link.key);
+  agent.on_rc_frame(disc.data(), disc.size(), 100);
+  REQUIRE(act.controls.size() == 1);
+  const auto& a = act.controls[0];
+  auto ack = parse_disc_ack(a.data(), a.size());
+  REQUIRE(ack.has_value());
+  CHECK(ack->channel == agent.channel());
+  CHECK(ack->seq == 5);
+  CHECK(verify_control(a.data(), a.size(), cfg.link.key, TagCtx{}));
+}
+
+TEST(foreign_version_disc_is_answered_but_never_links) {
   Config cfg = make_cfg();
   MockActuator act;
   RcAgent agent(cfg, act);
   agent.tick(0, RadioHealth{});
-  auto disc = make_disc_wire(kVrx, 149, 40, 0, 1);
+  auto disc = disc_at_version(cfg.link.key, 18);
   agent.on_rc_frame(disc.data(), disc.size(), 100);
+  REQUIRE(act.controls.size() == 1);
   auto ack = parse_disc_ack(act.controls[0].data(), act.controls[0].size());
-  auto rcf = make_rcf_wire(1, encode_profile(PhyMode::HT, 2, 20), 8, ack->vtx_nonce);
+  REQUIRE(ack.has_value());
+  CHECK(ack->flags == 0);
+  CHECK(verify_control(act.controls[0].data(), act.controls[0].size(), cfg.link.key, TagCtx{}));
+  // An RCF of that version under the acked pair is refused by the version gate.
+  auto rcf = make_rcf_wire(1, encode_profile(PhyMode::HT, 0, 20), 8, ack->vtx_nonce);
+  rcf[2] = 18;
+  const uint16_t crc = crc16_ccitt(rcf.data(), rcf.size() - 2);
+  rcf[rcf.size() - 2] = crc & 0xFF; rcf[rcf.size() - 1] = crc >> 8;
   agent.on_rc_frame(rcf.data(), rcf.size(), 110);
-  CHECK(agent.state() == RcAgent::State::LINKED);
-  CHECK(agent.take_session_promoted());
-  CHECK(!agent.take_session_promoted());
-  CHECK(agent.current_session().vrx_nonce == kVrx);
-  CHECK(agent.current_session().vtx_nonce == ack->vtx_nonce);
-  CHECK(act.retunes.empty());                       // not yet: main sends a Telem first
-  agent.tick(200, RadioHealth{});
-  REQUIRE(act.retunes.size() == 1);
-  CHECK(act.retunes[0] == 149);
-  CHECK(act.retune_reasons[0] == "disc");
-  CHECK(agent.channel() == 149);
-  CHECK(agent.current().ladder[0].mcs == 2);        // the RCF's op, not an init profile
-  REQUIRE(!act.bitrates.empty());
+  agent.tick(110 + cfg.link.failsafe_ms + 1, RadioHealth{});
+  CHECK(agent.state() != RcAgent::State::LINKED);
+}
+
+TEST(disc_never_moves_the_drone) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  const uint8_t home = agent.channel();
+  const uint32_t vtx = ack_agent(agent, act, 149);   // old proposal arg is ignored
+  auto ack = parse_disc_ack(act.controls[0].data(), act.controls[0].size());
+  CHECK(ack->channel == home);
+  auto rcf = make_rcf_wire(1, encode_profile(PhyMode::HT, 0, 20), 8, vtx);
+  agent.on_rc_frame(rcf.data(), rcf.size(), 110);
+  REQUIRE(agent.state() == RcAgent::State::LINKED);
+  agent.tick(120, RadioHealth{});
+  CHECK(act.retunes.empty());
+  CHECK(agent.channel() == home);
 }
 
 TEST(unverified_rcf_is_dropped_and_flagged) {
@@ -377,33 +418,6 @@ TEST(new_vrx_nonce_while_linked_swaps_session_without_touching_op) {
   auto old_dead = make_rcf_wire(4, encode_profile(PhyMode::HT, 4, 20), 8, vtx);
   agent.on_rc_frame(old_dead.data(), old_dead.size(), 410);
   CHECK(agent.take_auth_reject());
-}
-
-// A promotion while LINKED whose pair was acked on a DIFFERENT channel still
-// moves -- deferred to tick() like any promotion (the old LINKED ack-only
-// branch honoured a channel move; link pairing keeps it, but only
-// once the new pair has proved itself with a verified RCF).
-MOVE_ON_DISC_TEST(promotion_while_linked_to_a_new_channel_defers_the_move) {
-  Config cfg = make_cfg();
-  MockActuator act;
-  RcAgent agent(cfg, act);
-  link_agent(agent, act, cfg);
-  const uint64_t gen = agent.current().generation;
-  auto disc = make_disc_wire(kVrx + 7, 149, 20, 0, 1);
-  agent.on_rc_frame(disc.data(), disc.size(), 300);
-  CHECK(act.retunes.empty());                                // the DISC alone never moves
-  const uint32_t vtx2 = last_ack_vtx(act);
-  auto first = make_rcf_wire(1, encode_profile(PhyMode::HT, 0, 20), 8, 8, kNoProbeProfile, vtx2, 1, kVrx + 7);
-  agent.on_rc_frame(first.data(), first.size(), 320);
-  CHECK(agent.take_session_promoted());
-  CHECK(act.retunes.empty());
-  agent.tick(400, RadioHealth{});
-  REQUIRE(act.retunes.size() == 1);
-  CHECK(act.retunes[0] == 149);
-  CHECK(act.retune_reasons[0] == "disc");
-  CHECK(agent.channel() == 149);
-  CHECK(agent.state() == RcAgent::State::LINKED);
-  CHECK(agent.current().generation == gen + 1);              // just the RCF's own apply
 }
 
 TEST(wrong_key_disc_gets_flagged_ack_and_nothing_else) {
@@ -1473,34 +1487,6 @@ TEST(link_established_latches_on_first_rcf_not_on_disc) {
   CHECK(!agent.take_link_established());
 }
 
-// Auto channel select, as amended by link pairing: DISC with a foreign
-// channel -> ack agreeing to the NEW
-// channel from the current one; the retune waits for the first verified RCF
-// and then runs from tick() (after main's promote Telem).
-MOVE_ON_DISC_TEST(disc_foreign_channel_acks_then_retunes) {
-  auto cfg = make_cfg();
-  MockActuator act;
-  RcAgent agent(cfg, act);
-  agent.tick(0, RadioHealth{});
-  auto wire = make_disc_wire(kVrx, /*op_channel=*/149, 20, 0, 1);
-  agent.on_rc_frame(wire.data(), wire.size(), 100);
-  REQUIRE(act.controls.size() == 1);
-  auto ack = parse_disc_ack(act.controls[0].data(), act.controls[0].size());
-  REQUIRE(ack.has_value());
-  CHECK(ack->channel == 149);
-  CHECK(act.retunes.empty());                         // a DISC never retunes
-  auto rcf = make_rcf_wire(1, encode_profile(PhyMode::HT, 0, 20), 8, ack->vtx_nonce);
-  agent.on_rc_frame(rcf.data(), rcf.size(), 150);
-  CHECK(act.retunes.empty());                         // deferred to tick()
-  agent.tick(200, RadioHealth{});
-  REQUIRE(act.retunes.size() == 1);
-  CHECK(act.retunes[0] == 149);
-  REQUIRE(act.retune_reasons.size() == 1);
-  CHECK(act.retune_reasons[0] == "disc");             // retune reason
-  CHECK(agent.channel() == 149);
-  CHECK(agent.state() == RcAgent::State::LINKED);
-}
-
 // A keep-alive DISC for the CURRENT pair re-proposing a channel mid-session
 // is ack-only now: the ack still reports the agreed channel, but nothing
 // retunes and the op is untouched (no DISC path
@@ -1544,77 +1530,6 @@ TEST(disc_same_channel_never_retunes) {
   CHECK(act.retunes.empty());
   REQUIRE(act.controls.size() == 2);
   CHECK(parse_disc_ack(act.controls[1].data(), act.controls[1].size())->channel == 136);
-}
-
-MOVE_ON_DISC_TEST(unconfirmed_move_returns_home_after_move_confirm_ms) {
-  auto cfg = make_cfg();
-  MockActuator act;
-  RcAgent agent(cfg, act);
-  agent.tick(0, RadioHealth{});
-  auto wire = make_disc_wire(kVrx, 149, 20, 0, 1);
-  agent.on_rc_frame(wire.data(), wire.size(), 50);
-  auto rcf = make_rcf_wire(1, encode_profile(PhyMode::HT, 0, 20), 8, last_ack_vtx(act));
-  agent.on_rc_frame(rcf.data(), rcf.size(), 90);
-  agent.tick(100, RadioHealth{});                      // deferred move at t=100
-  agent.tick(1000, RadioHealth{});
-  CHECK(act.retunes.size() == 1);
-  agent.tick(2100, RadioHealth{});                     // 100 + 2000 elapsed
-  REQUIRE(act.retunes.size() == 2);
-  CHECK(act.retunes[1] == 136);
-  REQUIRE(act.retune_reasons.size() == 2);
-  CHECK(act.retune_reasons[1] == "move_unconfirmed");  // retune reason
-  CHECK(agent.channel() == 136);
-  CHECK(agent.state() == RcAgent::State::RENDEZVOUS);
-  // Leaving LINKED clears both sessions, same as failsafe entry:
-  // an RCF under the old pair is rejected ...
-  CHECK(!agent.current_session().valid);
-  const uint32_t old_vtx = parse_disc_ack(act.controls[0].data(), act.controls[0].size())->vtx_nonce;
-  auto stale = make_rcf_wire(2, encode_profile(PhyMode::HT, 3, 20), 8, old_vtx);
-  agent.on_rc_frame(stale.data(), stale.size(), 2200);
-  CHECK(agent.state() == RcAgent::State::RENDEZVOUS);
-  CHECK(agent.take_auth_reject());
-  // ... and the keep-alive DISC (same vrx) gets a NEW pair that links.
-  auto disc = make_disc_wire(kVrx, 136, 20, 0, 2);
-  agent.on_rc_frame(disc.data(), disc.size(), 2300);
-  const uint32_t vtx2 = last_ack_vtx(act);
-  CHECK(vtx2 != old_vtx);
-  auto first = make_rcf_wire(1, encode_profile(PhyMode::HT, 2, 20), 8, vtx2);
-  agent.on_rc_frame(first.data(), first.size(), 2310);
-  CHECK(agent.state() == RcAgent::State::LINKED);
-}
-
-// A monotonic timeline that exercises all four checkpoints: the move
-// (deferred to the tick at 100) is confirmed at 500; no fallback past
-// move_confirm_ms (100+2000=2100, checked via retunes.size() staying at 1 --
-// state has already moved on to FAILSAFE by then since failsafe_ms(1000) <
-// move_confirm_ms(2000) from the RCF's last_fb_ms=500, which the same
-// tick(2100) call also crosses); LINKED -> FAILSAFE without a home retune
-// (channel stays on the op channel: the drone sits on the op channel only
-// while LINKED or FAILSAFE); FAILSAFE -> RENDEZVOUS at +rendezvous_ms from
-// the FAILSAFE-entry rebase, WITHOUT any retune (FAILSAFE->RENDEZVOUS
-// never retunes -- there is no home to go to).
-MOVE_ON_DISC_TEST(gs_frame_confirms_move_and_rendezvous_entry_never_retunes) {
-  auto cfg = make_cfg();
-  MockActuator act;
-  RcAgent agent(cfg, act);
-  agent.tick(0, RadioHealth{});
-  auto wire = make_disc_wire(kVrx, 149, 20, 0, 1);
-  agent.on_rc_frame(wire.data(), wire.size(), 50);
-  const uint32_t vtx = last_ack_vtx(act);
-  auto link = make_rcf_wire(1, encode_profile(PhyMode::HT, 0, 20), 8, vtx);
-  agent.on_rc_frame(link.data(), link.size(), 90);
-  agent.tick(100, RadioHealth{});                      // deferred move
-  REQUIRE(act.retunes.size() == 1);
-  auto rcf = make_rcf_wire(2, encode_profile(PhyMode::HT, 2, 20), 8, vtx);
-  agent.on_rc_frame(rcf.data(), rcf.size(), 500);      // confirms
-  agent.tick(2100, RadioHealth{});
-  CHECK(act.retunes.size() == 1);                      // no fallback, no FAILSAFE-entry retune
-  CHECK(agent.state() == RcAgent::State::FAILSAFE);
-  CHECK(agent.channel() == 149);                       // FAILSAFE stays on the op channel
-  agent.tick(2100 + 30000, RadioHealth{});
-  CHECK(agent.state() == RcAgent::State::RENDEZVOUS);
-  CHECK(act.retunes.size() == 1);                      // still just the one DISC move
-  CHECK(agent.channel() == 149);                       // stays put, never "home"
 }
 
 // fec-nack: a T_NACK's counter must be strictly
@@ -3289,60 +3204,6 @@ TEST(disc_proposing_a_non_member_is_acked_with_the_current_channel) {
   REQUIRE(ack.has_value());
   CHECK(ack->channel == 136);       // override: stay where we are
   CHECK(act.retunes.empty());
-}
-
-MOVE_ON_DISC_TEST(unconfirmed_disc_move_returns_to_the_channel_it_came_from_and_stays) {
-  Config cfg = make_cfg();
-  MockActuator act;
-  RcAgent agent(cfg, act);
-  uint64_t t = 100;
-  link_agent(agent, act, cfg, /*op_channel=*/149, t);   // acked 149 from 136, promoted
-  agent.tick(t + 10, RadioHealth{});        // deferred move runs: retune 149 (reason disc)
-  REQUIRE(act.retunes.size() == 1);
-  CHECK(act.retunes[0] == 149 && agent.channel() == 149);
-  agent.tick(t + 10 + cfg.link.move_confirm_ms, RadioHealth{});  // nothing heard on 149
-  REQUIRE(act.retunes.size() == 2);
-  CHECK(act.retunes[1] == 136);             // back where the GS found us
-  CHECK(act.retune_reasons[1] == "move_unconfirmed");
-  CHECK(agent.channel() == 136);
-  CHECK(agent.state() == RcAgent::State::RENDEZVOUS);
-  agent.tick(t + 10 + cfg.link.move_confirm_ms + 60000, RadioHealth{});  // long silence: nowhere else to go
-  CHECK(act.retunes.size() == 2);
-}
-
-MOVE_ON_DISC_TEST(failsafe_and_rendezvous_timers_never_retune) {
-  Config cfg = make_cfg();
-  MockActuator act;
-  RcAgent agent(cfg, act);
-  uint64_t t = 100;
-  link_agent(agent, act, cfg, 149, t);
-  agent.tick(t + 10, RadioHealth{});
-  const size_t n = act.retunes.size();      // the DISC move
-  // Confirm the move with an accepted RCF, then go silent.
-  t = send_rcf(agent, act, t + 20);         // must clear move_pending_
-  agent.tick(t + static_cast<uint64_t>(cfg.link.failsafe_ms) + 1, RadioHealth{});
-  CHECK(agent.state() == RcAgent::State::FAILSAFE);
-  agent.tick(t + static_cast<uint64_t>(cfg.link.failsafe_ms) +
-                 static_cast<uint64_t>(cfg.link.rendezvous_ms) + 2,
-             RadioHealth{});
-  CHECK(agent.state() == RcAgent::State::RENDEZVOUS);
-  CHECK(act.retunes.size() == n);           // still on 149
-  CHECK(agent.channel() == 149);
-}
-
-MOVE_ON_DISC_TEST(confirmed_move_is_remembered_once) {
-  Config cfg = make_cfg();
-  MockActuator act;
-  RcAgent agent(cfg, act);
-  uint64_t t = 100;
-  link_agent(agent, act, cfg, 149, t);
-  agent.tick(t + 10, RadioHealth{});
-  CHECK(act.remembered.empty());            // not before the GS is heard on 149
-  t = send_rcf(agent, act, t + 20);
-  REQUIRE(act.remembered.size() == 1);
-  CHECK(act.remembered[0] == 149);
-  send_rcf(agent, act, t + 40);
-  CHECK(act.remembered.size() == 1);        // once per move, not per RCF
 }
 
 TEST(hop_order_to_a_non_member_is_ignored_and_not_reevaluated) {

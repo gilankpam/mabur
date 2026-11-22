@@ -587,8 +587,7 @@ struct RealActuator : mabur::Actuator {
 #endif
   }
 
-  // RcAgent calls this on a promoted session's agreed-channel move
-  // ("disc"), an RCF hop order ("hop") and an unconfirmed move's return to
+  // RcAgent calls this on an RCF hop order ("hop") and an unconfirmed move's return to
   // where it came from ("move_unconfirmed"), from the agent thread only (same contract as
   // apply_op/send_control above). Null in dry-run (dev == nullptr): there is
   // no device and no tx_gate to take, so that path is a pure stderr echo.
@@ -666,9 +665,7 @@ struct RealActuator : mabur::Actuator {
     if (retune_waiting) retune_waiting->store(true, std::memory_order_release);
     {
       std::unique_lock<std::shared_mutex> g(*tx_gate);
-      // The promote Telem that precedes a "disc" retune (main sends it on
-      // RcAgent::take_session_promoted(), before tick() executes the
-      // deferred move; sink->send, synchronous) has RETURNED from
+      // A Telem sent just before a retune (sink->send, synchronous) has RETURNED from
       // send_packet but may still be sitting in the chip's TX FIFO -- the
       // GS commits the move on hearing that LINKED Telem arrive on the OLD
       // channel (link pairing); if FastRetune races it
@@ -1793,7 +1790,8 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
     const uint8_t* body = pkt.Data.data() + kDot11HeaderLen;
     size_t body_len = pkt.Data.size() - kDot11HeaderLen;
     const int rc_type = rc::frame_type(body, body_len);
-    if (rc_type >= 0) {
+    // A DISC of another version is still ours to answer (frozen type).
+    if (rc_type >= 0 || rc::frozen_type(body, body_len) == rc::T_DISC) {
       // Calibration rides T_MAV (the mabur dialect): the MAV thread verifies
       // it and hands its cal packets to the TX writer thread.
       if (rc_type == rc::T_NACK) {

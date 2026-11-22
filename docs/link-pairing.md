@@ -152,7 +152,11 @@ golden.
    foreign, and moves the body to byte 26 for frame control `0x88` (QoS
    data, the video header)
    ([`gs/src/dot11.cpp`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/dot11.cpp)).
-   The drone skips the 24 bytes unread.
+   The drone skips the 24 bytes unread. devourer's receive path filters in
+   hardware only (`RXFLTMAP*` frame-type map and the `RCR` address-class
+   bits, set at bring-up): by frame control type/subtype and receiver
+   address class, both covered by the frozen probe-request / broadcast
+   header; it does not filter on addr2/addr3.
 2. **The RC prefix:** `u16 magic 0x5243 "RC" | u8 version | u8 type`. The
    version byte is the sender's `RC_VERSION`; for frozen types it is
    information, never a parse gate.
@@ -290,7 +294,13 @@ an attacker resends before the next one lands.
 
 ## Rendezvous, as built
 
-A DISC only ever elicits an ack — **no op, no retune, no LINKED entry**.
+A DISC only ever elicits an ack — **no op, no retune, no LINKED entry**,
+and the DISC proposes no channel, so the drone never moves on one: the ack
+names the channel the drone is on and the GS follows it. DISC is a frozen
+type: the drone answers it at any `RC_VERSION` byte (`rc::frozen_type`, in
+`rx_callback` and `RcAgent::on_rc_frame`), so a GS of another version still
+gets an ack carrying the drone's version. A foreign-version RCF is still
+dropped by `rc::frame_type`, so such a GS is answered but never linked.
 The first RCF that verifies under the acked pair is what actually links
 the drone (`RcAgent::on_rc_frame` T_RCF: verify against `current_`, then
 `pending_`; a `pending_` pass promotes it to `current_`, resets its
@@ -304,26 +314,21 @@ Cold start:
 2. Drone verifies the tag (`rc::verify_control(..., cfg_.link.key,
    TagCtx{})`):
    - pass: pick or reuse a `vtx_nonce` for this `vrx_nonce`, store it as
-     `pending_`, ack unflagged (`kAckKeyMismatch` clear);
-   - fail: ack with `kAckKeyMismatch` set and `vtx_nonce` zero, set
-     `auth_reject`. Nothing else changes.
+     `pending_`, ack unflagged (`kAckKeyMismatch` clear), tagged under
+     `link.key` with `TagCtx{}`;
+   - fail: ack with `kAckKeyMismatch` set, `vtx_nonce` zero and an
+     all-zero tag, set `auth_reject`. Nothing else changes.
 3. GS (`VrxRendezvous::feed_disc_ack`): `vrx_nonce` must match ours.
    - unflagged: adopt the `vtx_nonce` (**newest unflagged ack for our
      `vrx_nonce` wins**), enter `SESSION`, start tagging and sending
      RCFs;
    - flagged: the stranger rule below.
 4. Drone's first RCF under `pending_` verifies: promotes to `current_`,
-   enters `LINKED`. If the DISC proposed a channel move, one immediate
-   Telem goes out on the OLD channel first (the "I heard you, moving"
-   signal — `RcAgent::take_session_promoted()` / `deferred_move_ch_`,
-   executed in `tick()` so main has a chance to send that Telem before
-   the retune), then the drone retunes.
-5. GS: `VrxController::note_drone_state(2)` on that LINKED Telem — or,
-   if it's lost, `kMoveAfterRcfs = 5` RCFs sent under the new session —
-   arms `take_move_edge()`; GS main follows to the agreed channel on that
-   edge. If the GS never follows, the drone hears no accepted RCF on the
-   new channel within `link.move_confirm_ms` and returns to the channel
-   it came from ([`docs/channel-select.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/channel-select.md)).
+   enters `LINKED` on the channel the drone already holds
+   (`RcAgent::take_session_promoted()` still tells main to send its
+   promote Telem). A channel change after that is a hop order in an RCF
+   ([`docs/channel-select.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/channel-select.md)),
+   which `link.move_confirm_ms` still guards.
 
 Keep-alive DISC while LINKED: verified like any DISC, acked with the
 *same* `vtx_nonce` already issued for that `vrx_nonce` — nothing else
