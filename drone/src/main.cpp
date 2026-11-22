@@ -2126,9 +2126,11 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
       if (linked && !cal_sweeping.load(std::memory_order_relaxed) &&
           comp.outbound_packets() > 0 && now - last_up >= kMavUplinkMinMs) {
         rc::Mav m;
+        m.type = rc::T_MAV_UP;
         m.counter = mav_up_counter.fetch_add(1, std::memory_order_relaxed);
         const int packets = comp.take_outbound(&m.payload);
-        const auto mav = rc::pack_mav(m, /*tagged=*/false);
+        // shortcut: zero tag context; the session pair is not wired to the uplink yet.
+        const auto mav = rc::pack_mav(m, cfg.link.key, rc::TagCtx{});
         const std::vector<uint8_t>& telem_radiotap = mav_radiotap.get();
         std::vector<uint8_t> frame;
         frame.reserve(telem_radiotap.size() + kDot11HeaderLen + mav.size());
@@ -2781,10 +2783,12 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
     ControlRadiotap cal_radiotap = make_control_radiotap();
     auto send_cal = [&](const cal::CalMsg& msg) {
       rc::Mav m;
+      m.type = rc::T_MAV_UP;
       m.counter = mav_up_counter.fetch_add(1, std::memory_order_relaxed);
       m.payload = cal::encode(msg, MavComponent::sys_id(), MavComponent::comp_id(),
                               mav::kChanDroneRx);
-      const auto mav = rc::pack_mav(m, /*tagged=*/false);
+      // shortcut: zero tag context; the cal run pair is not wired to the uplink yet.
+      const auto mav = rc::pack_mav(m, cfg.link.key, rc::TagCtx{});
       const std::vector<uint8_t>& rt = cal_radiotap.get();
       std::vector<uint8_t> frame;
       frame.reserve(rt.size() + kDot11HeaderLen + mav.size());

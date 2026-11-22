@@ -18,6 +18,11 @@
 using namespace mabur;
 using namespace mabur::rc;
 
+// Pins the drone's move-on-DISC path. The frozen DISC proposes no channel,
+// so that path can no longer fire: compiled, not registered, until the path
+// itself is deleted.
+#define MOVE_ON_DISC_TEST(name) [[maybe_unused]] static void name()
+
 namespace {
 
 // Records every Actuator call for inspection by the tests. bitrate_ok /
@@ -141,14 +146,13 @@ std::vector<uint8_t> make_rcf_wire(uint16_t seq, uint8_t profile, uint8_t ov_16t
   return make_rcf_wire(seq, profile, ov_16ths, ov_16ths, vtx_nonce);
 }
 
-std::vector<uint8_t> make_disc_wire(uint32_t nonce, uint8_t op_channel, uint8_t op_width,
-                                    uint8_t init_profile, uint16_t seq,
+// op_channel / op_width / init_profile are no longer on the wire (the frozen
+// DISC carries vrx_nonce + seq only); kept so existing callers compile.
+std::vector<uint8_t> make_disc_wire(uint32_t nonce, uint8_t /*op_channel*/, uint8_t /*op_width*/,
+                                    uint8_t /*init_profile*/, uint16_t seq,
                                     const mabur::LinkKey& key = mabur::kDefaultLinkKey) {
   Disc d;
   d.vrx_nonce = nonce;
-  d.op_channel = op_channel;
-  d.op_width = op_width;
-  d.init_profile = init_profile;
   d.seq = seq;
   return pack_disc(d, key);
 }
@@ -251,8 +255,7 @@ TEST(disc_replies_disc_ack_and_does_not_link) {
   CHECK(ack->vrx_nonce == kVrx);
   CHECK(ack->vtx_nonce != 0);
   CHECK(ack->flags == 0);
-  CHECK(ack->agreed_channel == 149);
-  CHECK(ack->agreed_width == cfg.radio.width);
+  CHECK(ack->channel == agent.channel());   // the frozen ack names where the drone is
   CHECK(act.retunes.empty());          // no move on a DISC
   CHECK(act.applied.size() == applied0);   // no op on a DISC (BOOT's MAX_RANGE only)
   CHECK(act.bitrates.size() == bitrates0);
@@ -267,7 +270,7 @@ TEST(disc_replies_disc_ack_and_does_not_link) {
   CHECK(ack3->vtx_nonce != ack->vtx_nonce);
 }
 
-TEST(first_verified_rcf_links_and_defers_the_move_to_tick) {
+MOVE_ON_DISC_TEST(first_verified_rcf_links_and_defers_the_move_to_tick) {
   Config cfg = make_cfg();
   MockActuator act;
   RcAgent agent(cfg, act);
@@ -380,7 +383,7 @@ TEST(new_vrx_nonce_while_linked_swaps_session_without_touching_op) {
 // moves -- deferred to tick() like any promotion (the old LINKED ack-only
 // branch honoured a channel move; link pairing keeps it, but only
 // once the new pair has proved itself with a verified RCF).
-TEST(promotion_while_linked_to_a_new_channel_defers_the_move) {
+MOVE_ON_DISC_TEST(promotion_while_linked_to_a_new_channel_defers_the_move) {
   Config cfg = make_cfg();
   MockActuator act;
   RcAgent agent(cfg, act);
@@ -515,27 +518,8 @@ TEST(install_session_for_replay_accepts_a_pretagged_rcf) {
   CHECK(agent.state() == RcAgent::State::LINKED);
 }
 
-// 2c. DiscAck.chip_caps always advertises CAP_FRAME_WIRE: the frame wire is
-// the only video format maburd speaks since the pre-frame-shm path was
-// deleted. The bit stays on the wire so a GS can refuse a peer without it.
-TEST(disc_ack_advertises_frame_wire_cap) {
-  Config cfg = make_cfg();
-  MockActuator act;
-  RcAgent agent(cfg, act);
-  agent.tick(0, RadioHealth{});  // BOOT -> RENDEZVOUS
-
-  auto wire = make_disc_wire(0xCAFEF00D, /*op_channel=*/136,
-                              /*op_width=*/40, 0, 2);
-  agent.on_rc_frame(wire.data(), wire.size(), 100);
-
-  REQUIRE(act.controls.size() == 1);
-  auto parsed = parse_disc_ack(act.controls[0].data(), act.controls[0].size());
-  REQUIRE(parsed.has_value());
-  CHECK(parsed->chip_caps & mabur::rc::CAP_FRAME_WIRE);
-}
-
 // 2b. Keep-alive DISC while LINKED: ACK-ONLY. The drone must reply with a
-// DiscAck (so a rebooted GS re-learns chip_caps — the stale-caps deadlock)
+// DiscAck (so a rebooted GS can re-open its session)
 // but must otherwise treat the DISC as noise: no init-profile apply (the
 // op-thrash fix stands), no state
 // change, no failsafe-watchdog refresh, no bitrate re-force.
@@ -562,8 +546,8 @@ TEST(keepalive_disc_while_linked_acks_without_op_change) {
                              /*init_profile=*/0, /*seq=*/7);
   agent.on_rc_frame(disc.data(), disc.size(), 600);
 
-  // Exactly one new control frame: a well-formed DiscAck echoing our real
-  // caps and channel, and the DISC's nonce/seq.
+  // Exactly one new control frame: a well-formed DiscAck echoing our
+  // channel and the DISC's nonce/seq.
   REQUIRE(act.controls.size() == n_controls + 1);
   auto parsed = parse_disc_ack(act.controls.back().data(),
                                act.controls.back().size());
@@ -572,9 +556,7 @@ TEST(keepalive_disc_while_linked_acks_without_op_change) {
   CHECK(parsed->vtx_nonce == vtx);  // keep-alive for the current pair: same answer
   CHECK(parsed->flags == 0);
   CHECK(parsed->seq == 7);
-  CHECK(parsed->chip_caps & mabur::rc::CAP_FRAME_WIRE);
-  CHECK(parsed->agreed_channel == cfg.radio.channels.front());
-  CHECK(parsed->agreed_width == cfg.radio.width);
+  CHECK(parsed->channel == cfg.radio.channels.front());
   CHECK(act.retunes.empty());
 
   // Everything else about the DISC is still ignored.
@@ -1495,7 +1477,7 @@ TEST(link_established_latches_on_first_rcf_not_on_disc) {
 // channel -> ack agreeing to the NEW
 // channel from the current one; the retune waits for the first verified RCF
 // and then runs from tick() (after main's promote Telem).
-TEST(disc_foreign_channel_acks_then_retunes) {
+MOVE_ON_DISC_TEST(disc_foreign_channel_acks_then_retunes) {
   auto cfg = make_cfg();
   MockActuator act;
   RcAgent agent(cfg, act);
@@ -1505,7 +1487,7 @@ TEST(disc_foreign_channel_acks_then_retunes) {
   REQUIRE(act.controls.size() == 1);
   auto ack = parse_disc_ack(act.controls[0].data(), act.controls[0].size());
   REQUIRE(ack.has_value());
-  CHECK(ack->agreed_channel == 149);
+  CHECK(ack->channel == 149);
   CHECK(act.retunes.empty());                         // a DISC never retunes
   auto rcf = make_rcf_wire(1, encode_profile(PhyMode::HT, 0, 20), 8, ack->vtx_nonce);
   agent.on_rc_frame(rcf.data(), rcf.size(), 150);
@@ -1537,7 +1519,7 @@ TEST(linked_keepalive_disc_foreign_channel_acks_without_retune) {
   REQUIRE(act.controls.size() == controls_before + 1);
   auto ack = parse_disc_ack(act.controls.back().data(), act.controls.back().size());
   REQUIRE(ack.has_value());
-  CHECK(ack->agreed_channel == 149);
+  CHECK(ack->channel == agent.channel());
   CHECK(ack->vtx_nonce == vtx);
   agent.tick(300, RadioHealth{});
   CHECK(act.retunes.empty());
@@ -1561,10 +1543,10 @@ TEST(disc_same_channel_never_retunes) {
   agent.tick(260, RadioHealth{});
   CHECK(act.retunes.empty());
   REQUIRE(act.controls.size() == 2);
-  CHECK(parse_disc_ack(act.controls[1].data(), act.controls[1].size())->agreed_channel == 136);
+  CHECK(parse_disc_ack(act.controls[1].data(), act.controls[1].size())->channel == 136);
 }
 
-TEST(unconfirmed_move_returns_home_after_move_confirm_ms) {
+MOVE_ON_DISC_TEST(unconfirmed_move_returns_home_after_move_confirm_ms) {
   auto cfg = make_cfg();
   MockActuator act;
   RcAgent agent(cfg, act);
@@ -1611,7 +1593,7 @@ TEST(unconfirmed_move_returns_home_after_move_confirm_ms) {
 // while LINKED or FAILSAFE); FAILSAFE -> RENDEZVOUS at +rendezvous_ms from
 // the FAILSAFE-entry rebase, WITHOUT any retune (FAILSAFE->RENDEZVOUS
 // never retunes -- there is no home to go to).
-TEST(gs_frame_confirms_move_and_rendezvous_entry_never_retunes) {
+MOVE_ON_DISC_TEST(gs_frame_confirms_move_and_rendezvous_entry_never_retunes) {
   auto cfg = make_cfg();
   MockActuator act;
   RcAgent agent(cfg, act);
@@ -1798,13 +1780,13 @@ TEST(mav_check_separates_malformed_from_rejected) {
   Mav out;
   {
     // Not linked yet: a well-formed frame has nothing to verify against.
-    auto early = pack_mav(m, true, mabur::kDefaultLinkKey, TagCtx{kVrx, 1, 4});
+    auto early = pack_mav(m, mabur::kDefaultLinkKey, TagCtx{kVrx, 1, 4});
     CHECK(agent.check_mav(early.data(), early.size(), &out, false) == RcAgent::MavCheck::kRejected);
     CHECK(agent.take_auth_reject());
   }
   const uint32_t vtx = link_agent(agent, act, cfg);
   CHECK(!agent.take_auth_reject());
-  auto good = pack_mav(m, true, mabur::kDefaultLinkKey, TagCtx{kVrx, vtx, 4});
+  auto good = pack_mav(m, mabur::kDefaultLinkKey, TagCtx{kVrx, vtx, 4});
   // len16 claims more bytes than the buffer holds: malformed.
   auto overrun = good;
   overrun[8] = static_cast<uint8_t>(m.payload.size() + 20);
@@ -1812,12 +1794,13 @@ TEST(mav_check_separates_malformed_from_rejected) {
   CHECK(!agent.take_auth_reject());
   CHECK(agent.check_mav(good.data(), good.size() - 3, &out, false) == RcAgent::MavCheck::kMalformed);
   CHECK(!agent.take_auth_reject());
-  // An untagged (drone->GS layout) frame fails the tagged parse: malformed.
-  auto untagged = pack_mav(m, false);
-  CHECK(agent.check_mav(untagged.data(), untagged.size(), &out, false) == RcAgent::MavCheck::kMalformed);
+  // The drone->GS type, however well tagged, is not a GS request: malformed.
+  Mav up = m; up.type = T_MAV_UP;
+  auto uplink = pack_mav(up, mabur::kDefaultLinkKey, TagCtx{kVrx, vtx, 4});
+  CHECK(agent.check_mav(uplink.data(), uplink.size(), &out, false) == RcAgent::MavCheck::kMalformed);
   CHECK(!agent.take_auth_reject());
   // Tagged with the wrong seq32: rejected.
-  auto wrongseq = pack_mav(m, true, mabur::kDefaultLinkKey, TagCtx{kVrx, vtx, 5});
+  auto wrongseq = pack_mav(m, mabur::kDefaultLinkKey, TagCtx{kVrx, vtx, 5});
   CHECK(agent.check_mav(wrongseq.data(), wrongseq.size(), &out, false) == RcAgent::MavCheck::kRejected);
   CHECK(agent.take_auth_reject());
   // Good frame (plus a trailing FCS, as on hardware): accepted, out filled.
@@ -1877,7 +1860,7 @@ std::vector<uint8_t> mav_wire(const std::vector<uint8_t>& payload, uint32_t coun
   Mav m;
   m.counter = counter;
   m.payload = payload;
-  return pack_mav(m, true, mabur::kDefaultLinkKey, TagCtx{kVrx, vtx, counter});
+  return pack_mav(m, mabur::kDefaultLinkKey, TagCtx{kVrx, vtx, counter});
 }
 
 RcAgent::MavCheck mav_check(RcAgent& agent, const std::vector<uint8_t>& w, bool run_open,
@@ -3304,11 +3287,11 @@ TEST(disc_proposing_a_non_member_is_acked_with_the_current_channel) {
   REQUIRE(act.controls.size() == 1);
   auto ack = parse_disc_ack(act.controls[0].data(), act.controls[0].size());
   REQUIRE(ack.has_value());
-  CHECK(ack->agreed_channel == 136);       // override: stay where we are
+  CHECK(ack->channel == 136);       // override: stay where we are
   CHECK(act.retunes.empty());
 }
 
-TEST(unconfirmed_disc_move_returns_to_the_channel_it_came_from_and_stays) {
+MOVE_ON_DISC_TEST(unconfirmed_disc_move_returns_to_the_channel_it_came_from_and_stays) {
   Config cfg = make_cfg();
   MockActuator act;
   RcAgent agent(cfg, act);
@@ -3327,7 +3310,7 @@ TEST(unconfirmed_disc_move_returns_to_the_channel_it_came_from_and_stays) {
   CHECK(act.retunes.size() == 2);
 }
 
-TEST(failsafe_and_rendezvous_timers_never_retune) {
+MOVE_ON_DISC_TEST(failsafe_and_rendezvous_timers_never_retune) {
   Config cfg = make_cfg();
   MockActuator act;
   RcAgent agent(cfg, act);
@@ -3347,7 +3330,7 @@ TEST(failsafe_and_rendezvous_timers_never_retune) {
   CHECK(agent.channel() == 149);
 }
 
-TEST(confirmed_move_is_remembered_once) {
+MOVE_ON_DISC_TEST(confirmed_move_is_remembered_once) {
   Config cfg = make_cfg();
   MockActuator act;
   RcAgent agent(cfg, act);

@@ -85,7 +85,7 @@ u16 crc16
   calibration sweep holds the GS radio-silent. A frame goes out only when
   a ground app has sent something, or the calibration session has a
   message due (its own lane, below).
-- `CAP_MAVLINK` (`0x0008`) in DISC_ACK `chip_caps` says the drone answers
+- `CAP_MAVLINK` (`0x0008`) in Telem `chip_caps` says the drone answers
   `T_MAV`. It is display-only: with `[mavlink] enable`, `maburgs` logs
   `maburgs: mavlink: drone lacks CAP_MAVLINK` once per session when the bit
   is missing, and it gates nothing on it.

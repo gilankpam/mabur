@@ -143,6 +143,13 @@ build. mabur owes nothing to old peers, old configs, or old consumers.
   intended forcing function, not a regression. No migration shims.
 - **There is no rollback contract.** An old binary needs its old config
   restored alongside it, always. Prefer rolling forward.
+- **The one exception: the frozen handshake.** The 802.11 framing of
+  control frames, the RC prefix, DISC, DISC_ACK, the tag construction,
+  the `T_MAV`/`T_MAV_UP` envelope and the CRC never change, under any
+  `RC_VERSION` — not by appending, not under a new version; a new need is
+  a new frame type. It is what lets a GS and a drone at different versions
+  find and authenticate each other. `docs/link-pairing.md`
+  "Frozen handshake" owns it; the goldens in `tests/test_rc.cpp` pin it.
 
 **Release versions — a rule, not advice.** Releases are `v0.MINOR.PATCH`
 (`docs/releases.md`). Free-to-change does not mean silent: every other GS
@@ -169,10 +176,11 @@ deployment just as hard as a fleet:
 
 1. **Deploy is two devices and is never atomic.** Any wire change is a
    flag day: between swapping `maburd` and swapping `maburgs` the pair is
-   mismatched, and a mismatched pair has no control link and — since
-   DISC_ACK carries `CAP_FRAME_WIRE` — no video at all, which looks exactly
-   like the stale-caps deadlock and will send you to `restart maburd`. That
-   does not help; finish the deploy. See `docs/deploy.md`.
+   mismatched. A mismatched pair still completes the frozen handshake, so
+   the GS shows it (`UPD?` on the OSD, `link.state = "version_mismatch"`
+   on the sideport) instead of plain silence, but it has no control link
+   and no video. Restarting either daemon does not help; finish the
+   deploy. See `docs/deploy.md`.
 2. **Config-before-binary, still.** A daemon that sees an unknown key
    exits, and its wrapper respawns it forever at 2 s. See `docs/deploy.md`.
 3. **Recordings outlive the code that wrote them.** `flightreport.py` reads

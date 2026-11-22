@@ -192,8 +192,8 @@ RcAgent::NackCheck RcAgent::check_nack(const uint8_t* body, size_t len, rc::Nack
 
 RcAgent::MavCheck RcAgent::check_mav(const uint8_t* body, size_t len, rc::Mav* out,
                                      bool cal_run_open) {
-  auto m = rc::parse_mav(body, len, /*tagged=*/true);
-  if (!m) return MavCheck::kMalformed;
+  auto m = rc::parse_mav(body, len);
+  if (!m || m->type != rc::T_MAV) return MavCheck::kMalformed;
   const bool cal_only = cal::all_packets_are_cal(m->payload.data(), m->payload.size());
   MavCheck verdict = MavCheck::kRejected;
   uint64_t session = 0;
@@ -663,13 +663,8 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
   if (type == rc::T_DISC) {
     auto d = rc::parse_disc(body, len);
     if (!d.has_value()) return;
-    // Auto channel select: a DISC is a proposal (Disc.op_channel), not a
-    // command -- we agree to it when it's a member of our channel set; a
-    // non-member is answered with the current channel instead (the GS logs
-    // ack_override). The agreement
-    // rides the ack and the pending pair; the move itself happens only once
-    // that pair is promoted (see T_RCF).
-    const uint8_t agreed = member_(d->op_channel) ? d->op_channel : channel_;
+    // The frozen DISC proposes no channel: the ack names the current one.
+    const uint8_t agreed = channel_;
     if (!rc::verify_control(body, len, cfg_.link.key, rc::TagCtx{})) {
       // Wrong key on the GS. Answer so the GS can SHOW it instead of
       // looking like the stale-caps deadlock; change nothing else.
@@ -681,8 +676,8 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
     // A DISC only elicits an ack: no op, no retune, no LINKED
     // entry, no watchdog refresh. The first RCF that verifies under the
     // acked pair does those. The ack itself still goes out on every DISC,
-    // LINKED included: a rebooted GS's keep-alive is the only way it
-    // re-learns chip_caps (the stale-caps deadlock).
+    // LINKED included: a rebooted GS's keep-alive is how it re-opens its
+    // session.
     uint32_t vtx;
     if (state_ == State::LINKED && current_.valid && d->vrx_nonce == current_.vrx_nonce) {
       vtx = current_.vtx_nonce;                       // keep-alive: same answer
@@ -1030,23 +1025,7 @@ rc::DiscAck RcAgent::make_disc_ack(uint32_t vrx_nonce, uint32_t vtx_nonce, uint8
   ack.vrx_nonce = vrx_nonce;
   ack.vtx_nonce = vtx_nonce;
   ack.flags = flags;
-  // Frame wire is the only video format maburd speaks; the bit stays on the
-  // wire (one legal value) so a GS can still refuse a peer that lacks it.
-  // CAP_TELEMETRY: this drone also sends T_TELEM frames on its uplink —
-  // display-grade only, not a gate.
-  // CAP_CALIBRATE: this build runs the mabur-dialect calibration -- a real
-  // gate, unlike CAP_TELEMETRY: gs/src/cal_session.cpp's start() refuses a
-  // session outright without it.
-  // CAP_MAVLINK: this build answers T_MAV (main.cpp's MAV thread).
-  // Display-only, like CAP_TELEMETRY: the GS logs a peer without it once
-  // per session and gates nothing on it.
-  ack.chip_caps = rc::CAP_FRAME_WIRE | rc::CAP_TELEMETRY | rc::CAP_CALIBRATE | rc::CAP_MAVLINK;
-  // agreed is member_(op_channel) ? the DISC's proposed op_channel : the
-  // current channel -- computed by the caller, which also stores it in the
-  // pending pair whose promotion drives the actual retune, so the ack and the
-  // move can never disagree about what was agreed to.
-  ack.agreed_channel = agreed;
-  ack.agreed_width = cfg_.radio.width;
+  ack.channel = agreed;
   ack.seq = seq;
   return ack;
 }

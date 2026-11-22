@@ -137,9 +137,6 @@ TimedActuator replay_real_agent() {
 
   Disc d;
   d.vrx_nonce = kVrx;
-  d.op_channel = 149;
-  d.op_width = 20;
-  d.init_profile = encode_profile(PhyMode::HT, 7, 20);
   d.seq = 1;
   auto disc = pack_disc(d);
   agent.on_rc_frame(disc.data(), disc.size(), t_link);  // -> DISC_ACK

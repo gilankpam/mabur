@@ -45,8 +45,8 @@ the GS's own composition (`default_sweeps`, [`gs/src/cal_control.h`](https://git
 `power20, cap20`, plus `power40, cap40` when the GS receiver width
 (derived from the ladder, `docs/bw40.md`) is 40
 **and** some `[[link.ladder]]` rung has `bw = 40`. The width is the
-narrower of the GS receiver width and the linked drone's DISC_ACK
-`agreed_width`, so a 40 MHz GS linked to a drone flying 20 composes the
+narrower of the GS receiver width and the linked drone's Telem
+`width`, so a 40 MHz GS linked to a drone flying 20 composes the
 20 MHz pair only. Arguments `power20|power40|cap20|cap40` pick a subset;
 duplicates drop. Whatever was typed, the session runs widths ascending and,
 within a width, **power before capacity**: capacity is measured at the

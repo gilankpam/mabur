@@ -38,6 +38,9 @@ Releases are `v0.MINOR.PATCH`, starting at `v0.1.0`.
   means "update the ground station with this drone".
 - **PATCH** otherwise. It means "drop-in, no GS change".
 
+The frozen handshake (`docs/link-pairing.md` "Frozen handshake") is
+outside this rule: it never changes, so no release moves it.
+
 `tools/release.py check <tag>` enforces the first three: it reads them at
 the tag and at the previous `v*` tag and fails when only the patch number
 moved over a change. The tag's workflow run runs it before building, so a

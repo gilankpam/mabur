@@ -180,6 +180,15 @@ Chronological; each line names the section below that carries the detail.
   `follow` they are display lines (the frame-length register's and the
   grid's), and the drone's sensor runs on its trim (RCF `snr_off` 0).
   Reglog ≤ 4 rows carry no `lact=` and are all the sensor steer.
+- 2026-11-22 — the frozen handshake: RC_VERSION 19. DISC was 27 bytes
+  (`RC|ver|2|flags 0x04|u32 vrx_nonce|op_channel|op_width|table_ver|init_profile|u16 cap_bits|u16 seq|tag|crc`),
+  is 20 (`RC|ver|2|u32 vrx_nonce|u16 seq|tag|crc`). DISC_ACK was 22
+  bytes, untagged
+  (`RC|ver|3|flags 0x04|u32 vrx_nonce|u32 vtx_nonce|u16 chip_caps|agreed_channel|agreed_width|flags|u16 seq|crc`),
+  is 26 and tagged (`RC|ver|3|u32 vrx_nonce|u32 vtx_nonce|flags|channel|u16 seq|tag|crc`).
+  Drone → GS MAVLink is type 9 (`T_MAV_UP`), tagged; before it, type 8
+  untagged. Telem 54 → 57 bytes: `chip_caps` and `width` appended. Layouts
+  from here on: `docs/link-pairing.md` "Frozen handshake".
 - 2026-11-15 — the drone's carrier sense is the config key `radio.cca`
   (default on); a recording does not carry its state (see "2026-09-23 —
   carrier sense back ON").

@@ -8,10 +8,11 @@ runbooks of past flag days are in
 
 **A version mismatch has no video at all.** Any `RC_VERSION` bump
 (`common/include/mabur/rc_proto.h`) is a flag day: a drone and GS at
-different versions reject each other's frames in BOTH directions, and
-because DISC_ACK is what carries `CAP_FRAME_WIRE`, the symptom is no
-control link and no video. Restarting either daemon does not fix a
-version mismatch; finish the deploy. The RC wire goldens live in
+different versions exchange only the frozen handshake
+(`docs/link-pairing.md` "Frozen handshake") and reject every other frame
+in BOTH directions, so the symptom is no control link and no video.
+Restarting either daemon does not fix a version mismatch; finish the
+deploy. The RC wire goldens live in
 `tests/test_rc.cpp`. `RC_VERSION` 18 (calibration moves onto the MAVLink
 tunnel; `T_CAL_CMD`/`T_CAL_RESULT` deleted) is a flag day like every other
 bump, and it also removes a drone config key: `radio.rate_walls_rel` fails
