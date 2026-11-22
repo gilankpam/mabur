@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdio>
@@ -1905,6 +1906,22 @@ TEST(bundle_is_the_per_drone_keys_only) {
   CHECK(keys == (std::set<std::string>{"radio.channels", "radio.rate_walls_rel_20",
                                        "radio.rate_walls_rel_40", "link.key_file",
                                        "venc.sensor_bin"}));
+}
+
+// A section the file leaves out still reports every key's value in the
+// boot log, so the built-in tuning is visible on a minimal config.
+TEST(absent_section_reports_each_default_value) {
+  auto p = write_temp_toml("[venc]\nsensor_bin = \"/x.bin\"\n");
+  std::vector<std::string> defaulted;
+  (void)load_config(p.string(), &defaulted);
+  auto has = [&](const std::string& d) {
+    return std::find(defaulted.begin(), defaulted.end(), d) != defaulted.end();
+  };
+  CHECK(has("fec.window=64"));
+  CHECK(has("air_clock.shed_ms=25"));
+  CHECK(has("encoder.airtime_budget=0.650000"));
+  CHECK(has("record.size=1920x1080"));
+  std::filesystem::remove(p);
 }
 
 MTEST_MAIN

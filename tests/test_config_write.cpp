@@ -359,4 +359,15 @@ TEST(remove_toml_table_stops_at_next_header) {
   CHECK(!remove_toml_table(&t, "bogus"));
 }
 
+// A commented-out line with '=' and an unclosed '[' (an old wall table
+// kept as a comment) is not an open multi-line value: the lines after it,
+// headers included, stay visible.
+TEST(commented_open_array_does_not_hide_the_rest) {
+  std::string t = "[radio]\n# old = [63,\n#  45]\ncca = false\n[venc]\nfps = 60\n";
+  CHECK(remove_toml_key(&t, "radio", "cca"));
+  CHECK(t == "[radio]\n# old = [63,\n#  45]\n[venc]\nfps = 60\n");
+  set_toml_key(&t, "venc", "size", "\"1920x1080\"");
+  CHECK(t == "[radio]\n# old = [63,\n#  45]\n[venc]\nfps = 60\nsize = \"1920x1080\"\n");
+}
+
 MTEST_MAIN

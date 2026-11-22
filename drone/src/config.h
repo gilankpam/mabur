@@ -89,9 +89,9 @@ struct FecCfg {
   // seal without padding/latency.
   std::array<int, 2> symbol_size = {332, 332};
   // Sliding-window burst budget: a layer at overhead ov survives a hole of
-  // up to L <= window*ov/(1+ov) consecutive lost symbols. 128 lets the
-  // ov-0.50 layer survive one full bpb-16 body loss with room to spare
-  // (L=128*0.50/1.50≈42.7 vs 16 lost symbols).
+  // up to L <= window*ov/(1+ov) consecutive lost symbols. 64 lets the
+  // ov-0.50 layer survive a run of L=64*0.50/1.50≈21 lost symbols, more
+  // than one bpb-4 body.
   int window = 64;
   std::array<int, 2> blocks_per_body = {4, 4};
   // Literal air overhead: the fraction of repair bytes over source bytes
@@ -103,10 +103,9 @@ struct FecCfg {
   // (TxQueue wakeup batching + grouped pool submit) so URBs fill their
   // 3-descriptor cap and A-MPDU aggregates can form, instead of the
   // per-body trickle that ships every body alone (~360 µs metronome,
-  // dq-spike findings §17). 0/1 = streaming push (per-body wakeups). Bench
-  // lever — default off until the batching+agg compound is accepted
-  // end-to-end (watch arrival-jitter EMA: coarser quanta, the 656-rollback
-  // lesson).
+  // dq-spike findings §17). 0/1 = streaming push (per-body wakeups), and 1
+  // is the default; >1 batches (watch arrival-jitter EMA: coarser quanta,
+  // the 656-rollback lesson).
   int feed_batch = 1;
 
   bool operator==(const FecCfg&) const = default;
@@ -195,15 +194,13 @@ struct MspCfg {
   bool operator==(const MspCfg&) const = default;
 };
 
-// A-MPDU TX aggregation. OFF by default per the bench verdict
-// (dq-spike-findings §12): the depth sweep measured NO fec improvement at any
-// depth — maburd's per-body tax is host/USB-side, not medium access — while
-// aggregate subframes carry missing-or-untrustworthy PHY reports that degrade
-// the GS's RF telemetry even with the phy_valid filtering in place. Enable
-// (max_num > 0) only for experiments, e.g. after a USB feed rework. The
-// QoS-Data wire header does NOT depend on this block — max_num 0 turns off
-// only the aggregation (frames become QoS-Data singles, measured identical to
-// the old pace).
+// A-MPDU TX aggregation, on by default: 6-frame aggregates, only from MCS4
+// at 20 MHz and MCS2 at 40 MHz, where aggregation pays (min_mcs_* below).
+// Aggregate subframes carry missing-or-untrustworthy PHY reports, which
+// degrades the GS's RF telemetry even with the phy_valid filtering
+// (dq-spike-findings §12). The QoS-Data wire header does NOT depend on this
+// block -- max_num 0 turns off only the aggregation (frames become QoS-Data
+// singles).
 struct AmpduCfg {
   int max_num = 6;    // MAX_AGG_NUM cap, 0 = aggregation off, max 31 (5-bit)
   int max_time = 32;  // raw 0x455 fill-timer value (0x20 ~= 0.8 ms);
@@ -213,9 +210,9 @@ struct AmpduCfg {
   // Lowest op MCS that aggregates, PER WIDTH; rungs below fly QoS-Data
   // singles (drone/src/ampdu_policy.h). 20 MHz: agg6 delivers 6-13 points
   // LESS than singles at mcs0-2 (docs/findings/2026-09-17-bandwidth-sweep.md),
-  // the bundle ships 4. 40 MHz: frames are half as long on air and
+  // so the default is 4. 40 MHz: frames are half as long on air and
   // aggregation pays from mcs2 (docs/findings/2026-09-23-bw40-sweep.md),
-  // the bundle ships 2. 0 = aggregate at every rung of that width.
+  // so the default is 2. 0 = aggregate at every rung of that width.
   int min_mcs_20 = 4;
   int min_mcs_40 = 2;
 
@@ -272,7 +269,7 @@ struct RecordCfg {
   int bitrate_kbps = 40000;            // CBR
   int fps = 60;
   int min_free_mb = 512;               // refuse to start / stop below this
-  // Recording size; 0x0 = venc.size. A size other than venc.size records
+  // Recording size, 1920x1080 by default. A size other than venc.size records
   // from the second VPE scaler (port 1) instead of the link's port 0; above
   // 1920x1080 the sensor switches to its 3840x2160@30 mode.
   int width = 1920, height = 1080;

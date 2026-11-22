@@ -13,15 +13,15 @@ typedef struct {
                               * window (1..100 fps only) */
   double gop_s;              /* venc.gop_s: seconds between refresh starts; 0 = no periodic refresh (the GS asks for IDRs on demand) */
   int8_t qp_delta;           /* venc.qp_delta */
-  uint8_t max_ipprop;        /* venc.max_ipprop: 0 (default) = leave the
-                              * firmware default (0 = unbounded); 1..100 =
+  uint8_t max_ipprop;        /* venc.max_ipprop: 2 by default; 0 = leave the
+                              * firmware default (unbounded); 1..100 =
                               * program u32MaxIPProp at boot. Probe
                               * findings: enforced on star6e
                               * (dose-response measured), achieved-ratio
                               * floor ~1.4 at small values (I-QP rails);
                               * useful range 2..4 at the shipped GDR/SVC-T
                               * settings, where IDRs are already ~1.7x P. */
-  uint8_t min_iqp;           /* venc.min_iqp: 0 (default) = leave the
+  uint8_t min_iqp;           /* venc.min_iqp: 34 by default; 0 = leave the
                               * firmware I-QP floor (12); 1..51 = program
                               * u32MinIQp at boot. The one direct IDR SIZE
                               * bound star6e honours (bench:
@@ -31,7 +31,7 @@ typedef struct {
                               * Costs one soft keyframe per transition;
                               * sized for the rung-0 demote IDR. Must not
                               * exceed the MaxIQp rail (48 firmware). */
-  uint16_t superframe_p_pct; /* venc.superframe_p_pct: 0 (default) = off;
+  uint16_t superframe_p_pct; /* venc.superframe_p_pct: 200 by default; 0 = off;
                               * 100..1000 = P-frame ceiling as a percentage
                               * of the rung's per-frame budget
                               * (kbps*1024 / (fps*8)), programmed through

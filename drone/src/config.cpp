@@ -626,7 +626,7 @@ void parse_record(const Value& j, RecordCfg& r) {
   if (j.contains("size"))
     parse_wxh(j, "record", r.width, r.height);
   else
-    note_default("record", "size", "(venc.size)");
+    note_default("record", "size", std::to_string(r.width) + "x" + std::to_string(r.height));
   assign_if_present(j, "enable", r.enable, "record");
   assign_if_present(j, "dir", r.dir, "record");
   assign_if_present(j, "bitrate_kbps", r.bitrate_kbps, "record");
@@ -737,31 +737,34 @@ Config load_config(const std::string& path, std::vector<std::string>* defaulted)
     ~Clear() { g_defaulted = nullptr; g_file.clear(); g_line = 0; }
   } clear_on_exit;
 
-  static const char* kSections[] = {"radio", "fec", "encoder", "venc",
-                                    "link", "msp", "ampdu", "air_clock", "low_power", "record", "nack"};
   check_known_keys(j, {"radio", "fec", "encoder", "venc", "link", "msp", "ampdu", "air_clock", "low_power", "record", "nack"}, "");
 
-  // A whole missing section means none of its keys are visited below, so
-  // report the section itself. Dropping a [table] while hand-transcribing is
-  // exactly the mistake this line exists to catch.
-  for (const char* sec : kSections)
-    if (!j.contains(sec)) note_default("", sec, "(section absent)");
-
+  // A missing section is parsed as an empty one, so every key in it reports
+  // its default value: on a minimal drone config this list is where the
+  // built-in tuning shows. [venc] is the exception -- it has a required key
+  // -- and reports itself as absent.
+  const Value empty;
+  auto sec = [&](const char* name) -> const Value& {
+    return j.contains(name) ? j.at(name) : empty;
+  };
   Config cfg;
-  if (j.contains("radio")) parse_radio(j.at("radio"), cfg.radio);
-  if (j.contains("fec")) parse_fec(j.at("fec"), cfg.fec);
-  if (j.contains("encoder")) parse_encoder(j.at("encoder"), cfg.encoder);
-  if (j.contains("venc")) parse_venc(j.at("venc"), cfg.venc);
+  parse_radio(sec("radio"), cfg.radio);
+  parse_fec(sec("fec"), cfg.fec);
+  parse_encoder(sec("encoder"), cfg.encoder);
+  if (j.contains("venc"))
+    parse_venc(j.at("venc"), cfg.venc);
+  else
+    note_default("", "venc", "(section absent)");
   // A config with no [link] table at all must still resolve the pairing
   // key (to the compiled-in default), so this section is parsed
   // unconditionally rather than gated on j.contains("link") like the rest.
-  parse_link(j.contains("link") ? j.at("link") : Value(), cfg.link);
-  if (j.contains("msp")) parse_msp(j.at("msp"), cfg.msp);
-  if (j.contains("ampdu")) parse_ampdu(j.at("ampdu"), cfg.ampdu);
-  if (j.contains("air_clock")) parse_air_clock(j.at("air_clock"), cfg.air_clock);
-  if (j.contains("low_power")) parse_low_power(j.at("low_power"), cfg.low_power);
-  if (j.contains("record")) parse_record(j.at("record"), cfg.record);
-  if (j.contains("nack")) parse_nack(j.at("nack"), cfg.nack);
+  parse_link(sec("link"), cfg.link);
+  parse_msp(sec("msp"), cfg.msp);
+  parse_ampdu(sec("ampdu"), cfg.ampdu);
+  parse_air_clock(sec("air_clock"), cfg.air_clock);
+  parse_low_power(sec("low_power"), cfg.low_power);
+  parse_record(sec("record"), cfg.record);
+  parse_nack(sec("nack"), cfg.nack);
 
   // Cross-section checks, only when the mode is on: a disabled mode's
   // values are irrelevant and the minimal configs the tests load (msp off,

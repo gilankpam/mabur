@@ -12,9 +12,14 @@
 namespace mabur {
 namespace {
 
-const char* const kNeverPrune[] = {"radio.channels", "radio.rate_walls_rel_20",
-                                   "radio.rate_walls_rel_40", "link.key_file",
-                                   "venc.sensor_bin"};
+// Per-drone keys: the channel set, the files, and the calibration results
+// (walls, what they were measured with, the legacy wall). A value equal to
+// today's default is still this drone's, and must not follow a later
+// default change.
+const char* const kNeverPrune[] = {"radio.channels",    "radio.rate_walls_rel_20",
+                                   "radio.rate_walls_rel_40", "radio.cal_flags_20",
+                                   "radio.cal_flags_40", "radio.legacy_wall_rel",
+                                   "link.key_file",     "venc.sensor_bin"};
 
 std::string trim(const std::string& s) {
   size_t a = 0, b = s.size();

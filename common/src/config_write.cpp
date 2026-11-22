@@ -284,7 +284,8 @@ std::vector<TomlLine> scan_toml(const std::string& t) {
     l.begin = at;
     at = phys(at, &l.text);
     l.header = table_header(l.text, &l.name);
-    if (!l.header) {
+    const std::string first = trim_line(l.text);
+    if (!l.header && !first.empty() && first[0] != '#') {
       const size_t eq = l.text.find('=');
       if (eq != std::string::npos) {
         int depth = bracket_depth(l.text, eq + 1);

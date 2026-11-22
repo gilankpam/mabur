@@ -63,9 +63,11 @@ bool logged(const MigrateResult& r, const std::string& line) {
 TEST(full_bundle_migrates_to_per_drone_keys) {
   const MigrateResult r = migrate(fixture());
   REQUIRE(r.ok);
-  CHECK(key_paths(r.text) == (std::set<std::string>{"radio.channels", "radio.rate_walls_rel_20",
-                                                     "radio.rate_walls_rel_40", "link.key_file",
-                                                     "venc.sensor_bin"}));
+  CHECK(key_paths(r.text) ==
+        (std::set<std::string>{"radio.channels", "radio.rate_walls_rel_20",
+                               "radio.rate_walls_rel_40", "radio.cal_flags_20",
+                               "radio.cal_flags_40", "radio.legacy_wall_rel", "link.key_file",
+                               "venc.sensor_bin"}));
   CHECK(logged(r, "removed default venc.min_iqp = 34"));
 }
 
@@ -118,6 +120,18 @@ TEST(unparseable_key_fails_cleanly) {
   const MigrateResult r = migrate(std::string("[radio]\n\"foo\" = 1\n") + kVenc);
   CHECK(!r.ok);
   CHECK(r.error.find("quoted keys") != std::string::npos);
+}
+
+// Calibration results are per card: kept even when they equal today's
+// default, so a later default change never rewrites a measured unit.
+TEST(calibration_results_kept_even_at_default_value) {
+  const std::string in =
+      "[radio]\npower_mode = \"offset\"\n"
+      "rate_walls_rel_20 = [60, 60, 60, 45, 22, 6, 9, 5]\n"
+      "cal_flags_20 = \"ldpc+stbc\"\nlegacy_wall_rel = 63\n" + std::string(kVenc);
+  const MigrateResult r = migrate(in);
+  REQUIRE(r.ok);
+  CHECK(r.text == in);
 }
 
 MTEST_MAIN

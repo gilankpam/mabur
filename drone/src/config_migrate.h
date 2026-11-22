@@ -7,8 +7,9 @@
 //     the unknown name is a table);
 //   - a key whose line can go without changing what the file loads to (an
 //     equal Config) is removed: its value is this binary's default;
-//   - per-drone keys (the channel set, the wall tables, the key file, the
-//     sensor file) are never removed, even when they equal the default;
+//   - per-drone keys (the channel set, the calibration results -- wall
+//     tables, cal_flags, legacy_wall_rel -- the key file, the sensor file)
+//     are never removed, even when they equal the default;
 //   - every other line is kept byte for byte, comments included.
 //
 // The loader is load_config itself, so "known key" and "default value"

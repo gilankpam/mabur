@@ -186,8 +186,10 @@ creating the `[table]` when that is missing too
 binary needs, judging every line with its own loader: a key it rejects as
 unknown is removed (its whole table when the name is a table), and a line
 whose removal leaves the loaded config equal is removed as a default. The
-per-drone keys — `radio.channels`, `radio.rate_walls_rel_20`/`_40` (`[]`
-included), `link.key_file`, `venc.sensor_bin` — are never removed. Every
+per-drone keys — `radio.channels`, the calibration results
+(`radio.rate_walls_rel_20`/`_40`, `[]` included, `radio.cal_flags_20`/`_40`,
+`radio.legacy_wall_rel`), `link.key_file`, `venc.sensor_bin` — are never
+removed, even when they equal today's default. Every
 other line, comments included, is kept as written. Each removal is one
 `migrate: removed unknown <key>` or `migrate: removed default <key> =
 <value>` line on stderr. `<out>` is written (`<out>.new` + rename) only when
@@ -203,7 +205,10 @@ belongs to that drone.** `bundle/mabur.default.toml` sets five keys —
 calibrated), `link.key_file`, `venc.sensor_bin` — and every other key flies
 `maburd`'s built-in default, which is the flight tuning; retuning means
 changing that default in code. The drone's startup defaulted-key list is
-therefore long and expected. A value set on purpose is a line in the file;
+therefore long and expected: it is where the tuning shows, one
+`<key>=<value>` per key the file leaves out (a missing `[table]` is read as
+an empty one, so its keys are listed too; only a missing `[venc]` reports as
+`(section absent)`, since it has a required key). A value set on purpose is a line in the file;
 a test pins the bundle to those five keys
 (`bundle_is_the_per_drone_keys_only` in `test_config`).
 
