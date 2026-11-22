@@ -103,9 +103,11 @@ constexpr uint8_t T_TELEM = 4;
 constexpr uint8_t T_NACK = 7;
 // T_MAV (GS -> drone) and T_MAV_UP (drone -> GS), the MAVLink tunnel: one
 // frozen envelope, the type is the direction. Both are tagged under the
-// session pair with the frame's counter as the tag ctx's seq32; the
-// receiver accepts only a counter greater than the last it verified. The
-// type byte is inside the tagged bytes, so a frame of one direction never
+// session pair with the frame's counter as the tag ctx's seq32. The drone
+// accepts only a T_MAV counter greater than the last it verified; the GS
+// takes each T_MAV_UP counter once inside a 64-wide anti-replay window per
+// pair (the drone's uplink threads share one counter and may air out of
+// order), reset when the pair changes. The type byte is inside the tagged bytes, so a frame of one direction never
 // verifies as the other. rc_proto treats the payload as opaque bytes --
 // MAVLink parsing lives above this layer.
 constexpr uint8_t T_MAV = 8;
@@ -382,13 +384,10 @@ int frozen_type(const uint8_t* buf, size_t len);
 // a buffer shorter than 4 bytes, false for a non-RC body, false for our own
 // version.
 //
-// Deliberately additive rather than a change to frame_type()'s contract:
-// frame_type() returning -1 is the affirmative "this is video" signal on the
-// GS ingest path (gs/src/main.cpp), so distinguishing the version case there
-// would silently reroute video accounting. This predicate exists so the two
-// ingest points can LOG a version mismatch while still dropping/handling the
-// frame exactly as before -- a half-deployed pair otherwise fails completely
-// silently, presenting as no-video that looks like the stale-caps deadlock.
+// Deliberately additive rather than a change to frame_type()'s contract,
+// which stays the version gate for every non-frozen type. A GS ingest path
+// uses it to keep another version's RC frames off its video path and to log
+// that a peer at another version is in range.
 //
 // NOT a CRC check. RC_MAGIC is two bytes, so ~1 in 65536 corrupt bodies match
 // it by chance: RX-path callers must gate on their own crc_ok.

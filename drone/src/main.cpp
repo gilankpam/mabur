@@ -665,13 +665,10 @@ struct RealActuator : mabur::Actuator {
     if (retune_waiting) retune_waiting->store(true, std::memory_order_release);
     {
       std::unique_lock<std::shared_mutex> g(*tx_gate);
-      // A Telem sent just before a retune (sink->send, synchronous) has RETURNED from
-      // send_packet but may still be sitting in the chip's TX FIFO -- the
-      // GS commits the move on hearing that LINKED Telem arrive on the OLD
-      // channel (link pairing); if FastRetune races it
-      // out from under the Telem and it actually airs on the new channel
-      // instead, the GS never hears it there and every move falls back to
-      // the slower kMoveAfterRcfs path.
+      // A frame sent just before a retune (sink->send, synchronous) has
+      // RETURNED from send_packet but may still be sitting in the chip's TX
+      // FIFO; if FastRetune races it out, it airs on the new channel, where
+      // the GS's link card is not listening yet.
       // Holding the gate exclusive already stops any NEW send from
       // starting, but does nothing about a frame the chip already
       // accepted and queued before this lock was taken; this sleep is
@@ -1647,10 +1644,10 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
   // T_MAV frames, for the TX writer thread: CalSweep's on_cmd/on_apply/
   // on_abort must run on pump()'s thread (cal_sweep.h constraint 1).
   CalMsgQueue cal_queue;
-  // The drone's T_MAV uplink counter, shared by the MAV thread's own uplink
-  // and the TX writer thread's calibration replies: both send T_MAV frames
-  // to the same GS duplicate filter, which drops a repeat of the last
-  // counter (the second card's copy of the same frame).
+  // The drone's T_MAV_UP counter, shared by the MAV thread's own uplink and
+  // the TX writer thread's calibration replies: the GS takes each counter
+  // once inside a 64-wide anti-replay window per pair, so the two threads
+  // must never reuse one, and may air theirs out of order.
   std::atomic<uint32_t> mav_up_counter{0};
   // MAV thread -> agent thread's stats line, cumulative. drop = frames that
   // failed parse_mav plus packets the component dropped (not for us, bad

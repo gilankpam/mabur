@@ -72,11 +72,15 @@ u16 crc16
   frame every `kMavUplinkMinMs` (50 ms), which caps the tunnel near
   12 kB/s on the drone's uplink. Nothing from the component goes up while
   a calibration sweep airs (the periodic Telem's rule); replies wait
-  queued. The calibration replies are the exception (below). A two-card
-  GS receives each frame once
-  per card: the tunnel drops a frame whose counter equals the last one it
-  took, and forgets that counter when the session's `vtx_nonce` changes
-  (a restarted drone counts from 0 again).
+  queued. The calibration replies are the exception (below). The GS
+  takes each counter once per pair, inside a 64-wide anti-replay window:
+  the highest counter taken and a bitmap of the 64 counters ending there.
+  A counter already taken (a two-card GS hears each frame once per card)
+  or more than 63 below the highest is dropped; a counter inside the
+  window is taken even out of order (the MAV thread and the calibration
+  replies share one counter and may air out of order). The live session
+  and the calibration run's pair keep a window each, and a window resets
+  when its pair changes (a restarted drone counts from 0 again).
 - The GS's other card also hears the GS's own `T_MAV` (type 8). The GS
   tells it from the drone's `T_MAV_UP` (type 9) by type, counts it apart,
   and never delivers it or takes it as a reject.
@@ -284,8 +288,9 @@ under no known pair, is still a reject.
 The drone's replies (ACK, SWEEP_DONE, APPLIED) are packed by the TX
 writer thread as tagged `T_MAV_UP` frames, one message each, on the
 control path with the shared Telem 802.11 sequence, outside the MAV thread's 50 ms pacing and sweep suppression.
-The MAV thread and the TX writer share one atomic uplink counter, so the
-GS's duplicate filter sees one monotonic sequence. They are tagged under
+The MAV thread and the TX writer share one atomic uplink counter, so no
+counter is used twice; the GS's 64-wide window takes their frames even
+when they air out of order. They are tagged under
 the calibration run's pair while one is latched (a sweep outlasts the live
 session), else the published pair; with neither the frame is not sent and
 counts in `drop=`. They count in the
