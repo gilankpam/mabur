@@ -80,6 +80,26 @@ bool match_toml_key(const std::string& line, const std::string& key,
 bool patch_toml_key(std::string* text, const std::string& section,
                     const std::string& key, const std::string& rendered_value);
 
+// Patches key's line in [section] as patch_toml_key does; when the key has
+// no line, inserts "key = rendered_value" after the last key of [section]
+// (right after its header when it has none); when the section is absent,
+// appends "[section]" and the key at the end of the file. Section "" is the
+// root table (a missing root key goes at the top). Keeps the file's line
+// endings (\r\n stays \r\n). Never fails: a minimal config gains any key a
+// writer needs.
+void set_toml_key(std::string* text, const std::string& section,
+                  const std::string& key, const std::string& rendered_value);
+
+// Removes key's line in [section], and the continuation lines of a value
+// that opens a '[' it does not close on the same line. False, `*text`
+// unchanged, when the key is not in that section.
+bool remove_toml_key(std::string* text, const std::string& section, const std::string& key);
+
+// Removes the header line "[section]" and every line up to the next table
+// header (or the end of the file). False, `*text` unchanged, when there is
+// no such header.
+bool remove_toml_table(std::string* text, const std::string& section);
+
 enum class PublishResult {
   Ok,
   BackupFailed,   // couldn't read `path` or write its backup -- `path`
