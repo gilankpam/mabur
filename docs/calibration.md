@@ -410,7 +410,8 @@ efficiency_40 = [0.77, 0.75, 0.75, 0.75, 0.74, 0.77, 0.76, 0.75]
 ```
 
 - **`rate_walls_rel_20` / `_40`** are both optional; `power_mode =
-  "offset"` needs at least one. Every entry is in [−64, 63] and
+  "offset"` needs at least one. An empty table, `[]`, reads the same as an
+  absent key: not calibrated. Every entry is in [−64, 63] and
   `wall − round(wall_margin_db · 4) ≥ −64`. The single-table
   `radio.rate_walls_rel` is gone: a config that still has it fails boot
   (unknown key) — rename it by hand (`docs/deploy.md`).

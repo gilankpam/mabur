@@ -93,6 +93,8 @@ void parse_wall_table(const Value& j, const char* key,
   auto& arr = j.at(key);
   g_line = arr.line();
   const std::string field = std::string("radio.") + key;
+  // [] is the shipped "not calibrated": the same as the key being absent.
+  if (arr.is_array() && arr.size() == 0) return;
   if (!arr.is_array() || arr.size() != 8)
     fail(field, "must be an array of 8 ints");
   std::array<int, 8> vals{};

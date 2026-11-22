@@ -1877,4 +1877,19 @@ TEST(config_equality_sees_a_venc_field) {
   std::filesystem::remove(b);
 }
 
+TEST(empty_wall_table_loads_as_absent) {
+  auto p = write_temp_toml("[radio]\nrate_walls_rel_20 = []\nrate_walls_rel_40 = []\n"
+                           "[venc]\nsensor_bin = \"/x.bin\"\n");
+  const Config c = load_config(p.string());
+  CHECK(!c.radio.rate_walls_rel_20 && !c.radio.rate_walls_rel_40);
+  std::filesystem::remove(p);
+}
+
+TEST(empty_wall_tables_with_offset_still_fail) {
+  auto p = write_temp_toml("[radio]\npower_mode = \"offset\"\nrate_walls_rel_20 = []\n"
+                           "rate_walls_rel_40 = []\n[venc]\nsensor_bin = \"/x.bin\"\n");
+  CHECK(what_of([&] { load_config(p.string()); }).find("radio.rate_walls_rel_20") != std::string::npos);
+  std::filesystem::remove(p);
+}
+
 MTEST_MAIN
