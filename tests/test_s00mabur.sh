@@ -128,4 +128,17 @@ setup trial_runs_with_MABUR_TRIAL_1 A proven
 step
 grep -q 'trial=1' "$T/ran" || fail "MABUR_TRIAL not 1: $(cat "$T/ran")"
 
+setup loop_survives_a_closed_stderr A run
+rm -f "$T/up/go"
+export MABUR_PIDFILE="$T/loop.pid" MABUR_LOGPIDFILE="$T/logwatch.pid"
+# An ssh session that started the loop and then went away: its stderr is a
+# pipe nobody reads any more.
+sh "$S" start 2>&1 | true
+runs() { r=$(grep -c '^ran$' "$T/events" 2>/dev/null); echo "${r:-0}"; }
+n=0; while [ $n -lt 30 ] && [ "$(runs)" -lt 3 ]; do sleep 0.1; n=$((n+1)); done
+runs=$(runs)
+sh "$S" stop >/dev/null 2>&1
+[ "${runs:-0}" -ge 3 ] || fail "loop stopped respawning after $runs run(s)"
+unset MABUR_PIDFILE MABUR_LOGPIDFILE
+
 echo "PASS test_s00mabur"

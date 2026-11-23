@@ -4,8 +4,8 @@ CONF=${MABUR_CONF:-/etc/mabur.toml}
 UP=${MABUR_UP:-/tmp/mabur-up}
 TRIAL_S=${MABUR_TRIAL_S:-40}
 RESPAWN_S=${MABUR_RESPAWN_S:-2}
-PIDFILE=/var/run/mabur-loop.pid
-LOGPIDFILE=/var/run/mabur-logwatch.pid
+PIDFILE=${MABUR_PIDFILE:-/var/run/mabur-loop.pid}
+LOGPIDFILE=${MABUR_LOGPIDFILE:-/var/run/mabur-logwatch.pid}
 LOG=${MABUR_LOG:-/tmp/mabur.log}
 LOG_MAX=$((4 * 1024 * 1024))
 
@@ -131,10 +131,18 @@ running() { [ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null; }
 
 case "$1" in
   start)
-    running "$PIDFILE" || { loop & echo $! > "$PIDFILE"; }
+    # Detached from the caller's stdio: started from an ssh session, the
+    # loop's stderr is that session's pipe, and once the session is gone the
+    # "maburd exited" line would kill the loop with SIGPIPE -- no respawn,
+    # and no install after an update's START. The console keeps those lines
+    # (the serial console is where a crash loop shows); maburd's own output
+    # goes to $LOG either way.
+    out=/dev/null
+    [ -w /dev/console ] && out=/dev/console
+    running "$PIDFILE" || { loop </dev/null >"$out" 2>&1 & echo $! > "$PIDFILE"; }
     # Checked independently of the respawn loop: a live daemon must not mask a
     # dead logwatch, since an uncapped log is the failure this guards against.
-    running "$LOGPIDFILE" || { logwatch & echo $! > "$LOGPIDFILE"; }
+    running "$LOGPIDFILE" || { logwatch </dev/null >"$out" 2>&1 & echo $! > "$LOGPIDFILE"; }
     ;;
   stop)
     [ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null
