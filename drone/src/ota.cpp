@@ -5,7 +5,12 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <algorithm>
 #include <cstring>
+#include <fstream>
+#include <sstream>
+
+#include "mabur/sha256.h"
 
 namespace mabur {
 namespace {
@@ -27,9 +32,80 @@ bool OtaServer::trial_running() const {
   return env_.trial && ::access((env_.dir + "/result").c_str(), F_OK) != 0;
 }
 
-std::vector<ota::OtaMsg> OtaServer::on_msg(const ota::OtaMsg& m, uint64_t) {
+std::vector<ota::OtaMsg> OtaServer::on_msg(const ota::OtaMsg& m, uint64_t now_ms) {
   if (const auto* f = std::get_if<ota::Ftp>(&m)) return {ftp(*f)};
+  if (std::holds_alternative<ota::IdentReq>(m)) return {env_.ident};
+  if (const auto* u = std::get_if<ota::UpdateCmd>(&m)) return {update(*u, now_ms)};
   return {};
+}
+
+namespace {
+bool has(const std::string& p) { return ::access(p.c_str(), F_OK) == 0; }
+
+std::string slurp(const std::string& p) {
+  std::ifstream f(p, std::ios::binary);
+  std::ostringstream ss;
+  ss << f.rdbuf();
+  return ss.str();
+}
+}  // namespace
+
+ota::Status OtaServer::status(uint64_t now_ms) const {
+  std::istringstream in(slurp(env_.dir + "/result"));
+  std::string word, why;
+  in >> word >> why;
+  if (word == "committed") return {ota::State::kCommitted, ota::Reason::kNone, 0};
+  if (word == "rolled_back" || word == "refused") {
+    auto r = ota::reason_from_name(why);
+    if (r && *r != ota::Reason::kNone)
+      return {word == "refused" ? ota::State::kRefused : ota::State::kRolledBack, *r, 0};
+  }
+  if (env_.trial) {
+    int64_t left = 40 - int64_t(now_ms - env_.start_ms) / 1000;
+    return {ota::State::kTrial, ota::Reason::kNone, uint8_t(std::clamp<int64_t>(left, 1, 40))};
+  }
+  if (has(env_.dir + "/maburd")) return {ota::State::kReceiving, ota::Reason::kNone, 0};
+  return {};
+}
+
+ota::Status OtaServer::update(const ota::UpdateCmd& u, uint64_t now_ms) {
+  const std::string bin = env_.dir + "/maburd", go = env_.dir + "/go";
+  auto refuse = [](ota::Reason r) { return ota::Status{ota::State::kRefused, r, 0}; };
+  switch (u.cmd) {
+    case ota::Cmd::kStart: {
+      if (trial_running()) return refuse(ota::Reason::kBusy);
+      if (has(go))  // a resent START after a lost reply gets the same answer
+        return slurp(go) == sha256_hex(u.sha256) + "\n" ? ota::Status{ota::State::kTrial, ota::Reason::kNone, 40}
+                                                             : refuse(ota::Reason::kBusy);
+      if (!has(bin)) return refuse(ota::Reason::kNoFile);
+      auto h = sha256_file(bin);
+      if (!h || *h != u.sha256) return refuse(ota::Reason::kBadHash);
+      close_fd();
+      const std::string tmp = go + ".new";
+      {
+        std::ofstream f(tmp, std::ios::trunc);
+        f << sha256_hex(*h) << "\n";
+        if (!f.flush()) { ::unlink(tmp.c_str()); return refuse(ota::Reason::kBadHash); }
+      }
+      if (::rename(tmp.c_str(), go.c_str()) != 0) { ::unlink(tmp.c_str()); return refuse(ota::Reason::kBadHash); }
+      exit_ = true;
+      return {ota::State::kTrial, ota::Reason::kNone, 40};
+    }
+    case ota::Cmd::kAbort:
+      if (env_.trial) {
+        if (trial_running()) {
+          ::unlink((env_.dir + "/proven").c_str());
+          exit_ = true;
+        }
+      } else {
+        close_fd();
+        ::unlink(bin.c_str());
+      }
+      break;
+    default:
+      break;
+  }
+  return status(now_ms);
 }
 
 ota::Ftp OtaServer::ftp(const ota::Ftp& req) {

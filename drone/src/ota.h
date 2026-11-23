@@ -30,6 +30,8 @@ class OtaServer {
 
  private:
   ota::Ftp ftp(const ota::Ftp& req);
+  ota::Status status(uint64_t now_ms) const;
+  ota::Status update(const ota::UpdateCmd& u, uint64_t now_ms);
   bool trial_running() const;
   void close_fd();
 
