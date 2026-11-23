@@ -22,6 +22,7 @@ add_library(mabur_drone_core STATIC
   src/live_power_table.cpp
   src/mav_params.cpp
   src/mav_component.cpp
+  src/ota.cpp
   vendor/venc_frame_ring.c
   # venc_cfg.c is dependency-free C99 (string.h only), so it compiles on
   # host too — config.cpp's parse_venc() needs venc_cfg_defaults() at
