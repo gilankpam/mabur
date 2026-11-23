@@ -266,13 +266,60 @@ TEST(start_repeated_same_hash_answers_trial) {
   CHECK(slurp(rg.dir + "/go") == go);
 }
 
-TEST(start_during_trial_is_busy) {
+TEST(start_with_another_hash_during_trial_is_busy) {
   Rig rg;
   ::mkdir(rg.dir.c_str(), 0755);
   spit(rg.dir + "/maburd", "bin");
   OtaServer s(rg.env(true));
-  IS(status_of(s, ota::Cmd::kStart, hash_of(rg.dir + "/maburd")), kRefused, kBusy, 0);
+  Sha256 other = hash_of(rg.dir + "/maburd");
+  other[0] ^= 1;
+  IS(status_of(s, ota::Cmd::kStart, other), kRefused, kBusy, 0);
   CHECK(!exists(rg.dir + "/go") && !s.exit_requested());
+}
+
+// The old maburd's reply was lost and the GS resent START to the trial binary.
+TEST(start_resent_during_its_trial_answers_trial) {
+  Rig rg;
+  ::mkdir(rg.dir.c_str(), 0755);
+  spit(rg.dir + "/maburd", "bin");
+  OtaEnv te = rg.env(true);
+  te.start_ms = 1000;
+  OtaServer s(te);
+  IS(status_of(s, ota::Cmd::kStart, hash_of(rg.dir + "/maburd"), 13000), kTrial, kNone, 28);
+  CHECK(!exists(rg.dir + "/go") && !s.exit_requested());
+}
+
+TEST(second_update_after_commit_runs_in_the_trial_process) {
+  Rig rg;
+  ::mkdir(rg.dir.c_str(), 0755);
+  spit(rg.dir + "/maburd", "first");
+  spit(rg.dir + "/result", "committed\n");
+  OtaServer s(rg.env(true));
+  IS(status_of(s, ota::Cmd::kStatus), kCommitted, kNone, 0);
+  CHECK(call(s, req(6, 0, 0, "maburd")).opcode == 128);
+  CHECK(!exists(rg.dir + "/result"));
+  IS(status_of(s, ota::Cmd::kStatus), kReceiving, kNone, 0);
+  CHECK(call(s, req(7, 0, 0, "second")).opcode == 128);
+  call(s, req(1));
+  CHECK(slurp(rg.dir + "/maburd") == "second");
+  IS(status_of(s, ota::Cmd::kStart, hash_of(rg.dir + "/maburd")), kTrial, kNone, 40);
+  CHECK(exists(rg.dir + "/go") && s.exit_requested());
+}
+
+TEST(file_requests_after_start_nak_fail_and_leave_the_file) {
+  Rig rg;
+  ::mkdir(rg.dir.c_str(), 0755);
+  spit(rg.dir + "/maburd", "bin");
+  OtaServer s(rg.env());
+  auto c = call(s, req(6, 0, 0, "maburd"));
+  CHECK(call(s, req(7, c.session, 0, "bin")).opcode == 128);
+  IS(status_of(s, ota::Cmd::kStart, hash_of(rg.dir + "/maburd")), kTrial, kNone, 40);
+  CHECK(nak_code(call(s, req(7, c.session, 0, "X"))) == 1);
+  for (uint8_t op : {6, 11, 12}) CHECK(nak_code(call(s, req(op, 0, 0, "maburd"))) == 1);
+  CHECK(slurp(rg.dir + "/maburd") == "bin");
+  OtaServer next(rg.env());  // go is still there: the loop has not taken it yet
+  for (uint8_t op : {6, 11, 12}) CHECK(nak_code(call(next, req(op, 0, 0, "maburd"))) == 1);
+  CHECK(slurp(rg.dir + "/maburd") == "bin");
 }
 
 TEST(abort_before_start_deletes_the_binary) {
@@ -295,9 +342,11 @@ TEST(abort_during_trial_requests_exit_and_removes_proven) {
   ::mkdir(r2.dir.c_str(), 0755);
   spit(r2.dir + "/proven", "");
   spit(r2.dir + "/result", "committed");
+  spit(r2.dir + "/maburd", "next");  // after commit, abort discards a new upload
   OtaServer c(r2.env(true));
   IS(status_of(c, ota::Cmd::kAbort), kCommitted, kNone, 0);
   CHECK(exists(r2.dir + "/proven") && !c.exit_requested());
+  CHECK(!exists(r2.dir + "/maburd"));
 }
 
 TEST(non_ftp_messages_get_no_reply) {

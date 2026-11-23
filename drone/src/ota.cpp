@@ -28,10 +28,6 @@ void OtaServer::close_fd() {
   fd_ = -1;
 }
 
-bool OtaServer::trial_running() const {
-  return env_.trial && ::access((env_.dir + "/result").c_str(), F_OK) != 0;
-}
-
 std::vector<ota::OtaMsg> OtaServer::on_msg(const ota::OtaMsg& m, uint64_t now_ms) {
   if (const auto* f = std::get_if<ota::Ftp>(&m)) return {ftp(*f)};
   if (std::holds_alternative<ota::IdentReq>(m)) return {env_.ident};
@@ -50,6 +46,11 @@ std::string slurp(const std::string& p) {
 }
 }  // namespace
 
+bool OtaServer::trial_running() const {
+  if (env_.trial && has(env_.dir + "/result")) trial_over_ = true;
+  return env_.trial && !trial_over_;
+}
+
 ota::Status OtaServer::status(uint64_t now_ms) const {
   std::istringstream in(slurp(env_.dir + "/result"));
   std::string word, why;
@@ -60,7 +61,7 @@ ota::Status OtaServer::status(uint64_t now_ms) const {
     if (r && *r != ota::Reason::kNone)
       return {word == "refused" ? ota::State::kRefused : ota::State::kRolledBack, *r, 0};
   }
-  if (env_.trial) {
+  if (trial_running()) {
     int64_t left = 40 - int64_t(now_ms - env_.start_ms) / 1000;
     return {ota::State::kTrial, ota::Reason::kNone, uint8_t(std::clamp<int64_t>(left, 1, 40))};
   }
@@ -73,7 +74,10 @@ ota::Status OtaServer::update(const ota::UpdateCmd& u, uint64_t now_ms) {
   auto refuse = [](ota::Reason r) { return ota::Status{ota::State::kRefused, r, 0}; };
   switch (u.cmd) {
     case ota::Cmd::kStart: {
-      if (trial_running()) return refuse(ota::Reason::kBusy);
+      if (trial_running()) {  // a START resent after the old maburd's reply was lost
+        auto h = sha256_file(bin);
+        return h && *h == u.sha256 ? status(now_ms) : refuse(ota::Reason::kBusy);
+      }
       if (has(go))  // a resent START after a lost reply gets the same answer
         return slurp(go) == sha256_hex(u.sha256) + "\n" ? ota::Status{ota::State::kTrial, ota::Reason::kNone, 40}
                                                              : refuse(ota::Reason::kBusy);
@@ -92,11 +96,9 @@ ota::Status OtaServer::update(const ota::UpdateCmd& u, uint64_t now_ms) {
       return {ota::State::kTrial, ota::Reason::kNone, 40};
     }
     case ota::Cmd::kAbort:
-      if (env_.trial) {
-        if (trial_running()) {
-          ::unlink((env_.dir + "/proven").c_str());
-          exit_ = true;
-        }
+      if (trial_running()) {
+        ::unlink((env_.dir + "/proven").c_str());
+        exit_ = true;
       } else {
         close_fd();
         ::unlink(bin.c_str());
@@ -128,7 +130,8 @@ ota::Ftp OtaServer::ftp(const ota::Ftp& req) {
     path.assign(req.data.begin(), req.data.begin() + n);
     path.resize(strnlen(path.c_str(), path.size()));
     if (path != "maburd" && path != "/maburd") return nak(kProtected);
-    if (trial_running()) return nak(kFail);
+    // After START the file is hash-verified and waiting for the loop: frozen.
+    if (trial_running() || exit_ || has(env_.dir + "/go")) return nak(kFail);
     ::mkdir(env_.dir.c_str(), 0755);
   }
   const std::string file = env_.dir + "/maburd";
@@ -146,6 +149,7 @@ ota::Ftp OtaServer::ftp(const ota::Ftp& req) {
       return r;
     }
     case kWrite: {
+      if (exit_) return nak(kFail);
       if (fd_ < 0 || req.session != 0) return nak(kBadSession);
       size_t n = std::min<size_t>(req.size, req.data.size());
       if (n && ::pwrite(fd_, req.data.data(), n, off_t(req.offset)) != ssize_t(n)) return nak(kFailErrno);

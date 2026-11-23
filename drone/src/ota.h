@@ -38,6 +38,9 @@ class OtaServer {
   OtaEnv env_;
   int fd_ = -1;
   bool exit_ = false;
+  // A trial binary's trial ends for good at the first result it sees: Create
+  // deletes result to take the next upload, and that must not restart it.
+  mutable bool trial_over_ = false;
 };
 
 }  // namespace mabur
