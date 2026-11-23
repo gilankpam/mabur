@@ -257,6 +257,12 @@ std::optional<rc::TagCtx> RcAgent::uplink_ctx(bool cal_reply) const {
   return rc::TagCtx{static_cast<uint32_t>(p >> 32), static_cast<uint32_t>(p & 0xFFFFFFFFu), 0};
 }
 
+std::optional<rc::TagCtx> RcAgent::update_ctx() const {
+  const uint64_t p = update_session_.load(std::memory_order_acquire);
+  if (p == 0) return std::nullopt;
+  return rc::TagCtx{static_cast<uint32_t>(p >> 32), static_cast<uint32_t>(p & 0xFFFFFFFFu), 0};
+}
+
 void RcAgent::install_session_for_replay(uint32_t vrx_nonce, uint32_t vtx_nonce) {
   pending_ = Session{vrx_nonce, vtx_nonce, true, 0, false};
 }

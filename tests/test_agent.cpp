@@ -3521,9 +3521,14 @@ TEST(same_version_promotion_clears_the_update_pair_and_expiry_leaves_published_a
   foreign_disc(agent, act, cfg, vrxB, 200);
   CHECK(agent.update_session_open());
   CHECK(agent.has_published_session());
+  // The update pair stays reachable while A's session is published.
+  const auto uctx = agent.update_ctx();
+  REQUIRE(uctx.has_value());
+  CHECK(uctx->vrx_nonce == vrxB && uctx->vtx_nonce != vtxA);
   // B's expiry; A is untouched.
   agent.tick(200 + RcAgent::kUpdateSessionMs + 1, RadioHealth{});
   CHECK(!agent.update_session_open());
+  CHECK(!agent.update_ctx().has_value());
   CHECK(agent.has_published_session());
   CHECK(mav_check(agent, mav_wire(param_set_packet(), 1, vtxA), false) == RcAgent::MavCheck::kOk);
   // B again, then B at our version promotes and clears the pair.

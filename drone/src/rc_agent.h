@@ -281,6 +281,11 @@ class RcAgent {
   // outlasts the live session), else the published pair. Either falls back
   // to the update-only pair when no session is published. Any thread.
   std::optional<rc::TagCtx> uplink_ctx(bool cal_reply) const;
+  // Tag context for a reply to the update-only pair's GS, nullopt when no
+  // such pair is open. Unlike uplink_ctx, a published session does not hide
+  // it: the GS updating the drone may not be the one it is linked to. Any
+  // thread.
+  std::optional<rc::TagCtx> update_ctx() const;
   // T_MAV replay guard: accept_nack_counter's rule and CAS shape on its own
   // state (mav_last_), so the GS's MAV and NACK counters never refuse each
   // other. Any thread.
