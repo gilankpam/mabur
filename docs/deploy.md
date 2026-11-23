@@ -108,15 +108,18 @@ staging the file and `S00mabur` doing the rest.
 | File | Written by | Meaning |
 |---|---|---|
 | `maburd` | the FTP server | the staged new binary; the only file the radio can write |
-| `go` | `maburd` on START | the SHA-256 of the staged binary; the loop installs on seeing it, then deletes it |
+| `go` | `maburd` on START | the SHA-256 START verified; the loop reads and deletes it, then installs only a staged binary that still hashes to it |
 | `mabur.toml` | the loop, via the new binary's `--migrate-config` | the current config trimmed to what the new binary loads |
 | `linked` | the trial `maburd` | the trial published a session |
 | `proven` | the trial `maburd` | linked, and encoder frames moved for 5 s |
 | `result` | `S00mabur` | `committed`, `rolled_back <reason>` or `refused <reason>`; the reason words are in `docs/mavlink.md` |
+| `trial.log` | `S00mabur` on rollback | the last 256 KiB of `/tmp/mabur.log`, which the next run truncates |
 
 **One install**, as `S00mabur` runs it after `maburd` exits for a START:
 
-1. Remove the stale `proven`, `linked` and `result`. The new binary must
+1. Read and delete `go`, and remove the stale `proven`, `linked` and
+   `result`. The staged `maburd` must still hash to `go`'s SHA-256, else
+   `refused bad_hash` and nothing runs from it. The new binary must
    report the same board as the running one (`maburd --identify`; a hand
    build reports `local` and takes no release update), else
    `refused wrong_board`.
@@ -125,13 +128,18 @@ staging the file and `S00mabur` doing the rest.
    config is migrated only here: a drone's own `maburd` never migrates.
 3. Copy the live `/usr/bin/maburd` and `/etc/mabur.toml` to `.prev`
    (always a copy to `.prev.new`, `sync`, then `mv`, so the live files
-   never go missing), then install the new pair the same way.
+   never go missing), then install the new pair the same way, and `sync`
+   once more so both renames are on flash before the trial starts.
 4. **Trial**: run `MABUR_TRIAL=1 maburd -c /etc/mabur.toml` for up to
    40 s. `proven` before then: `result` is `committed` and the new pair
    stays. The trial exiting: `rolled_back exited`. 40 s with no `proven`:
    `rolled_back no_link` (never linked) or `rolled_back no_video`.
-5. **Rollback** moves `/usr/bin/maburd.prev` and `/etc/mabur.toml.prev`
-   back over the live pair, then the loop respawns as usual.
+5. **Rollback** keeps the failed trial's log in `/tmp/mabur-up/trial.log`,
+   moves `/usr/bin/maburd.prev` and `/etc/mabur.toml.prev` back over the
+   live pair, then the loop respawns as usual.
+
+After a commit the trial `maburd` keeps running as the drone's daemon and
+takes the next update the same way; a second update needs no reboot.
 
 Overlay space: during an install the overlay briefly holds **three**
 copies of `maburd` (live, `.prev`, and `.new`), and after a commit two

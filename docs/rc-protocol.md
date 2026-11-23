@@ -295,7 +295,8 @@ A GS at another `RC_VERSION` cannot link, but it can update the drone
   holds the key. The counter rule is the `T_MAV` one (strictly above the
   last accepted under this pair).
 - **Uplink.** Replies go out as `T_MAV_UP` tagged under the update pair,
-  unpaced (no video to protect), whether or not a session is published.
+  unpaced (no video to protect) when no session is published, and paced at
+  `kMavUplinkMinMs` like the rest of the tunnel while one is.
 - **Expiry.** The pair lapses 10 s (`RcAgent::kUpdateSessionMs`) after
   the last verified other-version DISC. The drone's other state is
   untouched: no op change, no retune, no LINKED entry.

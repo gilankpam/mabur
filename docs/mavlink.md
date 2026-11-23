@@ -326,7 +326,7 @@ mabur-ground's. Everything here is the drone's wire behaviour.
 
 Three GS-to-drone messages, all accepted in both session kinds:
 `MABUR_IDENT_REQ` (60006), `MABUR_UPDATE` (60008) and the standard
-`FILE_TRANSFER_PROTOCOL` (230). The drone answers on `MABUR_IDENT` (60007),
+`FILE_TRANSFER_PROTOCOL` (110). The drone answers on `MABUR_IDENT` (60007),
 `MABUR_UPDATE_STATUS` (60009) and FTP replies.
 
 | message | id | dir | fields |
@@ -360,17 +360,18 @@ the words in the `result` file):
 | 1 | exited | the trial process exited, or the install could not complete (no space) and the old pair is still running |
 | 2 | no_link | the trial never linked within 40 s |
 | 3 | no_video | the trial linked but never held 5 s of encoder frames |
-| 4 | bad_hash | the staged file does not match START's SHA-256 |
+| 4 | bad_hash | the staged file does not match START's SHA-256 (checked at START, and again by the loop before it runs anything from the file) |
 | 5 | wrong_board | the new binary's board differs from the running one (or it cannot run `--identify`) |
 | 6 | bad_config | the new binary cannot migrate the current config |
-| 7 | busy | a trial is running (or `go` exists for another hash) |
+| 7 | busy | a trial is running and START names another hash (or `go` exists for another hash) |
 | 8 | no_file | START with nothing staged |
 
 Commands. `status` returns the current status and changes nothing.
 `start` checks that no trial is running, that `maburd` is staged and its
 SHA-256 equals the message's, writes `go` and asks `maburd` to exit; the
-reply is `trial` (40 s). A repeated START for the same hash while `go`
-exists answers `trial` again (a lost reply makes the GS resend); a
+reply is `trial` (40 s). A lost reply makes the GS resend: a repeated
+START for the same hash answers `trial` again, whether `go` still exists
+or the trial binary is already running (then with its seconds left); a
 different hash answers `refused busy`. `abort` deletes the staged file
 when no trial runs; during a trial it removes the proof and exits, so the
 loop rolls back. The reply is the status after the command.
@@ -396,7 +397,7 @@ codes it uses:
 
 | Code | Name | When |
 |---|---|---|
-| 1 | Fail | a create, open or truncate while a trial runs (the GS learns `busy` from the status) |
+| 1 | Fail | a create, open or truncate while a trial runs (the GS learns `busy` from the status), or a create, open, truncate or write after START was accepted (the file is verified and waiting for the loop) |
 | 2 | FailErrno | an open, write or truncate failed (no space); the errno byte is not carried |
 | 4 | InvalidSession | WriteFile with no open file or a session other than 0 |
 | 7 | UnknownCommand | any other opcode (read, list, remove, CRC...) |
@@ -427,7 +428,10 @@ FTP create/open/truncate refusal above applies, so a late GS cannot
 overwrite the file under test. The trial writes `linked` on its first
 published session and `proven` after the link has held with encoder
 frames moving for 5 s straight (`drone/src/trial_proof.h`); a tick that is
-unlinked or without frames restarts that run.
+unlinked or without frames restarts that run. The trial ends at the first
+`result` the trial `maburd` sees; from then on it serves the lane like any
+`maburd`, so a second update in the same power-on starts with CreateFile
+(which clears `result`) as the first did.
 
 ## Later tenants
 
