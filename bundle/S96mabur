@@ -19,6 +19,8 @@ safe_cp() { cp "$1" "$2.new" && sync && mv "$2.new" "$2"; }
 
 # Put the previous pair back. Only called once the .prev copies are fresh.
 rollback() {
+  # The next run truncates $LOG: keep the failed trial's tail for the operator.
+  tail -c 262144 "$LOG" > "$UP/trial.log"
   for f in "$DAEMON" "$CONF"; do
     if [ -f "$f.prev" ]; then mv "$f.prev" "$f"; else echo "mabur: $f.prev missing, cannot restore" >&2; fi
   done
@@ -26,6 +28,9 @@ rollback() {
 }
 
 trial() {
+  # safe_cp syncs the data, not the rename after it: commit both renames before
+  # a power cut can leave the new binary beside the old, unmigrated config.
+  sync
   # Truncate-then-append as in the normal run (see below).
   : > "$LOG"
   MABUR_TRIAL=1 "$DAEMON" -c "$CONF" >> "$LOG" 2>&1 &
@@ -60,11 +65,15 @@ trial() {
 # plain run.
 step() {
   if [ -f "$UP/go" ]; then
+    # go holds the sha256 START verified; the file must still match it.
+    want=$(cat "$UP/go")
     rm -f "$UP/go"
     rm -f "$UP/proven" "$UP/linked" "$UP/result"
     chmod +x "$UP/maburd" 2>/dev/null
-    new=$(board "$UP/maburd")
-    if [ -z "$new" ] || [ "$new" != "$(board "$DAEMON")" ]; then
+    have=$(sha256sum "$UP/maburd" 2>/dev/null)
+    if [ -z "$want" ] || [ "${have%% *}" != "$want" ]; then
+      res "refused bad_hash"
+    elif new=$(board "$UP/maburd"); [ -z "$new" ] || [ "$new" != "$(board "$DAEMON")" ]; then
       res "refused wrong_board"
     elif ! "$UP/maburd" --migrate-config "$CONF" "$UP/mabur.toml" >/dev/null 2>&1; then
       res "refused bad_config"

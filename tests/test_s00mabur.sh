@@ -6,6 +6,21 @@ ROOT=$(mktemp -d) || exit 1
 trap 'rm -rf "$ROOT"' EXIT INT TERM
 CASE=""
 
+# A fake sync on PATH logs whether the new pair was already in place when it
+# ran; the fake maburd logs "ran" when it starts, so the order is checkable.
+mkdir "$ROOT/path"
+cat > "$ROOT/path/sync" <<'EOT'
+#!/bin/sh
+if cmp -s "$MABUR_DAEMON" "$MABUR_UP/maburd" && grep -q migrated "$MABUR_CONF"; then
+  echo "sync installed"
+else
+  echo sync
+fi >> "$MABUR_UP/../events"
+EOT
+chmod +x "$ROOT/path/sync"
+PATH=$ROOT/path:$PATH
+export PATH
+
 fail() { echo "FAIL $CASE: $*"; exit 1; }
 
 # fake <path> <board|-> <mode> [badmig]: identify answers the board ("-" =
@@ -14,10 +29,12 @@ fake() {
   cat > "$1" <<EOT
 #!/bin/sh
 case "\$1" in
-  --identify) [ "$2" = - ] && exit 1; echo "version=v1 board=$2"; exit 0 ;;
+  --identify) echo "identify $3" >> "$T/events"; [ "$2" = - ] && exit 1; echo "version=v1 board=$2"; exit 0 ;;
   --migrate-config) [ "$4" = badmig ] && exit 1; cp "\$2" "\$3"; echo migrated >> "\$3"; exit 0 ;;
 esac
 echo "$3 trial=\$MABUR_TRIAL" > "$T/ran"
+echo ran >> "$T/events"
+echo "fake maburd says $3"
 nap() { n=0; while [ \$n -lt \$1 ]; do sleep 1; n=\$((n+1)); done; }
 case "$3" in
   run) ;;
@@ -40,7 +57,7 @@ setup() {
   echo old > "$T/mabur.toml"
   cp "$T/bin/maburd" "$T/old.bin"
   fake "$T/up/maburd" "$2" "$3" "$4"
-  : > "$T/up/go"
+  sha256sum "$T/up/maburd" | cut -d' ' -f1 > "$T/up/go"
 }
 
 step() { sh "$S" step >/dev/null 2>&1; }
@@ -65,9 +82,12 @@ cmp -s "$T/bin/maburd.prev" "$T/old.bin" || fail "binary .prev is not the old on
 [ "$(cat "$T/mabur.toml.prev")" = old ] || fail "config .prev is not the old one"
 [ "$(cat "$T/mabur.toml" | tr '\n' ' ')" = "old migrated " ] || fail "config not migrated"
 [ ! -e "$T/bin/maburd.new" ] && [ ! -e "$T/mabur.toml.new" ] || fail "leftover .new"
+# Both renames are synced before the trial binary starts.
+sed -n '/^sync installed$/,$p' "$T/events" | grep -q '^ran$' || fail "no sync between install and trial: $(cat "$T/events")"
 
 setup trial_that_exits_rolls_back A exit
 step; no_go; expect_result "rolled_back exited"; is_old
+grep -q 'fake maburd says exit' "$T/up/trial.log" || fail "trial log not kept"
 
 setup trial_without_link_rolls_back_no_link A hang
 step; no_go; expect_result "rolled_back no_link"; is_old
@@ -75,6 +95,19 @@ step; no_go; expect_result "rolled_back no_link"; is_old
 
 setup trial_linked_without_video_rolls_back_no_video A linked
 step; no_go; expect_result "rolled_back no_video"; is_old
+grep -q 'fake maburd says linked' "$T/up/trial.log" || fail "trial log not kept"
+step
+grep -q 'fake maburd says linked' "$T/up/trial.log" || fail "trial log lost by the next run"
+
+setup go_with_wrong_hash_is_refused_and_nothing_installed A proven
+echo 0000000000000000000000000000000000000000000000000000000000000000 > "$T/up/go"
+step; no_go; expect_result "refused bad_hash"; is_old
+[ ! -e "$T/bin/maburd.prev" ] || fail ".prev written"
+! grep -q '^identify proven' "$T/events" || fail "unverified binary was run"
+
+setup empty_go_is_refused_bad_hash A proven
+: > "$T/up/go"
+step; no_go; expect_result "refused bad_hash"; is_old
 
 setup wrong_board_is_refused_and_nothing_installed B proven
 step; no_go; expect_result "refused wrong_board"; is_old
