@@ -1,9 +1,10 @@
 <?xml version="1.0"?>
-<!-- The mabur calibration dialect: carries the power/verify/capacity sweep
+<!-- The mabur dialect: carries the power/verify/capacity calibration sweep
      protocol between maburcal (ground) and maburd (drone) over the
-     existing MAVLink tunnel. Superset of common.xml: every common
+     existing MAVLink tunnel, and the update lane (identity request and
+     reply, update command and status). Superset of common.xml: every common
      message still decodes under this dialect. Message id range
-     60000-60005. -->
+     60000-60009. -->
 <mavlink>
   <include>common.xml</include>
   <dialect>1</dialect>
@@ -34,6 +35,33 @@
       <entry value="3" name="MABUR_CAL_ACK_RESULT_UNSUPPORTED">
         <description>The requested sweep is not supported by this drone build.</description>
       </entry>
+    </enum>
+    <enum name="MABUR_UPDATE_CMD">
+      <description>What a MABUR_UPDATE frame asks. Frozen: never change; add only extension fields.</description>
+      <entry value="0" name="MABUR_UPDATE_CMD_STATUS"><description>Report the update status.</description></entry>
+      <entry value="1" name="MABUR_UPDATE_CMD_START"><description>Install the uploaded binary with the given SHA-256 and start the trial.</description></entry>
+      <entry value="2" name="MABUR_UPDATE_CMD_ABORT"><description>Abandon the update in progress.</description></entry>
+    </enum>
+    <enum name="MABUR_UPDATE_STATE">
+      <description>State reported by MABUR_UPDATE_STATUS. Frozen: never change; add only extension fields.</description>
+      <entry value="0" name="MABUR_UPDATE_STATE_IDLE"><description>No update in progress.</description></entry>
+      <entry value="1" name="MABUR_UPDATE_STATE_RECEIVING"><description>A binary is being received.</description></entry>
+      <entry value="2" name="MABUR_UPDATE_STATE_TRIAL"><description>The new binary is on trial.</description></entry>
+      <entry value="3" name="MABUR_UPDATE_STATE_COMMITTED"><description>The new binary was proven and kept.</description></entry>
+      <entry value="4" name="MABUR_UPDATE_STATE_ROLLED_BACK"><description>The trial failed and the previous binary is back.</description></entry>
+      <entry value="5" name="MABUR_UPDATE_STATE_REFUSED"><description>The update was refused; see reason.</description></entry>
+    </enum>
+    <enum name="MABUR_UPDATE_REASON">
+      <description>Why an update was refused or rolled back. Frozen: never change; add only extension fields.</description>
+      <entry value="0" name="MABUR_UPDATE_REASON_NONE"><description>No reason.</description></entry>
+      <entry value="1" name="MABUR_UPDATE_REASON_EXITED"><description>The trial process exited.</description></entry>
+      <entry value="2" name="MABUR_UPDATE_REASON_NO_LINK"><description>The trial never linked.</description></entry>
+      <entry value="3" name="MABUR_UPDATE_REASON_NO_VIDEO"><description>The trial linked but produced no video.</description></entry>
+      <entry value="4" name="MABUR_UPDATE_REASON_BAD_HASH"><description>The uploaded binary does not match the SHA-256.</description></entry>
+      <entry value="5" name="MABUR_UPDATE_REASON_WRONG_BOARD"><description>The binary is not for this board.</description></entry>
+      <entry value="6" name="MABUR_UPDATE_REASON_BAD_CONFIG"><description>The configuration was rejected.</description></entry>
+      <entry value="7" name="MABUR_UPDATE_REASON_BUSY"><description>A trial is already running.</description></entry>
+      <entry value="8" name="MABUR_UPDATE_REASON_NO_FILE"><description>No uploaded binary to install.</description></entry>
     </enum>
   </enums>
   <messages>
@@ -87,6 +115,27 @@
     <message id="60005" name="MABUR_CAL_ABORT">
       <description>Ground cancels the in-progress sweep identified by nonce.</description>
       <field type="uint32_t" name="nonce">Nonce of the sweep to cancel.</field>
+    </message>
+    <message id="60006" name="MABUR_IDENT_REQ">
+      <description>Ground asks the drone to identify itself. Frozen: never change; add only extension fields.</description>
+      <field type="uint8_t" name="pad">Unused; MAVLink needs one field.</field>
+    </message>
+    <message id="60007" name="MABUR_IDENT">
+      <description>Drone identity. Frozen: never change; add only extension fields.</description>
+      <field type="char[32]" name="version">Build version.</field>
+      <field type="char[48]" name="board">Board name.</field>
+      <field type="char[16]" name="chip">Radio chip name.</field>
+    </message>
+    <message id="60008" name="MABUR_UPDATE">
+      <description>Ground update command. Frozen: never change; add only extension fields.</description>
+      <field type="uint8_t" name="cmd" enum="MABUR_UPDATE_CMD">Command.</field>
+      <field type="uint8_t[32]" name="sha256">SHA-256 of the uploaded binary (START).</field>
+    </message>
+    <message id="60009" name="MABUR_UPDATE_STATUS">
+      <description>Drone update status. Frozen: never change; add only extension fields.</description>
+      <field type="uint8_t" name="state" enum="MABUR_UPDATE_STATE">Update state.</field>
+      <field type="uint8_t" name="reason" enum="MABUR_UPDATE_REASON">Reason for refused or rolled back.</field>
+      <field type="uint8_t" name="trial_s">Seconds left in the trial.</field>
     </message>
   </messages>
 </mavlink>

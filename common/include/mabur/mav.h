@@ -33,6 +33,10 @@
 // fresh local state, the same stateless pattern param_client.cpp uses -- so it carries
 // no per-channel parse state for a caller elsewhere to collide with.
 //
+// common/src/ota_mav.cpp is another: the only place that calls the update
+// lane's mabur_ident/mabur_update pack_chan helpers and the FTP one, with
+// the same stateless split for parsing.
+//
 // The vendored headers are MIT-licensed generated output (see
 // third_party/mavlink/LICENSE).
 

@@ -1,9 +1,10 @@
 # The mabur MAVLink dialect
 
-`mabur.xml` is the mabur calibration dialect: six messages (ids
-60000-60005) that carry the power/verify/capacity calibration sweep
+`mabur.xml` is the mabur calibration dialect: ten messages (ids
+60000-60009): six carry the power/verify/capacity calibration sweep
 between the ground calibration tool and the drone over the existing
-MAVLink tunnel. It includes `common.xml`, so it is a superset -- every
+MAVLink tunnel, four (60006-60009) carry the update lane's identity and
+update status. It includes `common.xml`, so it is a superset -- every
 common message still packs and decodes under it. The message table is
 the XML itself; read `mabur.xml` for field names, types and the
 `MABUR_CAL_KIND` / `MABUR_CAL_ACK_RESULT` enums.
