@@ -187,7 +187,7 @@ Boot log: `maburgs: mavlink endpoint udp <bind>:<port>` or
   ([`docs/gs-image.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/gs-image.md)).
 - Polled from the core loop next to the calibration control socket; at
   most 64 datagrams per tick, so a flooding client cannot hold the loop.
-- Sideport: `link.mav{tx, rx, reject, peer}` ([`docs/observability.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/observability.md));
+- Sideport: `link.mav{tx, rx, reject, drop_not_update, peer}` ([`docs/observability.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/observability.md));
   maburtop shows `mav <tx>/<rx>` on its top bar.
 
 ## Trust boundary
