@@ -150,7 +150,9 @@ TEST(uplink_lane_allowlist) {
   CHECK(ok(e(ftp_of(10))));
   CHECK(!ok(e(Ident{"a", "b", "c"})));
   mavlink_message_t msg;
-  mavlink_msg_param_ext_set_pack_chan(kSys, kComp, kChanGsLocal, &msg, 1, 1, "X", "1", 1);
+  char id[16] = "X";
+  char val[128] = "1";
+  mavlink_msg_param_ext_set_pack_chan(kSys, kComp, kChanGsLocal, &msg, 1, 1, id, val, 1);
   uint8_t buf[MAVLINK_MAX_PACKET_LEN];
   std::vector<uint8_t> pes(buf, buf + mavlink_msg_to_send_buffer(buf, &msg));
   CHECK(!ok(pes));
