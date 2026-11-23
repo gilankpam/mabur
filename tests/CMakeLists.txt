@@ -176,3 +176,5 @@ if(TARGET maburd)
   add_test(NAME test_maburd_identify COMMAND $<TARGET_FILE:maburd> --identify)
   set_tests_properties(test_maburd_identify PROPERTIES PASS_REGULAR_EXPRESSION "^version=local board=local\n$")
 endif()
+
+add_test(NAME test_s00mabur COMMAND sh ${PROJECT_SOURCE_DIR}/tests/test_s00mabur.sh ${PROJECT_SOURCE_DIR}/bundle/S96mabur)
