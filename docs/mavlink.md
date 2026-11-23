@@ -179,6 +179,12 @@ Boot log: `maburgs: mavlink endpoint udp <bind>:<port>` or
   own datagram. With no peer, or when `sendto` fails, the datagram is
   dropped: the socket never blocks and never retries. Retrying a request
   whose answer was lost is the ground app's job.
+- **VERSION_MISMATCH.** The endpoint runs under the update pair and forwards
+  only the update lane (`MABUR_IDENT_REQ`, `MABUR_UPDATE`,
+  `FILE_TRANSFER_PROTOCOL`); any other packet is dropped and counted
+  (`drop_not_update`), because the drone drops a whole frame that mixes in
+  anything else. The GS tool is mabur-ground's `maburup`
+  ([`docs/gs-image.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/gs-image.md)).
 - Polled from the core loop next to the calibration control socket; at
   most 64 datagrams per tick, so a flooding client cannot hold the loop.
 - Sideport: `link.mav{tx, rx, reject, peer}` ([`docs/observability.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/observability.md));
@@ -320,7 +326,7 @@ counts in `drop=`. They count in the
 A GS replaces the drone's `maburd` over the tunnel. The drone only stages
 the file and exits; `S00mabur` does the install, the trial and the
 rollback (`docs/deploy.md` "Over-the-air update"). The GS side is
-mabur-ground's. Everything here is the drone's wire behaviour.
+mabur-ground's `maburup`. Everything here is the drone's wire behaviour.
 
 ### The update lane
 
