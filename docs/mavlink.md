@@ -18,6 +18,11 @@ page.
   and the drone's sweep engine talk over the same tunnel in a mabur
   MAVLink dialect, on a lane of their own that survives the session lapse
   every sweep causes. See "Calibration over the tunnel" below.
+- **Over-the-air update** (`docs/deploy.md`): a GS pushes a new `maburd`
+  to the drone over the tunnel, by MAVLink FTP and four frozen mabur
+  messages, and the drone installs it on trial. It also works for a GS at
+  another `RC_VERSION`, under an update-only session. See "Over-the-air
+  update" below.
 - Designed for, not built: "Later tenants" below.
 
 ## Where the code lives
@@ -28,6 +33,8 @@ page.
 | the mabur dialect's XML (`mabur.xml`, including `common.xml`) | `common/mavlink/` |
 | the vendored generated headers (mabur, common, minimal, standard) | `third_party/mavlink/` (pymavlink version, regenerate command and the `protocol.h` patch in its `VERSION`), included through `common/include/mabur/mav.h` |
 | calibration messages: plain structs and their MAVLink codec | `common/include/mabur/cal_proto.h`, `common/include/mabur/cal_mav.h` |
+| update messages and FTP: plain structs and their codec; SHA-256 | `common/include/mabur/ota_mav.h`, `common/include/mabur/sha256.h` |
+| drone: the update server (FTP subset, START/ABORT/status), the trial proof | `drone/src/ota.h`, `drone/src/trial_proof.h` |
 | drone: the component (routing, heartbeat; the parameter protocol in `docs/vtx-config-mavlink.md`) | `drone/src/mav_component.h` |
 | drone: MAV thread, tag and counter check | `drone/src/main.cpp` (`mbr-mav`), `RcAgent::check_mav` |
 | GS: the tunnel and its cal lane (shared GS core) | [`gs/src/mav_tunnel.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/mav_tunnel.h) |
@@ -65,12 +72,20 @@ u16 crc16
   parse is dropped and counted without it. The GS restarts its counter at
   1 when the session's `vtx_nonce` changes. The one exception is a frame
   made entirely of calibration messages: its own counter domain, and a
-  latch onto the calibration run's pair (below).
+  latch onto the calibration run's pair (below). The other exception is
+  the update-only pair ("Over-the-air update" below), which takes the
+  update lane's messages from a GS at another `RC_VERSION`.
 - **Drone to GS** is `T_MAV_UP` (type 9), same layout as `T_MAV` and tagged
-  the same way, under the published session's `{vrx, vtx, counter}`. It goes
+  the same way, under `{vrx, vtx, counter}` of the pair of the most recent
+  accepted inbound frame: the published session, or the update-only pair
+  after a frame accepted under it (so an update GS that is not the linked
+  one still verifies its replies). Uplink needs a published session or an
+  open update-only pair; with neither, replies wait queued. It goes
   out on the Telem path (control radiotap, the shared Telem 802.11 sequence) at most one
-  frame every `kMavUplinkMinMs` (50 ms), which caps the tunnel near
-  12 kB/s on the drone's uplink. Nothing from the component goes up while
+  frame every `kMavUplinkMinMs` (50 ms) while a session is published,
+  which caps the tunnel near 12 kB/s on the drone's uplink; with only an
+  update-only pair there is no video to protect and the uplink is
+  unpaced. Nothing from the component goes up while
   a calibration sweep airs (the periodic Telem's rule); replies wait
   queued. The calibration replies are the exception (below). The GS
   takes each counter once per pair, inside a 64-wide anti-replay window:
@@ -112,7 +127,8 @@ their own queue, checks the tag and counter, feeds the payload in, and
 sends queued replies. The config write fsyncs flash, so it stays off the
 agent and TX threads.
 
-- **Heartbeat.** Once a second while a session is published:
+- **Heartbeat.** Once a second while a session is published (not for an
+  update-only pair alone):
   `MAV_TYPE_ONBOARD_CONTROLLER`, `MAV_AUTOPILOT_INVALID`,
   `MAV_STATE_ACTIVE`. Suppressed while a calibration sweep airs, the
   same rule as the periodic Telem. This is what a ground app discovers
@@ -123,7 +139,9 @@ agent and TX threads.
   component. A message is for the component when its target system is 0
   or 1 and its target component is 0 or 191. Served:
   `HEARTBEAT` (ignored), `PARAM_EXT_REQUEST_LIST`,
-  `PARAM_EXT_REQUEST_READ`, `PARAM_EXT_SET`. Anything else (a calibration
+  `PARAM_EXT_REQUEST_READ`, `PARAM_EXT_SET`, and the update lane
+  (`MABUR_IDENT_REQ`, `MABUR_UPDATE`, `FILE_TRANSFER_PROTOCOL`, which
+  carry no target the component checks). Anything else (a calibration
   id in a mixed frame included), or anything for another target, is
   dropped and counted.
 - **Parameters.** List, read and set, the apply paths and what
@@ -187,8 +205,9 @@ rewrites packets.
 ### The mabur dialect
 
 `common/mavlink/mabur.xml` includes `common.xml`, so every common message
-still packs and decodes under it, and adds six messages in the private id
-range. Both daemons and the web GS build against it (`mabur/mav.h`
+still packs and decodes under it, and adds ten messages in the private id
+range: the six calibration messages here (60000-60005) and the four
+update messages (60006-60009, "Over-the-air update" below). Both daemons and the web GS build against it (`mabur/mav.h`
 includes `mavlink/mabur/mavlink.h`); a `common`-only ground app drops the
 new ids at its parser (unknown CRC_EXTRA), which is what we want.
 
@@ -296,6 +315,120 @@ session), else the published pair; with neither the frame is not sent and
 counts in `drop=`. They count in the
 `stats:` line's `mav tx=`.
 
+## Over-the-air update
+
+A GS replaces the drone's `maburd` over the tunnel. The drone only stages
+the file and exits; `S00mabur` does the install, the trial and the
+rollback (`docs/deploy.md` "Over-the-air update"). The GS side is
+mabur-ground's. Everything here is the drone's wire behaviour.
+
+### The update lane
+
+Three GS-to-drone messages, all accepted in both session kinds:
+`MABUR_IDENT_REQ` (60006), `MABUR_UPDATE` (60008) and the standard
+`FILE_TRANSFER_PROTOCOL` (230). The drone answers on `MABUR_IDENT` (60007),
+`MABUR_UPDATE_STATUS` (60009) and FTP replies.
+
+| message | id | dir | fields |
+|---|---|---|---|
+| `MABUR_IDENT_REQ` | 60006 | GS → drone | `pad u8` (mavgen needs one field) |
+| `MABUR_IDENT` | 60007 | drone → GS | `version char[32]` (the release compiled in: the tag, `snapshot-<sha8>` or `pr<N>-<sha8>`), `board char[48]`, `chip char[16]` |
+| `MABUR_UPDATE` | 60008 | GS → drone | `cmd u8 (0 status, 1 start, 2 abort), sha256 u8[32]` |
+| `MABUR_UPDATE_STATUS` | 60009 | drone → GS | `state u8, reason u8, trial_s u8` |
+
+These four are frozen (`docs/link-pairing.md`): `frozen_ota_goldens` in
+`tests/test_ota_mav.cpp` pins the bytes. `MABUR_IDENT` carries what
+`maburd --identify` prints; a hand build reports board `local`, so it
+cannot take a release update.
+
+`MABUR_UPDATE_STATUS` `state`:
+
+| value | state | meaning |
+|---|---|---|
+| 0 | idle | no update in progress |
+| 1 | receiving | a staged `maburd` exists, no `go` yet |
+| 2 | trial | the new binary is running or about to; `trial_s` is the seconds left of its 40 s window (a START reply says 40) |
+| 3 | committed | the trial proved itself and was kept |
+| 4 | rolled_back | the trial failed; the previous pair is back |
+| 5 | refused | the update was not started or not installed; see `reason` |
+
+`reason` (0 none; `rolled_back` and `refused` carry one; the names are
+the words in the `result` file):
+
+| value | reason | meaning |
+|---|---|---|
+| 1 | exited | the trial process exited, or the install could not complete (no space) and the old pair is still running |
+| 2 | no_link | the trial never linked within 40 s |
+| 3 | no_video | the trial linked but never held 5 s of encoder frames |
+| 4 | bad_hash | the staged file does not match START's SHA-256 |
+| 5 | wrong_board | the new binary's board differs from the running one (or it cannot run `--identify`) |
+| 6 | bad_config | the new binary cannot migrate the current config |
+| 7 | busy | a trial is running (or `go` exists for another hash) |
+| 8 | no_file | START with nothing staged |
+
+Commands. `status` returns the current status and changes nothing.
+`start` checks that no trial is running, that `maburd` is staged and its
+SHA-256 equals the message's, writes `go` and asks `maburd` to exit; the
+reply is `trial` (40 s). A repeated START for the same hash while `go`
+exists answers `trial` again (a lost reply makes the GS resend); a
+different hash answers `refused busy`. `abort` deletes the staged file
+when no trial runs; during a trial it removes the proof and exits, so the
+loop rolls back. The reply is the status after the command.
+
+### The FTP subset
+
+`FILE_TRANSFER_PROTOCOL` is the standard MAVLink FTP payload (`seq`,
+`session`, `opcode`, `size`, `req_opcode`, `offset`, up to 239 data
+bytes), served write-only and only for the one leaf file `maburd` in the
+update dir (`/tmp/mabur-up`; `docs/deploy.md`).
+
+| Opcode | Does |
+|---|---|
+| 1 TerminateSession, 2 ResetSessions | close the open file; ACK |
+| 6 CreateFile | create or truncate `maburd` (mode 0755), clear a stale `result`; ACK with session 0 |
+| 11 OpenFileWO | open `maburd` for writing without truncating (resume); ACK with session 0 |
+| 7 WriteFile | write `size` bytes at `offset`; needs the open file (session 0) |
+| 12 TruncateFile | set `maburd`'s length to `offset` |
+
+A reply is an ACK (opcode 128) or a NAK (129) with a one-byte error code in
+the data, `seq` + 1, and the request's opcode in `req_opcode`. The NAK
+codes it uses:
+
+| Code | Name | When |
+|---|---|---|
+| 1 | Fail | a create, open or truncate while a trial runs (the GS learns `busy` from the status) |
+| 2 | FailErrno | an open, write or truncate failed (no space); the errno byte is not carried |
+| 4 | InvalidSession | WriteFile with no open file or a session other than 0 |
+| 7 | UnknownCommand | any other opcode (read, list, remove, CRC...) |
+| 9 | FileProtected | a path other than `maburd` or `/maburd`; nothing is created |
+| 10 | FileNotFound | TruncateFile with no staged file |
+
+### The two session kinds
+
+| | published session (linked, same version) | update-only session |
+|---|---|---|
+| opened by | the first RCF verifying under the acked pair | a verified DISC of another `RC_VERSION` (`docs/rc-protocol.md`) |
+| lapses | link failsafe (1 s without a verified RCF) | 10 s without such a DISC |
+| accepted | everything the tunnel serves, calibration included | only the update lane; anything else is dropped and counted in `update_dropped=` |
+| uplink | paced at `kMavUplinkMinMs`, heartbeat once a second | unpaced, no heartbeat |
+| tag pair | the published `{vrx, vtx}` | the update pair |
+
+The two counter domains are as above: the update pair advances `mav_last_`.
+`update_dropped=` is the last field of the `mav` part of the `stats:` line
+and is folded into `drop=` too.
+
+### Exit and trial
+
+After START the MAV thread waits until the replies have gone (or 1 s) and
+stops `maburd`, as SIGTERM does; `S00mabur` then sees `go` and installs.
+The new `maburd` runs as the trial with `MABUR_TRIAL=1`: its update
+server reports `trial` with the seconds left, and while a trial runs the
+FTP create/open/truncate refusal above applies, so a late GS cannot
+overwrite the file under test. The trial writes `linked` on its first
+published session and `proven` after the link has held with encoder
+frames moving for 5 s straight (`drone/src/trial_proof.h`); a tick that is
+unlinked or without frames restarts that run.
+
 ## Later tenants
 
 Designed for, not built. Each is more traffic through the same tunnel and
@@ -308,5 +441,5 @@ one more case in the drone's routing; none needs a wire change.
   `MAV_CMD_SET_MESSAGE_INTERVAL`, or a byte budget by message id). Arm
   state comes from the FC heartbeat's `MAV_MODE_FLAG_SAFETY_ARMED` into
   the input low-power mode reads today.
-- **Firmware upload / MAVLink FTP.** FTP packets are tunnel payload; the
-  tenant is a file-service component on the drone.
+- **General file service.** The update lane's FTP is write-only and
+  confined to one file; reads, listing and other paths are not served.

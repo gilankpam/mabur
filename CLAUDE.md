@@ -112,7 +112,8 @@ Two kinds of doc, two rules:
 | the software NACK (base-layer selective repeat): T_NACK, the retx ring, the air bucket, the retx accounting class, feclog 3 | docs/fec-nack.md (as built) + docs/findings/2026-10-05-fec-nack-spike.md (spike) |
 | H.265 row slices: slice salvage (SliceAssembler, skip-slice fills, `[venc] slices`, FrameHdr `slice_rows`, `kRecFlagSliceSalvaged`, aulog 5) and streamed decode (AU ring v4 open slots, StreamFeeder, the decoder-input thread (FeedLoop), `[decoder] stream`, the MPP patches in [`gs/player/mpp-patches/`](https://github.com/gilankpam/mabur-ground/blob/master/gs/player/mpp-patches/), the stream-mode GS image and its p1 flash) | docs/slices.md (as built) + docs/findings/2026-10-09-venc-slice.md; flashing: mabur-ground's docs/deploy.md |
 | the phase lock (sensor-rate servo against the GS vblank: PhaseLock, the regulator's margin and placement switch, RCF `snr_off`, `display.phase_lock`/`phase_margin_ms`, `screen_mode` exact-rate pick, reg.log `lock=` fields, drone `[sensor] steer`) | docs/phase-lock.md + docs/findings/2026-10-17-phase-lock-spike-2.md |
-| MAVLink tunnel (`T_MAV`, ids, the drone component's routing/heartbeat), the GS MAVLink UDP endpoint and its trust boundary | docs/mavlink.md |
+| MAVLink tunnel (`T_MAV`, ids, the drone component's routing/heartbeat), the GS MAVLink UDP endpoint and its trust boundary, the over-the-air update's messages, FTP subset and update-only session | docs/mavlink.md (+ docs/rc-protocol.md "Update-only session") |
+| updating the drone's `maburd` over the radio: the `/tmp/mabur-up` files, install, trial, rollback, manual recovery, `sysupgrade` after an OTA | `docs/deploy.md` "Over-the-air update" |
 | drone config parameters over MAVLink (`PARAM_EXT_*` table, applying a set, `.pre-param`, ordering rules, `ParamClient`, mavparam.py) | docs/vtx-config-mavlink.md; the web GS VTX tab → mabur-ground's [`docs/web-gs.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/web-gs.md) |
 | radio/PHY below mabur | `third_party/devourer/CLAUDE.md` |
 
@@ -149,11 +150,15 @@ build. mabur owes nothing to old peers, old configs, or old consumers.
   restored alongside it, always. Prefer rolling forward.
 - **The one exception: the frozen handshake.** The 802.11 framing of
   control frames, the RC prefix, DISC, DISC_ACK, the tag construction,
-  the `T_MAV`/`T_MAV_UP` envelope and the CRC never change, under any
-  `RC_VERSION` — not by appending, not under a new version; a new need is
-  a new frame type. It is what lets a GS and a drone at different versions
+  the `T_MAV`/`T_MAV_UP` envelope, the CRC, and the four mabur update
+  messages (`MABUR_IDENT_REQ`, `MABUR_IDENT`, `MABUR_UPDATE`,
+  `MABUR_UPDATE_STATUS`, ids 60006-60009: base fields) never change,
+  under any `RC_VERSION` — not by appending, not under a new version; a
+  new need is a new frame type (a MAVLink message gains fields only as
+  MAVLink 2 extensions). It is what lets a GS and a drone at different versions
   find and authenticate each other. `docs/link-pairing.md`
-  "Frozen handshake" owns it; the goldens in `tests/test_rc.cpp` pin it.
+  "Frozen handshake" owns it; the goldens in `tests/test_rc.cpp` and `frozen_ota_goldens` in
+  `tests/test_ota_mav.cpp` pin it.
 
 **Release versions — a rule, not advice.** Releases are `v0.MINOR.PATCH`
 (`docs/releases.md`). Free-to-change does not mean silent: every other GS
