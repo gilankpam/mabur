@@ -42,7 +42,7 @@ page.
 
 ## The wire: `T_MAV`
 
-`T_MAV = 8`, `RC_VERSION` 18. Same layout both directions; only the GS to
+`T_MAV = 8` (the layout is frozen: `docs/rc-protocol.md`). Same layout both directions; only the GS to
 drone direction carries the tag:
 
 ```
