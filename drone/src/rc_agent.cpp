@@ -9,6 +9,7 @@
 
 #include "mabur/cal_mav.h"
 #include "mabur/link_key.h"
+#include "mabur/ota_mav.h"
 #include "mabur/rc_proto.h"
 #include "mabur/uep_encoder.h"
 
@@ -197,6 +198,7 @@ RcAgent::MavCheck RcAgent::check_mav(const uint8_t* body, size_t len, rc::Mav* o
   const bool cal_only = cal::all_packets_are_cal(m->payload.data(), m->payload.size());
   MavCheck verdict = MavCheck::kRejected;
   uint64_t session = 0;
+  const uint64_t up = update_session_.load(std::memory_order_acquire);
   if (verify_session_tagged(body, len, m->counter, &session)) {
     // Published path: a verified tag settles which pair the frame belongs
     // to, so a stale counter is a rejection, never a fall-through to the
@@ -207,6 +209,13 @@ RcAgent::MavCheck RcAgent::check_mav(const uint8_t* body, size_t len, rc::Mav* o
     const bool fresh = cal_only ? advance_counter_(cal_last_, m->counter, session)
                                 : accept_mav_counter(m->counter, session);
     if (fresh) verdict = MavCheck::kOk;
+  } else if (up != 0 && verifies_under_(body, len, up, m->counter)) {
+    // Update-only pair: the update lane's messages and nothing else.
+    if (!ota::all_packets_uplink_lane(m->payload.data(), m->payload.size())) {
+      update_dropped_.fetch_add(1, std::memory_order_relaxed);
+      return MavCheck::kUpdateDropped;
+    }
+    if (advance_counter_(mav_last_, m->counter, up)) verdict = MavCheck::kOkUpdate;
   } else {
     // Latched path: cal-only frames of an open run, under the run pair
     // when it is not the published one (that pair just failed above).
@@ -243,6 +252,7 @@ std::optional<rc::TagCtx> RcAgent::uplink_ctx(bool cal_reply) const {
     const uint64_t run = cal_run_session_.load(std::memory_order_acquire);
     if (run != 0) p = run;
   }
+  if (p == 0) p = update_session_.load(std::memory_order_acquire);
   if (p == 0) return std::nullopt;
   return rc::TagCtx{static_cast<uint32_t>(p >> 32), static_cast<uint32_t>(p & 0xFFFFFFFFu), 0};
 }
@@ -701,6 +711,13 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
       vtx = fresh_vtx_nonce_();
       pending_ = Session{d->vrx_nonce, vtx, true, 0, false};
     }
+    // The DISC's version is byte 2: a verified GS at another version gets an
+    // update-only pair (the ack's), refreshed by every such DISC.
+    if (body[2] != rc::RC_VERSION) {
+      update_session_.store((static_cast<uint64_t>(d->vrx_nonce) << 32) | vtx,
+                            std::memory_order_release);
+      update_heard_ms_.store(now_ms, std::memory_order_relaxed);
+    }
     act_.send_control(
         rc::pack_disc_ack(make_disc_ack(d->vrx_nonce, vtx, 0, d->seq), cfg_.link.key));
     return;
@@ -719,6 +736,7 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
       current_ = pending_;
       pending_ = Session{};
       publish_session_();
+      update_session_.store(0, std::memory_order_release);
       session_promoted_ = true;
       // Session boundary: the drone's seen hop and IDR epochs restart here
       // (maburgs keeps its own epochs across sessions), so the old
@@ -841,6 +859,9 @@ void RcAgent::on_rc_frame(const uint8_t* body, size_t len, uint64_t now_ms) {
 }
 
 void RcAgent::tick(uint64_t now_ms, const RadioHealth& health) {
+  if (update_session_.load(std::memory_order_acquire) != 0 &&
+      now_ms - update_heard_ms_.load(std::memory_order_relaxed) > kUpdateSessionMs)
+    update_session_.store(0, std::memory_order_release);
   if (state_ == State::BOOT) {
     apply_max_range(now_ms);
     state_ = State::RENDEZVOUS;

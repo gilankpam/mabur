@@ -12,6 +12,7 @@
 #include "mabur/link_key.h"
 #include "mabur/siphash.h"
 #include "mabur/mav.h"
+#include "mabur/ota_mav.h"
 #include "mabur/profile.h"
 #include "mabur/rc_proto.h"
 #include "mabur/uep_encoder.h"
@@ -3403,4 +3404,146 @@ TEST(ldpc_change_reapplies_current_op_next_tick) {
   CHECK(act.applied.back().ladder[1].ldpc == false);
   CHECK(act.applied.back().ladder[1].mcs == prev.ladder[1].mcs);  // same rung
   CHECK(act.applied.back().generation == prev.generation);       // not a new op
+}
+
+// ---- update-only session --------------------------------------------------
+
+namespace {
+
+// A T_MAV as mav_wire builds it, with the version byte patched and the tag
+// and CRC redone so it still verifies under (kVrx, vtx).
+std::vector<uint8_t> mav_at_version(const mabur::LinkKey& key, uint8_t ver,
+                                    const std::vector<uint8_t>& payload, uint32_t counter,
+                                    uint32_t vrx, uint32_t vtx) {
+  Mav m;
+  m.counter = counter;
+  m.payload = payload;
+  auto w = pack_mav(m, key, TagCtx{vrx, vtx, counter});
+  w[2] = ver;
+  const size_t tag = w.size() - 10;
+  std::vector<uint8_t> in(w.begin(), w.begin() + tag);
+  for (uint32_t v : {vrx, vtx, counter})
+    for (int i = 0; i < 4; ++i) in.push_back(static_cast<uint8_t>(v >> (8 * i)));
+  const uint64_t t = siphash24(key, in.data(), in.size());
+  for (int i = 0; i < 8; ++i) w[tag + i] = static_cast<uint8_t>(t >> (8 * i));
+  const uint16_t crc = crc16_ccitt(w.data(), w.size() - 2);
+  w[w.size() - 2] = crc & 0xFF; w[w.size() - 1] = crc >> 8;
+  return w;
+}
+
+std::vector<uint8_t> ident_req_packet() {
+  return mabur::ota::encode(mabur::ota::OtaMsg{mabur::ota::IdentReq{}}, kGcsSys, kGcsComp,
+                            mav::kChanGsLocal);
+}
+
+std::vector<uint8_t> update_packet() {
+  return mabur::ota::encode(mabur::ota::OtaMsg{mabur::ota::UpdateCmd{}}, kGcsSys, kGcsComp,
+                            mav::kChanGsLocal);
+}
+
+// A foreign-version DISC for vrx at t; returns the vtx its ack carries.
+uint32_t foreign_disc(RcAgent& agent, MockActuator& act, const Config& cfg, uint32_t vrx,
+                      uint64_t t) {
+  auto w = disc_at_version(cfg.link.key, 18);
+  if (vrx != kVrx) {
+    // Re-tag for another vrx: pack, patch version and retag.
+    w = pack_disc(Disc{vrx, 7}, cfg.link.key);
+    w[2] = 18;
+    std::vector<uint8_t> m(w.begin(), w.begin() + 10);
+    for (int i = 0; i < 12; ++i) m.push_back(0);
+    const uint64_t tg = siphash24(cfg.link.key, m.data(), m.size());
+    for (int i = 0; i < 8; ++i) w[10 + i] = static_cast<uint8_t>(tg >> (8 * i));
+    const uint16_t crc = crc16_ccitt(w.data(), w.size() - 2);
+    w[w.size() - 2] = crc & 0xFF; w[w.size() - 1] = crc >> 8;
+  }
+  agent.on_rc_frame(w.data(), w.size(), t);
+  return last_ack_vtx(act);
+}
+
+}  // namespace
+
+TEST(foreign_disc_opens_an_update_session) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});
+  CHECK(!agent.update_session_open());
+  const uint32_t vtx = foreign_disc(agent, act, cfg, kVrx, 100);
+  CHECK(agent.update_session_open());
+  const auto req = ident_req_packet();
+  auto w = mav_at_version(cfg.link.key, 18, req, 1, kVrx, vtx);
+  CHECK(mav_check(agent, w, false) == RcAgent::MavCheck::kOkUpdate);
+  CHECK(mav_check(agent, w, false) == RcAgent::MavCheck::kRejected);   // replayed counter
+  auto ctx = agent.uplink_ctx(false);
+  REQUIRE(ctx.has_value());
+  CHECK(ctx->vrx_nonce == kVrx && ctx->vtx_nonce == vtx);
+  CHECK(!agent.has_published_session());
+  CHECK(agent.state() != RcAgent::State::LINKED);
+}
+
+TEST(update_session_drops_everything_else) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});
+  const uint32_t vtx = foreign_disc(agent, act, cfg, kVrx, 100);
+  CHECK(mav_check(agent, mav_at_version(cfg.link.key, 18, param_set_packet(), 1, kVrx, vtx),
+                  false) == RcAgent::MavCheck::kUpdateDropped);
+  auto mixed = update_packet();
+  const auto p = param_set_packet();
+  mixed.insert(mixed.end(), p.begin(), p.end());
+  CHECK(mav_check(agent, mav_at_version(cfg.link.key, 18, mixed, 2, kVrx, vtx), false) ==
+        RcAgent::MavCheck::kUpdateDropped);
+  CHECK(agent.update_dropped() == 2);
+  CHECK(!agent.take_auth_reject());
+}
+
+TEST(update_session_expires_without_disc) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(0, RadioHealth{});
+  foreign_disc(agent, act, cfg, kVrx, 100);
+  foreign_disc(agent, act, cfg, kVrx, 5000);
+  agent.tick(14900, RadioHealth{});
+  CHECK(agent.update_session_open());
+  agent.tick(15001, RadioHealth{});
+  CHECK(!agent.update_session_open());
+}
+
+TEST(same_version_promotion_clears_the_update_pair_and_expiry_leaves_published_alone) {
+  Config cfg = make_cfg();
+  cfg.link.failsafe_ms = 1000000;   // A stays linked across the expiry, with no RCFs sent
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  const uint32_t vtxA = link_agent(agent, act, cfg);          // GS A (kVrx) linked at 110
+  const uint32_t vrxB = kVrx + 1;
+  foreign_disc(agent, act, cfg, vrxB, 200);
+  CHECK(agent.update_session_open());
+  CHECK(agent.has_published_session());
+  // B's expiry; A is untouched.
+  agent.tick(200 + RcAgent::kUpdateSessionMs + 1, RadioHealth{});
+  CHECK(!agent.update_session_open());
+  CHECK(agent.has_published_session());
+  CHECK(mav_check(agent, mav_wire(param_set_packet(), 1, vtxA), false) == RcAgent::MavCheck::kOk);
+  // B again, then B at our version promotes and clears the pair.
+  const uint32_t vtxB = foreign_disc(agent, act, cfg, vrxB, 20000);
+  CHECK(agent.update_session_open());
+  auto disc = make_disc_wire(vrxB, 136, 20, 0, 2);
+  agent.on_rc_frame(disc.data(), disc.size(), 20010);
+  CHECK(last_ack_vtx(act) == vtxB);
+  auto rcf = make_rcf_wire(1, encode_profile(PhyMode::HT, 0, 20), 8, 8, kNoProbeProfile, vtxB,
+                           0, vrxB);
+  agent.on_rc_frame(rcf.data(), rcf.size(), 20020);
+  CHECK(agent.rcf_accepted() == 2);
+  CHECK(!agent.update_session_open());
+}
+
+TEST(same_version_disc_opens_no_update_session) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  ack_agent(agent, act);
+  CHECK(!agent.update_session_open());
+  CHECK(!agent.uplink_ctx(false).has_value());
 }
