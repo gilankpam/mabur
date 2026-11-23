@@ -12,6 +12,7 @@
 # Environment:
 #   FIRMWARE_DIR      the OpenIPC tree (default: firmware/openipc)
 #   MABUR_SRC_DIR     the mabur tree maburd is built from (default: repo root)
+#   MABUR_RELEASE     release name compiled into maburd (default: local)
 #   DEVOURER_VERSION  devourer commit (default: devourer master, resolved once)
 #   SKIP_UBOOT=1      leave U-Boot alone
 set -eo pipefail
@@ -21,6 +22,9 @@ BUILDER_DIR=$(cd "$(dirname "$0")" && pwd)
 FIRMWARE_DIR="${FIRMWARE_DIR:-${BUILDER_DIR}/openipc}"
 MABUR_SRC_DIR="${MABUR_SRC_DIR:-$(cd "${BUILDER_DIR}/.." && pwd)}"
 export MABUR_SRC_DIR
+# Compiled into maburd (--identify); the OTA path compares the board.
+export MABUR_BOARD="$1"
+export MABUR_RELEASE="${MABUR_RELEASE:-local}"
 OPENIPC_REPO="https://github.com/OpenIPC/firmware.git"
 OPENIPC_REF=$(tr -d '[:space:]' < "${BUILDER_DIR}/openipc.ref")
 

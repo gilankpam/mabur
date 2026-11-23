@@ -19,6 +19,9 @@ build is never cancelled.
 
 Files: `mabur-<version>-<board>-nor.tgz` (the sysupgrade image) and
 `mabur-<version>-u-boot-ssc338q-nor-padded.bin` (`docs/flash-uboot.md`),
+and, per board, the drone binary `mabur-<version>-<board>-maburd` with its
+`.sha256` (the same stripped `maburd` the image carries, with the release and
+board compiled in; the ground station pushes it to the drone over the radio),
 where `<version>` is the tag, `snapshot-<sha8>` or `pr<N>-<sha8>`. A release
 also carries the same images under their unversioned names
 (`<board>-nor.tgz`, `u-boot-ssc338q-nor-padded.bin`): each board's

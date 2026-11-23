@@ -60,6 +60,8 @@ MABUR_DEPENDENCIES = libusb host-pkgconf devourer
 # harnesses are neither installed nor useful on the SSC338Q.
 MABUR_CONF_OPTS = \
 	-DDEVOURER_DIR=$(DEVOURER_DIR) \
+	-DMABUR_BOARD=$(or $(MABUR_BOARD),local) \
+	-DMABUR_RELEASE=$(or $(MABUR_RELEASE),local) \
 	-DMABUR_BUILD_TESTS=OFF \
 	-DMABUR_BUILD_DRONE=ON \
 	-DMABUR_BUILD_LINKBENCH=OFF \
