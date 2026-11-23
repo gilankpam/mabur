@@ -118,8 +118,10 @@ jobs:
           bin=firmware/openipc/output/target/usr/bin/maburd
           [ -f "$bin" ] || { echo "no maburd in the target tree"; exit 1; }
           # It is ARM and cannot run here: check the identity compiled into it.
-          strings "$bin" | grep -qxF "$VERSION" || { echo "maburd lacks release $VERSION"; exit 1; }
-          strings "$bin" | grep -qxF "${{ matrix.board }}" || { echo "maburd lacks board ${{ matrix.board }}"; exit 1; }
+          # To a file, not a pipe: grep -q exiting early would SIGPIPE strings under pipefail.
+          strings "$bin" > "$RUNNER_TEMP/maburd.strings"
+          grep -qxF "$VERSION" "$RUNNER_TEMP/maburd.strings" || { echo "maburd lacks release $VERSION"; exit 1; }
+          grep -qxF "${{ matrix.board }}" "$RUNNER_TEMP/maburd.strings" || { echo "maburd lacks board ${{ matrix.board }}"; exit 1; }
           name="mabur-$VERSION-${{ matrix.board }}-maburd"
           cp "$bin" "dist/$name"
           (cd dist && sha256sum "$name" > "$name.sha256")
