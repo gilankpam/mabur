@@ -168,8 +168,10 @@ TEST(create_during_trial_naks_fail) {
   ::mkdir(rg.dir.c_str(), 0755);
   spit(rg.dir + "/maburd", "keep");
   OtaServer s(rg.env(true));
-  CHECK(nak_code(call(s, req(6, 0, 0, "maburd"))) == 1);
-  CHECK(slurp(rg.dir + "/maburd") == "keep");
+  for (uint8_t op : {6, 11, 12}) {
+    CHECK(nak_code(call(s, req(op, 0, 0, "maburd"))) == 1);
+    CHECK(slurp(rg.dir + "/maburd") == "keep");
+  }
   spit(rg.dir + "/result", "committed");
   CHECK(call(s, req(6, 0, 0, "maburd")).opcode == 128);
 }
