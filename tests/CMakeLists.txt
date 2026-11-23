@@ -167,3 +167,8 @@ if(MABUR_BUILD_LINKBENCH)
   add_mtest(test_linkbench_rxpipe test_linkbench_rxpipe.cpp LIBS linkbench_core)
   add_mtest(test_linkbench_e2e test_linkbench_e2e.cpp LIBS linkbench_core)
 endif()
+
+if(TARGET maburd)
+  add_test(NAME test_maburd_identify COMMAND $<TARGET_FILE:maburd> --identify)
+  set_tests_properties(test_maburd_identify PROPERTIES PASS_REGULAR_EXPRESSION "^version=local board=local\n$")
+endif()

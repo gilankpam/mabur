@@ -43,6 +43,7 @@
 #endif
 
 #include "air_clock.h"
+#include "build_ident.h"
 #include "nack_bucket.h"
 #include "air_rate.h"
 #include "ampdu_policy.h"
@@ -3522,8 +3523,9 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
 void print_usage(const char* argv0) {
   std::fprintf(stderr,
                "usage: %s -c <config.toml> [--dry-run --in <file> --out <file> [--rc-in <file>]]\n"
-               "       %s --migrate-config <in.toml> <out.toml>\n",
-               argv0, argv0);
+               "       %s --migrate-config <in.toml> <out.toml>\n"
+               "       %s --identify\n",
+               argv0, argv0, argv0);
 }
 
 }  // namespace
@@ -3532,6 +3534,11 @@ int main(int argc, char** argv) {
   // Runs and exits before anything else: no radio, MI or USB is touched.
   if (argc == 4 && std::string(argv[1]) == "--migrate-config")
     return mabur::migrate_config_cli(argv[2], argv[3]);
+
+  if (argc == 2 && std::string(argv[1]) == "--identify") {
+    std::printf("version=%s board=%s\n", mabur::build_release(), mabur::build_board());
+    return 0;
+  }
 
   std::string cfg_path;
   bool dry_run = false;
