@@ -12,9 +12,11 @@
 #include "mabur/config_write.h"
 #include "mabur/config_params.h"
 #include "mabur/mav.h"
+#include "mabur/ota_mav.h"
 #include "mabur/param_value.h"
 #include "mabur/rc_proto.h"
 #include "mav_params.h"
+#include "ota.h"
 
 namespace mabur {
 
@@ -75,10 +77,12 @@ const char* apply_path_name(ConfigApplyPath p) {
 }  // namespace
 
 MavComponent::MavComponent(std::string cfg_path, ApplyPort port,
-                           std::function<void(const std::string&)> log)
-    : cfg_path_(std::move(cfg_path)), port_(std::move(port)), log_(std::move(log)) {
+                           std::function<void(const std::string&)> log, OtaServer* ota)
+    : cfg_path_(std::move(cfg_path)), port_(std::move(port)), log_(std::move(log)), ota_(ota) {
   mavlink_reset_channel_status(kChanDroneRx);
 }
+
+bool MavComponent::exit_requested() const { return ota_ && ota_->exit_requested(); }
 
 uint8_t MavComponent::sys_id() { return mav::kSysId; }
 uint8_t MavComponent::comp_id() { return mav::kCompId; }
@@ -88,17 +92,22 @@ void MavComponent::log(const std::string& line) const {
 }
 
 void MavComponent::queue(const Msg& m, bool list_value) {
+  uint8_t buf[MAVLINK_MAX_PACKET_LEN];
+  const uint16_t n = mavlink_msg_to_send_buffer(buf, &m.m);
+  queue_bytes(std::vector<uint8_t>(buf, buf + n), list_value);
+}
+
+void MavComponent::queue_bytes(std::vector<uint8_t> bytes, bool list_value) {
   if (queue_.size() >= kMavQueueCap) {
     ++stats_.drop_queue_full;
     return;
   }
-  uint8_t buf[MAVLINK_MAX_PACKET_LEN];
-  const uint16_t n = mavlink_msg_to_send_buffer(buf, &m.m);
-  queue_.push_back(Out{std::vector<uint8_t>(buf, buf + n), list_value});
+  queue_.push_back(Out{std::move(bytes), list_value});
   if (list_value) ++list_queued_;
 }
 
-void MavComponent::on_payload(const uint8_t* bytes, size_t n) {
+void MavComponent::on_payload(const uint8_t* bytes, size_t n, uint64_t now_ms) {
+  now_ms_ = now_ms;
   for (size_t i = 0; i < n; ++i) {
     const bool was_idle = parser_idle();
     Msg msg;
@@ -122,6 +131,13 @@ void MavComponent::on_payload(const uint8_t* bytes, size_t n) {
 
 void MavComponent::route(const Msg& in) {
   const mavlink_message_t& m = in.m;
+  if (ota_ && ota::is_uplink_lane_msgid(m.msgid)) {
+    if (auto d = ota::decode(m)) {
+      for (const auto& r : ota_->on_msg(*d, now_ms_))
+        queue_bytes(ota::encode(r, kSysId, kCompId, kChanDroneRx));
+      return;
+    }
+  }
   switch (m.msgid) {
     case MAVLINK_MSG_ID_HEARTBEAT:
       return;

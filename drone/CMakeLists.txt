@@ -1,4 +1,10 @@
+set(MABUR_RELEASE "local" CACHE STRING "Release name compiled into maburd (--identify)")
+set(MABUR_BOARD "local" CACHE STRING "Board name compiled into maburd (--identify)")
+set_source_files_properties(src/build_ident.cpp PROPERTIES COMPILE_DEFINITIONS
+  "MABUR_RELEASE_STR=\"${MABUR_RELEASE}\";MABUR_BOARD_STR=\"${MABUR_BOARD}\"")
+
 add_library(mabur_drone_core STATIC
+  src/build_ident.cpp
   src/config.cpp
   src/config_migrate.cpp
   src/debug_http.cpp
@@ -16,6 +22,7 @@ add_library(mabur_drone_core STATIC
   src/live_power_table.cpp
   src/mav_params.cpp
   src/mav_component.cpp
+  src/ota.cpp
   vendor/venc_frame_ring.c
   # venc_cfg.c is dependency-free C99 (string.h only), so it compiles on
   # host too — config.cpp's parse_venc() needs venc_cfg_defaults() at

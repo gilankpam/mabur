@@ -39,10 +39,12 @@
 #include <dirent.h>       // repin_inherited_threads() walks /proc/self/task
 #include <pthread.h>
 #include <sched.h>  // cpu_set_t — see the core-placement policy below
+#include <sys/stat.h>     // mkdir() — the trial proof files
 #include <sys/syscall.h>  // SYS_gettid
 #endif
 
 #include "air_clock.h"
+#include "build_ident.h"
 #include "nack_bucket.h"
 #include "air_rate.h"
 #include "ampdu_policy.h"
@@ -59,6 +61,8 @@
 #include "frame_source.h"
 #include "live_power_table.h"
 #include "mav_component.h"
+#include "ota.h"
+#include "trial_proof.h"
 #include "mabur/channel_file.h"
 #include "mabur/cal_mav.h"
 #include "mabur/cal_proto.h"
@@ -755,6 +759,20 @@ uint64_t now_steady_ms() {
           .count());
 }
 
+// An empty <dir>/<name> marker for the update loop (written as .new, then
+// renamed), creating dir if it is missing.
+void touch_update_file(const std::string& dir, const char* name) {
+  ::mkdir(dir.c_str(), 0755);
+  const std::string path = dir + "/" + name, tmp = path + ".new";
+  FILE* f = std::fopen(tmp.c_str(), "w");
+  if (!f || std::fclose(f) != 0 || std::rename(tmp.c_str(), path.c_str()) != 0) {
+    std::remove(tmp.c_str());
+    std::fprintf(stderr, "maburd trial: could not write %s\n", path.c_str());
+    return;
+  }
+  std::fprintf(stderr, "maburd trial: %s\n", name);
+}
+
 // Names show in /proc/<pid>/task/<tid>/comm (16-char cap) — without them
 // every maburd thread reads "maburd" next to the vendor SDK's unnamed
 // threads, and the fec-compute forensics once spent an hour pinning
@@ -1234,6 +1252,12 @@ uint16_t open_usb_and_get_pid(uint16_t vid, uint16_t configured_pid,
 }
 
 int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_path) {
+  // The update trial's window counts from here.
+  const uint64_t process_start_ms = now_steady_ms();
+  // Set by the update loop when this process is a trial of a new binary.
+  const char* trial_env = std::getenv("MABUR_TRIAL");
+  const bool ota_trial = trial_env && std::strcmp(trial_env, "1") == 0;
+  const std::string ota_dir = OtaEnv{}.dir;
   // Before libusb_init and the venc bring-up, so every thread either
   // library spawns inherits core 0; the hot thread claims core 1 itself.
   if (two_core_target()) {
@@ -1641,6 +1665,12 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
   // parameter set rewrites the config file, I/O that belongs on neither the
   // RX nor the agent thread.
   RcQueue mav_queue;
+  // The radio's chip name for the update lane's MABUR_IDENT: read on the
+  // main thread at bring-up, after the MAV thread has started. radio_chip is
+  // written once, before the release store; the MAV thread reads it only
+  // after an acquire load sees true.
+  std::string radio_chip;
+  std::atomic<bool> radio_chip_ready{false};
   // The calibration messages the MAV thread pulls out of verified cal-only
   // T_MAV frames, for the TX writer thread: CalSweep's on_cmd/on_apply/
   // on_abort must run on pump()'s thread (cal_sweep.h constraint 1).
@@ -1651,7 +1681,8 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
   // must never reuse one, and may air theirs out of order.
   std::atomic<uint32_t> mav_up_counter{0};
   // MAV thread -> agent thread's stats line, cumulative. drop = frames that
-  // failed parse_mav plus packets the component dropped (not for us, bad
+  // failed parse_mav, frames under the update pair carrying anything but the
+  // update lane, plus packets the component dropped (not for us, bad
   // MAVLink); reject = frames that parsed but failed the tag or the counter.
   std::atomic<uint64_t> mav_rx_frames{0}, mav_rx_packets{0}, mav_tx_frames{0},
       mav_tx_packets{0}, mav_drop{0}, mav_reject{0};
@@ -1791,13 +1822,15 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
     const uint8_t* body = pkt.Data.data() + kDot11HeaderLen;
     size_t body_len = pkt.Data.size() - kDot11HeaderLen;
     const int rc_type = rc::frame_type(body, body_len);
-    // A DISC of another version is still ours to answer (frozen type).
-    if (rc_type >= 0 || rc::frozen_type(body, body_len) == rc::T_DISC) {
+    // A DISC of another version is still ours to answer (frozen type), and
+    // a T_MAV of another version may be the update lane: check_mav decides.
+    const int frozen = rc_type >= 0 ? rc_type : rc::frozen_type(body, body_len);
+    if (rc_type >= 0 || frozen == rc::T_DISC || frozen == rc::T_MAV) {
       // Calibration rides T_MAV (the mabur dialect): the MAV thread verifies
       // it and hands its cal packets to the TX writer thread.
       if (rc_type == rc::T_NACK) {
         if (nack_hook) nack_hook(body, body_len);  // RX thread (fec-nack)
-      } else if (rc_type == rc::T_MAV) {
+      } else if (frozen == rc::T_MAV) {
         mav_queue.push(body, body_len);
       } else {
         rc_queue.push(body, body_len);
@@ -2049,10 +2082,17 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
   // TX writer thread -- and sends its
   // queued replies back as tagged T_MAV_UP frames on the Telem path (control
   // radiotap, the shared telem dot11 seq, the mutex-guarded dev_sink.send()),
-  // at most one frame per kMavUplinkMinMs so the tunnel never crowds Telem
-  // or the OSD stream. Uplink and the 1 Hz HEARTBEAT need a published
-  // session (nobody is listening without one), and both follow Telem's
-  // suppression while a calibration sweep airs: replies wait queued. RcQueue has no
+  // at most one frame per kMavUplinkMinMs while a session is published so the
+  // tunnel never crowds Telem or the OSD stream. Uplink needs a published
+  // session or an update-only pair (nobody is listening without one); with
+  // only the update pair there is no video to protect and no pacing. The
+  // 1 Hz HEARTBEAT needs a published session. Both follow Telem's
+  // suppression while a calibration sweep airs: replies wait queued.
+  // Frames go out tagged under the pair of the latest accepted inbound frame
+  // (the update pair after a kOkUpdate), so an update GS that is not the
+  // linked one still verifies its replies. Once the update server asks to
+  // exit, the thread stops maburd (as SIGTERM does) when its replies have
+  // gone, or after kOtaExitGraceMs regardless. RcQueue has no
   // condvar, so this polls at 5 ms, like cal_queue's consumer.
   std::thread mav_thread([&]() {
     name_thread("mbr-mav");
@@ -2070,14 +2110,26 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
     };
     port.take_result = [&applier](ConfigApplyResult* out) { return applier.take_result(out); };
     port.busy = [&applier] { return applier.busy(); };
+    OtaEnv ota_env;
+    ota_env.dir = ota_dir;
+    ota_env.ident = {build_release(), build_board(), ""};
+    ota_env.trial = ota_trial;
+    ota_env.start_ms = process_start_ms;
+    OtaServer ota(std::move(ota_env));
+    bool chip_set = false;
     MavComponent comp(cfg_path, std::move(port), [](const std::string& line) {
       std::fprintf(stderr, "%s\n", line.c_str());
-    });
+    }, &ota);
     ControlRadiotap mav_radiotap = make_control_radiotap();
     std::fprintf(stderr, "maburd mav: component sys %u comp %u, config %s\n",
                  static_cast<unsigned>(MavComponent::sys_id()),
                  static_cast<unsigned>(MavComponent::comp_id()), cfg_path.c_str());
     uint64_t last_hb = 0, last_up = 0, bad_parse = 0, rejected = 0;
+    // Whether the latest accepted inbound frame came under the update pair.
+    bool reply_to_update = false;
+    // A lost reply pair must not keep this process alive past the request.
+    constexpr uint64_t kOtaExitGraceMs = 1000;
+    std::optional<uint64_t> exit_seen_ms;
     std::vector<uint8_t> body;
     // A cal-only frame's packets go to the TX writer, never the component;
     // a frame mixing cal and other packets goes whole to the component,
@@ -2087,6 +2139,10 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
         cal_queue.push(CalInbound{std::move(msg), latched});
     };
     while (!g_devourer_should_stop) {
+      if (!chip_set && radio_chip_ready.load(std::memory_order_acquire)) {
+        ota.set_chip(radio_chip);
+        chip_set = true;
+      }
       while (mav_queue.pop(body)) {
         rc::Mav m;
         // While a calibration run is open, a frame tagged under the run's
@@ -2097,10 +2153,16 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
                                 cal_active.load(std::memory_order_relaxed))) {
           case RcAgent::MavCheck::kOk:
             mav_rx_frames.fetch_add(1, std::memory_order_relaxed);
+            reply_to_update = false;
             if (cal::all_packets_are_cal(m.payload.data(), m.payload.size()))
               push_cal(m, /*latched=*/false);
             else
-              comp.on_payload(m.payload.data(), m.payload.size());
+              comp.on_payload(m.payload.data(), m.payload.size(), now_steady_ms());
+            break;
+          case RcAgent::MavCheck::kOkUpdate:
+            mav_rx_frames.fetch_add(1, std::memory_order_relaxed);
+            reply_to_update = true;
+            comp.on_payload(m.payload.data(), m.payload.size(), now_steady_ms());
             break;
           case RcAgent::MavCheck::kOkLatched:
             mav_rx_frames.fetch_add(1, std::memory_order_relaxed);
@@ -2109,6 +2171,9 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
           // The run's own trailing frames under its pair after it closed:
           // dropped, counted by the agent (cal_late=), not a reject.
           case RcAgent::MavCheck::kLateCal: break;
+          // Not update-lane traffic under the update pair: counted by the
+          // agent (update_dropped=), folded into drop below.
+          case RcAgent::MavCheck::kUpdateDropped: break;
           case RcAgent::MavCheck::kMalformed: ++bad_parse; break;
           case RcAgent::MavCheck::kRejected: ++rejected; break;
         }
@@ -2122,9 +2187,13 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
         comp.queue_heartbeat();
         last_hb = now;
       }
-      auto ctx = agent.uplink_ctx(false);  // replies wait queued without a pair
-      if (linked && ctx && !cal_sweeping.load(std::memory_order_relaxed) &&
-          comp.outbound_packets() > 0 && now - last_up >= kMavUplinkMinMs) {
+      // Replies wait queued without a pair.
+      std::optional<rc::TagCtx> ctx = reply_to_update ? agent.update_ctx() : std::nullopt;
+      if (!ctx) ctx = agent.uplink_ctx(false);
+      const uint64_t pace_ms = linked ? kMavUplinkMinMs : 0;
+      if ((linked || agent.update_session_open()) && ctx &&
+          !cal_sweeping.load(std::memory_order_relaxed) && comp.outbound_packets() > 0 &&
+          now - last_up >= pace_ms) {
         rc::Mav m;
         m.type = rc::T_MAV_UP;
         m.counter = mav_up_counter.fetch_add(1, std::memory_order_relaxed);
@@ -2143,10 +2212,17 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
         mav_tx_packets.fetch_add(static_cast<uint64_t>(packets), std::memory_order_relaxed);
         last_up = now;
       }
+      if (comp.exit_requested()) {
+        if (!exit_seen_ms) exit_seen_ms = now;
+        if (comp.outbound_packets() == 0 || now - *exit_seen_ms >= kOtaExitGraceMs) {
+          std::fprintf(stderr, "maburd: update accepted, exiting for the trial\n");
+          g_devourer_should_stop = true;
+        }
+      }
       const MavComponentStats& cs = comp.stats();
       mav_rx_packets.store(cs.rx_packets, std::memory_order_relaxed);
       mav_drop.store(bad_parse + cs.drop_not_for_us + cs.drop_bad_packet + cs.drop_queue_full +
-                         mav_up_nopair.load(std::memory_order_relaxed),
+                         mav_up_nopair.load(std::memory_order_relaxed) + agent.update_dropped(),
                      std::memory_order_relaxed);
       mav_reject.store(rejected, std::memory_order_relaxed);
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -3106,7 +3182,11 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
     uint64_t last_hot_change_ms = start, last_rx_change_ms = start;
     uint64_t last_stats_ms = start;
     // The MAV counters as of the last stats line printed with them.
-    uint64_t mav_last[7] = {};
+    uint64_t mav_last[8] = {};
+    // A trial binary's linked/proven markers for the update loop, sampled
+    // once a second.
+    TrialProof trial_proof;
+    uint64_t last_proof_ms = start;
 
     // T_TELEM: sent at ~1 Hz on this same periodic path, on the mutex-guarded
     // dev_sink.send() the MSP thread also uses. The tlm_seq/dot11 seq
@@ -3208,6 +3288,15 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
       uint64_t now = now_steady_ms();
       enc_peak.sample(now, enc_bytes_total.load(std::memory_order_relaxed),
                       enc_frames_total.load(std::memory_order_relaxed));
+      if (ota_trial && now - last_proof_ms >= 1000) {
+        last_proof_ms = now;
+        switch (trial_proof.tick(now, agent.has_published_session(),
+                                 enc_frames_total.load(std::memory_order_relaxed))) {
+          case TrialProof::kLinked: touch_update_file(ota_dir, "linked"); break;
+          case TrialProof::kProven: touch_update_file(ota_dir, "proven"); break;
+          case TrialProof::kNone: break;
+        }
+      }
 
       // The epoch is read before cal_active: see CalEndEdge.
       const uint32_t cal_epoch_now = cal_epoch.load(std::memory_order_acquire);
@@ -3319,26 +3408,29 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
           }
 #endif
           // MAV fields only when a counter moved since they were last shown.
-          char mav_part[160] = "";
-          const uint64_t mav_now[7] = {
+          char mav_part[200] = "";
+          const uint64_t mav_now[8] = {
               mav_rx_frames.load(std::memory_order_relaxed),
               mav_rx_packets.load(std::memory_order_relaxed),
               mav_tx_frames.load(std::memory_order_relaxed),
               mav_tx_packets.load(std::memory_order_relaxed),
               mav_drop.load(std::memory_order_relaxed),
               mav_reject.load(std::memory_order_relaxed),
-              agent.cal_late()};
+              agent.cal_late(),
+              agent.update_dropped()};
           if (!std::equal(std::begin(mav_now), std::end(mav_now), std::begin(mav_last))) {
             std::copy(std::begin(mav_now), std::end(mav_now), std::begin(mav_last));
             std::snprintf(mav_part, sizeof mav_part,
-                          " mav rx=%llu/%llu tx=%llu/%llu drop=%llu reject=%llu cal_late=%llu",
+                          " mav rx=%llu/%llu tx=%llu/%llu drop=%llu reject=%llu cal_late=%llu"
+                          " update_dropped=%llu",
                           static_cast<unsigned long long>(mav_now[0]),
                           static_cast<unsigned long long>(mav_now[1]),
                           static_cast<unsigned long long>(mav_now[2]),
                           static_cast<unsigned long long>(mav_now[3]),
                           static_cast<unsigned long long>(mav_now[4]),
                           static_cast<unsigned long long>(mav_now[5]),
-                          static_cast<unsigned long long>(mav_now[6]));
+                          static_cast<unsigned long long>(mav_now[6]),
+                          static_cast<unsigned long long>(mav_now[7]));
           }
           const ConfigApplierStats apply_stats = applier.stats();
           std::fprintf(stderr,
@@ -3406,6 +3498,8 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
   // a sampling-cadence call.
   {
     const devourer::AdapterCaps ac = rtl_device->GetAdapterCaps();
+    radio_chip = ac.chip_name ? ac.chip_name : "";
+    radio_chip_ready.store(true, std::memory_order_release);
     const RxEnergy e = rtl_device->GetRxEnergy(/*with_nhm=*/true);
     std::fprintf(stderr,
                  "maburd radio caps: %s %s %ux%u bw=%x tune5g=%u-%u fast_retune=%d "
@@ -3522,8 +3616,9 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
 void print_usage(const char* argv0) {
   std::fprintf(stderr,
                "usage: %s -c <config.toml> [--dry-run --in <file> --out <file> [--rc-in <file>]]\n"
-               "       %s --migrate-config <in.toml> <out.toml>\n",
-               argv0, argv0);
+               "       %s --migrate-config <in.toml> <out.toml>\n"
+               "       %s --identify\n",
+               argv0, argv0, argv0);
 }
 
 }  // namespace
@@ -3532,6 +3627,11 @@ int main(int argc, char** argv) {
   // Runs and exits before anything else: no radio, MI or USB is touched.
   if (argc == 4 && std::string(argv[1]) == "--migrate-config")
     return mabur::migrate_config_cli(argv[2], argv[3]);
+
+  if (argc == 2 && std::string(argv[1]) == "--identify") {
+    std::printf("version=%s board=%s\n", mabur::build_release(), mabur::build_board());
+    return 0;
+  }
 
   std::string cfg_path;
   bool dry_run = false;

@@ -170,9 +170,17 @@ golden.
    drone → GS.
 6. **The CRC:** CRC16-CCITT (`mabur::crc16_ccitt`) over every byte before
    it; bytes after it (the 802.11 FCS) ignored.
+7. **The four mabur update messages**, ids 60006-60009 (`MABUR_IDENT_REQ`,
+   `MABUR_IDENT`, `MABUR_UPDATE`, `MABUR_UPDATE_STATUS`): id, name, field
+   names and base fields. New fields come only as MAVLink 2 extensions;
+   new enum values are allowed. `frozen_ota_goldens` in
+   `tests/test_ota_mav.cpp` holds the bytes. They are what lets a GS
+   update a drone of another `RC_VERSION` (`docs/rc-protocol.md` "Update-only session");
+   the update FTP subset in `docs/mavlink.md` rides the standard
+   `FILE_TRANSFER_PROTOCOL` message.
 
 Not frozen: every other frame type and its contents (RCF, NACK, Telem,
-video, probe, MSP), every MAVLink message, and the timing and behaviour
+video, probe, MSP), every other MAVLink message, and the timing and behaviour
 around the frozen frames (beacon periods, keep-alive, the stranger rule,
 the calibration lane).
 
@@ -243,9 +251,9 @@ magic and one of the four frozen types, whatever its version byte, else
 -1. `parse_disc`, `parse_disc_ack` and `parse_mav` never read the version
 byte (`DiscAck::version` reports it), and `verify_control` verifies the
 frozen types at any version. Every other type stays gated on our version
-by `rc::frame_type()`, which returns -1 for any other version. `T_MAV` and
-`T_MAV_UP` are still routed only at our version: their layout is frozen,
-their use across versions is not open yet.
+by `rc::frame_type()`, which returns -1 for any other version. The drone also takes a
+`T_MAV` of another version, but only under an update-only session
+(`docs/rc-protocol.md` "Update-only session"); `T_MAV_UP` goes out at our version.
 
 ## Session and the nonces
 

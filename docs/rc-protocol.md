@@ -51,7 +51,7 @@ u16 magic 0x5243 | u8 version (the sender's RC_VERSION) | u8 type | ... | u16 cr
 | 5, 6 | — | | | | | deleted (old calibration frames), never reused | |
 | 7 | NACK | GS → drone | 21 + 8·n | session | no | on demand, at most one per poll | `docs/fec-nack.md` |
 | 8 | `T_MAV` | GS → drone | 20 + len | session | **envelope** | on demand | `docs/mavlink.md` |
-| 9 | `T_MAV_UP` | drone → GS | 20 + len | session | **envelope** | ≤ 1 per 50 ms; calibration replies unpaced | `docs/mavlink.md` |
+| 9 | `T_MAV_UP` | drone → GS | 20 + len | session | **envelope** | ≤ 1 per 50 ms with a published session; calibration replies and the update-only session unpaced | `docs/mavlink.md` |
 
 Sizes are the RC body: prefix through CRC, without the 802.11 header or FCS.
 
@@ -62,6 +62,9 @@ Sizes are the RC body: prefix through CRC, without the 802.11 header or FCS.
   it, so an RCF, NACK or Telem from another version is dropped.
 - `rc::frozen_type()` returns the type of DISC, DISC_ACK, `T_MAV` and
   `T_MAV_UP` at **any** version byte. Their parsers never read the version.
+  The drone hands a `T_MAV` of another version to the MAV thread, which
+  accepts it only under an update-only session ("Update-only session"
+  below).
 - `rc::is_foreign_rc_version()` lets an ingest path keep another version's
   RC frames off the video path and log that the peer is there.
 
@@ -273,6 +276,34 @@ The rules:
   new pair on its first verified RCF without touching the current
   operating point, so a GS crash mid-flight keeps the rung.
 
+### Update-only session
+
+A GS at another `RC_VERSION` cannot link, but it can update the drone
+(`docs/mavlink.md` "Over-the-air update"). The drone opens a separate
+**update-only pair** for it:
+
+- **Open.** A DISC whose tag verifies and whose version byte is not the
+  drone's `RC_VERSION` is answered as always, and its acked pair
+  (`vrx_nonce`, `vtx_nonce`) is also stored as the update pair. Every
+  such DISC refreshes it; the GS repeats one every second.
+- **Allowlist.** Under the update pair the drone accepts only the update
+  lane's messages: `MABUR_IDENT_REQ`, `MABUR_UPDATE` and
+  `FILE_TRANSFER_PROTOCOL` (the GS-to-drone ids; replies are
+  `MABUR_IDENT`, `MABUR_UPDATE_STATUS` and the FTP ACK/NAK). A tagged
+  frame carrying anything else is dropped whole and counted as
+  `update_dropped=`; it is not an `auth_reject`, since it proves the GS
+  holds the key. The counter rule is the `T_MAV` one (strictly above the
+  last accepted under this pair).
+- **Uplink.** Replies go out as `T_MAV_UP` tagged under the update pair,
+  unpaced (no video to protect) when no session is published, and paced at
+  `kMavUplinkMinMs` like the rest of the tunnel while one is.
+- **Expiry.** The pair lapses 10 s (`RcAgent::kUpdateSessionMs`) after
+  the last verified other-version DISC. The drone's other state is
+  untouched: no op change, no retune, no LINKED entry.
+- **Cleared** by the next normal promotion (the first RCF that verifies
+  under a pair at our version), so a GS that is then updated and links
+  leaves nothing behind.
+
 GS states (`VrxState`):
 
 | State | Meaning |
@@ -318,6 +349,7 @@ release.
 - DISC and DISC_ACK;
 - the tag construction;
 - the MAV envelope;
+- the four mabur update messages (ids 60006-60009);
 - the CRC.
 
 These never change under any `RC_VERSION`, not even by appending; a new

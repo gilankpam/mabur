@@ -1,28 +1,114 @@
 #!/bin/sh
-DAEMON=/usr/bin/maburd
-CONF=/etc/mabur.toml
-PIDFILE=/var/run/mabur-loop.pid
-LOGPIDFILE=/var/run/mabur-logwatch.pid
-LOG=/tmp/mabur.log
+DAEMON=${MABUR_DAEMON:-/usr/bin/maburd}
+CONF=${MABUR_CONF:-/etc/mabur.toml}
+UP=${MABUR_UP:-/tmp/mabur-up}
+TRIAL_S=${MABUR_TRIAL_S:-40}
+RESPAWN_S=${MABUR_RESPAWN_S:-2}
+PIDFILE=${MABUR_PIDFILE:-/var/run/mabur-loop.pid}
+LOGPIDFILE=${MABUR_LOGPIDFILE:-/var/run/mabur-logwatch.pid}
+LOG=${MABUR_LOG:-/tmp/mabur.log}
 LOG_MAX=$((4 * 1024 * 1024))
+
+# The running maburd may read result at any time: replace it, never edit it.
+res() { echo "$1" > "$UP/result.new" && mv "$UP/result.new" "$UP/result"; }
+
+board() { "$1" --identify 2>/dev/null | sed -n 's/.*board=\([^ ]*\).*/\1/p'; }
+
+# write-new + sync + rename: the destination is never missing or half-written.
+safe_cp() { cp "$1" "$2.new" && sync && mv "$2.new" "$2"; }
+
+# Put the previous pair back. Only called once the .prev copies are fresh.
+rollback() {
+  # The next run truncates $LOG: keep the failed trial's tail for the operator.
+  tail -c 262144 "$LOG" > "$UP/trial.log"
+  for f in "$DAEMON" "$CONF"; do
+    if [ -f "$f.prev" ]; then mv "$f.prev" "$f"; else echo "mabur: $f.prev missing, cannot restore" >&2; fi
+  done
+  sync
+}
+
+trial() {
+  # safe_cp syncs the data, not the rename after it: commit both renames before
+  # a power cut can leave the new binary beside the old, unmigrated config.
+  sync
+  # Truncate-then-append as in the normal run (see below).
+  : > "$LOG"
+  MABUR_TRIAL=1 "$DAEMON" -c "$CONF" >> "$LOG" 2>&1 &
+  pid=$!
+  i=0
+  while true; do
+    # proven first: a trial that proves and then exits is still proven.
+    if [ -f "$UP/proven" ]; then
+      res committed
+      wait "$pid"
+      return
+    fi
+    if ! kill -0 "$pid" 2>/dev/null; then
+      wait "$pid"
+      rollback; res "rolled_back exited"
+      return
+    fi
+    [ "$i" -ge "$TRIAL_S" ] && break
+    sleep 1
+    i=$((i + 1))
+  done
+  kill "$pid" 2>/dev/null
+  i=0
+  while [ "$i" -lt 5 ] && kill -0 "$pid" 2>/dev/null; do sleep 1; i=$((i + 1)); done
+  kill -9 "$pid" 2>/dev/null
+  wait "$pid"
+  rollback
+  if [ -f "$UP/linked" ]; then res "rolled_back no_video"; else res "rolled_back no_link"; fi
+}
+
+# One respawn iteration: an OTA install and trial when go exists, else a
+# plain run.
+step() {
+  if [ -f "$UP/go" ]; then
+    # go holds the sha256 START verified; the file must still match it.
+    want=$(cat "$UP/go")
+    rm -f "$UP/go"
+    rm -f "$UP/proven" "$UP/linked" "$UP/result"
+    chmod +x "$UP/maburd" 2>/dev/null
+    have=$(sha256sum "$UP/maburd" 2>/dev/null)
+    if [ -z "$want" ] || [ "${have%% *}" != "$want" ]; then
+      res "refused bad_hash"
+    elif new=$(board "$UP/maburd"); [ -z "$new" ] || [ "$new" != "$(board "$DAEMON")" ]; then
+      res "refused wrong_board"
+    elif ! "$UP/maburd" --migrate-config "$CONF" "$UP/mabur.toml" >/dev/null 2>&1; then
+      res "refused bad_config"
+    elif ! { safe_cp "$DAEMON" "$DAEMON.prev" && safe_cp "$CONF" "$CONF.prev"; }; then
+      # Nothing live was touched; the .prev pair may be stale, so no rollback.
+      rm -f "$DAEMON.prev.new" "$CONF.prev.new"
+      res "rolled_back exited"
+    elif ! { safe_cp "$UP/maburd" "$DAEMON" && safe_cp "$UP/mabur.toml" "$CONF"; }; then
+      rm -f "$DAEMON.new" "$CONF.new"
+      rollback; res "rolled_back exited"
+    else
+      trial
+      return
+    fi
+  fi
+  # Truncate on every (re)start rather than appending across runs: /tmp is
+  # RAM-backed, so an ever-growing log over a long respawn loop can exhaust
+  # it. This keeps only the current run's log, which is also what
+  # install.sh/README document ("cat /tmp/mabur.log") — without this
+  # redirection there was no log at all.
+  #
+  # The redirect is O_APPEND (>>) with an explicit truncate first, NOT a
+  # plain >. Both start the run at an empty file, but only O_APPEND lets
+  # logwatch() truncate underneath a running daemon: with a plain >, the
+  # daemon's file offset survives the truncate and the next write recreates
+  # a sparse file of the old size instead of restarting at zero.
+  : > "$LOG"
+  "$DAEMON" -c "$CONF" >> "$LOG" 2>&1
+  echo "maburd exited ($?) - respawn in ${RESPAWN_S}s" >&2
+}
 
 loop() {
   while true; do
-    # Truncate on every (re)start rather than appending across runs: /tmp is
-    # RAM-backed, so an ever-growing log over a long respawn loop can exhaust
-    # it. This keeps only the current run's log, which is also what
-    # install.sh/README document ("cat /tmp/mabur.log") — without this
-    # redirection there was no log at all.
-    #
-    # The redirect is O_APPEND (>>) with an explicit truncate first, NOT a
-    # plain >. Both start the run at an empty file, but only O_APPEND lets
-    # logwatch() truncate underneath a running daemon: with a plain >, the
-    # daemon's file offset survives the truncate and the next write recreates
-    # a sparse file of the old size instead of restarting at zero.
-    : > "$LOG"
-    "$DAEMON" -c "$CONF" >> "$LOG" 2>&1
-    echo "maburd exited ($?) - respawn in 2s" >&2
-    sleep 2
+    step
+    sleep "$RESPAWN_S"
   done
 }
 
@@ -45,10 +131,18 @@ running() { [ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null; }
 
 case "$1" in
   start)
-    running "$PIDFILE" || { loop & echo $! > "$PIDFILE"; }
+    # Detached from the caller's stdio: started from an ssh session, the
+    # loop's stderr is that session's pipe, and once the session is gone the
+    # "maburd exited" line would kill the loop with SIGPIPE -- no respawn,
+    # and no install after an update's START. The console keeps those lines
+    # (the serial console is where a crash loop shows); maburd's own output
+    # goes to $LOG either way.
+    out=/dev/null
+    [ -w /dev/console ] && out=/dev/console
+    running "$PIDFILE" || { loop </dev/null >"$out" 2>&1 & echo $! > "$PIDFILE"; }
     # Checked independently of the respawn loop: a live daemon must not mask a
     # dead logwatch, since an uncapped log is the failure this guards against.
-    running "$LOGPIDFILE" || { logwatch & echo $! > "$LOGPIDFILE"; }
+    running "$LOGPIDFILE" || { logwatch </dev/null >"$out" 2>&1 & echo $! > "$LOGPIDFILE"; }
     ;;
   stop)
     [ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null
@@ -58,13 +152,14 @@ case "$1" in
     # The PID kill only stops the respawn-loop subshell; the foreground daemon survives without this.
     killall maburd 2>/dev/null || true   # not running is not an error
     ;;
+  step) step ;;
   restart)
     "$0" stop
     sleep 1
     "$0" start
     ;;
   *)
-    echo "usage: $0 {start|stop|restart}"
+    echo "usage: $0 {start|stop|restart|step}"
     exit 1
     ;;
 esac

@@ -41,7 +41,8 @@ loop to notice.
 
 **The clean sequence:** stop both daemons, edit both configs, swap both
 binaries (`df -h /` and prune first: the drone rootfs fits at most two
-`maburd` binaries), start both. Rollback, when you actually need one, is
+`maburd` binaries, and an over-the-air install briefly needs a third:
+"Over-the-air update"), start both. Rollback, when you actually need one, is
 PAIRED: an old binary needs its old config restored alongside it. There is
 no forward or backward config compatibility, so rolling forward is usually
 the shorter path. The generic checklist is "Flag-day checklist" below.
@@ -93,6 +94,76 @@ once it passes 4 MB (`/tmp` is RAM-backed). On the GS, `S96maburgs` runs
 the same respawn loop (and `rmmod 8812eu` on start, so devourer can claim
 the cards), logging to `/tmp/maburgs.log`; `S97maburplay` logs to
 `/tmp/maburplay.log`.
+
+## Over-the-air update
+
+A GS can replace the drone's `maburd` over the radio, including a GS at
+another `RC_VERSION`: this is how a flag day is finished without a cable.
+The wire side (messages, FTP subset, update-only session) is
+`docs/mavlink.md` "Over-the-air update". The drone side is `maburd`
+staging the file and `S00mabur` doing the rest.
+
+**The update dir `/tmp/mabur-up`** (RAM, gone at reboot):
+
+| File | Written by | Meaning |
+|---|---|---|
+| `maburd` | the FTP server | the staged new binary; the only file the radio can write |
+| `go` | `maburd` on START | the SHA-256 START verified; the loop reads and deletes it, then installs only a staged binary that still hashes to it |
+| `mabur.toml` | the loop, via the new binary's `--migrate-config` | the current config trimmed to what the new binary loads |
+| `linked` | the trial `maburd` | the trial published a session |
+| `proven` | the trial `maburd` | linked, and encoder frames moved for 5 s |
+| `result` | `S00mabur` | `committed`, `rolled_back <reason>` or `refused <reason>`; the reason words are in `docs/mavlink.md` |
+| `trial.log` | `S00mabur` on rollback | the last 256 KiB of `/tmp/mabur.log`, which the next run truncates |
+
+**One install**, as `S00mabur` runs it after `maburd` exits for a START:
+
+1. Read and delete `go`, and remove the stale `proven`, `linked` and
+   `result`. The staged `maburd` must still hash to `go`'s SHA-256, else
+   `refused bad_hash` and nothing runs from it. The new binary must
+   report the same board as the running one (`maburd --identify`; a hand
+   build reports `local` and takes no release update), else
+   `refused wrong_board`.
+2. The new binary migrates the current config into `mabur.toml`
+   (`maburd --migrate-config`); a failure is `refused bad_config`. The
+   config is migrated only here: a drone's own `maburd` never migrates.
+3. Copy the live `/usr/bin/maburd` and `/etc/mabur.toml` to `.prev`
+   (always a copy to `.prev.new`, `sync`, then `mv`, so the live files
+   never go missing), then install the new pair the same way, and `sync`
+   once more so both renames are on flash before the trial starts.
+4. **Trial**: run `MABUR_TRIAL=1 maburd -c /etc/mabur.toml` for up to
+   40 s. `proven` before then: `result` is `committed` and the new pair
+   stays. The trial exiting: `rolled_back exited`. 40 s with no `proven`:
+   `rolled_back no_link` (never linked) or `rolled_back no_video`.
+5. **Rollback** keeps the failed trial's log in `/tmp/mabur-up/trial.log`,
+   moves `/usr/bin/maburd.prev` and `/etc/mabur.toml.prev` back over the
+   live pair, then the loop respawns as usual.
+
+After a commit the trial `maburd` keeps running as the drone's daemon and
+takes the next update the same way; a second update needs no reboot.
+
+Overlay space: during an install the overlay briefly holds **three**
+copies of `maburd` (live, `.prev`, and `.new`), and after a commit two
+(live and `.prev`). Size the overlay for that, and prune other `maburd.pre-*`
+copies first. A failed install (no space) reports `rolled_back exited` and
+leaves the old pair running; nothing live was replaced.
+
+**Manual recovery** over ssh, when a drone is left on a bad pair and the
+loop did not roll back:
+
+```sh
+mv /usr/bin/maburd.prev /usr/bin/maburd
+mv /etc/mabur.toml.prev /etc/mabur.toml
+/etc/init.d/S00mabur restart    # detach it as under "Restarting the drone daemon"
+```
+
+**Bootstrapping and `sysupgrade`.** A drone can take an OTA only if its
+`S00mabur` and `maburd` already have it: the first OTA-capable install is
+`bundle/install.sh` from this release, or `sysupgrade -n` of this
+release's image. A `sysupgrade` after an OTA keeps the overlay binary
+(`/overlay/root/usr/bin/maburd`) over the image's: use `sysupgrade -n`, or
+delete `/overlay/root/usr/bin/maburd` and `maburd.prev` first, or the
+drone keeps running the OTA'd build. The release's per-board `maburd`
+asset (`docs/releases.md`) is what the GS pushes.
 
 ## Supported drone cards
 

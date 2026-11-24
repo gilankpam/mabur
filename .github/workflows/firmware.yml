@@ -101,6 +101,8 @@ jobs:
           path: /tmp/ccache
           key: ${{ matrix.board }}-${{ env.CACHE_MONTH }}
       - name: Build
+        env:
+          MABUR_RELEASE: ${{ env.VERSION }}
         run: |
           mkdir -p /tmp/ccache && ln -sfn /tmp/ccache "$HOME/.ccache"
           bash firmware/builder.sh "${{ matrix.board }}"
@@ -112,6 +114,17 @@ jobs:
           [ -f "$nor" ] || { echo "no NOR image"; exit 1; }
           cp "$nor" "dist/mabur-$VERSION-${{ matrix.board }}-nor.tgz"
           cp $img/u-boot-ssc338q-nor-padded.bin "dist/mabur-$VERSION-u-boot-ssc338q-nor-padded.bin"
+          # The stripped binary the image carries, for the over-the-air update.
+          bin=firmware/openipc/output/target/usr/bin/maburd
+          [ -f "$bin" ] || { echo "no maburd in the target tree"; exit 1; }
+          # It is ARM and cannot run here: check the identity compiled into it.
+          # To a file, not a pipe: grep -q exiting early would SIGPIPE strings under pipefail.
+          strings "$bin" > "$RUNNER_TEMP/maburd.strings"
+          grep -qxF "$VERSION" "$RUNNER_TEMP/maburd.strings" || { echo "maburd lacks release $VERSION"; exit 1; }
+          grep -qxF "${{ matrix.board }}" "$RUNNER_TEMP/maburd.strings" || { echo "maburd lacks board ${{ matrix.board }}"; exit 1; }
+          name="mabur-$VERSION-${{ matrix.board }}-maburd"
+          cp "$bin" "dist/$name"
+          (cd dist && sha256sum "$name" > "$name.sha256")
           cp $img/build-info.txt "dist/build-info-${{ matrix.board }}.txt"
           ls -l dist
       - uses: actions/upload-artifact@v5
@@ -173,7 +186,7 @@ jobs:
         if: needs.version.outputs.kind == 'snapshot'
         run: |
           gh release delete snapshot --cleanup-tag -y || true
-          gh release create snapshot dist/*.tgz dist/*.bin --prerelease \
+          gh release create snapshot dist/*.tgz dist/*.bin dist/*-maburd dist/*-maburd.sha256 --prerelease \
             --title "snapshot (${SHA:0:8})" --notes-file notes.md
       # Each image also goes up under its unversioned name: the drones'
       # `upgrade` URL (customizer.sh) is releases/latest/download/<board>-nor.tgz.
@@ -185,5 +198,5 @@ jobs:
             cp "$f" "latest/${f#dist/mabur-"$VERSION"-}"
           done
           ls -l latest
-          gh release create "$VERSION" dist/*.tgz dist/*.bin latest/* --verify-tag \
+          gh release create "$VERSION" dist/*.tgz dist/*.bin dist/*-maburd dist/*-maburd.sha256 latest/* --verify-tag \
             --title "$VERSION" --notes-file notes.md --latest

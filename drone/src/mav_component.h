@@ -2,7 +2,9 @@
 // The drone's MAVLink component: answers MAVLink extended-parameter traffic
 // (PARAM_EXT_REQUEST_LIST / _REQUEST_READ / _SET) for the config keys in
 // cfgparam::kTable (common/include/mabur/config_params.h), and rewrites the
-// config file one row at a time.
+// config file one row at a time. With an OtaServer it also serves the
+// update lane (MABUR_IDENT_REQ, MABUR_UPDATE, FILE_TRANSFER_PROTOCOL),
+// queueing the server's replies like any other.
 //
 // The failure mode this file exists to prevent is the one config_write.h
 // guards against: a config maburd cannot load is a drone stuck in a 2 s
@@ -96,16 +98,24 @@ struct MavComponentStats {
       list_coalesced = 0;        // a REQUEST_LIST answered by a list still queued
 };
 
+class OtaServer;
+
 class MavComponent {
  public:
   // cfg_path: the file maburd loaded. port: ConfigApplier's submit/
   // take_result. log: one line per event, prefixed "[mav] ", no trailing
-  // newline; may be null.
-  MavComponent(std::string cfg_path, ApplyPort port, std::function<void(const std::string&)> log);
+  // newline; may be null. ota: the update lane's server, not owned; null
+  // counts update-lane messages as drop_not_for_us.
+  MavComponent(std::string cfg_path, ApplyPort port, std::function<void(const std::string&)> log,
+               OtaServer* ota = nullptr);
 
   // Inbound T_MAV payload bytes (already tag-verified by the caller).
-  // Parses, routes, and queues replies.
-  void on_payload(const uint8_t* bytes, size_t n);
+  // Parses, routes, and queues replies. now_ms (steady clock) reaches only
+  // the update lane's server.
+  void on_payload(const uint8_t* bytes, size_t n, uint64_t now_ms = 0);
+  // The update server accepted a START (or an ABORT of a running trial):
+  // maburd should exit once the reply is on the air.
+  bool exit_requested() const;
   // Queues a HEARTBEAT (MAV_TYPE_ONBOARD_CONTROLLER, MAV_STATE_ACTIVE).
   void queue_heartbeat();
   // Appends whole queued packets to *out while out->size() stays within
@@ -131,6 +141,7 @@ class MavComponent {
   void handle_read(const char id16[16], int16_t index);
   void handle_set(const char id16[16], const char value[128], uint8_t type);
   void queue(const Msg& m, bool list_value = false);
+  void queue_bytes(std::vector<uint8_t> bytes, bool list_value = false);
   // A PARAM_EXT_VALUE for row idx; list_value marks one queued by a list.
   void queue_value(size_t idx, const mavparam::Value& v, bool list_value = false);
   // A PARAM_EXT_ACK, shared by handle_set's immediate acks and poll_results'
@@ -145,6 +156,8 @@ class MavComponent {
   std::string cfg_path_;
   ApplyPort port_;
   std::function<void(const std::string&)> log_;
+  OtaServer* ota_;
+  uint64_t now_ms_ = 0;   // on_payload's now_ms, for route()
   struct Out {
     std::vector<uint8_t> bytes;
     bool list_value;   // a PARAM_EXT_VALUE queued by handle_list

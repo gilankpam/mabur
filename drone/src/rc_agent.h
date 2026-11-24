@@ -278,8 +278,14 @@ class RcAgent {
   // Tag context for a drone -> GS T_MAV_UP frame, seq32 left 0 for the caller
   // (the shared uplink counter). cal_reply false: the published pair, nullopt
   // when none. true: the calibration run's pair when one is latched (a sweep
-  // outlasts the live session), else the published pair. Any thread.
+  // outlasts the live session), else the published pair. Either falls back
+  // to the update-only pair when no session is published. Any thread.
   std::optional<rc::TagCtx> uplink_ctx(bool cal_reply) const;
+  // Tag context for a reply to the update-only pair's GS, nullopt when no
+  // such pair is open. Unlike uplink_ctx, a published session does not hide
+  // it: the GS updating the drone may not be the one it is linked to. Any
+  // thread.
+  std::optional<rc::TagCtx> update_ctx() const;
   // T_MAV replay guard: accept_nack_counter's rule and CAS shape on its own
   // state (mav_last_), so the GS's MAV and NACK counters never refuse each
   // other. Any thread.
@@ -287,7 +293,8 @@ class RcAgent {
   // The MAV thread's whole T_MAV gate: parse_mav (tagged layout), the tag
   // with the counter as seq32, then the counter. kMalformed = the parse
   // failed (radio corruption): auth_reject stays down. kRejected = parsed
-  // but the tag or the counter failed: raises auth_reject. kOk / kOkLatched
+  // but the tag or the counter failed: raises auth_reject. kOk / kOkLatched /
+  // kOkUpdate
   // fill *out.
   //
   // Two counter domains per pair, chosen by content: a frame whose payload
@@ -334,8 +341,26 @@ class RcAgent {
   //
   // MAV thread only: the run pair is plain state owned by check_mav's one
   // caller; not safe against concurrent check_mav calls.
-  enum class MavCheck { kOk, kOkLatched, kLateCal, kMalformed, kRejected };
+  //
+  // Update-only session: a DISC of another RC_VERSION that verifies opens
+  // a pair (update_session_open()) under which only the update lane's
+  // messages (ota::all_packets_uplink_lane) are accepted. Checked after the
+  // published pair fails: kOkUpdate = verified under it, payload is update
+  // lane only, counter fresh in the mav_last_ domain (stale = kRejected).
+  // kUpdateDropped = verified under it but the payload carries anything
+  // else: counted in update_dropped(), never an auth reject.
+  enum class MavCheck { kOk, kOkLatched, kLateCal, kOkUpdate, kUpdateDropped, kMalformed,
+                        kRejected };
   MavCheck check_mav(const uint8_t* body, size_t len, rc::Mav* out, bool cal_run_open);
+  // True while an update-only pair is open. Any thread.
+  bool update_session_open() const {
+    return update_session_.load(std::memory_order_acquire) != 0;
+  }
+  // kUpdateDropped frames since start. Any thread.
+  uint64_t update_dropped() const { return update_dropped_.load(std::memory_order_relaxed); }
+  // The update-only pair lapses this long after the last verified
+  // other-version DISC (the GS repeats one every second).
+  static constexpr uint64_t kUpdateSessionMs = 10000;
   // kLateCal frames since start. Any thread.
   uint64_t cal_late() const { return cal_late_.load(std::memory_order_relaxed); }
   // Replay harness only (maburd --dry-run): install a known pair so a file
@@ -452,6 +477,11 @@ class RcAgent {
   // TX writer thread.
   std::atomic<uint64_t> cal_run_session_{0};
   std::atomic<uint64_t> cal_late_{0};  // check_mav's kLateCal count
+  // The update-only pair (vrx << 32 | vtx), 0 = none, and when its DISC
+  // was last heard. Written on the agent thread, read on the MAV thread.
+  std::atomic<uint64_t> update_session_{0};
+  std::atomic<uint64_t> update_heard_ms_{0};
+  std::atomic<uint64_t> update_dropped_{0};  // check_mav's kUpdateDropped count
   std::atomic<bool> auth_reject_{false};
   // accept_nack_counter's state: (vtx_nonce << 32) | last accepted counter.
   // A vtx other than the current pair's means "nothing accepted yet".

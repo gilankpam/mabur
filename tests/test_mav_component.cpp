@@ -13,16 +13,20 @@
 #include <thread>
 #include <vector>
 
+#include "build_ident.h"
 #include "cal_apply.h"
 #include "config.h"
 #include "config_apply.h"
 #include "mabur/config_write.h"
 #include "mabur/config_params.h"
 #include "mabur/mav.h"
+#include "mabur/ota_mav.h"
+#include "mabur/sha256.h"
 #include "mabur/rc_proto.h"
 #include "mav_component.h"
 #include "mav_params.h"
 #include "mtest.h"
+#include "ota.h"
 #include "scratch.h"
 
 using namespace mabur;
@@ -1134,6 +1138,89 @@ TEST(venc_mode_equal_value_is_unchanged_shortcut) {
   CHECK(r.ack.param_result == PARAM_ACK_ACCEPTED);
   CHECK(fake.submits.empty());
   CHECK(slurp(b.path()) == before);
+}
+
+// ---- update lane -----------------------------------------------------------
+
+namespace {
+
+// An OtaServer on a scratch directory the server creates itself.
+struct OtaRig {
+  ScratchFile dir_name{"test_mav_component", ".up"};
+  std::string dir = dir_name.path;
+  OtaServer server{[this] {
+    OtaEnv e;
+    e.dir = dir;
+    e.ident = {build_release(), build_board(), ""};
+    return e;
+  }()};
+  ~OtaRig() {
+    const std::string c = "rm -rf '" + dir + "'";
+    if (std::system(c.c_str())) {}
+  }
+};
+
+MavComponent make_ota(const std::string& path, OtaServer* ota) {
+  fake = FakeApply{};
+  fake.path = path;
+  return MavComponent(path, fake.port(), [](const std::string& l) { logs.push_back(l); }, ota);
+}
+
+void feed_ota(MavComponent& c, const ota::OtaMsg& m) {
+  const auto b = ota::encode(m, kGcsSys, kGcsComp, kChanTest);
+  c.on_payload(b.data(), b.size(), 0);
+}
+
+}  // namespace
+
+TEST(ident_req_is_answered_with_ident) {
+  ScratchBundle b;
+  OtaRig rig;
+  auto c = make_ota(b.path(), &rig.server);
+  feed_ota(c, ota::IdentReq{});
+  auto msgs = drain(c);
+  REQUIRE(msgs.size() == 1);
+  CHECK(msgs[0].sysid == mav::kSysId && msgs[0].compid == mav::kCompId);
+  auto m = ota::decode(msgs[0]);
+  REQUIRE(m.has_value());
+  const auto* id = std::get_if<ota::Ident>(&*m);
+  REQUIRE(id);
+  CHECK(id->version == build_release());
+  CHECK(id->board == build_board());
+}
+
+TEST(update_lane_without_server_is_not_for_us) {
+  ScratchBundle b;
+  auto c = make_ota(b.path(), nullptr);
+  feed_ota(c, ota::IdentReq{});
+  feed_ota(c, ota::UpdateCmd{});
+  feed_ota(c, ota::Ftp{});
+  CHECK(c.outbound_packets() == 0);
+  CHECK(c.stats().rx_packets == 3);
+  CHECK(c.stats().drop_not_for_us == 3);
+  CHECK(!c.exit_requested());
+}
+
+TEST(start_ok_sets_exit_requested) {
+  ScratchBundle b;
+  OtaRig rig;
+  ::mkdir(rig.dir.c_str(), 0755);
+  spit(rig.dir + "/maburd", "bin");
+  auto c = make_ota(b.path(), &rig.server);
+  CHECK(!c.exit_requested());
+  ota::UpdateCmd u;
+  u.cmd = ota::Cmd::kStart;
+  u.sha256 = *sha256_file(rig.dir + "/maburd");
+  feed_ota(c, u);
+  auto msgs = drain(c);
+  REQUIRE(msgs.size() == 1);
+  auto m = ota::decode(msgs[0]);
+  REQUIRE(m.has_value());
+  const auto* st = std::get_if<ota::Status>(&*m);
+  REQUIRE(st);
+  CHECK(st->state == ota::State::kTrial);
+  CHECK(c.exit_requested());
+  CHECK(c.stats().drop_not_for_us == 0);
 }
 
 MTEST_MAIN
