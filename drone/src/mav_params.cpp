@@ -142,12 +142,7 @@ bool patch_row(std::string* text, size_t idx, const Value& v, const Config& curr
       if (err) *err = "value unsupported";
       return false;
     }
-    std::string candidate = *text;
-    if (!patch_toml_key(&candidate, row.section, row.key, rendered)) {
-      if (err) *err = std::string(row.section) + "." + row.key + ": key not found";
-      return false;
-    }
-    *text = std::move(candidate);
+    set_toml_key(text, row.section, row.key, rendered);
     return true;
   }
 
@@ -163,22 +158,13 @@ bool patch_row(std::string* text, size_t idx, const Value& v, const Config& curr
     return false;
   }
   std::string candidate = *text;
-  if (!patch_toml_key(&candidate, "venc", "fps", std::to_string(fps))) {
-    if (err) *err = "venc.fps: key not found";
-    return false;
-  }
+  set_toml_key(&candidate, "venc", "fps", std::to_string(fps));
   const std::string size_text = "\"" + std::to_string(w) + "x" + std::to_string(h) + "\"";
-  if (!patch_toml_key(&candidate, "venc", "size", size_text)) {
-    if (err) *err = "venc.size: key not found";
-    return false;
-  }
-  if (!patch_toml_key(&candidate, "venc", "binning", binning ? "true" : "false")) {
-    if (err) *err = "venc.binning: key not found";
-    return false;
-  }
+  set_toml_key(&candidate, "venc", "size", size_text);
+  set_toml_key(&candidate, "venc", "binning", binning ? "true" : "false");
   // The recorder follows this set only when it is on and pinned to an
   // explicit size (width > 0; 0x0 means "same as venc.size" and already
-  // tracks it with no line to patch), and either the aspect ratio changed
+  // tracks it), and either the aspect ratio changed
   // (cross-multiplied so this never depends on float rounding) or the
   // pinned recording is larger than 1920x1080 and than the new readout's
   // sensor mode in either dimension, above 30 fps -- the loader's 4K rule
@@ -198,10 +184,7 @@ bool patch_row(std::string* text, size_t idx, const Value& v, const Config& curr
                            (current.record.width > 1920 || current.record.height > 1080) &&
                            (current.record.width > tier.w || current.record.height > tier.h);
     if (aspect_changed || needs_4k) {
-      if (!patch_toml_key(&candidate, "record", "size", size_text)) {
-        if (err) *err = "record.size: key not found";
-        return false;
-      }
+      set_toml_key(&candidate, "record", "size", size_text);
       if (followed) *followed = "record.size";
     }
   }

@@ -217,7 +217,7 @@ the preceding power sweep just wrote, or the existing table when the run
 has no power sweep at that width) and in the production A-MPDU mode
 (`ampdu_mode_for(ampdu, mcs, bw)`). Frames are the stamp padded to the
 video body size at the configured geometry, `13 + blocks_per_body[1] ·
-(16 + symbol_size[1])` (1405 B at the bundle's `[fec]`), sent as stream 1
+(16 + symbol_size[1])` (1405 B at the default `[fec]`), sent as stream 1
 through `RadioTx::send_bodies` in batches of three, so every
 `radio.tx_threads` sender stays busy. The drone counts frames `offered`
 and `blocked_pct`, the share of the dwell its submitter spent waiting for
@@ -278,7 +278,7 @@ writes nothing: without `offered` and `blocked_pct` a `tx_bound` point
 cannot be told apart.
 
 Why delivered bits and not a fit: the air clock and the bitrate formula
-price delivered capacity, and the bench numbers the bundle carried were
+price delivered capacity, and the bench numbers the defaults carry were
 defined as exactly this ratio, so a measured table replaces them like for
 like.
 
@@ -410,7 +410,8 @@ efficiency_40 = [0.77, 0.75, 0.75, 0.75, 0.74, 0.77, 0.76, 0.75]
 ```
 
 - **`rate_walls_rel_20` / `_40`** are both optional; `power_mode =
-  "offset"` needs at least one. Every entry is in [−64, 63] and
+  "offset"` needs at least one. An empty table, `[]`, reads the same as an
+  absent key: not calibrated. Every entry is in [−64, 63] and
   `wall − round(wall_margin_db · 4) ≥ −64`. The single-table
   `radio.rate_walls_rel` is gone: a config that still has it fails boot
   (unknown key) — rename it by hand (`docs/deploy.md`).
@@ -522,15 +523,15 @@ changes only what `park` predicts.
 
 ## Walls and efficiency are re-measured after a wipe, never restored
 
-The shipped bundle files are the live flight configs, verbatim, and the
-standing rule is "retune in the repo or it's lost at the next wipe".
-**That rule does not cover the walls and efficiency tables.** They are
-per-unit measurements; the numbers in `bundle/mabur.default.toml` are one
-reference unit's, kept as documentation and inert under the bundle's
-`power_mode = "none"` (efficiency is not inert — it prices every rung —
-which is one more reason to calibrate a new unit before flying it). After
-a drone wipe or replacement, run `maburcal start`; restore everything
-else from the bundle as-is.
+The drone's flight tuning is `maburd`'s built-in defaults; the shipped
+`bundle/mabur.default.toml` holds only per-drone keys, with
+`rate_walls_rel_20 = []` / `rate_walls_rel_40 = []` (not calibrated). The
+built-in efficiency tables are one reference unit's numbers, and they
+price every rung on a drone that never calibrated, which is one more
+reason to calibrate a new unit before flying it. After a drone wipe or
+replacement, run `maburcal start`: it writes the walls into those lines,
+adds `cal_flags_*`, `legacy_wall_rel` and the efficiency tables, and sets
+`power_mode = "offset"`.
 
 ## Geometry
 

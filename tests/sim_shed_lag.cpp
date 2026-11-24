@@ -106,6 +106,11 @@ Config make_cfg() {
   cfg.encoder.roi_threshold_kbps = 3000;
   cfg.encoder.roi_qp_low = 8;
   cfg.encoder.roi_qp_normal = 0;
+  // These tests check the agent's arithmetic at nominal PHY rates, not the
+  // flight tuning: pin the efficiency tables to 1.0 and the shed off.
+  cfg.air_clock.efficiency_20.fill(1.0);
+  cfg.air_clock.efficiency_40.fill(1.0);
+  cfg.air_clock.shed_ms = 0;
   return cfg;
 }
 

@@ -141,7 +141,10 @@ build. mabur owes nothing to old peers, old configs, or old consumers.
   **in the same mabur-ground commit** that changes the format, not to keep
   the old shape alive.
 - **Config keys are free to change.** A removed key failing boot is the
-  intended forcing function, not a regression. No migration shims.
+  intended forcing function, not a regression. No migration shims. The
+  drone's tuning lives in `maburd`'s built-in defaults and its shipped file
+  holds only per-drone keys; `maburd --migrate-config` drops keys a binary
+  does not know, when someone runs it (`docs/deploy.md`).
 - **There is no rollback contract.** An old binary needs its old config
   restored alongside it, always. Prefer rolling forward.
 - **The one exception: the frozen handshake.** The 802.11 framing of

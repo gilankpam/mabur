@@ -28,25 +28,22 @@ void venc_cfg_defaults(VencCfg *cfg)
 	cfg->height = 1080;
 	cfg->fps = 60;
 	cfg->binning = true;
-	cfg->gop_s = 2.0;
-	cfg->qp_delta = -4;
-	cfg->max_ipprop = 0; /* leave the firmware default (unbounded) */
-	cfg->min_iqp = 0;    /* leave the firmware I-QP floor */
-	cfg->superframe_p_pct = 0; /* no P-frame ceiling */
-	/* Error-resilience structure. These reproduce, at 1080p60, exactly
-	 * what the deleted "rally" preset expanded to: its "fast" intra mode
-	 * targeted a 150 ms sweep: 9 frames, ceil(34 CTU rows / 9) = 4 rows
-	 * per P-frame at QP 36, over 1:1 SVC-T with prediction on. Being a
-	 * sweep length, it re-derives its rows at any venc.size. */
-	cfg->intra_refresh_frames = 9;
+	cfg->gop_s = 0; /* no periodic refresh: the GS asks for an IDR when its picture is damaged */
+	cfg->qp_delta = 4;
+	cfg->max_ipprop = 2; /* keyframe at most twice a P-frame */
+	cfg->min_iqp = 34;  /* keyframe quality floor: smaller keyframes */
+	cfg->superframe_p_pct = 200; /* P-frame cap, % of the per-frame budget */
+	/* Rolling intra refresh runs only at a GOP start, so it is off while
+	 * gop_s is 0. */
+	cfg->intra_refresh_frames = 0;
 	cfg->intra_refresh_qp = 36;
 	cfg->ref_base = 1;
 	cfg->ref_enhance = 1;
 	cfg->ref_pred = true;
 	cfg->mirror = false;
 	cfg->flip = false;
-	cfg->slices = 1; /* split off */
-	cfg->roi_enabled = true;
+	cfg->slices = 4; /* row slices: truncated-AU salvage needs > 1 */
+	cfg->roi_enabled = false;
 	cfg->roi_steps = 2;
 	cfg->roi_center = 0.4;
 	cfg->ae_fps = 15;

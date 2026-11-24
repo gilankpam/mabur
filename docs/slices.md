@@ -11,7 +11,7 @@ Bench record: `docs/findings/2026-10-10-slice-salvage.md`.
 
 ## Drone
 
-- `[venc] slices` (compiled default 1 = off; the bundle ships 4): row slices
+- `[venc] slices` (default 4; 1 = off): row slices
   on the link channel, applied with `MI_VENC_SetH265SliceSplit` before
   StartRecvPic. Only the counts the SDK's whole-64-px-CTU-row geometry can
   produce pass config load (1080p: 1,2,3,4,5,6,9,17). How the count trades
@@ -266,7 +266,7 @@ Full record: `docs/findings/2026-10-10-slice-salvage.md`.
 - **Streamed decode** (with FeedLoop): `dec` p50 −2.7 ms (means), `e2e`
   p50 −2.3 ms; ~96 % of AUs stream, the rest were the one-slice
   refresh-start pictures of the GDR refresh the bench ran, which
-  decode whole (with the sweep off, as the bundle ships, the IDR is
+  decode whole (with the sweep off, the default, the IDR is
   sliced and streams too). Turning rkvdec2 link mode off costs nothing
   measurable. Killing a stream-on maburplay mid-stream: 0 of 10 resets.
 

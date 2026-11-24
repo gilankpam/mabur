@@ -222,6 +222,18 @@ bool read_int_array(const std::vector<std::string>& lines, int idx, const std::s
   return true;
 }
 
+// True when lines[idx] is `key = []`: the shipped "not calibrated" table.
+bool is_empty_array(const std::vector<std::string>& lines, int idx, const std::string& key) {
+  const std::string& line = lines[static_cast<size_t>(idx)];
+  size_t key_begin, eq_pos;
+  if (!match_toml_key(line, key, &key_begin, &eq_pos)) return false;
+  size_t v = eq_pos + 1;
+  while (v < line.size() && (line[v] == ' ' || line[v] == '\t')) ++v;
+  if (v >= line.size() || line[v] != '[') return false;
+  const size_t close = line.find(']', v);
+  return close != std::string::npos && trim(line.substr(v + 1, close - v - 1)).empty();
+}
+
 // "mcs5,6,7" for a per-rate bit mask (bit r = MCS r).
 std::string rate_list(uint8_t mask) {
   std::string s;
@@ -288,7 +300,22 @@ std::string patch_toml(const std::string& text, const CalWrite& w, PatchStatus* 
   // Which line owns rate_walls_rel_20 specifically, independent of which
   // width this call is writing -- legacy_wall_rel's patch condition reads
   // this, not idx_rate_bw/idx_rate_other.
-  const int idx_rate_20 = (w.bw == 20) ? idx_rate_bw : idx_rate_other;
+  // An empty table ("[]", the shipped "not calibrated") is a line to
+  // replace but never a table: it has nothing to keep or to borrow.
+  const bool empty_bw = idx_rate_bw >= 0 && is_empty_array(lines, idx_rate_bw, rate_key);
+  const bool empty_other =
+      idx_rate_other >= 0 && is_empty_array(lines, idx_rate_other, rate_other_key);
+  const int idx_rate_20_line = (w.bw == 20) ? idx_rate_bw : idx_rate_other;
+  const bool empty_20 = (w.bw == 20) ? empty_bw : empty_other;
+  const int idx_rate_20 = empty_20 ? -1 : idx_rate_20_line;
+
+  // Keys with neither a line nor an anchor line to sit next to (a minimal
+  // config): set through set_toml_key once the line pass is done.
+  struct Fallback {
+    const char* section;
+    std::string key, value;
+  };
+  std::vector<Fallback> fallbacks;
 
   struct Insertion {
     int anchor;
@@ -297,7 +324,7 @@ std::string patch_toml(const std::string& text, const CalWrite& w, PatchStatus* 
   std::vector<Insertion> pending;
 
   if (w.has_walls) {
-    if (idx_rate_bw >= 0) {
+    if (idx_rate_bw >= 0 && !empty_bw) {
       if (rewrite_int_array(lines, idx_rate_bw, rate_key, w.walls))
         if (status) status->walls = true;
     } else {
@@ -309,7 +336,7 @@ std::string patch_toml(const std::string& text, const CalWrite& w, PatchStatus* 
       // the 20 MHz wall errs low at 40); with nothing to take it from the
       // line is not inserted and apply_calibration refuses the write.
       std::array<int, 8> other{};
-      const bool have_20 = w.bw == 40 && idx_rate_other >= 0 &&
+      const bool have_20 = w.bw == 40 && idx_rate_other >= 0 && !empty_other &&
                            read_int_array(lines, idx_rate_other, rate_other_key, &other);
       std::array<int, 8> vals{};
       uint8_t borrowed = 0, unfilled = 0;
@@ -329,11 +356,17 @@ std::string patch_toml(const std::string& text, const CalWrite& w, PatchStatus* 
         status->unfilled_walls = unfilled;
       }
       const int anchor = (idx_rate_other >= 0) ? idx_rate_other : idx_power_mode;
-      if (anchor >= 0 && unfilled == 0) {
-        pending.push_back({anchor, rate_key + " = " + render_int_array(vals)});
+      if (unfilled == 0) {
+        const std::string line = rate_key + " = " + render_int_array(vals);
+        if (empty_bw)
+          lines[static_cast<size_t>(idx_rate_bw)] = line;
+        else if (anchor >= 0)
+          pending.push_back({anchor, line});
+        else
+          fallbacks.push_back({"radio", rate_key, render_int_array(vals)});
         if (status) {
           status->walls = true;
-          status->inserted_walls = true;
+          status->inserted_walls = !empty_bw;
         }
       }
     }
@@ -346,12 +379,13 @@ std::string patch_toml(const std::string& text, const CalWrite& w, PatchStatus* 
         if (status) status->cal_flags = true;
     } else {
       const int anchor = (idx_cflag_other >= 0) ? idx_cflag_other : idx_power_mode;
-      if (anchor >= 0) {
+      if (anchor >= 0)
         pending.push_back({anchor, cflag_key + " = \"" + w.cal_flags + "\""});
-        if (status) {
-          status->cal_flags = true;
-          status->inserted_cal_flags = true;
-        }
+      else
+        fallbacks.push_back({"radio", cflag_key, "\"" + w.cal_flags + "\""});
+      if (status) {
+        status->cal_flags = true;
+        status->inserted_cal_flags = true;
       }
     }
 
@@ -359,14 +393,16 @@ std::string patch_toml(const std::string& text, const CalWrite& w, PatchStatus* 
     // legacy wall regardless of width): only a 20 MHz write repatches it,
     // unless the file has no rate_walls_rel_20 line at all -- a unit
     // calibrated on only 40 MHz still needs legacy derived from somewhere.
-    // No insertion path: this key always already exists in a loadable
-    // config (RadioCfg::legacy_wall_rel's struct default is never absent
-    // from the bundle), so a missing line here is a KeyNotFound, not an
-    // insert.
+    // A minimal config has no line for it: it is inserted.
     const bool patch_legacy = (w.bw == 20) || (idx_rate_20 < 0);
-    if (patch_legacy && w.legacy_wall != mabur::rc::kWallUndetermined && idx_legacy >= 0) {
-      if (rewrite_int(lines, idx_legacy, "legacy_wall_rel", w.legacy_wall))
+    if (patch_legacy && w.legacy_wall != mabur::rc::kWallUndetermined) {
+      if (idx_legacy >= 0) {
+        if (rewrite_int(lines, idx_legacy, "legacy_wall_rel", w.legacy_wall))
+          if (status) status->legacy_wall_rel = true;
+      } else {
+        fallbacks.push_back({"radio", "legacy_wall_rel", std::to_string(w.legacy_wall)});
         if (status) status->legacy_wall_rel = true;
+      }
     }
 
     // Any walls write means the unit now has at least one measured table,
@@ -374,6 +410,9 @@ std::string patch_toml(const std::string& text, const CalWrite& w, PatchStatus* 
     if (idx_power_mode >= 0) {
       if (rewrite_quoted_string(lines, idx_power_mode, "power_mode", "offset"))
         if (status) status->power_mode = true;
+    } else {
+      fallbacks.push_back({"radio", "power_mode", "\"offset\""});
+      if (status) status->power_mode = true;
     }
   }
 
@@ -388,7 +427,7 @@ std::string patch_toml(const std::string& text, const CalWrite& w, PatchStatus* 
       // table's own first key) only when there is no other-width line
       // either.
       const int anchor = (idx_eff_other >= 0) ? idx_eff_other : idx_shed_ms;
-      if (anchor >= 0) {
+      {
         // A left-at-0 ("leave") entry has nothing to inherit when the line
         // doesn't exist yet, so it takes what the loader flies for that
         // width with the key absent (AirClockCfg's own default): the
@@ -401,7 +440,10 @@ std::string patch_toml(const std::string& text, const CalWrite& w, PatchStatus* 
           const size_t s = static_cast<size_t>(i);
           vals[s] = (w.eff[s] == 0.0) ? dflt[s] : w.eff[s];
         }
-        pending.push_back({anchor, eff_key + " = " + render_double_array(vals)});
+        if (anchor >= 0)
+          pending.push_back({anchor, eff_key + " = " + render_double_array(vals)});
+        else
+          fallbacks.push_back({"air_clock", eff_key, render_double_array(vals)});
         if (status) status->eff = true;
       }
     }
@@ -427,6 +469,7 @@ std::string patch_toml(const std::string& text, const CalWrite& w, PatchStatus* 
     if (i + 1 < lines.size()) out += "\n";
   }
   if (trailing_newline) out += "\n";
+  for (const Fallback& f : fallbacks) set_toml_key(&out, f.section, f.key, f.value);
   return out;
 }
 

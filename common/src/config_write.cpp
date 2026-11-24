@@ -13,6 +13,8 @@
 #include <sstream>
 #include <string>
 
+#include <vector>
+
 namespace mabur {
 
 bool match_toml_key(const std::string& line, const std::string& key,
@@ -229,6 +231,156 @@ bool patch_toml_key(std::string* text, const std::string& section,
       }
     }
     start = nl + 1;
+  }
+  return false;
+}
+
+namespace {
+
+// One logical line of a TOML file: a header, a key (with every
+// continuation line of a multi-line array value), or anything else.
+// [begin, next) is its whole byte span, newline(s) included.
+struct TomlLine {
+  size_t begin = 0, next = 0;
+  bool header = false;
+  std::string name;   // header: its table name
+  std::string text;   // the first physical line, without "\r"
+};
+
+// Net '[' minus ']' in a value, outside quoted strings and comments.
+int bracket_depth(const std::string& s, size_t from) {
+  int depth = 0;
+  char quote = 0;
+  for (size_t i = from; i < s.size(); ++i) {
+    const char c = s[i];
+    if (quote) {
+      if (c == '\\' && quote == '"') ++i;
+      else if (c == quote) quote = 0;
+    } else if (c == '"' || c == '\'') {
+      quote = c;
+    } else if (c == '#') {
+      break;
+    } else if (c == '[') {
+      ++depth;
+    } else if (c == ']') {
+      --depth;
+    }
+  }
+  return depth;
+}
+
+std::vector<TomlLine> scan_toml(const std::string& t) {
+  std::vector<TomlLine> out;
+  auto phys = [&](size_t at, std::string* text) {
+    size_t nl = t.find('\n', at);
+    const size_t end = nl == std::string::npos ? t.size() : nl;
+    *text = t.substr(at, end - at);
+    if (!text->empty() && text->back() == '\r') text->pop_back();
+    return nl == std::string::npos ? t.size() : nl + 1;
+  };
+  size_t at = 0;
+  while (at < t.size()) {
+    TomlLine l;
+    l.begin = at;
+    at = phys(at, &l.text);
+    l.header = table_header(l.text, &l.name);
+    const std::string first = trim_line(l.text);
+    if (!l.header && !first.empty() && first[0] != '#') {
+      const size_t eq = l.text.find('=');
+      if (eq != std::string::npos) {
+        int depth = bracket_depth(l.text, eq + 1);
+        std::string cont;
+        while (depth > 0 && at < t.size()) {
+          at = phys(at, &cont);
+          depth += bracket_depth(cont, 0);
+        }
+      }
+    }
+    l.next = at;
+    out.push_back(std::move(l));
+  }
+  return out;
+}
+
+// Index of key's line in [section], or -1.
+int find_toml_key(const std::vector<TomlLine>& lines, const std::string& section,
+                  const std::string& key) {
+  bool in_any = false;
+  std::string current;
+  for (size_t i = 0; i < lines.size(); ++i) {
+    if (lines[i].header) {
+      current = lines[i].name;
+      in_any = true;
+      continue;
+    }
+    size_t kb, eq;
+    if ((in_any ? current == section : section.empty()) &&
+        match_toml_key(lines[i].text, key, &kb, &eq))
+      return static_cast<int>(i);
+  }
+  return -1;
+}
+
+}  // namespace
+
+void set_toml_key(std::string* text, const std::string& section,
+                  const std::string& key, const std::string& rendered_value) {
+  if (patch_toml_key(text, section, key, rendered_value)) return;
+  const std::string eol = text->find("\r\n") != std::string::npos ? "\r\n" : "\n";
+  const std::string entry = key + " = " + rendered_value + eol;
+  const auto lines = scan_toml(*text);
+  size_t pos = std::string::npos;
+  if (section.empty()) {
+    pos = 0;
+  } else {
+    bool in = false;
+    for (const TomlLine& l : lines) {
+      if (l.header) {
+        if (in) break;
+        if (l.name == section) {
+          in = true;
+          pos = l.next;
+        }
+        continue;
+      }
+      const std::string t = trim_line(l.text);
+      if (in && !t.empty() && t[0] != '#' && t.find('=') != std::string::npos) pos = l.next;
+    }
+  }
+  if (pos == std::string::npos) {
+    if (!text->empty() && text->back() != '\n') *text += eol;
+    if (!text->empty()) *text += eol;
+    *text += "[" + section + "]" + eol + entry;
+    return;
+  }
+  if (pos == text->size() && !text->empty() && text->back() != '\n') {
+    *text += eol;
+    pos = text->size();
+  }
+  text->insert(pos, entry);
+}
+
+bool remove_toml_key(std::string* text, const std::string& section, const std::string& key) {
+  const auto lines = scan_toml(*text);
+  const int i = find_toml_key(lines, section, key);
+  if (i < 0) return false;
+  const TomlLine& l = lines[static_cast<size_t>(i)];
+  text->erase(l.begin, l.next - l.begin);
+  return true;
+}
+
+bool remove_toml_table(std::string* text, const std::string& section) {
+  const auto lines = scan_toml(*text);
+  for (size_t i = 0; i < lines.size(); ++i) {
+    if (!lines[i].header || lines[i].name != section) continue;
+    size_t end = text->size();
+    for (size_t j = i + 1; j < lines.size(); ++j)
+      if (lines[j].header) {
+        end = lines[j].begin;
+        break;
+      }
+    text->erase(lines[i].begin, end - lines[i].begin);
+    return true;
   }
   return false;
 }

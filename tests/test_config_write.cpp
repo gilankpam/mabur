@@ -27,7 +27,7 @@ std::string slurp(const std::string& path) {
 bool exists(const std::string& path) { return std::ifstream(path).good(); }
 
 std::string bundle_text() {
-  const std::string t = slurp(std::string(MABUR_BUNDLE_DIR) + "/mabur.default.toml");
+  const std::string t = slurp(std::string(MABUR_FIXTURE_DIR) + "/mabur.full.toml");
   REQUIRE(!t.empty());
   return t;
 }
@@ -282,6 +282,92 @@ TEST(publish_config_reparse_failed_carries_the_verifier_message) {
   CHECK(publish_config(f.path, "a = 2\n", "pre-live", &err, bad) == PublishResult::ReparseFailed);
   CHECK(err == "config: x:1: a: nope");
   CHECK(slurp(f.path) == "a = 1\n");
+}
+
+TEST(set_toml_key_patches_existing_line) {
+  std::string t = "[venc]\nfps = 60  # x\n";
+  set_toml_key(&t, "venc", "fps", "100");
+  CHECK(t == "[venc]\nfps = 100  # x\n");
+}
+
+TEST(set_toml_key_inserts_after_last_key_of_section) {
+  std::string t = "[radio]\nchannels = [40]\n\n[venc]\nsensor_bin = \"/x\"\n";
+  set_toml_key(&t, "radio", "power_mode", "\"offset\"");
+  CHECK(t == "[radio]\nchannels = [40]\npower_mode = \"offset\"\n\n[venc]\nsensor_bin = \"/x\"\n");
+}
+
+TEST(set_toml_key_creates_missing_section_at_eof) {
+  std::string t = "[radio]\nchannels = [40]\n";
+  set_toml_key(&t, "air_clock", "shed_ms", "25");
+  CHECK(t == "[radio]\nchannels = [40]\n\n[air_clock]\nshed_ms = 25\n");
+}
+
+TEST(set_toml_key_eof_without_newline) {
+  std::string t = "[radio]\nchannels = [40]";
+  set_toml_key(&t, "record", "fps", "30");
+  CHECK(t.find("channels = [40]\n") != std::string::npos);
+  CHECK(t.size() >= 18 && t.compare(t.size() - 18, 18, "[record]\nfps = 30\n") == 0);
+}
+
+TEST(set_toml_key_inserts_into_empty_section_after_header) {
+  std::string t = "[radio]\n[venc]\nsensor_bin = \"/x\"\n";
+  set_toml_key(&t, "radio", "cca", "false");
+  CHECK(t == "[radio]\ncca = false\n[venc]\nsensor_bin = \"/x\"\n");
+}
+
+TEST(set_toml_key_keeps_crlf) {
+  std::string t = "[radio]\r\nchannels = [40]\r\n";
+  set_toml_key(&t, "radio", "cca", "false");
+  CHECK(t == "[radio]\r\nchannels = [40]\r\ncca = false\r\n");
+}
+
+TEST(set_toml_key_inserts_after_a_multiline_value) {
+  std::string t = "[radio]\nchannels = [\n  40,\n]\n";
+  set_toml_key(&t, "radio", "cca", "false");
+  CHECK(t == "[radio]\nchannels = [\n  40,\n]\ncca = false\n");
+}
+
+TEST(remove_toml_key_single_line) {
+  std::string t = "[venc]\nfps = 60\nmin_iqp = 34  # floor\nsize = \"1920x1080\"\n";
+  CHECK(remove_toml_key(&t, "venc", "min_iqp"));
+  CHECK(t == "[venc]\nfps = 60\nsize = \"1920x1080\"\n");
+}
+
+TEST(remove_toml_key_multiline_array) {
+  std::string t = "[radio]\nchannels = [\n  40,\n  64,\n]\ncca = true\n";
+  CHECK(remove_toml_key(&t, "radio", "channels"));
+  CHECK(t == "[radio]\ncca = true\n");
+}
+
+TEST(remove_toml_key_crlf) {
+  std::string t = "[radio]\r\ncca = true\r\nldpc = true\r\n";
+  CHECK(remove_toml_key(&t, "radio", "cca"));
+  CHECK(t == "[radio]\r\nldpc = true\r\n");
+}
+
+TEST(remove_toml_key_absent_returns_false) {
+  std::string t = "[radio]\ncca = true\n";
+  CHECK(!remove_toml_key(&t, "radio", "ldpc"));
+  CHECK(!remove_toml_key(&t, "venc", "cca"));
+  CHECK(t == "[radio]\ncca = true\n");
+}
+
+TEST(remove_toml_table_stops_at_next_header) {
+  std::string t = "[venc]\nfps = 60\n[venc.roi]\nenabled = false\nsteps = 2\n[link]\nkey_file = \"/k\"\n";
+  CHECK(remove_toml_table(&t, "venc.roi"));
+  CHECK(t == "[venc]\nfps = 60\n[link]\nkey_file = \"/k\"\n");
+  CHECK(!remove_toml_table(&t, "bogus"));
+}
+
+// A commented-out line with '=' and an unclosed '[' (an old wall table
+// kept as a comment) is not an open multi-line value: the lines after it,
+// headers included, stay visible.
+TEST(commented_open_array_does_not_hide_the_rest) {
+  std::string t = "[radio]\n# old = [63,\n#  45]\ncca = false\n[venc]\nfps = 60\n";
+  CHECK(remove_toml_key(&t, "radio", "cca"));
+  CHECK(t == "[radio]\n# old = [63,\n#  45]\n[venc]\nfps = 60\n");
+  set_toml_key(&t, "venc", "size", "\"1920x1080\"");
+  CHECK(t == "[radio]\n# old = [63,\n#  45]\n[venc]\nfps = 60\nsize = \"1920x1080\"\n");
 }
 
 MTEST_MAIN

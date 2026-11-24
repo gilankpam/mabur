@@ -174,7 +174,7 @@ indexed by `seq & (slots − 1)`, preallocated at startup. Size
 slots = next pow2 ≥ bitrate_max_kbps × 1000/8 × 0.6 × ring_ms/1000 / symbol_size + 1
 ```
 
-At the bundle's `bitrate_max_kbps` 24000, `ring_ms` 150 and symbol size 332
+At the default `bitrate_max_kbps` 24000, `ring_ms` 150 and symbol size 332
 that is 814 → **1024 slots × 346 B ≈ 354 kB**. The ring is sized once at
 startup from the boot config's `bitrate_max_kbps` and never resized: an
 `ENC_BITRATE_MAX` MAVLink set (`docs/vtx-config-mavlink.md`) changes the live
@@ -213,7 +213,7 @@ miss.
 `nack.burst_ms` (20) of air at the current op's delivered sid-0 rate,
 re-set at every verified NACK (`TokenBucket::depth_for`; growing it only
 raises the ceiling, shrinking it clamps what is held): about 75 symbols at
-mcs0/40, 146 at mcs1/40, 433 at mcs4/40 with the bundle's efficiency
+mcs0/40, 146 at mcs1/40, 433 at mcs4/40 with the default efficiency
 tables. A fixed symbol depth would be a few ms of air at the top rung and
 tens of ms at the bottom one, refusing most of a demote cascade's requests;
 sizing it in air time keeps the burst equal at every rung. Tokens start
@@ -228,7 +228,7 @@ applied op's sid-0 spec). A symbol costs 1 token, 2 under the repeat flag;
 a symbol the tokens do not cover is refused, so a request is served in
 order up to the tokens and the rest is counted `retx_refused`.
 
-**Config** (`drone/src/config.cpp`, `bundle/mabur.default.toml`):
+**Config** (`drone/src/config.cpp`; the values shown are the built-in defaults):
 
 ```toml
 [nack]

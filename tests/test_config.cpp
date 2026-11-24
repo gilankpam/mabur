@@ -1,8 +1,11 @@
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -10,6 +13,7 @@
 #include "mtest.h"
 #include "config.h"
 #include "mabur/link_key.h"
+#include "mabur/toml.h"
 using namespace mabur;
 
 namespace {
@@ -45,9 +49,9 @@ std::string what_of(const std::function<void()>& fn) {
 
 // The shipped bundle is baked into the drone image as /etc/mabur.toml, so it
 // must load through the real loader: a typo or out-of-range value there
-// would put a freshly flashed drone into maburd's restart loop. Its VALUES
-// are tuning and deliberately not pinned here -- retuning must not fail a
-// test. (bundle_default_sets_every_known_key keeps it complete.)
+// would put a freshly flashed drone into maburd's restart loop. It holds
+// only the per-drone keys (bundle_is_the_per_drone_keys_only); the tuning
+// is the built-in defaults.
 TEST(bundle_config_loads) {
   Config cfg = load_config(default_config_path());
   // Loader behaviour, not a bundle value: every layer's overhead is
@@ -250,22 +254,20 @@ TEST(venc_absent_keys_fall_back_to_spec_defaults) {
   CHECK(c.venc.core.fps == 60);
   CHECK(c.venc.core.width == 1920);
   CHECK(c.venc.core.height == 1080);
-  CHECK(c.venc.core.gop_s == 2.0);
-  CHECK(c.venc.core.qp_delta == -4);
-  CHECK(c.venc.core.max_ipprop == 0);
-  CHECK(c.venc.core.superframe_p_pct == 0);
-  // The decomposed resilience components (venc.resilience is deleted):
-  // defaults reproduce the old "rally" preset at 1080p60 —
-  // a 9-frame sweep (4 CTU rows/P at 1080p) at QP 36, 1:1 SVC-T with
-  // enhance prediction on.
-  CHECK(c.venc.core.intra_refresh_frames == 9);
+  CHECK(c.venc.core.gop_s == 0);
+  CHECK(c.venc.core.qp_delta == 4);
+  CHECK(c.venc.core.max_ipprop == 2);
+  CHECK(c.venc.core.superframe_p_pct == 200);
+  // Intra refresh off (it only runs at a GOP start, and gop_s is 0); its
+  // QP and the 1:1 SVC-T with enhance prediction on stay as before.
+  CHECK(c.venc.core.intra_refresh_frames == 0);
   CHECK(c.venc.core.intra_refresh_qp == 36);
   CHECK(c.venc.core.ref_base == 1);
   CHECK(c.venc.core.ref_enhance == 1);
   CHECK(c.venc.core.ref_pred == true);
   CHECK(c.venc.core.mirror == false);
   CHECK(c.venc.core.flip == false);
-  CHECK(c.venc.core.roi_enabled == true);
+  CHECK(c.venc.core.roi_enabled == false);
   CHECK(c.venc.core.roi_steps == 2);
   CHECK(c.venc.core.roi_center == 0.4);
   CHECK(c.venc.core.ae_fps == 15);
@@ -460,11 +462,11 @@ TEST(venc_min_iqp_parses) {
   std::filesystem::remove(path);
 }
 
-TEST(venc_min_iqp_absent_leaves_firmware_floor) {
+TEST(venc_min_iqp_absent_is_34) {
   auto path = write_temp_toml(
       "[venc]\nsensor_bin = \"/etc/sensors/imx415_greg_fpvXIX_colortrans.bin\"\n");
   Config c = load_config(path.string());
-  CHECK(c.venc.core.min_iqp == 0);
+  CHECK(c.venc.core.min_iqp == 34);
   std::filesystem::remove(path);
 }
 
@@ -616,9 +618,9 @@ TEST(fec_symbol_size_array_per_layer) {
   std::filesystem::remove(path);
 }
 
-TEST(fec_feed_batch_parses_and_defaults_off) {
+TEST(fec_feed_batch_parses_and_defaults_to_one) {
   Config def;
-  CHECK(def.fec.feed_batch == 0);  // streaming push is the default shape
+  CHECK(def.fec.feed_batch == 1);  // each block handed over as soon as it is ready
   auto path = write_temp_toml("[fec]\nfeed_batch = 3\n");
   Config cfg = load_config(path.string());
   CHECK(cfg.fec.feed_batch == 3);
@@ -719,14 +721,14 @@ TEST(fec_symbol_size_bounds) {
 }
 
 TEST(msp_defaults_and_parse) {
-  // Defaults: disabled, ttyS2, 1 Hz.
+  // Defaults: enabled, ttyS2, 3 Hz.
   {
     auto path = write_temp_toml("");
     auto cfg = load_config(path.string());
-    CHECK(cfg.msp.enable == false);
+    CHECK(cfg.msp.enable == true);
     CHECK(cfg.msp.serial == "/dev/ttyS2");
     CHECK(cfg.msp.baud == 115200);
-    CHECK(cfg.msp.update_rate_hz == 1.0);
+    CHECK(cfg.msp.update_rate_hz == 3.0);
     CHECK(cfg.msp.symbol_size == 1312);
     std::filesystem::remove(path);
   }
@@ -1148,11 +1150,13 @@ TEST(link_vtx_id_is_an_unknown_key_now) {
 // ---- ampdu block --------------------------------------------------------
 
 TEST(ampdu_defaults_when_absent) {
-  // A config with no "ampdu" block gets the shipped defaults — aggregation
-  // OFF per the bench verdict (no fec win, RF-report damage).
+  // A config with no "ampdu" block gets the flight defaults: 6-frame
+  // aggregates from MCS4 at 20 MHz and MCS2 at 40 MHz.
   auto path = write_temp_toml("");
   auto cfg = load_config(path.string());
-  CHECK(cfg.ampdu.max_num == 0);
+  CHECK(cfg.ampdu.max_num == 6);
+  CHECK(cfg.ampdu.min_mcs_20 == 4);
+  CHECK(cfg.ampdu.min_mcs_40 == 2);
   CHECK(cfg.ampdu.max_time == 32);
   std::filesystem::remove(path);
 }
@@ -1167,10 +1171,9 @@ TEST(ampdu_block_parses) {
   std::filesystem::remove(path);
 }
 
-TEST(ampdu_min_mcs_keys_default_to_zero) {
-  // Absent min_mcs_20/min_mcs_40 = aggregate at every rung of that width,
-  // so a config written without the keys aggregates everywhere.
-  auto path = write_temp_toml("[ampdu]\nmax_num = 6\n");
+TEST(ampdu_min_mcs_keys_parse_zero) {
+  // 0 = aggregate at every rung of that width.
+  auto path = write_temp_toml("[ampdu]\nmax_num = 6\nmin_mcs_20 = 0\nmin_mcs_40 = 0\n");
   auto cfg = load_config(path.string());
   CHECK(cfg.ampdu.min_mcs_20 == 0);
   CHECK(cfg.ampdu.min_mcs_40 == 0);
@@ -1259,14 +1262,14 @@ TEST(ampdu_rejects_bad_values) {
 // delivers at each width (8 entries, HT mcs0..7, measured --
 // docs/findings/2026-09-17-bandwidth-sweep.md,
 // docs/findings/2026-09-23-bw40-sweep.md), priced into both the bitrate
-// policy and the air clock; body_us a fixed per-body cost. Absent = all
-// ones = nominal.
+// policy and the air clock; body_us a fixed per-body cost. Absent = the
+// reference card's tables.
 TEST(air_clock_defaults_when_absent) {
   auto path = write_temp_toml("[link]\ntick_ms = 100\n");
   Config c = load_config(path.string());
-  CHECK(c.air_clock.shed_ms == 0);
-  for (double e : c.air_clock.efficiency_20) CHECK(e == 1.0);
-  for (double e : c.air_clock.efficiency_40) CHECK(e == 1.0);
+  CHECK(c.air_clock.shed_ms == 25);
+  CHECK((c.air_clock.efficiency_20 == std::array<double, 8>{0.93, 0.88, 0.84, 0.80, 0.76, 0.76, 0.78, 0.76}));
+  CHECK((c.air_clock.efficiency_40 == std::array<double, 8>{0.77, 0.75, 0.75, 0.75, 0.74, 0.77, 0.76, 0.75}));
   CHECK(c.air_clock.body_us == 0);
   std::filesystem::remove(path);
 }
@@ -1367,7 +1370,7 @@ TEST(load_config_reports_defaulted_keys) {
   bool saw_window = false, saw_flush = false;
   for (const std::string& d : defaulted) {
     if (d.rfind("fec.window", 0) == 0) saw_window = true;
-    if (d == "fec.flush_ms=15") saw_flush = true;
+    if (d == "fec.flush_ms=25") saw_flush = true;
   }
   CHECK(!saw_window);
   CHECK(saw_flush);
@@ -1415,13 +1418,12 @@ TEST(load_config_reports_real_venc_defaults_not_zero) {
   bool saw_fps = false, saw_qp_delta = false, saw_roi_absent = false;
   for (const std::string& d : defaulted) {
     if (d == "venc.fps=60") saw_fps = true;
-    if (d == "venc.qp_delta=-4") saw_qp_delta = true;
+    if (d == "venc.qp_delta=4") saw_qp_delta = true;
     if (d == "venc.roi=(section absent)") saw_roi_absent = true;
     // These keys' real compiled defaults are all nonzero (venc_cfg.c); a
     // bare "=0" here would be exactly the lie a naive `else
     // note_default(key, to_text(local_temp))` would have produced.
     for (const char* wrong : {"venc.fps=0", "venc.qp_delta=0",
-                              "venc.intra_refresh_frames=0",
                               "venc.intra_refresh_qp=0", "venc.ref_base=0",
                               "venc.ref_enhance=0", "venc.ae_fps=0",
                               "venc.awb_fps=0", "venc.snapshot_quality=0",
@@ -1498,7 +1500,7 @@ TEST(low_power_defaults_are_disabled_and_parse) {
     auto cfg = load_config(path.string());
     CHECK(cfg.low_power.enable == false);
     CHECK(cfg.low_power.bitrate_kbps == 1000);
-    CHECK(cfg.low_power.fps == 15);
+    CHECK(cfg.low_power.fps == 30);
     CHECK(cfg.low_power.stale_ms == 2000);
     std::filesystem::remove(path);
   }
@@ -1526,6 +1528,7 @@ TEST(low_power_unknown_key_throws_naming_it) {
 TEST(low_power_enable_requires_msp_enable) {
   auto path = write_temp_toml(
       "[encoder]\nbitrate_min_kbps = 1000\nbitrate_max_kbps = 16000\n"
+      "[msp]\nenable = false\n"
       "[low_power]\nenable = true\n");
   std::string msg = what_of([&] { (void)load_config(path.string()); });
   CHECK(msg.find("low_power.enable") != std::string::npos);
@@ -1628,16 +1631,16 @@ TEST(radio_width_40_needs_a_standard_pair) {
   std::filesystem::remove(path);
 }
 
-TEST(record_defaults_are_disabled_and_parse) {
+TEST(record_defaults_are_enabled_and_parse) {
   {
     auto path = write_temp_toml("");
     auto cfg = load_config(path.string());
-    CHECK(cfg.record.enable == false);
+    CHECK(cfg.record.enable == true);
     CHECK(cfg.record.dir == "/mnt/mmcblk0p1");
     CHECK(cfg.record.bitrate_kbps == 40000);
     CHECK(cfg.record.fps == 60);
     CHECK(cfg.record.min_free_mb == 512);
-    CHECK(cfg.record.width == 0 && cfg.record.height == 0);  // follows venc.size
+    CHECK(cfg.record.width == 1920 && cfg.record.height == 1080);
     std::filesystem::remove(path);
   }
   {
@@ -1833,14 +1836,6 @@ TEST(venc_slices_parses_and_rejects_unachievable_counts) {
 // key without writing it into bundle/mabur.default.toml fails here, which is
 // the point -- a knob that only exists in a struct default is a knob nobody
 // knows about, and this bundle is also the drone's verbatim /etc/mabur.toml.
-TEST(bundle_default_sets_every_known_key) {
-  std::vector<std::string> defaulted;
-  load_config(default_config_path(), &defaulted);
-  for (const std::string& d : defaulted)
-    std::fprintf(stderr, "  bundle leaves defaulted: %s\n", d.c_str());
-  CHECK(defaulted.empty());
-}
-
 TEST(fec_repairs_with_frame_key_is_rejected) {
   auto p = write_temp_toml("[fec]\nrepairs_with_frame = true\n");
   std::string w = what_of([&] { load_config(p.string()); });
@@ -1851,6 +1846,81 @@ TEST(fec_repairs_with_frame_key_is_rejected) {
 TEST(fec_window_is_not_raised_any_more) {
   auto p = write_temp_toml("[fec]\nwindow = 32\n");
   CHECK(load_config(p.string()).fec.window == 32);
+  std::filesystem::remove(p);
+}
+
+
+// Every value the full bundle sets, except the per-card walls, is a built-in
+// default: a file carrying only the walls and the sensor path loads equal.
+TEST(full_bundle_values_are_builtin_defaults) {
+  const Config full = load_config(std::string(MABUR_FIXTURE_DIR) + "/mabur.full.toml");
+  auto p = write_temp_toml(
+      "[radio]\n"
+      "rate_walls_rel_20 = [63, 63, 63, 63, 45, 23, 22, 21]\n"
+      "rate_walls_rel_40 = [63, 63, 63, 63, 45, 28, 28, 23]\n"
+      "[venc]\n"
+      "sensor_bin = \"/etc/sensors/imx415_greg_fpvXIX_colortrans.bin\"\n");
+  CHECK(load_config(p.string()) == full);
+  std::filesystem::remove(p);
+}
+
+TEST(config_equality_sees_a_venc_field) {
+  auto a = write_temp_toml("[venc]\nsensor_bin = \"/x.bin\"\n");
+  auto b = write_temp_toml("[venc]\nsensor_bin = \"/x.bin\"\nmin_iqp = 40\n");
+  CHECK(!(load_config(a.string()) == load_config(b.string())));
+  std::filesystem::remove(a);
+  std::filesystem::remove(b);
+}
+
+TEST(empty_wall_table_loads_as_absent) {
+  auto p = write_temp_toml("[radio]\nrate_walls_rel_20 = []\nrate_walls_rel_40 = []\n"
+                           "[venc]\nsensor_bin = \"/x.bin\"\n");
+  const Config c = load_config(p.string());
+  CHECK(!c.radio.rate_walls_rel_20 && !c.radio.rate_walls_rel_40);
+  std::filesystem::remove(p);
+}
+
+TEST(empty_wall_tables_with_offset_still_fail) {
+  auto p = write_temp_toml("[radio]\npower_mode = \"offset\"\nrate_walls_rel_20 = []\n"
+                           "rate_walls_rel_40 = []\n[venc]\nsensor_bin = \"/x.bin\"\n");
+  CHECK(what_of([&] { load_config(p.string()); }).find("radio.rate_walls_rel_20") != std::string::npos);
+  std::filesystem::remove(p);
+}
+
+namespace {
+void collect_paths(const mabur::toml::Value& t, const std::string& prefix,
+                   std::set<std::string>* out) {
+  for (auto it = t.begin(); it != t.end(); ++it) {
+    const std::string path = prefix.empty() ? it.key() : prefix + "." + it.key();
+    if ((*it).is_object())
+      collect_paths(*it, path, out);
+    else
+      out->insert(path);
+  }
+}
+}  // namespace
+
+TEST(bundle_is_the_per_drone_keys_only) {
+  std::set<std::string> keys;
+  collect_paths(mabur::toml::parse_toml_file(default_config_path()), "", &keys);
+  CHECK(keys == (std::set<std::string>{"radio.channels", "radio.rate_walls_rel_20",
+                                       "radio.rate_walls_rel_40", "link.key_file",
+                                       "venc.sensor_bin"}));
+}
+
+// A section the file leaves out still reports every key's value in the
+// boot log, so the built-in tuning is visible on a minimal config.
+TEST(absent_section_reports_each_default_value) {
+  auto p = write_temp_toml("[venc]\nsensor_bin = \"/x.bin\"\n");
+  std::vector<std::string> defaulted;
+  (void)load_config(p.string(), &defaulted);
+  auto has = [&](const std::string& d) {
+    return std::find(defaulted.begin(), defaulted.end(), d) != defaulted.end();
+  };
+  CHECK(has("fec.window=64"));
+  CHECK(has("air_clock.shed_ms=25"));
+  CHECK(has("encoder.airtime_budget=0.650000"));
+  CHECK(has("record.size=1920x1080"));
   std::filesystem::remove(p);
 }
 

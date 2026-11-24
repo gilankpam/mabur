@@ -1,6 +1,7 @@
 #pragma once
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <optional>
 #include <string>
 #include <vector>
@@ -16,7 +17,7 @@ namespace mabur {
 struct RadioCfg {
   uint16_t usb_vid = 0x0bda;
   uint16_t usb_pid = 0;  // 0 = scan
-  uint8_t width = 20;
+  uint8_t width = 40;
   // The channel set: the drone parks on the remembered member (else the
   // first) and follows the GS to any member. Must be a superset of the GS's
   // list.
@@ -76,6 +77,8 @@ struct RadioCfg {
   // hold the video back, and a drone burst can start on top of a GS frame
   // that is already on air. The GS's own carrier sense is not this key.
   bool cca = true;
+
+  bool operator==(const RadioCfg&) const = default;
 };
 
 struct FecCfg {
@@ -84,36 +87,37 @@ struct FecCfg {
   // symbols lost per body, window spans more airtime, cheaper GF per byte
   // (burst_sim table). Layer 0 (critical NALs) stays small so VPS/SPS/PPS
   // seal without padding/latency.
-  std::array<int, 2> symbol_size = {64, 64};
+  std::array<int, 2> symbol_size = {332, 332};
   // Sliding-window burst budget: a layer at overhead ov survives a hole of
-  // up to L <= window*ov/(1+ov) consecutive lost symbols. 128 lets the
-  // ov-0.50 layer survive one full bpb-16 body loss with room to spare
-  // (L=128*0.50/1.50≈42.7 vs 16 lost symbols).
-  int window = 128;
-  std::array<int, 2> blocks_per_body = {4, 8};
+  // up to L <= window*ov/(1+ov) consecutive lost symbols. 64 lets the
+  // ov-0.50 layer survive a run of L=64*0.50/1.50≈21 lost symbols, more
+  // than one bpb-4 body.
+  int window = 64;
+  std::array<int, 2> blocks_per_body = {4, 4};
   // Literal air overhead: the fraction of repair bytes over source bytes
   // actually put on air, not a scaled command value — no uep_layer_overhead
   // ladder translation. Default 0.5 matches the flattened reference ladder.
   double base_overhead = 0.5;
-  int flush_ms = 15;
+  int flush_ms = 25;
   // Feed grouping: release sealed bodies to the TX writer in groups of N
   // (TxQueue wakeup batching + grouped pool submit) so URBs fill their
   // 3-descriptor cap and A-MPDU aggregates can form, instead of the
   // per-body trickle that ships every body alone (~360 µs metronome,
-  // dq-spike findings §17). 0/1 = streaming push (per-body wakeups). Bench
-  // lever — default off until the batching+agg compound is accepted
-  // end-to-end (watch arrival-jitter EMA: coarser quanta, the 656-rollback
-  // lesson).
-  int feed_batch = 0;
+  // dq-spike findings §17). 0/1 = streaming push (per-body wakeups), and 1
+  // is the default; >1 batches (watch arrival-jitter EMA: coarser quanta,
+  // the 656-rollback lesson).
+  int feed_batch = 1;
+
+  bool operator==(const FecCfg&) const = default;
 };
 
 // RcAgent's bitrate/ROI policy knobs (ex-WaybeamCfg; the HTTP fields
 // host/port/idr_path went with the waybeam section they lived in — venc is
 // in-process now, no control-plane HTTP left to address).
 struct EncoderCfg {
-  int bitrate_min_kbps = 2000;
-  int bitrate_max_kbps = 10000;
-  double airtime_budget = 0.60;
+  int bitrate_min_kbps = 1000;
+  int bitrate_max_kbps = 24000;
+  double airtime_budget = 0.65;
   int roi_threshold_kbps = 3000;
   // NEGATIVE, and that is the point: the ROI delta-QP is applied to the
   // centre region, and a LOWER QP means MORE bits there. -24 is the
@@ -123,6 +127,8 @@ struct EncoderCfg {
   // centre of frame exactly when the link is poorest.
   int roi_qp_low = -24;
   int roi_qp_normal = 0;
+
+  bool operator==(const EncoderCfg&) const = default;
 };
 
 // Boot-time encoder pipeline config, handed to venc_core_start() as a
@@ -139,10 +145,17 @@ struct VencSectionCfg {
   // for those values; it leaves sensor_bin empty, which parse_venc treats
   // as a boot failure.
   VencSectionCfg() { venc_cfg_defaults(&core); }
+
+  // VencCfg is a plain C struct with no operator==. Both sides start from a
+  // value-initialised core (zeroed padding) and are filled field by field,
+  // so a byte compare is a value compare.
+  bool operator==(const VencSectionCfg& o) const {
+    return debug_port == o.debug_port && std::memcmp(&core, &o.core, sizeof core) == 0;
+  }
 };
 
 struct LinkCfg {
-  int failsafe_ms = 1000;
+  int failsafe_ms = 3000;
   int rendezvous_ms = 30000;
   // After a GS-commanded retune, hear the GS within this or go home.
   int move_confirm_ms = 2000;
@@ -165,29 +178,31 @@ struct LinkCfg {
   mabur::LinkKey key = mabur::kDefaultLinkKey;   // resolved at load
   bool key_is_default = true;
   std::string key_source;                        // path, "default", or "link.key" (GS overlay)
+
+  bool operator==(const LinkCfg&) const = default;
 };
 
 struct MspCfg {
-  bool enable = false;
+  bool enable = true;
   std::string serial = "/dev/ttyS2";
   int baud = 115200;
-  double update_rate_hz = 1.0;  // ceiling on forwarded snapshots
+  double update_rate_hz = 3.0;  // ceiling on forwarded snapshots
   int symbol_size = 1312;       // one snapshot per symbol
   int window = 16;
   double overhead = 1.0;
+
+  bool operator==(const MspCfg&) const = default;
 };
 
-// A-MPDU TX aggregation. OFF by default per the bench verdict
-// (dq-spike-findings §12): the depth sweep measured NO fec improvement at any
-// depth — maburd's per-body tax is host/USB-side, not medium access — while
-// aggregate subframes carry missing-or-untrustworthy PHY reports that degrade
-// the GS's RF telemetry even with the phy_valid filtering in place. Enable
-// (max_num > 0) only for experiments, e.g. after a USB feed rework. The
-// QoS-Data wire header does NOT depend on this block — max_num 0 turns off
-// only the aggregation (frames become QoS-Data singles, measured identical to
-// the old pace).
+// A-MPDU TX aggregation, on by default: 6-frame aggregates, only from MCS4
+// at 20 MHz and MCS2 at 40 MHz, where aggregation pays (min_mcs_* below).
+// Aggregate subframes carry missing-or-untrustworthy PHY reports, which
+// degrades the GS's RF telemetry even with the phy_valid filtering
+// (dq-spike-findings §12). The QoS-Data wire header does NOT depend on this
+// block -- max_num 0 turns off only the aggregation (frames become QoS-Data
+// singles).
 struct AmpduCfg {
-  int max_num = 0;    // MAX_AGG_NUM cap, 0 = aggregation off, max 31 (5-bit)
+  int max_num = 6;    // MAX_AGG_NUM cap, 0 = aggregation off, max 31 (5-bit)
   int max_time = 32;  // raw 0x455 fill-timer value (0x20 ~= 0.8 ms);
                       // 1..8 is a hardware cliff (disables aggregation) and
                       // is rejected at load; 0 keeps the chip bring-up
@@ -195,11 +210,13 @@ struct AmpduCfg {
   // Lowest op MCS that aggregates, PER WIDTH; rungs below fly QoS-Data
   // singles (drone/src/ampdu_policy.h). 20 MHz: agg6 delivers 6-13 points
   // LESS than singles at mcs0-2 (docs/findings/2026-09-17-bandwidth-sweep.md),
-  // the bundle ships 4. 40 MHz: frames are half as long on air and
+  // so the default is 4. 40 MHz: frames are half as long on air and
   // aggregation pays from mcs2 (docs/findings/2026-09-23-bw40-sweep.md),
-  // the bundle ships 2. 0 = aggregate at every rung of that width.
-  int min_mcs_20 = 0;
-  int min_mcs_40 = 0;
+  // so the default is 2. 0 = aggregate at every rung of that width.
+  int min_mcs_20 = 4;
+  int min_mcs_40 = 2;
+
+  bool operator==(const AmpduCfg&) const = default;
 };
 
 // Drone air clock: per-frame virtual air-serialization model + enh admission.
@@ -209,7 +226,7 @@ struct AmpduCfg {
 // capacity; body_us a fixed per-body cost. Both are calibrated on the bench,
 // not derived.
 struct AirClockCfg {
-  int shed_ms = 0;
+  int shed_ms = 25;
   // Delivered/nominal air capacity per HT MCS 0..7, measured at saturation,
   // one table per width (drone/src/air_rate.h picks by LayerTxSpec.bw).
   // 20 MHz: docs/findings/2026-09-17-bandwidth-sweep.md (singles at
@@ -218,9 +235,11 @@ struct AirClockCfg {
   // rung-0 exception). Priced into BOTH run_bitrate_policy
   // (encoder.airtime_budget is a fraction of this, not of nominal) and the
   // air clock. All ones = nominal.
-  std::array<double, 8> efficiency_20 = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
-  std::array<double, 8> efficiency_40 = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
+  std::array<double, 8> efficiency_20 = {0.93, 0.88, 0.84, 0.80, 0.76, 0.76, 0.78, 0.76};
+  std::array<double, 8> efficiency_40 = {0.77, 0.75, 0.75, 0.75, 0.74, 0.77, 0.76, 0.75};
   int body_us = 0;
+
+  bool operator==(const AirClockCfg&) const = default;
 };
 
 // Low-power (disarmed) mode. While the FC reports DISARMED (MSP_STATUS over
@@ -236,22 +255,26 @@ struct AirClockCfg {
 struct LowPowerCfg {
   bool enable = false;
   int bitrate_kbps = 1000;
-  int fps = 15;
+  int fps = 30;
   int stale_ms = 2000;
+
+  bool operator==(const LowPowerCfg&) const = default;
 };
 
 // VTX onboard SD recorder. enable creates the record VENC channel at boot;
 // the GS record button starts/stops it.
 struct RecordCfg {
-  bool enable = false;
+  bool enable = true;
   std::string dir = "/mnt/mmcblk0p1";  // mdev automount point of the SD card
   int bitrate_kbps = 40000;            // CBR
   int fps = 60;
   int min_free_mb = 512;               // refuse to start / stop below this
-  // Recording size; 0x0 = venc.size. A size other than venc.size records
+  // Recording size, 1920x1080 by default. A size other than venc.size records
   // from the second VPE scaler (port 1) instead of the link's port 0; above
   // 1920x1080 the sensor switches to its 3840x2160@30 mode.
-  int width = 0, height = 0;
+  int width = 1920, height = 1080;
+
+  bool operator==(const RecordCfg&) const = default;
 };
 
 // Software NACK (fec-nack): how long the drone keeps recently sent base-layer
@@ -261,6 +284,8 @@ struct NackDroneCfg {
   int ring_ms = 150;
   int air_pct = 5;
   int burst_ms = 20;  // bucket depth: this much air of re-sends at the current op
+
+  bool operator==(const NackDroneCfg&) const = default;
 };
 
 struct Config {
@@ -276,6 +301,8 @@ struct Config {
   RecordCfg record;
   NackDroneCfg nack;
   std::array<UepLayerCfg, 2> uep_layers() const;
+
+  bool operator==(const Config&) const = default;
 };
 
 // Loads and validates a mabur.toml config file. Missing keys fall back to

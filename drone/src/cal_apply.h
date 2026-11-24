@@ -82,9 +82,10 @@ struct CalWrite {
 };
 
 // Which keys patch_toml actually found-and-rewrote or created. A flag
-// stays false either because the key's line was never matched and could
-// not be inserted either (missing anchor, reformatted, a multi-line array
-// patch_toml doesn't parse) or, for legacy_wall_rel only, because it was
+// stays false either because the key's line was matched but could not be
+// rewritten (reformatted, a multi-line array patch_toml doesn't parse) --
+// a key with no line is always inserted, next to its anchor line or by
+// set_toml_key when there is none -- or, for legacy_wall_rel only, because it was
 // deliberately left untouched (CalWrite::legacy_wall undetermined, or this
 // width/file combination doesn't own that line -- see patch_toml's
 // comment). apply_calibration uses this to tell those cases apart from
