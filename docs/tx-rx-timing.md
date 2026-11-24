@@ -54,9 +54,9 @@ Drone → GS (the downlink, nearly all of the airtime):
 | probe stream (sid 5) | one body after every video AU while a probe is commanded, i.e. the AU rate | one 1405 B body, its own PPDU right behind the burst's last aggregate | MCS of rung `current + link.probe.rung_offset` (`docs/airtime-model.md` §6) |
 | NACK retransmits (sid 0 symbols) | on a verified `T_NACK` only | pushed at the TxQueue HEAD (`TxQueue::push_front`) | `[nack] air_pct`/`burst_ms` token bucket (`docs/fec-nack.md`) |
 | MSP OSD (sid 4) | `msp.update_rate_hz` 3 | `msp.symbol_size` 1312 B units | not slotted |
-| T_TELEM | 1 Hz | 54 B payload (`TELEM_LEN`) | not slotted |
-| T_MAV (MAVLink tunnel, untagged) | ≤ 1 per 50 ms | ≤ 600 B payload (`kMavMaxPayload`) | not slotted |
-| T_MAV calibration replies (ack, sweep done, applied) | `maburcal` runs only: one per command, a sweep-done every 200 ms until the next command | one MAVLink packet each | not slotted, unpaced, from the TX writer thread |
+| T_TELEM | 1 Hz | 57 B payload (`TELEM_LEN`) | not slotted |
+| T_MAV_UP (MAVLink tunnel, drone → GS) | ≤ 1 per 50 ms | ≤ 600 B payload (`kMavMaxPayload`) | not slotted |
+| T_MAV_UP calibration replies (ack, sweep done, applied) | `maburcal` runs only: one per command, a sweep-done every 200 ms until the next command | one MAVLink packet each | not slotted, unpaced, from the TX writer thread |
 | DISC_ACK | rendezvous only | small | not slotted |
 
 GS → drone (the uplink: a low duty cycle, but every send is a blast):

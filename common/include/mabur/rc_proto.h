@@ -15,6 +15,13 @@ namespace mabur::rc {
 // bytes as of RC_VERSION 2, pinned by the goldens in tests/test_rc.cpp.
 // All multi-byte fields are little-endian; every frame ends with a u16
 // CRC16-CCITT (mabur::crc16_ccitt) over every byte before it.
+//
+// FROZEN (docs/link-pairing.md "Frozen handshake"): the RC prefix, DISC,
+// DISC_ACK, the T_MAV / T_MAV_UP envelope and the tag construction never
+// change under any RC_VERSION, so peers of different versions still find
+// and authenticate each other. Their parsers never read the version byte;
+// every other type is gated on it by frame_type(). A new need is a new
+// frame type, never an edit to a frozen layout.
 
 constexpr uint16_t RC_MAGIC = 0x5243;  // "RC"
 // Bumped 1 -> 2: the RCF power byte and the T_TELEM
@@ -34,9 +41,6 @@ constexpr uint16_t RC_MAGIC = 0x5243;  // "RC"
 // Bumped 5 -> 6: probe_profile is a FIXED head byte (0xFF = no probe
 // stream); the RCF_F_PROBE_ENH flag + optional tail and CAP_ENH_PROBE are
 // gone.
-// Old and new peers reject each other in BOTH directions -- a half-deployed
-// pair has no control link and, because DISC_ACK carries CAP_FRAME_WIRE, no
-// video either. Recovery is to finish the deploy.
 // Bumped 6 -> 7: T_CAL_CMD / T_CAL_RESULT carry the TX-power wall
 // calibration session; Telem gained cal_base_ref_idx and flags bit6
 // (cal_active).
@@ -65,7 +69,13 @@ constexpr uint16_t RC_MAGIC = 0x5243;  // "RC"
 // Bumped 17 -> 18: T_CAL_CMD / T_CAL_RESULT deleted (calibration rides the
 // MAVLink tunnel's cal lane instead); Telem flags bit6 (cal_active), which
 // acked the dedicated command frame, is no longer set.
-constexpr uint8_t RC_VERSION = 18;
+// Bumped 18 -> 19: the frozen handshake. DISC trimmed to vrx_nonce + seq;
+// DISC_ACK trimmed to vrx/vtx nonces, flags, channel, seq and tagged by the
+// drone; drone -> GS MAVLink is its own tagged type T_MAV_UP; chip_caps and
+// width moved from DISC_ACK to Telem.
+// Peers of different versions exchange only the frozen frames: no RCF,
+// Telem or video is understood across versions.
+constexpr uint8_t RC_VERSION = 19;
 
 // RCF probe_profile sentinel: the drone runs no probe stream.
 constexpr uint8_t kNoProbeProfile = 0xFF;
@@ -91,19 +101,20 @@ constexpr uint8_t T_TELEM = 4;
 // recover; the drone re-sends them from its retransmit ring at the head of
 // the TxQueue.
 constexpr uint8_t T_NACK = 7;
-// T_MAV (MAVLink tunnel): carries an opaque MAVLink packet. GS -> drone is
-// tagged, with the request counter doubling as the tag ctx's seq32 (same
-// accept-only-greater rule as T_NACK's counter); drone -> GS is untagged,
-// like T_TELEM, and its per-process counter lets a two-card GS drop the
-// second card's copy of a frame. rc_proto treats the payload as opaque bytes -- MAVLink
-// parsing lives above this layer.
+// T_MAV (GS -> drone) and T_MAV_UP (drone -> GS), the MAVLink tunnel: one
+// frozen envelope, the type is the direction. Both are tagged under the
+// session pair with the frame's counter as the tag ctx's seq32. The drone
+// accepts only a T_MAV counter greater than the last it verified; the GS
+// takes each T_MAV_UP counter once inside a 64-wide anti-replay window per
+// pair (the drone's uplink threads share one counter and may air out of
+// order), reset when the pair changes. The type byte is inside the tagged bytes, so a frame of one direction never
+// verifies as the other. rc_proto treats the payload as opaque bytes --
+// MAVLink parsing lives above this layer.
 constexpr uint8_t T_MAV = 8;
+constexpr uint8_t T_MAV_UP = 9;
 
-constexpr uint8_t F_DISCOVERY = 0x04;
-
-// SipHash-24 auth tag (link pairing): the 8 bytes
-// immediately before the CRC on every DISC/RCF/NACK frame and every
-// GS -> drone MAV frame.
+// SipHash-24 auth tag (link pairing): the 8 bytes immediately before the
+// CRC on every DISC/DISC_ACK/RCF/NACK/T_MAV/T_MAV_UP frame.
 constexpr size_t kTagLen = 8;
 
 constexpr uint8_t kAckKeyMismatch = 0x01;   // DiscAck::flags bit0
@@ -111,29 +122,28 @@ constexpr uint8_t kTelemAuthReject = 0x02;  // Telem::flags bit1
 
 // Values hashed into a control frame's tag but never sent on the wire
 // (link pairing): the VRX/VTX nonces from the completed
-// rendezvous plus a 32-bit sequence (RCF's seq, widened; 0 for DISC
-// frames, which carry no seq of their own).
+// rendezvous plus a 32-bit sequence (RCF's seq widened, or the NACK/MAV
+// counter). All zero for DISC and DISC_ACK, which open the session.
 struct TagCtx {
   uint32_t vrx_nonce = 0;
   uint32_t vtx_nonce = 0;
   uint32_t seq32 = 0;
 };
 
-// DiscAck.chip_caps bit: VTX's video bodies use the frame wire format
+// Telem.chip_caps bit: VTX's video bodies use the frame wire format
 // (8-byte FrameHdr units + 6-byte wide FRAG headers) instead of pre-built
 // RTP packets + 4-byte FRAG headers.
 constexpr uint16_t CAP_FRAME_WIRE = 0x0001;
 
-// DiscAck.chip_caps bit: drone sends T_TELEM frames on its RC uplink.
-// Display-grade only (not a safety gate): a GS lacking this bit just never
-// sees a T_TELEM frame from an old drone.
+// Telem.chip_caps bit: drone sends T_TELEM frames on its RC uplink.
+// Display-grade only (not a safety gate).
 constexpr uint16_t CAP_TELEMETRY = 0x0002;
 
-// DiscAck.chip_caps bit: the peer runs the mabur-dialect calibration (the
+// Telem.chip_caps bit: the peer runs the mabur-dialect calibration (the
 // MAVLink tunnel's cal lane). The GS refuses to start a session without it.
 constexpr uint16_t CAP_CALIBRATE = 0x0004;
 
-// DiscAck.chip_caps bit: VTX understands T_MAV and tunnels MAVLink both ways.
+// Telem.chip_caps bit: VTX understands T_MAV and tunnels MAVLink both ways.
 // Display-only, as CAP_TELEMETRY: the GS logs a peer without it once per
 // session and gates nothing on it.
 constexpr uint16_t CAP_MAVLINK = 0x0008;
@@ -177,30 +187,27 @@ struct Rcf {
   int16_t snr_off = 0;
 };
 
-// VRX -> VTX discovery beacon (rendezvous), addressed to a VTX_ID.
+// VRX -> VTX discovery beacon (FROZEN), 20 bytes:
+//   "RC" | ver | type=2 | u32 vrx_nonce | u16 seq | tag[8] | crc16
+// tag over bytes [0, 10) with ctx all zero.
 struct Disc {
-  uint32_t vrx_nonce = 0;
-  uint8_t op_channel = 0;
-  uint8_t op_width = 20;
-  uint8_t table_ver = 1;
-  uint8_t init_profile = 0;
-  uint16_t cap_bits = 0;
-  uint16_t seq = 0;
+  uint32_t vrx_nonce = 0;  // fresh per GS process
+  uint16_t seq = 0;        // GS DISC counter; the ack echoes it
 };
 
-// VTX -> VRX reply completing rendezvous + agreeing the op channel.
+// VTX -> VRX reply opening the session (FROZEN), 26 bytes:
+//   "RC" | ver | type=3 | u32 vrx_nonce | u32 vtx_nonce | u8 flags |
+//   u8 channel | u16 seq | tag[8] | crc16
+// tag over bytes [0, 16) with ctx all zero; all zero when flags bit0.
 struct DiscAck {
+  uint8_t version = 0;  // the sender's RC_VERSION: filled by parse, pack writes ours
   uint32_t vrx_nonce = 0;
-  uint32_t vtx_nonce = 0;
-  uint16_t chip_caps = 0;
-  uint8_t agreed_channel = 0;
-  uint8_t agreed_width = 20;
-  uint8_t flags = 0;  // bit0 kAckKeyMismatch: VTX's DISC tag did not verify
-                      // against the VTX's own key --
-                      // the rendezvous still completes (no tag to check the
-                      // ack itself against yet, pre-rendezvous), but the
-                      // VRX now knows the pair is running mismatched keys.
-  uint16_t seq = 0;
+  uint32_t vtx_nonce = 0;  // 0 when key-mismatch flagged
+  uint8_t flags = 0;  // bit0 kAckKeyMismatch: the DISC's tag failed under the
+                      // VTX's key, so this ack carries a zero tag. Other bits
+                      // reserved zero; a receiver ignores them.
+  uint8_t channel = 0;  // the channel the VTX is tuned to (primary of its pair)
+  uint16_t seq = 0;     // echo of the DISC's seq
 };
 
 // VTX -> VRX drone telemetry: RcAgent/queue/radio state for the GS
@@ -277,6 +284,10 @@ struct Telem {
   // Software NACK, per Telem period, saturating:
   // requests verified, source symbols re-sent, symbols refused by the air bucket.
   uint16_t nack_rx = 0, retx_syms = 0, retx_refused = 0;
+
+  // The drone's CAP_* bits and radio.width, every period.
+  uint16_t chip_caps = 0;
+  uint8_t width = 0;
 };
 
 // Calibration indices: relative to the chip's own per-channel TXAGC anchor,
@@ -287,19 +298,21 @@ constexpr int kRelMax = 63;
 constexpr int kRailRel = 63;  // a no-dip row's wall: rail to the top of the range
 constexpr int16_t kWallUndetermined = -128;
 
-// Tagged frames (DISC/RCF) carry an 8-byte SipHash tag
-// (kTagLen) right before the CRC. pack_* always writes a tag -- keyed by
-// `key`, defaulting to kDefaultLinkKey, hashed over the frame's bytes plus
-// `ctx` (never sent; see TagCtx). parse_* stays structural and never checks
-// it; verify_control is the one place a tag is checked.
+// Tagged frames carry an 8-byte SipHash tag (kTagLen) right before the CRC.
+// pack_* always writes a tag -- keyed by `key`, defaulting to
+// kDefaultLinkKey, hashed over the frame's bytes plus `ctx` (never sent; see
+// TagCtx). parse_* stays structural and never checks it; verify_control is
+// the one place a tag is checked.
 std::vector<uint8_t> pack_rcf(const Rcf& r, const LinkKey& key = kDefaultLinkKey,
                               const TagCtx& ctx = {});
 std::optional<Rcf> parse_rcf(const uint8_t* buf, size_t len);
 
+// Frozen: parse_disc / parse_disc_ack accept any version byte.
 std::vector<uint8_t> pack_disc(const Disc& d, const LinkKey& key = kDefaultLinkKey);  // ctx all-zero
 std::optional<Disc> parse_disc(const uint8_t* buf, size_t len);
 
-std::vector<uint8_t> pack_disc_ack(const DiscAck& a);
+// ctx all-zero; a zero tag when a.flags has kAckKeyMismatch.
+std::vector<uint8_t> pack_disc_ack(const DiscAck& a, const LinkKey& key = kDefaultLinkKey);
 std::optional<DiscAck> parse_disc_ack(const uint8_t* buf, size_t len);
 
 std::vector<uint8_t> pack_telem(const Telem& t);
@@ -326,52 +339,55 @@ std::vector<uint8_t> pack_nack(const Nack& n, const LinkKey& key = kDefaultLinkK
                                const TagCtx& ctx = TagCtx{});
 std::optional<Nack> parse_nack(const uint8_t* buf, size_t len);
 
-// T_MAV: an opaque MAVLink packet tunneled over the RC link. The payload is
-// never inspected here -- rc_proto just frames it. magic(2) ver type
-// counter(4) len(2) = kMavFixedLen (10); payload is len bytes, then
-// (tagged ? the tag) then the CRC.
+// T_MAV / T_MAV_UP (FROZEN envelope): an opaque MAVLink payload tunneled
+// over the RC link, never inspected here -- rc_proto just frames it.
+//   "RC" | ver | type | u32 counter | u16 len | payload[len <= 600] | tag[8] | crc16
+// magic(2) ver type counter(4) len(2) = kMavFixedLen (10).
 constexpr size_t kMavFixedLen = 2 + 1 + 1 + 4 + 2;  // magic ver type counter len = 10
 constexpr size_t kMavMaxPayload = 600;
 struct Mav {
+  uint8_t type = T_MAV;  // T_MAV (GS -> drone) or T_MAV_UP (drone -> GS)
   uint32_t counter = 0;
   std::vector<uint8_t> payload;
 };
-// tagged = true: GS->drone layout (tag before CRC); false: drone->GS, no
-// tag. The frame itself carries no direction bit -- the caller knows which
-// way it is sending/expecting and must pass the same `tagged` on both ends.
-// Caller keeps payload.size() <= kMavMaxPayload (asserted, not refused).
-std::vector<uint8_t> pack_mav(const Mav& m, bool tagged, const LinkKey& key = kDefaultLinkKey,
+// Always tagged. Caller keeps payload.size() <= kMavMaxPayload and type one
+// of the two MAV types (both asserted, not refused).
+std::vector<uint8_t> pack_mav(const Mav& m, const LinkKey& key = kDefaultLinkKey,
                               const TagCtx& ctx = {});
-// Structural parse. `tagged` must match the sender's layout (the frame does
-// not say); the wrong value fails the CRC check.
-std::optional<Mav> parse_mav(const uint8_t* buf, size_t len, bool tagged);
+// Structural parse: type T_MAV or T_MAV_UP, any version byte.
+std::optional<Mav> parse_mav(const uint8_t* buf, size_t len);
 
-// Recomputes the tag of any tagged frame (DISC/RCF/NACK/MAV): the 8 bytes
-// at the frame's STRUCTURAL tag offset -- derived from its type (DISC_LEN,
-// RCF_HEAD_LEN, kNackFixedLen + n*kNackEntryLen, or kMavFixedLen + len16) --
-// must equal SipHash(key, bytes-before-tag || ctx). Bytes past tag+CRC are
-// ignored: on hardware the drone's body still carries the 4-byte 802.11 FCS.
-// Constant-time compare. False for any other type, a NACK whose n is 0 or
-// > kMaxNackEntries, a MAV whose len16 > kMavMaxPayload, or a buffer shorter
-// than structural + tag + CRC.
+// Recomputes the tag of any tagged frame (DISC/DISC_ACK/RCF/NACK/T_MAV/
+// T_MAV_UP): the 8 bytes at the frame's STRUCTURAL tag offset -- derived
+// from its type (DISC_LEN, DISC_ACK_LEN, RCF_HEAD_LEN, kNackFixedLen +
+// n*kNackEntryLen, or kMavFixedLen + len16) -- must equal
+// SipHash(key, bytes-before-tag || ctx). Frozen types are recognised at any
+// version (frozen_type), the rest only at ours (frame_type). Bytes past
+// tag+CRC are ignored: on hardware the drone's body still carries the
+// 4-byte 802.11 FCS. Constant-time compare. False for any other type, a
+// NACK whose n is 0 or > kMaxNackEntries, a MAV whose len16 >
+// kMavMaxPayload, or a buffer shorter than structural + tag + CRC. A
+// key-mismatch-flagged DISC_ACK's zero tag never verifies.
 bool verify_control(const uint8_t* buf, size_t len, const LinkKey& key, const TagCtx& ctx);
 
 // Peeks the RC frame type without a full parse (no CRC check). Returns -1 if
 // the buffer is too short or doesn't carry the RC magic/version.
 int frame_type(const uint8_t* buf, size_t len);
 
+// The version-blind peek for the frozen types: RC magic and type T_DISC,
+// T_DISC_ACK, T_MAV or T_MAV_UP -> that type, whatever the version byte;
+// -1 otherwise. No CRC check.
+int frozen_type(const uint8_t* buf, size_t len);
+
 // True iff these bytes carry the RC magic but NOT our RC_VERSION -- i.e. a
 // peer at a different protocol version. Total and side-effect-free: false for
 // a buffer shorter than 4 bytes, false for a non-RC body, false for our own
 // version.
 //
-// Deliberately additive rather than a change to frame_type()'s contract:
-// frame_type() returning -1 is the affirmative "this is video" signal on the
-// GS ingest path (gs/src/main.cpp), so distinguishing the version case there
-// would silently reroute video accounting. This predicate exists so the two
-// ingest points can LOG a version mismatch while still dropping/handling the
-// frame exactly as before -- a half-deployed pair otherwise fails completely
-// silently, presenting as no-video that looks like the stale-caps deadlock.
+// Deliberately additive rather than a change to frame_type()'s contract,
+// which stays the version gate for every non-frozen type. A GS ingest path
+// uses it to keep another version's RC frames off its video path and to log
+// that a peer at another version is in range.
 //
 // NOT a CRC check. RC_MAGIC is two bytes, so ~1 in 65536 corrupt bodies match
 // it by chance: RX-path callers must gate on their own crc_ok.

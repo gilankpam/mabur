@@ -45,8 +45,8 @@ the GS's own composition (`default_sweeps`, [`gs/src/cal_control.h`](https://git
 `power20, cap20`, plus `power40, cap40` when the GS receiver width
 (derived from the ladder, `docs/bw40.md`) is 40
 **and** some `[[link.ladder]]` rung has `bw = 40`. The width is the
-narrower of the GS receiver width and the linked drone's DISC_ACK
-`agreed_width`, so a 40 MHz GS linked to a drone flying 20 composes the
+narrower of the GS receiver width and the linked drone's Telem
+`width`, so a 40 MHz GS linked to a drone flying 20 composes the
 20 MHz pair only. Arguments `power20|power40|cap20|cap40` pick a subset;
 duplicates drop. Whatever was typed, the session runs widths ascending and,
 within a width, **power before capacity**: capacity is measured at the
@@ -61,7 +61,8 @@ Refusals come back at once, before anything airs:
 | `err refused: GS receiver width is 20 (load a 40 MHz ladder to calibrate 40 MHz)` | a `*40` token while the effective width (above) is 20 |
 | `err a calibration session is already running` | a run, or its channel pick, is in progress |
 | `err refused: link is down` | `maburgs` is not in `SESSION` |
-| `err refused: peer does not advertise CAP_CALIBRATE` | the drone's DISC_ACK lacks the bit (a build without the mabur-dialect calibration) |
+| `err refused: waiting for drone telemetry` | `maburgs` is in `SESSION` but no Telem has arrived since the ack, so the drone's caps are not known yet (about the first second of a session); retry |
+| `err refused: peer does not advertise CAP_CALIBRATE` | the drone's Telem `chip_caps` lacks the bit (a build without the mabur-dialect calibration) |
 
 The "GS receiver width is 20" wording is also what a 40 MHz GS says when it
 is the linked drone that flies 20.

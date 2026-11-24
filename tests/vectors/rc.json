@@ -1,30 +1,4 @@
 {
- "disc": [
-  {
-   "fields": {
-    "cap_bits": 0,
-    "init_profile": 0,
-    "op_channel": 149,
-    "op_width": 20,
-    "seq": 2,
-    "table_ver": 1,
-    "vrx_nonce": 3405643777
-   }
-  }
- ],
- "disc_ack": [
-  {
-   "fields": {
-    "agreed_channel": 149,
-    "agreed_width": 20,
-    "chip_caps": 3,
-    "flags": 0,
-    "seq": 1,
-    "vrx_nonce": 3405643777,
-    "vtx_nonce": 3203334146
-   }
-  }
- ],
  "rcf": [
   {
    "fields": {

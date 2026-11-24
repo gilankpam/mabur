@@ -53,6 +53,8 @@ UplinkTrack::Snap UplinkTrack::snap() const {
 rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in) {
   rc::Telem t;
   t.tlm_seq = tlm_seq;
+  t.chip_caps = in.chip_caps;
+  t.width = in.width;
   t.state = static_cast<uint8_t>(in.state);
   t.flags = static_cast<uint8_t>((in.failsafe_shed ? 0x01 : 0) |
                                   (in.auth_reject ? rc::kTelemAuthReject : 0) |

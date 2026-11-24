@@ -54,7 +54,7 @@ void put_crc(std::vector<uint8_t>& body) {
   put16(body, crc);
 }
 
-// Writes the 8-byte SipHash tag for a tagged frame (DISC/RCF/NACK/MAV):
+// Writes the 8-byte SipHash tag for a tagged frame (FROZEN construction):
 // keyed MAC over `body` so far (the frame's bytes up to but not including
 // the tag) concatenated with ctx's three u32s, which are hashed in but
 // never sent (TagCtx doc comment).
@@ -67,9 +67,10 @@ void put_tag(std::vector<uint8_t>& body, const LinkKey& key, const TagCtx& ctx) 
 }
 
 constexpr size_t RCF_HEAD_LEN = 17;  // RC_VERSION 16: +snr_off (15)
-constexpr size_t DISC_LEN = 17;
-constexpr size_t DISC_ACK_LEN = 20;  // RC_VERSION 14: vtx_nonce(4) + flags(1) added (15)
-constexpr size_t TELEM_LEN = 54;  // RC_VERSION 15: +nack_rx/retx_syms/retx_refused (48)
+// DISC_LEN / DISC_ACK_LEN: the frozen bytes before the tag.
+constexpr size_t DISC_LEN = 10;
+constexpr size_t DISC_ACK_LEN = 16;
+constexpr size_t TELEM_LEN = 57;  // RC_VERSION 19: +chip_caps/width (54)
 
 // magic(2) | ver | type | flags | counter(4) | sid | n | n * (first_seq(4) bitmap(4))
 constexpr size_t kNackFixedLen = 5 + 4 + 1 + 1;  // 11, INCLUDES the n byte at [10]
@@ -125,78 +126,56 @@ std::vector<uint8_t> pack_disc(const Disc& d, const LinkKey& key) {
   put16(body, RC_MAGIC);
   body.push_back(RC_VERSION);
   body.push_back(T_DISC);
-  body.push_back(F_DISCOVERY);
   put32(body, d.vrx_nonce);
-  body.push_back(d.op_channel);
-  body.push_back(d.op_width);
-  body.push_back(d.table_ver);
-  body.push_back(d.init_profile);
-  put16(body, d.cap_bits);
   put16(body, d.seq);
-
   put_tag(body, key, TagCtx{});  // ctx all-zero: pre-rendezvous, no nonces/seq yet
   put_crc(body);
   return body;
 }
 
+// Frozen: the version byte is never read.
 std::optional<Disc> parse_disc(const uint8_t* buf, size_t len) {
   if (len < DISC_LEN + kTagLen + 2) return std::nullopt;
-  uint16_t magic = get16(buf, 0);
-  uint8_t ver = buf[2];
-  uint8_t type = buf[3];
-  if (magic != RC_MAGIC || ver != RC_VERSION || type != T_DISC) return std::nullopt;
-
-  uint16_t crc = get16(buf, DISC_LEN + kTagLen);
-  if (crc != crc16_ccitt(buf, DISC_LEN + kTagLen)) return std::nullopt;
-
+  if (get16(buf, 0) != RC_MAGIC || buf[3] != T_DISC) return std::nullopt;
+  if (get16(buf, DISC_LEN + kTagLen) != crc16_ccitt(buf, DISC_LEN + kTagLen)) return std::nullopt;
   Disc d;
-  d.vrx_nonce = get32(buf, 5);
-  d.op_channel = buf[9];
-  d.op_width = buf[10];
-  d.table_ver = buf[11];
-  d.init_profile = buf[12];
-  d.cap_bits = get16(buf, 13);
-  d.seq = get16(buf, 15);
+  d.vrx_nonce = get32(buf, 4);
+  d.seq = get16(buf, 8);
   return d;
 }
 
-std::vector<uint8_t> pack_disc_ack(const DiscAck& a) {
+std::vector<uint8_t> pack_disc_ack(const DiscAck& a, const LinkKey& key) {
   std::vector<uint8_t> body;
-  body.reserve(DISC_ACK_LEN + 2);
+  body.reserve(DISC_ACK_LEN + kTagLen + 2);
   put16(body, RC_MAGIC);
   body.push_back(RC_VERSION);
   body.push_back(T_DISC_ACK);
-  body.push_back(F_DISCOVERY);
   put32(body, a.vrx_nonce);
   put32(body, a.vtx_nonce);
-  put16(body, a.chip_caps);
-  body.push_back(a.agreed_channel);
-  body.push_back(a.agreed_width);
   body.push_back(a.flags);
+  body.push_back(a.channel);
   put16(body, a.seq);
-
+  if (a.flags & kAckKeyMismatch)
+    body.insert(body.end(), kTagLen, 0);  // the DISC failed under our key: nothing to tag with
+  else
+    put_tag(body, key, TagCtx{});
   put_crc(body);
   return body;
 }
 
+// Frozen: the version byte is reported, never checked.
 std::optional<DiscAck> parse_disc_ack(const uint8_t* buf, size_t len) {
-  if (len < DISC_ACK_LEN + 2) return std::nullopt;
-  uint16_t magic = get16(buf, 0);
-  uint8_t ver = buf[2];
-  uint8_t type = buf[3];
-  if (magic != RC_MAGIC || ver != RC_VERSION || type != T_DISC_ACK) return std::nullopt;
-
-  uint16_t crc = get16(buf, DISC_ACK_LEN);
-  if (crc != crc16_ccitt(buf, DISC_ACK_LEN)) return std::nullopt;
-
+  if (len < DISC_ACK_LEN + kTagLen + 2) return std::nullopt;
+  if (get16(buf, 0) != RC_MAGIC || buf[3] != T_DISC_ACK) return std::nullopt;
+  if (get16(buf, DISC_ACK_LEN + kTagLen) != crc16_ccitt(buf, DISC_ACK_LEN + kTagLen))
+    return std::nullopt;
   DiscAck a;
-  a.vrx_nonce = get32(buf, 5);
-  a.vtx_nonce = get32(buf, 9);
-  a.chip_caps = get16(buf, 13);
-  a.agreed_channel = buf[15];
-  a.agreed_width = buf[16];
-  a.flags = buf[17];
-  a.seq = get16(buf, 18);
+  a.version = buf[2];
+  a.vrx_nonce = get32(buf, 4);
+  a.vtx_nonce = get32(buf, 8);
+  a.flags = buf[12];
+  a.channel = buf[13];
+  a.seq = get16(buf, 14);
   return a;
 }
 
@@ -230,6 +209,8 @@ std::vector<uint8_t> pack_telem(const Telem& t) {
   put16(body, t.nack_rx);
   put16(body, t.retx_syms);
   put16(body, t.retx_refused);
+  put16(body, t.chip_caps);
+  body.push_back(t.width);
 
   put_crc(body);
   return body;
@@ -267,10 +248,11 @@ std::optional<Telem> parse_telem(const uint8_t* buf, size_t len) {
   t.rx_foreign = get16(buf, 43);
   t.rx_crcfail = get16(buf, 45);
   t.rec_status = buf[47];
-  const size_t o = TELEM_LEN - 6;
-  t.nack_rx = get16(buf, o);
-  t.retx_syms = get16(buf, o + 2);
-  t.retx_refused = get16(buf, o + 4);
+  t.nack_rx = get16(buf, 48);
+  t.retx_syms = get16(buf, 50);
+  t.retx_refused = get16(buf, 52);
+  t.chip_caps = get16(buf, 54);
+  t.width = buf[56];
   return t;
 }
 
@@ -280,6 +262,14 @@ int frame_type(const uint8_t* buf, size_t len) {
   uint8_t ver = buf[2];
   if (magic != RC_MAGIC || ver != RC_VERSION) return -1;
   return buf[3];
+}
+
+int frozen_type(const uint8_t* buf, size_t len) {
+  if (len < 4 || get16(buf, 0) != RC_MAGIC) return -1;
+  switch (buf[3]) {
+    case T_DISC: case T_DISC_ACK: case T_MAV: case T_MAV_UP: return buf[3];
+    default: return -1;
+  }
 }
 
 bool is_foreign_rc_version(const uint8_t* buf, size_t len) {
@@ -330,31 +320,34 @@ std::optional<Nack> parse_nack(const uint8_t* buf, size_t len) {
   return n;
 }
 
-std::vector<uint8_t> pack_mav(const Mav& m, bool tagged, const LinkKey& key, const TagCtx& ctx) {
+std::vector<uint8_t> pack_mav(const Mav& m, const LinkKey& key, const TagCtx& ctx) {
   assert(m.payload.size() <= kMavMaxPayload);
+  assert(m.type == T_MAV || m.type == T_MAV_UP);
   const uint16_t plen = static_cast<uint16_t>(m.payload.size());
   std::vector<uint8_t> body;
   body.reserve(kMavFixedLen + plen + kTagLen + 2);
   put16(body, RC_MAGIC);
   body.push_back(RC_VERSION);
-  body.push_back(T_MAV);
+  body.push_back(m.type);
   put32(body, m.counter);
   put16(body, plen);
   body.insert(body.end(), m.payload.begin(), m.payload.end());
-  if (tagged) put_tag(body, key, ctx);
+  put_tag(body, key, ctx);
   put_crc(body);
   return body;
 }
 
-std::optional<Mav> parse_mav(const uint8_t* buf, size_t len, bool tagged) {
+// Frozen: the version byte is never read.
+std::optional<Mav> parse_mav(const uint8_t* buf, size_t len) {
   if (len < kMavFixedLen) return std::nullopt;
-  if (get16(buf, 0) != RC_MAGIC || buf[2] != RC_VERSION || buf[3] != T_MAV) return std::nullopt;
+  if (get16(buf, 0) != RC_MAGIC || (buf[3] != T_MAV && buf[3] != T_MAV_UP)) return std::nullopt;
   const uint16_t payload_len = get16(buf, 8);
   if (payload_len > kMavMaxPayload) return std::nullopt;
-  const size_t plen = kMavFixedLen + payload_len + (tagged ? kTagLen : 0);
+  const size_t plen = kMavFixedLen + payload_len + kTagLen;
   if (len < plen + 2) return std::nullopt;
   if (get16(buf, plen) != crc16_ccitt(buf, plen)) return std::nullopt;
   Mav m;
+  m.type = buf[3];
   m.counter = get32(buf, 4);
   m.payload.assign(buf + kMavFixedLen, buf + kMavFixedLen + payload_len);
   return m;
@@ -366,8 +359,10 @@ bool verify_control(const uint8_t* buf, size_t len, const LinkKey& key, const Ta
   // 802.11 FCS (Packet.Data, fcs_present), so anything past the CRC is
   // ignored -- exactly as parse_* already ignore it.
   size_t tag_at = 0;
-  switch (frame_type(buf, len)) {
+  const int frozen = frozen_type(buf, len);
+  switch (frozen >= 0 ? frozen : frame_type(buf, len)) {
     case T_DISC: tag_at = DISC_LEN; break;
+    case T_DISC_ACK: tag_at = DISC_ACK_LEN; break;
     case T_RCF: tag_at = RCF_HEAD_LEN; break;
     case T_NACK: {
       if (len < kNackFixedLen) return false;
@@ -376,7 +371,8 @@ bool verify_control(const uint8_t* buf, size_t len, const LinkKey& key, const Ta
       tag_at = kNackFixedLen + static_cast<size_t>(n) * kNackEntryLen;
       break;
     }
-    case T_MAV: {
+    case T_MAV:
+    case T_MAV_UP: {
       if (len < kMavFixedLen) return false;
       const uint16_t len16 = get16(buf, 8);
       if (len16 > kMavMaxPayload) return false;

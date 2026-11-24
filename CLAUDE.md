@@ -107,6 +107,7 @@ Two kinds of doc, two rules:
 | carrier sense (CCA) on/off, the GS-send self-collision, the drone's RX channel view (`drone.radio.rx`), why the OSD LOSS row reads what it reads, the pending cca-on flight gate | `docs/findings/2026-09-23-cca-on.md` |
 | 40 MHz (HT40): which rungs fly 40, per-width tables, pair candidates, the boot scan's pair pick, no_agg, scanlog 6 / ctllog 12, the derived receiver width | `docs/bw40.md` (as built: per-rung width, pairs, scan, no_agg) + `docs/findings/2026-09-23-bw40-sweep.md` ("Start here") |
 | the VTX onboard SD recorder ([record], dvr.target, the RCF rec byte, OSD REC field), VENC bind-peer order, the MI /proc/mi_modules/mi_venc per-stage delay instrument, the startup vanish-counter ratchet | docs/vtx-recorder.md (as built) + docs/findings/2026-09-26-sd-record.md (spike) |
+| the drone↔GS protocol as a whole: every frame type and its bytes, SBI bodies, the session lifecycle, caps, which versions can talk | docs/rc-protocol.md |
 | pairing / the link key file, SipHash tag, session nonces, KEY MISMATCH, auth_reject | docs/link-pairing.md |
 | the software NACK (base-layer selective repeat): T_NACK, the retx ring, the air bucket, the retx accounting class, feclog 3 | docs/fec-nack.md (as built) + docs/findings/2026-10-05-fec-nack-spike.md (spike) |
 | H.265 row slices: slice salvage (SliceAssembler, skip-slice fills, `[venc] slices`, FrameHdr `slice_rows`, `kRecFlagSliceSalvaged`, aulog 5) and streamed decode (AU ring v4 open slots, StreamFeeder, the decoder-input thread (FeedLoop), `[decoder] stream`, the MPP patches in [`gs/player/mpp-patches/`](https://github.com/gilankpam/mabur-ground/blob/master/gs/player/mpp-patches/), the stream-mode GS image and its p1 flash) | docs/slices.md (as built) + docs/findings/2026-10-09-venc-slice.md; flashing: mabur-ground's docs/deploy.md |
@@ -143,6 +144,13 @@ build. mabur owes nothing to old peers, old configs, or old consumers.
   intended forcing function, not a regression. No migration shims.
 - **There is no rollback contract.** An old binary needs its old config
   restored alongside it, always. Prefer rolling forward.
+- **The one exception: the frozen handshake.** The 802.11 framing of
+  control frames, the RC prefix, DISC, DISC_ACK, the tag construction,
+  the `T_MAV`/`T_MAV_UP` envelope and the CRC never change, under any
+  `RC_VERSION` — not by appending, not under a new version; a new need is
+  a new frame type. It is what lets a GS and a drone at different versions
+  find and authenticate each other. `docs/link-pairing.md`
+  "Frozen handshake" owns it; the goldens in `tests/test_rc.cpp` pin it.
 
 **Release versions — a rule, not advice.** Releases are `v0.MINOR.PATCH`
 (`docs/releases.md`). Free-to-change does not mean silent: every other GS
@@ -169,10 +177,11 @@ deployment just as hard as a fleet:
 
 1. **Deploy is two devices and is never atomic.** Any wire change is a
    flag day: between swapping `maburd` and swapping `maburgs` the pair is
-   mismatched, and a mismatched pair has no control link and — since
-   DISC_ACK carries `CAP_FRAME_WIRE` — no video at all, which looks exactly
-   like the stale-caps deadlock and will send you to `restart maburd`. That
-   does not help; finish the deploy. See `docs/deploy.md`.
+   mismatched. A mismatched pair still completes the frozen handshake, so
+   the GS shows it (`UPD?` on the OSD, `link.state = "version_mismatch"`
+   on the sideport) instead of plain silence, but it has no control link
+   and no video. Restarting either daemon does not help; finish the
+   deploy. See `docs/deploy.md`.
 2. **Config-before-binary, still.** A daemon that sees an unknown key
    exits, and its wrapper respawns it forever at 2 s. See `docs/deploy.md`.
 3. **Recordings outlive the code that wrote them.** `flightreport.py` reads

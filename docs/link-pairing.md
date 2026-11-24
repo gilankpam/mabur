@@ -74,17 +74,17 @@ mid-flight — see "Known edges").
 
 No frame carries a VTX id: the key is the identity. Every GS-to-drone
 control frame carries an 8-byte SipHash-2-4 tag (`kTagLen`) right before
-its CRC; the drone-to-GS frames stay untagged:
+its CRC; of the drone-to-GS frames, DISC_ACK and `T_MAV_UP` are tagged,
+Telem, video and MSP are not. DISC, DISC_ACK and the MAV envelope are
+frozen ("Frozen handshake" below):
 
-- **DISC** (GS to drone): tagged over the frame bytes alone (no session exists yet — tagged with
-  the key only).
-- **DISC_ACK** (drone to GS): carries u32 `vtx_nonce` and u8 `flags` (bit0 =
-  `kAckKeyMismatch`, `0x01`). Unauthenticated — the drone has nothing of
-  the GS's to prove yet, and a forged ack can only confuse a display, not
-  move the aircraft (see "Not defended"). `chip_caps` carries `CAP_MAVLINK`
-  (`0x0008`) when the drone understands T_MAV. It is display-only: the GS
-  logs `maburgs: mavlink: drone lacks CAP_MAVLINK` once per session when the
-  bit is missing and gates nothing on it.
+- **DISC** (GS to drone): `vrx_nonce` and `seq`, tagged over the frame
+  bytes alone (no session exists yet — tagged with the key only).
+- **DISC_ACK** (drone to GS): echoes `vrx_nonce` and `seq`, carries u32
+  `vtx_nonce`, u8 `flags` (bit0 = `kAckKeyMismatch`, `0x01`) and u8
+  `channel` (the channel the drone is tuned to), tagged with the key only.
+  A key-mismatch-flagged ack carries `vtx_nonce` 0 and an all-zero tag:
+  the drone cannot tag with a key it does not have.
 - **RCF** (GS to drone): tagged over the frame bytes
   plus `vrx_nonce ‖ vtx_nonce ‖ seq32` (`TagCtx`) — session-bound, not
   just key-bound.
@@ -94,17 +94,21 @@ its CRC; the drone-to-GS frames stay untagged:
   (`RcAgent::check_nack` → `verify_session_tagged` +
   `accept_nack_counter`, on the RX thread); a tag or counter failure sets
   `auth_reject`, a parse failure does not.
-- **MAV** (both directions, carries one or more opaque MAVLink packets): GS to drone
-  is tagged, same session-bound `TagCtx` as NACK, with the request's own
+- **MAV** (carries one or more opaque MAVLink packets): `T_MAV` (8) GS to
+  drone, `T_MAV_UP` (9) drone to GS, one frozen envelope, always tagged.
+  GS to drone uses the same session-bound `TagCtx` as NACK, with the request's own
   `counter` as `seq32` under the same accept-only-greater rule, on its own
   counter state (`RcAgent::check_mav` → `verify_session_tagged` +
   `accept_mav_counter`, on the MAV thread); a tag or counter failure sets
-  `auth_reject`, a parse failure does not. Drone to GS is untagged, like
-  Telem. Calibration rides MAV too (`docs/calibration.md`): a frame made
+  `auth_reject`, a parse failure does not. Calibration rides MAV too (`docs/calibration.md`): a frame made
   entirely of calibration messages counts in a counter domain of its own
   (`cal_last_`) and may verify under the calibration run's pair after the
-  session lapses ("Session and the nonces").
-- **Telem** (drone to GS): flags bit1 is `kTelemAuthReject`
+  session lapses ("Session and the nonces"). Drone to GS uses the same
+  `TagCtx` with the drone's uplink counter as `seq32`; the GS takes each
+  counter once inside a 64-wide anti-replay window per pair (`MavTunnel`,
+  `docs/mavlink.md`).
+- **Telem** (drone to GS): carries the drone's `chip_caps` (`CAP_*`) and
+  `width` (its `radio.width`) every period. Flags bit1 is `kTelemAuthReject`
   (`0x02`) — at least one control frame failed verification this
   telemetry period. (Bit1 was `radio_rx_ok` before the 2026-09-30 telem
   diet; a recording from before that date reads bit1 as the old meaning —
@@ -113,14 +117,135 @@ its CRC; the drone-to-GS frames stay untagged:
 `rc::verify_control(buf, len, key, ctx)` is the one place a tag is
 checked — on the drone, for DISC/RCF on the agent thread, for NACK on
 the RX thread and for MAV on the MAV thread. It finds the tag at the frame's
-**structural** offset, derived from the type (`DISC_LEN`, `RCF_HEAD_LEN`,
-`kNackFixedLen + n * kNackEntryLen`, or `kMavFixedLen + len16`), never at
+**structural** offset, derived from the type (`DISC_LEN`, `DISC_ACK_LEN`,
+`RCF_HEAD_LEN`, `kNackFixedLen + n * kNackEntryLen`, or
+`kMavFixedLen + len16`), and recognises the frozen types at any version
+byte (`rc::frozen_type`), the others only at ours (`rc::frame_type`). Never at
 `len - 10`: on hardware the drone's RC body still carries devourer's
 trailing 4-byte 802.11 FCS
 (`Packet.Data`), and bytes past the CRC are ignored exactly as `parse_*`
 ignores them. `common/include/mabur/siphash.h` + `common/src/siphash.cpp`
 are the primitive — SipHash-2-4, 128-bit key, 64-bit output, no library,
 builds unchanged for armv7/aarch64/WASM.
+
+## Frozen handshake
+
+A GS and a drone at different `RC_VERSION`s still find each other,
+authenticate each other and see that their versions differ. For that, a
+small part of the RC protocol is **frozen**: from `RC_VERSION` 19 on it is
+parsed the same way under every version. It is the one exception to
+mabur's "no compatibility policy" (`CLAUDE.md`) and sits outside the
+release version rule (`docs/releases.md`). A frozen layout is changed
+never — not by appending, not under a new version; a future need is a new
+frame type. `tests/test_rc.cpp` pins it: the layout cases check every
+offset by hand, `frozen_goldens` holds the bytes under a fixed key, and
+`frozen_frames_parse_at_any_version` parses each frame with the version
+byte at 0, 19 and 255. A failing golden is a broken peer, not a stale
+golden.
+
+### What is frozen
+
+1. **Air framing of GS ↔ drone control frames.** A 24-byte 802.11 header
+   with frame control `0x40 0x00` (probe request), addr1
+   `ff:ff:ff:ff:ff:ff`, addr2 = addr3 = `57:42:75:05:d6:00`; duration and
+   seq_ctl are free. The RC body starts at byte 24. Sent as HT MCS0,
+   20 MHz, long GI, STBC, LDPC per config, on the 20 MHz primary of the
+   channel. The header values are frozen because receivers read them: the
+   GS drops any CRC-clean frame whose source is not that address as
+   foreign, and moves the body to byte 26 for frame control `0x88` (QoS
+   data, the video header)
+   ([`gs/src/dot11.cpp`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/dot11.cpp)).
+   The drone skips the 24 bytes unread. devourer's receive path filters in
+   hardware only (`RXFLTMAP*` frame-type map and the `RCR` address-class
+   bits, set at bring-up): by frame control type/subtype and receiver
+   address class, both covered by the frozen probe-request / broadcast
+   header; it does not filter on addr2/addr3.
+2. **The RC prefix:** `u16 magic 0x5243 "RC" | u8 version | u8 type`. The
+   version byte is the sender's `RC_VERSION`; for frozen types it is
+   information, never a parse gate.
+3. **DISC and DISC_ACK bytes**, at types `T_DISC = 2`, `T_DISC_ACK = 3`.
+4. **The tag construction**, including which bytes and which context
+   words are hashed.
+5. **The MAV envelope:** type 8 (`T_MAV`) GS → drone, type 9 (`T_MAV_UP`)
+   drone → GS.
+6. **The CRC:** CRC16-CCITT (`mabur::crc16_ccitt`) over every byte before
+   it; bytes after it (the 802.11 FCS) ignored.
+
+Not frozen: every other frame type and its contents (RCF, NACK, Telem,
+video, probe, MSP), every MAVLink message, and the timing and behaviour
+around the frozen frames (beacon periods, keep-alive, the stranger rule,
+the calibration lane).
+
+### DISC and DISC_ACK
+
+All fields little-endian.
+
+```
+DISC (GS -> drone), 20 bytes
+  u16 magic "RC" | u8 ver | u8 type=2 |
+  u32 vrx_nonce | u16 seq |
+  u8[8] tag  = tag(key, bytes[0..10), ctx{0, 0, 0}) |
+  u16 crc
+
+DISC_ACK (drone -> GS), 26 bytes
+  u16 magic "RC" | u8 ver | u8 type=3 |
+  u32 vrx_nonce | u32 vtx_nonce | u8 flags | u8 channel | u16 seq |
+  u8[8] tag  = tag(key, bytes[0..16), ctx{0, 0, 0}); all zero when flags bit0 |
+  u16 crc
+```
+
+- `seq`: the GS's DISC counter; the ack echoes it.
+- `flags` bit0 `kAckKeyMismatch`: the DISC's tag failed under the drone's
+  key; `vtx_nonce` is 0 and the tag is zero. Other bits are reserved zero;
+  a receiver ignores them.
+- `channel`: the channel the drone is tuned to (the primary of its pair).
+- No release version (`v0.M.P`) in either frame: a pair at the same
+  `RC_VERSION` but different minors links normally. Release identity
+  comes over MAVLink.
+- The DISC_ACK's tag covers `vrx_nonce` (fresh per GS process) and
+  `vtx_nonce`, so it is bound to one GS process without a session context.
+
+### The tag
+
+`tag(key, m, ctx) = SipHash-2-4(key, m ‖ u32 vrx ‖ u32 vtx ‖ u32 seq32)`,
+output u64 little-endian, where `m` is every frame byte before the tag. Its
+position is structural (by type and length fields), never `len - 10`.
+
+Direction is structural, not hashed: every tagged type travels one way
+only, and the type byte is inside the tagged bytes, so a frame of one
+direction never verifies as the other. A keyless reader tells them apart
+by type alone.
+
+| Frame | Direction | Tag context |
+|---|---|---|
+| DISC | GS → drone | key only `{0, 0, 0}` |
+| DISC_ACK | drone → GS | key only `{0, 0, 0}`; zero tag when key-mismatch flagged |
+| RCF | GS → drone | session `{vrx, vtx, seq32}` (not frozen) |
+| NACK | GS → drone | session `{vrx, vtx, counter}` (not frozen) |
+| `T_MAV` (8) | GS → drone | session `{vrx, vtx, counter}` |
+| `T_MAV_UP` (9) | drone → GS | session `{vrx, vtx, counter}` |
+| Telem, video, probe, MSP | drone → GS | untagged |
+
+### The MAV envelope
+
+```
+u16 "RC" | u8 ver | u8 type (8 = T_MAV, GS -> drone; 9 = T_MAV_UP, drone -> GS) |
+u32 counter | u16 len | u8[len] MAVLink 2 packets (len <= 600) | u8[8] tag | u16 crc
+```
+
+Same layout both ways; only the type differs. The layout is frozen; the
+MAVLink messages inside are not.
+
+### In code
+
+`rc::frozen_type(buf, len)` returns the type of a buffer carrying the RC
+magic and one of the four frozen types, whatever its version byte, else
+-1. `parse_disc`, `parse_disc_ack` and `parse_mav` never read the version
+byte (`DiscAck::version` reports it), and `verify_control` verifies the
+frozen types at any version. Every other type stays gated on our version
+by `rc::frame_type()`, which returns -1 for any other version. `T_MAV` and
+`T_MAV_UP` are still routed only at our version: their layout is frozen,
+their use across versions is not open yet.
 
 ## Session and the nonces
 
@@ -172,7 +297,13 @@ an attacker resends before the next one lands.
 
 ## Rendezvous, as built
 
-A DISC only ever elicits an ack — **no op, no retune, no LINKED entry**.
+A DISC only ever elicits an ack — **no op, no retune, no LINKED entry**,
+and the DISC proposes no channel, so the drone never moves on one: the ack
+names the channel the drone is on and the GS follows it. DISC is a frozen
+type: the drone answers it at any `RC_VERSION` byte (`rc::frozen_type`, in
+`rx_callback` and `RcAgent::on_rc_frame`), so a GS of another version still
+gets an ack carrying the drone's version. A foreign-version RCF is still
+dropped by `rc::frame_type`, so such a GS is answered but never linked.
 The first RCF that verifies under the acked pair is what actually links
 the drone (`RcAgent::on_rc_frame` T_RCF: verify against `current_`, then
 `pending_`; a `pending_` pass promotes it to `current_`, resets its
@@ -186,26 +317,22 @@ Cold start:
 2. Drone verifies the tag (`rc::verify_control(..., cfg_.link.key,
    TagCtx{})`):
    - pass: pick or reuse a `vtx_nonce` for this `vrx_nonce`, store it as
-     `pending_`, ack unflagged (`kAckKeyMismatch` clear);
-   - fail: ack with `kAckKeyMismatch` set and `vtx_nonce` zero, set
-     `auth_reject`. Nothing else changes.
+     `pending_`, ack unflagged (`kAckKeyMismatch` clear), tagged under
+     `link.key` with `TagCtx{}`;
+   - fail: ack with `kAckKeyMismatch` set, `vtx_nonce` zero and an
+     all-zero tag, set `auth_reject`. Nothing else changes.
 3. GS (`VrxRendezvous::feed_disc_ack`): `vrx_nonce` must match ours.
-   - unflagged: adopt the `vtx_nonce` (**newest unflagged ack for our
-     `vrx_nonce` wins**), enter `SESSION`, start tagging and sending
-     RCFs;
+   - unflagged: it must verify and answer a recent DISC ("The GS's side of
+     the handshake" below); then, at our version, adopt the `vtx_nonce`
+     (**newest verified ack for our `vrx_nonce` wins**), enter `SESSION`,
+     start tagging and sending RCFs; at another version, `VERSION_MISMATCH`;
    - flagged: the stranger rule below.
 4. Drone's first RCF under `pending_` verifies: promotes to `current_`,
-   enters `LINKED`. If the DISC proposed a channel move, one immediate
-   Telem goes out on the OLD channel first (the "I heard you, moving"
-   signal — `RcAgent::take_session_promoted()` / `deferred_move_ch_`,
-   executed in `tick()` so main has a chance to send that Telem before
-   the retune), then the drone retunes.
-5. GS: `VrxController::note_drone_state(2)` on that LINKED Telem — or,
-   if it's lost, `kMoveAfterRcfs = 5` RCFs sent under the new session —
-   arms `take_move_edge()`; GS main follows to the agreed channel on that
-   edge. If the GS never follows, the drone hears no accepted RCF on the
-   new channel within `link.move_confirm_ms` and returns to the channel
-   it came from ([`docs/channel-select.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/channel-select.md)).
+   enters `LINKED` on the channel the drone already holds
+   (`RcAgent::take_session_promoted()` still tells main to send its
+   promote Telem). A channel change after that is a hop order in an RCF
+   ([`docs/channel-select.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/channel-select.md)),
+   which `link.move_confirm_ms` still guards.
 
 Keep-alive DISC while LINKED: verified like any DISC, acked with the
 *same* `vtx_nonce` already issued for that `vrx_nonce` — nothing else
@@ -244,6 +371,61 @@ session, resetting the GS's `seq32` counter — and the still-LINKED drone
 is worse than the stranger's few flagged acks `KEY_MISMATCH` exists to
 flag in the first place.
 
+### The GS's side of the handshake
+
+The GS ([`gs/src/rendezvous.cpp`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/rendezvous.cpp),
+[`gs/src/vrx_controller.cpp`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/vrx_controller.cpp))
+reads every DISC_ACK through `rc::frozen_type`, so an ack from a drone at
+any `RC_VERSION` reaches the rendezvous. Every RC frame, at any version,
+is kept off the video path: another version's Telem or video never
+refreshes the video-silence timer and never feeds the decoder.
+
+**Ack verification.** An unflagged ack is acted on only if both hold:
+
+- its tag verifies under our key (`verify_control(..., TagCtx{})`), and
+- its `seq` echoes a DISC this process sent within the last
+  `VrxRendezvous::kAckWindowMs` (2000 ms; the GS keeps the send time of
+  its last 128 DISCs by `seq % 128`).
+
+Anything else is dropped, never adopted. The seq window is what stops an
+ack recorded earlier in the same GS process from rolling the GS back to a
+stale `vtx_nonce` after the drone re-paired. Left open: a replay inside
+the 2 s window, and one landing on the same `seq` after the u16 wraps
+(about 22 min of 20 ms beacons) — both make the GS adopt a dead pair
+until the next keep-alive re-pairs it ("Not defended").
+
+**Version mismatch.** A verified unflagged ack whose version byte is not
+ours puts the GS in `VrxState::VERSION_MISMATCH` and records the drone's
+`RC_VERSION`:
+
+- no RCF, NACK or `T_MAV` goes out and no session is adopted: the held
+  `vtx_nonce` is not used and video does not re-enter `SESSION` from this
+  state; the drone's video does not reach the decoder;
+- the drone counts as found on the ack's `channel`: the channel search
+  stops there; DISCs go out at the 1 s keep-alive cadence;
+- the first verified ack at our version (an updated drone, or this GS
+  restarted at the drone's version) leaves it for `SESSION`;
+- with no verified other-version ack for three keep-alive periods
+  (`VrxRendezvous::kMismatchKeepalives` × `keepalive_ms`, 3 s), it falls back to
+  `BEACONING` and the channel search resumes: the mismatched drone has
+  gone;
+- an other-version ack is ignored (and counted, `VrxRendezvous::ignored_version_acks()`) while
+  the GS has same-version proof of its own drone — a verified same-version
+  ack or a same-version Telem within the last
+  `VrxRendezvous::kPeerAliveMs` (2000 ms). A same-key spare drone at
+  another version in range cannot take down a live session; a drone
+  reflashed mid-session shows the mismatch up to ~2 s late.
+
+Key mismatch outranks it: a flagged ack carries no tag, so it never
+reaches the version check, and the stranger rule leaves
+`VERSION_MISMATCH` for `KEY_MISMATCH` like any other state. The GS
+surfaces it as `link.state = "version_mismatch"` and
+`link.drone_rc_version` on the sideport, an amber `UPD?` in the OSD's
+channel slot, `version_mismatch` / `drone_rc_version` in the web GS state,
+and one `maburgs` line per entry naming the older end
+(`drone RC <n>, GS RC <m>: update the drone` / `…: update the ground
+station`).
+
 ### Restart cases (all RAM, nothing persisted)
 
 - **Drone restart, GS running** (battery swap). Drone boots with no
@@ -268,18 +450,22 @@ flag in the first place.
 
 Out of scope by design (the spec's threat model): jamming/DoS; a captured drone or a stolen
 GS config leaking the key (change it); the browser's key storage, whose
-security is the phone's lock screen; spoofed telemetry/DISC_ACK toward
-the GS (unauthenticated by design — can confuse a display, never move
-the aircraft); confidentiality of anything (video/OSD/telemetry stay
-clear). **Same-key strangers**: with no VTX id in the frames, a nearby
+security is the phone's lock screen; spoofed telemetry toward the GS
+(Telem is untagged — can confuse a display, never move the aircraft);
+confidentiality of anything (video/OSD/telemetry stay clear). A
+key-mismatch-flagged DISC_ACK carries no tag, so anyone can forge one: a
+forger can push the GS into `KEY_MISMATCH` (DoS), never into a session. **Same-key strangers**: with no VTX id in the frames, a nearby
 default-key GS beaconing on the
 same channel is answered exactly like our own GS — it only fails to win
 a session because our GS's unflagged acks keep winning "newest wins",
 not because the drone refuses it. It can thrash the drone's single
 `pending_` slot (wasted work, not a session loss as long as our own
-keep-alives keep landing). **A spoofed unflagged DISC_ACK** makes the GS
-adopt a bogus `vtx_nonce`; the drone rejects the RCFs tagged under it
-until `failsafe_ms` (the drone's `[link] failsafe_ms`, 3000 ms in
+keep-alives keep landing). **A replayed unflagged DISC_ACK.** An unflagged
+ack is tagged and must echo a DISC of the last 2 s, so a forged one is
+dropped; a genuine one replayed inside that window, or on the same `seq`
+after the u16 DISC counter wraps (~22 min), makes the GS adopt a dead
+`vtx_nonce`: the drone rejects the RCFs tagged under it until
+`failsafe_ms` (the drone's `[link] failsafe_ms`, 3000 ms in
 `bundle/mabur.default.toml`) drops it out of LINKED, and the next
 keep-alive DISC re-pairs — DoS, out of scope.
 
@@ -301,7 +487,9 @@ All self-healing.
 ## Observability
 
 - Sideport: `link.key_fp` (`"default"` or 4 hex), `link.state` =
-  `key_mismatch` (else `session` / `beaconing`), `drone.auth_reject` (bool, this period). Three causes
+  `key_mismatch` / `version_mismatch` (else `session` / `beaconing`),
+  `link.drone_rc_version` (the drone's `RC_VERSION` in `version_mismatch`,
+  else null), `drone.auth_reject` (bool, this period). Three causes
   set `auth_reject`: a drone/GS restart or failsafe re-pair (one period,
   expected); two controllers fighting over the session (sustained); and a
   foreign-key GS in range — its DISCs fail the tag and set the bit every
@@ -314,9 +502,9 @@ All self-healing.
   a drone/GS restart is the expected transient; sustained means a bug,
   two controllers fighting over the session, or a foreign-key GS in range.
 - Player OSD ([`gs/player/src/gs_compact.cpp`](https://github.com/gilankpam/mabur-ground/blob/master/gs/player/src/gs_compact.cpp)): `KEY?` in the `ch:` slot
-  that otherwise shows the stale/searching channel state — the one
-  failure that would otherwise look exactly like the stale-caps restart
-  deadlock and send the operator to `restart maburd`.
+  that otherwise shows the stale/searching channel state, and `UPD?` there
+  in `VERSION_MISMATCH` — the two failures that would otherwise look like
+  plain silence.
 - `maburgs` stderr: one line on the `KEY_MISMATCH` edge (entry and
   exit) — `link KEY MISMATCH -- the drone rejects our tag; both ends
   need the same /etc/mabur.key (our key <fp>)` / `link key accepted

@@ -161,4 +161,15 @@ TEST(soc_temp_formats) {
 }
 
 
+TEST(telem_carries_caps_and_width) {
+  mabur::TelemInputs in;
+  in.chip_caps = mabur::rc::CAP_FRAME_WIRE | mabur::rc::CAP_MAVLINK;
+  in.width = 40;
+  const auto b = mabur::rc::pack_telem(mabur::make_telem(1, in));
+  const auto t = mabur::rc::parse_telem(b.data(), b.size());
+  REQUIRE(t.has_value());
+  CHECK(t->chip_caps == (mabur::rc::CAP_FRAME_WIRE | mabur::rc::CAP_MAVLINK));
+  CHECK(t->width == 40);
+}
+
 MTEST_MAIN

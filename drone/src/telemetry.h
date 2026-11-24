@@ -64,6 +64,9 @@ struct TelemInputs {
   std::optional<double> cpu_pct;
   // VtxRecorder::status_byte(), straight pass-through.
   uint8_t rec_status = 0;
+  // The drone's CAP_* bits and radio.width, straight pass-through.
+  uint16_t chip_caps = 0;
+  uint8_t width = 0;
 };
 
 rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in);
