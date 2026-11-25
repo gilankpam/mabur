@@ -200,24 +200,95 @@ The second is devourer's **wide-TX IGI floor**
 switched on by the session's first 40 MHz frame and stays on while the card
 is tuned to 40 MHz. It exists because on a silent channel the receiver can
 settle where the secondary 20 MHz never reads idle, and the MAC then holds
-the first 40 MHz frame forever. A ladder with 40 MHz rungs
-turns the floor on at the first 40 MHz rung and keeps it on for the rest
-of the flight, which costs the RCF uplink idle-channel sensitivity. The
-shipped ladder is all 20 MHz, so it never turns the floor on. `maburd` picks the value per image,
+the first 40 MHz frame forever. Every IGI step above the DIG window costs
+the RCF uplink idle-channel sensitivity, so `maburd` starts low and raises
+the floor only while 40 MHz sends stall. The starting floor is per image,
 from the one Jaguar3 chip that image compiles in:
 
-- **8812EU**: `0` (no floor). The EU has flown the 40 MHz rungs without a
-  floor and never stalled. An EU unit that does stall loses the downlink
-  at its first 40 MHz frame, with the TX FIFO full; give that unit a floor.
-- **8812CU**: devourer's default, `0x35`. The stall was found on the 8822C,
-  and the default is the lowest value that has cleared every CU unit tested.
+- **8812EU**: `0x22`.
+- **8812CU**: `0x26`. The stall was found on the 8822C.
+
+The cap on both is `0x35`.
+
+A watchdog thread (`drone/src/igi_floor_watchdog.h`, fed by
+`drone/src/send_timer.h`) raises the floor in flight. It times every video
+send, on the sender pool and on the direct path, and judges one-second
+windows. A window is slow when its longest radio send is 30 ms or more, or
+when the chip's TX queue is 60 % full or more at its deepest in the window
+(the queue is read every 100 ms; frames can back up inside the chip while
+USB sends still return quickly). A window that is not slow is clean when
+the chip queue stayed under 30 % (a healthy link peaks near 22 %), and
+murky between 30 % and 60 %. Two slow windows among the last three judged
+ones within 30 s start an episode; murky and clean windows do not count
+toward it.
+
+- The floor steps up by `+2`, then `+4`, then `+8`, then goes straight to
+  the cap, never past it. After each step it waits 300 ms to settle, then
+  judges the next window.
+- During the climb a slow or a murky window raises again: a level that only
+  partly helps is not proven. Three clean windows in a row keep the level;
+  the episode ends and the failure hold resets.
+- If the floor is at the cap and a window is still slow or murky, or no
+  window is judged for 3 s (the link is gone, the rung dropped to 20 MHz,
+  or the channel is busy), the climb is undone: the floor returns to the
+  level the episode started from, and a new episode waits out a hold of
+  30 s that doubles at each failure up to 300 s.
+
+A busy channel gates the judging. Foreign airtime stalls sends and fills the
+chip queue exactly as an IGI stall does, and a higher floor does not cure
+it, so a window in which the channel's busy airtime reads 20 % or more is
+not judged at all: it neither counts slow, nor clean, nor starts or keeps
+an episode. The thread arms one 240 ms busy-airtime window a second on the
+radio and reads it at the next second; a reading is used for at most 2 s,
+and a retune or a tick that is not eligible drops it. The accepted risk: an
+IGI stall on a channel with 20 % or more foreign airtime is not recovered.
+
+Only windows in which video airs at 40 MHz, the radio is up, no
+calibration is running and no retune happened are judged; on any other
+tick the thread reads neither the chip queue nor the busy airtime. A kept
+level lasts for the process and survives hops, and is never lowered, in
+failsafe or otherwise. An unproven climb is undone by the rules above in
+any link state, failsafe included. The 20 MHz ladder never arms the floor
+(devourer applies it only while tuned 40 MHz wide), so the shipped
+all-20 MHz ladder sees no floor, and the watchdog judges nothing and makes
+no chip reads. With the cap at or below the base the thread is not
+started. The watchdog takes no `maburd` lock: a sender stalled in the chip
+holds `tx_gate` and the sink lock, and the watchdog exists to notice that.
+
+The log lines (stderr):
+
+```
+maburd radio: IGI floor base 0x22 cap 0x35            (once at start; " (env)" appended when an override is set)
+maburd radio: IGI floor 0x22 -> 0x24 (longest send 87 ms, chip queue 91 %, busy 0 %)
+maburd radio: IGI floor 0x24 kept
+maburd radio: IGI floor 0x35 -> 0x22 reverted, no help; holding 30 s
+maburd radio: IGI floor watchdog off (radio has no runtime floor)
+maburd radio: IGI floor 0x24: USB error on the IGI write, DIG applies it
+maburd radio: IGI floor watchdog: no chip queue reading, sends only
+maburd radio: IGI floor watchdog: no busy reading, busy gate off
+```
+
+`watchdog off` means the radio refuses a runtime floor and the thread
+stops; `USB error` means the write failed on USB but the floor is recorded and
+the periodic DIG tick enforces it; `no chip queue reading` means the radio
+cannot report its queue, so only slow sends count (logged once). A failed
+queue read counts as an empty queue for that tick, with no log line. `no busy
+reading` means the radio cannot arm a busy window, so the gate is off (logged
+once); a failed busy read leaves that second unknown, with no log line. The
+`stats:` line carries `igi_floor=0x%02x`, the level currently set, after
+`txq_drop=`: it starts at the base and changes only on a raise or a revert.
+
+For a bench run, `MABUR_IGI_FLOOR_BASE` and `MABUR_IGI_FLOOR_CAP` override the
+start and the cap (decimal, or hex with `0x`; an invalid value is ignored,
+one above `0x7f` too). A cap equal to or below the base turns the watchdog
+off, leaving a fixed floor at the base.
 
 The 8812CU is 2T2R, so STBC airs on two real chains; none of the 8822E
 constraints in devourer's 8822E quirks page
 (`third_party/devourer/docs/8822e-quirks.md`: spur channels, single-path
-1SS TX, DPDT front end) apply to it. **The 8812CU path is not
-hardware-verified on this bench** — there is no CU unit here; its only
-on-hardware check is an external tester's rig.
+1SS TX, DPDT front end) apply to it. **The 8812CU path, its `0x26` start and the
+watchdog on it, are not hardware-verified with `maburd`**; the only
+on-hardware check of the CU is an external tester's rig.
 
 ## Config format
 

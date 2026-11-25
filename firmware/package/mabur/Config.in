@@ -25,9 +25,10 @@ choice
 	  maburd, 2026-09-26: 8822E 1.08 MB, 8822C 1.27 MB, both 1.70 MB)
 	  and the board carries one card. maburd on the wrong card fails
 	  at CreateRtlDevice ("unsupported chip"). The choice also sets
-	  maburd's wide-TX IGI floor at build time: off on the 8812EU,
-	  devourer's default (0x35) on the 8812CU, whose 40 MHz inject
-	  stalls on a silent channel without it.
+	  maburd's wide-TX IGI floor start at build time: 0x22 on the
+	  8812EU, 0x26 on the 8812CU, whose 40 MHz inject stalls on a
+	  silent channel without a floor. A watchdog raises it toward
+	  0x35 in flight only while 40 MHz sends stall.
 
 config BR2_PACKAGE_MABUR_RADIO_8812EU
 	bool "RTL8812EU (devourer rtl8822e)"

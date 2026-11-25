@@ -52,9 +52,9 @@ MABUR_DEPENDENCIES = libusb host-pkgconf devourer
 # deliberate difference: the Jaguar3 die is the board's Kconfig radio choice
 # (Config.in), where build-arm.sh is always the 8822E -- the bench drone's
 # card. Exactly one of the two is ON, and maburd relies on that: it picks
-# devourer's wide-TX IGI floor from the die compiled in (none on an
-# 8822E-only build, devourer's default 0x35 otherwise). With both ON an
-# 8812EU would fly the CU's floor and lose uplink sensitivity at range.
+# devourer's wide-TX IGI floor start from the die compiled in (0x22 on an
+# 8822E-only build, 0x26 otherwise). With both ON an 8812EU would start at
+# the CU's floor and lose uplink sensitivity at range.
 #
 # MABUR_BUILD_LINKBENCH=OFF: this is the drone image. The bench
 # harnesses are neither installed nor useful on the SSC338Q.
