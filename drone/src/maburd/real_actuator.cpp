@@ -102,13 +102,9 @@ void RealActuator::apply_op(const AppliedOp& op) {
 
 void RealActuator::send_control(const std::vector<uint8_t>& body) {
   const std::vector<uint8_t>& control_radiotap = control_rt.get();
-  std::vector<uint8_t> frame;
-  frame.reserve(control_radiotap.size() + kDot11HeaderLen + body.size());
-  frame.insert(frame.end(), control_radiotap.begin(), control_radiotap.end());
-  auto hdr = build_dot11_header(control_seq);
+  const auto frame = build_control_frame(control_radiotap, control_seq,
+                                         body.data(), body.size());
   control_seq = static_cast<uint16_t>((control_seq + 1) & 0xFFF);
-  frame.insert(frame.end(), hdr.begin(), hdr.end());
-  frame.insert(frame.end(), body.begin(), body.end());
   sink->send(frame.data(), frame.size());
 }
 

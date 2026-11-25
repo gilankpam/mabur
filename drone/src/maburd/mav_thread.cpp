@@ -145,12 +145,10 @@ void mav_loop(RealMode& m) {
       ctx->seq32 = mv.counter;
       const auto mav = rc::pack_mav(mv, m.cfg.link.key, *ctx);
       const std::vector<uint8_t>& telem_radiotap = mav_radiotap.get();
-      std::vector<uint8_t> frame;
-      frame.reserve(telem_radiotap.size() + kDot11HeaderLen + mav.size());
-      frame.insert(frame.end(), telem_radiotap.begin(), telem_radiotap.end());
-      auto hdr = build_dot11_header(m.telem_dot11_seq.fetch_add(1, std::memory_order_relaxed) & 0xFFF);
-      frame.insert(frame.end(), hdr.begin(), hdr.end());
-      frame.insert(frame.end(), mav.begin(), mav.end());
+      const auto frame = build_control_frame(
+          telem_radiotap,
+          m.telem_dot11_seq.fetch_add(1, std::memory_order_relaxed) & 0xFFF,
+          mav.data(), mav.size());
       m.dev_sink.send(frame.data(), frame.size());
       m.mav_tx_frames.fetch_add(1, std::memory_order_relaxed);
       m.mav_tx_packets.fetch_add(static_cast<uint64_t>(packets), std::memory_order_relaxed);

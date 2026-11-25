@@ -36,13 +36,8 @@ void RealMode::run_msp(std::atomic<bool>& stop, const MspCfg m) {
       // overflows waiting out a session.
       if (cal_active.load(std::memory_order_relaxed)) return;
       const std::vector<uint8_t>& radiotap = msp_radiotap.get();
-      std::vector<uint8_t> frame;
-      frame.reserve(radiotap.size() + kDot11HeaderLen + n);
-      frame.insert(frame.end(), radiotap.begin(), radiotap.end());
-      auto hdr = build_dot11_header(seq);
+      const auto frame = build_control_frame(radiotap, seq, body, n);
       seq = static_cast<uint16_t>((seq + 1) & 0xFFF);
-      frame.insert(frame.end(), hdr.begin(), hdr.end());
-      frame.insert(frame.end(), body, body + n);
       dev_sink.send(frame.data(), frame.size());
     },
     rd());  // random initial_seq (SwEncoder restart-safety contract)
