@@ -1046,8 +1046,8 @@ TEST(failsafe_shed_survives_congestion_reapply) {
   CHECK(agent.current().shed[1] == true);
 }
 
-// 9c. Proves the main.cpp hot-loop seam directly: an identity-compare pump
-// (mirroring apply_op_to_uep's callers in main.cpp) observes every
+// 9c. Proves the maburd hot-loop seam directly: an identity-compare pump
+// (mirroring apply_op_to_uep's callers in maburd/hot_thread.cpp) observes every
 // congestion-triggered shed reapply even though reapply_with_shed never
 // bumps generation, whereas a generation-compare pump (the pre-fix
 // behavior) would observe only the very first op and then silently miss
@@ -1064,12 +1064,12 @@ TEST(identity_compare_seam_catches_shed_only_republish_generation_compare_misses
   agent.on_rc_frame(wire.data(), wire.size(), 0);  // -> LINKED, shed all false
   CHECK(agent.current().shed[1] == false);
 
-  // Simulate the atomic shared_ptr handoff main.cpp uses: MockActuator
+  // Simulate the atomic shared_ptr handoff maburd uses: MockActuator
   // doesn't publish shared_ptrs, so build the same sequence of AppliedOp
   // snapshots RealActuator::apply_op would have published (one per
   // act.applied entry so far) and feed them through both a generation-gated
   // pump and an identity-gated pump, exactly mirroring apply_op_to_uep's
-  // two call sites in main.cpp.
+  // two call sites in maburd/hot_thread.cpp.
   std::vector<std::shared_ptr<const AppliedOp>> published;
   for (const auto& op : act.applied) published.push_back(std::make_shared<const AppliedOp>(op));
 

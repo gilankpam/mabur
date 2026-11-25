@@ -174,7 +174,7 @@ supported through a separate firmware image, the board
 the 8822C alone (`BR2_PACKAGE_MABUR_RADIO_8812CU`). One image, one chip: a
 binary on the wrong card fails at `CreateRtlDevice` ("unsupported chip").
 The shipped `usb_pid = 0` scan tries `a81a`, then `c812`/`c82c`, then the
-8812AU ids `881a`/`8812` (`drone/src/main.cpp`), so the same `mabur.toml`
+8812AU ids `881a`/`8812` (`drone/src/maburd/radio_glue.cpp`), so the same `mabur.toml`
 boots either board; the `opened device 0bda:XXXX` line in `/tmp/mabur.log`
 says which card was found. GS cards stay 8812EU.
 

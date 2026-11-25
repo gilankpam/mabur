@@ -37,6 +37,7 @@
 
 #include "IRtlRadio.h"
 
+
 namespace mabur::maburd {
 
 using namespace mabur;
@@ -102,8 +103,10 @@ constexpr size_t kTxQueueCap = 256;  // also the congestion shed's txq_cap
 
 // The state run_real_mode's threads share. Each member was a local of
 // run_real_mode and keeps that local's name and declaration order, so
-// construction and destruction order are unchanged. Built once, right after
-// CreateRadio succeeds; threads hold references into it, so it is neither
+// declaration order is the old local order, and
+// the members are plain allocations and wiring, so building it ahead of the
+// venc boot costs nothing. Built once, after the radio bring-up thread starts
+// (the radio handle is passed in); threads hold references into it, so it is neither
 // copyable nor movable.
 struct RealMode {
   RealMode(const Config& cfg, uint8_t start_ch, const std::string& cfg_path, IRtlRadio* dev,
@@ -127,9 +130,9 @@ struct RealMode {
 
   // Exclusive against RealActuator::retune's FastRetune (devourer threading
   // contract: control-plane calls must not overlap a bulk-OUT from any
-  // sender thread). Every USB sender in this function -- DevourerSink::send/
-  // send_many's direct branch, and the UsbTxPool send lambda below -- takes
-  // this shared; retune takes it exclusive. Declared here, ahead of every
+  // sender thread). Every USB sender -- DevourerSink::send/
+  // send_many's direct branch, and the UsbTxPool send lambda -- takes
+  // this shared; retune takes it exclusive. Declared ahead of every
   // sender that references it.
   std::shared_mutex tx_gate;
   // Writer-priority flag for tx_gate: raised by
@@ -194,7 +197,7 @@ struct RealMode {
 #endif
 
   RcQueue rc_queue;
-  // T_MAV lands here (RX callback, below), consumed by the MAV thread: a
+  // T_MAV lands here (RX callback, rx_path.cpp), consumed by the MAV thread: a
   // parameter set rewrites the config file, I/O that belongs on neither the
   // RX nor the agent thread.
   RcQueue mav_queue;
@@ -259,7 +262,7 @@ struct RealMode {
   // with no custom rate-diff table live, i.e. before SetTxPowerRateDiffs is
   // first applied). Drone-internal only: it caps reference + diff at 127
   // (power_plan.h) and never reaches config or the wire. 0 = not yet read
-  // by bring-up (below); make_power_plan treats anchor_idx <= 0 as no cap.
+  // by bring-up (real_mode.cpp); make_power_plan treats anchor_idx <= 0 as no cap.
   //
   // Deliberately NOT re-read on a channel move, and it does not need to be.
   // The `127 - anchor` cap it feeds is a BOOT-CHANNEL APPROXIMATION of a
@@ -268,7 +271,7 @@ struct RealMode {
   // exists for devourer's blank-efuse fallback (75), where it caps at +52
   // and touches only no-dip rows. The per-channel anchor the diffs actually
   // ride on is re-derived by devourer itself on every retune, via the
-  // ReApplyTxPower() call in RealActuator::retune_now_() above -- that, not
+  // ReApplyTxPower() call in RealActuator::retune_now_() -- that, not
   // this number, is what keeps the walls valid across an auto-select move.
   //
   // Re-reading it after a retune is not merely unnecessary but WRONG:
@@ -306,7 +309,7 @@ struct RealMode {
 
   // fec-nack: retransmit ring of base-layer source envelopes (hot thread
   // writes via the UepEncoder source tap, RX thread reads) and the T_NACK
-  // handler, bound once txq exists (it is declared after this callback).
+  // handler, bound by install_nack_hook (rx_path.cpp) once txq exists.
   // Sized by [nack].ring_ms of base-layer history at
   // encoder.bitrate_max_kbps; env_len is the sealed base envelope (sw header
   // + base symbol_size). Counters are per Telem period (exchanged at the 1 Hz
@@ -348,7 +351,7 @@ struct RealMode {
   // Air clock. Lives out here, not in the hot thread, since fec-nack: the hot
   // thread prices it (set_rates via apply_op_to_clock), books every
   // video/probe body and reads the backlog; the RX thread's T_NACK handler
-  // below books every retransmit body. AirClock's own mutex guards it; both
+  // books every retransmit body. AirClock's own mutex guards it; both
   // sides lock per BODY, never per symbol.
   AirClock air_clock;
 

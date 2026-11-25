@@ -8,8 +8,8 @@
 #include <functional>
 #include <mutex>
 #include <optional>
-#include <thread>
 #include <shared_mutex>
+#include <thread>
 #include <vector>
 
 #include <libusb.h>

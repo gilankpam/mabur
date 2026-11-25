@@ -36,7 +36,7 @@ page.
 | update messages and FTP: plain structs and their codec; SHA-256 | `common/include/mabur/ota_mav.h`, `common/include/mabur/sha256.h` |
 | drone: the update server (FTP subset, START/ABORT/status), the trial proof | `drone/src/ota.h`, `drone/src/trial_proof.h` |
 | drone: the component (routing, heartbeat; the parameter protocol in `docs/vtx-config-mavlink.md`) | `drone/src/mav_component.h` |
-| drone: MAV thread, tag and counter check | `drone/src/main.cpp` (`mbr-mav`), `RcAgent::check_mav` |
+| drone: MAV thread, tag and counter check | `drone/src/maburd/mav_thread.cpp` (`mbr-mav`), `RcAgent::check_mav` |
 | GS: the tunnel and its cal lane (shared GS core) | [`gs/src/mav_tunnel.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/mav_tunnel.h) |
 | GS: the UDP endpoint | [`gs/src/mav_endpoint.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/mav_endpoint.h) |
 

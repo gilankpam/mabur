@@ -1,5 +1,5 @@
 // Real mode: bring-up, the threads, the RX loop and teardown (real_mode.h).
-#include <algorithm>
+
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -7,105 +7,30 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <deque>
+#include <exception>
 #include <memory>
-#include <mutex>
-#include <optional>
-#include <random>
 #include <shared_mutex>
 #include <string>
 #include <thread>
-#include <exception>
-#include <variant>
-#include <iterator>
 #include <vector>
 
-#include <unistd.h>  // _exit() — see the venc on_fault handler
+#include <unistd.h>
 
-#if defined(__linux__)
-#include <dirent.h>       // repin_inherited_threads() walks /proc/self/task
-#include <pthread.h>
-#include <sched.h>  // cpu_set_t — see the core-placement policy below
-#include <sys/stat.h>     // mkdir() — the trial proof files
-#include <sys/syscall.h>  // SYS_gettid
-#endif
-
-#include "air_clock.h"
-#include "build_ident.h"
-#include "nack_bucket.h"
-#include "air_rate.h"
-#include "ampdu_policy.h"
-#include "cal_apply.h"
 #include "cal_link.h"
-#include "cal_sweep.h"
-#include "config.h"
-#include "config_migrate.h"
-#include "config_apply.h"
-#include "mabur/config_write.h"
-#include "control_tx_mode.h"
 #include "debug_http.h"
-#include "frame_pipeline.h"
-#include "frame_source.h"
-#include "live_power_table.h"
-#include "mav_component.h"
 #include "ota.h"
-#include "trial_proof.h"
-#include "mabur/channel_file.h"
-#include "mabur/cal_mav.h"
-#include "mabur/cal_proto.h"
-#include "mabur/channel_set.h"
-#include "mabur/frame_wire.h"
-#include "mabur/ht40.h"
-#include "mabur/msp_source.h"
-#include "mabur/msp_status.h"
-#include "mabur/profile.h"
-#include "mabur/rc_proto.h"
-#include "mabur/sbi.h"
-#include "mabur/sw_wire.h"
-#include "mabur/fec_worker.h"
-#include "mabur/uep_encoder.h"
-#include "msp_serial.h"
-#include "power_plan.h"
-#include "power_tables.h"
-#include "probe_source.h"
-#include "radio_tx.h"
-#include "rc_agent.h"
 #include "mi_ready.h"
-#include "telemetry.h"
-#include "peak_rate.h"
-#include "vtx_recorder.h"
-#include "tick_gate.h"
-#include "tx_queue.h"
-#include "mabur/retx_ring.h"
-#include "usb_tx_pool.h"
-#include "send_timer.h"
-#include "threads.h"
-#include "radio_glue.h"
-#include "real_actuator.h"
 #include "real_mode.h"
-#include "igi_floor_watchdog.h"
-#ifdef MABUR_HAVE_VENC
-#include "venc_core.h"  // ARM only: drone/venc is not compiled on host builds
-#endif
+#include "SignalStop.h"
+#include "UsbOpen.h"
+#include "WiFiDriver.h"
+
+#include <libusb.h>
 
 #if defined(MABUR_DRY_RUN_ONLY)
 // Not used; real mode is always compiled in, guarded at runtime by --dry-run
 // so the same binary runs (in dry-run) on a machine with no dongle attached.
 #endif
-
-#include "AdapterCaps.h"
-#include "AmpduMode.h"
-#include "RadiotapBuilder.h"
-#include "RxPacket.h"
-#include "RxSense.h"
-#include "SignalStop.h"
-#include "TxMode.h"
-#include "UsbOpen.h"
-#include "IRtlRadio.h"
-#include "WiFiDriver.h"
-#include "logger.h"
-
-#include <libusb.h>
 
 namespace mabur::maburd {
 
@@ -124,7 +49,7 @@ void handle_sigusr1(int) { g_sigusr1_flag.store(true); }
 // ../devourer/src/SignalStop.h and how examples/rx, examples/tx, and
 // examples/doctor all call install_devourer_signal_handlers() instead of
 // installing their own SIGINT/SIGTERM handlers). A locally-scoped flag set by
-// a handler main.cpp installs itself is never consulted by Init()'s loop, so
+// a handler maburd installs itself is never consulted by Init()'s loop, so
 // Ctrl-C/SIGTERM would never unblock it. The hot/agent thread loops below
 // read g_devourer_should_stop directly too, so all three (Init()'s RX loop,
 // hot_thread, agent_thread) stop on the same signal.
@@ -589,9 +514,9 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
 #ifdef MABUR_HAVE_VENC
   // Boot the encoder BEFORE the radio and before any thread starts: it
   // creates the frame-shm ring the hot thread reads, and RcAgent's very
-  // first tick (BOOT -> MAX_RANGE) commands a bitrate through the verbs
-  // above, which no-op until the core is up. `agent` is constructed on the
-  // line above and outlives every venc thread (venc_core_stop() joins them
+  // first tick (BOOT -> MAX_RANGE) commands a bitrate through the venc
+  // verbs, which no-op until the core is up. `m.agent` is constructed with
+  // RealMode and outlives every venc thread (venc_core_stop() joins them
   // before this scope ends), so handing its address to the callbacks is
   // safe without a file-scope indirection.
   m.vcb.on_chain_break = [](void* u) {

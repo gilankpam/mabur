@@ -1,6 +1,6 @@
 #pragma once
 // The drone-side glue between the calibration protocol (mabur/cal_proto.h)
-// and the drone's config and power path, kept out of main.cpp so it can be
+// and the drone's config and power path, kept out of maburd so it can be
 // tested on the host: what an ApplyCmd writes, where the Verify sweep that
 // follows it parks each rate, the APPLIED cache that answers the GS's
 // APPLY resends, and the boot/parameter-set warnings about the per-width

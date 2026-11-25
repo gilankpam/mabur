@@ -23,6 +23,7 @@
 #include "AmpduMode.h"
 #include "IRtlRadio.h"
 
+
 namespace mabur::maburd {
 
 using namespace mabur;
@@ -187,7 +188,7 @@ struct RealActuator : mabur::Actuator {
   void retune(uint8_t ch, const char* reason) override;
 
   // Replays the retune retune() deferred, if any. Called from the agent
-  // thread on the falling edge of cal_active (see main.cpp's agent loop),
+  // thread on the falling edge of cal_active (see agent_thread.cpp's agent loop),
   // the same edge that re-applies the ladder.
   void apply_deferred_retune() {
     if (!deferred_ch.has_value()) return;

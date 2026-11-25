@@ -188,7 +188,7 @@ overwritten under the reader (acquire gate on the seq, an acquire fence
 after the copy, an acquire recheck of state). A rejected or stale slot is a
 miss.
 
-**Handler** (`nack_hook` in `drone/src/maburd/main.cpp`, on the **RX thread**;
+**Handler** (`nack_hook` in `drone/src/maburd/rx_path.cpp`, on the **RX thread**;
 `rx_callback` routes `T_NACK` there instead of the agent queue):
 
 1. `RcAgent::check_nack`: `parse_nack`, `sid == 0`,

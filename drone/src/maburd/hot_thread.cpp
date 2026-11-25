@@ -1,111 +1,28 @@
 // Real mode: the hot (encode) thread body (real_mode.h).
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <csignal>
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>
-#include <cstring>
-#include <deque>
 #include <memory>
-#include <mutex>
-#include <optional>
 #include <random>
-#include <shared_mutex>
-#include <string>
 #include <thread>
-#include <exception>
-#include <variant>
-#include <iterator>
 #include <vector>
 
-#include <unistd.h>  // _exit() — see the venc on_fault handler
+#include <unistd.h>
 
-#if defined(__linux__)
-#include <dirent.h>       // repin_inherited_threads() walks /proc/self/task
-#include <pthread.h>
-#include <sched.h>  // cpu_set_t — see the core-placement policy below
-#include <sys/stat.h>     // mkdir() — the trial proof files
-#include <sys/syscall.h>  // SYS_gettid
-#endif
-
-#include "air_clock.h"
-#include "build_ident.h"
-#include "nack_bucket.h"
-#include "air_rate.h"
-#include "ampdu_policy.h"
-#include "cal_apply.h"
-#include "cal_link.h"
-#include "cal_sweep.h"
-#include "config.h"
-#include "config_migrate.h"
-#include "config_apply.h"
-#include "mabur/config_write.h"
-#include "control_tx_mode.h"
-#include "debug_http.h"
-#include "frame_pipeline.h"
 #include "frame_source.h"
-#include "live_power_table.h"
-#include "mav_component.h"
-#include "ota.h"
-#include "trial_proof.h"
-#include "mabur/channel_file.h"
-#include "mabur/cal_mav.h"
-#include "mabur/cal_proto.h"
-#include "mabur/channel_set.h"
-#include "mabur/frame_wire.h"
-#include "mabur/ht40.h"
-#include "mabur/msp_source.h"
-#include "mabur/msp_status.h"
-#include "mabur/profile.h"
-#include "mabur/rc_proto.h"
-#include "mabur/sbi.h"
-#include "mabur/sw_wire.h"
-#include "mabur/fec_worker.h"
-#include "mabur/uep_encoder.h"
-#include "msp_serial.h"
-#include "power_plan.h"
-#include "power_tables.h"
 #include "probe_source.h"
-#include "radio_tx.h"
-#include "rc_agent.h"
-#include "mi_ready.h"
-#include "telemetry.h"
-#include "peak_rate.h"
-#include "vtx_recorder.h"
-#include "tick_gate.h"
-#include "tx_queue.h"
-#include "mabur/retx_ring.h"
-#include "usb_tx_pool.h"
-#include "send_timer.h"
-#include "threads.h"
-#include "radio_glue.h"
-#include "real_actuator.h"
 #include "real_mode.h"
-#include "igi_floor_watchdog.h"
-#ifdef MABUR_HAVE_VENC
-#include "venc_core.h"  // ARM only: drone/venc is not compiled on host builds
-#endif
+#include "SignalStop.h"
+
+#include <libusb.h>
 
 #if defined(MABUR_DRY_RUN_ONLY)
 // Not used; real mode is always compiled in, guarded at runtime by --dry-run
 // so the same binary runs (in dry-run) on a machine with no dongle attached.
 #endif
-
-#include "AdapterCaps.h"
-#include "AmpduMode.h"
-#include "RadiotapBuilder.h"
-#include "RxPacket.h"
-#include "RxSense.h"
-#include "SignalStop.h"
-#include "TxMode.h"
-#include "UsbOpen.h"
-#include "IRtlRadio.h"
-#include "WiFiDriver.h"
-#include "logger.h"
-
-#include <libusb.h>
 
 namespace mabur::maburd {
 
@@ -155,9 +72,8 @@ void hot_loop(RealMode& m) {
                         std::random_device{}());
 
   std::shared_ptr<const AppliedOp> last_applied_op;
-  // Debug-HTTP per-layer overhead override transition tracking (fix
-  // round 1, review finding): true while the last tick saw both
-  // ovr_base_pct/ovr_enh_pct armed. Needed because clearing the override
+  // Debug-HTTP per-layer overhead override transition tracking: true while the
+  // last tick saw both ovr_base_pct/ovr_enh_pct armed. Needed because clearing the override
   // has NO bounded re-assert to fall back on -- run_bitrate_policy's 5 s
   // reassert (kReassertMs) only re-sends the bitrate/roi_qp verbs, never
   // touches the UEP layers' overhead, so without this the encoder would
@@ -165,7 +81,7 @@ void hot_loop(RealMode& m) {
   // genuine op change.
   bool ov_override_was_armed = false;
 
-  // dq_split gauge (dq-spike follow-up): per-frame split of the
+  // dq_split gauge: per-frame split of the
   // interval the wire's q_ms currently lumps together — venc-ring wait
   // (loop-top → read return) and FEC/SBI-pack CPU (read return → push).
   // Hot-thread-owned, reported on the 5 s ring-stats cadence.
@@ -177,7 +93,7 @@ void hot_loop(RealMode& m) {
   // remainder minus join_wait is the frag/GF-credit/SBI-pack feed itself.
   uint64_t split_sink_sum_us = 0;
 
-  // fec_worker gauge (fec-compute handover): per-layer split of
+  // fec_worker gauge: per-layer split of
   // dq_split's cpu_us into wait-on-worker (join spins) vs the hot thread's
   // own work, plus the worker's per-repair build cost and queue depth.
   // take_fec_gauge's sums are cumulative — keep last-window copies and
@@ -298,7 +214,7 @@ void hot_loop(RealMode& m) {
       // drop is learned as the new period, not booked as 3 holes/frame.
       if (m.fps_rate_change.exchange(false, std::memory_order_relaxed))
         pipe.note_rate_change();
-      // Streaming push (dq-spike follow-up): each body goes to the TxQueue
+      // Streaming push: each body goes to the TxQueue
       // the moment its SBI group seals, so the radio drains this frame's
       // early bodies in parallel with the remaining GF256/SBI packing — an
       // accumulate-then-push shape serialized ~3.4 ms of that CPU in front
@@ -409,7 +325,7 @@ void hot_loop(RealMode& m) {
             (unsigned long long)pipe.self_idr_refused(),
             (unsigned long long)pipe.slice_mismatch());
       }
-      // dq_split window report (dq-spike follow-up): the pre-push half of
+      // dq_split window report: the pre-push half of
       // the interval the wire q_ms spans. The post-push half (true queue
       // wait) is the tx thread's dq_queue line on the same cadence.
       if (split_n > 0) {

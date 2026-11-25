@@ -1,111 +1,27 @@
 // Real mode: the agent thread body (real_mode.h).
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <csignal>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
-#include <deque>
-#include <memory>
-#include <mutex>
-#include <optional>
-#include <random>
-#include <shared_mutex>
-#include <string>
-#include <thread>
-#include <exception>
-#include <variant>
 #include <iterator>
+#include <thread>
 #include <vector>
 
-#include <unistd.h>  // _exit() — see the venc on_fault handler
-
-#if defined(__linux__)
-#include <dirent.h>       // repin_inherited_threads() walks /proc/self/task
-#include <pthread.h>
-#include <sched.h>  // cpu_set_t — see the core-placement policy below
-#include <sys/stat.h>     // mkdir() — the trial proof files
-#include <sys/syscall.h>  // SYS_gettid
-#endif
-
-#include "air_clock.h"
-#include "build_ident.h"
-#include "nack_bucket.h"
-#include "air_rate.h"
-#include "ampdu_policy.h"
-#include "cal_apply.h"
-#include "cal_link.h"
-#include "cal_sweep.h"
-#include "config.h"
-#include "config_migrate.h"
-#include "config_apply.h"
-#include "mabur/config_write.h"
-#include "control_tx_mode.h"
-#include "debug_http.h"
-#include "frame_pipeline.h"
-#include "frame_source.h"
-#include "live_power_table.h"
-#include "mav_component.h"
-#include "ota.h"
 #include "trial_proof.h"
-#include "mabur/channel_file.h"
-#include "mabur/cal_mav.h"
-#include "mabur/cal_proto.h"
-#include "mabur/channel_set.h"
-#include "mabur/frame_wire.h"
-#include "mabur/ht40.h"
-#include "mabur/msp_source.h"
-#include "mabur/msp_status.h"
-#include "mabur/profile.h"
-#include "mabur/rc_proto.h"
-#include "mabur/sbi.h"
-#include "mabur/sw_wire.h"
-#include "mabur/fec_worker.h"
-#include "mabur/uep_encoder.h"
-#include "msp_serial.h"
-#include "power_plan.h"
-#include "power_tables.h"
-#include "probe_source.h"
-#include "radio_tx.h"
-#include "rc_agent.h"
-#include "mi_ready.h"
-#include "telemetry.h"
 #include "peak_rate.h"
-#include "vtx_recorder.h"
 #include "tick_gate.h"
-#include "tx_queue.h"
-#include "mabur/retx_ring.h"
-#include "usb_tx_pool.h"
-#include "send_timer.h"
-#include "threads.h"
-#include "radio_glue.h"
-#include "real_actuator.h"
 #include "real_mode.h"
-#include "igi_floor_watchdog.h"
-#ifdef MABUR_HAVE_VENC
-#include "venc_core.h"  // ARM only: drone/venc is not compiled on host builds
-#endif
+#include "SignalStop.h"
+
+#include <libusb.h>
 
 #if defined(MABUR_DRY_RUN_ONLY)
 // Not used; real mode is always compiled in, guarded at runtime by --dry-run
 // so the same binary runs (in dry-run) on a machine with no dongle attached.
 #endif
-
-#include "AdapterCaps.h"
-#include "AmpduMode.h"
-#include "RadiotapBuilder.h"
-#include "RxPacket.h"
-#include "RxSense.h"
-#include "SignalStop.h"
-#include "TxMode.h"
-#include "UsbOpen.h"
-#include "IRtlRadio.h"
-#include "WiFiDriver.h"
-#include "logger.h"
-
-#include <libusb.h>
 
 namespace mabur::maburd {
 
@@ -132,7 +48,7 @@ void agent_loop(RealMode& m) {
 
   // T_TELEM: sent at ~1 Hz on this same periodic path, on the mutex-guarded
   // dev_sink.send() the MSP thread also uses. The tlm_seq/dot11 seq
-  // counters are declared at run_real_mode scope (not here) — deliberately
+  // counters are members of RealMode (real_mode.h) — deliberately
   // NOT the video path's tx.seq() or RealActuator's DISC_ACK control_seq,
   // so a telemetry-send bug can never perturb either. The dot11 seq is
   // shared with the MAV thread and the TX writer thread's calibration

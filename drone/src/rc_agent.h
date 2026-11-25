@@ -48,7 +48,7 @@ struct AppliedOp {
 
 // Volatile per-layer overhead override (bench sweeps, set via the debug
 // HTTP :8301 POST /venc/set?ov_base_pct=N / ov_enh_pct=N; -1 = off, both
-// must be >= 0 to take effect). main.cpp's hot loop applies the forced pair
+// must be >= 0 to take effect). maburd's hot loop (hot_thread.cpp) applies the forced pair
 // to the UEP layers directly (the op pair loses), and run_bitrate_policy
 // reads the same pair so its target describes what is ACTUALLY flying
 // rather than the commanded op. Not persisted; a daemon restart clears it.
@@ -125,7 +125,7 @@ class Actuator {
 struct RadioHealth {
   int thermal_delta = 0;
   uint64_t tx_drops = 0;  // TxStats::failed: USB bulk-OUT failures
-  // TxQueue occupancy at the tick (main.cpp). 0/0 when unknown (tests,
+  // TxQueue occupancy at the tick (maburd/agent_thread.cpp). 0/0 when unknown (tests,
   // pre-radio ticks) -- never reads as pressure.
   size_t txq_depth = 0;
   size_t txq_cap = 0;
@@ -145,7 +145,7 @@ class RcAgent {
   // be null (tests), in which case no override is ever armed and the
   // bitrate policy always builds its target from the commanded pair.
   // start_ch is the channel to park on (the remembered member from the
-  // state file, read by main.cpp); 0 (or a non-member) means
+  // state file, read by maburd); 0 (or a non-member) means
   // cfg.radio.channels.front().
   RcAgent(const Config& cfg, Actuator& act, OvOverride* ovr = nullptr, uint8_t start_ch = 0);
 
@@ -196,7 +196,7 @@ class RcAgent {
   // Telemetry accessors: read-only
   // snapshots of RcAgent-internal state the T_TELEM collector needs but
   // that isn't otherwise exposed. All same-thread reads (the agent thread
-  // owns both RcAgent and the telemetry collector call site in main.cpp).
+  // owns both RcAgent and the telemetry collector call site in maburd/agent_thread.cpp).
   bool failsafe_shed() const { return failsafe_shed_; }
   // True while run_congestion_guard holds any shed level (TxQueue at/past
   // half cap, or USB TX failures) — Telem flags bit4. Reported separately
@@ -231,7 +231,7 @@ class RcAgent {
     return static_cast<uint16_t>(current_.last_seq32);
   }
 
-  // True once after a pending pair became current (main.cpp sends one
+  // True once after a pending pair became current (maburd/agent_thread.cpp sends one
   // "promote" Telem on the current channel before tick() runs any deferred
   // channel move). Agent thread only.
   bool take_session_promoted() {

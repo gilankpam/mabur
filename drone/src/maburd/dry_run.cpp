@@ -1,40 +1,16 @@
 // Dry-run mode: file-driven, no radio. host_e2e byte-checks its output.
-#include "dry_run.h"
 
-#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <deque>
 #include <memory>
-#include <mutex>
-#include <optional>
 #include <string>
-#include <thread>
-#include <variant>
 #include <vector>
 
-#include "air_clock.h"
-#include "air_rate.h"
-#include "config.h"
-#include "config_apply.h"
 #include "debug_http.h"
 #include "frame_pipeline.h"
-#include "frame_source.h"
-#include "mabur/frame_wire.h"
-#include "mabur/msp_source.h"
-#include "mabur/msp_status.h"
-#include "mabur/profile.h"
-#include "mabur/rc_proto.h"
-#include "mabur/sbi.h"
-#include "mabur/sw_wire.h"
-#include "mabur/uep_encoder.h"
 #include "probe_source.h"
-#include "radio_glue.h"
-#include "radio_tx.h"
-#include "rc_agent.h"
 #include "real_actuator.h"
-#include "threads.h"
 
 namespace mabur::maburd {
 

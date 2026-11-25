@@ -27,13 +27,13 @@ namespace mabur {
 // per-channel anchor the diffs ride on is NOT this number. devourer
 // re-derives it from the efuse on every channel change, driven by the
 // ReApplyTxPower() call maburd makes right after each FastRetune
-// (drone/src/main.cpp, RealActuator::retune_now_). A stale value here can
+// (drone/src/maburd/real_actuator.cpp: RealActuator::retune_now_). A stale value here can
 // only mis-size a guard that does not bind; it cannot mis-place a wall.
 //
 // One plan per width (power_tables.h) is the WHOLE of mabur's power
 // policy: bring-up programs the start width's plan with the global offset
 // zeroed beside it, and the live table swaps to the other width's plan
-// when a rung crosses to that width (main.cpp, LivePowerTable). A
+// when a rung crosses to that width (maburd/real_actuator.cpp, LivePowerTable). A
 // RADIO_WALL_MARGN set rebuilds both plans and writes the live one. A
 // calibration apply only records the new plans: the run's capacity sweep
 // programs its width's plan, and the run's end programs the rung's. Nothing
