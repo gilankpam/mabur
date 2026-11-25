@@ -16,6 +16,7 @@
 #include "probe_source.h"
 #include "real_mode.h"
 #include "SignalStop.h"
+#include "ov_override_edge.h"
 #include "window_stat.h"
 
 #include <libusb.h>
@@ -68,14 +69,7 @@ void hot_loop(RealMode& m) {
                         std::random_device{}());
 
   std::shared_ptr<const AppliedOp> last_applied_op;
-  // Debug-HTTP per-layer overhead override transition tracking: true while the
-  // last tick saw both ovr_base_pct/ovr_enh_pct armed. Needed because clearing the override
-  // has NO bounded re-assert to fall back on -- run_bitrate_policy's 5 s
-  // reassert (kReassertMs) only re-sends the bitrate/roi_qp verbs, never
-  // touches the UEP layers' overhead, so without this the encoder would
-  // stay pinned at the last override value indefinitely, until the next
-  // genuine op change.
-  bool ov_override_was_armed = false;
+  mabur::OvOverrideEdge ov_edge;  // debug-HTTP override arm/clear edge
 
   // dq_split gauge: per-frame split of the
   // interval the wire's q_ms currently lumps together — venc-ring wait
@@ -136,14 +130,16 @@ void hot_loop(RealMode& m) {
     if (op) {
       const int ob = m.ov_override.ovr_base_pct.load(std::memory_order_relaxed);
       const int oe = m.ov_override.ovr_enh_pct.load(std::memory_order_relaxed);
-      const bool armed = ob >= 0 && oe >= 0;
-      if (armed) {
-        uep.set_layer_overhead(0, ob / 100.0);
-        uep.set_layer_overhead(1, oe / 100.0);
-        ov_override_was_armed = true;
-      } else if (ov_override_was_armed) {
-        apply_op_to_uep(*op, uep);
-        ov_override_was_armed = false;
+      switch (ov_edge.step(ob, oe)) {
+        case mabur::OvOverrideEdge::Action::ApplyOverride:
+          uep.set_layer_overhead(0, ob / 100.0);
+          uep.set_layer_overhead(1, oe / 100.0);
+          break;
+        case mabur::OvOverrideEdge::Action::ReapplyOp:
+          apply_op_to_uep(*op, uep);
+          break;
+        case mabur::OvOverrideEdge::Action::None:
+          break;
       }
     }
 
