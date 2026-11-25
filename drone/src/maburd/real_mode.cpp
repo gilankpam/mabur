@@ -666,6 +666,8 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
 
   auto rx_callback = [&m](const Packet& pkt) { rx_on_packet(m, pkt); };
 
+  if (cfg.msp.enable) m.start_msp(cfg.msp);
+
   std::thread mav_thread([&m] { mav_loop(m); });
 
   install_nack_hook(m);

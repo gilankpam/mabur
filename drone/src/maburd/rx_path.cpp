@@ -112,9 +112,9 @@ namespace mabur::maburd {
 using namespace mabur;
 
 // RX callback: pulls RC frames (rc::frame_type >= 0) off the air and
-void rx_on_packet(RealMode& m, const Packet& pkt) {
+// queues them for the agent thread. Runs on the main thread (inside
 // rtl_device->Init's blocking RX loop).
-auto rx_callback = [&m](const Packet& pkt) {
+void rx_on_packet(RealMode& m, const Packet& pkt) {
   m.rx_beat.fetch_add(1, std::memory_order_relaxed);
   if (pkt.RxAtrib.crc_err) m.rx_crcfail_frames.fetch_add(1, std::memory_order_relaxed);
   if (pkt.Data.size() < kDot11HeaderLen + 4) return;
@@ -151,9 +151,8 @@ auto rx_callback = [&m](const Packet& pkt) {
     if (rc::is_foreign_rc_version(body, body_len))
       log_foreign_rc_version(body[2]);
   }
-};
-
 }
+
 namespace {
 
 // RX-thread-only state of the NACK answer, owned by the hook.
