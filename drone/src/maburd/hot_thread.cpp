@@ -19,11 +19,6 @@
 
 #include <libusb.h>
 
-#if defined(MABUR_DRY_RUN_ONLY)
-// Not used; real mode is always compiled in, guarded at runtime by --dry-run
-// so the same binary runs (in dry-run) on a machine with no dongle attached.
-#endif
-
 namespace mabur::maburd {
 
 using namespace mabur;
@@ -161,7 +156,7 @@ void hot_loop(RealMode& m) {
     int n = fsrc.read(fbuf.data(), fbuf.size(), 5, &meta);
     const uint64_t t_read_us = now_steady_us();
     if (n <= 0) {
-      // Between frames (fec-join-delete): the frame-end flush does not wait
+      // Between frames: the frame-end flush does not wait
       // for the FEC worker, so the repairs it was still building ship here,
       // on the ring-read timeout, ≤5 ms after the frame. No AU owns these
       // bodies (au_first stays false, enc_us stays the packer's zero

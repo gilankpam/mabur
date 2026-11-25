@@ -27,11 +27,6 @@
 
 #include <libusb.h>
 
-#if defined(MABUR_DRY_RUN_ONLY)
-// Not used; real mode is always compiled in, guarded at runtime by --dry-run
-// so the same binary runs (in dry-run) on a machine with no dongle attached.
-#endif
-
 namespace mabur::maburd {
 
 using namespace mabur;
@@ -50,7 +45,7 @@ void handle_sigusr1(int) { g_sigusr1_flag.store(true); }
 // examples/doctor all call install_devourer_signal_handlers() instead of
 // installing their own SIGINT/SIGTERM handlers). A locally-scoped flag set by
 // a handler maburd installs itself is never consulted by Init()'s loop, so
-// Ctrl-C/SIGTERM would never unblock it. The hot/agent thread loops below
+// Ctrl-C/SIGTERM would never unblock it. The loops in hot_thread.cpp and agent_thread.cpp
 // read g_devourer_should_stop directly too, so all three (Init()'s RX loop,
 // hot_thread, agent_thread) stop on the same signal.
 
@@ -578,7 +573,7 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
   }
 #endif
   m.vtx_rec.start_thread();
-  // After venc_core_start: RcAgent's first tick (below) already commands a
+  // After venc_core_start: RcAgent's first tick (agent_thread.cpp) already commands a
   // bitrate through the verbs, so the ring/stats the debug endpoint reads
   // are live from here on. localhost-only, always on -- bind failure logs
   // and disables itself, never fatal (see debug_http.h).
@@ -656,7 +651,7 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
   // per cell, close_session parks it at the anchor). A maburd
   // killed mid-session (operator interrupt, wrapper respawn, watchdog)
   // never reaches the TX writer thread's falling-edge restore
-  // (restore_operating_power(), below) and hands off to the next process
+  // (restore_operating_power(), in tx_writer.cpp) and hands off to the next process
   // with the override still live -- reverting it here, unconditionally,
   // before the power plan is applied, means a fresh process never depends
   // on how the previous one died. -1 reverts to the calibrated table

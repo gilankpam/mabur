@@ -165,7 +165,7 @@ struct RealActuator : mabur::Actuator {
   // Threading: FastRetune is a control-plane call, and devourer's IRtlRadio.h
   // threading contract forbids one concurrent with ANY other device call —
   // not just a bulk-OUT. A calibration sweep runs the three TX-power knobs
-  // (DevicePowerCtl, below) from the TX writer thread for up to 180 s, and
+  // (DevicePowerCtl, in tx_writer.cpp) from the TX writer thread for up to 180 s, and
   // nothing stops a retune being requested in that time: a hop order in an
   // RCF that was already queued, or
   // move_unconfirmed's return when the GS goes radio-silent for the sweep

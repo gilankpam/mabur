@@ -21,11 +21,6 @@
 
 #include <libusb.h>
 
-#if defined(MABUR_DRY_RUN_ONLY)
-// Not used; real mode is always compiled in, guarded at runtime by --dry-run
-// so the same binary runs (in dry-run) on a machine with no dongle attached.
-#endif
-
 namespace mabur::maburd {
 
 using namespace mabur;
@@ -335,7 +330,7 @@ void tx_writer_loop(RealMode& m) {
   // reported every 5 s.
   uint64_t qw_n = 0, qw_sum_us = 0, qw_max_us = 0;
   uint64_t qf_n = 0, qf_sum_us = 0, qf_max_us = 0;
-  // tx_send gauge (burst-drain follow-up): wall time of each
+  // tx_send gauge: wall time of each
   // tx.send_bodies call and its body count, to split the measured
   // ~0.385 ms/body burst pace into USB round-trip vs airtime. A blocking
   // ~1.1 ms per 3-body batch here = the URB round-trip IS the pace.

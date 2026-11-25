@@ -37,7 +37,6 @@
 
 #include "IRtlRadio.h"
 
-
 namespace mabur::maburd {
 
 using namespace mabur;
@@ -101,13 +100,11 @@ struct CalMsgQueue {
 // ~256 bodies ≈ 150 ms at 1700 bodies/s.
 constexpr size_t kTxQueueCap = 256;  // also the congestion shed's txq_cap
 
-// The state run_real_mode's threads share. Each member was a local of
-// run_real_mode and keeps that local's name and declaration order, so
-// declaration order is the old local order, and
-// the members are plain allocations and wiring, so building it ahead of the
-// venc boot costs nothing. Built once, after the radio bring-up thread starts
-// (the radio handle is passed in); threads hold references into it, so it is neither
-// copyable nor movable.
+// The state run_real_mode's threads share. Members are declared in the order
+// run_real_mode's bring-up needs; construction is allocation and wiring only,
+// so building it before the venc boot costs nothing. Built once, after the
+// radio bring-up thread starts; threads hold references into it, so it is
+// neither copyable nor movable.
 struct RealMode {
   RealMode(const Config& cfg, uint8_t start_ch, const std::string& cfg_path, IRtlRadio* dev,
            const IgiFloorParams& igi);
@@ -165,8 +162,8 @@ struct RealMode {
   // writer), the hot thread (which applies it to the UEP layers) and the
   // agent thread (whose bitrate target must describe what is actually
   // flying) — see OvOverride's doc comment in rc_agent.h. Must outlive both
-  // hot_thread and agent_thread, so it lives in this outer scope beside
-  // shared_op, not inside either thread's lambda.
+  // hot_thread and agent_thread, so it is a RealMode member beside
+  // shared_op, not a local of either thread function.
   OvOverride ov_override;
 
   // Agent thread -> hot thread: the encoder's frame rate changed (low-power

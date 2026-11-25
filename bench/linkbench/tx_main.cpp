@@ -388,7 +388,7 @@ int main(int argc, char** argv) {
   else if (a.pwr_mode == "offset") dev->SetTxPowerOffsetQdb(a.pwr_offset_qdb);
   // "none": leave the efuse per-rate (per-MCS) calibration untouched.
 
-  // A-MPDU exactly as drone/src/maburd/real_mode.cpp programs it (after InitWrite, before
+  // A-MPDU as RealActuator::apply_ampdu_for (drone/src/maburd/real_actuator.cpp) programs it (after InitWrite, before
   // the first send): no_ack + density 7, aggregate-fill timer max_time.
   if (a.ampdu > 0) {
     devourer::AmpduMode am;

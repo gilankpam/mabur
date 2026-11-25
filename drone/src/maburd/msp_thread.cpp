@@ -15,11 +15,6 @@
 #include "real_mode.h"
 #include "SignalStop.h"
 
-#if defined(MABUR_DRY_RUN_ONLY)
-// Not used; real mode is always compiled in, guarded at runtime by --dry-run
-// so the same binary runs (in dry-run) on a machine with no dongle attached.
-#endif
-
 namespace mabur::maburd {
 
 using namespace mabur;
