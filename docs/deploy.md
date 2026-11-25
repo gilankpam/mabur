@@ -230,9 +230,17 @@ episode:
 - If the floor is at the cap and a window is still slow, or no window is
   judged slow or clean for 3 s (the link is gone, the rung dropped to
   20 MHz, or the queue stayed murky), the climb is undone: the floor returns
-  to the level the episode started from, and a
-  new episode waits out a hold of 30 s that doubles at each failure up to
-  300 s.
+  to the level the episode started from, and a new episode waits out a hold
+  of 30 s that doubles at each failure up to 300 s.
+
+A busy channel gates the judging. Foreign airtime stalls sends and fills the
+chip queue exactly as an IGI stall does, and a higher floor does not cure it,
+so a window in which the channel's busy airtime reads 20 % or more is not
+judged at all: it neither counts slow, nor clean, nor starts or keeps an
+episode. The thread arms one 240 ms busy-airtime window a second on the
+radio and reads it at the next second; a reading is used for at most 2 s, and
+a retune or a tick that is not eligible drops it. The accepted risk: an IGI
+stall on a channel with 20 % or more foreign airtime is not recovered.
 
 Only windows in which video airs at 40 MHz, the radio is up, no calibration
 is running and no retune happened are judged. The level lasts for the
@@ -246,19 +254,22 @@ The log lines (stderr):
 
 ```
 maburd radio: IGI floor base 0x22 cap 0x35            (once at start; " (env)" appended when an override is set)
-maburd radio: IGI floor 0x22 -> 0x24 (longest send 87 ms, chip queue 91 %)
+maburd radio: IGI floor 0x22 -> 0x24 (longest send 87 ms, chip queue 91 %, busy 0 %)
 maburd radio: IGI floor 0x24 kept
 maburd radio: IGI floor 0x35 -> 0x22 reverted, no help; holding 30 s
 maburd radio: IGI floor watchdog off (radio has no runtime floor)
 maburd radio: IGI floor 0x24: USB error on the IGI write, DIG applies it
 maburd radio: IGI floor watchdog: no chip queue reading, sends only
+maburd radio: IGI floor watchdog: no busy reading, busy gate off
 ```
 
 `watchdog off` means the radio refuses a runtime floor and the thread
 stops; `USB error` means the write failed on USB but the floor is recorded and
 the periodic DIG tick enforces it; `no chip queue reading` means the radio
 cannot report its queue, so only slow sends count (logged once). A failed
-queue read counts as an empty queue for that tick, with no log line. The
+queue read counts as an empty queue for that tick, with no log line. `no busy
+reading` means the radio cannot arm a busy window, so the gate is off (logged
+once); a failed busy read leaves that second unknown, with no log line. The
 `stats:` line carries `igi_floor=0x%02x`, the level currently set, after
 `txq_drop=`.
 
