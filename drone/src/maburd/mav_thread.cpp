@@ -24,21 +24,13 @@ using namespace mabur;
 // MAVLink parameter component. Verifies each T_MAV off mav_queue
 // (RcAgent::check_mav), feeds the payload to the component -- or, for a
 // frame of calibration packets only, decodes them onto cal_queue for the
-// TX writer thread -- and sends its
-// queued replies back as tagged T_MAV_UP frames on the Telem path (control
-// radiotap, the shared telem dot11 seq, the mutex-guarded dev_sink.send()),
-// at most one frame per kMavUplinkMinMs while a session is published so the
-// tunnel never crowds Telem or the OSD stream. Uplink needs a published
-// session or an update-only pair (nobody is listening without one); with
-// only the update pair there is no video to protect and no pacing. The
-// 1 Hz HEARTBEAT needs a published session. Both follow Telem's
-// suppression while a calibration sweep airs: replies wait queued.
-// Frames go out tagged under the pair of the latest accepted inbound frame
-// (the update pair after a kOkUpdate), so an update GS that is not the
-// linked one still verifies its replies. Once the update server asks to
-// exit, the thread stops maburd (as SIGTERM does) when its replies have
-// gone, or after MavUplinkGate::kOtaExitGraceMs regardless. RcQueue has no
-// condvar, so this polls at 5 ms, like cal_queue's consumer.
+// TX writer thread -- and sends its queued replies back as tagged T_MAV_UP
+// frames on the Telem path (control radiotap, the shared telem dot11 seq,
+// the mutex-guarded dev_sink.send()), tagged under the pair of the latest
+// accepted inbound frame (the update pair after a kOkUpdate) so an update GS
+// that is not the linked one still verifies its replies. When to send, and
+// when to exit, is MavUplinkGate's. RcQueue has no condvar, so the loop
+// polls at 5 ms, like cal_queue's consumer.
 void mav_loop(RealMode& m) {
   name_thread("mbr-mav");
   ApplyPort port;

@@ -50,7 +50,7 @@ TEST(reads_after_a_second) {
   CHECK(d.reads == 1 && d.arms == 2);
 }
 
-TEST(reading_expires_after_two_seconds) {
+TEST(invalid_read_clears_reading) {
   BusyWindow b;
   FakeDev d;
   d.readings = {37};

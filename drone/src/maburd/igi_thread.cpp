@@ -8,6 +8,7 @@
 #include <string>
 #include <thread>
 
+#include "busy_window.h"
 #include "real_mode.h"
 #include "SignalStop.h"
 
