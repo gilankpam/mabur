@@ -13,6 +13,7 @@
 #include "trial_proof.h"
 #include "peak_rate.h"
 #include "tick_gate.h"
+#include "loop_watchdog.h"
 #include "real_mode.h"
 #include "SignalStop.h"
 
@@ -27,12 +28,8 @@ using namespace mabur;
 // stats dumps.
 void agent_loop(RealMode& m) {
   name_thread("mbr-agent");
-  const uint64_t grace_ms = 10000;
-  const uint64_t stale_ms = 3000;
   uint64_t start = now_steady_ms();
-
-  uint64_t last_hot_beat = 0, last_rx_beat = 0;
-  uint64_t last_hot_change_ms = start, last_rx_change_ms = start;
+  LoopWatchdog wd(start);
   uint64_t last_stats_ms = start;
   // The MAV counters as of the last stats line printed with them.
   uint64_t mav_last[8] = {};
@@ -195,52 +192,21 @@ void agent_loop(RealMode& m) {
       if (m.agent.take_link_established())
         m.link_up_discont.store(true, std::memory_order_relaxed);
 
-      // Watchdog: after an initial grace period, a heartbeat going stale for
-      // > stale_ms means the corresponding loop is wedged — EXCEPT rx_beat,
-      // which only bumps when a frame is actually received off the air.
-      // Silence on the RX side is the expected steady state whenever the
-      // agent isn't LINKED (RENDEZVOUS: waiting for a DISC beacon; FAILSAFE:
-      // GS has gone quiet, which is exactly the scenario failsafe exists
-      // for) — gating rx-stale detection on agent.state() == LINKED tells
-      // "the receive path is stuck" apart from "the ground station turned
-      // off," which used to abort()/respawn-loop maburd forever on a merely
-      // quiet channel. The hot-thread check stays unconditional: hot_beat
-      // bumps every ring-read iteration regardless of RF activity, so its
-      // staleness always means the pipeline thread itself is wedged. This
-      // check runs on the agent thread, which already owns `agent`
-      // (RcAgent::tick() above is called from here), so reading
-      // agent.state() here is the same-thread access it already is
-      // elsewhere in this loop — no cross-thread synchronization needed.
+      // Watchdog: see loop_watchdog.h for what counts as a stall.
       uint64_t hb = m.hot_beat.load(std::memory_order_relaxed);
       uint64_t rb = m.rx_beat.load(std::memory_order_relaxed);
-      if (hb != last_hot_beat) {
-        last_hot_beat = hb;
-        last_hot_change_ms = now;
-      }
-      if (rb != last_rx_beat) {
-        last_rx_beat = rb;
-        last_rx_change_ms = now;
-      }
-      // Calibration radio silence: the GS transmits nothing while a sweep
-      // airs, so
-      // rx_beat legitimately stalls for the session's duration -- pin the
-      // "last seen" clock to now instead of gating the check below on
-      // cal_active, so the instant the session ends the watchdog gets a
-      // full fresh stale_ms window rather than reading however long the
-      // session already ran as instant staleness.
-      if (m.cal_active.load(std::memory_order_relaxed)) last_rx_change_ms = now;
-      if (now - start > grace_ms) {
-        if (now - last_hot_change_ms > stale_ms) {
+      switch (wd.check(now, hb, rb, m.agent.state() == RcAgent::State::LINKED,
+                       m.cal_active.load(std::memory_order_relaxed))) {
+        case LoopWatchdog::Stall::Hot:
           std::fprintf(stderr, "watchdog: hot thread stalled (no beat for >%llums)\n",
-                       static_cast<unsigned long long>(stale_ms));
+                       static_cast<unsigned long long>(wd.stale_ms()));
           std::abort();
-        }
-        if (m.agent.state() == RcAgent::State::LINKED && now - last_rx_change_ms > stale_ms) {
+        case LoopWatchdog::Stall::Rx:
           std::fprintf(stderr,
                        "watchdog: rx loop stalled while LINKED (no beat for >%llums)\n",
-                       static_cast<unsigned long long>(stale_ms));
+                       static_cast<unsigned long long>(wd.stale_ms()));
           std::abort();
-        }
+        case LoopWatchdog::Stall::None: break;
       }
 
       bool want_stats = g_sigusr1_flag.exchange(false);
