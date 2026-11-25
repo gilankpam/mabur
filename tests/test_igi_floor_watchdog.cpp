@@ -14,14 +14,14 @@ struct Rig {
   std::vector<IgiFloorWatchdog::Result> ev;
   explicit Rig(uint8_t base = 0x22, uint8_t cap = 0x35)
       : p{igi_floor_params(base, nullptr, nullptr)}, w{(p.cap = cap, p), now} {}
-  void ticks(int n, bool eligible, uint64_t us) {
+  void ticks(int n, bool eligible, uint64_t us, uint8_t q = 0) {
     for (int i = 0; i < n; ++i) {
       now += 100;
-      auto r = w.step(now, eligible, us);
+      auto r = w.step(now, eligible, us, q);
       if (r.event != IgiFloorWatchdog::Event::None) ev.push_back(r);
     }
   }
-  void secs(int n, bool eligible, uint64_t us) { ticks(10 * n, eligible, us); }
+  void secs(int n, bool eligible, uint64_t us, uint8_t q = 0) { ticks(10 * n, eligible, us, q); }
 };
 
 static bool is(const IgiFloorWatchdog::Result& r, E e, uint8_t level) {
@@ -142,9 +142,39 @@ TEST(watchdog_off_when_cap_equals_base) {
 
 TEST(late_tick_is_one_ignored_window) {
   Rig r; r.now += 5000;
-  CHECK(r.w.step(r.now, true, kSlow).event == E::None);
+  CHECK(r.w.step(r.now, true, kSlow, 0).event == E::None);
   r.secs(1, true, kSlow);
   CHECK(r.ev.empty());
+}
+
+TEST(queue_backlog_alone_starts_a_climb) {
+  Rig r; r.secs(2, true, kFast, 90);
+  REQUIRE(r.ev.size() == 1);
+  CHECK(r.ev[0].event == E::Raised); CHECK(r.ev[0].from == 0x22);
+  CHECK(r.ev[0].level == 0x24); CHECK(r.ev[0].backlog_pct == 90);
+  CHECK(r.ev[0].longest_ms == 2);
+}
+
+TEST(queue_below_threshold_is_clean) {
+  Rig r; r.secs(60, true, kFast, 39); CHECK(r.ev.empty());
+}
+
+TEST(queue_backlog_blocks_the_keep) {
+  Rig r; r.secs(2, true, kFast, 90);
+  r.ticks(23, true, kFast, 50);   // 50 % is still slow: climbs on, never keeps
+  REQUIRE(r.ev.size() == 2);
+  CHECK(is(r.ev[0], E::Raised, 0x24)); CHECK(is(r.ev[1], E::Raised, 0x28));
+}
+
+TEST(one_backlog_tick_makes_the_window_slow) {
+  Rig r;
+  for (int s = 0; s < 2; ++s) { r.ticks(9, true, kFast, 0); r.ticks(1, true, kFast, 95); }
+  REQUIRE(r.ev.size() == 1); CHECK(is(r.ev[0], E::Raised, 0x24));
+}
+
+TEST(queue_signal_off_when_pct_zero) {
+  Rig r; r.p.queue_slow_pct = 0; r.w = IgiFloorWatchdog(r.p, r.now);
+  r.secs(60, true, kFast, 99); CHECK(r.ev.empty());
 }
 
 TEST(params_from_env) {

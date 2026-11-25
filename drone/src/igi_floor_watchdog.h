@@ -20,6 +20,7 @@ struct IgiFloorParams {
   uint8_t base = 0, cap = 0;            // cap <= base: watchdog off
   uint32_t window_ms = 1000;
   uint64_t slow_us = 30000;
+  uint8_t queue_slow_pct = 40;          // chip TX queue backlog; 0 = queue signal off
   uint32_t settle_ms = 300;
   uint32_t history_ms = 30000;
   uint32_t abandon_ms = 3000;
@@ -59,6 +60,7 @@ class IgiFloorWatchdog {
     Event event = Event::None;
     uint8_t from = 0, level = 0;        // level = the floor to have set now
     uint32_t longest_ms = 0;            // Raised: the slow window's longest send
+    uint8_t backlog_pct = 0;            // Raised: the slow window's deepest backlog
     uint32_t hold_s = 0;                // Reverted: seconds before a new episode
   };
 
@@ -68,7 +70,10 @@ class IgiFloorWatchdog {
   // One call per tick (about 100 ms). eligible: video is airing at 40 MHz, the
   // radio is up, no calibration is active, and no retune happened since the
   // previous call. longest_send_us: SendTimer::take_longest_us for that interval.
-  Result step(uint64_t now_ms, bool eligible, uint64_t longest_send_us) {
+  // queue_backlog_pct: the chip TX queue in use right now (0 when unknown); a
+  // low floor backs frames up in the chip while every USB send still returns fast.
+  Result step(uint64_t now_ms, bool eligible, uint64_t longest_send_us,
+              uint8_t queue_backlog_pct) {
     if (p_.cap <= p_.base) return none();
     // No judged window for abandon_ms (link gone, rung dropped to 20 MHz):
     // the raise was never proven, so it does not stay.
@@ -76,19 +81,22 @@ class IgiFloorWatchdog {
     if (now_ms <= win_start_) return none();  // settling after a level change
     win_ok_ = win_ok_ && eligible;
     win_max_ = std::max(win_max_, longest_send_us);
+    win_q_ = std::max(win_q_, queue_backlog_pct);
     if (now_ms < win_start_ + p_.window_ms) return none();
 
     // A window stretched past twice its length (a starved thread, a clock
     // jump) is one ignored window, never several slow ones.
     const bool judged = win_ok_ && now_ms <= win_start_ + 2ull * p_.window_ms;
     const uint64_t longest = win_max_;
-    const bool slow = longest >= p_.slow_us;
+    const uint8_t backlog = win_q_;
+    const bool slow = longest >= p_.slow_us ||
+                      (p_.queue_slow_pct != 0 && backlog >= p_.queue_slow_pct);
     open(now_ms);
     if (!judged) return none();
 
     if (climbing_) {
       last_act_ = now_ms;
-      if (slow) return level_ < p_.cap ? raise(now_ms, longest) : fail(now_ms);
+      if (slow) return level_ < p_.cap ? raise(now_ms, longest, backlog) : fail(now_ms);
       if (!clean_) { clean_ = true; return none(); }
       hist_n_ = 0;
       hold_len_ = p_.hold_ms;
@@ -111,7 +119,7 @@ class IgiFloorWatchdog {
     climbing_ = true;
     episode_base_ = level_;
     raises_ = 0;
-    return raise(now_ms, longest);
+    return raise(now_ms, longest, backlog);
   }
 
   uint8_t level() const { return level_; }
@@ -121,11 +129,11 @@ class IgiFloorWatchdog {
 
   Result none() const { Result r; r.from = r.level = level_; return r; }
 
-  void open(uint64_t t) { win_start_ = t; win_ok_ = true; win_max_ = 0; }
+  void open(uint64_t t) { win_start_ = t; win_ok_ = true; win_max_ = 0; win_q_ = 0; }
 
   void changed(uint64_t now) { last_act_ = now; open(now + p_.settle_ms); }
 
-  Result raise(uint64_t now, uint64_t longest_us) {
+  Result raise(uint64_t now, uint64_t longest_us, uint8_t backlog) {
     static constexpr uint8_t kSteps[] = {2, 4, 8};  // then straight to the cap
     Result r = none();
     const int up = raises_ < 3 ? kSteps[raises_] : p_.cap;
@@ -136,6 +144,7 @@ class IgiFloorWatchdog {
     r.event = Event::Raised;
     r.level = level_;
     r.longest_ms = static_cast<uint32_t>(longest_us / 1000);
+    r.backlog_pct = backlog;
     return r;
   }
 
@@ -156,6 +165,7 @@ class IgiFloorWatchdog {
   IgiFloorParams p_;
   uint8_t level_;
   uint64_t win_start_ = 0, win_max_ = 0;
+  uint8_t win_q_ = 0;
   bool win_ok_ = true;
   Judged hist_[3] = {};
   int hist_n_ = 0;

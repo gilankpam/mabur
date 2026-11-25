@@ -3636,7 +3636,7 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
                             video_bw.load(std::memory_order_relaxed) == 40 && seq == last_seq;
       last_seq = seq;
       const uint64_t now_us = now_steady_us();
-      const auto r = wd.step(now_us / 1000, eligible, send_timer.take_longest_us(now_us));
+      const auto r = wd.step(now_us / 1000, eligible, send_timer.take_longest_us(now_us), 0);
       if (r.event == Ev::Raised || r.event == Ev::Reverted) {
         bool ok = true;
         try {
