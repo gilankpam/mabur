@@ -200,7 +200,7 @@ The second is devourer's **wide-TX IGI floor**
 switched on by the session's first 40 MHz frame and stays on while the card
 is tuned to 40 MHz. It exists because on a silent channel the receiver can
 settle where the secondary 20 MHz never reads idle, and the MAC then holds
-the 40 MHz frame. Every IGI step above the DIG window costs the RCF uplink
+the first 40 MHz frame forever. Every IGI step above the DIG window costs the RCF uplink
 idle-channel sensitivity, so `maburd` starts low and raises the floor only
 while 40 MHz sends stall. The starting floor is per image, from the one
 Jaguar3 chip that image compiles in:
@@ -259,9 +259,9 @@ off, leaving a fixed floor at the base.
 The 8812CU is 2T2R, so STBC airs on two real chains; none of the 8822E
 constraints in devourer's 8822E quirks page
 (`third_party/devourer/docs/8822e-quirks.md`: spur channels, single-path
-1SS TX, DPDT front end) apply to it. **The 8812CU path is not
-hardware-verified on this bench** — there is no CU unit here; its only
-on-hardware check is an external tester's rig.
+1SS TX, DPDT front end) apply to it. **The 8812CU path, its `0x26` start and the
+watchdog on it, are not hardware-verified with `maburd`**; the only
+on-hardware check of the CU is an external tester's rig.
 
 ## Config format
 
