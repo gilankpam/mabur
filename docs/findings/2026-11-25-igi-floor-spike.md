@@ -268,6 +268,12 @@ minus the capture stamp, relative to the session's fastest frame
   "always empty". `maburd`'s existing send timing shows the fault without any
   register read: blocked sends over 60 ms and TX-queue waits over 35 ms
   appear only in the bad cells, bar one 55 ms send just after a switch.
+- The switches themselves, read from the 1 s chip-queue lines: raising the
+  floor to 0x22 clears a full queue within the next second, six times out of
+  six. Going down on 161 the gain control passes through 0x20 for about 2 s
+  and the queue is already full there (15-17 free pages, both linked
+  switches), so on 161 the edge is above 0x20 and 0x22 has one or two steps
+  of margin, not three. 0x21 was not held anywhere.
 - With the GS silent the drone goes to failsafe after 3 s and sheds to about
   230 frames/s; at that load the chip queue is empty at either setting. The
   exposure with a quiet uplink is those 3 s.
