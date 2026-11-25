@@ -200,17 +200,61 @@ The second is devourer's **wide-TX IGI floor**
 switched on by the session's first 40 MHz frame and stays on while the card
 is tuned to 40 MHz. It exists because on a silent channel the receiver can
 settle where the secondary 20 MHz never reads idle, and the MAC then holds
-the first 40 MHz frame forever. A ladder with 40 MHz rungs
-turns the floor on at the first 40 MHz rung and keeps it on for the rest
-of the flight, which costs the RCF uplink idle-channel sensitivity. The
-shipped ladder is all 20 MHz, so it never turns the floor on. `maburd` picks the value per image,
-from the one Jaguar3 chip that image compiles in:
+the 40 MHz frame. Every IGI step above the DIG window costs the RCF uplink
+idle-channel sensitivity, so `maburd` starts low and raises the floor only
+while 40 MHz sends stall. The starting floor is per image, from the one
+Jaguar3 chip that image compiles in:
 
-- **8812EU**: `0` (no floor). The EU has flown the 40 MHz rungs without a
-  floor and never stalled. An EU unit that does stall loses the downlink
-  at its first 40 MHz frame, with the TX FIFO full; give that unit a floor.
-- **8812CU**: devourer's default, `0x35`. The stall was found on the 8822C,
-  and the default is the lowest value that has cleared every CU unit tested.
+- **8812EU**: `0x22`.
+- **8812CU**: `0x26`. The stall was found on the 8822C.
+
+The cap on both is `0x35`.
+
+A watchdog thread (`drone/src/igi_floor_watchdog.h`, fed by
+`drone/src/send_timer.h`) raises the floor in flight. It times every
+direct-path video send and judges one-second windows; a window is slow when
+its longest radio send is 30 ms or more. Two slow windows among the last
+three judged ones within 30 s start an episode:
+
+- The floor steps up by `+2`, then `+4`, then `+8`, then goes straight to
+  the cap, never past it. After each step it waits 300 ms to settle, then
+  judges the next window.
+- Two clean windows in a row keep the level. The episode ends and the
+  failure hold resets.
+- If the floor is at the cap and a window is still slow, or no window is
+  judged for 3 s (the link is gone, or the rung dropped to 20 MHz), the climb
+  is undone: the floor returns to the level the episode started from, and a
+  new episode waits out a hold of 30 s that doubles at each failure up to
+  300 s.
+
+Only windows in which video airs at 40 MHz, the radio is up, no calibration
+is running and no retune happened are judged. The level lasts for the
+process and survives hops. It is never lowered or switched off in failsafe.
+The 20 MHz ladder never arms the floor (devourer applies it only while tuned
+40 MHz wide), so the shipped all-20 MHz ladder sees no floor and the watchdog
+stays idle. The watchdog takes no `maburd` lock: a sender stalled in the chip
+holds `tx_gate` and the sink lock, and the watchdog exists to notice that.
+
+The log lines (stderr):
+
+```
+maburd radio: IGI floor base 0x22 cap 0x35            (once at start; " (env)" appended when an override is set)
+maburd radio: IGI floor 0x22 -> 0x24 (longest send 87 ms)
+maburd radio: IGI floor 0x24 kept
+maburd radio: IGI floor 0x35 -> 0x22 reverted, no help; holding 30 s
+maburd radio: IGI floor watchdog off (radio has no runtime floor)
+maburd radio: IGI floor 0x24: USB error on the IGI write, DIG applies it
+```
+
+The last-but-one means the radio refuses a runtime floor and the thread
+stops; the last means the write failed on USB but the floor is recorded and
+the periodic DIG tick enforces it. The `stats:` line carries
+`igi_floor=0x%02x`, the level currently set, after `txq_drop=`.
+
+For a bench run, `MABUR_IGI_FLOOR_BASE` and `MABUR_IGI_FLOOR_CAP` override the
+start and the cap (decimal, or hex with `0x`; an invalid value is ignored,
+one above `0x7f` too). A cap equal to or below the base turns the watchdog
+off, leaving a fixed floor at the base.
 
 The 8812CU is 2T2R, so STBC airs on two real chains; none of the 8822E
 constraints in devourer's 8822E quirks page

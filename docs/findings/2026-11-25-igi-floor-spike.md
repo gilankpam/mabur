@@ -1,10 +1,7 @@
 # 2026-11-25 — wide-TX IGI floor on the bench 8812EU drone: fixed value or self-calibration
 
-**Status:** spike, nothing shipped; the decision is open. The floor as built
-is described in [`docs/deploy.md`](../deploy.md) ("wide-TX IGI floor");
-`maburd` still sets it to 0 on 8812EU images. With the real `maburd` and
-`maburgs` at 40 MHz on a non-DFS channel that 0 costs this unit frames and
-100-300 ms of latency, and 0x22 removes it (section 8). The bench tooling is
+**Status:** spike; the outcome is the IGI floor watchdog, described in
+[`docs/deploy.md`](../deploy.md) ("wide-TX IGI floor"). The bench tooling is
 on the local `igi-floor-spike` branches of devourer and mabur (throwaway, not
 for merge).
 
