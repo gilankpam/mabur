@@ -1,13 +1,17 @@
 // IGI floor watchdog. A Jaguar3 radio flies a low IGI floor for range; when
-// its 40 MHz sends stall (a send taking 30 ms or more in two of the last three
-// judged one-second windows) the floor climbs in steps until the sends clear.
-// A window on a busy channel is not judged: foreign airtime stalls sends at
-// any floor, and a raise cannot fix it. The first level that holds three clean
-// windows in a row is kept; a climb that reaches the cap and is still slow,
-// or stops being judged or clean, is undone and the next
-// episode waits out a hold that doubles each failure. Pure logic: the caller
-// supplies the clock and the per-tick longest send, and sets the radio's floor
-// to result.level on Raised and Reverted.
+// its 40 MHz sends stall, the floor climbs in steps until they clear. Three
+// inputs per tick: the longest video send, the chip TX queue backlog, and the
+// channel's foreign busy airtime. Each one-second window is slow (a send of
+// 30 ms or more, or a backlog of 60 % or more), clean (no slow send and a
+// backlog under 30 %), or murky (in between). A window on a busy channel is
+// not judged: foreign airtime stalls sends at any floor, and a raise cannot
+// fix it. Two slow windows among the last three judged start a climb. While
+// climbing, a slow or murky window raises again; three clean windows in a row
+// keep the level. A climb that is not clean at the cap, or sees no judged
+// window for 3 s, is undone, and the next episode waits out a hold that
+// doubles each failure. Pure logic: the caller supplies the clock and the
+// per-tick readings, and sets the radio's floor to result.level on Raised and
+// Reverted.
 #pragma once
 #include <algorithm>
 #include <cctype>
@@ -30,7 +34,8 @@ struct IgiFloorParams {
   uint8_t busy_max_pct = 20;            // 0 = busy gate off
   // Clean needs the backlog under 30 %: healthy links peak near 22 %, a stall
   // sits at 45 % or more. Between this and queue_slow_pct a window is murky:
-  // neither slow nor clean.
+  // it does not count slow toward starting a climb, but during one it raises,
+  // since a level that only partly helps is not proven.
   uint8_t clean_backlog_pct = 30;
   // Three, not two: two clean windows in a row happen by chance under
   // interference.
@@ -73,10 +78,10 @@ class IgiFloorWatchdog {
   struct Result {
     Event event = Event::None;
     uint8_t from = 0, level = 0;        // level = the floor to have set now
-    uint32_t longest_ms = 0;            // Raised: the slow window's longest send
-    uint8_t backlog_pct = 0;            // Raised: the slow window's deepest backlog
+    uint32_t longest_ms = 0;            // Raised: the raising window's longest send
+    uint8_t backlog_pct = 0;            // Raised: the raising window's deepest backlog
     uint32_t hold_s = 0;                // Reverted: seconds before a new episode
-    int busy_pct = -1;                  // Raised: the highest busy reading in the slow window
+    int busy_pct = -1;                  // Raised: the raising window's highest busy reading
   };
 
   IgiFloorWatchdog(const IgiFloorParams& p, uint64_t now_ms)
@@ -91,9 +96,8 @@ class IgiFloorWatchdog {
   Result step(uint64_t now_ms, bool eligible, uint64_t longest_send_us,
               uint8_t queue_backlog_pct, int busy_pct) {
     if (p_.cap <= p_.base) return none();
-    // No judged slow or clean window for abandon_ms (link gone, rung dropped
-    // to 20 MHz, busy channel, murky backlog): the raise was never proven, so
-    // it does not stay.
+    // No judged window for abandon_ms (link gone, rung dropped to 20 MHz,
+    // busy channel): the raise was never proven, so it does not stay.
     if (climbing_ && now_ms >= last_act_ + p_.abandon_ms) return fail(now_ms);
     if (now_ms <= win_start_) return none();  // settling after a level change
     const bool busy = p_.busy_max_pct != 0 && busy_pct >= p_.busy_max_pct;
@@ -116,11 +120,10 @@ class IgiFloorWatchdog {
     if (!judged) return none();
 
     if (climbing_) {
-      if (slow) {
-        last_act_ = now_ms;
+      // Slow or murky: this level is not proven, so climb on (or give up at
+      // the cap). Only keep_windows clean windows in a row keep it.
+      if (slow || !clean)
         return level_ < p_.cap ? raise(now_ms, longest, backlog, win_busy) : fail(now_ms);
-      }
-      if (!clean) { clean_n_ = 0; return none(); }  // murky: the abandon timer runs on
       last_act_ = now_ms;
       if (++clean_n_ < p_.keep_windows) return none();
       hist_n_ = 0;

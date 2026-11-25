@@ -3622,8 +3622,10 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
   // lock -- a sender stalled in the chip holds tx_gate shared (and
   // DevourerSink::m on the direct path), and this thread exists to notice
   // exactly that. SetWideTxIgiFloor takes only devourer's register lock,
-  // which no sender holds across a bulk-OUT.
-  std::thread igi_wd_thread([&]() {
+  // which no sender holds across a bulk-OUT. Not started when the cap is not
+  // above the base (watchdog off).
+  std::thread igi_wd_thread;
+  if (igi_params.cap > igi_params.base) igi_wd_thread = std::thread([&]() {
     name_thread("mbr-igi-wd");
     using Ev = mabur::IgiFloorWatchdog::Event;
     mabur::IgiFloorWatchdog wd(igi_params, now_steady_ms());
@@ -3641,8 +3643,14 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
     uint64_t busy_read_ms = 0;
     while (!g_devourer_should_stop) {
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      const uint32_t seq = retune_seq.load(std::memory_order_relaxed);
+      const bool eligible = device_ready.load(std::memory_order_acquire) &&
+                            !cal_active.load(std::memory_order_relaxed) &&
+                            video_bw.load(std::memory_order_relaxed) == 40 && seq == last_seq;
+      last_seq = seq;
+      // No chip reads while video is not at 40 MHz: the window is not judged.
       uint32_t backlog_pct = 0;
-      if (queue_ok) {
+      if (eligible && queue_ok) {
         try {
           uint16_t free_pages = 0, total_pages = 0;
           if (!rtl_device->GetTxQueuePages(free_pages, total_pages)) {
@@ -3657,17 +3665,13 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
           // per failure would flood at 10 Hz and the USB fault shows elsewhere.
         }
       }
-      const uint32_t seq = retune_seq.load(std::memory_order_relaxed);
-      const bool eligible = device_ready.load(std::memory_order_acquire) &&
-                            !cal_active.load(std::memory_order_relaxed) &&
-                            video_bw.load(std::memory_order_relaxed) == 40 && seq == last_seq;
-      last_seq = seq;
       const uint64_t now_us = now_steady_us();
       const uint64_t now_ms = now_us / 1000;
       if (!eligible) {
-        // A retune spoils the armed window; the next eligible second re-arms.
+        // A retune spoils the armed window; the next eligible tick re-arms.
         busy_armed = false;
         busy_pct = -1;
+        busy_read_ms = 0;
       } else if (busy_ok && now_ms - busy_read_ms >= 1000) {
         busy_read_ms = now_ms;
         try {
@@ -3697,7 +3701,7 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
         } catch (...) {
           // The floor is recorded before the register write, so DIG enforces it.
           std::fprintf(stderr, "maburd radio: IGI floor 0x%02x: USB error on the IGI write, DIG applies it\n",
-                       r.level);
+                       static_cast<unsigned>(r.level));
         }
         if (!ok) {
           std::fprintf(stderr, "maburd radio: IGI floor watchdog off (radio has no runtime floor)\n");
@@ -3707,13 +3711,14 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
       }
       if (r.event == Ev::Raised)
         std::fprintf(stderr, "maburd radio: IGI floor 0x%02x -> 0x%02x (longest send %u ms, chip queue %u %%, busy %s)\n",
-                     r.from, r.level, r.longest_ms, r.backlog_pct,
+                     static_cast<unsigned>(r.from), static_cast<unsigned>(r.level), r.longest_ms,
+                     static_cast<unsigned>(r.backlog_pct),
                      r.busy_pct < 0 ? "?" : (std::to_string(r.busy_pct) + " %").c_str());
       else if (r.event == Ev::Kept)
-        std::fprintf(stderr, "maburd radio: IGI floor 0x%02x kept\n", r.level);
+        std::fprintf(stderr, "maburd radio: IGI floor 0x%02x kept\n", static_cast<unsigned>(r.level));
       else if (r.event == Ev::Reverted)
         std::fprintf(stderr, "maburd radio: IGI floor 0x%02x -> 0x%02x reverted, no help; holding %u s\n",
-                     r.from, r.level, r.hold_s);
+                     static_cast<unsigned>(r.from), static_cast<unsigned>(r.level), r.hold_s);
     }
   });
 

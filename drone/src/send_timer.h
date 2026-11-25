@@ -26,8 +26,9 @@ class SendTimer {
     if (slot < 0) return;
     const uint64_t s = start_[slot].load();
     const uint64_t d = now_us > s ? now_us - s : 0;
-    // Publish the duration before freeing the slot, so a concurrent take sees
-    // the send as running or finished, never neither.
+    // Publish the duration before freeing the slot, so the send is never lost:
+    // a take that swaps out the finished maximum before this publish and scans
+    // the slot after the free sees neither, and the next take reports it.
     uint64_t m = max_done_.load();
     while (d > m && !max_done_.compare_exchange_weak(m, d)) {}
     start_[slot].store(0);

@@ -72,7 +72,7 @@ TEST(climb_steps_cu) {
   CHECK(is(r.ev[4], E::Reverted, 0x26));
 }
 
-TEST(two_clean_windows_keep_the_level) {
+TEST(clean_windows_keep_the_level) {
   Rig r; r.secs(2, true, kSlow); r.secs(4, true, kFast);
   REQUIRE(r.ev.size() == 2);
   CHECK(is(r.ev[0], E::Raised, 0x24)); CHECK(is(r.ev[1], E::Kept, 0x24));
@@ -157,7 +157,7 @@ TEST(queue_backlog_alone_starts_a_climb) {
   CHECK(r.ev[0].longest_ms == 2);
 }
 
-TEST(queue_below_threshold_is_clean) {
+TEST(queue_below_threshold_never_triggers) {
   Rig r; r.secs(60, true, kFast, 59); CHECK(r.ev.empty());
 }
 
@@ -206,15 +206,37 @@ TEST(three_clean_windows_keep) {
   REQUIRE(r.ev.size() == 2); CHECK(is(r.ev[1], E::Kept, 0x24));
 }
 
-TEST(murky_resets_the_clean_run) {
+TEST(murky_after_clean_raises) {
   Rig r; r.secs(2, true, kSlow);
   r.ticks(23, true, kFast, 0); r.secs(1, true, kFast, 45); r.secs(2, true, kFast, 0);
   for (const auto& e : r.ev) CHECK(e.event != E::Kept);
+  REQUIRE(r.ev.size() == 2);
+  CHECK(r.ev[1].event == E::Raised); CHECK(r.ev[1].from == 0x24); CHECK(r.ev[1].level == 0x28);
 }
 
-TEST(murky_alone_abandons) {
+TEST(murky_climbs_on) {
   Rig r; r.secs(2, true, kSlow); r.secs(4, true, kFast, 45);
-  REQUIRE(r.ev.size() == 2); CHECK(is(r.ev[1], E::Reverted, 0x22));
+  REQUIRE(r.ev.size() == 4);
+  CHECK(r.ev[1].event == E::Raised); CHECK(r.ev[1].from == 0x24); CHECK(r.ev[1].level == 0x28);
+  CHECK(is(r.ev[2], E::Raised, 0x30)); CHECK(is(r.ev[3], E::Raised, 0x35));
+}
+
+TEST(clean_clean_murky_never_keeps_an_unproven_raise) {
+  Rig r; r.secs(2, true, kSlow);
+  for (int i = 0; i < 8; ++i) {   // settle, then clean, clean, murky
+    r.ticks(3, true, kFast); r.secs(2, true, kFast, 0); r.secs(1, true, kFast, 45);
+  }
+  for (const auto& e : r.ev) CHECK(e.event != E::Kept);
+  REQUIRE(r.ev.size() == 5);
+  CHECK(is(r.ev[3], E::Raised, 0x35));
+  CHECK(r.ev[4].event == E::Reverted); CHECK(r.ev[4].from == 0x35); CHECK(r.ev[4].level == 0x22);
+}
+
+TEST(murky_at_cap_fails) {
+  Rig r(0x33); r.secs(2, true, kSlow); r.secs(2, true, kFast, 45);  // fails before the 3 s abandon
+  REQUIRE(r.ev.size() == 2);
+  CHECK(is(r.ev[0], E::Raised, 0x35));
+  CHECK(is(r.ev[1], E::Reverted, 0x33)); CHECK(r.ev[1].hold_s == 30);
 }
 
 TEST(busy_gate_off_when_zero) {
