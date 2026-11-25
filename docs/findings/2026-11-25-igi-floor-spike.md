@@ -2,8 +2,11 @@
 
 **Status:** spike, nothing shipped; the decision is open. The floor as built
 is described in [`docs/deploy.md`](../deploy.md) ("wide-TX IGI floor");
-`maburd` still sets it to 0 on 8812EU images. The bench tooling is on the
-local devourer branch `igi-floor-spike` (throwaway, not for merge).
+`maburd` still sets it to 0 on 8812EU images. With the real `maburd` and
+`maburgs` at 40 MHz on a non-DFS channel that 0 costs this unit frames and
+100-300 ms of latency, and 0x22 removes it (section 8). The bench tooling is
+on the local `igi-floor-spike` branches of devourer and mabur (throwaway, not
+for merge).
 
 ## Question
 
@@ -214,6 +217,64 @@ fewest frames sent in one sample, as a share of the offered load.
 - With the uplink silent the loss at a video-like load varies from run to
   run (94–100 % sent, worst 200 ms between 15 % and 91 %).
 
+## 8. The real link: `maburd` video, A-MPDU, real RCFs
+
+`maburd` (master plus a spike hook that sets the floor or pins IGI at run
+time and samples the chip queue every 100 ms) against `maburgs` with the link
+pinned to MCS2 at 40 MHz on one channel: 60 fps video, A-MPDU on (up to 6),
+NACK on, RCFs every 50 ms, the session's air use 33-58 %. Each cell is three
+windows of about 40 s, alternated A-B-A-B-A-B inside one session; the first
+seconds after each switch are dropped. "Arrival" is frame complete at the GS
+minus the capture stamp, relative to the session's fastest frame
+(`au.log`). Ranges are across the three windows.
+
+| | 144(-), gain control on | | 161(-), gain control on | | 144(-), IGI pinned | |
+|---|---|---|---|---|---|---|
+| | floor 0 | floor 0x22 | floor 0 | floor 0x22 | 0x1e | 0x22 |
+| IGI the drone sat at | 0x20 | 0x22 | 0x1e | 0x22 | 0x1e | 0x22 |
+| frames/s delivered (of 60) | 60.0 | 59.7-60.0 | 38.5-58.5 | 59.8-60.0 | 45.8-58.4 | 59.7-60.0 |
+| arrival p50, ms | 3.0-5.1 | 1.5-3.6 | 40-55 | 5.0-6.2 | 34-46 | 1.6-5.8 |
+| arrival p99, ms | 9.2-15.2 | 7.0-10.0 | 176-294 | 11.4-11.9 | 142-249 | 7.6-12.1 |
+| longest blocked USB send, ms | 2.4-7.3 | 3.3-4.3 | 102-131 | 2.7, 55, 1.9 | 68-116 | 2.4-3.6 |
+| longest wait in `maburd`'s TX queue, ms | 15.7-18.0 | 17.8-23.1 | 162-225 | 14.4-16.0 | 38-242 | 18.3-29.6 |
+| `txq_drop` | 0 | 0 | 0, 0, 74 | 0 | 64, 0, 0 | 0 |
+| chip queue empty in (100 ms samples) | 43-53 % | 44-53 % | 9-14 % | 51-62 % | 11-14 % | 53-61 % |
+| lowest free pages | 1073-1441 | 1225-1436 | 15 | 1417-1452 | 15 | 1132-1546 |
+| RCFs the drone accepted per s | 19.6-19.7 | 19.6-19.7 | 18.6-18.8 | 19.5-19.7 | 18.7-18.9 | 19.6 |
+| NACK symbols requested per window | 0 | 0-181 | 2144-4413 | 0-135 | 1481-3438 | 12-49 |
+
+- On a non-DFS channel the shipped configuration (gain control on, floor 0)
+  lets IGI settle at 0x1e, and at 40 MHz the video suffers badly even though
+  the drone hears 19 RCFs a second: frames are shed on the drone, the median
+  frame arrives 40-55 ms late and the 99th percentile 180-290 ms late, and
+  USB sends block for over 100 ms. Floor 0x22 in the same session is clean
+  in every window.
+- On DFS 144 the gain control holds 0x20, one step above this unit's edge
+  there, and floor 0 and floor 0x22 cannot be told apart.
+- Pinning 0x1e on 144 reproduces the 161 result, so the cause is the IGI
+  value, not the channel's other traffic (161 had some: the GS cards counted
+  about 5000 CRC failures in the session against 1 on 144).
+- Almost no frame is lost on the air (pre-FEC loss stays under 1.5 %): the
+  damage is delay and the drone shedding frames it cannot send in time. The
+  NACK requests in the bad windows were almost never filled.
+- The uplink is not worse at 0x22 at bench signal strength (RSSI far above
+  any floor): the drone accepts slightly more RCFs than at 0x1e.
+- The stand-in runs of sections 3 and 7 understated this. With single frames
+  and the RCF-rate player, 28 % air lost nothing at 0x1e; the real A-MPDU
+  video at 33-58 % air does.
+- A healthy real link reads the chip queue empty in only 43-62 % of samples,
+  because frames in flight count. A watchdog on this signal has to compare
+  against a full queue (free pages at 15) or long blocked sends, not against
+  "always empty". `maburd`'s existing send timing shows the fault without any
+  register read: blocked sends over 60 ms and TX-queue waits over 35 ms
+  appear only in the bad cells, bar one 55 ms send just after a switch.
+- With the GS silent the drone goes to failsafe after 3 s and sheds to about
+  230 frames/s; at that load the chip queue is empty at either setting. The
+  exposure with a quiet uplink is those 3 s.
+- 144(-) and 161(-), both with the primary on the upper half, show the high
+  edge; 157(+) and 100(+) showed the low one (section 4). Two channels each;
+  not tested further. The GS's shipped channel set is all upper-primary.
+
 ## What this means for the four options
 
 - **Fixed 0x35 on the 8812EU too:** no boot time, covers every unit measured
@@ -232,15 +293,19 @@ fewest frames sent in one sample, as a share of the offered load.
 
 A fifth option the numbers suggest: a small fixed floor on 8812EU images.
 0x22 is fully clean on all three channels on this unit, cold and after the
-soak.
+soak, and on the real link it removes the loss floor 0 causes on a non-DFS
+channel (section 8). The shipped ladder is all 20 MHz, which the fault does
+not touch (section 1); it applies once a 40 MHz rung or `static_bw = 40` is
+loaded.
 
 ## Not shown
 
 - One unit, mostly single runs. The devourer record lists an 8812EU that
   hangs outright at 0x20 and one 8812CU that needs 0x35; neither was here.
-- devourer `txdemo`, single frames, MCS2 only — not `maburd` with A-MPDU and
-  the real RCF/NACK exchange. RCF delivery and NACK success were not
-  measured; the MCS0/20 player is the stand-in.
+- Sections 1-7 are devourer `txdemo`, single frames, MCS2 only, with the
+  MCS0/20 player as the stand-in for the GS. Section 8 is the real pair, but
+  pinned to MCS2/40: the adaptive 40 MHz ladder was not run, and neither was
+  a real non-DFS member of the shipped channel set (channel 40).
 - No flight-hot state (encoder off), and "cold" was a 4-minute power-off.
 - The uplink cost at the floors that matter (0x22–0x35) is extended from
   cliffs measured at 0x43–0x51; the bench had no way to attenuate further.
