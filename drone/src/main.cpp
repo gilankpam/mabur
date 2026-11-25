@@ -3628,15 +3628,35 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
     using Ev = mabur::IgiFloorWatchdog::Event;
     mabur::IgiFloorWatchdog wd(igi_params, now_steady_ms());
     uint32_t last_seq = retune_seq.load(std::memory_order_relaxed);
+    // Frames can back up inside the chip while USB sends still return quickly,
+    // so the chip's TX queue fill is a second slow signal. One control read per
+    // tick; a radio that cannot report it is read no more.
+    bool queue_ok = true;
     while (!g_devourer_should_stop) {
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      uint32_t backlog_pct = 0;
+      if (queue_ok) {
+        try {
+          uint16_t free_pages = 0, total_pages = 0;
+          if (!rtl_device->GetTxQueuePages(free_pages, total_pages)) {
+            queue_ok = false;
+            std::fprintf(stderr, "maburd radio: IGI floor watchdog: no chip queue reading, sends only\n");
+          } else if (total_pages > 0) {
+            const uint32_t used = total_pages > free_pages ? total_pages - free_pages : 0;
+            backlog_pct = std::min<uint32_t>(100, used * 100 / total_pages);
+          }
+        } catch (...) {
+          // A failed USB read counts as an empty queue for this tick; a log line
+          // per failure would flood at 10 Hz and the USB fault shows elsewhere.
+        }
+      }
       const uint32_t seq = retune_seq.load(std::memory_order_relaxed);
       const bool eligible = device_ready.load(std::memory_order_acquire) &&
                             !cal_active.load(std::memory_order_relaxed) &&
                             video_bw.load(std::memory_order_relaxed) == 40 && seq == last_seq;
       last_seq = seq;
       const uint64_t now_us = now_steady_us();
-      const auto r = wd.step(now_us / 1000, eligible, send_timer.take_longest_us(now_us), 0);
+      const auto r = wd.step(now_us / 1000, eligible, send_timer.take_longest_us(now_us), backlog_pct);
       if (r.event == Ev::Raised || r.event == Ev::Reverted) {
         bool ok = true;
         try {
@@ -3653,8 +3673,8 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
         igi_floor_now.store(r.level, std::memory_order_relaxed);
       }
       if (r.event == Ev::Raised)
-        std::fprintf(stderr, "maburd radio: IGI floor 0x%02x -> 0x%02x (longest send %u ms)\n",
-                     r.from, r.level, r.longest_ms);
+        std::fprintf(stderr, "maburd radio: IGI floor 0x%02x -> 0x%02x (longest send %u ms, chip queue %u %%)\n",
+                     r.from, r.level, r.longest_ms, r.backlog_pct);
       else if (r.event == Ev::Kept)
         std::fprintf(stderr, "maburd radio: IGI floor 0x%02x kept\n", r.level);
       else if (r.event == Ev::Reverted)

@@ -213,7 +213,7 @@ The cap on both is `0x35`.
 A watchdog thread (`drone/src/igi_floor_watchdog.h`, fed by
 `drone/src/send_timer.h`) raises the floor in flight. It times every
 direct-path video send and judges one-second windows; a window is slow when
-its longest radio send is 30 ms or more. Two slow windows among the last
+its longest radio send is 30 ms or more, or when the chip's TX queue is 40 % full or more at its deepest in the window (the queue is read every 100 ms; frames can back up inside the chip while USB sends still return quickly). Two slow windows among the last
 three judged ones within 30 s start an episode:
 
 - The floor steps up by `+2`, then `+4`, then `+8`, then goes straight to
@@ -239,16 +239,19 @@ The log lines (stderr):
 
 ```
 maburd radio: IGI floor base 0x22 cap 0x35            (once at start; " (env)" appended when an override is set)
-maburd radio: IGI floor 0x22 -> 0x24 (longest send 87 ms)
+maburd radio: IGI floor 0x22 -> 0x24 (longest send 87 ms, chip queue 91 %)
 maburd radio: IGI floor 0x24 kept
 maburd radio: IGI floor 0x35 -> 0x22 reverted, no help; holding 30 s
 maburd radio: IGI floor watchdog off (radio has no runtime floor)
 maburd radio: IGI floor 0x24: USB error on the IGI write, DIG applies it
+maburd radio: IGI floor watchdog: no chip queue reading, sends only
 ```
 
-The last-but-one means the radio refuses a runtime floor and the thread
-stops; the last means the write failed on USB but the floor is recorded and
-the periodic DIG tick enforces it. The `stats:` line carries
+`watchdog off` means the radio refuses a runtime floor and the thread
+stops; `USB error` means the write failed on USB but the floor is recorded and
+the periodic DIG tick enforces it; `no chip queue reading` means the radio
+cannot report its queue, so only slow sends count (logged once). A failed
+queue read counts as an empty queue for that tick, with no log line. The `stats:` line carries
 `igi_floor=0x%02x`, the level currently set, after `txq_drop=`.
 
 For a bench run, `MABUR_IGI_FLOOR_BASE` and `MABUR_IGI_FLOOR_CAP` override the
