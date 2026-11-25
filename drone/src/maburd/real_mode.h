@@ -17,6 +17,7 @@
 #include "config.h"
 #include "config_apply.h"
 #include "igi_floor_watchdog.h"
+#include "busy_window.h"
 #include "live_power_table.h"
 #include "power_tables.h"
 #include "radio_glue.h"
