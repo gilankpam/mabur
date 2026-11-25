@@ -62,7 +62,9 @@ struct NackState {
 
 }  // namespace
 
-// Software NACK answer (NackResponder), RX thread.
+// Software NACK answer (NackResponder), RX thread. The hook may touch txq,
+// air_clock and agent because they are thread-safe; the responder's
+// bucket/packer/scratch are RX-thread-only.
 void install_nack_hook(RealMode& m) {
   auto st = std::make_shared<NackState>(m);
   m.nack_hook = [&m, st](const uint8_t* body, size_t len) {
