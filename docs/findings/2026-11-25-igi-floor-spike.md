@@ -281,6 +281,32 @@ minus the capture stamp, relative to the session's fastest frame
   edge; 157(+) and 100(+) showed the low one (section 4). Two channels each;
   not tested further. The GS's shipped channel set is all upper-primary.
 
+## 9. Does raising the floor free a stuck 8812CU?
+
+One 8812CU USB adapter (the unit devourer's record lists as clean at 0x24)
+on a PC, devourer `txdemo` saturated at MCS3/40 on silent 144(-), a GS card
+as the receive-only witness, the floor switched at run time every 5 s.
+Frames accepted per 500 ms sample; full rate is about 1780.
+
+| floor | accepted per 500 ms | longest blocked send |
+|---|---|---|
+| 0x20 | 0 in every sample | 5.3 s (the whole dwell) |
+| 0x26 | 1767, 1314, 1770, 1790, ... | 9 ms |
+| 0x20 | 1569, then 0 in every sample | 4.7 s |
+| 0x26 | 1201, 1783, 1782, ... | 218 ms |
+| 0x20 | 469, 328, 0, 115, 0, 0, 1240, 0, 0, 0 | 1.6 s |
+| 0x24 | 1754, 1780, 1770, ... | 8 ms |
+| 0x20 | 276, 0, 1263, 0, 189, 266, 0, 715, 791, 120 | 1.0 s |
+| 0x35 | 1775, 1780, 1031, 1776, ... | 8 ms |
+
+- A raise frees it at once: all four times the first 500 ms sample after the
+  raise is at or near full rate, including after a send had been blocked for
+  5.3 s. The witness shows the frames on the air.
+- With a fixed floor of 0x22 the same adapter does not stop for good here:
+  it stalls for up to 3 s at a time and resumes by itself. A fixed 0x35 ran
+  14 s clean.
+- One adapter, the easy one. The 8812CU that needs 0x35 was not here.
+
 ## What this means for the four options
 
 - **Fixed 0x35 on the 8812EU too:** no boot time, covers every unit measured
@@ -316,5 +342,5 @@ loaded.
 - The uplink cost at the floors that matter (0x22–0x35) is extended from
   cliffs measured at 0x43–0x51; the bench had no way to attenuate further.
 - 157(+) has light ambient traffic; no silent non-DFS channel was found.
-- Whether raising the floor frees a unit that stops outright was not
-  testable on this unit.
+- Whether raising the floor frees a unit that stops outright: shown on one
+  8812CU adapter (section 9), not on an 8812EU and not on the harder CU.
