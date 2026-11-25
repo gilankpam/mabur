@@ -91,6 +91,8 @@
 #include "tx_queue.h"
 #include "mabur/retx_ring.h"
 #include "usb_tx_pool.h"
+#include "send_timer.h"
+#include "igi_floor_watchdog.h"
 #ifdef MABUR_HAVE_VENC
 #include "venc_core.h"  // ARM only: drone/venc is not compiled on host builds
 #endif
@@ -202,6 +204,8 @@ inline void await_retune_gate(const std::atomic<bool>* waiting) {
   while (waiting->load(std::memory_order_acquire)) std::this_thread::yield();
 }
 
+uint64_t now_steady_us();  // defined below; the send timer's clock
+
 // Wraps IRtlRadio::send_packet with a mutex — shared between the hot
 // thread (video bodies) and the agent thread (send_control / DISC_ACK).
 struct DevourerSink : mabur::FrameSink {
@@ -233,6 +237,9 @@ struct DevourerSink : mabur::FrameSink {
   std::shared_mutex* gate = nullptr;
   // Writer-priority flag paired with `gate` — see await_retune_gate above.
   std::atomic<bool>* gate_waiting = nullptr;
+  // Times the direct-path video sends for the IGI floor watchdog (null in
+  // dry-run). Control sends are not timed.
+  mabur::SendTimer* timer = nullptr;
 
   bool send(const uint8_t* p, size_t n) override {
     if (ready && !ready->load(std::memory_order_acquire)) return false;
@@ -272,7 +279,10 @@ struct DevourerSink : mabur::FrameSink {
     std::shared_lock<std::shared_mutex> sg;
     if (gate) sg = std::shared_lock<std::shared_mutex>(*gate);
     std::lock_guard<std::mutex> l(m);
-    return dev->send_packets(v.data(), n);
+    const int slot = timer ? timer->begin(now_steady_us()) : -1;
+    const size_t sent = dev->send_packets(v.data(), n);
+    if (timer) timer->end(slot, now_steady_us());
+    return sent;
   }
 };
 
@@ -441,6 +451,11 @@ struct RealActuator : mabur::Actuator {
   // The per-width TX-power table (null in dry-run): apply_op makes the
   // op's width's plan live.
   LivePowerTable* power_table = nullptr;
+  // For the IGI floor watchdog (null in dry-run): the width the video layers
+  // air at (both layers share it), and a count of retunes, each of which makes
+  // the window it lands in unjudged.
+  std::atomic<uint8_t>* video_bw = nullptr;
+  std::atomic<uint32_t>* retune_seq = nullptr;
 
   // Agent thread, on the falling edge of cal_active, before the op is
   // re-applied: calibration programmed the A-MPDU mode behind last_ampdu's
@@ -485,6 +500,7 @@ struct RealActuator : mabur::Actuator {
       tx->set_ladder(op.ladder, op.probe_profile != rc::kNoProbeProfile
                                     ? std::optional<rc::LayerTxSpec>(op.probe)
                                     : std::nullopt);
+      if (video_bw) video_bw->store(op.ladder[0].bw, std::memory_order_relaxed);
       if (power_table) {
         power_table->unless_cal([&] { apply_ampdu_for(op); });
         power_table->follow(op.ladder[1].bw);
@@ -711,6 +727,7 @@ struct RealActuator : mabur::Actuator {
       tx_power_ok = dev->ReApplyTxPower();
     }
     if (retune_waiting) retune_waiting->store(false, std::memory_order_release);
+    if (retune_seq) retune_seq->fetch_add(1, std::memory_order_relaxed);
     cur = ch;
     std::fprintf(stderr, "maburd: retune %u -> %u (%s)\n", static_cast<unsigned>(from),
                  static_cast<unsigned>(ch), reason);
@@ -1383,26 +1400,33 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
   // longer defers to a GS frame already on air: the GS's RcfSlotter is then
   // the only thing keeping uplink sends out of the bursts.
   dev_cfg.tuning.disable_cca = !cfg.radio.cca;
-  // devourer's wide-TX IGI floor: off on an 8812EU image, devourer's default
-  // on an 8812CU one. The floor raises the DIG lower bound for the rest of
-  // the session once the first >= 40 MHz frame goes out, because on a silent
-  // channel the receiver can park where the secondary 20 MHz never reads
-  // idle and the MAC holds that frame forever. The shipped ladder airs every
-  // rung at 40 MHz, so a floor is on from the first video frame and costs
-  // the RCF uplink idle-channel sensitivity for the whole flight (devourer
-  // estimates ~1 dB per IGI step; its default 0x35 is ~20 steps over the
-  // 0x1e-0x22 window). The 8812EU flew the 40 MHz rungs with no floor and
-  // never stalled; the 8822C is the die the stall was found on (one CU unit
-  // only clears at 0x35), so it keeps the default. The choice is per image,
-  // not per card: each drone build compiles exactly one Jaguar3 die
-  // (tools/build-arm.sh and firmware/package/mabur), and a binary
-  // refuses the other die at CreateRadio. An 8812EU that does stall loses the
-  // downlink at its first 40 MHz frame with the chip's TX FIFO full; give it
-  // a floor then (devourer measured one EU unit that clears at 0x2c, not
-  // 0x20).
+  // devourer's wide-TX IGI floor: a low start, raised only when sends stall.
+  // While the radio is tuned 40 MHz wide (from the session's first such
+  // frame) the floor is the DIG lower bound, because on a quiet channel the
+  // receiver can park where the secondary 20 MHz never reads idle and the
+  // MAC holds the frame for good. Every IGI step above the DIG window costs
+  // the RCF uplink idle-channel sensitivity (devourer estimates ~1 dB a step),
+  // so each image starts low -- 0x22 on the 8812EU, 0x26 on the 8812CU, the
+  // die the stall was found on -- and the IGI floor watchdog (started before
+  // the RX loop) climbs toward the 0x35 cap only while 40 MHz video sends
+  // stall, keeping the first level that clears them. The shipped ladder airs
+  // every rung at 20 MHz, so the floor only matters on a 40 MHz rung. The
+  // start is per image, not per card: each drone build compiles exactly one
+  // Jaguar3 die (tools/build-arm.sh and firmware/package/mabur), and a binary
+  // refuses the other die at CreateRadio. MABUR_IGI_FLOOR_BASE and
+  // MABUR_IGI_FLOOR_CAP override the start and the cap for a bench run.
 #if defined(DEVOURER_HAVE_JAGUAR3_8822E) && !defined(DEVOURER_HAVE_JAGUAR3_8822C)
-  dev_cfg.tuning.wide_tx_igi_floor = 0;
+  constexpr uint8_t kIgiFloorImageBase = 0x22;   // 8812EU image
+#else
+  constexpr uint8_t kIgiFloorImageBase = 0x26;   // 8812CU image
 #endif
+  const char* igi_base_env = std::getenv("MABUR_IGI_FLOOR_BASE");
+  const char* igi_cap_env = std::getenv("MABUR_IGI_FLOOR_CAP");
+  const mabur::IgiFloorParams igi_params =
+      mabur::igi_floor_params(kIgiFloorImageBase, igi_base_env, igi_cap_env);
+  dev_cfg.tuning.wide_tx_igi_floor = igi_params.base;
+  std::fprintf(stderr, "maburd radio: IGI floor base 0x%02x cap 0x%02x%s\n", igi_params.base,
+               igi_params.cap, igi_base_env || igi_cap_env ? " (env)" : "");
   // Pinned here now that devourer defaults both the other way. A multi-packet
   // bulk-OUT that times out mid-transfer wedges the 8822EU's TX endpoint for
   // the rest of the session, so data sends never cancel one (the cost -- a
@@ -1493,24 +1517,36 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
   // and the writer runs on the agent thread — see await_retune_gate.
   std::atomic<bool> retune_waiting{false};
 
+  // What the IGI floor watchdog thread reads, all lock-free: the longest
+  // video send, the video width, the retune count, and (for the stats line)
+  // the floor it last set.
+  mabur::SendTimer send_timer;
+  std::atomic<uint8_t> video_bw{20};
+  std::atomic<uint32_t> retune_seq{0};
+  std::atomic<uint8_t> igi_floor_now{igi_params.base};
+
   DevourerSink dev_sink;
   dev_sink.dev = rtl_device.get();
   dev_sink.ready = &device_ready;
   dev_sink.gate = &tx_gate;
   dev_sink.gate_waiting = &retune_waiting;
+  dev_sink.timer = &send_timer;
 
   // Capacity 6 frames per sender: enough to keep every sender's next ≤3-
   // frame URB staged while it blocks in the current one, small enough that
   // backlog still lands in TxQueue (whose drop-oldest policy is the
   // FEC-recoverable erasure path).
   mabur::UsbTxPool tx_pool(
-      [dev = rtl_device.get(), &tx_gate, &retune_waiting](
+      [dev = rtl_device.get(), &tx_gate, &retune_waiting, &send_timer](
           const std::vector<std::vector<uint8_t>>& b) {
         std::vector<TxPacketView> v(b.size());
         for (size_t i = 0; i < b.size(); ++i) v[i] = {b[i].data(), b[i].size()};
         await_retune_gate(&retune_waiting);
         std::shared_lock<std::shared_mutex> sg(tx_gate);
-        return dev->send_packets(v.data(), v.size());
+        const int slot = send_timer.begin(now_steady_us());
+        const size_t sent = dev->send_packets(v.data(), v.size());
+        send_timer.end(slot, now_steady_us());
+        return sent;
       },
       cfg.radio.tx_threads,
       static_cast<size_t>(cfg.radio.tx_threads) * 6);
@@ -1549,6 +1585,8 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
   actuator.ampdu = cfg.ampdu;
   actuator.tx_gate = &tx_gate;
   actuator.retune_waiting = &retune_waiting;
+  actuator.video_bw = &video_bw;
+  actuator.retune_seq = &retune_seq;
   actuator.cur = start_ch;
   actuator.control_rt.ldpc = &live_ldpc;
   actuator.control_rt.gen = &radiotap_gen;
@@ -3435,7 +3473,7 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
           const ConfigApplierStats apply_stats = applier.stats();
           std::fprintf(stderr,
                        "stats: state=%d hot_beat=%llu rx_beat=%llu seq=%u sent=%llu drops=%llu "
-                       "txq=%zu txq_drop=%llu "
+                       "txq=%zu txq_drop=%llu igi_floor=0x%02x "
                        "thermal_delta=%d tx_failed=%llu venc_verb_fail=%llu "
                        "enc_pk100=%uk lp=%d armed=%d snr_mhz=%u snr_off=%d "
                        "mav_apply=%llu/%llu mav_rebuild=%llu%s\n",
@@ -3444,6 +3482,7 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
                        static_cast<unsigned long long>(tx.sent()),
                        static_cast<unsigned long long>(tx.drops()),
                        txq.depth(), static_cast<unsigned long long>(txq.dropped()),
+                       static_cast<unsigned>(igi_floor_now.load(std::memory_order_relaxed)),
                        health.thermal_delta,
                        static_cast<unsigned long long>(txstats.failed),
                        static_cast<unsigned long long>(actuator.venc_verb_failures),
@@ -3577,6 +3616,53 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
   // aggregation is on (radio_tx.cpp), so the wire never depends on this.
 
   device_ready.store(true, std::memory_order_release);
+
+  // IGI floor watchdog: every 100 ms, feed the longest video send to the
+  // state machine and set the radio's floor when it moves. Takes no maburd
+  // lock -- a sender stalled in the chip holds tx_gate shared (and
+  // DevourerSink::m on the direct path), and this thread exists to notice
+  // exactly that. SetWideTxIgiFloor takes only devourer's register lock,
+  // which no sender holds across a bulk-OUT.
+  std::thread igi_wd_thread([&]() {
+    name_thread("mbr-igi-wd");
+    using Ev = mabur::IgiFloorWatchdog::Event;
+    mabur::IgiFloorWatchdog wd(igi_params, now_steady_ms());
+    uint32_t last_seq = retune_seq.load(std::memory_order_relaxed);
+    while (!g_devourer_should_stop) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      const uint32_t seq = retune_seq.load(std::memory_order_relaxed);
+      const bool eligible = device_ready.load(std::memory_order_acquire) &&
+                            !cal_active.load(std::memory_order_relaxed) &&
+                            video_bw.load(std::memory_order_relaxed) == 40 && seq == last_seq;
+      last_seq = seq;
+      const uint64_t now_us = now_steady_us();
+      const auto r = wd.step(now_us / 1000, eligible, send_timer.take_longest_us(now_us));
+      if (r.event == Ev::Raised || r.event == Ev::Reverted) {
+        bool ok = true;
+        try {
+          ok = rtl_device->SetWideTxIgiFloor(r.level);
+        } catch (...) {
+          // The floor is recorded before the register write, so DIG enforces it.
+          std::fprintf(stderr, "maburd radio: IGI floor 0x%02x: USB error on the IGI write, DIG applies it\n",
+                       r.level);
+        }
+        if (!ok) {
+          std::fprintf(stderr, "maburd radio: IGI floor watchdog off (radio has no runtime floor)\n");
+          return;
+        }
+        igi_floor_now.store(r.level, std::memory_order_relaxed);
+      }
+      if (r.event == Ev::Raised)
+        std::fprintf(stderr, "maburd radio: IGI floor 0x%02x -> 0x%02x (longest send %u ms)\n",
+                     r.from, r.level, r.longest_ms);
+      else if (r.event == Ev::Kept)
+        std::fprintf(stderr, "maburd radio: IGI floor 0x%02x kept\n", r.level);
+      else if (r.event == Ev::Reverted)
+        std::fprintf(stderr, "maburd radio: IGI floor 0x%02x -> 0x%02x reverted, no help; holding %u s\n",
+                     r.from, r.level, r.hold_s);
+    }
+  });
+
   std::fprintf(stderr, "maburd entering RX loop on channel %d\n", start_ch);
   rtl_device->StartRxLoop(rx_callback);
 
@@ -3591,6 +3677,7 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
   if (hot_thread.joinable()) hot_thread.join();
   if (tx_thread.joinable()) tx_thread.join();
   if (agent_thread.joinable()) agent_thread.join();
+  if (igi_wd_thread.joinable()) igi_wd_thread.join();
   stop_msp();
   if (mav_thread.joinable()) mav_thread.join();
   tx_pool.stop();  // drain + join senders before device teardown
