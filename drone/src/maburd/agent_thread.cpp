@@ -1,12 +1,10 @@
 // Real mode: the agent thread body (real_mode.h).
 
-#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <iterator>
 #include <thread>
 #include <vector>
 
