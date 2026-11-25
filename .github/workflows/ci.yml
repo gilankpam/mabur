@@ -26,15 +26,17 @@ jobs:
     steps:
       # The build wants devourer as a SIBLING directory (DEVOURER_DIR defaults
       # to ../devourer). Hence the two-checkout layout.
-      # Tracking devourer's master mirrors the dev box; the third_party/devourer
-      # submodule pin is NOT the build input and is routinely stale.
+      # The sibling is the commit third_party/devourer pins (read from the
+      # tree; the submodule itself is never checked out).
       - uses: actions/checkout@v5
         with:
           path: mabur
+      - id: pin
+        run: echo "devourer=$(git rev-parse HEAD:third_party/devourer)" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v5
         with:
           repository: gilankpam/devourer
-          ref: master
+          ref: ${{ steps.pin.outputs.devourer }}
           path: devourer
 
       - uses: cachix/install-nix-action@v31.11.1
