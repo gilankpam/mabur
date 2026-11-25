@@ -33,6 +33,13 @@ int repin_inherited_threads(const char* comm, int cpu);
 
 void touch_update_file(const std::string& dir, const char* name);
 
+inline uint64_t now_steady_ms() {
+  return static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count());
+}
+
 // µs sibling for the dq_split gauge: the intervals it separates (venc-ring
 // wait 0–5 ms, FEC/SBI CPU, queue wait) are each of the same order as
 // now_steady_ms()'s 1 ms quantum, so a ms clock cannot split them.
