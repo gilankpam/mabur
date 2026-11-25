@@ -1,8 +1,10 @@
 // IGI floor watchdog. A Jaguar3 radio flies a low IGI floor for range; when
 // its 40 MHz sends stall (a send taking 30 ms or more in two of the last three
 // judged one-second windows) the floor climbs in steps until the sends clear.
-// The first level that holds two clean windows is kept; a climb that reaches
-// the cap and is still slow, or stops being judged, is undone and the next
+// A window on a busy channel is not judged: foreign airtime stalls sends at
+// any floor, and a raise cannot fix it. The first level that holds three clean
+// windows in a row is kept; a climb that reaches the cap and is still slow,
+// or stops being judged or clean, is undone and the next
 // episode waits out a hold that doubles each failure. Pure logic: the caller
 // supplies the clock and the per-tick longest send, and sets the radio's floor
 // to result.level on Raised and Reverted.
@@ -23,6 +25,16 @@ struct IgiFloorParams {
   uint8_t queue_slow_pct = 60;          // chip TX queue backlog; 0 = queue signal off
   // 60, not lower: a healthy link can briefly fill the queue to about 40 %,
   // while a real stall reads near 100 % and most faulty seconds reach 60 %.
+  // A real IGI stall reads a quiet channel (about 0 % busy); a jammer that
+  // fills the TX queue reads about 50 %.
+  uint8_t busy_max_pct = 20;            // 0 = busy gate off
+  // Clean needs the backlog under 30 %: healthy links peak near 22 %, a stall
+  // sits at 45 % or more. Between this and queue_slow_pct a window is murky:
+  // neither slow nor clean.
+  uint8_t clean_backlog_pct = 30;
+  // Three, not two: two clean windows in a row happen by chance under
+  // interference.
+  uint8_t keep_windows = 3;
   uint32_t settle_ms = 300;
   uint32_t history_ms = 30000;
   uint32_t abandon_ms = 3000;
@@ -64,6 +76,7 @@ class IgiFloorWatchdog {
     uint32_t longest_ms = 0;            // Raised: the slow window's longest send
     uint8_t backlog_pct = 0;            // Raised: the slow window's deepest backlog
     uint32_t hold_s = 0;                // Reverted: seconds before a new episode
+    int busy_pct = -1;                  // Raised: the highest busy reading in the slow window
   };
 
   IgiFloorWatchdog(const IgiFloorParams& p, uint64_t now_ms)
@@ -74,16 +87,20 @@ class IgiFloorWatchdog {
   // previous call. longest_send_us: SendTimer::take_longest_us for that interval.
   // queue_backlog_pct: the chip TX queue in use right now (0 when unknown); a
   // low floor backs frames up in the chip while every USB send still returns fast.
+  // busy_pct: the channel's foreign busy airtime in percent, -1 when unknown.
   Result step(uint64_t now_ms, bool eligible, uint64_t longest_send_us,
-              uint8_t queue_backlog_pct) {
+              uint8_t queue_backlog_pct, int busy_pct) {
     if (p_.cap <= p_.base) return none();
-    // No judged window for abandon_ms (link gone, rung dropped to 20 MHz):
-    // the raise was never proven, so it does not stay.
+    // No judged slow or clean window for abandon_ms (link gone, rung dropped
+    // to 20 MHz, busy channel, murky backlog): the raise was never proven, so
+    // it does not stay.
     if (climbing_ && now_ms >= last_act_ + p_.abandon_ms) return fail(now_ms);
     if (now_ms <= win_start_) return none();  // settling after a level change
-    win_ok_ = win_ok_ && eligible;
+    const bool busy = p_.busy_max_pct != 0 && busy_pct >= p_.busy_max_pct;
+    win_ok_ = win_ok_ && eligible && !busy;
     win_max_ = std::max(win_max_, longest_send_us);
     win_q_ = std::max(win_q_, queue_backlog_pct);
+    win_busy_ = std::max(win_busy_, busy_pct);
     if (now_ms < win_start_ + p_.window_ms) return none();
 
     // A window stretched past twice its length (a starved thread, a clock
@@ -91,15 +108,21 @@ class IgiFloorWatchdog {
     const bool judged = win_ok_ && now_ms <= win_start_ + 2ull * p_.window_ms;
     const uint64_t longest = win_max_;
     const uint8_t backlog = win_q_;
+    const int win_busy = win_busy_;
     const bool slow = longest >= p_.slow_us ||
                       (p_.queue_slow_pct != 0 && backlog >= p_.queue_slow_pct);
+    const bool clean = p_.queue_slow_pct == 0 || backlog < p_.clean_backlog_pct;
     open(now_ms);
     if (!judged) return none();
 
     if (climbing_) {
+      if (slow) {
+        last_act_ = now_ms;
+        return level_ < p_.cap ? raise(now_ms, longest, backlog, win_busy) : fail(now_ms);
+      }
+      if (!clean) { clean_n_ = 0; return none(); }  // murky: the abandon timer runs on
       last_act_ = now_ms;
-      if (slow) return level_ < p_.cap ? raise(now_ms, longest, backlog) : fail(now_ms);
-      if (!clean_) { clean_ = true; return none(); }
+      if (++clean_n_ < p_.keep_windows) return none();
       hist_n_ = 0;
       hold_len_ = p_.hold_ms;
       climbing_ = false;
@@ -121,7 +144,7 @@ class IgiFloorWatchdog {
     climbing_ = true;
     episode_base_ = level_;
     raises_ = 0;
-    return raise(now_ms, longest, backlog);
+    return raise(now_ms, longest, backlog, win_busy);
   }
 
   uint8_t level() const { return level_; }
@@ -131,22 +154,25 @@ class IgiFloorWatchdog {
 
   Result none() const { Result r; r.from = r.level = level_; return r; }
 
-  void open(uint64_t t) { win_start_ = t; win_ok_ = true; win_max_ = 0; win_q_ = 0; }
+  void open(uint64_t t) {
+    win_start_ = t; win_ok_ = true; win_max_ = 0; win_q_ = 0; win_busy_ = -1;
+  }
 
   void changed(uint64_t now) { last_act_ = now; open(now + p_.settle_ms); }
 
-  Result raise(uint64_t now, uint64_t longest_us, uint8_t backlog) {
+  Result raise(uint64_t now, uint64_t longest_us, uint8_t backlog, int busy) {
     static constexpr uint8_t kSteps[] = {2, 4, 8};  // then straight to the cap
     Result r = none();
     const int up = raises_ < 3 ? kSteps[raises_] : p_.cap;
     level_ = static_cast<uint8_t>(std::min<int>(level_ + up, p_.cap));
     ++raises_;
-    clean_ = false;
+    clean_n_ = 0;
     changed(now);
     r.event = Event::Raised;
     r.level = level_;
     r.longest_ms = static_cast<uint32_t>(longest_us / 1000);
     r.backlog_pct = backlog;
+    r.busy_pct = busy;
     return r;
   }
 
@@ -168,10 +194,12 @@ class IgiFloorWatchdog {
   uint8_t level_;
   uint64_t win_start_ = 0, win_max_ = 0;
   uint8_t win_q_ = 0;
+  int win_busy_ = -1;
   bool win_ok_ = true;
   Judged hist_[3] = {};
   int hist_n_ = 0;
-  bool climbing_ = false, clean_ = false;
+  bool climbing_ = false;
+  int clean_n_ = 0;         // clean windows in a row at the current level
   uint8_t episode_base_ = 0;
   int raises_ = 0;
   uint64_t last_act_ = 0;   // the later of the last level change and judged window

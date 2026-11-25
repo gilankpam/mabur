@@ -222,11 +222,15 @@ episode:
 - The floor steps up by `+2`, then `+4`, then `+8`, then goes straight to
   the cap, never past it. After each step it waits 300 ms to settle, then
   judges the next window.
-- Two clean windows in a row keep the level. The episode ends and the
-  failure hold resets.
+- A window that is not slow is clean when the chip queue stayed under 30 %
+  (a healthy link peaks near 22 %), and murky between 30 % and 60 %. Three
+  clean windows in a row keep the level. The episode ends and the failure
+  hold resets. A murky window neither raises nor keeps, and restarts the
+  clean count.
 - If the floor is at the cap and a window is still slow, or no window is
-  judged for 3 s (the link is gone, or the rung dropped to 20 MHz), the climb
-  is undone: the floor returns to the level the episode started from, and a
+  judged slow or clean for 3 s (the link is gone, the rung dropped to
+  20 MHz, or the queue stayed murky), the climb is undone: the floor returns
+  to the level the episode started from, and a
   new episode waits out a hold of 30 s that doubles at each failure up to
   300 s.
 
