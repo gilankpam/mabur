@@ -40,7 +40,7 @@ target_link_libraries(mabur_drone_core PUBLIC mabur_common rt devourer)
 # on mabur_drone_core above.
 target_include_directories(mabur_drone_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/venc)
 
-add_executable(maburd src/maburd/main.cpp src/maburd/threads.cpp src/maburd/radio_glue.cpp src/maburd/real_actuator.cpp src/maburd/dry_run.cpp src/maburd/real_mode.cpp)
+add_executable(maburd src/maburd/main.cpp src/maburd/threads.cpp src/maburd/radio_glue.cpp src/maburd/real_actuator.cpp src/maburd/dry_run.cpp src/maburd/real_mode.cpp src/maburd/rx_path.cpp src/maburd/hot_thread.cpp src/maburd/tx_writer.cpp src/maburd/agent_thread.cpp src/maburd/mav_thread.cpp src/maburd/msp_thread.cpp src/maburd/igi_thread.cpp)
 
 # Same rule as mabur_common (common/CMakeLists.txt): the producer loop lives
 # in src/maburd/ and the pipeline in mabur_drone_core, and both must not fall

@@ -376,6 +376,15 @@ struct RealMode {
   RealActuator& wire_sink_and_actuator();
 };
 
+// One function per thread body (and the RX callback), each in its own file.
+void rx_on_packet(RealMode& m, const Packet& pkt);
+void install_nack_hook(RealMode& m);  // assigns m.nack_hook; the hook owns its RX-only state
+void hot_loop(RealMode& m);
+void tx_writer_loop(RealMode& m);
+void agent_loop(RealMode& m);
+void mav_loop(RealMode& m);
+void igi_wd_loop(RealMode& m);
+
 int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_path);
 
 }  // namespace mabur::maburd
