@@ -189,7 +189,9 @@ after the copy, an acquire recheck of state). A rejected or stale slot is a
 miss.
 
 **Handler** (`nack_hook` in `drone/src/maburd/rx_path.cpp`, on the **RX thread**;
-`rx_callback` routes `T_NACK` there instead of the agent queue):
+`rx_callback` routes `T_NACK` there instead of the agent queue). Steps 2–3 and
+the push order are `NackResponder` (`drone/src/nack_responder.*`), called from
+the hook; the hook does the check, the counters and the pushes:
 
 1. `RcAgent::check_nack`: `parse_nack`, `sid == 0`,
    `RcAgent::verify_session_tagged(…, counter)` against the published
