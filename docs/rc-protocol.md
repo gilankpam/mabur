@@ -29,7 +29,7 @@ byte 26 for `0x88`, and ignores the trailing 4-byte 802.11 FCS. All
 multi-byte fields are little-endian, so the RC magic is `43 52` on the air
 and the SBI magic is `b0 f5`.
 
-Code: the control header is built in `drone/src/main.cpp` (drone) and
+Code: the control header is built in `drone/src/maburd/main.cpp` (drone) and
 [`gs/src/dot11.cpp`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/dot11.cpp)
 (GS); the QoS-Data header in `drone/src/radio_tx.cpp`.
 
@@ -378,5 +378,5 @@ else may change in any release.
 | RC frames, tag, version gates | `common/include/mabur/rc_proto.h`, `common/src/rc_proto.cpp`, `siphash.*`, `link_key.*` | — |
 | SBI / FEC / fragments / frame header / probe | `common/include/mabur/sbi.h`, `sw_wire.h`, `frag.h`, `frame_wire.h`, `probe_wire.h`, `uep_encoder.h`, `uep_decoder.h` | — |
 | MAVLink | `common/include/mabur/mav.h`, `third_party/mavlink/` | `gs/src/mav_tunnel.*` |
-| Drone side | `drone/src/rc_agent.*` (session, RCF apply), `drone/src/main.cpp` (RX callback, Telem, control TX), `drone/src/radio_tx.cpp` (data TX) | — |
+| Drone side | `drone/src/rc_agent.*` (session, RCF apply), `drone/src/maburd/main.cpp` (RX callback, Telem, control TX), `drone/src/radio_tx.cpp` (data TX) | — |
 | GS side | — | `gs/src/rendezvous.*`, `vrx_controller.*`, `aggregator.cpp`, `dot11.cpp`, `channel_core.*` |
