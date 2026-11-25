@@ -156,12 +156,12 @@ TEST(queue_backlog_alone_starts_a_climb) {
 }
 
 TEST(queue_below_threshold_is_clean) {
-  Rig r; r.secs(60, true, kFast, 39); CHECK(r.ev.empty());
+  Rig r; r.secs(60, true, kFast, 59); CHECK(r.ev.empty());
 }
 
 TEST(queue_backlog_blocks_the_keep) {
   Rig r; r.secs(2, true, kFast, 90);
-  r.ticks(23, true, kFast, 50);   // 50 % is still slow: climbs on, never keeps
+  r.ticks(23, true, kFast, 70);   // 70 % is still slow: climbs on, never keeps
   REQUIRE(r.ev.size() == 2);
   CHECK(is(r.ev[0], E::Raised, 0x24)); CHECK(is(r.ev[1], E::Raised, 0x28));
 }

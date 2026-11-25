@@ -213,8 +213,11 @@ The cap on both is `0x35`.
 A watchdog thread (`drone/src/igi_floor_watchdog.h`, fed by
 `drone/src/send_timer.h`) raises the floor in flight. It times every
 direct-path video send and judges one-second windows; a window is slow when
-its longest radio send is 30 ms or more, or when the chip's TX queue is 40 % full or more at its deepest in the window (the queue is read every 100 ms; frames can back up inside the chip while USB sends still return quickly). Two slow windows among the last
-three judged ones within 30 s start an episode:
+its longest radio send is 30 ms or more, or when the chip's TX queue is 60 %
+full or more at its deepest in the window (the queue is read every 100 ms;
+frames can back up inside the chip while USB sends still return quickly).
+Two slow windows among the last three judged ones within 30 s start an
+episode:
 
 - The floor steps up by `+2`, then `+4`, then `+8`, then goes straight to
   the cap, never past it. After each step it waits 300 ms to settle, then
@@ -251,8 +254,9 @@ maburd radio: IGI floor watchdog: no chip queue reading, sends only
 stops; `USB error` means the write failed on USB but the floor is recorded and
 the periodic DIG tick enforces it; `no chip queue reading` means the radio
 cannot report its queue, so only slow sends count (logged once). A failed
-queue read counts as an empty queue for that tick, with no log line. The `stats:` line carries
-`igi_floor=0x%02x`, the level currently set, after `txq_drop=`.
+queue read counts as an empty queue for that tick, with no log line. The
+`stats:` line carries `igi_floor=0x%02x`, the level currently set, after
+`txq_drop=`.
 
 For a bench run, `MABUR_IGI_FLOOR_BASE` and `MABUR_IGI_FLOOR_CAP` override the
 start and the cap (decimal, or hex with `0x`; an invalid value is ignored,

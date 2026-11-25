@@ -20,7 +20,9 @@ struct IgiFloorParams {
   uint8_t base = 0, cap = 0;            // cap <= base: watchdog off
   uint32_t window_ms = 1000;
   uint64_t slow_us = 30000;
-  uint8_t queue_slow_pct = 40;          // chip TX queue backlog; 0 = queue signal off
+  uint8_t queue_slow_pct = 60;          // chip TX queue backlog; 0 = queue signal off
+  // 60, not lower: a healthy link can briefly fill the queue to about 40 %,
+  // while a real stall reads near 100 % and most faulty seconds reach 60 %.
   uint32_t settle_ms = 300;
   uint32_t history_ms = 30000;
   uint32_t abandon_ms = 3000;
