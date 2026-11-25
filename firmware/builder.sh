@@ -13,7 +13,8 @@
 #   FIRMWARE_DIR      the OpenIPC tree (default: firmware/openipc)
 #   MABUR_SRC_DIR     the mabur tree maburd is built from (default: repo root)
 #   MABUR_RELEASE     release name compiled into maburd (default: local)
-#   DEVOURER_VERSION  devourer commit (default: devourer master, resolved once)
+#   DEVOURER_VERSION  devourer commit (default: the third_party/devourer pin
+#                     of MABUR_SRC_DIR)
 #   SKIP_UBOOT=1      leave U-Boot alone
 set -eo pipefail
 
@@ -173,9 +174,10 @@ if [ -z "${ITEM}" ]; then
     exit 2
 fi
 if [ -z "${DEVOURER_VERSION}" ]; then
-    DEVOURER_VERSION=$(git ls-remote https://github.com/gilankpam/devourer refs/heads/master | cut -f1)
+    # The gitlink in the tree; the submodule itself need not be checked out.
+    DEVOURER_VERSION=$(git -C "${MABUR_SRC_DIR}" rev-parse HEAD:third_party/devourer) ||
+        { echo "error: cannot read the devourer pin of ${MABUR_SRC_DIR}" >&2; exit 1; }
 fi
-[ -n "${DEVOURER_VERSION}" ] || { echo "error: cannot resolve devourer master" >&2; exit 1; }
 export DEVOURER_VERSION
 # The kernel commit the board's defconfig pins (its tarball URL ends in it).
 KERNEL_REF=$(sed -n 's|^BR2_LINUX_KERNEL_CUSTOM_TARBALL_LOCATION=".*/archive/\([0-9a-f]\{40\}\)\.tar\.gz"$|\1|p' \

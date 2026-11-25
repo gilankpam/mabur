@@ -43,7 +43,6 @@ jobs:
       kind: ${{ steps.v.outputs.kind }}
       sha: ${{ steps.v.outputs.sha }}
       prev_tag: ${{ steps.v.outputs.prev_tag }}
-      devourer: ${{ steps.v.outputs.devourer }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -71,11 +70,9 @@ jobs:
             kind=snapshot sha=$GITHUB_SHA version=snapshot-${GITHUB_SHA:0:8}
             prev=$(prev_below v999999.0.0)
           fi
-          devourer=$(git ls-remote https://github.com/gilankpam/devourer refs/heads/master | cut -f1)
-          [ -n "$devourer" ] || { echo "cannot resolve devourer master"; exit 1; }
           {
             echo "kind=$kind"; echo "version=$version"; echo "sha=$sha"
-            echo "prev_tag=$prev"; echo "devourer=$devourer"
+            echo "prev_tag=$prev"
           } | tee -a "$GITHUB_OUTPUT"
 
   build:
@@ -89,7 +86,6 @@ jobs:
           - ssc338q_fpv_emax-wyvern-link-alpha
     env:
       VERSION: ${{ needs.version.outputs.version }}
-      DEVOURER_VERSION: ${{ needs.version.outputs.devourer }}
     steps:
       - uses: actions/checkout@v5
       - name: Prepare

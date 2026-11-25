@@ -86,8 +86,8 @@ build downloaded, and each file's md5.
   video) before it merges.
 - The toolchain and `ipctool` are OpenIPC's rolling downloads, not pinned;
   their sha256 in the notes shows when they moved.
-- **devourer** master, resolved once per workflow run (recorded in the
-  notes).
+- **devourer** at the `third_party/devourer` pin (recorded in the notes);
+  the GS builds the same commit through its mabur pin.
 - **U-Boot** from `gilankpam/u-boot-sigmastar`, ref `mabur-fastboot`.
 - **maburd** from the mabur tree the build runs in
   (`firmware/package/mabur/mabur.mk`, Buildroot `local` site), plus the
