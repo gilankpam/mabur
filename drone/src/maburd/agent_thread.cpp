@@ -14,6 +14,7 @@
 #include "peak_rate.h"
 #include "tick_gate.h"
 #include "loop_watchdog.h"
+#include "stats_line.h"
 #include "real_mode.h"
 #include "SignalStop.h"
 
@@ -223,7 +224,6 @@ void agent_loop(RealMode& m) {
         }
 #endif
         // MAV fields only when a counter moved since they were last shown.
-        char mav_part[200] = "";
         const uint64_t mav_now[8] = {
             m.mav_rx_frames.load(std::memory_order_relaxed),
             m.mav_rx_packets.load(std::memory_order_relaxed),
@@ -233,20 +233,7 @@ void agent_loop(RealMode& m) {
             m.mav_reject.load(std::memory_order_relaxed),
             m.agent.cal_late(),
             m.agent.update_dropped()};
-        if (!std::equal(std::begin(mav_now), std::end(mav_now), std::begin(mav_last))) {
-          std::copy(std::begin(mav_now), std::end(mav_now), std::begin(mav_last));
-          std::snprintf(mav_part, sizeof mav_part,
-                        " mav rx=%llu/%llu tx=%llu/%llu drop=%llu reject=%llu cal_late=%llu"
-                        " update_dropped=%llu",
-                        static_cast<unsigned long long>(mav_now[0]),
-                        static_cast<unsigned long long>(mav_now[1]),
-                        static_cast<unsigned long long>(mav_now[2]),
-                        static_cast<unsigned long long>(mav_now[3]),
-                        static_cast<unsigned long long>(mav_now[4]),
-                        static_cast<unsigned long long>(mav_now[5]),
-                        static_cast<unsigned long long>(mav_now[6]),
-                        static_cast<unsigned long long>(mav_now[7]));
-        }
+        const std::string mav_part = mav_stats_suffix(mav_now, mav_last);
         const ConfigApplierStats apply_stats = m.applier.stats();
         std::fprintf(stderr,
                      "stats: state=%d hot_beat=%llu rx_beat=%llu seq=%u sent=%llu drops=%llu "
@@ -268,7 +255,7 @@ void agent_loop(RealMode& m) {
                      snr_mhz, snr_off,
                      static_cast<unsigned long long>(apply_stats.ok),
                      static_cast<unsigned long long>(apply_stats.failed),
-                     static_cast<unsigned long long>(apply_stats.rebuilds), mav_part);
+                     static_cast<unsigned long long>(apply_stats.rebuilds), mav_part.c_str());
       }
 
       // Telemetry suppression: non-sweep PPDUs in the airtime a calibration
