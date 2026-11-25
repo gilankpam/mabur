@@ -18,6 +18,7 @@
 #include "mabur/cal_mav.h"
 #include "real_mode.h"
 #include "SignalStop.h"
+#include "window_stat.h"
 
 #include <libusb.h>
 
@@ -325,13 +326,13 @@ void tx_writer_loop(RealMode& m) {
   // wait from the pre-push pushed_us stamp, per body and for the AU-first
   // body alone (the one whose q_ms the GS latches as dq). Thread-owned,
   // reported every 5 s.
-  uint64_t qw_n = 0, qw_sum_us = 0, qw_max_us = 0;
-  uint64_t qf_n = 0, qf_sum_us = 0, qf_max_us = 0;
+  mabur::WindowStat qw, qf;
   // tx_send gauge: wall time of each
   // tx.send_bodies call and its body count, to split the measured
   // ~0.385 ms/body burst pace into USB round-trip vs airtime. A blocking
   // ~1.1 ms per 3-body batch here = the URB round-trip IS the pace.
-  uint64_t sb_calls = 0, sb_bodies = 0, sb_sum_us = 0, sb_max_us = 0;
+  mabur::WindowStat sb;  // sb.n = calls
+  uint64_t sb_bodies = 0;
   // SWEEPs accepted only under the calibration run pair (kOkLatched) that
   // named a nonce other than the open run's: dropped, since a run opens
   // only from a SWEEP verified under the published session.
@@ -469,49 +470,44 @@ void tx_writer_loop(RealMode& m) {
       while (w > prev && !m.txq_wait_max_ms.compare_exchange_weak(prev, w)) {}
       if (b.pushed_us && pop_us > b.pushed_us) {
         const uint64_t tw = pop_us - b.pushed_us;
-        ++qw_n; qw_sum_us += tw;
-        if (tw > qw_max_us) qw_max_us = tw;
-        if (b.au_first) {
-          ++qf_n; qf_sum_us += tw;
-          if (tw > qf_max_us) qf_max_us = tw;
-        }
+        qw.add(tw);
+        if (b.au_first) qf.add(tw);
       }
     }
     if (pop_ms - last_qw_report_ms >= 5000) {
       last_qw_report_ms = pop_ms;
-      if (qw_n > 0) {
+      if (qw.n > 0) {
         std::fprintf(stderr,
             "maburd dq_queue: bodies=%llu wait_us mean=%llu max=%llu "
             "au_first n=%llu mean=%llu max=%llu\n",
-            (unsigned long long)qw_n,
-            (unsigned long long)(qw_sum_us / qw_n),
-            (unsigned long long)qw_max_us,
-            (unsigned long long)qf_n,
-            (unsigned long long)(qf_n ? qf_sum_us / qf_n : 0),
-            (unsigned long long)qf_max_us);
+            (unsigned long long)qw.n,
+            (unsigned long long)qw.mean(),
+            (unsigned long long)qw.max,
+            (unsigned long long)qf.n,
+            (unsigned long long)qf.mean(),
+            (unsigned long long)qf.max);
       }
-      qw_n = qw_sum_us = qw_max_us = 0;
-      qf_n = qf_sum_us = qf_max_us = 0;
-      if (sb_calls > 0) {
+      qw.reset();
+      qf.reset();
+      if (sb.n > 0) {
         std::fprintf(stderr,
             "maburd tx_send: calls=%llu bodies=%llu us/call mean=%llu "
             "max=%llu us/body=%llu cal_latch_drop=%llu\n",
-            (unsigned long long)sb_calls,
+            (unsigned long long)sb.n,
             (unsigned long long)sb_bodies,
-            (unsigned long long)(sb_sum_us / sb_calls),
-            (unsigned long long)sb_max_us,
-            (unsigned long long)(sb_bodies ? sb_sum_us / sb_bodies : 0),
+            (unsigned long long)sb.mean(),
+            (unsigned long long)sb.max,
+            (unsigned long long)(sb_bodies ? sb.sum / sb_bodies : 0),
             (unsigned long long)cal_latch_drops);
       }
-      sb_calls = sb_bodies = sb_sum_us = sb_max_us = 0;
+      sb.reset();
+      sb_bodies = 0;
     }
     const uint64_t sb_t0 = now_steady_us();
     m.tx.send_bodies(batch);
     const uint64_t sb_dt = now_steady_us() - sb_t0;
-    ++sb_calls;
+    sb.add(sb_dt);
     sb_bodies += batch.size();
-    sb_sum_us += sb_dt;
-    if (sb_dt > sb_max_us) sb_max_us = sb_dt;
   }
 }
 }  // namespace mabur::maburd

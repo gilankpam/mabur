@@ -16,6 +16,7 @@
 #include "probe_source.h"
 #include "real_mode.h"
 #include "SignalStop.h"
+#include "window_stat.h"
 
 #include <libusb.h>
 
@@ -80,9 +81,7 @@ void hot_loop(RealMode& m) {
   // interval the wire's q_ms currently lumps together — venc-ring wait
   // (loop-top → read return) and FEC/SBI-pack CPU (read return → push).
   // Hot-thread-owned, reported on the 5 s ring-stats cadence.
-  uint64_t split_n = 0;
-  uint64_t split_ring_sum_us = 0, split_ring_max_us = 0;
-  uint64_t split_cpu_sum_us = 0, split_cpu_max_us = 0;
+  mabur::WindowStat split_ring, split_cpu;  // split_cpu.n is the frame count
   // sink_us: time inside the streaming sink (SBI patch + stamps +
   // txq.push/notify) — the per-body wakeup-chain half of cpu_us; the
   // remainder minus join_wait is the frag/GF-credit/SBI-pack feed itself.
@@ -276,11 +275,8 @@ void hot_loop(RealMode& m) {
         const uint64_t t_done_us = now_steady_us();
         const uint64_t ring_us = t_read_us - t0_us;
         const uint64_t cpu_us = t_done_us - t_read_us;
-        ++split_n;
-        split_ring_sum_us += ring_us;
-        if (ring_us > split_ring_max_us) split_ring_max_us = ring_us;
-        split_cpu_sum_us += cpu_us;
-        if (cpu_us > split_cpu_max_us) split_cpu_max_us = cpu_us;
+        split_ring.add(ring_us);
+        split_cpu.add(cpu_us);
       }
       m.enc_frames_total.fetch_add(1, std::memory_order_relaxed);
       m.enc_bytes_total.fetch_add(static_cast<uint64_t>(n), std::memory_order_relaxed);
@@ -323,20 +319,19 @@ void hot_loop(RealMode& m) {
       // dq_split window report: the pre-push half of
       // the interval the wire q_ms spans. The post-push half (true queue
       // wait) is the tx thread's dq_queue line on the same cadence.
-      if (split_n > 0) {
+      if (split_cpu.n > 0) {
         std::fprintf(stderr,
             "maburd dq_split: n=%llu ring_us mean=%llu max=%llu "
             "cpu_us mean=%llu max=%llu sink_us mean=%llu\n",
-            (unsigned long long)split_n,
-            (unsigned long long)(split_ring_sum_us / split_n),
-            (unsigned long long)split_ring_max_us,
-            (unsigned long long)(split_cpu_sum_us / split_n),
-            (unsigned long long)split_cpu_max_us,
-            (unsigned long long)(split_sink_sum_us / split_n));
+            (unsigned long long)split_cpu.n,
+            (unsigned long long)split_ring.mean(),
+            (unsigned long long)split_ring.max,
+            (unsigned long long)split_cpu.mean(),
+            (unsigned long long)split_cpu.max,
+            (unsigned long long)(split_sink_sum_us / split_cpu.n));
       }
-      split_n = 0;
-      split_ring_sum_us = split_ring_max_us = 0;
-      split_cpu_sum_us = split_cpu_max_us = 0;
+      split_ring.reset();
+      split_cpu.reset();
       split_sink_sum_us = 0;
       for (int sid = 0; sid < UepEncoder::kNumStreams; ++sid) {
         const auto g = uep.take_fec_gauge(sid);
