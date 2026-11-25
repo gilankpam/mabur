@@ -172,6 +172,48 @@ A sweep needs a runtime floor setter in devourer (the floor is
 construction-time today); the spike added one, and changed
 `set_igi_floor` so that any lowering parks IGI at once.
 
+## 7. With the GS talking, at a video-like load
+
+A later run the same day, after a power cycle. Pinned IGI on silent 144(-),
+the drone at a fixed offered load instead of saturated, the GS card playing
+MCS0/20 frames; 10 s per cell, sampled every 200 ms. "Worst 200 ms" is the
+fewest frames sent in one sample, as a share of the offered load.
+
+790 frames/s offered (28 % air, about a video stream):
+
+| IGI | GS frames/s | sent | worst 200 ms | FIFO empty in | lowest free pages | longest blocked send |
+|---|---|---|---|---|---|---|
+| 0x22, 0x20 | 0, 20, 50 | 100 % | 95–100 % | 100 % of samples | 1745 | 0–9 ms |
+| 0x1e | 0 (three runs) | 94, 98, 100 % | 15, 68, 91 % | 12, 14, 45 % | 17, 245, 1197 | 124, 0, 10 ms |
+| 0x1e | 20 (two runs) | 100 % | 96–98 % | 35, 39 % | 1017, 1077 | 0–9 ms |
+| 0x1e | 50 | 100 % | 99 % | 79 % | 1473 | 0 ms |
+| 0x1c | 20 (two runs) | 100 % | 96–97 % | 45, 58 % | 1289, 1329 | 0–9 ms |
+
+1980 frames/s offered (70 % air):
+
+| IGI | GS frames/s | sent | worst 200 ms | FIFO empty in | lowest free pages | longest blocked send |
+|---|---|---|---|---|---|---|
+| 0x22 | 0, 20, 50 | 100 % | 92–99 % | 100 % | 1713 | 0 ms |
+| 0x20 | 0, 20, 50 | 100 % | 96–99 % | 95–97 % | 1569–1689 | 0 ms |
+| 0x1e | 0 | 60 % | 8 % | 0 % | 17 | 154 ms |
+| 0x1e | 20 | 95 % | 48 % | 10 % | 17 | 21 ms |
+| 0x1e | 50 | 100 % | 97 % | 33 % | 717 | 0 ms |
+| 0x1c | 0 | 52 % | 0 % | 0 % | 17 | 263 ms |
+| 0x1c | 20 | 93 % | 60 % | 4 % | 17 | 33 ms |
+
+- The drone-local signal survives the uplink. With the GS at the RCF rate the
+  FIFO is empty in 100 % of samples at 0x20 and above at the video-like load
+  and in 35–58 % below the edge; at the DISC rate, 75–79 %.
+- With the GS at the RCF rate, a video-like load loses no frames below the
+  edge and no send blocks. What remains is a standing backlog: up to ~730
+  pages, about 60 frames of 1400 B (128-byte pages), which at 790 frames/s
+  is roughly 75 ms of queueing in the worst sample and 30–40 frames in the
+  worst tenth. That delay is computed from the page count, not measured.
+- At 70 % air the RCF rate still costs 5–7 % of the frames and halves the
+  worst 200 ms.
+- With the uplink silent the loss at a video-like load varies from run to
+  run (94–100 % sent, worst 200 ms between 15 % and 91 %).
+
 ## What this means for the four options
 
 - **Fixed 0x35 on the 8812EU too:** no boot time, covers every unit measured
@@ -182,8 +224,9 @@ construction-time today); the spike added one, and changed
   and 157 differ by three steps on this unit).
 - **Runtime watchdog** (raise the floor when the drone's own TX FIFO stops
   draining): the signal exists and needs no GS; it follows the channel and
-  the temperature; it costs uplink only on a unit that needs it. Not built;
-  a busy channel also backs the FIFO up, so it needs a cap.
+  the temperature; it costs uplink only on a unit that needs it. The signal
+  holds with the GS sending at the RCF rate (section 7). Not built; a busy
+  channel also backs the FIFO up, so it needs a cap.
 - **One-time calibration stored in config:** no boot time, but it needs a
   value per channel or a margin over the worst one, and an operator step.
 
