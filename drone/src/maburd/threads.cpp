@@ -98,5 +98,4 @@ void pin_self_to(int cpu) {
 #endif
 }
 
-
 }  // namespace mabur::maburd

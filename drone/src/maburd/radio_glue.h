@@ -8,6 +8,7 @@
 #include <functional>
 #include <mutex>
 #include <optional>
+#include <thread>
 #include <shared_mutex>
 #include <vector>
 
@@ -46,7 +47,6 @@ inline void await_retune_gate(const std::atomic<bool>* waiting) {
   if (!waiting) return;
   while (waiting->load(std::memory_order_acquire)) std::this_thread::yield();
 }
-
 
 // Wraps IRtlRadio::send_packet with a mutex — shared between the hot
 // thread (video bodies) and the agent thread (send_control / DISC_ACK).
@@ -181,7 +181,6 @@ struct RadioPowerTableDevice : PowerTableDevice {
 
 uint16_t open_usb_and_get_pid(uint16_t vid, uint16_t configured_pid,
                               libusb_context* ctx, libusb_device_handle** out_handle);
-
 
 // A GS at a different RC_VERSION is refused by rc::frame_type(), so its RCFs
 // never reach the agent -- and, because the uplink RSSI/SNR EMAs are fed
