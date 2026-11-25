@@ -92,6 +92,8 @@
 #include "mabur/retx_ring.h"
 #include "usb_tx_pool.h"
 #include "send_timer.h"
+#include "threads.h"
+#include "radio_glue.h"
 #include "igi_floor_watchdog.h"
 #ifdef MABUR_HAVE_VENC
 #include "venc_core.h"  // ARM only: drone/venc is not compiled on host builds
@@ -119,33 +121,7 @@
 namespace {
 
 using namespace mabur;
-
-// A GS at a different RC_VERSION is refused by rc::frame_type(), so its RCFs
-// never reach the agent -- and, because the uplink RSSI/SNR EMAs are fed
-// inside that same accepted-frame branch, drone.uplink.snr_* goes stale too.
-// From the drone's side that is indistinguishable from "no GS is talking",
-// and from the GS's side it looks like the stale-caps restart deadlock, which
-// sends the operator to `restart maburd` -- which cannot help. So say it out
-// loud, but rarely: a mismatched peer transmits continuously and /tmp is
-// tmpfs, hence the once-per-5 s gate.
-// Not thread-safe; only rx_callback (the RX thread) calls it.
-void log_foreign_rc_version(uint8_t peer_ver) {
-  using clock = std::chrono::steady_clock;
-  static clock::time_point last{};
-  const auto now = clock::now();
-  if (last.time_since_epoch().count() != 0 &&
-      now - last < std::chrono::seconds(5))
-    return;
-  last = now;
-  std::fprintf(stderr,
-               "maburd: heard an RC frame at RC_VERSION %u but this build "
-               "speaks %u -- ignoring it (rate-limited to 1/5s). The pair is "
-               "half-deployed: there is no control link and no video in "
-               "either direction. Finish the deploy on BOTH ends; restarting "
-               "maburd will not help.\n",
-               static_cast<unsigned>(peer_ver),
-               static_cast<unsigned>(rc::RC_VERSION));
-}
+using namespace mabur::maburd;
 
 // ---------------------------------------------------------------------------
 // Sinks
@@ -179,134 +155,9 @@ void write_len_prefixed(FILE* f, const uint8_t* p, size_t n) {
   if (n > 0) std::fwrite(p, 1, n, f);
 }
 
-MspSourceCfg to_msp_source_cfg(const MspCfg& m) {
-  MspSourceCfg c;
-  c.update_rate_hz = m.update_rate_hz;
-  c.symbol_size = m.symbol_size;
-  c.window = m.window;
-  c.overhead = m.overhead;
-  return c;
-}
-
-// Writer-priority handshake for tx_gate. glibc's pthread_rwlock is
-// READER-PREFERRING by default: with video bodies, control frames and the
-// calibration writer all taking the gate shared at a few kHz, a thread
-// blocked in pthread_rwlock_wrlock can be overtaken indefinitely by newly
-// arriving readers. The one writer is RealActuator::retune, which runs on the
-// AGENT thread -- a starved writer there stalls the whole tick (RCF drain,
-// telemetry, the ladder), so the retune must not be allowed to queue behind
-// an unbounded reader stream. Every shared-taker spins on this flag first, so
-// once retune raises it no NEW reader enters and the writer gets in after at
-// most the readers already inside. The spin is yield-only and the window is
-// the ~7 ms of a single FastRetune, once per channel move.
-inline void await_retune_gate(const std::atomic<bool>* waiting) {
-  if (!waiting) return;
-  while (waiting->load(std::memory_order_acquire)) std::this_thread::yield();
-}
-
-uint64_t now_steady_us();  // defined below; the send timer's clock
-
-// Wraps IRtlRadio::send_packet with a mutex — shared between the hot
-// thread (video bodies) and the agent thread (send_control / DISC_ACK).
-struct DevourerSink : mabur::FrameSink {
-  IRtlRadio* dev = nullptr;
-  std::mutex m;
-  // Opened true only after InitWrite() finishes device bring-up (power-on,
-  // firmware download, TX-path enable). Until then every send is dropped:
-  // pushing frames into the chip's bulk-OUT FIFO *during* bring-up fills it
-  // with packets the not-yet-booted MAC cannot transmit, which then starves
-  // devourer's own reserved-page firmware download (its bulk-OUT to the same
-  // endpoint times out) — the FW never boots and TX is bricked for the whole
-  // session. Bench-confirmed on the SSC338Q: devourer's `doctor` brings the
-  // same dongle up HEALTHY in isolation, while maburd's concurrent hot/agent
-  // sends made DLFW fail after ~3 frames.
-  std::atomic<bool>* ready = nullptr;
-
-  // Parallel USB sender pool (radio.tx_threads > 1): send_many submits
-  // frames here and returns immediately; N pool threads each block in
-  // their own sync bulk transfer, keeping ~N URBs in flight (the chip
-  // flow-controls sync URB acceptance — one blocking sender caps air at
-  // ~26 Mbps regardless of MCS). Null = direct synchronous path.
-  mabur::UsbTxPool* pool = nullptr;
-
-  // Shared/exclusive gate against RealActuator::retune's FastRetune
-  // (devourer threading contract: a control-plane call must not overlap a
-  // bulk-OUT from any sender thread). Every USB sender here takes it
-  // shared; retune takes it exclusive. Null in dry-run, where there is no
-  // device to retune and no gate to take.
-  std::shared_mutex* gate = nullptr;
-  // Writer-priority flag paired with `gate` — see await_retune_gate above.
-  std::atomic<bool>* gate_waiting = nullptr;
-  // Times the direct-path video sends for the IGI floor watchdog (null in
-  // dry-run). Control sends are not timed.
-  mabur::SendTimer* timer = nullptr;
-
-  bool send(const uint8_t* p, size_t n) override {
-    if (ready && !ready->load(std::memory_order_acquire)) return false;
-    await_retune_gate(gate_waiting);
-    std::shared_lock<std::shared_mutex> sg;
-    if (gate) sg = std::shared_lock<std::shared_mutex>(*gate);
-    std::lock_guard<std::mutex> l(m);
-    return dev->send_packet(p, n);
-  }
-
-  // Batch path: devourer's send_packets packs consecutive frames into
-  // shared bulk-OUT URBs when tx.usb_agg_max > 0 (one transfer per batch
-  // instead of one per frame). Same ready-gate as send(). With a pool,
-  // "accepted" means queued to the senders (frames are copied; real air
-  // failures surface via GetTxStats + the pool's own counters).
-  size_t send_many(const View* frames, size_t n) override {
-    if (ready && !ready->load(std::memory_order_acquire)) return 0;
-    if (pool) {
-      // Grouped enqueue: the whole batch lands under one pool lock with one
-      // worker wakeup per 3 frames, so a feed_batch group becomes full
-      // 3-descriptor URBs instead of splitting 1+1+1 across idle workers.
-      size_t ok = 0;
-      mabur::UsbTxPool::Frame g[16];
-      while (ok < n) {
-        const size_t k = std::min(n - ok, sizeof g / sizeof g[0]);
-        for (size_t i = 0; i < k; ++i)
-          g[i] = {frames[ok + i].data, frames[ok + i].len};
-        const size_t accepted = pool->submit_many(g, k);
-        ok += accepted;
-        if (accepted < k) break;  // stopped
-      }
-      return ok;
-    }
-    std::vector<TxPacketView> v(n);
-    for (size_t i = 0; i < n; ++i) v[i] = {frames[i].data, frames[i].len};
-    await_retune_gate(gate_waiting);
-    std::shared_lock<std::shared_mutex> sg;
-    if (gate) sg = std::shared_lock<std::shared_mutex>(*gate);
-    std::lock_guard<std::mutex> l(m);
-    const int slot = timer ? timer->begin(now_steady_us()) : -1;
-    const size_t sent = dev->send_packets(v.data(), n);
-    if (timer) timer->end(slot, now_steady_us());
-    return sent;
-  }
-};
-
 // ---------------------------------------------------------------------------
 // RealActuator — bridges RcAgent to the radio/UEP/encoder world.
 // ---------------------------------------------------------------------------
-
-constexpr uint8_t kCanonicalSa[6] = {0x57, 0x42, 0x75, 0x05, 0xd6, 0x00};
-constexpr size_t kDot11HeaderLen = 24;
-
-std::vector<uint8_t> build_dot11_header(uint16_t seq) {
-  std::vector<uint8_t> h(kDot11HeaderLen, 0);
-  h[0] = 0x40;
-  h[1] = 0x00;
-  h[2] = 0x00;
-  h[3] = 0x00;
-  std::memset(h.data() + 4, 0xff, 6);
-  std::memcpy(h.data() + 10, kCanonicalSa, 6);
-  std::memcpy(h.data() + 16, kCanonicalSa, 6);
-  uint16_t seq_ctl = static_cast<uint16_t>(seq << 4);
-  h[22] = static_cast<uint8_t>(seq_ctl & 0xff);
-  h[23] = static_cast<uint8_t>((seq_ctl >> 8) & 0xff);
-  return h;
-}
 
 // The recorder's encoder side: drone/venc/venc_record.c on the drone, a
 // channel that is never there on host builds (the recorder then reports
@@ -329,52 +180,6 @@ struct VencRecordChannel : mabur::RecordChannel {
     venc_record_request_idr();
 #endif
   }
-};
-
-// The radiotap of a control-modulation frame (control_tx_mode: DISC_ACK,
-// Telem, MSP, MAVLink) for the live LDPC flag. A parameter set can flip
-// that flag at run time: the setter stores the flag, then bumps the
-// generation, and each sender rebuilds its header the first time it sees a
-// generation other than the one it built at. One instance per sending
-// thread, so no thread ever reads a vector another one rebuilds. Null
-// pointers (dry run) mean LDPC on, built once.
-struct ControlRadiotap {
-  const std::atomic<bool>* ldpc = nullptr;
-  const std::atomic<uint32_t>* gen = nullptr;
-
-  const std::vector<uint8_t>& get() {
-    const uint32_t g = gen ? gen->load(std::memory_order_acquire) : 0;
-    if (rt_.empty() || g != built_gen_) {
-      const bool on = ldpc ? ldpc->load(std::memory_order_acquire) : true;
-      rt_ = devourer::build_stream_radiotap(control_tx_mode(on));
-      built_gen_ = g;
-    }
-    return rt_;
-  }
-
- private:
-  std::vector<uint8_t> rt_;
-  uint32_t built_gen_ = 0;
-};
-
-// LivePowerTable's device (live_power_table.h): the radio, every call made
-// inside the retune gate -- await_retune_gate, then tx_gate shared.
-struct RadioPowerTableDevice : PowerTableDevice {
-  IRtlRadio* dev = nullptr;
-  std::shared_mutex* gate = nullptr;
-  std::atomic<bool>* gate_waiting = nullptr;
-
-  void gated(const std::function<void()>& f) override {
-    await_retune_gate(gate_waiting);
-    std::shared_lock<std::shared_mutex> sg;
-    if (gate) sg = std::shared_lock<std::shared_mutex>(*gate);
-    f();
-  }
-  bool set_rate_diffs(const std::optional<devourer::TxRateDiffsQdb>& diffs) override {
-    return dev->SetTxPowerRateDiffs(diffs);
-  }
-  void set_offset_qdb(int qdb) override { dev->SetTxPowerOffsetQdb(qdb); }
-  void set_index_override(int idx) override { dev->SetTxPowerIndexOverride(idx); }
 };
 
 // RealActuator bridges RcAgent's Actuator interface to the radio (RadioTx +
@@ -776,117 +581,6 @@ uint64_t now_steady_ms() {
           .count());
 }
 
-// An empty <dir>/<name> marker for the update loop (written as .new, then
-// renamed), creating dir if it is missing.
-void touch_update_file(const std::string& dir, const char* name) {
-  ::mkdir(dir.c_str(), 0755);
-  const std::string path = dir + "/" + name, tmp = path + ".new";
-  FILE* f = std::fopen(tmp.c_str(), "w");
-  if (!f || std::fclose(f) != 0 || std::rename(tmp.c_str(), path.c_str()) != 0) {
-    std::remove(tmp.c_str());
-    std::fprintf(stderr, "maburd trial: could not write %s\n", path.c_str());
-    return;
-  }
-  std::fprintf(stderr, "maburd trial: %s\n", name);
-}
-
-// Names show in /proc/<pid>/task/<tid>/comm (16-char cap) — without them
-// every maburd thread reads "maburd" next to the vendor SDK's unnamed
-// threads, and the fec-compute forensics once spent an hour pinning
-// the wrong tid. Names also let an operator taskset/renice by name.
-void name_thread(const char* n) {
-#if defined(__linux__)
-  pthread_setname_np(pthread_self(), n);
-#else
-  (void)n;
-#endif
-}
-
-// Core-placement policy (findings §19). The SSC338Q has two
-// A7s and the frame producer is the pacer for the whole link: dq_split
-// cpu_us is ~9 ms/frame unpinned but ~6.3 ms with the producer alone on a
-// core, because every txq.push notify lets the TX writer preempt it
-// mid-frame and the FEC worker migrates onto it (sink_us 1.9 -> 0.15 ms,
-// GS arrival span 8.6 -> 7.9 ms, air spacing 382 -> 346 us).
-//
-// Applied as: process affinity -> core 0 BEFORE any thread exists (radio,
-// venc SDK, USB pool, FEC worker all inherit it), then the hot thread
-// moves itself to core 1. Cost: the FEC worker shares core 0 and slows to
-// ~120 us/repair, so the producer's flush-join rises ~1 ms — a net win at
-// today's geometry, NOT a free one. Revisit if per-frame repair count grows.
-//
-// Guarded on exactly-2 online CPUs: that is the deployment target, and it
-// keeps a dev host (where this same binary builds and runs) from cramming
-// every thread onto CPU 0.
-constexpr int kHotCore = 1;
-constexpr int kRestCore = 0;
-
-// Moves every OTHER thread of this process whose comm equals `comm` onto
-// `cpu`. A thread's children inherit its affinity AND its name, so a thread
-// that pins itself somewhere unusual before calling into a library that
-// spawns workers (devourer's InitWrite starts a periodic ticker) leaves
-// those workers on that core with its name on them -- which is exactly how
-// they are found again here. Returns the number moved.
-int repin_inherited_threads(const char* comm, int cpu) {
-#if defined(__linux__)
-  const long self = syscall(SYS_gettid);
-  int moved = 0;
-  DIR* d = opendir("/proc/self/task");
-  if (!d) return 0;
-  while (dirent* e = readdir(d)) {
-    if (e->d_name[0] == '.') continue;
-    const long tid = std::atol(e->d_name);
-    if (tid == self) continue;
-    char path[64], name[32] = {0};
-    std::snprintf(path, sizeof path, "/proc/self/task/%ld/comm", tid);
-    FILE* f = std::fopen(path, "r");
-    if (!f) continue;
-    if (!std::fgets(name, sizeof name, f)) name[0] = '\0';
-    std::fclose(f);
-    name[strcspn(name, "\n")] = '\0';
-    if (std::strcmp(name, comm) != 0) continue;
-    cpu_set_t set;
-    CPU_ZERO(&set);
-    CPU_SET(cpu, &set);
-    if (sched_setaffinity(static_cast<pid_t>(tid), sizeof set, &set) == 0) ++moved;
-  }
-  closedir(d);
-  return moved;
-#else
-  (void)comm; (void)cpu;
-  return 0;
-#endif
-}
-bool two_core_target() {
-#if defined(__linux__)
-  return sysconf(_SC_NPROCESSORS_ONLN) == 2;
-#else
-  return false;
-#endif
-}
-
-void pin_self_to(int cpu) {
-#if defined(__linux__)
-  cpu_set_t set;
-  CPU_ZERO(&set);
-  CPU_SET(cpu, &set);
-  if (pthread_setaffinity_np(pthread_self(), sizeof set, &set) != 0)
-    std::fprintf(stderr, "maburd: affinity pin to cpu%d failed\n", cpu);
-#else
-  (void)cpu;
-#endif
-}
-
-// µs sibling for the dq_split gauge: the intervals it separates (venc-ring
-// wait 0–5 ms, FEC/SBI CPU, queue wait) are each of the same order as
-// now_steady_ms()'s 1 ms quantum, so a ms clock cannot split them.
-uint64_t now_steady_us() {
-  return static_cast<uint64_t>(
-      std::chrono::duration_cast<std::chrono::microseconds>(
-          std::chrono::steady_clock::now().time_since_epoch())
-          .count());
-}
-
 // Applies a freshly-published AppliedOp (detected via shared_ptr identity,
 // not generation — see the callers' pump-loop comments) to the
 // hot-thread-owned UepEncoder: the commanded overhead PAIR applied directly
@@ -1244,29 +938,6 @@ struct CalMsgQueue {
     return true;
   }
 };
-
-uint16_t open_usb_and_get_pid(uint16_t vid, uint16_t configured_pid,
-                              libusb_context* ctx, libusb_device_handle** out_handle) {
-  std::vector<uint16_t> pids;
-  if (configured_pid != 0) {
-    pids.push_back(configured_pid);
-  } else {
-    // Scan order: 8812EU, then the Jaguar3 8822C dies (RTL8812CU c812,
-    // RTL8822CU c82c -- the EMAX Wyvern Link board), then 8812AU. Which of
-    // these the binary can actually drive is devourer's build-time chip
-    // selection; an unbuilt chip fails at CreateRadio, not here.
-    pids = {0xa81a, 0xc812, 0xc82c, 0x881a, 0x8812};
-  }
-  for (uint16_t pid : pids) {
-    libusb_device_handle* h = libusb_open_device_with_vid_pid(ctx, vid, pid);
-    if (h) {
-      *out_handle = h;
-      return pid;
-    }
-  }
-  *out_handle = nullptr;
-  return 0;
-}
 
 int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_path) {
   // The update trial's window counts from here.
