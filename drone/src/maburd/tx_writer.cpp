@@ -18,6 +18,7 @@
 #include "mabur/cal_mav.h"
 #include "real_mode.h"
 #include "SignalStop.h"
+#include "q_wait.h"
 #include "window_stat.h"
 
 #include <libusb.h>
@@ -452,20 +453,12 @@ void tx_writer_loop(RealMode& m) {
 
     batch.clear();
     if (m.txq.pop_batch(batch, 3, 5) == 0) continue;
-    // Patch each body's SBI q_ms with its TxQueue wait (push→pop), and fold
-    // the batch's worst case into the window-max gauge (latency
-    // accounting). enqueued_ms == 0 means the producer never stamped it
-    // (shouldn't happen on the real path, but dry-run/test paths may still
-    // push bare bodies) -> leave q_ms at the packer's zero placeholder
-    // rather than reporting a bogus wait.
+    // Patch each body's SBI q_ms with its queue wait (see q_wait.h) and fold the worst into the window max.
     const uint32_t pop_ms = static_cast<uint32_t>(now_steady_ms());
     const uint64_t pop_us = now_steady_us();
     for (auto& b : batch) {
-      uint32_t w = (b.enqueued_ms && pop_ms > b.enqueued_ms)
-                       ? pop_ms - b.enqueued_ms : 0;
-      if (w > 65535) w = 65535;
-      mabur::sbi_set_q_ms(b.body.data(), b.body.size(),
-                          static_cast<uint16_t>(w));
+      const uint32_t w = mabur::q_wait_ms(b.enqueued_ms, pop_ms);
+      mabur::sbi_set_q_ms(b.body.data(), b.body.size(), static_cast<uint16_t>(w));
       uint32_t prev = m.txq_wait_max_ms.load(std::memory_order_relaxed);
       while (w > prev && !m.txq_wait_max_ms.compare_exchange_weak(prev, w)) {}
       if (b.pushed_us && pop_us > b.pushed_us) {

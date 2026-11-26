@@ -5,7 +5,7 @@
 #include <memory>
 #include <vector>
 
-#include "nack_bucket.h"
+#include "nack_responder.h"
 #include "real_mode.h"
 #include "rx_classify.h"
 #include "RxPacket.h"
@@ -55,36 +55,19 @@ namespace {
 
 // RX-thread-only state of the NACK answer, owned by the hook.
 struct NackState {
-  TokenBucket retx_bucket{64.0};  // re-sized from the op at every refill
-  mabur::SbiPacker retx_packer;
-  std::vector<uint8_t> retx_env;
-  std::vector<std::vector<uint8_t>> retx_out;
-  explicit NackState(RealMode& m)
-      : retx_packer(static_cast<int>(m.retx_env_len), m.cfg.fec.blocks_per_body[0],
-                    static_cast<uint8_t>(0 | mabur::kSbiRetxMark)),
-        retx_env(m.retx_env_len) {}
+  NackResponder responder;
+  std::vector<std::vector<uint8_t>> push_order;
+  explicit NackState(RealMode& m) : responder(m.retx_env_len, m.cfg.fec.blocks_per_body[0]) {}
 };
 
 }  // namespace
 
-// Software NACK answer (fec-nack), RX thread. Verified request -> ring
-// lookups -> fresh SBI bodies marked retx -> TxQueue head, under a token
-// bucket of nack.air_pct of the base layer's delivered capacity,
-// nack.burst_ms of that capacity deep (flight 0026: a fixed 64-symbol depth
-// was 4 ms of air at rung 5 and 30 ms at rung 0, and refused half of every
-// cascade's requests). A repeat-flagged request is answered twice (and
-// draws two tokens per symbol). The bucket, packer and scratch envelope are
-// RX-thread-only; ring, txq, air_clock and agent are thread-safe. The
-// UepBody carries stream_id 0, so RadioTx::build_frame and the air clock
-// see plain base-layer bodies; the retx mark lives only in the SBI stream
-// byte, which the GS routes as base and decodes as a retransmit.
+// Software NACK answer (NackResponder), RX thread. The hook may touch txq,
+// air_clock and agent because they are thread-safe; the responder's
+// bucket/packer/scratch are RX-thread-only.
 void install_nack_hook(RealMode& m) {
   auto st = std::make_shared<NackState>(m);
   m.nack_hook = [&m, st](const uint8_t* body, size_t len) {
-    TokenBucket& retx_bucket = st->retx_bucket;
-    mabur::SbiPacker& retx_packer = st->retx_packer;
-    std::vector<uint8_t>& retx_env = st->retx_env;
-    std::vector<std::vector<uint8_t>>& retx_out = st->retx_out;
     // A malformed frame (radio corruption, sid != 0) counts nack_bad only;
     // check_nack raises auth_reject itself for a tag/counter failure.
     rc::Nack nk;
@@ -92,40 +75,20 @@ void install_nack_hook(RealMode& m) {
       m.nack_bad.fetch_add(1, std::memory_order_relaxed);
       return;
     }
-    const rc::Nack* n = &nk;
     m.nack_rx.fetch_add(1, std::memory_order_relaxed);
     const auto op = m.shared_op.load();
-    const double sym_per_s =
-        op ? delivered_mbps(op->ladder[0], m.cfg.air_clock) * 1e6 / 8.0 / static_cast<double>(m.retx_env_len)
-           : 0.0;
-    if (op) retx_bucket.set_depth(TokenBucket::depth_for(sym_per_s, m.cfg.nack.burst_ms));
-    retx_bucket.refill(now_steady_us(), sym_per_s * m.cfg.nack.air_pct / 100.0);
-    const bool twice = (n->flags & rc::kNackFlagRepeat) != 0;
-    const double cost = twice ? 2.0 : 1.0;
-    retx_out.clear();
-    for (uint8_t i = 0; i < n->n; ++i) {
-      for (int b = 0; b < 32; ++b) {
-        if (!(n->e[i].bitmap & (1u << b))) continue;
-        const uint32_t seq = n->e[i].first_seq + static_cast<uint32_t>(b);
-        if (!m.retx.get(seq, retx_env.data())) { m.retx_miss.fetch_add(1, std::memory_order_relaxed); continue; }
-        if (!retx_bucket.take(cost)) { m.retx_refused.fetch_add(1, std::memory_order_relaxed); continue; }
-        m.retx_syms.fetch_add(1, std::memory_order_relaxed);
-        auto out = retx_packer.add_one(retx_env.data(), retx_env.size());
-        if (!out.empty()) retx_out.push_back(std::move(out));
-      }
-    }
-    auto tail = retx_packer.flush_one();
-    if (!tail.empty()) retx_out.push_back(std::move(tail));
-    // push_front stacks, so push each pass back-to-front: the bodies then
-    // leave in request order (pass 1 then pass 2) ahead of queued video.
+    const NackResponder::Tally t = st->responder.answer(nk, op.get(), m.cfg.air_clock, m.cfg.nack, now_steady_us(),
+                                                        m.retx, &st->push_order);
+    m.retx_miss.fetch_add(t.miss, std::memory_order_relaxed);
+    m.retx_refused.fetch_add(t.refused, std::memory_order_relaxed);
+    m.retx_syms.fetch_add(t.syms, std::memory_order_relaxed);
     const uint32_t now_ms = static_cast<uint32_t>(now_steady_ms());
-    for (int rep = 0; rep < (twice ? 2 : 1); ++rep)
-      for (auto it = retx_out.rbegin(); it != retx_out.rend(); ++it) {
-        const uint64_t p_us = now_steady_us();
-        const size_t bytes = it->size();
-        m.txq.push_front(UepBody{0, *it, now_ms, p_us, false});
-        m.air_clock.book(p_us, bytes, 0);
-      }
+    for (auto& b : st->push_order) {
+      const uint64_t p_us = now_steady_us();
+      const size_t bytes = b.size();
+      m.txq.push_front(UepBody{0, std::move(b), now_ms, p_us, false});
+      m.air_clock.book(p_us, bytes, 0);
+    }
   };
 }
 }  // namespace mabur::maburd

@@ -189,7 +189,10 @@ after the copy, an acquire recheck of state). A rejected or stale slot is a
 miss.
 
 **Handler** (`nack_hook` in `drone/src/maburd/rx_path.cpp`, on the **RX thread**;
-`rx_callback` routes `T_NACK` there instead of the agent queue):
+`rx_callback` routes `T_NACK` there instead of the agent queue). The hook does
+steps 1 and 4, counts `nack_rx` and adds `NackResponder`'s tally to the
+retx counters; steps 2–3 (bucket refill, ring walk, take, pack) are
+`NackResponder` (`drone/src/nack_responder.*`):
 
 1. `RcAgent::check_nack`: `parse_nack`, `sid == 0`,
    `RcAgent::verify_session_tagged(…, counter)` against the published
@@ -201,10 +204,12 @@ miss.
    routes frames regardless of `crc_err`, so this is mostly radio
    corruption) or `sid != 0` is not an auth failure and raises nothing,
    like the RCF path's silent parse drop.
-2. `nack_rx++`; refill the bucket.
-3. For each requested seq: ring `get` (miss → skip), bucket `take(cost)`
-   (refused → `retx_refused++`, skip), `retx_syms++`, pack into a fresh SBI
-   body with the sid-0 geometry and the retx mark.
+2. The hook counts `nack_rx`; the responder refills the bucket.
+3. For each requested seq the responder does a ring `get` (a miss is tallied
+   `retx_miss`, skipped), then bucket `take(cost)` (refused is tallied
+   `retx_refused`, skipped), else tallies `retx_syms` and packs a fresh SBI
+   body with the sid-0 geometry and the retx mark. The hook adds the tally
+   to `retx_miss`, `retx_refused` and `retx_syms`.
 4. `TxQueue::push_front` every body (pushed back-to-front, so they leave in
    request order ahead of queued video), each booked on the air clock; with
    the repeat flag the whole answer is pushed twice.
