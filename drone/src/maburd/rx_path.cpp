@@ -7,6 +7,7 @@
 
 #include "nack_bucket.h"
 #include "real_mode.h"
+#include "rx_classify.h"
 #include "RxPacket.h"
 
 namespace mabur::maburd {
@@ -22,36 +23,31 @@ void rx_on_packet(RealMode& m, const Packet& pkt) {
   if (pkt.Data.size() < kDot11HeaderLen + 4) return;
   const uint8_t* body = pkt.Data.data() + kDot11HeaderLen;
   size_t body_len = pkt.Data.size() - kDot11HeaderLen;
-  const int rc_type = rc::frame_type(body, body_len);
-  // A DISC of another version is still ours to answer (frozen type), and
-  // a T_MAV of another version may be the update lane: check_mav decides.
-  const int frozen = rc_type >= 0 ? rc_type : rc::frozen_type(body, body_len);
-  if (rc_type >= 0 || frozen == rc::T_DISC || frozen == rc::T_MAV) {
-    // Calibration rides T_MAV (the mabur dialect): the MAV thread verifies
-    // it and hands its cal packets to the TX writer thread.
-    if (rc_type == rc::T_NACK) {
+  const RxVerdict v = classify_rx(body, body_len, pkt.RxAtrib.crc_err);
+  switch (v.route) {
+    case RxRoute::Nack:
       if (m.nack_hook) m.nack_hook(body, body_len);  // RX thread (fec-nack)
-    } else if (frozen == rc::T_MAV) {
+      break;
+    case RxRoute::Mav:
+      // Calibration rides T_MAV (the mabur dialect): the MAV thread verifies
+      // it and hands its cal packets to the TX writer thread.
       m.mav_queue.push(body, body_len);
-    } else {
+      break;
+    case RxRoute::Rc:
       m.rc_queue.push(body, body_len);
-    }
-    // Uplink EMAs feed off CRC-clean RC frames only — a corrupt frame's
-    // attrib (rssi/snr) is not a trustworthy sample.
-    if (!pkt.RxAtrib.crc_err) {
-      m.uplink_track.on_rc_frame(pkt.RxAtrib.rssi, pkt.RxAtrib.snr);
-      m.rx_own_frames.fetch_add(1, std::memory_order_relaxed);
-    }
-  } else if (!pkt.RxAtrib.crc_err) {
-    // Same crc gate as the EMAs, and for the same class of reason:
-    // RC_MAGIC is two bytes, so ~1 in 65536 corrupt bodies matches it by
-    // chance and must not print a version-mismatch scare, nor count as a
-    // neighbour. Everything CRC-clean that is not ours is a foreign
-    // 802.11 frame on our channel (Telem rx_foreign); a foreign RC
-    // version is logged on top. The frame is still dropped as before.
-    m.rx_foreign_frames.fetch_add(1, std::memory_order_relaxed);
-    if (rc::is_foreign_rc_version(body, body_len))
-      log_foreign_rc_version(body[2]);
+      break;
+    case RxRoute::Foreign:
+      // Everything CRC-clean that is not ours (Telem rx_foreign); the frame
+      // is still dropped.
+      m.rx_foreign_frames.fetch_add(1, std::memory_order_relaxed);
+      if (v.foreign_version) log_foreign_rc_version(body[2]);
+      break;
+    case RxRoute::Drop:
+      break;
+  }
+  if (v.clean_own) {
+    m.uplink_track.on_rc_frame(pkt.RxAtrib.rssi, pkt.RxAtrib.snr);
+    m.rx_own_frames.fetch_add(1, std::memory_order_relaxed);
   }
 }
 

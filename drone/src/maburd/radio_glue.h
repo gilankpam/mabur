@@ -15,6 +15,7 @@
 #include <libusb.h>
 
 #include "config.h"
+#include "control_frame.h"
 #include "control_tx_mode.h"
 #include "frame_pipeline.h"
 #include "live_power_table.h"
@@ -127,11 +128,6 @@ struct DevourerSink : mabur::FrameSink {
     return sent;
   }
 };
-
-constexpr uint8_t kCanonicalSa[6] = {0x57, 0x42, 0x75, 0x05, 0xd6, 0x00};
-constexpr size_t kDot11HeaderLen = 24;
-
-std::vector<uint8_t> build_dot11_header(uint16_t seq);
 
 // The radiotap of a control-modulation frame (control_tx_mode: DISC_ACK,
 // Telem, MSP, MAVLink) for the live LDPC flag. A parameter set can flip

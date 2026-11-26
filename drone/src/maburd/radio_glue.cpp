@@ -46,21 +46,6 @@ MspSourceCfg to_msp_source_cfg(const MspCfg& m) {
   return c;
 }
 
-std::vector<uint8_t> build_dot11_header(uint16_t seq) {
-  std::vector<uint8_t> h(kDot11HeaderLen, 0);
-  h[0] = 0x40;
-  h[1] = 0x00;
-  h[2] = 0x00;
-  h[3] = 0x00;
-  std::memset(h.data() + 4, 0xff, 6);
-  std::memcpy(h.data() + 10, kCanonicalSa, 6);
-  std::memcpy(h.data() + 16, kCanonicalSa, 6);
-  uint16_t seq_ctl = static_cast<uint16_t>(seq << 4);
-  h[22] = static_cast<uint8_t>(seq_ctl & 0xff);
-  h[23] = static_cast<uint8_t>((seq_ctl >> 8) & 0xff);
-  return h;
-}
-
 uint16_t open_usb_and_get_pid(uint16_t vid, uint16_t configured_pid,
                               libusb_context* ctx, libusb_device_handle** out_handle) {
   std::vector<uint16_t> pids;

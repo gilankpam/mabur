@@ -127,14 +127,10 @@ void agent_loop(RealMode& m) {
     auto telem = rc::pack_telem(telem_struct);
 
     const std::vector<uint8_t>& telem_radiotap = agent_radiotap.get();
-    std::vector<uint8_t> frame;
-    frame.reserve(telem_radiotap.size() + kDot11HeaderLen + telem.size());
-    frame.insert(frame.end(), telem_radiotap.begin(), telem_radiotap.end());
     const uint16_t dot11_seq =
         m.telem_dot11_seq.fetch_add(1, std::memory_order_relaxed) & 0xFFF;
-    auto hdr = build_dot11_header(dot11_seq);
-    frame.insert(frame.end(), hdr.begin(), hdr.end());
-    frame.insert(frame.end(), telem.begin(), telem.end());
+    const auto frame = build_control_frame(telem_radiotap, dot11_seq,
+                                           telem.data(), telem.size());
     m.dev_sink.send(frame.data(), frame.size());
   };
   while (!g_devourer_should_stop) {

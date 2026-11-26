@@ -29,7 +29,7 @@ byte 26 for `0x88`, and ignores the trailing 4-byte 802.11 FCS. All
 multi-byte fields are little-endian, so the RC magic is `43 52` on the air
 and the SBI magic is `b0 f5`.
 
-Code: the control header is built in `drone/src/maburd/radio_glue.cpp` and `real_actuator.cpp` (drone) and
+Code: the control header is built in `drone/src/control_frame.h` (drone) and
 [`gs/src/dot11.cpp`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/dot11.cpp)
 (GS); the QoS-Data header in `drone/src/radio_tx.cpp`.
 
