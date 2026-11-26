@@ -144,8 +144,11 @@ Offsets in bytes. `tag` is 8 bytes; `crc` is u16.
   - bit0: failsafe shed;
   - bit1: auth reject (at least one GS → drone frame failed verification
     this period);
+  - bit2: FC arm state known (an `MSP_STATUS` reply within 1.5 s);
   - bit3: `rcf_seq_echo` is valid;
   - bit4: congestion shed;
+  - bit5: FC armed (never set without bit2). A change of either arm bit
+    sends a Telem at once, outside the telemetry period;
   - bit7: low-power (disarmed) mode.
 - `up_rssi` is raw: dBm = v − 110. `soc_temp_c` −128 and `cpu_busy_x100`
   65535 mean unavailable.

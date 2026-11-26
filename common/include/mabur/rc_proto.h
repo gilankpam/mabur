@@ -119,6 +119,8 @@ constexpr size_t kTagLen = 8;
 
 constexpr uint8_t kAckKeyMismatch = 0x01;   // DiscAck::flags bit0
 constexpr uint8_t kTelemAuthReject = 0x02;  // Telem::flags bit1
+constexpr uint8_t kTelemArmKnown = 0x04;    // Telem::flags bit2
+constexpr uint8_t kTelemArmed = 0x20;       // Telem::flags bit5
 
 // Values hashed into a control frame's tag but never sent on the wire
 // (link pairing): the VRX/VTX nonces from the completed
@@ -236,7 +238,10 @@ struct Telem {
                       //      verification this telemetry period. One period around a
                       //      drone restart is the expected transient; sustained = bug or
                       //      two controllers.
-                      // bits 2, 5 unused.
+                      // bit2 arm_known: the FC answered MSP_STATUS within
+                      //      RcAgent::kArmKnownMs (RcAgent::arm_known()),
+                      // bit5 armed: the FC's BOXARM, meaningful only with
+                      //      bit2 (never set without it).
   uint16_t rcf_age_ms = 0;  // saturating
   // link-rtt: seq of the RCF rcf_age_ms is aging against, so
   // the GS can subtract the send time of the RIGHT frame (repeats are 10 ms

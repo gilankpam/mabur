@@ -289,6 +289,12 @@ void RcAgent::intake_arm_state_(uint64_t now_ms) {
     last_arm_ms_ = (r >> 1) - 1;
     if (last_armed_) armed_latched_ = true;
   }
+  // The GS's view (Telem bit2/bit5), independent of low_power.enable.
+  const bool known = arm_reported_ && (now_ms < last_arm_ms_ || now_ms - last_arm_ms_ <= kArmKnownMs);
+  const bool armed = known && last_armed_;
+  if (known != arm_known_ || armed != armed_) arm_changed_ = true;
+  arm_known_ = known;
+  armed_ = armed;
   const bool fresh = arm_reported_ &&
                      (now_ms < last_arm_ms_ ||
                       now_ms - last_arm_ms_ <= static_cast<uint64_t>(cfg_.low_power.stale_ms));

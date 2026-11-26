@@ -71,6 +71,24 @@ TEST(low_power_flag_round_trips) {
   CHECK((mabur::make_telem(2, in).flags & 0x80) == 0);
 }
 
+// FC arm state rides flags bit2 (known) and bit5 (armed); armed never
+// reaches the wire without known.
+TEST(arm_state_is_flags_bit2_and_bit5) {
+  mabur::TelemInputs in;
+  CHECK((mabur::make_telem(1, in).flags & 0x24) == 0);
+  in.arm_known = true;
+  CHECK((mabur::make_telem(2, in).flags & 0x24) == mabur::rc::kTelemArmKnown);
+  in.armed = true;
+  auto t = mabur::make_telem(3, in);
+  CHECK((t.flags & 0x24) == (mabur::rc::kTelemArmKnown | mabur::rc::kTelemArmed));
+  auto wire = mabur::rc::pack_telem(t);
+  auto back = mabur::rc::parse_telem(wire.data(), wire.size());
+  REQUIRE(back.has_value());
+  CHECK((back->flags & 0x24) == 0x24);
+  in.arm_known = false;
+  CHECK((mabur::make_telem(4, in).flags & 0x24) == 0);
+}
+
 // Link pairing: a control frame that failed its tag
 // since the last Telem sets flags bit1, so the GS can show it.
 TEST(auth_reject_is_flags_bit1) {

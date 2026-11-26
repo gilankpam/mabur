@@ -60,6 +60,8 @@ rc::Telem make_telem(uint16_t tlm_seq, const TelemInputs& in) {
                                   (in.auth_reject ? rc::kTelemAuthReject : 0) |
                                   (in.rcf_seq_echo_valid ? 0x08 : 0) |
                                   (in.congestion_shed ? 0x10 : 0) |
+                                  (in.arm_known ? rc::kTelemArmKnown : 0) |
+                                  (in.arm_known && in.armed ? rc::kTelemArmed : 0) |
                                   (in.low_power ? 0x80 : 0));
   t.rcf_age_ms = saturate<uint16_t>(in.rcf_age_ms);
   t.rcf_seq_echo = in.rcf_seq_echo;
