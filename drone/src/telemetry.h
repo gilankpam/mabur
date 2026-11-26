@@ -35,6 +35,10 @@ struct TelemInputs {
   bool failsafe_shed = false;
   bool congestion_shed = false;  // RcAgent::congestion_shed() — flags bit4
   bool low_power = false;  // RcAgent::low_power() — flags bit7
+  // RcAgent::arm_known() / armed() — flags bit2 / bit5 (rc::kTelemArmKnown,
+  // rc::kTelemArmed). armed is dropped unless arm_known.
+  bool arm_known = false;
+  bool armed = false;
   // RcAgent::take_auth_reject() — flags bit1 (rc::kTelemAuthReject): a
   // control frame failed its tag since the last Telem.
   bool auth_reject = false;

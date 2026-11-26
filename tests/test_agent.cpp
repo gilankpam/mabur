@@ -3077,6 +3077,71 @@ TEST(low_power_silence_after_arming_never_reenters) {
   CHECK(act.fps.back() == 60);
 }
 
+// Arm state for the GS (Telem bit2/bit5) follows the FC's reports with
+// low power OFF, and goes unknown once the last report is older than
+// kArmKnownMs.
+TEST(arm_state_known_while_fresh_with_low_power_off) {
+  Config cfg = make_cfg();
+  cfg.low_power.enable = false;
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(1, RadioHealth{});
+  agent.tick(2, RadioHealth{});
+  CHECK(!agent.arm_known());
+  CHECK(!agent.armed());
+  agent.note_arm_state(true, 1000);
+  agent.tick(1000, RadioHealth{});
+  CHECK(agent.arm_known());
+  CHECK(agent.armed());
+  agent.note_arm_state(false, 1500);
+  agent.tick(1500, RadioHealth{});
+  CHECK(agent.arm_known());
+  CHECK(!agent.armed());
+  agent.tick(1500 + RcAgent::kArmKnownMs, RadioHealth{});
+  CHECK(agent.arm_known());
+  agent.tick(1500 + RcAgent::kArmKnownMs + 1, RadioHealth{});
+  CHECK(!agent.arm_known());
+  CHECK(!agent.armed());
+  CHECK(!agent.low_power());
+}
+
+// A stale ARMED report reads as not armed: armed() never outlives known.
+TEST(arm_state_stale_armed_reads_unknown) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(1, RadioHealth{});
+  agent.note_arm_state(true, 100);
+  agent.tick(100, RadioHealth{});
+  REQUIRE(agent.armed());
+  agent.tick(100 + RcAgent::kArmKnownMs + 1, RadioHealth{});
+  CHECK(!agent.arm_known());
+  CHECK(!agent.armed());
+}
+
+// An arm-state change is latched once so the drone can send a Telem at
+// once instead of waiting out the telemetry period: record on arm catches
+// the takeoff.
+TEST(arm_state_change_is_latched_once) {
+  Config cfg = make_cfg();
+  MockActuator act;
+  RcAgent agent(cfg, act);
+  agent.tick(1, RadioHealth{});
+  CHECK(!agent.take_arm_changed());
+  agent.note_arm_state(false, 100);
+  agent.tick(100, RadioHealth{});
+  CHECK(agent.take_arm_changed());   // unknown -> disarmed
+  CHECK(!agent.take_arm_changed());
+  agent.note_arm_state(false, 600);
+  agent.tick(600, RadioHealth{});
+  CHECK(!agent.take_arm_changed());  // same state, fresher report
+  agent.note_arm_state(true, 1100);
+  agent.tick(1100, RadioHealth{});
+  CHECK(agent.take_arm_changed());   // disarmed -> armed
+  agent.tick(1100 + RcAgent::kArmKnownMs + 1, RadioHealth{});
+  CHECK(agent.take_arm_changed());   // armed -> unknown
+}
+
 // LP-3. Silence: a DISARMED report older than stale_ms means full power
 // (fail open). A report stamped slightly AFTER the tick clock (the MSP
 // thread stamps on its own read) still counts as fresh.

@@ -368,7 +368,7 @@ class RcAgent {
   void install_session_for_replay(uint32_t vrx_nonce, uint32_t vtx_nonce);
 
   // True while the drone is emitting the probe stream: LINKED and the last
-  // accepted RCF commanded a probe MCS. Telem flags bit2.
+  // accepted RCF commanded a probe MCS.
   bool probe_on() const {
     return state_ == State::LINKED && applied_.probe_profile != rc::kNoProbeProfile;
   }
@@ -384,6 +384,22 @@ class RcAgent {
   // armed", which separates a pre-flight drone from a downed one. NOT a
   // policy input -- low_power() deliberately does not read it.
   bool armed_latched() const { return armed_latched_; }
+
+  // The FC's current arm state for the GS (Telem flags bit2 / bit5),
+  // independent of low_power.enable. Known while the last report is at most
+  // kArmKnownMs old -- three MSP_STATUS polls -- and armed() is false
+  // whenever it is not known.
+  static constexpr uint64_t kArmKnownMs = 1500;
+  bool arm_known() const { return arm_known_; }
+  bool armed() const { return armed_; }
+  // True once after arm_known() or armed() changed, so main.cpp sends a
+  // Telem at once instead of up to a telemetry period later: the GS starts
+  // recording on arm from it. Agent thread only.
+  bool take_arm_changed() {
+    const bool v = arm_changed_;
+    arm_changed_ = false;
+    return v;
+  }
 
   // Latched on a BOOT/RENDEZVOUS -> LINKED transition — the process-(re)start
   // link-up, when frames encoded so far never reached the air and the GS may
@@ -560,6 +576,9 @@ class RcAgent {
   bool last_armed_ = false;
   uint64_t last_arm_ms_ = 0;
   bool low_power_active_ = false;
+  bool arm_known_ = false;
+  bool armed_ = false;
+  bool arm_changed_ = false;
   // Last fps the encoder ACCEPTED (0 = never), the fps twin of
   // last_bitrate_kbps_.
   int commanded_fps_ = 0;
