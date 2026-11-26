@@ -11,6 +11,7 @@
 
 #include "build_ident.h"
 #include "mav_component.h"
+#include "mav_uplink_gate.h"
 #include "ota.h"
 #include "mabur/cal_mav.h"
 #include "real_mode.h"
@@ -23,21 +24,13 @@ using namespace mabur;
 // MAVLink parameter component. Verifies each T_MAV off mav_queue
 // (RcAgent::check_mav), feeds the payload to the component -- or, for a
 // frame of calibration packets only, decodes them onto cal_queue for the
-// TX writer thread -- and sends its
-// queued replies back as tagged T_MAV_UP frames on the Telem path (control
-// radiotap, the shared telem dot11 seq, the mutex-guarded dev_sink.send()),
-// at most one frame per kMavUplinkMinMs while a session is published so the
-// tunnel never crowds Telem or the OSD stream. Uplink needs a published
-// session or an update-only pair (nobody is listening without one); with
-// only the update pair there is no video to protect and no pacing. The
-// 1 Hz HEARTBEAT needs a published session. Both follow Telem's
-// suppression while a calibration sweep airs: replies wait queued.
-// Frames go out tagged under the pair of the latest accepted inbound frame
-// (the update pair after a kOkUpdate), so an update GS that is not the
-// linked one still verifies its replies. Once the update server asks to
-// exit, the thread stops maburd (as SIGTERM does) when its replies have
-// gone, or after kOtaExitGraceMs regardless. RcQueue has no
-// condvar, so this polls at 5 ms, like cal_queue's consumer.
+// TX writer thread -- and sends its queued replies back as tagged T_MAV_UP
+// frames on the Telem path (control radiotap, the shared telem dot11 seq,
+// the mutex-guarded dev_sink.send()), tagged under the pair of the latest
+// accepted inbound frame (the update pair after a kOkUpdate) so an update GS
+// that is not the linked one still verifies its replies. When to send, and
+// when to exit, is MavUplinkGate's. RcQueue has no condvar, so the loop
+// polls at 5 ms, like cal_queue's consumer.
 void mav_loop(RealMode& m) {
   name_thread("mbr-mav");
   ApplyPort port;
@@ -68,12 +61,11 @@ void mav_loop(RealMode& m) {
   std::fprintf(stderr, "maburd mav: component sys %u comp %u, config %s\n",
                static_cast<unsigned>(MavComponent::sys_id()),
                static_cast<unsigned>(MavComponent::comp_id()), m.cfg_path.c_str());
-  uint64_t last_hb = 0, last_up = 0, bad_parse = 0, rejected = 0;
+  uint64_t bad_parse = 0, rejected = 0;
   // Whether the latest accepted inbound frame came under the update pair.
   bool reply_to_update = false;
   // A lost reply pair must not keep this process alive past the request.
-  constexpr uint64_t kOtaExitGraceMs = 1000;
-  std::optional<uint64_t> exit_seen_ms;
+  MavUplinkGate gate;
   std::vector<uint8_t> body;
   // A cal-only frame's packets go to the TX writer, never the component;
   // a frame mixing cal and other packets goes whole to the component,
@@ -127,17 +119,13 @@ void mav_loop(RealMode& m) {
     comp.poll_results();
     const uint64_t now = now_steady_ms();
     const bool linked = m.agent.has_published_session();
-    if (linked && !m.cal_sweeping.load(std::memory_order_relaxed) && now - last_hb >= 1000) {
-      comp.queue_heartbeat();
-      last_hb = now;
-    }
+    const bool sweeping = m.cal_sweeping.load(std::memory_order_relaxed);
+    if (gate.heartbeat_due(now, linked, sweeping)) comp.queue_heartbeat();
     // Replies wait queued without a pair.
     std::optional<rc::TagCtx> ctx = reply_to_update ? m.agent.update_ctx() : std::nullopt;
     if (!ctx) ctx = m.agent.uplink_ctx(false);
-    const uint64_t pace_ms = linked ? kMavUplinkMinMs : 0;
-    if ((linked || m.agent.update_session_open()) && ctx &&
-        !m.cal_sweeping.load(std::memory_order_relaxed) && comp.outbound_packets() > 0 &&
-        now - last_up >= pace_ms) {
+    if (gate.uplink_due(now, linked, m.agent.update_session_open(), ctx.has_value(),
+                        m.cal_sweeping.load(std::memory_order_relaxed), comp.outbound_packets())) {
       rc::Mav mv;
       mv.type = rc::T_MAV_UP;
       mv.counter = m.mav_up_counter.fetch_add(1, std::memory_order_relaxed);
@@ -152,14 +140,10 @@ void mav_loop(RealMode& m) {
       m.dev_sink.send(frame.data(), frame.size());
       m.mav_tx_frames.fetch_add(1, std::memory_order_relaxed);
       m.mav_tx_packets.fetch_add(static_cast<uint64_t>(packets), std::memory_order_relaxed);
-      last_up = now;
     }
-    if (comp.exit_requested()) {
-      if (!exit_seen_ms) exit_seen_ms = now;
-      if (comp.outbound_packets() == 0 || now - *exit_seen_ms >= kOtaExitGraceMs) {
-        std::fprintf(stderr, "maburd: update accepted, exiting for the trial\n");
-        g_devourer_should_stop = true;
-      }
+    if (gate.exit_now(now, comp.exit_requested(), comp.outbound_packets())) {
+      std::fprintf(stderr, "maburd: update accepted, exiting for the trial\n");
+      g_devourer_should_stop = true;
     }
     const MavComponentStats& cs = comp.stats();
     m.mav_rx_packets.store(cs.rx_packets, std::memory_order_relaxed);

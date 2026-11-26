@@ -8,6 +8,7 @@
 #include <string>
 #include <thread>
 
+#include "busy_window.h"
 #include "real_mode.h"
 #include "SignalStop.h"
 
@@ -31,13 +32,17 @@ void igi_wd_loop(RealMode& m) {
   // so the chip's TX queue fill is a second slow signal. One control read per
   // tick; a radio that cannot report it is read no more.
   bool queue_ok = true;
-  // Foreign airtime fills the queue too and a higher floor does not cure it,
-  // so a window on a busy channel is not judged. One 240 ms CCX window is
-  // armed per second and read at the next; a reading counts for 2 s. This
-  // thread is the only one that arms or reads the engine after startup.
-  bool busy_ok = true, busy_armed = false;
-  int busy_pct = -1;
-  uint64_t busy_read_ms = 0;
+  // One 240 ms busy window per second; see busy_window.h.
+  struct RtlBusyDev : mabur::BusyWindow::Dev {
+    explicit RtlBusyDev(RealMode& mm) : m(mm) {}
+    int read_busy_pct() override {
+      const auto cb = m.rtl_device->GetChannelBusy();
+      return cb.valid && cb.valid_busy ? static_cast<int>(cb.busy_pct) : -1;
+    }
+    bool arm(uint32_t window_us) override { return m.rtl_device->ArmChannelBusy(window_us) != 0; }
+    RealMode& m;
+  } busy_dev(m);
+  mabur::BusyWindow busy;
   while (!g_devourer_should_stop) {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     const uint32_t seq = m.retune_seq.load(std::memory_order_relaxed);
@@ -64,32 +69,10 @@ void igi_wd_loop(RealMode& m) {
     }
     const uint64_t now_us = now_steady_us();
     const uint64_t now_ms = now_us / 1000;
-    if (!eligible) {
-      // A retune spoils the armed window; the next eligible tick re-arms.
-      busy_armed = false;
-      busy_pct = -1;
-      busy_read_ms = 0;
-    } else if (busy_ok && now_ms - busy_read_ms >= 1000) {
-      busy_read_ms = now_ms;
-      try {
-        if (busy_armed) {
-          const auto cb = m.rtl_device->GetChannelBusy();
-          busy_pct = cb.valid && cb.valid_busy ? static_cast<int>(cb.busy_pct) : -1;
-        }
-        busy_armed = false;
-        if (m.rtl_device->ArmChannelBusy(240000) != 0) {
-          busy_armed = true;
-        } else {
-          busy_ok = false;
-          busy_pct = -1;
-          std::fprintf(stderr, "maburd radio: IGI floor watchdog: no busy reading, busy gate off\n");
-        }
-      } catch (...) {
-        busy_armed = false;
-        busy_pct = -1;
-      }
-    }
-    if (busy_pct >= 0 && now_ms - busy_read_ms > 2000) busy_pct = -1;
+    bool busy_unsupported = false;
+    const int busy_pct = busy.step(now_ms, eligible, busy_dev, &busy_unsupported);
+    if (busy_unsupported)
+      std::fprintf(stderr, "maburd radio: IGI floor watchdog: no busy reading, busy gate off\n");
     const auto r = wd.step(now_ms, eligible, m.send_timer.take_longest_us(now_us), backlog_pct, busy_pct);
     if (r.event == Ev::Raised || r.event == Ev::Reverted) {
       bool ok = true;
