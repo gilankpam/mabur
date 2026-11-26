@@ -984,7 +984,9 @@ What differs across the arm boundary, in the same recording:
   `docs/link-adaptation.md`).
 
 `drone.low_power` (sideport, Telem flags bit7) is true for exactly this
-segment and is the marker to split on; the drone `stats:` line carries
+segment and is the marker to split on; `drone.armed` (Telem flags bit2 +
+bit5: `null` while the FC has not answered for 1.5 s) gives the arm state
+itself, with low power on or off; the drone `stats:` line carries
 `lp=`/`armed=` and `rc: low_power ENTER/EXIT` brackets it in stderr.
 **[`tools/flightreport.py`](https://github.com/gilankpam/mabur-ground/blob/master/tools/flightreport.py) does not know about any of this** — it neither
 excludes nor annotates the segment, so a whole-file mean of bitrate, fps,

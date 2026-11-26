@@ -1934,11 +1934,12 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
           m.symbol_size + static_cast<int>(mabur::sw::kSwHeaderLen),
           m.update_rate_hz, m.serial.c_str(), m.baud);
 
-      // Low-power mode: ask the FC for its arm state.
-      // MSP_STATUS is request/reply -- the FC pushes only DisplayPort on
-      // its own -- so poll at kArmPollMs and hand every decoded reply to
-      // RcAgent. Kept polling after the arm latch: 6 B out + ~33 B in per
-      // 500 ms is free and the live flag stays observable.
+      // Ask the FC for its arm state whenever MSP is on. MSP_STATUS is
+      // request/reply -- the FC pushes only DisplayPort on its own -- so
+      // poll at kArmPollMs and hand every decoded reply to RcAgent, which
+      // feeds both low-power mode and the Telem arm bits the GS records on
+      // (bit2/bit5, known for RcAgent::kArmKnownMs = three polls). 6 B out
+      // + ~33 B in per 500 ms is free, so it never stops.
       //
       // COUPLED to low_power.stale_ms, which is operator-configurable while
       // this is not: a report is fresh for stale_ms and arrives at best once
@@ -1952,8 +1953,8 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
       std::vector<uint8_t> status_req;
       mabur::msp_append_status_request(status_req);
       uint64_t last_poll_ms = 0;
-      // Installed whether or not low power is on: low_power.enable is a live
-      // knob, and the poll below is what gates the replies.
+      // Installed whether or not low power is on: the arm state feeds the
+      // Telem bits too, and low_power.enable is a live knob.
       src.set_message_hook([&](const mabur::MspMessage& msg) {
         if (auto armed = mabur::msp_status_armed(msg))
           agent.note_arm_state(*armed, now_steady_ms());
@@ -1974,7 +1975,7 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
         if (n > 0) src.on_serial_bytes(buf, static_cast<size_t>(n), now_steady_ms());
         else if (n < 0) serial.close();  // error -> reconnect
 
-        if (agent.low_power_enabled() && serial.is_open()) {
+        if (serial.is_open()) {
           uint64_t t = now_steady_ms();
           if (t - last_poll_ms >= kArmPollMs) {
             last_poll_ms = t;
@@ -3260,6 +3261,8 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
       ti.failsafe_shed = agent.failsafe_shed();
       ti.congestion_shed = agent.congestion_shed();
       ti.low_power = agent.low_power();
+      ti.arm_known = agent.arm_known();
+      ti.armed = agent.armed();
       ti.auth_reject = agent.take_auth_reject();
       ti.rec_status = vtx_rec.status_byte();
       ti.chip_caps = rc::CAP_FRAME_WIRE | rc::CAP_TELEMETRY | rc::CAP_CALIBRATE | rc::CAP_MAVLINK;
@@ -3503,8 +3506,11 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
         // open, and skipping last_telem_ms's update
         // while suppressed means telemetry resumes on the very next tick once
         // a phase ends, not up to 1 s later.
+        // An arm-state change goes out at once rather than up to 1 s later:
+        // the GS's record on arm starts from it.
+        const bool arm_changed = agent.take_arm_changed();
         if (!cal_sweeping.load(std::memory_order_relaxed) &&
-            now - last_telem_ms >= 1000) {
+            (arm_changed || now - last_telem_ms >= 1000)) {
           last_telem_ms = now;
           send_telem(now);
         }

@@ -671,9 +671,16 @@ pre-flight drone from a downed one on the `stats:` line. It is
 observability only and does not gate the mode.
 
 - **Trigger.** The MSP thread polls `MSP_STATUS` (cmd 101) every 500 ms
-  (`kArmPollMs`) on the OSD UART; the FC pushes only DisplayPort on its
-  own. It hands BOXARM (flightModeFlags bit 0) to
-  `RcAgent::note_arm_state()`, an atomic consumed on the tick.
+  (`kArmPollMs`) on the OSD UART whenever `msp.enable` is on, whether or
+  not low power is; the FC pushes only DisplayPort on its own. It hands
+  BOXARM (flightModeFlags bit 0) to `RcAgent::note_arm_state()`, an atomic
+  consumed on the tick.
+- **Arm state for the GS.** Separately from this mode, the agent reports
+  the FC's arm state in Telem flags bit2 (`kTelemArmKnown`: a reply within
+  `RcAgent::kArmKnownMs` = 1500 ms) and bit5 (`kTelemArmed`, never set
+  without bit2). The GS exports it as sideport `drone.armed` and its DVR
+  can record on arm. Silence clears both bits: the GS sees "unknown", not
+  "disarmed".
 - **Fail open.** `low_power_active_` = enabled ∧ the last arm report says
   DISARMED ∧ that report is fresher than `low_power.stale_ms` (2000).
   - Silence, a dead UART, or `msp.enable = false` all mean full power. A
