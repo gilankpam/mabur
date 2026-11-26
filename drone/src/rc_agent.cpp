@@ -417,7 +417,7 @@ void RcAgent::apply_ladder_op(const std::array<LayerTxSpec, 2>& ladder,
 // generation tracks *new operating points* (BOOT/DISC/RCF/failsafe entry),
 // not shed adjustments to the current one, so this function publishes via
 // act_.apply_op() WITHOUT touching applied_.generation. Consumers (the
-// hot-thread loops in main.cpp) must therefore detect "a new AppliedOp was
+// hot-thread loops in maburd/hot_thread.cpp) must therefore detect "a new AppliedOp was
 // published" by identity-comparing the shared_ptr they last applied against
 // the one the atomic handoff currently holds, NOT by checking whether
 // generation changed — otherwise a congestion shed would be computed here
@@ -634,7 +634,7 @@ void RcAgent::run_bitrate_policy(uint64_t now_ms, bool force) {
 // self-decaying, no ratchet.
 //
 // Two triggers, OR'd:
-//  - health.tx_drops = TxStats::failed (main.cpp): USB bulk-OUT
+//  - health.tx_drops = TxStats::failed (maburd/agent_thread.cpp): USB bulk-OUT
 //    submission/completion FAILURES -- a sick dongle. Edge-triggered on the
 //    counter rising.
 //  - health.txq_depth >= txq_cap * kTxqShedNum/kTxqShedDen: TxQueue

@@ -25,7 +25,7 @@ DebugReq debug_http_parse(const std::string& request_line);
 // 127.0.0.1:port. Bind/listen failure logs to stderr and returns without
 // starting a serving loop -- never fatal, always started unconditionally
 // rather than gated behind its own enable flag (simplest option; see
-// main.cpp call sites). snapshot_quality is cfg.venc.core.snapshot_quality,
+// maburd call sites). snapshot_quality is cfg.venc.core.snapshot_quality,
 // forwarded unmodified into the SNAPSHOT route so it can tell "subsystem
 // disabled" (quality == 0) apart from a capture failure (quality > 0, verb
 // still returns -1). Safe to call on host/dry-run builds too: without

@@ -99,7 +99,7 @@ define MABUR_INSTALL_TARGET_CMDS
 	# dropbear and crond, none of which video needs (devtmpfs makes the
 	# device nodes; mdev only adds SD-card automount rules). The MI modules
 	# are no longer loaded by an init script at all: maburd runs
-	# load_sigmastar itself (a constant in drone/src/main.cpp) under its USB port reset,
+	# load_sigmastar itself (a constant in drone/src/maburd/real_mode.cpp) under its USB port reset,
 	# so the insmod chain lands under the radio bring-up instead of ahead of
 	# maburd's exec. Measured 2026-09-09: first AU on the GS 5.40 -> 4.37 s
 	# of uptime (mabur docs/boot-time-findings-2026-09-07.md, "rcS, stamped").

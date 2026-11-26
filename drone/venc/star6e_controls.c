@@ -469,7 +469,7 @@ static int apply_max_ipprop(uint32_t prop)
 		return -1;
 	}
 	/* stdout is fully buffered once the wrapper redirects it into
-	 * /tmp/mabur.log (not a tty) -- unlike the stats: line (main.cpp,
+	 * /tmp/mabur.log (not a tty) -- unlike the stats: line (agent_thread.cpp,
 	 * stderr, unbuffered), a lone control-verb printf can sit unflushed
 	 * for the life of the process.  Force it out now. */
 	printf("> max_ipprop: applied = %u (firmware default %u)\n",

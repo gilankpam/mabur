@@ -850,7 +850,7 @@ static int star6e_pipeline_pre_start_apply_slices(MI_VENC_CHN chn,
 	}
 	/* The encoder splits the ENCODED height (clamped/auto-sized image),
 	 * while maburd stamps FrameHdr.slice_rows from the configured one
-	 * (main.cpp set_slice_geometry): a different geometry would make every
+	 * (maburd hot_thread.cpp set_slice_geometry): a different geometry would make every
 	 * stamped AU lie to the GS. Refuse to start rather than fly that. */
 	if (venc_cfg_slice_rows(cfg->height, cfg->slices) != k ||
 	    venc_cfg_ctb64_rows(cfg->height) != venc_cfg_ctb64_rows((uint16_t)height)) {

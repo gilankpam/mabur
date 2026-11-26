@@ -12,7 +12,7 @@
 //
 //   1. It owns no thread. RadioTx::send_body is single-caller by contract
 //      (drone/src/radio_tx.h) -- its scratch buffer is not thread-safe --
-//      and the TX writer thread (drone/src/main.cpp) is its sole legal
+//      and the TX writer thread (drone/src/maburd/tx_writer.cpp) is its sole legal
 //      caller. pump() is meant to be called FROM that thread once the
 //      TxQueue is quiesced; this class never spawns anything of its own.
 //      A Capacity point's blast() call is allowed to block pump() for the

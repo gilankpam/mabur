@@ -2,7 +2,7 @@
 // sequenced test stream, encodes it with mabur's sliding-window+SBI FEC
 // (single stream, id 0xB0), and injects it via devourer at the chosen
 // channel/MCS/power.
-// Bring-up order mirrors maburd run_real_mode (drone/src/main.cpp):
+// Bring-up order mirrors maburd run_real_mode (drone/src/maburd/real_mode.cpp):
 // InitWrite must complete before the first send or the bulk-OUT FIFO fills
 // mid-DLFW and bricks TX for the session.
 #include <algorithm>
@@ -388,7 +388,7 @@ int main(int argc, char** argv) {
   else if (a.pwr_mode == "offset") dev->SetTxPowerOffsetQdb(a.pwr_offset_qdb);
   // "none": leave the efuse per-rate (per-MCS) calibration untouched.
 
-  // A-MPDU exactly as drone/src/main.cpp programs it (after InitWrite, before
+  // A-MPDU as RealActuator::apply_ampdu_for (drone/src/maburd/real_actuator.cpp) programs it (after InitWrite, before
   // the first send): no_ack + density 7, aggregate-fill timer max_time.
   if (a.ampdu > 0) {
     devourer::AmpduMode am;

@@ -282,7 +282,7 @@ shed left the sideport and Telem on 2026-09-30, and `au.log`'s `air_ms` is
 how to see it now.
 
 **Dry-run.** The dry-run replay path (`run_dry_run` in
-`drone/src/main.cpp`) calls `apply_op_to_uep` only, never
+`drone/src/maburd/dry_run.cpp`) calls `apply_op_to_uep` only, never
 `apply_op_to_clock`. Replayed bodies always carry `air_ms` 0 and the gate
 never closes there.
 

@@ -40,16 +40,16 @@ target_link_libraries(mabur_drone_core PUBLIC mabur_common rt devourer)
 # on mabur_drone_core above.
 target_include_directories(mabur_drone_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/venc)
 
-add_executable(maburd src/main.cpp)
+add_executable(maburd src/maburd/main.cpp src/maburd/threads.cpp src/maburd/radio_glue.cpp src/maburd/real_actuator.cpp src/maburd/dry_run.cpp src/maburd/real_mode.cpp src/maburd/rx_path.cpp src/maburd/hot_thread.cpp src/maburd/tx_writer.cpp src/maburd/agent_thread.cpp src/maburd/mav_thread.cpp src/maburd/msp_thread.cpp src/maburd/igi_thread.cpp)
 
 # Same rule as mabur_common (common/CMakeLists.txt): the producer loop lives
-# in main.cpp and the pipeline in mabur_drone_core, and both must not fall
+# in src/maburd/ and the pipeline in mabur_drone_core, and both must not fall
 # back to Buildroot's -Os. venc_core below is the deliberate exception.
 if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
   target_compile_options(mabur_drone_core PRIVATE -O3)
   target_compile_options(maburd PRIVATE -O3)
 endif()
-target_include_directories(maburd PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(maburd PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/src/maburd)
 target_link_libraries(maburd PRIVATE mabur_drone_core mabur_common devourer pthread)
 
 # Venc core: waybeam_venc star6e encoder folded in (spec

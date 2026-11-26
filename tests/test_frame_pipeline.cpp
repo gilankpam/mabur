@@ -569,7 +569,7 @@ TEST(frame_pipeline_reset_vanish_counters_zeros_all_counters) {
 // ── enc_us passthrough + SBI patch round-trip (latency accounting)
 //
 // encode() latches the producer meta's enc_us so the hot-thread push site
-// can patch it into every body it just got back (main.cpp does this outside
+// can patch it into every body it just got back (maburd/hot_thread.cpp does this outside
 // FramePipeline, since the patch happens post-SBI-pack); a shed frame
 // returns before that latch and must leave the previous value untouched.
 

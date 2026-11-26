@@ -90,7 +90,7 @@ class FramePipeline {
   // The just-encoded frame's producer-reported encoder latency (µs, 0 =
   // unknown), latched by encode() right after the shed check — a shed frame
   // returns before it, so this stays at the prior non-shed value. The
-  // hot-thread push site (drone/src/main.cpp) reads this back to patch
+  // hot-thread push site (drone/src/maburd/hot_thread.cpp) reads this back to patch
   // sbi_set_enc_us into every body encode() just returned, since the SBI
   // header sits outside the FEC envelope and can only be patched post-pack.
   uint16_t last_enc_us() const { return last_enc_us_; }

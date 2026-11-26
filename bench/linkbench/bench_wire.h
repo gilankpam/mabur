@@ -57,7 +57,7 @@ inline bool parse_bench_packet(const uint8_t* p, size_t len, uint32_t* seq,
   return true;
 }
 
-// Canonical probe-req dot11 header (mirrors drone/src/main.cpp
+// Canonical probe-req dot11 header (mirrors drone/src/maburd/radio_glue.cpp
 // build_dot11_header and gs/src/dot11.cpp build_control_frame).
 inline std::vector<uint8_t> build_dot11_header(uint16_t seq) {
   static constexpr uint8_t kSa[6] = {0x57, 0x42, 0x75, 0x05, 0xd6, 0x00};
