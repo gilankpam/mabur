@@ -55,11 +55,11 @@ class WallSweep {
   uint64_t start_;
   Measure measure_;
   Phase phase_ = Phase::Begin;
-  bool begun_ = false, done_ = false;
+  bool begun_ = false, parked_ = false, done_ = false;
   cal::WallResult result_ = cal::WallResult::Aborted;
   WallCurve curve_;
   float unparked_env_ = 0, park_rise_ = 0;
-  int k_ = 0, gain_ = kGains - 1, tries_ = 0;   // tries_: captures of point k_ at gain_
+  int k_ = 0, gain_ = kGains - 1, tries_ = 0;   // tries_: captures of point k_ at gain_, or park-check retries
   std::vector<float> vals_;
   std::vector<devourer::IqSample> buf_;
 };

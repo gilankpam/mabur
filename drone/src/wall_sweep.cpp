@@ -35,13 +35,23 @@ bool WallSweep::step(uint64_t now_ms) {
     if (!s_.begin(bw_)) { finish(cal::WallResult::DeviceError); return false; }
     phase_ = Phase::Unparked;
   }
-  if (phase_ == Phase::Parked && !s_.park(true)) { finish(cal::WallResult::Unparked); return false; }
+  if (phase_ == Phase::Parked && !parked_) {
+    parked_ = true;
+    if (!s_.park(true)) { finish(cal::WallResult::Unparked); return false; }
+  }
 
   const bool points = phase_ == Phase::Points;
   const int idx = points ? wall_point_index(k_) : kParkIndex;
   const int gain = points ? gain_ : kParkGain;
   if (!s_.capture(idx, gain, &buf_)) { finish(cal::WallResult::DeviceError); return false; }
   const CrossEvm m = measure_(buf_.data(), buf_.size(), bw_);
+
+  // A park-check capture can hold no TX at all (no frame, only the removed DC left): it says
+  // nothing about the park, so retry it. The last attempt is used whatever it holds.
+  if (!points) {
+    if (!m.frame && m.envelope_db < kMinLevelDb && tries_ < kMaxRetries) { ++tries_; return true; }
+    tries_ = 0;
+  }
 
   switch (phase_) {
     case Phase::Unparked:

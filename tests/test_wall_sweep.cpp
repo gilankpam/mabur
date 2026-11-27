@@ -116,6 +116,56 @@ TEST(an_empty_envelope_is_not_a_park) {   // an all-zero capture has envelope -i
     CHECK(sw.park_rise_db() == 0.0f);                      // non-finite rise reports 0
   }
 }
+// A park-check capture that caught no TX: no frame, and the envelope (DC removed) is low.
+CrossEvm no_tx() { CrossEvm m; m.envelope_db = 3; return m; }
+TEST(a_parked_capture_without_tx_is_retried) {   // unparked 35, parked: no TX, then 50
+  SWEEP(fake, sw);
+  fake.script = [](const Cap& c) { return c.id == 1 ? no_tx() : default_script(c); };
+  run_to_end(sw);
+  CHECK(sw.result() == cal::WallResult::Ok && sw.park_rise_db() == 15.0f);
+  CHECK(fake.calls[1] == "cap 28 0" && fake.calls[2] == "park 1" && fake.calls[3] == "cap 28 0" &&
+        fake.calls[4] == "cap 28 0" && fake.calls[5] == "cap 28 3");   // 3 park-check captures
+  CHECK(fake.count("park") == 1);                                      // parked once, not per retry
+}
+TEST(an_unparked_capture_without_tx_is_retried) {
+  // unparked: no TX (3), then leakage 35; parked 44. Without the retry the rise would be 41 and pass.
+  SWEEP(fake, sw);
+  fake.script = [](const Cap& c) {
+    if (c.id == 0) return no_tx();
+    CrossEvm m = default_script(c);
+    if (c.id == 1) m.envelope_db = 35;
+    if (c.id == 2) m.envelope_db = 44;
+    return m;
+  };
+  run_to_end(sw);
+  CHECK(sw.result() == cal::WallResult::Unparked && sw.park_rise_db() == 9.0f);
+  CHECK(fake.count("cap") == 3 && fake.count("park") == 1 && fake.calls[2] == "cap 28 0" && fake.calls[3] == "park 1");
+}
+TEST(a_park_check_still_without_tx_after_two_retries_uses_the_last) {   // parked: no TX three times
+  SWEEP(fake, sw);
+  fake.script = [](const Cap& c) { return c.id >= 1 ? no_tx() : default_script(c); };
+  run_to_end(sw);
+  CHECK(sw.result() == cal::WallResult::Unparked && sw.park_rise_db() == -32.0f);
+  CHECK(fake.count("cap") == 4 && fake.count("park") == 1);           // 1 unparked + 3 parked
+}
+TEST(each_park_check_capture_has_its_own_retries) {   // unparked: no TX twice, then 35; parked: no TX once, then 50
+  SWEEP(fake, sw);
+  fake.script = [](const Cap& c) {
+    if (c.id == 0 || c.id == 1 || c.id == 3) return no_tx();
+    CrossEvm m = default_script(c);
+    if (c.id == 2) m.envelope_db = 35;
+    return m;
+  };
+  run_to_end(sw);
+  CHECK(sw.result() == cal::WallResult::Ok && sw.park_rise_db() == 15.0f);
+  CHECK(fake.calls[3] == "cap 28 0" && fake.calls[4] == "park 1" && fake.calls[7] == "cap 28 3");   // 3 + 2 park-check captures
+}
+TEST(a_park_check_frame_with_a_low_envelope_is_not_retried) {   // only "no frame AND low envelope" is no TX
+  SWEEP(fake, sw);
+  fake.script = [](const Cap& c) { CrossEvm m = default_script(c); if (c.id == 1) m.envelope_db = 20; return m; };
+  run_to_end(sw);
+  CHECK(sw.result() == cal::WallResult::Unparked && fake.count("cap") == 2);
+}
 TEST(gain_steps_down_and_never_back_up) {
   SWEEP(fake, sw);
   fake.script = [](const Cap& c) {
