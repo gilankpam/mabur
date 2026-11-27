@@ -330,7 +330,13 @@ LDPC+STBC wall on the channels where the witness agrees):
 | 64 (66) | 9.1 / 17.3 / 37.9 | 10.0 / 18.3 / 36.4 | 10.7 / 20.4 / 40.9 | 12.1 / 22.3 / 39.9 |
 | 112 (46) | 8.0 / 18.5 / 42.4 | 7.7 / 17.7 / 40.1 | invalid | invalid |
 | 144 (39) | 11.2 / 20.5 / 44.3 | 12.8 / 21.4 / 40.4 | 5.7 / 16.6 / 42.0 | 5.1 / 15.6 / 36.3 |
-| 161 (53) | 5.3 / 15.4 / 28.8 | 6.9 / 15.0 / 36.8 | 2.1 / 12.1 / 32.2 | 2.0 / 12.3 / 30.5 |
+| 161 (53) | 5.3 / 15.4 / 41.8 | 6.9 / 15.0 / 36.8 | 2.1 / 12.1 / 32.2 | 2.0 / 12.3 / 30.5 |
+
+Correction: the channel 161 PA A 20 MHz −11 dB crossing first read 28.8.
+One of the two captures at index 84 held no probe frame and the script took
+a "frame" demodulated out of its noise (level 12 dB, EVM −2.9 dB) into the
+median; with frames under 30 dB level dropped the crossing is 41.8, in line
+with the other channels. No other cell changes.
 
 - **PA A** is clean everywhere: floors −30 to −34 dB, −7 to −9 dB at
   index 124. Relative to the anchor the −17 dB crossing stays within
