@@ -1,7 +1,10 @@
 # Drone self-calibration spike — can the 8812EU measure its own TX-power walls?
 
-**Status:** negative result; the walls stay a receiver-side measurement
-(`docs/calibration.md`). Nothing built. The throwaway register hook lives
+**Status:** the conclusion "not possible in software" is overturned by
+[2026-11-26-drone-self-calibration-cross-path](2026-11-26-drone-self-calibration-cross-path.md)
+(the other chain can listen); what this record measured — the same-path
+loopback is blind to the FEM — stands. The drone's own wall measurement is
+described in `docs/calibration.md`. Nothing built from this record. The throwaway register hook lives
 on a local branch of the sibling devourer checkout (`spike-dpk-gl`), never
 to merge.
 

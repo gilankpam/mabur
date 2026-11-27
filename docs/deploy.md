@@ -13,17 +13,17 @@ different versions exchange only the frozen handshake
 in BOTH directions, so the symptom is no control link and no video.
 Restarting either daemon does not fix a version mismatch; finish the
 deploy. The RC wire goldens live in
-`tests/test_rc.cpp`. `RC_VERSION` 18 (calibration moves onto the MAVLink
-tunnel; `T_CAL_CMD`/`T_CAL_RESULT` deleted) is a flag day like every other
-bump, and it also removes a drone config key: `radio.rate_walls_rel` fails
-boot, and the old binary refuses its replacements. On the drone: stop
-`maburd`, edit the config — rename the key to `rate_walls_rel_20` (it
-holds 20 MHz walls; with no `_40` the 40 MHz rungs fly the 20 MHz table,
-which `maburd` logs) and add `cal_flags_20 = "none"` (the old kit swept
-with LDPC and STBC off) — swap the binary, start. Then `maburgs` with
+`tests/test_rc.cpp`. `RC_VERSION` 20 (the drone measures its own TX walls) is a flag day like
+every other bump, and it also removes the drone's per-width wall-table and
+coding-flag config keys: a config that still has one fails boot, and the
+old binary refuses a config without them. On the drone: stop `maburd`,
+delete those lines from the config (a `maburd --migrate-config` run does
+it), swap the binary, start. Then `maburgs` with
 [`gs/bundle/maburcal`](https://github.com/gilankpam/mabur-ground/blob/master/gs/bundle/maburcal) and [`tools/maburtop.py`](https://github.com/gilankpam/mabur-ground/blob/master/tools/maburtop.py) ([`gs/bundle/install.sh`](https://github.com/gilankpam/mabur-ground/blob/master/gs/bundle/install.sh)
-installs all three), and re-run `maburcal start` to measure both widths
-under the flags the link flies (`docs/calibration.md`).
+installs all three). The old walls are not carried over: a drone on
+`power_mode = "offset"` flies the chip's own table until each channel and
+width it flies is measured (`maburcal start power20@<ch> …`,
+`docs/calibration.md`), and the operator sets `"offset"` by hand.
 
 **A config error crash-loops the daemon.** A stale, removed or unknown key
 makes the daemon fail to start. A config-load error exits **1** in `maburd`
@@ -179,19 +179,18 @@ boots either board; the `opened device 0bda:XXXX` line in `/tmp/mabur.log`
 says which card was found. GS cards stay 8812EU.
 
 The first behavioural difference is **TX power**. Mechanism is identical
-(same TXAGC block, same per-rate diffs, same offset), so maburcal and
-`power_mode = "offset"` work unchanged (`docs/calibration.md`) — but the
-anchor the relative walls ride on is not:
+(same TXAGC block, same per-rate diffs, same offset) — but the anchor the
+relative walls ride on is not, and only the 8812EU can measure its walls
+(`docs/calibration.md`):
 
 - **8812EU**: per-channel efuse reference (39 on ch136, 53 on ch149 on the
-  bench unit), which absorbs the channel-to-channel gain difference — one
-  wall table covers every channel.
+  bench unit), which absorbs the channel-to-channel gain difference. It
+  measures its own walls per channel and width.
 - **8812CU**: devourer's flat reference, index 40 on every channel, no
   efuse per-channel correction and no efuse rate shape. With the shipped
-  `power_mode = "none"` the card flies that flat, uncalibrated power. After
-  maburcal the walls are exact on the calibrated channel and approximate
-  (a few dB, unmeasured) elsewhere, e.g. after an auto-select move or an
-  in-flight hop. Calibrate on the channel flown most. Reading the CU's
+  `power_mode = "none"` the card flies that flat, uncalibrated power; a
+  wall sweep is refused `unsupported` and `maburcal start` skips it and
+  measures capacity. Reading the CU's
   efuse per channel is a devourer change, worth it only if a mismatch is
   actually seen.
 
@@ -328,10 +327,8 @@ creating the `[table]` when that is missing too
 binary needs, judging every line with its own loader: a key it rejects as
 unknown is removed (its whole table when the name is a table), and a line
 whose removal leaves the loaded config equal is removed as a default. The
-per-drone keys — `radio.channels`, the calibration results
-(`radio.rate_walls_rel_20`/`_40`, `[]` included, `radio.cal_flags_20`/`_40`,
-`radio.legacy_wall_rel`), `link.key_file`, `venc.sensor_bin` — are never
-removed, even when they equal today's default. Every
+per-drone keys — `radio.channels`, `radio.legacy_wall_rel`,
+`link.key_file`, `venc.sensor_bin` — are never removed, even when they equal today's default. Every
 other line, comments included, is kept as written. Each removal is one
 `migrate: removed unknown <key>` or `migrate: removed default <key> =
 <value>` line on stderr. `<out>` is written (`<out>.new` + rename) only when
@@ -342,16 +339,15 @@ never written. It opens no radio, MI or USB, so it is safe beside a running
 unknown key still fails boot.
 
 **The drone's tuning is built into `maburd`; its file holds only what
-belongs to that drone.** `bundle/mabur.default.toml` sets five keys —
-`radio.channels`, `radio.rate_walls_rel_20 = []` and `_40 = []` (not
-calibrated), `link.key_file`, `venc.sensor_bin` — and every other key flies
+belongs to that drone.** `bundle/mabur.default.toml` sets three keys —
+`radio.channels`, `link.key_file`, `venc.sensor_bin` — and every other key flies
 `maburd`'s built-in default, which is the flight tuning; retuning means
 changing that default in code. The drone's startup defaulted-key list is
 therefore long and expected: it is where the tuning shows, one
 `<key>=<value>` per key the file leaves out (a missing `[table]` is read as
 an empty one, so its keys are listed too; only a missing `[venc]` reports as
 `(section absent)`, since it has a required key). A value set on purpose is a line in the file;
-a test pins the bundle to those five keys
+a test pins the bundle to those keys
 (`bundle_is_the_per_drone_keys_only` in `test_config`).
 
 The GS bundles — [`gs/bundle/maburgs.default.toml`](https://github.com/gilankpam/mabur-ground/blob/master/gs/bundle/maburgs.default.toml),
@@ -361,14 +357,16 @@ in them is a real gap (`bundle_default_sets_every_known_key` in
 `test_player_config`, `bundle_default_sets_every_known_key_but_radio_cards`
 in `test_gs_config`): a new GS key goes into its bundle in the same commit.
 
-`rate_walls_rel_20`/`_40` and `air_clock.efficiency_20`/`_40` are per-UNIT
-calibrations (`docs/calibration.md`). A drone that never calibrated flies
+The TX walls (`/etc/mabur.walls`, one curve per channel and width) and
+`air_clock.efficiency_20`/`_40` are per-UNIT calibrations
+(`docs/calibration.md`). A drone that never calibrated flies
 `power_mode = "none"` (the card's own power) and the built-in efficiency
 tables, the reference 8812EU unit's. Measure your own vtx: ssh to the GS
-and run `maburcal start`, which measures both per width, writes them to
-the drone's `/etc/mabur.toml` (backing the old file up to `.pre-cal`) and
-sets `power_mode = "offset"` itself — the walls fly when the run ends, the
-efficiency tables from the next `maburd` start; no laptop-side step.
+and run `maburcal start`: the drone measures its walls itself and stores
+them, and the efficiency tables go into the drone's `/etc/mabur.toml`
+(backing the old file up to `.pre-cal`), from the next `maburd` start; no
+laptop-side step. `power_mode = "offset"` is set by the operator, by hand in
+the config; no run switches it. 
 ⚠ `"none"` also skips the `SetTxPowerOffsetQdb(0)` beside the plan, so a
 global offset left in the chip by a bench tool survives a `maburd` restart;
 power-cycle if you need a known baseline.

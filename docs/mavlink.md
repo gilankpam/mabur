@@ -219,16 +219,18 @@ new ids at its parser (unknown CRC_EXTRA), which is what we want.
 
 | message | id | dir | fields |
 |---|---|---|---|
-| `MABUR_CAL_SWEEP` | 60000 | GS → drone | `nonce u32, seq u8, kind u8 (1 power, 2 verify, 3 capacity), bw u8, frames_per_cell u16, settle_ms u16, gap_us u16, dwell_ms u16, idx_lo i8, idx_hi i8, mcs_mask u8` |
-| `MABUR_CAL_ACK` | 60001 | drone → GS | `nonce u32, seq u8, result u8 (0 accepted, 1 anchor unreadable, 2 busy, 3 unsupported), start_in_ms u16, flags u8 (the stamp's ldpc/stbc mask)` |
-| `MABUR_CAL_SWEEP_DONE` | 60002 | drone → GS | `nonce u32, seq u8, offered u32[8], blocked_pct u8[8]` |
-| `MABUR_CAL_APPLY` | 60003 | GS → drone | `nonce u32, seq u8, bw u8, has u8 (bit0 walls, bit1 eff), walls i8[8] (−128 = leave), legacy i8, eff u16[8] (×1000, 0 = leave)` |
-| `MABUR_CAL_APPLIED` | 60004 | drone → GS | `nonce u32, seq u8, bw u8, ok u8, reason char[50]` (why it refused; on success empty, or a note of what it kept) |
+| `MABUR_CAL_SWEEP` | 60000 | GS → drone | `nonce u32, seq u8, kind u8 (1 wall, 3 capacity), bw u8, channel u8 (wall: the channel to measure, 0 = the link's), settle_ms u16, dwell_ms u16, mcs_mask u8` (the last three: capacity) |
+| `MABUR_CAL_ACK` | 60001 | drone → GS | `nonce u32, seq u8, result u8 (0 accepted, 1 anchor unreadable, 2 busy, 3 unsupported, 4 bad channel, 5 bad width), start_in_ms u16, flags u8 (the stamp's ldpc/stbc mask)` |
+| `MABUR_CAL_SWEEP_DONE` | 60002 | drone → GS | `nonce u32, seq u8, offered u32[8], blocked_pct u8[8]` (capacity), `wall_result u8 (0 ok, 1 unparked, 2 too few points, 3 floor too high, 4 not saturated, 5 deadline, 6 device error, 7 aborted), channel u8, bw u8, walls i8[8] (relative to anchor, 63 = no wall found), floor_evm_x10 i16, anchor u8` (wall) |
+| `MABUR_CAL_APPLY` | 60003 | GS → drone | `nonce u32, seq u8, bw u8, eff u16[8] (×1000, 0 = leave)` (efficiency only) |
+| `MABUR_CAL_APPLIED` | 60004 | drone → GS | `nonce u32, seq u8, bw u8, ok u8, reason char[50]` (why it refused; on success empty) |
 | `MABUR_CAL_ABORT` | 60005 | GS → drone | `nonce u32` |
 
 `seq` is the sweep's position in the run, on SWEEP and on the APPLY that
-sweep produced. The drone answers only `accepted` or `anchor unreadable`
-today. What each message does in a run: `docs/calibration.md`. The
+sweep produced. A wall sweep has no APPLY: the drone measures the walls
+itself and stores them. During a wall measurement the drone sends nothing
+(no ack, re-ack or DONE until it ends); the DONE then repeats until the
+next command. What each message does in a run: `docs/calibration.md`. The
 messages carry no RC version of their own; the dialect changes with the
 code. `common/include/mabur/cal_proto.h` holds them as plain structs and
 `common/src/cal_mav.cpp` is the one TU that packs and parses them

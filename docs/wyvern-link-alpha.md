@@ -97,11 +97,10 @@ Then on the GS: video on the glass, `maburtop` link panel live,
 
 - `radio.power_mode = "none"` as shipped. The 8812CU then flies devourer's
   flat TX-power reference (index 40, every channel, uncalibrated). Leave it
-  there until `maburcal start` (run on the GS) has measured *this* unit's
-  walls — the shipped `rate_walls_rel` are another board's 8812EU numbers.
-  Calibrate on the channel flown most: on the CU the walls are exact there
-  and only approximate on other channels (mabur `docs/deploy.md`,
-  "Supported drone cards").
+  there: the 8812CU cannot self-measure (the drone answers `unsupported` to
+  a wall sweep, and `maburcal start` skips it and measures capacity), so
+  there are no walls to fly for it (mabur `docs/deploy.md`, "Supported
+  drone cards").
 - `msp.serial = "/dev/ttyS2"` is the URLLC AIO's FC UART. Unverified on the
   Wyvern: if the flight controller is wired to another UART, MSP OSD and arm
   state stay silent (the link still flies, but low-power disarmed mode never

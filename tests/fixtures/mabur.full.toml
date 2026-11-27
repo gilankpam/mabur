@@ -11,7 +11,7 @@ channels   = [40, 64, 112, 144]   # the channel set, same as the ground station'
                                   # PROVISIONAL until bench row 8 (maburcal on 64 and 112; swap 64 for 128
                                   # if it fails), mabur-ground docs/channel-select.md "Config".
 width      = 40        # HT40 on each member's standard pair; per-rung width comes from the GS ladder (docs/bw40.md)
-power_mode = "none"      # "none" = card's default TX power; "offset" = use the calibrated walls below
+power_mode = "none"      # "none" = card's default TX power; "offset" = fly the walls the drone measured (/etc/mabur.walls)
 tx_threads = 4           # parallel USB senders; 4 is needed to reach full link speed
 ldpc       = true        # LDPC coding on every frame. false only for an RTL8821AU ground card (it can't decode LDPC); costs ~2-3 dB of range
 cca        = true        # carrier sense: wait for other Wi-Fi on the channel before sending. false = never wait (other networks cannot stall the video); needs a restart

@@ -119,21 +119,16 @@ column below:
   Nothing stops.
 - **Reprogram** (`RADIO_WALL_MARGN`, `RADIO_LDPC`, `MSP_ENABLE`): a radio
   or peripheral setting changes in place. `RADIO_WALL_MARGN` rebuilds
-  both widths' TX-power plans and writes the live rung's under the retune
-  gate (`docs/calibration.md` "Per-width tables on the drone");
+  every (channel, width) TX-power plan and writes the live one under the
+  retune gate (`docs/calibration.md` "The power table follows channel and
+  width");
   `RADIO_LDPC` rebuilds the control radiotaps and `RcAgent` re-applies
   the current operating point with the new flag on its next tick (every
   ladder it builds from then on uses it too); `MSP_ENABLE` starts or
-  stops the MSP thread. A `RADIO_LDPC` set that leaves a flown wall table
-  measured under the other LDPC setting (`radio.cal_flags_<bw>`) is still
-  `ACCEPTED`, followed by a `STATUSTEXT` (`MAV_SEVERITY_WARNING`) per
-  width: `radio: 20 MHz walls were measured with ldpc on; radio.ldpc is
-  off — re-run maburcal`. It is longer than 50 bytes, so it goes out in
-  MAVLink 2's chunked form (one nonzero id, `chunk_seq` from 0).
-  `mavparam.py` prints the chunks as they come; the web GS's
-  `ParamClient` reassembles them and attaches the whole text to the
-  `RADIO_LDPC` row, which the VTX tab shows under it as a warning
-  ([`docs/web-gs.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/web-gs.md)).
+  stops the MSP thread. A `RADIO_LDPC` set re-derives every channel's
+  wall plan from the stored curves (the thresholds shift 4 dB with LDPC
+  off, `docs/calibration.md` "Walls from a curve"), so it needs no
+  re-measure.
 - **Rebuild** (`VENC_MODE`, `VENC_SLICES`, `REC_ENABLE`,
   `REC_BITRATE`, `REC_FPS`, `REC_SIZE`, `VENC_MIRROR`, `VENC_FLIP`): the
   encoder pipeline is rebuilt in-process (`docs/link-adaptation.md`
@@ -198,7 +193,7 @@ quoted string).
 
 | # | param_id | TOML key | type | apply | help |
 |---|---|---|---|---|---|
-| 0 | `RADIO_WALL_MARGN` | `radio.wall_margin_db` | Real32 | reprogram | Safety margin below the calibrated TX-power walls; raise to lower TX power |
+| 0 | `RADIO_WALL_MARGN` | `radio.wall_margin_db` | Real32 | reprogram | Safety margin below the measured TX-power walls; raise to lower TX power |
 | 1 | `RADIO_LDPC` | `radio.ldpc` | Bool | reprogram | LDPC coding on every frame; turn off only for a ground card that cannot decode it |
 | 2 | `VENC_MODE` | `venc.fps` + `venc.size` + `venc.binning` | Str | rebuild | Camera frame rate, encoder size and sensor readout, `<fps>@<WxH>/binned\|native`; the rate and readout pick the sensor mode and the size must fit it |
 | 3 | `VENC_SLICES` | `venc.slices` | Int32 | rebuild | H.265 row slices on the link channel; 1 disables slice salvage |
