@@ -38,13 +38,17 @@ inline PlanPick plan_for(const ChannelPlans& p, uint8_t channel, uint8_t bw) {
 
 // Empty unless power_mode is "offset". One plan per cache entry, its walls
 // derived from the stored curve under the link's LDPC flag now, so an ldpc
-// or margin change re-derives every plan without a re-measure.
+// or margin change re-derives every plan without a re-measure. An entry
+// whose curve fails the measurement's validity checks (a hand-edited or
+// damaged file can still parse) is never flown: its walls could read 63,
+// full power.
 inline ChannelPlans make_channel_plans(const WallCache& cache, const RadioCfg& r,
                                        double margin_db, bool ldpc) {
   ChannelPlans p;
   if (r.power_mode != "offset") return p;
   for (const auto& [key, curve] : cache.entries)
-    p.by[key] = make_power_plan(walls_from_curve(curve, ldpc), r.legacy_wall_rel, margin_db,
+    if (check_curve(curve) == cal::WallResult::Ok)
+      p.by[key] = make_power_plan(walls_from_curve(curve, ldpc), r.legacy_wall_rel, margin_db,
                                 curve.anchor);
   return p;
 }

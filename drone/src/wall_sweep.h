@@ -25,7 +25,7 @@ struct CaptureSession {
 class WallSweep {
  public:
   using Measure = CrossEvm (*)(const devourer::IqSample*, size_t, uint8_t);
-  static constexpr uint32_t kDeadlineMs = 20000;
+  static constexpr uint32_t kDeadlineMs = cal::kWallDeadlineMs;
   static constexpr float kHeadroomDb = 57.0f, kMinLevelDb = 30.0f, kParkRiseDb = 10.0f;
   static constexpr int kCapturesPerPoint = 3, kMaxRetries = 2, kGains = 4;
 

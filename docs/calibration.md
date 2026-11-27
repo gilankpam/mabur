@@ -13,8 +13,11 @@ Two per-unit hardware facts of the vtx are measured, by different means:
   and the drone writes it into `/etc/mabur.toml`.
 
 The walls are flown only under `radio.power_mode = "offset"`, which the
-operator sets; nothing switches it. A power sweep takes about 6 s of
-captures per (channel, width), at most 20 s. A capacity sweep takes about
+operator sets; nothing switches it. A power sweep's time per (channel,
+width) is set by its capture count and the drone's per-capture time,
+measured per width on the bench and logged by each sweep (`time_ms`,
+`captures`, below); it never exceeds the 20 s deadline
+(`cal::kWallDeadlineMs`, shared by both ends). A capacity sweep takes about
 18 s per width, at the power the drone flies for the link's channel.
 
 ```
@@ -154,8 +157,10 @@ store follows a calibration relocate like any hop.
    …}` every 200 ms until acked; 3 s without an ack fails the run
    (`calibration ack timeout`). `seq` is the sweep's position in the run.
    `channel` names the channel a Wall sweep measures; 0 means the link's
-   channel, which the GS fills in (the picker's op, else the session's
-   channel; none known fails the run, `no link channel known`). The drone
+   channel, which the drone resolves to the channel it flies (its
+   SWEEP_DONE names that channel). `maburgs` never sends 0: it fills the
+   channel in itself (the picker's op, else the session's channel; none
+   known fails the run, `no link channel known`). The drone
    is idempotent by (nonce, seq): a repeat of the running seq re-acks
    without touching the sweep, an older seq is ignored, a newer one starts
    the next sweep. One hold: a SWEEP is not sent while a scout dwell begun
@@ -179,7 +184,7 @@ store follows a calibration relocate like any hop.
    |---|---|---|
    | `anchor_unreadable` | the chip would not zero its rate diffs or report its TXAGC reference (checked when a run's first sweep is accepted; a wall sweep's own anchor read failing later ends it `device_error`) | fails the run |
    | `busy` | reserved in the enum, never sent by the drone | — |
-   | `unsupported` | a Wall sweep on a chip that cannot self-measure (anything but the 8812EU) | skips the sweep with a note (`X` line in `cal.log`) and goes on |
+   | `unsupported` | a Wall sweep on a chip that cannot self-measure (anything but the 8812EU), or a sweep of a kind the drone does not know (neither wall nor capacity) | skips the sweep with a note (`X` line in `cal.log`) and goes on |
    | `bad_channel` | a Wall channel not in the drone's `radio.channels`, or on 2.4 GHz (the capture is validated at 5 GHz only) | fails the run, `channel not in the drone's set` |
    | `bad_width` | a 40 MHz Wall sweep on a drone with `radio.width = 20` | fails the run, `width not flown by the drone` |
 
@@ -263,7 +268,12 @@ TX writer thread, against a capture session on the radio
    error): the capture session ends (switch route, listener chain and TX
    buffer layout back to flight's), then width, channel and TX power. If
    the session's own restore fails the result is `device_error` and nothing
-   is stored.
+   is stored; the radio's state is then unknown, so `maburd` keeps
+   repeating the report for 1 s, logs `maburd cal: ERROR: the wall
+   measurement could not restore the radio; exiting for wrapper respawn …`
+   and exits, and its wrapper starts it again with a fresh bring-up (the
+   link drops for that restart). The same happens when the measurement is
+   aborted or cut off and its restore fails, with no report.
 
 **The drone sends nothing during the measurement** (`radio_quiet`): from
 the setup to the restore every send is dropped, so no DISC_ACK, no
@@ -272,7 +282,10 @@ silent for the same window. The deadline, not an abort, bounds a run: an
 abort is only checked between captures, and the drone is off the link's
 channel or has a chain detached while it measures.
 
-**Validity.** A result is stored only if all hold, tested in this order:
+**Validity.** A result is stored only when the measurement runs to its
+end and the curve passes the checks; every other result stores nothing.
+The results other than `ok` (the first four are checked in the order
+listed):
 
 | result code | condition |
 |---|---|
@@ -416,7 +429,7 @@ and resume video on its own.
 | step | time |
 |---|---|
 | channel pick | 0 pinned or one card; ~1 s for the round (three members at 280 ms) plus up to `[hop] confirm_ms` for a relocate |
-| wall measurement | about 6 s of captures plus the channel and width switches; never more than 20 s |
+| wall measurement | captures × the per-capture time, plus the channel and width switches (each sweep logs `time_ms` and `captures`); never more than 20 s |
 | capacity sweep | 18.4 s per width (8 × 2.3 s) + 200 ms start + ack |
 | apply (capacity) | one round trip |
 
@@ -516,6 +529,11 @@ order.
   trailing newline) discards the **whole** file: "nothing measured". Over
   64 KB is rejected the same way (a full file of 354 entries is about
   50 KB).
+- An entry whose curve fails the measurement's validity checks (fewer
+  than 20 values, best point above −26 dB, last point below −11 dB; see
+  "Validity") parses but is never flown: that (channel, width) flies as
+  unmeasured, and `maburd` logs `maburd radio: wall cache ch <ch> <bw>
+  MHz: curve fails its checks, not flown` at start.
 - Entries for channels no longer in `radio.channels` are kept and unused.
 - A wipe of the drone loses the cache: re-measure, never restore.
 
@@ -655,7 +673,11 @@ calibrate a new unit before flying it. After a drone wipe or replacement,
 `/etc/mabur.walls` is gone: measure every channel the link flies at both
 widths (`maburcal start power20@<ch> power40@<ch> …`, one token per
 channel and width, then `maburcal start` for capacity), then set
-`power_mode = "offset"`.
+`power_mode = "offset"`. One run is bounded by the drone's 180 s
+`hard_cap_ms`, and a wall token can take its whole window, the 20 s
+deadline plus the GS's 1 s slack and the 200 ms start: eight wall tokens
+fit one run at worst, six beside both capacity sweeps. Measure more
+channels over several runs.
 
 ## Geometry
 
@@ -770,8 +792,10 @@ says which:
   chain; re-run); `not_saturated`: the PA never compressed within the
   index range, so no curve to cut (a very low-power module); `deadline`:
   20 s were not enough; `device_error`: the radio refused a step or did
-  not restore, and the drone's `maburd cal: ERROR: CrossPathEnd failed`
-  line says which — the radio is not trusted, restart `maburd`; `aborted`: cancelled.
+  not restore. A failed restore is the drone's `maburd cal: ERROR:
+  CrossPathEnd failed` line, and `maburd` then restarts itself about 1 s
+  after the report (the link drops and comes back; nothing to do on the
+  GS); `aborted`: cancelled.
 - `no wall report from the drone` — no copy of the SWEEP_DONE arrived by
   the window's end (the 20 s deadline plus the GS's 1 s slack). The
   measurement may still have succeeded on the drone: its log line says.
@@ -790,8 +814,10 @@ lists every apply's outcome.
 **The drone was silent and the pair did not come back.** The measurement
 detached a chain and switched channel and width, and every exit path
 restores them. If video does not return within a couple of DISC beacons
-after the run, look for `maburd cal: wall … result=` and `ERROR:
-CrossPathEnd failed` in `/tmp/mabur.log`, then restart `maburd`.
+after the run, look for `maburd cal: wall … result=` in `/tmp/mabur.log`.
+After an `ERROR: CrossPathEnd failed` line `maburd` restarts itself
+within about a second (its wrapper respawns it); if the pair stays down
+without one, restart `maburd` or power-cycle the drone.
 
 **`eff` is `-` for a width whose capacity sweep ran.** Every copy of its
 SweepDone was lost inside the GS's 1 s listen tail, so nothing was written
@@ -844,7 +870,10 @@ Deadline DeviceError Aborted`; `park_rise` the parked-minus-unparked level
 in dB, `floor` the best EVM in dB, `captures` the probe captures taken,
 `time_ms` the measurement's wall-clock time from the setup; ` (LDPC off:
 thresholds lowered 4 dB)` is appended when `radio.ldpc` is off. Also at
-boot `maburd radio: wall cache …`, on every table switch `maburd radio:
+boot `maburd radio: wall cache …` (and `… curve fails its checks, not
+flown` per invalid entry), on a failed restore `maburd cal: ERROR:
+CrossPathEnd failed …` then `maburd cal: ERROR: the wall measurement could
+not restore the radio; exiting …`, on every table switch `maburd radio:
 power table ch <ch> <bw> MHz: …` (above), `maburd cal: applied <bw> MHz
 efficiency` / `apply <bw> MHz refused: …`, `maburd cal:
 wall cache write to … failed`, and `cal_latch_drop=` on `maburd tx_send:`.

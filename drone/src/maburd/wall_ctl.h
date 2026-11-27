@@ -53,6 +53,11 @@ struct DeviceWallCtl : CalSweep::WallCtl {
   cal::SweepDone finish() override;
   void cancel() override;
 
+  // True once a measurement's capture session failed to put the radio back
+  // (CrossPathEnd): what the radio is doing is unknown from then on, and
+  // only a fresh bring-up lays its state down again. Never cleared.
+  bool radio_untrusted() const { return untrusted_; }
+
  private:
   void restore();
   void log_result(cal::WallResult r, const std::array<int8_t, 8>& walls, int16_t floor_x10,
@@ -64,6 +69,7 @@ struct DeviceWallCtl : CalSweep::WallCtl {
   bool open_ = false;      // between start() and the restore
   bool retuned_ = false;   // start() moved the channel
   bool narrowed_ = false;  // start() took a 40 MHz tuning to 20
+  bool untrusted_ = false;  // see radio_untrusted()
   uint8_t ch_ = 0, bw_ = 0;
   int anchor_ = -1;        // -1: start() could not set the radio up
   uint64_t t0_ms_ = 0;

@@ -692,6 +692,13 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
                    kWallCacheFile, c.entries.size());
     else
       std::fprintf(stderr, "maburd radio: wall cache %s: %s\n", kWallCacheFile, note.c_str());
+    // Only an Ok curve is ever stored at run time, so this is the one place
+    // an invalid entry can come in; make_channel_plans skips it.
+    for (const auto& [key, curve] : c.entries)
+      if (check_curve(curve) != cal::WallResult::Ok)
+        std::fprintf(stderr,
+                     "maburd radio: wall cache ch %u %u MHz: curve fails its checks, not flown\n",
+                     static_cast<unsigned>(key.first), static_cast<unsigned>(key.second));
     std::lock_guard<std::mutex> l(m.wall_cache_mu);
     m.wall_cache = std::move(c);
   }

@@ -85,6 +85,7 @@ DeviceWallCtl::DeviceWallCtl(RealMode& m) : m_(m) {
 }
 
 cal::AckResult DeviceWallCtl::check(uint8_t channel, uint8_t bw) {
+  if (channel == 0) channel = m_.power_table.channel();  // 0 = the link's channel
   if (!m_.rtl_device->CrossPathSupported()) return cal::AckResult::Unsupported;
   // The cross-path capture is validated at 5 GHz only.
   if (channel <= 14 || !channel_set_member(m_.cfg.radio.channels, channel))
@@ -95,6 +96,8 @@ cal::AckResult DeviceWallCtl::check(uint8_t channel, uint8_t bw) {
 }
 
 void DeviceWallCtl::start(uint8_t channel, uint8_t bw, uint64_t now_ms) {
+  // 0 = the link's channel; the report and the cache carry the resolved one.
+  if (channel == 0) channel = m_.power_table.channel();
   ch_ = channel;
   bw_ = bw;
   t0_ms_ = now_ms;
@@ -156,6 +159,7 @@ void DeviceWallCtl::restore() {
       m_.radio_quiet.store(false, std::memory_order_release);
     });
   });
+  if (!sess_.end_ok) untrusted_ = true;
 }
 
 void DeviceWallCtl::log_result(cal::WallResult r, const std::array<int8_t, 8>& w,

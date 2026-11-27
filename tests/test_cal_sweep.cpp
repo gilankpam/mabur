@@ -519,7 +519,34 @@ TEST(starts_sweep_predicts_on_cmd_and_run_nonce_names_the_run) {
   CHECK(r.sw.starts_sweep(cap_cmd(6, 0)));
 }
 
+// Revert (no kind check in on_cmd): the ack reads Accepted and a run opens
+// on an empty sweep. Revert (no kind check in starts_sweep): it predicts a
+// start, so the owner would raise cal_active for a refused command.
+TEST(a_sweep_of_an_unknown_kind_is_refused_unsupported) {
+  Rig r;
+  cal::SweepCmd c = cap_cmd(7, 0);
+  c.kind = static_cast<cal::Kind>(2);
+  CHECK(!r.sw.starts_sweep(c));
+  r.cmd(c, 1000);
+  const auto ack = r.sw.take_ack();
+  REQUIRE(ack.has_value());
+  CHECK(ack->result == cal::AckResult::Unsupported);
+  CHECK(!r.sw.active() && r.pwr.untouched() && r.wall.calls.empty());
+  r.pump(1300);
+  CHECK(!r.sw.take_done().has_value());
+}
+
 // ---- Wall sweeps ----------------------------------------------------------
+
+// Channel 0 means the link's channel, which the WallCtl resolves: CalSweep
+// hands it through to check() and start() untouched.
+TEST(a_wall_sweep_hands_channel_0_to_the_wall_ctl) {
+  Rig r;
+  r.cmd(wall_cmd(7, 0, 0, 20), 1000);
+  CHECK(r.sw.take_ack()->result == cal::AckResult::Accepted);
+  r.pump(1200);
+  CHECK(r.wall.calls == (std::vector<std::string>{"check 0 20", "start 0 20"}));
+}
 
 // Revert (pump skipping the 200 ms start delay for Wall): "start" lands at
 // t = 1100. Revert (finish's report sent without nonce/seq filled in): the

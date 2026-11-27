@@ -47,6 +47,19 @@ TEST(a_larger_margin_lowers_the_plans) {
   CHECK(p.by.at({144, 20}).mcs[7] == 12);
 }
 
+// A parsable but invalid curve (here never saturated: every point -30 dB,
+// so no rate finds a wall and all read 63) is not flown. Revert (no
+// check_curve in make_channel_plans): the plan count reads 2.
+TEST(an_invalid_cached_curve_gets_no_plan) {
+  WallCache c = cache144();
+  WallCurve flat;
+  flat.anchor = 39;
+  for (auto& v : flat.evm_db) v = -30.0f;
+  c.entries[{112, 20}] = flat;
+  const ChannelPlans p = make_channel_plans(c, offset(), 1.0, true);
+  CHECK(p.by.size() == 1 && p.by.count({144, 20}) == 1);
+}
+
 TEST(power_mode_none_has_no_plans) {
   RadioCfg r;
   r.power_mode = "none";

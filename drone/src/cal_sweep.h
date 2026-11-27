@@ -201,7 +201,8 @@ class CalSweep {
   uint32_t run_nonce() const { return nonce_; }
 
   // True iff on_cmd(c) would start a sweep (a new run or a later seq of
-  // the open one) rather than re-ack or ignore it -- before the anchor
+  // the open one, of a known kind) rather than re-ack, ignore or refuse it
+  // -- before the anchor
   // read and the wall check, which can still refuse it. The owner programs
   // what a starting sweep needs from the device (aggregation off, a
   // capacity width's power table) only for a command this accepts, so a

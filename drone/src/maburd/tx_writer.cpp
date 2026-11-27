@@ -12,6 +12,8 @@
 #include <thread>
 #include <vector>
 
+#include <unistd.h>
+
 #include "cal_link.h"
 #include "cal_sweep.h"
 #include "mav_component.h"
@@ -312,6 +314,30 @@ void tx_writer_loop(RealMode& m) {
     apply_ledger.record(out);
     send_cal(out);
   };
+  // A measurement whose capture session failed to restore the radio leaves
+  // it in an unknown state (TX may be wedged, the chains or the TX buffer
+  // layout not flight's). The writer keeps the run's repeats going for up
+  // to 1 s, so the DeviceError report gets its chance to air, and then
+  // maburd exits for the wrapper to respawn it: bring-up lays the whole
+  // radio state down again. Commands arriving meanwhile are left unread.
+  // _exit, as for every fault exit here: destructors must not run on a
+  // live multi-threaded process.
+  auto exit_if_radio_untrusted = [&]() {
+    if (!wall.radio_untrusted()) return;
+    std::fprintf(stderr,
+                 "maburd cal: ERROR: the wall measurement could not restore the radio; "
+                 "exiting for wrapper respawn to bring it up again\n");
+    const uint64_t t_end = now_steady_ms() + 1000;
+    for (uint64_t now = now_steady_ms(); now < t_end; now = now_steady_ms()) {
+      // Never into a sweep that superseded the failed one: nothing more
+      // is started on this radio.
+      if (cal_sweep.state() != CalSweep::State::Sweeping) cal_sweep.pump(now, pwr, cap, wall);
+      if (auto d = cal_sweep.take_done()) send_cal(*d);
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    std::fflush(stderr);
+    _exit(3);
+  };
   bool cal_was_active = false;  // edge-detect: session start -> drain txq once
   CalRestoreOwed restore_owed;  // see cal_link.h
   // dq_queue gauge: TRUE push→pop queue
@@ -400,6 +426,8 @@ void tx_writer_loop(RealMode& m) {
       }
       // SweepAck, SweepDone and Applied travel drone -> GS only.
     }
+    // An abort or a superseding SWEEP may have just cancelled a measurement.
+    exit_if_radio_untrusted();
 
     if (auto a = cal_sweep.take_pending_apply()) apply_eff(*a);
 
@@ -416,6 +444,7 @@ void tx_writer_loop(RealMode& m) {
       cal_was_active = true;
       cal_sweep.pump(now_steady_ms(), pwr, cap, wall);
       if (auto d = cal_sweep.take_done()) send_cal(*d);
+      exit_if_radio_untrusted();
       // The one blocking wait this loop has is txq.pop_batch(.., 5) at
       // the bottom, which a calibration session never reaches -- and
       // pump() returns immediately whenever the sweep is waiting on its

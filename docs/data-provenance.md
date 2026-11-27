@@ -257,9 +257,10 @@ control anywhere in mabur: no GS-commanded offset, no thermal derate, no
 per-profile offset. Under `radio.power_mode = "offset"` `maburd` programs
 the wall-equalized per-rate diff table and zeroes the global offset at
 bring-up; each rate `r` sits at effective TXAGC index `anchor(channel) +
-wall[r] − round(wall_margin_db * 4)`, `wall` from the config's per-width
-table (the live rung's width) (one table for every width before 2026-10-31; per channel
-and width from 2026-11-27). Note the
+wall[r] − round(wall_margin_db * 4)`, `wall` from the walls the drone
+measured for the link's channel at the live rung's width (`/etc/mabur.walls`,
+from 2026-11-27; before that a config table per width from 2026-10-31, and
+one table for every width before 2026-10-31). Note the
 `* 4`: the chip's index step is 0.25 dB, so `wall_margin_db` is a dB
 figure converted to index steps, and a 1 dB margin is 4 steps
 (`make_power_plan()` in `drone/src/power_plan.h`). The only later power

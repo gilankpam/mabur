@@ -4,6 +4,10 @@
 
 namespace mabur {
 
+namespace {
+bool known_kind(cal::Kind k) { return k == cal::Kind::Wall || k == cal::Kind::Capacity; }
+}  // namespace
+
 uint8_t CalSweep::stamp_flags() const {
   return cal::kFlagStbc | (cfg_.ldpc ? cal::kFlagLdpc : 0);
 }
@@ -23,6 +27,7 @@ uint16_t CalSweep::remaining_start_ms(uint64_t now_ms) const {
 
 bool CalSweep::starts_sweep(const cal::SweepCmd& c) const {
   // The same three branches on_cmd() takes, without the side effects.
+  if (!known_kind(c.kind)) return false;
   if (!has_session_ || c.nonce != nonce_)
     return !(last_nonce_valid_ && c.nonce == last_closed_nonce_);
   return static_cast<int>(c.seq) > last_started_seq_;
@@ -72,6 +77,12 @@ void CalSweep::on_cmd(const cal::SweepCmd& c, uint64_t now_ms, PowerCtl& pwr, Wa
       // outright, no ack -- the GS is not waiting on this seq any more.
       return;
     }
+  }
+  // A kind this drone does not know (a retired one, say) is refused, never
+  // run as an empty sweep that would report success.
+  if (!known_kind(c.kind)) {
+    pending_ack_ = cal::SweepAck{c.nonce, c.seq, cal::AckResult::Unsupported, 200, stamp_flags()};
+    return;
   }
   // A Wall sweep the drone cannot run is refused before anything touches
   // the device or the run: the GS goes on with the rest of its run.
