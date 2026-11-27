@@ -137,6 +137,11 @@ struct RealMode {
   // every shared-taker before it enters. glibc's rwlock is reader-preferring
   // and the writer runs on the agent thread — see await_retune_gate.
   std::atomic<bool> retune_waiting{false};
+  // Raised by a wall measurement (wall_ctl.cpp) for as long as its
+  // cross-path session can be open, inside an exclusive tx_gate hold:
+  // devourer's session moves the TX queue boundaries, so nothing else may
+  // send. DevourerSink drops every send while it is up.
+  std::atomic<bool> radio_quiet{false};
 
   // What the IGI floor watchdog thread reads, all lock-free: the longest
   // video send, the video width, the retune count, and (for the stats line)

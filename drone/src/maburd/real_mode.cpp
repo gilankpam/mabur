@@ -111,6 +111,7 @@ RealActuator& RealMode::wire_sink_and_actuator() {
   dev_sink.ready = &device_ready;
   dev_sink.gate = &tx_gate;
   dev_sink.gate_waiting = &retune_waiting;
+  dev_sink.quiet = &radio_quiet;
   dev_sink.timer = &send_timer;
   if (cfg.radio.tx_threads > 1) dev_sink.pool = &tx_pool;
   actuator.tx = &tx;

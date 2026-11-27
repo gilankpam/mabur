@@ -80,6 +80,11 @@ struct DevourerSink : mabur::FrameSink {
   std::shared_mutex* gate = nullptr;
   // Writer-priority flag paired with `gate` — see await_retune_gate above.
   std::atomic<bool>* gate_waiting = nullptr;
+  // RealMode::radio_quiet: while it is up every send is dropped. Read under
+  // the gate, so a send cannot slip past the exclusive hold that raises it.
+  // The pool path needs no check: only the TX writer thread feeds it, and
+  // that thread is the one running the measurement.
+  std::atomic<bool>* quiet = nullptr;
   // Times the direct-path video sends for the IGI floor watchdog (null in
   // dry-run). Control sends are not timed.
   mabur::SendTimer* timer = nullptr;
@@ -89,6 +94,7 @@ struct DevourerSink : mabur::FrameSink {
     await_retune_gate(gate_waiting);
     std::shared_lock<std::shared_mutex> sg;
     if (gate) sg = std::shared_lock<std::shared_mutex>(*gate);
+    if (quiet && quiet->load(std::memory_order_acquire)) return false;
     std::lock_guard<std::mutex> l(m);
     return dev->send_packet(p, n);
   }
@@ -121,6 +127,7 @@ struct DevourerSink : mabur::FrameSink {
     await_retune_gate(gate_waiting);
     std::shared_lock<std::shared_mutex> sg;
     if (gate) sg = std::shared_lock<std::shared_mutex>(*gate);
+    if (quiet && quiet->load(std::memory_order_acquire)) return 0;
     std::lock_guard<std::mutex> l(m);
     const int slot = timer ? timer->begin(now_steady_us()) : -1;
     const size_t sent = dev->send_packets(v.data(), n);

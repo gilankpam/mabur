@@ -17,6 +17,7 @@
 #include "mav_component.h"
 #include "mabur/cal_mav.h"
 #include "real_mode.h"
+#include "wall_ctl.h"
 #include "SignalStop.h"
 #include "q_wait.h"
 #include "window_stat.h"
@@ -160,16 +161,6 @@ struct DeviceCapacityCtl : CalSweep::CapacityCtl {
   }
 };
 
-// No chip can measure its own walls yet: every Wall sweep is refused as
-// unsupported, so a run skips it and goes on to capacity.
-struct NoWallCtl : CalSweep::WallCtl {
-  cal::AckResult check(uint8_t, uint8_t) override { return cal::AckResult::Unsupported; }
-  void start(uint8_t, uint8_t, uint64_t) override {}
-  bool step(uint64_t) override { return false; }
-  cal::SweepDone finish() override { return {}; }
-  void cancel() override {}
-};
-
 }  // namespace
 
 // TX writer thread: sole caller of tx.send_bodies (RadioTx's
@@ -210,7 +201,7 @@ void tx_writer_loop(RealMode& m) {
   cap.gate_waiting = &m.retune_waiting;
   cap.ampdu = m.cfg.ampdu;
   cap.ldpc = cal_ldpc;
-  NoWallCtl wall;
+  DeviceWallCtl wall(m);
   // One drone->GS calibration message (ack, done, applied) as its own
   // tagged T_MAV_UP frame on the control path: the shared uplink counter
   // and dot11 sequence, the mutex-guarded dev_sink.send(). Sent whatever
@@ -220,6 +211,9 @@ void tx_writer_loop(RealMode& m) {
   // SweepDone take_done() yields (it repeats until the GS moves on).
   ControlRadiotap cal_radiotap = m.make_control_radiotap();
   auto send_cal = [&](const cal::CalMsg& msg) {
+    // Nothing airs during a wall measurement (a repeat SWEEP's re-ack
+    // included): the sink would drop it anyway, so it takes no counter.
+    if (m.radio_quiet.load(std::memory_order_acquire)) return;
     auto ctx = m.agent.uplink_ctx(/*cal_reply=*/true);
     if (!ctx) {
       m.mav_up_nopair.fetch_add(1, std::memory_order_relaxed);
@@ -265,6 +259,7 @@ void tx_writer_loop(RealMode& m) {
       return m.cfg;
     }
   };
+  wall.reload_config = reload_config;
   // The run's end, however it ended (done, abort, a deadline, a refusal):
   // close_session() only parks the flat override at the anchor and never
   // restores the diffs a new run zeroed, so left alone the drone would fly
@@ -355,7 +350,12 @@ void tx_writer_loop(RealMode& m) {
           ++cal_latch_drops;
           continue;
         }
-        const bool starting = cal_sweep.starts_sweep(*c);
+        // A Wall command check() refuses changes nothing: no cal_active, no
+        // epoch, no device touch, aggregation left as it is. check() writes
+        // nothing, so on_cmd() asking it again is harmless.
+        const bool starting =
+            cal_sweep.starts_sweep(*c) &&
+            (c->kind != cal::Kind::Wall || wall.check(c->channel, c->bw) == cal::AckResult::Accepted);
         if (starting) {
           // cal_active up first, under the power table's lock (see
           // LivePowerTable), and the restore owed from here on; then
