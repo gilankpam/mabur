@@ -1586,6 +1586,6 @@ What changed for a recording or a comparison:
   written; `S`'s kind is `wall` or `capacity` and its `param` is the
   measured channel for a wall sweep; `W` is `<bw> <channel> <anchor>
   <floor_evm_x10> <w0>…<w7>` as the drone reported it; new `X <seq> <token>
-  <reason>` for a skipped sweep. The wall flag bits 1–16 are no longer
+  <reason>` for a skipped sweep (which gets no `S`); the `R` line's `ldpc` is `-` when no ack was heard before the run's first record. The wall flag bits 1–16 are no longer
   written; capacity flags are as in `callog 5`. `maburcal report` reads
   `callog 1`–`6`. The sideport `link.cal` kind is `wall` or `capacity`.
