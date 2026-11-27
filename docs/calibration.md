@@ -559,18 +559,13 @@ under the current `radio.ldpc`; the plan is built from the eight walls
 with `radio.wall_margin_db` and `radio.legacy_wall_rel` as the power plan
 always was (`park = clamp(wall − round(wall_margin_db · 4), −64, 63)`).
 
-**Lookup for (channel, width):**
-
-1. its own entry;
-2. else the same channel's other width, logged (the two widths' curves
-   agree within about one index);
-3. else the chip's own table, logged once per channel and width.
-
-An unmeasured channel is never flown on another channel's walls. Each
-switch logs `maburd radio: power table ch <ch> <bw> MHz: measured plan
-(mcs5 diff N)`, with `the 20 MHz plan` / `the 40 MHz plan` in place of
-`measured plan` when it flies the other width's, or `maburd radio: power
-table ch <ch> <bw> MHz: chip's own table (no plan)`; ` for calibration` is
+**Lookup for (channel, width):** its own entry, else the chip's own
+table, logged once per channel and width. A (channel, width) is never
+flown on another channel's walls, nor on the same channel's other width:
+40 MHz flying a channel's 20 MHz plan lost 25-56 % of frames at mcs4 where
+the chip's own table was clean. Each switch logs `maburd radio: power
+table ch <ch> <bw> MHz: measured plan (mcs5 diff N)`, or `maburd radio:
+power table ch <ch> <bw> MHz: chip's own table (no plan)`; ` for calibration` is
 appended for a table a capacity sweep programs. Control frames are 20 MHz
 MCS0 whatever the rung and ride the legacy diff in every plan.
 
@@ -961,7 +956,7 @@ findings page.
 | wall, link channel | `maburcal start power20` | one sweep, `done`, `maburd cal: wall … result=Ok`, the pair back on its channel with video |
 | wall, named channels | `maburcal start power20@<ch> power40@<ch>` on each channel of the set | each `result=Ok`, the −17 dB crossing within 2 index steps of the reference, `/etc/mabur.walls` holds one line per (channel, width) |
 | link after a measurement | after every wall sweep | `SESSION` again within a couple of beacons, video, uplink delivery as before the trigger |
-| table follows | hop across measured and unmeasured channels under `power_mode = "offset"` | the `power table ch … ` log names the right plan, the other width's, or the chip's table |
+| table follows | hop across measured and unmeasured channels under `power_mode = "offset"` | the `power table ch … ` log names the measured plan where that (channel, width) has an entry, else the chip's table (a channel measured only at 20 MHz flies the chip's table at 40) |
 | rungs | each ladder rung, forced, on three channels at the stored walls and default margin | flies clean |
 | full run | `maburcal start` on a 40 MHz GS | four sweeps, `done`, both widths; capacity matches a run from before |
 | 20 MHz GS | an all-20 ladder on the GS (derived receiver width 20) | `maburcal start` runs two sweeps; `maburcal start power40` → `err refused: GS receiver width is 20 (load a 40 MHz ladder to calibrate 40 MHz)` |

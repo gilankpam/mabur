@@ -63,8 +63,7 @@ bool LivePowerTable::program_for_cal(uint8_t bw) {
 
 bool LivePowerTable::write_locked(uint8_t bw, const Write& w, bool gated) {
   const uint8_t ch = ch_.load(std::memory_order_relaxed);
-  const PlanPick pick = plan_for(plans_, ch, bw);
-  const PowerPlan* p = pick.plan;
+  const PowerPlan* p = plan_for(plans_, ch, bw);
   // No plan: back to the untrimmed efuse table, but only over a plan or
   // what calibration left -- a chip already on its own table is not
   // rewritten on every hop between unmeasured channels.
@@ -95,12 +94,8 @@ bool LivePowerTable::write_locked(uint8_t bw, const Write& w, bool gated) {
   if (p || write_own) holds_plan_ = p != nullptr;
   const char* cal = w.for_cal ? " for calibration" : "";
   if (p) {
-    std::fprintf(stderr, "maburd radio: power table ch %u %u MHz: %s (mcs5 diff %d)%s%s\n",
-                 static_cast<unsigned>(ch), static_cast<unsigned>(bw),
-                 pick.source == PlanSource::Own ? "measured plan"
-                 : bw == 40                     ? "the 20 MHz plan"
-                                                : "the 40 MHz plan",
-                 p->mcs[5], cal,
+    std::fprintf(stderr, "maburd radio: power table ch %u %u MHz: measured plan (mcs5 diff %d)%s%s\n",
+                 static_cast<unsigned>(ch), static_cast<unsigned>(bw), p->mcs[5], cal,
                  ok ? "" : " -- SetTxPowerRateDiffs FAILED, chip keeps its previous table");
   } else if (own_logged_.insert({ch, bw}).second || !ok) {
     std::fprintf(stderr, "maburd radio: power table ch %u %u MHz: chip's own table (no plan)%s%s\n",

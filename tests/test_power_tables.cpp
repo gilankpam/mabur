@@ -66,17 +66,16 @@ TEST(power_mode_none_has_no_plans) {
   CHECK(make_channel_plans(cache144(), r, 1.0, true).by.empty());
 }
 
-TEST(lookup_order) {
+TEST(lookup_is_the_own_width_only) {
   ChannelPlans p;
   p.by[{144, 20}] = make_power_plan({63, 63, 63, 63, 45, 23, 22, 21}, 63, 1.0, 0);
   p.by[{112, 40}] = make_power_plan({63, 63, 63, 63, 45, 28, 28, 23}, 63, 1.0, 0);
-  CHECK(plan_for(p, 144, 20).source == PlanSource::Own);
-  CHECK((plan_for(p, 144, 20).plan == &p.by[{144, 20}]));
-  CHECK((plan_for(p, 144, 40).source == PlanSource::OtherWidth &&
-         plan_for(p, 144, 40).plan == &p.by[{144, 20}]));
-  CHECK((plan_for(p, 112, 20).source == PlanSource::OtherWidth &&
-         plan_for(p, 112, 20).plan == &p.by[{112, 40}]));
-  CHECK(plan_for(p, 64, 20).source == PlanSource::None && plan_for(p, 64, 20).plan == nullptr);
+  CHECK((plan_for(p, 144, 20) == &p.by[{144, 20}]));
+  CHECK((plan_for(p, 112, 40) == &p.by[{112, 40}]));
+  // The other width is never borrowed: the chip's own table (nullptr).
+  CHECK(plan_for(p, 144, 40) == nullptr);
+  CHECK(plan_for(p, 112, 20) == nullptr);
+  CHECK(plan_for(p, 64, 20) == nullptr);
 }
 
 MTEST_MAIN

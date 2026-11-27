@@ -95,7 +95,7 @@ ChannelPlans two_channels() {
   return p;
 }
 int mcs5(const ChannelPlans& p, uint8_t ch, uint8_t bw) {
-  return plan_for(p, ch, bw).plan->mcs[5];
+  return plan_for(p, ch, bw)->mcs[5];
 }
 std::string diffs_of(const ChannelPlans& p, uint8_t bw, uint8_t ch = 144) {
   return "diffs mcs5=" + std::to_string(mcs5(p, ch, bw));
@@ -212,14 +212,18 @@ TEST(restore_with_no_plans_writes_the_efuse_table_and_clears_the_override) {
   CHECK((r.dev.calls == Calls{"gate", "diffs efuse", "override -1"}));
 }
 
-TEST(program_for_cal_flies_the_fallback_or_the_efuse_table) {
+TEST(program_for_cal_flies_the_plan_or_the_efuse_table) {
   Rig r;
-  // Only a 20 MHz table: a 40 MHz capacity sweep flies it, as production does.
+  // Only a 20 MHz table: a 20 MHz capacity sweep flies it, a 40 MHz one the
+  // chip's own table, as production does.
   const ChannelPlans p = only20();
   REQUIRE(r.t.replace(p, 20, true, false));
   r.t.begin_cal();
   r.dev.clear();
   REQUIRE(r.t.program_for_cal(40));
+  CHECK((r.dev.calls == Calls{"gate", "diffs efuse"}));
+  r.dev.clear();
+  REQUIRE(r.t.program_for_cal(20));
   CHECK((r.dev.calls == Calls{"gate", diffs_of(p, 20)}));
   // ...and calibration still owns the table: the run's end puts it back.
   r.cal_active = false;
@@ -333,14 +337,16 @@ TEST(a_hop_back_reprograms_the_plan) {
   CHECK((r.dev.calls == Calls{diffs_of(p, 20, 144)}));
 }
 
-TEST(the_width_follows_within_a_channel) {
+TEST(a_width_without_its_own_plan_flies_the_chip_table) {
+  // A channel measured only at 20 MHz: at 40 it flies the chip's own table,
+  // never the 20 MHz plan.
   Rig r;
   const ChannelPlans p = only20();
   REQUIRE(r.t.replace(p, 20, true, false));
   r.dev.clear();
   const std::string log = stderr_of([&] { r.t.follow(40); });
-  CHECK((r.dev.calls == Calls{"gate", diffs_of(p, 20)}));
-  CHECK(log.find("ch 144 40 MHz: the 20 MHz plan") != std::string::npos);
+  CHECK((r.dev.calls == Calls{"gate", "diffs efuse"}));
+  CHECK(log.find("ch 144 40 MHz: chip's own table") != std::string::npos);
 }
 
 TEST(a_retune_during_calibration_only_records) {

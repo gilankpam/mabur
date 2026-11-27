@@ -1,8 +1,7 @@
 #pragma once
 // Power plans per (channel, width), built from the wall cache's measured
 // curves. See power_plan.h for what a PowerPlan actually means; this file is
-// the per-(channel, width) wrapper over it and the lookup a unit measured on
-// only one width of a channel needs.
+// the per-(channel, width) wrapper over it and its lookup.
 
 #include <cstdint>
 #include <map>
@@ -19,21 +18,12 @@ struct ChannelPlans {
   std::map<std::pair<uint8_t, uint8_t>, PowerPlan> by;  // key (channel, width)
 };
 
-enum class PlanSource : uint8_t { None, Own, OtherWidth };
-struct PlanPick {
-  const PowerPlan* plan = nullptr;
-  PlanSource source = PlanSource::None;
-};
-
-// (channel, bw)'s own plan; else the same channel's other width's (the two
-// widths' curves agree within about one index); else none: the chip's own
-// table.
-inline PlanPick plan_for(const ChannelPlans& p, uint8_t channel, uint8_t bw) {
+// (channel, bw)'s own plan, else none: the chip's own table. The other
+// width's plan is never borrowed: at 40 MHz a 20 MHz plan lost a quarter to
+// half of the frames at mcs4 on a channel where the chip's table was clean.
+inline const PowerPlan* plan_for(const ChannelPlans& p, uint8_t channel, uint8_t bw) {
   auto own = p.by.find({channel, bw});
-  if (own != p.by.end()) return {&own->second, PlanSource::Own};
-  auto other = p.by.find({channel, static_cast<uint8_t>(bw == 40 ? 20 : 40)});
-  if (other != p.by.end()) return {&other->second, PlanSource::OtherWidth};
-  return {};
+  return own == p.by.end() ? nullptr : &own->second;
 }
 
 // Empty unless power_mode is "offset". One plan per cache entry, its walls
