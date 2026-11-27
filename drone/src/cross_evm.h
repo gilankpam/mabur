@@ -20,9 +20,9 @@ struct CrossEvm {
   size_t start = 0;       // sample where the chosen frame rises
 };
 
-// bw is 20 or 40 (MHz). Of every frame in the capture, the result is the one
-// with the fewest flagged samples, then the lowest EVM over the symbol timings
-// its search tries.
+// bw is 20 or 40 (MHz). Of every frame in the capture and every symbol timing
+// tried, the result is the one with the fewest flagged samples, then the
+// lowest EVM.
 CrossEvm cross_evm(const devourer::IqSample* s, size_t n, uint8_t bw);
 
 } // namespace mabur

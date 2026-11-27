@@ -69,8 +69,9 @@ TEST(matches_the_reference) {
   }
 }
 
-// Recorded from the exhaustive search (every symbol timing of every frame
-// demodulated): the cheaper search keeps its frame, its level and its EVM.
+// Recorded from the plain search (every symbol timing of every frame
+// demodulated from fresh FFTs): the sliding, early-exit search keeps its
+// frame, its level and its EVM.
 struct Pin {
   const char* name;
   uint8_t bw;
@@ -90,6 +91,12 @@ const Pin kPins[] = {
     {"c144_40_i076", 40, true, 1419, -11.8456f, 58.6848f},
     {"c144_40_i124", 40, true, 5218, -7.2659f, 59.8433f},
     {"c144_40_noframe", 40, false, 0, 0, 0},
+    // The best timing a sample or two past the edge of a flat EVM floor.
+    {"c40_20_i040_edge", 20, true, 5848, -30.5835f, 45.5880f},
+    {"c40_40_i072_edge", 40, true, 5820, -24.1413f, 43.4630f},
+    // Two frames, the later one the better.
+    {"c112_40_i064_two", 40, true, 8060, -16.8325f, 54.2875f},
+    {"c40_20_i112_two", 20, true, 3770, -11.5450f, 49.9813f},
 };
 
 TEST(keeps_the_exhaustive_search_answer) {

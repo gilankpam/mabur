@@ -20,9 +20,15 @@ Each archive file is named `<dir>/i<TXAGC index>_<listener gain word>_<take>.bin
 | `c144_40_i076.hi32` | `x144_40_r/i076_0x3000e_2.bin` | 40 |
 | `c144_40_i124.hi32` | `x144_40_r/i124_0x3000e_2.bin` | 40 |
 | `c144_40_noframe.hi32` | `x144_40_r/i076_0x3000e_1.bin` | 40 |
+| `c40_20_i040_edge.hi32` | `x40_20_r/i040_0x30800_1.bin` | 20 |
+| `c40_40_i072_edge.hi32` | `x40_40_r/i072_0x3000e_1.bin` | 40 |
+| `c112_40_i064_two.hi32` | `x112_40_r/i064_0x3000e_2.bin` | 40 |
+| `c40_20_i112_two.hi32` | `x40_20_r/i112_0x3000e_1.bin` | 20 |
 
 `c40_20_noise` was taken with nothing on the air; `c144_40_noframe` holds no
-complete frame.
+complete frame. The `_edge` captures have their best symbol timing just past
+the edge of the EVM floor; the `_two` captures hold two frames, the later one
+the better.
 
 Conversion: an archive `.bin` is a 32-byte header followed by one
 little-endian `uint64` logic-analyzer word per sample. A `.hi32` keeps only
@@ -32,5 +38,6 @@ bits 11:0 (12-bit two's complement), and bit 29 clear marks a bad I sample;
 the test rebuilds the word as `uint64_t{hi} << 32` for
 `devourer::cross_path_sample`.
 
-The reference values in the test are the spike's numpy measurement on
-these files.
+The `matches_the_reference` values in the test are the spike's numpy
+measurement on the first eleven files; `keeps_the_exhaustive_search_answer`
+pins every file to what the exhaustive timing search returned.

@@ -65,13 +65,22 @@ void fft(cf* a, int n, const cf* tw) {
   }
 }
 
-// numpy's sign: 0 stays 0.
-float sgn(float v) { return float((v > 0) - (v < 0)); }
-cf slice_qpsk(cf z) { return cf(sgn(z.real()), sgn(z.imag())) * float(M_SQRT1_2); }
+// The nearest QPSK point, each axis by numpy's sign (0 stays 0); copysign
+// and a select instead of an int-to-float conversion, the demod's costliest
+// line.
+float slice_axis(float v) {
+  const float a = std::copysign(float(M_SQRT1_2), v);
+  return v == 0 ? 0.0f : a;
+}
+cf slice_qpsk(cf z) { return cf(slice_axis(z.real()), slice_axis(z.imag())); }
+
+// The LTF window (row 0) and the kSyms data symbols after it, as data tones.
+using Windows = cf[kSyms + 1][kMaxTones];
 
 struct Demod {
   int fft_n, tones, sym;
   int bin[kMaxTones];
+  cf rot[kMaxTones];  // exp(+2*pi*j*bin/N): a bin's factor for a one-sample advance
   cf tw[kMaxFft / 2];
 
   explicit Demod(int S) : fft_n(64 * S), tones(0), sym(kSymLen * S) {
@@ -83,6 +92,7 @@ struct Demod {
                                : (a == 0 || a == 7 || a == 21);
       if (!skip) bin[tones++] = k < 0 ? k + fft_n : k;
     }
+    for (int t = 0; t < tones; ++t) rot[t] = std::polar(1.0f, float(2 * M_PI * bin[t] / fft_n));
     for (int k = 0; k < fft_n / 2; ++k)
       tw[k] = std::polar(1.0f, float(-2 * M_PI * k / fft_n));
   }
@@ -94,47 +104,69 @@ struct Demod {
     for (int t = 0; t < tones; ++t) out[t] = a[bin[t]];
   }
 
-  // Decision-directed EVM with the channel taken from the HT-LTF at x[0],
-  // then refined twice on the sliced data. Caller guarantees x holds
-  // (kSyms + 1) symbols.
-  float evm_db(const cf* x) const {
-    cf H[kMaxTones], Y[kSyms][kMaxTones], Z[kSyms][kMaxTones], D[kSyms][kMaxTones];
-    tones_at(x, H);
-    for (int t = 0; t < tones; ++t) H[t] = inv(H[t]);
-    for (int m = 0; m < kSyms; ++m) tones_at(x + sym * (m + 1), Y[m]);
-    for (int m = 0; m < kSyms; ++m)
-      for (int t = 0; t < tones; ++t) {
-        Z[m][t] = mul(Y[m][t], H[t]);
-        D[m][t] = slice_qpsk(Z[m][t]);
+  // The windows of the symbol timing whose LTF window starts at x[0].
+  void windows_at(const cf* x, Windows& w) const {
+    for (int m = 0; m <= kSyms; ++m) tones_at(x + sym * m, w[m]);
+  }
+
+  // w, the windows at x[0], becomes the windows at x[1]: a sliding DFT, one
+  // complex multiply per bin in place of an FFT per window.
+  void advance(const cf* x, Windows& w) const {
+    for (int m = 0; m <= kSyms; ++m) {
+      const cf* xm = x + sym * m;
+      const cf delta = xm[fft_n] - xm[0];
+      for (int t = 0; t < tones; ++t) w[m][t] = mul(w[m][t] + delta, rot[t]);
+    }
+  }
+
+  // Decision-directed EVM with each tone's channel taken from the HT-LTF,
+  // then refined twice on the sliced data. Tone by tone, so it gives up
+  // (+inf) once the error so far already puts the result at or above
+  // `stop_db`: a timing that cannot beat the best one costs only part of the
+  // work.
+  float evm_db(const Windows& w, float stop_db = INFINITY) const {
+    // |D|^2 is at most 1, so err / (kSyms * tones) bounds err / ref from below.
+    const double stop_err = std::pow(10.0, stop_db / 10.0) * kSyms * tones;
+    double err = 0, ref = 0;
+    cf Y[kSyms], D[kSyms];  // one tone's symbols and decisions
+    for (int t = 0; t < tones; ++t) {
+      // Decisions on the LTF's channel, and the sums the first pass needs.
+      const cf hinv = inv(w[0][t]);
+      cf num = 0;
+      float den = 0;
+      for (int m = 0; m < kSyms; ++m) {
+        Y[m] = w[m + 1][t];
+        D[m] = slice_qpsk(mul(Y[m], hinv));
+        num += mul(Y[m], std::conj(D[m]));
+        den += std::norm(D[m]);
       }
-    // A tone whose decisions a pass left unchanged would get the same
-    // channel, so the same Z and D, from the next pass: it is done.
-    bool settled[kMaxTones] = {};
-    for (int pass = 0; pass < 2; ++pass)
-      for (int t = 0; t < tones; ++t) {
-        if (settled[t]) continue;
-        cf num = 0;
-        float den = 0;
-        for (int m = 0; m < kSyms; ++m) {
-          num += mul(Y[m][t], std::conj(D[m][t]));
-          den += std::norm(D[m][t]);
-        }
+      // Each pass re-slices on the channel the last decisions give, summing
+      // for the next pass and for the error as it goes. A pass that leaves
+      // the decisions unchanged would give the next one the same channel,
+      // so the same Z and D: the tone is done.
+      double terr = 0, tref = 0;
+      for (int pass = 0; pass < 2; ++pass) {
         const cf h2inv = inv(num) * den;  // 1 / (num / den)
+        num = 0;
+        den = 0;
+        terr = tref = 0;
         bool same = true;
         for (int m = 0; m < kSyms; ++m) {
-          Z[m][t] = mul(Y[m][t], h2inv);
-          const cf d = slice_qpsk(Z[m][t]);
-          same = same && d == D[m][t];
-          D[m][t] = d;
+          const cf z = mul(Y[m], h2inv);
+          const cf d = slice_qpsk(z);
+          same = same && d == D[m];
+          D[m] = d;
+          num += mul(Y[m], std::conj(d));
+          den += std::norm(d);
+          terr += std::norm(z - d);
+          tref += std::norm(d);
         }
-        settled[t] = same;
+        if (same) break;
       }
-    double err = 0, ref = 0;
-    for (int m = 0; m < kSyms; ++m)
-      for (int t = 0; t < tones; ++t) {
-        err += std::norm(Z[m][t] - D[m][t]);
-        ref += std::norm(D[m][t]);
-      }
+      err += terr;
+      ref += tref;
+      if (err >= stop_err) return INFINITY;
+    }
     return float(10 * std::log10(err / ref));
   }
 };
@@ -208,39 +240,31 @@ CrossEvm cross_evm(const devourer::IqSample* s, size_t n, uint8_t bw) {
 
   bool have = false;
   int best_nb = 0;
-  float best_evm = 0;
+  float best_evm = INFINITY;
   size_t best_s = 0;
-  const int d_lo = -12 * S, d_hi = 9 * S;  // symbol timings tried: d_lo <= d < d_hi
-  const int grid = 4 * S;
+  Windows win;
   for (const Cand& c : cands) {
     if (have && c.nb > best_nb) break;
-    // EVM against the symbol timing is flat across the guard interval's
-    // ISI-free span (a dozen 20 MHz samples) and climbs steeply outside it:
-    // a grid of four 20 MHz samples lands in the span, then halving steps
-    // around the best point find its floor to one 20 MHz sample (finer steps
-    // only move along the floor's noise). Ten demodulations a frame in place
-    // of one per timing (21 at 20 MHz, 42 at 40).
-    auto at = [&](int d) {
-      const long b = long(c.st) + kLtfOffset * S + d;
-      if (d < d_lo || d >= d_hi || b < 0 || size_t(b) + span > n) return INFINITY;
-      const float ev = dm.evm_db(x.data() + b);
-      return std::isfinite(ev) ? ev : INFINITY;
-    };
-    int bd = d_lo;
-    float bev = INFINITY;
-    for (int d = d_lo; d < d_hi; d += grid)
-      if (const float ev = at(d); ev < bev) bev = ev, bd = d;
-    if (!std::isfinite(bev)) continue;
-    for (int step = grid / 2; step >= S; step /= 2) {
-      const int c0 = bd;
-      for (const int d : {c0 - step, c0 + step})
-        if (const float ev = at(d); ev < bev) bev = ev, bd = d;
-    }
-    if (!have || bev < best_evm) {
-      have = true;
-      best_nb = c.nb;
-      best_evm = bev;
-      best_s = c.st;
+    // Every symbol timing from 12 20 MHz samples early to 8 late is tried,
+    // in order, so each one's windows slide from the last's. EVM against
+    // timing is no flat floor: the best timing can sit in a pocket one to
+    // three samples wide at the floor's edge, so none is skipped. The float
+    // drift over the slides stays far below a hundredth of a dB.
+    const size_t b0 = c.st + kLtfOffset * S - 12 * S;
+    for (int k = 0; k < 21 * S; ++k) {
+      const size_t b = b0 + k;
+      if (b + span > n) break;
+      if (k == 0)
+        dm.windows_at(x.data() + b, win);
+      else
+        dm.advance(x.data() + b - 1, win);
+      const float ev = dm.evm_db(win, best_evm);
+      if (std::isfinite(ev) && ev < best_evm) {
+        have = true;
+        best_nb = c.nb;
+        best_evm = ev;
+        best_s = c.st;
+      }
     }
   }
   if (!have) return r;
