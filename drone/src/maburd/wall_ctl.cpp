@@ -47,7 +47,12 @@ void exclusive(RealMode& m, F&& f) {
 bool DeviceCaptureSession::begin(uint8_t bw) {
   await_retune_gate(gate_waiting);
   std::shared_lock<std::shared_mutex> sg(*gate);
-  return dev->CrossPathBegin(bw == 40 ? CHANNEL_WIDTH_40 : CHANNEL_WIDTH_20);
+  const bool ok = dev->CrossPathBegin(bw == 40 ? CHANNEL_WIDTH_40 : CHANNEL_WIDTH_20);
+  // The EVM maths runs on this thread. Core 0 is saturated during a measurement
+  // (the probe train, spawned above and so left on core 0, plus the rest of maburd);
+  // the hot core idles while nothing airs. Back in end().
+  if (two_core_target()) pin_self_to(kHotCore);
+  return ok;
 }
 
 bool DeviceCaptureSession::park(bool parked) {
@@ -64,6 +69,7 @@ bool DeviceCaptureSession::capture(int tx_index, int gain, std::vector<devourer:
 }
 
 void DeviceCaptureSession::end() {
+  if (two_core_target()) pin_self_to(kRestCore);
   bool ok;
   {
     await_retune_gate(gate_waiting);

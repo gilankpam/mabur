@@ -265,11 +265,23 @@ TEST(a_level_of_exactly_57_does_not_step_down) {
   CHECK(sw.result() == cal::WallResult::Ok && fake.count("cap") == 77);
   CHECK(fake.count("cap 124 3") == 3);
 }
-TEST(a_park_rise_of_exactly_10_passes) {   // envelopes 40 then 50
+TEST(a_park_rise_of_exactly_12_passes) {   // envelopes 38 then 50
   SWEEP(fake, sw);
-  fake.script = [](const Cap& c) { CrossEvm m = default_script(c); if (c.id == 0) m.envelope_db = 40; return m; };
+  fake.script = [](const Cap& c) { CrossEvm m = default_script(c); if (c.id == 0) m.envelope_db = 38; return m; };
   run_to_end(sw);
-  CHECK(sw.result() == cal::WallResult::Ok && sw.park_rise_db() == 10.0f);
+  CHECK(sw.result() == cal::WallResult::Ok && sw.park_rise_db() == 12.0f);
+}
+TEST(a_park_rise_of_11_is_unparked) {   // envelopes 39 then 50
+  SWEEP(fake, sw);
+  fake.script = [](const Cap& c) { CrossEvm m = default_script(c); if (c.id == 0) m.envelope_db = 39; return m; };
+  run_to_end(sw);
+  CHECK(sw.result() == cal::WallResult::Unparked && sw.park_rise_db() == 11.0f);
+}
+TEST(a_park_rise_of_12_5_passes) {   // envelopes 37.5 then 50
+  SWEEP(fake, sw);
+  fake.script = [](const Cap& c) { CrossEvm m = default_script(c); if (c.id == 0) m.envelope_db = 37.5f; return m; };
+  run_to_end(sw);
+  CHECK(sw.result() == cal::WallResult::Ok && sw.park_rise_db() == 12.5f);
 }
 TEST(a_capture_without_a_frame_is_retried_twice) {
   SWEEP(fake, sw);
@@ -321,9 +333,9 @@ TEST(values_are_rounded_to_a_tenth) {
 }
 TEST(the_deadline_ends_the_sweep) {
   SWEEP(fake, sw);
-  for (int i = 0; i < 10; ++i) CHECK(sw.step(kT0 + 19999));
+  for (int i = 0; i < 10; ++i) CHECK(sw.step(kT0 + 29999));
   int caps = fake.count("cap");
-  CHECK(!sw.step(kT0 + 20000));
+  CHECK(!sw.step(kT0 + 30000));
   CHECK(sw.finished() && sw.result() == cal::WallResult::Deadline);
   CHECK(fake.count("cap") == caps && fake.count("end") == 1);   // the deadline is checked before capturing
 }

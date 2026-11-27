@@ -106,6 +106,6 @@ constexpr uint32_t kCalMsgIdLo = 60000, kCalMsgIdHi = 60005;
 // A wall measurement's limit on the drone, from its setup; the GS waits the
 // same time (plus its own slack) for the report, since the drone airs
 // nothing until then.
-constexpr uint32_t kWallDeadlineMs = 20000;
+constexpr uint32_t kWallDeadlineMs = 30000;
 
 }  // namespace mabur::cal

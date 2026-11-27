@@ -16,7 +16,7 @@ The walls are flown only under `radio.power_mode = "offset"`, which the
 operator sets; nothing switches it. A power sweep's time per (channel,
 width) is set by its capture count and the drone's per-capture time,
 measured per width on the bench and logged by each sweep (`time_ms`,
-`captures`, below); it never exceeds the 20 s deadline
+`captures`, below); it never exceeds the 30 s deadline
 (`cal::kWallDeadlineMs`, shared by both ends). A capacity sweep takes about
 18 s per width, at the power the drone flies for the link's channel.
 
@@ -94,8 +94,8 @@ ok state=sweep sweep=2/4 kind=capacity bw=20 cell=3/8
 `state` is one of `idle picking await_ack sweep await_done analyze apply
 done failed`; `sweep=k/n` the running sweep, 1-based; `kind` is `wall` or
 `capacity`; `cell=i/n` the point of the latest capacity frame the GS
-tallied (8 capacity points); for a wall sweep it is `<s>/20`, the seconds
-since the ack against the drone's 20 s deadline.
+tallied (8 capacity points); for a wall sweep it is `<s>/30`, the seconds
+since the ack against the drone's 30 s deadline.
 `mismatch=<n>` appears once frames have been dropped for a kind, width or
 flags that do not match the running sweep (see "The sweep frame"). A
 `failed` line ends with `fail_reason=<why>` (free text to the end of the
@@ -193,7 +193,7 @@ store follows a calibration relocate like any hop.
 3. **Silence.** From the ack the GS sends nothing — no RCF, no DISC
    keepalive, no live MAVLink — for the sweep's planned duration plus
    `phase_slack_ms` (1 s) (`CalSession::radio_silent()`). A Wall sweep's
-   planned duration is its 20 s deadline. The drone is silent too during a
+   planned duration is its 30 s deadline. The drone is silent too during a
    Wall measurement (below).
 4. **Done.** `MABUR_CAL_SWEEP_DONE{nonce, seq, …}`. For a Capacity sweep it
    goes out when the last frame is out and carries `offered[8]`,
@@ -249,7 +249,7 @@ TX writer thread, against a capture session on the radio
    lands on it).
 2. **Park check, first.** One capture at index 28 and the weakest listener
    gain with the switch unparked, one after parking it. The parked level
-   (envelope) must be at least 10 dB above the unparked one, or the sweep
+   (envelope) must be at least 12 dB above the unparked one, or the sweep
    ends `unparked` (as it does when the park itself does not take or the
    rise is not finite, an all-zero capture): an unparked listener passes every other rule while
    reading PA A about 3 dB too good, the overdriving direction. The check
@@ -258,6 +258,11 @@ TX writer thread, against a capture session on the radio
    frame at a level of 30 dB or more, envelope under 30 dB: the
    demodulator can read a "frame" out of an empty capture's noise) says
    nothing about the park and is retried, up to twice.
+   A channel whose park isolation is weak hears the probe through leakage
+   with the switch unparked, so the rise is small and the curve reads
+   several dB too high (the unsafe direction); such a channel is refused
+   and flies the chip's table. A healthy channel's rise is well above the
+   12 dB threshold.
 3. **Points.** Absolute TXAGC index 28 to 124 in steps of 4, ascending: 25
    points. A point is the median of up to three captures that held a
    clean, unclipped frame at a level of at least 30 dB; a capture without
@@ -279,9 +284,17 @@ TX writer thread, against a capture session on the radio
    same happens when the measurement is aborted or cut off and its restore
    fails, with no report.
 
+**The measuring thread runs on the idle core.** On the two-core drone the
+probe train, the USB event loop and the encoder saturate core 0 during a
+measurement while core 1 idles, so after the session opens the measuring
+thread pins itself to core 1 (the hot core) and returns to core 0 when the
+session ends, on every exit path. The EVM maths takes about 90 ms per capture
+there against more than twice that on the busy core, which is what keeps a
+sweep inside the deadline.
+
 **The drone sends nothing during the measurement** (`radio_quiet`): from
 the setup to the restore every send is dropped, so no DISC_ACK, no
-re-ack of a repeated SWEEP, no Telem, for up to the 20 s deadline. The GS is
+re-ack of a repeated SWEEP, no Telem, for up to the 30 s deadline. The GS is
 silent for the same window. The deadline, not an abort, bounds a run: an
 abort is only checked between captures, and only heard on the link's
 channel (a measurement on another channel cannot hear it at all). A
@@ -302,7 +315,7 @@ listed):
 | `too_few_points` | fewer than 20 of the 25 points have a value |
 | `floor_too_high` | the best point is above −26 dB |
 | `not_saturated` | the last point is below −11 dB (the PA was never driven into compression) |
-| `deadline` | the 20 s measurement deadline ran out |
+| `deadline` | the 30 s measurement deadline ran out |
 | `device_error` | the radio refused a step, or its restore failed |
 | `aborted` | the run was cancelled mid-measurement |
 
@@ -438,7 +451,7 @@ and resume video on its own.
 | step | time |
 |---|---|
 | channel pick | 0 pinned or one card; ~1 s for the round (three members at 280 ms) plus up to `[hop] confirm_ms` for a relocate |
-| wall measurement | captures × the per-capture time, plus the channel and width switches (each sweep logs `time_ms` and `captures`); never more than 20 s |
+| wall measurement | captures × the per-capture time, plus the channel and width switches (each sweep logs `time_ms` and `captures`); never more than 30 s |
 | capacity sweep | 18.4 s per width (8 × 2.3 s) + 200 ms start + ack |
 | apply (capacity) | one round trip |
 
@@ -678,7 +691,7 @@ calibrate a new unit before flying it. After a drone wipe or replacement,
 widths (`maburcal start power20@<ch> power40@<ch> …`, one token per
 channel and width, then `maburcal start` for capacity), then set
 `power_mode = "offset"`. One run is bounded by the drone's 180 s
-`hard_cap_ms`, and a wall token can take its whole window, the 20 s
+`hard_cap_ms`, and a wall token can take its whole window, the 30 s
 deadline plus the GS's 1 s slack and the 200 ms start: eight wall tokens
 fit one run at worst, six beside both capacity sweeps. Measure more
 channels over several runs.
@@ -790,7 +803,7 @@ says which:
   a 40 MHz measurement was asked of a drone at `radio.width = 20`.
 - `wall measurement failed: <code>` — the drone's result. Nothing was
   stored and the cache is as it was. `unparked`: the antenna-switch park
-  did not raise the listener level by 10 dB (check the antennas and the
+  did not raise the listener level by 12 dB (check the antennas and the
   drone's own radio, re-run); `too_few_points`, `floor_too_high`: the
   listener or the PA was not clean enough to read (an antenna, a wedged
   chain; re-run); `not_saturated`: the PA never compressed within the
@@ -804,7 +817,7 @@ says which:
   never heard leaves no `aborted`: see "The drone sends nothing during the
   measurement").
 - `no wall report from the drone` — no copy of the SWEEP_DONE arrived by
-  the window's end (the 20 s deadline plus the GS's 1 s slack). The
+  the window's end (the 30 s deadline plus the GS's 1 s slack). The
   measurement may still have succeeded on the drone: its log line says.
   `no ack and no wall report from the drone` is the same with no ack heard
   either.
@@ -976,7 +989,7 @@ findings page.
 | unsupported drone | a drone on another chip, `maburcal start` | the wall sweeps are skipped (`X` lines), capacity completes |
 | config | `/etc/mabur.toml` diff vs `.pre-cal` after a capacity run | only `efficiency_<bw>`; comments intact |
 | abort | `maburcal abort` mid-capacity, and mid-wall on the link's channel and on another | video back; the drone flies normally; the cache is as it was when the drone heard the abort (`result=Aborted`); a measurement that finished first (off the link's channel it always does) keeps its result, and an `Ok` one is stored |
-| interruption | kill `maburgs` mid-sweep | drone back to video within `await_next_ms` (or the measurement's 20 s deadline); config byte-identical, and the cache too unless a wall measurement under way finished `Ok`, which it stores |
+| interruption | kill `maburgs` mid-sweep | drone back to video within `await_next_ms` (or the measurement's 30 s deadline); config byte-identical, and the cache too unless a wall measurement under way finished `Ok`, which it stores |
 | re-link | after every run | `SESSION` again within a couple of beacons, IDR at the join |
 | dirty op | start with a jammer or busy air on op | `H relocate … cal` in `scan.log`; the run on the quiet member |
 | tunnel lane | the drone's `stats:`/`tx_send:` lines and the sideport during a run | `mav … reject=` flat (`cal_late=` may rise by ~2 at the end of a run), `drone.auth_reject` false, `link.mav.reject` flat, `cal_latch_drop=0` |
