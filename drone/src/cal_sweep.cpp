@@ -36,9 +36,19 @@ void CalSweep::cancel_wall(WallCtl& wall) {
 
 void CalSweep::on_cmd(const cal::SweepCmd& c, uint64_t now_ms, PowerCtl& pwr, WallCtl& wall) {
   const bool new_session = !has_session_ || c.nonce != nonce_;
-  // Any SWEEP of the open run is taken as the GS having moved past the
-  // last SweepDone (take_done()) -- not proof that it heard it -- whatever
-  // on_cmd does with it below.
+  // An exact repeat of a sweep that has already finished: the GS never
+  // heard the ack (or the sweep outran it) and is still asking. The answer
+  // it is missing is the report, not a fresh ack that would send it
+  // waiting for a sweep that is over -- re-send the stored SweepDone, on
+  // its repeat schedule, and touch nothing else.
+  if (!new_session && state_ == State::Idle && repeat_done_ &&
+      static_cast<int>(c.seq) == last_started_seq_) {
+    pending_done_ = repeat_done_;
+    return;
+  }
+  // Any other SWEEP of the open run is taken as the GS having moved past
+  // the last SweepDone (take_done()) -- not proof that it heard it --
+  // whatever on_cmd does with it below.
   if (!new_session) repeat_done_.reset();
   // A closed run (hard cap, abort, or await timeout) never reopens: a
   // straggler or a GS resend of that exact nonce arriving after the

@@ -144,6 +144,9 @@ class CalSweep {
   // sweep) without touching the sweep: no second wall.check(), no restart.
   // The re-armed ack's start_in_ms reports whatever is left of the
   // original 200 ms start delay, clamped to 0 once the sweep is under way.
+  // An exact repeat of a sweep that has already FINISHED (its SweepDone
+  // still repeating) gets no ack: it re-queues that SweepDone for
+  // take_done(), keeps the repeat schedule, and changes nothing else.
   //
   // A Wall command past those filters is checked (wall.check()) before
   // anything else: a refusal answers with that result and changes nothing
@@ -233,8 +236,9 @@ class CalSweep {
   // offset keeps the repeats off the GS's own 200 ms resend grid, so a
   // repeat and the GS's next command never land on the same tick. The
   // repeats stop at the next command of the run -- any SweepCmd, ApplyCmd
-  // or Abort naming its nonce, taken as the GS having moved on -- or when
-  // the run closes. The owner sends whatever this yields.
+  // or Abort naming its nonce, taken as the GS having moved on, except an
+  // exact repeat of the finished sweep, which re-sends it -- or when the
+  // run closes. The owner sends whatever this yields.
   std::optional<cal::SweepDone> take_done();
 
   static constexpr uint32_t kDoneFirstRepeatMs = 100;

@@ -302,11 +302,12 @@ TEST(done_repeats_stop_at_a_sweep_an_abort_or_the_close) {
     return quiet;
   };
   {
-    // Any SWEEP of the run, even a repeat of the finished one.
+    // Any other SWEEP of the run, even one the drone refuses.
     Rig r;
     const uint64_t end = finish_one_point(r, 8, 0);
     REQUIRE(r.sw.take_done().has_value());
-    r.cmd(cap_cmd(8, 0, 20, 0x01), end + 10);
+    r.wall.check_result = cal::AckResult::Unsupported;
+    r.cmd(wall_cmd(8, 1, 112, 20), end + 10);
     (void)r.sw.take_ack();
     CHECK(silent_after(r, end + 10));
   }
@@ -684,6 +685,56 @@ TEST(the_report_repeats_until_the_next_command) {
   REQUIRE(cap_done.has_value());
   CHECK(cap_done->seq == 1 && cap_done->channel == 0);  // the wall report stopped
   CHECK(r.wall.count("finish") == 1);
+}
+
+// A Wall sweep that finishes before the GS hears its ack: the GS keeps
+// repeating the SWEEP, and the answer it needs is the report. Revert (the
+// repeat clearing the report and re-acking): an Accepted ack comes back and
+// take_done stays empty. Revert (the repeat re-arming the schedule from
+// now): the report due at end + 100 does not come.
+TEST(a_repeat_of_a_finished_wall_sweep_re_sends_its_done) {
+  Rig r;
+  const auto c = wall_cmd(7, 0, 112, 20);
+  r.cmd(c, 1000);
+  REQUIRE(r.sw.take_ack()->result == cal::AckResult::Accepted);
+  r.pump(1200);
+  r.pump(1201);
+  r.pump(1202);  // finished
+  const auto first = r.sw.take_done();
+  REQUIRE(first.has_value());
+  r.cmd(c, 1250);
+  CHECK(!r.sw.take_ack().has_value());
+  const auto again = r.sw.take_done();
+  REQUIRE(again.has_value());
+  CHECK(again->nonce == 7 && again->seq == 0 && again->channel == 112);
+  CHECK(again->walls == first->walls && again->anchor == first->anchor);
+  CHECK(r.wall.count("check") == 1 && r.wall.count("start") == 1 &&
+        r.wall.count("finish") == 1);
+  CHECK(r.sw.state() == CalSweep::State::Idle && r.sw.active());
+  r.pump(1202 + CalSweep::kDoneFirstRepeatMs - 1);
+  CHECK(!r.sw.take_done().has_value());
+  r.pump(1202 + CalSweep::kDoneFirstRepeatMs);  // the schedule is the original one
+  CHECK(r.sw.take_done().has_value());
+  CHECK(r.pwr.zero_diff_calls == 1 && r.pwr.read_anchor_calls == 1);
+}
+
+// The same for a capacity sweep: its report is a better answer than an
+// ack for a sweep that is over. Revert (re-ack and clear): an ack comes
+// back and take_done stays empty.
+TEST(a_repeat_of_a_finished_capacity_sweep_re_sends_its_done) {
+  Rig r;
+  r.cap.to_return = BlastResult{500, 90};
+  const uint64_t end = finish_one_point(r, 4, 0);
+  REQUIRE(r.sw.take_done().has_value());
+  const size_t points = r.cap.points.size();
+  const size_t writes = r.pwr.index_writes.size();
+  r.cmd(cap_cmd(4, 0, 20, 0x01), end + 10);
+  CHECK(!r.sw.take_ack().has_value());
+  const auto again = r.sw.take_done();
+  REQUIRE(again.has_value());
+  CHECK(again->seq == 0 && again->offered[0] == 500 && again->blocked_pct[0] == 90);
+  CHECK(r.sw.state() == CalSweep::State::Idle);
+  CHECK(r.cap.points.size() == points && r.pwr.index_writes.size() == writes);
 }
 
 MTEST_MAIN
