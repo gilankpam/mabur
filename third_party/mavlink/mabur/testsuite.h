@@ -37,20 +37,17 @@ static void mavlink_test_mabur_cal_sweep(uint8_t system_id, uint8_t component_id
         uint8_t buffer[MAVLINK_MAX_PACKET_LEN];
         uint16_t i;
     mavlink_mabur_cal_sweep_t packet_in = {
-        963497464,17443,17547,17651,17755,41,108,175,242,53,120
+        963497464,17443,17547,29,96,163,230,41
     };
     mavlink_mabur_cal_sweep_t packet1, packet2;
         memset(&packet1, 0, sizeof(packet1));
         packet1.nonce = packet_in.nonce;
-        packet1.frames_per_cell = packet_in.frames_per_cell;
         packet1.settle_ms = packet_in.settle_ms;
-        packet1.gap_us = packet_in.gap_us;
         packet1.dwell_ms = packet_in.dwell_ms;
         packet1.seq = packet_in.seq;
         packet1.kind = packet_in.kind;
         packet1.bw = packet_in.bw;
-        packet1.idx_lo = packet_in.idx_lo;
-        packet1.idx_hi = packet_in.idx_hi;
+        packet1.channel = packet_in.channel;
         packet1.mcs_mask = packet_in.mcs_mask;
         
         
@@ -66,12 +63,12 @@ static void mavlink_test_mabur_cal_sweep(uint8_t system_id, uint8_t component_id
         MAVLINK_ASSERT(memcmp(&packet1, &packet2, sizeof(packet1)) == 0);
 
         memset(&packet2, 0, sizeof(packet2));
-    mavlink_msg_mabur_cal_sweep_pack(system_id, component_id, &msg , packet1.nonce , packet1.seq , packet1.kind , packet1.bw , packet1.frames_per_cell , packet1.settle_ms , packet1.gap_us , packet1.dwell_ms , packet1.idx_lo , packet1.idx_hi , packet1.mcs_mask );
+    mavlink_msg_mabur_cal_sweep_pack(system_id, component_id, &msg , packet1.nonce , packet1.seq , packet1.kind , packet1.bw , packet1.channel , packet1.settle_ms , packet1.dwell_ms , packet1.mcs_mask );
     mavlink_msg_mabur_cal_sweep_decode(&msg, &packet2);
         MAVLINK_ASSERT(memcmp(&packet1, &packet2, sizeof(packet1)) == 0);
 
         memset(&packet2, 0, sizeof(packet2));
-    mavlink_msg_mabur_cal_sweep_pack_chan(system_id, component_id, MAVLINK_COMM_0, &msg , packet1.nonce , packet1.seq , packet1.kind , packet1.bw , packet1.frames_per_cell , packet1.settle_ms , packet1.gap_us , packet1.dwell_ms , packet1.idx_lo , packet1.idx_hi , packet1.mcs_mask );
+    mavlink_msg_mabur_cal_sweep_pack_chan(system_id, component_id, MAVLINK_COMM_0, &msg , packet1.nonce , packet1.seq , packet1.kind , packet1.bw , packet1.channel , packet1.settle_ms , packet1.dwell_ms , packet1.mcs_mask );
     mavlink_msg_mabur_cal_sweep_decode(&msg, &packet2);
         MAVLINK_ASSERT(memcmp(&packet1, &packet2, sizeof(packet1)) == 0);
 
@@ -84,7 +81,7 @@ static void mavlink_test_mabur_cal_sweep(uint8_t system_id, uint8_t component_id
         MAVLINK_ASSERT(memcmp(&packet1, &packet2, sizeof(packet1)) == 0);
         
         memset(&packet2, 0, sizeof(packet2));
-    mavlink_msg_mabur_cal_sweep_send(MAVLINK_COMM_1 , packet1.nonce , packet1.seq , packet1.kind , packet1.bw , packet1.frames_per_cell , packet1.settle_ms , packet1.gap_us , packet1.dwell_ms , packet1.idx_lo , packet1.idx_hi , packet1.mcs_mask );
+    mavlink_msg_mabur_cal_sweep_send(MAVLINK_COMM_1 , packet1.nonce , packet1.seq , packet1.kind , packet1.bw , packet1.channel , packet1.settle_ms , packet1.dwell_ms , packet1.mcs_mask );
     mavlink_msg_mabur_cal_sweep_decode(last_msg, &packet2);
         MAVLINK_ASSERT(memcmp(&packet1, &packet2, sizeof(packet1)) == 0);
 
@@ -169,15 +166,21 @@ static void mavlink_test_mabur_cal_sweep_done(uint8_t system_id, uint8_t compone
         uint8_t buffer[MAVLINK_MAX_PACKET_LEN];
         uint16_t i;
     mavlink_mabur_cal_sweep_done_t packet_in = {
-        963497464,{ 963497672, 963497673, 963497674, 963497675, 963497676, 963497677, 963497678, 963497679 },113,{ 180, 181, 182, 183, 184, 185, 186, 187 }
+        963497464,{ 963497672, 963497673, 963497674, 963497675, 963497676, 963497677, 963497678, 963497679 },19107,247,{ 58, 59, 60, 61, 62, 63, 64, 65 },82,149,216,{ 27, 28, 29, 30, 31, 32, 33, 34 },51
     };
     mavlink_mabur_cal_sweep_done_t packet1, packet2;
         memset(&packet1, 0, sizeof(packet1));
         packet1.nonce = packet_in.nonce;
+        packet1.floor_evm_x10 = packet_in.floor_evm_x10;
         packet1.seq = packet_in.seq;
+        packet1.wall_result = packet_in.wall_result;
+        packet1.channel = packet_in.channel;
+        packet1.bw = packet_in.bw;
+        packet1.anchor = packet_in.anchor;
         
         mav_array_memcpy(packet1.offered, packet_in.offered, sizeof(uint32_t)*8);
         mav_array_memcpy(packet1.blocked_pct, packet_in.blocked_pct, sizeof(uint8_t)*8);
+        mav_array_memcpy(packet1.walls, packet_in.walls, sizeof(int8_t)*8);
         
 #ifdef MAVLINK_STATUS_FLAG_OUT_MAVLINK1
         if (status->flags & MAVLINK_STATUS_FLAG_OUT_MAVLINK1) {
@@ -191,12 +194,12 @@ static void mavlink_test_mabur_cal_sweep_done(uint8_t system_id, uint8_t compone
         MAVLINK_ASSERT(memcmp(&packet1, &packet2, sizeof(packet1)) == 0);
 
         memset(&packet2, 0, sizeof(packet2));
-    mavlink_msg_mabur_cal_sweep_done_pack(system_id, component_id, &msg , packet1.nonce , packet1.seq , packet1.offered , packet1.blocked_pct );
+    mavlink_msg_mabur_cal_sweep_done_pack(system_id, component_id, &msg , packet1.nonce , packet1.seq , packet1.offered , packet1.blocked_pct , packet1.wall_result , packet1.channel , packet1.bw , packet1.walls , packet1.floor_evm_x10 , packet1.anchor );
     mavlink_msg_mabur_cal_sweep_done_decode(&msg, &packet2);
         MAVLINK_ASSERT(memcmp(&packet1, &packet2, sizeof(packet1)) == 0);
 
         memset(&packet2, 0, sizeof(packet2));
-    mavlink_msg_mabur_cal_sweep_done_pack_chan(system_id, component_id, MAVLINK_COMM_0, &msg , packet1.nonce , packet1.seq , packet1.offered , packet1.blocked_pct );
+    mavlink_msg_mabur_cal_sweep_done_pack_chan(system_id, component_id, MAVLINK_COMM_0, &msg , packet1.nonce , packet1.seq , packet1.offered , packet1.blocked_pct , packet1.wall_result , packet1.channel , packet1.bw , packet1.walls , packet1.floor_evm_x10 , packet1.anchor );
     mavlink_msg_mabur_cal_sweep_done_decode(&msg, &packet2);
         MAVLINK_ASSERT(memcmp(&packet1, &packet2, sizeof(packet1)) == 0);
 
@@ -209,7 +212,7 @@ static void mavlink_test_mabur_cal_sweep_done(uint8_t system_id, uint8_t compone
         MAVLINK_ASSERT(memcmp(&packet1, &packet2, sizeof(packet1)) == 0);
         
         memset(&packet2, 0, sizeof(packet2));
-    mavlink_msg_mabur_cal_sweep_done_send(MAVLINK_COMM_1 , packet1.nonce , packet1.seq , packet1.offered , packet1.blocked_pct );
+    mavlink_msg_mabur_cal_sweep_done_send(MAVLINK_COMM_1 , packet1.nonce , packet1.seq , packet1.offered , packet1.blocked_pct , packet1.wall_result , packet1.channel , packet1.bw , packet1.walls , packet1.floor_evm_x10 , packet1.anchor );
     mavlink_msg_mabur_cal_sweep_done_decode(last_msg, &packet2);
         MAVLINK_ASSERT(memcmp(&packet1, &packet2, sizeof(packet1)) == 0);
 
@@ -231,18 +234,15 @@ static void mavlink_test_mabur_cal_apply(uint8_t system_id, uint8_t component_id
         uint8_t buffer[MAVLINK_MAX_PACKET_LEN];
         uint16_t i;
     mavlink_mabur_cal_apply_t packet_in = {
-        963497464,{ 17443, 17444, 17445, 17446, 17447, 17448, 17449, 17450 },65,132,199,{ 10, 11, 12, 13, 14, 15, 16, 17 },34
+        963497464,{ 17443, 17444, 17445, 17446, 17447, 17448, 17449, 17450 },65,132
     };
     mavlink_mabur_cal_apply_t packet1, packet2;
         memset(&packet1, 0, sizeof(packet1));
         packet1.nonce = packet_in.nonce;
         packet1.seq = packet_in.seq;
         packet1.bw = packet_in.bw;
-        packet1.has = packet_in.has;
-        packet1.legacy = packet_in.legacy;
         
         mav_array_memcpy(packet1.eff, packet_in.eff, sizeof(uint16_t)*8);
-        mav_array_memcpy(packet1.walls, packet_in.walls, sizeof(int8_t)*8);
         
 #ifdef MAVLINK_STATUS_FLAG_OUT_MAVLINK1
         if (status->flags & MAVLINK_STATUS_FLAG_OUT_MAVLINK1) {
@@ -256,12 +256,12 @@ static void mavlink_test_mabur_cal_apply(uint8_t system_id, uint8_t component_id
         MAVLINK_ASSERT(memcmp(&packet1, &packet2, sizeof(packet1)) == 0);
 
         memset(&packet2, 0, sizeof(packet2));
-    mavlink_msg_mabur_cal_apply_pack(system_id, component_id, &msg , packet1.nonce , packet1.seq , packet1.bw , packet1.has , packet1.walls , packet1.legacy , packet1.eff );
+    mavlink_msg_mabur_cal_apply_pack(system_id, component_id, &msg , packet1.nonce , packet1.seq , packet1.bw , packet1.eff );
     mavlink_msg_mabur_cal_apply_decode(&msg, &packet2);
         MAVLINK_ASSERT(memcmp(&packet1, &packet2, sizeof(packet1)) == 0);
 
         memset(&packet2, 0, sizeof(packet2));
-    mavlink_msg_mabur_cal_apply_pack_chan(system_id, component_id, MAVLINK_COMM_0, &msg , packet1.nonce , packet1.seq , packet1.bw , packet1.has , packet1.walls , packet1.legacy , packet1.eff );
+    mavlink_msg_mabur_cal_apply_pack_chan(system_id, component_id, MAVLINK_COMM_0, &msg , packet1.nonce , packet1.seq , packet1.bw , packet1.eff );
     mavlink_msg_mabur_cal_apply_decode(&msg, &packet2);
         MAVLINK_ASSERT(memcmp(&packet1, &packet2, sizeof(packet1)) == 0);
 
@@ -274,7 +274,7 @@ static void mavlink_test_mabur_cal_apply(uint8_t system_id, uint8_t component_id
         MAVLINK_ASSERT(memcmp(&packet1, &packet2, sizeof(packet1)) == 0);
         
         memset(&packet2, 0, sizeof(packet2));
-    mavlink_msg_mabur_cal_apply_send(MAVLINK_COMM_1 , packet1.nonce , packet1.seq , packet1.bw , packet1.has , packet1.walls , packet1.legacy , packet1.eff );
+    mavlink_msg_mabur_cal_apply_send(MAVLINK_COMM_1 , packet1.nonce , packet1.seq , packet1.bw , packet1.eff );
     mavlink_msg_mabur_cal_apply_decode(last_msg, &packet2);
         MAVLINK_ASSERT(memcmp(&packet1, &packet2, sizeof(packet1)) == 0);
 

@@ -27,19 +27,19 @@ std::vector<uint8_t> encode(const CalMsg& m, uint8_t sysid, uint8_t compid, uint
         if constexpr (std::is_same_v<T, SweepCmd>) {
           mavlink_msg_mabur_cal_sweep_pack_chan(
               sysid, compid, chan, &msg, v.nonce, v.seq, static_cast<uint8_t>(v.kind), v.bw,
-              v.frames_per_cell, v.settle_ms, v.gap_us, v.dwell_ms, v.idx_lo, v.idx_hi,
-              v.mcs_mask);
+              v.channel, v.settle_ms, v.dwell_ms, v.mcs_mask);
         } else if constexpr (std::is_same_v<T, SweepAck>) {
           mavlink_msg_mabur_cal_ack_pack_chan(sysid, compid, chan, &msg, v.nonce, v.seq,
                                               static_cast<uint8_t>(v.result), v.start_in_ms,
                                               v.flags);
         } else if constexpr (std::is_same_v<T, SweepDone>) {
-          mavlink_msg_mabur_cal_sweep_done_pack_chan(sysid, compid, chan, &msg, v.nonce, v.seq,
-                                                     v.offered.data(), v.blocked_pct.data());
+          mavlink_msg_mabur_cal_sweep_done_pack_chan(
+              sysid, compid, chan, &msg, v.nonce, v.seq, v.offered.data(), v.blocked_pct.data(),
+              static_cast<uint8_t>(v.wall_result), v.channel, v.bw, v.walls.data(),
+              v.floor_evm_x10, v.anchor);
         } else if constexpr (std::is_same_v<T, ApplyCmd>) {
-          const uint8_t has = (v.has_walls ? 1u : 0u) | (v.has_eff ? 2u : 0u);
-          mavlink_msg_mabur_cal_apply_pack_chan(sysid, compid, chan, &msg, v.nonce, v.seq, v.bw, has,
-                                                v.walls.data(), v.legacy, v.eff_x1000.data());
+          mavlink_msg_mabur_cal_apply_pack_chan(sysid, compid, chan, &msg, v.nonce, v.seq, v.bw,
+                                                v.eff_x1000.data());
         } else if constexpr (std::is_same_v<T, Applied>) {
           char reason[50];
           pack_reason(v.reason, reason);
@@ -68,12 +68,9 @@ std::optional<CalMsg> decode(const mavlink_message_t& msg) {
       c.seq = d.seq;
       c.kind = static_cast<Kind>(d.kind);
       c.bw = d.bw;
-      c.frames_per_cell = d.frames_per_cell;
+      c.channel = d.channel;
       c.settle_ms = d.settle_ms;
-      c.gap_us = d.gap_us;
       c.dwell_ms = d.dwell_ms;
-      c.idx_lo = d.idx_lo;
-      c.idx_hi = d.idx_hi;
       c.mcs_mask = d.mcs_mask;
       return CalMsg{c};
     }
@@ -96,6 +93,12 @@ std::optional<CalMsg> decode(const mavlink_message_t& msg) {
       s.seq = d.seq;
       std::copy(d.offered, d.offered + 8, s.offered.begin());
       std::copy(d.blocked_pct, d.blocked_pct + 8, s.blocked_pct.begin());
+      s.wall_result = static_cast<WallResult>(d.wall_result);
+      s.channel = d.channel;
+      s.bw = d.bw;
+      std::copy(d.walls, d.walls + 8, s.walls.begin());
+      s.floor_evm_x10 = d.floor_evm_x10;
+      s.anchor = d.anchor;
       return CalMsg{s};
     }
     case MAVLINK_MSG_ID_MABUR_CAL_APPLY: {
@@ -105,10 +108,6 @@ std::optional<CalMsg> decode(const mavlink_message_t& msg) {
       a.nonce = d.nonce;
       a.seq = d.seq;
       a.bw = d.bw;
-      a.has_walls = (d.has & 1u) != 0;
-      a.has_eff = (d.has & 2u) != 0;
-      std::copy(d.walls, d.walls + 8, a.walls.begin());
-      a.legacy = d.legacy;
       std::copy(d.eff, d.eff + 8, a.eff_x1000.begin());
       return CalMsg{a};
     }

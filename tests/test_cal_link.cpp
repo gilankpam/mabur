@@ -1,70 +1,64 @@
 #include "cal_link.h"
 
+#include <cstdio>
+#include <fstream>
+#include <sstream>
+#include <string>
+
 #include "cal_sweep.h"
 
-#include "mabur/cal_wire.h"
-#include "mabur/rc_proto.h"
 #include "mtest.h"
-#include "power_plan.h"
-#include "power_tables.h"
+#include "scratch.h"
 
 using namespace mabur;
 
-namespace {
-
-cal::ApplyCmd walls_apply(uint32_t nonce, uint8_t bw) {
+TEST(cal_write_scales_eff_and_keeps_zero_as_leave) {
   cal::ApplyCmd a;
-  a.nonce = nonce;
-  a.bw = bw;
-  a.has_walls = true;
-  a.walls = {63, 63, cal::kWallLeave, 50, 45, 23, 22, -60};
-  a.legacy = 40;
-  return a;
+  a.nonce = 7;
+  a.bw = 40;
+  a.eff_x1000 = {930, 0, 840, 800, 760, 680, 630, 600};
+  const CalWrite w = cal_write_for(a);
+  CHECK(w.bw == 40);
+  CHECK(w.eff[0] == 0.93 && w.eff[1] == 0.0 && w.eff[7] == 0.6);
 }
 
+namespace {
+std::string slurp(const std::string& p) {
+  std::ifstream f(p);
+  std::stringstream s;
+  s << f.rdbuf();
+  return s.str();
+}
 }  // namespace
 
-TEST(cal_write_maps_leave_sentinels_and_scales_eff) {
-  cal::ApplyCmd a = walls_apply(7, 40);
-  a.has_eff = true;
-  a.eff_x1000 = {930, 0, 840, 800, 760, 680, 630, 600};
-  const CalWrite w = cal_write_for(a, cal::kFlagStbc);
-  CHECK(w.bw == 40 && w.has_walls && w.has_eff);
-  CHECK(w.walls[0] == 63 && w.walls[7] == -60);
-  CHECK(w.walls[2] == rc::kWallUndetermined);
-  CHECK(w.legacy_wall == 40);
-  CHECK(w.eff[0] == 0.93 && w.eff[1] == 0.0 && w.eff[7] == 0.6);
-  CHECK(w.cal_flags == "stbc");
-
-  cal::ApplyCmd b;
-  b.legacy = cal::kWallLeave;
-  CHECK(cal_write_for(b, 0).legacy_wall == rc::kWallUndetermined);
-}
-
-TEST(cal_flags_name_inverts_cal_flags_mask) {
-  for (const char* s : {"ldpc+stbc", "stbc", "ldpc", "none"}) {
-    const auto mask = cal_flags_mask(s);
-    REQUIRE(mask.has_value());
-    CHECK(cal_flags_name(*mask) == s);
+// The run's applies the way the TX writer makes them: the ".pre-cal" backup
+// holds the file as it was before the run, however many applies follow.
+// Revert (the ledger not latching the backup on the first ok apply): the
+// second apply overwrites ".pre-cal" with the mid-run file.
+TEST(a_run_of_efficiency_applies_backs_up_once) {
+  const std::string path = std::string(MABUR_TEST_SCRATCH_DIR) + "/cal_link_run.toml";
+  std::remove((path + ".pre-cal").c_str());
+  const std::string original =
+      "[air_clock]\nshed_ms = 25\nefficiency_20 = [0.93, 0.88, 0.84, 0.8, 0.76, 0.76, 0.78, "
+      "0.76]\n";
+  { std::ofstream f(path); f << original; }
+  CalApplyLedger ledger;
+  for (uint8_t seq : {0, 1}) {
+    cal::ApplyCmd a;
+    a.nonce = 5;
+    a.seq = seq;
+    a.bw = seq == 0 ? 20 : 40;
+    a.eff_x1000 = {800, 0, 0, 0, 0, 0, 0, 700};
+    std::string err;
+    const bool ok = apply_calibration(path, cal_write_for(a), ledger.want_backup(a.nonce), &err) ==
+                    ApplyResult::Ok;
+    CHECK(ok);
+    ledger.record(cal::Applied{a.nonce, a.seq, a.bw, ok, ""});
   }
-}
-
-TEST(verify_parks_are_wall_minus_margin_for_written_walls_only) {
-  const cal::ApplyCmd a = walls_apply(7, 20);
-  const auto p = verify_parks(a, 1.0);  // 4 steps
-  CHECK(p[0] == 59 && p[1] == 59);
-  CHECK(p[2] == cal::kWallLeave);
-  CHECK(p[3] == 46 && p[5] == 19);
-  CHECK(p[7] == -64);  // -60 - 4: on the stamp's floor
-  CHECK(p[3] == 50 - margin_steps(1.0));
-
-  // An odd margin rounds the same way make_power_plan does.
-  CHECK(verify_parks(a, 0.6)[4] == 45 - margin_steps(0.6));
-
-  cal::ApplyCmd eff_only;
-  eff_only.has_eff = true;
-  eff_only.walls = {10, 10, 10, 10, 10, 10, 10, 10};  // ignored without has_walls
-  for (int v : verify_parks(eff_only, 1.0)) CHECK(v == cal::kWallLeave);
+  CHECK(slurp(path + ".pre-cal") == original);
+  const std::string now = slurp(path);
+  CHECK(now.find("efficiency_20 = [0.8, 0.88,") != std::string::npos);
+  CHECK(now.find("efficiency_40 = [0.8,") != std::string::npos);
 }
 
 TEST(ledger_caches_applied_per_nonce_and_seq) {
@@ -96,13 +90,12 @@ TEST(ledger_caches_applied_per_nonce_and_seq) {
 }
 
 TEST(ledger_treats_a_new_seq_at_the_same_width_as_a_new_apply) {
-  // A run applies twice at one width: the power sweep's walls, then the
-  // capacity sweep's efficiency. Answering the second from the first's
-  // cache would leave the efficiency table unwritten.
+  // A run may apply twice at one width (two capacity sweeps). Answering the
+  // second from the first's cache would leave its table unwritten.
   CalApplyLedger l;
   l.record(cal::Applied{7, 0, 20, true, ""});
-  REQUIRE(l.cached(7, 0).has_value());  // a repeat of the power apply
-  CHECK(!l.cached(7, 1).has_value());   // the capacity apply at 20 is new
+  REQUIRE(l.cached(7, 0).has_value());  // a repeat of the first apply
+  CHECK(!l.cached(7, 1).has_value());   // the second apply at 20 is new
 }
 
 TEST(ldpc_mismatch_warns_per_flown_width) {
@@ -172,10 +165,17 @@ struct NullPower : CalSweep::PowerCtl {
   int read_anchor_idx() override { return anchor; }
   int anchor = 50;
 };
-cal::SweepCmd power_sweep(uint32_t nonce) {
+struct NullWall : CalSweep::WallCtl {
+  cal::AckResult check(uint8_t, uint8_t) override { return cal::AckResult::Accepted; }
+  void start(uint8_t, uint8_t, uint64_t) override {}
+  bool step(uint64_t) override { return true; }
+  cal::SweepDone finish() override { return {}; }
+  void cancel() override {}
+};
+cal::SweepCmd sweep(uint32_t nonce) {
   cal::SweepCmd c;
   c.nonce = nonce;
-  c.kind = cal::Kind::Power;
+  c.kind = cal::Kind::Capacity;
   return c;
 }
 }  // namespace
@@ -185,32 +185,33 @@ cal::SweepCmd power_sweep(uint32_t nonce) {
 // the same pass open and close a run before the owner looks at active().
 TEST(restore_is_owed_even_for_a_run_opened_and_closed_in_one_pass) {
   NullPower pwr;
+  NullWall wall;
   CalSweep s(CalSweepCfg{});
   CalRestoreOwed owed;
   CHECK(!owed.take_due(s.active()));  // nothing touched yet
 
-  const auto c = power_sweep(7);
+  const auto c = sweep(7);
   REQUIRE(s.starts_sweep(c));
   owed.note_device_touched();
-  s.on_cmd(c, 0, pwr);
-  s.on_abort(cal::Abort{7}, 1, pwr);
+  s.on_cmd(c, 0, pwr, wall);
+  s.on_abort(cal::Abort{7}, 1, pwr, wall);
   REQUIRE(!s.active());
   CHECK(owed.take_due(s.active()));
   CHECK(!owed.take_due(s.active()));  // once
 
   // A run still open owes its restore until it closes.
-  const auto d = power_sweep(8);
+  const auto d = sweep(8);
   owed.note_device_touched();
-  s.on_cmd(d, 10, pwr);
+  s.on_cmd(d, 10, pwr, wall);
   REQUIRE(s.active());
   CHECK(!owed.take_due(s.active()));
-  s.on_abort(cal::Abort{8}, 11, pwr);
+  s.on_abort(cal::Abort{8}, 11, pwr, wall);
   CHECK(owed.take_due(s.active()));
 
   // A refused sweep (anchor unreadable) never opens a run but still owes it.
   pwr.anchor = -1;
   owed.note_device_touched();
-  s.on_cmd(power_sweep(9), 20, pwr);
+  s.on_cmd(sweep(9), 20, pwr, wall);
   REQUIRE(!s.active());
   CHECK(owed.take_due(s.active()));
 }

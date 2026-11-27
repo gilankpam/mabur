@@ -1,5 +1,5 @@
 <?xml version="1.0"?>
-<!-- The mabur dialect: carries the power/verify/capacity calibration sweep
+<!-- The mabur dialect: carries the wall/capacity calibration sweep
      protocol between maburcal (ground) and maburd (drone) over the
      existing MAVLink tunnel, and the update lane (identity request and
      reply, update command and status). Superset of common.xml: every common
@@ -11,11 +11,8 @@
   <enums>
     <enum name="MABUR_CAL_KIND">
       <description>Which calibration sweep a MABUR_CAL_SWEEP frame runs.</description>
-      <entry value="1" name="MABUR_CAL_KIND_POWER">
-        <description>TX-power wall sweep.</description>
-      </entry>
-      <entry value="2" name="MABUR_CAL_KIND_VERIFY">
-        <description>Verification pass at the walls found by a power sweep.</description>
+      <entry value="1" name="MABUR_CAL_KIND_WALL">
+        <description>TX-power wall measurement, made by the drone on one channel and width.</description>
       </entry>
       <entry value="3" name="MABUR_CAL_KIND_CAPACITY">
         <description>Link-capacity dwell sweep.</description>
@@ -33,8 +30,25 @@
         <description>The drone is already running a sweep.</description>
       </entry>
       <entry value="3" name="MABUR_CAL_ACK_RESULT_UNSUPPORTED">
-        <description>The requested sweep is not supported by this drone build.</description>
+        <description>The requested sweep is not supported by this drone build or its radio chip.</description>
       </entry>
+      <entry value="4" name="MABUR_CAL_ACK_RESULT_BAD_CHANNEL">
+        <description>The wall sweep's channel is not one of the drone's radio.channels.</description>
+      </entry>
+      <entry value="5" name="MABUR_CAL_ACK_RESULT_BAD_WIDTH">
+        <description>A 40 MHz wall sweep on a drone whose radio is tuned to 20 MHz.</description>
+      </entry>
+    </enum>
+    <enum name="MABUR_CAL_WALL_RESULT">
+      <description>How a wall sweep ended, in MABUR_CAL_SWEEP_DONE.</description>
+      <entry value="0" name="MABUR_CAL_WALL_RESULT_OK"><description>A valid measurement; the walls are stored.</description></entry>
+      <entry value="1" name="MABUR_CAL_WALL_RESULT_UNPARKED"><description>The listener did not see the parked power level change.</description></entry>
+      <entry value="2" name="MABUR_CAL_WALL_RESULT_TOO_FEW_POINTS"><description>Too few power steps produced a value.</description></entry>
+      <entry value="3" name="MABUR_CAL_WALL_RESULT_FLOOR_TOO_HIGH"><description>The best EVM is above the floor a valid curve reaches.</description></entry>
+      <entry value="4" name="MABUR_CAL_WALL_RESULT_NOT_SATURATED"><description>The curve never rises into compression.</description></entry>
+      <entry value="5" name="MABUR_CAL_WALL_RESULT_DEADLINE"><description>The measurement ran out of time.</description></entry>
+      <entry value="6" name="MABUR_CAL_WALL_RESULT_DEVICE_ERROR"><description>The radio refused a step of the measurement.</description></entry>
+      <entry value="7" name="MABUR_CAL_WALL_RESULT_ABORTED"><description>The measurement was cancelled.</description></entry>
     </enum>
     <enum name="MABUR_UPDATE_CMD">
       <description>What a MABUR_UPDATE frame asks. Frozen: never change; add only extension fields.</description>
@@ -71,13 +85,10 @@
       <field type="uint8_t" name="seq">The sweep's position in the run; the drone is idempotent by (nonce, seq).</field>
       <field type="uint8_t" name="kind" enum="MABUR_CAL_KIND">Which sweep to run.</field>
       <field type="uint8_t" name="bw">Channel bandwidth (MHz) the sweep flies at.</field>
-      <field type="uint16_t" name="frames_per_cell">Frames transmitted per power/verify cell.</field>
-      <field type="uint16_t" name="settle_ms">Settle time before sampling a cell, in milliseconds.</field>
-      <field type="uint16_t" name="gap_us">Gap between frames within a cell, in microseconds.</field>
-      <field type="uint16_t" name="dwell_ms">Dwell time per capacity point, in milliseconds.</field>
-      <field type="int8_t" name="idx_lo">Low end of the rel power index range swept.</field>
-      <field type="int8_t" name="idx_hi">High end of the rel power index range swept.</field>
-      <field type="uint8_t" name="mcs_mask">Bitmask of MCS indices the capacity sweep probes.</field>
+      <field type="uint8_t" name="channel">Wall sweep: the channel to measure; 0 = the link's channel.</field>
+      <field type="uint16_t" name="settle_ms">Capacity sweep: settle time before each point, in milliseconds.</field>
+      <field type="uint16_t" name="dwell_ms">Capacity sweep: dwell time per point, in milliseconds.</field>
+      <field type="uint8_t" name="mcs_mask">Capacity sweep: bitmask of MCS indices probed.</field>
     </message>
     <message id="60001" name="MABUR_CAL_ACK">
       <description>Drone's reply to MABUR_CAL_SWEEP: accept, refuse, or report when the sweep will start.</description>
@@ -85,24 +96,27 @@
       <field type="uint8_t" name="seq">Echoes the sweep's seq.</field>
       <field type="uint8_t" name="result" enum="MABUR_CAL_ACK_RESULT">Accept/refuse result.</field>
       <field type="uint16_t" name="start_in_ms">Milliseconds until the sweep starts, if accepted.</field>
-      <field type="uint8_t" name="flags">Stamp flag mask the drone will fly for this sweep.</field>
+      <field type="uint8_t" name="flags">Stamp flag mask (LDPC, STBC) the drone flies for this sweep.</field>
     </message>
     <message id="60002" name="MABUR_CAL_SWEEP_DONE">
-      <description>Drone reports a finished sweep's per-cell results.</description>
+      <description>Drone reports a finished sweep's results: per rate for a capacity sweep, the measured walls for a wall sweep.</description>
       <field type="uint32_t" name="nonce">Echoes the sweep's nonce.</field>
       <field type="uint8_t" name="seq">Echoes the sweep's seq.</field>
-      <field type="uint32_t[8]" name="offered">Frames offered per cell.</field>
-      <field type="uint8_t[8]" name="blocked_pct">Per rate, the share of the capacity dwell (percent) the drone's sender spent blocked on the device; 0 for a power sweep.</field>
+      <field type="uint32_t[8]" name="offered">Capacity: frames offered per rate.</field>
+      <field type="uint8_t[8]" name="blocked_pct">Capacity: per rate, the share of the dwell (percent) the drone's sender spent blocked on the device.</field>
+      <field type="uint8_t" name="wall_result" enum="MABUR_CAL_WALL_RESULT">Wall: how the measurement ended.</field>
+      <field type="uint8_t" name="channel">Wall: the channel measured.</field>
+      <field type="uint8_t" name="bw">Wall: the bandwidth (MHz) measured.</field>
+      <field type="int8_t[8]" name="walls">Wall: per MCS, the wall as a TXAGC index relative to anchor; 63 = no wall found.</field>
+      <field type="int16_t" name="floor_evm_x10">Wall: the best EVM of the curve, in 0.1 dB.</field>
+      <field type="uint8_t" name="anchor">Wall: the chip's TXAGC reference index on the channel measured.</field>
     </message>
     <message id="60003" name="MABUR_CAL_APPLY">
-      <description>Ground pushes the walls and efficiency table a sweep produced for the drone to adopt.</description>
+      <description>Ground pushes the efficiency table a capacity sweep produced for the drone to adopt.</description>
       <field type="uint32_t" name="nonce">Session nonce for this apply.</field>
       <field type="uint8_t" name="seq">Seq of the sweep that produced this table.</field>
       <field type="uint8_t" name="bw">Channel bandwidth (MHz) the table applies to.</field>
-      <field type="uint8_t" name="has">Bitmask of which wall/efficiency slots are present.</field>
-      <field type="int8_t[8]" name="walls">Rel power-index wall per rung.</field>
-      <field type="int8_t" name="legacy">Wall for legacy/control frames (radio.legacy_wall_rel), from the 20 MHz mcs0 wall, or the 40 MHz one when the run has no 20 MHz power sweep; -128 = leave.</field>
-      <field type="uint16_t[8]" name="eff">air_clock efficiency per rung.</field>
+      <field type="uint16_t[8]" name="eff">air_clock efficiency per MCS, x1000; 0 = leave.</field>
     </message>
     <message id="60004" name="MABUR_CAL_APPLIED">
       <description>Drone reports whether it adopted a MABUR_CAL_APPLY table.</description>
@@ -110,7 +124,7 @@
       <field type="uint8_t" name="seq">Echoes the apply's sweep seq.</field>
       <field type="uint8_t" name="bw">Echoes the bandwidth the apply targeted.</field>
       <field type="uint8_t" name="ok">1 if the table was adopted, 0 otherwise.</field>
-      <field type="char[50]" name="reason">Why the drone refused; on success empty, or a note of what it kept that the apply did not carry.</field>
+      <field type="char[50]" name="reason">Why the drone refused; empty on success.</field>
     </message>
     <message id="60005" name="MABUR_CAL_ABORT">
       <description>Ground cancels the in-progress sweep identified by nonce.</description>

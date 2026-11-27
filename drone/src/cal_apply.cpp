@@ -22,30 +22,10 @@ std::string trim(const std::string& s) {
   return s.substr(a, b - a);
 }
 
-// Parses the 8 numbers out of a "[91, 91, ...]" array's inner text. A
-// malformed original (should never happen -- it's bundle/mabur.default.toml
-// verbatim) falls back to 0 for the unparseable slot rather than throwing;
-// walls_in_range()/load_config() are the layers that actually guard
-// correctness, not this cosmetic fallback.
-std::array<int, 8> parse_int_array(const std::string& inner) {
-  std::array<int, 8> vals{};
-  size_t pos = 0;
-  for (int idx = 0; idx < 8; ++idx) {
-    size_t comma = inner.find(',', pos);
-    const std::string tok =
-        trim(comma == std::string::npos ? inner.substr(pos)
-                                         : inner.substr(pos, comma - pos));
-    try {
-      vals[static_cast<size_t>(idx)] = std::stoi(tok);
-    } catch (...) {
-      vals[static_cast<size_t>(idx)] = 0;
-    }
-    if (comma == std::string::npos) break;
-    pos = comma + 1;
-  }
-  return vals;
-}
-
+// Parses the 8 numbers out of a "[0.9, 0.88, ...]" array's inner text. A
+// malformed original falls back to 0 for the unparseable slot rather than
+// throwing; load_config() is the layer that guards correctness, not this
+// cosmetic fallback.
 std::array<double, 8> parse_double_array(const std::string& inner) {
   std::array<double, 8> vals{};
   size_t pos = 0;
@@ -77,16 +57,6 @@ std::string fmt_double(double v) {
   return out;
 }
 
-std::string render_int_array(const std::array<int, 8>& v) {
-  std::string s = "[";
-  for (int i = 0; i < 8; ++i) {
-    if (i) s += ", ";
-    s += std::to_string(v[static_cast<size_t>(i)]);
-  }
-  s += "]";
-  return s;
-}
-
 std::string render_double_array(const std::array<double, 8>& v) {
   std::string s = "[";
   for (int i = 0; i < 8; ++i) {
@@ -114,9 +84,8 @@ std::string rewrite_line(const std::string& line, size_t key_begin,
 }
 
 // Index of the (first) line matching `key`, or -1. Not section-scoped:
-// cal_apply only ever deals with the one [radio] and one [air_clock] table
-// mabur.toml carries, and every key name it touches is unique across the
-// whole file.
+// cal_apply only ever deals with the one [air_clock] table mabur.toml
+// carries, and every key name it touches is unique across the whole file.
 int find_key_line(const std::vector<std::string>& lines, const std::string& key) {
   size_t key_begin, eq_pos;
   for (size_t i = 0; i < lines.size(); ++i)
@@ -124,40 +93,10 @@ int find_key_line(const std::vector<std::string>& lines, const std::string& key)
   return -1;
 }
 
-bool has_key_line(const std::string& text, const std::string& key) {
-  size_t key_begin, eq_pos;
-  std::stringstream ss(text);
-  std::string line;
-  while (std::getline(ss, line))
-    if (match_toml_key(line, key, &key_begin, &eq_pos)) return true;
-  return false;
-}
-
-// Rewrites lines[idx]'s bracketed 8-int array in place, keeping entry i
-// unless vals[i] == kWallUndetermined (kept = inherits the original's
-// value at that slot). False (nothing rewritten) if the line isn't the
-// bracketed-array shape this patcher understands.
-bool rewrite_int_array(std::vector<std::string>& lines, int idx,
-                       const std::string& key, const std::array<int, 8>& vals) {
-  std::string& line = lines[static_cast<size_t>(idx)];
-  size_t key_begin, eq_pos;
-  if (!match_toml_key(line, key, &key_begin, &eq_pos)) return false;
-  size_t v = eq_pos + 1;
-  while (v < line.size() && (line[v] == ' ' || line[v] == '\t')) ++v;
-  if (v >= line.size() || line[v] != '[') return false;
-  const size_t close = line.find(']', v);
-  if (close == std::string::npos) return false;
-  const auto orig = parse_int_array(line.substr(v + 1, close - v - 1));
-  std::array<int, 8> merged{};
-  for (int i = 0; i < 8; ++i) {
-    const size_t s = static_cast<size_t>(i);
-    merged[s] = (vals[s] == mabur::rc::kWallUndetermined) ? orig[s] : vals[s];
-  }
-  line = rewrite_line(line, key_begin, key.size(), eq_pos, render_int_array(merged), close + 1);
-  return true;
-}
-
-// Same as rewrite_int_array, for an 8-double array where 0 means "leave".
+// Rewrites lines[idx]'s bracketed 8-double array in place, keeping entry i
+// where vals[i] == 0 ("leave": inherits the original's value at that slot).
+// False (nothing rewritten) if the line isn't the bracketed-array shape this
+// patcher understands.
 bool rewrite_double_array(std::vector<std::string>& lines, int idx,
                           const std::string& key, const std::array<double, 8>& vals) {
   std::string& line = lines[static_cast<size_t>(idx)];
@@ -178,83 +117,6 @@ bool rewrite_double_array(std::vector<std::string>& lines, int idx,
   return true;
 }
 
-bool rewrite_quoted_string(std::vector<std::string>& lines, int idx,
-                           const std::string& key, const std::string& new_value) {
-  std::string& line = lines[static_cast<size_t>(idx)];
-  size_t key_begin, eq_pos;
-  if (!match_toml_key(line, key, &key_begin, &eq_pos)) return false;
-  size_t v = eq_pos + 1;
-  while (v < line.size() && (line[v] == ' ' || line[v] == '\t')) ++v;
-  if (v >= line.size() || line[v] != '"') return false;
-  const size_t close = line.find('"', v + 1);
-  if (close == std::string::npos) return false;
-  line = rewrite_line(line, key_begin, key.size(), eq_pos, "\"" + new_value + "\"", close + 1);
-  return true;
-}
-
-bool rewrite_int(std::vector<std::string>& lines, int idx, const std::string& key,
-                 int new_value) {
-  std::string& line = lines[static_cast<size_t>(idx)];
-  size_t key_begin, eq_pos;
-  if (!match_toml_key(line, key, &key_begin, &eq_pos)) return false;
-  size_t v = eq_pos + 1;
-  while (v < line.size() && (line[v] == ' ' || line[v] == '\t')) ++v;
-  size_t e = v;
-  if (e < line.size() && line[e] == '-') ++e;
-  while (e < line.size() && std::isdigit(static_cast<unsigned char>(line[e]))) ++e;
-  line = rewrite_line(line, key_begin, key.size(), eq_pos, std::to_string(new_value), e);
-  return true;
-}
-
-// The bracketed 8-int array on lines[idx] (matched as `key`). False if the
-// line isn't that shape.
-bool read_int_array(const std::vector<std::string>& lines, int idx, const std::string& key,
-                    std::array<int, 8>* out) {
-  const std::string& line = lines[static_cast<size_t>(idx)];
-  size_t key_begin, eq_pos;
-  if (!match_toml_key(line, key, &key_begin, &eq_pos)) return false;
-  size_t v = eq_pos + 1;
-  while (v < line.size() && (line[v] == ' ' || line[v] == '\t')) ++v;
-  if (v >= line.size() || line[v] != '[') return false;
-  const size_t close = line.find(']', v);
-  if (close == std::string::npos) return false;
-  *out = parse_int_array(line.substr(v + 1, close - v - 1));
-  return true;
-}
-
-// True when lines[idx] is `key = []`: the shipped "not calibrated" table.
-bool is_empty_array(const std::vector<std::string>& lines, int idx, const std::string& key) {
-  const std::string& line = lines[static_cast<size_t>(idx)];
-  size_t key_begin, eq_pos;
-  if (!match_toml_key(line, key, &key_begin, &eq_pos)) return false;
-  size_t v = eq_pos + 1;
-  while (v < line.size() && (line[v] == ' ' || line[v] == '\t')) ++v;
-  if (v >= line.size() || line[v] != '[') return false;
-  const size_t close = line.find(']', v);
-  return close != std::string::npos && trim(line.substr(v + 1, close - v - 1)).empty();
-}
-
-// "mcs5,6,7" for a per-rate bit mask (bit r = MCS r).
-std::string rate_list(uint8_t mask) {
-  std::string s;
-  for (int r = 0; r < 8; ++r) {
-    if (!(mask & (1u << r))) continue;
-    s += s.empty() ? "mcs" : ",";
-    s += std::to_string(r);
-  }
-  return s;
-}
-
-// Inserts `new_line` right after lines[after_idx], shifting every later
-// line down by one. Callers that queue several insertions in one
-// patch_toml() call sort them by anchor and apply low-to-high, adding the
-// running shift to each anchor themselves -- otherwise an insertion whose
-// anchor sits after an earlier one would land one line short.
-void insert_toml_key_after(std::vector<std::string>& lines, int after_idx,
-                           const std::string& new_line) {
-  lines.insert(lines.begin() + after_idx + 1, new_line);
-}
-
 // publish_config's verifier: the SAME function maburd boots with, not a
 // bare TOML syntax check (see mabur/config_write.h for why anything weaker
 // defeats the point of publishing through it at all).
@@ -268,245 +130,10 @@ bool verify_with_load_config(const std::string& candidate_path, std::string* err
   }
 }
 
-}  // namespace
-
-std::string patch_toml(const std::string& text, const CalWrite& w, PatchStatus* status) {
-  std::vector<std::string> lines;
-  {
-    std::stringstream ss(text);
-    std::string line;
-    while (std::getline(ss, line)) lines.push_back(line);
-  }
-  const bool trailing_newline = !text.empty() && text.back() == '\n';
-
-  const std::string bw_s = std::to_string(w.bw);
-  const std::string other_s = std::to_string(w.bw == 40 ? 20 : 40);
-  const std::string rate_key = "rate_walls_rel_" + bw_s;
-  const std::string rate_other_key = "rate_walls_rel_" + other_s;
-  const std::string cflag_key = "cal_flags_" + bw_s;
-  const std::string cflag_other_key = "cal_flags_" + other_s;
-  const std::string eff_key = "efficiency_" + bw_s;
-  const std::string eff_other_key = "efficiency_" + other_s;
-
-  const int idx_rate_bw = find_key_line(lines, rate_key);
-  const int idx_rate_other = find_key_line(lines, rate_other_key);
-  const int idx_cflag_bw = find_key_line(lines, cflag_key);
-  const int idx_cflag_other = find_key_line(lines, cflag_other_key);
-  const int idx_legacy = find_key_line(lines, "legacy_wall_rel");
-  const int idx_power_mode = find_key_line(lines, "power_mode");
-  const int idx_eff_bw = find_key_line(lines, eff_key);
-  const int idx_eff_other = find_key_line(lines, eff_other_key);
-  const int idx_shed_ms = find_key_line(lines, "shed_ms");
-  // Which line owns rate_walls_rel_20 specifically, independent of which
-  // width this call is writing -- legacy_wall_rel's patch condition reads
-  // this, not idx_rate_bw/idx_rate_other.
-  // An empty table ("[]", the shipped "not calibrated") is a line to
-  // replace but never a table: it has nothing to keep or to borrow.
-  const bool empty_bw = idx_rate_bw >= 0 && is_empty_array(lines, idx_rate_bw, rate_key);
-  const bool empty_other =
-      idx_rate_other >= 0 && is_empty_array(lines, idx_rate_other, rate_other_key);
-  const int idx_rate_20_line = (w.bw == 20) ? idx_rate_bw : idx_rate_other;
-  const bool empty_20 = (w.bw == 20) ? empty_bw : empty_other;
-  const int idx_rate_20 = empty_20 ? -1 : idx_rate_20_line;
-
-  // Keys with neither a line nor an anchor line to sit next to (a minimal
-  // config): set through set_toml_key once the line pass is done.
-  struct Fallback {
-    const char* section;
-    std::string key, value;
-  };
-  std::vector<Fallback> fallbacks;
-
-  struct Insertion {
-    int anchor;
-    std::string text;
-  };
-  std::vector<Insertion> pending;
-
-  if (w.has_walls) {
-    if (idx_rate_bw >= 0 && !empty_bw) {
-      if (rewrite_int_array(lines, idx_rate_bw, rate_key, w.walls))
-        if (status) status->walls = true;
-    } else {
-      // First calibration of this width: there is no original line for an
-      // undetermined slot to keep. Never the rail -- that is the top of the
-      // diff field, the overdriving direction, for a rate whose wall this
-      // run could not find. A 40 MHz table takes that rate's 20 MHz wall
-      // instead (walls at 40 MHz measure at or above the 20 MHz ones, so
-      // the 20 MHz wall errs low at 40); with nothing to take it from the
-      // line is not inserted and apply_calibration refuses the write.
-      std::array<int, 8> other{};
-      const bool have_20 = w.bw == 40 && idx_rate_other >= 0 && !empty_other &&
-                           read_int_array(lines, idx_rate_other, rate_other_key, &other);
-      std::array<int, 8> vals{};
-      uint8_t borrowed = 0, unfilled = 0;
-      for (int i = 0; i < 8; ++i) {
-        const size_t s = static_cast<size_t>(i);
-        if (w.walls[s] != mabur::rc::kWallUndetermined) {
-          vals[s] = w.walls[s];
-        } else if (have_20) {
-          vals[s] = other[s];
-          borrowed |= static_cast<uint8_t>(1u << i);
-        } else {
-          unfilled |= static_cast<uint8_t>(1u << i);
-        }
-      }
-      if (status) {
-        status->borrowed_walls = borrowed;
-        status->unfilled_walls = unfilled;
-      }
-      const int anchor = (idx_rate_other >= 0) ? idx_rate_other : idx_power_mode;
-      if (unfilled == 0) {
-        const std::string line = rate_key + " = " + render_int_array(vals);
-        if (empty_bw)
-          lines[static_cast<size_t>(idx_rate_bw)] = line;
-        else if (anchor >= 0)
-          pending.push_back({anchor, line});
-        else
-          fallbacks.push_back({"radio", rate_key, render_int_array(vals)});
-        if (status) {
-          status->walls = true;
-          status->inserted_walls = !empty_bw;
-        }
-      }
-    }
-
-    // cal_flags_<bw> records what the walls above were measured with, not
-    // a per-rate value with its own sentinel: it is always overwritten
-    // whenever walls are written.
-    if (idx_cflag_bw >= 0) {
-      if (rewrite_quoted_string(lines, idx_cflag_bw, cflag_key, w.cal_flags))
-        if (status) status->cal_flags = true;
-    } else {
-      const int anchor = (idx_cflag_other >= 0) ? idx_cflag_other : idx_power_mode;
-      if (anchor >= 0)
-        pending.push_back({anchor, cflag_key + " = \"" + w.cal_flags + "\""});
-      else
-        fallbacks.push_back({"radio", cflag_key, "\"" + w.cal_flags + "\""});
-      if (status) {
-        status->cal_flags = true;
-        status->inserted_cal_flags = true;
-      }
-    }
-
-    // legacy_wall_rel is shared by both widths (legacy/CCK rides the one
-    // legacy wall regardless of width): only a 20 MHz write repatches it,
-    // unless the file has no rate_walls_rel_20 line at all -- a unit
-    // calibrated on only 40 MHz still needs legacy derived from somewhere.
-    // A minimal config has no line for it: it is inserted.
-    const bool patch_legacy = (w.bw == 20) || (idx_rate_20 < 0);
-    if (patch_legacy && w.legacy_wall != mabur::rc::kWallUndetermined) {
-      if (idx_legacy >= 0) {
-        if (rewrite_int(lines, idx_legacy, "legacy_wall_rel", w.legacy_wall))
-          if (status) status->legacy_wall_rel = true;
-      } else {
-        fallbacks.push_back({"radio", "legacy_wall_rel", std::to_string(w.legacy_wall)});
-        if (status) status->legacy_wall_rel = true;
-      }
-    }
-
-    // Any walls write means the unit now has at least one measured table,
-    // so bring-up should stop running the card's as-shipped power.
-    if (idx_power_mode >= 0) {
-      if (rewrite_quoted_string(lines, idx_power_mode, "power_mode", "offset"))
-        if (status) status->power_mode = true;
-    } else {
-      fallbacks.push_back({"radio", "power_mode", "\"offset\""});
-      if (status) status->power_mode = true;
-    }
-  }
-
-  if (w.has_eff) {
-    if (idx_eff_bw >= 0) {
-      if (rewrite_double_array(lines, idx_eff_bw, eff_key, w.eff))
-        if (status) status->eff = true;
-    } else {
-      // Same anchoring rule as the walls/cal_flags insertions above: sit
-      // next to the other width's line of the same key so the file keeps
-      // reading as one per-width pair, falling back to shed_ms (the
-      // table's own first key) only when there is no other-width line
-      // either.
-      const int anchor = (idx_eff_other >= 0) ? idx_eff_other : idx_shed_ms;
-      {
-        // A left-at-0 ("leave") entry has nothing to inherit when the line
-        // doesn't exist yet, so it takes what the loader flies for that
-        // width with the key absent (AirClockCfg's own default): the
-        // inserted line changes nothing the drone flew for that rate.
-        const AirClockCfg absent{};
-        const std::array<double, 8>& dflt =
-            (w.bw == 40) ? absent.efficiency_40 : absent.efficiency_20;
-        std::array<double, 8> vals{};
-        for (int i = 0; i < 8; ++i) {
-          const size_t s = static_cast<size_t>(i);
-          vals[s] = (w.eff[s] == 0.0) ? dflt[s] : w.eff[s];
-        }
-        if (anchor >= 0)
-          pending.push_back({anchor, eff_key + " = " + render_double_array(vals)});
-        else
-          fallbacks.push_back({"air_clock", eff_key, render_double_array(vals)});
-        if (status) status->eff = true;
-      }
-    }
-  }
-
-  // Apply insertions anchor-ascending, so each insertion's own shift only
-  // ever pushes an anchor that comes AFTER it in the file -- never one
-  // already used. stable_sort keeps two insertions sharing an anchor (the
-  // degenerate case where both this width's wall and flag lines fall back
-  // to the same power_mode anchor) in the order they were queued above:
-  // walls, then flags.
-  std::stable_sort(pending.begin(), pending.end(),
-                   [](const Insertion& a, const Insertion& b) { return a.anchor < b.anchor; });
-  int shift = 0;
-  for (const auto& ins : pending) {
-    insert_toml_key_after(lines, ins.anchor + shift, ins.text);
-    ++shift;
-  }
-
-  std::string out;
-  for (size_t i = 0; i < lines.size(); ++i) {
-    out += lines[i];
-    if (i + 1 < lines.size()) out += "\n";
-  }
-  if (trailing_newline) out += "\n";
-  for (const Fallback& f : fallbacks) set_toml_key(&out, f.section, f.key, f.value);
-  return out;
-}
-
-bool walls_in_range(const CalWrite& w, double margin_db, std::string* why) {
-  // Mirrors drone/src/config.cpp exactly for walls, including its message
-  // wording, so a refusal here reads the same way a boot-time refusal
-  // would. This pre-check and the load_config() verification step later in
-  // apply_calibration() serve different purposes and both stay: this one
-  // refuses a bad table before the disk is touched at all, with a
-  // specific OutOfRange result and a message naming the exact derivation
-  // that failed; load_config() is the backstop that catches anything this
-  // model does not.
-  const int m = static_cast<int>(std::lround(margin_db * 4.0));
-  auto check_wall = [&](int v, const std::string& key) {
-    if (v == mabur::rc::kWallUndetermined) return true;
-    if (v < rc::kRelMin || v > rc::kRelMax) {
-      if (why) *why = key + ": " + std::to_string(v) +
-                      " is outside the 7-bit hardware field range [-64,63]";
-      return false;
-    }
-    if (v - m < rc::kRelMin) {
-      if (why) *why = key + ": " + std::to_string(v) +
-                      " - wall_margin_db*4 = " + std::to_string(v - m) +
-                      " is below the hardware field floor -64";
-      return false;
-    }
-    return true;
-  };
-  const std::string rate_field = "radio.rate_walls_rel_" + std::to_string(w.bw);
-  for (size_t i = 0; i < w.walls.size(); ++i)
-    if (!check_wall(w.walls[i], rate_field + "[" + std::to_string(i) + "]"))
-      return false;
-  if (!check_wall(w.legacy_wall, "radio.legacy_wall_rel")) return false;
-
-  // eff has no hardware field to mirror: [0.05, 1.0] is this file's own
-  // sanity bound on a measured capacity fraction (the loader itself only
-  // enforces (0,1]).
+// [0.05, 1.0]: this file's own sanity bound on a measured capacity
+// fraction (the loader itself only requires (0,1]), checked before the disk
+// is touched at all.
+bool eff_in_range(const CalWrite& w, std::string* why) {
   const std::string eff_field = "air_clock.efficiency_" + std::to_string(w.bw);
   for (size_t i = 0; i < w.eff.size(); ++i) {
     const double e = w.eff[i];
@@ -521,48 +148,59 @@ bool walls_in_range(const CalWrite& w, double margin_db, std::string* why) {
   return true;
 }
 
-namespace {
+}  // namespace
 
-// Checks that patch_toml() actually found-and-rewrote or inserted every
-// key this write is required to have touched. `legacy_required` is passed
-// in rather than recomputed from `w` alone because it also depends on
-// whether the file had its own rate_walls_rel_20 line -- information
-// patch_toml had but PatchStatus doesn't carry back out (apply_calibration
-// re-derives it with has_key_line() against the same original text).
-bool patch_covered_required_keys(const PatchStatus& s, const CalWrite& w,
-                                 bool legacy_required, std::string* why) {
-  if (w.has_walls) {
-    if (!s.walls) {
-      if (why)
-        *why = "radio.rate_walls_rel_" + std::to_string(w.bw) +
-               ": line not found in config -- unexpected file structure, nothing written";
-      return false;
-    }
-    if (!s.cal_flags) {
-      if (why)
-        *why = "radio.cal_flags_" + std::to_string(w.bw) +
-               ": line not found in config -- unexpected file structure, nothing written";
-      return false;
-    }
-    if (!s.power_mode) {
-      if (why)
-        *why = "radio.power_mode: line not found in config -- unexpected file structure, nothing written";
-      return false;
-    }
-    if (legacy_required && !s.legacy_wall_rel) {
-      if (why)
-        *why = "radio.legacy_wall_rel: line not found in config -- unexpected file structure, nothing written";
-      return false;
-    }
+std::string patch_toml(const std::string& text, const CalWrite& w, PatchStatus* status) {
+  std::vector<std::string> lines;
+  {
+    std::stringstream ss(text);
+    std::string line;
+    while (std::getline(ss, line)) lines.push_back(line);
   }
-  if (w.has_eff && !s.eff) {
-    if (why)
-      *why = "air_clock.efficiency_" + std::to_string(w.bw) +
-             ": line not found in config -- unexpected file structure, nothing written";
-    return false;
+  const bool trailing_newline = !text.empty() && text.back() == '\n';
+
+  const std::string eff_key = "efficiency_" + std::to_string(w.bw);
+  const std::string eff_other_key = "efficiency_" + std::to_string(w.bw == 40 ? 20 : 40);
+  const int idx_eff_bw = find_key_line(lines, eff_key);
+  bool fallback = false;
+  std::string fallback_value;
+
+  if (idx_eff_bw >= 0) {
+    if (rewrite_double_array(lines, idx_eff_bw, eff_key, w.eff) && status) status->eff = true;
+  } else {
+    // A left-at-0 entry has nothing to inherit when the line doesn't exist
+    // yet, so it takes what the loader flies for that width with the key
+    // absent (AirClockCfg's own default): the inserted line changes nothing
+    // the drone flew for that rate.
+    const AirClockCfg absent{};
+    const std::array<double, 8>& dflt = (w.bw == 40) ? absent.efficiency_40 : absent.efficiency_20;
+    std::array<double, 8> vals{};
+    for (size_t s = 0; s < 8; ++s) vals[s] = (w.eff[s] == 0.0) ? dflt[s] : w.eff[s];
+    // Next to the other width's line, so the file keeps reading as one
+    // per-width pair; after shed_ms (the table's own first key) when there
+    // is none; through set_toml_key when there is no [air_clock] line at all.
+    const int idx_other = find_key_line(lines, eff_other_key);
+    const int anchor = idx_other >= 0 ? idx_other : find_key_line(lines, "shed_ms");
+    if (anchor >= 0) {
+      lines.insert(lines.begin() + anchor + 1, eff_key + " = " + render_double_array(vals));
+    } else {
+      fallback = true;
+      fallback_value = render_double_array(vals);
+    }
+    if (status) status->eff = true;
   }
-  return true;
+
+  std::string out;
+  for (size_t i = 0; i < lines.size(); ++i) {
+    out += lines[i];
+    if (i + 1 < lines.size()) out += "\n";
+  }
+  if (trailing_newline) out += "\n";
+  if (fallback) set_toml_key(&out, "air_clock", eff_key, fallback_value);
+  return out;
 }
+
+namespace {
 
 // Shared body of apply_calibration() and its corrupt-writer test seam.
 // `content_override`, when set, replaces the real patch_toml() output --
@@ -570,16 +208,11 @@ bool patch_covered_required_keys(const PatchStatus& s, const CalWrite& w,
 // real writer bug, to prove verification actually catches it. The
 // publisher's verify-before-publish order is what makes that refusal
 // leave `path` untouched; see config_write.h.
-ApplyResult apply_calibration_impl(const std::string& path, const CalWrite& w,
-                                   double margin_db, bool backup, std::string* err,
-                                   std::string* note, const std::string* content_override) {
-  if (note) note->clear();
-  // Step 1: validate the derived diffs/efficiencies. Nothing on disk is
-  // touched if this fails -- see walls_in_range()'s comment for why this
-  // pre-check stays even though load_config() below re-derives the same
-  // numbers.
+ApplyResult apply_calibration_impl(const std::string& path, const CalWrite& w, bool backup,
+                                   std::string* err, const std::string* content_override) {
+  // Step 1: validate. Nothing on disk is touched if this fails.
   std::string why;
-  if (!walls_in_range(w, margin_db, &why)) {
+  if (!eff_in_range(w, &why)) {
     if (err) *err = why;
     return ApplyResult::OutOfRange;
   }
@@ -594,52 +227,31 @@ ApplyResult apply_calibration_impl(const std::string& path, const CalWrite& w,
     return ApplyResult::WriteFailed;
   }
 
-  // Step 2: patch in memory and check every REQUIRED key was actually
-  // found/rewritten or inserted. patch_toml has no error channel of its
-  // own -- a key it can't match or insert is silently left as the
-  // original's value (or absent), which load_config() below would still
-  // accept. Without this check, apply_calibration could report Ok on a
-  // calibration that never actually applied -- the exact
-  // silent-miscalibration failure this file exists to prevent, arriving
-  // through the back door, so it is checked explicitly and refused
-  // loudly. Skipped for content_override: that seam bypasses patch_toml on
-  // purpose to inject raw garbage.
+  // Step 2: patch in memory and check the key was actually rewritten or
+  // inserted -- see the file header. Skipped for content_override: that
+  // seam bypasses patch_toml on purpose to inject raw garbage.
   std::string content;
-  std::string kept;  // the note, handed out only once the write is published
   if (content_override) {
     content = *content_override;
   } else {
     PatchStatus status;
     content = patch_toml(original, w, &status);
-    if (status.unfilled_walls) {
+    if (!status.eff) {
       if (err)
-        *err = "undetermined " + rate_list(status.unfilled_walls) + "; no table to keep";
-      return ApplyResult::NoTableToKeep;
-    }
-    if (status.borrowed_walls)
-      kept = "ok; " + rate_list(status.borrowed_walls) + " kept from the 20 MHz table";
-    const bool legacy_required =
-        w.has_walls && w.legacy_wall != mabur::rc::kWallUndetermined &&
-        (w.bw == 20 || !has_key_line(original, "rate_walls_rel_20"));
-    std::string key_why;
-    if (!patch_covered_required_keys(status, w, legacy_required, &key_why)) {
-      if (err) *err = key_why;
+        *err = "air_clock.efficiency_" + std::to_string(w.bw) +
+               ": line not found in config -- unexpected file structure, nothing written";
       return ApplyResult::KeyNotFound;
     }
   }
 
   // Steps 3-6: write "<path>.new", verify it with load_config, conditionally
-  // back up, rename -- the shared publisher, see config_write.h. Passing
-  // `backup` straight through as publish_config's write_backup means a
-  // call that doesn't own the session's backup never touches
-  // "<path>.pre-cal" at all -- it is not written and then reverted, so an
-  // earlier call's real backup in the same session is never at risk.
+  // back up, rename -- the shared publisher, see config_write.h. A call that
+  // doesn't own the run's backup never touches "<path>.pre-cal" at all.
   std::string pub_err;
   const PublishResult pr = publish_config(path, content, "pre-cal", &pub_err,
                                           verify_with_load_config, /*write_backup=*/backup);
   switch (pr) {
     case PublishResult::Ok:
-      if (note) *note = std::move(kept);
       return ApplyResult::Ok;
     case PublishResult::BackupFailed:
       if (err) *err = pub_err;
@@ -657,16 +269,15 @@ ApplyResult apply_calibration_impl(const std::string& path, const CalWrite& w,
 
 }  // namespace
 
-ApplyResult apply_calibration(const std::string& path, const CalWrite& w,
-                              double margin_db, bool backup, std::string* err,
-                              std::string* note) {
-  return apply_calibration_impl(path, w, margin_db, backup, err, note, nullptr);
+ApplyResult apply_calibration(const std::string& path, const CalWrite& w, bool backup,
+                              std::string* err) {
+  return apply_calibration_impl(path, w, backup, err, nullptr);
 }
 
-ApplyResult apply_calibration_for_test_with_corrupt_writer(
-    const std::string& path, const CalWrite& w, double margin_db, std::string* err) {
+ApplyResult apply_calibration_for_test_with_corrupt_writer(const std::string& path,
+                                                           const CalWrite& w, std::string* err) {
   static const std::string kGarbage = "this is not valid toml [[[ ===\n";
-  return apply_calibration_impl(path, w, margin_db, /*backup=*/true, err, nullptr, &kGarbage);
+  return apply_calibration_impl(path, w, /*backup=*/true, err, &kGarbage);
 }
 
 }  // namespace mabur

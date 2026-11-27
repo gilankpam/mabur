@@ -23,9 +23,8 @@ TEST(mabur_dialect_packs_and_decodes_cal_sweep) {
   mavlink_message_t msg; uint8_t buf[MAVLINK_MAX_PACKET_LEN];
   mavlink_msg_mabur_cal_sweep_pack_chan(mabur::mav::kSysId, mabur::mav::kCompId,
       mabur::mav::kChanDroneRx, &msg,
-      /*nonce=*/0xA5A5, /*seq=*/0, /*kind=*/3, /*bw=*/40,
-      /*frames_per_cell=*/20, /*settle_ms=*/5, /*gap_us=*/1000,
-      /*dwell_ms=*/2000, /*idx_lo=*/-41, /*idx_hi=*/63, /*mcs_mask=*/0xFF);
+      /*nonce=*/0xA5A5, /*seq=*/0, /*kind=*/3, /*bw=*/40, /*channel=*/112,
+      /*settle_ms=*/5, /*dwell_ms=*/2000, /*mcs_mask=*/0xFF);
   const uint16_t n = mavlink_msg_to_send_buffer(buf, &msg);
 
   mavlink_message_t out; mavlink_status_t st{};
@@ -41,12 +40,9 @@ TEST(mabur_dialect_packs_and_decodes_cal_sweep) {
   CHECK(decoded.seq == 0);
   CHECK(decoded.kind == 3);
   CHECK(decoded.bw == 40);
-  CHECK(decoded.frames_per_cell == 20);
+  CHECK(decoded.channel == 112);
   CHECK(decoded.settle_ms == 5);
-  CHECK(decoded.gap_us == 1000);
   CHECK(decoded.dwell_ms == 2000);
-  CHECK(decoded.idx_lo == -41);
-  CHECK(decoded.idx_hi == 63);
   CHECK(decoded.mcs_mask == 0xFF);
 }
 TEST(common_messages_still_decode) {

@@ -44,8 +44,7 @@ struct PowerPlan {
   int8_t mcs[8];
 };
 
-// margin_steps (the dB->index-step conversion) moved to mabur/cal_park.h so
-// the GS's verify-cell prediction (gs/src/cal_plan.cpp) can share it.
+// margin_steps (the dB->index-step conversion) is in mabur/cal_park.h.
 
 inline PowerPlan make_power_plan(const std::array<int, 8>& walls_rel,
                                   int legacy_wall_rel, double margin_db,

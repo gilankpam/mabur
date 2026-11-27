@@ -126,14 +126,14 @@ TEST(rcf_matches_golden_wire) {
   //   std::fprintf(stderr, "%s\n", mtest::hex(wire).c_str());
   // Reverting any pack_rcf() layout change without updating these fails
   // here, which is the point -- the format cannot drift silently.
-  // Re-pinned for the RC_VERSION 18 -> 19 bump: version byte 2 moved,
+  // Re-pinned for the RC_VERSION 19 -> 20 bump: version byte 2 moved,
   // re-deriving the tag + CRC over the changed body.
   const std::vector<std::string> GOLDEN = {
-      "43521301000700243232ff00000000000090e20c6c1bfa9db86efb",
-      "4352130100ffff006464ff00000300c800fceddb8e45283a3b96ce",
+      "43521401000700243232ff000000000000511e5798208020d42d0c",
+      "4352140100ffff006464ff00000300c8004ce51c5f78005bbe8ae5",
       // Asym pair (base 1.0 / enh 0.5): ENH actually rides a different
       // literal overhead than BASE here, not a duplicated equal-pair scalar.
-      "43521301002a00086432060000025adbff4e631871dda358c94e96",
+      "43521401002a00086432060000025adbff997aee266dc326775639",
   };
   auto j = mtest::load_json(std::string(MABUR_VECTOR_DIR) + "/rc.json");
   REQUIRE(j["rcf"].size() == GOLDEN.size());
@@ -295,11 +295,11 @@ TEST(telem_round_trip_and_golden) {
   CHECK(back->nack_rx == 0 && back->retx_syms == 0 && back->retx_refused == 0);
   CHECK(back->chip_caps == 0 && back->width == 0);
   // Golden pin: byte-exact wire so the format can never drift silently.
-  // Re-pinned for the RC_VERSION 18 -> 19 bump: version byte, the appended
-  // chip_caps/width (zero here) and the CRC they feed.
+  // Re-pinned for the RC_VERSION 19 -> 20 bump: the version byte and the
+  // CRC it feeds.
   const std::string GOLDEN =
-      "43521304090201022d0034127766554433221100a0860100282307000000d2040200"
-      "333415163d48000d000e000f0016000000000000000000969b";
+      "43521404090201022d0034127766554433221100a0860100282307000000d2040200"
+      "333415163d48000d000e000f00160000000000000000001d60";
   CHECK(mtest::hex(wire) == GOLDEN);
   // Corrupt/truncate rejection, mirroring the disc_ack tests:
   auto trunc = wire; trunc.pop_back();
@@ -368,13 +368,13 @@ TEST(version_mismatch_rejected_both_directions) {
   CHECK(mabur::rc::parse_rcf(body.data(), body.size()).has_value());
 
   // Byte 2 is the version. Any other version must be refused outright —
-  // including 18, the version before the bump to 19.
+  // including 19, the version before the bump to 20.
   auto v_old = body;
-  v_old[2] = 18;
+  v_old[2] = 19;
   CHECK(!mabur::rc::parse_rcf(v_old.data(), v_old.size()).has_value());
 
   auto v_future = body;
-  v_future[2] = 20;
+  v_future[2] = 21;
   CHECK(!mabur::rc::parse_rcf(v_future.data(), v_future.size()).has_value());
 
   // The same guard must hold for telemetry, which travels the opposite
@@ -455,7 +455,7 @@ TEST(foreign_rc_version_predicate) {
 TEST(telem_ack_is_the_cal_active_bit_alone) {
   // The anchor never leaves the drone: the radio-ownership gate is flags
   // bit6 and nothing else (dropping the anchor shrank TELEM_LEN by one
-  // byte). TELEM_LEN is 57 at RC_VERSION 19.
+  // byte). TELEM_LEN is 57.
   mabur::rc::Telem t;
   t.flags = 0x40;
   auto b = mabur::rc::pack_telem(t);
@@ -465,7 +465,7 @@ TEST(telem_ack_is_the_cal_active_bit_alone) {
   CHECK((got->flags & 0x40) != 0);
 }
 
-TEST(rc_version_is_19) { CHECK(mabur::rc::RC_VERSION == 19); }
+TEST(rc_version_is_20) { CHECK(mabur::rc::RC_VERSION == 20); }
 
 // Types 5 and 6 were T_CAL_CMD / T_CAL_RESULT; deleted, not reused. A frame
 // doctored to either type must parse as nothing (every type-specific

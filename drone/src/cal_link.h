@@ -1,12 +1,10 @@
 #pragma once
 // The drone-side glue between the calibration protocol (mabur/cal_proto.h)
 // and the drone's config and power path, kept out of maburd so it can be
-// tested on the host: what an ApplyCmd writes, where the Verify sweep that
-// follows it parks each rate, the APPLIED cache that answers the GS's
-// APPLY resends, and the boot/parameter-set warnings about the per-width
-// wall tables.
+// tested on the host: what an ApplyCmd writes, the APPLIED cache that
+// answers the GS's APPLY resends, and the boot/parameter-set warnings about
+// the per-width wall tables.
 
-#include <array>
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -19,32 +17,17 @@
 
 namespace mabur {
 
-// The CalWrite an ApplyCmd asks for: the GS's kWallLeave and eff 0 both
-// become cal_apply's "leave the config's value", eff_x1000 is scaled to a
-// fraction, and cal_flags records `stamp_flags` (CalSweep::stamp_flags(),
-// the flags the sweep's frames flew with).
-CalWrite cal_write_for(const cal::ApplyCmd& a, uint8_t stamp_flags);
-
-// "ldpc+stbc", "stbc", "ldpc" or "none" for a kFlagLdpc|kFlagStbc mask:
-// the inverse of power_tables.h's cal_flags_mask.
-std::string cal_flags_name(uint8_t flags);
-
-// The parked relative index of each rate for the Verify sweep that
-// follows an applied ApplyCmd: wall - margin_steps(margin_db) for every
-// wall the apply wrote, clamped to the stamp's [kRelMin, kRelMax] range,
-// and kWallLeave for every wall it left (and for all eight when the apply
-// carried no walls). The GS predicts the same parks from the same walls
-// and margin, so this deliberately ignores the drone-internal anchor cap
-// make_power_plan applies.
-std::array<int, 8> verify_parks(const cal::ApplyCmd& a, double margin_db);
+// The CalWrite an ApplyCmd asks for: eff_x1000 scaled to a fraction, the
+// GS's 0 kept as cal_apply's "leave the config's value".
+CalWrite cal_write_for(const cal::ApplyCmd& a);
 
 // Per-run bookkeeping for applies, owned by the TX writer thread.
 //
 // The GS resends MABUR_CAL_APPLY every 200 ms until it hears
 // MABUR_CAL_APPLIED, so the APPLIED of every (nonce, seq) already applied
 // is kept and re-sent for each resend instead of applying again. Keyed on
-// the sweep's seq, not the width: a run applies a power sweep and then a
-// capacity sweep at the same width, and the second must be applied. The
+// the sweep's seq, not the width: a run may apply two sweeps at the same
+// width, and the second must be applied. The
 // "<config>.pre-cal" backup belongs to the first successful apply of a
 // run only, so it holds the file as it was before the run. A nonce other
 // than the one recorded starts a fresh ledger.

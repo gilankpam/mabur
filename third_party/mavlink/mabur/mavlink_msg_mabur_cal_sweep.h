@@ -6,25 +6,22 @@
 
 typedef struct __mavlink_mabur_cal_sweep_t {
  uint32_t nonce; /*<  Session nonce; the drone echoes it on every reply for this sweep.*/
- uint16_t frames_per_cell; /*<  Frames transmitted per power/verify cell.*/
- uint16_t settle_ms; /*<  Settle time before sampling a cell, in milliseconds.*/
- uint16_t gap_us; /*<  Gap between frames within a cell, in microseconds.*/
- uint16_t dwell_ms; /*<  Dwell time per capacity point, in milliseconds.*/
+ uint16_t settle_ms; /*<  Capacity sweep: settle time before each point, in milliseconds.*/
+ uint16_t dwell_ms; /*<  Capacity sweep: dwell time per point, in milliseconds.*/
  uint8_t seq; /*<  The sweep's position in the run; the drone is idempotent by (nonce, seq).*/
  uint8_t kind; /*<  Which sweep to run.*/
  uint8_t bw; /*<  Channel bandwidth (MHz) the sweep flies at.*/
- int8_t idx_lo; /*<  Low end of the rel power index range swept.*/
- int8_t idx_hi; /*<  High end of the rel power index range swept.*/
- uint8_t mcs_mask; /*<  Bitmask of MCS indices the capacity sweep probes.*/
+ uint8_t channel; /*<  Wall sweep: the channel to measure; 0 = the link's channel.*/
+ uint8_t mcs_mask; /*<  Capacity sweep: bitmask of MCS indices probed.*/
 } mavlink_mabur_cal_sweep_t;
 
-#define MAVLINK_MSG_ID_MABUR_CAL_SWEEP_LEN 18
-#define MAVLINK_MSG_ID_MABUR_CAL_SWEEP_MIN_LEN 18
-#define MAVLINK_MSG_ID_60000_LEN 18
-#define MAVLINK_MSG_ID_60000_MIN_LEN 18
+#define MAVLINK_MSG_ID_MABUR_CAL_SWEEP_LEN 13
+#define MAVLINK_MSG_ID_MABUR_CAL_SWEEP_MIN_LEN 13
+#define MAVLINK_MSG_ID_60000_LEN 13
+#define MAVLINK_MSG_ID_60000_MIN_LEN 13
 
-#define MAVLINK_MSG_ID_MABUR_CAL_SWEEP_CRC 193
-#define MAVLINK_MSG_ID_60000_CRC 193
+#define MAVLINK_MSG_ID_MABUR_CAL_SWEEP_CRC 78
+#define MAVLINK_MSG_ID_60000_CRC 78
 
 
 
@@ -32,35 +29,29 @@ typedef struct __mavlink_mabur_cal_sweep_t {
 #define MAVLINK_MESSAGE_INFO_MABUR_CAL_SWEEP { \
     60000, \
     "MABUR_CAL_SWEEP", \
-    11, \
+    8, \
     {  { "nonce", NULL, MAVLINK_TYPE_UINT32_T, 0, 0, offsetof(mavlink_mabur_cal_sweep_t, nonce) }, \
-         { "seq", NULL, MAVLINK_TYPE_UINT8_T, 0, 12, offsetof(mavlink_mabur_cal_sweep_t, seq) }, \
-         { "kind", NULL, MAVLINK_TYPE_UINT8_T, 0, 13, offsetof(mavlink_mabur_cal_sweep_t, kind) }, \
-         { "bw", NULL, MAVLINK_TYPE_UINT8_T, 0, 14, offsetof(mavlink_mabur_cal_sweep_t, bw) }, \
-         { "frames_per_cell", NULL, MAVLINK_TYPE_UINT16_T, 0, 4, offsetof(mavlink_mabur_cal_sweep_t, frames_per_cell) }, \
-         { "settle_ms", NULL, MAVLINK_TYPE_UINT16_T, 0, 6, offsetof(mavlink_mabur_cal_sweep_t, settle_ms) }, \
-         { "gap_us", NULL, MAVLINK_TYPE_UINT16_T, 0, 8, offsetof(mavlink_mabur_cal_sweep_t, gap_us) }, \
-         { "dwell_ms", NULL, MAVLINK_TYPE_UINT16_T, 0, 10, offsetof(mavlink_mabur_cal_sweep_t, dwell_ms) }, \
-         { "idx_lo", NULL, MAVLINK_TYPE_INT8_T, 0, 15, offsetof(mavlink_mabur_cal_sweep_t, idx_lo) }, \
-         { "idx_hi", NULL, MAVLINK_TYPE_INT8_T, 0, 16, offsetof(mavlink_mabur_cal_sweep_t, idx_hi) }, \
-         { "mcs_mask", NULL, MAVLINK_TYPE_UINT8_T, 0, 17, offsetof(mavlink_mabur_cal_sweep_t, mcs_mask) }, \
+         { "seq", NULL, MAVLINK_TYPE_UINT8_T, 0, 8, offsetof(mavlink_mabur_cal_sweep_t, seq) }, \
+         { "kind", NULL, MAVLINK_TYPE_UINT8_T, 0, 9, offsetof(mavlink_mabur_cal_sweep_t, kind) }, \
+         { "bw", NULL, MAVLINK_TYPE_UINT8_T, 0, 10, offsetof(mavlink_mabur_cal_sweep_t, bw) }, \
+         { "channel", NULL, MAVLINK_TYPE_UINT8_T, 0, 11, offsetof(mavlink_mabur_cal_sweep_t, channel) }, \
+         { "settle_ms", NULL, MAVLINK_TYPE_UINT16_T, 0, 4, offsetof(mavlink_mabur_cal_sweep_t, settle_ms) }, \
+         { "dwell_ms", NULL, MAVLINK_TYPE_UINT16_T, 0, 6, offsetof(mavlink_mabur_cal_sweep_t, dwell_ms) }, \
+         { "mcs_mask", NULL, MAVLINK_TYPE_UINT8_T, 0, 12, offsetof(mavlink_mabur_cal_sweep_t, mcs_mask) }, \
          } \
 }
 #else
 #define MAVLINK_MESSAGE_INFO_MABUR_CAL_SWEEP { \
     "MABUR_CAL_SWEEP", \
-    11, \
+    8, \
     {  { "nonce", NULL, MAVLINK_TYPE_UINT32_T, 0, 0, offsetof(mavlink_mabur_cal_sweep_t, nonce) }, \
-         { "seq", NULL, MAVLINK_TYPE_UINT8_T, 0, 12, offsetof(mavlink_mabur_cal_sweep_t, seq) }, \
-         { "kind", NULL, MAVLINK_TYPE_UINT8_T, 0, 13, offsetof(mavlink_mabur_cal_sweep_t, kind) }, \
-         { "bw", NULL, MAVLINK_TYPE_UINT8_T, 0, 14, offsetof(mavlink_mabur_cal_sweep_t, bw) }, \
-         { "frames_per_cell", NULL, MAVLINK_TYPE_UINT16_T, 0, 4, offsetof(mavlink_mabur_cal_sweep_t, frames_per_cell) }, \
-         { "settle_ms", NULL, MAVLINK_TYPE_UINT16_T, 0, 6, offsetof(mavlink_mabur_cal_sweep_t, settle_ms) }, \
-         { "gap_us", NULL, MAVLINK_TYPE_UINT16_T, 0, 8, offsetof(mavlink_mabur_cal_sweep_t, gap_us) }, \
-         { "dwell_ms", NULL, MAVLINK_TYPE_UINT16_T, 0, 10, offsetof(mavlink_mabur_cal_sweep_t, dwell_ms) }, \
-         { "idx_lo", NULL, MAVLINK_TYPE_INT8_T, 0, 15, offsetof(mavlink_mabur_cal_sweep_t, idx_lo) }, \
-         { "idx_hi", NULL, MAVLINK_TYPE_INT8_T, 0, 16, offsetof(mavlink_mabur_cal_sweep_t, idx_hi) }, \
-         { "mcs_mask", NULL, MAVLINK_TYPE_UINT8_T, 0, 17, offsetof(mavlink_mabur_cal_sweep_t, mcs_mask) }, \
+         { "seq", NULL, MAVLINK_TYPE_UINT8_T, 0, 8, offsetof(mavlink_mabur_cal_sweep_t, seq) }, \
+         { "kind", NULL, MAVLINK_TYPE_UINT8_T, 0, 9, offsetof(mavlink_mabur_cal_sweep_t, kind) }, \
+         { "bw", NULL, MAVLINK_TYPE_UINT8_T, 0, 10, offsetof(mavlink_mabur_cal_sweep_t, bw) }, \
+         { "channel", NULL, MAVLINK_TYPE_UINT8_T, 0, 11, offsetof(mavlink_mabur_cal_sweep_t, channel) }, \
+         { "settle_ms", NULL, MAVLINK_TYPE_UINT16_T, 0, 4, offsetof(mavlink_mabur_cal_sweep_t, settle_ms) }, \
+         { "dwell_ms", NULL, MAVLINK_TYPE_UINT16_T, 0, 6, offsetof(mavlink_mabur_cal_sweep_t, dwell_ms) }, \
+         { "mcs_mask", NULL, MAVLINK_TYPE_UINT8_T, 0, 12, offsetof(mavlink_mabur_cal_sweep_t, mcs_mask) }, \
          } \
 }
 #endif
@@ -75,45 +66,36 @@ typedef struct __mavlink_mabur_cal_sweep_t {
  * @param seq  The sweep's position in the run; the drone is idempotent by (nonce, seq).
  * @param kind  Which sweep to run.
  * @param bw  Channel bandwidth (MHz) the sweep flies at.
- * @param frames_per_cell  Frames transmitted per power/verify cell.
- * @param settle_ms  Settle time before sampling a cell, in milliseconds.
- * @param gap_us  Gap between frames within a cell, in microseconds.
- * @param dwell_ms  Dwell time per capacity point, in milliseconds.
- * @param idx_lo  Low end of the rel power index range swept.
- * @param idx_hi  High end of the rel power index range swept.
- * @param mcs_mask  Bitmask of MCS indices the capacity sweep probes.
+ * @param channel  Wall sweep: the channel to measure; 0 = the link's channel.
+ * @param settle_ms  Capacity sweep: settle time before each point, in milliseconds.
+ * @param dwell_ms  Capacity sweep: dwell time per point, in milliseconds.
+ * @param mcs_mask  Capacity sweep: bitmask of MCS indices probed.
  * @return length of the message in bytes (excluding serial stream start sign)
  */
 static inline uint16_t mavlink_msg_mabur_cal_sweep_pack(uint8_t system_id, uint8_t component_id, mavlink_message_t* msg,
-                               uint32_t nonce, uint8_t seq, uint8_t kind, uint8_t bw, uint16_t frames_per_cell, uint16_t settle_ms, uint16_t gap_us, uint16_t dwell_ms, int8_t idx_lo, int8_t idx_hi, uint8_t mcs_mask)
+                               uint32_t nonce, uint8_t seq, uint8_t kind, uint8_t bw, uint8_t channel, uint16_t settle_ms, uint16_t dwell_ms, uint8_t mcs_mask)
 {
 #if MAVLINK_NEED_BYTE_SWAP || !MAVLINK_ALIGNED_FIELDS
     char buf[MAVLINK_MSG_ID_MABUR_CAL_SWEEP_LEN];
     _mav_put_uint32_t(buf, 0, nonce);
-    _mav_put_uint16_t(buf, 4, frames_per_cell);
-    _mav_put_uint16_t(buf, 6, settle_ms);
-    _mav_put_uint16_t(buf, 8, gap_us);
-    _mav_put_uint16_t(buf, 10, dwell_ms);
-    _mav_put_uint8_t(buf, 12, seq);
-    _mav_put_uint8_t(buf, 13, kind);
-    _mav_put_uint8_t(buf, 14, bw);
-    _mav_put_int8_t(buf, 15, idx_lo);
-    _mav_put_int8_t(buf, 16, idx_hi);
-    _mav_put_uint8_t(buf, 17, mcs_mask);
+    _mav_put_uint16_t(buf, 4, settle_ms);
+    _mav_put_uint16_t(buf, 6, dwell_ms);
+    _mav_put_uint8_t(buf, 8, seq);
+    _mav_put_uint8_t(buf, 9, kind);
+    _mav_put_uint8_t(buf, 10, bw);
+    _mav_put_uint8_t(buf, 11, channel);
+    _mav_put_uint8_t(buf, 12, mcs_mask);
 
         memcpy(_MAV_PAYLOAD_NON_CONST(msg), buf, MAVLINK_MSG_ID_MABUR_CAL_SWEEP_LEN);
 #else
     mavlink_mabur_cal_sweep_t packet;
     packet.nonce = nonce;
-    packet.frames_per_cell = frames_per_cell;
     packet.settle_ms = settle_ms;
-    packet.gap_us = gap_us;
     packet.dwell_ms = dwell_ms;
     packet.seq = seq;
     packet.kind = kind;
     packet.bw = bw;
-    packet.idx_lo = idx_lo;
-    packet.idx_hi = idx_hi;
+    packet.channel = channel;
     packet.mcs_mask = mcs_mask;
 
         memcpy(_MAV_PAYLOAD_NON_CONST(msg), &packet, MAVLINK_MSG_ID_MABUR_CAL_SWEEP_LEN);
@@ -134,45 +116,36 @@ static inline uint16_t mavlink_msg_mabur_cal_sweep_pack(uint8_t system_id, uint8
  * @param seq  The sweep's position in the run; the drone is idempotent by (nonce, seq).
  * @param kind  Which sweep to run.
  * @param bw  Channel bandwidth (MHz) the sweep flies at.
- * @param frames_per_cell  Frames transmitted per power/verify cell.
- * @param settle_ms  Settle time before sampling a cell, in milliseconds.
- * @param gap_us  Gap between frames within a cell, in microseconds.
- * @param dwell_ms  Dwell time per capacity point, in milliseconds.
- * @param idx_lo  Low end of the rel power index range swept.
- * @param idx_hi  High end of the rel power index range swept.
- * @param mcs_mask  Bitmask of MCS indices the capacity sweep probes.
+ * @param channel  Wall sweep: the channel to measure; 0 = the link's channel.
+ * @param settle_ms  Capacity sweep: settle time before each point, in milliseconds.
+ * @param dwell_ms  Capacity sweep: dwell time per point, in milliseconds.
+ * @param mcs_mask  Capacity sweep: bitmask of MCS indices probed.
  * @return length of the message in bytes (excluding serial stream start sign)
  */
 static inline uint16_t mavlink_msg_mabur_cal_sweep_pack_status(uint8_t system_id, uint8_t component_id, mavlink_status_t *_status, mavlink_message_t* msg,
-                               uint32_t nonce, uint8_t seq, uint8_t kind, uint8_t bw, uint16_t frames_per_cell, uint16_t settle_ms, uint16_t gap_us, uint16_t dwell_ms, int8_t idx_lo, int8_t idx_hi, uint8_t mcs_mask)
+                               uint32_t nonce, uint8_t seq, uint8_t kind, uint8_t bw, uint8_t channel, uint16_t settle_ms, uint16_t dwell_ms, uint8_t mcs_mask)
 {
 #if MAVLINK_NEED_BYTE_SWAP || !MAVLINK_ALIGNED_FIELDS
     char buf[MAVLINK_MSG_ID_MABUR_CAL_SWEEP_LEN];
     _mav_put_uint32_t(buf, 0, nonce);
-    _mav_put_uint16_t(buf, 4, frames_per_cell);
-    _mav_put_uint16_t(buf, 6, settle_ms);
-    _mav_put_uint16_t(buf, 8, gap_us);
-    _mav_put_uint16_t(buf, 10, dwell_ms);
-    _mav_put_uint8_t(buf, 12, seq);
-    _mav_put_uint8_t(buf, 13, kind);
-    _mav_put_uint8_t(buf, 14, bw);
-    _mav_put_int8_t(buf, 15, idx_lo);
-    _mav_put_int8_t(buf, 16, idx_hi);
-    _mav_put_uint8_t(buf, 17, mcs_mask);
+    _mav_put_uint16_t(buf, 4, settle_ms);
+    _mav_put_uint16_t(buf, 6, dwell_ms);
+    _mav_put_uint8_t(buf, 8, seq);
+    _mav_put_uint8_t(buf, 9, kind);
+    _mav_put_uint8_t(buf, 10, bw);
+    _mav_put_uint8_t(buf, 11, channel);
+    _mav_put_uint8_t(buf, 12, mcs_mask);
 
         memcpy(_MAV_PAYLOAD_NON_CONST(msg), buf, MAVLINK_MSG_ID_MABUR_CAL_SWEEP_LEN);
 #else
     mavlink_mabur_cal_sweep_t packet;
     packet.nonce = nonce;
-    packet.frames_per_cell = frames_per_cell;
     packet.settle_ms = settle_ms;
-    packet.gap_us = gap_us;
     packet.dwell_ms = dwell_ms;
     packet.seq = seq;
     packet.kind = kind;
     packet.bw = bw;
-    packet.idx_lo = idx_lo;
-    packet.idx_hi = idx_hi;
+    packet.channel = channel;
     packet.mcs_mask = mcs_mask;
 
         memcpy(_MAV_PAYLOAD_NON_CONST(msg), &packet, MAVLINK_MSG_ID_MABUR_CAL_SWEEP_LEN);
@@ -196,46 +169,37 @@ static inline uint16_t mavlink_msg_mabur_cal_sweep_pack_status(uint8_t system_id
  * @param seq  The sweep's position in the run; the drone is idempotent by (nonce, seq).
  * @param kind  Which sweep to run.
  * @param bw  Channel bandwidth (MHz) the sweep flies at.
- * @param frames_per_cell  Frames transmitted per power/verify cell.
- * @param settle_ms  Settle time before sampling a cell, in milliseconds.
- * @param gap_us  Gap between frames within a cell, in microseconds.
- * @param dwell_ms  Dwell time per capacity point, in milliseconds.
- * @param idx_lo  Low end of the rel power index range swept.
- * @param idx_hi  High end of the rel power index range swept.
- * @param mcs_mask  Bitmask of MCS indices the capacity sweep probes.
+ * @param channel  Wall sweep: the channel to measure; 0 = the link's channel.
+ * @param settle_ms  Capacity sweep: settle time before each point, in milliseconds.
+ * @param dwell_ms  Capacity sweep: dwell time per point, in milliseconds.
+ * @param mcs_mask  Capacity sweep: bitmask of MCS indices probed.
  * @return length of the message in bytes (excluding serial stream start sign)
  */
 static inline uint16_t mavlink_msg_mabur_cal_sweep_pack_chan(uint8_t system_id, uint8_t component_id, uint8_t chan,
                                mavlink_message_t* msg,
-                                   uint32_t nonce,uint8_t seq,uint8_t kind,uint8_t bw,uint16_t frames_per_cell,uint16_t settle_ms,uint16_t gap_us,uint16_t dwell_ms,int8_t idx_lo,int8_t idx_hi,uint8_t mcs_mask)
+                                   uint32_t nonce,uint8_t seq,uint8_t kind,uint8_t bw,uint8_t channel,uint16_t settle_ms,uint16_t dwell_ms,uint8_t mcs_mask)
 {
 #if MAVLINK_NEED_BYTE_SWAP || !MAVLINK_ALIGNED_FIELDS
     char buf[MAVLINK_MSG_ID_MABUR_CAL_SWEEP_LEN];
     _mav_put_uint32_t(buf, 0, nonce);
-    _mav_put_uint16_t(buf, 4, frames_per_cell);
-    _mav_put_uint16_t(buf, 6, settle_ms);
-    _mav_put_uint16_t(buf, 8, gap_us);
-    _mav_put_uint16_t(buf, 10, dwell_ms);
-    _mav_put_uint8_t(buf, 12, seq);
-    _mav_put_uint8_t(buf, 13, kind);
-    _mav_put_uint8_t(buf, 14, bw);
-    _mav_put_int8_t(buf, 15, idx_lo);
-    _mav_put_int8_t(buf, 16, idx_hi);
-    _mav_put_uint8_t(buf, 17, mcs_mask);
+    _mav_put_uint16_t(buf, 4, settle_ms);
+    _mav_put_uint16_t(buf, 6, dwell_ms);
+    _mav_put_uint8_t(buf, 8, seq);
+    _mav_put_uint8_t(buf, 9, kind);
+    _mav_put_uint8_t(buf, 10, bw);
+    _mav_put_uint8_t(buf, 11, channel);
+    _mav_put_uint8_t(buf, 12, mcs_mask);
 
         memcpy(_MAV_PAYLOAD_NON_CONST(msg), buf, MAVLINK_MSG_ID_MABUR_CAL_SWEEP_LEN);
 #else
     mavlink_mabur_cal_sweep_t packet;
     packet.nonce = nonce;
-    packet.frames_per_cell = frames_per_cell;
     packet.settle_ms = settle_ms;
-    packet.gap_us = gap_us;
     packet.dwell_ms = dwell_ms;
     packet.seq = seq;
     packet.kind = kind;
     packet.bw = bw;
-    packet.idx_lo = idx_lo;
-    packet.idx_hi = idx_hi;
+    packet.channel = channel;
     packet.mcs_mask = mcs_mask;
 
         memcpy(_MAV_PAYLOAD_NON_CONST(msg), &packet, MAVLINK_MSG_ID_MABUR_CAL_SWEEP_LEN);
@@ -255,7 +219,7 @@ static inline uint16_t mavlink_msg_mabur_cal_sweep_pack_chan(uint8_t system_id, 
  */
 static inline uint16_t mavlink_msg_mabur_cal_sweep_encode(uint8_t system_id, uint8_t component_id, mavlink_message_t* msg, const mavlink_mabur_cal_sweep_t* mabur_cal_sweep)
 {
-    return mavlink_msg_mabur_cal_sweep_pack(system_id, component_id, msg, mabur_cal_sweep->nonce, mabur_cal_sweep->seq, mabur_cal_sweep->kind, mabur_cal_sweep->bw, mabur_cal_sweep->frames_per_cell, mabur_cal_sweep->settle_ms, mabur_cal_sweep->gap_us, mabur_cal_sweep->dwell_ms, mabur_cal_sweep->idx_lo, mabur_cal_sweep->idx_hi, mabur_cal_sweep->mcs_mask);
+    return mavlink_msg_mabur_cal_sweep_pack(system_id, component_id, msg, mabur_cal_sweep->nonce, mabur_cal_sweep->seq, mabur_cal_sweep->kind, mabur_cal_sweep->bw, mabur_cal_sweep->channel, mabur_cal_sweep->settle_ms, mabur_cal_sweep->dwell_ms, mabur_cal_sweep->mcs_mask);
 }
 
 /**
@@ -269,7 +233,7 @@ static inline uint16_t mavlink_msg_mabur_cal_sweep_encode(uint8_t system_id, uin
  */
 static inline uint16_t mavlink_msg_mabur_cal_sweep_encode_chan(uint8_t system_id, uint8_t component_id, uint8_t chan, mavlink_message_t* msg, const mavlink_mabur_cal_sweep_t* mabur_cal_sweep)
 {
-    return mavlink_msg_mabur_cal_sweep_pack_chan(system_id, component_id, chan, msg, mabur_cal_sweep->nonce, mabur_cal_sweep->seq, mabur_cal_sweep->kind, mabur_cal_sweep->bw, mabur_cal_sweep->frames_per_cell, mabur_cal_sweep->settle_ms, mabur_cal_sweep->gap_us, mabur_cal_sweep->dwell_ms, mabur_cal_sweep->idx_lo, mabur_cal_sweep->idx_hi, mabur_cal_sweep->mcs_mask);
+    return mavlink_msg_mabur_cal_sweep_pack_chan(system_id, component_id, chan, msg, mabur_cal_sweep->nonce, mabur_cal_sweep->seq, mabur_cal_sweep->kind, mabur_cal_sweep->bw, mabur_cal_sweep->channel, mabur_cal_sweep->settle_ms, mabur_cal_sweep->dwell_ms, mabur_cal_sweep->mcs_mask);
 }
 
 /**
@@ -283,7 +247,7 @@ static inline uint16_t mavlink_msg_mabur_cal_sweep_encode_chan(uint8_t system_id
  */
 static inline uint16_t mavlink_msg_mabur_cal_sweep_encode_status(uint8_t system_id, uint8_t component_id, mavlink_status_t* _status, mavlink_message_t* msg, const mavlink_mabur_cal_sweep_t* mabur_cal_sweep)
 {
-    return mavlink_msg_mabur_cal_sweep_pack_status(system_id, component_id, _status, msg,  mabur_cal_sweep->nonce, mabur_cal_sweep->seq, mabur_cal_sweep->kind, mabur_cal_sweep->bw, mabur_cal_sweep->frames_per_cell, mabur_cal_sweep->settle_ms, mabur_cal_sweep->gap_us, mabur_cal_sweep->dwell_ms, mabur_cal_sweep->idx_lo, mabur_cal_sweep->idx_hi, mabur_cal_sweep->mcs_mask);
+    return mavlink_msg_mabur_cal_sweep_pack_status(system_id, component_id, _status, msg,  mabur_cal_sweep->nonce, mabur_cal_sweep->seq, mabur_cal_sweep->kind, mabur_cal_sweep->bw, mabur_cal_sweep->channel, mabur_cal_sweep->settle_ms, mabur_cal_sweep->dwell_ms, mabur_cal_sweep->mcs_mask);
 }
 
 /**
@@ -294,45 +258,36 @@ static inline uint16_t mavlink_msg_mabur_cal_sweep_encode_status(uint8_t system_
  * @param seq  The sweep's position in the run; the drone is idempotent by (nonce, seq).
  * @param kind  Which sweep to run.
  * @param bw  Channel bandwidth (MHz) the sweep flies at.
- * @param frames_per_cell  Frames transmitted per power/verify cell.
- * @param settle_ms  Settle time before sampling a cell, in milliseconds.
- * @param gap_us  Gap between frames within a cell, in microseconds.
- * @param dwell_ms  Dwell time per capacity point, in milliseconds.
- * @param idx_lo  Low end of the rel power index range swept.
- * @param idx_hi  High end of the rel power index range swept.
- * @param mcs_mask  Bitmask of MCS indices the capacity sweep probes.
+ * @param channel  Wall sweep: the channel to measure; 0 = the link's channel.
+ * @param settle_ms  Capacity sweep: settle time before each point, in milliseconds.
+ * @param dwell_ms  Capacity sweep: dwell time per point, in milliseconds.
+ * @param mcs_mask  Capacity sweep: bitmask of MCS indices probed.
  */
 #ifdef MAVLINK_USE_CONVENIENCE_FUNCTIONS
 
-static inline void mavlink_msg_mabur_cal_sweep_send(mavlink_channel_t chan, uint32_t nonce, uint8_t seq, uint8_t kind, uint8_t bw, uint16_t frames_per_cell, uint16_t settle_ms, uint16_t gap_us, uint16_t dwell_ms, int8_t idx_lo, int8_t idx_hi, uint8_t mcs_mask)
+static inline void mavlink_msg_mabur_cal_sweep_send(mavlink_channel_t chan, uint32_t nonce, uint8_t seq, uint8_t kind, uint8_t bw, uint8_t channel, uint16_t settle_ms, uint16_t dwell_ms, uint8_t mcs_mask)
 {
 #if MAVLINK_NEED_BYTE_SWAP || !MAVLINK_ALIGNED_FIELDS
     char buf[MAVLINK_MSG_ID_MABUR_CAL_SWEEP_LEN];
     _mav_put_uint32_t(buf, 0, nonce);
-    _mav_put_uint16_t(buf, 4, frames_per_cell);
-    _mav_put_uint16_t(buf, 6, settle_ms);
-    _mav_put_uint16_t(buf, 8, gap_us);
-    _mav_put_uint16_t(buf, 10, dwell_ms);
-    _mav_put_uint8_t(buf, 12, seq);
-    _mav_put_uint8_t(buf, 13, kind);
-    _mav_put_uint8_t(buf, 14, bw);
-    _mav_put_int8_t(buf, 15, idx_lo);
-    _mav_put_int8_t(buf, 16, idx_hi);
-    _mav_put_uint8_t(buf, 17, mcs_mask);
+    _mav_put_uint16_t(buf, 4, settle_ms);
+    _mav_put_uint16_t(buf, 6, dwell_ms);
+    _mav_put_uint8_t(buf, 8, seq);
+    _mav_put_uint8_t(buf, 9, kind);
+    _mav_put_uint8_t(buf, 10, bw);
+    _mav_put_uint8_t(buf, 11, channel);
+    _mav_put_uint8_t(buf, 12, mcs_mask);
 
     _mav_finalize_message_chan_send(chan, MAVLINK_MSG_ID_MABUR_CAL_SWEEP, buf, MAVLINK_MSG_ID_MABUR_CAL_SWEEP_MIN_LEN, MAVLINK_MSG_ID_MABUR_CAL_SWEEP_LEN, MAVLINK_MSG_ID_MABUR_CAL_SWEEP_CRC);
 #else
     mavlink_mabur_cal_sweep_t packet;
     packet.nonce = nonce;
-    packet.frames_per_cell = frames_per_cell;
     packet.settle_ms = settle_ms;
-    packet.gap_us = gap_us;
     packet.dwell_ms = dwell_ms;
     packet.seq = seq;
     packet.kind = kind;
     packet.bw = bw;
-    packet.idx_lo = idx_lo;
-    packet.idx_hi = idx_hi;
+    packet.channel = channel;
     packet.mcs_mask = mcs_mask;
 
     _mav_finalize_message_chan_send(chan, MAVLINK_MSG_ID_MABUR_CAL_SWEEP, (const char *)&packet, MAVLINK_MSG_ID_MABUR_CAL_SWEEP_MIN_LEN, MAVLINK_MSG_ID_MABUR_CAL_SWEEP_LEN, MAVLINK_MSG_ID_MABUR_CAL_SWEEP_CRC);
@@ -347,7 +302,7 @@ static inline void mavlink_msg_mabur_cal_sweep_send(mavlink_channel_t chan, uint
 static inline void mavlink_msg_mabur_cal_sweep_send_struct(mavlink_channel_t chan, const mavlink_mabur_cal_sweep_t* mabur_cal_sweep)
 {
 #if MAVLINK_NEED_BYTE_SWAP || !MAVLINK_ALIGNED_FIELDS
-    mavlink_msg_mabur_cal_sweep_send(chan, mabur_cal_sweep->nonce, mabur_cal_sweep->seq, mabur_cal_sweep->kind, mabur_cal_sweep->bw, mabur_cal_sweep->frames_per_cell, mabur_cal_sweep->settle_ms, mabur_cal_sweep->gap_us, mabur_cal_sweep->dwell_ms, mabur_cal_sweep->idx_lo, mabur_cal_sweep->idx_hi, mabur_cal_sweep->mcs_mask);
+    mavlink_msg_mabur_cal_sweep_send(chan, mabur_cal_sweep->nonce, mabur_cal_sweep->seq, mabur_cal_sweep->kind, mabur_cal_sweep->bw, mabur_cal_sweep->channel, mabur_cal_sweep->settle_ms, mabur_cal_sweep->dwell_ms, mabur_cal_sweep->mcs_mask);
 #else
     _mav_finalize_message_chan_send(chan, MAVLINK_MSG_ID_MABUR_CAL_SWEEP, (const char *)mabur_cal_sweep, MAVLINK_MSG_ID_MABUR_CAL_SWEEP_MIN_LEN, MAVLINK_MSG_ID_MABUR_CAL_SWEEP_LEN, MAVLINK_MSG_ID_MABUR_CAL_SWEEP_CRC);
 #endif
@@ -361,35 +316,29 @@ static inline void mavlink_msg_mabur_cal_sweep_send_struct(mavlink_channel_t cha
   is usually the receive buffer for the channel, and allows a reply to an
   incoming message with minimum stack space usage.
  */
-static inline void mavlink_msg_mabur_cal_sweep_send_buf(mavlink_message_t *msgbuf, mavlink_channel_t chan,  uint32_t nonce, uint8_t seq, uint8_t kind, uint8_t bw, uint16_t frames_per_cell, uint16_t settle_ms, uint16_t gap_us, uint16_t dwell_ms, int8_t idx_lo, int8_t idx_hi, uint8_t mcs_mask)
+static inline void mavlink_msg_mabur_cal_sweep_send_buf(mavlink_message_t *msgbuf, mavlink_channel_t chan,  uint32_t nonce, uint8_t seq, uint8_t kind, uint8_t bw, uint8_t channel, uint16_t settle_ms, uint16_t dwell_ms, uint8_t mcs_mask)
 {
 #if MAVLINK_NEED_BYTE_SWAP || !MAVLINK_ALIGNED_FIELDS
     char *buf = (char *)msgbuf;
     _mav_put_uint32_t(buf, 0, nonce);
-    _mav_put_uint16_t(buf, 4, frames_per_cell);
-    _mav_put_uint16_t(buf, 6, settle_ms);
-    _mav_put_uint16_t(buf, 8, gap_us);
-    _mav_put_uint16_t(buf, 10, dwell_ms);
-    _mav_put_uint8_t(buf, 12, seq);
-    _mav_put_uint8_t(buf, 13, kind);
-    _mav_put_uint8_t(buf, 14, bw);
-    _mav_put_int8_t(buf, 15, idx_lo);
-    _mav_put_int8_t(buf, 16, idx_hi);
-    _mav_put_uint8_t(buf, 17, mcs_mask);
+    _mav_put_uint16_t(buf, 4, settle_ms);
+    _mav_put_uint16_t(buf, 6, dwell_ms);
+    _mav_put_uint8_t(buf, 8, seq);
+    _mav_put_uint8_t(buf, 9, kind);
+    _mav_put_uint8_t(buf, 10, bw);
+    _mav_put_uint8_t(buf, 11, channel);
+    _mav_put_uint8_t(buf, 12, mcs_mask);
 
     _mav_finalize_message_chan_send(chan, MAVLINK_MSG_ID_MABUR_CAL_SWEEP, buf, MAVLINK_MSG_ID_MABUR_CAL_SWEEP_MIN_LEN, MAVLINK_MSG_ID_MABUR_CAL_SWEEP_LEN, MAVLINK_MSG_ID_MABUR_CAL_SWEEP_CRC);
 #else
     mavlink_mabur_cal_sweep_t *packet = (mavlink_mabur_cal_sweep_t *)msgbuf;
     packet->nonce = nonce;
-    packet->frames_per_cell = frames_per_cell;
     packet->settle_ms = settle_ms;
-    packet->gap_us = gap_us;
     packet->dwell_ms = dwell_ms;
     packet->seq = seq;
     packet->kind = kind;
     packet->bw = bw;
-    packet->idx_lo = idx_lo;
-    packet->idx_hi = idx_hi;
+    packet->channel = channel;
     packet->mcs_mask = mcs_mask;
 
     _mav_finalize_message_chan_send(chan, MAVLINK_MSG_ID_MABUR_CAL_SWEEP, (const char *)packet, MAVLINK_MSG_ID_MABUR_CAL_SWEEP_MIN_LEN, MAVLINK_MSG_ID_MABUR_CAL_SWEEP_LEN, MAVLINK_MSG_ID_MABUR_CAL_SWEEP_CRC);
@@ -419,7 +368,7 @@ static inline uint32_t mavlink_msg_mabur_cal_sweep_get_nonce(const mavlink_messa
  */
 static inline uint8_t mavlink_msg_mabur_cal_sweep_get_seq(const mavlink_message_t* msg)
 {
-    return _MAV_RETURN_uint8_t(msg,  12);
+    return _MAV_RETURN_uint8_t(msg,  8);
 }
 
 /**
@@ -429,7 +378,7 @@ static inline uint8_t mavlink_msg_mabur_cal_sweep_get_seq(const mavlink_message_
  */
 static inline uint8_t mavlink_msg_mabur_cal_sweep_get_kind(const mavlink_message_t* msg)
 {
-    return _MAV_RETURN_uint8_t(msg,  13);
+    return _MAV_RETURN_uint8_t(msg,  9);
 }
 
 /**
@@ -439,77 +388,47 @@ static inline uint8_t mavlink_msg_mabur_cal_sweep_get_kind(const mavlink_message
  */
 static inline uint8_t mavlink_msg_mabur_cal_sweep_get_bw(const mavlink_message_t* msg)
 {
-    return _MAV_RETURN_uint8_t(msg,  14);
+    return _MAV_RETURN_uint8_t(msg,  10);
 }
 
 /**
- * @brief Get field frames_per_cell from mabur_cal_sweep message
+ * @brief Get field channel from mabur_cal_sweep message
  *
- * @return  Frames transmitted per power/verify cell.
+ * @return  Wall sweep: the channel to measure; 0 = the link's channel.
  */
-static inline uint16_t mavlink_msg_mabur_cal_sweep_get_frames_per_cell(const mavlink_message_t* msg)
+static inline uint8_t mavlink_msg_mabur_cal_sweep_get_channel(const mavlink_message_t* msg)
 {
-    return _MAV_RETURN_uint16_t(msg,  4);
+    return _MAV_RETURN_uint8_t(msg,  11);
 }
 
 /**
  * @brief Get field settle_ms from mabur_cal_sweep message
  *
- * @return  Settle time before sampling a cell, in milliseconds.
+ * @return  Capacity sweep: settle time before each point, in milliseconds.
  */
 static inline uint16_t mavlink_msg_mabur_cal_sweep_get_settle_ms(const mavlink_message_t* msg)
 {
-    return _MAV_RETURN_uint16_t(msg,  6);
-}
-
-/**
- * @brief Get field gap_us from mabur_cal_sweep message
- *
- * @return  Gap between frames within a cell, in microseconds.
- */
-static inline uint16_t mavlink_msg_mabur_cal_sweep_get_gap_us(const mavlink_message_t* msg)
-{
-    return _MAV_RETURN_uint16_t(msg,  8);
+    return _MAV_RETURN_uint16_t(msg,  4);
 }
 
 /**
  * @brief Get field dwell_ms from mabur_cal_sweep message
  *
- * @return  Dwell time per capacity point, in milliseconds.
+ * @return  Capacity sweep: dwell time per point, in milliseconds.
  */
 static inline uint16_t mavlink_msg_mabur_cal_sweep_get_dwell_ms(const mavlink_message_t* msg)
 {
-    return _MAV_RETURN_uint16_t(msg,  10);
-}
-
-/**
- * @brief Get field idx_lo from mabur_cal_sweep message
- *
- * @return  Low end of the rel power index range swept.
- */
-static inline int8_t mavlink_msg_mabur_cal_sweep_get_idx_lo(const mavlink_message_t* msg)
-{
-    return _MAV_RETURN_int8_t(msg,  15);
-}
-
-/**
- * @brief Get field idx_hi from mabur_cal_sweep message
- *
- * @return  High end of the rel power index range swept.
- */
-static inline int8_t mavlink_msg_mabur_cal_sweep_get_idx_hi(const mavlink_message_t* msg)
-{
-    return _MAV_RETURN_int8_t(msg,  16);
+    return _MAV_RETURN_uint16_t(msg,  6);
 }
 
 /**
  * @brief Get field mcs_mask from mabur_cal_sweep message
  *
- * @return  Bitmask of MCS indices the capacity sweep probes.
+ * @return  Capacity sweep: bitmask of MCS indices probed.
  */
 static inline uint8_t mavlink_msg_mabur_cal_sweep_get_mcs_mask(const mavlink_message_t* msg)
 {
-    return _MAV_RETURN_uint8_t(msg,  17);
+    return _MAV_RETURN_uint8_t(msg,  12);
 }
 
 /**
@@ -522,15 +441,12 @@ static inline void mavlink_msg_mabur_cal_sweep_decode(const mavlink_message_t* m
 {
 #if MAVLINK_NEED_BYTE_SWAP || !MAVLINK_ALIGNED_FIELDS
     mabur_cal_sweep->nonce = mavlink_msg_mabur_cal_sweep_get_nonce(msg);
-    mabur_cal_sweep->frames_per_cell = mavlink_msg_mabur_cal_sweep_get_frames_per_cell(msg);
     mabur_cal_sweep->settle_ms = mavlink_msg_mabur_cal_sweep_get_settle_ms(msg);
-    mabur_cal_sweep->gap_us = mavlink_msg_mabur_cal_sweep_get_gap_us(msg);
     mabur_cal_sweep->dwell_ms = mavlink_msg_mabur_cal_sweep_get_dwell_ms(msg);
     mabur_cal_sweep->seq = mavlink_msg_mabur_cal_sweep_get_seq(msg);
     mabur_cal_sweep->kind = mavlink_msg_mabur_cal_sweep_get_kind(msg);
     mabur_cal_sweep->bw = mavlink_msg_mabur_cal_sweep_get_bw(msg);
-    mabur_cal_sweep->idx_lo = mavlink_msg_mabur_cal_sweep_get_idx_lo(msg);
-    mabur_cal_sweep->idx_hi = mavlink_msg_mabur_cal_sweep_get_idx_hi(msg);
+    mabur_cal_sweep->channel = mavlink_msg_mabur_cal_sweep_get_channel(msg);
     mabur_cal_sweep->mcs_mask = mavlink_msg_mabur_cal_sweep_get_mcs_mask(msg);
 #else
         uint8_t len = msg->len < MAVLINK_MSG_ID_MABUR_CAL_SWEEP_LEN? msg->len : MAVLINK_MSG_ID_MABUR_CAL_SWEEP_LEN;

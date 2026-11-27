@@ -2,42 +2,16 @@
 
 #include <cstdio>
 
-#include "mabur/cal_park.h"
 #include "mabur/cal_wire.h"
-#include "mabur/rc_proto.h"
-#include "power_plan.h"
 #include "power_tables.h"
 
 namespace mabur {
 
-CalWrite cal_write_for(const cal::ApplyCmd& a, uint8_t stamp_flags) {
+CalWrite cal_write_for(const cal::ApplyCmd& a) {
   CalWrite w;
   w.bw = a.bw;
-  w.has_walls = a.has_walls;
-  w.has_eff = a.has_eff;
-  for (size_t r = 0; r < 8; ++r) {
-    w.walls[r] = a.walls[r] == cal::kWallLeave ? rc::kWallUndetermined : a.walls[r];
-    w.eff[r] = a.eff_x1000[r] == 0 ? 0.0 : a.eff_x1000[r] / 1000.0;
-  }
-  w.legacy_wall = a.legacy == cal::kWallLeave ? rc::kWallUndetermined : a.legacy;
-  w.cal_flags = cal_flags_name(stamp_flags);
+  for (size_t r = 0; r < 8; ++r) w.eff[r] = a.eff_x1000[r] == 0 ? 0.0 : a.eff_x1000[r] / 1000.0;
   return w;
-}
-
-std::string cal_flags_name(uint8_t flags) {
-  const bool ldpc = (flags & cal::kFlagLdpc) != 0;
-  const bool stbc = (flags & cal::kFlagStbc) != 0;
-  if (ldpc && stbc) return "ldpc+stbc";
-  if (stbc) return "stbc";
-  if (ldpc) return "ldpc";
-  return "none";
-}
-
-std::array<int, 8> verify_parks(const cal::ApplyCmd& a, double margin_db) {
-  std::array<int, 8> park;
-  park.fill(cal::kWallLeave);
-  if (!a.has_walls) return park;
-  return park_rel_for(a.walls, margin_db);
 }
 
 std::optional<cal::Applied> CalApplyLedger::cached(uint32_t nonce, uint8_t seq) const {
