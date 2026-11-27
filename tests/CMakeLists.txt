@@ -118,6 +118,7 @@ if(MABUR_BUILD_DRONE)
   add_mtest(test_live_power_table test_live_power_table.cpp LIBS mabur_drone_core)
   add_mtest(test_debug_http test_debug_http.cpp LIBS mabur_drone_core)
   add_mtest(test_probe_source test_probe_source.cpp LIBS mabur_drone_core)
+  add_mtest(test_cross_evm test_cross_evm.cpp LIBS mabur_drone_core)
 
   # Host coverage for the carried waybeam venc pure modules (Task B8).
   # These drone/venc/*.c files are ARM-only in venc_core (drone/
