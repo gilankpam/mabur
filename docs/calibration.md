@@ -100,7 +100,9 @@ since the ack against the drone's 20 s deadline.
 flags that do not match the running sweep (see "The sweep frame"). A
 `failed` line ends with `fail_reason=<why>` (free text to the end of the
 line). Then `start` finds the run's `cal.log` and prints the final report
-(below). `maburcal abort` cancels a run in any state.
+(below). `maburcal abort` cancels a run in any state (a wall measurement
+only once the drone hears it: see "The drone sends nothing during the
+measurement").
 
 **Run it with `[radio] relays = []`.** The session tallies only cards 0
 and 1, and relay cards come after the USB cards in the roster: on a GS
@@ -269,19 +271,25 @@ TX writer thread, against a capture session on the radio
    error): the capture session ends (switch route, listener chain and TX
    buffer layout back to flight's), then width, channel and TX power. If
    the session's own restore fails the result is `device_error` and nothing
-   is stored; the radio's state is then unknown, so `maburd` keeps
-   repeating the report for 1 s, logs `maburd cal: ERROR: the wall
-   measurement could not restore the radio; exiting for wrapper respawn …`
-   and exits, and its wrapper starts it again with a fresh bring-up (the
-   link drops for that restart). The same happens when the measurement is
-   aborted or cut off and its restore fails, with no report.
+   is stored; the radio's state is then unknown, so `maburd` sends the
+   report, logs `maburd cal: ERROR: the wall measurement could not restore
+   the radio; exiting for wrapper respawn …`, keeps repeating the report
+   for 1 s after that line and exits (code 3); its wrapper starts it again
+   2 s later with a fresh bring-up (the link drops for that restart). The
+   same happens when the measurement is aborted or cut off and its restore
+   fails, with no report.
 
 **The drone sends nothing during the measurement** (`radio_quiet`): from
 the setup to the restore every send is dropped, so no DISC_ACK, no
 re-ack of a repeated SWEEP, no Telem, for up to the 20 s deadline. The GS is
 silent for the same window. The deadline, not an abort, bounds a run: an
-abort is only checked between captures, and the drone is off the link's
-channel or has a chain detached while it measures.
+abort is only checked between captures, and only heard on the link's
+channel (a measurement on another channel cannot hear it at all). A
+measurement that ends before an abort reaches it finishes as if none was
+sent: its result stands, and an `Ok` one is stored in the cache and
+reported, though `maburcal` already said the run was aborted. The GS answers that late
+report with another round of Aborts, which close the run; unheard, the
+run closes after `await_next_ms` (15 s).
 
 **Validity.** A result is stored only when the measurement runs to its
 end and the curve passes the checks; every other result stores nothing.
@@ -789,9 +797,12 @@ says which:
   index range, so no curve to cut (a very low-power module); `deadline`:
   20 s were not enough; `device_error`: the radio refused a step or did
   not restore. A failed restore is the drone's `maburd cal: ERROR:
-  CrossPathEnd failed` line, and `maburd` then restarts itself about 1 s
-  after the report (the link drops and comes back; nothing to do on the
-  GS); `aborted`: cancelled.
+  CrossPathEnd failed` line; `maburd` then exits 1 s after its `exiting for
+  wrapper respawn` line and its wrapper starts it 2 s later, so the drone
+  is off the air for 3 s plus a fresh bring-up (the link drops and comes
+  back; nothing to do on the GS); `aborted`: cancelled (an abort the drone
+  never heard leaves no `aborted`: see "The drone sends nothing during the
+  measurement").
 - `no wall report from the drone` — no copy of the SWEEP_DONE arrived by
   the window's end (the 20 s deadline plus the GS's 1 s slack). The
   measurement may still have succeeded on the drone: its log line says.
@@ -811,9 +822,11 @@ lists every apply's outcome.
 detached a chain and switched channel and width, and every exit path
 restores them. If video does not return within a couple of DISC beacons
 after the run, look for `maburd cal: wall … result=` in `/tmp/mabur.log`.
-After an `ERROR: CrossPathEnd failed` line `maburd` restarts itself
-within about a second (its wrapper respawns it); if the pair stays down
-without one, restart `maburd` or power-cycle the drone.
+After an `ERROR: CrossPathEnd failed` line `maburd` exits 1 s after its
+`exiting for wrapper respawn` line and its wrapper starts it 2 s later: 3 s
+off the air plus a fresh bring-up (radio firmware download, encoder
+start) before the link can return. If the pair stays down without one,
+restart `maburd` or power-cycle the drone.
 
 **`eff` is `-` for a width whose capacity sweep ran.** Every copy of its
 SweepDone was lost inside the GS's 1 s listen tail, so nothing was written
@@ -962,8 +975,8 @@ findings page.
 | 20 MHz GS | an all-20 ladder on the GS (derived receiver width 20) | `maburcal start` runs two sweeps; `maburcal start power40` → `err refused: GS receiver width is 20 (load a 40 MHz ladder to calibrate 40 MHz)` |
 | unsupported drone | a drone on another chip, `maburcal start` | the wall sweeps are skipped (`X` lines), capacity completes |
 | config | `/etc/mabur.toml` diff vs `.pre-cal` after a capacity run | only `efficiency_<bw>`; comments intact |
-| abort | `maburcal abort` mid-capacity, and mid-wall | video back; the drone flies normally; the cache is as it was |
-| interruption | kill `maburgs` mid-sweep | drone back to video within `await_next_ms` (or the measurement's 20 s deadline); config and cache byte-identical |
+| abort | `maburcal abort` mid-capacity, and mid-wall on the link's channel and on another | video back; the drone flies normally; the cache is as it was when the drone heard the abort (`result=Aborted`); a measurement that finished first (off the link's channel it always does) keeps its result, and an `Ok` one is stored |
+| interruption | kill `maburgs` mid-sweep | drone back to video within `await_next_ms` (or the measurement's 20 s deadline); config byte-identical, and the cache too unless a wall measurement under way finished `Ok`, which it stores |
 | re-link | after every run | `SESSION` again within a couple of beacons, IDR at the join |
 | dirty op | start with a jammer or busy air on op | `H relocate … cal` in `scan.log`; the run on the quiet member |
 | tunnel lane | the drone's `stats:`/`tx_send:` lines and the sideport during a run | `mav … reject=` flat (`cal_late=` may rise by ~2 at the end of a run), `drone.auth_reject` false, `link.mav.reject` flat, `cal_latch_drop=0` |
