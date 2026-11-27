@@ -277,6 +277,12 @@ TEST(a_park_rise_of_11_is_unparked) {   // envelopes 39 then 50
   run_to_end(sw);
   CHECK(sw.result() == cal::WallResult::Unparked && sw.park_rise_db() == 11.0f);
 }
+TEST(a_park_rise_of_10_5_is_unparked) {   // envelopes 39.5 then 50
+  SWEEP(fake, sw);
+  fake.script = [](const Cap& c) { CrossEvm m = default_script(c); if (c.id == 0) m.envelope_db = 39.5f; return m; };
+  run_to_end(sw);
+  CHECK(sw.result() == cal::WallResult::Unparked && sw.park_rise_db() == 10.5f);
+}
 TEST(a_park_rise_of_12_5_passes) {   // envelopes 37.5 then 50
   SWEEP(fake, sw);
   fake.script = [](const Cap& c) { CrossEvm m = default_script(c); if (c.id == 0) m.envelope_db = 37.5f; return m; };

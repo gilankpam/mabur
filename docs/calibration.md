@@ -692,8 +692,8 @@ widths (`maburcal start power20@<ch> power40@<ch> …`, one token per
 channel and width, then `maburcal start` for capacity), then set
 `power_mode = "offset"`. One run is bounded by the drone's 180 s
 `hard_cap_ms`, and a wall token can take its whole window, the 30 s
-deadline plus the GS's 1 s slack and the 200 ms start: eight wall tokens
-fit one run at worst, six beside both capacity sweeps. Measure more
+deadline plus the GS's 1 s slack and the 200 ms start: five wall tokens
+fit one run at worst (31.2 s each), four beside both capacity sweeps. Measure more
 channels over several runs.
 
 ## Geometry
@@ -808,7 +808,7 @@ says which:
   listener or the PA was not clean enough to read (an antenna, a wedged
   chain; re-run); `not_saturated`: the PA never compressed within the
   index range, so no curve to cut (a very low-power module); `deadline`:
-  20 s were not enough; `device_error`: the radio refused a step or did
+  30 s were not enough; `device_error`: the radio refused a step or did
   not restore. A failed restore is the drone's `maburd cal: ERROR:
   CrossPathEnd failed` line; `maburd` then exits 1 s after its `exiting for
   wrapper respawn` line and its wrapper starts it 2 s later, so the drone
