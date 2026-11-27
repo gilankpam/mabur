@@ -67,6 +67,9 @@ RealMode::RealMode(const Config& cfg, uint8_t start_ch, const std::string& cfg_p
           for (size_t i = 0; i < b.size(); ++i) v[i] = {b[i].data(), b[i].size()};
           await_retune_gate(&retune_waiting);
           std::shared_lock<std::shared_mutex> sg(tx_gate);
+          // A frame queued before a wall measurement began (a capacity
+          // blast's tail) must not air inside its cross-path session.
+          if (radio_quiet.load(std::memory_order_acquire)) return size_t{0};
           const int slot = send_timer.begin(now_steady_us());
           const size_t sent = dev->send_packets(v.data(), v.size());
           send_timer.end(slot, now_steady_us());

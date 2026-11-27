@@ -107,11 +107,11 @@ void DeviceWallCtl::start(uint8_t channel, uint8_t bw, uint64_t now_ms) {
   // ht40_offset, and every member of radio.channels shares one at width 40
   // (channel_set_issue), so the measured channel lands on the standard pair
   // the link flies there.
-  retuned_ = channel != m_.power_table.channel();
   narrowed_ = bw == 20 && m_.cfg.radio.width == 40;
   IRtlRadio* dev = m_.rtl_device;
   m_.power_table.with_lock([&] {
     exclusive(m_, [&] {
+      retuned_ = channel != m_.power_table.channel();
       // From here to the restore nothing else may send (the session moves
       // the TX queue boundaries): every DevourerSink send is dropped.
       m_.radio_quiet.store(true, std::memory_order_release);

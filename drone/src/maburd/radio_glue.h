@@ -82,8 +82,8 @@ struct DevourerSink : mabur::FrameSink {
   std::atomic<bool>* gate_waiting = nullptr;
   // RealMode::radio_quiet: while it is up every send is dropped. Read under
   // the gate, so a send cannot slip past the exclusive hold that raises it.
-  // The pool path needs no check: only the TX writer thread feeds it, and
-  // that thread is the one running the measurement.
+  // The pool's own send (RealMode's tx_pool) makes the same check under the
+  // gate, for frames already queued to its workers when the flag went up.
   std::atomic<bool>* quiet = nullptr;
   // Times the direct-path video sends for the IGI floor watchdog (null in
   // dry-run). Control sends are not timed.
