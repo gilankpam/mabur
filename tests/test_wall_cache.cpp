@@ -3,6 +3,7 @@
 
 #include <unistd.h>
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -123,6 +124,36 @@ TEST(header_only_is_a_valid_empty_cache) {  // fails if an empty-but-valid file 
   std::string note = "x";
   CHECK(load_wall_cache(t.p(), &note).entries.empty());
   CHECK(note.empty());
+}
+
+TEST(oversize_file_is_rejected) {  // fails if the size cap is removed
+  expect_bad(H + std::string(70 * 1024, 'a') + "\n");
+}
+TEST(long_digit_token_is_rejected) {  // fails if parse_int's length cap is removed (7 digits of a value in range, e.g. 0000040, would load)
+  expect_bad(H + line("0000040", "40", "75", vals(25)));
+}
+TEST(save_refuses_out_of_range_and_keeps_old_file) {  // fails if save stops validating: one bad entry would poison the next boot
+  Dir t;
+  WallCache good;
+  good.entries[{40, 40}] = mk(75, -319);
+  REQUIRE(save_wall_cache(t.p(), good));
+  const std::string before = slurp(t.p());
+  WallCache bad = good;
+  bad.entries[{144, 20}] = mk(39, -306);
+  bad.entries[{144, 20}].evm_db[1] = -61.0f;
+  CHECK(!save_wall_cache(t.p(), bad));
+  bad.entries[{144, 20}].evm_db[1] = std::nanf("");
+  CHECK(!save_wall_cache(t.p(), bad));
+  bad.entries[{144, 20}] = mk(39, -306); bad.entries[{144, 20}].evm_db[1] = 0.5f;
+  CHECK(!save_wall_cache(t.p(), bad));
+  bad.entries[{144, 20}] = mk(128, -306);
+  CHECK(!save_wall_cache(t.p(), bad));
+  bad.entries.erase({144, 20}); bad.entries[{0, 20}] = mk(1, -306);
+  CHECK(!save_wall_cache(t.p(), bad));
+  bad.entries.erase({0, 20}); bad.entries[{50, 80}] = mk(1, -306);
+  CHECK(!save_wall_cache(t.p(), bad));
+  CHECK(slurp(t.p()) == before);
+  CHECK(access((t.p() + ".tmp").c_str(), F_OK) != 0);
 }
 
 TEST(leftover_tmp_is_ignored) {  // fails if load reads <path>.tmp

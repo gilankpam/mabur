@@ -13,6 +13,10 @@ namespace mabur {
 namespace {
 
 constexpr const char* kHeader = "maburwalls 1";
+// Shared by load and save: save never writes what load would reject.
+constexpr int kChMin = 1, kChMax = 177, kAnchorMax = 127, kEvmMin = -600, kEvmMax = 0;
+constexpr long kMaxBytes = 64 * 1024;  // 354 entries x ~140 B is ~50 KB
+bool width_ok(long w) { return w == 20 || w == 40; }
 
 // Whole token must be an optionally negative decimal integer ("5x", "-3.5", "+1", "" are out).
 bool parse_int(const std::string& s, long* out) {
@@ -41,16 +45,16 @@ std::string parse(const std::string& text, WallCache* out) {
     }
     if (tok.size() != 3 + kWallPoints) return at + "wrong token count";
     long ch, w, anchor;
-    if (!parse_int(tok[0], &ch) || ch < 1 || ch > 177) return at + "bad channel";
-    if (!parse_int(tok[1], &w) || (w != 20 && w != 40)) return at + "bad width";
-    if (!parse_int(tok[2], &anchor) || anchor < 0 || anchor > 127) return at + "bad anchor";
+    if (!parse_int(tok[0], &ch) || ch < kChMin || ch > kChMax) return at + "bad channel";
+    if (!parse_int(tok[1], &w) || !width_ok(w)) return at + "bad width";
+    if (!parse_int(tok[2], &anchor) || anchor < 0 || anchor > kAnchorMax) return at + "bad anchor";
     WallCurve c;
     c.anchor = static_cast<int>(anchor);
     for (int k = 0; k < kWallPoints; ++k) {
       const std::string& t = tok[3 + k];
       if (t == "x") continue;
       long v;
-      if (!parse_int(t, &v) || v < -600 || v > 0) return at + "bad value";
+      if (!parse_int(t, &v) || v < kEvmMin || v > kEvmMax) return at + "bad value";
       c.evm_db[k] = v / 10.0f;
     }
     if (!out->entries.emplace(std::make_pair(uint8_t(ch), uint8_t(w)), c).second)
@@ -64,13 +68,20 @@ std::string parse(const std::string& text, WallCache* out) {
 WallCache load_wall_cache(const std::string& path, std::string* note) {
   WallCache c;
   std::string why;
-  std::ifstream f(path, std::ios::binary);
-  if (!f) {
-    why = "cannot open " + path;
-  } else {
-    std::stringstream buf;
-    buf << f.rdbuf();
-    why = parse(buf.str(), &c);
+  try {
+    std::ifstream f(path, std::ios::binary | std::ios::ate);
+    if (!f) {
+      why = "cannot open " + path;
+    } else if (f.tellg() > kMaxBytes) {
+      why = "file too large";
+    } else {
+      f.seekg(0);
+      std::stringstream buf;
+      buf << f.rdbuf();
+      why = parse(buf.str(), &c);
+    }
+  } catch (...) {
+    why = "read failed";
   }
   if (!why.empty()) c.entries.clear();
   if (note) *note = why;
@@ -78,6 +89,13 @@ WallCache load_wall_cache(const std::string& path, std::string* note) {
 }
 
 bool save_wall_cache(const std::string& path, const WallCache& c) {
+  for (const auto& [key, cv] : c.entries) {
+    bool ok = key.first >= kChMin && key.first <= kChMax && width_ok(key.second) &&
+              cv.anchor >= 0 && cv.anchor <= kAnchorMax;
+    for (const auto& v : cv.evm_db)  // NaN fails both comparisons' negation: !(x>=lo) catches it
+      if (v && !(std::lround(*v * 10.0f) >= kEvmMin && std::lround(*v * 10.0f) <= kEvmMax && *v == *v)) ok = false;
+    if (!ok) return false;
+  }
   const std::string tmp = path + ".tmp";
   std::FILE* f = std::fopen(tmp.c_str(), "w");
   if (!f) return false;
