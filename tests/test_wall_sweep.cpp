@@ -179,6 +179,39 @@ TEST(clipped_at_the_weakest_gain_leaves_the_point_empty) {
   CHECK(fake.count("cap 40 0") == 1);
   CHECK(sw.curve().evm_db[k_of(44)].has_value() && sw.curve().evm_db[k_of(36)].has_value());
 }
+TEST(a_clip_at_the_weakest_gain_discards_values_already_taken) {
+  // every gain above 0 clips; at index 40 gain 0 gives good, good, clipped
+  SWEEP(fake, sw);
+  fake.script = [](const Cap& c) {
+    CrossEvm m = default_script(c);
+    if (c.id >= 2 && c.gain > 0) m.clipped = true;
+    if (c.id >= 2 && c.idx == 40 && c.nth == 2) m.clipped = true;
+    return m;
+  };
+  run_to_end(sw);
+  CHECK(fake.count("cap 40 0") == 3);
+  CHECK(!sw.curve().evm_db[k_of(40)].has_value());
+}
+TEST(a_level_of_exactly_30_is_usable) {
+  SWEEP(fake, sw);
+  fake.script = [](const Cap& c) { CrossEvm m = default_script(c); m.level_db = 30.0f; return m; };
+  run_to_end(sw);
+  CHECK(sw.result() == cal::WallResult::Ok && fake.count("cap") == 77);
+  for (const auto& v : sw.curve().evm_db) CHECK(v.has_value());
+}
+TEST(a_level_of_exactly_57_does_not_step_down) {
+  SWEEP(fake, sw);
+  fake.script = [](const Cap& c) { CrossEvm m = default_script(c); m.level_db = 57.0f; return m; };
+  run_to_end(sw);
+  CHECK(sw.result() == cal::WallResult::Ok && fake.count("cap") == 77);
+  CHECK(fake.count("cap 124 3") == 3);
+}
+TEST(a_park_rise_of_exactly_10_passes) {   // envelopes 40 then 50
+  SWEEP(fake, sw);
+  fake.script = [](const Cap& c) { CrossEvm m = default_script(c); if (c.id == 0) m.envelope_db = 40; return m; };
+  run_to_end(sw);
+  CHECK(sw.result() == cal::WallResult::Ok && sw.park_rise_db() == 10.0f);
+}
 TEST(a_capture_without_a_frame_is_retried_twice) {
   SWEEP(fake, sw);
   fake.script = [](const Cap& c) {

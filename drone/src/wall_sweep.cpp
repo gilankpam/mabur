@@ -27,6 +27,7 @@ void WallSweep::finish(cal::WallResult r) {
 
 bool WallSweep::step(uint64_t now_ms) {
   if (done_) return false;
+  // now_ms is monotonic, so the unsigned difference cannot wrap.
   if (now_ms - start_ >= kDeadlineMs) { finish(cal::WallResult::Deadline); return false; }
 
   if (phase_ == Phase::Begin) {
@@ -63,6 +64,7 @@ bool WallSweep::step(uint64_t now_ms) {
 }
 
 void WallSweep::take_point(const CrossEvm& m) {
+  // Level is only defined with a frame; a strong frameless capture may be foreign energy, not the probe.
   const bool hot = m.clipped || (m.frame && m.level_db > kHeadroomDb);
   if (hot && gain_ > 0) {
     // Values taken at the stronger gain are not comparable with the weaker one:
@@ -72,7 +74,7 @@ void WallSweep::take_point(const CrossEvm& m) {
     tries_ = 0;
     return;
   }
-  if (m.clipped) { next_point(); return; }   // clipped at the weakest gain: the point stays empty
+  if (m.clipped) { vals_.clear(); next_point(); return; }   // clipped at the weakest gain: the point stays empty
 
   ++tries_;
   // A demodulated "frame" below kMinLevelDb is read out of noise, not the probe: a retry.

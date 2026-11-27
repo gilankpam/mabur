@@ -30,6 +30,7 @@ class WallSweep {
   static constexpr int kCapturesPerPoint = 3, kMaxRetries = 2, kGains = 4;
 
   WallSweep(CaptureSession& s, uint8_t bw, int anchor, uint64_t now_ms, Measure measure = cross_evm);
+  // end() is called once on finishing, and only if begin() was called.
   ~WallSweep();                    // ends the session if it is still open
   WallSweep(const WallSweep&) = delete;
   WallSweep& operator=(const WallSweep&) = delete;
