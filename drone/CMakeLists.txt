@@ -18,6 +18,7 @@ add_library(mabur_drone_core STATIC
   src/cal_apply.cpp
   src/config_apply.cpp
   src/cal_sweep.cpp
+  src/wall_curve.cpp
   src/cal_link.cpp
   src/live_power_table.cpp
   src/mav_params.cpp
