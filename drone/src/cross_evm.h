@@ -17,11 +17,12 @@ struct CrossEvm {
   float envelope_db = 0;  // 90th percentile of the smoothed power; always valid
   bool clipped = false;   // any I or Q at or beyond +-2040 once the DC (median) is removed
   int flagged = 0;        // samples marked bad inside the chosen frame's demodulated span
+  size_t start = 0;       // sample where the chosen frame rises
 };
 
-// bw is 20 or 40 (MHz). Of every frame in the capture and every symbol timing
-// tried, the result is the one with the fewest flagged samples, then the
-// lowest EVM.
+// bw is 20 or 40 (MHz). Of every frame in the capture, the result is the one
+// with the fewest flagged samples, then the lowest EVM over the symbol timings
+// its search tries.
 CrossEvm cross_evm(const devourer::IqSample* s, size_t n, uint8_t bw);
 
 } // namespace mabur

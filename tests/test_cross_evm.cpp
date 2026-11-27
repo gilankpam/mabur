@@ -69,6 +69,43 @@ TEST(matches_the_reference) {
   }
 }
 
+// Recorded from the exhaustive search (every symbol timing of every frame
+// demodulated): the cheaper search keeps its frame, its level and its EVM.
+struct Pin {
+  const char* name;
+  uint8_t bw;
+  bool frame;
+  size_t start;
+  float evm_db, level_db;
+};
+const Pin kPins[] = {
+    {"c144_20_i028", 20, true, 908, -30.5977f, 50.1552f},
+    {"c144_20_i060", 20, true, 2808, -16.7838f, 57.0648f},
+    {"c144_20_i124", 20, true, 3929, -8.1238f, 59.6049f},
+    {"c40_20_i060", 20, true, 2988, -32.0028f, 52.7690f},
+    {"c40_20_i060_weak", 20, true, 4330, -21.7906f, 40.9141f},
+    {"c144_20_i028_clip", 20, true, 2128, -22.3813f, 61.8624f},
+    {"c40_20_noise", 20, true, 1275, -2.8008f, 12.3008f},
+    {"c144_40_i028", 40, true, 7780, -29.8555f, 49.2009f},
+    {"c144_40_i076", 40, true, 1419, -11.8456f, 58.6848f},
+    {"c144_40_i124", 40, true, 5218, -7.2659f, 59.8433f},
+    {"c144_40_noframe", 40, false, 0, 0, 0},
+};
+
+TEST(keeps_the_exhaustive_search_answer) {
+  for (const Pin& p : kPins) {
+    const auto s = load_hi32(p.name);
+    const CrossEvm e = cross_evm(s.data(), s.size(), p.bw);
+    std::printf("  %-18s frame %d start %zu evm %8.4f level %8.4f\n", p.name, e.frame, e.start,
+                e.evm_db, e.level_db);
+    CHECK(e.frame == p.frame);
+    if (!p.frame) continue;
+    CHECK(e.start == p.start);
+    CHECK(std::fabs(e.evm_db - p.evm_db) <= 0.05f);
+    CHECK(std::fabs(e.level_db - p.level_db) <= 0.05f);
+  }
+}
+
 TEST(too_short_or_empty_is_no_frame) {
   CHECK(!cross_evm(nullptr, 0, 20).frame);
   std::vector<devourer::IqSample> few(100);

@@ -18,13 +18,25 @@ constexpr int kLtfOffset = 656;  // frame rise to the HT-LTF's FFT window, at 20
 constexpr int kMinFrame = 1900;  // shortest frame that holds the probe, at 20 MHz
 constexpr float kClip = 2040.0f;
 
-double median(std::vector<int16_t>& v) {
-  const size_t h = v.size() / 2;
-  std::nth_element(v.begin(), v.begin() + h, v.end());
-  if (v.size() % 2) return v[h];
-  const int16_t hi = v[h];
-  const int16_t lo = *std::max_element(v.begin(), v.begin() + h);
-  return (double(lo) + hi) / 2;
+// Median of 12-bit samples by counting: the two middle order statistics
+// read off a 4096-bin histogram, linear where a selection over the samples
+// is not. A value outside 12 bits is clamped, which moves the median only if
+// the median itself is out of range.
+template <class Get>
+double median12(const devourer::IqSample* s, size_t n, Get get) {
+  uint32_t hist[4096] = {};
+  for (size_t k = 0; k < n; ++k) ++hist[std::clamp(int(get(s[k])), -2048, 2047) + 2048];
+  // The values at sorted positions h - 1 and h; the median is h for odd n.
+  const size_t h = n / 2;
+  int below = -1, at = -1;
+  size_t seen = 0;
+  for (int b = 0; b < 4096 && at < 0; ++b) {
+    seen += hist[b];
+    if (below < 0 && seen >= h) below = b;  // sorted position h - 1 is in bin b
+    if (seen > h) at = b;
+  }
+  if (n % 2) return at - 2048;
+  return (double(below - 2048) + (at - 2048)) / 2;
 }
 
 // std::complex's * and / take a NaN-recovery path (/ is a libgcc call); the
@@ -95,8 +107,12 @@ struct Demod {
         Z[m][t] = mul(Y[m][t], H[t]);
         D[m][t] = slice_qpsk(Z[m][t]);
       }
+    // A tone whose decisions a pass left unchanged would get the same
+    // channel, so the same Z and D, from the next pass: it is done.
+    bool settled[kMaxTones] = {};
     for (int pass = 0; pass < 2; ++pass)
       for (int t = 0; t < tones; ++t) {
+        if (settled[t]) continue;
         cf num = 0;
         float den = 0;
         for (int m = 0; m < kSyms; ++m) {
@@ -104,10 +120,14 @@ struct Demod {
           den += std::norm(D[m][t]);
         }
         const cf h2inv = inv(num) * den;  // 1 / (num / den)
+        bool same = true;
         for (int m = 0; m < kSyms; ++m) {
           Z[m][t] = mul(Y[m][t], h2inv);
-          D[m][t] = slice_qpsk(Z[m][t]);
+          const cf d = slice_qpsk(Z[m][t]);
+          same = same && d == D[m][t];
+          D[m][t] = d;
         }
+        settled[t] = same;
       }
     double err = 0, ref = 0;
     for (int m = 0; m < kSyms; ++m)
@@ -126,14 +146,16 @@ CrossEvm cross_evm(const devourer::IqSample* s, size_t n, uint8_t bw) {
   if (n == 0) return r;
   const int S = bw == 40 ? 2 : 1;
 
-  std::vector<int16_t> tmp(n);
-  for (size_t k = 0; k < n; ++k) tmp[k] = s[k].i;
-  const double mi = median(tmp);
-  for (size_t k = 0; k < n; ++k) tmp[k] = s[k].q;
-  const double mq = median(tmp);
+  const double mi = median12(s, n, [](const devourer::IqSample& v) { return v.i; });
+  const double mq = median12(s, n, [](const devourer::IqSample& v) { return v.q; });
 
-  std::vector<cf> x(n);
-  std::vector<double> pw(n + 1, 0.0);  // prefix sums of |x|^2
+  // Kept across calls: fresh buffers (0.4 MB at 40 MHz) go back to the
+  // kernel on free and fault in again, zeroed, on every capture.
+  static thread_local std::vector<cf> x;
+  static thread_local std::vector<double> pw, sorted;
+  x.resize(n);
+  pw.resize(n + 1);  // prefix sums of |x|^2
+  pw[0] = 0;
   for (size_t k = 0; k < n; ++k) {
     x[k] = cf(float(s[k].i - mi), float(s[k].q - mq));
     if (std::fabs(x[k].real()) >= kClip || std::fabs(x[k].imag()) >= kClip) r.clipped = true;
@@ -142,12 +164,12 @@ CrossEvm cross_evm(const devourer::IqSample* s, size_t n, uint8_t bw) {
   auto mean_pow = [&](size_t a, size_t b) { return (pw[b] - pw[a]) / double(b - a); };
 
   // Power smoothed over x[k-8 .. k+7], zero outside the capture.
-  std::vector<double> p(n);
-  for (size_t k = 0; k < n; ++k) {
+  auto p = [&](size_t k) {
     const size_t a = k >= 8 ? k - 8 : 0, b = std::min(n, k + 8);
-    p[k] = (pw[b] - pw[a]) / 16;
-  }
-  std::vector<double> sorted(p);
+    return (pw[b] - pw[a]) / 16;
+  };
+  sorted.resize(n);
+  for (size_t k = 0; k < n; ++k) sorted[k] = p(k);
   const double rank = 0.9 * double(n - 1);
   const size_t lo = size_t(rank);
   std::nth_element(sorted.begin(), sorted.begin() + lo, sorted.end());
@@ -161,37 +183,71 @@ CrossEvm cross_evm(const devourer::IqSample* s, size_t n, uint8_t bw) {
   const Demod dm(S);
   const double thr = 0.1 * p90;
   const size_t span = size_t(kSymLen) * S * (kSyms + 1);
-  bool have = false;
-  int best_nb = 0;
-  float best_evm = 0;
-  size_t best_s = 0;
+
+  // Candidate frames, each with the flagged count over its demodulated span.
+  // Flagged count ranks first, so they are tried fewest-flagged first and a
+  // frame flagged more than a frame that demodulated cannot win.
+  struct Cand {
+    size_t st;
+    int nb;
+  };
+  std::vector<Cand> cands;
   for (size_t st = 1; st < n; ++st) {
-    if (!(p[st] > thr) || p[st - 1] > thr) continue;
+    if (!(p(st) > thr) || p(st - 1) > thr) continue;
     size_t e = st + 1;
-    while (e < n && p[e] > thr) ++e;
+    while (e < n && p(e) > thr) ++e;
     if (e - st < size_t(kMinFrame) * S) continue;
     const size_t f0 = std::min(n, st + 640 * S);
     const size_t f1 = std::min(n, st + size_t(kLtfOffset + kSymLen * (kSyms + 1)) * S);
     int nb = 0;
     for (size_t k = f0; k < f1; ++k) nb += s[k].bad;
-    if (have && nb > best_nb) continue;  // cannot win: flagged count ranks first
-    for (int d = -12 * S; d < 9 * S; ++d) {
-      const long b = long(st) + kLtfOffset * S + d;
-      if (b < 0 || size_t(b) + span > n) continue;
+    cands.push_back({st, nb});
+  }
+  std::stable_sort(cands.begin(), cands.end(),
+                   [](const Cand& a, const Cand& b) { return a.nb < b.nb; });
+
+  bool have = false;
+  int best_nb = 0;
+  float best_evm = 0;
+  size_t best_s = 0;
+  const int d_lo = -12 * S, d_hi = 9 * S;  // symbol timings tried: d_lo <= d < d_hi
+  const int grid = 4 * S;
+  for (const Cand& c : cands) {
+    if (have && c.nb > best_nb) break;
+    // EVM against the symbol timing is flat across the guard interval's
+    // ISI-free span (a dozen 20 MHz samples) and climbs steeply outside it:
+    // a grid of four 20 MHz samples lands in the span, then halving steps
+    // around the best point find its floor to one 20 MHz sample (finer steps
+    // only move along the floor's noise). Ten demodulations a frame in place
+    // of one per timing (21 at 20 MHz, 42 at 40).
+    auto at = [&](int d) {
+      const long b = long(c.st) + kLtfOffset * S + d;
+      if (d < d_lo || d >= d_hi || b < 0 || size_t(b) + span > n) return INFINITY;
       const float ev = dm.evm_db(x.data() + b);
-      if (!std::isfinite(ev)) continue;
-      if (!have || nb < best_nb || (nb == best_nb && ev < best_evm)) {
-        have = true;
-        best_nb = nb;
-        best_evm = ev;
-        best_s = st;
-      }
+      return std::isfinite(ev) ? ev : INFINITY;
+    };
+    int bd = d_lo;
+    float bev = INFINITY;
+    for (int d = d_lo; d < d_hi; d += grid)
+      if (const float ev = at(d); ev < bev) bev = ev, bd = d;
+    if (!std::isfinite(bev)) continue;
+    for (int step = grid / 2; step >= S; step /= 2) {
+      const int c0 = bd;
+      for (const int d : {c0 - step, c0 + step})
+        if (const float ev = at(d); ev < bev) bev = ev, bd = d;
+    }
+    if (!have || bev < best_evm) {
+      have = true;
+      best_nb = c.nb;
+      best_evm = bev;
+      best_s = c.st;
     }
   }
   if (!have) return r;
   r.frame = true;
   r.evm_db = best_evm;
   r.flagged = best_nb;
+  r.start = best_s;
   r.level_db = float(10 * std::log10(mean_pow(best_s + 700 * S, best_s + 1800 * S)));
   return r;
 }
