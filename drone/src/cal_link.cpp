@@ -3,7 +3,6 @@
 #include <cstdio>
 
 #include "mabur/cal_wire.h"
-#include "power_tables.h"
 
 namespace mabur {
 
@@ -34,52 +33,6 @@ void CalApplyLedger::record(const cal::Applied& a) {
   }
   if (a.ok) backed_up_ = true;
   by_seq_[a.seq] = a;
-}
-
-namespace {
-// 20 always (control frames, and 20 rungs fly on a 40-tuned radio's
-// primary); 40 only on a radio tuned to 40.
-bool width_flown(const RadioCfg& r, int bw) { return bw == 20 || r.width == 40; }
-}  // namespace
-
-std::vector<std::string> ldpc_mismatch_warnings(const RadioCfg& r) {
-  std::vector<std::string> out;
-  if (r.power_mode != "offset") return out;
-  for (const int bw : {20, 40}) {
-    if (!width_flown(r, bw)) continue;
-    if (!r.has_walls(static_cast<uint8_t>(bw))) continue;
-    const auto mask = cal_flags_mask(bw == 40 ? r.cal_flags_40 : r.cal_flags_20);
-    if (!mask) continue;
-    const bool measured_ldpc = (*mask & cal::kFlagLdpc) != 0;
-    if (measured_ldpc == r.ldpc) continue;
-    char line[128];
-    std::snprintf(line, sizeof line,
-                  "radio: %d MHz walls were measured with ldpc %s; radio.ldpc is %s "
-                  "\xe2\x80\x94 re-run maburcal",
-                  bw, measured_ldpc ? "on" : "off", r.ldpc ? "on" : "off");
-    out.emplace_back(line);
-  }
-  return out;
-}
-
-std::vector<std::string> missing_wall_notes(const RadioCfg& r) {
-  std::vector<std::string> out;
-  if (r.power_mode != "offset") return out;
-  for (const int bw : {20, 40}) {
-    const int other = bw == 40 ? 20 : 40;
-    if (!width_flown(r, bw)) continue;
-    if (r.has_walls(static_cast<uint8_t>(bw)) || !r.has_walls(static_cast<uint8_t>(other)))
-      continue;
-    // Walls at 40 MHz sit at or above the 20 MHz walls, so 20's table at 40
-    // only gives power away; 40's table at 20 overdrives, and the note says so.
-    char line[160];
-    std::snprintf(line, sizeof line, "radio: no %d MHz walls, flying the %d MHz table at %d%s", bw,
-                  other, bw,
-                  bw == 20 ? " \xe2\x80\x94 the overdriving direction, re-run maburcal at 20 MHz"
-                           : "");
-    out.emplace_back(line);
-  }
-  return out;
 }
 
 }  // namespace mabur

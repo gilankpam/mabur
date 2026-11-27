@@ -341,7 +341,7 @@ TEST(patch_row_single_key_rows_unchanged) {
 
 namespace {
 const char* const kMinimal =
-    "[radio]\nchannels = [40, 64, 112, 144]\nrate_walls_rel_20 = []\nrate_walls_rel_40 = []\n\n"
+    "[radio]\nchannels = [40, 64, 112, 144]\n\n"
     "[link]\nkey_file = \"/etc/mabur.key\"\n\n[venc]\nsensor_bin = \"/x.bin\"\n";
 
 Config load_text(const std::string& text) {

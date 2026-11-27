@@ -255,31 +255,16 @@ struct RealMode {
   // dot11 sequence stays one stream whichever thread sent the last frame.
   std::atomic<uint16_t> telem_wire_seq{0};
   std::atomic<uint16_t> telem_dot11_seq{0};
-  // The chip's TXAGC reference for the BOOT channel (mcs7_index read back
-  // with no custom rate-diff table live, i.e. before SetTxPowerRateDiffs is
-  // first applied). Drone-internal only: it caps reference + diff at 127
-  // (power_plan.h) and never reaches config or the wire. 0 = not yet read
-  // by bring-up (real_mode.cpp); make_power_plan treats anchor_idx <= 0 as no cap.
-  //
-  // Deliberately NOT re-read on a channel move, and it does not need to be.
-  // The `127 - anchor` cap it feeds is a BOOT-CHANNEL APPROXIMATION of a
-  // guard that never binds in practice: measured efuse anchors on this unit
-  // are 39-57, so the cap lands at +70..+88, well above kRelMax (+63). It
-  // exists for devourer's blank-efuse fallback (75), where it caps at +52
-  // and touches only no-dip rows. The per-channel anchor the diffs actually
-  // ride on is re-derived by devourer itself on every retune, via the
-  // ReApplyTxPower() call in RealActuator::retune_now_() -- that, not
-  // this number, is what keeps the walls valid across an auto-select move.
-  //
-  // Re-reading it after a retune is not merely unnecessary but WRONG:
-  // GetTxPowerState reports the raw reference only while no custom table is
-  // live, and by then SetTxPowerRateDiffs has been applied, so a fresh read
-  // would return the trimmed value, not the anchor.
-  int boot_anchor_idx = 0;
+  // The measured TX walls per (channel, width) (wall_cache.h): loaded at
+  // bring-up, written by a wall measurement on the TX writer thread, read
+  // by every plans_for() caller.
+  WallCache wall_cache;
+  std::mutex wall_cache_mu;
 
-  // The per-width TX-power table (live_power_table.h): bring-up programs
-  // the start width's plan, the agent thread follows the rung's width,
-  // RADIO_WALL_MARGN's reprogram and calibration replace the plans.
+  // The TX-power table (live_power_table.h): bring-up programs the start
+  // channel and width's plan, the agent thread follows the rung's width and
+  // every retune, RADIO_WALL_MARGN's and RADIO_LDPC's reprogram and
+  // calibration replace the plans.
   RadioPowerTableDevice power_dev;
   LivePowerTable power_table;
 
@@ -355,10 +340,10 @@ struct RealMode {
   // Each Telem/MAVLink sender (agent thread, TX writer thread's calibration
   // replies, MAV thread) builds its own radiotap from this.
   ControlRadiotap make_control_radiotap();
-  // The plans a RadioCfg flies: one per width with a wall table of its own,
-  // none at all under power_mode "none" (the bundle keeps reference walls
-  // there, inert).
-  WidthPlans plans_for(const RadioCfg& r, double margin_db) const;
+  // The plans a RadioCfg flies: one per wall cache entry, derived under the
+  // live LDPC flag, none at all under power_mode "none". Takes
+  // wall_cache_mu.
+  ChannelPlans plans_for(const RadioCfg& r, double margin_db);
 #ifdef MABUR_HAVE_VENC
   // The record channel's configuration from [record]: here at boot, and
   // again by the config applier before every pipeline rebuild, since the

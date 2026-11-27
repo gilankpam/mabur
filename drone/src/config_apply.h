@@ -70,9 +70,7 @@ struct ConfigApplyResult {
   std::string reason;  // empty on ok
   ConfigApplyPath path;
   uint64_t ms;         // apply thread time, lock wait through publish
-  // Warnings an accepted apply leaves the operator, one STATUSTEXT each:
-  // an accepted radio.ldpc set that leaves a flown wall table measured
-  // under the other ldpc flag (cal_link.h ldpc_mismatch_warnings).
+  // Warnings an accepted apply leaves the operator, one STATUSTEXT each.
   std::vector<std::string> notices;
 };
 

@@ -2,8 +2,7 @@
 // The drone-side glue between the calibration protocol (mabur/cal_proto.h)
 // and the drone's config and power path, kept out of maburd so it can be
 // tested on the host: what an ApplyCmd writes, the APPLIED cache that
-// answers the GS's APPLY resends, and the boot/parameter-set warnings about
-// the per-width wall tables.
+// answers the GS's APPLY resends, and the restore a refused run owes.
 
 #include <cstdint>
 #include <map>
@@ -66,22 +65,5 @@ class CalRestoreOwed {
  private:
   bool owed_ = false;
 };
-
-// One line per width whose own wall table the drone flies (power_mode
-// "offset") while radio.ldpc disagrees with the ldpc flag the table was
-// measured under (cal_flags_<bw>). Flags-off walls sit below flags-on
-// ones, so an ldpc-on table flown with ldpc off is the overdriving
-// direction. Empty when nothing disagrees, or when power_mode is "none"
-// and no table is flown at all. Only widths the radio can fly count: 40
-// only with radio.width 40 (a 20 MHz-tuned radio never airs a 40 rung; the
-// ladder itself is the GS's, which refuses a 40 rung unless its radio is
-// at 40 too).
-std::vector<std::string> ldpc_mismatch_warnings(const RadioCfg& r);
-
-// One line per width that has no wall table of its own and so flies the
-// other width's (RadioCfg::walls_for's fallback), under power_mode
-// "offset", among the widths the radio can fly (as above). Empty when both
-// widths have a table, or neither does.
-std::vector<std::string> missing_wall_notes(const RadioCfg& r);
 
 }  // namespace mabur

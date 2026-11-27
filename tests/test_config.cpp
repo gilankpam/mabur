@@ -779,135 +779,50 @@ TEST(msp_rejects_bad_values) {
   }
 }
 
-// rate_walls_rel is gone: a single shared table either overclaims 40 or
-// leaves 20 on the table (bw40-sweep findings), so the loader only knows
-// rate_walls_rel_20/_40 now. The old key is dropped from the known-key
-// list entirely rather than kept as a dead alias (CLAUDE.md: config keys
-// are free to change).
-TEST(rate_walls_rel_is_an_unknown_key_now) {
-  auto path = write_temp_toml(
-      "[radio]\nrate_walls_rel = [63, 63, 63, 42, 20, 1, -2, -4]\n");
-  std::string msg = what_of([&] { (void)load_config(path.string()); });
-  CHECK(msg.find("radio.rate_walls_rel") != std::string::npos);
-  CHECK(msg.find("unknown key") != std::string::npos);
+// The walls are measured by the drone and kept in the wall cache now: the
+// wall tables (the old shared one and the per-width ones) and what they were
+// measured with are unknown keys.
+TEST(the_removed_wall_keys_fail_the_load) {
+  for (const char* line : {"rate_walls_rel = [63, 63, 63, 42, 20, 1, -2, -4]",
+                           "rate_walls_rel_20 = [63, 63, 63, 42, 20, 1, -2, -4]",
+                           "rate_walls_rel_40 = []", "cal_flags_20 = \"ldpc+stbc\"",
+                           "cal_flags_40 = \"none\""}) {
+    auto path = write_temp_toml(std::string("[radio]\n") + line + "\n");
+    const std::string key(line, std::string(line).find(' '));
+    std::string msg = what_of([&] { (void)load_config(path.string()); });
+    CHECK(msg.find("radio." + key) != std::string::npos);
+    CHECK(msg.find("unknown key") != std::string::npos);
+    std::filesystem::remove(path);
+  }
+}
+
+// "offset" with nothing measured flies the chip's own table until a
+// measurement lands in the cache.
+TEST(offset_without_any_table_loads) {
+  auto path = write_temp_toml("[radio]\npower_mode = \"offset\"\n");
+  CHECK(load_config(path.string()).radio.power_mode == "offset");
   std::filesystem::remove(path);
 }
 
-TEST(radio_per_width_walls_parse_and_validate) {
+TEST(legacy_wall_and_margin_validate) {
   auto path = write_temp_toml(
-      "[radio]\n"
-      "power_mode = \"offset\"\n"
-      "rate_walls_rel_20 = [63, 63, 63, 42, 20, 1, -2, -4]\n"
-      "rate_walls_rel_40 = [63, 63, 63, 45, 28, 28, 23, 10]\n"
-      "legacy_wall_rel = 63\n"
-      "wall_margin_db = 2.0\n");
+      "[radio]\npower_mode = \"offset\"\nlegacy_wall_rel = 63\nwall_margin_db = 2.0\n");
   Config cfg = load_config(path.string());
-  CHECK((cfg.radio.rate_walls_rel_20 ==
-         std::array<int, 8>{63, 63, 63, 42, 20, 1, -2, -4}));
-  CHECK((cfg.radio.rate_walls_rel_40 ==
-         std::array<int, 8>{63, 63, 63, 45, 28, 28, 23, 10}));
   CHECK(cfg.radio.legacy_wall_rel == 63);
   CHECK(cfg.radio.wall_margin_db == 2.0);
   std::filesystem::remove(path);
-
-  for (const char* key : {"rate_walls_rel_20", "rate_walls_rel_40"}) {
-    auto bad = write_temp_toml(std::string("[radio]\n") + key + " = [63, 63, 63]\n");
-    std::string msg = what_of([&] { (void)load_config(bad.string()); });
-    CHECK(msg.find(std::string("radio.") + key) != std::string::npos);
-    std::filesystem::remove(bad);
-  }
-
-  for (const char* key : {"rate_walls_rel_20", "rate_walls_rel_40"}) {
-    auto bad = write_temp_toml(std::string("[radio]\n") + key +
-                                " = [64, 63, 63, 63, 63, 63, 63, 63]\n");
-    std::string msg = what_of([&] { (void)load_config(bad.string()); });
-    CHECK(msg.find(std::string("radio.") + key) != std::string::npos);
-    CHECK(msg.find("[-64,63]") != std::string::npos);
-    std::filesystem::remove(bad);
-  }
-
-  // rel - m must stay >= -64 or the diff clamps silently; -62 - 4 = -66.
-  for (const char* key : {"rate_walls_rel_20", "rate_walls_rel_40"}) {
-    auto bad = write_temp_toml(
-        std::string("[radio]\npower_mode = \"offset\"\n") + key +
-        " = [63, 63, 63, 63, 63, 63, 63, -62]\n"
-        "legacy_wall_rel = 63\nwall_margin_db = 1.0\n");
-    std::string msg = what_of([&] { (void)load_config(bad.string()); });
-    CHECK(msg.find(std::string("radio.") + key) != std::string::npos);
-    std::filesystem::remove(bad);
-  }
 
   auto path2 = write_temp_toml("[radio]\nlegacy_wall_rel = -65\n");
   std::string msg = what_of([&] { (void)load_config(path2.string()); });
   CHECK(msg.find("radio.legacy_wall_rel") != std::string::npos);
   std::filesystem::remove(path2);
-}
 
-TEST(offset_needs_one_width_table) {
-  auto path = write_temp_toml("[radio]\npower_mode = \"offset\"\n");
-  std::string msg = what_of([&] { (void)load_config(path.string()); });
-  CHECK(msg.find("radio.rate_walls_rel_20") != std::string::npos);
-  CHECK(msg.find("one per-width wall table is required") != std::string::npos);
-  std::filesystem::remove(path);
-
-  // Either width alone is enough.
-  auto only20 = write_temp_toml(
-      "[radio]\npower_mode = \"offset\"\n"
-      "rate_walls_rel_20 = [63, 63, 63, 63, 63, 63, 63, 63]\n");
-  Config c20 = load_config(only20.string());
-  CHECK(c20.radio.has_walls(20));
-  std::filesystem::remove(only20);
-
-  auto only40 = write_temp_toml(
-      "[radio]\npower_mode = \"offset\"\n"
-      "rate_walls_rel_40 = [63, 63, 63, 63, 63, 63, 63, 63]\n");
-  Config c40 = load_config(only40.string());
-  CHECK(c40.radio.has_walls(40));
-  std::filesystem::remove(only40);
-}
-
-// walls_for()/has_walls() are plain RadioCfg accessors -- exercised directly
-// rather than through the loader, since the fallback they implement has
-// nothing to do with TOML parsing.
-TEST(walls_for_falls_back_to_the_other_width) {
-  RadioCfg r;
-  r.rate_walls_rel_20 = std::array<int, 8>{1, 2, 3, 4, 5, 6, 7, 8};
-  CHECK(r.has_walls(20));
-  CHECK(!r.has_walls(40));
-  const std::array<int, 8>* w40 = r.walls_for(40);
-  REQUIRE(w40 != nullptr);
-  CHECK((*w40 == std::array<int, 8>{1, 2, 3, 4, 5, 6, 7, 8}));
-  const std::array<int, 8>* w20 = r.walls_for(20);
-  REQUIRE(w20 != nullptr);
-  CHECK(w20 == &*r.rate_walls_rel_20);
-
-  RadioCfg empty;
-  CHECK(empty.walls_for(20) == nullptr);
-  CHECK(empty.walls_for(40) == nullptr);
-}
-
-TEST(cal_flags_must_be_a_known_string) {
-  for (const char* key : {"cal_flags_20", "cal_flags_40"}) {
-    auto bad = write_temp_toml(std::string("[radio]\n") + key + " = \"bogus\"\n");
-    std::string msg = what_of([&] { (void)load_config(bad.string()); });
-    CHECK(msg.find(std::string("radio.") + key) != std::string::npos);
-    std::filesystem::remove(bad);
-  }
-  for (const char* v : {"ldpc+stbc", "stbc", "ldpc", "none"}) {
-    auto path = write_temp_toml(
-        std::string("[radio]\ncal_flags_20 = \"") + v + "\"\n" +
-        "cal_flags_40 = \"" + v + "\"\n");
-    Config cfg = load_config(path.string());
-    CHECK(cfg.radio.cal_flags_20 == v);
-    CHECK(cfg.radio.cal_flags_40 == v);
-    std::filesystem::remove(path);
-  }
-
-  auto defaulted = write_temp_toml("[radio]\nwidth = 20\n");
-  Config cfg = load_config(defaulted.string());
-  CHECK(cfg.radio.cal_flags_20 == "ldpc+stbc");
-  CHECK(cfg.radio.cal_flags_40 == "ldpc+stbc");
-  std::filesystem::remove(defaulted);
+  // legacy - m must stay >= -64 or the diff clamps silently; -62 - 4 = -66.
+  auto path3 = write_temp_toml(
+      "[radio]\npower_mode = \"offset\"\nlegacy_wall_rel = -62\nwall_margin_db = 1.0\n");
+  msg = what_of([&] { (void)load_config(path3.string()); });
+  CHECK(msg.find("radio.legacy_wall_rel") != std::string::npos);
+  std::filesystem::remove(path3);
 }
 
 TEST(deleted_absolute_wall_keys_fail_boot) {
@@ -1850,14 +1765,11 @@ TEST(fec_window_is_not_raised_any_more) {
 }
 
 
-// Every value the full bundle sets, except the per-card walls, is a built-in
-// default: a file carrying only the walls and the sensor path loads equal.
+// Every value the full bundle sets is a built-in default: a file carrying
+// only the sensor path loads equal.
 TEST(full_bundle_values_are_builtin_defaults) {
   const Config full = load_config(std::string(MABUR_FIXTURE_DIR) + "/mabur.full.toml");
   auto p = write_temp_toml(
-      "[radio]\n"
-      "rate_walls_rel_20 = [63, 63, 63, 63, 45, 23, 22, 21]\n"
-      "rate_walls_rel_40 = [63, 63, 63, 63, 45, 28, 28, 23]\n"
       "[venc]\n"
       "sensor_bin = \"/etc/sensors/imx415_greg_fpvXIX_colortrans.bin\"\n");
   CHECK(load_config(p.string()) == full);
@@ -1870,21 +1782,6 @@ TEST(config_equality_sees_a_venc_field) {
   CHECK(!(load_config(a.string()) == load_config(b.string())));
   std::filesystem::remove(a);
   std::filesystem::remove(b);
-}
-
-TEST(empty_wall_table_loads_as_absent) {
-  auto p = write_temp_toml("[radio]\nrate_walls_rel_20 = []\nrate_walls_rel_40 = []\n"
-                           "[venc]\nsensor_bin = \"/x.bin\"\n");
-  const Config c = load_config(p.string());
-  CHECK(!c.radio.rate_walls_rel_20 && !c.radio.rate_walls_rel_40);
-  std::filesystem::remove(p);
-}
-
-TEST(empty_wall_tables_with_offset_still_fail) {
-  auto p = write_temp_toml("[radio]\npower_mode = \"offset\"\nrate_walls_rel_20 = []\n"
-                           "rate_walls_rel_40 = []\n[venc]\nsensor_bin = \"/x.bin\"\n");
-  CHECK(what_of([&] { load_config(p.string()); }).find("radio.rate_walls_rel_20") != std::string::npos);
-  std::filesystem::remove(p);
 }
 
 namespace {
@@ -1903,9 +1800,7 @@ void collect_paths(const mabur::toml::Value& t, const std::string& prefix,
 TEST(bundle_is_the_per_drone_keys_only) {
   std::set<std::string> keys;
   collect_paths(mabur::toml::parse_toml_file(default_config_path()), "", &keys);
-  CHECK(keys == (std::set<std::string>{"radio.channels", "radio.rate_walls_rel_20",
-                                       "radio.rate_walls_rel_40", "link.key_file",
-                                       "venc.sensor_bin"}));
+  CHECK(keys == (std::set<std::string>{"radio.channels", "link.key_file", "venc.sensor_bin"}));
 }
 
 // A section the file leaves out still reports every key's value in the

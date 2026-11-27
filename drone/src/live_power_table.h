@@ -1,13 +1,17 @@
 #pragma once
-// The chip's per-width TX-power table: which width's wall-equalized
+// The chip's TX-power table: which (channel, width)'s wall-equalized
 // rate-diff plan (power_tables.h) is live. Shared by every thread that
 // programs it -- bring-up, the agent thread on a rung width change
-// (RealActuator::apply_op), the config-apply thread on a RADIO_WALL_MARGN
-// set and the TX writer thread for calibration. `mu_` serialises the choice
-// of plan with its device write, so two writers can never leave the chip on
-// one width's diffs while bw_ names the other. Every device write runs
-// inside PowerTableDevice::gated (it must not overlap a retune's
-// FastRetune), always inside mu_, never the other way round.
+// (RealActuator::apply_op) and on a retune (RealActuator::retune_now_), the
+// config-apply thread on a RADIO_WALL_MARGN or RADIO_LDPC set and the TX
+// writer thread for calibration. `mu_` serialises the choice of plan with
+// its device write, so two writers can never leave the chip on one plan's
+// diffs while ch_/bw_ name another. Lock order is always mu_, then the
+// retune gate: every device write runs inside PowerTableDevice::gated (it
+// must not overlap a retune's FastRetune), always inside mu_; a retune
+// takes mu_ first (with_lock) and the gate exclusive inside it, and
+// programs the new channel's plan through retuned_in_gate, which never
+// takes the gate again.
 //
 // Calibration owns the table while cal_active: follow() is a no-op then,
 // checked under mu_, and begin_cal() raises cal_active under the same lock
@@ -15,14 +19,17 @@
 // read cal_active clear has finished its write before the sweep zeroes the
 // diffs, and none starts after.
 //
-// No plans (power_mode "none") means the chip's own efuse table: never
-// written, except to put it back after calibration zeroed it.
+// No plan for the live (channel, width) -- power_mode "none", or nothing
+// measured there -- means the chip's own efuse table: written only to put
+// it back after a plan or calibration changed it.
 
 #include <atomic>
 #include <cstdint>
 #include <functional>
 #include <mutex>
 #include <optional>
+#include <set>
+#include <utility>
 
 #include "TxPower.h"  // devourer::TxRateDiffsQdb
 #include "power_tables.h"
@@ -54,22 +61,36 @@ struct LivePowerTable {
   // The chip's diffs stop being the live plan's until a follow()/replace().
   void begin_cal();
 
-  // Agent thread: makes `bw`'s plan the live one unless it already is.
+  // Agent thread: makes the link channel's `bw` plan the live one unless it
+  // already is.
   void follow(uint8_t bw);
 
-  // New plans, `bw`'s programmed at once (callers pass the rung's width as
-  // they last saw it; a width change racing this is put right by the
-  // agent's next follow(), which sees bw_ disagree). zero_offset also zeroes
+  // Bring-up, before the first replace(): the channel the radio starts on.
+  void set_channel(uint8_t ch);
+  // The link's channel: the one the last retune went to. Lock-free, so a
+  // caller holding the table's lock or the retune gate may read it.
+  uint8_t channel() const { return ch_.load(std::memory_order_acquire); }
+  // The agent's retune, inside with_lock() while it holds the retune gate
+  // exclusive, after ReApplyTxPower: records the channel and programs its
+  // plan for the current width directly, never through
+  // PowerTableDevice::gated (the caller already holds the gate). Only
+  // records while calibration owns the table, whose end programs the
+  // recorded channel, and before the first replace(), which does.
+  void retuned_in_gate(uint8_t ch);
+
+  // New plans, the link channel's `bw` plan programmed at once (callers
+  // pass the rung's width as they last saw it; a width change racing this
+  // is put right by the agent's next follow(), which sees bw_ disagree). zero_offset also zeroes
   // the global offset beside a plan; clear_override then clears the flat
   // TXAGC override, in the same gate hold. False when the device refused
   // the plan.
-  bool replace(WidthPlans p, uint8_t bw, bool zero_offset, bool clear_override);
+  bool replace(ChannelPlans p, uint8_t bw, bool zero_offset, bool clear_override);
 
-  // RADIO_WALL_MARGN's reprogram: replace(), refused under mu_ while
+  // RADIO_WALL_MARGN's and RADIO_LDPC's reprogram: replace(), refused under mu_ while
   // calibration owns the table (*refused_cal set), so a run starting
   // between the caller's own cal_active check and here is never written
   // over. False on that refusal or when the device refused the plan.
-  bool replace_unless_cal(WidthPlans p, uint8_t bw, bool* refused_cal);
+  bool replace_unless_cal(ChannelPlans p, uint8_t bw, bool* refused_cal);
 
   // The A-MPDU mode shares this lock: the agent's production write runs
   // only while calibration does not own the radio, checked under mu_
@@ -88,13 +109,13 @@ struct LivePowerTable {
     f();
   }
 
-  // Calibration's apply: the plans a following capacity sweep and the run's
-  // restore program, not programmed now -- the verify sweep that follows a
-  // power apply flies the zeroed diffs under the parked override.
-  void set_plans(WidthPlans p);
+  // A calibration run's new plans (a wall measurement stored, an apply):
+  // what a following capacity sweep and the run's restore program, not
+  // programmed now -- calibration owns the table.
+  void set_plans(ChannelPlans p);
 
-  // Capacity sweep (TX writer, cal_active): `bw`'s plan, or the chip's own
-  // table with no plan -- what production flies at that width.
+  // Capacity sweep (TX writer, cal_active): the link channel's `bw` plan,
+  // or the chip's own table with no plan -- what production flies there.
   bool program_for_cal(uint8_t bw);
 
  private:
@@ -104,12 +125,16 @@ struct LivePowerTable {
     bool for_cal = false;  // calibration keeps owning the table afterwards
   };
 
-  bool write_locked(uint8_t bw, const Write& w);
+  // `gated` false: the caller already holds the retune gate.
+  bool write_locked(uint8_t bw, const Write& w, bool gated = true);
 
   std::mutex mu_;
-  WidthPlans plans_;    // empty when power_mode != "offset"
-  uint8_t bw_ = 0;      // the rung width whose plan was last programmed, 0 = none yet
-  bool dirty_ = false;  // the chip's diffs are not plan_for(plans_, bw_)
+  ChannelPlans plans_;            // empty when power_mode != "offset"
+  std::atomic<uint8_t> ch_{0};    // the link's channel; written under mu_
+  uint8_t bw_ = 0;                // the rung width last programmed, 0 = nothing yet
+  bool dirty_ = false;            // calibration changed the chip's diffs
+  bool holds_plan_ = false;       // the chip's diffs are a plan, not its own table
+  std::set<std::pair<uint8_t, uint8_t>> own_logged_;  // (ch, bw) "chip's own table" logged
 };
 
 // The agent thread's calibration falling edge: the moment it must put back

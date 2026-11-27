@@ -269,9 +269,9 @@ void tx_writer_loop(RealMode& m) {
   // close_session() only parks the flat override at the anchor and never
   // restores the diffs a new run zeroed, so left alone the drone would fly
   // ONE flat index across every rate until restart -- every rate below the
-  // anchor above its measured wall. This puts
-  // the current rung's width's plan (or the chip's own table under
-  // power_mode "none") back and only then clears the override, in one
+  // anchor above its measured wall. This puts the link channel's plan for
+  // the current rung's width (or the chip's own table where there is none)
+  // back and only then clears the override, in one
   // tx_gate hold: while the override is live it masks the diffs, so the
   // right table is on the air the moment the override goes, with no window
   // of "no override, zeroed diffs". The config read stays outside the lock
@@ -288,7 +288,7 @@ void tx_writer_loop(RealMode& m) {
   // width's efficiency (cal_apply.h) and answer APPLIED. The plans are
   // only recorded here, not programmed: a following capacity sweep
   // programs its width's plan when it is accepted, and the run's restore
-  // programs the rung's.
+  // programs the link's.
   CalApplyLedger apply_ledger;
   auto apply_eff = [&](const cal::ApplyCmd& a) {
     std::string err;

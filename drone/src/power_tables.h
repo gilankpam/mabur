@@ -1,65 +1,52 @@
 #pragma once
-// Per-width power plans built from RadioCfg's rate_walls_rel_20/_40, and the
-// cal_flags_20/_40 string -> wire mask mapping. See power_plan.h for what a
-// PowerPlan actually means; this file is the per-width wrapper over it plus
-// the fallback a unit calibrated on only one width needs.
+// Power plans per (channel, width), built from the wall cache's measured
+// curves. See power_plan.h for what a PowerPlan actually means; this file is
+// the per-(channel, width) wrapper over it and the lookup a unit measured on
+// only one width of a channel needs.
 
-#include <array>
 #include <cstdint>
-#include <optional>
-#include <string>
+#include <map>
+#include <utility>
 
 #include "config.h"
 #include "power_plan.h"
-#include "mabur/cal_wire.h"
+#include "wall_cache.h"
+#include "wall_curve.h"
 
 namespace mabur {
 
-// One PowerPlan per width, built straight from RadioCfg -- nullopt when that
-// width has no wall table of its own (RadioCfg::walls_for() already folds
-// the cross-width fallback in at load time; plan_for() below applies the
-// same fallback to the built plans, so either entry point gives the same
-// answer).
-struct WidthPlans {
-  std::optional<PowerPlan> p20, p40;
+struct ChannelPlans {
+  std::map<std::pair<uint8_t, uint8_t>, PowerPlan> by;  // key (channel, width)
 };
 
-inline WidthPlans make_width_plans(const RadioCfg& r, double margin_db,
-                                   int anchor_idx) {
-  WidthPlans wp;
-  if (r.rate_walls_rel_20)
-    wp.p20 = make_power_plan(*r.rate_walls_rel_20, r.legacy_wall_rel,
-                             margin_db, anchor_idx);
-  if (r.rate_walls_rel_40)
-    wp.p40 = make_power_plan(*r.rate_walls_rel_40, r.legacy_wall_rel,
-                             margin_db, anchor_idx);
-  return wp;
+enum class PlanSource : uint8_t { None, Own, OtherWidth };
+struct PlanPick {
+  const PowerPlan* plan = nullptr;
+  PlanSource source = PlanSource::None;
+};
+
+// (channel, bw)'s own plan; else the same channel's other width's (the two
+// widths' curves agree within about one index); else none: the chip's own
+// table.
+inline PlanPick plan_for(const ChannelPlans& p, uint8_t channel, uint8_t bw) {
+  auto own = p.by.find({channel, bw});
+  if (own != p.by.end()) return {&own->second, PlanSource::Own};
+  auto other = p.by.find({channel, static_cast<uint8_t>(bw == 40 ? 20 : 40)});
+  if (other != p.by.end()) return {&other->second, PlanSource::OtherWidth};
+  return {};
 }
 
-// The plan for `bw`, falling back to the other width's when `bw`'s own is
-// absent (same fallback rule as RadioCfg::walls_for()). nullptr when
-// neither width has a plan.
-inline const PowerPlan* plan_for(const WidthPlans& p, uint8_t bw) {
-  const auto& own = (bw == 40) ? p.p40 : p.p20;
-  const auto& other = (bw == 40) ? p.p20 : p.p40;
-  if (own) return &*own;
-  if (other) return &*other;
-  return nullptr;
-}
-
-// "ldpc+stbc" -> kFlagLdpc|kFlagStbc, "stbc" -> kFlagStbc, "ldpc" ->
-// kFlagLdpc, "none" -> 0. nullopt for anything else -- callers that read
-// this from config.cpp never see anything else, since parse_radio already
-// rejects an unknown string at load; this stays total so a caller
-// constructing a string some other way isn't tempted to assume it is
-// always one of the four.
-inline std::optional<uint8_t> cal_flags_mask(const std::string& s) {
-  if (s == "ldpc+stbc")
-    return static_cast<uint8_t>(mabur::cal::kFlagLdpc | mabur::cal::kFlagStbc);
-  if (s == "stbc") return mabur::cal::kFlagStbc;
-  if (s == "ldpc") return mabur::cal::kFlagLdpc;
-  if (s == "none") return static_cast<uint8_t>(0);
-  return std::nullopt;
+// Empty unless power_mode is "offset". One plan per cache entry, its walls
+// derived from the stored curve under the link's LDPC flag now, so an ldpc
+// or margin change re-derives every plan without a re-measure.
+inline ChannelPlans make_channel_plans(const WallCache& cache, const RadioCfg& r,
+                                       double margin_db, bool ldpc) {
+  ChannelPlans p;
+  if (r.power_mode != "offset") return p;
+  for (const auto& [key, curve] : cache.entries)
+    p.by[key] = make_power_plan(walls_from_curve(curve, ldpc), r.legacy_wall_rel, margin_db,
+                                curve.anchor);
+  return p;
 }
 
 }  // namespace mabur

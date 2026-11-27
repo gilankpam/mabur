@@ -64,9 +64,7 @@ TEST(full_bundle_migrates_to_per_drone_keys) {
   const MigrateResult r = migrate(fixture());
   REQUIRE(r.ok);
   CHECK(key_paths(r.text) ==
-        (std::set<std::string>{"radio.channels", "radio.rate_walls_rel_20",
-                               "radio.rate_walls_rel_40", "radio.cal_flags_20",
-                               "radio.cal_flags_40", "radio.legacy_wall_rel", "link.key_file",
+        (std::set<std::string>{"radio.channels", "radio.legacy_wall_rel", "link.key_file",
                                "venc.sensor_bin"}));
   CHECK(logged(r, "removed default venc.min_iqp = 34"));
 }
@@ -100,12 +98,24 @@ TEST(default_in_other_spelling_is_pruned) {
   CHECK(r.text == std::string(kVenc) + "[encoder]\n");
 }
 
-TEST(empty_walls_and_default_channels_kept) {
-  const std::string in =
-      std::string("[radio]\nchannels = [40, 64, 112, 144]\nrate_walls_rel_20 = []\n") + kVenc;
+TEST(default_channels_kept) {
+  const std::string in = std::string("[radio]\nchannels = [40, 64, 112, 144]\n") + kVenc;
   const MigrateResult r = migrate(in);
   REQUIRE(r.ok);
   CHECK(r.text == in);
+}
+
+// The walls live in the wall cache now: a file from before keeps its
+// channel set and loses the wall keys.
+TEST(the_removed_wall_keys_are_pruned) {
+  const MigrateResult r = migrate(
+      std::string("[radio]\nchannels = [40, 64, 112, 144]\n"
+                  "rate_walls_rel_20 = [60, 60, 60, 45, 22, 6, 9, 5]\ncal_flags_40 = \"stbc\"\n") +
+      kVenc);
+  REQUIRE(r.ok);
+  CHECK(r.text == std::string("[radio]\nchannels = [40, 64, 112, 144]\n") + kVenc);
+  CHECK(logged(r, "removed unknown radio.rate_walls_rel_20"));
+  CHECK(logged(r, "removed unknown radio.cal_flags_40"));
 }
 
 TEST(bad_value_fails_without_output) {
@@ -122,13 +132,11 @@ TEST(unparseable_key_fails_cleanly) {
   CHECK(r.error.find("quoted keys") != std::string::npos);
 }
 
-// Calibration results are per card: kept even when they equal today's
-// default, so a later default change never rewrites a measured unit.
+// The legacy wall is per card: kept even when it equals today's default,
+// so a later default change never rewrites a measured unit.
 TEST(calibration_results_kept_even_at_default_value) {
   const std::string in =
-      "[radio]\npower_mode = \"offset\"\n"
-      "rate_walls_rel_20 = [60, 60, 60, 45, 22, 6, 9, 5]\n"
-      "cal_flags_20 = \"ldpc+stbc\"\nlegacy_wall_rel = 63\n" + std::string(kVenc);
+      "[radio]\npower_mode = \"offset\"\nlegacy_wall_rel = 63\n" + std::string(kVenc);
   const MigrateResult r = migrate(in);
   REQUIRE(r.ok);
   CHECK(r.text == in);

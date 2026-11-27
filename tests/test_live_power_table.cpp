@@ -1,9 +1,12 @@
-// LivePowerTable: which width's power plan is live, and how calibration
-// takes the table over and hands it back. CalEndEdge: the agent thread's
-// calibration falling edge.
+// LivePowerTable: which (channel, width)'s power plan is live, and how
+// calibration takes the table over and hands it back. CalEndEdge: the agent
+// thread's calibration falling edge.
 #include "live_power_table.h"
 
+#include <unistd.h>
+
 #include <array>
+#include <cstdio>
 #include <optional>
 #include <string>
 #include <vector>
@@ -60,24 +63,60 @@ struct Rig {
     t.ready = &ready;
     t.cal_active = &cal_active;
     t.cal_epoch = &cal_epoch;
+    t.set_channel(144);
+  }
+  // The agent's retune: the table's lock, then (in maburd) the gate.
+  void retune(uint8_t ch) {
+    t.with_lock([&] { t.retuned_in_gate(ch); });
   }
 };
 
-// Two tables that differ on mcs5, so which one went live is visible.
-WidthPlans both() {
-  RadioCfg r;
-  r.rate_walls_rel_20 = std::array<int, 8>{63, 63, 63, 63, 45, 23, 22, 21};
-  r.rate_walls_rel_40 = std::array<int, 8>{63, 63, 63, 63, 45, 28, 28, 23};
-  return make_width_plans(r, 1.0, 53);
+PowerPlan plan(int mcs5) {
+  return make_power_plan({63, 63, 63, 63, 45, mcs5, 22, 21}, 63, 1.0, 53);
 }
-WidthPlans only20() {
-  RadioCfg r;
-  r.rate_walls_rel_20 = std::array<int, 8>{63, 63, 63, 63, 45, 23, 22, 21};
-  return make_width_plans(r, 1.0, 53);
+// Two widths of channel 144 that differ on mcs5, so which one went live is
+// visible.
+ChannelPlans both() {
+  ChannelPlans p;
+  p.by[{144, 20}] = plan(23);
+  p.by[{144, 40}] = plan(28);
+  return p;
 }
-int mcs5(const WidthPlans& p, uint8_t bw) { return plan_for(p, bw)->mcs[5]; }
-std::string diffs_of(const WidthPlans& p, uint8_t bw) {
-  return "diffs mcs5=" + std::to_string(mcs5(p, bw));
+ChannelPlans only20() {
+  ChannelPlans p;
+  p.by[{144, 20}] = plan(23);
+  return p;
+}
+// Two channels at 20 MHz that differ on mcs5; 64 and 40 not measured.
+ChannelPlans two_channels() {
+  ChannelPlans p;
+  p.by[{144, 20}] = plan(23);
+  p.by[{112, 20}] = plan(30);
+  return p;
+}
+int mcs5(const ChannelPlans& p, uint8_t ch, uint8_t bw) {
+  return plan_for(p, ch, bw).plan->mcs[5];
+}
+std::string diffs_of(const ChannelPlans& p, uint8_t bw, uint8_t ch = 144) {
+  return "diffs mcs5=" + std::to_string(mcs5(p, ch, bw));
+}
+
+// What the table logs while `f` runs.
+template <class F>
+std::string stderr_of(F&& f) {
+  std::fflush(stderr);
+  FILE* tmp = std::tmpfile();
+  const int saved = ::dup(2);
+  ::dup2(::fileno(tmp), 2);
+  f();
+  std::fflush(stderr);
+  ::dup2(saved, 2);
+  ::close(saved);
+  std::rewind(tmp);
+  std::string out;
+  for (int c; (c = std::fgetc(tmp)) != EOF;) out.push_back(static_cast<char>(c));
+  std::fclose(tmp);
+  return out;
 }
 
 using Calls = std::vector<std::string>;
@@ -86,8 +125,8 @@ using Calls = std::vector<std::string>;
 
 TEST(follow_programs_a_new_width_once) {
   Rig r;
-  const WidthPlans p = both();
-  REQUIRE(mcs5(p, 20) != mcs5(p, 40));
+  const ChannelPlans p = both();
+  REQUIRE(mcs5(p, 144, 20) != mcs5(p, 144, 40));
   REQUIRE(r.t.replace(p, 20, true, false));
   CHECK((r.dev.calls == Calls{"gate", diffs_of(p, 20), "offset 0"}));
   r.dev.clear();
@@ -100,7 +139,7 @@ TEST(follow_programs_a_new_width_once) {
 
 TEST(follow_is_a_no_op_while_calibrating) {
   Rig r;
-  const WidthPlans p = both();
+  const ChannelPlans p = both();
   REQUIRE(r.t.replace(p, 20, true, false));
   r.dev.clear();
   r.t.begin_cal();
@@ -115,7 +154,7 @@ TEST(follow_puts_back_a_table_calibration_changed) {
   // A sweep zeroes the diffs behind the table's back; once calibration lets
   // go, follow() rewrites the plan even at the width it already names.
   Rig r;
-  const WidthPlans p = both();
+  const ChannelPlans p = both();
   REQUIRE(r.t.replace(p, 20, true, false));
   r.t.begin_cal();
   r.cal_active = false;
@@ -152,7 +191,7 @@ TEST(follow_waits_for_the_device) {
 
 TEST(restore_after_a_run_clears_the_override_in_the_same_gate_hold) {
   Rig r;
-  const WidthPlans p = both();
+  const ChannelPlans p = both();
   REQUIRE(r.t.replace(p, 40, true, false));
   r.t.begin_cal();
   r.cal_active = false;
@@ -169,14 +208,14 @@ TEST(restore_with_no_plans_writes_the_efuse_table_and_clears_the_override) {
   Rig r;
   r.t.begin_cal();
   r.cal_active = false;
-  REQUIRE(r.t.replace(WidthPlans{}, 20, true, true));
+  REQUIRE(r.t.replace(ChannelPlans{}, 20, true, true));
   CHECK((r.dev.calls == Calls{"gate", "diffs efuse", "override -1"}));
 }
 
 TEST(program_for_cal_flies_the_fallback_or_the_efuse_table) {
   Rig r;
   // Only a 20 MHz table: a 40 MHz capacity sweep flies it, as production does.
-  const WidthPlans p = only20();
+  const ChannelPlans p = only20();
   REQUIRE(r.t.replace(p, 20, true, false));
   r.t.begin_cal();
   r.dev.clear();
@@ -203,7 +242,7 @@ TEST(program_for_cal_flies_the_fallback_or_the_efuse_table) {
 
 TEST(replace_unless_cal_refuses_during_calibration) {
   Rig r;
-  const WidthPlans p = both();
+  const ChannelPlans p = both();
   REQUIRE(r.t.replace(p, 20, true, false));
   r.t.begin_cal();
   r.dev.clear();
@@ -246,6 +285,104 @@ TEST(the_production_ampdu_write_is_refused_under_calibration) {
   r.cal_active = false;
   r.t.unless_cal([&] { written += r.dev.set_ampdu(true); });
   CHECK(written == 3);
+}
+
+TEST(follows_the_channel_on_a_retune) {
+  Rig r;
+  const ChannelPlans p = two_channels();
+  REQUIRE(mcs5(p, 144, 20) != mcs5(p, 112, 20));
+  REQUIRE(r.t.replace(p, 20, true, false));
+  CHECK(r.dev.last_diffs && r.dev.last_diffs->mcs[5] == mcs5(p, 144, 20));
+  r.dev.clear();
+  r.retune(112);
+  // Written in the caller's gate hold: no second take of the gate.
+  CHECK((r.dev.calls == Calls{diffs_of(p, 20, 112)}));
+  CHECK(r.t.channel() == 112);
+  r.dev.clear();
+  r.t.follow(20);  // already live
+  CHECK(r.dev.calls.empty());
+}
+
+TEST(a_hop_to_an_unmeasured_channel_restores_the_chip_table) {
+  // Leaving 144's diffs on 64's anchor would fly walls nobody measured.
+  Rig r;
+  const ChannelPlans p = two_channels();
+  REQUIRE(r.t.replace(p, 20, true, false));
+  r.dev.clear();
+  const std::string log = stderr_of([&] { r.retune(64); });
+  CHECK((r.dev.calls == Calls{"diffs efuse"}));
+  CHECK(log.find("ch 64 20 MHz: chip's own table") != std::string::npos);
+  r.dev.clear();
+  r.retune(40);  // also unmeasured: the chip is on its own table already
+  CHECK(r.dev.calls.empty());
+  // Once per channel and width: a second visit writes, but does not log.
+  r.retune(144);
+  r.dev.clear();
+  const std::string again = stderr_of([&] { r.retune(64); });
+  CHECK((r.dev.calls == Calls{"diffs efuse"}));
+  CHECK(again.find("chip's own table") == std::string::npos);
+}
+
+TEST(a_hop_back_reprograms_the_plan) {
+  Rig r;
+  const ChannelPlans p = two_channels();
+  REQUIRE(r.t.replace(p, 20, true, false));
+  r.retune(64);
+  r.dev.clear();
+  r.retune(144);
+  CHECK((r.dev.calls == Calls{diffs_of(p, 20, 144)}));
+}
+
+TEST(the_width_follows_within_a_channel) {
+  Rig r;
+  const ChannelPlans p = only20();
+  REQUIRE(r.t.replace(p, 20, true, false));
+  r.dev.clear();
+  const std::string log = stderr_of([&] { r.t.follow(40); });
+  CHECK((r.dev.calls == Calls{"gate", diffs_of(p, 20)}));
+  CHECK(log.find("ch 144 40 MHz: the 20 MHz plan") != std::string::npos);
+}
+
+TEST(a_retune_during_calibration_only_records) {
+  Rig r;
+  const ChannelPlans p = two_channels();
+  REQUIRE(r.t.replace(p, 20, true, false));
+  r.t.begin_cal();
+  r.dev.clear();
+  r.retune(112);
+  CHECK(r.dev.calls.empty());
+  CHECK(r.t.channel() == 112);
+  // The run's end programs the recorded channel.
+  r.cal_active = false;
+  r.t.follow(20);
+  CHECK((r.dev.calls == Calls{"gate", diffs_of(p, 20, 112)}));
+}
+
+TEST(a_retune_before_bring_up_only_records) {
+  Rig r;
+  ChannelPlans p = two_channels();
+  p.by[{112, 40}] = plan(28);
+  r.t.set_plans(p);  // plans held, but nothing programmed yet
+  r.retune(112);
+  CHECK(r.dev.calls.empty());
+  CHECK(r.t.channel() == 112);
+  REQUIRE(r.t.replace(p, 20, true, false));
+  CHECK((r.dev.calls == Calls{"gate", diffs_of(p, 20, 112), "offset 0"}));
+}
+
+TEST(offset_with_an_empty_cache_flies_the_chip_table) {
+  Rig r;
+  CHECK(r.t.replace(ChannelPlans{}, 20, true, false));
+  int own = 0;
+  for (const auto& c : r.dev.calls) {
+    own += c == "diffs efuse";
+    CHECK(c.rfind("diffs mcs5", 0) != 0);
+  }
+  CHECK(own <= 1);
+  r.dev.clear();
+  r.t.follow(40);
+  r.retune(112);
+  CHECK(!r.dev.diffs_written);
 }
 
 TEST(cal_end_edge_fires_once_per_run) {

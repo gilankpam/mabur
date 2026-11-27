@@ -143,9 +143,9 @@ ControlRadiotap RealMode::make_control_radiotap() {
   return rt;
 }
 
-WidthPlans RealMode::plans_for(const RadioCfg& r, double margin_db) const {
-  return r.power_mode == "offset" ? make_width_plans(r, margin_db, boot_anchor_idx)
-                                  : WidthPlans{};
+ChannelPlans RealMode::plans_for(const RadioCfg& r, double margin_db) {
+  std::lock_guard<std::mutex> l(wall_cache_mu);
+  return make_channel_plans(wall_cache, r, margin_db, live_ldpc.load(std::memory_order_acquire));
 }
 
 #ifdef MABUR_HAVE_VENC
@@ -180,9 +180,9 @@ ConfigApplyHooks RealMode::make_apply_hooks() {
       return false;
     }
     if (c.radio.power_mode != "offset") { *err = "no offset power plan"; return false; }
-    // Both widths' plans move with the margin; the rung's width's is
-    // written now (under tx_gate, inside the table's lock), the other's when
-    // the rung next crosses to it.
+    // Every plan moves with the margin; the link channel's for the rung's
+    // width is written now (under tx_gate, inside the table's lock), the
+    // others when the rung or a retune next reaches them.
     const auto op = shared_op.load();
     bool refused_cal = false;
     if (!power_table.replace_unless_cal(plans_for(c.radio, c.radio.wall_margin_db),
@@ -197,6 +197,16 @@ ConfigApplyHooks RealMode::make_apply_hooks() {
     live_ldpc.store(ldpc, std::memory_order_release);
     radiotap_gen.fetch_add(1, std::memory_order_release);
     agent.note_ldpc_changed(ldpc);
+    // The walls are derived from the stored curves under the LDPC flag (an
+    // LDPC-off link decodes 4 dB worse), so every plan is rebuilt now. A
+    // run that owns the table refuses it; its end rebuilds them anyway.
+    if (!rtl_device || !device_ready.load(std::memory_order_acquire)) return;
+    const auto op = shared_op.load();
+    bool refused_cal = false;
+    if (!power_table.replace_unless_cal(plans_for(cfg.radio, live_wall_margin.load()),
+                                        op ? op->ladder[1].bw : cfg.radio.width, &refused_cal) &&
+        !refused_cal)
+      std::fprintf(stderr, "maburd radio: SetTxPowerRateDiffs failed after the ldpc change\n");
   };
   apply_hooks.msp = [this](bool enable, const Config& c) {
     if (enable) start_msp(c.msp);
@@ -659,30 +669,29 @@ int run_real_mode(const Config& cfg, uint8_t start_ch, const std::string& cfg_pa
   // clears a knob that was already clear.
   rtl_device->SetTxPowerIndexOverride(-1);
 
-  // The chip's TXAGC reference for the boot channel, read with no custom
-  // table live (GetTxPowerState reports the reference itself then). Used
-  // ONLY to cap reference + diff at 127 (power_plan.h); it never reaches
-  // config or the wire. 0 = unknown, no cap. This is the ONE read: see the
-  // declaration of boot_anchor_idx for why a channel move re-applies TX
-  // power (devourer re-derives the new channel's anchor) instead of
-  // re-reading here.
-  {
-    const auto st = rtl_device->GetTxPowerState();
-    if (st.valid && st.mcs7_index >= 0) m.boot_anchor_idx = st.mcs7_index;
-  }
-
-  // power_mode == "offset": program the start width's wall-equalized
-  // per-rate diff table and zero the global offset; from here the table
-  // follows the rung's width (RealActuator::apply_op), and nothing else
-  // moves power. "none" never touches it. SetTxPowerRateDiffs returns false
+  // power_mode == "offset": program the start channel and width's
+  // wall-equalized per-rate diff table from the wall cache and zero the
+  // global offset; from here the table follows the rung's width
+  // (RealActuator::apply_op) and every retune (RealActuator::retune_now_),
+  // and nothing else moves power. "none", or nothing measured on the start
+  // channel, flies the chip's own table. SetTxPowerRateDiffs returns false
   // on chips without a rate-diff table (both Jaguar3 dies, 8822E and 8822C,
   // have one) -- warn and continue rather than aborting bring-up, so
   // "offset" configured on an unsupported chip degrades to the chip's
-  // default power instead of failing to fly.
-  for (const auto& note : missing_wall_notes(cfg.radio))
-    std::fprintf(stderr, "maburd %s\n", note.c_str());
-  for (const auto& warn : ldpc_mismatch_warnings(cfg.radio))
-    std::fprintf(stderr, "maburd warning: %s\n", warn.c_str());
+  // default power instead of failing to fly. A missing or unreadable cache
+  // is "nothing measured", never a bring-up failure.
+  {
+    std::string note;
+    WallCache c = load_wall_cache(kWallCacheFile, &note);
+    if (note.empty())
+      std::fprintf(stderr, "maburd radio: wall cache %s: %zu measured (channel, width)\n",
+                   kWallCacheFile, c.entries.size());
+    else
+      std::fprintf(stderr, "maburd radio: wall cache %s: %s\n", kWallCacheFile, note.c_str());
+    std::lock_guard<std::mutex> l(m.wall_cache_mu);
+    m.wall_cache = std::move(c);
+  }
+  m.power_table.set_channel(m.start_ch);
   if (!m.power_table.replace(m.plans_for(cfg.radio, cfg.radio.wall_margin_db), cfg.radio.width,
                            /*zero_offset=*/true, /*clear_override=*/false)) {
     std::fprintf(stderr,

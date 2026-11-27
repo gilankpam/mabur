@@ -98,66 +98,6 @@ TEST(ledger_treats_a_new_seq_at_the_same_width_as_a_new_apply) {
   CHECK(!l.cached(7, 1).has_value());   // the second apply at 20 is new
 }
 
-TEST(ldpc_mismatch_warns_per_flown_width) {
-  RadioCfg r;
-  r.power_mode = "offset";
-  r.rate_walls_rel_20 = std::array<int, 8>{63, 63, 63, 63, 45, 23, 22, 21};
-  r.cal_flags_20 = "ldpc+stbc";
-  r.cal_flags_40 = "stbc";  // no 40 MHz table: never warned about
-  r.ldpc = true;
-  CHECK(ldpc_mismatch_warnings(r).empty());
-
-  r.ldpc = false;
-  auto w = ldpc_mismatch_warnings(r);
-  REQUIRE(w.size() == 1);
-  CHECK(w[0] ==
-        "radio: 20 MHz walls were measured with ldpc on; radio.ldpc is off \xe2\x80\x94 re-run "
-        "maburcal");
-
-  r.rate_walls_rel_40 = std::array<int, 8>{63, 63, 63, 63, 45, 28, 28, 23};
-  r.ldpc = true;
-  r.width = 20;  // a 20 MHz radio never flies 40: its table is not warned about
-  CHECK(ldpc_mismatch_warnings(r).empty());
-  r.width = 40;
-  w = ldpc_mismatch_warnings(r);
-  REQUIRE(w.size() == 1);
-  CHECK(w[0] ==
-        "radio: 40 MHz walls were measured with ldpc off; radio.ldpc is on \xe2\x80\x94 re-run "
-        "maburcal");
-
-  r.power_mode = "none";  // nothing flown, nothing to warn about
-  CHECK(ldpc_mismatch_warnings(r).empty());
-}
-
-TEST(missing_wall_notes_name_the_fallback_width) {
-  RadioCfg r;
-  r.power_mode = "offset";
-  r.width = 20;
-  r.rate_walls_rel_20 = std::array<int, 8>{63, 63, 63, 63, 45, 23, 22, 21};
-  CHECK(missing_wall_notes(r).empty());  // a 20 MHz radio never flies 40
-  r.width = 40;
-  auto n = missing_wall_notes(r);
-  REQUIRE(n.size() == 1);
-  CHECK(n[0] == "radio: no 40 MHz walls, flying the 20 MHz table at 40");
-
-  r.rate_walls_rel_20.reset();
-  r.rate_walls_rel_40 = std::array<int, 8>{63, 63, 63, 63, 45, 28, 28, 23};
-  n = missing_wall_notes(r);
-  REQUIRE(n.size() == 1);
-  // 40 MHz walls sit at or above the 20 MHz ones, so this direction
-  // overdrives and the note says so.
-  CHECK(n[0] ==
-        "radio: no 20 MHz walls, flying the 40 MHz table at 20 "
-        "\xe2\x80\x94 the overdriving direction, re-run maburcal at 20 MHz");
-
-  r.rate_walls_rel_20 = std::array<int, 8>{63, 63, 63, 63, 45, 23, 22, 21};
-  CHECK(missing_wall_notes(r).empty());
-
-  r.rate_walls_rel_40.reset();
-  r.power_mode = "none";
-  CHECK(missing_wall_notes(r).empty());
-}
-
 namespace {
 struct NullPower : CalSweep::PowerCtl {
   bool set_index_override(int) override { return true; }
