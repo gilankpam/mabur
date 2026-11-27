@@ -46,10 +46,12 @@ bool WallSweep::step(uint64_t now_ms) {
   if (!s_.capture(idx, gain, &buf_)) { finish(cal::WallResult::DeviceError); return false; }
   const CrossEvm m = measure_(buf_.data(), buf_.size(), bw_);
 
-  // A park-check capture can hold no TX at all (no frame, only the removed DC left): it says
-  // nothing about the park, so retry it. The last attempt is used whatever it holds.
+  // A park-check capture can hold no TX at all (only the removed DC left, or a "frame" read
+  // out of that noise below kMinLevelDb): it says nothing about the park, so retry it. The
+  // last attempt is used whatever it holds.
   if (!points) {
-    if (!m.frame && m.envelope_db < kMinLevelDb && tries_ < kMaxRetries) { ++tries_; return true; }
+    const bool clean_frame = m.frame && m.level_db >= kMinLevelDb;
+    if (!clean_frame && m.envelope_db < kMinLevelDb && tries_ < kMaxRetries) { ++tries_; return true; }
     tries_ = 0;
   }
 

@@ -160,6 +160,15 @@ TEST(each_park_check_capture_has_its_own_retries) {   // unparked: no TX twice, 
   CHECK(sw.result() == cal::WallResult::Ok && sw.park_rise_db() == 15.0f);
   CHECK(fake.calls[3] == "cap 28 0" && fake.calls[4] == "park 1" && fake.calls[7] == "cap 28 3");   // 3 + 2 park-check captures
 }
+// With nothing on the air the demodulator can still read a "frame" out of the noise.
+CrossEvm noise_frame() { CrossEvm m; m.frame = true; m.level_db = 13; m.envelope_db = 16; m.evm_db = -3; return m; }
+TEST(a_parked_capture_with_only_a_noise_frame_is_retried) {   // unparked 35, parked: noise frame, then 50
+  SWEEP(fake, sw);
+  fake.script = [](const Cap& c) { return c.id == 1 ? noise_frame() : default_script(c); };
+  run_to_end(sw);
+  CHECK(sw.result() == cal::WallResult::Ok && sw.park_rise_db() == 15.0f);
+  CHECK(fake.calls[3] == "cap 28 0" && fake.calls[4] == "cap 28 0" && fake.calls[5] == "cap 28 3");
+}
 TEST(a_park_check_frame_with_a_low_envelope_is_not_retried) {   // only "no frame AND low envelope" is no TX
   SWEEP(fake, sw);
   fake.script = [](const Cap& c) { CrossEvm m = default_script(c); if (c.id == 1) m.envelope_db = 20; return m; };

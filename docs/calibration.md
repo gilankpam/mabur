@@ -253,8 +253,9 @@ TX writer thread, against a capture session on the radio
    reading PA A about 3 dB too good, the overdriving direction. The check
    is relative on purpose, since the absolute parked level differs between
    channels and airframes. A park-check capture holding no TX at all (no
-   frame, envelope under 30 dB) says nothing about the park and is
-   retried, up to twice.
+   frame at a level of 30 dB or more, envelope under 30 dB: the
+   demodulator can read a "frame" out of an empty capture's noise) says
+   nothing about the park and is retried, up to twice.
 3. **Points.** Absolute TXAGC index 28 to 124 in steps of 4, ascending: 25
    points. A point is the median of up to three captures that held a
    clean, unclipped frame at a level of at least 30 dB; a capture without
