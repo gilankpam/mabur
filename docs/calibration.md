@@ -357,6 +357,18 @@ Against a receiver, the MCS7 LDPC+STBC wall lies within 3.5 steps of the
 walls sit 5–8 steps above the curve, the self-measurement reading low, the
 safe side.
 
+**Known limit.** The measurement hears chain A's transmitter inside the
+radio through chain B, so it cannot see an impairment that exists only over
+the air and sets in at high power on some channels. On one channel of the
+bench unit the 20 MHz MCS4 wall read about 3.5 dB (about 14 index steps)
+above an over-the-air reference and lost 6–34 % of frames at the default
+margin, while that channel's MCS7 wall and every other rung, channel and
+width flew clean. The stored curve looks like a good channel's, so no check
+on the drone can flag it. After a measurement, verify the rungs over the
+air (each rung forced on the measured channel, as the checklist's rungs
+gate does); where one is lossy, raise `radio.wall_margin_db` or set
+`radio.power_mode = "none"` to fly the chip's own table.
+
 ### 5. The capacity sweep
 
 Eight points (MCS 0–7) at the sweep's width, each a **300 ms settle then a
@@ -980,10 +992,10 @@ findings page.
 | gate | command | expected |
 |---|---|---|
 | wall, link channel | `maburcal start power20` | one sweep, `done`, `maburd cal: wall … result=Ok`, the pair back on its channel with video |
-| wall, named channels | `maburcal start power20@<ch> power40@<ch>` on each channel of the set | each `result=Ok`, the −17 dB crossing within 2 index steps of the reference, `/etc/mabur.walls` holds one line per (channel, width) |
+| wall, named channels | `maburcal start power20@<ch> power40@<ch>` on each channel of the set | each `result=Ok`, the −17 dB crossing (the MCS7 wall only; the other rungs are not checked here) within 2 index steps of the reference, `/etc/mabur.walls` holds one line per (channel, width) |
 | link after a measurement | after every wall sweep | `SESSION` again within a couple of beacons, video, uplink delivery as before the trigger |
 | table follows | hop across measured and unmeasured channels under `power_mode = "offset"` | the `power table ch … ` log names the measured plan where that (channel, width) has an entry, else the chip's table (a channel measured only at 20 MHz flies the chip's table at 40) |
-| rungs | each ladder rung, forced, on three channels at the stored walls and default margin | flies clean |
+| rungs | each ladder rung, forced, on three channels at the stored walls and default margin; the only gate that checks every rung over the air (see "Known limit") | flies clean |
 | full run | `maburcal start` on a 40 MHz GS | four sweeps, `done`, both widths; capacity matches a run from before |
 | 20 MHz GS | an all-20 ladder on the GS (derived receiver width 20) | `maburcal start` runs two sweeps; `maburcal start power40` → `err refused: GS receiver width is 20 (load a 40 MHz ladder to calibrate 40 MHz)` |
 | unsupported drone | a drone on another chip, `maburcal start` | the wall sweeps are skipped (`X` lines), capacity completes |
