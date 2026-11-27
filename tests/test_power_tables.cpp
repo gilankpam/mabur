@@ -6,7 +6,7 @@ using namespace mabur;
 
 namespace {
 // A measured (144, 20) curve, anchor 39 (test_wall_curve.cpp): walls
-// {63,63,63,63,44,26,24,20} with LDPC, mcs7 11 without.
+// {63,63,63,63,36,26,24,20} with LDPC, mcs7 11 without.
 const int k144_20[25] = {-306,-302,-296,-285,-241,-221,-200,-184,-168,-154,-144,-133,-124,
                          -116,-109,-103,-98,-94,-91,-89,-87,-86,-84,-83,-81};
 WallCurve curve(const int (&v)[25], int anchor) {
@@ -33,7 +33,7 @@ TEST(plans_come_from_the_cache_one_per_entry) {
   REQUIRE(p.by.count({144, 20}) == 1);
   const PowerPlan& pl = p.by.at({144, 20});
   CHECK(pl.mcs[7] == 16);  // wall 20, margin 1.0 dB = 4 steps
-  CHECK(pl.mcs[4] == 40);
+  CHECK(pl.mcs[4] == 32);
   CHECK(pl.legacy == 59);  // legacy_wall_rel 63 - 4
 }
 

@@ -343,11 +343,17 @@ chip adds its own per-channel-group reference on every channel.
 
 | MCS | 0–2 | 3 | 4 | 5 | 6 | 7 |
 |---|---|---|---|---|---|---|
-| threshold, EVM dB (LDPC on, STBC on) | none (63) | −9.0 | −11.0 | −15.0 | −15.5 | −17.0 |
+| threshold, EVM dB (LDPC on, STBC on) | none (63) | −9.0 | −12.5 | −15.0 | −15.5 | −17.0 |
 
 The thresholds are one reference unit's PA A EVM at that unit's walls
 (MCS7 spread −13.9 to −18.1, MCS4 −10.0 to −11.2 across three channels and
-both widths). **With `radio.ldpc = false` every threshold is lowered by
+both widths), except MCS4's, which is 1.5 dB lower. MCS4's wall lies where
+the PA is compressed and the curve is nearly flat, about 0.15 dB per index
+against 0.4 dB at MCS7's wall. The EVM at which MCS4 delivery fails differs
+between channels by about 2 dB, which is a dozen index steps on that part of
+the curve, more than `radio.wall_margin_db` covers, while the radiated power
+rises only about 0.1 dB per index there: the lower threshold costs under
+1 dB of MCS4 power. **With `radio.ldpc = false` every threshold is lowered by
 4 dB** (the BCC versus LDPC+STBC difference at MCS7), and the
 measurement's log line says so. The walls are derived from the stored curve
 at load and whenever `radio.ldpc` or the margin changes, so neither needs
@@ -357,15 +363,12 @@ Against a receiver, the MCS7 LDPC+STBC wall lies within 3.5 steps of the
 walls sit 5–8 steps above the curve, the self-measurement reading low, the
 safe side.
 
-**Known limit.** The measurement hears chain A's transmitter inside the
-radio through chain B, so it cannot see an impairment that exists only over
-the air and sets in at high power on some channels. On one channel of the
-bench unit the 20 MHz MCS4 wall read about 3.5 dB (about 14 index steps)
-above an over-the-air reference and lost 6–34 % of frames at the default
-margin, while that channel's MCS7 wall and every other rung, channel and
-width flew clean. The stored curve looks like a good channel's, so no check
-on the drone can flag it. After a measurement, verify the rungs over the
-air (each rung forced on the measured channel, as the checklist's rungs
+**Known limit.** The measurement hears chain A's transmitter through
+chain B and knows nothing of the receiver: the thresholds stand in for
+delivery, and they come from one unit. A wall can therefore sit above what
+a channel delivers while its stored curve looks like any other, and no
+check on the drone can flag it. After a measurement, verify the rungs over
+the air (each rung forced on the measured channel, as the checklist's rungs
 gate does); where one is lossy, raise `radio.wall_margin_db` or set
 `radio.power_mode = "none"` to fly the chip's own table.
 
@@ -896,7 +899,7 @@ commands the drone, after the pick.
 **`maburd` log** (`/tmp/mabur.log`). The measurement's one line:
 
 ```
-maburd cal: wall ch=112 bw=20 result=Ok park_rise=17.4 floor=-30.6 anchor=39 walls=63,63,63,63,44,26,24,20 captures=88 time_ms=6100
+maburd cal: wall ch=112 bw=20 result=Ok park_rise=17.4 floor=-30.6 anchor=39 walls=63,63,63,63,36,26,24,20 captures=88 time_ms=6100
 ```
 
 `result` is one of `Ok Unparked TooFewPoints FloorTooHigh NotSaturated

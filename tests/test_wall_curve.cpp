@@ -17,10 +17,10 @@ const int k40_40[25]  = {-319,-320,-322,-311,-305,-307,-308,-307,-305,-302,-292,
 }  // namespace
 
 TEST(measured_curves_give_these_walls) {
-  CHECK(walls_from_curve(curve(k144_20, 39), true)  == (std::array<int,8>{63,63,63,63,44,26,24,20}));
-  CHECK(walls_from_curve(curve(k144_20, 39), false) == (std::array<int,8>{63,63,63,34,26,15,14,11}));
-  CHECK(walls_from_curve(curve(k40_40, 75), true)   == (std::array<int,8>{63,63,63,47,37,24,22,18}));
-  CHECK(walls_from_curve(curve(k40_40, 75), false)  == (std::array<int,8>{63,63,63,30,24,14,13,10}));
+  CHECK(walls_from_curve(curve(k144_20, 39), true)  == (std::array<int,8>{63,63,63,63,36,26,24,20}));
+  CHECK(walls_from_curve(curve(k144_20, 39), false) == (std::array<int,8>{63,63,63,34,21,15,14,11}));
+  CHECK(walls_from_curve(curve(k40_40, 75), true)   == (std::array<int,8>{63,63,63,47,32,24,22,18}));
+  CHECK(walls_from_curve(curve(k40_40, 75), false)  == (std::array<int,8>{63,63,63,30,19,14,13,10}));
 }
 TEST(the_search_starts_at_the_floor) {      // k40_40's floor is its third point, not its first
   CHECK(*curve_floor_db(curve(k40_40, 75)) == -32.2f);
@@ -31,7 +31,7 @@ TEST(points_without_a_value_are_bridged) {  // drop the point at index 56 of k14
 }
 TEST(walls_are_clamped_to_the_diff_range) {
   CHECK(walls_from_curve(curve(k144_20, 0), true)[7] == 59);     // 59.5 - 0
-  CHECK(walls_from_curve(curve(k144_20, 0), true)[4] == 63);     // 83.4 - 0, clamped
+  CHECK(walls_from_curve(curve(k144_20, 0), true)[4] == 63);     // 75.6 - 0, clamped
   CHECK(walls_from_curve(curve(k144_20, 127), true)[7] == -64);  // 59.5 - 127, clamped
 }
 TEST(validity_rules) {
@@ -46,15 +46,15 @@ TEST(validity_rules) {
   CHECK(check_curve(tail) == cal::WallResult::Ok);
 }
 
-TEST(an_early_dip_before_the_floor_is_ignored) {  // fails if the search starts at index 0: mcs4 would cross at 31, not 47
+TEST(an_early_dip_before_the_floor_is_ignored) {  // fails if the search starts at index 0: mcs4 would cross at 30, not 46
   const int v[25] = {-300,-50,-100,-320,-200,-80,-80,-80,-80,-80,-80,-80,-80,
                      -80,-80,-80,-80,-80,-80,-80,-80,-80,-80,-80,-80};
-  CHECK(walls_from_curve(curve(v, 0), true)[4] == 47);
+  CHECK(walls_from_curve(curve(v, 0), true)[4] == 46);
 }
-TEST(only_the_first_crossing_counts) {  // fails if the search keeps going after the first crossing: mcs4 would be 42
+TEST(only_the_first_crossing_counts) {  // fails if the search keeps going after the first crossing: mcs4 would be 41
   const int v[25] = {-300,-200,-90,-140,-80,-80,-80,-80,-80,-80,-80,-80,-80,
                      -80,-80,-80,-80,-80,-80,-80,-80,-80,-80,-80,-80};
-  CHECK(walls_from_curve(curve(v, 0), true)[4] == 35);
+  CHECK(walls_from_curve(curve(v, 0), true)[4] == 34);
 }
 TEST(no_crossing_is_63) {  // floor above mcs7's threshold: nothing to cross, not a clamp (anchor 0 would give <63)
   const int v[25] = {-165,-165,-165,-165,-165,-165,-165,-165,-165,-165,-165,-165,-165,

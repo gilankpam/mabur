@@ -7,7 +7,11 @@ namespace mabur {
 
 namespace {
 // EVM dB thresholds (LDPC with STBC); MCS0-2 have none.
-constexpr float kThreshold[8] = {0, 0, 0, -9.0f, -11.0f, -15.0f, -15.5f, -17.0f};
+// MCS4's sits 1.5 dB under the EVM its delivery fails at on most channels: its wall lies
+// where the PA is compressed and the curve is nearly flat (about 0.15 dB per index), so
+// the channel-to-channel spread of that EVM (about 2 dB) is a dozen index steps there,
+// while the lost index steps cost almost no radiated power.
+constexpr float kThreshold[8] = {0, 0, 0, -9.0f, -12.5f, -15.0f, -15.5f, -17.0f};
 constexpr float kNoLdpcPenaltyDb = 4.0f;
 }  // namespace
 
