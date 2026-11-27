@@ -46,4 +46,28 @@ TEST(validity_rules) {
   CHECK(check_curve(tail) == cal::WallResult::Ok);
 }
 
+TEST(an_early_dip_before_the_floor_is_ignored) {  // fails if the search starts at index 0: mcs4 would cross at 31, not 47
+  const int v[25] = {-300,-50,-100,-320,-200,-80,-80,-80,-80,-80,-80,-80,-80,
+                     -80,-80,-80,-80,-80,-80,-80,-80,-80,-80,-80,-80};
+  CHECK(walls_from_curve(curve(v, 0), true)[4] == 47);
+}
+TEST(only_the_first_crossing_counts) {  // fails if the search keeps going after the first crossing: mcs4 would be 42
+  const int v[25] = {-300,-200,-90,-140,-80,-80,-80,-80,-80,-80,-80,-80,-80,
+                     -80,-80,-80,-80,-80,-80,-80,-80,-80,-80,-80,-80};
+  CHECK(walls_from_curve(curve(v, 0), true)[4] == 35);
+}
+TEST(no_crossing_is_63) {  // floor above mcs7's threshold: nothing to cross, not a clamp (anchor 0 would give <63)
+  const int v[25] = {-165,-165,-165,-165,-165,-165,-165,-165,-165,-165,-165,-165,-165,
+                     -165,-165,-165,-165,-165,-165,-165,-165,-165,-165,-165,-80};
+  CHECK(walls_from_curve(curve(v, 0), true)[7] == 63);
+}
+TEST(validity_boundaries_are_inclusive) {
+  auto twenty = curve(k144_20, 39);  for (int k = 10; k < 15; ++k) twenty.evm_db[k].reset();
+  CHECK(check_curve(twenty) == cal::WallResult::Ok);               // 20 of 25; fails if the count test is <= 20
+  auto floor26 = curve(k144_20, 39);  for (auto& v : floor26.evm_db) if (*v < -26.0f) v = -26.0f;
+  CHECK(check_curve(floor26) == cal::WallResult::Ok);              // fails if the floor test is >= -26
+  auto last11 = curve(k144_20, 39);  for (auto& v : last11.evm_db) if (*v > -11.0f) v = -11.0f;
+  CHECK(check_curve(last11) == cal::WallResult::Ok);               // fails if the last-point test is <= -11
+}
+
 MTEST_MAIN
