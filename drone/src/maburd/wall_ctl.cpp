@@ -173,11 +173,12 @@ void DeviceWallCtl::log_result(cal::WallResult r, const std::array<int8_t, 8>& w
   const float rise = sweep_ ? sweep_->park_rise_db() : 0.0f;
   std::fprintf(stderr,
                "maburd cal: wall ch=%u bw=%u result=%s park_rise=%.1f floor=%.1f anchor=%d "
-               "walls=%d,%d,%d,%d,%d,%d,%d,%d captures=%d time_ms=%llu%s\n",
+               "walls=%d,%d,%d,%d,%d,%d,%d,%d captures=%d time_ms=%llu%s%s\n",
                static_cast<unsigned>(ch_), static_cast<unsigned>(bw_), result_name(r), rise,
                floor_x10 / 10.0, anchor_, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7],
                sess_.captures, static_cast<unsigned long long>(now_steady_ms() - t0_ms_),
-               ldpc ? "" : " (LDPC off: thresholds lowered 4 dB)");
+               ldpc ? "" : " (LDPC off: thresholds lowered 4 dB)",
+               sweep_ && sweep_->curve().weak_park ? " park=weak (thresholds lowered 2.5 dB)" : "");
 }
 
 cal::SweepDone DeviceWallCtl::finish() {
