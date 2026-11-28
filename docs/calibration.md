@@ -1,34 +1,42 @@
 # TX-power walls and air capacity — `maburcal`
 
-An operator ssh'd into the ground station measures, per channel width the
-link flies, two per-unit hardware facts of their own vtx and writes them
-into the drone's config:
+Two per-unit hardware facts of the vtx are measured, by different means:
 
 - the **walls**: the TXAGC index at which each MCS's PA starts to
-  compress (`radio.rate_walls_rel_20` / `_40`), and
+  compress. The **drone measures these itself**, on one chain listening to
+  the other, per channel and width, and keeps the curves in
+  `/etc/mabur.walls`. No receiver is involved; the GS only triggers it.
 - the **efficiency**: the share of the nominal PHY rate the air really
   delivers at each MCS (`air_clock.efficiency_20` / `_40`), which the
   drone's bitrate formula and air clock price against
-  (`docs/airtime-model.md` §7).
+  (`docs/airtime-model.md` §7). The GS measures it with a capacity sweep
+  and the drone writes it into `/etc/mabur.toml`.
 
-Both are measured on this drone and this GS, under the coding flags the
-link flies (`radio.ldpc`, STBC on), at the drone's production frame size
-and aggregation. A full run of four sweeps takes about 80 seconds:
+The walls are flown only under `radio.power_mode = "offset"`, which the
+operator sets; nothing switches it. A power sweep's time per (channel,
+width) is set by its capture count and the drone's per-capture time,
+measured per width on the bench and logged by each sweep (`time_ms`,
+`captures`, below); it never exceeds the 30 s deadline
+(`cal::kWallDeadlineMs`, shared by both ends). A capacity sweep takes about
+18 s per width, at the power the drone flies for the link's channel.
 
 ```
 $ ssh root@<gs>
 # maburcal start                 # everything the GS's ladder needs
 # maburcal start power20 cap40   # a subset, any order; the GS sorts it
+# maburcal start power20@112     # measure channel 112 at 20 MHz; the pair stays put
 # maburcal status
 # maburcal abort
 # maburcal report /media/dvr/log/cal/cal.log
 ```
 
-No toolchain, no repo checkout, no laptop-side step. Why the run has the
-shape it has (20 frames per cell, one pass, a 2 s capacity dwell):
-`docs/findings/2026-10-31-calibration-shortening-spike.md`. Earlier
-measurements that are still hardware fact — the comb past the first dip,
-the transfer curve, channel-to-channel repeatability:
+No toolchain, no repo checkout, no laptop-side step. Why the capacity
+sweep has the shape it has (a 2 s dwell):
+`docs/findings/2026-10-31-calibration-shortening-spike.md`. How the walls
+measurement was found to work:
+`docs/findings/2026-11-26-drone-self-calibration-cross-path.md`.
+Earlier measurements that are still hardware fact — the comb past the
+first dip, the transfer curve:
 `docs/findings/2026-07-16-txagc-calibration.md`,
 `docs/findings/2026-09-11-maburcal-bench.md`.
 
@@ -40,29 +48,38 @@ the transfer curve, channel-to-channel repeatability:
 logged into the GS to start a run.
 
 **What a run measures.** A run is a list of sweeps, each a kind (`power`
-or `cap`) at a width (20 or 40). `maburcal start` with no arguments runs
-the GS's own composition (`default_sweeps`, [`gs/src/cal_control.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/cal_control.h)):
+or `cap`) at a width (20 or 40). `power` is the drone's wall
+self-measurement; on the wire it is the Wall kind. `maburcal start` with no
+arguments runs the GS's own composition (`default_sweeps`, [`gs/src/cal_control.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/cal_control.h)):
 `power20, cap20`, plus `power40, cap40` when the GS receiver width
 (derived from the ladder, `docs/bw40.md`) is 40
 **and** some `[[link.ladder]]` rung has `bw = 40`. The width is the
 narrower of the GS receiver width and the linked drone's Telem
 `width`, so a 40 MHz GS linked to a drone flying 20 composes the
-20 MHz pair only. Arguments `power20|power40|cap20|cap40` pick a subset;
-duplicates drop. Whatever was typed, the session runs widths ascending and,
-within a width, **power before capacity**: capacity is measured at the
-power the walls just parked. The reply names the run as it will go:
-`ok started power20,cap20,power40,cap40`.
+20 MHz pair only. Tokens:
+
+| token | sweep |
+|---|---|
+| `power20`, `power40` | the drone measures the walls of the link's channel at that width |
+| `power20@<ch>`, `power40@<ch>` | the same for channel `<ch>` (decimal, 1..177); the pair does not move |
+| `cap20`, `cap40` | the capacity sweep at that width |
+
+Duplicates drop; two `power` tokens at one width naming different channels
+both run. Whatever was typed, the session runs widths ascending and,
+within a width, **power before capacity** (channels ascending): capacity
+is measured at the walls a preceding power sweep just stored for the link's channel. The reply
+names the run as it will go: `ok started power20,cap20,power40,cap40`.
 
 Refusals come back at once, before anything airs:
 
 | reply | why |
 |---|---|
-| `err bad token: <tok>` | not one of the four tokens |
+| `err bad token: <tok>` | not one of the tokens above (`cap20@112`, `power20@0`, `power20@` are bad) |
 | `err refused: GS receiver width is 20 (load a 40 MHz ladder to calibrate 40 MHz)` | a `*40` token while the effective width (above) is 20 |
 | `err a calibration session is already running` | a run, or its channel pick, is in progress |
 | `err refused: link is down` | `maburgs` is not in `SESSION` |
 | `err refused: waiting for drone telemetry` | `maburgs` is in `SESSION` but no Telem has arrived since the ack, so the drone's caps are not known yet (about the first second of a session); retry |
-| `err refused: peer does not advertise CAP_CALIBRATE` | the drone's Telem `chip_caps` lacks the bit (a build without the mabur-dialect calibration) |
+| `err refused: peer does not advertise CAP_CALIBRATE` | the drone's Telem `chip_caps` lacks the bit |
 
 The "GS receiver width is 20" wording is also what a 40 MHz GS says when it
 is the linked drone that flies 20.
@@ -75,19 +92,22 @@ ok state=sweep sweep=2/4 kind=capacity bw=20 cell=3/8
 ```
 
 `state` is one of `idle picking await_ack sweep await_done analyze apply
-verify done failed`; `sweep=k/n` the running sweep, 1-based; `kind` is
-`verify` during a verify pass; `cell=i/n` the cell of the latest frame the
-GS tallied (840 power cells per sweep, 8 capacity points, up to 8 verify
-cells). `mismatch=<n>` appears once frames have been dropped for a kind,
-width or flags that do not match the running sweep (see "The sweep
-frame"). A `failed` line ends with `fail_reason=<why>` (free text to the
-end of the line). Then `start` finds the run's `cal.log` and prints the
-final table (below). `maburcal abort` cancels a run in any state.
+done failed`; `sweep=k/n` the running sweep, 1-based; `kind` is `wall` or
+`capacity`; `cell=i/n` the point of the latest capacity frame the GS
+tallied (8 capacity points); for a wall sweep it is `<s>/30`, the seconds
+since the ack against the drone's 30 s deadline.
+`mismatch=<n>` appears once frames have been dropped for a kind, width or
+flags that do not match the running sweep (see "The sweep frame"). A
+`failed` line ends with `fail_reason=<why>` (free text to the end of the
+line). Then `start` finds the run's `cal.log` and prints the final report
+(below). `maburcal abort` cancels a run in any state (a wall measurement
+only once the drone hears it: see "The drone sends nothing during the
+measurement").
 
 **Run it with `[radio] relays = []`.** The session tallies only cards 0
 and 1, and relay cards come after the USB cards in the roster: on a GS
-with one USB card the relay *is* card 1, and its sweep frames (another
-antenna, ath9k RSSI) would enter the cells. `[mavlink] enable` is not
+with one USB card the relay *is* card 1, and its capacity frames (another
+antenna, ath9k RSSI) would enter the tally. `[mavlink] enable` is not
 needed: the tunnel calibration rides is always built; the UDP endpoint is
 a separate tenant (`docs/mavlink.md`).
 
@@ -135,86 +155,234 @@ store follows a calibration relocate like any hop.
 
 ### 2. Per sweep
 
-1. **Command.** The GS sends `MABUR_CAL_SWEEP{nonce, seq, kind, bw, …}`
-   every 200 ms until acked; 3 s without an ack fails the run
+1. **Command.** The GS sends `MABUR_CAL_SWEEP{nonce, seq, kind, bw, channel,
+   …}` every 200 ms until acked; 3 s without an ack fails the run
    (`calibration ack timeout`). `seq` is the sweep's position in the run.
-   The drone is idempotent by (nonce, seq): a repeat of the running seq
-   re-acks without touching the sweep, an older seq is ignored, a newer
-   one starts the next sweep. One hold: a SWEEP is not sent while a scout
-   dwell begun just before the start still has a card off-channel
-   (`cal_cmd_clear`, [`gs/src/hop_burst_gate.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/hop_burst_gate.h)).
-2. **Ack.** `MABUR_CAL_ACK{nonce, seq, result, start_in_ms, flags}`. The
-   drone starts the sweep 200 ms after accepting it, so the ack can land
-   first; `flags` is the stamp mask the sweep flies (`ldpc`, `stbc`), and
-   the GS tallies only frames carrying it. A CRC-clean frame of the
-   commanded kind and width stands in for a lost ack. A refusal
-   (`anchor_unreadable`: the chip cannot report its TXAGC reference, or
-   would not zero its rate diffs so the reference can be read clean —
-   checked again before every later power sweep of the run, which a
-   failure closes) fails the run.
+   `channel` names the channel a Wall sweep measures; 0 means the link's
+   channel, which the drone resolves to the channel it flies (its
+   SWEEP_DONE names that channel). `maburgs` never sends 0: it fills the
+   channel in itself (the picker's op, else the session's channel; none
+   known fails the run, `no link channel known`). The drone
+   is idempotent by (nonce, seq): a repeat of the running seq re-acks
+   without touching the sweep, an older seq is ignored, a newer one starts
+   the next sweep. One hold: a SWEEP is not sent while a scout dwell begun
+   just before the start still has a card off-channel (`cal_cmd_clear`,
+   [`gs/src/hop_burst_gate.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/hop_burst_gate.h)).
+2. **Ack.** `MABUR_CAL_ACK{nonce, seq, result, start_in_ms, flags}`. A
+   Capacity sweep starts 200 ms after it is accepted, so the ack can land
+   first; `flags` is the stamp mask it flies (`ldpc`, `stbc`), and the GS
+   tallies only frames carrying it. A CRC-clean frame of the commanded
+   kind and width stands in for a lost ack of a capacity sweep; a wall
+   sweep's ack may be lost the same way, and then its **report stands in
+   for it** (nothing airs during the measurement, so the report is the
+   first thing the GS can hear; it carries no stamp flags, so the run's
+   `ldpc` in `cal.log` is `-` if no ack was ever heard). A wall sweep whose
+   ack timeout (3 s) passes without any ack does not fail: the GS goes
+   silent for the window the last SWEEP copy opens and waits for the
+   report (`no ack and no wall report from the drone` if none comes). A
+   capacity sweep still fails the run at the ack timeout. Refusals:
+
+   | result | meaning | the GS |
+   |---|---|---|
+   | `anchor_unreadable` | the chip would not zero its rate diffs or report its TXAGC reference (checked when a run's first sweep is accepted; a wall sweep's own anchor read failing later ends it `device_error`) | fails the run |
+   | `busy` | reserved in the enum, never sent by the drone | — |
+   | `unsupported` | a Wall sweep on a chip that cannot self-measure (anything but the 8812EU), or a sweep of a kind the drone does not know (neither wall nor capacity) | skips the sweep with a note (`X` line in `cal.log`) and goes on |
+   | `bad_channel` | a Wall channel not in the drone's `radio.channels`, or on 2.4 GHz (the capture is validated at 5 GHz only) | fails the run, `channel not in the drone's set` |
+   | `bad_width` | a 40 MHz Wall sweep on a drone with `radio.width = 20` | fails the run, `width not flown by the drone` |
+
 3. **Silence.** From the ack the GS sends nothing — no RCF, no DISC
    keepalive, no live MAVLink — for the sweep's planned duration plus
-   `phase_slack_ms` (1 s) (`CalSession::radio_silent()`).
-4. **Done.** When its last frame is out the drone sends
-   `MABUR_CAL_SWEEP_DONE{nonce, seq, offered[8], blocked_pct[8]}`, then
-   repeats it 100 ms later and every 200 ms after that until the run's
-   next command arrives or the run closes. The first copy ends the GS's
-   silence early; duplicates are ignored. Without any copy the GS's window
-   closes at planned end + 1 s.
-5. **Analyse.** Power: one wall per rate (below). Capacity: one
-   efficiency per rate (below).
-6. **Apply.** `MABUR_CAL_APPLY{nonce, seq, bw, has, walls[8], legacy,
-   eff[8]}` every 200 ms until `MABUR_CAL_APPLIED{nonce, seq, bw, ok,
-   reason}`; 5 s without an answer fails the run (`calibration apply
-   timeout`), a refusal fails it with the drone's reason. An adopted
-   apply's `reason` is empty, or a note of what the drone kept that the
-   apply did not carry (below, "What gets written"). `seq` names the
-   sweep the apply belongs to: a run applies twice at one width (power,
-   then capacity), and the drone answers a repeat of an apply it already
-   made from its cache instead of applying again. A sweep with nothing to
-   write (every wall undetermined, every capacity point `tx_bound`) sends
-   no apply.
-7. **Verify** (power applies only). The drone parks each newly written
-   rate at `park = clamp(wall − round(wall_margin_db · 4), −64, 63)` and
-   sends 20 frames there (5 ms settle, 1 ms gap), starting 200 ms after
-   the apply; the GS computes the same parks (`mabur/cal_park.h`, one rule
-   for both ends), stays silent for the pass plus 1 s and tallies delivery
-   per rate into the `verify` column.
+   `phase_slack_ms` (1 s) (`CalSession::radio_silent()`). A Wall sweep's
+   planned duration is its 30 s deadline. The drone is silent too during a
+   Wall measurement (below).
+4. **Done.** `MABUR_CAL_SWEEP_DONE{nonce, seq, …}`. For a Capacity sweep it
+   goes out when the last frame is out and carries `offered[8]`,
+   `blocked_pct[8]`. For a Wall sweep it carries `wall_result`, `channel`,
+   `bw`, the eight `walls`, `floor_evm_x10` and `anchor`. The drone repeats
+   it 100 ms later and every 200 ms after that until the run's next
+   command arrives or the run closes. The first copy ends the GS's silence
+   early, and a Wall sweep's `Ok` report goes straight to the next sweep;
+   duplicates are ignored, and so is a late Wall report arriving during
+   the following sweep. A SWEEP repeat of a sweep the drone has already
+   finished (the ack, or the whole sweep, outran the GS) is answered with
+   the stored report again on its repeat schedule, not a fresh ack. Without
+   any copy the GS's window closes at planned end + 1 s, and a Wall sweep
+   then fails the run (`no wall report from the drone`).
+5. **Result.** A Wall sweep that comes back `unparked` (a channel the
+   drone cannot measure) is skipped with a note, an `X` line in `cal.log`,
+   and the run goes on: the drone stored nothing and flies its chip's
+   table there. Any other result than `ok` fails the run, `wall
+   measurement failed: <code>` (codes below). Capacity: one
+   efficiency per rate (below), then:
+6. **Apply** (capacity only). `MABUR_CAL_APPLY{nonce, seq, bw, eff[8]}`
+   every 200 ms until `MABUR_CAL_APPLIED{nonce, seq, bw, ok, reason}`; 5 s
+   without an answer fails the run (`calibration apply timeout`), a
+   refusal fails it with the drone's reason. `seq` names the sweep the
+   apply belongs to: the drone answers a repeat of an apply it already made
+   from its cache instead of applying again. A sweep with nothing to write
+   (every capacity point `tx_bound` or `lost`) sends no apply. A Wall
+   sweep has no apply: the drone stores the measurement itself.
 
 Between sweeps the GS is not silent: RCF and the DISC keepalive go out as
 usual while it waits for an ack or an APPLIED.
 
-### 3. The power sweep
+### 3. The wall measurement
 
-One full-resolution pass per width: every relative index −41..+63 for
-each of the eight MCS rows, 840 cells, **20 frames per cell, 5 ms settle,
-1 ms gap** — 21 s ([`gs/src/cal_plan.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/cal_plan.h)). The low end is −41, not −40, so
-the grid lands on **+63 exactly**: a no-dip row parks at that rail, and
-the rail has to be a cell the run measured. Each frame is the 64-byte
-stamp (below), sent alone (`no_agg`) at the cell's (MCS, width), LDPC per
-`radio.ldpc`, STBC on. The drone zeroes the per-rate diff table and reads
-the chip's anchor once per run, at its first accepted command; every
-power sweep zeroes the diffs again, so each row is swept from the same
-base.
+The drone measures one PA's transmit quality directly. PA A transmits a
+QPSK (MCS1) probe frame; chain B, its antenna transfer switch parked so it
+hears the antenna side of the front end, captures the signal through the
+chip's logic-analyzer mode, and `cross_evm`
+([`drone/src/cross_evm.h`](../drone/src/cross_evm.h)) demodulates the frame and returns its error
+vector magnitude (EVM, dB; lower is cleaner) at the TXAGC index under test.
+Evidence and the register-level recipe: the cross-path finding above. PA B
+is never measured: PA A's curve sets the walls for both.
 
-**The wall is the end of the first contiguous ≥90 % delivery run**,
-scanning upward from the sensitivity floor. Past the first dip delivery is
-a reproducible *comb*, not a cliff — islands of ≥90 % reappear higher up,
-and they are **not usable headroom**. That is why the sweep walks the
-whole range rather than bisecting: a search that stopped at a "good"
-reading past a bad one would land inside the comb and overdrive the PA.
-Scoring uses the **best single card**, never the union of both:
-diversity protects against fading, not against PA compression (both cards
-receive the same degraded waveform), and a union would push the wall up
-([`gs/src/cal_analysis.cpp`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/cal_analysis.cpp)). Every shortcut errs low, never high.
+The work is done by `WallSweep` ([`drone/src/wall_sweep.h`](../drone/src/wall_sweep.h)) on the
+TX writer thread, against a capture session on the radio
+(`DeviceCaptureSession`, [`drone/src/maburd/wall_ctl.h`](../drone/src/maburd/wall_ctl.h)):
 
-### 4. The capacity sweep
+1. **Setup.** Under the retune gate held exclusive the drone retunes to the
+   commanded channel if it is not the link's, switches to 20 MHz when the
+   request is 20 and the radio is at 40, clears any flat power override,
+   zeroes the rate diffs, re-applies TX power for the channel and reads the
+   **anchor**: the chip's MCS7 TXAGC index with the diffs zeroed. A chip
+   that will not zero its diffs or report the anchor ends the sweep
+   `device_error`. 40 MHz is measured on the link's standard pair (every
+   member of `radio.channels` shares one at 40, so the measured channel
+   lands on it).
+2. **Park check, first.** One capture at index 28 and the weakest listener
+   gain with the switch unparked, one after parking it. The parked level
+   (envelope) must be at least 12 dB above the unparked one, or the sweep
+   ends `unparked` (as it does when the park itself does not take or the
+   rise is not finite, an all-zero capture): an unparked listener passes every other rule while
+   reading PA A about 3 dB too good, the overdriving direction. The check
+   is relative on purpose, since the absolute parked level differs between
+   channels and airframes. A park-check capture holding no TX at all (no
+   frame at a level of 30 dB or more, envelope under 30 dB: the
+   demodulator can read a "frame" out of an empty capture's noise) says
+   nothing about the park and is retried, up to twice.
+   A channel whose park isolation is weak hears the probe through leakage
+   with the switch unparked, so the rise is small and the curve reads
+   several dB too high (the unsafe direction); such a channel is refused
+   and flies the chip's table. A healthy channel's rise is well above the
+   12 dB threshold.
+3. **Points.** Absolute TXAGC index 28 to 124 in steps of 4, ascending: 25
+   points. A point is the median of up to three captures that held a
+   clean, unclipped frame at a level of at least 30 dB; a capture without
+   one is retried, at most twice per point. A point may end with no value.
+4. **Gain.** Four listener gain words, strongest first. The sweep starts at
+   the strongest and only steps down: a clipped capture, or a listener
+   level above 57 dB (where the listener's own distortion adds), restarts
+   that index one word weaker. A clipped capture is never used for a point,
+   and clipping at the weakest word leaves the point empty.
+5. **Restore, on every exit path** (done, invalid, abort, deadline, device
+   error): the capture session ends (switch route, listener chain and TX
+   buffer layout back to flight's), then width, channel and TX power. If
+   the session's own restore fails the result is `device_error` and nothing
+   is stored; the radio's state is then unknown, so `maburd` sends the
+   report, logs `maburd cal: ERROR: the wall measurement could not restore
+   the radio; exiting for wrapper respawn …`, keeps repeating the report
+   for 1 s after that line and exits (code 3); its wrapper starts it again
+   2 s later with a fresh bring-up (the link drops for that restart). The
+   same happens when the measurement is aborted or cut off and its restore
+   fails, with no report.
+
+**The measuring thread runs on the idle core.** On the two-core drone the
+probe train, the USB event loop and the encoder saturate core 0 during a
+measurement while core 1 idles, so after the session opens the measuring
+thread pins itself to core 1 (the hot core) and returns to core 0 when the
+session ends, on every exit path. The EVM maths takes about 90 ms per capture
+there against more than twice that on the busy core, which is what keeps a
+sweep inside the deadline.
+
+**The drone sends nothing during the measurement** (`radio_quiet`): from
+the setup to the restore every send is dropped, so no DISC_ACK, no
+re-ack of a repeated SWEEP, no Telem, for up to the 30 s deadline. The GS is
+silent for the same window. The deadline, not an abort, bounds a run: an
+abort is only checked between captures, and only heard on the link's
+channel (a measurement on another channel cannot hear it at all). A
+measurement that ends before an abort reaches it finishes as if none was
+sent: its result stands, and an `Ok` one is stored in the cache and
+reported, though `maburcal` already said the run was aborted. The GS answers that late
+report with another round of Aborts, which close the run; unheard, the
+run closes after `await_next_ms` (15 s).
+
+**Validity.** A result is stored only when the measurement runs to its
+end and the curve passes the checks; every other result stores nothing.
+The results other than `ok` (the first five are checked in the order
+listed):
+
+| result code | condition |
+|---|---|
+| `unparked` | the park check failed (above) |
+| `too_few_points` | fewer than 20 of the 25 points have a value |
+| `floor_too_high` | the best point is above −26 dB |
+| `not_saturated` | the last point is below −11 dB (the PA was never driven into compression) |
+| `disturbed` | once the curve has reached −21 dB (the lowest threshold any wall uses), a point reads more than 2 dB better than an earlier one. A PA's EVM only gets worse with the index, so the earlier capture held something else on the air; left in, it puts a wall many index steps too low |
+| `deadline` | the 30 s measurement deadline ran out |
+| `device_error` | the radio refused a step, or its restore failed |
+| `aborted` | the run was cancelled mid-measurement |
+
+`ok` is the only result that stores anything: a failed or doubtful
+measurement never replaces a stored one and is never flown.
+
+**20 MHz tuning.** At `radio.width = 40` the drone airs 20 MHz rungs as
+20 MHz frames on the 40 MHz tuning, but the 20 MHz curve is measured with
+the radio switched to a 20 MHz tuning (`FastSetBandwidth`), the case the
+measurement was validated on. The two widths' curves agree within about one
+index; the difference between those tunings is not measured.
+
+**The probe is one PA at low duty;** flight is two PAs at high duty, and a
+hot PA reads about 1 dB worse than the probe. `radio.wall_margin_db`
+covers it.
+
+### 4. Walls from a curve
+
+`walls_from_curve` ([`drone/src/wall_curve.h`](../drone/src/wall_curve.h)): for each MCS, the crossing is
+the linearly interpolated TXAGC index at which the curve first rises
+through that MCS's threshold, searching upward from the floor (the first
+lowest point). `wall = floor(crossing − anchor)`, clamped to [−64, 63];
+no crossing means 63. Walls are relative to the anchor, as before: the
+chip adds its own per-channel-group reference on every channel.
+
+| MCS | 0–2 | 3 | 4 | 5 | 6 | 7 |
+|---|---|---|---|---|---|---|
+| threshold, EVM dB (LDPC on, STBC on) | none (63) | −9.0 | −12.5 | −15.0 | −15.5 | −17.0 |
+
+The thresholds are one reference unit's PA A EVM at that unit's walls
+(MCS7 spread −13.9 to −18.1, MCS4 −10.0 to −11.2 across three channels and
+both widths), except MCS4's, which is 1.5 dB lower. MCS4's wall lies where
+the PA is compressed and the curve is nearly flat, about 0.15 dB per index
+against 0.4 dB at MCS7's wall. The EVM at which MCS4 delivery fails differs
+between channels by about 2 dB, which is a dozen index steps on that part of
+the curve, more than `radio.wall_margin_db` covers, while the radiated power
+rises only about 0.1 dB per index there: the lower threshold costs under
+1 dB of MCS4 power. **With `radio.ldpc = false` every threshold is lowered by
+4 dB** (the BCC versus LDPC+STBC difference at MCS7), and the
+measurement's log line says so. The walls are derived from the stored curve
+at load and whenever `radio.ldpc` or the margin changes, so neither needs
+a re-measure and a later correction of the thresholds does not either.
+Against a receiver, the MCS7 LDPC+STBC wall lies within 3.5 steps of the
+−17 dB crossing on the channels checked; on one channel the receiver's
+walls sit 5–8 steps above the curve, the self-measurement reading low, the
+safe side.
+
+**Known limit.** The measurement hears chain A's transmitter through
+chain B and knows nothing of the receiver: the thresholds stand in for
+delivery, and they come from one unit. A wall can therefore sit above what
+a channel delivers while its stored curve looks like any other, and no
+check on the drone can flag it. After a measurement, verify the rungs over
+the air (each rung forced on the measured channel, as the checklist's rungs
+gate does); where one is lossy, raise `radio.wall_margin_db` or set
+`radio.power_mode = "none"` to fly the chip's own table.
+
+### 5. The capacity sweep
 
 Eight points (MCS 0–7) at the sweep's width, each a **300 ms settle then a
 2 s dwell** of back-to-back frames (18.4 s), at the drone's production
-power for that width (its plan diffs live, no index override — the walls
-the preceding power sweep just wrote, or the existing table when the run
-has no power sweep at that width) and in the production A-MPDU mode
+power for that width (the link channel's plan live, no index override —
+the walls a preceding power sweep just stored, or the chip's own table
+when that channel has none) and in the production A-MPDU mode
 (`ampdu_mode_for(ampdu, mcs, bw)`). Frames are the stamp padded to the
 video body size at the configured geometry, `13 + blocks_per_body[1] ·
 (16 + symbol_size[1])` (1405 B at the default `[fec]`), sent as stream 1
@@ -262,8 +430,7 @@ that handled the last one, not from that frame's receive stamp, so a slow
 loop pass with the drain still queued behind it does not read as quiet —
 within the usual listen window. Closing at the SweepDone would drop the last point's
 tail — reading as loss on that point — and count whatever arrived after
-the next sweep began as `mismatch=`. A power sweep's frames are paced and
-leave no tail; it still closes at its SweepDone. A point whose
+the next sweep began as `mismatch=`. A point whose
 sender was blocked less than 50 % of the dwell measured the drone's CPU or
 USB, not the air: it is flagged `tx_bound` and **not written** (the
 config keeps its value, as an undetermined wall does). A point that
@@ -282,18 +449,18 @@ price delivered capacity, and the bench numbers the defaults carry were
 defined as exactly this ratio, so a measured table replaces them like for
 like.
 
-### 5. The end of a run
+### 6. The end of a run
 
 After the last sweep the session is `done`, and the GS sends
 `MABUR_CAL_ABORT` three times, 200 ms apart: the drone closes the run at
-once — restoring the current rung's width table, clearing the override and
+once — restoring the current rung's power plan, clearing the override and
 resuming video — instead of waiting out its 15 s `await_next_ms`. The
 abort keeps everything the applies wrote. `maburcal abort` and a failure
 send the same three Aborts, if a SWEEP ever went out.
 
 The drone needs none of it to get home: every state of its sweep engine
 (`CalSweep`, `drone/src/cal_sweep.h`) has a deadline — `await_next_ms`
-(15 s) for the next command after any sweep, apply or verify, and
+(15 s) for the next command after any sweep or apply, and
 `hard_cap_ms` (180 s) for the whole run from the first accepted SWEEP.
 Killing `maburgs` mid-run leaves the drone to time out, restore its power
 and resume video on its own.
@@ -303,25 +470,23 @@ and resume video on its own.
 | step | time |
 |---|---|
 | channel pick | 0 pinned or one card; ~1 s for the round (three members at 280 ms) plus up to `[hop] confirm_ms` for a relocate |
-| power sweep | 21 s per width (840 × 25 ms) + 200 ms start + ack |
-| apply + verify | ~1.5 s per power sweep (8 × 25 ms of verify air, 200 ms start, 1 s listen tail) |
+| wall measurement | captures × the per-capture time, plus the channel and width switches (each sweep logs `time_ms` and `captures`); never more than 30 s |
 | capacity sweep | 18.4 s per width (8 × 2.3 s) + 200 ms start + ack |
 | apply (capacity) | one round trip |
 
-The host loopback test (`test_cal_e2e`) reaches `done` for four sweeps at
-82 s simulated and for `power20` alone at 22 s. The target is a full run
-well under two minutes and a walls-only 20 MHz run under half a minute.
+The whole run is bounded by the drone's 180 s `hard_cap_ms`.
 
 ## The drone during a run
 
 **Video stops for the whole run.** From the first accepted SWEEP until
 the run closes (`cal_active`) the drone queues no video and drains what
-was queued; Telem and the MAV component's own uplink pause while a sweep
-or verify pass airs (`cal_sweeping`) and go out between sweeps. Its
-calibration replies go out whenever they are due. Video resumes when the
+was queued; Telem and the MAV component's own uplink pause while a
+capacity sweep airs (`cal_sweeping`) and go out between sweeps. Its
+calibration replies go out whenever they are due, except during a wall
+measurement, which sends nothing at all (above). Video resumes when the
 run closes.
 
-**It will be in `RENDEZVOUS` by the end of every run.** Every sweep
+**It will be in `RENDEZVOUS` by the end of a long run.** Every sweep
 outlasts `link.failsafe_ms` (3 s), so the drone's `RcAgent` ages out of
 `LINKED` inside every sweep, and `link.rendezvous_ms` (30 s) later is in
 `RENDEZVOUS`. It may re-link in a gap between sweeps or stay out until the
@@ -330,7 +495,8 @@ the TX-power table are all gated on `cal_active` (a retune ordered
 meanwhile is deferred and replayed after), so the agent cannot fight the
 sweep for the radio. The operator's only job is to **confirm the pair
 re-links after each run**: video back within a couple of DISC beacons,
-with an IDR at the join. If it does not, that is the ordinary stale-caps
+with an IDR at the join, and on the link's channel and width after a
+`power<bw>@<ch>` run. If it does not, that is the ordinary stale-caps
 shape, not a calibration bug (`docs/deploy.md`).
 
 **The run survives the lapsed session.** Leaving `LINKED` clears the
@@ -355,256 +521,280 @@ a re-pair between sweeps is held until the run ends (`CalMoveEdgeHold`).
 The pick (above) runs before this freeze, which is why `picking` is
 outside `running()`.
 
+
 ## The sweep frame (stamp)
 
+Capacity frames only; a wall measurement airs no stamped frame.
 `common/include/mabur/cal_wire.h`, a 12-byte header:
 
 ```
-magic "MCAL" | u8 kind (1 power, 2 verify, 3 capacity) | u8 rate | i8 idx |
+magic "MCAL" | u8 kind (3 capacity) | u8 rate | i8 idx |
 u8 bw (20/40) | u8 flags (bit0 ldpc, bit1 stbc) | u8 seq_hi | u16 seq (LE)
 ```
 
-then fill `(0x5A ^ idx)` to the frame length (64 B for power and verify,
-the video body size for capacity). `seq` is a 24-bit running frame
-counter. `idx` is signed and relative to the chip's anchor. The parser
-refuses an unknown kind, a rate over 7, an index outside [−64, 63], a
-width other than 20/40, unknown flag bits, or a fill that does not match
-(with or without a trailing FCS): `maburgs` keeps CRC-bad frames, and the
-fill check is what stops a corrupted frame being attributed to the wrong
-cell. A frame whose kind, width or flags do not match the running sweep
-is counted (`stamp_mismatch`, the status line's `mismatch=`) and never
-tallied.
+then fill `(0x5A ^ idx)` to the frame length (the video body size).
+`seq` is a 24-bit running frame counter. The parser refuses any kind but
+capacity, a rate over 7, an index outside [−64, 63], a width other than
+20/40, unknown flag bits, or a fill that does not match (with or without
+a trailing FCS): `maburgs` keeps CRC-bad frames, and the fill check is
+what stops a corrupted frame being attributed to the wrong point. A frame
+whose kind, width or flags do not match the running sweep is counted
+(`stamp_mismatch`, the status line's `mismatch=`) and never tallied.
 
-## One calibration covers every channel
+## The cache: `/etc/mabur.walls`
+
+One line per (channel, width), holding the measured curve and the anchor,
+not the walls. A text file beside `/etc/mabur.channel`:
+
+```
+maburwalls 1
+<ch> <bw> <anchor> <e0> <e1> … <e24>
+```
+
+`<ch>` is 1..177, `<bw>` 20 or 40, `<anchor>` 0..127, then 25 values, one per
+TXAGC index 28, 32, … 124: the point's EVM in dB × 10 (an integer, −600..0),
+or `x` for a point with no value. Entries are in channel, then width,
+order.
+
+- Written only after an `ok` measurement, replacing that channel and
+  width's line: the whole file to `<path>.tmp`, fsync, atomic rename. A
+  failed write leaves the entry live until `maburd` restarts and logs
+  `maburd cal: wall cache … write … failed`; the result stays `ok`.
+- Read at `maburd` start: `maburd radio: wall cache /etc/mabur.walls: N
+  measured (channel, width)`. A missing, unreadable, malformed or
+  wrong-version file is "nothing measured", with the reason in the same
+  log line; it is never a boot failure.
+- **Hand-editing:** LF line ends, single spaces between tokens, a final
+  newline, a header line exactly `maburwalls 1`. Any malformed line (wrong
+  token count, a value out of range, a duplicate (channel, width), no
+  trailing newline) discards the **whole** file: "nothing measured". Over
+  64 KB is rejected the same way (a full file of 354 entries is about
+  50 KB).
+- An entry whose curve fails the measurement's validity checks (fewer
+  than 20 values, best point above −26 dB, last point below −11 dB, a
+  fall-back of more than 2 dB; see
+  "Validity") parses but is never flown: that (channel, width) flies as
+  unmeasured, and `maburd` logs `maburd radio: wall cache ch <ch> <bw>
+  MHz: curve fails its checks, not flown` at start.
+- Entries for channels no longer in `radio.channels` are kept and unused.
+- A wipe of the drone loses the cache: re-measure, never restore.
+
+## The power table follows channel and width
+
+`power_mode` (`docs/deploy.md`):
+
+- `"none"` (the default): the chip's own table is flown; measurements are
+  stored but never programmed.
+- `"offset"`: the drone flies the measured walls. **The operator sets it;
+  nothing switches it automatically**, not a measurement and not a
+  `maburcal` run. `"offset"` with an empty cache is legal and flies the
+  chip's own table until something is measured.
+
+The chip has one per-rate diff table with no channel or width axis, so
+`maburd` keeps one plan per (channel, width) in the cache
+(`make_channel_plans`, [`drone/src/power_tables.h`](../drone/src/power_tables.h)) and programs the live
+one (`LivePowerTable`, [`drone/src/live_power_table.h`](../drone/src/live_power_table.h)) at bring-up,
+on every rung width change and on every retune, inside the retune's gate
+hold after the TX power re-apply. A plan's walls come from the stored curve
+under the current `radio.ldpc`; the plan is built from the eight walls
+with `radio.wall_margin_db` and `radio.legacy_wall_rel` as the power plan
+always was (`park = clamp(wall − round(wall_margin_db · 4), −64, 63)`).
+
+**Lookup for (channel, width):** its own entry, else the chip's own
+table, logged once per channel and width. A (channel, width) is never
+flown on another channel's walls, nor on the same channel's other width:
+40 MHz flying a channel's 20 MHz plan lost 25-56 % of frames at mcs4 where
+the chip's own table was clean. Each switch logs `maburd radio: power
+table ch <ch> <bw> MHz: measured plan (mcs5 diff N)`, or `maburd radio:
+power table ch <ch> <bw> MHz: chip's own table (no plan)`; ` for calibration` is
+appended for a table a capacity sweep programs. Control frames are 20 MHz
+MCS0 whatever the rung and ride the legacy diff in every plan.
+
+A `RADIO_WALL_MARGN` or `RADIO_LDPC` set re-derives every plan and writes
+the live one (refused "calibration in progress" during a run). A measurement
+made during a run rebuilds the plans at once but does not program them
+(calibration owns the table): the run's capacity sweeps and its restore
+do. Only the 8812EU can self-measure; any other drone card answers
+`unsupported` and flies `"none"` (`docs/deploy.md` "Supported drone cards").
+
+`legacy_wall_rel` (control and telemetry: legacy/CCK) is one number for
+every plan, in the config. Legacy 6 Mb/s and HT MCS0 are BPSK 1/2 on the
+same OFDM waveform; it is a physical assumption, re-checked by the
+acceptance checklist.
+
+
+## The anchor
 
 Walls are signed indices **relative to the chip's own TXAGC anchor**. The
 anchor is the per-channel-group reference devourer programs from the
-module's efuse on every channel set, and the chip adds it itself, so a run
-on any member of the channel set produces a table valid on every member.
-The anchor never leaves the drone: it is not in config, not on the wire,
-not in `cal.log`. `maburd` re-applies TX power (`ReApplyTxPower()`) after
-every retune, so the diffs sit on the anchor of the channel the link is
-on. Across three channel groups on one unit (anchors 39 / 53 / 57) the
-rows with a real wall stayed within 3-5 indices relative to the anchor
-while the absolute wall moved 13-17 with it
-(`docs/findings/2026-09-11-maburcal-bench.md`). Same-channel
-repeatability at 20 frames per cell is 0-1 index (the spike page).
-An 8812CU has a flat anchor, so its walls are exact only on the channel
-calibrated (`docs/deploy.md` "Supported drone cards").
+module's efuse on every channel set, and the chip adds it itself. A
+measurement reads it on the channel it measures and stores it with the
+curve; the walls a plan flies come from `crossing − anchor` of that
+channel's own entry, so a channel's walls are its own, not another's
+shifted. `maburd` re-applies TX power (`ReApplyTxPower()`) after every
+retune, so the diffs sit on the anchor of the channel the link is on. The
+anchor is in `/etc/mabur.walls` and `SWEEP_DONE`, nowhere else.
 
-## Per-width tables on the drone
+## Config keys
 
 ```toml
 [radio]
-power_mode        = "none"      # "offset" flies the walls below
-rate_walls_rel_20 = [63, 63, 63, 63, 45, 23, 22, 21]
-rate_walls_rel_40 = [63, 63, 63, 63, 45, 28, 28, 23]
-cal_flags_20      = "ldpc+stbc"
-cal_flags_40      = "ldpc+stbc"
-legacy_wall_rel   = 63
-wall_margin_db    = 1.0
+power_mode      = "none"      # "offset" flies the measured walls
+legacy_wall_rel = 63
+wall_margin_db  = 1.0
 
 [air_clock]
 efficiency_20 = [0.93, 0.88, 0.84, 0.80, 0.76, 0.76, 0.78, 0.76]
 efficiency_40 = [0.77, 0.75, 0.75, 0.75, 0.74, 0.77, 0.76, 0.75]
 ```
 
-- **`rate_walls_rel_20` / `_40`** are both optional; `power_mode =
-  "offset"` needs at least one. An empty table, `[]`, reads the same as an
-  absent key: not calibrated. Every entry is in [−64, 63] and
-  `wall − round(wall_margin_db · 4) ≥ −64`. The single-table
-  `radio.rate_walls_rel` is gone: a config that still has it fails boot
-  (unknown key) — rename it by hand (`docs/deploy.md`).
-- **A width with no table flies the other width's** (`RadioCfg::walls_for`)
-  and `maburd` says so at boot: `maburd radio: no 40 MHz walls, flying the
-  20 MHz table at 40`. Walls at 40 MHz have measured ≥ the 20 MHz ones on
-  every row so far, so the 20 MHz table at 40 is the conservative
-  direction; the reverse (40's table at 20) overdrives, and its line says
-  so: `maburd radio: no 20 MHz walls, flying the 40 MHz table at 20 — the
-  overdriving direction, re-run maburcal at 20 MHz`. Either line is the
-  hint to calibrate that width.
-- **`cal_flags_20` / `_40`** record what the table was measured under:
-  `ldpc+stbc`, `stbc`, `ldpc` or `none` (default `ldpc+stbc`). Walls
-  measured with LDPC off sit below the LDPC-on ones, so flying an
-  LDPC-on table with `radio.ldpc = false` is the overdriving direction.
-  `maburd` warns at boot — `maburd warning: radio: 20 MHz walls were
-  measured with ldpc on; radio.ldpc is off — re-run maburcal` — and a
-  `RADIO_LDPC` parameter set that creates the mismatch answers `ACCEPTED`
-  plus a `STATUSTEXT` WARNING with the same text (`docs/vtx-config-mavlink.md`). It
-  warns, it does not refuse. Both checks consider only widths the radio
-  can fly (40 only with `radio.width = 40`) and only under `"offset"`.
-- **`legacy_wall_rel`** (control and telemetry: legacy/CCK) is one
-  number for both widths, derived from the **20 MHz mcs0** wall — there
-  is no legacy row to sweep, and legacy 6 Mb/s and HT MCS0 are both BPSK
-  1/2 on the same OFDM waveform, so their PA wall should track. A
-  physical assumption, re-checked on every unit by the acceptance
-  checklist. A run with no 20 MHz power sweep derives it from 40 MHz mcs0
-  only when the config has no `rate_walls_rel_20` either.
-- **The live table follows the rung.** The chip has one per-rate diff
-  table (no width axis), so `maburd` keeps one plan per width
-  (`make_width_plans`, `drone/src/power_tables.h`) and programs the one
-  for the applied rung's width on every rung change, under the TX gate
-  (`LivePowerTable`, `drone/src/live_power_table.h`). Each switch logs `maburd
-  radio: power table 40 MHz live (mcs5 diff N)`, with ` (20 MHz table)`
-  appended when that width flies the other's table; with no walls at all
-  (`"none"`) it is `power table: chip default (no walls)` after
-  calibration has touched the chip. Bring-up programs `radio.width`'s
-  plan; a `RADIO_WALL_MARGN` set rebuilds both plans and writes the live
-  one (refused "calibration in progress" during a run). Control frames are
-  20 MHz MCS0 whatever the rung and ride the legacy diff in both plans.
+- **No wall keys.** The per-width wall tables and their coding-flag keys
+  that earlier builds kept in this file do not exist: a config that still
+  has one fails boot as an unknown key (`docs/deploy.md`); delete the
+  line. The curves live in `/etc/mabur.walls`.
+- **`wall_margin_db`** is the operator's safety choice, set on the drone
+  (`RADIO_WALL_MARGN` or by hand) and never written by the kit; a change
+  re-derives every plan.
+- **`ldpc`** shifts the thresholds by 4 dB (above). A `RADIO_LDPC` set
+  re-derives every plan, so a drone that flew LDPC and now sets
+  `radio.ldpc = false` flies lower walls from the same curves.
 - **The efficiency tables** are read at `maburd` start only: a run's new
-  `efficiency_<bw>` takes effect at the next `maburd` start (walls take
-  effect when the run ends).
+  `efficiency_<bw>` takes effect at the next `maburd` start.
 
 ## What gets written, and how to roll back
 
-Per apply, line-surgical in `/etc/mabur.toml` (`drone/src/cal_apply.h`):
+Walls are written by the drone alone, to `/etc/mabur.walls` (above); there
+is no backup of it, and a wrong entry is replaced by measuring that channel
+and width again, or removed by deleting its line.
 
-| apply | keys |
-|---|---|
-| power at `<bw>` | `radio.rate_walls_rel_<bw>`, `radio.cal_flags_<bw>` (the sweep's stamp flags), `radio.legacy_wall_rel` (20 MHz, or 40 MHz with no 20 MHz table), `radio.power_mode = "offset"` |
-| capacity at `<bw>` | `air_clock.efficiency_<bw>` |
-
-An undetermined wall (`-128` on the wire) and a capacity point sent as 0
-(`tx_bound` or `lost`) leave that entry as it is. A key the file lacks — a first
-40 MHz calibration on a file with only `rate_walls_rel_20` — is
-**inserted** next to the other width's line (or after `power_mode`;
-`efficiency_<bw>` after the other width's or after `shed_ms`), the one
-place the patcher adds a line. Every comment and every other key survive
-byte for byte.
-
-An inserted line has no entry of its own for a left rate to keep:
-
-- **Walls, never the rail.** An undetermined rate in a new
-  `rate_walls_rel_40` takes that rate's `rate_walls_rel_20` wall — 40 MHz
-  walls measure at or above the 20 MHz ones, so it errs low — and the
-  APPLIED reason says so: `ok; mcs6 kept from the 20 MHz table`. With no
-  20 MHz table to take it from (a first 20 MHz table, whatever the file
-  holds at 40, or a first 40 MHz table with no 20 MHz one) the apply is
-  refused and nothing is written: `undetermined mcs5,6; no table to keep`.
-  A rate kept this way is not verified (nothing was parked for it).
-- **Efficiency.** A left rate in a new `efficiency_<bw>` takes what the
-  loader flies for that width with the key absent (`AirClockCfg`'s
-  default, nominal 1.0 today), so the insert changes nothing the drone
-  flew for that rate.
+A capacity apply is line-surgical in `/etc/mabur.toml`
+(`drone/src/cal_apply.h`): `air_clock.efficiency_<bw>` only. A capacity
+point sent as 0 (`tx_bound` or `lost`) leaves that entry as it is. A key
+the file lacks — a first 40 MHz calibration on a file with only
+`efficiency_20` — is **inserted** next to the other width's line (or after
+`shed_ms`), the one place the patcher adds a line; a left rate in an
+inserted line takes what the loader flies for that width with the key
+absent (`AirClockCfg`'s default, nominal 1.0), so the insert changes
+nothing the drone flew for that rate. Every comment and every other key
+survive byte for byte.
 
 Before anything is written the candidate is validated with the loader's
-own rules (every wall in [−64, 63], `wall − round(wall_margin_db · 4) ≥
-−64`, every efficiency in [0.05, 1.0]), patched, written to
+own rules (every efficiency in [0.05, 1.0]), patched, written to
 `<path>.new`, fsynced and loaded with `mabur::load_config` — the function
 `maburd` boots with — and only then published by an atomic rename, under
 the config-write lock shared with the MAVLink parameter component (a
 parameter set during a run is refused "calibration in progress"). A
 config `maburd` cannot load would crash-loop it at 2 s (`docs/deploy.md`);
 every refusal leaves the file exactly as it was, and APPLIED carries the
-reason. The drone's log: `maburd cal: applied 20 MHz walls` /
-`… efficiency`, or `maburd cal: apply 20 MHz refused: <why>`.
+reason. The drone's log: `maburd cal: applied 20 MHz efficiency`, or
+`maburd cal: apply 20 MHz refused: <why>`.
 
 **Backup.** The first successful apply of a run copies the file as it was
 before the run to `/etc/mabur.toml.pre-cal`; later applies of the same run
-do not touch it. So `.pre-cal` is always the file from immediately before
-the most recent run that applied anything.
-
-**To roll back**, restore it on the drone and restart `maburd` (from a
-non-interactive ssh command, start the wrapper under `setsid` —
-`docs/deploy.md`):
+do not touch it. **To roll back**, restore it on the drone and restart
+`maburd` (from a non-interactive ssh command, start the wrapper under
+`setsid` — `docs/deploy.md`):
 
 ```sh
 cp /etc/mabur.toml.pre-cal /etc/mabur.toml
 /etc/init.d/S00mabur restart
 ```
 
-`maburcal start` takes no margin: `wall_margin_db` is the operator's
-safety choice, set on the drone (`RADIO_WALL_MARGN` or by hand) and never
-written by the kit. The report's `park` column uses the GS's own 1.0 dB
-(the `margin=` on the header line); the drone parks verify at its own
-margin and the GS tallies verify by rate, so a different drone margin
-changes only what `park` predicts.
-
 ## Walls and efficiency are re-measured after a wipe, never restored
 
 The drone's flight tuning is `maburd`'s built-in defaults; the shipped
-`bundle/mabur.default.toml` holds only per-drone keys, with
-`rate_walls_rel_20 = []` / `rate_walls_rel_40 = []` (not calibrated). The
-built-in efficiency tables are one reference unit's numbers, and they
-price every rung on a drone that never calibrated, which is one more
-reason to calibrate a new unit before flying it. After a drone wipe or
-replacement, run `maburcal start`: it writes the walls into those lines,
-adds `cal_flags_*`, `legacy_wall_rel` and the efficiency tables, and sets
-`power_mode = "offset"`.
+`bundle/mabur.default.toml` holds only per-drone keys. The built-in
+efficiency tables are one reference unit's numbers, and they price every
+rung on a drone that never calibrated, which is one more reason to
+calibrate a new unit before flying it. After a drone wipe or replacement,
+`/etc/mabur.walls` is gone: measure every channel the link flies at both
+widths (`maburcal start power20@<ch> power40@<ch> …`, one token per
+channel and width, then `maburcal start` for capacity), then set
+`power_mode = "offset"`. One run is bounded by the drone's 180 s
+`hard_cap_ms`, and a wall token can take its whole window, the 30 s
+deadline plus the GS's 1 s slack and the 200 ms start: five wall tokens
+fit one run at worst (31.2 s each), four beside both capacity sweeps. Measure more
+channels over several runs.
 
 ## Geometry
 
-Put the drone and GS at a normal bench distance — close enough that the
-low end of the sweep (weak transmissions on the fastest rows) has a
-chance to be heard, far enough that the high end does not compress the
-GS's own RX front end. The `saturated` flag watches the second failure;
-if it fires, move the drone out and re-run rather than trusting the
-table. Run where the air is quiet (the pick helps): random loss on both
-cards reads walls low (below).
+The walls measurement needs no receiver, so it does not depend on the
+GS's distance or antennas. It does need the drone's own antennas
+connected (a detached one reads as a failed park check or a floor above
+−26 dB). The capacity sweep still wants a normal bench distance:
+close enough to hear the fastest rows, far enough not to compress the GS's
+RX front end (the `saturated` flag fires on a peak RSSI above −45 dBm).
+Run capacity where the air is quiet (the pick helps).
 
 ## Reading the result
 
+`maburcal report` output for a log holding a normal run, a run whose
+first record was a wall report (ack lost, `ldpc=-`) and a run on a drone
+that cannot self-measure:
+
 ```
 run nonce=1873455120 margin=1.00dB ch=112 pick=auto ldpc=1
-                20 MHz                    40 MHz
-rate    wall  park verify    eff     wall  park verify    eff   flags
-mcs0      63    59   100%    .93       63    59   100%    .77   20:no_dip 40:no_dip
-mcs1      63    59   100%    .88       63    59   100%    .75   20:no_dip 40:no_dip
-mcs2      63    59   100%    .84       63    59   100%    .75   20:no_dip 40:no_dip
-mcs3      63    59   100%    .80       63    59   100%    .75   20:no_dip 40:no_dip
-mcs4      45    41   100%    .76       45    41   100%    .74
-mcs5      23    19   100%    .76       28    24   100%    .77
-mcs6      22    18    95%    .78       28    24    99%    .76
-mcs7      21    17   100%      -       23    19    98%    .75   20:tx_bound
-legacy 63 (from 20 MHz mcs0)
+walls ch=112 20 MHz anchor=39 floor=-30.6dB: 63 63 63 63 44 26 24 20
+walls ch=112 40 MHz anchor=39 floor=-29.8dB: 63 63 63 63 45 28 28 23
+rate     eff20   flags
+mcs0       .93
+mcs1       .88
+mcs2       .84
+mcs7         -   20:tx_bound
+walls stored by the drone (/etc/mabur.walls)
+written: /etc/mabur.toml (backup /etc/mabur.toml.pre-cal)
+
+run nonce=1873455121 margin=1.00dB ch=112 pick=pinned ldpc=-
+walls ch=112 20 MHz anchor=39 floor=-30.6dB: 63 63 63 63 44 26 24 20
+walls stored by the drone (/etc/mabur.walls)
+
+run nonce=1873455122 margin=1.00dB ch=112 pick=onecard ldpc=1
+rate     eff20   flags
+mcs0       .93
+skipped power20 (sweep 0): unsupported
 written: /etc/mabur.toml (backup /etc/mabur.toml.pre-cal)
 ```
 
-One row per rate; per width the wall, its park (`wall − round(margin ·
-4)`), the verify delivery at the park, and the efficiency. `-` means this
-run has no number there (that kind or width was not in the run, or the
-wall was undetermined). Flags carry a `20:`/`40:` prefix. A run that never
-swept 40 prints the 20 MHz block alone; a width with capacity points but
-no walls in this run adds `<bw> MHz eff measured at the existing walls`.
-A `tx_bound` or `lost` point's `eff` prints `-`: it was measured
-(`cal.log` keeps it) but never written, and the flag says why. The
-`legacy` line names the wall it came from: the 20 MHz mcs0 wall, or the
-40 MHz one when the run had no 20 MHz power sweep. An adopted apply that kept
-something adds a line such as `40 MHz apply: ok; mcs6 kept from the 20 MHz
-table`. The last line comes from the apply records: `written: …` when any
-apply succeeded, else `not written: <bw> MHz: <reason>; …` or `not
-written: this run produced no apply attempt`.
+Per wall sweep one line, `walls ch=<ch> <bw> MHz anchor=<a> floor=<dB>dB:`
+then the eight walls, MCS0 first (63 = no crossing, the rail). The
+capacity table has one column per width swept (`eff20`, `eff40`) and a
+`flags` column with a `20:`/`40:` prefix; `-` is a point with no written
+number (`tx_bound` or `lost`: measured, kept in `cal.log`, never written).
+There are no wall, park or verify columns and no legacy line. Then one
+`skipped <token> (sweep <seq>): <reason>` line per skipped sweep, and the
+tail: `walls stored by the drone (/etc/mabur.walls)` when the run reported
+walls, then the apply line when there was a capacity sweep or an apply
+(`written: …`, or `not written: <bw> MHz: <reason>; …`, or `not written:
+this run produced no apply attempt`). A run with no walls, no capacity and
+no apply prints `not written: this run produced no measurements`; a
+walls-only run prints no written line.
 
-### Health flags
+### Reading a wall
+
+- **`63`** for MCS0–2 is by design: they have no threshold. For MCS3–7 it
+  means the curve never rose through the threshold: the row parks at the
+  rail, the top of the 7-bit diff field. A constant, not a measurement.
+- **Walls lower than a receiver's** are the safe direction. Measured on a
+  channel group where the receiver's walls were 5–8 steps above the curve,
+  the cause is not understood.
+- **The floor** (`floor_evm_x10` / `floor` on the report) is the best EVM
+  of the curve; a healthy PA A reads −26 dB or better, and a floor near the
+  limit is the first sign of a bad listener setup or antenna.
+
+### Capacity flags
 
 | Flag | Meaning | What to do |
 |---|---|---|
-| `no_dip` | The row never dropped below 90 % anywhere: no wall to find, so it parks at the **rail**, `+63`, the top of the 7-bit diff field — a constant, not a measurement. | Normal for MCS 0-3 under LDPC+STBC. If it is *missing* on those rows, see "Random loss reads walls low". |
-| `undetermined` | No cell reached 90 % anywhere: no first run exists. `-128` in `cal.log`. | The wall is left as it was; in a first 40 MHz table it takes the 20 MHz wall, and a first table with nothing to take from is refused (above). Never the rail. Check geometry and re-run. |
-| `narrow` | The floor edge (first ≥90 % cell) is within 4 indices of the wall. | Move closer and re-run; a wall that close to its own floor is not trustworthy. |
-| `saturated` | The best card's peak median RSSI is above −45 dBm: the GS front end may be compressing. | Walls read **low** under it (the safe direction). Move the drone out and re-run for a tighter number. |
-| `card_disagree` | The two cards' walls differ by more than 2 indices. | An antenna or card problem, not a PA one: check the disagreeing card. |
 | `tx_bound` | Capacity: the sender was blocked < 50 % of the dwell — the drone's CPU/USB, not the air, was the limit. | Not written; the config keeps its value. Expected at the top MCS if the drone cannot saturate the air there. |
-| `lossy` | Capacity: the best card got < 90 % of the frames offered. | Written (unless also `lost`). Interference, or the parked power is too low for this geometry; re-run on a quieter channel if it fires on low MCS. |
+| `lossy` | Capacity: the best card got < 90 % of the frames offered. | Written (unless also `lost`). Interference, or the power is too low for this geometry; re-run on a quieter channel if it fires on low MCS. |
 | `lost` | Capacity: the best card got < 50 % of the frames offered (always with `lossy`). | Not written; the config keeps its value and `maburcal report` prints `-`. Re-run on a quieter channel or closer. |
 | `short_span` | Capacity: the best card heard < 20 clean frames, or over < 500 ms, too few to time the point by its receive span; `eff` is bits over the commanded dwell, which reads high by the drone's TX-queue drain. | Written. Nearly always comes with `lost` (then not written); alone, re-run closer or on a quieter channel. |
 
 Thresholds are `CalThresholds` in [`gs/src/cal_analysis.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/cal_analysis.h). The bit values
-are in "`cal.log`" below; `drift` (the old coarse/fine disagreement) is
-retired.
-
-### Random loss reads walls low
-
-With 20 frames per cell a 90 % threshold has no noise margin: one cell
-that loses 3 frames ends the first contiguous run, and the row's wall
-becomes the cell below it. Because the error always ends the run early,
-it is always **low** — power given up, never overdrive — but a lossy
-channel can take a wall down by tens of indices: a few percent of random
-loss on **both** cards collapses most rows (loss on one card alone is
-absorbed by the best-card rule). The kit does not detect this. The tell is
-MCS 0-3 coming back **without** `no_dip`, or walls far below the
-reference unit's; re-run on a quieter channel or closer geometry.
+are in "`cal.log`" below. The old wall flags (`no_dip`, `undetermined`,
+`narrow`, `card_disagree`) belong to the retired GS power sweep and appear
+only when `maburcal report` reads an older log; `saturated` is still set
+by a capacity point whose best card peaks above −45 dBm.
 
 ## When it doesn't work
 
@@ -622,44 +812,59 @@ says which:
   within 3 s of SWEEPs every 200 ms. The uplink is lossy by design
   (`docs/findings/2026-08-14-rcf-uplink-loss.md`); improve geometry and
   retry before suspecting anything else.
-- `sweep refused by the drone: anchor_unreadable` — the chip did not
+- `sweep refused by the drone: anchor_unreadable` (every refusal carries the `sweep refused by the drone: ` prefix) — the chip did not
   report its TXAGC reference, or refused to zero its rate diffs (a read
   off a live diff table is reference + diff, and every wall would shift).
-  The drone restores its power table at once (`maburd cal: sweep refused
-  (TXAGC anchor unreadable or rate diffs not zeroed); restoring operating
-  power`).
+  The drone restores its power table at once.
+- `no link channel known` — a `power` token without `@<ch>` before the GS
+  knows the link's channel; nothing was sent. Name the channel.
+- `channel not in the drone's set` / `width not flown by the drone` — the
+  `@<ch>` token names a channel outside `radio.channels` or on 2.4 GHz, or
+  a 40 MHz measurement was asked of a drone at `radio.width = 20`.
+- `calibration sweep … skipped: the drone cannot measure its walls on
+  this channel` — the result was `unparked`: the antenna-switch park did
+  not raise the listener level by 12 dB. Nothing was stored, the channel
+  flies the chip's table and the run went on. A unit can read like this on
+  a whole band; if it is one channel only, check the antennas and re-run.
+- `wall measurement failed: <code>` — the drone's result. Nothing was
+  stored and the cache is as it was. `too_few_points`, `floor_too_high`: the
+  listener or the PA was not clean enough to read (an antenna, a wedged
+  chain; re-run); `not_saturated`: the PA never compressed within the
+  index range, so no curve to cut (a very low-power module); `disturbed`:
+  something else transmitted during a capture (re-run; on a busy channel
+  it can take more than one try); `deadline`:
+  30 s were not enough; `device_error`: the radio refused a step or did
+  not restore. A failed restore is the drone's `maburd cal: ERROR:
+  CrossPathEnd failed` line; `maburd` then exits 1 s after its `exiting for
+  wrapper respawn` line and its wrapper starts it 2 s later, so the drone
+  is off the air for 3 s plus a fresh bring-up (the link drops and comes
+  back; nothing to do on the GS); `aborted`: cancelled (an abort the drone
+  never heard leaves no `aborted`: see "The drone sends nothing during the
+  measurement").
+- `no wall report from the drone` — no copy of the SWEEP_DONE arrived by
+  the window's end (the 30 s deadline plus the GS's 1 s slack). The
+  measurement may still have succeeded on the drone: its log line says.
+  `no ack and no wall report from the drone` is the same with no ack heard
+  either.
 - `calibration apply timeout` — no APPLIED within 5 s of APPLYs.
 - `apply refused by the drone: <reason>` — the drone validated and
-  refused: an out-of-range table, a key it could not find or insert, a
-  first table with undetermined rates and no table to keep them from
-  (`undetermined mcs5,6; no table to keep`), a backup or write failure, or
-  a candidate that would not load. The file is unchanged; `/tmp/mabur.log`
-  on the drone has the full reason.
+  refused: an out-of-range efficiency, a key it could not find or insert, a
+  backup or write failure, or a candidate that would not load. The file
+  is unchanged; `/tmp/mabur.log` on the drone has the full reason.
 
-A failure after an earlier apply succeeded keeps that apply: the walls of
-a finished `power20` stay written when a later `cap40` fails. The report
+A failure after an earlier sweep succeeded keeps its result: the walls of
+a finished `power20` stay stored when a later `cap40` fails. The report
 lists every apply's outcome.
 
-**The `verify` column is blank for a width that has walls.** The verify
-pass follows only an APPLIED ok, so that width's apply did not land: the
-run's `fail_reason`, and the report's last line, say why (it reads
-`written` when another width's apply landed). A `-` in `verify` on a rate
-whose wall is also `-` is just an undetermined rate: nothing was parked
-there.
-
-**One rate reads `0%` in `verify` while its neighbours show real
-percentages.** This rate was parked, the drone did sweep verify (every
-other rate proves it), and the GS heard nothing at this rate's park: the
-config on the drone right now is untransmittable at this MCS and width.
-Likely a wall a little optimistic without quite tripping a flag, or a
-geometry problem specific to that rate's card. Re-run first; if it
-repeats, widen `radio.wall_margin_db` (several rates) or keep that rate
-out of the ladder until a re-run gives it a real number.
-
-**Verify reads low on a rate with no flag.** Flags come from the sweep;
-verify has none of its own, and geometry can move between the sweep and
-the verify a few seconds later. Treat the verify number over the flag:
-re-run, or widen the margin on the drone and re-run.
+**The drone was silent and the pair did not come back.** The measurement
+detached a chain and switched channel and width, and every exit path
+restores them. If video does not return within a couple of DISC beacons
+after the run, look for `maburd cal: wall … result=` in `/tmp/mabur.log`.
+After an `ERROR: CrossPathEnd failed` line `maburd` exits 1 s after its
+`exiting for wrapper respawn` line and its wrapper starts it 2 s later: 3 s
+off the air plus a fresh bring-up (radio firmware download, encoder
+start) before the link can return. If the pair stays down without one,
+restart `maburd` or power-cycle the drone.
 
 **`eff` is `-` for a width whose capacity sweep ran.** Every copy of its
 SweepDone was lost inside the GS's 1 s listen tail, so nothing was written
@@ -686,30 +891,47 @@ and raise nothing.
 ```
 maburgs: CAL start -> ok started power20,cap20,power40,cap40
 maburgs: calibration started -> /media/dvr/log/cal/cal.log sweeps=[power20,cap20,power40,cap40] ch=112 (auto: moved to 112)
-maburgs: calibration apply 1/4 power20: ok
 maburgs: calibration sweep 1/4 power20 done
+maburgs: calibration sweep 2/4 cap20 done
+maburgs: calibration apply 2/4 cap20: ok
 …
 maburgs: calibration done
 ```
 
-An adopted apply with a note prints it in place of `ok` (`calibration
-apply 3/4 power40: ok; mcs6 kept from the 20 MHz table`). Then
+A wall sweep the drone refused as unsupported prints `calibration sweep
+1/4 power20 skipped: the drone cannot measure its walls` in place of
+`done`; one that came back `unparked` prints the same line ending `on this
+channel`. An adopted apply always prints `ok` (the drone sends no note). Then
 `calibration failed: <why>` / `calibration aborted: <why>`, and the
 channel pick's own `maburgs channel: calibration …` lines
 ([`docs/channel-select.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/channel-select.md)). The start line is printed when the run first
 commands the drone, after the pick.
 
-**`maburd` log** (`/tmp/mabur.log`): `maburd cal: applied …` (with
-` -- <note>` when it kept something) / `apply … refused: …`, `maburd radio: power table <bw> MHz live (mcs5 diff
-N)[ (… table)][ for calibration]` on every table switch (a capacity sweep
-programs its width's table "for calibration"), the boot wall and ldpc
-lines above, and `cal_latch_drop=` on `maburd tx_send:`.
+**`maburd` log** (`/tmp/mabur.log`). The measurement's one line:
+
+```
+maburd cal: wall ch=112 bw=20 result=Ok park_rise=17.4 floor=-30.6 anchor=39 walls=63,63,63,63,36,26,24,20 captures=88 time_ms=6100
+```
+
+`result` is one of `Ok Unparked TooFewPoints FloorTooHigh NotSaturated
+Deadline DeviceError Aborted Disturbed`; `park_rise` the parked-minus-unparked level
+in dB, `floor` the best EVM in dB, `captures` the probe captures taken,
+`time_ms` the measurement's wall-clock time from the setup; ` (LDPC off:
+thresholds lowered 4 dB)` is appended when `radio.ldpc` is off. Also at
+boot `maburd radio: wall cache …` (and `… curve fails its checks, not
+flown` per invalid entry), on a failed restore `maburd cal: ERROR:
+CrossPathEnd failed …` then `maburd cal: ERROR: the wall measurement could
+not restore the radio; exiting …`, on every table switch `maburd radio:
+power table ch <ch> <bw> MHz: …` (above), `maburd cal: applied <bw> MHz
+efficiency` / `apply <bw> MHz refused: …`, `maburd cal:
+wall cache write to … failed`, and `cal_latch_drop=` on `maburd tx_send:`.
 
 **Sideport** `link.cal{state, sweep, kind, bw, cell}` while a run owns the
-air (`await_ack` through `verify`; absent while picking and after the
-end): `sweep` and `cell` are `"k/n"` strings as on the status line, `kind`
-`power|capacity|verify`. maburtop shows `CAL <kind><bw> <i>/<n>` (e.g.
-`CAL power40 312/840`) on its top bar and in the compact header
+air (`await_ack` through the end of the sweep; absent while picking and
+after the end): `sweep` is a `"k/n"` string as on the status line, `kind`
+`wall|capacity`, and `cell` the capacity point (`i/8`), or for a wall sweep
+the seconds since the ack (`s/20`). maburtop shows `CAL <kind><bw> …` on its
+top bar and in the compact header
 ([`docs/observability.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/observability.md)).
 
 ### `cal.log`
@@ -721,45 +943,49 @@ debug logging on it goes in the session directory
 `<debug_log.dir>/cal/cal.log`, i.e. `/media/dvr/log/cal/cal.log`. The
 start line names the resolved path, and `maburcal start` finds it there.
 
-Format `callog 5` ([`gs/src/cal_log.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/cal_log.h); [`gs/bundle/maburcal`](https://github.com/gilankpam/mabur-ground/blob/master/gs/bundle/maburcal) is the
+Format `callog 6` ([`gs/src/cal_log.h`](https://github.com/gilankpam/mabur-ground/blob/master/gs/src/cal_log.h); [`gs/bundle/maburcal`](https://github.com/gilankpam/mabur-ground/blob/master/gs/bundle/maburcal) is the
 in-repo reader and changes with it):
 
 ```
-callog 5                                              # once per file
-R <nonce> <margin_db> <ch> <auto|pinned|onecard|stayed> <ldpc 0|1>   # once per run
-S <seq> <power|capacity> <bw> <frames_per_cell|dwell_ms>             # once per sweep
-C <rate> <idx> <expected> <recv0> <recv1> <corrupt> <rssi0> <rssi1>  # power cells
-W <rate> <wall> <floor> <best_card> <flags>                          # per rate, power
+callog 6                                                             # once per file
+R <nonce> <margin_db> <channel> <auto|pinned|onecard|stayed> <ldpc 0|1|->  # once per run
+S <seq> <wall|capacity> <bw> <param>                                 # once per accepted sweep
+W <bw> <channel> <anchor> <floor_evm_x10> <w0> <w1> … <w7>           # per finished wall sweep
+X <seq> <token> <reason>                                             # a sweep the drone could not run
 P <rate> <offered> <recv_best> <air_bits_best> <eff_x1000> <blocked_pct> <flags> <span_ms>  # per rate, capacity
 A <bw> <0|1> <reason to end of line>                                 # per apply
-V <rate> <idx> <pct>                                                 # per verify cell
 ```
 
-`S` scopes the rows after it to its width until the next `S`; a verify
-pass writes no `S` of its own (its `V` rows follow that sweep's `A`). The
-`R` line is written at the run's first ack, so a run that failed before
-any ack has none; `ldpc` is the drone's announced stamp flag (the GS has
-no LDPC setting of its own). Every index is signed and relative to the
-drone's anchor; a card with no RSSI in a cell writes `-999`; an
-undetermined rate writes `-128` for wall and floor. `P`'s `eff_x1000` is
-the measured value even for a `tx_bound` or `lost` point; `span_ms` is
-the best card's first-to-last receive span it was timed over (written
-even when `short_span` sent eff to the dwell instead). An ok `A` row's reason is
-empty or the drone's note. Flags bitmask: 1
-`no_dip`, 2 `undetermined`, 4 `narrow`, 8 `saturated`, 16
-`card_disagree`, 64 `tx_bound`, 128 `lossy`, 256 `lost`, 512
-`short_span` (32 was `drift`,
-retired and never reused). A `V` row means "this rate was parked", never "verified
-clean": `pct` 0 is a real measurement.
+`S` is written for a sweep the drone accepted (a wall sweep acknowledged
+only by its report is written when the report arrives); a sweep the drone
+refused as unsupported gets an `X` and no `S`. `S`'s `param` is the measured channel for a wall sweep and the dwell in
+ms for capacity; it scopes the rows after it to its width until the next
+`S`. `W` records what the drone reported, as it reported it: the walls
+relative to its anchor, the floor in 0.1 dB, 63 = no crossing. `X` is
+written for a sweep the GS skipped: one the drone refused as unsupported
+(`X 0 power20 unsupported`), or a wall sweep whose measurement came back
+`unparked` (`X 0 power20 unparked`, after its `S`). `C` (power cells) and `V` (verify)
+lines are no longer written. The `R` line is written at the run's first accepted or skipped sweep, so
+a run that failed before that has none; `ldpc` is the drone's announced
+stamp flag (the GS has no LDPC setting of its own), or `-` when no ack was
+heard before the first record (a first sweep acknowledged only by its
+report). `P`'s
+`eff_x1000` is the measured value even for a `tx_bound` or `lost` point;
+`span_ms` is the best card's first-to-last receive span it was timed over
+(written even when `short_span` sent eff to the dwell instead). An ok `A`
+row's reason is empty. Capacity flags bitmask: 8 `saturated`, 64
+`tx_bound`, 128 `lossy`, 256 `lost`, 512 `short_span` (1, 2, 4 and 16 were
+power-sweep flags, 32 `drift`, never reused).
 
-One file holds several runs (a retry after moving the drone lands in the
-same file), each delimited by its own `R`. A file in an older format is
-renamed `cal.log.callog<N>` when `maburgs` starts, so one file never
-mixes formats. `maburcal report` reads `callog 1`-`5`: 1 and 2
-carry absolute indices and a `base_ref` on `R` (`-1` = undetermined), 3 is
-the single-width relative format, 4 is 5 without `P`'s `span_ms`, its
-`eff` divided by the commanded dwell and so reading high
-(`docs/data-provenance.md`).
+One file holds several runs (a retry lands in the same file), each
+delimited by its own `R`. A file in an older format is renamed
+`cal.log.callog<N>` when `maburgs` starts, so one file never mixes
+formats. `maburcal report` reads `callog 1`–`6`: 1 and 2 carry absolute
+indices and a `base_ref` on `R` (`-1` = undetermined), 3 is the
+single-width relative format, 4 is 5 without `P`'s `span_ms`, its `eff`
+divided by the commanded dwell and so reading high, and 5 has `S` kind `power` (param = frames per cell), the `C` cell
+lines, per-rate `W <rate> <wall> <floor> <best_card> <flags>`, `V` lines
+and no `X` (`docs/data-provenance.md`).
 
 ## Offline analysis: `maburcal report`
 
@@ -767,7 +993,7 @@ the single-width relative format, 4 is 5 without `P`'s `span_ms`, its
 maburcal report /media/dvr/log/cal/cal.log
 ```
 
-re-renders every run in a saved file — the same table `start` prints,
+re-renders every run in a saved file — the same report `start` prints,
 straight from the log, no daemon involved. Nothing else parses `cal.log`.
 
 ## Hardware acceptance checklist
@@ -780,23 +1006,18 @@ findings page.
 
 | gate | command | expected |
 |---|---|---|
-| ausniff before/after | mabur-ground's [`tools/bench/ausniff.py`](https://github.com/gilankpam/mabur-ground/blob/master/tools/bench/ausniff.py) on the GS (scp the repo copy to `/tmp` first) | ~fps of the mode, 0 gaps, both runs |
-| full run | `maburcal start` on a 40 MHz GS | four sweeps, `done`, wall-clock < 120 s; both width blocks in the table |
-| walls | the table vs the spike's reference at the same geometry | within ±2 on mcs4–7, mcs0–3 `no_dip` |
-| capacity | `eff` per width vs the spike's low-MCS points | within ±0.03 at mcs0–4; high points plausible, or flagged `tx_bound` and left at the existing value |
-| subset | `maburcal start power20` | one sweep, `done` < 30 s, `_40` lines untouched (`diff` against `.pre-cal`) |
+| wall, link channel | `maburcal start power20` | one sweep, `done`, `maburd cal: wall … result=Ok`, the pair back on its channel with video |
+| wall, named channels | `maburcal start power20@<ch> power40@<ch>` on each channel of the set | each `result=Ok`, the −17 dB crossing (the MCS7 wall only; the other rungs are not checked here) within 2 index steps of the reference, `/etc/mabur.walls` holds one line per (channel, width) |
+| link after a measurement | after every wall sweep | `SESSION` again within a couple of beacons, video, uplink delivery as before the trigger |
+| table follows | hop across measured and unmeasured channels under `power_mode = "offset"` | the `power table ch … ` log names the measured plan where that (channel, width) has an entry, else the chip's table (a channel measured only at 20 MHz flies the chip's table at 40) |
+| rungs | each ladder rung, forced, on three channels at the stored walls and default margin; the only gate that checks every rung over the air (see "Known limit") | flies clean |
+| full run | `maburcal start` on a 40 MHz GS | four sweeps, `done`, both widths; capacity matches a run from before |
 | 20 MHz GS | an all-20 ladder on the GS (derived receiver width 20) | `maburcal start` runs two sweeps; `maburcal start power40` → `err refused: GS receiver width is 20 (load a 40 MHz ladder to calibrate 40 MHz)` |
-| table swap | `link.static_mcs` pinned at 20 then at 40 (or watch rung changes) | `maburd` log `power table 40 MHz live`; `GetTxPowerState` read-back differs between widths |
-| config | `/etc/mabur.toml` diff vs `.pre-cal` | only the per-width keys above plus `power_mode`; comments intact |
-| legacy | `legacy_wall_rel` after a `power20` | equals the 20 MHz mcs0 wall |
-| interruption | kill `maburgs` mid-sweep | drone back to video within `await_next_ms`; config byte-identical |
-| abort | `maburcal abort` mid-sweep | video back within 2 s; nothing written |
+| unsupported drone | a drone on another chip, `maburcal start` | the wall sweeps are skipped (`X` lines), capacity completes |
+| config | `/etc/mabur.toml` diff vs `.pre-cal` after a capacity run | only `efficiency_<bw>`; comments intact |
+| abort | `maburcal abort` mid-capacity, and mid-wall on the link's channel and on another | video back; the drone flies normally; the cache is as it was when the drone heard the abort (`result=Aborted`); a measurement that finished first (off the link's channel it always does) keeps its result, and an `Ok` one is stored |
+| interruption | kill `maburgs` mid-sweep | drone back to video within `await_next_ms` (or the measurement's 30 s deadline); config byte-identical, and the cache too unless a wall measurement under way finished `Ok`, which it stores |
 | re-link | after every run | `SESSION` again within a couple of beacons, IDR at the join |
 | dirty op | start with a jammer or busy air on op | `H relocate … cal` in `scan.log`; the run on the quiet member |
 | tunnel lane | the drone's `stats:`/`tx_send:` lines and the sideport during a run | `mav … reject=` flat (`cal_late=` may rise by ~2 at the end of a run), `drone.auth_reject` false, `link.mav.reject` flat, `cal_latch_drop=0` |
 | parameter set during a run | `mavparam.py set ENC_BITRATE_MAX …` mid-run | `FAILED`, "calibration in progress" |
-
-`sat_rssi_dbm` (−45) is inherited from the old bench tool's precondition;
-the spike saw card 1 sit at the −45 readout rail at close geometry. Worth
-checking on a normal-geometry run that `saturated` stays off, and that it
-fires when the drone is moved within a metre of the GS.

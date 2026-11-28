@@ -9,7 +9,7 @@ typedef struct __mavlink_mabur_cal_ack_t {
  uint16_t start_in_ms; /*<  Milliseconds until the sweep starts, if accepted.*/
  uint8_t seq; /*<  Echoes the sweep's seq.*/
  uint8_t result; /*<  Accept/refuse result.*/
- uint8_t flags; /*<  Stamp flag mask the drone will fly for this sweep.*/
+ uint8_t flags; /*<  Stamp flag mask (LDPC, STBC) the drone flies for this sweep.*/
 } mavlink_mabur_cal_ack_t;
 
 #define MAVLINK_MSG_ID_MABUR_CAL_ACK_LEN 9
@@ -57,7 +57,7 @@ typedef struct __mavlink_mabur_cal_ack_t {
  * @param seq  Echoes the sweep's seq.
  * @param result  Accept/refuse result.
  * @param start_in_ms  Milliseconds until the sweep starts, if accepted.
- * @param flags  Stamp flag mask the drone will fly for this sweep.
+ * @param flags  Stamp flag mask (LDPC, STBC) the drone flies for this sweep.
  * @return length of the message in bytes (excluding serial stream start sign)
  */
 static inline uint16_t mavlink_msg_mabur_cal_ack_pack(uint8_t system_id, uint8_t component_id, mavlink_message_t* msg,
@@ -98,7 +98,7 @@ static inline uint16_t mavlink_msg_mabur_cal_ack_pack(uint8_t system_id, uint8_t
  * @param seq  Echoes the sweep's seq.
  * @param result  Accept/refuse result.
  * @param start_in_ms  Milliseconds until the sweep starts, if accepted.
- * @param flags  Stamp flag mask the drone will fly for this sweep.
+ * @param flags  Stamp flag mask (LDPC, STBC) the drone flies for this sweep.
  * @return length of the message in bytes (excluding serial stream start sign)
  */
 static inline uint16_t mavlink_msg_mabur_cal_ack_pack_status(uint8_t system_id, uint8_t component_id, mavlink_status_t *_status, mavlink_message_t* msg,
@@ -142,7 +142,7 @@ static inline uint16_t mavlink_msg_mabur_cal_ack_pack_status(uint8_t system_id, 
  * @param seq  Echoes the sweep's seq.
  * @param result  Accept/refuse result.
  * @param start_in_ms  Milliseconds until the sweep starts, if accepted.
- * @param flags  Stamp flag mask the drone will fly for this sweep.
+ * @param flags  Stamp flag mask (LDPC, STBC) the drone flies for this sweep.
  * @return length of the message in bytes (excluding serial stream start sign)
  */
 static inline uint16_t mavlink_msg_mabur_cal_ack_pack_chan(uint8_t system_id, uint8_t component_id, uint8_t chan,
@@ -222,7 +222,7 @@ static inline uint16_t mavlink_msg_mabur_cal_ack_encode_status(uint8_t system_id
  * @param seq  Echoes the sweep's seq.
  * @param result  Accept/refuse result.
  * @param start_in_ms  Milliseconds until the sweep starts, if accepted.
- * @param flags  Stamp flag mask the drone will fly for this sweep.
+ * @param flags  Stamp flag mask (LDPC, STBC) the drone flies for this sweep.
  */
 #ifdef MAVLINK_USE_CONVENIENCE_FUNCTIONS
 
@@ -343,7 +343,7 @@ static inline uint16_t mavlink_msg_mabur_cal_ack_get_start_in_ms(const mavlink_m
 /**
  * @brief Get field flags from mabur_cal_ack message
  *
- * @return  Stamp flag mask the drone will fly for this sweep.
+ * @return  Stamp flag mask (LDPC, STBC) the drone flies for this sweep.
  */
 static inline uint8_t mavlink_msg_mabur_cal_ack_get_flags(const mavlink_message_t* msg)
 {

@@ -440,10 +440,11 @@ int main(int argc, char** argv) {
         std::this_thread::sleep_for(std::chrono::milliseconds(a.wall_settle_ms));
         uint64_t due = mono_us();
         for (int k = 0; k < a.wall_frames; ++k) {
+          // The stamp's one kind; linkbench-rx --wall tallies by (mcs, idx).
           const auto body = mabur::cal::build_cal_payload(
-              mabur::cal::Kind::Power, static_cast<uint8_t>(m),
+              mabur::cal::Kind::Capacity, static_cast<uint8_t>(m),
               static_cast<int8_t>(rel), /*bw=*/static_cast<uint8_t>(a.bw),
-              wall_flags, static_cast<uint32_t>(k));
+              wall_flags, static_cast<uint32_t>(k), /*len=*/64);
           std::vector<uint8_t> f;
           f.reserve(rt.size() + kDot11HeaderLen + body.size());
           f.insert(f.end(), rt.begin(), rt.end());

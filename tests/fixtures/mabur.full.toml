@@ -11,24 +11,15 @@ channels   = [40, 64, 112, 144]   # the channel set, same as the ground station'
                                   # PROVISIONAL until bench row 8 (maburcal on 64 and 112; swap 64 for 128
                                   # if it fails), mabur-ground docs/channel-select.md "Config".
 width      = 40        # HT40 on each member's standard pair; per-rung width comes from the GS ladder (docs/bw40.md)
-power_mode = "none"      # "none" = card's default TX power; "offset" = use the calibrated walls below
+power_mode = "none"      # "none" = card's default TX power; "offset" = fly the walls the drone measured (/etc/mabur.walls)
 tx_threads = 4           # parallel USB senders; 4 is needed to reach full link speed
 ldpc       = true        # LDPC coding on every frame. false only for an RTL8821AU ground card (it can't decode LDPC); costs ~2-3 dB of range
 cca        = true        # carrier sense: wait for other Wi-Fi on the channel before sending. false = never wait (other networks cannot stall the video); needs a restart
 
-# TX-power calibration ("walls"). These numbers, and air_clock's
-# efficiency_20/_40 below, belong to ONE card: the reference unit, measured
-# with LDPC+STBC on (cal_flags_20/_40). They do nothing while
-# power_mode = "none". To calibrate your own card, run `maburcal start` on
-# the ground station: it re-measures them, writes them here, records what
-# it measured with in cal_flags_20/_40 and switches power_mode to "offset"
-# for you -- never hand-restore these four from git, they describe a card,
-# not a software default. On an 8812CU, calibrate on the channel you fly
-# most.
-rate_walls_rel_20 = [63, 63, 63, 63, 45, 23, 22, 21]   # per MCS 0..7 at 20 MHz
-rate_walls_rel_40 = [63, 63, 63, 63, 45, 28, 28, 23]   # per MCS 0..7 at 40 MHz
-cal_flags_20      = "ldpc+stbc"
-cal_flags_40      = "ldpc+stbc"
+# TX-power walls are measured by the drone itself, per channel and width,
+# and kept in /etc/mabur.walls, not here: `maburcal start` on the ground
+# station runs the measurement. They do nothing while power_mode = "none".
+# air_clock's efficiency_20/_40 below belong to ONE card: the reference unit.
 legacy_wall_rel   = 63
 wall_margin_db    = 1.0    # safety margin below the walls; raise it to lower TX power
 

@@ -125,7 +125,7 @@ Chronological; each line names the section below that carries the detail.
 - 2026-10-31 — calibration over MAVLink: RC_VERSION 18 (`T_CAL_CMD`/
   `T_CAL_RESULT` deleted), `callog 4`/`5` (per-width walls and capacity;
   5 times capacity over the receive span),
-  `scanlog 7` (`H` reason), `radio.rate_walls_rel` → `_20`/`_40`, sideport
+  `scanlog 7` (`H` reason), the single wall table → one per width, sideport
   `link.cal` (`docs/calibration.md`).
 - 2026-10-31 — GS live config (`set`/`get` on 8402): `ctllog 13` — a
   `ctl.log` can carry a second `ctllog 13 <header_info>` line mid-file at a
@@ -192,6 +192,9 @@ Chronological; each line names the section below that carries the detail.
   Drone → GS MAVLink is type 9 (`T_MAV_UP`), tagged; before it, type 8
   untagged. Telem 54 → 57 bytes: `chip_caps` and `width` appended. Layouts
   from here on: `docs/link-pairing.md` "Frozen handshake".
+- 2026-11-27 — the drone measures its own TX walls: RC_VERSION 20,
+  `callog 6`, `/etc/mabur.walls`, the per-width wall config keys removed
+  (see "2026-11-27 — drone self-calibration of TX walls").
 
 ## 2026-09-23 — `link.pre_fec_loss` scale break, twice
 
@@ -254,8 +257,10 @@ control anywhere in mabur: no GS-commanded offset, no thermal derate, no
 per-profile offset. Under `radio.power_mode = "offset"` `maburd` programs
 the wall-equalized per-rate diff table and zeroes the global offset at
 bring-up; each rate `r` sits at effective TXAGC index `anchor(channel) +
-rate_walls_rel_<bw>[r] − round(wall_margin_db * 4)`, `<bw>` the live
-rung's width (one table for every width before 2026-10-31). Note the
+wall[r] − round(wall_margin_db * 4)`, `wall` from the walls the drone
+measured for the link's channel at the live rung's width (`/etc/mabur.walls`,
+from 2026-11-27; before that a config table per width from 2026-10-31, and
+one table for every width before 2026-10-31). Note the
 `* 4`: the chip's index step is 0.25 dB, so `wall_margin_db` is a dB
 figure converted to index steps, and a 1 dB margin is 4 steps
 (`make_power_plan()` in `drone/src/power_plan.h`). The only later power
@@ -268,9 +273,10 @@ anchor) and `maburcal`'s sweep, index override and live apply
 `link.static_offset_qdb` were REMOVED and now FAIL BOOT, as does
 `radio.power_mode: "override"` (it had become identical to `"none"`).
 Also REMOVED: `radio.rate_walls_idx`, `radio.legacy_wall_idx`,
-`radio.base_ref_idx` (2026-09-13, replaced by `rate_walls_rel`/
-`legacy_wall_rel`), and `radio.rate_walls_rel` itself (2026-10-31,
-replaced by the per-width `rate_walls_rel_20`/`_40`).
+`radio.base_ref_idx` (2026-09-13, replaced by a relative wall table and
+`legacy_wall_rel`), the single wall table (2026-10-31, replaced by one per
+width) and those per-width tables (2026-11-27, see "2026-11-27 — drone
+self-calibration of TX walls").
 Sideport keys `link.op.offset_qdb`, `drone.applied.offset_qdb` and
 `drone.applied.derate_qdb` are gone. The PA thermal reading left the
 sideport with the 2026-09-30 telem diet (`drone.sys.thermal_delta`); it
@@ -1369,10 +1375,10 @@ reused), and the drone config loses a key.
   bitrate the formula commands at every rung. Compare bitrate and air
   share only within one table (the drone's `/etc/mabur.toml` at the
   time, or its `.pre-cal`).
-- **Config.** `radio.rate_walls_rel` is REMOVED and fails boot; the
-  per-width `rate_walls_rel_20`/`_40` are optional (`power_mode =
-  "offset"` needs one), with `cal_flags_20`/`_40` recording the coding
-  flags each was measured under.
+- **Config.** The single wall table is REMOVED and fails boot; the
+  per-width tables are optional (`power_mode = "offset"` needs one), each
+  with a key recording the coding flags it was measured under (all of
+  them removed again on 2026-11-27).
 - **`callog 4`.** The `R` line gains `<ch> <pick> <ldpc>`; new `S` (sweep:
   seq, kind, width, param — scopes the rows after it to its width), `P`
   (capacity point) and `A` (apply outcome) records; `C` loses its leading
@@ -1554,3 +1560,33 @@ those frames count in `self_pps` instead, and own airtime is also floored
 at the decoded airtime ([`docs/inflight-channel-hop.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/inflight-channel-hop.md) §2). In older
 files, a run of `loss_pct: null` on one card while its `pps` holds marks a
 stalled walk, not lost video.
+
+## 2026-11-27 — drone self-calibration of TX walls: RC_VERSION 20, callog 6
+
+The drone now measures its own TX-power walls, per channel and width
+(`docs/calibration.md`). Before this build the GS's power sweep measured
+them (a receiver-side delivery count, one table per width for every
+channel, verified by a parked pass) and wrote them into `/etc/mabur.toml`;
+a wall figure from before and one from after are different measurements.
+What changed for a recording or a comparison:
+
+- **RC_VERSION 20.** The calibration messages change: SWEEP kinds are Wall
+  and Capacity (power and verify gone) and SWEEP gains `channel`; ACK
+  gains the refusals `bad_channel` and `bad_width`; SWEEP_DONE carries a
+  Wall report; APPLY / APPLIED carry efficiency only (`docs/mavlink.md`).
+  A drone and GS at different versions do not link.
+- **Walls.** One curve per (channel, width) in `/etc/mabur.walls`
+  (`maburwalls 1`), derived to walls at load; a wall figure is an EVM
+  crossing on the drone's own PA A, not a delivery threshold at a
+  receiver, and 20 MHz is measured on a 20 MHz tuning. Walls from the GS
+  sweep and walls from the drone are not pooled. A channel and width never
+  measured fly the chip's own table, not another channel's walls.
+- **Config.** The per-width wall tables and their coding-flag keys are
+  REMOVED and fail boot. Nothing converts them.
+- **`callog 6`.** `C` (power cells) and `V` (verify) are no longer
+  written; `S`'s kind is `wall` or `capacity` and its `param` is the
+  measured channel for a wall sweep; `W` is `<bw> <channel> <anchor>
+  <floor_evm_x10> <w0>…<w7>` as the drone reported it; new `X <seq> <token>
+  <reason>` for a skipped sweep (which gets no `S`); the `R` line's `ldpc` is `-` when no ack was heard before the run's first record. The wall flag bits 1–16 are no longer
+  written; capacity flags are as in `callog 5`. `maburcal report` reads
+  `callog 1`–`6`. The sideport `link.cal` kind is `wall` or `capacity`.

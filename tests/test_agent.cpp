@@ -1755,8 +1755,7 @@ std::vector<uint8_t> cal_packet(uint32_t nonce) {
 std::vector<uint8_t> apply_packet(uint32_t nonce) {
   mabur::cal::ApplyCmd a;
   a.nonce = nonce;
-  a.has_walls = true;
-  a.walls[0] = 10;
+  a.eff_x1000[0] = 900;
   return mabur::cal::encode(mabur::cal::CalMsg{a}, kGcsSys, kGcsComp, mav::kChanGsLocal);
 }
 

@@ -5,37 +5,18 @@
 namespace mabur {
 
 namespace {
-// Verify has no SweepCmd of its own to copy pacing from (arm_verify is
-// called directly by the owner, not over the wire) -- it runs at the same
-// pacing the protocol's own SweepCmd defaults use.
-constexpr uint16_t kVerifyFramesPerCell = 20;
-constexpr uint32_t kVerifySettleMs = 5;
-constexpr uint32_t kVerifyGapUs = 1000;
+bool known_kind(cal::Kind k) { return k == cal::Kind::Wall || k == cal::Kind::Capacity; }
 }  // namespace
 
 uint8_t CalSweep::stamp_flags() const {
   return cal::kFlagStbc | (cfg_.ldpc ? cal::kFlagLdpc : 0);
 }
 
-void CalSweep::build_cells(const cal::SweepCmd& c) {
-  cells_.clear();
-  if (c.kind == cal::Kind::Capacity) {
-    for (int mcs = 0; mcs < 8; ++mcs)
-      if (c.mcs_mask & (1 << mcs)) cells_.push_back(Cell{static_cast<uint8_t>(mcs), 0});
-    return;
-  }
-  for (int mcs = 0; mcs < 8; ++mcs) {
-    if (!(c.mcs_mask & (1 << mcs))) continue;
-    for (int idx = c.idx_lo; idx <= c.idx_hi; ++idx)
-      cells_.push_back(Cell{static_cast<uint8_t>(mcs), idx});
-  }
-}
-
-void CalSweep::build_verify_cells(const std::array<int, 8>& park_rel) {
-  cells_.clear();
+void CalSweep::build_points(const cal::SweepCmd& c) {
+  points_.clear();
+  if (c.kind != cal::Kind::Capacity) return;
   for (int mcs = 0; mcs < 8; ++mcs)
-    if (park_rel[mcs] != cal::kWallLeave)
-      cells_.push_back(Cell{static_cast<uint8_t>(mcs), park_rel[mcs]});
+    if (c.mcs_mask & (1 << mcs)) points_.push_back(static_cast<uint8_t>(mcs));
 }
 
 uint16_t CalSweep::remaining_start_ms(uint64_t now_ms) const {
@@ -46,16 +27,33 @@ uint16_t CalSweep::remaining_start_ms(uint64_t now_ms) const {
 
 bool CalSweep::starts_sweep(const cal::SweepCmd& c) const {
   // The same three branches on_cmd() takes, without the side effects.
+  if (!known_kind(c.kind)) return false;
   if (!has_session_ || c.nonce != nonce_)
     return !(last_nonce_valid_ && c.nonce == last_closed_nonce_);
   return static_cast<int>(c.seq) > last_started_seq_;
 }
 
-void CalSweep::on_cmd(const cal::SweepCmd& c, uint64_t now_ms, PowerCtl& pwr) {
+void CalSweep::cancel_wall(WallCtl& wall) {
+  if (!wall_started_) return;
+  wall.cancel();
+  wall_started_ = false;
+}
+
+void CalSweep::on_cmd(const cal::SweepCmd& c, uint64_t now_ms, PowerCtl& pwr, WallCtl& wall) {
   const bool new_session = !has_session_ || c.nonce != nonce_;
-  // Any SWEEP of the open run is taken as the GS having moved past the
-  // last SweepDone (take_done()) -- not proof that it heard it -- whatever
-  // on_cmd does with it below.
+  // An exact repeat of a sweep that has already finished: the GS never
+  // heard the ack (or the sweep outran it) and is still asking. The answer
+  // it is missing is the report, not a fresh ack that would send it
+  // waiting for a sweep that is over -- re-send the stored SweepDone, on
+  // its repeat schedule, and touch nothing else.
+  if (!new_session && state_ == State::Idle && repeat_done_ &&
+      static_cast<int>(c.seq) == last_started_seq_) {
+    pending_done_ = repeat_done_;
+    return;
+  }
+  // Any other SWEEP of the open run is taken as the GS having moved past
+  // the last SweepDone (take_done()) -- not proof that it heard it --
+  // whatever on_cmd does with it below.
   if (!new_session) repeat_done_.reset();
   // A closed run (hard cap, abort, or await timeout) never reopens: a
   // straggler or a GS resend of that exact nonce arriving after the
@@ -63,36 +61,66 @@ void CalSweep::on_cmd(const cal::SweepCmd& c, uint64_t now_ms, PowerCtl& pwr) {
   // hard_cap_ms keeps bounding the run it was armed for and an abort
   // cannot be undone by a late retransmission.
   if (new_session && last_nonce_valid_ && c.nonce == last_closed_nonce_) return;
+  if (!new_session) {
+    if (static_cast<int>(c.seq) == last_started_seq_) {
+      // Exact repeat of the sweep already running: re-arm the ack every
+      // time (the GS resends into a 30-50%-lossy uplink, and a single
+      // lost ack must not cost the whole sweep), but touch nothing else.
+      // start_in_ms reports what's left of the ORIGINAL 200 ms start
+      // delay, not a fresh one.
+      pending_ack_ = cal::SweepAck{nonce_, c.seq, cal::AckResult::Accepted,
+                                   remaining_start_ms(now_ms), stamp_flags()};
+      return;
+    }
+    if (static_cast<int>(c.seq) < last_started_seq_) {
+      // Stale duplicate of an EARLIER sweep arriving late: ignored
+      // outright, no ack -- the GS is not waiting on this seq any more.
+      return;
+    }
+  }
+  // A kind this drone does not know (a retired one, say) is refused, never
+  // run as an empty sweep that would report success.
+  if (!known_kind(c.kind)) {
+    pending_ack_ = cal::SweepAck{c.nonce, c.seq, cal::AckResult::Unsupported, 200, stamp_flags()};
+    return;
+  }
+  // A Wall sweep the drone cannot run is refused before anything touches
+  // the device or the run: the GS goes on with the rest of its run.
+  if (c.kind == cal::Kind::Wall) {
+    const cal::AckResult r = wall.check(c.channel, c.bw);
+    if (r != cal::AckResult::Accepted) {
+      pending_ack_ = cal::SweepAck{c.nonce, c.seq, r, 200, stamp_flags()};
+      return;
+    }
+  }
+  // Accepted from here on: a measurement still open belongs to the sweep
+  // this command supersedes, and the radio goes back first.
+  cancel_wall(wall);
   if (new_session) {
     // A brand-new nonce arriving while a run is still live -- any second
     // `maburcal start` after an abort, after a GS restart, or within
     // await_next_ms of the previous run's last frame -- finds the TXAGC
-    // override still parked at the PREVIOUS run's last swept cell (only
-    // close_session() restores it). Undo that park before reading the
-    // anchor, so this read sees the same clean reference a genuinely
-    // first run would.
+    // override still parked at the anchor of the PREVIOUS run (only
+    // close_session() restores it). Undo that before reading, so this
+    // read sees the same clean reference a genuinely first run would.
     if (has_session_) pwr.set_index_override(anchor_idx_);
     // Zero BEFORE reading, whatever the kind: with a custom diff table live
-    // the chip reports reference + diff, not the reference, and every
-    // Power/Verify cell of this run is placed relative to what this read
-    // returns. A capacity-first run's owner programs its width's plan back
-    // after accepting the command.
-    // A table that would not zero reads reference + diff, not the
-    // reference: no read is taken off it, and the command is refused as
-    // an unreadable anchor is.
+    // the chip reports reference + diff, not the reference. A capacity
+    // sweep's owner programs its width's plan back after accepting the
+    // command. A table that would not zero gives no clean read, and the
+    // command is refused as an unreadable anchor is.
     const bool zeroed = pwr.zero_rate_diffs();
     const int anchor = zeroed ? pwr.read_anchor_idx() : -1;
     if (anchor < 0) {
-      // Cannot place a relative cell without the reference: refuse this
-      // command, answering with an explicit ack rather than staying
-      // silent. Full teardown (not just has_session_ = false), so
-      // pump()'s switch(state_) never keeps dispatching into a stale
-      // Sweeping state for cells nobody owns any more.
+      // Refuse with an explicit ack rather than staying silent. Full
+      // teardown (not just has_session_ = false), so pump()'s
+      // switch(state_) never keeps dispatching into a stale Sweeping
+      // state nobody owns any more.
       has_session_ = false;
       state_ = State::Idle;
       cursor_ = 0;
-      cell_entered_ = false;
-      cells_.clear();
+      point_entered_ = false;
+      points_.clear();
       pending_done_.reset();
       repeat_done_.reset();
       pending_apply_.reset();
@@ -112,48 +140,19 @@ void CalSweep::on_cmd(const cal::SweepCmd& c, uint64_t now_ms, PowerCtl& pwr) {
     // Per-run state from any earlier run must not leak into this one.
     power_restored_ = false;
     handed_out_apply_ = false;
-  } else {
-    if (static_cast<int>(c.seq) == last_started_seq_) {
-      // Exact repeat of the sweep already running: re-arm the ack every
-      // time (the GS resends into a 30-50%-lossy uplink, and a single
-      // lost ack must not cost the whole sweep), but touch nothing else
-      // -- the cell cursor is left exactly as it is. start_in_ms reports
-      // what's left of the ORIGINAL 200 ms start delay, not a fresh one.
-      pending_ack_ = cal::SweepAck{nonce_, c.seq, cal::AckResult::Accepted,
-                                   remaining_start_ms(now_ms), stamp_flags()};
-      return;
-    }
-    if (static_cast<int>(c.seq) < last_started_seq_) {
-      // Stale duplicate of an EARLIER sweep arriving late: ignored
-      // outright, no ack -- the GS is not waiting on this seq any more.
-      return;
-    }
-    // Seq strictly ahead: a new sweep within the same run, reusing the
-    // anchor already captured above. A power sweep needs the diffs zeroed
-    // again (a capacity sweep put its width's plan up); a table that would
-    // not zero puts every cell at reference + diff and shifts every wall,
-    // so the sweep is refused and the run closed, and the owner restores.
-    if (c.kind == cal::Kind::Power && !pwr.zero_rate_diffs()) {
-      close_session(pwr);
-      pending_ack_ = cal::SweepAck{c.nonce, c.seq, cal::AckResult::AnchorUnreadable, 200,
-                                   stamp_flags()};
-      pending_refusal_ = true;
-      return;
-    }
   }
 
   last_started_seq_ = c.seq;
   current_kind_ = c.kind;
   current_bw_ = c.bw;
-  frames_per_cell_ = c.frames_per_cell;
+  current_channel_ = c.channel;
   settle_ms_ = c.settle_ms;
-  gap_ms_ = c.gap_us / 1000;
   dwell_ms_ = c.dwell_ms;
   offered_.fill(0);
   blocked_pct_.fill(0);
-  build_cells(c);
+  build_points(c);
   cursor_ = 0;
-  cell_entered_ = false;
+  point_entered_ = false;
   state_ = State::Sweeping;
   pending_done_.reset();
   repeat_done_.reset();
@@ -161,15 +160,11 @@ void CalSweep::on_cmd(const cal::SweepCmd& c, uint64_t now_ms, PowerCtl& pwr) {
   // sweep of this run -- take_pending_apply() must not hand out a result
   // for a sweep that just got superseded.
   pending_apply_.reset();
-  // Capacity flies the production power plan the owner programs for
-  // this width -- restore the override to the anchor in case a
-  // Power/Verify sweep earlier in this run left it parked at a swept
-  // cell. Power/Verify instead program the override per cell, inside
-  // pump().
+  // Capacity flies the production power plan the owner programs for this
+  // width, from the anchor with no flat override parked elsewhere.
   if (c.kind == cal::Kind::Capacity) pwr.set_index_override(anchor_idx_);
-  // The first cell does not open until 200 ms from now (pump_power_verify
-  // / pump_capacity check this): the ack needs a chance to reach the GS
-  // first.
+  // The sweep does not start until 200 ms from now (pump_capacity /
+  // pump_wall check this): the ack needs a chance to reach the GS first.
   sweep_start_ms_ = now_ms + 200;
   pending_ack_ = cal::SweepAck{nonce_, c.seq, cal::AckResult::Accepted,
                                remaining_start_ms(now_ms), stamp_flags()};
@@ -180,15 +175,12 @@ void CalSweep::on_apply(const cal::ApplyCmd& a, uint64_t now_ms) {
   // The GS analysed the sweep: its SweepDone need not repeat.
   repeat_done_.reset();
   // A sweep actively running owns the radio right now; accepting an
-  // apply here would silently abandon its progress. Verify only ever
-  // follows a drained apply, never races one.
+  // apply here would silently abandon its progress.
   if (state_ == State::Sweeping) return;
   // The GS resends APPLY every 200 ms until it hears APPLIED. A repeat
   // of a (nonce, seq) already handed out by take_pending_apply() must be
-  // a no-op -- not a re-queue, which would restart Applying and disturb
-  // a verify sweep the owner already armed from the first delivery. Keyed
-  // on the sweep's seq, not the width: a run applies a power sweep and
-  // then a capacity sweep at the same width, and the second is new.
+  // a no-op, not a re-queue. Keyed on the sweep's seq, not the width: a
+  // run may apply twice at one width, and the second is new.
   if (handed_out_apply_ && a.nonce == handed_out_nonce_ && a.seq == handed_out_seq_) return;
   pending_apply_ = a;
   state_ = State::Applying;
@@ -197,9 +189,11 @@ void CalSweep::on_apply(const cal::ApplyCmd& a, uint64_t now_ms) {
   await_deadline_ms_ = now_ms + cfg_.await_next_ms;
 }
 
-void CalSweep::on_abort(const cal::Abort& a, uint64_t now_ms, PowerCtl& pwr) {
+void CalSweep::on_abort(const cal::Abort& a, uint64_t now_ms, PowerCtl& pwr, WallCtl& wall) {
   (void)now_ms;
-  if (has_session_ && a.nonce == nonce_) close_session(pwr);
+  if (!has_session_ || a.nonce != nonce_) return;
+  cancel_wall(wall);
+  close_session(pwr);
 }
 
 std::optional<cal::SweepAck> CalSweep::take_ack() {
@@ -222,8 +216,7 @@ std::optional<cal::ApplyCmd> CalSweep::take_pending_apply() {
   pending_apply_.reset();
   // Remember this (nonce, seq) as handed out so a GS resend of the same
   // apply -- it keeps resending until it hears APPLIED -- is ignored by
-  // on_apply() rather than re-queued over the verify sweep this apply is
-  // about to trigger.
+  // on_apply() rather than re-queued.
   handed_out_apply_ = true;
   handed_out_nonce_ = a.nonce;
   handed_out_seq_ = a.seq;
@@ -237,36 +230,12 @@ bool CalSweep::take_refused() {
   return v;
 }
 
-void CalSweep::arm_verify(const std::array<int, 8>& park_rel, uint8_t bw, uint64_t now_ms) {
-  // No run to verify, or a Power/Capacity sweep is actively Sweeping and
-  // owns the radio right now -- never interrupt it. Without this guard,
-  // calling arm_verify() with no open run would build a cell plan and
-  // flip state_ to Sweeping with has_session_ still false: pump()'s
-  // hard-cap/await guards are gated on has_session_, so nothing would
-  // ever close this "run" or restore power again.
-  if (!has_session_ || state_ == State::Sweeping) return;
-  current_kind_ = cal::Kind::Verify;
-  current_bw_ = bw;
-  frames_per_cell_ = kVerifyFramesPerCell;
-  settle_ms_ = kVerifySettleMs;
-  gap_ms_ = kVerifyGapUs / 1000;
-  offered_.fill(0);
-  blocked_pct_.fill(0);
-  build_verify_cells(park_rel);
-  cursor_ = 0;
-  cell_entered_ = false;
-  pending_done_.reset();
-  repeat_done_.reset();
-  // Same 200 ms start delay as an on_cmd sweep -- see that method.
-  sweep_start_ms_ = now_ms + 200;
-  state_ = State::Sweeping;
-}
-
-void CalSweep::pump(uint64_t now_ms, RadioTx& tx, PowerCtl& pwr, CapacityCtl& cap) {
+void CalSweep::pump(uint64_t now_ms, PowerCtl& pwr, CapacityCtl& cap, WallCtl& wall) {
   // Constraint 2, checked before anything else: losing the link mid-run
   // is the expected case, not an error, so a GS that never sends another
-  // byte must never leave the drone parked mid-sweep.
+  // byte must never leave the drone mid-sweep.
   if (has_session_ && now_ms >= hard_cap_deadline_ms_) {
+    cancel_wall(wall);
     close_session(pwr);
     return;
   }
@@ -279,126 +248,85 @@ void CalSweep::pump(uint64_t now_ms, RadioTx& tx, PowerCtl& pwr, CapacityCtl& ca
       }
       if (repeat_done_ && now_ms >= next_done_ms_) {
         pending_done_ = repeat_done_;
-        // Deadline-based like the frame pacing, but a late pump re-arms
-        // once rather than in a burst.
+        // Deadline-based, but a late pump re-arms once rather than in a
+        // burst.
         next_done_ms_ += kDoneRepeatMs;
         if (next_done_ms_ <= now_ms) next_done_ms_ = now_ms + kDoneRepeatMs;
       }
       return;
     case State::Applying:
-      // Waiting on the caller to drain take_pending_apply() and either
-      // call arm_verify() or let the next command land. Bounded by both
-      // the shared hard cap above and this state's own await deadline --
-      // a GS that stops talking mid-apply must not leave the drone
-      // stuck here forever either.
+      // Waiting on the caller to drain take_pending_apply() or the next
+      // command to land. Bounded by both the shared hard cap above and
+      // this state's own await deadline.
       if (has_session_ && now_ms >= await_deadline_ms_) close_session(pwr);
       return;
     case State::Sweeping:
-      if (current_kind_ == cal::Kind::Capacity) {
+      if (current_kind_ == cal::Kind::Wall)
+        pump_wall(now_ms, wall);
+      else
         pump_capacity(now_ms, cap);
-      } else {
-        pump_power_verify(now_ms, tx, pwr);
-      }
       return;
   }
 }
 
-void CalSweep::pump_power_verify(uint64_t now_ms, RadioTx& tx, PowerCtl& pwr) {
-  // The ack (or, for Verify, the owner's applied config) needs a chance
-  // to reach the GS before the first cell starts using up the air.
+void CalSweep::pump_wall(uint64_t now_ms, WallCtl& wall) {
   if (now_ms < sweep_start_ms_) return;
-  if (!cell_entered_) {
-    if (cursor_ >= cells_.size()) {
-      finish_sweep(now_ms);
-      return;
-    }
-    if (frames_per_cell_ == 0) {
-      // Nothing to attribute to this cell -- step over it rather than
-      // parking the radio there to send a frame nobody asked for.
-      ++cursor_;
-      return;
-    }
-    const Cell cell = cells_[cursor_];
-    active_mcs_ = cell.mcs;
-    active_idx_ = cell.idx;
-    // Every frame is stamped with the RELATIVE cell it's sent in, so the
-    // ladder and the TXAGC index are both pinned to this cell before the
-    // first frame goes out -- programmed as the anchor plus the relative
-    // offset, clamped to the chip's real [0, 127] index range.
-    pwr.set_index_override(std::clamp(anchor_idx_ + active_idx_, 0, 127));
-    tx.set_ladder({rc::LayerTxSpec{rc::PhyMode::HT, active_mcs_, current_bw_, false, cfg_.ldpc,
-                                   true},
-                   rc::LayerTxSpec{rc::PhyMode::HT, active_mcs_, current_bw_, false, cfg_.ldpc,
-                                   true}},
-                  std::nullopt);
-    cell_seq_ = 0;
-    settle_deadline_ms_ = now_ms + settle_ms_;
-    next_send_ms_ = settle_deadline_ms_;  // first frame may fire as soon as settled
-    cell_entered_ = true;
+  if (!wall_started_) {
+    wall.start(current_channel_, current_bw_, now_ms);
+    wall_started_ = true;
     return;
   }
-
-  if (now_ms < settle_deadline_ms_ || now_ms < next_send_ms_) return;
-
-  const auto payload = cal::build_cal_payload(current_kind_, active_mcs_,
-                                               static_cast<int8_t>(active_idx_), current_bw_,
-                                               stamp_flags(), cell_seq_);
-  tx.send_body(0, payload.data(), payload.size());
-  ++cell_seq_;
-  if (current_kind_ == cal::Kind::Power) ++offered_[active_mcs_];
-  // DEADLINE-based, not now_ms-based: the next frame is due gap_ms_ after
-  // the one that was DUE, not after the one that was SENT, so a late
-  // wake absorbs itself instead of pushing every later frame later too.
-  next_send_ms_ += gap_ms_;
-
-  if (cell_seq_ >= frames_per_cell_) {
-    ++cursor_;
-    cell_entered_ = false;
-  }
+  if (wall.step(now_ms)) return;
+  wall_started_ = false;
+  cal::SweepDone d = wall.finish();
+  d.nonce = nonce_;
+  d.seq = static_cast<uint8_t>(last_started_seq_);
+  finish_sweep(now_ms, d);
 }
 
 void CalSweep::pump_capacity(uint64_t now_ms, CapacityCtl& cap) {
-  // Same start delay as Power/Verify -- see pump_power_verify().
+  // The ack needs a chance to reach the GS before the first point starts
+  // using up the air.
   if (now_ms < sweep_start_ms_) return;
-  if (!cell_entered_) {
-    if (cursor_ >= cells_.size()) {
-      finish_sweep(now_ms);
+  if (!point_entered_) {
+    if (cursor_ >= points_.size()) {
+      cal::SweepDone d;
+      d.nonce = nonce_;
+      d.seq = static_cast<uint8_t>(last_started_seq_);
+      d.offered = offered_;
+      d.blocked_pct = blocked_pct_;
+      finish_sweep(now_ms, d);
       return;
     }
-    const Cell cell = cells_[cursor_];
-    active_mcs_ = cell.mcs;
-    cap.set_point(active_mcs_, current_bw_);
+    cap.set_point(points_[cursor_], current_bw_);
     settle_deadline_ms_ = now_ms + settle_ms_;
-    cell_entered_ = true;
+    point_entered_ = true;
     return;
   }
 
   if (now_ms < settle_deadline_ms_) return;
 
-  const auto payload = cal::build_cal_payload(cal::Kind::Capacity, active_mcs_, /*idx=*/0,
-                                               current_bw_, stamp_flags(), /*seq=*/0,
+  const uint8_t mcs = points_[cursor_];
+  const auto payload = cal::build_cal_payload(cal::Kind::Capacity, mcs, /*idx=*/0, current_bw_,
+                                               stamp_flags(), /*seq=*/0,
                                                cfg_.capacity_frame_len);
   // Blocks for the dwell by design -- see the class comment.
   const BlastResult r = cap.blast(payload.data(), payload.size(), dwell_ms_);
-  offered_[active_mcs_] = r.offered;
-  blocked_pct_[active_mcs_] = r.blocked_pct;
+  offered_[mcs] = r.offered;
+  blocked_pct_[mcs] = r.blocked_pct;
   ++cursor_;
-  cell_entered_ = false;
+  point_entered_ = false;
 }
 
-void CalSweep::finish_sweep(uint64_t now_ms) {
-  // Verify emits no SweepDone -- the GS times its own verify window.
-  if (current_kind_ != cal::Kind::Verify) {
-    pending_done_ = cal::SweepDone{nonce_, static_cast<uint8_t>(last_started_seq_), offered_,
-                                   blocked_pct_};
-    repeat_done_ = pending_done_;
-    next_done_ms_ = now_ms + kDoneFirstRepeatMs;
-  }
-  // The run stays open -- Capacity can follow Power, and a result's
-  // verify can follow an apply -- so this is Idle-but-active, not a full
-  // close: only the await timer (or the hard cap) closes the run.
+void CalSweep::finish_sweep(uint64_t now_ms, const cal::SweepDone& d) {
+  pending_done_ = d;
+  repeat_done_ = d;
+  next_done_ms_ = now_ms + kDoneFirstRepeatMs;
+  // The run stays open -- another sweep or an apply can follow -- so this
+  // is Idle-but-active, not a full close: only the await timer (or the
+  // hard cap) closes the run.
   state_ = State::Idle;
-  cell_entered_ = false;
+  point_entered_ = false;
   cursor_ = 0;
   await_deadline_ms_ = now_ms + cfg_.await_next_ms;
 }
@@ -420,7 +348,7 @@ void CalSweep::close_session(PowerCtl& pwr) {
   has_session_ = false;
   state_ = State::Idle;
   cursor_ = 0;
-  cell_entered_ = false;
+  point_entered_ = false;
   pending_done_.reset();
   repeat_done_.reset();
   pending_apply_.reset();

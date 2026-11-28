@@ -14,31 +14,38 @@
 
 namespace mabur::cal {
 
-// One cell the drone is asked to sweep: a kind (Power or Capacity) at a
-// bandwidth (20 or 40).
+// One sweep of a run: a kind (Wall or Capacity) at a bandwidth (20 or 40),
+// and for Wall the channel to measure.
 struct SweepSpec {
   Kind kind;
   uint8_t bw;
+  uint8_t channel = 0;  // Wall only; 0 = the link's channel
 };
 
-// Ground -> drone: run a sweep. idx_lo/idx_hi bound the rel power-index
-// range (Power/Verify); mcs_mask selects which rates a Capacity sweep
-// probes.
+// Ground -> drone: run a sweep. Wall measures the TX walls of `channel` at
+// `bw` on the drone itself; Capacity dwells on each rate in mcs_mask.
 struct SweepCmd {
   uint32_t nonce = 0;
   uint8_t seq = 0;
-  Kind kind = Kind::Power;
+  Kind kind = Kind::Capacity;
   uint8_t bw = 20;
-  uint16_t frames_per_cell = 20;
-  uint16_t settle_ms = 5;
-  uint16_t gap_us = 1000;
-  uint16_t dwell_ms = 2000;
-  int8_t idx_lo = -41;
-  int8_t idx_hi = 63;
-  uint8_t mcs_mask = 0xFF;
+  uint8_t channel = 0;       // Wall: the channel to measure
+  uint16_t settle_ms = 300;  // Capacity
+  uint16_t dwell_ms = 2000;  // Capacity
+  uint8_t mcs_mask = 0xFF;   // Capacity
 };
 
-enum class AckResult : uint8_t { Accepted = 0, AnchorUnreadable = 1, Busy = 2, Unsupported = 3 };
+// BadChannel: a Wall channel outside radio.channels. BadWidth: a 40 MHz
+// Wall on a radio tuned to 20. Unsupported: a chip that cannot measure.
+enum class AckResult : uint8_t {
+  Accepted = 0,
+  AnchorUnreadable = 1,
+  Busy = 2,
+  Unsupported = 3,
+  BadChannel = 4,
+  BadWidth = 5
+};
+enum class WallResult : uint8_t { Ok = 0, Unparked = 1, TooFewPoints = 2, FloorTooHigh = 3, NotSaturated = 4, Deadline = 5, DeviceError = 6, Aborted = 7, Disturbed = 8 };
 
 // Drone -> ground: accept/refuse a SweepCmd, and how soon it starts.
 struct SweepAck {
@@ -49,37 +56,36 @@ struct SweepAck {
   uint8_t flags = 0;
 };
 
-// Drone -> ground: a finished sweep's per-cell results, up to 8 cells.
+// Drone -> ground: a finished sweep's results. Capacity fills offered and
+// blocked_pct; Wall fills wall_result and everything after it. walls are
+// relative to `anchor`, the chip's TXAGC reference on that channel; the
+// floor EVM is in 0.1 dB.
 struct SweepDone {
   uint32_t nonce = 0;
   uint8_t seq = 0;
   std::array<uint32_t, 8> offered{};
   std::array<uint8_t, 8> blocked_pct{};
+  WallResult wall_result = WallResult::Ok;
+  uint8_t channel = 0, bw = 0;
+  std::array<int8_t, 8> walls{};
+  int16_t floor_evm_x10 = 0;
+  uint8_t anchor = 0;
 };
 
-constexpr int8_t kWallLeave = -128;  // walls[i]: leave the config entry; eff_x1000 0 = leave
-
-// Ground -> drone: the walls and/or efficiency table a sweep produced, for
-// the drone to adopt at `bw`. `seq` names that sweep: a run applies twice
-// at one width (power, then capacity), so (nonce, bw) alone cannot tell
-// the second apply from a repeat of the first.
+// Ground -> drone: the efficiency table a capacity sweep produced, for the
+// drone to adopt at `bw` (eff_x1000 0 = leave). `seq` names that sweep: a
+// run may apply twice at one width, so (nonce, bw) alone cannot tell the
+// second apply from a repeat of the first.
 struct ApplyCmd {
   uint32_t nonce = 0;
   uint8_t seq = 0;
   uint8_t bw = 20;
-  bool has_walls = false;
-  bool has_eff = false;
-  std::array<int8_t, 8> walls{kWallLeave, kWallLeave, kWallLeave, kWallLeave,
-                              kWallLeave, kWallLeave, kWallLeave, kWallLeave};
-  int8_t legacy = kWallLeave;
   std::array<uint16_t, 8> eff_x1000{};
 };
 
 // Drone -> ground: whether it adopted an ApplyCmd; nonce, seq and bw echo
-// it. reason says why on a refusal; on success it is empty, or a note of
-// what the drone kept that the apply did not carry ("ok; mcs6 kept from the
-// 20 MHz table"). At most 49 chars (the wire field is char[50],
-// NUL-terminated).
+// it. reason says why on a refusal; empty on success. At most 49 chars
+// (the wire field is char[50], NUL-terminated).
 struct Applied {
   uint32_t nonce = 0;
   uint8_t seq = 0;
@@ -96,5 +102,10 @@ struct Abort {
 using CalMsg = std::variant<SweepCmd, SweepAck, SweepDone, ApplyCmd, Applied, Abort>;
 
 constexpr uint32_t kCalMsgIdLo = 60000, kCalMsgIdHi = 60005;
+
+// A wall measurement's limit on the drone, from its setup; the GS waits the
+// same time (plus its own slack) for the report, since the drone airs
+// nothing until then.
+constexpr uint32_t kWallDeadlineMs = 30000;
 
 }  // namespace mabur::cal

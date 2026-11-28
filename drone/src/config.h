@@ -22,42 +22,21 @@ struct RadioCfg {
   // first) and follows the GS to any member. Must be a superset of the GS's
   // list.
   std::vector<uint8_t> channels{40, 64, 112, 144};
-  // How bring-up programs TX power:
-  //   "offset" — program the wall-equalized per-rate diff table
-  //              (SetTxPowerRateDiffs) once, then zero the global offset
-  //              once. Power is constant for the life of the process.
+  // How TX power is programmed:
+  //   "offset" — the wall-equalized per-rate diff table
+  //              (SetTxPowerRateDiffs) measured for the link's channel and
+  //              width, the global offset zeroed once; the chip's own table
+  //              where nothing is measured. It changes only with the
+  //              channel and width.
   //   "none"   — never touch power (efuse table as-is, streamtx-proven).
   // There is no runtime power control: no per-op power, no thermal derate.
   std::string power_mode = "none";
-  // Wall-equalization inputs: measured per-rate clean-air ceilings as
-  // signed indices RELATIVE to the chip's per-channel anchor, [-64,63].
-  // One table per width (the 8812E/8822x walls at 40 sit at or above the
-  // 20 MHz walls on every unit measured, so a single shared table either
-  // overdrives 20 or leaves power unused at 40). At least one table is
-  // REQUIRED when power_mode == "offset"; walls_for() falls back to the
-  // other width's table when the requested one is absent, so a unit
-  // calibrated on only one width still powers both. See power_plan.h for
-  // diff[r] = rel[r] - m. legacy_wall_rel/wall_margin_db are shared by both
-  // widths (legacy/CCK rides the one legacy wall regardless of width).
-  std::optional<std::array<int, 8>> rate_walls_rel_20, rate_walls_rel_40;
+  // The walls themselves are measured by the drone and kept per channel
+  // and width in the wall cache (wall_cache.h); these two are shared by
+  // every plan built from it (power_plan.h: diff[r] = rel[r] - m; legacy
+  // and CCK ride the one legacy wall regardless of width).
   int legacy_wall_rel = 63;
   double wall_margin_db = 1.0;
-  // Which of LDPC/STBC the walls above were measured with, recorded by
-  // maburcal so a later re-measure (or a human reading the bundle) knows
-  // what the numbers assume. Purely informational: it does not gate
-  // anything at load, and changing radio.ldpc does not invalidate it on
-  // its own. One of "ldpc+stbc", "stbc", "ldpc", "none".
-  std::string cal_flags_20 = "ldpc+stbc", cal_flags_40 = "ldpc+stbc";
-
-  // The table for `bw`, falling back to the other width's. Walls at 40 are
-  // never below walls at 20 on any unit measured, so 20's table at 40 is a
-  // safe, if suboptimal, substitute, while 40's table at 20 overdrives the
-  // rates whose 40 MHz wall is higher (maburd says so at boot). nullptr when
-  // neither width has a table.
-  const std::array<int, 8>* walls_for(uint8_t bw) const;
-  // True when `bw`'s own table is present (ignores the other width's
-  // fallback walls_for() would use).
-  bool has_walls(uint8_t bw) const;
   // Parallel USB sender threads (URBs in flight). The 8822E flow-controls
   // sync bulk-OUT URBs (~0.4 ms acceptance handshake + FIFO drain), so a
   // single blocking sender caps air throughput at ~26 Mbps regardless of

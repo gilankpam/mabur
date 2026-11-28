@@ -73,9 +73,12 @@ constexpr uint16_t RC_MAGIC = 0x5243;  // "RC"
 // DISC_ACK trimmed to vrx/vtx nonces, flags, channel, seq and tagged by the
 // drone; drone -> GS MAVLink is its own tagged type T_MAV_UP; chip_caps and
 // width moved from DISC_ACK to Telem.
+// Bumped 19 -> 20: the calibration lane measures walls on the drone (a Wall
+// sweep, its walls in SWEEP_DONE) and lost the power and verify sweeps and
+// the walls half of APPLY.
 // Peers of different versions exchange only the frozen frames: no RCF,
 // Telem or video is understood across versions.
-constexpr uint8_t RC_VERSION = 19;
+constexpr uint8_t RC_VERSION = 20;
 
 // RCF probe_profile sentinel: the drone runs no probe stream.
 constexpr uint8_t kNoProbeProfile = 0xFF;

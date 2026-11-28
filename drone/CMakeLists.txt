@@ -18,12 +18,16 @@ add_library(mabur_drone_core STATIC
   src/cal_apply.cpp
   src/config_apply.cpp
   src/cal_sweep.cpp
+  src/wall_curve.cpp
+  src/wall_cache.cpp
   src/cal_link.cpp
   src/live_power_table.cpp
   src/mav_params.cpp
   src/mav_component.cpp
   src/ota.cpp
   src/nack_responder.cpp
+  src/cross_evm.cpp
+  src/wall_sweep.cpp
   vendor/venc_frame_ring.c
   # venc_cfg.c is dependency-free C99 (string.h only), so it compiles on
   # host too — config.cpp's parse_venc() needs venc_cfg_defaults() at
@@ -41,7 +45,7 @@ target_link_libraries(mabur_drone_core PUBLIC mabur_common rt devourer)
 # on mabur_drone_core above.
 target_include_directories(mabur_drone_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/venc)
 
-add_executable(maburd src/maburd/main.cpp src/maburd/threads.cpp src/maburd/radio_glue.cpp src/maburd/real_actuator.cpp src/maburd/dry_run.cpp src/maburd/real_mode.cpp src/maburd/rx_path.cpp src/maburd/hot_thread.cpp src/maburd/tx_writer.cpp src/maburd/agent_thread.cpp src/maburd/mav_thread.cpp src/maburd/msp_thread.cpp src/maburd/igi_thread.cpp)
+add_executable(maburd src/maburd/main.cpp src/maburd/threads.cpp src/maburd/radio_glue.cpp src/maburd/real_actuator.cpp src/maburd/dry_run.cpp src/maburd/real_mode.cpp src/maburd/rx_path.cpp src/maburd/hot_thread.cpp src/maburd/tx_writer.cpp src/maburd/wall_ctl.cpp src/maburd/agent_thread.cpp src/maburd/mav_thread.cpp src/maburd/msp_thread.cpp src/maburd/igi_thread.cpp)
 
 # Same rule as mabur_common (common/CMakeLists.txt): the producer loop lives
 # in src/maburd/ and the pipeline in mabur_drone_core, and both must not fall

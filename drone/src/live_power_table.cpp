@@ -20,7 +20,19 @@ void LivePowerTable::follow(uint8_t bw) {
   (void)write_locked(bw, Write{});
 }
 
-bool LivePowerTable::replace(WidthPlans p, uint8_t bw, bool zero_offset, bool clear_override) {
+void LivePowerTable::set_channel(uint8_t ch) {
+  std::lock_guard<std::mutex> l(mu_);
+  ch_.store(ch, std::memory_order_release);
+}
+
+void LivePowerTable::retuned_in_gate(uint8_t ch) {
+  // mu_ is the caller's (with_lock).
+  ch_.store(ch, std::memory_order_release);
+  if (bw_ == 0 || cal_active->load(std::memory_order_relaxed)) return;  // nothing programmed yet
+  (void)write_locked(bw_, Write{}, /*gated=*/false);
+}
+
+bool LivePowerTable::replace(ChannelPlans p, uint8_t bw, bool zero_offset, bool clear_override) {
   std::lock_guard<std::mutex> l(mu_);
   plans_ = std::move(p);
   Write w;
@@ -29,7 +41,7 @@ bool LivePowerTable::replace(WidthPlans p, uint8_t bw, bool zero_offset, bool cl
   return write_locked(bw, w);
 }
 
-bool LivePowerTable::replace_unless_cal(WidthPlans p, uint8_t bw, bool* refused_cal) {
+bool LivePowerTable::replace_unless_cal(ChannelPlans p, uint8_t bw, bool* refused_cal) {
   std::lock_guard<std::mutex> l(mu_);
   *refused_cal = cal_active->load(std::memory_order_relaxed);
   if (*refused_cal) return false;
@@ -37,7 +49,7 @@ bool LivePowerTable::replace_unless_cal(WidthPlans p, uint8_t bw, bool* refused_
   return write_locked(bw, Write{});
 }
 
-void LivePowerTable::set_plans(WidthPlans p) {
+void LivePowerTable::set_plans(ChannelPlans p) {
   std::lock_guard<std::mutex> l(mu_);
   plans_ = std::move(p);
 }
@@ -49,10 +61,15 @@ bool LivePowerTable::program_for_cal(uint8_t bw) {
   return write_locked(bw, w);
 }
 
-bool LivePowerTable::write_locked(uint8_t bw, const Write& w) {
-  const PowerPlan* p = plan_for(plans_, bw);
+bool LivePowerTable::write_locked(uint8_t bw, const Write& w, bool gated) {
+  const uint8_t ch = ch_.load(std::memory_order_relaxed);
+  const PowerPlan* p = plan_for(plans_, ch, bw);
+  // No plan: back to the untrimmed efuse table, but only over a plan or
+  // what calibration left -- a chip already on its own table is not
+  // rewritten on every hop between unmeasured channels.
+  const bool write_own = !p && (holds_plan_ || dirty_ || w.for_cal);
   bool ok = true;
-  dev->gated([&] {
+  auto calls = [&] {
     if (p) {
       devourer::TxRateDiffsQdb diffs;
       diffs.cck = p->cck;
@@ -63,21 +80,26 @@ bool LivePowerTable::write_locked(uint8_t bw, const Write& w) {
       // explicitly rather than trusting whatever a prior process or
       // bench tool left in the chip.
       if (w.zero_offset) dev->set_offset_qdb(0);
-    } else if (dirty_ || w.for_cal) {
-      // No plan: back to the untrimmed efuse table calibration zeroed.
+    } else if (write_own) {
       ok = dev->set_rate_diffs(std::nullopt);
     }
     if (w.clear_override) dev->set_index_override(-1);
-  });
+  };
+  if (p || write_own || w.clear_override) {
+    if (gated)
+      dev->gated(calls);
+    else
+      calls();
+  }
+  if (p || write_own) holds_plan_ = p != nullptr;
+  const char* cal = w.for_cal ? " for calibration" : "";
   if (p) {
-    // plan_for falls back to the other width's table when bw has none.
-    const bool own = (bw == 40 ? plans_.p40 : plans_.p20).has_value();
-    std::fprintf(stderr, "maburd radio: power table %d MHz live (mcs5 diff %d)%s%s%s\n", bw,
-                 p->mcs[5], own ? "" : (bw == 40 ? " (20 MHz table)" : " (40 MHz table)"),
-                 w.for_cal ? " for calibration" : "",
+    std::fprintf(stderr, "maburd radio: power table ch %u %u MHz: measured plan (mcs5 diff %d)%s%s\n",
+                 static_cast<unsigned>(ch), static_cast<unsigned>(bw), p->mcs[5], cal,
                  ok ? "" : " -- SetTxPowerRateDiffs FAILED, chip keeps its previous table");
-  } else if (dirty_ || w.for_cal) {
-    std::fprintf(stderr, "maburd radio: power table: chip default (no walls)%s\n",
+  } else if (own_logged_.insert({ch, bw}).second || !ok) {
+    std::fprintf(stderr, "maburd radio: power table ch %u %u MHz: chip's own table (no plan)%s%s\n",
+                 static_cast<unsigned>(ch), static_cast<unsigned>(bw), cal,
                  ok ? "" : " -- SetTxPowerRateDiffs FAILED");
   }
   // A refused write is not retried: a chip without a rate-diff table

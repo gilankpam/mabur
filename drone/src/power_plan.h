@@ -15,37 +15,28 @@ namespace mabur {
 // adds the right anchor itself.
 // m = round(margin_db * 4) converts dB to the chip's 0.25 dB index steps.
 //
-// anchor_idx: the reference index read back at bring-up ON THE BOOT
-// CHANNEL, used only to keep reference + diff <= 127 (the vendor driver
-// guarantees that in software; hardware behaviour beyond it is undefined).
-// <= 0 means unknown: no cap. On this unit (anchors 39-57) the cap never
-// binds -- it lands at +70..+88, above kRelMax (+63); it exists for a
-// blank-efuse card (devourer fallback 75), which caps at +52 and touches
-// only no-dip rows.
+// anchor_idx: the chip's own MCS7 reference on the channel the walls were
+// measured on (WallCurve::anchor), used only to keep reference + diff <=
+// 127 (the vendor driver guarantees that in software; hardware behaviour
+// beyond it is undefined). <= 0 means unknown: no cap. The anchor the
+// diffs ride on is re-derived by devourer on every channel change, driven
+// by the ReApplyTxPower() call maburd makes right after each FastRetune
+// (drone/src/maburd/real_actuator.cpp: RealActuator::retune_now_).
 //
-// It is therefore a BOOT-CHANNEL APPROXIMATION, and deliberately so: the
-// per-channel anchor the diffs ride on is NOT this number. devourer
-// re-derives it from the efuse on every channel change, driven by the
-// ReApplyTxPower() call maburd makes right after each FastRetune
-// (drone/src/maburd/real_actuator.cpp: RealActuator::retune_now_). A stale value here can
-// only mis-size a guard that does not bind; it cannot mis-place a wall.
-//
-// One plan per width (power_tables.h) is the WHOLE of mabur's power
-// policy: bring-up programs the start width's plan with the global offset
-// zeroed beside it, and the live table swaps to the other width's plan
-// when a rung crosses to that width (maburd/real_actuator.cpp, LivePowerTable). A
-// RADIO_WALL_MARGN set rebuilds both plans and writes the live one. A
-// calibration apply only records the new plans: the run's capacity sweep
-// programs its width's plan, and the run's end programs the rung's. Nothing
-// else moves power.
+// One plan per measured (channel, width) (power_tables.h) is the WHOLE of
+// mabur's power policy: bring-up programs the start channel and width's
+// plan with the global offset zeroed beside it, and the live table
+// (LivePowerTable) swaps plans when a rung crosses to the other width and
+// on every retune. A RADIO_WALL_MARGN or RADIO_LDPC set rebuilds every plan
+// and writes the live one. A wall measurement only records the new plans:
+// the run's end programs the link's. Nothing else moves power.
 struct PowerPlan {
   int8_t cck;
   int8_t legacy;
   int8_t mcs[8];
 };
 
-// margin_steps (the dB->index-step conversion) moved to mabur/cal_park.h so
-// the GS's verify-cell prediction (gs/src/cal_plan.cpp) can share it.
+// margin_steps (the dB->index-step conversion) is in mabur/cal_park.h.
 
 inline PowerPlan make_power_plan(const std::array<int, 8>& walls_rel,
                                   int legacy_wall_rel, double margin_db,

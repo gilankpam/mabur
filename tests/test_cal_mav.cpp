@@ -25,60 +25,60 @@ std::optional<mavlink_message_t> parse_one(const std::vector<uint8_t>& bytes) {
   return out;
 }
 
+template <typename T>
+T round_trip(const T& m) {
+  auto out = parse_one(encode(CalMsg{m}, kSysId, kCompId, kChanGsLocal));
+  REQUIRE(out.has_value());
+  auto decoded = decode(*out);
+  REQUIRE(decoded.has_value());
+  auto* got = std::get_if<T>(&*decoded);
+  REQUIRE(got != nullptr);
+  return *got;
+}
+
 }  // namespace
 
+// Every field set to a value distinct from its default and from the other
+// fields, so a field dropped, swapped or mis-typed on either side reads back
+// wrong.
 TEST(every_message_round_trips) {
   {
     SweepCmd c;
     c.nonce = 0xDEADBEEF;
     c.seq = 7;
-    c.kind = Kind::Capacity;
+    c.kind = Kind::Wall;
     c.bw = 40;
-    c.frames_per_cell = 20;
-    c.settle_ms = 5;
-    c.gap_us = 1000;
-    c.dwell_ms = 2000;
-    c.idx_lo = -41;
-    c.idx_hi = 63;
+    c.channel = 112;
+    c.settle_ms = 55;
+    c.dwell_ms = 2100;
     c.mcs_mask = 0x3C;
-    auto bytes = encode(CalMsg{c}, kSysId, kCompId, kChanGsLocal);
-    auto out = parse_one(bytes);
-    REQUIRE(out.has_value());
-    auto decoded = decode(*out);
-    REQUIRE(decoded.has_value());
-    auto* got = std::get_if<SweepCmd>(&*decoded);
-    REQUIRE(got != nullptr);
-    CHECK(got->nonce == c.nonce);
-    CHECK(got->seq == c.seq);
-    CHECK(got->kind == c.kind);
-    CHECK(got->bw == c.bw);
-    CHECK(got->frames_per_cell == c.frames_per_cell);
-    CHECK(got->settle_ms == c.settle_ms);
-    CHECK(got->gap_us == c.gap_us);
-    CHECK(got->dwell_ms == c.dwell_ms);
-    CHECK(got->idx_lo == c.idx_lo);
-    CHECK(got->idx_hi == c.idx_hi);
-    CHECK(got->mcs_mask == c.mcs_mask);
+    const auto got = round_trip(c);
+    CHECK(got.nonce == c.nonce);
+    CHECK(got.seq == c.seq);
+    CHECK(got.kind == Kind::Wall);
+    CHECK(got.bw == c.bw);
+    CHECK(got.channel == 112);
+    CHECK(got.settle_ms == c.settle_ms);
+    CHECK(got.dwell_ms == c.dwell_ms);
+    CHECK(got.mcs_mask == c.mcs_mask);
+    c.kind = Kind::Capacity;
+    CHECK(round_trip(c).kind == Kind::Capacity);
   }
   {
     SweepAck a;
     a.nonce = 0x1234;
     a.seq = 3;
-    a.result = AckResult::Busy;
+    a.result = AckResult::BadWidth;
     a.start_in_ms = 500;
     a.flags = kFlagLdpc | kFlagStbc;
-    auto bytes = encode(CalMsg{a}, kSysId, kCompId, kChanGsLocal);
-    auto out = parse_one(bytes);
-    REQUIRE(out.has_value());
-    auto decoded = decode(*out);
-    REQUIRE(decoded.has_value());
-    auto* got = std::get_if<SweepAck>(&*decoded);
-    REQUIRE(got != nullptr);
-    CHECK(got->nonce == a.nonce);
-    CHECK(got->seq == a.seq);
-    CHECK(got->result == a.result);
-    CHECK(got->start_in_ms == a.start_in_ms);
-    CHECK(got->flags == a.flags);
+    const auto got = round_trip(a);
+    CHECK(got.nonce == a.nonce);
+    CHECK(got.seq == a.seq);
+    CHECK(got.result == AckResult::BadWidth);
+    CHECK(got.start_in_ms == a.start_in_ms);
+    CHECK(got.flags == a.flags);
+    a.result = AckResult::BadChannel;
+    CHECK(round_trip(a).result == AckResult::BadChannel);
   }
   {
     SweepDone d;
@@ -88,45 +88,35 @@ TEST(every_message_round_trips) {
       d.offered[i] = static_cast<uint32_t>(1000 + i);
       d.blocked_pct[i] = static_cast<uint8_t>(i * 10);
     }
-    auto bytes = encode(CalMsg{d}, kSysId, kCompId, kChanGsLocal);
-    auto out = parse_one(bytes);
-    REQUIRE(out.has_value());
-    auto decoded = decode(*out);
-    REQUIRE(decoded.has_value());
-    auto* got = std::get_if<SweepDone>(&*decoded);
-    REQUIRE(got != nullptr);
-    CHECK(got->nonce == d.nonce);
-    CHECK(got->seq == d.seq);
-    CHECK(got->offered == d.offered);
-    CHECK(got->blocked_pct == d.blocked_pct);
+    d.wall_result = WallResult::FloorTooHigh;
+    d.channel = 112;
+    d.bw = 40;
+    d.walls = {63, 63, 63, 63, 44, 26, 24, -20};
+    d.floor_evm_x10 = -306;
+    d.anchor = 39;
+    const auto got = round_trip(d);
+    CHECK(got.nonce == d.nonce);
+    CHECK(got.seq == d.seq);
+    CHECK(got.offered == d.offered);
+    CHECK(got.blocked_pct == d.blocked_pct);
+    CHECK(got.wall_result == WallResult::FloorTooHigh);
+    CHECK(got.channel == 112);
+    CHECK(got.bw == 40);
+    CHECK(got.walls == d.walls);
+    CHECK(got.floor_evm_x10 == -306);
+    CHECK(got.anchor == 39);
   }
   {
     ApplyCmd a;
     a.nonce = 0x99;
     a.seq = 3;
     a.bw = 40;
-    a.has_walls = true;
-    a.has_eff = true;
-    for (size_t i = 0; i < 8; ++i) {
-      a.walls[i] = static_cast<int8_t>(-20 + i);
-      a.eff_x1000[i] = static_cast<uint16_t>(700 + i);
-    }
-    a.legacy = 17;
-    auto bytes = encode(CalMsg{a}, kSysId, kCompId, kChanGsLocal);
-    auto out = parse_one(bytes);
-    REQUIRE(out.has_value());
-    auto decoded = decode(*out);
-    REQUIRE(decoded.has_value());
-    auto* got = std::get_if<ApplyCmd>(&*decoded);
-    REQUIRE(got != nullptr);
-    CHECK(got->nonce == a.nonce);
-    CHECK(got->seq == a.seq);
-    CHECK(got->bw == a.bw);
-    CHECK(got->has_walls == a.has_walls);
-    CHECK(got->has_eff == a.has_eff);
-    CHECK(got->walls == a.walls);
-    CHECK(got->eff_x1000 == a.eff_x1000);
-    CHECK(got->legacy == a.legacy);
+    for (size_t i = 0; i < 8; ++i) a.eff_x1000[i] = static_cast<uint16_t>(700 + i);
+    const auto got = round_trip(a);
+    CHECK(got.nonce == a.nonce);
+    CHECK(got.seq == a.seq);
+    CHECK(got.bw == a.bw);
+    CHECK(got.eff_x1000 == a.eff_x1000);
   }
   {
     Applied a;

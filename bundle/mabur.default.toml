@@ -9,8 +9,6 @@
 
 [radio]
 channels = [40, 64, 112, 144]   # the channel set; same as the ground station's
-rate_walls_rel_20 = []           # not calibrated; maburcal writes the walls here
-rate_walls_rel_40 = []
 
 [link]
 key_file = "/etc/mabur.key"     # pairing key; same file on the ground station

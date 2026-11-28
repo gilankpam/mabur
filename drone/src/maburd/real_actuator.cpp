@@ -189,52 +189,65 @@ void RealActuator::retune_now_(uint8_t ch, const char* reason) {
   // Exclusive against every USB sender (DevourerSink/UsbTxPool take the
   // gate shared): FastRetune is a control-plane call and must not overlap
   // a bulk-OUT (devourer threading contract). ~2.4 ms on the 8812EU.
+  //
+  // With a power table, the whole hold runs inside its lock: the table's
+  // lock before the gate, as every other table writer takes them, so the
+  // new channel's plan goes on the chip in the same exclusive hold
+  // (retuned_in_gate) and no table write can land between the re-apply and
+  // it on the old channel's plan.
   const uint8_t from = cur;
   bool tx_power_ok = false;
-  if (retune_waiting) retune_waiting->store(true, std::memory_order_release);
-  {
-    std::unique_lock<std::shared_mutex> g(*tx_gate);
-    // A frame sent just before a retune (sink->send, synchronous) has
-    // RETURNED from send_packet but may still be sitting in the chip's TX
-    // FIFO; if FastRetune races it out, it airs on the new channel, where
-    // the GS's link card is not listening yet.
-    // Holding the gate exclusive already stops any NEW send from
-    // starting, but does nothing about a frame the chip already
-    // accepted and queued before this lock was taken; this sleep is
-    // what gives that frame time to actually leave the antenna on the
-    // old channel before FastRetune reprograms it. Once-per-move 5 ms
-    // TX stall.
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    dev->FastRetune(ch, /*cache_rf=*/true);
-    // Critical: FastRetune does NOT re-fold TX power for us at mabur's
-    // settings. devourer re-derives it inside FastRetune only on a BAND
-    // change and only when a global offset or an index override is live
-    // (RtlJaguar3Device.cpp, the `_tx_pwr_offset_steps != 0 ||
-    // _tx_pwr_override >= 0` guard); mabur runs offset 0 and override -1
-    // by design (power_plan.h: the rate-diff table IS the whole policy),
-    // so neither leg fires and the per-rate diff table keeps being added
-    // to the BOOT channel's efuse anchor after an auto-select move. The
-    // anchors differ per channel -- 39 / 53 / 57 on this unit for
-    // ch136 / 149 / 165 -- so that is up to 18 indices, 4.5 dB, of
-    // silent error in the overdriven direction on the channel the link
-    // just moved to for being quieter.
-    //
-    // ReApplyTxPower() is apply_tx_power_current(full=true) on Jaguar3:
-    // it re-reads the efuse references for the channel the chip is NOW
-    // on and rewrites the caller-supplied diffs on top of them. Inside
-    // the same exclusive tx_gate as FastRetune, because it is a
-    // control-plane register walk and must not overlap a bulk-OUT
-    // (devourer threading contract), and because a send landing between
-    // the retune and the re-apply would air at the stale anchor.
-    //
-    // FastRetune returns void (IRtlRadio.h), so there is no success to
-    // branch on: re-apply unconditionally. ReApplyTxPower() is the one
-    // that reports -- false means the chip is not brought up or a CW
-    // tone is active, i.e. the diffs are NOT sitting on this channel's
-    // anchor and the log line below is the only trace of it.
-    tx_power_ok = dev->ReApplyTxPower();
-  }
-  if (retune_waiting) retune_waiting->store(false, std::memory_order_release);
+  auto hop = [&] {
+    if (retune_waiting) retune_waiting->store(true, std::memory_order_release);
+    {
+      std::unique_lock<std::shared_mutex> g(*tx_gate);
+      // A frame sent just before a retune (sink->send, synchronous) has
+      // RETURNED from send_packet but may still be sitting in the chip's TX
+      // FIFO; if FastRetune races it out, it airs on the new channel, where
+      // the GS's link card is not listening yet.
+      // Holding the gate exclusive already stops any NEW send from
+      // starting, but does nothing about a frame the chip already
+      // accepted and queued before this lock was taken; this sleep is
+      // what gives that frame time to actually leave the antenna on the
+      // old channel before FastRetune reprograms it. Once-per-move 5 ms
+      // TX stall.
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      dev->FastRetune(ch, /*cache_rf=*/true);
+      // Critical: FastRetune does NOT re-fold TX power for us at mabur's
+      // settings. devourer re-derives it inside FastRetune only on a BAND
+      // change and only when a global offset or an index override is live
+      // (RtlJaguar3Device.cpp, the `_tx_pwr_offset_steps != 0 ||
+      // _tx_pwr_override >= 0` guard); mabur runs offset 0 and override -1
+      // by design (power_plan.h: the rate-diff table IS the whole policy),
+      // so neither leg fires and the per-rate diff table keeps being added
+      // to the BOOT channel's efuse anchor after an auto-select move. The
+      // anchors differ per channel -- 39 / 53 / 57 on this unit for
+      // ch136 / 149 / 165 -- so that is up to 18 indices, 4.5 dB, of
+      // silent error in the overdriven direction on the channel the link
+      // just moved to for being quieter.
+      //
+      // ReApplyTxPower() is apply_tx_power_current(full=true) on Jaguar3:
+      // it re-reads the efuse references for the channel the chip is NOW
+      // on and rewrites the caller-supplied diffs on top of them. Inside
+      // the same exclusive tx_gate as FastRetune, because it is a
+      // control-plane register walk and must not overlap a bulk-OUT
+      // (devourer threading contract), and because a send landing between
+      // the retune and the re-apply would air at the stale anchor.
+      //
+      // FastRetune returns void (IRtlRadio.h), so there is no success to
+      // branch on: re-apply unconditionally. ReApplyTxPower() is the one
+      // that reports -- false means the chip is not brought up or a CW
+      // tone is active, i.e. the diffs are NOT sitting on this channel's
+      // anchor and the log line below is the only trace of it.
+      tx_power_ok = dev->ReApplyTxPower();
+      if (power_table) power_table->retuned_in_gate(ch);
+    }
+    if (retune_waiting) retune_waiting->store(false, std::memory_order_release);
+  };
+  if (power_table)
+    power_table->with_lock(hop);
+  else
+    hop();
   if (retune_seq) retune_seq->fetch_add(1, std::memory_order_relaxed);
   cur = ch;
   std::fprintf(stderr, "maburd: retune %u -> %u (%s)\n", static_cast<unsigned>(from),

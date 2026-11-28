@@ -58,7 +58,7 @@ Sizes are the RC body: prefix through CRC, without the 802.11 header or FCS.
 ### Version gating
 
 - `rc::frame_type()` returns a frame's type only when its version byte is
-  our `RC_VERSION` (19), else -1. Every **non-frozen** type is read through
+  our `RC_VERSION` (20), else -1. Every **non-frozen** type is read through
   it, so an RCF, NACK or Telem from another version is dropped.
 - `rc::frozen_type()` returns the type of DISC, DISC_ACK, `T_MAV` and
   `T_MAV_UP` at **any** version byte. Their parsers never read the version.
@@ -333,7 +333,7 @@ The GS treats caps as unknown until the first Telem of a session
 
 ## Versions: who can talk to whom
 
-`RC_VERSION` (`common/include/mabur/rc_proto.h`, currently 19) is the wire
+`RC_VERSION` (`common/include/mabur/rc_proto.h`, currently 20) is the wire
 version. It is not the release version (`v0.MINOR.PATCH`,
 `docs/releases.md`). Any `RC_VERSION` bump or `CAP_*` change is a minor
 release.

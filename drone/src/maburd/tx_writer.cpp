@@ -12,11 +12,14 @@
 #include <thread>
 #include <vector>
 
+#include <unistd.h>
+
 #include "cal_link.h"
 #include "cal_sweep.h"
 #include "mav_component.h"
 #include "mabur/cal_mav.h"
 #include "real_mode.h"
+#include "wall_ctl.h"
 #include "SignalStop.h"
 #include "q_wait.h"
 #include "window_stat.h"
@@ -62,8 +65,8 @@ struct DevicePowerCtl : CalSweep::PowerCtl {
   }
   bool zero_rate_diffs() override {
     // A table of zeros is a no-op at the anchor rate (MCS7) and flattens
-    // every other rate onto it (devourer/src/TxPower.h) — exactly "every
-    // rate measures against a common base" (cal_sweep.h constraint 2).
+    // every other rate onto it (devourer/src/TxPower.h), so the anchor
+    // reads as the chip's own reference.
     await_retune_gate(gate_waiting);
     std::shared_lock<std::shared_mutex> sg;
     if (gate) sg = std::shared_lock<std::shared_mutex>(*gate);
@@ -71,8 +74,7 @@ struct DevicePowerCtl : CalSweep::PowerCtl {
   }
   int read_anchor_idx() override {
     // mcs7_index with diffs zeroed is the chip's own reference level for
-    // the anchor rate -- the anchor the sweep programs each relative
-    // cell against (cal_sweep.h). GetTxPowerState().valid stays false on
+    // the anchor rate (cal_sweep.h). GetTxPowerState().valid stays false on
     // chips this knob doesn't support; -1 means "unreadable" and the
     // caller refuses the session rather than sweeping against a made-up
     // anchor.
@@ -201,6 +203,7 @@ void tx_writer_loop(RealMode& m) {
   cap.gate_waiting = &m.retune_waiting;
   cap.ampdu = m.cfg.ampdu;
   cap.ldpc = cal_ldpc;
+  DeviceWallCtl wall(m);
   // One drone->GS calibration message (ack, done, applied) as its own
   // tagged T_MAV_UP frame on the control path: the shared uplink counter
   // and dot11 sequence, the mutex-guarded dev_sink.send(). Sent whatever
@@ -210,6 +213,9 @@ void tx_writer_loop(RealMode& m) {
   // SweepDone take_done() yields (it repeats until the GS moves on).
   ControlRadiotap cal_radiotap = m.make_control_radiotap();
   auto send_cal = [&](const cal::CalMsg& msg) {
+    // Nothing airs during a wall measurement (a repeat SWEEP's re-ack
+    // included): the sink would drop it anyway, so it takes no counter.
+    if (m.radio_quiet.load(std::memory_order_acquire)) return;
     auto ctx = m.agent.uplink_ctx(/*cal_reply=*/true);
     if (!ctx) {
       m.mav_up_nopair.fetch_add(1, std::memory_order_relaxed);
@@ -230,9 +236,9 @@ void tx_writer_loop(RealMode& m) {
     m.mav_tx_frames.fetch_add(1, std::memory_order_relaxed);
     m.mav_tx_packets.fetch_add(1, std::memory_order_relaxed);
   };
-  // Power and verify frames fly alone, one per PPDU, so each stamped
-  // frame's delivery is its own (AmpduMode{} is aggregation off). Under
-  // the power table's lock (see LivePowerTable::unless_cal) and tx_gate
+  // A Wall sweep starts with aggregation off (AmpduMode{}): the
+  // measurement's frames fly alone, one per PPDU. Under the power table's
+  // lock (see LivePowerTable::unless_cal) and tx_gate
   // like every device call on this thread; the agent puts the rung's mode
   // back on the cal_active falling edge (RealActuator::on_cal_end).
   auto cal_no_agg = [&]() {
@@ -244,8 +250,8 @@ void tx_writer_loop(RealMode& m) {
     });
   };
   // Re-reads the config from disk -- not the bring-up `cfg` -- so one path
-  // covers "the run applied new walls" (the file holds them) and "the run
-  // never applied" (the file is unchanged, so this reproduces bring-up).
+  // covers "the run applied" (the file holds it) and "the run never
+  // applied" (the file is unchanged, so this reproduces bring-up).
   auto reload_config = [&]() {
     try {
       return load_config(m.cfg_path, nullptr);
@@ -255,13 +261,14 @@ void tx_writer_loop(RealMode& m) {
       return m.cfg;
     }
   };
+  wall.reload_config = reload_config;
   // The run's end, however it ended (done, abort, a deadline, a refusal):
   // close_session() only parks the flat override at the anchor and never
-  // restores the diffs a power sweep zeroed, so left alone the drone would
-  // fly ONE flat index across every rate until restart -- after an aborted
-  // run, every rate below the anchor above its measured wall. This puts
-  // the current rung's width's plan (or the chip's own table under
-  // power_mode "none") back and only then clears the override, in one
+  // restores the diffs a new run zeroed, so left alone the drone would fly
+  // ONE flat index across every rate until restart -- every rate below the
+  // anchor above its measured wall. This puts the link channel's plan for
+  // the current rung's width (or the chip's own table where there is none)
+  // back and only then clears the override, in one
   // tx_gate hold: while the override is live it masks the diffs, so the
   // right table is on the air the moment the override goes, with no window
   // of "no override, zeroed diffs". The config read stays outside the lock
@@ -275,26 +282,20 @@ void tx_writer_loop(RealMode& m) {
       std::fprintf(stderr, "maburd cal: SetTxPowerRateDiffs failed restoring after the run\n");
   };
   // An ApplyCmd drained from the engine: validate/patch/publish this
-  // width's walls and/or efficiency (cal_apply.h), answer APPLIED, and for
-  // walls arm the verify sweep the GS expects but never commands. The new
-  // plans are only recorded here, not programmed: verify parks each rate
-  // with the flat override over zeroed diffs, a following capacity sweep
+  // width's efficiency (cal_apply.h) and answer APPLIED. The plans are
+  // only recorded here, not programmed: a following capacity sweep
   // programs its width's plan when it is accepted, and the run's restore
-  // programs the rung's. The live margin is the one apply_calibration
-  // validates with and the one the parks subtract -- the GS derives the
-  // same parks from the same walls and margin.
+  // programs the link's.
   CalApplyLedger apply_ledger;
-  auto apply_and_arm_verify = [&](const cal::ApplyCmd& a) {
-    const double margin_db = m.live_wall_margin.load();
-    const CalWrite w = cal_write_for(a, cal_sweep.stamp_flags());
-    std::string err, note;
+  auto apply_eff = [&](const cal::ApplyCmd& a) {
+    std::string err;
     ApplyResult ar;
     {
       // Held across the write and the applier's notice, so its next apply
       // re-reads the calibrated file rather than racing this write.
       auto lk = lock_config_writes();
-      ar = apply_calibration(m.cfg_path, w, margin_db, apply_ledger.want_backup(a.nonce), &err,
-                             &note);
+      ar = apply_calibration(m.cfg_path, cal_write_for(a), apply_ledger.want_backup(a.nonce),
+                             &err);
       if (ar == ApplyResult::Ok) m.applier.note_file_rewritten_externally();
     }
     cal::Applied out;
@@ -303,12 +304,8 @@ void tx_writer_loop(RealMode& m) {
     out.bw = a.bw;
     out.ok = ar == ApplyResult::Ok;
     if (out.ok) {
-      // An ok apply that kept something the GS did not send says so.
-      out.reason = note.substr(0, 49);
-      m.power_table.set_plans(m.plans_for(reload_config().radio, margin_db));
-      std::fprintf(stderr, "maburd cal: applied %u MHz%s%s%s%s\n", static_cast<unsigned>(a.bw),
-                   a.has_walls ? " walls" : "", a.has_eff ? " efficiency" : "",
-                   note.empty() ? "" : " -- ", note.c_str());
+      m.power_table.set_plans(m.plans_for(reload_config().radio, m.live_wall_margin.load()));
+      std::fprintf(stderr, "maburd cal: applied %u MHz efficiency\n", static_cast<unsigned>(a.bw));
     } else {
       out.reason = loader_reason(err).substr(0, 49);
       std::fprintf(stderr, "maburd cal: apply %u MHz refused: %s\n", static_cast<unsigned>(a.bw),
@@ -316,10 +313,30 @@ void tx_writer_loop(RealMode& m) {
     }
     apply_ledger.record(out);
     send_cal(out);
-    if (out.ok && a.has_walls) {
-      cal_no_agg();
-      cal_sweep.arm_verify(verify_parks(a, margin_db), a.bw, now_steady_ms());
+  };
+  // A measurement whose capture session failed to restore the radio leaves
+  // it in an unknown state (TX may be wedged, the chains or the TX buffer
+  // layout not flight's). The writer keeps the run's repeats going for up
+  // to 1 s, so the DeviceError report gets its chance to air, and then
+  // maburd exits for the wrapper to respawn it: bring-up lays the whole
+  // radio state down again. Commands arriving meanwhile are left unread.
+  // _exit, as for every fault exit here: destructors must not run on a
+  // live multi-threaded process.
+  auto exit_if_radio_untrusted = [&]() {
+    if (!wall.radio_untrusted()) return;
+    std::fprintf(stderr,
+                 "maburd cal: ERROR: the wall measurement could not restore the radio; "
+                 "exiting for wrapper respawn to bring it up again\n");
+    const uint64_t t_end = now_steady_ms() + 1000;
+    for (uint64_t now = now_steady_ms(); now < t_end; now = now_steady_ms()) {
+      // Never into a sweep that superseded the failed one: nothing more
+      // is started on this radio.
+      if (cal_sweep.state() != CalSweep::State::Sweeping) cal_sweep.pump(now, pwr, cap, wall);
+      if (auto d = cal_sweep.take_done()) send_cal(*d);
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
+    std::fflush(stderr);
+    _exit(3);
   };
   bool cal_was_active = false;  // edge-detect: session start -> drain txq once
   CalRestoreOwed restore_owed;  // see cal_link.h
@@ -359,17 +376,22 @@ void tx_writer_loop(RealMode& m) {
           ++cal_latch_drops;
           continue;
         }
-        const bool starting = cal_sweep.starts_sweep(*c);
+        // A Wall command check() refuses changes nothing: no cal_active, no
+        // epoch, no device touch, aggregation left as it is. check() writes
+        // nothing, so on_cmd() asking it again is harmless.
+        const bool starting =
+            cal_sweep.starts_sweep(*c) &&
+            (c->kind != cal::Kind::Wall || wall.check(c->channel, c->bw) == cal::AckResult::Accepted);
         if (starting) {
           // cal_active up first, under the power table's lock (see
           // LivePowerTable), and the restore owed from here on; then
-          // aggregation off for every kind but capacity, whose points
-          // program the production mode themselves.
+          // aggregation off for a Wall sweep (capacity points program the
+          // production mode themselves).
           m.power_table.begin_cal();
           restore_owed.note_device_touched();
           if (c->kind != cal::Kind::Capacity) cal_no_agg();
         }
-        cal_sweep.on_cmd(*c, cal_now, pwr);
+        cal_sweep.on_cmd(*c, cal_now, pwr, wall);
         const auto ack = cal_sweep.take_ack();
         // An accepted capacity sweep flies this width's production power
         // table: programmed only after on_cmd() accepted it, since a new
@@ -379,7 +401,7 @@ void tx_writer_loop(RealMode& m) {
             ack->result == cal::AckResult::Accepted)
           m.power_table.program_for_cal(c->bw);
         // The ack goes out HERE -- before this thread pumps the sweep the
-        // command touched, whose first cell waits 200 ms for it -- on every
+        // command touched, which waits 200 ms for it -- on every
         // accepted command, an exact repeat included: the GS resends its
         // SWEEP every 200 ms into a lossy uplink, and one lost ack must not
         // cost the sweep.
@@ -400,12 +422,14 @@ void tx_writer_loop(RealMode& m) {
         else
           cal_sweep.on_apply(*ap, cal_now);
       } else if (const auto* ab = std::get_if<cal::Abort>(&in.msg)) {
-        cal_sweep.on_abort(*ab, cal_now, pwr);
+        cal_sweep.on_abort(*ab, cal_now, pwr, wall);
       }
       // SweepAck, SweepDone and Applied travel drone -> GS only.
     }
+    // An abort or a superseding SWEEP may have just cancelled a measurement.
+    exit_if_radio_untrusted();
 
-    if (auto a = cal_sweep.take_pending_apply()) apply_and_arm_verify(*a);
+    if (auto a = cal_sweep.take_pending_apply()) apply_eff(*a);
 
     m.cal_active.store(cal_sweep.active(), std::memory_order_relaxed);
     m.cal_sweeping.store(cal_sweep.state() == CalSweep::State::Sweeping,
@@ -414,22 +438,22 @@ void tx_writer_loop(RealMode& m) {
     if (cal_sweep.active()) {
       // Video quiesce: the hot thread has already stopped pushing (its own
       // cal_active guard, above), but bodies queued before this exact
-      // moment must not trickle out mixed with sweep frames — drain once,
+      // moment must not trickle out mixed with the sweep — drain once,
       // on the session's very first iteration here.
       if (!cal_was_active) m.txq.drain();
       cal_was_active = true;
-      cal_sweep.pump(now_steady_ms(), m.tx, pwr, cap);
+      cal_sweep.pump(now_steady_ms(), pwr, cap, wall);
       if (auto d = cal_sweep.take_done()) send_cal(*d);
+      exit_if_radio_untrusted();
       // The one blocking wait this loop has is txq.pop_batch(.., 5) at
       // the bottom, which a calibration session never reaches -- and
-      // pump() returns immediately whenever the current cell is still
-      // settling or the next frame is not due yet. Without this sleep
-      // the writer thread spins one of the SigmaStar's two cores at
-      // 100% for the length of a run, on a SoC with a documented
-      // thermal incident (flight 21, 81 C). 200 us is a fifth of the
-      // sweep's 1 ms inter-frame gap, and CalSweep's pacing is
-      // deadline-based (cal_sweep.cpp), so a late wake does not
-      // accumulate into the sweep's duration.
+      // pump() returns immediately whenever the sweep is waiting on its
+      // start delay or a point is still settling. Without this sleep the
+      // writer thread spins one of the SigmaStar's two cores at 100% for
+      // the length of a run, on a SoC with a documented thermal incident
+      // (flight 21, 81 C). CalSweep's waits are deadline-based
+      // (cal_sweep.cpp), so a 200 us late wake does not accumulate into
+      // the sweep's duration.
       std::this_thread::sleep_for(std::chrono::microseconds(200));
       continue;  // never fall through to the video drain below
     }
@@ -502,5 +526,7 @@ void tx_writer_loop(RealMode& m) {
     sb.add(sb_dt);
     sb_bodies += batch.size();
   }
+  // A Wall measurement open when the daemon stops puts the radio back.
+  wall.cancel();
 }
 }  // namespace mabur::maburd

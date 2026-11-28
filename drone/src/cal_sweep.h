@@ -1,27 +1,26 @@
 #pragma once
 // Drone-side calibration sweep state machine (docs/calibration.md).
 //
-// Walks the cells one GS-commanded SweepCmd describes -- a (kind, width)
-// at a time -- stamping every Power/Verify frame it sends with the cell it
-// was sent in so the GS can attribute delivery back to that cell with no
-// clock sync and no sequence negotiation (mabur/cal_wire.h's header comment
-// has the why). Capacity cells instead run one production-sized blast per
-// MCS and report what the owner's CapacityCtl measured.
+// Runs the sweeps of a GS-commanded run one SweepCmd -- a (kind, width) --
+// at a time: a Capacity sweep runs one production-sized blast per MCS and
+// reports what the owner's CapacityCtl measured; a Wall sweep drives the
+// owner's WallCtl, which measures the walls on the drone itself, and
+// reports what it found.
 //
 // Three constraints shape this class:
 //
-//   1. It owns no thread. RadioTx::send_body is single-caller by contract
-//      (drone/src/radio_tx.h) -- its scratch buffer is not thread-safe --
-//      and the TX writer thread (drone/src/maburd/tx_writer.cpp) is its sole legal
-//      caller. pump() is meant to be called FROM that thread once the
-//      TxQueue is quiesced; this class never spawns anything of its own.
-//      A Capacity point's blast() call is allowed to block pump() for the
-//      whole dwell -- that thread is the one legal driver of the device,
-//      so there is no other thread for it to block.
+//   1. It owns no thread. RadioTx is single-caller by contract
+//      (drone/src/radio_tx.h) and the TX writer thread
+//      (drone/src/maburd/tx_writer.cpp) is its sole legal caller. pump()
+//      is meant to be called FROM that thread once the TxQueue is
+//      quiesced; this class never spawns anything of its own. A Capacity
+//      point's blast() call is allowed to block pump() for the whole
+//      dwell -- that thread is the one legal driver of the device, so
+//      there is no other thread for it to block.
 //   2. Every non-Idle state carries a deadline. Losing the link mid-run is
-//      the expected case, not an error -- a sweep deliberately walks into
-//      indices where nothing decodes, and the GS is deliberately silent
-//      for most of a run. pump() checks the run-wide deadline before
+//      the expected case, not an error -- a capacity point deliberately
+//      saturates the air, and the GS is deliberately silent for most of a
+//      run. pump() checks the run-wide deadline before
 //      anything else, so the drone always finds its way back to Idle with
 //      power restored, GS or no GS.
 //   3. Idempotent by (nonce, seq), monotonically. The uplink loses
@@ -30,8 +29,8 @@
 //      or behind the one already accepted -- a repeat of the sweep
 //      running now, or a late duplicate of an EARLIER sweep arriving
 //      after the run has moved on -- must be ignored or re-acked, not
-//      restarted: restarting would re-zero the cell cursor and throw away
-//      partial progress.
+//      restarted: restarting would reset the point cursor (or reopen a
+//      measurement) and throw away partial progress.
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -41,22 +40,19 @@
 #include "mabur/cal_proto.h"
 #include "mabur/cal_wire.h"
 #include "mabur/profile.h"
-#include "radio_tx.h"
 
 namespace mabur {
 
 struct CalSweepCfg {
   // Absolute ceiling on one calibration run (every kind/width sweep of one
-  // nonce combined -- Power, its Verify, and any Capacity sweeps that
-  // follow), from the first accepted SweepCmd. The backstop for "the GS
+  // nonce combined), from the first accepted SweepCmd. The backstop for "the GS
   // never speaks again" -- see constraint 2.
   uint32_t hard_cap_ms = 180000;
-  // How long to wait for the next run event -- the next SweepCmd, an
-  // on_apply, or (once an apply is drained) the arm_verify it should
-  // trigger -- before giving up on the run and restoring power on its
+  // How long to wait for the next run event -- the next SweepCmd or an
+  // on_apply -- before giving up on the run and restoring power on its
   // own. Re-armed fresh at each of those events.
   uint32_t await_next_ms = 15000;
-  // radio.ldpc: whether Power/Verify/Capacity frames fly LDPC. STBC is
+  // radio.ldpc: whether Capacity frames fly LDPC. STBC is
   // always on (an RTL8821AU GS ground card decodes STBC but not every
   // chip's HT-LDPC at every rate, which is exactly what calibration is
   // measuring for -- so the sweep rides whatever the operator has chosen
@@ -64,8 +60,7 @@ struct CalSweepCfg {
   bool ldpc = true;
   // Capacity frame body size -- the production A-MPDU payload
   // (13 + bpb*(16 + symbol_size) from [fec]) -- so a Capacity point
-  // measures throughput at the size real video frames actually fly at,
-  // not the fixed 64-byte Power/Verify stamp.
+  // measures throughput at the size real video frames actually fly at.
   size_t capacity_frame_len = 1405;
 };
 
@@ -78,30 +73,22 @@ struct BlastResult {
   uint8_t blocked_pct = 0;
 };
 
-// Sweeps the cells of one SweepCmd at a time -- Power, Verify (armed
-// directly by the owner after an apply, not over the wire) or Capacity --
-// and reports the stamped delivery frames or the measured capacity back,
-// then hands off a matching ApplyCmd (once one arrives) for the owner to
-// apply. Not thread-safe; on_cmd/on_apply/on_abort/pump/arm_verify are all
-// meant to be called from the same thread that owns the RadioTx passed to
-// pump() (see the file header).
+// Runs one SweepCmd at a time -- Capacity or Wall -- and reports the
+// result back, then hands off a matching ApplyCmd (once one arrives) for
+// the owner to apply. Not thread-safe; on_cmd/on_apply/on_abort/pump are
+// all meant to be called from the TX writer thread (see the file header).
 //
-// Every Power/Verify cell is SIGNED and RELATIVE to the chip's own TXAGC
-// anchor -- the wire never carries an absolute index, on the command in,
-// the stamped sweep frame, or the ack out. The anchor itself is read once
-// per run (read_anchor_idx(), below) and stays entirely drone-internal: it
-// is what pwr.set_index_override() is programmed against
-// (clamp(anchor_idx_ + rel, 0, 127)) and what close_session() restores,
-// but it is never reported to the GS.
+// The chip's TXAGC anchor is read once per run (read_anchor_idx(), below)
+// and stays drone-internal: it is what close_session() parks the override
+// at, and what a Capacity sweep restores the override to on acceptance.
 class CalSweep {
  public:
   enum class State { Idle, Sweeping, Applying };
 
   // Test/production seam for the three knobs this class needs from the
-  // drone's real power path (drone/src/power_plan.h in production):
-  // parking the TXAGC index at a candidate cell, zeroing the
-  // wall-equalized per-rate diff table so every rate is swept from the
-  // same anchor, and reading that anchor back.
+  // drone's real power path (drone/src/power_plan.h in production): the
+  // flat TXAGC override, zeroing the per-rate diff table so the anchor
+  // reads clean, and reading that anchor back.
   struct PowerCtl {
     virtual ~PowerCtl() = default;
     virtual bool set_index_override(int idx) = 0;
@@ -124,52 +111,64 @@ class CalSweep {
     virtual BlastResult blast(const uint8_t* frame, size_t len, uint32_t dwell_ms) = 0;
   };
 
+  // Test/production seam for a Wall sweep, owned by the TX writer thread
+  // like the other two. pump() calls start() once the start delay has
+  // passed, then step() once per pump until it returns false, then
+  // finish(); any path that abandons a started measurement calls cancel().
+  struct WallCtl {
+    virtual ~WallCtl() = default;
+    // Accepted, or why not. Writes nothing to the device.
+    virtual cal::AckResult check(uint8_t channel, uint8_t bw) = 0;
+    // Takes the radio to the channel and width and opens the measurement.
+    virtual void start(uint8_t channel, uint8_t bw, uint64_t now_ms) = 0;
+    virtual bool step(uint64_t now_ms) = 0;  // false once the measurement has finished
+    // Puts the radio back, stores a valid result, and returns the wall fields of the report.
+    virtual cal::SweepDone finish() = 0;
+    // Puts the radio back and stores nothing. Safe when nothing is open.
+    virtual void cancel() = 0;
+  };
+
   explicit CalSweep(CalSweepCfg cfg) : cfg_(cfg) {}
 
-  // Accepts a sweep command (Power or Capacity -- Verify never arrives
-  // this way, see arm_verify). A brand-new nonce starts a fresh run
-  // (state -> Sweeping, cell cursor reset, the chip's anchor captured
-  // right here, synchronously), UNLESS that nonce is the one this engine
-  // just closed (hard cap, abort, or the await timeout) -- a straggler or
-  // a GS resend of an already-closed nonce is ignored outright, with no
-  // ack, so a closed run can never reopen and hard_cap_ms keeps bounding
-  // the run it was armed for. A chip that cannot report its anchor right
-  // now (read_anchor_idx() < 0) cannot place a single relative cell: the
-  // command is refused with AckResult::AnchorUnreadable rather than
-  // silently dropped, so the GS does not have to infer the refusal from a
-  // timeout. A table that would not zero (zero_rate_diffs() false) is
-  // refused the same way, before any read -- for a later power sweep of
-  // the run too, which then closes the run. A seq strictly BEHIND the one already accepted for this
+  // Accepts a sweep command (Capacity or Wall). A brand-new nonce starts
+  // a fresh run (state -> Sweeping, the chip's anchor captured right here,
+  // synchronously), UNLESS that nonce is the one this engine just closed
+  // (hard cap, abort, or the await timeout) -- a straggler or a GS resend
+  // of an already-closed nonce is ignored outright, with no ack, so a
+  // closed run can never reopen and hard_cap_ms keeps bounding the run it
+  // was armed for. A seq strictly BEHIND the one already accepted for this
   // nonce -- a late duplicate of an earlier sweep -- is ignored outright
   // with no ack. An EXACT repeat of the seq already running re-arms the
   // same Accepted ack every time (the GS resends its SweepCmd into a
   // 30-50%-lossy uplink, and a single lost ack must not cost the whole
-  // sweep) without touching the cell cursor; the re-armed ack's
-  // start_in_ms reports whatever is left of the original 200 ms start
-  // delay, clamped to 0 once cells are already airing. A seq strictly
-  // AHEAD of the one already accepted (matching nonce) starts a new sweep
-  // from this command's own fields, reusing the nonce's already-captured
-  // anchor, and drops any ApplyCmd still queued from an earlier sweep of
-  // this run (take_pending_apply() would otherwise hand out a result for
-  // a sweep this new command just superseded).
+  // sweep) without touching the sweep: no second wall.check(), no restart.
+  // The re-armed ack's start_in_ms reports whatever is left of the
+  // original 200 ms start delay, clamped to 0 once the sweep is under way.
+  // An exact repeat of a sweep that has already FINISHED (its SweepDone
+  // still repeating) gets no ack: it re-queues that SweepDone for
+  // take_done(), keeps the repeat schedule, and changes nothing else.
+  //
+  // A Wall command past those filters is checked (wall.check()) before
+  // anything else: a refusal answers with that result and changes nothing
+  // -- no run opens, an open run and its running sweep go on untouched,
+  // and nothing is owed back to the power path.
   //
   // A new run zeroes the per-rate diff table before its one anchor read,
   // whatever the kind (the chip reports reference + diff while a custom
-  // table is live). Every accepted Power-kind command -- new run or a
-  // later sweep of the same run -- zeroes it again (per-rate walls must be
-  // measured against a common base every time Power runs); a later
-  // Capacity sweep of a run never zeroes. Capacity DOES restore the TXAGC
-  // override to the anchor on acceptance (a prior Power/Verify sweep of
-  // the same run may have left it parked at a swept cell); the owner then
-  // programs this width's production plan and its CapacityCtl clears the
-  // override per point, since a live override flattens the per-rate
-  // table. The anchor itself is read only once, at the run's first
-  // accepted command, regardless of kind. The
-  // first cell of any accepted sweep does not open until 200 ms after
-  // acceptance (see pump()): the ack has to have a chance to reach the GS
-  // before frames the GS is not listening for yet start using up the
-  // air.
-  void on_cmd(const cal::SweepCmd& c, uint64_t now_ms, PowerCtl& pwr);
+  // table is live). A chip that cannot report its anchor (read_anchor_idx()
+  // < 0), or a table that would not zero, refuses the command with
+  // AckResult::AnchorUnreadable rather than dropping it silently, and arms
+  // take_refused(). A seq strictly AHEAD of the one already accepted
+  // (matching nonce) starts a new sweep from this command's own fields,
+  // reusing the run's anchor, cancelling a Wall measurement still open,
+  // and dropping any ApplyCmd still queued from an earlier sweep (it is
+  // superseded). An accepted Capacity sweep restores the TXAGC override
+  // to the anchor; the owner then programs this width's production plan
+  // and its CapacityCtl clears the override per point, since a live
+  // override flattens the per-rate table. Any accepted sweep does not
+  // start until 200 ms after acceptance (see pump()): the ack has to have
+  // a chance to reach the GS first.
+  void on_cmd(const cal::SweepCmd& c, uint64_t now_ms, PowerCtl& pwr, WallCtl& wall);
 
   // Accepts an ApplyCmd for the run currently in flight. Ignored if there
   // is no open run, the nonce doesn't match, a sweep is actively
@@ -177,22 +176,22 @@ class CalSweep {
   // progress), or this exact (nonce, seq) has already been handed out by
   // take_pending_apply() -- the GS resends APPLY every 200 ms until it
   // hears back APPLIED, and a repeat landing after the owner has already
-  // applied it and armed Verify must not re-queue anything or disturb
-  // the verify sweep running. Otherwise queues it for take_pending_apply()
+  // applied it must not re-queue anything. Otherwise queues it for take_pending_apply()
   // and moves to Applying; the run stays open (close_session is not
   // called) so a silent GS still times out through the normal
   // await/hard-cap path -- checked in Applying too, not just the shared
   // hard cap.
   void on_apply(const cal::ApplyCmd& a, uint64_t now_ms);
 
-  // Cancels the run identified by `a.nonce` immediately -- the same
-  // close_session every other exit path uses, so power is restored and
-  // the run is torn down synchronously rather than waiting on a timeout.
-  // Ignored if there is no open run or the nonce doesn't match.
-  void on_abort(const cal::Abort& a, uint64_t now_ms, PowerCtl& pwr);
+  // Cancels the run identified by `a.nonce` immediately -- a started Wall
+  // measurement first (wall.cancel()), then the same close_session every
+  // other exit path uses, so power is restored and the run is torn down
+  // synchronously rather than waiting on a timeout. Ignored if there is no
+  // open run or the nonce doesn't match.
+  void on_abort(const cal::Abort& a, uint64_t now_ms, PowerCtl& pwr, WallCtl& wall);
 
-  // True while a run (any sweep, or the Idle gap between sweeps/apply/
-  // verify while awaiting the next event) is open -- i.e. before it has
+  // True while a run (any sweep, or the Idle gap between sweeps/apply
+  // while awaiting the next event) is open -- i.e. before it has
   // timed out, been aborted, or fully drained. Distinct from state(),
   // which reports the transmit sub-state rather than whether a run is in
   // flight at all.
@@ -202,55 +201,45 @@ class CalSweep {
   uint32_t run_nonce() const { return nonce_; }
 
   // True iff on_cmd(c) would start a sweep (a new run or a later seq of
-  // the open one) rather than re-ack or ignore it -- before the anchor
-  // read, which can still refuse it. The owner programs what a starting
-  // sweep needs from the device (aggregation off, a capacity width's
-  // power table) only for a command this accepts, so a GS resend landing
-  // mid-sweep never touches the device under the sweep running.
+  // the open one, of a known kind) rather than re-ack, ignore or refuse it
+  // -- before the anchor
+  // read and the wall check, which can still refuse it. The owner programs
+  // what a starting sweep needs from the device (aggregation off, a
+  // capacity width's power table) only for a command this accepts, so a
+  // GS resend landing mid-sweep never touches the device under the sweep
+  // running.
   bool starts_sweep(const cal::SweepCmd& c) const;
 
-  // Advances the sweep by one unit of work: entering a cell, sending one
-  // frame (Power/Verify) or running one Capacity point, or ending a
+  // Advances the sweep by one unit of work: entering or running one
+  // Capacity point, starting or stepping a Wall measurement, or ending a
   // sweep/run. Checks the run-wide deadline first (constraint 2) so a
-  // silent GS can never leave the drone parked mid-sweep. Must be called
-  // from RadioTx's single legal caller thread (constraint 1); a Capacity
-  // point's cap.blast() call may occupy this call for its whole dwell.
-  void pump(uint64_t now_ms, RadioTx& tx, PowerCtl& pwr, CapacityCtl& cap);
-
-  // Arms a Verify sweep directly -- not over the wire -- for the owner to
-  // call once it has applied an ApplyCmd it drained from
-  // take_pending_apply(). A no-op when there is no open run, or when a
-  // Power/Capacity sweep is actively Sweeping (verify only ever follows a
-  // drained apply, never interrupts a sweep in progress). Walks exactly
-  // one cell per MCS, at the parked relative index `park_rel[mcs]`
-  // (kWallLeave skips that MCS: nothing was measured, or the GS left the
-  // file's existing wall alone), at `bw`. There is no per-sweep plan from
-  // the wire to copy pacing from, so the cells run at the same
-  // frames-per-cell/settle/gap the protocol's own SweepCmd defaults use
-  // (20 frames, 5 ms settle, 1 ms gap) -- see cal_sweep.cpp. Never zeroes
-  // the diff table and never touches PowerCtl itself (the per-cell index
-  // override, like every Power/Verify cell, is programmed inside pump()).
-  // Like on_cmd's sweeps, the first cell does not open until 200 ms after
-  // this call. A Verify sweep emits no SweepDone -- the GS times its own
-  // verify window -- so take_done() never arms for it.
-  void arm_verify(const std::array<int, 8>& park_rel, uint8_t bw, uint64_t now_ms);
+  // silent GS can never leave the drone mid-sweep; a started Wall
+  // measurement is cancelled before the run closes there. Once a Wall
+  // sweep's start delay has passed, the first pump only calls
+  // wall.start(); every later one calls wall.step(), and the pump that
+  // sees it return false reports wall.finish() with nonce and seq filled
+  // in. Must be called from the TX writer thread (constraint 1); a
+  // Capacity point's cap.blast() call may occupy this call for its whole
+  // dwell.
+  void pump(uint64_t now_ms, PowerCtl& pwr, CapacityCtl& cap, WallCtl& wall);
 
   // Drains the ack on_cmd() armed: Accepted for a new or repeated sweep,
-  // AnchorUnreadable for a refused one. Nullopt for a call that accepted
-  // nothing at all -- a stale repeat of an EARLIER seq.
+  // the refusal's result for a refused one. Nullopt for a call that
+  // answered nothing at all -- a stale repeat of an EARLIER seq, or a
+  // closed nonce.
   std::optional<cal::SweepAck> take_ack();
 
-  // Drains the finished sweep's per-cell results, for a Power or Capacity
-  // sweep (never for Verify -- see arm_verify). Armed the instant the last
-  // cell's work is done, inside pump(), and re-armed by pump()
+  // Drains the finished sweep's report, Capacity or Wall. Armed the
+  // instant the sweep's work is done, inside pump(), and re-armed by pump()
   // kDoneFirstRepeatMs later and every kDoneRepeatMs after that while the
-  // run waits: SweepDone rides a lossy downlink, and a capacity sweep
-  // whose SweepDone never reaches the GS writes nothing. The half-period
+  // run waits: SweepDone rides a lossy downlink, and a sweep whose
+  // SweepDone never reaches the GS is lost to the run. The half-period
   // offset keeps the repeats off the GS's own 200 ms resend grid, so a
   // repeat and the GS's next command never land on the same tick. The
   // repeats stop at the next command of the run -- any SweepCmd, ApplyCmd
-  // or Abort naming its nonce, taken as the GS having moved on -- or when
-  // the run closes. The owner sends whatever this yields.
+  // or Abort naming its nonce, taken as the GS having moved on, except an
+  // exact repeat of the finished sweep, which re-sends it -- or when the
+  // run closes. The owner sends whatever this yields.
   std::optional<cal::SweepDone> take_done();
 
   static constexpr uint32_t kDoneFirstRepeatMs = 100;
@@ -264,7 +253,8 @@ class CalSweep {
   // Drains the "this command was REFUSED after flattening the rate-diff
   // table" flag, armed once by on_cmd()'s anchor-read failure (a new run
   // zeroes before that read whatever its kind, so the table is always
-  // flattened by then) and cleared by this call.
+  // flattened by then) and cleared by this call. A Wall refusal from
+  // wall.check() never arms it: nothing was touched.
   //
   // Why the caller must act on it: a chip that cannot report its anchor
   // right after being zeroed leaves the drone with a FLATTENED table and
@@ -276,13 +266,13 @@ class CalSweep {
   State state() const { return state_; }
 
   // kFlagStbc, plus kFlagLdpc when radio.ldpc (cfg_.ldpc) is set. Stamped
-  // on every Power/Verify/Capacity frame and echoed in every SweepAck so
-  // the GS can filter frames on it.
+  // on every Capacity frame and echoed in every SweepAck so the GS can
+  // filter frames on it.
   uint8_t stamp_flags() const;
 
-  // The drone-internal TXAGC reference this run's cells are programmed
-  // relative to -- read once at the run's first accepted command and
-  // never re-read for a later sweep of the same run. 0 before any
+  // The drone-internal TXAGC reference of this run -- read once at the
+  // run's first accepted command and never re-read for a later sweep of
+  // the same run. 0 before any
   // command of this run has ever been accepted. Test-only: production
   // code has no reason to read this back, since it never leaves the
   // drone.
@@ -295,16 +285,13 @@ class CalSweep {
   bool power_restored_for_test() const { return power_restored_; }
 
  private:
-  struct Cell {
-    uint8_t mcs = 0;
-    int idx = 0;  // relative to anchor_idx_ for Power/Verify; unused for Capacity
-  };
-
-  void build_cells(const cal::SweepCmd& c);
-  void build_verify_cells(const std::array<int, 8>& park_rel);
-  void pump_power_verify(uint64_t now_ms, RadioTx& tx, PowerCtl& pwr);
+  void build_points(const cal::SweepCmd& c);
   void pump_capacity(uint64_t now_ms, CapacityCtl& cap);
-  void finish_sweep(uint64_t now_ms);
+  void pump_wall(uint64_t now_ms, WallCtl& wall);
+  void finish_sweep(uint64_t now_ms, const cal::SweepDone& d);
+  // wall.cancel() when a Wall measurement has been started and not
+  // finished; a no-op otherwise.
+  void cancel_wall(WallCtl& wall);
   void close_session(PowerCtl& pwr);
   // Milliseconds left until sweep_start_ms_, clamped to 0 once it has
   // passed -- what a SweepAck's start_in_ms reports.
@@ -340,46 +327,37 @@ class CalSweep {
   // already touched the table, drained by take_refused().
   bool pending_refusal_ = false;
 
-  // When the run's current sweep's first cell is allowed to open --
-  // now_ms + 200 at the moment on_cmd()/arm_verify() accepted the sweep.
-  // Both pump_power_verify() and pump_capacity() wait for this before
-  // touching a cell, so the ack (or, for Verify, the applied config) has
-  // time to reach the GS before any frame the GS is not listening for
-  // yet airs.
+  // When the run's current sweep may start -- now_ms + 200 at the moment
+  // on_cmd() accepted it, so the ack has time to reach the GS first.
   uint64_t sweep_start_ms_ = 0;
 
   // The (nonce, seq) of the last ApplyCmd handed out by
   // take_pending_apply(), so a GS resend of that same apply (it keeps
   // resending until it hears APPLIED) is ignored by on_apply() rather
-  // than re-queued over a verify sweep already running from it.
+  // than re-queued.
   bool handed_out_apply_ = false;
   uint32_t handed_out_nonce_ = 0;
   uint8_t handed_out_seq_ = 0;
 
   // Current sweep's plan.
-  cal::Kind current_kind_ = cal::Kind::Power;
+  cal::Kind current_kind_ = cal::Kind::Capacity;
   uint8_t current_bw_ = 20;
-  uint16_t frames_per_cell_ = 0;
-  uint32_t settle_ms_ = 0;
-  uint32_t gap_ms_ = 0;
-  uint32_t dwell_ms_ = 0;  // Capacity only
+  uint8_t current_channel_ = 0;  // Wall only
+  uint32_t settle_ms_ = 0;       // Capacity only
+  uint32_t dwell_ms_ = 0;        // Capacity only
 
-  std::vector<Cell> cells_;
+  // Capacity: the MCS points left to run, the cursor into them, and
+  // whether the current one has been set up and is settling.
+  std::vector<uint8_t> points_;
   size_t cursor_ = 0;
-  bool cell_entered_ = false;
-  uint8_t active_mcs_ = 0;
-  int active_idx_ = 0;  // relative, as stamped on the wire (Power/Verify)
-
-  // Per-cell frame pacing (Power/Verify), copied out of the accepted
-  // SweepCmd (or the hard-coded Verify constants -- see arm_verify()).
-  uint16_t cell_seq_ = 0;
+  bool point_entered_ = false;
   uint64_t settle_deadline_ms_ = 0;
-  uint64_t next_send_ms_ = 0;
 
-  // Per-MCS accumulators for the sweep in progress: frames actually sent
-  // for Power (SweepDone.offered[mcs] is the row's send count), or the
-  // CapacityCtl::blast result for Capacity. Unused for Verify (no
-  // SweepDone is ever built from these).
+  // Wall: wall.start() has been called and the measurement has neither
+  // finished nor been cancelled.
+  bool wall_started_ = false;
+
+  // Per-MCS CapacityCtl::blast results for the sweep in progress.
   std::array<uint32_t, 8> offered_{};
   std::array<uint8_t, 8> blocked_pct_{};
 

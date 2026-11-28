@@ -649,18 +649,16 @@ TEST(every_row_sets_reads_back_and_restores) {
 TEST(calibration_and_parameter_sets_on_two_threads_lose_nothing) {
   ScratchBundle b;
   auto c = make(b.path());
-  const std::array<int, 8> walls_a = {60, 60, 60, 45, 22, 6, 9, 5};
-  const std::array<int, 8> walls_last = {58, 57, 56, 44, 21, 5, 8, 4};
+  const std::array<double, 8> eff_a = {0.9, 0.85, 0.8, 0.8, 0.75, 0.75, 0.7, 0.7};
+  const std::array<double, 8> eff_last = {0.8, 0.75, 0.7, 0.7, 0.65, 0.65, 0.6, 0.6};
   int cal_bad = 0, set_bad = 0;
   std::thread cal([&] {
     for (int i = 0; i < 20; ++i) {
       CalWrite w;
       w.bw = 20;
-      w.has_walls = true;
-      w.walls = i == 19 ? walls_last : walls_a;
-      w.legacy_wall = i == 19 ? 58 : 60;
+      w.eff = i == 19 ? eff_last : eff_a;
       std::string err;
-      if (apply_calibration(b.path(), w, 1.0, /*backup=*/true, &err) != ApplyResult::Ok)
+      if (apply_calibration(b.path(), w, /*backup=*/true, &err) != ApplyResult::Ok)
         ++cal_bad;
     }
   });
@@ -703,9 +701,7 @@ TEST(calibration_and_parameter_sets_on_two_threads_lose_nothing) {
   CHECK(set_bad == 0);
   const Config cfg = load_config(b.path());
   CHECK(cfg.record.bitrate_kbps == 30000);
-  CHECK(cfg.radio.rate_walls_rel_20 == walls_last);
-  CHECK(cfg.radio.legacy_wall_rel == 58);
-  CHECK(cfg.radio.power_mode == "offset");
+  CHECK(cfg.air_clock.efficiency_20 == eff_last);
   std::remove((b.path() + ".pre-cal").c_str());
   std::remove((b.path() + ".pre-cal.tmp").c_str());
 }
