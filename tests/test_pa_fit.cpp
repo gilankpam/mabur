@@ -1,7 +1,9 @@
 #include "mtest.h"
 #include "pa_fit.h"
 
+#include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstdio>
 #include <fstream>
 #include <string>
@@ -143,6 +145,32 @@ TEST(a_foreign_burst_raises_the_residual) {
   std::printf("  ok %d clipped %d residual - own %.2f\n", f.ok, f.clipped,
               f.residual_db - f.own_evm_db);
   CHECK(!f.ok || f.residual_db - f.own_evm_db > -8.0f);
+}
+
+// Host time per pa_fit call and per 25 pa_predict calls; runs only with
+// PA_FIT_TIME set, so the suite does not pay for it.
+TEST(time_per_call) {
+  if (!std::getenv("PA_FIT_TIME")) return;
+  for (const char* base : {"d144_20_i080", "d144_40_i076"}) {
+    const uint8_t bw = std::string(base).find("_40_") != std::string::npos ? 40 : 20;
+    const auto a = load_hi32(std::string(base) + "_a");
+    const auto b = load_hi32(std::string(base) + "_b");
+    const IqSpan caps[] = {span(a), span(b)};
+    const int reps = 20;
+    using clk = std::chrono::steady_clock;
+    PaFit f;
+    auto t0 = clk::now();
+    for (int i = 0; i < reps; ++i) f = pa_fit(caps, 2, bw);
+    const double fit_ms = std::chrono::duration<double, std::milli>(clk::now() - t0).count() / reps;
+    float sink = 0;
+    t0 = clk::now();
+    for (int i = 0; i < reps; ++i)
+      for (int k = 0; k < 25; ++k) sink += pa_predict(f, bw, k);
+    const double pred_ms =
+        std::chrono::duration<double, std::milli>(clk::now() - t0).count() / reps;
+    std::printf("  %d MHz: pa_fit %.2f ms, 25 pa_predict %.2f ms (sink %.1f)\n", bw, fit_ms,
+                pred_ms, sink);
+  }
 }
 
 MTEST_MAIN

@@ -24,7 +24,10 @@ constexpr int kRounds = 10;
 constexpr float kFloorDb = -27.0f;
 constexpr double kMinLevelDb = 30.0;
 constexpr float kStepDb = 0.25f;  // one TXAGC step
-constexpr int kPredSyms = 200;
+// Enough symbols that the fixtures predict within 0.2 dB of the reference's
+// 200 random ones; below that the error is set more by which symbols are
+// drawn than by how many.
+constexpr int kPredSyms = 40;
 
 // The HT-LTF's 52-tone sign sequence (the legacy L-LTF's).
 constexpr int8_t kLL[52] = {1,  1,  -1, -1, 1,  1,  -1, 1,  -1, 1,  1,  1,  1, 1, 1, -1, -1, 1,
@@ -90,50 +93,85 @@ void knot(float a, int& j, float& t) {
 
 float env_db(cf v) { return 10 * std::log10(std::max(std::norm(v), 1e-12f)); }
 
-// The data symbols' EVM (dB) of the fixed QPSK/BPSK-pilot symbol set, as
-// the ideal waveform through `gain` driven `steps` TXAGC steps lower, each
-// tone's channel estimated against the known symbols.
-float pred_raw(const std::array<cf, J>& gain, int S, int steps) {
+// The fixed QPSK/BPSK-pilot symbol set the prediction drives through the
+// curve: its ideal waveform at rms 1, that waveform's envelope (dB) and the
+// symbols. It depends only on the width, so it is built once per width.
+struct PredSet {
+  std::vector<cf> v, D;    // kPredSyms x os_n samples, kPredSyms x used tones
+  std::vector<float> env;  // dB, per sample of v
+  double Q[kMaxUsed] = {};  // sum |D|^2 per tone over the symbols
+};
+
+PredSet make_pred_set(int S) {
   const Tones& tn = tones(S);
   const int T = tn.lay.used, n = tn.os_n;
   // Each symbol's waveform has rms sqrt(T) unscaled: every used tone is unit power.
   const float scale = 1.0f / std::sqrt(float(T));
-  cd P[kMaxUsed] = {};
-  double Q[kMaxUsed] = {}, E[kMaxUsed] = {};
-  cf D[kMaxUsed], v[kMaxOsFft];
+  PredSet ps;
+  ps.v.assign(size_t(kPredSyms) * n, cf(0));
+  ps.D.resize(size_t(kPredSyms) * T);
+  ps.env.resize(ps.v.size());
   uint32_t rng = 1;
   auto bit = [&rng] {
     rng = rng * 1664525u + 1013904223u;
     return (rng >> 31) ? 1.0f : -1.0f;
   };
   for (int s = 0; s < kPredSyms; ++s) {
-    std::fill(v, v + n, cf(0));
+    cf* v = &ps.v[size_t(s) * n];
+    cf* D = &ps.D[size_t(s) * T];
     for (int t = 0; t < T; ++t) {
       D[t] = tn.lay.pilot[t] ? cf(bit(), 0) : cf(bit(), bit()) * float(M_SQRT1_2);
       v[tn.binos[t]] = D[t] * tn.gamma[t];
+      ps.Q[t] += std::norm(D[t]);
     }
     detail::fft(v, n, tn.itw_os);
     for (int k = 0; k < n; ++k) {
       v[k] *= scale;
+      ps.env[size_t(s) * n + k] = env_db(v[k]);
+    }
+  }
+  return ps;
+}
+
+const PredSet& pred_set(int S) {
+  static const PredSet p20 = make_pred_set(1), p40 = make_pred_set(2);
+  return S == 2 ? p40 : p20;
+}
+
+// The data symbols' EVM (dB) of the fixed symbol set through `gain`, driven
+// `steps` TXAGC steps lower, each tone's channel estimated against the known
+// symbols.
+float pred_raw(const std::array<cf, J>& gain, int S, int steps) {
+  const Tones& tn = tones(S);
+  const PredSet& ps = pred_set(S);
+  const int T = tn.lay.used, n = tn.os_n;
+  const float shift = kStepDb * steps;
+  cd P[kMaxUsed] = {};
+  double E[kMaxUsed] = {};
+  cf y[kMaxOsFft];
+  for (int s = 0; s < kPredSyms; ++s) {
+    const cf* v = &ps.v[size_t(s) * n];
+    const float* env = &ps.env[size_t(s) * n];
+    const cf* D = &ps.D[size_t(s) * T];
+    for (int k = 0; k < n; ++k) {
       int j;
       float w;
-      knot(env_db(v[k]) - kStepDb * steps, j, w);
-      v[k] *= gain[j] * (1 - w) + gain[j + 1] * w;
+      knot(env[k] - shift, j, w);
+      y[k] = v[k] * (gain[j] * (1 - w) + gain[j + 1] * w);
     }
-    detail::fft(v, n, tn.tw_os);
+    detail::fft(y, n, tn.tw_os);
     for (int t = 0; t < T; ++t) {
-      const cd y = v[tn.binos[t]];
-      P[t] += y * std::conj(cd(D[t]));
-      Q[t] += std::norm(D[t]);
-      E[t] += std::norm(y);
+      const cd yt = y[tn.binos[t]];
+      P[t] += yt * std::conj(cd(D[t]));
+      E[t] += std::norm(yt);
     }
   }
   // sum |Y/h - D|^2 with h = P/Q is Q (E Q / |P|^2 - 1).
   double err = 0, ref = 0;
   for (int t = 0; t < T; ++t) {
     if (tn.lay.pilot[t]) continue;
-    err += Q[t] * (E[t] * Q[t] / std::norm(P[t]) - 1);
-    ref += Q[t];
+    err += ps.Q[t] * (E[t] * ps.Q[t] / std::norm(P[t]) - 1);
+    ref += ps.Q[t];
   }
   return float(10 * std::log10(err / ref));
 }
@@ -190,7 +228,8 @@ PaFit pa_fit(const IqSpan* caps, int ncaps, uint8_t bw) {
     size_t start;
     double level;
   };
-  std::vector<Cand> cand;
+  static thread_local std::vector<Cand> cand;
+  cand.clear();
   // Every symbol timing tried, 8 samples late at most, fits in the capture.
   const size_t need = size_t(detail::kLtfOffset + 8 + detail::kSymLen * (M + 1)) * S;
   for (int ci = 0; ci < ncaps; ++ci) {
@@ -215,11 +254,21 @@ PaFit pa_fit(const IqSpan* caps, int ncaps, uint8_t bw) {
   // Per fitted frame and tone: the Gram matrix of the knots' basis tones over
   // the symbols (upper triangle), their products with the received tones,
   // and the received power. The least-squares rounds need nothing else.
-  std::vector<cd> G(2 * T * kTri), C(2 * T * J);
-  std::vector<double> E(2 * T);
-  std::vector<cf> R(M * T), D(M * T), bufs(J * NOS);
-  std::vector<int> kj(NOS);
-  std::vector<float> kt(NOS);
+  // Kept across calls, as cross_evm's buffers are (0.7 MB at 40 MHz).
+  static thread_local std::vector<cd> G, C, H;
+  static thread_local std::vector<double> E;
+  static thread_local std::vector<cf> R, D, bufs;
+  static thread_local std::vector<int> kj;
+  static thread_local std::vector<float> kt;
+  G.assign(2 * T * kTri, 0);
+  C.assign(2 * T * J, 0);
+  E.assign(2 * T, 0);
+  H.resize(2 * T);
+  R.resize(M * T);
+  D.resize(M * T);
+  bufs.resize(J * NOS);
+  kj.resize(NOS);
+  kt.resize(NOS);
   double wt2[2];  // each frame's rows weigh 1 / rms(R)
   double own = 0, level = 0;
   for (int fi = 0; fi < 2; ++fi) {
@@ -301,7 +350,6 @@ PaFit pa_fit(const IqSpan* caps, int ncaps, uint8_t bw) {
   // the knots over both frames with a smoothness penalty, scaled to G(low) = 1.
   std::array<cd, J> th;
   th.fill(1);
-  std::vector<cd> H(2 * T);
   auto model = [&](int ft, cd& P, double& Q) {  // sum R conj(M) and sum |M|^2 over the symbols
     const cd* gt = &G[ft * kTri];
     const cd* ct = &C[ft * J];
