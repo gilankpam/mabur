@@ -529,7 +529,7 @@ and resume video on its own.
 | step | time |
 |---|---|
 | channel pick | 0 pinned or one card; ~1 s for the round (three members at 280 ms) plus up to `[hop] confirm_ms` for a relocate |
-| wall measurement | a handful of captures plus the channel and width switches (each sweep logs `time_ms` and `captures`); bounded by the 30 s deadline |
+| wall measurement | 8 to 12 captures plus the channel and width switches: 1.5–1.8 s at 20 MHz and 2.8–3.5 s at 40 MHz on the reference drone (each sweep logs `time_ms` and `captures`); bounded by the 30 s deadline |
 | capacity sweep | 18.4 s per width (8 × 2.3 s) + 200 ms start + ack |
 | apply (capacity) | one round trip |
 
@@ -793,7 +793,7 @@ that cannot self-measure:
 
 ```
 run nonce=1873455120 margin=1.00dB ch=112 pick=auto ldpc=1
-walls ch=144 20 MHz anchor=39 floor=-23.6dB: 63 63 63 62 35 25 24 19
+walls ch=144 20 MHz anchor=39 floor=-22.7dB: 63 63 63 63 35 25 23 19
 rate     eff20   flags
 mcs0       .93
 mcs1       .88
@@ -803,7 +803,7 @@ walls stored by the drone (/etc/mabur.walls)
 written: /etc/mabur.toml (backup /etc/mabur.toml.pre-cal)
 
 run nonce=1873455121 margin=1.00dB ch=112 pick=pinned ldpc=-
-walls ch=144 20 MHz anchor=39 floor=-23.6dB: 63 63 63 62 35 25 24 19
+walls ch=144 20 MHz anchor=39 floor=-22.7dB: 63 63 63 63 35 25 23 19
 walls stored by the drone (/etc/mabur.walls)
 
 run nonce=1873455122 margin=1.00dB ch=112 pick=onecard ldpc=1
@@ -968,7 +968,7 @@ commands the drone, after the pick.
 **`maburd` log** (`/tmp/mabur.log`). The measurement's one line:
 
 ```
-maburd cal: wall ch=144 bw=20 result=Ok park_rise=16.9 floor=-23.6 anchor=39 walls=63,63,63,62,35,25,24,19 captures=8 time_ms=2237
+maburd cal: wall ch=144 bw=20 result=Ok park_rise=17.5 floor=-22.7 anchor=39 walls=63,63,63,63,35,25,23,19 captures=8 time_ms=1507
 ```
 
 `result` is one of `Ok Unparked TooFewPoints NotSaturated
