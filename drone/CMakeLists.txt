@@ -27,6 +27,7 @@ add_library(mabur_drone_core STATIC
   src/ota.cpp
   src/nack_responder.cpp
   src/cross_evm.cpp
+  src/pa_fit.cpp
   src/wall_sweep.cpp
   vendor/venc_frame_ring.c
   # venc_cfg.c is dependency-free C99 (string.h only), so it compiles on
