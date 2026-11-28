@@ -144,6 +144,7 @@ TEST(a_foreign_burst_raises_the_residual) {
   const PaFit f = pa_fit(&c, 1, 20);
   std::printf("  ok %d clipped %d residual - own %.2f\n", f.ok, f.clipped,
               f.residual_db - f.own_evm_db);
+  CHECK(f.ok && !f.clipped);
   CHECK(!f.ok || f.residual_db - f.own_evm_db > -8.0f);
 }
 

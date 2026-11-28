@@ -35,6 +35,7 @@ std::string parse(const std::string& text, WallCache* out) {
   std::vector<std::string> lines;
   std::stringstream ss(text);
   for (std::string l; std::getline(ss, l);) lines.push_back(l);
+  if (lines[0] == "maburwalls 1") return "version 1 (re-measure)";
   if (lines[0] != kHeader) return "unknown header";
   for (size_t n = 1; n < lines.size(); ++n) {
     const std::string at = "line " + std::to_string(n + 1) + ": ";

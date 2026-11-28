@@ -271,11 +271,12 @@ PaFit pa_fit(const IqSpan* caps, int ncaps, uint8_t bw) {
   kt.resize(NOS);
   double wt2[2];  // each frame's rows weigh 1 / rms(R)
   double own = 0, level = 0;
-  for (int fi = 0; fi < 2; ++fi) {
-    const Cand& c = cand[fi];
+  int fi = 0;  // the first two candidates that demodulate are fitted
+  for (size_t n = 0; n < cand.size() && fi < 2; ++n) {
+    const Cand& c = cand[n];
     prepare(c.ci);
     const detail::Timing tm = detail::best_timing(cap, c.start, S);
-    if (!std::isfinite(tm.evm_db)) return f;
+    if (!std::isfinite(tm.evm_db)) continue;   // no symbol timing demodulates it: try the next
     own += tm.evm_db;
     level += c.level;
 
@@ -342,7 +343,9 @@ PaFit pa_fit(const IqSpan* caps, int ncaps, uint8_t bw) {
       }
     }
     wt2[fi] = double(M) * T / rpow;
+    ++fi;
   }
+  if (fi < 2) return f;
   f.own_evm_db = float(own / 2);
   f.level_db = float(level / 2);
 

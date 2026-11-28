@@ -94,7 +94,7 @@ TEST(a_version_1_file_is_nothing_measured) {
   put(t.p(), "maburwalls 1\n40 40 75" + vals(25) + "\n");
   std::string note;
   CHECK(load_wall_cache(t.p(), &note).entries.empty());
-  CHECK(!note.empty());
+  CHECK(note.find("version 1") != std::string::npos);
 }
 TEST(a_bad_flag_token_discards_the_file) {
   Dir t;

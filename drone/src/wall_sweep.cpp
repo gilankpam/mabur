@@ -187,7 +187,6 @@ void WallSweep::assemble() {
     const int idx = wall_point_index(k);
     if (idx <= probe1_) v[k] = ops_.predict(fit1_, bw_, probe1_ - idx);
     else if (probe2_ && idx <= probe2_) v[k] = ops_.predict(fit2_, bw_, probe2_ - idx);
-    else v[k] = probe2_ ? fit2_.own_evm_db : fit1_.own_evm_db;   // above the top probe: not predicted
   }
   // Going down from each probe a point never reads worse than the one above it: a PA's EVM
   // only worsens with the index, and a fit's prediction rises again far below its probe,
@@ -196,6 +195,14 @@ void WallSweep::assemble() {
     const int idx = wall_point_index(k);
     if (idx < probe1_ || (probe2_ && idx > probe1_ && idx < probe2_)) v[k] = std::min(v[k], v[k + 1]);
   }
+  // Where the two fits meet, a fit-2 point never reads better than probe 1's.
+  const int k1 = (probe1_ - kWallIdxLo) / kWallIdxStep;
+  for (int k = k1 + 1; k < kWallPoints && wall_point_index(k) <= probe2_; ++k) v[k] = std::max(v[k], v[k1]);
+  // Above the top probe nothing is predicted: the EVM keeps worsening at the hunt's probe-2
+  // slope. A flat tail at the probe's level could sit just under MCS3's threshold and hide
+  // its crossing (wall 63). Probe 1 is the top probe only at the top index.
+  const int top = probe2_ ? probe2_ : probe1_, kt = (top - kWallIdxLo) / kWallIdxStep;
+  for (int k = kt + 1; k < kWallPoints; ++k) v[k] = v[kt] + kProbe2Slope * (wall_point_index(k) - top);
   for (float x : v)
     if (!std::isfinite(x)) { finish(cal::WallResult::TooFewPoints); return; }
   for (int k = 0; k < kWallPoints; ++k) curve_.evm_db[k] = std::round(v[k] * 10) / 10.0f;

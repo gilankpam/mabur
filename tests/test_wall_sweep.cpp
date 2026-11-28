@@ -170,7 +170,7 @@ TEST(the_hunt_never_tries_an_index_twice) {   // measured EVM +-0.6 dB, alternat
   }
   CHECK(!fake.hunted(false).empty() && !fake.hunted(true).empty());
 }
-TEST(a_bracketing_pair_takes_the_upper_index) {   // 100 -> 112 (-10.8, above) -> 108 (-12.6, below)
+TEST(a_bracketing_pair_takes_the_upper_index) {   // 100 -> 112 (-10.8, above) -> 108 (-12.75, below)
   SWEEP(fake, sw);
   fake.evm = [](int idx) { return idx <= 108 ? std::min(model(idx), -12.6f) : std::max(model(idx), -10.8f); };
   run_to_end(sw);
@@ -343,6 +343,33 @@ TEST(a_prediction_that_rises_again_is_flattened) {
   for (int k = 0; k < kWallPoints; ++k) REQUIRE(e[k]);
   for (int idx = 28; idx < 112 - 40; idx += 4) CHECK(*e[k_of(idx)] == *e[k_of(112 - 40)]);
   for (int k = 1; k < kWallPoints; ++k) CHECK(*e[k] >= *e[k - 1]);
+}
+TEST(above_probe_2_the_curve_keeps_rising) {   // probe 2 at 116: hunt -8.95, fit own -9.05
+  SWEEP(fake, sw);
+  fake.evm = [](int idx) { return idx <= 112 ? model(idx) : idx == 116 ? -8.95f : -7.0f; };
+  fake.fit_script = [](int idx, int) {
+    PaFit f = fit_with_residual(idx, -12.0f);
+    if (idx == 116) f.own_evm_db = -9.05f, f.residual_db = -21.05f;
+    return f;
+  };
+  run_to_end(sw);
+  CHECK(sw.result() == cal::WallResult::Ok);
+  REQUIRE(fake.fits.size() == 2 && fake.fits[1].first == 116);
+  const int w3 = walls_from_curve(sw.curve(), true)[3];
+  std::printf("  mcs3 wall %d\n", w3);
+  CHECK(w3 <= 116 - 60 + 1);
+}
+TEST(fit_2_never_reads_below_probe_1) {   // fit 2 predicts 1 dB under probe 1 at 116
+  SWEEP(fake, sw);
+  fake.predict_script = [](int idx, int steps) {
+    return idx == 124 && idx - steps == 116 ? model(112) - 1.0f : model(idx - steps);
+  };
+  run_to_end(sw);
+  CHECK(sw.result() == cal::WallResult::Ok);
+  REQUIRE(fake.fits.size() == 2 && fake.fits[0].first == 112 && fake.fits[1].first == 124);
+  const auto& e = sw.curve().evm_db;
+  REQUIRE(e[k_of(112)] && e[k_of(116)]);
+  CHECK(*e[k_of(116)] == *e[k_of(112)]);
 }
 TEST(a_non_finite_prediction_is_never_stored) {
   SWEEP(fake, sw);

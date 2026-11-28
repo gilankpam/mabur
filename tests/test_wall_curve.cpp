@@ -56,10 +56,11 @@ TEST(only_the_first_crossing_counts) {  // fails if the search keeps going after
                      -80,-80,-80,-80,-80,-80,-80,-80,-80,-80,-80,-80};
   CHECK(walls_from_curve(curve(v, 0), true)[4] == 34);
 }
-TEST(a_threshold_under_the_curve_takes_the_highest_index_of_its_minimum) {  // anchor 100: 120 - 100
+TEST(a_threshold_under_the_curve_takes_the_lowest_index_of_its_minimum) {  // -16.5 from 28 to 120
   const int v[25] = {-165,-165,-165,-165,-165,-165,-165,-165,-165,-165,-165,-165,-165,
                      -165,-165,-165,-165,-165,-165,-165,-165,-165,-165,-165,-80};
-  CHECK(walls_from_curve(curve(v, 100), true)[7] == 20);
+  CHECK(walls_from_curve(curve(v, 100), true)[7] == -64);   // 28 - 100, clamped
+  CHECK(walls_from_curve(curve(v, 0), true)[7] == 28);      // fails if it takes the plateau's top (120 -> 63)
 }
 TEST(a_curve_that_never_reaches_a_threshold_gives_63) {
   const int v[25] = {-200,-200,-200,-200,-200,-200,-200,-200,-200,-200,-200,-200,-200,
@@ -79,14 +80,14 @@ TEST(a_weak_park_curve_uses_thresholds_2_5_db_lower) {
   CHECK(at(true, true)   == (std::array<int,5>{42, 28, 18, 16, 10}));
   CHECK(at(true, false)  == (std::array<int,5>{26, 12, 2, 0, -6}));
 }
-TEST(a_threshold_under_every_point_takes_the_cleanest_index) {
+TEST(a_threshold_under_every_point_takes_the_lowest_index_of_the_minimum) {
   WallCurve c;  c.anchor = 60;  c.weak_park = true;
   for (int k = 0; k < 19; ++k) c.evm_db[k] = -23.0f;
   const float rest[6] = {-20, -17, -14, -11, -8, -8};
   for (int k = 19; k < 25; ++k) c.evm_db[k] = rest[k - 19];
   const auto w = walls_from_curve(c, false);
-  CHECK(w[7] == 40);
-  CHECK(w[6] == 41);
+  CHECK(w[7] == 28 - 60);   // mcs7 -23.5 is under the -23.0 plateau (28 to 100)
+  CHECK(w[6] == 41);        // mcs6 -22.0 crosses at 100 + 4/3
 }
 TEST(validity_boundaries_are_inclusive) {
   auto last11 = curve(k144_20, 39);  for (auto& v : last11.evm_db) if (*v > -11.0f) v = -11.0f;

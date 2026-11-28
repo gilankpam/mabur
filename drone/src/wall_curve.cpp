@@ -39,16 +39,15 @@ std::array<int, 8> walls_from_curve(const WallCurve& c, bool ldpc) {
   for (int k = 0; k < kWallPoints; ++k)
     if (c.evm_db[k] && (start < 0 || *c.evm_db[k] < *c.evm_db[start])) start = k;
   if (start < 0) return walls;
-  // The highest index holding the minimum: the cleanest power the rate can have.
-  int clean = start;
-  for (int k = start; k < kWallPoints; ++k)
-    if (c.evm_db[k] && *c.evm_db[k] == *c.evm_db[start]) clean = k;
 
   for (int mcs = 3; mcs < 8; ++mcs) {
     const float t = kThreshold[mcs] - (ldpc ? 0.0f : kNoLdpcPenaltyDb) -
                     (c.weak_park ? kWeakParkPenaltyDb : 0.0f);
-    if (t < *c.evm_db[start]) {  // under the whole curve: no crossing, take the cleanest point
-      walls[mcs] = std::clamp(wall_point_index(clean) - c.anchor, -64, 63);
+    // Under the whole curve there is no crossing: take the lowest index holding the minimum.
+    // On a predicted curve the minimum is a plateau the running minimum built, and the real
+    // crossing lies under its top.
+    if (t < *c.evm_db[start]) {
+      walls[mcs] = std::clamp(wall_point_index(start) - c.anchor, -64, 63);
       continue;
     }
     int a = -1;  // previous point with a value
