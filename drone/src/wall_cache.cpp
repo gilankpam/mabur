@@ -12,7 +12,7 @@
 namespace mabur {
 namespace {
 
-constexpr const char* kHeader = "maburwalls 1";
+constexpr const char* kHeader = "maburwalls 2";
 // Shared by load and save: save never writes what load would reject.
 constexpr int kChMin = 1, kChMax = 177, kAnchorMax = 127, kEvmMin = -600, kEvmMax = 0;
 constexpr long kMaxBytes = 64 * 1024;  // 354 entries x ~140 B is ~50 KB
@@ -43,15 +43,17 @@ std::string parse(const std::string& text, WallCache* out) {
     for (char ch : lines[n] + " ") {
       if (ch == ' ') { tok.push_back(cur); cur.clear(); } else cur += ch;
     }
-    if (tok.size() != 3 + kWallPoints) return at + "wrong token count";
+    if (tok.size() != 4 + kWallPoints) return at + "wrong token count";
     long ch, w, anchor;
     if (!parse_int(tok[0], &ch) || ch < kChMin || ch > kChMax) return at + "bad channel";
     if (!parse_int(tok[1], &w) || !width_ok(w)) return at + "bad width";
     if (!parse_int(tok[2], &anchor) || anchor < 0 || anchor > kAnchorMax) return at + "bad anchor";
+    if (tok[3] != "p" && tok[3] != "w") return at + "bad flag";
     WallCurve c;
     c.anchor = static_cast<int>(anchor);
+    c.weak_park = tok[3] == "w";
     for (int k = 0; k < kWallPoints; ++k) {
-      const std::string& t = tok[3 + k];
+      const std::string& t = tok[4 + k];
       if (t == "x") continue;
       long v;
       if (!parse_int(t, &v) || v < kEvmMin || v > kEvmMax) return at + "bad value";
@@ -101,7 +103,8 @@ bool save_wall_cache(const std::string& path, const WallCache& c) {
   if (!f) return false;
   bool ok = std::fprintf(f, "%s\n", kHeader) > 0;
   for (const auto& [key, cv] : c.entries) {  // std::map order = channel, then width
-    ok = ok && std::fprintf(f, "%u %u %d", unsigned(key.first), unsigned(key.second), cv.anchor) > 0;
+    ok = ok && std::fprintf(f, "%u %u %d %c", unsigned(key.first), unsigned(key.second), cv.anchor,
+                                   cv.weak_park ? 'w' : 'p') > 0;
     for (const auto& v : cv.evm_db) {
       if (v) ok = ok && std::fprintf(f, " %ld", std::lround(*v * 10.0f)) > 0;
       else ok = ok && std::fputs(" x", f) >= 0;
