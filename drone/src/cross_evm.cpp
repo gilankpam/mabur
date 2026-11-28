@@ -11,7 +11,6 @@ namespace {
 
 using cf = std::complex<float>;
 
-constexpr int kMaxFft = 128;     // 64 samples per symbol at 20 MHz, 128 at 40
 constexpr int kMaxTones = 108;   // data tones at 40 MHz
 constexpr int kMinFrame = 1900;  // shortest frame that holds the probe, at 20 MHz
 constexpr float kClip = 2040.0f;
@@ -57,30 +56,23 @@ cf slice_qpsk(cf z) { return cf(slice_axis(z.real()), slice_axis(z.imag())); }
 using Windows = cf[kSyms + 1][kMaxTones];
 
 struct Demod {
+  const ToneLayout& lay;
   int fft_n, tones, sym;
-  int bin[kMaxTones];
-  cf rot[kMaxTones];  // exp(+2*pi*j*bin/N): a bin's factor for a one-sample advance
-  cf tw[kMaxFft / 2];
+  int used[kMaxTones];  // a data tone's index among the layout's used tones
+  cf rot[kMaxTones];    // exp(+2*pi*j*bin/N): a bin's factor for a one-sample advance
 
-  explicit Demod(int S) : fft_n(64 * S), tones(0), sym(kSymLen * S) {
-    // Data tones (pilots, DC and the guard band excluded); negative k is bin k + N.
-    const int edge = S == 2 ? 58 : 28;
-    for (int k = -edge; k <= edge; ++k) {
-      const int a = std::abs(k);
-      const bool skip = S == 2 ? (a <= 1 || a == 11 || a == 25 || a == 53)
-                               : (a == 0 || a == 7 || a == 21);
-      if (!skip) bin[tones++] = k < 0 ? k + fft_n : k;
-    }
-    for (int t = 0; t < tones; ++t) rot[t] = std::polar(1.0f, float(2 * M_PI * bin[t] / fft_n));
-    for (int k = 0; k < fft_n / 2; ++k)
-      tw[k] = std::polar(1.0f, float(-2 * M_PI * k / fft_n));
+  explicit Demod(int S) : lay(tone_layout(S)), fft_n(lay.fft_n), tones(0), sym(kSymLen * S) {
+    // The data tones: the used ones without the pilots.
+    for (int u = 0; u < lay.used; ++u)
+      if (!lay.pilot[u]) used[tones++] = u;
+    for (int t = 0; t < tones; ++t)
+      rot[t] = std::polar(1.0f, float(2 * M_PI * lay.bin[used[t]] / fft_n));
   }
 
   void tones_at(const cf* x, cf* out) const {
-    cf a[kMaxFft];
-    std::copy(x, x + fft_n, a);
-    fft(a, fft_n, tw);
-    for (int t = 0; t < tones; ++t) out[t] = a[bin[t]];
+    cf all[kMaxUsed];
+    lay.tones_at(x, all);
+    for (int t = 0; t < tones; ++t) out[t] = all[used[t]];
   }
 
   // The windows of the symbol timing whose LTF window starts at x[0].
@@ -168,6 +160,34 @@ void fft(cf* a, int n, const cf* tw) {
         a[i + k] += t;
       }
   }
+}
+
+void ToneLayout::tones_at(const cf* x, cf* out) const {
+  cf a[kMaxFft];
+  std::copy(x, x + fft_n, a);
+  fft(a, fft_n, tw);
+  for (int u = 0; u < used; ++u) out[u] = a[bin[u]];
+}
+
+const ToneLayout& tone_layout(int S) {
+  auto make = [](int S) {
+    ToneLayout l;
+    l.fft_n = 64 * S;
+    const int edge = S == 2 ? 58 : 28;
+    for (int k = -edge; k <= edge; ++k) {
+      const int a = std::abs(k);
+      if (S == 2 ? a <= 1 : a == 0) continue;
+      l.k[l.used] = k;
+      l.bin[l.used] = k < 0 ? k + l.fft_n : k;
+      l.pilot[l.used] = S == 2 ? (a == 11 || a == 25 || a == 53) : (a == 7 || a == 21);
+      ++l.used;
+    }
+    for (int k = 0; k < l.fft_n / 2; ++k)
+      l.tw[k] = std::polar(1.0f, float(-2 * M_PI * k / l.fft_n));
+    return l;
+  };
+  static const ToneLayout l20 = make(1), l40 = make(2);
+  return S == 2 ? l40 : l20;
 }
 
 void prepare(const devourer::IqSample* s, size_t n, int S, Capture& c) {

@@ -107,9 +107,15 @@ TEST(a_clipped_capture_gives_no_frame) {
 }
 
 TEST(identical_frames_do_not_produce_a_non_finite_fit) {
+  // The capture's first 4000 samples hold only its first frame, so both
+  // fitted frames are the same samples.
   const auto a = load_hi32("d144_20_i080_a");
-  const IqSpan caps[] = {span(a), span(a)};
+  const IqSpan one = {a.data(), 4000};
+  const IqSpan caps[] = {one, one};
   const PaFit f = pa_fit(caps, 2, 20);
+  std::printf("  frames %d ok %d residual %.2f offset %.2f\n", f.frames, f.ok, f.residual_db,
+              f.offset_db);
+  CHECK(f.frames == 2);
   bool finite = std::isfinite(f.offset_db) && std::isfinite(f.residual_db);
   for (const auto& g : f.gain) finite = finite && std::isfinite(g.real()) && std::isfinite(g.imag());
   CHECK(!f.ok || finite);

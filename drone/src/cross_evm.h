@@ -34,6 +34,21 @@ namespace detail {
 constexpr int kSyms = 20;        // HT data symbols demodulated after the HT-LTF
 constexpr int kSymLen = 80;      // samples per symbol with its guard interval, at 20 MHz
 constexpr int kLtfOffset = 656;  // frame rise to the HT-LTF's FFT window, at 20 MHz
+constexpr int kMaxFft = 128;     // 64 samples per symbol at 20 MHz, 128 at 40
+constexpr int kMaxUsed = 114;    // used tones (data and pilots) at 40 MHz
+
+// The HT frame's used tones in order of tone index (DC and the guard band
+// excluded), and the receiver FFT that reads them.
+struct ToneLayout {
+  int fft_n = 0, used = 0;
+  int k[kMaxUsed];       // tone index: -28..28 at 20 MHz, -58..58 at 40
+  int bin[kMaxUsed];     // its FFT bin, k + fft_n for negative k
+  bool pilot[kMaxUsed];
+  std::complex<float> tw[kMaxFft / 2];  // exp(-2*pi*j*k/fft_n)
+  // The used tones of the fft_n samples starting at x.
+  void tones_at(const std::complex<float>* x, std::complex<float>* out) const;
+};
+const ToneLayout& tone_layout(int S);
 
 struct Capture {
   struct Frame {

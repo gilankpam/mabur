@@ -16,9 +16,8 @@ using cd = std::complex<double>;
 constexpr int J = kPaKnots;
 constexpr int kTri = J * (J + 1) / 2;  // a Hermitian JxJ's upper triangle, row by row
 constexpr int kOs = 4;                 // oversampling of the ideal waveform
-constexpr int kMaxUsed = 114;          // used tones (data and pilots) at 40 MHz
-constexpr int kMaxFft = 128;
-constexpr int kMaxOsFft = kMaxFft * kOs;
+using detail::kMaxUsed;
+constexpr int kMaxOsFft = detail::kMaxFft * kOs;
 constexpr float kKnot0 = -25.0f, kKnotStep = 2.0f;
 constexpr double kLambda = 0.05;  // weight of the curve's second differences
 constexpr int kRounds = 10;
@@ -32,16 +31,17 @@ constexpr int8_t kLL[52] = {1,  1,  -1, -1, 1,  1,  -1, 1,  -1, 1,  1,  1,  1, 1
                             1,  -1, 1,  -1, 1,  1,  1,  1,  1,  -1, -1, 1,  1, -1, 1, -1, 1, -1,
                             -1, -1, -1, -1, 1,  1,  -1, -1, 1,  -1, 1,  -1, 1, 1, 1, 1};
 
+// The receiver's tone layout, plus what the ideal waveform needs of each
+// used tone: its bin in the oversampled FFT, its HT-LTF sign and rotation.
 struct Tones {
-  int fft_n, os_n, used;
-  int bin[kMaxUsed];    // the tone's bin in the receiver's FFT
-  int binos[kMaxUsed];  // and in the oversampled one
-  bool pilot[kMaxUsed];
-  float ltf[kMaxUsed];  // HT-LTF sign
-  cf gamma[kMaxUsed];   // the upper half of an HT40 frame is sent rotated by j
-  cf tw[kMaxFft / 2], tw_os[kMaxOsFft / 2], itw_os[kMaxOsFft / 2];
+  const detail::ToneLayout& lay;
+  int os_n;
+  int binos[kMaxUsed];
+  float ltf[kMaxUsed];
+  cf gamma[kMaxUsed];  // the upper half of an HT40 frame is sent rotated by j
+  cf tw_os[kMaxOsFft / 2], itw_os[kMaxOsFft / 2];
 
-  explicit Tones(int S) : fft_n(64 * S), os_n(64 * S * kOs), used(0) {
+  explicit Tones(int S) : lay(detail::tone_layout(S)), os_n(lay.fft_n * kOs) {
     int8_t seq[kMaxUsed];
     int q = 0;
     auto put = [&](const int8_t* a, int n) { for (int i = 0; i < n; ++i) seq[q++] = a[i]; };
@@ -55,18 +55,12 @@ struct Tones {
         if (h == 0) put(mid, 8);
       }
     }
-    const int edge = S == 2 ? 58 : 28;
-    for (int k = -edge; k <= edge; ++k) {
-      const int a = std::abs(k);
-      if (S == 2 ? a <= 1 : a == 0) continue;
-      bin[used] = k < 0 ? k + fft_n : k;
-      binos[used] = k < 0 ? k + os_n : k;
-      pilot[used] = S == 2 ? (a == 11 || a == 25 || a == 53) : (a == 7 || a == 21);
-      ltf[used] = seq[used];
-      gamma[used] = S == 2 && k > 0 ? cf(0, 1) : cf(1, 0);
-      ++used;
+    for (int u = 0; u < lay.used; ++u) {
+      const int k = lay.k[u];
+      binos[u] = k < 0 ? k + os_n : k;
+      ltf[u] = seq[u];
+      gamma[u] = S == 2 && k > 0 ? cf(0, 1) : cf(1, 0);
     }
-    for (int k = 0; k < fft_n / 2; ++k) tw[k] = std::polar(1.0f, float(-2 * M_PI * k / fft_n));
     for (int k = 0; k < os_n / 2; ++k) {
       tw_os[k] = std::polar(1.0f, float(-2 * M_PI * k / os_n));
       itw_os[k] = std::conj(tw_os[k]);
@@ -101,7 +95,7 @@ float env_db(cf v) { return 10 * std::log10(std::max(std::norm(v), 1e-12f)); }
 // tone's channel estimated against the known symbols.
 float pred_raw(const std::array<cf, J>& gain, int S, int steps) {
   const Tones& tn = tones(S);
-  const int T = tn.used, n = tn.os_n;
+  const int T = tn.lay.used, n = tn.os_n;
   // Each symbol's waveform has rms sqrt(T) unscaled: every used tone is unit power.
   const float scale = 1.0f / std::sqrt(float(T));
   cd P[kMaxUsed] = {};
@@ -115,7 +109,7 @@ float pred_raw(const std::array<cf, J>& gain, int S, int steps) {
   for (int s = 0; s < kPredSyms; ++s) {
     std::fill(v, v + n, cf(0));
     for (int t = 0; t < T; ++t) {
-      D[t] = tn.pilot[t] ? cf(bit(), 0) : cf(bit(), bit()) * float(M_SQRT1_2);
+      D[t] = tn.lay.pilot[t] ? cf(bit(), 0) : cf(bit(), bit()) * float(M_SQRT1_2);
       v[tn.binos[t]] = D[t] * tn.gamma[t];
     }
     detail::fft(v, n, tn.itw_os);
@@ -137,7 +131,7 @@ float pred_raw(const std::array<cf, J>& gain, int S, int steps) {
   // sum |Y/h - D|^2 with h = P/Q is Q (E Q / |P|^2 - 1).
   double err = 0, ref = 0;
   for (int t = 0; t < T; ++t) {
-    if (tn.pilot[t]) continue;
+    if (tn.lay.pilot[t]) continue;
     err += Q[t] * (E[t] * Q[t] / std::norm(P[t]) - 1);
     ref += Q[t];
   }
@@ -179,7 +173,7 @@ PaFit pa_fit(const IqSpan* caps, int ncaps, uint8_t bw) {
   PaFit f;
   const int S = bw == 40 ? 2 : 1;
   const Tones& tn = tones(S);
-  const int T = tn.used, N = tn.fft_n, NOS = tn.os_n;
+  const int T = tn.lay.used, NOS = tn.os_n;
   constexpr int M = detail::kSyms;
 
   // Reused across calls, as cross_evm's; re-prepared when the fitted frames
@@ -237,13 +231,10 @@ PaFit pa_fit(const IqSpan* caps, int ncaps, uint8_t bw) {
     level += c.level;
 
     // The HT-LTF window and the data symbols at the chosen timing.
-    cf w0[kMaxUsed], a[kMaxFft];
-    for (int m = 0; m <= M; ++m) {
-      const cf* x = cap.x.data() + tm.ltf + size_t(detail::kSymLen) * S * m;
-      std::copy(x, x + N, a);
-      detail::fft(a, N, tn.tw);
-      for (int t = 0; t < T; ++t) (m ? R[(m - 1) * T + t] : w0[t]) = a[tn.bin[t]];
-    }
+    cf w0[kMaxUsed];
+    for (int m = 0; m <= M; ++m)
+      tn.lay.tones_at(cap.x.data() + tm.ltf + size_t(detail::kSymLen) * S * m,
+                      m ? &R[(m - 1) * T] : w0);
     // Decisions on the HT-LTF's channel, then refined twice on the sliced symbols.
     double dpow = 0;
     for (int t = 0; t < T; ++t) {
@@ -258,7 +249,7 @@ PaFit pa_fit(const IqSpan* caps, int ncaps, uint8_t bw) {
           }
           h = num / den;
         }
-        for (int m = 0; m < M; ++m) D[m * T + t] = decide(R[m * T + t] / h, tn.pilot[t]);
+        for (int m = 0; m < M; ++m) D[m * T + t] = decide(R[m * T + t] / h, tn.lay.pilot[t]);
       }
       for (int m = 0; m < M; ++m) dpow += std::norm(D[m * T + t]);
     }
