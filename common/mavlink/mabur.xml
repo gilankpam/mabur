@@ -49,6 +49,7 @@
       <entry value="5" name="MABUR_CAL_WALL_RESULT_DEADLINE"><description>The measurement ran out of time.</description></entry>
       <entry value="6" name="MABUR_CAL_WALL_RESULT_DEVICE_ERROR"><description>The radio refused a step of the measurement.</description></entry>
       <entry value="7" name="MABUR_CAL_WALL_RESULT_ABORTED"><description>The measurement was cancelled.</description></entry>
+      <entry value="8" name="MABUR_CAL_WALL_RESULT_DISTURBED"><description>The curve falls back after rising: a capture held something else on the air.</description></entry>
     </enum>
     <enum name="MABUR_UPDATE_CMD">
       <description>What a MABUR_UPDATE frame asks. Frozen: never change; add only extension fields.</description>

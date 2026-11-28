@@ -45,7 +45,7 @@ enum class AckResult : uint8_t {
   BadChannel = 4,
   BadWidth = 5
 };
-enum class WallResult : uint8_t { Ok = 0, Unparked = 1, TooFewPoints = 2, FloorTooHigh = 3, NotSaturated = 4, Deadline = 5, DeviceError = 6, Aborted = 7 };
+enum class WallResult : uint8_t { Ok = 0, Unparked = 1, TooFewPoints = 2, FloorTooHigh = 3, NotSaturated = 4, Deadline = 5, DeviceError = 6, Aborted = 7, Disturbed = 8 };
 
 // Drone -> ground: accept/refuse a SweepCmd, and how soon it starts.
 struct SweepAck {

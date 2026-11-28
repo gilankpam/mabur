@@ -13,6 +13,9 @@ namespace {
 // while the lost index steps cost almost no radiated power.
 constexpr float kThreshold[8] = {0, 0, 0, -9.0f, -12.5f, -15.0f, -15.5f, -17.0f};
 constexpr float kNoLdpcPenaltyDb = 4.0f;
+// A PA's EVM only gets worse with the index, so a point that reads this much better than
+// an earlier one means that earlier capture held something else on the air.
+constexpr float kFallBackDb = 2.0f;
 }  // namespace
 
 std::optional<float> curve_floor_db(const WallCurve& c) {
@@ -30,6 +33,14 @@ cal::WallResult check_curve(const WallCurve& c) {
   if (n < 20) return cal::WallResult::TooFewPoints;
   if (*curve_floor_db(c) > -26.0f) return cal::WallResult::FloorTooHigh;
   if (*last < -11.0f) return cal::WallResult::NotSaturated;
+  // Only from the lowest threshold any wall uses: under it the curve is the listener's
+  // noise floor, which scatters by several dB and never sets a wall.
+  std::optional<float> top;
+  for (const auto& v : c.evm_db) {
+    if (!v || (!top && *v < kThreshold[7] - kNoLdpcPenaltyDb)) continue;
+    if (top && *top - *v > kFallBackDb) return cal::WallResult::Disturbed;
+    if (!top || *v > *top) top = v;
+  }
   return cal::WallResult::Ok;
 }
 

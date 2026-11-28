@@ -208,8 +208,11 @@ store follows a calibration relocate like any hop.
    the stored report again on its repeat schedule, not a fresh ack. Without
    any copy the GS's window closes at planned end + 1 s, and a Wall sweep
    then fails the run (`no wall report from the drone`).
-5. **Result.** A Wall sweep with a result other than `ok` fails the run,
-   `wall measurement failed: <code>` (codes below). Capacity: one
+5. **Result.** A Wall sweep that comes back `unparked` (a channel the
+   drone cannot measure) is skipped with a note, an `X` line in `cal.log`,
+   and the run goes on: the drone stored nothing and flies its chip's
+   table there. Any other result than `ok` fails the run, `wall
+   measurement failed: <code>` (codes below). Capacity: one
    efficiency per rate (below), then:
 6. **Apply** (capacity only). `MABUR_CAL_APPLY{nonce, seq, bw, eff[8]}`
    every 200 ms until `MABUR_CAL_APPLIED{nonce, seq, bw, ok, reason}`; 5 s
@@ -306,7 +309,7 @@ run closes after `await_next_ms` (15 s).
 
 **Validity.** A result is stored only when the measurement runs to its
 end and the curve passes the checks; every other result stores nothing.
-The results other than `ok` (the first four are checked in the order
+The results other than `ok` (the first five are checked in the order
 listed):
 
 | result code | condition |
@@ -315,6 +318,7 @@ listed):
 | `too_few_points` | fewer than 20 of the 25 points have a value |
 | `floor_too_high` | the best point is above −26 dB |
 | `not_saturated` | the last point is below −11 dB (the PA was never driven into compression) |
+| `disturbed` | once the curve has reached −21 dB (the lowest threshold any wall uses), a point reads more than 2 dB better than an earlier one. A PA's EVM only gets worse with the index, so the earlier capture held something else on the air; left in, it puts a wall many index steps too low |
 | `deadline` | the 30 s measurement deadline ran out |
 | `device_error` | the radio refused a step, or its restore failed |
 | `aborted` | the run was cancelled mid-measurement |
@@ -567,7 +571,8 @@ order.
   64 KB is rejected the same way (a full file of 354 entries is about
   50 KB).
 - An entry whose curve fails the measurement's validity checks (fewer
-  than 20 values, best point above −26 dB, last point below −11 dB; see
+  than 20 values, best point above −26 dB, last point below −11 dB, a
+  fall-back of more than 2 dB; see
   "Validity") parses but is never flown: that (channel, width) flies as
   unmeasured, and `maburd` logs `maburd radio: wall cache ch <ch> <bw>
   MHz: curve fails its checks, not flown` at start.
@@ -816,13 +821,18 @@ says which:
 - `channel not in the drone's set` / `width not flown by the drone` — the
   `@<ch>` token names a channel outside `radio.channels` or on 2.4 GHz, or
   a 40 MHz measurement was asked of a drone at `radio.width = 20`.
+- `calibration sweep … skipped: the drone cannot measure its walls on
+  this channel` — the result was `unparked`: the antenna-switch park did
+  not raise the listener level by 12 dB. Nothing was stored, the channel
+  flies the chip's table and the run went on. A unit can read like this on
+  a whole band; if it is one channel only, check the antennas and re-run.
 - `wall measurement failed: <code>` — the drone's result. Nothing was
-  stored and the cache is as it was. `unparked`: the antenna-switch park
-  did not raise the listener level by 12 dB (check the antennas and the
-  drone's own radio, re-run); `too_few_points`, `floor_too_high`: the
+  stored and the cache is as it was. `too_few_points`, `floor_too_high`: the
   listener or the PA was not clean enough to read (an antenna, a wedged
   chain; re-run); `not_saturated`: the PA never compressed within the
-  index range, so no curve to cut (a very low-power module); `deadline`:
+  index range, so no curve to cut (a very low-power module); `disturbed`:
+  something else transmitted during a capture (re-run; on a busy channel
+  it can take more than one try); `deadline`:
   30 s were not enough; `device_error`: the radio refused a step or did
   not restore. A failed restore is the drone's `maburd cal: ERROR:
   CrossPathEnd failed` line; `maburd` then exits 1 s after its `exiting for
@@ -890,7 +900,8 @@ maburgs: calibration done
 
 A wall sweep the drone refused as unsupported prints `calibration sweep
 1/4 power20 skipped: the drone cannot measure its walls` in place of
-`done`. An adopted apply always prints `ok` (the drone sends no note). Then
+`done`; one that came back `unparked` prints the same line ending `on this
+channel`. An adopted apply always prints `ok` (the drone sends no note). Then
 `calibration failed: <why>` / `calibration aborted: <why>`, and the
 channel pick's own `maburgs channel: calibration …` lines
 ([`docs/channel-select.md`](https://github.com/gilankpam/mabur-ground/blob/master/docs/channel-select.md)). The start line is printed when the run first
@@ -903,7 +914,7 @@ maburd cal: wall ch=112 bw=20 result=Ok park_rise=17.4 floor=-30.6 anchor=39 wal
 ```
 
 `result` is one of `Ok Unparked TooFewPoints FloorTooHigh NotSaturated
-Deadline DeviceError Aborted`; `park_rise` the parked-minus-unparked level
+Deadline DeviceError Aborted Disturbed`; `park_rise` the parked-minus-unparked level
 in dB, `floor` the best EVM in dB, `captures` the probe captures taken,
 `time_ms` the measurement's wall-clock time from the setup; ` (LDPC off:
 thresholds lowered 4 dB)` is appended when `radio.ldpc` is off. Also at
@@ -946,13 +957,14 @@ A <bw> <0|1> <reason to end of line>                                 # per apply
 ```
 
 `S` is written for a sweep the drone accepted (a wall sweep acknowledged
-only by its report is written when the report arrives); a skipped sweep
-gets an `X` and no `S`. `S`'s `param` is the measured channel for a wall sweep and the dwell in
+only by its report is written when the report arrives); a sweep the drone
+refused as unsupported gets an `X` and no `S`. `S`'s `param` is the measured channel for a wall sweep and the dwell in
 ms for capacity; it scopes the rows after it to its width until the next
 `S`. `W` records what the drone reported, as it reported it: the walls
 relative to its anchor, the floor in 0.1 dB, 63 = no crossing. `X` is
-written for a sweep the drone refused as unsupported (`X 0 power20
-unsupported`), which the GS skipped. `C` (power cells) and `V` (verify)
+written for a sweep the GS skipped: one the drone refused as unsupported
+(`X 0 power20 unsupported`), or a wall sweep whose measurement came back
+`unparked` (`X 0 power20 unparked`, after its `S`). `C` (power cells) and `V` (verify)
 lines are no longer written. The `R` line is written at the run's first accepted or skipped sweep, so
 a run that failed before that has none; `ldpc` is the drone's announced
 stamp flag (the GS has no LDPC setting of its own), or `-` when no ack was

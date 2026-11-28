@@ -221,7 +221,7 @@ new ids at its parser (unknown CRC_EXTRA), which is what we want.
 |---|---|---|---|
 | `MABUR_CAL_SWEEP` | 60000 | GS → drone | `nonce u32, seq u8, kind u8 (1 wall, 3 capacity), bw u8, channel u8 (wall: the channel to measure, 0 = the link's), settle_ms u16, dwell_ms u16, mcs_mask u8` (the last three: capacity) |
 | `MABUR_CAL_ACK` | 60001 | drone → GS | `nonce u32, seq u8, result u8 (0 accepted, 1 anchor unreadable, 2 busy, 3 unsupported, 4 bad channel, 5 bad width), start_in_ms u16, flags u8 (the stamp's ldpc/stbc mask)` |
-| `MABUR_CAL_SWEEP_DONE` | 60002 | drone → GS | `nonce u32, seq u8, offered u32[8], blocked_pct u8[8]` (capacity), `wall_result u8 (0 ok, 1 unparked, 2 too few points, 3 floor too high, 4 not saturated, 5 deadline, 6 device error, 7 aborted), channel u8, bw u8, walls i8[8] (relative to anchor, 63 = no wall found), floor_evm_x10 i16, anchor u8` (wall) |
+| `MABUR_CAL_SWEEP_DONE` | 60002 | drone → GS | `nonce u32, seq u8, offered u32[8], blocked_pct u8[8]` (capacity), `wall_result u8 (0 ok, 1 unparked, 2 too few points, 3 floor too high, 4 not saturated, 5 deadline, 6 device error, 7 aborted, 8 disturbed), channel u8, bw u8, walls i8[8] (relative to anchor, 63 = no wall found), floor_evm_x10 i16, anchor u8` (wall) |
 | `MABUR_CAL_APPLY` | 60003 | GS → drone | `nonce u32, seq u8, bw u8, eff u16[8] (×1000, 0 = leave)` (efficiency only) |
 | `MABUR_CAL_APPLIED` | 60004 | drone → GS | `nonce u32, seq u8, bw u8, ok u8, reason char[50]` (why it refused; on success empty) |
 | `MABUR_CAL_ABORT` | 60005 | GS → drone | `nonce u32` |

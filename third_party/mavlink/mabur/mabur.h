@@ -72,7 +72,8 @@ typedef enum MABUR_CAL_WALL_RESULT
    MABUR_CAL_WALL_RESULT_DEADLINE=5, /* The measurement ran out of time. | */
    MABUR_CAL_WALL_RESULT_DEVICE_ERROR=6, /* The radio refused a step of the measurement. | */
    MABUR_CAL_WALL_RESULT_ABORTED=7, /* The measurement was cancelled. | */
-   MABUR_CAL_WALL_RESULT_ENUM_END=8, /*  | */
+   MABUR_CAL_WALL_RESULT_DISTURBED=8, /* The curve falls back after rising: a capture held something else on the air. | */
+   MABUR_CAL_WALL_RESULT_ENUM_END=9, /*  | */
 } MABUR_CAL_WALL_RESULT;
 #endif
 

@@ -21,7 +21,7 @@ namespace {
 const char* result_name(cal::WallResult r) {
   static const char* const kNames[] = {"Ok",           "Unparked", "TooFewPoints",
                                        "FloorTooHigh", "NotSaturated", "Deadline",
-                                       "DeviceError",  "Aborted"};
+                                       "DeviceError",  "Aborted",  "Disturbed"};
   const auto i = static_cast<size_t>(r);
   return i < sizeof kNames / sizeof kNames[0] ? kNames[i] : "?";
 }

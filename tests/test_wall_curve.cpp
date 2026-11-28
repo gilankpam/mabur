@@ -14,6 +14,11 @@ const int k144_20[25] = {-306,-302,-296,-285,-241,-221,-200,-184,-168,-154,-144,
                          -116,-109,-103,-98,-94,-91,-89,-87,-86,-84,-83,-81};      // anchor 39
 const int k40_40[25]  = {-319,-320,-322,-311,-305,-307,-308,-307,-305,-302,-292,-282,-268,
                          -243,-219,-199,-176,-161,-148,-134,-123,-112,-101,-95,-86};  // anchor 75
+// Measured at 40 MHz while something else was on the air: two points jump up and the curve
+// falls back 8.6 dB. Every other rule passes it, and its first -17 dB crossing is 19 index
+// steps below the undisturbed one.
+const int kDisturbed[25] = {-279,-292,-277,-201,-138,-224,-171,-189,-174,-157,-145,-123,-124,
+                            -99,-108,-95,-84,-89,-84,-82,-79,-77,-75,-75,-73};
 }  // namespace
 
 TEST(measured_curves_give_these_walls) {
@@ -68,6 +73,23 @@ TEST(validity_boundaries_are_inclusive) {
   CHECK(check_curve(floor26) == cal::WallResult::Ok);              // fails if the floor test is >= -26
   auto last11 = curve(k144_20, 39);  for (auto& v : last11.evm_db) if (*v > -11.0f) v = -11.0f;
   CHECK(check_curve(last11) == cal::WallResult::Ok);               // fails if the last-point test is <= -11
+}
+
+TEST(a_curve_that_falls_back_is_disturbed) {
+  CHECK(check_curve(curve(kDisturbed, 53)) == cal::WallResult::Disturbed);
+}
+TEST(a_fall_back_of_2_dB_is_tolerated_and_more_is_not) {
+  auto c = curve(k144_20, 39);     // -16.8 at index 60, then -15.4
+  c.evm_db[9] = -18.8f;
+  CHECK(check_curve(c) == cal::WallResult::Ok);          // fails if the test is >= 2 dB
+  c.evm_db[9] = -18.9f;
+  CHECK(check_curve(c) == cal::WallResult::Disturbed);
+}
+TEST(scatter_under_the_lowest_threshold_is_not_a_disturbance) {  // the noise-limited floor moves by several dB
+  auto c = curve(k144_20, 39);
+  c.evm_db[1] = -22.0f;
+  c.evm_db[2] = -32.0f;
+  CHECK(check_curve(c) == cal::WallResult::Ok);
 }
 
 MTEST_MAIN
