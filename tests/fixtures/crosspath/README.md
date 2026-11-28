@@ -41,3 +41,12 @@ the test rebuilds the word as `uint64_t{hi} << 32` for
 The `matches_the_reference` values in the test are the spike's numpy
 measurement on the first eleven files; `keeps_the_exhaustive_search_answer`
 pins every file to what the exhaustive timing search returned.
+
+## Probe pairs for `test_pa_fit`
+
+The twelve `d…` / `h…` files are the survey's weakest-word (`0x3000e`) takes
+1 and 2 of the bench drone (`d…`) and of a second RTL8812EU (`h…`), named
+`<unit><channel>_<width>_i<TXAGC index>_<a|b>.hi32` (take 1 is `a`, take 2 is
+`b`). The expected values in the test come from
+`pafit_ref.py <width> <a> <b>`, the numpy reference the C++ fit ports
+(`nix-shell -p 'python3.withPackages(ps: [ps.numpy])'`).

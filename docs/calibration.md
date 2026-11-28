@@ -13,11 +13,10 @@ Two per-unit hardware facts of the vtx are measured, by different means:
   and the drone writes it into `/etc/mabur.toml`.
 
 The walls are flown only under `radio.power_mode = "offset"`, which the
-operator sets; nothing switches it. A power sweep's time per (channel,
-width) is set by its capture count and the drone's per-capture time,
-measured per width on the bench and logged by each sweep (`time_ms`,
-`captures`, below); it never exceeds the 30 s deadline
-(`cal::kWallDeadlineMs`, shared by both ends). A capacity sweep takes about
+operator sets; nothing switches it. A power sweep per (channel, width) is
+a handful of captures, logged by each sweep (`time_ms`, `captures`,
+below); the 30 s deadline (`cal::kWallDeadlineMs`, shared by both ends)
+bounds it. A capacity sweep takes about
 18 s per width, at the power the drone flies for the link's channel.
 
 ```
@@ -34,7 +33,8 @@ No toolchain, no repo checkout, no laptop-side step. Why the capacity
 sweep has the shape it has (a 2 s dwell):
 `docs/findings/2026-10-31-calibration-shortening-spike.md`. How the walls
 measurement was found to work:
-`docs/findings/2026-11-26-drone-self-calibration-cross-path.md`.
+`docs/findings/2026-11-26-drone-self-calibration-cross-path.md`, and its
+two-probe fit: `docs/findings/2026-11-28-wall-probe-fit.md`.
 Earlier measurements that are still hardware fact — the comb past the
 first dip, the transfer curve:
 `docs/findings/2026-07-16-txagc-calibration.md`,
@@ -251,31 +251,88 @@ TX writer thread, against a capture session on the radio
    member of `radio.channels` shares one at 40, so the measured channel
    lands on it).
 2. **Park check, first.** One capture at index 28 and the weakest listener
-   gain with the switch unparked, one after parking it. The parked level
-   (envelope) must be at least 12 dB above the unparked one, or the sweep
-   ends `unparked` (as it does when the park itself does not take or the
-   rise is not finite, an all-zero capture): an unparked listener passes every other rule while
-   reading PA A about 3 dB too good, the overdriving direction. The check
-   is relative on purpose, since the absolute parked level differs between
-   channels and airframes. A park-check capture holding no TX at all (no
-   frame at a level of 30 dB or more, envelope under 30 dB: the
+   gain with the switch unparked, one after parking it. The rise of the
+   parked level (envelope) over the unparked one has three outcomes:
+   - **12 dB or more:** parked; the measurement goes on.
+   - **6 to 12 dB, weak:** the measurement goes on and its curve is flagged
+     weak (`park=weak` in the log, a `w` in the cache). A channel whose park
+     isolation is weak hears the probe through leakage with the switch
+     unparked, so its curve reads worse than the PA's own; the flag lowers
+     the wall thresholds by 2.5 dB (section 4).
+   - **Under 6 dB:** the sweep ends `unparked`, as it does when the park
+     itself does not take or the rise is not finite (an all-zero capture).
+     An unparked listener passes every other rule while reading PA A about
+     3 dB too good, the overdriving direction.
+
+   The check is relative on purpose, since the absolute parked level differs
+   between channels and airframes. A park-check capture holding no TX at all
+   (no frame at a level of 30 dB or more, envelope under 30 dB: the
    demodulator can read a "frame" out of an empty capture's noise) says
    nothing about the park and is retried, up to twice.
-   A channel whose park isolation is weak hears the probe through leakage
-   with the switch unparked, so the rise is small and the curve reads
-   several dB too high (the unsafe direction); such a channel is refused
-   and flies the chip's table. A healthy channel's rise is well above the
-   12 dB threshold.
-3. **Points.** Absolute TXAGC index 28 to 124 in steps of 4, ascending: 25
-   points. A point is the median of up to three captures that held a
-   clean, unclipped frame at a level of at least 30 dB; a capture without
-   one is retried, at most twice per point. A point may end with no value.
+3. **Two probes.** The measurement does not capture all 25 indices. It finds
+   two probe indices by each probe's own EVM (measured on the capture
+   itself, in dB), fits the PA at each, and predicts the rest of the curve.
+   - **Window.** Probe 1 is the index whose own EVM lies in −12.3 to
+     −11.0 dB, probe 2 the one in −9.0 to −8.3 dB. Probe 2 is hunted from
+     probe 1 + 24 (clamped to 124), counting probe 1 as an index already
+     tried, and the hunt may step down to probe 1 + 4.
+   - **Hunt.** Probe 1's first index is `anchor + 40` rounded to a grid
+     step (clamped to 60..124). Each capture outside the window moves the index
+     toward it by the EVM distance to the window's aim point divided by an
+     assumed slope (0.25 dB per index for probe 1, 0.1 for probe 2), rounded
+     to a grid step and limited to 4..16 indices; an index already tried is
+     skipped. A hunt ends on an index inside the window; on the top index
+     (124) still below it; on a tried pair one grid step apart that straddles
+     the window (the upper index is the probe; an index above the window
+     whose lower neighbour is below it is the same case from the other
+     side). A hunt that has measured
+     six indices without ending, or that runs out of indices, ends the
+     sweep `too_few_points`.
+   - **A probe** is up to three captures of its index; the fit needs two
+     frames that are clean, unclipped and at a level of at least 30 dB, and
+     takes another capture while it has fewer. If three captures still leave
+     under two frames, the sweep ends `too_few_points`. A hunt capture
+     without such a frame is retried, at most twice per index, then ends the
+     sweep `too_few_points`. If probe 1 is the top index there is no
+     probe 2.
 4. **Gain.** Four listener gain words, strongest first. The sweep starts at
-   the strongest and only steps down: a clipped capture, or a listener
-   level above 57 dB (where the listener's own distortion adds), restarts
-   that index one word weaker. A clipped capture is never used for a point,
-   and clipping at the weakest word leaves the point empty.
-5. **Restore, on every exit path** (done, invalid, abort, deadline, device
+   the strongest and only steps down, never back up (a fit's captures share
+   one gain): a clipped capture, or a listener level above 57 dB (where the
+   listener's own distortion adds), repeats that index one word weaker. A
+   clipped capture is never used, and clipping at the weakest word counts
+   as a capture without a frame.
+5. **The fit and its residual check.** `pa_fit`
+   ([`drone/src/pa_fit.h`](../drone/src/pa_fit.h); reference
+   [`tests/fixtures/crosspath/pafit_ref.py`](../tests/fixtures/crosspath/pafit_ref.py))
+   models the received tones as the ideal frame waveform through a memoryless
+   PA gain, piecewise linear in the envelope's dB (18 knots, 2 dB apart),
+   then a per-tone channel. Lowering the drive by n index steps slides the
+   waveform down the same gain curve, and the predicted EVM is that
+   prediction power-added to an assumed listener floor of −27 dB (the
+   floor is assumed, not measured).
+
+   After the fit, its residual (the error the model cannot explain, in dB
+   over the received power) minus the probe's own EVM is compared with a
+   limit; a probe above it holds foreign RF or a garbage fit, and is
+   retaken, up to twice, then the sweep ends `disturbed`. The limits:
+
+   | width | probe 1 | probe 2 |
+   |---|---|---|
+   | 20 MHz | −8.0 dB | −5.5 dB |
+   | 40 MHz | −5.0 dB | −3.0 dB |
+6. **The curve.** The 25 points are indices 28 to 124 in steps of 4. Up to
+   probe 1 each is the fit-1 prediction at that many steps below the probe;
+   between the probes it is the fit-2 prediction. Going down from each probe
+   a point never reads worse than the one above it (a running minimum): a
+   PA's EVM only worsens with the index, and a fit's prediction rises again
+   far below its probe, where few samples reach the low knots. Where the two
+   fits meet, a point above probe 1 never reads better than the point at
+   probe 1. Above the top probe nothing is predicted: each point is the top
+   probe's point plus 0.1 dB per index above it (the probe-2 hunt's slope),
+   so the curve keeps rising past the probe and a flat tail cannot hide
+   MCS3's crossing. Values are rounded to 0.1 dB; a non-finite value ends
+   the sweep `too_few_points`.
+7. **Restore, on every exit path** (done, invalid, abort, deadline, device
    error): the capture session ends (switch route, listener chain and TX
    buffer layout back to flight's), then width, channel and TX power. If
    the session's own restore fails the result is `device_error` and nothing
@@ -291,9 +348,10 @@ TX writer thread, against a capture session on the radio
 probe train, the USB event loop and the encoder saturate core 0 during a
 measurement while core 1 idles, so after the session opens the measuring
 thread pins itself to core 1 (the hot core) and returns to core 0 when the
-session ends, on every exit path. The EVM maths takes about 90 ms per capture
-there against more than twice that on the busy core, which is what keeps a
-sweep inside the deadline.
+session ends, on every exit path. A capture's EVM measurement takes about
+90 ms at 20 MHz there, against more than twice that on the busy core, and the
+two probe fits and the curve's predictions add to it; running there is what
+keeps a sweep inside the deadline.
 
 **The drone sends nothing during the measurement** (`radio_quiet`): from
 the setup to the restore every send is dropped, so no DISC_ACK, no
@@ -309,22 +367,24 @@ run closes after `await_next_ms` (15 s).
 
 **Validity.** A result is stored only when the measurement runs to its
 end and the curve passes the checks; every other result stores nothing.
-The results other than `ok` (the first five are checked in the order
-listed):
+The results other than `ok`:
 
 | result code | condition |
 |---|---|
-| `unparked` | the park check failed (above) |
-| `too_few_points` | fewer than 20 of the 25 points have a value |
-| `floor_too_high` | the best point is above −26 dB |
+| `unparked` | the rise at the park check was under 6 dB or not finite, or the park did not take |
+| `too_few_points` | a probe never gave two clean frames, or its hunt ran out of indices or measured six without ending |
 | `not_saturated` | the last point is below −11 dB (the PA was never driven into compression) |
-| `disturbed` | once the curve has reached −21 dB (the lowest threshold any wall uses), a point reads more than 2 dB better than an earlier one. A PA's EVM only gets worse with the index, so the earlier capture held something else on the air; left in, it puts a wall many index steps too low |
+| `disturbed` | a probe's fit residual stayed above its limit through its retakes: something else was on the air |
 | `deadline` | the 30 s measurement deadline ran out |
 | `device_error` | the radio refused a step, or its restore failed |
 | `aborted` | the run was cancelled mid-measurement |
 
 `ok` is the only result that stores anything: a failed or doubtful
-measurement never replaces a stored one and is never flown.
+measurement never replaces a stored one and is never flown. The result
+code `floor_too_high` (3) is not produced: nothing checks the listener's
+floor, which the fit assumes. A dead listener or a detached antenna shows
+as no frame at the 30 dB level the captures need, or as a failed park
+check.
 
 **20 MHz tuning.** At `radio.width = 40` the drone airs 20 MHz rungs as
 20 MHz frames on the 40 MHz tuning, but the 20 MHz curve is measured with
@@ -341,8 +401,12 @@ covers it.
 `walls_from_curve` ([`drone/src/wall_curve.h`](../drone/src/wall_curve.h)): for each MCS, the crossing is
 the linearly interpolated TXAGC index at which the curve first rises
 through that MCS's threshold, searching upward from the floor (the first
-lowest point). `wall = floor(crossing − anchor)`, clamped to [−64, 63];
-no crossing means 63. Walls are relative to the anchor, as before: the
+lowest point). `wall = floor(crossing − anchor)`, clamped to [−64, 63].
+A threshold under the whole curve has no crossing to find: its wall is the
+lowest index holding the curve's minimum, minus the anchor. On a predicted
+curve the minimum is a plateau the running minimum built, and the real
+crossing lies under its top, so the wall takes its bottom. A curve that
+never rises to the threshold gives 63. Walls are relative to the anchor, as before: the
 chip adds its own per-channel-group reference on every channel.
 
 | MCS | 0–2 | 3 | 4 | 5 | 6 | 7 |
@@ -359,7 +423,9 @@ the curve, more than `radio.wall_margin_db` covers, while the radiated power
 rises only about 0.1 dB per index there: the lower threshold costs under
 1 dB of MCS4 power. **With `radio.ldpc = false` every threshold is lowered by
 4 dB** (the BCC versus LDPC+STBC difference at MCS7), and the
-measurement's log line says so. The walls are derived from the stored curve
+measurement's log line says so. **A curve flagged weak** (park rise 6 to
+12 dB) has every threshold lowered by 2.5 dB too, 6.5 dB together with
+LDPC off; the log line says so. The walls are derived from the stored curve
 at load and whenever `radio.ldpc` or the margin changes, so neither needs
 a re-measure and a later correction of the thresholds does not either.
 Against a receiver, the MCS7 LDPC+STBC wall lies within 3.5 steps of the
@@ -470,7 +536,7 @@ and resume video on its own.
 | step | time |
 |---|---|
 | channel pick | 0 pinned or one card; ~1 s for the round (three members at 280 ms) plus up to `[hop] confirm_ms` for a relocate |
-| wall measurement | captures × the per-capture time, plus the channel and width switches (each sweep logs `time_ms` and `captures`); never more than 30 s |
+| wall measurement | 8 to 13 captures plus the channel and width switches: 1.5–1.8 s at 20 MHz and 2.8–3.5 s at 40 MHz on the reference drone (each sweep logs `time_ms` and `captures`); bounded by the 30 s deadline |
 | capacity sweep | 18.4 s per width (8 × 2.3 s) + 200 ms start + ack |
 | apply (capacity) | one round trip |
 
@@ -547,11 +613,12 @@ One line per (channel, width), holding the measured curve and the anchor,
 not the walls. A text file beside `/etc/mabur.channel`:
 
 ```
-maburwalls 1
-<ch> <bw> <anchor> <e0> <e1> … <e24>
+maburwalls 2
+<ch> <bw> <anchor> <p|w> <e0> <e1> … <e24>
 ```
 
-`<ch>` is 1..177, `<bw>` 20 or 40, `<anchor>` 0..127, then 25 values, one per
+`<ch>` is 1..177, `<bw>` 20 or 40, `<anchor>` 0..127, `p` (parked) or `w`
+(weak park: thresholds lowered 2.5 dB), then 25 values, one per
 TXAGC index 28, 32, … 124: the point's EVM in dB × 10 (an integer, −600..0),
 or `x` for a point with no value. Entries are in channel, then width,
 order.
@@ -562,17 +629,17 @@ order.
   `maburd cal: wall cache … write … failed`; the result stays `ok`.
 - Read at `maburd` start: `maburd radio: wall cache /etc/mabur.walls: N
   measured (channel, width)`. A missing, unreadable, malformed or
-  wrong-version file is "nothing measured", with the reason in the same
-  log line; it is never a boot failure.
+  wrong-version file (a `maburwalls 1` file included, reason `version 1
+  (re-measure)`) is "nothing measured", with the reason in the same log
+  line; it is never a boot failure.
 - **Hand-editing:** LF line ends, single spaces between tokens, a final
-  newline, a header line exactly `maburwalls 1`. Any malformed line (wrong
+  newline, a header line exactly `maburwalls 2`. Any malformed line (wrong
   token count, a value out of range, a duplicate (channel, width), no
   trailing newline) discards the **whole** file: "nothing measured". Over
   64 KB is rejected the same way (a full file of 354 entries is about
   50 KB).
-- An entry whose curve fails the measurement's validity checks (fewer
-  than 20 values, best point above −26 dB, last point below −11 dB, a
-  fall-back of more than 2 dB; see
+- An entry whose curve fails the measurement's validity checks (a point
+  without a value, last point below −11 dB; see
   "Validity") parses but is never flown: that (channel, width) flies as
   unmeasured, and `maburd` logs `maburd radio: wall cache ch <ch> <bw>
   MHz: curve fails its checks, not flown` at start.
@@ -720,8 +787,8 @@ channels over several runs.
 
 The walls measurement needs no receiver, so it does not depend on the
 GS's distance or antennas. It does need the drone's own antennas
-connected (a detached one reads as a failed park check or a floor above
-−26 dB). The capacity sweep still wants a normal bench distance:
+connected (a detached one reads as a failed park check or as probes that
+never give two clean frames). The capacity sweep still wants a normal bench distance:
 close enough to hear the fastest rows, far enough not to compress the GS's
 RX front end (the `saturated` flag fires on a peak RSSI above −45 dBm).
 Run capacity where the air is quiet (the pick helps).
@@ -734,8 +801,7 @@ that cannot self-measure:
 
 ```
 run nonce=1873455120 margin=1.00dB ch=112 pick=auto ldpc=1
-walls ch=112 20 MHz anchor=39 floor=-30.6dB: 63 63 63 63 44 26 24 20
-walls ch=112 40 MHz anchor=39 floor=-29.8dB: 63 63 63 63 45 28 28 23
+walls ch=144 20 MHz anchor=39 floor=-22.7dB: 63 63 63 63 35 25 23 19
 rate     eff20   flags
 mcs0       .93
 mcs1       .88
@@ -745,7 +811,7 @@ walls stored by the drone (/etc/mabur.walls)
 written: /etc/mabur.toml (backup /etc/mabur.toml.pre-cal)
 
 run nonce=1873455121 margin=1.00dB ch=112 pick=pinned ldpc=-
-walls ch=112 20 MHz anchor=39 floor=-30.6dB: 63 63 63 63 44 26 24 20
+walls ch=144 20 MHz anchor=39 floor=-22.7dB: 63 63 63 63 35 25 23 19
 walls stored by the drone (/etc/mabur.walls)
 
 run nonce=1873455122 margin=1.00dB ch=112 pick=onecard ldpc=1
@@ -755,6 +821,8 @@ skipped power20 (sweep 0): unsupported
 written: /etc/mabur.toml (backup /etc/mabur.toml.pre-cal)
 ```
 
+The `run` line names the link's channel and each `walls` line the channel
+it measured, which is why the example shows `ch=112` and `ch=144`.
 Per wall sweep one line, `walls ch=<ch> <bw> MHz anchor=<a> floor=<dB>dB:`
 then the eight walls, MCS0 first (63 = no crossing, the rail). The
 capacity table has one column per width swept (`eff20`, `eff40`) and a
@@ -778,8 +846,8 @@ walls-only run prints no written line.
   channel group where the receiver's walls were 5–8 steps above the curve,
   the cause is not understood.
 - **The floor** (`floor_evm_x10` / `floor` on the report) is the best EVM
-  of the curve; a healthy PA A reads −26 dB or better, and a floor near the
-  limit is the first sign of a bad listener setup or antenna.
+  of the curve. Its low end is a prediction power-added to the assumed
+  −27 dB listener floor, so it says nothing about the listener's health.
 
 ### Capacity flags
 
@@ -823,13 +891,13 @@ says which:
   a 40 MHz measurement was asked of a drone at `radio.width = 20`.
 - `calibration sweep … skipped: the drone cannot measure its walls on
   this channel` — the result was `unparked`: the antenna-switch park did
-  not raise the listener level by 12 dB. Nothing was stored, the channel
+  not raise the listener level by at least 6 dB (a rise of 6 to 12 dB
+  measures and is flagged `park=weak` in the drone's log). Nothing was stored, the channel
   flies the chip's table and the run went on. A unit can read like this on
   a whole band; if it is one channel only, check the antennas and re-run.
 - `wall measurement failed: <code>` — the drone's result. Nothing was
-  stored and the cache is as it was. `too_few_points`, `floor_too_high`: the
-  listener or the PA was not clean enough to read (an antenna, a wedged
-  chain; re-run); `not_saturated`: the PA never compressed within the
+  stored and the cache is as it was. `too_few_points`: a probe never gave two
+  clean frames (an antenna, a wedged chain; re-run); `not_saturated`: the PA never compressed within the
   index range, so no curve to cut (a very low-power module); `disturbed`:
   something else transmitted during a capture (re-run; on a busy channel
   it can take more than one try); `deadline`:
@@ -910,14 +978,15 @@ commands the drone, after the pick.
 **`maburd` log** (`/tmp/mabur.log`). The measurement's one line:
 
 ```
-maburd cal: wall ch=112 bw=20 result=Ok park_rise=17.4 floor=-30.6 anchor=39 walls=63,63,63,63,36,26,24,20 captures=88 time_ms=6100
+maburd cal: wall ch=144 bw=20 result=Ok park_rise=17.5 floor=-22.7 anchor=39 walls=63,63,63,63,35,25,23,19 captures=8 time_ms=1507
 ```
 
-`result` is one of `Ok Unparked TooFewPoints FloorTooHigh NotSaturated
+`result` is one of `Ok Unparked TooFewPoints NotSaturated
 Deadline DeviceError Aborted Disturbed`; `park_rise` the parked-minus-unparked level
 in dB, `floor` the best EVM in dB, `captures` the probe captures taken,
 `time_ms` the measurement's wall-clock time from the setup; ` (LDPC off:
-thresholds lowered 4 dB)` is appended when `radio.ldpc` is off. Also at
+thresholds lowered 4 dB)` is appended when `radio.ldpc` is off, and
+` park=weak (thresholds lowered 2.5 dB)` when the curve is flagged weak. Also at
 boot `maburd radio: wall cache …` (and `… curve fails its checks, not
 flown` per invalid entry), on a failed restore `maburd cal: ERROR:
 CrossPathEnd failed …` then `maburd cal: ERROR: the wall measurement could
@@ -1008,6 +1077,7 @@ findings page.
 |---|---|---|
 | wall, link channel | `maburcal start power20` | one sweep, `done`, `maburd cal: wall … result=Ok`, the pair back on its channel with video |
 | wall, named channels | `maburcal start power20@<ch> power40@<ch>` on each channel of the set | each `result=Ok`, the −17 dB crossing (the MCS7 wall only; the other rungs are not checked here) within 2 index steps of the reference, `/etc/mabur.walls` holds one line per (channel, width) |
+| weak park | a channel whose park rise reads 6 to 12 dB | `result=Ok` with `park=weak` in the log, a `w` in that channel's `/etc/mabur.walls` line, thresholds 2.5 dB lower than for an unflagged curve |
 | link after a measurement | after every wall sweep | `SESSION` again within a couple of beacons, video, uplink delivery as before the trigger |
 | table follows | hop across measured and unmeasured channels under `power_mode = "offset"` | the `power table ch … ` log names the measured plan where that (channel, width) has an entry, else the chip's table (a channel measured only at 20 MHz flies the chip's table at 40) |
 | rungs | each ladder rung, forced, on three channels at the stored walls and default margin; the only gate that checks every rung over the air (see "Known limit") | flies clean |

@@ -29,9 +29,9 @@ std::string vals(int n, const std::string& v = "-100") {
   return s;
 }
 std::string line(const std::string& ch, const std::string& w, const std::string& a, const std::string& rest) {
-  return ch + " " + w + " " + a + rest + "\n";
+  return ch + " " + w + " " + a + " p" + rest + "\n";
 }
-const std::string H = "maburwalls 1\n";
+const std::string H = "maburwalls 2\n";
 
 WallCurve mk(int anchor, int base) {
   WallCurve c;
@@ -39,7 +39,9 @@ WallCurve mk(int anchor, int base) {
   for (int k = 0; k < 25; ++k) c.evm_db[k] = (base - k * 7) / 10.0f;
   return c;
 }
-bool same(const WallCurve& a, const WallCurve& b) { return a.anchor == b.anchor && a.evm_db == b.evm_db; }
+bool same(const WallCurve& a, const WallCurve& b) {
+  return a.anchor == b.anchor && a.evm_db == b.evm_db && a.weak_park == b.weak_park;
+}
 
 void expect_bad(const std::string& content) {
   Dir t;
@@ -66,7 +68,40 @@ TEST(round_trip_keeps_values_and_gaps) {  // fails if save rounds by truncation,
   CHECK(same(r.entries.at({144, 20}), c.entries.at({144, 20})));
   CHECK(same(r.entries.at({40, 40}), c.entries.at({40, 40})));
   CHECK(!r.entries.at({144, 20}).evm_db[2]);
-  CHECK(slurp(t.p()).rfind("maburwalls 1\n40 40 75 ", 0) == 0);  // sorted: channel 40 first
+  CHECK(slurp(t.p()).rfind("maburwalls 2\n40 40 75 p ", 0) == 0);  // sorted: channel 40 first
+}
+
+TEST(version_2_round_trip_keeps_the_flag) {
+  Dir t;
+  WallCache c;
+  c.entries[{40, 40}] = mk(75, -319);
+  c.entries[{144, 20}] = mk(39, -306);
+  c.entries[{144, 20}].weak_park = true;
+  REQUIRE(save_wall_cache(t.p(), c));
+  std::string note;
+  auto r = load_wall_cache(t.p(), &note);
+  CHECK(note.empty());
+  REQUIRE(r.entries.size() == 2);
+  CHECK(same(r.entries.at({40, 40}), c.entries.at({40, 40})));
+  CHECK(same(r.entries.at({144, 20}), c.entries.at({144, 20})));
+  CHECK(r.entries.at({144, 20}).weak_park && !r.entries.at({40, 40}).weak_park);
+  const std::string f = slurp(t.p());
+  CHECK(f.rfind("maburwalls 2\n40 40 75 p ", 0) == 0);
+  CHECK(f.find("\n144 20 39 w ") != std::string::npos);
+}
+TEST(a_version_1_file_is_nothing_measured) {
+  Dir t;
+  put(t.p(), "maburwalls 1\n40 40 75" + vals(25) + "\n");
+  std::string note;
+  CHECK(load_wall_cache(t.p(), &note).entries.empty());
+  CHECK(note.find("version 1") != std::string::npos);
+}
+TEST(a_bad_flag_token_discards_the_file) {
+  Dir t;
+  put(t.p(), "maburwalls 2\n40 40 75 q" + vals(25) + "\n");
+  std::string note;
+  CHECK(load_wall_cache(t.p(), &note).entries.empty());
+  CHECK(note.find("line 2") != std::string::npos);
 }
 
 TEST(saving_replaces_the_whole_file) {  // fails if save appends/merges with the old file
@@ -92,7 +127,7 @@ TEST(missing_file_is_empty_with_a_note) {  // fails if load returns no note for 
   load_wall_cache(t.p(), nullptr);  // null note is fine
 }
 
-TEST(wrong_header) { expect_bad("maburwalls 2\n" + line("40", "40", "75", vals(25))); }  // fails if the version isn't checked
+TEST(wrong_header) { expect_bad("maburwalls 3\n" + line("40", "40", "75", vals(25))); }  // fails if the version isn't checked
 TEST(short_line) { expect_bad(H + line("40", "40", "75", vals(24))); }                   // fails if the count is >= 25
 TEST(long_line) { expect_bad(H + line("40", "40", "75", vals(26))); }                    // fails if the count is <= 25
 TEST(value_below_range) { expect_bad(H + line("40", "40", "75", vals(24) + " -601")); }  // fails if lower bound is dropped

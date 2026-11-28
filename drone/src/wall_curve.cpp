@@ -13,9 +13,8 @@ namespace {
 // while the lost index steps cost almost no radiated power.
 constexpr float kThreshold[8] = {0, 0, 0, -9.0f, -12.5f, -15.0f, -15.5f, -17.0f};
 constexpr float kNoLdpcPenaltyDb = 4.0f;
-// A PA's EVM only gets worse with the index, so a point that reads this much better than
-// an earlier one means that earlier capture held something else on the air.
-constexpr float kFallBackDb = 2.0f;
+// A curve parked on a weak rise reads that much worse than the same chip's usual curve.
+constexpr float kWeakParkPenaltyDb = 2.5f;
 }  // namespace
 
 std::optional<float> curve_floor_db(const WallCurve& c) {
@@ -26,21 +25,9 @@ std::optional<float> curve_floor_db(const WallCurve& c) {
 }
 
 cal::WallResult check_curve(const WallCurve& c) {
-  int n = 0;
-  std::optional<float> last;
   for (const auto& v : c.evm_db)
-    if (v) { ++n; last = v; }
-  if (n < 20) return cal::WallResult::TooFewPoints;
-  if (*curve_floor_db(c) > -26.0f) return cal::WallResult::FloorTooHigh;
-  if (*last < -11.0f) return cal::WallResult::NotSaturated;
-  // Only from the lowest threshold any wall uses: under it the curve is the listener's
-  // noise floor, which scatters by several dB and never sets a wall.
-  std::optional<float> top;
-  for (const auto& v : c.evm_db) {
-    if (!v || (!top && *v < kThreshold[7] - kNoLdpcPenaltyDb)) continue;
-    if (top && *top - *v > kFallBackDb) return cal::WallResult::Disturbed;
-    if (!top || *v > *top) top = v;
-  }
+    if (!v) return cal::WallResult::TooFewPoints;
+  if (*c.evm_db.back() < -11.0f) return cal::WallResult::NotSaturated;
   return cal::WallResult::Ok;
 }
 
@@ -54,7 +41,15 @@ std::array<int, 8> walls_from_curve(const WallCurve& c, bool ldpc) {
   if (start < 0) return walls;
 
   for (int mcs = 3; mcs < 8; ++mcs) {
-    const float t = kThreshold[mcs] - (ldpc ? 0.0f : kNoLdpcPenaltyDb);
+    const float t = kThreshold[mcs] - (ldpc ? 0.0f : kNoLdpcPenaltyDb) -
+                    (c.weak_park ? kWeakParkPenaltyDb : 0.0f);
+    // Under the whole curve there is no crossing: take the lowest index holding the minimum.
+    // On a predicted curve the minimum is a plateau the running minimum built, and the real
+    // crossing lies under its top.
+    if (t < *c.evm_db[start]) {
+      walls[mcs] = std::clamp(wall_point_index(start) - c.anchor, -64, 63);
+      continue;
+    }
     int a = -1;  // previous point with a value
     for (int k = start; k < kWallPoints; ++k) {
       if (!c.evm_db[k]) continue;

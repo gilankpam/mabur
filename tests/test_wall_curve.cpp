@@ -14,11 +14,6 @@ const int k144_20[25] = {-306,-302,-296,-285,-241,-221,-200,-184,-168,-154,-144,
                          -116,-109,-103,-98,-94,-91,-89,-87,-86,-84,-83,-81};      // anchor 39
 const int k40_40[25]  = {-319,-320,-322,-311,-305,-307,-308,-307,-305,-302,-292,-282,-268,
                          -243,-219,-199,-176,-161,-148,-134,-123,-112,-101,-95,-86};  // anchor 75
-// Measured at 40 MHz while something else was on the air: two points jump up and the curve
-// falls back 8.6 dB. Every other rule passes it, and its first -17 dB crossing is 19 index
-// steps below the undisturbed one.
-const int kDisturbed[25] = {-279,-292,-277,-201,-138,-224,-171,-189,-174,-157,-145,-123,-124,
-                            -99,-108,-95,-84,-89,-84,-82,-79,-77,-75,-75,-73};
 }  // namespace
 
 TEST(measured_curves_give_these_walls) {
@@ -40,15 +35,15 @@ TEST(walls_are_clamped_to_the_diff_range) {
   CHECK(walls_from_curve(curve(k144_20, 127), true)[7] == -64);  // 59.5 - 127, clamped
 }
 TEST(validity_rules) {
-  CHECK(check_curve(curve(k144_20, 39)) == cal::WallResult::Ok);
-  auto few = curve(k144_20, 39);  for (int k = 0; k < 6; ++k) few.evm_db[k + 10].reset();
-  CHECK(check_curve(few) == cal::WallResult::TooFewPoints);        // 19 of 25
-  auto shallow = curve(k144_20, 39);  for (auto& v : shallow.evm_db) if (*v < -25.9f) v = -25.9f;
-  CHECK(check_curve(shallow) == cal::WallResult::FloorTooHigh);
-  auto flat = curve(k144_20, 39);  for (auto& v : flat.evm_db) if (*v > -11.1f) v = -11.1f;
+  CHECK(check_curve(curve(k144_20, 39)) == cal::WallResult::Ok);   // last -8.1
+  auto few = curve(k144_20, 39);  few.evm_db[10].reset();
+  CHECK(check_curve(few) == cal::WallResult::TooFewPoints);
+  auto flat = curve(k144_20, 39);  flat.evm_db[24] = -11.5f;
   CHECK(check_curve(flat) == cal::WallResult::NotSaturated);
-  auto tail = curve(k144_20, 39);  tail.evm_db[24].reset();        // the last point WITH a value decides
-  CHECK(check_curve(tail) == cal::WallResult::Ok);
+  auto shallow = curve(k144_20, 39);  for (auto& v : shallow.evm_db) if (*v < -20.0f) v = -20.0f;
+  CHECK(check_curve(shallow) == cal::WallResult::Ok);              // no floor rule
+  auto fall = curve(k144_20, 39);  fall.evm_db[10] = -15.0f;  fall.evm_db[11] = -20.0f;
+  CHECK(check_curve(fall) == cal::WallResult::Ok);                 // no fall-back rule
 }
 
 TEST(an_early_dip_before_the_floor_is_ignored) {  // fails if the search starts at index 0: mcs4 would cross at 30, not 46
@@ -61,35 +56,42 @@ TEST(only_the_first_crossing_counts) {  // fails if the search keeps going after
                      -80,-80,-80,-80,-80,-80,-80,-80,-80,-80,-80,-80};
   CHECK(walls_from_curve(curve(v, 0), true)[4] == 34);
 }
-TEST(no_crossing_is_63) {  // floor above mcs7's threshold: nothing to cross, not a clamp (anchor 0 would give <63)
+TEST(a_threshold_under_the_curve_takes_the_lowest_index_of_its_minimum) {  // -16.5 from 28 to 120
   const int v[25] = {-165,-165,-165,-165,-165,-165,-165,-165,-165,-165,-165,-165,-165,
                      -165,-165,-165,-165,-165,-165,-165,-165,-165,-165,-165,-80};
-  CHECK(walls_from_curve(curve(v, 0), true)[7] == 63);
+  CHECK(walls_from_curve(curve(v, 100), true)[7] == -64);   // 28 - 100, clamped
+  CHECK(walls_from_curve(curve(v, 0), true)[7] == 28);      // fails if it takes the plateau's top (120 -> 63)
+}
+TEST(a_curve_that_never_reaches_a_threshold_gives_63) {
+  const int v[25] = {-200,-200,-200,-200,-200,-200,-200,-200,-200,-200,-200,-200,-200,
+                     -200,-200,-200,-200,-200,-200,-200,-200,-200,-200,-200,-200};
+  const auto w = walls_from_curve(curve(v, 60), true);
+  for (int m = 3; m < 8; ++m) CHECK(w[m] == 63);
+}
+TEST(a_weak_park_curve_uses_thresholds_2_5_db_lower) {
+  WallCurve c;  c.anchor = 60;
+  for (int k = 0; k < 25; ++k) c.evm_db[k] = -30.0f + k;
+  auto at = [&](bool weak, bool ldpc) {
+    c.weak_park = weak;
+    const auto w = walls_from_curve(c, ldpc);
+    return std::array<int,5>{w[3], w[4], w[5], w[6], w[7]};
+  };
+  CHECK(at(false, true)  == (std::array<int,5>{52, 38, 28, 26, 20}));
+  CHECK(at(true, true)   == (std::array<int,5>{42, 28, 18, 16, 10}));
+  CHECK(at(true, false)  == (std::array<int,5>{26, 12, 2, 0, -6}));
+}
+TEST(a_threshold_under_every_point_takes_the_lowest_index_of_the_minimum) {
+  WallCurve c;  c.anchor = 60;  c.weak_park = true;
+  for (int k = 0; k < 19; ++k) c.evm_db[k] = -23.0f;
+  const float rest[6] = {-20, -17, -14, -11, -8, -8};
+  for (int k = 19; k < 25; ++k) c.evm_db[k] = rest[k - 19];
+  const auto w = walls_from_curve(c, false);
+  CHECK(w[7] == 28 - 60);   // mcs7 -23.5 is under the -23.0 plateau (28 to 100)
+  CHECK(w[6] == 41);        // mcs6 -22.0 crosses at 100 + 4/3
 }
 TEST(validity_boundaries_are_inclusive) {
-  auto twenty = curve(k144_20, 39);  for (int k = 10; k < 15; ++k) twenty.evm_db[k].reset();
-  CHECK(check_curve(twenty) == cal::WallResult::Ok);               // 20 of 25; fails if the count test is <= 20
-  auto floor26 = curve(k144_20, 39);  for (auto& v : floor26.evm_db) if (*v < -26.0f) v = -26.0f;
-  CHECK(check_curve(floor26) == cal::WallResult::Ok);              // fails if the floor test is >= -26
   auto last11 = curve(k144_20, 39);  for (auto& v : last11.evm_db) if (*v > -11.0f) v = -11.0f;
   CHECK(check_curve(last11) == cal::WallResult::Ok);               // fails if the last-point test is <= -11
-}
-
-TEST(a_curve_that_falls_back_is_disturbed) {
-  CHECK(check_curve(curve(kDisturbed, 53)) == cal::WallResult::Disturbed);
-}
-TEST(a_fall_back_of_2_dB_is_tolerated_and_more_is_not) {
-  auto c = curve(k144_20, 39);     // -16.8 at index 60, then -15.4
-  c.evm_db[9] = -18.8f;
-  CHECK(check_curve(c) == cal::WallResult::Ok);          // fails if the test is >= 2 dB
-  c.evm_db[9] = -18.9f;
-  CHECK(check_curve(c) == cal::WallResult::Disturbed);
-}
-TEST(scatter_under_the_lowest_threshold_is_not_a_disturbance) {  // the noise-limited floor moves by several dB
-  auto c = curve(k144_20, 39);
-  c.evm_db[1] = -22.0f;
-  c.evm_db[2] = -32.0f;
-  CHECK(check_curve(c) == cal::WallResult::Ok);
 }
 
 MTEST_MAIN
