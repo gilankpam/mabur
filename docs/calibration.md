@@ -33,7 +33,8 @@ No toolchain, no repo checkout, no laptop-side step. Why the capacity
 sweep has the shape it has (a 2 s dwell):
 `docs/findings/2026-10-31-calibration-shortening-spike.md`. How the walls
 measurement was found to work:
-`docs/findings/2026-11-26-drone-self-calibration-cross-path.md`.
+`docs/findings/2026-11-26-drone-self-calibration-cross-path.md`, and its
+two-probe fit: `docs/findings/2026-11-28-wall-probe-fit.md`.
 Earlier measurements that are still hardware fact — the comb past the
 first dip, the transfer curve:
 `docs/findings/2026-07-16-txagc-calibration.md`,
@@ -321,12 +322,16 @@ TX writer thread, against a capture session on the radio
    | 40 MHz | −5.0 dB | −3.0 dB |
 6. **The curve.** The 25 points are indices 28 to 124 in steps of 4. Up to
    probe 1 each is the fit-1 prediction at that many steps below the probe;
-   between the probes it is the fit-2 prediction; above the top probe it
-   holds that probe's own EVM. Going down from each probe a point never
-   reads worse than the one above it (a running minimum): a PA's EVM only
-   worsens with the index, and a fit's prediction rises again far below its
-   probe, where few samples reach the low knots. Values are rounded to
-   0.1 dB; a non-finite value ends the sweep `too_few_points`.
+   between the probes it is the fit-2 prediction. Going down from each probe
+   a point never reads worse than the one above it (a running minimum): a
+   PA's EVM only worsens with the index, and a fit's prediction rises again
+   far below its probe, where few samples reach the low knots. Where the two
+   fits meet, a point above probe 1 never reads better than the point at
+   probe 1. Above the top probe nothing is predicted: each point is the top
+   probe's point plus 0.1 dB per index above it (the probe-2 hunt's slope),
+   so the curve keeps rising past the probe and a flat tail cannot hide
+   MCS3's crossing. Values are rounded to 0.1 dB; a non-finite value ends
+   the sweep `too_few_points`.
 7. **Restore, on every exit path** (done, invalid, abort, deadline, device
    error): the capture session ends (switch route, listener chain and TX
    buffer layout back to flight's), then width, channel and TX power. If
@@ -343,9 +348,10 @@ TX writer thread, against a capture session on the radio
 probe train, the USB event loop and the encoder saturate core 0 during a
 measurement while core 1 idles, so after the session opens the measuring
 thread pins itself to core 1 (the hot core) and returns to core 0 when the
-session ends, on every exit path. The EVM maths takes about 90 ms per capture
-there against more than twice that on the busy core, which is what keeps a
-sweep inside the deadline.
+session ends, on every exit path. A capture's EVM measurement takes about
+90 ms at 20 MHz there, against more than twice that on the busy core, and the
+two probe fits and the curve's predictions add to it; running there is what
+keeps a sweep inside the deadline.
 
 **The drone sends nothing during the measurement** (`radio_quiet`): from
 the setup to the restore every send is dropped, so no DISC_ACK, no
@@ -397,9 +403,10 @@ the linearly interpolated TXAGC index at which the curve first rises
 through that MCS's threshold, searching upward from the floor (the first
 lowest point). `wall = floor(crossing − anchor)`, clamped to [−64, 63].
 A threshold under the whole curve has no crossing to find: its wall is the
-highest index holding the curve's minimum, minus the anchor (the cleanest
-power the rate can have). A curve that never rises to the threshold gives
-63. Walls are relative to the anchor, as before: the
+lowest index holding the curve's minimum, minus the anchor. On a predicted
+curve the minimum is a plateau the running minimum built, and the real
+crossing lies under its top, so the wall takes its bottom. A curve that
+never rises to the threshold gives 63. Walls are relative to the anchor, as before: the
 chip adds its own per-channel-group reference on every channel.
 
 | MCS | 0–2 | 3 | 4 | 5 | 6 | 7 |
@@ -529,7 +536,7 @@ and resume video on its own.
 | step | time |
 |---|---|
 | channel pick | 0 pinned or one card; ~1 s for the round (three members at 280 ms) plus up to `[hop] confirm_ms` for a relocate |
-| wall measurement | 8 to 12 captures plus the channel and width switches: 1.5–1.8 s at 20 MHz and 2.8–3.5 s at 40 MHz on the reference drone (each sweep logs `time_ms` and `captures`); bounded by the 30 s deadline |
+| wall measurement | 8 to 13 captures plus the channel and width switches: 1.5–1.8 s at 20 MHz and 2.8–3.5 s at 40 MHz on the reference drone (each sweep logs `time_ms` and `captures`); bounded by the 30 s deadline |
 | capacity sweep | 18.4 s per width (8 × 2.3 s) + 200 ms start + ack |
 | apply (capacity) | one round trip |
 
@@ -622,8 +629,9 @@ order.
   `maburd cal: wall cache … write … failed`; the result stays `ok`.
 - Read at `maburd` start: `maburd radio: wall cache /etc/mabur.walls: N
   measured (channel, width)`. A missing, unreadable, malformed or
-  wrong-version file (a `maburwalls 1` file included) is "nothing measured", with the reason in the same
-  log line; it is never a boot failure.
+  wrong-version file (a `maburwalls 1` file included, reason `version 1
+  (re-measure)`) is "nothing measured", with the reason in the same log
+  line; it is never a boot failure.
 - **Hand-editing:** LF line ends, single spaces between tokens, a final
   newline, a header line exactly `maburwalls 2`. Any malformed line (wrong
   token count, a value out of range, a duplicate (channel, width), no
@@ -813,6 +821,8 @@ skipped power20 (sweep 0): unsupported
 written: /etc/mabur.toml (backup /etc/mabur.toml.pre-cal)
 ```
 
+The `run` line names the link's channel and each `walls` line the channel
+it measured, which is why the example shows `ch=112` and `ch=144`.
 Per wall sweep one line, `walls ch=<ch> <bw> MHz anchor=<a> floor=<dB>dB:`
 then the eight walls, MCS0 first (63 = no crossing, the rail). The
 capacity table has one column per width swept (`eff20`, `eff40`) and a

@@ -195,6 +195,9 @@ Chronological; each line names the section below that carries the detail.
 - 2026-11-27 — the drone measures its own TX walls: RC_VERSION 20,
   `callog 6`, `/etc/mabur.walls`, the per-width wall config keys removed
   (see "2026-11-27 — drone self-calibration of TX walls").
+- 2026-11-28 — walls from two probes and a PA fit: `maburwalls 2`, the
+  wall floor is a predicted point, `floor too high` no longer produced
+  (see "2026-11-28 — walls from two probes: maburwalls 2").
 
 ## 2026-09-23 — `link.pre_fec_loss` scale break, twice
 
@@ -1576,7 +1579,8 @@ What changed for a recording or a comparison:
   Wall report; APPLY / APPLIED carry efficiency only (`docs/mavlink.md`).
   A drone and GS at different versions do not link.
 - **Walls.** One curve per (channel, width) in `/etc/mabur.walls`
-  (`maburwalls 1`), derived to walls at load; a wall figure is an EVM
+  (`maburwalls 1`; `maburwalls 2` from 2026-11-28, below), derived to
+  walls at load; a wall figure is an EVM
   crossing on the drone's own PA A, not a delivery threshold at a
   receiver, and 20 MHz is measured on a 20 MHz tuning. Walls from the GS
   sweep and walls from the drone are not pooled. A channel and width never
@@ -1590,3 +1594,29 @@ What changed for a recording or a comparison:
   <reason>` for a skipped sweep (which gets no `S`); the `R` line's `ldpc` is `-` when no ack was heard before the run's first record. The wall flag bits 1–16 are no longer
   written; capacity flags are as in `callog 5`. `maburcal report` reads
   `callog 1`–`6`. The sideport `link.cal` kind is `wall` or `capacity`.
+
+## 2026-11-28 — walls from two probes: maburwalls 2
+
+The drone's wall measurement hunts two probe indices, fits the PA's gain
+curve to each and predicts the 25-point curve from the fits, where the
+2026-11-27 build captured all 25 points (`docs/calibration.md`). No wire
+change (RC_VERSION 20, `callog 6`). What changed for a recording or a
+comparison:
+
+- **Cache format `maburwalls 2`.** Lines are
+  `<ch> <bw> <anchor> <p|w> <e0>…<e24>`: the `p|w` flag (parked, or a weak
+  park whose thresholds are lowered 2.5 dB) is new. A `maburwalls 1` file
+  reads as nothing measured (reason `version 1 (re-measure)`): every
+  channel flies the chip's table until it is measured again.
+- **The floor.** `floor_evm_x10` (`W` records) and the wall report's
+  `floor` are, from this build on, the lowest point of a predicted curve,
+  bounded by an assumed −27 dB listener floor. Before it they were the
+  listener's measured floor, typically −30 dB or better. The two are not
+  comparable, and the new one says nothing about the listener's health.
+- **`wall_result` 3 (`floor too high`)** is no longer produced; a `W` or
+  sideport result of 3 is from an earlier build.
+- **Wall figures.** Walls from this build are typically 1–2 index steps
+  lower than the 25-point sweep's for the same channel and width, and
+  repeat within about 4 steps where the sweep repeated within about 1
+  (`docs/findings/2026-11-28-wall-probe-fit.md`). Walls from the two
+  builds are not pooled.

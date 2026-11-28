@@ -115,8 +115,11 @@ self-measured EVM (25-point sweep, PA A) read at the cliff:
 ## Bench, the built measurement
 
 Bench drone, `radio.width = 40`, the measurement triggered over the cal
-lane, the old 25-point binary and the new one in one session. Walls are
-MCS3 … MCS7 relative to the anchor.
+lane. The old 25-point binary and a first build of the new measurement were
+run in one session, and that session's walls are the agreement check (no
+new wall more than 2 steps above the old one). The table's "new" column is
+the final build (prediction symbols cached, 40 per prediction), run in a
+second session the same day. Walls are MCS3 … MCS7 relative to the anchor.
 
 | channel / width | old: walls, time | new: walls (repeats), time |
 |---|---|---|
