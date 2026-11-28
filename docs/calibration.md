@@ -273,16 +273,18 @@ TX writer thread, against a capture session on the radio
    itself, in dB), fits the PA at each, and predicts the rest of the curve.
    - **Window.** Probe 1 is the index whose own EVM lies in −12.3 to
      −11.0 dB, probe 2 the one in −9.0 to −8.3 dB. Probe 2 is hunted from
-     probe 1 + 4 upward, starting at probe 1 + 24.
-   - **Hunt.** The first index is `anchor + 40` rounded to a grid step
-     (clamped to 60..124). Each capture outside the window moves the index
+     probe 1 + 24 (clamped to 124), counting probe 1 as an index already
+     tried, and the hunt may step down to probe 1 + 4.
+   - **Hunt.** Probe 1's first index is `anchor + 40` rounded to a grid
+     step (clamped to 60..124). Each capture outside the window moves the index
      toward it by the EVM distance to the window's aim point divided by an
      assumed slope (0.25 dB per index for probe 1, 0.1 for probe 2), rounded
      to a grid step and limited to 4..16 indices; an index already tried is
      skipped. A hunt ends on an index inside the window; on the top index
      (124) still below it; on a tried pair one grid step apart that straddles
-     the window (the upper index is the probe); or on an index above the
-     window whose lower neighbour is below it. A hunt that has measured
+     the window (the upper index is the probe; an index above the window
+     whose lower neighbour is below it is the same case from the other
+     side). A hunt that has measured
      six indices without ending, or that runs out of indices, ends the
      sweep `too_few_points`.
    - **A probe** is up to three captures of its index; the fit needs two
@@ -791,8 +793,7 @@ that cannot self-measure:
 
 ```
 run nonce=1873455120 margin=1.00dB ch=112 pick=auto ldpc=1
-walls ch=112 20 MHz anchor=39 floor=-27.9dB: 63 63 63 63 44 26 24 20
-walls ch=112 40 MHz anchor=39 floor=-27.6dB: 63 63 63 63 45 28 28 23
+walls ch=144 20 MHz anchor=39 floor=-23.6dB: 63 63 63 62 35 25 24 19
 rate     eff20   flags
 mcs0       .93
 mcs1       .88
@@ -802,7 +803,7 @@ walls stored by the drone (/etc/mabur.walls)
 written: /etc/mabur.toml (backup /etc/mabur.toml.pre-cal)
 
 run nonce=1873455121 margin=1.00dB ch=112 pick=pinned ldpc=-
-walls ch=112 20 MHz anchor=39 floor=-27.9dB: 63 63 63 63 44 26 24 20
+walls ch=144 20 MHz anchor=39 floor=-23.6dB: 63 63 63 62 35 25 24 19
 walls stored by the drone (/etc/mabur.walls)
 
 run nonce=1873455122 margin=1.00dB ch=112 pick=onecard ldpc=1
@@ -967,7 +968,7 @@ commands the drone, after the pick.
 **`maburd` log** (`/tmp/mabur.log`). The measurement's one line:
 
 ```
-maburd cal: wall ch=112 bw=20 result=Ok park_rise=17.4 floor=-27.9 anchor=39 walls=63,63,63,63,36,26,24,20 captures=9 time_ms=4300
+maburd cal: wall ch=144 bw=20 result=Ok park_rise=16.9 floor=-23.6 anchor=39 walls=63,63,63,62,35,25,24,19 captures=8 time_ms=2237
 ```
 
 `result` is one of `Ok Unparked TooFewPoints NotSaturated
